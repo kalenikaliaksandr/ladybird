@@ -69,6 +69,9 @@ public:
     void update_immutable_bitmap_texture_cache(HashMap<u32, Gfx::ImmutableBitmap const*>&) override {};
 
     DisplayListPlayerSkia(Gfx::Bitmap&);
+    DisplayListPlayerSkia(SkiaBackendContext&, Gfx::Bitmap&);
+
+    static OwnPtr<SkiaBackendContext> create_gl_context();
 
 #ifdef AK_OS_MACOS
     static OwnPtr<SkiaBackendContext> create_metal_context(Core::MetalContext const&);

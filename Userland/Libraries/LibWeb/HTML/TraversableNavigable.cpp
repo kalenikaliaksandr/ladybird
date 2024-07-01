@@ -32,6 +32,15 @@ TraversableNavigable::TraversableNavigable(JS::NonnullGCPtr<Page> page)
     : Navigable(page)
     , m_session_history_traversal_queue(vm().heap().allocate_without_realm<SessionHistoryTraversalQueue>())
 {
+    auto context = AccelGfx::Context::create();
+    if (context.is_error()) {
+        dbgln("Failed to create AccelGfx context: {}", context.error());
+        VERIFY_NOT_REACHED();
+    }
+    m_accelerated_graphics_context = context.release_value();
+
+    m_skia_backend_context = Painting::DisplayListPlayerSkia::create_gl_context();
+
 #ifdef AK_OS_MACOS
     m_metal_context = Core::get_metal_context();
     m_skia_backend_context = Web::Painting::DisplayListPlayerSkia::create_metal_context(*m_metal_context);
@@ -1214,7 +1223,7 @@ void TraversableNavigable::paint(Web::DevicePixelRect const& content_rect, Paint
             return;
         }
 #endif
-        Web::Painting::DisplayListPlayerSkia player(target.bitmap());
+        Web::Painting::DisplayListPlayerSkia player(*m_skia_backend_context, target.bitmap());
         display_list.execute(player);
     } else {
         Web::Painting::DisplayListPlayerCPU player(target.bitmap());

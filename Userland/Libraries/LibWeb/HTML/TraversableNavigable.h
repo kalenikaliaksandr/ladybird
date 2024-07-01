@@ -130,8 +130,10 @@ private:
 
     String m_window_handle;
 
-#ifdef AK_OS_MACOS
     OwnPtr<Web::Painting::SkiaBackendContext> m_skia_backend_context;
+    OwnPtr<AccelGfx::Context> m_accelerated_graphics_context;
+
+#ifdef AK_OS_MACOS
     OwnPtr<Core::MetalContext> m_metal_context;
 #endif
 };
