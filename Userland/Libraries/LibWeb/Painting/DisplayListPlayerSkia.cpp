@@ -27,6 +27,8 @@
 #include <LibWeb/Painting/ShadowPainting.h>
 
 #ifdef USE_VULKAN
+#    include <gpu/GrBackendSurface.h>
+#    include <gpu/ganesh/vk/GrVkBackendSurface.h>
 #    include <gpu/ganesh/vk/GrVkDirectContext.h>
 #    include <gpu/vk/GrVkBackendContext.h>
 #    include <gpu/vk/VulkanBackendContext.h>
@@ -66,14 +68,70 @@ private:
 };
 
 #ifdef USE_VULKAN
+[[maybe_unused]] static VkImage create_image(VkDevice device, VkPhysicalDevice physical_device, int width, int height)
+{
+    VkImageCreateInfo image_create_info = {};
+    image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_create_info.pNext = nullptr;
+    image_create_info.flags = 0;
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;      // 1D, 2D, or 3D image
+    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM; // Format of the image
+    image_create_info.extent.width = width;
+    image_create_info.extent.height = height;
+    image_create_info.extent.depth = 1;
+    image_create_info.mipLevels = 1;
+    image_create_info.arrayLayers = 1;
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;                                          // Number of samples per pixel
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;                                         // Tiling arrangement
+    image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; // Usage flags
+    image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;                                  // Sharing mode
+    image_create_info.queueFamilyIndexCount = 0;                                                // Number of queue families
+    image_create_info.pQueueFamilyIndices = nullptr;
+    image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImage image;
+    VkResult result = vkCreateImage(device, &image_create_info, nullptr, &image);
+    if (result != VK_SUCCESS) {
+        VERIFY_NOT_REACHED();
+    }
+
+    VkMemoryRequirements memory_requirements;
+    vkGetImageMemoryRequirements(device, image, &memory_requirements);
+
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+    (void)memory_properties;
+
+    VkMemoryAllocateInfo memory_allocate_info = {};
+    memory_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    memory_allocate_info.pNext = nullptr;
+    memory_allocate_info.allocationSize = memory_requirements.size;
+    memory_allocate_info.memoryTypeIndex = 0; // FIXME
+
+    VkDeviceMemory imageMemory;
+    result = vkAllocateMemory(device, &memory_allocate_info, nullptr, &imageMemory);
+    if (result != VK_SUCCESS) {
+        VERIFY_NOT_REACHED();
+    }
+
+    result = vkBindImageMemory(device, image, imageMemory, 0);
+    if (result != VK_SUCCESS) {
+        VERIFY_NOT_REACHED();
+    }
+
+    return image;
+}
+
 class SkiaVulkanBackendContext final : public SkiaBackendContext {
     AK_MAKE_NONCOPYABLE(SkiaVulkanBackendContext);
     AK_MAKE_NONMOVABLE(SkiaVulkanBackendContext);
 
 public:
-    SkiaVulkanBackendContext(sk_sp<GrDirectContext> context, NonnullOwnPtr<skgpu::VulkanExtensions> extensions)
+    SkiaVulkanBackendContext(sk_sp<GrDirectContext> context, NonnullOwnPtr<skgpu::VulkanExtensions> extensions, VkDevice device, VkPhysicalDevice physical_device)
         : m_context(move(context))
         , m_extensions(move(extensions))
+        , m_device(device)
+        , m_physical_device(physical_device)
     {
     }
 
@@ -87,8 +145,22 @@ public:
 
     sk_sp<SkSurface> create_surface(int width, int height)
     {
-        auto image_info = SkImageInfo::Make(width, height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
-        return SkSurfaces::RenderTarget(m_context.get(), skgpu::Budgeted::kYes, image_info);
+        // auto image_info = SkImageInfo::Make(width, height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
+        // return SkSurfaces::RenderTarget(m_context.get(), skgpu::Budgeted::kYes, image_info);
+        // FIXME: MEMORY LEAKS MEMORY LEAKS MEMORY LEAKS MEMORY LEAKS MEMORY LEAKS MEMORY LEAKS MEMORY LEAKS MEMORY LEAKS
+        auto vk_image = create_image(m_device, m_physical_device, width, height);
+        (void)vk_image;
+        GrVkImageInfo image_info;
+        image_info.fImage = vk_image;
+        image_info.fAlloc = skgpu::VulkanAlloc();
+        image_info.fImageTiling = VK_IMAGE_TILING_OPTIMAL;
+        image_info.fFormat = VK_FORMAT_B8G8R8A8_UNORM;
+        auto backend_render_target = GrBackendRenderTargets::MakeVk(width, height, image_info);
+        auto surface = SkSurfaces::WrapBackendRenderTarget(m_context.get(), backend_render_target, kTopLeft_GrSurfaceOrigin, kBGRA_8888_SkColorType, nullptr, nullptr);
+        if (!surface) {
+            dbgln(">>>>>>>>>>>surface is null");
+        }
+        return surface;
     }
 
     skgpu::VulkanExtensions const* extensions() const { return m_extensions.ptr(); }
@@ -96,6 +168,8 @@ public:
 private:
     sk_sp<GrDirectContext> m_context;
     NonnullOwnPtr<skgpu::VulkanExtensions> m_extensions;
+    VkDevice m_device { VK_NULL_HANDLE };
+    VkPhysicalDevice m_physical_device { VK_NULL_HANDLE };
 };
 
 OwnPtr<SkiaBackendContext> DisplayListPlayerSkia::create_vulkan_context(Core::VulkanContext& vulkan_context)
@@ -119,7 +193,7 @@ OwnPtr<SkiaBackendContext> DisplayListPlayerSkia::create_vulkan_context(Core::Vu
 
     sk_sp<GrDirectContext> ctx = GrDirectContexts::MakeVulkan(backend_context);
     VERIFY(ctx);
-    return make<SkiaVulkanBackendContext>(ctx, move(extensions));
+    return make<SkiaVulkanBackendContext>(ctx, move(extensions), vulkan_context.logical_device, vulkan_context.physical_device);
 }
 
 DisplayListPlayerSkia::DisplayListPlayerSkia(SkiaBackendContext& context, Gfx::Bitmap& bitmap)
