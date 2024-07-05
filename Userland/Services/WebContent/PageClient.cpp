@@ -45,7 +45,7 @@ PageClient::PageClient(PageHost& owner, u64 id)
     : m_owner(owner)
     , m_page(Web::Page::create(Web::Bindings::main_thread_vm(), *this))
     , m_id(id)
-    , m_backing_store_manager(*this)
+// , m_backing_store_manager(*this)
 {
     setup_palette();
 }
@@ -193,19 +193,22 @@ void PageClient::process_screenshot_requests()
 
 void PageClient::paint_next_frame()
 {
+    auto& top_level_traversable = *page().top_level_traversable();
+    auto& backing_store_manager = top_level_traversable.backing_store_manager();
+
     process_screenshot_requests();
 
-    auto back_store = m_backing_store_manager.back_store();
+    auto back_store = backing_store_manager.back_store();
     if (!back_store)
         return;
 
     auto viewport_rect = page().css_to_device_rect(page().top_level_traversable()->viewport_rect());
     paint(viewport_rect, *back_store);
 
-    m_backing_store_manager.swap_back_and_front();
+    backing_store_manager.swap_back_and_front();
 
     m_paint_state = PaintState::WaitingForClient;
-    client().async_did_paint(m_id, viewport_rect.to_type<int>(), m_backing_store_manager.front_id());
+    client().async_did_paint(m_id, viewport_rect.to_type<int>(), backing_store_manager.front_id());
 }
 
 void PageClient::paint(Web::DevicePixelRect const& content_rect, Web::Painting::BackingStore& target, Web::PaintOptions paint_options)
@@ -217,10 +220,12 @@ void PageClient::paint(Web::DevicePixelRect const& content_rect, Web::Painting::
 
 void PageClient::set_viewport_size(Web::DevicePixelSize const& size)
 {
-    page().top_level_traversable()->set_viewport_size(page().device_to_css_size(size));
+    auto& top_level_traversable = *page().top_level_traversable();
+    top_level_traversable.set_viewport_size(page().device_to_css_size(size));
 
-    m_backing_store_manager.restart_resize_timer();
-    m_backing_store_manager.resize_backing_stores_if_needed(BackingStoreManager::WindowResizingInProgress::Yes);
+    auto& backing_store_manager = top_level_traversable.backing_store_manager();
+    backing_store_manager.restart_resize_timer();
+    backing_store_manager.resize_backing_stores_if_needed(Web::Painting::BackingStoreManager::WindowResizingInProgress::Yes);
 }
 
 void PageClient::page_did_request_cursor_change(Gfx::StandardCursor cursor)

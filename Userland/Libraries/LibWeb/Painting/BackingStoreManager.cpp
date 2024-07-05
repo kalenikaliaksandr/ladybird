@@ -6,7 +6,8 @@
 
 #include <LibCore/Timer.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
-#include <WebContent/BackingStoreManager.h>
+
+#include <LibWeb/Painting/BackingStoreManager.h>
 #include <WebContent/PageClient.h>
 
 #ifdef AK_OS_MACOS
@@ -15,7 +16,7 @@
 #    include <LibCore/Platform/MachMessageTypes.h>
 #endif
 
-namespace WebContent {
+namespace Web::Painting {
 
 #ifdef AK_OS_MACOS
 static Optional<Core::MachPort> s_browser_mach_port;

@@ -536,6 +536,7 @@ set(SOURCES
     Painting/AudioPaintable.cpp
     Painting/BackgroundPainting.cpp
     Painting/BackingStore.cpp
+    Painting/BackingStoreManager.cpp
     Painting/BorderRadiiData.cpp
     Painting/BorderPainting.cpp
     Painting/BorderRadiusCornerClipper.cpp

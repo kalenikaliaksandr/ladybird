@@ -11,7 +11,7 @@
 #include <LibWeb/Painting/BackingStore.h>
 #include <WebContent/Forward.h>
 
-namespace WebContent {
+namespace Web::Painting {
 
 class BackingStoreManager {
 public:
@@ -39,8 +39,8 @@ private:
 
     i32 m_front_bitmap_id { -1 };
     i32 m_back_bitmap_id { -1 };
-    OwnPtr<Web::Painting::BackingStore> m_front_store;
-    OwnPtr<Web::Painting::BackingStore> m_back_store;
+    OwnPtr<BackingStore> m_front_store;
+    OwnPtr<BackingStore> m_back_store;
     int m_next_bitmap_id { 0 };
 
     RefPtr<Core::Timer> m_backing_store_shrink_timer;

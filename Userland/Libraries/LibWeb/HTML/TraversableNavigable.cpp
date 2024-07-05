@@ -27,6 +27,7 @@ JS_DEFINE_ALLOCATOR(TraversableNavigable);
 TraversableNavigable::TraversableNavigable(JS::NonnullGCPtr<Page> page)
     : Navigable(page)
     , m_session_history_traversal_queue(vm().heap().allocate_without_realm<SessionHistoryTraversalQueue>())
+    , m_backing_store_manager(Painting::BackingStoreManager(page->client()))
 {
 #ifdef AK_OS_MACOS
     auto display_list_player_type = page->client().display_list_player_type();

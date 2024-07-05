@@ -12,8 +12,8 @@
 #include <LibWeb/HTML/SessionHistoryTraversalQueue.h>
 #include <LibWeb/HTML/VisibilityState.h>
 #include <LibWeb/Page/Page.h>
+#include <LibWeb/Painting/BackingStoreManager.h>
 #include <LibWeb/Painting/DisplayListPlayerSkia.h>
-#include <WebContent/BackingStoreManager.h>
 
 #ifdef AK_OS_MACOS
 #    include <LibCore/MetalContext.h>
@@ -97,6 +97,8 @@ public:
 
     void paint(Web::DevicePixelRect const&, Painting::BackingStore&, Web::PaintOptions);
 
+    Painting::BackingStoreManager& backing_store_manager() { return m_backing_store_manager; }
+
 private:
     TraversableNavigable(JS::NonnullGCPtr<Page>);
 
@@ -133,6 +135,8 @@ private:
     JS::NonnullGCPtr<SessionHistoryTraversalQueue> m_session_history_traversal_queue;
 
     String m_window_handle;
+
+    Painting::BackingStoreManager m_backing_store_manager;
 
     OwnPtr<Web::Painting::SkiaBackendContext> m_skia_backend_context;
 

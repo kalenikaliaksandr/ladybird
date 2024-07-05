@@ -12,8 +12,8 @@
 #include <LibWeb/HTML/AudioPlayState.h>
 #include <LibWeb/HTML/FileFilter.h>
 #include <LibWeb/Page/Page.h>
+#include <LibWeb/Painting/BackingStoreManager.h>
 #include <LibWeb/PixelUnits.h>
-#include <WebContent/BackingStoreManager.h>
 #include <WebContent/Forward.h>
 
 namespace WebContent {
@@ -86,7 +86,7 @@ public:
 
     void queue_screenshot_task(Optional<i32> node_id);
 
-    friend class BackingStoreManager;
+    friend class Web::Painting::BackingStoreManager;
 
 private:
     PageClient(PageHost&, u64 id);
@@ -198,7 +198,7 @@ private:
 
     RefPtr<WebDriverConnection> m_webdriver;
 
-    BackingStoreManager m_backing_store_manager;
+    // BackingStoreManager m_backing_store_manager;
 
     // NOTE: These documents are not visited, but manually removed from the map on document finalization.
     HashMap<JS::RawGCPtr<Web::DOM::Document>, JS::NonnullGCPtr<WebContentConsoleClient>> m_console_clients;

@@ -5,7 +5,6 @@ set(WEBCONTENT_SOURCE_DIR ${LADYBIRD_SOURCE_DIR}/Userland/Services/WebContent/)
 set(WEBCONTENT_SOURCES
     ${WEBCONTENT_SOURCE_DIR}/ConnectionFromClient.cpp
     ${WEBCONTENT_SOURCE_DIR}/ConsoleGlobalEnvironmentExtensions.cpp
-    ${WEBCONTENT_SOURCE_DIR}/BackingStoreManager.cpp
     ${WEBCONTENT_SOURCE_DIR}/PageClient.cpp
     ${WEBCONTENT_SOURCE_DIR}/PageHost.cpp
     ${WEBCONTENT_SOURCE_DIR}/WebContentConsoleClient.cpp
