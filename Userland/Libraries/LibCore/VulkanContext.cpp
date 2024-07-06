@@ -7,6 +7,9 @@
 #include <AK/Format.h>
 #include <AK/Vector.h>
 #include <LibCore/VulkanContext.h>
+#include <LibIPC/Decoder.h>
+#include <LibIPC/Encoder.h>
+#include <LibIPC/File.h>
 
 namespace Core {
 
@@ -200,6 +203,46 @@ VulkanImage VulkanImage::create(VkDevice device, VkPhysicalDevice physical_devic
     dbgln(">>>fd={}", fd);
 
     return VulkanImage(width, height, image, imageMemory, fd);
+}
+
+VulkanImage VulkanImage::create_from_fd(int fd)
+{
+    (void)fd;
+    VERIFY_NOT_REACHED();
+}
+
+}
+
+namespace IPC {
+
+template<>
+ErrorOr<void> encode(Encoder& encoder, Core::VulkanImage const& vulkan_image)
+{
+    TRY(encoder.encode(TRY(IPC::File::clone_fd(vulkan_image.fd()))));
+    return {};
+}
+
+template<>
+ErrorOr<Core::VulkanImage> decode(Decoder& decoder)
+{
+    (void)decoder;
+    VERIFY_NOT_REACHED();
+
+    //     if (auto valid = TRY(decoder.decode<bool>()); !valid)
+    //         return Gfx::ShareableBitmap {};
+    //
+    //     auto anon_file = TRY(decoder.decode<IPC::File>());
+    //     auto size = TRY(decoder.decode<Gfx::IntSize>());
+    //     auto raw_bitmap_format = TRY(decoder.decode<u32>());
+    //     if (!Gfx::is_valid_bitmap_format(raw_bitmap_format))
+    //         return Error::from_string_literal("IPC: Invalid Gfx::ShareableBitmap format");
+    //
+    //     auto bitmap_format = static_cast<Gfx::BitmapFormat>(raw_bitmap_format);
+    //
+    //     auto buffer = TRY(Core::AnonymousBuffer::create_from_anon_fd(anon_file.take_fd(), Gfx::Bitmap::size_in_bytes(Gfx::Bitmap::minimum_pitch(size.width(), bitmap_format), size.height())));
+    //     auto bitmap = TRY(Gfx::Bitmap::create_with_anonymous_buffer(bitmap_format, move(buffer), size));
+    //
+    //     return Gfx::ShareableBitmap { move(bitmap), Gfx::ShareableBitmap::ConstructWithKnownGoodBitmap };
 }
 
 }

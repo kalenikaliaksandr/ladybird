@@ -12,6 +12,7 @@ static_assert(false, "This file must only be used when Vulkan is available");
 
 #include <AK/Forward.h>
 #include <AK/Function.h>
+#include <LibIPC/Forward.h>
 #include <vulkan/vulkan.h>
 
 namespace Core {
@@ -31,6 +32,7 @@ class VulkanImage {
 
 public:
     static VulkanImage create(VkDevice device, VkPhysicalDevice physical_device, int width, int height);
+    static VulkanImage create_from_fd(int fd);
 
     VulkanImage(VulkanImage&& other) = default;
     VulkanImage& operator=(VulkanImage&& other) = default;
@@ -39,6 +41,8 @@ public:
 
     int width() const { return m_width; }
     int height() const { return m_height; }
+
+    int fd() const { return m_fd; }
 
 private:
     VulkanImage(int width, int height, VkImage image, VkDeviceMemory device_memory, int fd)
@@ -57,5 +61,15 @@ private:
     int m_width { 0 };
     int m_height { 0 };
 };
+
+}
+
+namespace IPC {
+
+// template<>
+// ErrorOr<void> encode(Encoder&, Core::VulkanImage const&);
+//
+// template<>
+// ErrorOr<Core::VulkanImage> decode(Decoder&);
 
 }
