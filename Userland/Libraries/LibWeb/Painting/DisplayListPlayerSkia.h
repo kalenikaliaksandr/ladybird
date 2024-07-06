@@ -76,7 +76,7 @@ public:
 
 #ifdef USE_VULKAN
     static OwnPtr<SkiaBackendContext> create_vulkan_context(Core::VulkanContext&);
-    DisplayListPlayerSkia(SkiaBackendContext&, Core::VulkanImage&);
+    DisplayListPlayerSkia(SkiaBackendContext&, NonnullRefPtr<Core::VulkanImage>);
 #endif
 
 #ifdef AK_OS_MACOS

@@ -132,7 +132,7 @@ ErrorOr<VulkanContext> create_vulkan_context()
     };
 }
 
-VulkanImage VulkanImage::create(VkDevice device, VkPhysicalDevice physical_device, int width, int height)
+NonnullRefPtr<VulkanImage> VulkanImage::create(VkDevice device, VkPhysicalDevice physical_device, int width, int height)
 {
     VkImageCreateInfo image_create_info = {};
     image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -202,7 +202,7 @@ VulkanImage VulkanImage::create(VkDevice device, VkPhysicalDevice physical_devic
     vkGetMemoryFdKHR(device, &memoryGetFdInfo, &fd);
     dbgln(">>>fd={}", fd);
 
-    return VulkanImage(width, height, image, imageMemory, fd);
+    return adopt_nonnull_ref_or_enomem(new (nothrow) VulkanImage(width, height, image, imageMemory, fd)).release_value();
 }
 
 VulkanImage VulkanImage::create_from_fd(int fd)

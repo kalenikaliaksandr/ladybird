@@ -45,23 +45,23 @@ private:
 #ifdef USE_VULKAN
 class VulkanBackingStore final : public BackingStore {
 public:
-    VulkanBackingStore(Core::VulkanImage&& vulkan_image)
+    VulkanBackingStore(NonnullRefPtr<Core::VulkanImage> vulkan_image)
         : m_vulkan_image(move(vulkan_image))
     {
     }
 
     Gfx::IntSize size() const override
     {
-        return { m_vulkan_image.width(), m_vulkan_image.height() };
+        return { m_vulkan_image->width(), m_vulkan_image->height() };
     }
     Gfx::Bitmap& bitmap() const override { VERIFY_NOT_REACHED(); }
 
-    Core::VulkanImage& vulkan_image() { return m_vulkan_image; }
+    NonnullRefPtr<Core::VulkanImage> vulkan_image() { return m_vulkan_image; }
 
     virtual ~VulkanBackingStore() {};
 
 private:
-    Core::VulkanImage m_vulkan_image;
+    NonnullRefPtr<Core::VulkanImage> m_vulkan_image;
 };
 #endif
 

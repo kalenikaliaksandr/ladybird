@@ -143,10 +143,10 @@ OwnPtr<SkiaBackendContext> DisplayListPlayerSkia::create_vulkan_context(Core::Vu
     return make<SkiaVulkanBackendContext>(ctx, move(extensions), vulkan_context.logical_device, vulkan_context.physical_device);
 }
 
-DisplayListPlayerSkia::DisplayListPlayerSkia(SkiaBackendContext& context, Core::VulkanImage& vulkan_image)
+DisplayListPlayerSkia::DisplayListPlayerSkia(SkiaBackendContext& context, NonnullRefPtr<Core::VulkanImage> vulkan_image)
 {
     //    VERIFY(bitmap.format() == Gfx::BitmapFormat::BGRA8888);
-    auto surface = static_cast<SkiaVulkanBackendContext&>(context).create_surface(vulkan_image);
+    auto surface = static_cast<SkiaVulkanBackendContext&>(context).create_surface(*vulkan_image);
     m_surface = make<SkiaSurface>(surface);
     m_flush_context = [&surface = m_surface, &context] {
         context.flush_and_submit();

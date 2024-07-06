@@ -12,6 +12,7 @@ static_assert(false, "This file must only be used when Vulkan is available");
 
 #include <AK/Forward.h>
 #include <AK/Function.h>
+#include <AK/RefCounted.h>
 #include <LibIPC/Forward.h>
 #include <vulkan/vulkan.h>
 
@@ -27,15 +28,10 @@ struct VulkanContext {
 
 ErrorOr<VulkanContext> create_vulkan_context();
 
-class VulkanImage {
-    AK_MAKE_NONCOPYABLE(VulkanImage);
-
+class VulkanImage : public RefCounted<VulkanImage> {
 public:
-    static VulkanImage create(VkDevice device, VkPhysicalDevice physical_device, int width, int height);
+    static NonnullRefPtr<VulkanImage> create(VkDevice device, VkPhysicalDevice physical_device, int width, int height);
     static VulkanImage create_from_fd(int fd);
-
-    VulkanImage(VulkanImage&& other) = default;
-    VulkanImage& operator=(VulkanImage&& other) = default;
 
     VkImage image() const { return m_image; }
 

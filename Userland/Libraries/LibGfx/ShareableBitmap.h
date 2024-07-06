@@ -11,6 +11,10 @@
 #include <LibGfx/Size.h>
 #include <LibIPC/Forward.h>
 
+#ifdef USE_VULKAN
+#    include <LibCore/VulkanContext.h>
+#endif
+
 namespace Gfx {
 
 class ShareableBitmap {
