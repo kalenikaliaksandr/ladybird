@@ -11,6 +11,10 @@
 #include <LibWeb/Painting/BackingStore.h>
 #include <WebContent/Forward.h>
 
+#ifdef USE_VULKAN
+#    include <LibCore/VulkanContext.h>
+#endif
+
 namespace Web::Painting {
 
 class BackingStoreManager {
@@ -32,6 +36,10 @@ public:
 
     void swap_back_and_front();
 
+#ifdef USE_VULKAN
+    void set_vulkan_context(Core::VulkanContext& vulkan_context);
+#endif
+
     BackingStoreManager(PageClient&);
 
 private:
@@ -44,6 +52,10 @@ private:
     int m_next_bitmap_id { 0 };
 
     RefPtr<Core::Timer> m_backing_store_shrink_timer;
+
+#ifdef USE_VULKAN
+    Optional<Core::VulkanContext> m_vulkan_context;
+#endif
 };
 
 }

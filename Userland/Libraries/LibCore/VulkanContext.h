@@ -26,4 +26,23 @@ struct VulkanContext {
 
 ErrorOr<VulkanContext> create_vulkan_context();
 
+class VulkanImage {
+    AK_MAKE_NONCOPYABLE(VulkanImage);
+
+public:
+    static VulkanImage create(VkDevice device, VkPhysicalDevice physical_device, int width, int height);
+
+    VkImage image() const { return m_image; }
+
+private:
+    VulkanImage(VkImage image, VkDeviceMemory device_memory)
+        : m_image(image)
+        , m_device_memory(device_memory)
+    {
+    }
+
+    VkImage m_image { VK_NULL_HANDLE };
+    VkDeviceMemory m_device_memory { VK_NULL_HANDLE };
+};
+
 }

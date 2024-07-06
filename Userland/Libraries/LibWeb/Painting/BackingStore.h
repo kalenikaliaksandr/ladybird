@@ -14,6 +14,10 @@
 #    include <LibCore/IOSurface.h>
 #endif
 
+#ifdef USE_VULKAN
+#    include <LibCore/VulkanContext.h>
+#endif
+
 namespace Web::Painting {
 
 class BackingStore {
@@ -37,6 +41,12 @@ public:
 private:
     RefPtr<Gfx::Bitmap> m_bitmap;
 };
+
+#ifdef USE_VULKAN
+// class VulkanBackingStore final : public BackingStore {
+//
+// };
+#endif
 
 #ifdef AK_OS_MACOS
 class IOSurfaceBackingStore final : public BackingStore {

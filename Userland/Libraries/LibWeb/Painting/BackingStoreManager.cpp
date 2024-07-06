@@ -39,8 +39,20 @@ void BackingStoreManager::restart_resize_timer()
     m_backing_store_shrink_timer->restart();
 }
 
+#ifdef USE_VULKAN
+void BackingStoreManager::set_vulkan_context(Core::VulkanContext& vulkan_context)
+{
+    m_vulkan_context = vulkan_context;
+}
+#endif
+
 void BackingStoreManager::reallocate_backing_stores(Gfx::IntSize size)
 {
+#ifdef USE_VULKAN
+    dbgln(">>>BackingStoreManager::reallocate_backing_stores USE VULKAN");
+    VERIFY(m_vulkan_context.has_value());
+#endif
+
 #ifdef AK_OS_MACOS
     if (s_browser_mach_port.has_value()) {
         auto back_iosurface = Core::IOSurfaceHandle::create(size.width(), size.height());
