@@ -89,20 +89,20 @@ public:
         m_context->submit(GrSyncCpu::kYes);
     }
 
-    sk_sp<SkSurface> create_surface(int width, int height)
+    sk_sp<SkSurface> create_surface(Core::VulkanImage& vulkan_image)
     {
         // auto image_info = SkImageInfo::Make(width, height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
         // return SkSurfaces::RenderTarget(m_context.get(), skgpu::Budgeted::kYes, image_info);
         // FIXME: MEMORY LEAKS MEMORY LEAKS MEMORY LEAKS MEMORY LEAKS MEMORY LEAKS MEMORY LEAKS MEMORY LEAKS MEMORY LEAKS
         //        auto vk_image = create_image(m_device, m_physical_device, width, height);
         //        (void)vk_image;
-        auto vulkan_image = Core::VulkanImage::create(m_device, m_physical_device, width, height);
+        //        auto vulkan_image = Core::VulkanImage::create(m_device, m_physical_device, width, height);
         GrVkImageInfo image_info;
         image_info.fImage = vulkan_image.image();
         image_info.fAlloc = skgpu::VulkanAlloc();
         image_info.fImageTiling = VK_IMAGE_TILING_OPTIMAL;
         image_info.fFormat = VK_FORMAT_B8G8R8A8_UNORM;
-        auto backend_render_target = GrBackendRenderTargets::MakeVk(width, height, image_info);
+        auto backend_render_target = GrBackendRenderTargets::MakeVk(vulkan_image.width(), vulkan_image.height(), image_info);
         auto surface = SkSurfaces::WrapBackendRenderTarget(m_context.get(), backend_render_target, kTopLeft_GrSurfaceOrigin, kBGRA_8888_SkColorType, nullptr, nullptr);
         if (!surface) {
             dbgln(">>>>>>>>>>>surface is null");
@@ -143,14 +143,14 @@ OwnPtr<SkiaBackendContext> DisplayListPlayerSkia::create_vulkan_context(Core::Vu
     return make<SkiaVulkanBackendContext>(ctx, move(extensions), vulkan_context.logical_device, vulkan_context.physical_device);
 }
 
-DisplayListPlayerSkia::DisplayListPlayerSkia(SkiaBackendContext& context, Gfx::Bitmap& bitmap)
+DisplayListPlayerSkia::DisplayListPlayerSkia(SkiaBackendContext& context, Core::VulkanImage& vulkan_image)
 {
-    VERIFY(bitmap.format() == Gfx::BitmapFormat::BGRA8888);
-    auto surface = static_cast<SkiaVulkanBackendContext&>(context).create_surface(bitmap.width(), bitmap.height());
+    //    VERIFY(bitmap.format() == Gfx::BitmapFormat::BGRA8888);
+    auto surface = static_cast<SkiaVulkanBackendContext&>(context).create_surface(vulkan_image);
     m_surface = make<SkiaSurface>(surface);
-    m_flush_context = [&bitmap, &surface = m_surface, &context] {
+    m_flush_context = [&surface = m_surface, &context] {
         context.flush_and_submit();
-        surface->read_into_bitmap(bitmap);
+        //        surface->read_into_bitmap(bitmap);
     };
 }
 #endif

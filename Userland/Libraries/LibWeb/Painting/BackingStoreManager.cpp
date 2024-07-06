@@ -50,7 +50,23 @@ void BackingStoreManager::reallocate_backing_stores(Gfx::IntSize size)
 {
 #ifdef USE_VULKAN
     dbgln(">>>BackingStoreManager::reallocate_backing_stores USE VULKAN");
-    VERIFY(m_vulkan_context.has_value());
+    if (m_vulkan_context.has_value()) {
+        auto* device = m_vulkan_context->logical_device;
+        auto* physical_device = m_vulkan_context->physical_device;
+
+        auto back_vulkan_image = Core::VulkanImage::create(device, physical_device, size.width(), size.height());
+        auto front_vulkan_image = Core::VulkanImage::create(device, physical_device, size.width(), size.height());
+
+        m_front_bitmap_id = m_next_bitmap_id++;
+        m_back_bitmap_id = m_next_bitmap_id++;
+
+        m_front_store = make<Web::Painting::VulkanBackingStore>(move(front_vulkan_image));
+        m_back_store = make<Web::Painting::VulkanBackingStore>(move(back_vulkan_image));
+
+        return;
+    }
+
+    VERIFY_NOT_REACHED();
 #endif
 
 #ifdef AK_OS_MACOS

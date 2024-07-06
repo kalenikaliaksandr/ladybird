@@ -1219,7 +1219,8 @@ void TraversableNavigable::paint(DevicePixelRect const& content_rect, Painting::
 
 #ifdef USE_VULKAN
         if (m_skia_backend_context) {
-            Painting::DisplayListPlayerSkia player(*m_skia_backend_context, target.bitmap());
+            auto& vulkan_backing_store = verify_cast<Painting::VulkanBackingStore>(target);
+            Painting::DisplayListPlayerSkia player(*m_skia_backend_context, vulkan_backing_store.vulkan_image());
             display_list.execute(player);
             return;
         }

@@ -99,6 +99,10 @@ ErrorOr<VkDevice> create_logical_device(VkPhysicalDevice physical_device)
     create_device_info.queueCreateInfoCount = 1;
     create_device_info.pEnabledFeatures = &deviceFeatures;
 
+    create_device_info.enabledExtensionCount = 1;
+    char const* deviceExtensions[] = { VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME };
+    create_device_info.ppEnabledExtensionNames = deviceExtensions;
+
     if (vkCreateDevice(physical_device, &create_device_info, nullptr, &device) != VK_SUCCESS) {
         return Error::from_string_view("Logical device creation failed"sv);
     }
@@ -159,9 +163,13 @@ VulkanImage VulkanImage::create(VkDevice device, VkPhysicalDevice physical_devic
     vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
     (void)memory_properties;
 
+    VkExportMemoryAllocateInfo exportInfo = {};
+    exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+    exportInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+
     VkMemoryAllocateInfo memory_allocate_info = {};
     memory_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    memory_allocate_info.pNext = nullptr;
+    memory_allocate_info.pNext = &exportInfo;
     memory_allocate_info.allocationSize = memory_requirements.size;
     memory_allocate_info.memoryTypeIndex = 0; // FIXME
 
@@ -176,7 +184,22 @@ VulkanImage VulkanImage::create(VkDevice device, VkPhysicalDevice physical_devic
         VERIFY_NOT_REACHED();
     }
 
-    return VulkanImage(image, imageMemory);
+    auto vkGetMemoryFdKHR = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(device, "vkGetMemoryFdKHR");
+    if (!vkGetMemoryFdKHR) {
+        VERIFY_NOT_REACHED();
+    }
+
+    VkMemoryGetFdInfoKHR memoryGetFdInfo = {};
+    memoryGetFdInfo.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+    memoryGetFdInfo.pNext = NULL;
+    memoryGetFdInfo.memory = imageMemory;                                      // Vulkan memory object
+    memoryGetFdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT; // Desired handle type
+
+    int fd = -1;
+    vkGetMemoryFdKHR(device, &memoryGetFdInfo, &fd);
+    dbgln(">>>fd={}", fd);
+
+    return VulkanImage(width, height, image, imageMemory, fd);
 }
 
 }
