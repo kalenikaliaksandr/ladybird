@@ -1,3 +1,5 @@
+include(vulkan)
+
 set(SOURCES
     AffineTransform.cpp
     AntiAliasingPainter.cpp

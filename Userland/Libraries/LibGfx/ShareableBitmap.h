@@ -24,15 +24,32 @@ public:
     enum Tag { ConstructWithKnownGoodBitmap };
     ShareableBitmap(NonnullRefPtr<Gfx::Bitmap>, Tag);
 
+#ifdef USE_VULKAN
+    ShareableBitmap(NonnullRefPtr<Core::VulkanImage>);
+#endif
+
     bool is_valid() const { return m_bitmap; }
 
     Bitmap const* bitmap() const { return m_bitmap; }
     Bitmap* bitmap() { return m_bitmap; }
 
+    bool is_bitmap() const { return m_type == Type::Bitmap; }
+    bool is_vulkan_image() const { return m_type == Type::VulkanImage; }
+
 private:
     friend class Bitmap;
 
+    enum class Type {
+        Bitmap,
+        VulkanImage
+    };
+    Type m_type { Type::Bitmap };
+
     RefPtr<Bitmap> m_bitmap;
+
+#ifdef USE_VULKAN
+    RefPtr<Core::VulkanImage> m_vulkan_image;
+#endif
 };
 
 }

@@ -60,8 +60,13 @@ void BackingStoreManager::reallocate_backing_stores(Gfx::IntSize size)
         m_front_bitmap_id = m_next_bitmap_id++;
         m_back_bitmap_id = m_next_bitmap_id++;
 
-        m_front_store = make<Web::Painting::VulkanBackingStore>(move(front_vulkan_image));
-        m_back_store = make<Web::Painting::VulkanBackingStore>(move(back_vulkan_image));
+        m_front_store = make<Web::Painting::VulkanBackingStore>(front_vulkan_image);
+        m_back_store = make<Web::Painting::VulkanBackingStore>(back_vulkan_image);
+
+        auto front_shareable_bitmap = Gfx::ShareableBitmap(front_vulkan_image);
+        auto back_shareable_bitmap = Gfx::ShareableBitmap(back_vulkan_image);
+
+        m_page_client.page_did_allocate_backing_stores(m_front_bitmap_id, front_shareable_bitmap, m_back_bitmap_id, back_shareable_bitmap);
 
         return;
     }
