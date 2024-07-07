@@ -18,15 +18,32 @@ static_assert(false, "This file must only be used when Vulkan is available");
 
 namespace Core {
 
-struct VulkanContext {
-    uint32_t api_version { VK_API_VERSION_1_0 };
-    VkInstance instance { VK_NULL_HANDLE };
-    VkPhysicalDevice physical_device { VK_NULL_HANDLE };
-    VkDevice logical_device { VK_NULL_HANDLE };
-    VkQueue graphics_queue { VK_NULL_HANDLE };
-};
+class VulkanContext : public RefCounted<VulkanContext> {
+public:
+    static ErrorOr<NonnullRefPtr<VulkanContext>> create();
 
-ErrorOr<VulkanContext> create_vulkan_context();
+    uint32_t api_version() const { return m_api_version; }
+    VkInstance instance() const { return m_instance; }
+    VkPhysicalDevice physical_device() const { return m_physical_device; }
+    VkDevice device() const { return m_device; }
+    VkQueue graphics_queue() const { return m_graphics_queue; }
+
+private:
+    VulkanContext(uint32_t api_version, VkInstance instance, VkPhysicalDevice physical_device, VkDevice device, VkQueue graphics_queue)
+        : m_api_version(api_version)
+        , m_instance(instance)
+        , m_physical_device(physical_device)
+        , m_device(device)
+        , m_graphics_queue(graphics_queue)
+    {
+    }
+
+    uint32_t m_api_version { VK_API_VERSION_1_0 };
+    VkInstance m_instance { VK_NULL_HANDLE };
+    VkPhysicalDevice m_physical_device { VK_NULL_HANDLE };
+    VkDevice m_device { VK_NULL_HANDLE };
+    VkQueue m_graphics_queue { VK_NULL_HANDLE };
+};
 
 class VulkanImage : public RefCounted<VulkanImage> {
 public:

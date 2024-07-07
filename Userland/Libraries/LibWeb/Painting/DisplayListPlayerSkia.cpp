@@ -123,11 +123,11 @@ OwnPtr<SkiaBackendContext> DisplayListPlayerSkia::create_vulkan_context(Core::Vu
 {
     GrVkBackendContext backend_context;
 
-    backend_context.fInstance = vulkan_context.instance;
-    backend_context.fDevice = vulkan_context.logical_device;
-    backend_context.fQueue = vulkan_context.graphics_queue;
-    backend_context.fPhysicalDevice = vulkan_context.physical_device;
-    backend_context.fMaxAPIVersion = vulkan_context.api_version;
+    backend_context.fInstance = vulkan_context.instance();
+    backend_context.fDevice = vulkan_context.device();
+    backend_context.fQueue = vulkan_context.graphics_queue();
+    backend_context.fPhysicalDevice = vulkan_context.physical_device();
+    backend_context.fMaxAPIVersion = vulkan_context.api_version();
     backend_context.fGetProc = [](char const* proc_name, VkInstance instance, VkDevice device) {
         if (device != VK_NULL_HANDLE) {
             return vkGetDeviceProcAddr(device, proc_name);
@@ -140,7 +140,7 @@ OwnPtr<SkiaBackendContext> DisplayListPlayerSkia::create_vulkan_context(Core::Vu
 
     sk_sp<GrDirectContext> ctx = GrDirectContexts::MakeVulkan(backend_context);
     VERIFY(ctx);
-    return make<SkiaVulkanBackendContext>(ctx, move(extensions), vulkan_context.logical_device, vulkan_context.physical_device);
+    return make<SkiaVulkanBackendContext>(ctx, move(extensions), vulkan_context.device(), vulkan_context.physical_device());
 }
 
 DisplayListPlayerSkia::DisplayListPlayerSkia(SkiaBackendContext& context, NonnullRefPtr<Core::VulkanImage> vulkan_image)

@@ -40,7 +40,7 @@ void BackingStoreManager::restart_resize_timer()
 }
 
 #ifdef USE_VULKAN
-void BackingStoreManager::set_vulkan_context(Core::VulkanContext& vulkan_context)
+void BackingStoreManager::set_vulkan_context(RefPtr<Core::VulkanContext> vulkan_context)
 {
     m_vulkan_context = vulkan_context;
 }
@@ -50,9 +50,9 @@ void BackingStoreManager::reallocate_backing_stores(Gfx::IntSize size)
 {
 #ifdef USE_VULKAN
     dbgln(">>>BackingStoreManager::reallocate_backing_stores USE VULKAN");
-    if (m_vulkan_context.has_value()) {
-        auto* device = m_vulkan_context->logical_device;
-        auto* physical_device = m_vulkan_context->physical_device;
+    if (m_vulkan_context) {
+        auto* device = m_vulkan_context->device();
+        auto* physical_device = m_vulkan_context->physical_device();
 
         auto back_vulkan_image = Core::VulkanImage::create(device, physical_device, size.width(), size.height());
         auto front_vulkan_image = Core::VulkanImage::create(device, physical_device, size.width(), size.height());

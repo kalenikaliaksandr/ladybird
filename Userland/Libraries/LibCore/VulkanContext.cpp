@@ -113,7 +113,7 @@ ErrorOr<VkDevice> create_logical_device(VkPhysicalDevice physical_device)
     return device;
 }
 
-ErrorOr<VulkanContext> create_vulkan_context()
+ErrorOr<NonnullRefPtr<VulkanContext>> VulkanContext::create()
 {
     uint32_t const api_version = VK_API_VERSION_1_0;
     auto* instance = TRY(create_instance(api_version));
@@ -123,13 +123,12 @@ ErrorOr<VulkanContext> create_vulkan_context()
     VkQueue graphics_queue;
     vkGetDeviceQueue(logical_device, 0, 0, &graphics_queue);
 
-    return VulkanContext {
-        .api_version = api_version,
-        .instance = instance,
-        .physical_device = physical_device,
-        .logical_device = logical_device,
-        .graphics_queue = graphics_queue,
-    };
+    return adopt_nonnull_ref_or_enomem(new (nothrow) VulkanContext(
+        api_version,
+        instance,
+        physical_device,
+        logical_device,
+        graphics_queue));
 }
 
 NonnullRefPtr<VulkanImage> VulkanImage::create(VkDevice device, VkPhysicalDevice physical_device, int width, int height)

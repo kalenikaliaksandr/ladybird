@@ -37,7 +37,7 @@ public:
     void swap_back_and_front();
 
 #ifdef USE_VULKAN
-    void set_vulkan_context(Core::VulkanContext& vulkan_context);
+    void set_vulkan_context(RefPtr<Core::VulkanContext> vulkan_context);
 #endif
 
     BackingStoreManager(PageClient&);
@@ -54,7 +54,7 @@ private:
     RefPtr<Core::Timer> m_backing_store_shrink_timer;
 
 #ifdef USE_VULKAN
-    Optional<Core::VulkanContext> m_vulkan_context;
+    RefPtr<Core::VulkanContext> m_vulkan_context;
 #endif
 };
 
