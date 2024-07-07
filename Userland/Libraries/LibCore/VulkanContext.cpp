@@ -159,7 +159,7 @@ NonnullRefPtr<VulkanImage> VulkanImage::create(VkDevice device, VkPhysicalDevice
     image_create_info.mipLevels = 1;
     image_create_info.arrayLayers = 1;
     image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;                                          // Number of samples per pixel
-    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;                                         // Tiling arrangement
+    image_create_info.tiling = VK_IMAGE_TILING_LINEAR;                                         // Tiling arrangement
     image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; // Usage flags
     image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;                                  // Sharing mode
     image_create_info.queueFamilyIndexCount = 0;                                                // Number of queue families
@@ -263,7 +263,7 @@ NonnullRefPtr<VulkanImage> VulkanImage::create_from_fd(int fd, uint64_t allocati
     image_create_info.mipLevels = 1;
     image_create_info.arrayLayers = 1;
     image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;                                          // Number of samples per pixel
-    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;                                         // Tiling arrangement
+    image_create_info.tiling = VK_IMAGE_TILING_LINEAR;                                         // Tiling arrangement
     image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; // Usage flags
     image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;                                  // Sharing mode
     image_create_info.queueFamilyIndexCount = 0;                                                // Number of queue families
@@ -294,6 +294,7 @@ void* VulkanImage::map()
         dbgln(">>>>>failed to map memory {:x}", to_underlying(result));
         VERIFY_NOT_REACHED();
     }
+    VERIFY(mapped_memory != nullptr);
     return mapped_memory;
 }
 

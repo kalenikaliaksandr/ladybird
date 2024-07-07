@@ -395,6 +395,8 @@ void ViewImplementation::did_update_navigation_buttons_state(Badge<WebContentCli
 
 void ViewImplementation::did_allocate_backing_stores(Badge<WebContentClient>, i32 front_bitmap_id, Gfx::ShareableBitmap const& front_bitmap, i32 back_bitmap_id, Gfx::ShareableBitmap const& back_bitmap)
 {
+    VERIFY_NOT_REACHED();
+
     if (m_client_state.has_usable_bitmap) {
         // NOTE: We keep the outgoing front bitmap as a backup so we have something to paint until we get a new one.
         m_backup_bitmap = m_client_state.front_bitmap.bitmap;
@@ -410,6 +412,13 @@ void ViewImplementation::did_allocate_backing_stores(Badge<WebContentClient>, i3
 
 void ViewImplementation::did_allocate_vulkan_backing_stores(Badge<WebContentClient>, i32 front_bitmap_id, Core::VulkanSharedMemoryDescriptor const& front_descriptor, i32 back_bitmap_id, Core::VulkanSharedMemoryDescriptor const& back_descriptor)
 {
+    if (m_client_state.has_usable_bitmap) {
+        // NOTE: We keep the outgoing front bitmap as a backup so we have something to paint until we get a new one.
+        m_backup_bitmap = m_client_state.front_bitmap.bitmap;
+        m_backup_bitmap_size = m_client_state.front_bitmap.last_painted_size;
+    }
+    m_client_state.has_usable_bitmap = false;
+
     (void)front_bitmap_id;
     (void)back_bitmap_id;
 
@@ -430,6 +439,8 @@ void ViewImplementation::did_allocate_vulkan_backing_stores(Badge<WebContentClie
 
     auto front_bitmap = Gfx::Bitmap::create_wrapper(Gfx::BitmapFormat::BGRA8888, front_size, front_pitch, mapped_front);
     auto back_bitmap = Gfx::Bitmap::create_wrapper(Gfx::BitmapFormat::BGRA8888, back_size, back_pitch, mapped_back);
+
+    dbgln(">front allocation_size={} pitch={}", front_descriptor.allocation_size, front_pitch);
 
     (void)front_bitmap;
     (void)back_bitmap;
