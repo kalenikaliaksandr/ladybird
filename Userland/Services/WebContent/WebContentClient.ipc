@@ -14,10 +14,7 @@
 #include <LibWeb/Page/Page.h>
 #include <LibWebView/Attribute.h>
 #include <LibWebView/ProcessHandle.h>
-
-#ifdef USE_VULKAN
-#include <LibCore/VulkanContext.h>
-#endif
+#include <LibCore/VulkanSharedMemoryDescriptor.h>
 
 endpoint WebContentClient
 {
@@ -85,7 +82,7 @@ endpoint WebContentClient
     did_insert_clipboard_entry(u64 page_id, String data, String presentation_style, String mime_type) =|
     did_update_navigation_buttons_state(u64 page_id, bool back_enabled, bool forward_enabled) =|
     did_allocate_backing_stores(u64 page_id, i32 front_bitmap_id, Gfx::ShareableBitmap front_bitmap, i32 back_bitmap_id, Gfx::ShareableBitmap back_bitmap) =|
-        //did_allocate_vulkan_backing_stores(u64 page_id, i32 front_bitmap_id, Core::VulkanImage front_image, i32 back_bitmap_id, Core::VulkanImage back_image) =|
+    did_allocate_vulkan_backing_stores(u64 page_id, i32 front_bitmap_id, Core::VulkanSharedMemoryDescriptor front, i32 back_bitmap_id, Core::VulkanSharedMemoryDescriptor back) =|
 
     did_change_audio_play_state(u64 page_id, Web::HTML::AudioPlayState play_state) =|
 

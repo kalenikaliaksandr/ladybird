@@ -112,6 +112,7 @@ private:
     virtual void did_change_audio_play_state(u64 page_id, Web::HTML::AudioPlayState) override;
     virtual void did_update_navigation_buttons_state(u64 page_id, bool back_enabled, bool forward_enabled) override;
     virtual void did_allocate_backing_stores(u64 page_id, i32 front_bitmap_id, Gfx::ShareableBitmap const&, i32 back_bitmap_id, Gfx::ShareableBitmap const&) override;
+    virtual void did_allocate_vulkan_backing_stores(u64 page_id, i32 front_bitmap_id, Core::VulkanSharedMemoryDescriptor const&, i32 back_bitmap_id, Core::VulkanSharedMemoryDescriptor const&) override;
     virtual void inspector_did_load(u64 page_id) override;
     virtual void inspector_did_select_dom_node(u64 page_id, i32 node_id, Optional<Web::CSS::Selector::PseudoElement::Type> const& pseudo_element) override;
     virtual void inspector_did_set_dom_node_text(u64 page_id, i32 node_id, String const& text) override;

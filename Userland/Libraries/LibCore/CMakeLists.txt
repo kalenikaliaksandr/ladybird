@@ -50,6 +50,7 @@ set(SOURCES
     ThreadEventQueue.cpp
     Timer.cpp
     UDPServer.cpp
+    VulkanSharedMemoryDescriptor.cpp
 )
 if (NOT ANDROID AND NOT WIN32 AND NOT EMSCRIPTEN)
     list(APPEND SOURCES

@@ -408,6 +408,14 @@ void ViewImplementation::did_allocate_backing_stores(Badge<WebContentClient>, i3
     m_client_state.back_bitmap.id = back_bitmap_id;
 }
 
+void ViewImplementation::did_allocate_vulkan_backing_stores(Badge<WebContentClient>, i32 front_bitmap_id, Core::VulkanSharedMemoryDescriptor const& front_descriptor, i32 back_bitmap_id, Core::VulkanSharedMemoryDescriptor const& back_descriptor)
+{
+    (void)front_bitmap_id;
+    (void)back_bitmap_id;
+
+    dbgln(">ViewImplementation::did_allocate_vulkan_backing_stores front_descriptor.fd={} back_descriptor.fd={}", front_descriptor.fd, back_descriptor.fd);
+}
+
 #ifdef AK_OS_MACOS
 void ViewImplementation::did_allocate_iosurface_backing_stores(i32 front_id, Core::MachPort&& front_port, i32 back_id, Core::MachPort&& back_port)
 {

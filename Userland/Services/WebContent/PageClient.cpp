@@ -592,6 +592,11 @@ void PageClient::page_did_allocate_backing_stores(i32 front_bitmap_id, Gfx::Shar
     client().async_did_allocate_backing_stores(m_id, front_bitmap_id, front_bitmap, back_bitmap_id, back_bitmap);
 }
 
+void PageClient::page_did_allocate_vulkan_backing_stores(i32 front_bitmap_id, Core::VulkanSharedMemoryDescriptor const& front_descriptor, i32 back_bitmap_id, Core::VulkanSharedMemoryDescriptor const& back_descriptor)
+{
+    client().async_did_allocate_vulkan_backing_stores(m_id, front_bitmap_id, front_descriptor, back_bitmap_id, back_descriptor);
+}
+
 IPC::File PageClient::request_worker_agent()
 {
     auto response = client().send_sync_but_allow_failure<Messages::WebContentClient::RequestWorkerAgent>(m_id);

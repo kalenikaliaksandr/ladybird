@@ -76,13 +76,3 @@ private:
 };
 
 }
-
-namespace IPC {
-
-// template<>
-// ErrorOr<void> encode(Encoder&, Core::VulkanImage const&);
-//
-// template<>
-// ErrorOr<Core::VulkanImage> decode(Decoder&);
-
-}

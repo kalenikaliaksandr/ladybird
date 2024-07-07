@@ -155,6 +155,7 @@ private:
     virtual void page_did_insert_clipboard_entry(String data, String presentation_style, String mime_type) override;
     virtual void page_did_change_audio_play_state(Web::HTML::AudioPlayState) override;
     virtual void page_did_allocate_backing_stores(i32 front_bitmap_id, Gfx::ShareableBitmap front_bitmap, i32 back_bitmap_id, Gfx::ShareableBitmap back_bitmap) override;
+    virtual void page_did_allocate_vulkan_backing_stores(i32 front_bitmap_id, Core::VulkanSharedMemoryDescriptor const&, i32 back_bitmap_id, Core::VulkanSharedMemoryDescriptor const&) override;
     virtual IPC::File request_worker_agent() override;
     virtual void inspector_did_load() override;
     virtual void inspector_did_select_dom_node(i32 node_id, Optional<Web::CSS::Selector::PseudoElement::Type> const& pseudo_element) override;

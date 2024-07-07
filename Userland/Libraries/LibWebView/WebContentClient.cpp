@@ -628,6 +628,12 @@ void WebContentClient::did_allocate_backing_stores(u64 page_id, i32 front_bitmap
         view->did_allocate_backing_stores({}, front_bitmap_id, front_bitmap, back_bitmap_id, back_bitmap);
 }
 
+void WebContentClient::did_allocate_vulkan_backing_stores(u64 page_id, i32 front_bitmap_id, Core::VulkanSharedMemoryDescriptor const& front_descriptor, i32 back_bitmap_id, Core::VulkanSharedMemoryDescriptor const& back_descriptor)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_allocate_vulkan_backing_stores({}, front_bitmap_id, front_descriptor, back_bitmap_id, back_descriptor);
+}
+
 void WebContentClient::inspector_did_load(u64 page_id)
 {
     if (auto view = view_for_page_id(page_id); view.has_value()) {

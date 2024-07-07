@@ -125,6 +125,8 @@ public:
     void did_allocate_iosurface_backing_stores(i32 front_bitmap_id, Core::MachPort&&, i32 back_bitmap_id, Core::MachPort&&);
 #endif
 
+    void did_allocate_vulkan_backing_stores(Badge<WebContentClient>, i32 front_bitmap_id, Core::VulkanSharedMemoryDescriptor const&, i32 back_bitmap_id, Core::VulkanSharedMemoryDescriptor const&);
+
     enum class ScreenshotType {
         Visible,
         Full,
