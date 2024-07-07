@@ -6,6 +6,7 @@ namespace Core {
 
 struct VulkanSharedMemoryDescriptor {
     int fd { -1 };
+    uint64_t allocation_size { 0 };
 };
 
 }

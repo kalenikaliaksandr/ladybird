@@ -1,5 +1,7 @@
 include(${SerenityOS_SOURCE_DIR}/Meta/CMake/public_suffix.cmake)
 
+include(vulkan)
+
 set(SOURCES
     Application.cpp
     Attribute.cpp

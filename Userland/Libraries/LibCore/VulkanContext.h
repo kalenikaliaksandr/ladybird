@@ -13,6 +13,7 @@ static_assert(false, "This file must only be used when Vulkan is available");
 #include <AK/Forward.h>
 #include <AK/Function.h>
 #include <AK/RefCounted.h>
+#include <LibCore/VulkanSharedMemoryDescriptor.h>
 #include <LibIPC/Forward.h>
 #include <vulkan/vulkan.h>
 
@@ -48,22 +49,23 @@ private:
 class VulkanImage : public RefCounted<VulkanImage> {
 public:
     static NonnullRefPtr<VulkanImage> create(VkDevice device, VkPhysicalDevice physical_device, int width, int height);
-    static VulkanImage create_from_fd(int fd);
 
     VkImage image() const { return m_image; }
 
     int width() const { return m_width; }
     int height() const { return m_height; }
 
-    int fd() const { return m_fd; }
+    //    int fd() const { return m_fd; }
+    VulkanSharedMemoryDescriptor descriptor() const;
 
 private:
-    VulkanImage(int width, int height, VkImage image, VkDeviceMemory device_memory, int fd)
+    VulkanImage(int width, int height, VkImage image, VkDeviceMemory device_memory, int fd, uint64_t allocation_size)
         : m_image(image)
         , m_device_memory(device_memory)
         , m_fd(fd)
         , m_width(width)
         , m_height(height)
+        , m_allocation_size(allocation_size)
     {
     }
 
@@ -73,6 +75,21 @@ private:
 
     int m_width { 0 };
     int m_height { 0 };
+
+    uint64_t m_allocation_size { 0 };
+};
+
+class VulkanMemory : public RefCounted<VulkanMemory> {
+public:
+    static NonnullRefPtr<VulkanMemory> create_from_fd(int fd, uint64_t allocation_size, VkDevice);
+
+private:
+    VulkanMemory(VkDeviceMemory device_memory)
+        : m_device_memory(device_memory)
+    {
+    }
+
+    VkDeviceMemory m_device_memory { VK_NULL_HANDLE };
 };
 
 }

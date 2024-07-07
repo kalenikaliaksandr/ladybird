@@ -1,3 +1,5 @@
+include(vulkan)
+
 qt_add_executable(ladybird ${LADYBIRD_SOURCES})
 target_sources(ladybird PRIVATE
     Application.cpp

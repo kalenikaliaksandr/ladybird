@@ -46,9 +46,17 @@
 #include <QTimer>
 #include <QToolTip>
 
+#ifdef USE_VULKAN
+#    include <LibCore/VulkanContext.h>
+#endif
+
 namespace Ladybird {
 
 bool is_using_dark_system_theme(QWidget&);
+
+#ifdef USE_VULKAN
+static RefPtr<Core::VulkanContext> s_vulkan_context;
+#endif
 
 WebContentView::WebContentView(QWidget* window, WebContentOptions const& web_content_options, StringView webdriver_content_ipc_path, RefPtr<WebView::WebContentClient> parent_client, size_t page_index)
     : QAbstractScrollArea(window)
@@ -139,6 +147,17 @@ WebContentView::WebContentView(QWidget* window, WebContentOptions const& web_con
         auto worker_client = MUST(launch_web_worker_process(MUST(get_paths_for_helper_process("WebWorker"sv)), request_server_client));
         return worker_client->dup_socket();
     };
+
+#ifdef USE_VULKAN
+    if (!s_vulkan_context) {
+        dbgln(">>>>Create Vulkan context on browser side");
+        s_vulkan_context = Core::VulkanContext::create().release_value();
+    }
+
+    on_request_vulkan_memory_from_descriptor = [&vulkan_context = s_vulkan_context](Core::VulkanSharedMemoryDescriptor descriptor) -> NonnullRefPtr<Core::VulkanMemory> {
+        return Core::VulkanMemory::create_from_fd(descriptor.fd, descriptor.allocation_size, vulkan_context->device());
+    };
+#endif
 }
 
 WebContentView::~WebContentView()

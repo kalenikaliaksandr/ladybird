@@ -26,6 +26,10 @@
 #include <LibWebView/Forward.h>
 #include <LibWebView/WebContentClient.h>
 
+// #ifdef USE_VULKAN
+// #    include <LibCore/VulkanContext.h>
+// #endif
+
 namespace WebView {
 
 class ViewImplementation {
@@ -217,6 +221,8 @@ public:
     Function<void(i32, Gfx::IntPoint, String const&, Optional<String> const&, Optional<size_t> const&)> on_inspector_requested_dom_tree_context_menu;
     Function<void(String const&)> on_inspector_executed_console_script;
     Function<IPC::File()> on_request_worker_agent;
+
+    Function<NonnullRefPtr<Core::VulkanMemory>(Core::VulkanSharedMemoryDescriptor)> on_request_vulkan_memory_from_descriptor;
 
     virtual Web::DevicePixelSize viewport_size() const = 0;
     virtual Gfx::IntPoint to_content_position(Gfx::IntPoint widget_position) const = 0;

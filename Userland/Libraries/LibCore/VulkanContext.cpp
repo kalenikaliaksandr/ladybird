@@ -201,13 +201,39 @@ NonnullRefPtr<VulkanImage> VulkanImage::create(VkDevice device, VkPhysicalDevice
     vkGetMemoryFdKHR(device, &memoryGetFdInfo, &fd);
     dbgln(">>>fd={}", fd);
 
-    return adopt_nonnull_ref_or_enomem(new (nothrow) VulkanImage(width, height, image, imageMemory, fd)).release_value();
+    return adopt_nonnull_ref_or_enomem(new (nothrow) VulkanImage(width, height, image, imageMemory, fd, memory_allocate_info.allocationSize)).release_value();
 }
 
-VulkanImage VulkanImage::create_from_fd(int fd)
+VulkanSharedMemoryDescriptor VulkanImage::descriptor() const
 {
-    (void)fd;
-    VERIFY_NOT_REACHED();
+    return { .fd = m_fd, .allocation_size = m_allocation_size };
+}
+
+NonnullRefPtr<VulkanMemory> VulkanMemory::create_from_fd(int fd, uint64_t allocation_size, VkDevice device)
+{
+    VERIFY(fd > -1);
+
+    VkImportMemoryFdInfoKHR importFdInfo = {};
+    importFdInfo.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+    importFdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    importFdInfo.fd = fd;
+
+    // Allocate memory
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = allocation_size;
+    allocInfo.memoryTypeIndex = 0; // <<<<<<<<<<<<FIXME
+    allocInfo.pNext = &importFdInfo;
+
+    VkDeviceMemory device_memory;
+    VkResult result = vkAllocateMemory(device, &allocInfo, nullptr, &device_memory);
+    if (result != VK_SUCCESS) {
+        VERIFY_NOT_REACHED();
+    }
+
+    close(fd);
+
+    return adopt_nonnull_ref_or_enomem(new (nothrow) VulkanMemory(device_memory)).release_value();
 }
 
 }

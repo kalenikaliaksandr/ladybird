@@ -65,10 +65,8 @@ void BackingStoreManager::reallocate_backing_stores(Gfx::IntSize size)
         m_front_store = make<Web::Painting::VulkanBackingStore>(front_vulkan_image);
         m_back_store = make<Web::Painting::VulkanBackingStore>(back_vulkan_image);
 
-        //        auto front_shareable_bitmap = Gfx::ShareableBitmap(front_vulkan_image);
-        //        auto back_shareable_bitmap = Gfx::ShareableBitmap(back_vulkan_image);
-        Core::VulkanSharedMemoryDescriptor front_descriptor { .fd = front_vulkan_image->fd() };
-        Core::VulkanSharedMemoryDescriptor back_descriptor { .fd = front_vulkan_image->fd() };
+        auto front_descriptor = front_vulkan_image->descriptor();
+        auto back_descriptor = back_vulkan_image->descriptor();
 
         m_page_client.page_did_allocate_vulkan_backing_stores(m_front_bitmap_id, front_descriptor, m_back_bitmap_id, back_descriptor);
 

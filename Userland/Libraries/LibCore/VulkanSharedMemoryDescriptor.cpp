@@ -13,18 +13,19 @@ template<>
 ErrorOr<void> encode(Encoder& encoder, Core::VulkanSharedMemoryDescriptor const& descriptor)
 {
     TRY(encoder.encode(TRY(IPC::File::clone_fd(descriptor.fd))));
+    TRY(encoder.encode(descriptor.allocation_size));
     return {};
 }
 
 template<>
 ErrorOr<Core::VulkanSharedMemoryDescriptor> decode(Decoder& decoder)
 {
-    (void)decoder;
-    dbgln(">>>>>>FIXME: VulkanSharedMemoryDescriptor::decode");
-
     auto file = TRY(decoder.decode<IPC::File>());
+    auto allocation_size = TRY(decoder.decode<uint64_t>());
 
-    return { Core::VulkanSharedMemoryDescriptor { .fd = file.take_fd() } };
+    dbgln(">>>>>>FIXME: VulkanSharedMemoryDescriptor::decode size={}", allocation_size);
+
+    return { Core::VulkanSharedMemoryDescriptor { .fd = file.take_fd(), .allocation_size = allocation_size } };
 
     //     if (auto valid = TRY(decoder.decode<bool>()); !valid)
     //         return Gfx::ShareableBitmap {};
