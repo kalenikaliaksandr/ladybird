@@ -62,6 +62,20 @@ ErrorOr<VkPhysicalDevice> pick_physical_device(VkInstance instance)
             picked_device = device;
     }
 
+    VkPhysicalDeviceMemoryProperties memoryProperties;
+    dbgln(">memoryTypeCount={}", memoryProperties.memoryTypeCount);
+    //    vkGetPhysicalDeviceMemoryProperties(picked_device, &memoryProperties);
+    //    bool isHostVisible = (memoryProperties.memoryTypes[1].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+    //    dbgln(">>>isHostVisible={}", isHostVisible);
+
+    for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++) {
+        bool isHostVisible = (memoryProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+        if (isHostVisible) {
+            dbgln(">>>>>host visible memory index={}", i);
+            break;
+        }
+    }
+
     if (picked_device != VK_NULL_HANDLE)
         return picked_device;
 
@@ -173,7 +187,7 @@ NonnullRefPtr<VulkanImage> VulkanImage::create(VkDevice device, VkPhysicalDevice
     memory_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     memory_allocate_info.pNext = &exportInfo;
     memory_allocate_info.allocationSize = memory_requirements.size;
-    memory_allocate_info.memoryTypeIndex = 0; // FIXME
+    memory_allocate_info.memoryTypeIndex = 4; // FIXME
 
     VkDeviceMemory imageMemory;
     result = vkAllocateMemory(device, &memory_allocate_info, nullptr, &imageMemory);
@@ -201,15 +215,20 @@ NonnullRefPtr<VulkanImage> VulkanImage::create(VkDevice device, VkPhysicalDevice
     vkGetMemoryFdKHR(device, &memoryGetFdInfo, &fd);
     dbgln(">>>fd={}", fd);
 
-    return adopt_nonnull_ref_or_enomem(new (nothrow) VulkanImage(width, height, image, imageMemory, fd, memory_allocate_info.allocationSize)).release_value();
+    return adopt_nonnull_ref_or_enomem(new (nothrow) VulkanImage(width, height, image, imageMemory, fd, memory_allocate_info.allocationSize, device)).release_value();
 }
 
 VulkanSharedMemoryDescriptor VulkanImage::descriptor() const
 {
-    return { .fd = m_fd, .allocation_size = m_allocation_size };
+    return {
+        .fd = m_fd,
+        .allocation_size = m_allocation_size,
+        .width = m_width,
+        .height = m_height
+    };
 }
 
-NonnullRefPtr<VulkanMemory> VulkanMemory::create_from_fd(int fd, uint64_t allocation_size, VkDevice device)
+NonnullRefPtr<VulkanImage> VulkanImage::create_from_fd(int fd, uint64_t allocation_size, VkDevice device, int width, int height)
 {
     VERIFY(fd > -1);
 
@@ -222,18 +241,60 @@ NonnullRefPtr<VulkanMemory> VulkanMemory::create_from_fd(int fd, uint64_t alloca
     VkMemoryAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = allocation_size;
-    allocInfo.memoryTypeIndex = 0; // <<<<<<<<<<<<FIXME
+    allocInfo.memoryTypeIndex = 4; // <<<<<<<<<<<<FIXME
     allocInfo.pNext = &importFdInfo;
 
     VkDeviceMemory device_memory;
     VkResult result = vkAllocateMemory(device, &allocInfo, nullptr, &device_memory);
+    if (result != VK_SUCCESS) {
+        dbgln(">>>Failed to import memory");
+        VERIFY_NOT_REACHED();
+    }
+
+    VkImageCreateInfo image_create_info = {};
+    image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_create_info.pNext = nullptr;
+    image_create_info.flags = 0;
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;      // 1D, 2D, or 3D image
+    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM; // Format of the image
+    image_create_info.extent.width = width;
+    image_create_info.extent.height = height;
+    image_create_info.extent.depth = 1;
+    image_create_info.mipLevels = 1;
+    image_create_info.arrayLayers = 1;
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;                                          // Number of samples per pixel
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;                                         // Tiling arrangement
+    image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; // Usage flags
+    image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;                                  // Sharing mode
+    image_create_info.queueFamilyIndexCount = 0;                                                // Number of queue families
+    image_create_info.pQueueFamilyIndices = nullptr;
+    image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImage image;
+    result = vkCreateImage(device, &image_create_info, nullptr, &image);
+    if (result != VK_SUCCESS) {
+        VERIFY_NOT_REACHED();
+    }
+
+    result = vkBindImageMemory(device, image, device_memory, 0);
     if (result != VK_SUCCESS) {
         VERIFY_NOT_REACHED();
     }
 
     close(fd);
 
-    return adopt_nonnull_ref_or_enomem(new (nothrow) VulkanMemory(device_memory)).release_value();
+    return adopt_nonnull_ref_or_enomem(new (nothrow) VulkanImage(width, height, image, device_memory, -1, allocation_size, device)).release_value();
+}
+
+void* VulkanImage::map()
+{
+    void* mapped_memory = nullptr;
+    auto result = vkMapMemory(m_device, m_device_memory, 0, m_allocation_size, 0, &mapped_memory);
+    if (result != VK_SUCCESS) {
+        dbgln(">>>>>failed to map memory {:x}", to_underlying(result));
+        VERIFY_NOT_REACHED();
+    }
+    return mapped_memory;
 }
 
 }

@@ -416,7 +416,10 @@ void ViewImplementation::did_allocate_vulkan_backing_stores(Badge<WebContentClie
     dbgln(">ViewImplementation::did_allocate_vulkan_backing_stores front_descriptor.fd={} back_descriptor.fd={}", front_descriptor.fd, back_descriptor.fd);
 
     auto front_memory = on_request_vulkan_memory_from_descriptor(front_descriptor);
-    (void)front_memory;
+    void* mapped_front = front_memory->map();
+    (void)mapped_front;
+
+    dbgln(">mapped memory pointer = {:p}", mapped_front);
 }
 
 #ifdef AK_OS_MACOS

@@ -48,6 +48,7 @@ class TimerEvent;
 class UDPServer;
 class UDPSocket;
 class VulkanMemory;
+class VulkanImage;
 struct VulkanSharedMemoryDescriptor;
 
 enum class TimerShouldFireWhenNotVisible;

@@ -154,8 +154,8 @@ WebContentView::WebContentView(QWidget* window, WebContentOptions const& web_con
         s_vulkan_context = Core::VulkanContext::create().release_value();
     }
 
-    on_request_vulkan_memory_from_descriptor = [&vulkan_context = s_vulkan_context](Core::VulkanSharedMemoryDescriptor descriptor) -> NonnullRefPtr<Core::VulkanMemory> {
-        return Core::VulkanMemory::create_from_fd(descriptor.fd, descriptor.allocation_size, vulkan_context->device());
+    on_request_vulkan_memory_from_descriptor = [&vulkan_context = s_vulkan_context](Core::VulkanSharedMemoryDescriptor descriptor) -> NonnullRefPtr<Core::VulkanImage> {
+        return Core::VulkanImage::create_from_fd(descriptor.fd, descriptor.allocation_size, vulkan_context->device(), descriptor.width, descriptor.height);
     };
 #endif
 }

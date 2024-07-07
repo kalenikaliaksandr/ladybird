@@ -14,6 +14,8 @@ ErrorOr<void> encode(Encoder& encoder, Core::VulkanSharedMemoryDescriptor const&
 {
     TRY(encoder.encode(TRY(IPC::File::clone_fd(descriptor.fd))));
     TRY(encoder.encode(descriptor.allocation_size));
+    TRY(encoder.encode(descriptor.width));
+    TRY(encoder.encode(descriptor.height));
     return {};
 }
 
@@ -22,10 +24,16 @@ ErrorOr<Core::VulkanSharedMemoryDescriptor> decode(Decoder& decoder)
 {
     auto file = TRY(decoder.decode<IPC::File>());
     auto allocation_size = TRY(decoder.decode<uint64_t>());
+    auto width = TRY(decoder.decode<int>());
+    auto height = TRY(decoder.decode<int>());
 
     dbgln(">>>>>>FIXME: VulkanSharedMemoryDescriptor::decode size={}", allocation_size);
 
-    return { Core::VulkanSharedMemoryDescriptor { .fd = file.take_fd(), .allocation_size = allocation_size } };
+    return { Core::VulkanSharedMemoryDescriptor {
+        .fd = file.take_fd(),
+        .allocation_size = allocation_size,
+        .width = width,
+        .height = height } };
 
     //     if (auto valid = TRY(decoder.decode<bool>()); !valid)
     //         return Gfx::ShareableBitmap {};

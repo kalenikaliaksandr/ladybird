@@ -49,6 +49,7 @@ private:
 class VulkanImage : public RefCounted<VulkanImage> {
 public:
     static NonnullRefPtr<VulkanImage> create(VkDevice device, VkPhysicalDevice physical_device, int width, int height);
+    static NonnullRefPtr<VulkanImage> create_from_fd(int fd, uint64_t allocation_size, VkDevice, int width, int height);
 
     VkImage image() const { return m_image; }
 
@@ -58,14 +59,17 @@ public:
     //    int fd() const { return m_fd; }
     VulkanSharedMemoryDescriptor descriptor() const;
 
+    void* map();
+
 private:
-    VulkanImage(int width, int height, VkImage image, VkDeviceMemory device_memory, int fd, uint64_t allocation_size)
+    VulkanImage(int width, int height, VkImage image, VkDeviceMemory device_memory, int fd, uint64_t allocation_size, VkDevice device)
         : m_image(image)
         , m_device_memory(device_memory)
         , m_fd(fd)
         , m_width(width)
         , m_height(height)
         , m_allocation_size(allocation_size)
+        , m_device(device)
     {
     }
 
@@ -77,19 +81,28 @@ private:
     int m_height { 0 };
 
     uint64_t m_allocation_size { 0 };
+
+    VkDevice m_device { VK_NULL_HANDLE };
 };
 
 class VulkanMemory : public RefCounted<VulkanMemory> {
 public:
-    static NonnullRefPtr<VulkanMemory> create_from_fd(int fd, uint64_t allocation_size, VkDevice);
+    //    static NonnullRefPtr<VulkanMemory> create_from_fd(int fd, uint64_t allocation_size, VkDevice);
+
+    //    void* map();
 
 private:
-    VulkanMemory(VkDeviceMemory device_memory)
+    VulkanMemory(VkDeviceMemory device_memory, VkDevice device, uint64_t allocation_size)
         : m_device_memory(device_memory)
+        , m_device(device)
+        , m_allocation_size(allocation_size)
     {
     }
 
     VkDeviceMemory m_device_memory { VK_NULL_HANDLE };
+    VkDevice m_device { VK_NULL_HANDLE };
+
+    uint64_t m_allocation_size { 0 };
 };
 
 }
