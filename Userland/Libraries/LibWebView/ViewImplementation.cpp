@@ -415,11 +415,31 @@ void ViewImplementation::did_allocate_vulkan_backing_stores(Badge<WebContentClie
 
     dbgln(">ViewImplementation::did_allocate_vulkan_backing_stores front_descriptor.fd={} back_descriptor.fd={}", front_descriptor.fd, back_descriptor.fd);
 
-    auto front_memory = on_request_vulkan_memory_from_descriptor(front_descriptor);
-    void* mapped_front = front_memory->map();
-    (void)mapped_front;
+    auto front_image = on_request_vulkan_memory_from_descriptor(front_descriptor);
+    void* mapped_front = front_image->map();
+    auto front_pitch = front_image->pitch();
 
-    dbgln(">mapped memory pointer = {:p}", mapped_front);
+    auto back_image = on_request_vulkan_memory_from_descriptor(back_descriptor);
+    void* mapped_back = back_image->map();
+    auto back_pitch = back_image->pitch();
+
+    Gfx::IntSize front_size { front_descriptor.width, front_descriptor.height };
+    Gfx::IntSize back_size { back_descriptor.width, back_descriptor.height };
+
+    dbgln(">front size = {} back size = {}", front_size, back_size);
+
+    auto front_bitmap = Gfx::Bitmap::create_wrapper(Gfx::BitmapFormat::BGRA8888, front_size, front_pitch, mapped_front);
+    auto back_bitmap = Gfx::Bitmap::create_wrapper(Gfx::BitmapFormat::BGRA8888, back_size, back_pitch, mapped_back);
+
+    (void)front_bitmap;
+    (void)back_bitmap;
+
+    m_client_state.front_bitmap.bitmap = front_bitmap.release_value_but_fixme_should_propagate_errors();
+    m_client_state.front_bitmap.id = front_bitmap_id;
+    m_client_state.back_bitmap.bitmap = back_bitmap.release_value_but_fixme_should_propagate_errors();
+    m_client_state.back_bitmap.id = back_bitmap_id;
+
+    //    dbgln(">>>pitch={}", pitch);
 }
 
 #ifdef AK_OS_MACOS

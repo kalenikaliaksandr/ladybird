@@ -61,6 +61,8 @@ public:
 
     void* map();
 
+    size_t pitch() const;
+
 private:
     VulkanImage(int width, int height, VkImage image, VkDeviceMemory device_memory, int fd, uint64_t allocation_size, VkDevice device)
         : m_image(image)

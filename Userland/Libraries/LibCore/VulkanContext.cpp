@@ -297,4 +297,19 @@ void* VulkanImage::map()
     return mapped_memory;
 }
 
+size_t VulkanImage::pitch() const
+{
+    VkImageSubresource subresource = {};
+    subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; // For color images
+    subresource.mipLevel = 0;                           // Mipmap level
+    subresource.arrayLayer = 0;                         // Array layer
+
+    VkSubresourceLayout layout;
+    vkGetImageSubresourceLayout(m_device, m_image, &subresource, &layout);
+
+    VkDeviceSize rowPitch = layout.rowPitch; // This is the stride
+
+    return rowPitch;
+}
+
 }
