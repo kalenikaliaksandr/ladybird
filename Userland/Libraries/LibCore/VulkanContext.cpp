@@ -164,7 +164,7 @@ NonnullRefPtr<VulkanImage> VulkanImage::create(VkDevice device, VkPhysicalDevice
     image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;                                  // Sharing mode
     image_create_info.queueFamilyIndexCount = 0;                                                // Number of queue families
     image_create_info.pQueueFamilyIndices = nullptr;
-    image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    image_create_info.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkImage image;
     VkResult result = vkCreateImage(device, &image_create_info, nullptr, &image);
@@ -268,7 +268,7 @@ NonnullRefPtr<VulkanImage> VulkanImage::create_from_fd(int fd, uint64_t allocati
     image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;                                  // Sharing mode
     image_create_info.queueFamilyIndexCount = 0;                                                // Number of queue families
     image_create_info.pQueueFamilyIndices = nullptr;
-    image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    image_create_info.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkImage image;
     result = vkCreateImage(device, &image_create_info, nullptr, &image);
@@ -306,6 +306,8 @@ size_t VulkanImage::pitch() const
 
     VkSubresourceLayout layout;
     vkGetImageSubresourceLayout(m_device, m_image, &subresource, &layout);
+
+    VERIFY(layout.offset == 0);
 
     VkDeviceSize rowPitch = layout.rowPitch; // This is the stride
 
