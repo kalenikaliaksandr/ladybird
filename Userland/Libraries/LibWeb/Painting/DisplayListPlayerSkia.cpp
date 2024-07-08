@@ -148,7 +148,7 @@ DisplayListPlayerSkia::DisplayListPlayerSkia(SkiaBackendContext& context, Nonnul
     //    VERIFY(bitmap.format() == Gfx::BitmapFormat::BGRA8888);
     auto surface = static_cast<SkiaVulkanBackendContext&>(context).create_surface(*vulkan_image);
     m_surface = make<SkiaSurface>(surface);
-    m_flush_context = [&surface = m_surface, &context] {
+    m_flush_context = [&context] {
         context.flush_and_submit();
         //        surface->read_into_bitmap(bitmap);
     };

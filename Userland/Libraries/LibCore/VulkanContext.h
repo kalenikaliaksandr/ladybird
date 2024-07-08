@@ -12,9 +12,9 @@ static_assert(false, "This file must only be used when Vulkan is available");
 
 #include <AK/Forward.h>
 #include <AK/Function.h>
+#include <AK/NonnullRefPtr.h>
 #include <AK/RefCounted.h>
 #include <LibCore/VulkanSharedMemoryDescriptor.h>
-#include <LibIPC/Forward.h>
 #include <vulkan/vulkan.h>
 
 namespace Core {
@@ -60,6 +60,7 @@ public:
     VulkanSharedMemoryDescriptor descriptor() const;
 
     void* map();
+    void unmap();
 
     size_t pitch() const;
 
@@ -85,26 +86,6 @@ private:
     uint64_t m_allocation_size { 0 };
 
     VkDevice m_device { VK_NULL_HANDLE };
-};
-
-class VulkanMemory : public RefCounted<VulkanMemory> {
-public:
-    //    static NonnullRefPtr<VulkanMemory> create_from_fd(int fd, uint64_t allocation_size, VkDevice);
-
-    //    void* map();
-
-private:
-    VulkanMemory(VkDeviceMemory device_memory, VkDevice device, uint64_t allocation_size)
-        : m_device_memory(device_memory)
-        , m_device(device)
-        , m_allocation_size(allocation_size)
-    {
-    }
-
-    VkDeviceMemory m_device_memory { VK_NULL_HANDLE };
-    VkDevice m_device { VK_NULL_HANDLE };
-
-    uint64_t m_allocation_size { 0 };
 };
 
 }
