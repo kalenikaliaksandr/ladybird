@@ -148,18 +148,18 @@ NonnullRefPtr<VulkanImage> VulkanImage::create(VkDevice device, VkPhysicalDevice
     image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_create_info.pNext = nullptr;
     image_create_info.flags = 0;
-    image_create_info.imageType = VK_IMAGE_TYPE_2D;      // 1D, 2D, or 3D image
-    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM; // Format of the image
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM;
     image_create_info.extent.width = width;
     image_create_info.extent.height = height;
     image_create_info.extent.depth = 1;
     image_create_info.mipLevels = 1;
     image_create_info.arrayLayers = 1;
-    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;                                          // Number of samples per pixel
-    image_create_info.tiling = VK_IMAGE_TILING_LINEAR;                                          // Tiling arrangement
-    image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; // Usage flags
-    image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;                                  // Sharing mode
-    image_create_info.queueFamilyIndexCount = 0;                                                // Number of queue families
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_create_info.tiling = VK_IMAGE_TILING_LINEAR;
+    image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_create_info.queueFamilyIndexCount = 0;
     image_create_info.pQueueFamilyIndices = nullptr;
     image_create_info.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
 
@@ -205,8 +205,8 @@ NonnullRefPtr<VulkanImage> VulkanImage::create(VkDevice device, VkPhysicalDevice
     VkMemoryGetFdInfoKHR memoryGetFdInfo = {};
     memoryGetFdInfo.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
     memoryGetFdInfo.pNext = NULL;
-    memoryGetFdInfo.memory = imageMemory;                                      // Vulkan memory object
-    memoryGetFdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT; // Desired handle type
+    memoryGetFdInfo.memory = imageMemory;
+    memoryGetFdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
 
     int fd = -1;
     vkGetMemoryFdKHR(device, &memoryGetFdInfo, &fd);
@@ -229,20 +229,19 @@ NonnullRefPtr<VulkanImage> VulkanImage::create_from_fd(int fd, uint64_t allocati
 {
     VERIFY(fd > -1);
 
-    VkImportMemoryFdInfoKHR importFdInfo = {};
-    importFdInfo.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
-    importFdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-    importFdInfo.fd = fd;
+    VkImportMemoryFdInfoKHR import_fd_info = {};
+    import_fd_info.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+    import_fd_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    import_fd_info.fd = fd;
 
-    // Allocate memory
-    VkMemoryAllocateInfo allocInfo = {};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = allocation_size;
-    allocInfo.memoryTypeIndex = 4; // <<<<<<<<<<<<FIXME
-    allocInfo.pNext = &importFdInfo;
+    VkMemoryAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc_info.allocationSize = allocation_size;
+    alloc_info.memoryTypeIndex = 4; // <<<<<<<<<<<<FIXME
+    alloc_info.pNext = &import_fd_info;
 
     VkDeviceMemory device_memory;
-    VkResult result = vkAllocateMemory(device, &allocInfo, nullptr, &device_memory);
+    VkResult result = vkAllocateMemory(device, &alloc_info, nullptr, &device_memory);
     if (result != VK_SUCCESS) {
         dbgln(">>>Failed to import memory");
         VERIFY_NOT_REACHED();
@@ -252,18 +251,18 @@ NonnullRefPtr<VulkanImage> VulkanImage::create_from_fd(int fd, uint64_t allocati
     image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_create_info.pNext = nullptr;
     image_create_info.flags = 0;
-    image_create_info.imageType = VK_IMAGE_TYPE_2D;      // 1D, 2D, or 3D image
-    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM; // Format of the image
+    image_create_info.imageType = VK_IMAGE_TYPE_2D; // 1D, 2D, or 3D image
+    image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM;
     image_create_info.extent.width = width;
     image_create_info.extent.height = height;
     image_create_info.extent.depth = 1;
     image_create_info.mipLevels = 1;
     image_create_info.arrayLayers = 1;
-    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;                                          // Number of samples per pixel
-    image_create_info.tiling = VK_IMAGE_TILING_LINEAR;                                          // Tiling arrangement
-    image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; // Usage flags
-    image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;                                  // Sharing mode
-    image_create_info.queueFamilyIndexCount = 0;                                                // Number of queue families
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_create_info.tiling = VK_IMAGE_TILING_LINEAR;
+    image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_create_info.queueFamilyIndexCount = 0; // Number of queue families
     image_create_info.pQueueFamilyIndices = nullptr;
     image_create_info.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
 
@@ -312,9 +311,7 @@ size_t VulkanImage::pitch() const
 
     VERIFY(layout.offset == 0);
 
-    VkDeviceSize rowPitch = layout.rowPitch; // This is the stride
-
-    return rowPitch;
+    return layout.rowPitch;
 }
 
 }
