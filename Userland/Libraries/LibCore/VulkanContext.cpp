@@ -202,11 +202,39 @@ ErrorOr<NonnullRefPtr<VulkanContext>> VulkanContext::create()
         graphics_queue));
 }
 
+[[maybe_unused]] static void print_memory_type_bits(uint32_t memory_type_bits)
+{
+    dbgln(">>>BEGIN MEMORY TYPE BITS DUMP");
+    if ((memory_type_bits & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+        dbgln(">VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT");
+    if ((memory_type_bits & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+        dbgln(">VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT");
+    if ((memory_type_bits & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+        dbgln(">VK_MEMORY_PROPERTY_HOST_COHERENT_BIT");
+    if ((memory_type_bits & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) == VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+        dbgln(">VK_MEMORY_PROPERTY_HOST_CACHED_BIT");
+    if ((memory_type_bits & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) == VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT)
+        dbgln(">VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT");
+    if ((memory_type_bits & VK_MEMORY_PROPERTY_PROTECTED_BIT) == VK_MEMORY_PROPERTY_PROTECTED_BIT)
+        dbgln(">VK_MEMORY_PROPERTY_PROTECTED_BIT");
+    if ((memory_type_bits & VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD) == VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD)
+        dbgln(">VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD");
+    if ((memory_type_bits & VK_MEMORY_PROPERTY_DEVICE_UNCACHED_BIT_AMD) == VK_MEMORY_PROPERTY_DEVICE_UNCACHED_BIT_AMD)
+        dbgln(">VK_MEMORY_PROPERTY_DEVICE_UNCACHED_BIT_AMD");
+    if ((memory_type_bits & VK_MEMORY_PROPERTY_RDMA_CAPABLE_BIT_NV) == VK_MEMORY_PROPERTY_RDMA_CAPABLE_BIT_NV)
+        dbgln(">VK_MEMORY_PROPERTY_RDMA_CAPABLE_BIT_NV");
+    dbgln(">>>END MEMORY TYPE BITS DUMP");
+}
+
 NonnullRefPtr<VulkanImage> VulkanImage::create(VkDevice device, VkPhysicalDevice physical_device, int width, int height)
 {
+    VkExternalMemoryImageCreateInfo externalMemoryImageCreateInfo = {};
+    externalMemoryImageCreateInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+    externalMemoryImageCreateInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+
     VkImageCreateInfo image_create_info = {};
     image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    image_create_info.pNext = nullptr;
+    image_create_info.pNext = &externalMemoryImageCreateInfo;
     image_create_info.flags = 0;
     image_create_info.imageType = VK_IMAGE_TYPE_2D;
     image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM;
@@ -231,6 +259,8 @@ NonnullRefPtr<VulkanImage> VulkanImage::create(VkDevice device, VkPhysicalDevice
 
     VkMemoryRequirements memory_requirements;
     vkGetImageMemoryRequirements(device, image, &memory_requirements);
+
+    print_memory_type_bits(memory_requirements.memoryTypeBits);
 
     VkPhysicalDeviceMemoryProperties memory_properties;
     vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
@@ -307,9 +337,13 @@ NonnullRefPtr<VulkanImage> VulkanImage::create_from_fd(int fd, uint64_t allocati
         VERIFY_NOT_REACHED();
     }
 
+    VkExternalMemoryImageCreateInfo externalMemoryImageCreateInfo = {};
+    externalMemoryImageCreateInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+    externalMemoryImageCreateInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+
     VkImageCreateInfo image_create_info = {};
     image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    image_create_info.pNext = nullptr;
+    image_create_info.pNext = &externalMemoryImageCreateInfo;
     image_create_info.flags = 0;
     image_create_info.imageType = VK_IMAGE_TYPE_2D; // 1D, 2D, or 3D image
     image_create_info.format = VK_FORMAT_B8G8R8A8_UNORM;
