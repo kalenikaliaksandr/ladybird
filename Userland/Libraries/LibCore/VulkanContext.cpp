@@ -10,9 +10,50 @@
 
 namespace Core {
 
+VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
+    [[maybe_unused]] VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    [[maybe_unused]] VkDebugUtilsMessageTypeFlagsEXT messageType,
+    VkDebugUtilsMessengerCallbackDataEXT const* pCallbackData,
+    [[maybe_unused]] void* pUserData)
+{
+
+    //    std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
+    dbgln(">>>Validation layer {}", pCallbackData->pMessage);
+
+    return VK_FALSE;
+}
+
+VkDebugUtilsMessengerCreateInfoEXT createDebugUtilsMessengerInfo()
+{
+    VkDebugUtilsMessengerCreateInfoEXT info = {};
+    info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    info.pfnUserCallback = debugCallback;
+    return info;
+}
+
+VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerCreateInfoEXT const* pCreateInfo, VkAllocationCallbacks const* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger)
+{
+    auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+    if (func != nullptr) {
+        return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
+    } else {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+}
+
 ErrorOr<VkInstance> create_instance(uint32_t api_version)
 {
     VkInstance instance;
+
+    char const* validationLayers[] = {
+        "VK_LAYER_KHRONOS_validation"
+    };
+
+    char const* extensions[] = {
+        VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+    };
 
     VkApplicationInfo app_info {};
     app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -26,10 +67,26 @@ ErrorOr<VkInstance> create_instance(uint32_t api_version)
     create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     create_info.pApplicationInfo = &app_info;
 
+    create_info.enabledLayerCount = sizeof(validationLayers) / sizeof(validationLayers[0]);
+    create_info.ppEnabledLayerNames = validationLayers;
+    create_info.enabledExtensionCount = 1;
+    create_info.ppEnabledExtensionNames = extensions;
+
+    dbgln(">>>enabledLayerCount={}", create_info.enabledLayerCount);
+
     auto result = vkCreateInstance(&create_info, nullptr, &instance);
     if (result != VK_SUCCESS) {
         dbgln("vkCreateInstance returned {}", to_underlying(result));
         return Error::from_string_view("Application instance creation failed"sv);
+    }
+
+    VkDebugUtilsMessengerEXT debugMessenger;
+
+    VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = createDebugUtilsMessengerInfo();
+
+    if (auto result_hm = CreateDebugUtilsMessengerEXT(instance, &debugCreateInfo, nullptr, &debugMessenger); result_hm != VK_SUCCESS) {
+        dbgln(">>>result_hm = {}", to_underlying(result_hm));
+        VERIFY_NOT_REACHED();
     }
 
     return instance;
@@ -113,8 +170,11 @@ ErrorOr<VkDevice> create_logical_device(VkPhysicalDevice physical_device)
     create_device_info.queueCreateInfoCount = 1;
     create_device_info.pEnabledFeatures = &deviceFeatures;
 
-    create_device_info.enabledExtensionCount = 1;
-    char const* deviceExtensions[] = { VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME };
+    create_device_info.enabledExtensionCount = 2;
+    char const* deviceExtensions[] = {
+        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME
+    };
     create_device_info.ppEnabledExtensionNames = deviceExtensions;
 
     if (vkCreateDevice(physical_device, &create_device_info, nullptr, &device) != VK_SUCCESS) {
@@ -161,7 +221,7 @@ NonnullRefPtr<VulkanImage> VulkanImage::create(VkDevice device, VkPhysicalDevice
     image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     image_create_info.queueFamilyIndexCount = 0;
     image_create_info.pQueueFamilyIndices = nullptr;
-    image_create_info.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+    image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VkImage image;
     VkResult result = vkCreateImage(device, &image_create_info, nullptr, &image);
@@ -264,7 +324,7 @@ NonnullRefPtr<VulkanImage> VulkanImage::create_from_fd(int fd, uint64_t allocati
     image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     image_create_info.queueFamilyIndexCount = 0; // Number of queue families
     image_create_info.pQueueFamilyIndices = nullptr;
-    image_create_info.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+    image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VkImage image;
     result = vkCreateImage(device, &image_create_info, nullptr, &image);
