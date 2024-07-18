@@ -831,6 +831,7 @@ CommandResult DisplayListPlayerSkia::fill_rect_with_rounded_corners(FillRectWith
 
     auto& canvas = surface().canvas();
     SkPaint paint;
+    paint.setAntiAlias(true);
     paint.setColor(to_skia_color(command.color));
 
     auto rounded_rect = to_skia_rrect(rect, command.corner_radii);
