@@ -1097,4 +1097,39 @@ void PaintableWithLines::resolve_paint_properties()
     }
 }
 
+CSSPixelPoint PaintableBox::offset_relative_to_nearest_scrollable_ancestor() const
+{
+    //    CSSPixelPoint offset;
+    //    auto* paintable = this;
+    //    while (paintable) {
+    //        offset.translate_by(paintable->offset());
+    //        paintable = paintable->containing_block();
+    //        if (paintable->is_scrollable(ScrollDirection::Vertical))
+    //            break;
+    //    }
+    //    return offset;
+    return absolute_padding_box_rect().top_left() - nearest_scrollable_ancestor().absolute_padding_box_rect().top_left();
+}
+
+PaintableBox const& PaintableBox::nearest_scrollable_ancestor() const
+{
+    auto const* paintable = this;
+    while (paintable) {
+        if (paintable->is_scrollable(ScrollDirection::Vertical))
+            return *paintable;
+        paintable = paintable->containing_block();
+    }
+    VERIFY_NOT_REACHED();
+}
+
+CSSPixels PaintableBox::max_sticky_scroll_offset() const
+{
+    return containing_block()->offset().y() + containing_block()->scrollable_overflow_rect().value().height() - absolute_padding_box_rect().height();
+}
+
+CSSPixels PaintableBox::min_sticky_scroll_offset() const
+{
+    return containing_block()->offset().y() + containing_block()->box_model().padding.top;
+}
+
 }

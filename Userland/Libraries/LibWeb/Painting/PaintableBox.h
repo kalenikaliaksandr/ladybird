@@ -210,6 +210,11 @@ public:
 
     virtual void resolve_paint_properties() override;
 
+    CSSPixelPoint offset_relative_to_nearest_scrollable_ancestor() const;
+    PaintableBox const& nearest_scrollable_ancestor() const;
+    CSSPixels max_sticky_scroll_offset() const;
+    CSSPixels min_sticky_scroll_offset() const;
+
 protected:
     explicit PaintableBox(Layout::Box const&);
 
