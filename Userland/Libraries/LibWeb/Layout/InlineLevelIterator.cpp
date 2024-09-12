@@ -13,7 +13,7 @@
 
 namespace Web::Layout {
 
-InlineLevelIterator::InlineLevelIterator(Layout::InlineFormattingContext& inline_formatting_context, Layout::LayoutState& layout_state, Layout::BlockContainer const& containing_block, LayoutState::UsedValues const& containing_block_used_values, LayoutMode layout_mode)
+InlineLevelIterator::InlineLevelIterator(Layout::InlineFormattingContext& inline_formatting_context, FormattingContext::LayoutStateAssertionWrapper& layout_state, Layout::BlockContainer const& containing_block, LayoutState::UsedValues const& containing_block_used_values, LayoutMode layout_mode)
     : m_inline_formatting_context(inline_formatting_context)
     , m_layout_state(layout_state)
     , m_containing_block(containing_block)

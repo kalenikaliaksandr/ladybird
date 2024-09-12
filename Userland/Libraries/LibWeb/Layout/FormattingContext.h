@@ -112,8 +112,36 @@ public:
 
     void compute_inset(NodeWithStyleAndBoxModelMetrics const&);
 
+    class LayoutStateAssertionWrapper {
+    public:
+        LayoutStateAssertionWrapper(Box const& context_box, LayoutState& state, Vector<JS::NonnullGCPtr<Node>> allowed_nodes, FormattingContext::Type type)
+            : m_context_box(context_box)
+            , m_state(state)
+            , m_allowed_nodes(move(allowed_nodes))
+            , m_type(type)
+        {
+        }
+
+        LayoutState::UsedValues const& get(NodeWithStyle const& node) const;
+        LayoutState::UsedValues const& get_unsafe(NodeWithStyle const& node) const;
+        LayoutState::UsedValues& get_mutable(NodeWithStyle const& node);
+        LayoutState::UsedValues& get_mutable_unsafe(NodeWithStyle const& node);
+
+        LayoutState& wrapped_state() { return m_state; }
+        LayoutState const& wrapped_state() const { return m_state; }
+
+        LayoutState const& root() const { return m_state.m_root; }
+
+    private:
+        Box const& m_context_box;
+        LayoutState& m_state;
+        Vector<JS::NonnullGCPtr<Node>> m_allowed_nodes;
+        FormattingContext::Type m_type;
+    };
+
 protected:
     FormattingContext(Type, LayoutMode, LayoutState&, Box const&, FormattingContext* parent = nullptr);
+    FormattingContext(Type, LayoutMode, LayoutStateAssertionWrapper, Box const&, FormattingContext* parent = nullptr);
 
     static bool should_treat_width_as_auto(Box const&, AvailableSpace const&);
     static bool should_treat_height_as_auto(Box const&, AvailableSpace const&);
@@ -175,7 +203,7 @@ protected:
     FormattingContext* m_parent { nullptr };
     JS::NonnullGCPtr<Box const> m_context_box;
 
-    LayoutState& m_state;
+    LayoutStateAssertionWrapper m_state;
 };
 
 bool box_is_sized_as_replaced_element(Box const&);

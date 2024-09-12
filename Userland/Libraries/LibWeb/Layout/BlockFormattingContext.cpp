@@ -50,7 +50,7 @@ CSSPixels BlockFormattingContext::automatic_content_height() const
     return compute_auto_height_for_block_formatting_context_root(root());
 }
 
-static bool margins_collapse_through(Box const& box, LayoutState& state)
+static bool margins_collapse_through(Box const& box, FormattingContext::LayoutStateAssertionWrapper& state)
 {
     // FIXME: A box's own margins collapse if the 'min-height' property is zero, and it has neither top or bottom borders
     // nor top or bottom padding, and it has a 'height' of either 0 or 'auto', and it does not contain a line box, and
@@ -495,40 +495,42 @@ void BlockFormattingContext::layout_inline_children(BlockContainer const& block_
 
     auto& block_container_state = m_state.get_mutable(block_container);
 
-    InlineFormattingContext context(m_state, m_layout_mode, block_container, block_container_state, *this);
+    InlineFormattingContext context(m_state.wrapped_state(), m_layout_mode, block_container, block_container_state, *this);
     context.run(available_space);
 
     if (!block_container_state.has_definite_width()) {
         // NOTE: min-width or max-width for boxes with inline children can only be applied after inside layout
         //       is done and width of box content is known
         auto used_width_px = context.automatic_content_width();
-        // https://www.w3.org/TR/css-sizing-3/#sizing-values
-        // Percentages are resolved against the width/height, as appropriate, of the box’s containing block.
-        auto containing_block_width = m_state.get(*block_container.containing_block()).content_width();
-        auto available_width = AvailableSize::make_definite(containing_block_width);
-        if (!should_treat_max_width_as_none(block_container, available_space.width)) {
-            auto max_width_px = calculate_inner_width(block_container, available_width, block_container.computed_values().max_width());
-            if (used_width_px > max_width_px)
-                used_width_px = max_width_px;
-        }
+        if (block_container_state.width_constraint == SizeConstraint::None) {
+            // https://www.w3.org/TR/css-sizing-3/#sizing-values
+            // Percentages are resolved against the width/height, as appropriate, of the box’s containing block.
+            auto containing_block_width = m_state.get(*block_container.containing_block()).content_width();
+            auto available_width = AvailableSize::make_definite(containing_block_width);
+            if (!should_treat_max_width_as_none(block_container, available_space.width)) {
+                auto max_width_px = calculate_inner_width(block_container, available_width, block_container.computed_values().max_width());
+                if (used_width_px > max_width_px)
+                    used_width_px = max_width_px;
+            }
 
-        auto should_treat_min_width_as_auto = [&] {
-            auto const& available_width = available_space.width;
-            auto const& min_width = block_container.computed_values().min_width();
-            if (min_width.is_auto())
-                return true;
-            if (min_width.is_fit_content() && available_width.is_intrinsic_sizing_constraint())
-                return true;
-            if (min_width.is_max_content() && available_width.is_max_content())
-                return true;
-            if (min_width.is_min_content() && available_width.is_min_content())
-                return true;
-            return false;
-        }();
-        if (!should_treat_min_width_as_auto) {
-            auto min_width_px = calculate_inner_width(block_container, available_width, block_container.computed_values().min_width());
-            if (used_width_px < min_width_px)
-                used_width_px = min_width_px;
+            auto should_treat_min_width_as_auto = [&] {
+                auto const& available_width = available_space.width;
+                auto const& min_width = block_container.computed_values().min_width();
+                if (min_width.is_auto())
+                    return true;
+                if (min_width.is_fit_content() && available_width.is_intrinsic_sizing_constraint())
+                    return true;
+                if (min_width.is_max_content() && available_width.is_max_content())
+                    return true;
+                if (min_width.is_min_content() && available_width.is_min_content())
+                    return true;
+                return false;
+            }();
+            if (!should_treat_min_width_as_auto) {
+                auto min_width_px = calculate_inner_width(block_container, available_width, block_container.computed_values().min_width());
+                if (used_width_px < min_width_px)
+                    used_width_px = min_width_px;
+            }
         }
         block_container_state.set_content_width(used_width_px);
         block_container_state.set_content_height(context.automatic_content_height());
@@ -676,7 +678,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         resolve_used_height_if_treated_as_auto(box, available_space);
     }
 
-    auto independent_formatting_context = create_independent_formatting_context_if_needed(m_state, m_layout_mode, box);
+    auto independent_formatting_context = create_independent_formatting_context_if_needed(m_state.wrapped_state(), m_layout_mode, box);
 
     // NOTE: It is possible to encounter SVGMaskBox nodes while doing layout of formatting context established by <foreignObject> with a mask.
     //       We should skip and let SVGFormattingContext take care of them.
@@ -719,7 +721,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         // value of the display property that is table-row, table-row-group, table-header-group,
         // table-footer-group, table-cell or table-caption, the containing block of element must be
         // calculated using the following algorithm, aborting on the first step that returns a value:
-        auto height = containing_block_height_to_resolve_percentage_in_quirks_mode(box, m_state);
+        auto height = containing_block_height_to_resolve_percentage_in_quirks_mode(box, m_state.wrapped_state());
         available_space_for_height_resolution.height = AvailableSize::make_definite(height);
     }
 
@@ -994,7 +996,7 @@ void BlockFormattingContext::layout_viewport(AvailableSpace const& available_spa
         auto const& svg_root = verify_cast<SVGSVGBox>(*root().first_child());
         auto content_height = m_state.get(*svg_root.containing_block()).content_height();
         m_state.get_mutable(svg_root).set_content_height(content_height);
-        auto svg_formatting_context = create_independent_formatting_context_if_needed(m_state, m_layout_mode, svg_root);
+        auto svg_formatting_context = create_independent_formatting_context_if_needed(m_state.wrapped_state(), m_layout_mode, svg_root);
         svg_formatting_context->run(available_space);
     } else {
         if (root().children_are_inline())

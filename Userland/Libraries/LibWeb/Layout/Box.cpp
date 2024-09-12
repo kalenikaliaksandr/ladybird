@@ -31,7 +31,7 @@ Box::~Box()
 void Box::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_contained_abspos_children);
+    visitor.visit(m_contained_children);
 }
 
 // https://www.w37.org/TR/css-overflow-3/#overflow-control

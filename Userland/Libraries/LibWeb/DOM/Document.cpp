@@ -1159,12 +1159,10 @@ void Document::update_layout()
 
     // Assign each box that establishes a formatting context a list of absolutely positioned children it should take care of during layout
     m_layout_root->for_each_in_inclusive_subtree_of_type<Layout::Box>([&](auto& child) {
-        child.clear_contained_abspos_children();
+        child.clear_contained_children();
         return TraversalDecision::Continue;
     });
     m_layout_root->for_each_in_inclusive_subtree([&](auto& child) {
-        if (!child.is_absolutely_positioned())
-            return TraversalDecision::Continue;
         if (auto* containing_block = child.containing_block()) {
             auto* closest_box_that_establishes_formatting_context = containing_block;
             while (closest_box_that_establishes_formatting_context) {
@@ -1176,7 +1174,7 @@ void Document::update_layout()
                 closest_box_that_establishes_formatting_context = closest_box_that_establishes_formatting_context->containing_block();
             }
             VERIFY(closest_box_that_establishes_formatting_context);
-            closest_box_that_establishes_formatting_context->add_contained_abspos_child(child);
+            closest_box_that_establishes_formatting_context->add_contained_child(child);
         }
         return TraversalDecision::Continue;
     });

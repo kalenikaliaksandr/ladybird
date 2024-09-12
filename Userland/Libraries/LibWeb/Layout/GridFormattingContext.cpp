@@ -1914,9 +1914,11 @@ void GridFormattingContext::run(AvailableSpace const& available_space)
 
     resolve_track_spacing(GridDimension::Column);
 
-    auto const& containing_block_state = m_state.get(*grid_container().containing_block());
-    auto height_of_containing_block = containing_block_state.content_height();
-    auto height_of_container_block_as_available_size = AvailableSize::make_definite(height_of_containing_block);
+    //    auto const& containing_block_state = m_state.get(*grid_container().containing_block());
+    //    auto height_of_containing_block = containing_block_state.content_height();
+    //    auto height_of_container_block_as_available_size = AvailableSize::make_definite(height_of_containing_block);
+    auto height_of_container_block_as_available_size = AvailableSize::make_definite(m_automatic_content_height);
+
     CSSPixels min_height = 0;
     if (!grid_computed_values.min_height().is_auto())
         min_height = calculate_inner_height(grid_container(), height_of_container_block_as_available_size, grid_computed_values.min_height());

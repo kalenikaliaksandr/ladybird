@@ -213,7 +213,7 @@ bool FlexFormattingContext::is_direction_reverse() const
     }
 }
 
-void FlexFormattingContext::populate_specified_margins(FlexItem& item, CSS::FlexDirection flex_direction) const
+void FlexFormattingContext::populate_specified_margins(FlexItem& item, CSS::FlexDirection flex_direction)
 {
     auto width_of_containing_block = m_flex_container_state.content_width();
 
@@ -1131,7 +1131,7 @@ void FlexFormattingContext::determine_hypothetical_cross_size_of_item(FlexItem& 
     }
 
     // For indefinite cross sizes, we perform a throwaway layout and then measure it.
-    LayoutState throwaway_state(&m_state);
+    LayoutState throwaway_state(&m_state.wrapped_state());
 
     auto& box_state = throwaway_state.get_mutable(item.box);
     if (is_row_layout()) {

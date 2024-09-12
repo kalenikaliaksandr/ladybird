@@ -41,7 +41,7 @@ struct GridItem {
         return dimension == GridDimension::Column ? column : row;
     }
 
-    [[nodiscard]] CSSPixels add_margin_box_sizes(CSSPixels content_size, GridDimension dimension, LayoutState const& state) const
+    [[nodiscard]] CSSPixels add_margin_box_sizes(CSSPixels content_size, GridDimension dimension, FormattingContext::LayoutStateAssertionWrapper const& state) const
     {
         auto const& box_state = state.get(box);
         if (dimension == GridDimension::Column)

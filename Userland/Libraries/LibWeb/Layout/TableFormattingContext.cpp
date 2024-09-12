@@ -40,7 +40,7 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase)
         }
         // The caption boxes are principal block-level boxes that retain their own content, padding, margin, and border areas,
         // and are rendered as normal block boxes inside the table wrapper box, as described in https://www.w3.org/TR/CSS22/tables.html#model
-        auto caption_context = make<BlockFormattingContext>(m_state, m_layout_mode, *verify_cast<BlockContainer>(child), this);
+        auto caption_context = make<BlockFormattingContext>(m_state.wrapped_state(), m_layout_mode, *verify_cast<BlockContainer>(child), this);
         caption_context->run(*m_available_space);
         VERIFY(child->is_box());
         auto const& child_box = static_cast<Box const&>(*child);
@@ -523,7 +523,7 @@ void TableFormattingContext::compute_table_width()
     }
 
     table_box_state.set_content_width(used_width);
-    auto& table_wrapper_box_state = m_state.get_mutable(table_wrapper());
+    auto& table_wrapper_box_state = m_state.get_mutable_unsafe(table_wrapper());
     table_wrapper_box_state.set_content_width(table_box_state.border_box_width());
 }
 

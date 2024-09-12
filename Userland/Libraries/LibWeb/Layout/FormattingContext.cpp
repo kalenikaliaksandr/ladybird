@@ -23,6 +23,15 @@ FormattingContext::FormattingContext(Type type, LayoutMode layout_mode, LayoutSt
     , m_layout_mode(layout_mode)
     , m_parent(parent)
     , m_context_box(context_box)
+    , m_state(LayoutStateAssertionWrapper(context_box, state, context_box.contained_children(), type))
+{
+}
+
+FormattingContext::FormattingContext(Type type, LayoutMode layout_mode, LayoutStateAssertionWrapper state, Box const& context_box, FormattingContext* parent)
+    : m_type(type)
+    , m_layout_mode(layout_mode)
+    , m_parent(parent)
+    , m_context_box(context_box)
     , m_state(state)
 {
 }
@@ -226,7 +235,7 @@ OwnPtr<FormattingContext> FormattingContext::layout_inside(Box const& child_box,
     if (!child_box.can_have_children())
         return {};
 
-    auto independent_formatting_context = create_independent_formatting_context_if_needed(m_state, layout_mode, child_box);
+    auto independent_formatting_context = create_independent_formatting_context_if_needed(m_state.wrapped_state(), layout_mode, child_box);
     if (independent_formatting_context)
         independent_formatting_context->run(available_space);
     else
@@ -419,7 +428,7 @@ CSSPixels FormattingContext::compute_table_box_width_inside_table_wrapper(Box co
     });
     VERIFY(table_box.has_value());
 
-    LayoutState throwaway_state(&m_state);
+    LayoutState throwaway_state(&m_state.wrapped_state());
 
     auto& table_box_state = throwaway_state.get_mutable(*table_box);
     auto const& table_box_computed_values = table_box->computed_values();
@@ -458,7 +467,7 @@ CSSPixels FormattingContext::compute_table_box_height_inside_table_wrapper(Box c
     // table-wrapper can't have borders or paddings but it might have margin taken from table-root.
     auto available_height = height_of_containing_block - margin_top.to_px(box) - margin_bottom.to_px(box);
 
-    LayoutState throwaway_state(&m_state);
+    LayoutState throwaway_state(&m_state.wrapped_state());
     auto context = create_independent_formatting_context_if_needed(throwaway_state, LayoutMode::IntrinsicSizing, box);
     VERIFY(context);
     context->run(m_state.get(box).available_inner_space_or_constraints_from(available_space));
@@ -1167,7 +1176,7 @@ CSSPixelRect FormattingContext::content_box_rect_in_static_position_ancestor_coo
     for (auto const* current = box.static_position_containing_block(); current; current = current->static_position_containing_block()) {
         if (current == &ancestor_box)
             return rect;
-        auto const& current_state = m_state.get(*current);
+        auto const& current_state = m_state.wrapped_state().get(*current);
         rect.translate_by(current_state.offset);
     }
     // If we get here, ancestor_box was not an ancestor of `box`!
@@ -1454,13 +1463,13 @@ CSSPixels FormattingContext::calculate_min_content_width(Layout::Box const& box)
     if (box.has_natural_width())
         return *box.natural_width();
 
-    auto& root_state = m_state.m_root;
+    auto& root_state = m_state.root();
 
     auto& cache = *root_state.intrinsic_sizes.ensure(&box, [] { return adopt_own(*new LayoutState::IntrinsicSizes); });
     if (cache.min_content_width.has_value())
         return *cache.min_content_width;
 
-    LayoutState throwaway_state(&m_state);
+    LayoutState throwaway_state(&m_state.wrapped_state());
 
     auto& box_state = throwaway_state.get_mutable(box);
     box_state.width_constraint = SizeConstraint::MinContent;
@@ -1494,13 +1503,13 @@ CSSPixels FormattingContext::calculate_max_content_width(Layout::Box const& box)
     if (box.has_natural_width())
         return *box.natural_width();
 
-    auto& root_state = m_state.m_root;
+    auto& root_state = m_state.root();
 
     auto& cache = *root_state.intrinsic_sizes.ensure(&box, [] { return adopt_own(*new LayoutState::IntrinsicSizes); });
     if (cache.max_content_width.has_value())
         return *cache.max_content_width;
 
-    LayoutState throwaway_state(&m_state);
+    LayoutState throwaway_state(&m_state.wrapped_state());
 
     auto& box_state = throwaway_state.get_mutable(box);
     box_state.width_constraint = SizeConstraint::MaxContent;
@@ -1540,7 +1549,7 @@ CSSPixels FormattingContext::calculate_min_content_height(Layout::Box const& box
         return *box.natural_height();
 
     auto get_cache_slot = [&]() -> Optional<CSSPixels>* {
-        auto& root_state = m_state.m_root;
+        auto& root_state = m_state.root();
         auto& cache = *root_state.intrinsic_sizes.ensure(&box, [] { return adopt_own(*new LayoutState::IntrinsicSizes); });
         return &cache.min_content_height.ensure(width);
     };
@@ -1548,7 +1557,7 @@ CSSPixels FormattingContext::calculate_min_content_height(Layout::Box const& box
     if (auto* cache_slot = get_cache_slot(); cache_slot && cache_slot->has_value())
         return cache_slot->value();
 
-    LayoutState throwaway_state(&m_state);
+    LayoutState throwaway_state(&m_state.wrapped_state());
 
     auto& box_state = throwaway_state.get_mutable(box);
     box_state.height_constraint = SizeConstraint::MinContent;
@@ -1584,7 +1593,7 @@ CSSPixels FormattingContext::calculate_max_content_height(Layout::Box const& box
         return *box.natural_height();
 
     auto get_cache_slot = [&]() -> Optional<CSSPixels>* {
-        auto& root_state = m_state.m_root;
+        auto& root_state = m_state.root();
         auto& cache = *root_state.intrinsic_sizes.ensure(&box, [] { return adopt_own(*new LayoutState::IntrinsicSizes); });
         return &cache.max_content_height.ensure(width);
     };
@@ -1592,7 +1601,7 @@ CSSPixels FormattingContext::calculate_max_content_height(Layout::Box const& box
     if (auto* cache_slot = get_cache_slot(); cache_slot && cache_slot->has_value())
         return cache_slot->value();
 
-    LayoutState throwaway_state(&m_state);
+    LayoutState throwaway_state(&m_state.wrapped_state());
 
     auto& box_state = throwaway_state.get_mutable(box);
     box_state.height_constraint = SizeConstraint::MaxContent;
@@ -1823,7 +1832,7 @@ bool FormattingContext::can_skip_is_anonymous_text_run(Box& box)
 
 CSSPixelRect FormattingContext::absolute_content_rect(Box const& box) const
 {
-    auto const& box_state = m_state.get(box);
+    auto const& box_state = m_state.get_unsafe(box);
     CSSPixelRect rect { box_state.offset, { box_state.content_width(), box_state.content_height() } };
     for (auto* block = box_state.containing_block_used_values(); block; block = block->containing_block_used_values())
         rect.translate_by(block->offset);
@@ -2033,8 +2042,8 @@ bool FormattingContext::should_treat_max_width_as_none(Box const& box, Available
             return true;
         if (available_width.is_min_content())
             return false;
-        if (!m_state.get(*box.non_anonymous_containing_block()).has_definite_width())
-            return true;
+//        if (!m_state.get(*box.non_anonymous_containing_block()).has_definite_width())
+//            return true;
     }
     if (box.children_are_inline()) {
         if (max_width.is_fit_content() && available_width.is_intrinsic_sizing_constraint())
@@ -2066,6 +2075,74 @@ bool FormattingContext::should_treat_max_height_as_none(Box const& box, Availabl
             return true;
     }
     return false;
+}
+
+LayoutState::UsedValues const& FormattingContext::LayoutStateAssertionWrapper::get(NodeWithStyle const& node) const
+{
+    /*
+    bool const needs_to_access_root = &node == &m_context_box;
+    if (!m_context_box.is_viewport() && !needs_to_access_root && !m_allowed_nodes.contains_slow(JS::NonnullGCPtr { const_cast<NodeWithStyle&>(node) })) {
+        dbgln(">FC created by {} is not allowed to access {}", m_context_box.debug_description(), node.debug_description());
+        //                                VERIFY_NOT_REACHED();
+    }
+     */
+
+    bool node_is_context_box_or_context_box_is_ancestor_of_node = m_context_box.is_inclusive_ancestor_of(node);
+    if (!node_is_context_box_or_context_box_is_ancestor_of_node && m_type == FormattingContext::Type::Grid) {
+        dbgln(">(get) FC created by {} is not allowed to access {}", m_context_box.debug_description(), node.debug_description());
+        VERIFY_NOT_REACHED();
+    }
+    return m_state.get(node);
+}
+
+LayoutState::UsedValues const& FormattingContext::LayoutStateAssertionWrapper::get_unsafe(NodeWithStyle const& node) const
+{
+    /*
+    bool const needs_to_access_root = &node == &m_context_box;
+    if (!m_context_box.is_viewport() && !needs_to_access_root && !m_allowed_nodes.contains_slow(JS::NonnullGCPtr { const_cast<NodeWithStyle&>(node) })) {
+        dbgln(">FC created by {} is not allowed to access {}", m_context_box.debug_description(), node.debug_description());
+        //                                VERIFY_NOT_REACHED();
+    }
+     */
+
+    //    bool node_is_context_box_or_context_box_is_ancestor_of_node = m_context_box.is_inclusive_ancestor_of(node);
+    //    if (!node_is_context_box_or_context_box_is_ancestor_of_node) {
+    //        dbgln(">FC created by {} is not allowed to access {}", m_context_box.debug_description(), node.debug_description());
+    //        VERIFY_NOT_REACHED();
+    //    }
+    return m_state.get(node);
+}
+
+LayoutState::UsedValues& FormattingContext::LayoutStateAssertionWrapper::get_mutable_unsafe(NodeWithStyle const& node)
+{
+    /*
+    bool const needs_to_access_root = &node == &m_context_box;
+    if (!m_context_box.is_viewport() && !needs_to_access_root && !m_allowed_nodes.contains_slow(JS::NonnullGCPtr { const_cast<NodeWithStyle&>(node) })) {
+        dbgln(">FC created by {} is not allowed to access {}", m_context_box.debug_description(), node.debug_description());
+        //                                VERIFY_NOT_REACHED();
+    }
+     */
+
+    return m_state.get_mutable(node);
+}
+
+LayoutState::UsedValues& FormattingContext::LayoutStateAssertionWrapper::get_mutable(NodeWithStyle const& node)
+{
+    /*
+    bool const needs_to_access_root = &node == &m_context_box;
+    if (!m_context_box.is_viewport() && !needs_to_access_root && !m_allowed_nodes.contains_slow(JS::NonnullGCPtr { const_cast<NodeWithStyle&>(node) })) {
+        dbgln(">FC created by {} is not allowed to access {}", m_context_box.debug_description(), node.debug_description());
+        //                                VERIFY_NOT_REACHED();
+    }
+     */
+
+    bool node_is_context_box_or_context_box_is_ancestor_of_node = m_context_box.is_inclusive_ancestor_of(node);
+    if (!node_is_context_box_or_context_box_is_ancestor_of_node && m_type == FormattingContext::Type::Grid) {
+        dbgln(">(get_mutable) FC created by {} is not allowed to access {}", m_context_box.debug_description(), node.debug_description());
+        VERIFY_NOT_REACHED();
+    }
+
+    return m_state.get_mutable(node);
 }
 
 }
