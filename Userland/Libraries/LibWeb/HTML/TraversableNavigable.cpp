@@ -5,6 +5,7 @@
  */
 
 #include <AK/QuickSort.h>
+#include <LibGfx/SkiaBackendContext.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/BrowsingContextGroup.h>
@@ -31,7 +32,7 @@ TraversableNavigable::TraversableNavigable(JS::NonnullGCPtr<Page> page)
     auto display_list_player_type = page->client().display_list_player_type();
     if (display_list_player_type == DisplayListPlayerType::SkiaGPUIfAvailable) {
         m_metal_context = Core::get_metal_context();
-        m_skia_backend_context = Painting::DisplayListPlayerSkia::create_metal_context(*m_metal_context);
+        m_skia_backend_context = Gfx::SkiaBackendContext::create_metal_context(*m_metal_context);
     }
 #endif
 
@@ -41,7 +42,7 @@ TraversableNavigable::TraversableNavigable(JS::NonnullGCPtr<Page> page)
         auto maybe_vulkan_context = Core::create_vulkan_context();
         if (!maybe_vulkan_context.is_error()) {
             auto vulkan_context = maybe_vulkan_context.release_value();
-            m_skia_backend_context = Painting::DisplayListPlayerSkia::create_vulkan_context(vulkan_context);
+            m_skia_backend_context = Gfx::SkiaBackendContext::create_vulkan_context(vulkan_context);
         } else {
             dbgln("Vulkan context creation failed: {}", maybe_vulkan_context.error());
         }
@@ -663,8 +664,8 @@ TraversableNavigable::HistoryStepResult TraversableNavigable::apply_the_history_
             //    that is synchronous navigation steps with a target navigable not contained in navigablesThatMustWaitBeforeHandlingSyncNavigation.
             //   2. Remove steps from traversable's session history traversal queue's algorithm set.
             for (auto entry = m_session_history_traversal_queue->first_synchronous_navigation_steps_with_target_navigable_not_contained_in(navigables_that_must_wait_before_handling_sync_navigation);
-                 entry;
-                 entry = m_session_history_traversal_queue->first_synchronous_navigation_steps_with_target_navigable_not_contained_in(navigables_that_must_wait_before_handling_sync_navigation)) {
+                entry;
+                entry = m_session_history_traversal_queue->first_synchronous_navigation_steps_with_target_navigable_not_contained_in(navigables_that_must_wait_before_handling_sync_navigation)) {
 
                 // 3. Set traversable's running nested apply history step to true.
                 m_running_nested_apply_history_step = true;

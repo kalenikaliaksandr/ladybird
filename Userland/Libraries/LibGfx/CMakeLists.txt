@@ -1,4 +1,5 @@
 include(skia)
+include(vulkan)
 
 set(SOURCES
     AffineTransform.cpp
@@ -63,6 +64,7 @@ set(SOURCES
     TextLayout.cpp
     Triangle.cpp
     VectorGraphic.cpp
+    SkiaBackendContext.cpp
 )
 
 serenity_lib(LibGfx gfx)
