@@ -277,6 +277,7 @@ private:
     Vector<URL::URL> m_urls;
     Function<void(FontLoader const&)> m_on_load;
     Function<void()> m_on_fail;
+    JS::Handle<FontFace> m_font_face;
 };
 
 }

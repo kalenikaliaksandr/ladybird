@@ -63,6 +63,16 @@ void FontFaceSet::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_ready_promise);
 }
 
+void FontFaceSet::add_css_connected(JS::Handle<FontFace> face)
+{
+    m_set_entries->set_add(face);
+}
+
+void FontFaceSet::delete_css_connected(JS::Handle<FontFace> face)
+{
+    m_set_entries->set_remove(face);
+}
+
 // https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-add
 JS::NonnullGCPtr<FontFaceSet> FontFaceSet::add(JS::Handle<FontFace> face)
 {
@@ -124,6 +134,8 @@ WebIDL::CallbackType* FontFaceSet::onloadingerror()
 // https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-load
 JS::ThrowCompletionOr<JS::NonnullGCPtr<JS::Promise>> FontFaceSet::load(String const&, String const&)
 {
+    dbgln("> FontFaceSet::load()");
+
     // FIXME: Do the steps
     auto promise = WebIDL::create_rejected_promise(realm(), WebIDL::NotSupportedError::create(realm(), "FontFaceSet::load is not yet implemented"_fly_string));
     return verify_cast<JS::Promise>(*promise->promise());
@@ -132,6 +144,8 @@ JS::ThrowCompletionOr<JS::NonnullGCPtr<JS::Promise>> FontFaceSet::load(String co
 // https://drafts.csswg.org/css-font-loading/#font-face-set-ready
 JS::NonnullGCPtr<JS::Promise> FontFaceSet::ready() const
 {
+    dbgln("> FontFaceSet::ready()");
+
     return verify_cast<JS::Promise>(*m_ready_promise->promise());
 }
 

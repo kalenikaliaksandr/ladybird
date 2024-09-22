@@ -14,6 +14,7 @@
 #include <LibWeb/Bindings/FontFacePrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/CSS/FontFace.h>
+#include <LibWeb/CSS/FontFaceSet.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
@@ -62,6 +63,12 @@ RefPtr<CSSStyleValue const> parse_property_string(JS::Realm& realm, StringView v
 {
     auto parser = CSS::Parser::Parser::create(CSS::Parser::ParsingContext(realm), value);
     return parser.parse_as_css_value(PropertyID);
+}
+
+JS::NonnullGCPtr<FontFace> FontFace::create_for_css_connected_font_face(JS::Realm& realm, String family, Vector<ParsedFontFace::Source> urls, FontFaceDescriptors const& descriptors)
+{
+    auto promise = WebIDL::create_promise(realm);
+    return realm.heap().allocate<FontFace>(realm, realm, promise, move(urls), ByteBuffer {}, move(family), descriptors, CSSConnected::Yes);
 }
 
 // https://drafts.csswg.org/css-font-loading/#font-face-constructor
@@ -163,11 +170,12 @@ JS::NonnullGCPtr<FontFace> FontFace::construct_impl(JS::Realm& realm, String fam
     return font;
 }
 
-FontFace::FontFace(JS::Realm& realm, JS::NonnullGCPtr<WebIDL::Promise> font_status_promise, Vector<ParsedFontFace::Source> urls, ByteBuffer data, String font_family, FontFaceDescriptors const& descriptors)
+FontFace::FontFace(JS::Realm& realm, JS::NonnullGCPtr<WebIDL::Promise> font_status_promise, Vector<ParsedFontFace::Source> urls, ByteBuffer data, String font_family, FontFaceDescriptors const& descriptors, CSSConnected is_css_connected)
     : Bindings::PlatformObject(realm)
     , m_font_status_promise(font_status_promise)
     , m_urls(move(urls))
     , m_binary_data(move(data))
+    , m_is_css_connected(is_css_connected)
 {
     m_family = move(font_family);
     m_style = descriptors.style;
@@ -217,7 +225,7 @@ WebIDL::ExceptionOr<void> FontFace::set_family(String const& string)
     if (!property)
         return WebIDL::SyntaxError::create(realm(), "FontFace.family setter: Invalid font descriptor"_fly_string);
 
-    if (m_is_css_connected) {
+    if (m_is_css_connected == CSSConnected::Yes) {
         // FIXME: Propagate to the CSSFontFaceRule and update the font-family property
     }
 
@@ -233,7 +241,7 @@ WebIDL::ExceptionOr<void> FontFace::set_style(String const& string)
     if (!property)
         return WebIDL::SyntaxError::create(realm(), "FontFace.style setter: Invalid font descriptor"_fly_string);
 
-    if (m_is_css_connected) {
+    if (m_is_css_connected == CSSConnected::Yes) {
         // FIXME: Propagate to the CSSFontFaceRule and update the font-style property
     }
 
@@ -249,7 +257,7 @@ WebIDL::ExceptionOr<void> FontFace::set_weight(String const& string)
     if (!property)
         return WebIDL::SyntaxError::create(realm(), "FontFace.weight setter: Invalid font descriptor"_fly_string);
 
-    if (m_is_css_connected) {
+    if (m_is_css_connected == CSSConnected::Yes) {
         // FIXME: Propagate to the CSSFontFaceRule and update the font-weight property
     }
 
@@ -265,7 +273,7 @@ WebIDL::ExceptionOr<void> FontFace::set_stretch(String const& string)
     if (!property)
         return WebIDL::SyntaxError::create(realm(), "FontFace.stretch setter: Invalid font descriptor"_fly_string);
 
-    if (m_is_css_connected) {
+    if (m_is_css_connected == CSSConnected::Yes) {
         // FIXME: Propagate to the CSSFontFaceRule and update the font-stretch property
     }
 

@@ -34,6 +34,13 @@ class FontFace final : public Bindings::PlatformObject {
 public:
     using FontFaceSource = Variant<String, JS::Handle<WebIDL::BufferSource>>;
 
+    enum class CSSConnected {
+        No,
+        Yes
+    };
+
+    static JS::NonnullGCPtr<FontFace> create_for_css_connected_font_face(JS::Realm&, String family, Vector<ParsedFontFace::Source> urls, FontFaceDescriptors const&);
+
     [[nodiscard]] static JS::NonnullGCPtr<FontFace> construct_impl(JS::Realm&, String family, FontFaceSource source, FontFaceDescriptors const& descriptors);
     virtual ~FontFace() override;
 
@@ -78,7 +85,7 @@ public:
     void load_font_source();
 
 private:
-    FontFace(JS::Realm&, JS::NonnullGCPtr<WebIDL::Promise> font_status_promise, Vector<ParsedFontFace::Source> urls, ByteBuffer data, String family, FontFaceDescriptors const& descriptors);
+    FontFace(JS::Realm&, JS::NonnullGCPtr<WebIDL::Promise> font_status_promise, Vector<ParsedFontFace::Source> urls, ByteBuffer data, String family, FontFaceDescriptors const& descriptors, CSSConnected is_css_connected = CSSConnected::No);
 
     virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Visitor&) override;
@@ -108,7 +115,7 @@ private:
     RefPtr<Core::Promise<NonnullRefPtr<Gfx::Typeface>>> m_font_load_promise;
 
     // https://drafts.csswg.org/css-font-loading/#css-connected
-    bool m_is_css_connected { false };
+    CSSConnected m_is_css_connected { CSSConnected::No };
 };
 
 }

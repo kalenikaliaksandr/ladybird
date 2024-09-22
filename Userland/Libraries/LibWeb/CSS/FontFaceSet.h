@@ -27,6 +27,9 @@ public:
 
     JS::NonnullGCPtr<JS::Set> set_entries() const { return m_set_entries; }
 
+    void add_css_connected(JS::Handle<FontFace>);
+    void delete_css_connected(JS::Handle<FontFace>);
+
     JS::NonnullGCPtr<FontFaceSet> add(JS::Handle<FontFace>);
     bool delete_(JS::Handle<FontFace>);
     void clear();

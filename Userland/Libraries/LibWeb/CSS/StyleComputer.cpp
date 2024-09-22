@@ -31,8 +31,9 @@
 #include <LibWeb/CSS/CSSImportRule.h>
 #include <LibWeb/CSS/CSSLayerBlockRule.h>
 #include <LibWeb/CSS/CSSLayerStatementRule.h>
-#include <LibWeb/CSS/CSSStyleRule.h>
 #include <LibWeb/CSS/CSSTransition.h>
+#include <LibWeb/CSS/FontFace.h>
+#include <LibWeb/CSS/FontFaceSet.h>
 #include <LibWeb/CSS/Interpolation.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/SelectorEngine.h>
@@ -45,7 +46,6 @@
 #include <LibWeb/CSS/StyleValues/CustomIdentStyleValue.h>
 #include <LibWeb/CSS/StyleValues/DisplayStyleValue.h>
 #include <LibWeb/CSS/StyleValues/EasingStyleValue.h>
-#include <LibWeb/CSS/StyleValues/FilterValueListStyleValue.h>
 #include <LibWeb/CSS/StyleValues/FrequencyStyleValue.h>
 #include <LibWeb/CSS/StyleValues/GridTrackPlacementStyleValue.h>
 #include <LibWeb/CSS/StyleValues/GridTrackSizeListStyleValue.h>
@@ -54,7 +54,6 @@
 #include <LibWeb/CSS/StyleValues/MathDepthStyleValue.h>
 #include <LibWeb/CSS/StyleValues/NumberStyleValue.h>
 #include <LibWeb/CSS/StyleValues/PercentageStyleValue.h>
-#include <LibWeb/CSS/StyleValues/PositionStyleValue.h>
 #include <LibWeb/CSS/StyleValues/RatioStyleValue.h>
 #include <LibWeb/CSS/StyleValues/RectStyleValue.h>
 #include <LibWeb/CSS/StyleValues/ShorthandStyleValue.h>
@@ -72,7 +71,6 @@
 #include <LibWeb/HTML/HTMLHtmlElement.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
-#include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/Layout/Node.h>
 #include <LibWeb/MimeSniff/MimeType.h>
 #include <LibWeb/MimeSniff/Resource.h>
@@ -81,7 +79,6 @@
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWeb/ReferrerPolicy/AbstractOperations.h>
 #include <math.h>
-#include <stdio.h>
 
 namespace AK {
 
@@ -115,9 +112,25 @@ FontLoader::FontLoader(StyleComputer& style_computer, FlyString family_name, Vec
     , m_on_load(move(on_load))
     , m_on_fail(move(on_fail))
 {
+    auto& document = m_style_computer.document();
+
+    Vector<ParsedFontFace::Source> sources;
+    for (auto& url : m_urls) {
+        sources.append(ParsedFontFace::Source { .local_or_url = url, .format = {} });
+    }
+    FontFaceDescriptors const descriptors;
+    HTML::TemporaryExecutionContext const context(document.relevant_settings_object());
+    auto font_face = FontFace::create_for_css_connected_font_face(document.realm(), m_family_name.to_string(), move(sources), descriptors);
+    m_font_face = JS::make_handle(font_face);
+
+    document.fonts()->add_css_connected(m_font_face);
 }
 
-FontLoader::~FontLoader() = default;
+FontLoader::~FontLoader()
+{
+    auto& document = m_style_computer.document();
+    document.fonts()->delete_css_connected(m_font_face);
+}
 
 void FontLoader::resource_did_load()
 {
