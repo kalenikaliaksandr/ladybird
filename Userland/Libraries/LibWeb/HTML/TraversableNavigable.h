@@ -97,6 +97,8 @@ public:
 
     void paint(Web::DevicePixelRect const&, Painting::BackingStore&, Web::PaintOptions);
 
+    RefPtr<Gfx::SkiaBackendContext> skia_backend_context() const { return m_skia_backend_context; }
+
 private:
     TraversableNavigable(JS::NonnullGCPtr<Page>);
 
