@@ -1,5 +1,3 @@
-include(vulkan)
-
 # These are the minimal set of sources needed to build the code generators. We separate them to allow
 # LibCore to depend on generated sources.
 set(SOURCES
@@ -83,10 +81,6 @@ else()
     )
 endif()
 
-if (HAS_VULKAN)
-    list(APPEND SOURCES VulkanContext.cpp)
-endif()
-
 if (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "GNU")
     list(APPEND SOURCES MachPort.cpp)
 endif()
@@ -108,8 +102,4 @@ endif()
 
 if (ANDROID)
     target_link_libraries(LibCore PRIVATE log)
-endif()
-
-if (HAS_VULKAN)
-    target_link_libraries(LibCore PUBLIC Vulkan::Vulkan Vulkan::Headers)
 endif()

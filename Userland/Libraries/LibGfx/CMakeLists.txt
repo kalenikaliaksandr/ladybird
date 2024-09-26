@@ -72,6 +72,10 @@ if (APPLE)
     list(APPEND SOURCES MetalContext.mm)
 endif()
 
+if (HAS_VULKAN)
+    list(APPEND SOURCES VulkanContext.cpp)
+endif()
+
 serenity_lib(LibGfx gfx)
 
 target_link_libraries(LibGfx PRIVATE LibCompress LibCore LibCrypto LibFileSystem LibRIFF LibTextCodec LibIPC LibUnicode LibURL)
@@ -134,4 +138,8 @@ endif()
 
 if (APPLE)
     target_link_libraries(LibCore PUBLIC "-framework Metal")
+endif()
+
+if (HAS_VULKAN)
+    target_link_libraries(LibCore PUBLIC Vulkan::Vulkan Vulkan::Headers)
 endif()
