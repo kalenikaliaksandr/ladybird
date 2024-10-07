@@ -381,6 +381,8 @@ struct PaintScrollBar {
     CSSPixelFraction scroll_size;
     bool vertical;
 
+    [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
+
     void translate_by(Gfx::IntPoint const& offset)
     {
         rect.translate_by(offset);
