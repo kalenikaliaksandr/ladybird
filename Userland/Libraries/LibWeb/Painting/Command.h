@@ -276,6 +276,11 @@ struct DrawLine {
     Gfx::LineStyle style;
     Color alternate_color;
 
+    [[nodiscard]] Gfx::IntRect bounding_rect() const
+    {
+        return Gfx::IntRect::from_two_points(from, to).inflated({ thickness, thickness });
+    }
+
     void translate_by(Gfx::IntPoint const& offset)
     {
         from.translate_by(offset);
