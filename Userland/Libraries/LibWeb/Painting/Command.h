@@ -88,6 +88,7 @@ struct DrawRepeatedImmutableBitmap {
     Gfx::ScalingMode scaling_mode;
     Repeat repeat;
 
+    [[nodiscard]] Gfx::IntRect bounding_rect() const { return clip_rect; }
     void translate_by(Gfx::IntPoint const& offset) { dst_rect.translate_by(offset); }
 };
 
