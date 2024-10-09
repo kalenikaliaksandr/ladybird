@@ -160,6 +160,36 @@ bool Node::establishes_stacking_context() const
     if (is_root_element())
         return true;
 
+    // https://www.w3.org/TR/SVG/render.html#EstablishingStackingContex
+    // A new stacking context must be established at an SVG element for its descendants if:
+    if (is_svg_box()) {
+        // FIXME: - it is the root element
+        // FIXME: - the element is an outermost svg element, or a ‘foreignObject’, ‘image’, ‘marker’, ‘mask’, ‘pattern’, ‘symbol’ or ‘use’ element
+        // FIXME: - the element is an inner ‘svg’ element and the computed value of its overflow property is a value other than visible
+
+        // - the element is subject to explicit clipping:
+        //   - the clip property applies to the element and it has a computed value other than auto
+        //   - the clip-path property applies to the element and it has a computed value other than none
+        if (!computed_values().clip().is_auto() || computed_values().clip_path().has_value())
+            return true;
+
+        // - the opacity property applies to the element and it has a computed value other than 1
+        if (computed_values().opacity() < 1.0f)
+            return true;
+
+        // - the mask property applies to the element and it has a computed value other than none
+        if (computed_values().mask().has_value())
+            return true;
+
+        // FIXME: - the filter property applies to the element and it has a computed value other than none
+
+        // - a property defined in another specification is applied and that property is defined to establish a stacking context in SVG
+        if (!computed_values().transformations().is_empty())
+            return true;
+
+        return false;
+    }
+
     auto position = computed_values().position();
 
     // Element with a position value absolute or relative and z-index value other than auto.

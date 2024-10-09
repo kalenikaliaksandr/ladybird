@@ -43,6 +43,8 @@ StackingContext::StackingContext(Paintable& paintable, StackingContext* parent, 
 void StackingContext::sort()
 {
     quick_sort(m_children, [](auto& a, auto& b) {
+        if (a->paintable().layout_node().is_svg_box() || b->paintable().layout_node().is_svg_box())
+            return a->m_index_in_tree_order < b->m_index_in_tree_order;
         auto a_z_index = a->paintable().computed_values().z_index().value_or(0);
         auto b_z_index = b->paintable().computed_values().z_index().value_or(0);
         if (a_z_index == b_z_index)
