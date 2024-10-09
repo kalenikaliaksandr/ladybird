@@ -116,19 +116,10 @@ void StackingContext::paint_descendants(PaintContext& context, Paintable const& 
             return IterationDecision::Continue;
         }
 
-        if (stacking_context && z_index.value_or(0) != 0)
+        if (stacking_context)
             return IterationDecision::Continue;
         if (child.is_positioned() && z_index.value_or(0) == 0)
             return IterationDecision::Continue;
-
-        if (stacking_context) {
-            // FIXME: This may not be fully correct with respect to the paint phases.
-            if (phase == StackingContextPaintPhase::Foreground) {
-                paint_child(context, *stacking_context);
-            }
-            // Note: Don't further recurse into descendants as paint_child() will do that.
-            return IterationDecision::Continue;
-        }
 
         bool child_is_inline_or_replaced = child.is_inline() || is<Layout::ReplacedBox>(child.layout_node());
         switch (phase) {
@@ -215,9 +206,6 @@ void StackingContext::paint_internal(PaintContext& context) const
     // Draw positioned descendants with z-index `0` or `auto` in tree order. (step 8)
     // FIXME: There's more to this step that we have yet to understand and implement.
     for (auto const& paintable : m_positioned_descendants_with_stack_level_0_and_stacking_contexts) {
-        if (!paintable->is_positioned())
-            continue;
-
         // At this point, `paintable_box` is a positioned descendant with z-index: auto.
         // FIXME: This is basically duplicating logic found elsewhere in this same function. Find a way to make this more elegant.
         auto* parent_paintable = paintable->parent();
