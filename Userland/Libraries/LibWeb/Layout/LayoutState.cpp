@@ -197,7 +197,16 @@ static void build_paint_tree(Node& node, Painting::Paintable* parent_paintable =
             node.dom_node()->set_paintable(paintable);
     }
     for (auto* child = node.first_child(); child; child = child->next_sibling()) {
+        if (child->is_absolutely_positioned()) {
+            continue;
+        }
         build_paint_tree(*child, node.first_paintable());
+    }
+    if (is<Box>(node)) {
+        auto& box = static_cast<Box&>(node);
+        for (auto& child : box.contained_abspos_children()) {
+            build_paint_tree(child, box.first_paintable());
+        }
     }
 }
 
