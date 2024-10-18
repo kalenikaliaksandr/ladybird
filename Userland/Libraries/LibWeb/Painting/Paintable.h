@@ -55,6 +55,9 @@ class Paintable
 public:
     virtual ~Paintable();
 
+    Paintable* parent() { return TreeNode<Paintable>::parent(); }
+    Paintable const* parent() const { return TreeNode<Paintable>::parent(); }
+
     [[nodiscard]] bool is_visible() const;
     [[nodiscard]] bool is_positioned() const { return m_positioned; }
     [[nodiscard]] bool is_fixed_position() const { return m_fixed_position; }

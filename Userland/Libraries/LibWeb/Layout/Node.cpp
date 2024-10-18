@@ -156,8 +156,8 @@ bool Node::establishes_stacking_context() const
         return true;
 
     // Root element of the document (<html>).
-    if (is_root_element())
-        return true;
+//    if (is_root_element())
+//        return true;
 
     auto position = computed_values().position();
 

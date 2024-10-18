@@ -188,6 +188,17 @@ void LayoutState::resolve_relative_positions()
 static void build_paint_tree(Node& node, Painting::Paintable* parent_paintable = nullptr)
 {
     for (auto& paintable : node.paintables()) {
+        if (!paintable.is_svg_paintable()) {
+            auto* containing_block = paintable.containing_block();
+            if (containing_block) {
+                VERIFY(containing_block);
+                containing_block->append_child(paintable);
+                paintable.set_dom_node(node.dom_node());
+            }
+            if (node.dom_node())
+                node.dom_node()->set_paintable(paintable);
+            continue;
+        }
         if (parent_paintable && !paintable.forms_unconnected_subtree()) {
             VERIFY(!paintable.parent());
             parent_paintable->append_child(paintable);
@@ -197,17 +208,17 @@ static void build_paint_tree(Node& node, Painting::Paintable* parent_paintable =
             node.dom_node()->set_paintable(paintable);
     }
     for (auto* child = node.first_child(); child; child = child->next_sibling()) {
-        if (child->is_absolutely_positioned()) {
-            continue;
-        }
+        //        if (child->is_absolutely_positioned()) {
+        //            continue;
+        //        }
         build_paint_tree(*child, node.first_paintable());
     }
-    if (is<Box>(node)) {
-        auto& box = static_cast<Box&>(node);
-        for (auto& child : box.contained_abspos_children()) {
-            build_paint_tree(child, box.first_paintable());
-        }
-    }
+    //    if (is<Box>(node)) {
+    //        auto& box = static_cast<Box&>(node);
+    //        for (auto& child : box.contained_abspos_children()) {
+    //            build_paint_tree(child, box.first_paintable());
+    //        }
+    //    }
 }
 
 void LayoutState::commit(Box& root)
