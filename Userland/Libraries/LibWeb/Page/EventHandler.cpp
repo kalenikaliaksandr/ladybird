@@ -455,11 +455,23 @@ EventResult EventHandler::handle_mousedown(CSSPixelPoint viewport_position, CSSP
                     }
                 }
 
+                // When a user activates a click focusable focusable area, the user agent must run the focusing steps on the focusable area with focus trigger set to "click".
+                // Spec Note: Note that focusing is not an activation behavior, i.e. calling the click() method on an element or dispatching a synthetic click event on it won't cause the element to get focused.
+                if (focus_candidate)
+                    HTML::run_focusing_steps(focus_candidate, nullptr, "click"sv);
+                else if (auto* focused_element = document->focused_element())
+                    HTML::run_unfocusing_steps(focused_element);
+
+                auto target = document->active_input_events_target();
+
                 // If we didn't focus anything, place the document text cursor at the mouse position.
                 // FIXME: This is all rather strange. Find a better solution.
-                if (!focus_candidate || dom_node->is_editable()) {
-                    auto& realm = document->realm();
-                    document->set_cursor_position(DOM::Position::create(realm, *dom_node, result->index_in_node));
+                if (!focus_candidate || target.has_value() /*!focus_candidate || dom_node->is_editable()*/) {
+                    if (target.has_value()) {
+                        auto& realm = document->realm();
+                        target->set_cursor_position(DOM::Position::create(realm, *dom_node, result->index_in_node));
+                    }
+                    //                    document->set_cursor_position(DOM::Position::create(realm, *dom_node, result->index_in_node));
                     if (auto selection = document->get_selection()) {
                         auto anchor_node = selection->anchor_node();
                         if (anchor_node && modifiers & UIEvents::KeyModifier::Mod_Shift) {
@@ -469,15 +481,16 @@ EventResult EventHandler::handle_mousedown(CSSPixelPoint viewport_position, CSSP
                         }
                     }
                     update_selection_range_for_input_or_textarea();
+                    dbgln(">m_in_mouse_selection=true");
                     m_in_mouse_selection = true;
                 }
 
                 // When a user activates a click focusable focusable area, the user agent must run the focusing steps on the focusable area with focus trigger set to "click".
                 // Spec Note: Note that focusing is not an activation behavior, i.e. calling the click() method on an element or dispatching a synthetic click event on it won't cause the element to get focused.
-                if (focus_candidate)
-                    HTML::run_focusing_steps(focus_candidate, nullptr, "click"sv);
-                else if (auto* focused_element = document->focused_element())
-                    HTML::run_unfocusing_steps(focused_element);
+                //                if (focus_candidate)
+                //                    HTML::run_focusing_steps(focus_candidate, nullptr, "click"sv);
+                //                else if (auto* focused_element = document->focused_element())
+                //                    HTML::run_unfocusing_steps(focused_element);
             }
         }
     }
@@ -503,7 +516,7 @@ EventResult EventHandler::handle_mousemove(CSSPixelPoint viewport_position, CSSP
         return EventResult::Dropped;
 
     auto& document = *m_navigable->active_document();
-    auto& realm = document.realm();
+    //    auto& realm = document.realm();
 
     bool hovered_node_changed = false;
     bool is_hovering_link = false;
@@ -583,21 +596,21 @@ EventResult EventHandler::handle_mousemove(CSSPixelPoint viewport_position, CSSP
 
         if (m_in_mouse_selection) {
             auto hit = paint_root()->hit_test(position, Painting::HitTestType::TextCursor);
-            auto should_set_cursor_position = true;
+            //            auto should_set_cursor_position = true;
             if (start_index.has_value() && hit.has_value() && hit->dom_node()) {
                 if (auto selection = document.get_selection()) {
                     auto anchor_node = selection->anchor_node();
                     if (anchor_node) {
                         if (&anchor_node->root() == &hit->dom_node()->root())
                             (void)selection->set_base_and_extent(*anchor_node, selection->anchor_offset(), *hit->paintable->dom_node(), hit->index_in_node);
-                        else
-                            should_set_cursor_position = false;
+                        //                        else
+                        //                            should_set_cursor_position = false;
                     } else {
                         (void)selection->set_base_and_extent(*hit->paintable->dom_node(), hit->index_in_node, *hit->paintable->dom_node(), hit->index_in_node);
                     }
                 }
-                if (should_set_cursor_position)
-                    document.set_cursor_position(DOM::Position::create(realm, *hit->dom_node(), *start_index));
+                //                if (should_set_cursor_position)
+                //                    document.set_cursor_position(DOM::Position::create(realm, *hit->dom_node(), *start_index));
 
                 document.set_needs_display();
             }
@@ -704,7 +717,8 @@ EventResult EventHandler::handle_doubleclick(CSSPixelPoint viewport_position, CS
             auto next_boundary = segmenter.next_boundary(result->index_in_node).value_or(text_for_rendering.byte_count());
 
             auto& realm = node->document().realm();
-            document.set_cursor_position(DOM::Position::create(realm, hit_dom_node, next_boundary));
+            (void)realm;
+            //            document.set_cursor_position(DOM::Position::create(realm, hit_dom_node, next_boundary));
             if (auto selection = node->document().get_selection()) {
                 (void)selection->set_base_and_extent(hit_dom_node, previous_boundary, hit_dom_node, next_boundary);
             }
@@ -952,7 +966,7 @@ EventResult EventHandler::handle_keydown(UIEvents::KeyCode key, u32 modifiers, u
         //    instead interpret this interaction as some other action, instead of interpreting it as a close request.
     }
 
-    auto& realm = document->realm();
+    //    auto& realm = document->realm();
 
     auto selection = document->get_selection();
     auto range = [&]() -> JS::GCPtr<DOM::Range> {
@@ -968,7 +982,7 @@ EventResult EventHandler::handle_keydown(UIEvents::KeyCode key, u32 modifiers, u
             selection->remove_all_ranges();
 
             // FIXME: This doesn't work for some reason?
-            document->set_cursor_position(DOM::Position::create(realm, *range->start_container(), range->start_offset()));
+            //            document->set_cursor_position(DOM::Position::create(realm, *range->start_container(), range->start_offset()));
         };
 
         if (key == UIEvents::KeyCode::Key_Backspace || key == UIEvents::KeyCode::Key_Delete) {
@@ -981,8 +995,8 @@ EventResult EventHandler::handle_keydown(UIEvents::KeyCode key, u32 modifiers, u
         if (!should_ignore_keydown_event(code_point, modifiers)) {
             clear_selection();
             m_edit_event_handler->handle_delete(document, *range);
-            m_edit_event_handler->handle_insert(document, JS::NonnullGCPtr { *document->cursor_position() }, code_point);
-            document->increment_cursor_position_offset();
+            //            m_edit_event_handler->handle_insert(document, JS::NonnullGCPtr { *document->cursor_position() }, code_point);
+            //            document->increment_cursor_position_offset();
             return EventResult::Handled;
         }
     }
@@ -993,31 +1007,36 @@ EventResult EventHandler::handle_keydown(UIEvents::KeyCode key, u32 modifiers, u
             return EventResult::Handled;
     }
 
-    if (document->cursor_position()) {
-        auto& node = *document->cursor_position()->node();
+    auto target = document->active_input_events_target();
 
-        if (key == UIEvents::KeyCode::Key_Backspace && node.is_editable()) {
+    if (target.has_value()) {
+        //        auto& node = *document->cursor_position()->node();
+
+        if (key == UIEvents::KeyCode::Key_Backspace /* && node.is_editable()*/) {
             FIRE(input_event(UIEvents::EventNames::beforeinput, UIEvents::InputTypes::deleteContentBackward, m_navigable, code_point));
 
-            if (!document->decrement_cursor_position_offset()) {
+            if (!target->decrement_cursor_position_offset()) {
                 // FIXME: Move to the previous node and delete the last character there.
                 return EventResult::Handled;
             }
 
-            m_edit_event_handler->handle_delete_character_after(document, *document->cursor_position());
+            //            m_edit_event_handler->handle_delete_character_after(document, *document->cursor_position());
+            target->delete_character_after_cursor();
+            //            TODO();
             FIRE(input_event(UIEvents::EventNames::input, UIEvents::InputTypes::deleteContentBackward, m_navigable, code_point));
             return EventResult::Handled;
         }
 
-        if (key == UIEvents::KeyCode::Key_Delete && node.is_editable()) {
+        if (key == UIEvents::KeyCode::Key_Delete /* && node.is_editable()*/) {
             FIRE(input_event(UIEvents::EventNames::beforeinput, UIEvents::InputTypes::deleteContentForward, m_navigable, code_point));
 
-            if (document->cursor_position()->offset_is_at_end_of_node()) {
-                // FIXME: Move to the next node and delete the first character there.
-                return EventResult::Handled;
-            }
-
-            m_edit_event_handler->handle_delete_character_after(document, *document->cursor_position());
+            TODO();
+            //            if (document->cursor_position()->offset_is_at_end_of_node()) {
+            //                // FIXME: Move to the next node and delete the first character there.
+            //                return EventResult::Handled;
+            //            }
+            //
+            //            m_edit_event_handler->handle_delete_character_after(document, *document->cursor_position());
             FIRE(input_event(UIEvents::EventNames::input, UIEvents::InputTypes::deleteContentForward, m_navigable, code_point));
             return EventResult::Handled;
         }
@@ -1039,89 +1058,76 @@ EventResult EventHandler::handle_keydown(UIEvents::KeyCode key, u32 modifiers, u
             auto increment_or_decrement_cursor = [&]() {
                 if ((modifiers & UIEvents::Mod_PlatformWordJump) == 0) {
                     if (key == UIEvents::KeyCode::Key_Left)
-                        return document->decrement_cursor_position_offset();
-                    return document->increment_cursor_position_offset();
+                        return target->decrement_cursor_position_offset();
+                    return target->increment_cursor_position_offset();
                 }
 
-                if (key == UIEvents::KeyCode::Key_Left)
-                    return document->decrement_cursor_position_to_previous_word();
-                return document->increment_cursor_position_to_next_word();
+                return false;
+
+                //                if (key == UIEvents::KeyCode::Key_Left)
+                //                    return target->decrement_cursor_position_to_previous_word();
+                //                return document->increment_cursor_position_to_next_word();
             };
 
-            if ((modifiers & UIEvents::Mod_Shift) != 0) {
-                auto previous_position = document->cursor_position()->offset();
-                auto should_udpdate_selection = increment_or_decrement_cursor();
+            increment_or_decrement_cursor();
 
-                if (should_udpdate_selection && selection) {
-                    auto selection_start = range ? selection->anchor_offset() : previous_position;
-                    auto selection_end = document->cursor_position()->offset();
-
-                    (void)selection->set_base_and_extent(node, selection_start, node, selection_end);
-                }
-            } else if (node.is_editable()) {
-                if (selection && range) {
-                    auto cursor_edge = key == UIEvents::KeyCode::Key_Left ? range->start_offset() : range->end_offset();
-
-                    document->set_cursor_position(DOM::Position::create(document->realm(), node, cursor_edge));
-                    selection->remove_all_ranges();
-                } else {
-                    increment_or_decrement_cursor();
-                }
-            }
+            //            if ((modifiers & UIEvents::Mod_Shift) != 0) {
+            //                auto previous_position = document->cursor_position()->offset();
+            //                auto should_udpdate_selection = increment_or_decrement_cursor();
+            //
+            //                if (should_udpdate_selection && selection) {
+            //                    auto selection_start = range ? selection->anchor_offset() : previous_position;
+            //                    auto selection_end = document->cursor_position()->offset();
+            //
+            //                    (void)selection->set_base_and_extent(node, selection_start, node, selection_end);
+            //                }
+            //            } else if (node.is_editable()) {
+            //                if (selection && range) {
+            //                    auto cursor_edge = key == UIEvents::KeyCode::Key_Left ? range->start_offset() : range->end_offset();
+            //
+            //                    document->set_cursor_position(DOM::Position::create(document->realm(), node, cursor_edge));
+            //                    selection->remove_all_ranges();
+            //                } else {
+            //                    increment_or_decrement_cursor();
+            //                }
+            //            }
 
             return EventResult::Handled;
         }
 
-        if (key == UIEvents::KeyCode::Key_Home || key == UIEvents::KeyCode::Key_End) {
-            auto cursor_edge = key == UIEvents::KeyCode::Key_Home ? 0uz : node.length();
+        //        if (key == UIEvents::KeyCode::Key_Home || key == UIEvents::KeyCode::Key_End) {
+        //            auto cursor_edge = key == UIEvents::KeyCode::Key_Home ? 0uz : node.length();
+        //
+        //            if ((modifiers & UIEvents::Mod_Shift) != 0) {
+        //                auto previous_position = document->cursor_position()->offset();
+        //                auto should_udpdate_selection = previous_position != cursor_edge;
+        //
+        //                if (should_udpdate_selection && selection) {
+        //                    auto selection_start = range ? selection->anchor_offset() : previous_position;
+        //                    (void)selection->set_base_and_extent(node, selection_start, node, cursor_edge);
+        //                }
+        //            } else if (node.is_editable()) {
+        //                if (selection && range)
+        //                    selection->remove_all_ranges();
+        //            }
+        //
+        //            document->set_cursor_position(DOM::Position::create(realm, node, cursor_edge));
+        //            return EventResult::Handled;
+        //        }
 
-            if ((modifiers & UIEvents::Mod_Shift) != 0) {
-                auto previous_position = document->cursor_position()->offset();
-                auto should_udpdate_selection = previous_position != cursor_edge;
-
-                if (should_udpdate_selection && selection) {
-                    auto selection_start = range ? selection->anchor_offset() : previous_position;
-                    (void)selection->set_base_and_extent(node, selection_start, node, cursor_edge);
-                }
-            } else if (node.is_editable()) {
-                if (selection && range)
-                    selection->remove_all_ranges();
-            }
-
-            document->set_cursor_position(DOM::Position::create(realm, node, cursor_edge));
-            return EventResult::Handled;
-        }
-
-        if (key == UIEvents::KeyCode::Key_Return && node.is_editable()) {
+        if (key == UIEvents::KeyCode::Key_Return) {
             FIRE(input_event(UIEvents::EventNames::beforeinput, UIEvents::InputTypes::insertParagraph, m_navigable, code_point));
-            HTML::HTMLInputElement* input_element = nullptr;
-            if (auto node = document->cursor_position()->node()) {
-                if (node->is_text()) {
-                    auto& text_node = static_cast<DOM::Text&>(*node);
-                    if (is<HTML::HTMLInputElement>(text_node.editable_text_node_owner()))
-                        input_element = static_cast<HTML::HTMLInputElement*>(text_node.editable_text_node_owner());
-                } else if (node->is_html_input_element()) {
-                    input_element = static_cast<HTML::HTMLInputElement*>(node.ptr());
-                }
-            }
-            if (input_element) {
-                if (auto* form = input_element->form()) {
-                    form->implicitly_submit_form().release_value_but_fixme_should_propagate_errors();
-                    return EventResult::Handled;
-                }
-
-                input_element->commit_pending_changes();
-                FIRE(input_event(UIEvents::EventNames::input, UIEvents::InputTypes::insertParagraph, m_navigable, code_point));
-                return EventResult::Handled;
-            }
+            target->handle_return_key();
             FIRE(input_event(UIEvents::EventNames::input, UIEvents::InputTypes::insertParagraph, m_navigable, code_point));
         }
 
         // FIXME: Text editing shortcut keys (copy/paste etc.) should be handled here.
-        if (!should_ignore_keydown_event(code_point, modifiers) && node.is_editable()) {
+        if (!should_ignore_keydown_event(code_point, modifiers) /* && node.is_editable()*/) {
             FIRE(input_event(UIEvents::EventNames::beforeinput, UIEvents::InputTypes::insertText, m_navigable, code_point));
-            m_edit_event_handler->handle_insert(document, JS::NonnullGCPtr { *document->cursor_position() }, code_point);
-            document->increment_cursor_position_offset();
+            //            m_edit_event_handler->handle_insert(document, JS::NonnullGCPtr { *document->cursor_position() }, code_point);
+            target->handle_insert(String::from_code_point(code_point));
+            //            document->increment_cursor_position_offset();
+            target->increment_cursor_position_offset();
             FIRE(input_event(UIEvents::EventNames::input, UIEvents::InputTypes::insertText, m_navigable, code_point));
             return EventResult::Handled;
         }
@@ -1189,13 +1195,15 @@ void EventHandler::handle_paste(String const& text)
     if (!active_document->is_fully_active())
         return;
 
-    if (auto cursor_position = active_document->cursor_position()) {
-        if (!cursor_position->node()->is_editable())
-            return;
-        active_document->update_layout();
-        m_edit_event_handler->handle_insert(*active_document, *cursor_position, text);
-        cursor_position->set_offset(cursor_position->offset() + text.code_points().length());
-    }
+    (void)text;
+
+    //    if (auto cursor_position = active_document->cursor_position()) {
+    //        if (!cursor_position->node()->is_editable())
+    //            return;
+    //        active_document->update_layout();
+    //        m_edit_event_handler->handle_insert(*active_document, *cursor_position, text);
+    //        cursor_position->set_offset(cursor_position->offset() + text.code_points().length());
+    //    }
 }
 
 void EventHandler::set_mouse_event_tracking_paintable(Painting::Paintable* paintable)

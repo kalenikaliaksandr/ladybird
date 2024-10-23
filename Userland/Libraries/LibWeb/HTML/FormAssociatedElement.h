@@ -10,6 +10,7 @@
 #include <AK/String.h>
 #include <AK/WeakPtr.h>
 #include <LibWeb/Bindings/HTMLFormElementPrototype.h>
+#include <LibWeb/DOM/InputEventsTarget.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/WebIDL/Types.h>
 
@@ -129,7 +130,8 @@ enum class SelectionSource {
     DOM,
 };
 
-class FormAssociatedTextControlElement : public FormAssociatedElement {
+class FormAssociatedTextControlElement : public FormAssociatedElement
+    , public InputEventsTarget {
 public:
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-textarea/input-relevant-value
     virtual String relevant_value() = 0;
@@ -168,6 +170,20 @@ public:
     bool has_scheduled_selectionchange_event() const { return m_has_scheduled_selectionchange_event; }
     void set_scheduled_selectionchange_event(bool value) { m_has_scheduled_selectionchange_event = value; }
 
+    virtual DOM::Text& form_associated_element_to_text_node() = 0;
+    virtual DOM::Text const& form_associated_element_to_text_node() const { return const_cast<FormAssociatedTextControlElement&>(*this).form_associated_element_to_text_node(); }
+
+    virtual void handle_insert(String const&) override;
+    virtual void set_cursor_position(JS::NonnullGCPtr<DOM::Position> const&) override;
+    virtual bool increment_cursor_position_offset() override;
+    virtual bool decrement_cursor_position_offset() override;
+    virtual void delete_character_before_cursor() override;
+    virtual void delete_character_after_cursor() override;
+    virtual void handle_return_key() override;
+
+    //    size_t cursor_position() const { return m_cursor_position; }
+    JS::NonnullGCPtr<DOM::Position> cursor_position() const;
+
 protected:
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-textarea/input-relevant-value
     void relevant_value_was_changed(JS::GCPtr<DOM::Text>);
@@ -175,6 +191,8 @@ protected:
     virtual void selection_was_changed([[maybe_unused]] size_t selection_start, [[maybe_unused]] size_t selection_end) { }
 
 private:
+    size_t m_cursor_position { 0 };
+
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-textarea/input-selection
     WebIDL::UnsignedLong m_selection_start { 0 };
     WebIDL::UnsignedLong m_selection_end { 0 };

@@ -77,8 +77,8 @@ void HTMLTextAreaElement::did_receive_focus()
     if (m_placeholder_text_node)
         m_placeholder_text_node->invalidate_style(DOM::StyleInvalidationReason::DidReceiveFocus);
 
-    if (auto cursor = document().cursor_position(); !cursor || m_text_node != cursor->node())
-        document().set_cursor_position(DOM::Position::create(realm(), *m_text_node, 0));
+//    if (auto cursor = document().cursor_position(); !cursor || m_text_node != cursor->node())
+    //        document().set_cursor_position(DOM::Position::create(realm(), *m_text_node, 0));
 }
 
 void HTMLTextAreaElement::did_lose_focus()
@@ -448,7 +448,7 @@ void HTMLTextAreaElement::form_associated_element_attribute_changed(FlyString co
     }
 }
 
-void HTMLTextAreaElement::did_edit_text_node(Badge<DOM::Document>)
+void HTMLTextAreaElement::did_edit_text_node()
 {
     VERIFY(m_text_node);
     set_raw_value(m_text_node->data());
@@ -476,13 +476,15 @@ void HTMLTextAreaElement::queue_firing_input_event()
 
 void HTMLTextAreaElement::selection_was_changed(size_t selection_start, size_t selection_end)
 {
-    if (!m_text_node || !document().cursor_position() || document().cursor_position()->node() != m_text_node)
-        return;
-
-    document().set_cursor_position(DOM::Position::create(realm(), *m_text_node, selection_end));
-
-    if (auto selection = document().get_selection())
-        MUST(selection->set_base_and_extent(*m_text_node, selection_start, *m_text_node, selection_end));
+    (void)selection_start;
+    (void)selection_end;
+    //    if (!m_text_node || !document().cursor_position() || document().cursor_position()->node() != m_text_node)
+    //        return;
+    //
+    //    document().set_cursor_position(DOM::Position::create(realm(), *m_text_node, selection_end));
+    //
+    //    if (auto selection = document().get_selection())
+    //        MUST(selection->set_base_and_extent(*m_text_node, selection_start, *m_text_node, selection_end));
 }
 
 }

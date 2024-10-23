@@ -9,6 +9,7 @@
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Bindings/HTMLElementPrototype.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/EditingHost.h>
 #include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/DOM/IDLEventListener.h>
 #include <LibWeb/DOM/LiveNodeList.h>
@@ -764,11 +765,15 @@ void HTMLElement::did_receive_focus()
         return TraversalDecision::Continue;
     });
 
+    auto editing_host = document().editing_host();
     if (!text) {
-        document().set_cursor_position(DOM::Position::create(realm(), *this, 0));
+        dbgln(">got here");
+        editing_host->set_cursor_position(DOM::Position::create(realm(), *this, 0));
+        //        document().set_cursor_position(DOM::Position::create(realm(), *this, 0));
         return;
     }
-    document().set_cursor_position(DOM::Position::create(realm(), *text, text->length()));
+    dbgln(">set focus to text node: '{}'", text->data());
+    editing_host->set_cursor_position(DOM::Position::create(realm(), *text, text->length()));
 }
 
 // https://html.spec.whatwg.org/multipage/interaction.html#dom-accesskeylabel

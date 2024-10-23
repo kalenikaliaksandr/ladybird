@@ -436,7 +436,7 @@ WebIDL::ExceptionOr<void> HTMLInputElement::run_input_activation_behavior(DOM::E
     return {};
 }
 
-void HTMLInputElement::did_edit_text_node(Badge<DOM::Document>)
+void HTMLInputElement::did_edit_text_node()
 {
     // An input element's dirty value flag must be set to true whenever the user interacts with the control in a way that changes the value.
     auto old_value = move(m_value);
@@ -1188,8 +1188,8 @@ void HTMLInputElement::did_receive_focus()
     if (m_placeholder_text_node)
         m_placeholder_text_node->invalidate_style(DOM::StyleInvalidationReason::DidReceiveFocus);
 
-    if (auto cursor = document().cursor_position(); !cursor || m_text_node != cursor->node())
-        document().set_cursor_position(DOM::Position::create(realm(), *m_text_node, m_text_node->length()));
+    //    if (auto cursor = document().cursor_position(); !cursor || m_text_node != cursor->node())
+    //        document().set_cursor_position(DOM::Position::create(realm(), *m_text_node, m_text_node->length()));
 }
 
 void HTMLInputElement::did_lose_focus()
@@ -1310,7 +1310,8 @@ void HTMLInputElement::type_attribute_changed(TypeAttributeState old_state, Type
     // 9. If previouslySelectable is false and nowSelectable is true, set the element's text entry cursor position to the
     //    beginning of the text control, and set its selection direction to "none".
     if (!previously_selectable && now_selectable) {
-        document().set_cursor_position(DOM::Position::create(realm(), *m_text_node, 0));
+//        document().set_cursor_position(DOM::Position::create(realm(), *m_text_node, 0));
+//        m_cursor_position = 0;
         set_selection_direction(OptionalNone {});
     }
 }
@@ -2594,13 +2595,16 @@ HTMLInputElement::ValueAttributeMode HTMLInputElement::value_attribute_mode() co
 
 void HTMLInputElement::selection_was_changed(size_t selection_start, size_t selection_end)
 {
-    if (!m_text_node || !document().cursor_position() || document().cursor_position()->node() != m_text_node)
-        return;
+    (void)selection_start;
+    (void)selection_end;
 
-    document().set_cursor_position(DOM::Position::create(realm(), *m_text_node, selection_end));
-
-    if (auto selection = document().get_selection())
-        MUST(selection->set_base_and_extent(*m_text_node, selection_start, *m_text_node, selection_end));
+    //    if (!m_text_node || !document().cursor_position() || document().cursor_position()->node() != m_text_node)
+    //        return;
+    //
+    //    document().set_cursor_position(DOM::Position::create(realm(), *m_text_node, selection_end));
+    //
+    //    if (auto selection = document().get_selection())
+    //        MUST(selection->set_base_and_extent(*m_text_node, selection_start, *m_text_node, selection_end));
 }
 
 }

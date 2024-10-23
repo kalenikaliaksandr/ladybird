@@ -534,6 +534,10 @@ void PaintableBox::clear_clip_overflow_rect(PaintContext& context, PaintPhase ph
 
 void paint_cursor_if_needed(PaintContext& context, TextPaintable const& paintable, PaintableFragment const& fragment)
 {
+    (void)context;
+    (void)paintable;
+    (void)fragment;
+
     auto const& navigable = *paintable.navigable();
     auto const& document = paintable.document();
 
@@ -543,11 +547,15 @@ void paint_cursor_if_needed(PaintContext& context, TextPaintable const& paintabl
     if (!document.cursor_blink_state())
         return;
 
-    if (document.cursor_position()->node() != paintable.dom_node())
+    auto cursor_position = document.focus_node_cursor_position();
+    if (!cursor_position || !cursor_position->node())
+        return;
+
+    if (cursor_position->node() != paintable.dom_node())
         return;
 
     // NOTE: This checks if the cursor is before the start or after the end of the fragment. If it is at the end, after all text, it should still be painted.
-    if (document.cursor_position()->offset() < (unsigned)fragment.start() || document.cursor_position()->offset() > (unsigned)(fragment.start() + fragment.length()))
+    if (cursor_position->offset() < (unsigned)fragment.start() || cursor_position->offset() > (unsigned)(fragment.start() + fragment.length()))
         return;
 
     if (!fragment.layout_node().dom_node() || !fragment.layout_node().dom_node()->is_editable())
@@ -557,7 +565,7 @@ void paint_cursor_if_needed(PaintContext& context, TextPaintable const& paintabl
 
     auto text = fragment.string_view();
     CSSPixelRect cursor_rect {
-        fragment_rect.x() + CSSPixels::nearest_value_for(paintable.layout_node().first_available_font().width(text.substring_view(0, document.cursor_position()->offset() - fragment.start()))),
+        fragment_rect.x() + CSSPixels::nearest_value_for(paintable.layout_node().first_available_font().width(text.substring_view(0, document.focus_node_cursor_position()->offset() - fragment.start()))),
         fragment_rect.top(),
         1,
         fragment_rect.height()

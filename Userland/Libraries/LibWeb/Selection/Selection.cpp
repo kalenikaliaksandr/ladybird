@@ -142,6 +142,8 @@ WebIDL::ExceptionOr<JS::GCPtr<DOM::Range>> Selection::get_range_at(unsigned inde
 // https://w3c.github.io/selection-api/#dom-selection-addrange
 void Selection::add_range(JS::NonnullGCPtr<DOM::Range> range)
 {
+    dbgln(">>>Selection::add_range()");
+
     // 1. If the root of the range's boundary points are not the document associated with this, abort these steps.
     if (&range->start_container()->root() != m_document.ptr())
         return;
@@ -160,6 +162,8 @@ void Selection::add_range(JS::NonnullGCPtr<DOM::Range> range)
 // https://w3c.github.io/selection-api/#dom-selection-removerange
 WebIDL::ExceptionOr<void> Selection::remove_range(JS::NonnullGCPtr<DOM::Range> range)
 {
+    dbgln(">Selection::remove_range()");
+
     // The method must make this empty by disassociating its range if this's range is range.
     if (m_range == range) {
         set_range(nullptr);
@@ -173,6 +177,8 @@ WebIDL::ExceptionOr<void> Selection::remove_range(JS::NonnullGCPtr<DOM::Range> r
 // https://w3c.github.io/selection-api/#dom-selection-removeallranges
 void Selection::remove_all_ranges()
 {
+    dbgln(">>>Selection::remove_all_ranges()");
+
     // The method must make this empty by disassociating its range if this has an associated range.
     set_range(nullptr);
 }
@@ -187,6 +193,8 @@ void Selection::empty()
 // https://w3c.github.io/selection-api/#dom-selection-collapse
 WebIDL::ExceptionOr<void> Selection::collapse(JS::GCPtr<DOM::Node> node, unsigned offset)
 {
+    dbgln(">>>Selection::collapse()");
+
     // 1. If node is null, this method must behave identically as removeAllRanges() and abort these steps.
     if (!node) {
         remove_all_ranges();
@@ -224,6 +232,8 @@ WebIDL::ExceptionOr<void> Selection::set_position(JS::GCPtr<DOM::Node> node, uns
 // https://w3c.github.io/selection-api/#dom-selection-collapsetostart
 WebIDL::ExceptionOr<void> Selection::collapse_to_start()
 {
+    dbgln(">>>Selection::collapse_to_start()");
+
     // 1. The method must throw InvalidStateError exception if the this is empty.
     if (!m_range) {
         return WebIDL::InvalidStateError::create(realm(), "Selection.collapse_to_start() on empty range"_string);
@@ -316,6 +326,8 @@ WebIDL::ExceptionOr<void> Selection::extend(JS::NonnullGCPtr<DOM::Node> node, un
 // https://w3c.github.io/selection-api/#dom-selection-setbaseandextent
 WebIDL::ExceptionOr<void> Selection::set_base_and_extent(JS::NonnullGCPtr<DOM::Node> anchor_node, unsigned anchor_offset, JS::NonnullGCPtr<DOM::Node> focus_node, unsigned focus_offset)
 {
+    dbgln(">Selection::set_base_and_extent anchor_offset={} focus_offset={}", anchor_offset, focus_offset);
+
     // 1. If anchorOffset is longer than anchorNode's length or if focusOffset is longer than focusNode's length, throw an IndexSizeError exception and abort these steps.
     if (anchor_offset > anchor_node->length())
         return WebIDL::IndexSizeError::create(realm(), "Anchor offset points outside of the anchor node"_string);
@@ -459,6 +471,8 @@ JS::GCPtr<DOM::Range> Selection::range() const
 
 void Selection::set_range(JS::GCPtr<DOM::Range> range)
 {
+    dbgln(">Selection::set_range");
+
     if (m_range == range)
         return;
 
@@ -469,6 +483,18 @@ void Selection::set_range(JS::GCPtr<DOM::Range> range)
 
     if (m_range)
         m_range->set_associated_selection({}, this);
+}
+
+JS::GCPtr<DOM::Position> Selection::cursor_position() const
+{
+    if (!m_range)
+        return nullptr;
+
+    if (is_collapsed()) {
+        return DOM::Position::create(m_document->realm(), *m_range->start_container(), m_range->start_offset());
+    }
+
+    return nullptr;
 }
 
 }

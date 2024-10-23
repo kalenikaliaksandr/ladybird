@@ -49,10 +49,12 @@
 #include <LibWeb/DOM/DocumentFragment.h>
 #include <LibWeb/DOM/DocumentObserver.h>
 #include <LibWeb/DOM/DocumentType.h>
+#include <LibWeb/DOM/EditingHost.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/HTMLCollection.h>
+#include <LibWeb/DOM/InputEventsTarget.h>
 #include <LibWeb/DOM/LiveNodeList.h>
 #include <LibWeb/DOM/NodeIterator.h>
 #include <LibWeb/DOM/ProcessingInstruction.h>
@@ -87,10 +89,12 @@
 #include <LibWeb/HTML/HTMLHtmlElement.h>
 #include <LibWeb/HTML/HTMLIFrameElement.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
+#include <LibWeb/HTML/HTMLInputElement.h>
 #include <LibWeb/HTML/HTMLLinkElement.h>
 #include <LibWeb/HTML/HTMLObjectElement.h>
 #include <LibWeb/HTML/HTMLScriptElement.h>
 #include <LibWeb/HTML/HTMLStyleElement.h>
+#include <LibWeb/HTML/HTMLTextAreaElement.h>
 #include <LibWeb/HTML/HTMLTitleElement.h>
 #include <LibWeb/HTML/HashChangeEvent.h>
 #include <LibWeb/HTML/ListOfAvailableImages.h>
@@ -389,10 +393,13 @@ Document::Document(JS::Realm& realm, const URL::URL& url, TemporaryDocumentForFr
     };
 
     m_cursor_blink_timer = Core::Timer::create_repeating(500, [this] {
-        if (!m_cursor_position)
+        auto cursor_position = this->focus_node_cursor_position();
+        if (!cursor_position) {
+            //            dbgln("No cursor position");
             return;
+        }
 
-        auto node = m_cursor_position->node();
+        auto node = cursor_position->node();
         if (!node)
             return;
 
@@ -408,7 +415,11 @@ Document::Document(JS::Realm& realm, const URL::URL& url, TemporaryDocumentForFr
         }
     });
 
+    m_cursor_blink_timer->start();
+
     HTML::main_thread_event_loop().register_document({}, *this);
+
+    m_editing_host = EditingHost::create(realm, *this);
 }
 
 Document::~Document()
@@ -5503,55 +5514,109 @@ JS::NonnullGCPtr<Document> Document::parse_html_unsafe(JS::VM& vm, StringView ht
     return document;
 }
 
-void Document::set_cursor_position(JS::NonnullGCPtr<DOM::Position> position)
+Optional<InputEventsTarget&> Document::active_input_events_target()
 {
-    if (m_cursor_position && m_cursor_position->equals(position))
-        return;
+    //    dbgln(">Document::active_input_events_target");
 
-    if (m_cursor_position && m_cursor_position->node()->paintable())
-        m_cursor_position->node()->paintable()->set_needs_display();
+    auto* focused_element = this->focused_element();
+    if (!focused_element) {
+        return {};
+    }
 
-    m_cursor_position = position;
+    //    dbgln(">focused element is {}", focused_element->debug_description());
 
-    if (m_cursor_position && m_cursor_position->node()->paintable())
-        m_cursor_position->node()->paintable()->set_needs_display();
+    Optional<InputEventsTarget&> target {};
+    if (is<HTML::HTMLInputElement>(*focused_element)) {
+        target = static_cast<HTML::HTMLInputElement&>(*focused_element);
+    } else if (is<HTML::HTMLTextAreaElement>(*focused_element)) {
+        target = static_cast<HTML::HTMLTextAreaElement&>(*focused_element);
+    }
 
-    reset_cursor_blink_cycle();
+    if (is<HTML::HTMLElement>(*focused_element) && static_cast<HTML::HTMLElement*>(focused_element)->is_editable()) {
+        //        dbgln(">return editing host as input events target");
+        target = *m_editing_host;
+    }
+
+    return target;
 }
 
-bool Document::increment_cursor_position_offset()
+JS::GCPtr<DOM::Position> Document::focus_node_cursor_position() const
 {
-    if (!m_cursor_position->increment_offset())
-        return false;
+    auto const* focused_element = this->focused_element();
+    if (!focused_element) {
+        return nullptr;
+    }
 
-    reset_cursor_blink_cycle();
-    return true;
+    Optional<HTML::FormAssociatedTextControlElement const&> target {};
+    if (is<HTML::HTMLInputElement>(*focused_element))
+        target = static_cast<HTML::HTMLInputElement const&>(*focused_element);
+    else if (is<HTML::HTMLTextAreaElement>(*focused_element))
+        target = static_cast<HTML::HTMLTextAreaElement const&>(*focused_element);
+
+    if (is<HTML::HTMLElement>(*focused_element) && static_cast<HTML::HTMLElement const*>(focused_element)->is_editable()) {
+        //        dbgln(">return editing host as input events target");
+        return m_selection->cursor_position();
+    }
+
+    if (!target.has_value()) {
+        return nullptr;
+    }
+    return target->cursor_position();
 }
 
-bool Document::decrement_cursor_position_offset()
-{
-    if (!m_cursor_position->decrement_offset())
-        return false;
+// void Document::set_cursor_position(JS::NonnullGCPtr<DOM::Position> position)
+//{
+//     if (m_cursor_position && m_cursor_position->equals(position))
+//         return;
+//
+//     if (m_cursor_position && m_cursor_position->node()->paintable())
+//         m_cursor_position->node()->paintable()->set_needs_display();
+//
+//     m_cursor_position = position;
+//
+//     if (m_cursor_position && m_cursor_position->node()->paintable())
+//         m_cursor_position->node()->paintable()->set_needs_display();
+//
+//     reset_cursor_blink_cycle();
+// }
 
-    reset_cursor_blink_cycle();
-    return true;
-}
+// bool Document::increment_cursor_position_offset()
+//{
+//     if (!m_cursor_position->increment_offset())
+//         return false;
+//
+//     reset_cursor_blink_cycle();
+//     return true;
+//    return true;
+//}
+
+// bool Document::decrement_cursor_position_offset()
+//{
+//     if (!m_cursor_position->decrement_offset())
+//         return false;
+//
+//     reset_cursor_blink_cycle();
+//     return true;
+//    return true;
+//}
 
 bool Document::increment_cursor_position_to_next_word()
 {
-    if (!m_cursor_position->increment_offset_to_next_word())
-        return false;
-
-    reset_cursor_blink_cycle();
+    //    if (!m_cursor_position->increment_offset_to_next_word())
+    //        return false;
+    //
+    //    reset_cursor_blink_cycle();
+    //    return true;
     return true;
 }
 
 bool Document::decrement_cursor_position_to_previous_word()
 {
-    if (!m_cursor_position->decrement_offset_to_previous_word())
-        return false;
-
-    reset_cursor_blink_cycle();
+    //    if (!m_cursor_position->decrement_offset_to_previous_word())
+    //        return false;
+    //
+    //    reset_cursor_blink_cycle();
+    //    return true;
     return true;
 }
 
@@ -5563,7 +5628,7 @@ void Document::user_did_edit_document_text(Badge<EditEventHandler>)
         auto& text_node = static_cast<DOM::Text&>(*m_cursor_position->node());
 
         if (auto* text_node_owner = text_node.editable_text_node_owner())
-            text_node_owner->did_edit_text_node({});
+            text_node_owner->did_edit_text_node();
     }
 }
 

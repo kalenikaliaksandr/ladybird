@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibUnicode/Segmenter.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/HTML/FormAssociatedElement.h>
@@ -198,6 +199,8 @@ WebIDL::ExceptionOr<void> FormAssociatedElement::set_form_action(String const& v
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-textarea/input-relevant-value
 void FormAssociatedTextControlElement::relevant_value_was_changed(JS::GCPtr<DOM::Text> text_node)
 {
+    (void)text_node;
+
     auto the_relevant_value = relevant_value();
     auto relevant_value_length = the_relevant_value.code_points().length();
 
@@ -223,13 +226,16 @@ void FormAssociatedTextControlElement::relevant_value_was_changed(JS::GCPtr<DOM:
 
     // 2. Otherwise, the element must have a text entry cursor position position. If it is now past
     //    the end of the relevant value, set it to the end of the relevant value.
-    auto& document = form_associated_element_to_html_element().document();
-    auto const current_cursor_position = document.cursor_position();
-    if (current_cursor_position && text_node
-        && current_cursor_position->node() == text_node
-        && current_cursor_position->offset() > relevant_value_length) {
-        document.set_cursor_position(DOM::Position::create(document.realm(), *text_node, relevant_value_length));
-    }
+    if (m_cursor_position > relevant_value_length)
+        m_cursor_position = relevant_value_length;
+    //    auto& document = form_associated_element_to_html_element().document();
+    //    auto const current_cursor_position = document.cursor_position();
+    //    auto const current_cursor_position = m_cursor_position;
+    //    if (current_cursor_position && text_node
+    //        && current_cursor_position->node() == text_node
+    //        && current_cursor_position->offset() > relevant_value_length) {
+    //        document.set_cursor_position(DOM::Position::create(document.realm(), *text_node, relevant_value_length));
+    //    }
 }
 
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-select
@@ -263,8 +269,9 @@ Optional<WebIDL::UnsignedLong> FormAssociatedTextControlElement::selection_start
     // 2. If there is no selection, return the code unit offset within the relevant value to the character that
     //    immediately follows the text entry cursor.
     if (m_selection_start == m_selection_end) {
-        if (auto cursor = form_associated_element_to_html_element().document().cursor_position())
-            return cursor->offset();
+        //        if (auto cursor = form_associated_element_to_html_element().document().cursor_position())
+        //            return cursor->offset();
+        return m_cursor_position;
     }
 
     // 3. Return the code unit offset within the relevant value to the character that immediately follows the start of
@@ -312,8 +319,9 @@ Optional<WebIDL::UnsignedLong> FormAssociatedTextControlElement::selection_end()
     // 2. If there is no selection, return the code unit offset within the relevant value to the
     //    character that immediately follows the text entry cursor.
     if (m_selection_start == m_selection_end) {
-        if (auto cursor = form_associated_element_to_html_element().document().cursor_position())
-            return cursor->offset();
+        return m_cursor_position;
+        //        if (auto cursor = form_associated_element_to_html_element().document().cursor_position())
+        //            return cursor->offset();
     }
 
     // 3. Return the code unit offset within the relevant value to the character that immediately
@@ -587,6 +595,113 @@ void FormAssociatedTextControlElement::set_the_selection_range(Optional<WebIDL::
         //         element-specific updates.
         selection_was_changed(m_selection_start, m_selection_end);
     }
+}
+
+void FormAssociatedTextControlElement::handle_insert(String const& data)
+{
+    auto& node = form_associated_element_to_text_node();
+    if (!node.is_editable()) {
+        return;
+    }
+
+    StringBuilder builder;
+    builder.append(node.data().bytes_as_string_view().substring_view(0, m_cursor_position));
+    builder.append(data);
+    builder.append(node.data().bytes_as_string_view().substring_view(m_cursor_position));
+
+    // Cut string by max length
+    // FIXME: Cut by UTF-16 code units instead of raw bytes
+    if (auto max_length = node.max_length(); max_length.has_value() && builder.string_view().length() > *max_length) {
+        node.set_data(MUST(String::from_utf8(builder.string_view().substring_view(0, *max_length))));
+    } else {
+        node.set_data(MUST(builder.to_string()));
+    }
+
+    node.invalidate_style(DOM::StyleInvalidationReason::EditingInsertion);
+
+    node.editable_text_node_owner()->did_edit_text_node();
+}
+
+void FormAssociatedTextControlElement::handle_return_key()
+{
+    dbgln(">FormAssociatedTextControlElement::handle_return_key");
+
+    auto& html_element = form_associated_element_to_html_element();
+    if (is<HTMLInputElement>(html_element)) {
+        auto& input_element = static_cast<HTMLInputElement&>(html_element);
+        if (auto* form = input_element.form()) {
+            form->implicitly_submit_form().release_value_but_fixme_should_propagate_errors();
+            return;
+        }
+
+        input_element.commit_pending_changes();
+    }
+    //            HTML::HTMLInputElement* input_element = nullptr;
+    //            if (auto node = document->cursor_position()->node()) {
+    //                if (node->is_text()) {
+    //                    auto& text_node = static_cast<DOM::Text&>(*node);
+    //                    if (is<HTML::HTMLInputElement>(text_node.editable_text_node_owner()))
+    //                        input_element = static_cast<HTML::HTMLInputElement*>(text_node.editable_text_node_owner());
+    //                } else if (node->is_html_input_element()) {
+    //                    input_element = static_cast<HTML::HTMLInputElement*>(node.ptr());
+    //                }
+    //            }
+    //            if (input_element) {
+    //                if (auto* form = input_element->form()) {
+    //                    form->implicitly_submit_form().release_value_but_fixme_should_propagate_errors();
+    //                    return EventResult::Handled;
+    //                }
+    //
+    //                input_element->commit_pending_changes();
+    //                FIRE(input_event(UIEvents::EventNames::input, UIEvents::InputTypes::insertParagraph, m_navigable, code_point));
+    //                return EventResult::Handled;
+    //            }
+}
+
+void FormAssociatedTextControlElement::set_cursor_position(JS::NonnullGCPtr<DOM::Position> const& position)
+{
+    auto& node = form_associated_element_to_text_node();
+    if (position->node() != &node) {
+        return;
+    }
+
+    m_cursor_position = position->offset();
+
+    node.document().reset_cursor_blink_cycle();
+}
+
+bool FormAssociatedTextControlElement::increment_cursor_position_offset()
+{
+    auto const& node = form_associated_element_to_text_node();
+    if (auto offset = node.grapheme_segmenter().next_boundary(m_cursor_position); offset.has_value()) {
+        m_cursor_position = *offset;
+        return true;
+    }
+    return false;
+}
+
+bool FormAssociatedTextControlElement::decrement_cursor_position_offset()
+{
+    auto const& node = form_associated_element_to_text_node();
+    if (auto offset = node.grapheme_segmenter().previous_boundary(m_cursor_position); offset.has_value()) {
+        m_cursor_position = *offset;
+        return true;
+    }
+    return false;
+}
+
+JS::NonnullGCPtr<DOM::Position> FormAssociatedTextControlElement::cursor_position() const
+{
+    auto const& node = form_associated_element_to_text_node();
+    return DOM::Position::create(node.realm(), const_cast<DOM::Text&>(node), m_cursor_position);
+}
+
+void FormAssociatedTextControlElement::delete_character_before_cursor()
+{
+}
+
+void FormAssociatedTextControlElement::delete_character_after_cursor()
+{
 }
 
 }
