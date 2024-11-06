@@ -60,14 +60,19 @@ int PaintableFragment::text_index_at(CSSPixelPoint position) const
         auto glyph_position = CSSPixels::nearest_value_for(glyphs[i].position.x());
         if (i + 1 < glyphs.size()) {
             auto next_glyph_position = CSSPixels::nearest_value_for(glyphs[i + 1].position.x());
-            if (relative_inline_offset >= glyph_position && relative_inline_offset < next_glyph_position)
+            if (relative_inline_offset >= glyph_position && relative_inline_offset < next_glyph_position) {
+                dbgln(">return m_start + i = {}", m_start + i);
                 return m_start + i;
+            }
         } else {
-            if (relative_inline_offset >= glyph_position)
+            if (relative_inline_offset >= glyph_position) {
+                dbgln(">return m_start + i = {}", m_start + i);
                 return m_start + i;
+            }
         }
     }
 
+    dbgln(">return m_start + m_length = {}", m_start + m_length);
     return m_start + m_length;
 }
 CSSPixelRect PaintableFragment::range_rect(Gfx::Font const& font, size_t start_offset, size_t end_offset) const

@@ -190,6 +190,8 @@ void Selection::empty()
 // https://w3c.github.io/selection-api/#dom-selection-collapse
 WebIDL::ExceptionOr<void> Selection::collapse(JS::GCPtr<DOM::Node> node, unsigned offset)
 {
+    dbgln("> Selection::collapse() with node={}, offset={}", node->debug_description(), offset);
+
     // 1. If node is null, this method must behave identically as removeAllRanges() and abort these steps.
     if (!node) {
         remove_all_ranges();
@@ -198,6 +200,7 @@ WebIDL::ExceptionOr<void> Selection::collapse(JS::GCPtr<DOM::Node> node, unsigne
 
     // 2. The method must throw an IndexSizeError exception if offset is longer than node's length and abort these steps.
     if (offset > node->length()) {
+        dbgln("> Selection::collapse() with offset longer than node's length");
         return WebIDL::IndexSizeError::create(realm(), "Selection.collapse() with offset longer than node's length"_string);
     }
 
@@ -493,9 +496,11 @@ void Selection::move_offset_to_next_character(bool collapse_selection)
         return;
 
     auto& text_node = static_cast<DOM::Text&>(*anchor_node);
-    if (auto offset = text_node.grapheme_segmenter().next_boundary(focus_offset()); offset.has_value()) {
+    auto focus_offset_converted_to_byte_offset = Utf8View { text_node.data() }.byte_offset_of(focus_offset());
+    if (auto offset = text_node.grapheme_segmenter().next_boundary(focus_offset_converted_to_byte_offset); offset.has_value()) {
+        auto utf16_offset = Utf8View { text_node.data() }.substring_view(0, *offset).length();
         if (collapse_selection) {
-            MUST(collapse(*anchor_node, *offset));
+            MUST(collapse(*anchor_node, utf16_offset));
             m_document->reset_cursor_blink_cycle();
         } else {
             MUST(set_base_and_extent(*anchor_node, anchor_offset(), *anchor_node, *offset));
@@ -510,9 +515,11 @@ void Selection::move_offset_to_previous_character(bool collapse_selection)
         return;
 
     auto& text_node = static_cast<DOM::Text&>(*anchor_node);
-    if (auto offset = text_node.grapheme_segmenter().previous_boundary(focus_offset()); offset.has_value()) {
+    auto focus_offset_converted_to_byte_offset = Utf8View { text_node.data() }.byte_offset_of(focus_offset());
+    if (auto offset = text_node.grapheme_segmenter().previous_boundary(focus_offset_converted_to_byte_offset); offset.has_value()) {
+        auto utf16_offset = Utf8View { text_node.data() }.substring_view(0, *offset).length();
         if (collapse_selection) {
-            MUST(collapse(*anchor_node, *offset));
+            MUST(collapse(*anchor_node, utf16_offset));
             m_document->reset_cursor_blink_cycle();
         } else {
             MUST(set_base_and_extent(*anchor_node, anchor_offset(), *anchor_node, *offset));

@@ -73,8 +73,10 @@ WebIDL::ExceptionOr<void> CharacterData::replace_data(size_t offset, size_t coun
     auto length = utf16_view.length_in_code_units();
 
     // 2. If offset is greater than length, then throw an "IndexSizeError" DOMException.
-    if (offset > length)
+    if (offset > length) {
+        VERIFY_NOT_REACHED();
         return WebIDL::IndexSizeError::create(realm(), "Replacement offset out of range."_string);
+    }
 
     // 3. If offset plus count is greater than length, then set count to length minus offset.
     if (offset + count > length)
@@ -92,11 +94,19 @@ WebIDL::ExceptionOr<void> CharacterData::replace_data(size_t offset, size_t coun
     builder.append(MUST(utf16_view.substring_view(offset + count).to_utf8(Utf16View::AllowInvalidCodeUnits::Yes)));
     m_data = MUST(builder.to_string());
 
+    for (auto& range : Range::live_ranges()) {
+        dbgln("range: {} {} {} {}", range->start_container(), range->start_offset(), range->end_container(), range->end_offset());
+    }
+
+    dbgln(">CharacterData::replace_data before step 8");
+
     // 8. For each live range whose start node is node and start offset is greater than offset but less than or equal to offset plus count, set its start offset to offset.
     for (auto& range : Range::live_ranges()) {
         if (range->start_container() == this && range->start_offset() > offset && range->start_offset() <= (offset + count))
             TRY(range->set_start(*range->start_container(), offset));
     }
+
+    dbgln(">CharacterData::replace_data before step 9");
 
     // 9. For each live range whose end node is node and end offset is greater than offset but less than or equal to offset plus count, set its end offset to offset.
     for (auto& range : Range::live_ranges()) {
@@ -104,20 +114,28 @@ WebIDL::ExceptionOr<void> CharacterData::replace_data(size_t offset, size_t coun
             TRY(range->set_end(*range->end_container(), offset));
     }
 
+    dbgln(">CharacterData::replace_data before step 10");
+
     // 10. For each live range whose start node is node and start offset is greater than offset plus count, increase its start offset by data’s length and decrease it by count.
     for (auto& range : Range::live_ranges()) {
         if (range->start_container() == this && range->start_offset() > (offset + count))
-            TRY(range->set_start(*range->start_container(), range->start_offset() + data.bytes().size() - count));
+            TRY(range->set_start(*range->start_container(), range->start_offset() + utf16_view.length_in_code_units() - count));
     }
+
+    dbgln(">CharacterData::replace_data before step 11");
 
     // 11. For each live range whose end node is node and end offset is greater than offset plus count, increase its end offset by data’s length and decrease it by count.
     for (auto& range : Range::live_ranges()) {
         if (range->end_container() == this && range->end_offset() > (offset + count)) {
             // AD-HOC: Clamp offset to the end of the data if it's too large.
-            auto new_offset = min(range->end_offset() + data.bytes().size() - count, m_data.bytes().size());
+            dbgln(">end_offset={}", range->end_offset());
+            auto new_offset = min(range->end_offset() + utf16_view.length_in_code_units() - count, utf16_view.length_in_code_units());
+            dbgln(">new_offset={} m_data.bytes().size={} length={}", new_offset, utf16_view.length_in_code_units(), length);
             TRY(range->set_end(*range->end_container(), new_offset));
         }
     }
+
+    dbgln(">CharacterData::replace_data before step 12");
 
     // 12. If node’s parent is non-null, then run the children changed steps for node’s parent.
     if (parent())

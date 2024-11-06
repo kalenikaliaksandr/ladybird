@@ -176,12 +176,16 @@ WebIDL::ExceptionOr<void> Range::set_start_or_end(Node& node, u32 offset, StartO
     // To set the start or end of a range to a boundary point (node, offset), run these steps:
 
     // 1. If node is a doctype, then throw an "InvalidNodeTypeError" DOMException.
-    if (is<DocumentType>(node))
+    if (is<DocumentType>(node)) {
+        dbgln(">Node cannot be a DocumentType");
         return WebIDL::InvalidNodeTypeError::create(realm(), "Node cannot be a DocumentType."_string);
+    }
 
     // 2. If offset is greater than node’s length, then throw an "IndexSizeError" DOMException.
-    if (offset > node.length())
+    if (offset > node.length()) {
+        dbgln(">Node does not contain a child at offset offset={} node.length={}", offset, node.length());
         return WebIDL::IndexSizeError::create(realm(), MUST(String::formatted("Node does not contain a child at offset {}", offset)));
+    }
 
     // 3. Let bp be the boundary point (node, offset).
 

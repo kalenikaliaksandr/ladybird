@@ -82,12 +82,14 @@ void EditingHostManager::select_all()
 void EditingHostManager::set_selection_anchor(JS::NonnullGCPtr<DOM::Node> anchor_node, size_t anchor_offset)
 {
     auto selection = m_document->get_selection();
+    dbgln(">set_selection_anchor offset={} length={}", anchor_offset, anchor_node->length());
     MUST(selection->collapse(*anchor_node, anchor_offset));
     m_document->reset_cursor_blink_cycle();
 }
 
 void EditingHostManager::set_selection_focus(JS::NonnullGCPtr<DOM::Node> focus_node, size_t focus_offset)
 {
+    dbgln(">set_selection_focus offset={} length={}", focus_offset, focus_node->length());
     if (!m_active_contenteditable_element || !m_active_contenteditable_element->is_ancestor_of(*focus_node))
         return;
     auto selection = m_document->get_selection();
