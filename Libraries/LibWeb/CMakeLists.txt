@@ -172,6 +172,7 @@ set(SOURCES
     CSS/Transformation.cpp
     CSS/TransitionEvent.cpp
     CSS/VisualViewport.cpp
+    CSS/RuleCache.cpp
     Cookie/Cookie.cpp
     Cookie/ParsedCookie.cpp
     DOM/AbortController.cpp

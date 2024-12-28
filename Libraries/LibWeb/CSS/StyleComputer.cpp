@@ -380,7 +380,7 @@ void StyleComputer::for_each_stylesheet(CascadeOrigin cascade_origin, Callback c
     }
 }
 
-StyleComputer::RuleCache const& StyleComputer::rule_cache_for_cascade_origin(CascadeOrigin cascade_origin) const
+RuleCache const& StyleComputer::rule_cache_for_cascade_origin(CascadeOrigin cascade_origin) const
 {
     switch (cascade_origin) {
     case CascadeOrigin::Author:
@@ -2482,7 +2482,7 @@ struct SimplifiedSelectorForBucketing {
     FlyString name;
 };
 
-static Optional<SimplifiedSelectorForBucketing> is_roundabout_selector_bucketable_as_something_simpler(CSS::Selector::SimpleSelector const& simple_selector)
+[[maybe_unused]] static Optional<SimplifiedSelectorForBucketing> is_roundabout_selector_bucketable_as_something_simpler(CSS::Selector::SimpleSelector const& simple_selector)
 {
     if (simple_selector.type != CSS::Selector::SimpleSelector::Type::PseudoClass)
         return {};
@@ -2535,10 +2535,11 @@ void StyleComputer::collect_selector_insights(Selector const& selector, Selector
     }
 }
 
-NonnullOwnPtr<StyleComputer::RuleCache> StyleComputer::make_rule_cache_for_cascade_origin(CascadeOrigin cascade_origin, SelectorInsights& insights)
+NonnullOwnPtr<RuleCache> StyleComputer::make_rule_cache_for_cascade_origin(CascadeOrigin cascade_origin, SelectorInsights& insights)
 {
-    auto rule_cache = make<RuleCache>();
+    auto rule_cache = make<RuleCache>(cascade_origin);
 
+    /*
     size_t num_class_rules = 0;
     size_t num_id_rules = 0;
     size_t num_tag_name_rules = 0;
@@ -2546,10 +2547,13 @@ NonnullOwnPtr<StyleComputer::RuleCache> StyleComputer::make_rule_cache_for_casca
     size_t num_root_rules = 0;
     size_t num_attribute_rules = 0;
     size_t num_hover_rules = 0;
+    */
 
     Vector<MatchingRule> matching_rules;
-    size_t style_sheet_index = 0;
+    // size_t style_sheet_index = 0;
     for_each_stylesheet(cascade_origin, [&](auto& sheet, GC::Ptr<DOM::ShadowRoot> shadow_root) {
+        rule_cache->add_rules_from_stylesheet(sheet, shadow_root, insights);
+        /*
         size_t rule_index = 0;
         sheet.for_each_effective_style_producing_rule([&](auto const& rule) {
             size_t selector_index = 0;
@@ -2732,8 +2736,10 @@ NonnullOwnPtr<StyleComputer::RuleCache> StyleComputer::make_rule_cache_for_casca
             rule_cache->rules_by_animation_keyframes.set(rule.name(), move(keyframe_set));
         });
         ++style_sheet_index;
+        */
     });
 
+    /*
     size_t total_rules = num_class_rules + num_id_rules + num_tag_name_rules + num_pseudo_element_rules + num_root_rules + num_attribute_rules + rule_cache->other_rules.size();
     if constexpr (LIBWEB_CSS_DEBUG) {
         dbgln("Built rule cache!");
@@ -2746,6 +2752,7 @@ NonnullOwnPtr<StyleComputer::RuleCache> StyleComputer::make_rule_cache_for_casca
         dbgln("        Other: {}", rule_cache->other_rules.size());
         dbgln("        Total: {}", total_rules);
     }
+    */
     return rule_cache;
 }
 

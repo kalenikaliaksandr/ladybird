@@ -18,6 +18,7 @@
 #include <LibWeb/CSS/CascadeOrigin.h>
 #include <LibWeb/CSS/CascadedProperties.h>
 #include <LibWeb/CSS/ComputedProperties.h>
+#include <LibWeb/CSS/RuleCache.h>
 #include <LibWeb/CSS/Selector.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Loader/ResourceLoader.h>
@@ -71,27 +72,6 @@ private:
     [[nodiscard]] CounterType bucket2(u32 key) const { return m_buckets[hash2(key)]; }
 
     CounterType m_buckets[bucket_count];
-};
-
-struct MatchingRule {
-    GC::Ptr<DOM::ShadowRoot const> shadow_root;
-    GC::Ptr<CSSRule const> rule; // Either CSSStyleRule or CSSNestedDeclarations
-    GC::Ptr<CSSStyleSheet const> sheet;
-    size_t style_sheet_index { 0 };
-    size_t rule_index { 0 };
-    size_t selector_index { 0 };
-
-    u32 specificity { 0 };
-    CascadeOrigin cascade_origin;
-    bool contains_pseudo_element { false };
-    bool can_use_fast_matches { false };
-    bool must_be_hovered { false };
-    bool skip { false };
-
-    // Helpers to deal with the fact that `rule` might be a CSSStyleRule or a CSSNestedDeclarations
-    PropertyOwningCSSStyleDeclaration const& declaration() const;
-    SelectorList const& absolutized_selectors() const;
-    FlyString const& qualified_layer_name() const;
 };
 
 struct FontFaceKey;
@@ -249,23 +229,23 @@ private:
 
     GC::Ref<DOM::Document> m_document;
 
-    struct SelectorInsights {
-        bool has_has_selectors { false };
-        bool has_defined_selectors { false };
-        HashTable<FlyString> all_names_used_in_attribute_selectors;
-    };
+    // struct SelectorInsights {
+    //     bool has_has_selectors { false };
+    //     bool has_defined_selectors { false };
+    //     HashTable<FlyString> all_names_used_in_attribute_selectors;
+    // };
 
-    struct RuleCache {
-        HashMap<FlyString, Vector<MatchingRule>> rules_by_id;
-        HashMap<FlyString, Vector<MatchingRule>> rules_by_class;
-        HashMap<FlyString, Vector<MatchingRule>> rules_by_tag_name;
-        HashMap<FlyString, Vector<MatchingRule>, AK::ASCIICaseInsensitiveFlyStringTraits> rules_by_attribute_name;
-        Array<Vector<MatchingRule>, to_underlying(CSS::Selector::PseudoElement::Type::KnownPseudoElementCount)> rules_by_pseudo_element;
-        Vector<MatchingRule> root_rules;
-        Vector<MatchingRule> other_rules;
-
-        HashMap<FlyString, NonnullRefPtr<Animations::KeyframeEffect::KeyFrameSet>> rules_by_animation_keyframes;
-    };
+    // struct RuleCache {
+    //     HashMap<FlyString, Vector<MatchingRule>> rules_by_id;
+    //     HashMap<FlyString, Vector<MatchingRule>> rules_by_class;
+    //     HashMap<FlyString, Vector<MatchingRule>> rules_by_tag_name;
+    //     HashMap<FlyString, Vector<MatchingRule>, AK::ASCIICaseInsensitiveFlyStringTraits> rules_by_attribute_name;
+    //     Array<Vector<MatchingRule>, to_underlying(CSS::Selector::PseudoElement::Type::KnownPseudoElementCount)> rules_by_pseudo_element;
+    //     Vector<MatchingRule> root_rules;
+    //     Vector<MatchingRule> other_rules;
+    //
+    //     HashMap<FlyString, NonnullRefPtr<Animations::KeyframeEffect::KeyFrameSet>> rules_by_animation_keyframes;
+    // };
 
     NonnullOwnPtr<RuleCache> make_rule_cache_for_cascade_origin(CascadeOrigin, SelectorInsights&);
 
