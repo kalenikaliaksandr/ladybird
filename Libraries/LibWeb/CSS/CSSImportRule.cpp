@@ -157,7 +157,7 @@ void CSSImportRule::set_style_sheet(GC::Ref<CSSStyleSheet> style_sheet)
 {
     m_style_sheet = style_sheet;
     m_style_sheet->set_owner_css_rule(this);
-    m_document->style_computer().invalidate_rule_cache();
+    m_document->style_computer().invalidate_rule_cache(*m_document, StyleComputer::InvalidateRuleCacheReason::SetStyleSheet);
     m_document->style_computer().load_fonts_from_sheet(*m_style_sheet);
     m_document->invalidate_style(DOM::StyleInvalidationReason::CSSImportRule);
 }

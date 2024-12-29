@@ -7,12 +7,15 @@
 #pragma once
 
 #include <LibWeb/Bindings/ShadowRootPrototype.h>
+#include <LibWeb/CSS/StyleScope.h>
 #include <LibWeb/DOM/DocumentFragment.h>
 #include <LibWeb/WebIDL/ObservableArray.h>
 
 namespace Web::DOM {
 
-class ShadowRoot final : public DocumentFragment {
+class ShadowRoot final
+    : public DocumentFragment
+    , public CSS::StyleScope {
     WEB_PLATFORM_OBJECT(ShadowRoot, DocumentFragment);
     GC_DECLARE_ALLOCATOR(ShadowRoot);
 
@@ -63,6 +66,11 @@ public:
     WebIDL::ExceptionOr<Vector<GC::Ref<Animations::Animation>>> get_animations();
 
     virtual void finalize() override;
+
+    virtual void style_scope__invalidate_style(StyleInvalidationReason reason) override
+    {
+        invalidate_style(reason);
+    }
 
 protected:
     virtual void visit_edges(Cell::Visitor&) override;

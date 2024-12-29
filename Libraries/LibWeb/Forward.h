@@ -105,6 +105,7 @@ class SubtleCrypto;
 }
 
 namespace Web::CSS {
+class StyleScope;
 class AbstractImageStyleValue;
 class Angle;
 class AngleOrCalculated;

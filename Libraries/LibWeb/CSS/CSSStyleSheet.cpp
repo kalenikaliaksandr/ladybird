@@ -158,7 +158,7 @@ WebIDL::ExceptionOr<unsigned> CSSStyleSheet::insert_rule(StringView rule, unsign
         parsed_rule->set_parent_style_sheet(this);
 
         if (m_style_sheet_list) {
-            m_style_sheet_list->document().style_computer().invalidate_rule_cache();
+            m_style_sheet_list->document().style_computer().invalidate_rule_cache(m_style_sheet_list->document_or_shadow_root(), StyleComputer::InvalidateRuleCacheReason::InsertRule);
             m_style_sheet_list->document_or_shadow_root().invalidate_style(DOM::StyleInvalidationReason::StyleSheetInsertRule);
         }
     }
@@ -179,7 +179,7 @@ WebIDL::ExceptionOr<void> CSSStyleSheet::delete_rule(unsigned index)
     auto result = m_rules->remove_a_css_rule(index);
     if (!result.is_exception()) {
         if (m_style_sheet_list) {
-            m_style_sheet_list->document().style_computer().invalidate_rule_cache();
+            m_style_sheet_list->document().style_computer().invalidate_rule_cache(m_style_sheet_list->document_or_shadow_root(), StyleComputer::InvalidateRuleCacheReason::DeleteRule);
             m_style_sheet_list->document_or_shadow_root().invalidate_style(DOM::StyleInvalidationReason::StyleSheetDeleteRule);
         }
     }

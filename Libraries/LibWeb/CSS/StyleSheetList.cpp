@@ -9,6 +9,7 @@
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/CSS/StyleSheetList.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/ShadowRoot.h>
 
 namespace Web::CSS {
 
@@ -107,7 +108,7 @@ void StyleSheetList::add_sheet(CSSStyleSheet& sheet)
         return;
     }
 
-    document().style_computer().invalidate_rule_cache();
+    document().style_computer().invalidate_rule_cache(document_or_shadow_root(), StyleComputer::InvalidateRuleCacheReason::AddSheet);
     document().style_computer().load_fonts_from_sheet(sheet);
     document_or_shadow_root().invalidate_style(DOM::StyleInvalidationReason::StyleSheetListAddSheet);
 }
@@ -124,7 +125,7 @@ void StyleSheetList::remove_sheet(CSSStyleSheet& sheet)
     }
 
     m_document_or_shadow_root->document().style_computer().unload_fonts_from_sheet(sheet);
-    m_document_or_shadow_root->document().style_computer().invalidate_rule_cache();
+    m_document_or_shadow_root->document().style_computer().invalidate_rule_cache(document_or_shadow_root(), StyleComputer::InvalidateRuleCacheReason::RemoveSheet);
     document_or_shadow_root().invalidate_style(DOM::StyleInvalidationReason::StyleSheetListRemoveSheet);
 }
 

@@ -128,7 +128,19 @@ public:
 
     Vector<MatchingRule> collect_matching_rules(DOM::Element const&, CascadeOrigin, Optional<CSS::Selector::PseudoElement::Type>, FlyString const& qualified_layer_name = {}) const;
 
-    void invalidate_rule_cache();
+    enum InvalidateRuleCacheReason {
+        Unknown,
+        SetUserStyle,
+        InsertRule,
+        DeleteRule,
+        CreateAdoptedStyleSheetsList,
+        AddSheet,
+        SetSelectorText,
+        SetStyleSheet,
+        RemoveSheet,
+        EvaluateMediaRules,
+    };
+    void invalidate_rule_cache(DOM::Node const& document_or_shadow_root, InvalidateRuleCacheReason);
 
     Gfx::Font const& initial_font() const;
 
@@ -247,14 +259,15 @@ private:
     //     HashMap<FlyString, NonnullRefPtr<Animations::KeyframeEffect::KeyFrameSet>> rules_by_animation_keyframes;
     // };
 
-    NonnullOwnPtr<RuleCache> make_rule_cache_for_cascade_origin(CascadeOrigin, SelectorInsights&);
+    // NonnullOwnPtr<RuleCache> make_rule_cache_for_cascade_origin(CascadeOrigin, SelectorInsights&);
 
-    RuleCache const& rule_cache_for_cascade_origin(CascadeOrigin) const;
+    RuleCache const& rule_cache_for_cascade_origin(CascadeOrigin, DOM::Node const* document_or_shadow_root) const;
 
     static void collect_selector_insights(Selector const&, SelectorInsights&);
 
     OwnPtr<SelectorInsights> m_selector_insights;
-    OwnPtr<RuleCache> m_author_rule_cache;
+    // OwnPtr<RuleCache> m_author_rule_cache;
+    mutable HashMap<DOM::Node const*, OwnPtr<RuleCache>> m_author_rule_cache;
     OwnPtr<RuleCache> m_user_rule_cache;
     OwnPtr<RuleCache> m_user_agent_rule_cache;
     GC::Root<CSSStyleSheet> m_user_style_sheet;

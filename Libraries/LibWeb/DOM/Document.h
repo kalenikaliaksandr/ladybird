@@ -22,6 +22,7 @@
 #include <LibURL/URL.h>
 #include <LibUnicode/Forward.h>
 #include <LibWeb/CSS/CSSStyleSheet.h>
+#include <LibWeb/CSS/StyleScope.h>
 #include <LibWeb/CSS/StyleSheetList.h>
 #include <LibWeb/Cookie/Cookie.h>
 #include <LibWeb/DOM/NonElementParentNode.h>
@@ -85,7 +86,8 @@ enum class PolicyControlledFeature {
 class Document
     : public ParentNode
     , public NonElementParentNode<Document>
-    , public HTML::GlobalEventHandlers {
+    , public HTML::GlobalEventHandlers
+    , public CSS::StyleScope {
     WEB_PLATFORM_OBJECT(Document, ParentNode);
     GC_DECLARE_ALLOCATOR(Document);
 
@@ -759,6 +761,11 @@ public:
     void set_css_styling_flag(bool flag) { m_css_styling_flag = flag; }
 
     GC::Ptr<DOM::Document> container_document() const;
+
+    virtual void style_scope__invalidate_style(StyleInvalidationReason reason) override
+    {
+        invalidate_style(reason);
+    }
 
 protected:
     virtual void initialize(JS::Realm&) override;

@@ -380,11 +380,24 @@ void StyleComputer::for_each_stylesheet(CascadeOrigin cascade_origin, Callback c
     }
 }
 
-RuleCache const& StyleComputer::rule_cache_for_cascade_origin(CascadeOrigin cascade_origin) const
+RuleCache const& StyleComputer::rule_cache_for_cascade_origin(CascadeOrigin cascade_origin, DOM::Node const* document_or_shadow_root) const
 {
+    // VERIFY(is<DOM::Document>(*document_or_shadow_root));
     switch (cascade_origin) {
-    case CascadeOrigin::Author:
-        return *m_author_rule_cache;
+    case CascadeOrigin::Author: {
+        // if (is<DOM::ShadowRoot>(*document_or_shadow_root)) {
+        //     dbgln(">shadow root");
+        // } else if (is<DOM::Document>(*document_or_shadow_root)) {
+        //     dbgln(">document");
+        // } else {
+        //     VERIFY_NOT_REACHED();
+        // }
+        auto& rule_cache = m_author_rule_cache.ensure(document_or_shadow_root, []() {
+            dbgln(">>>allocate RuleCache from rule_cache_for_cascade_origin");
+            return make<RuleCache>(CascadeOrigin::Author);
+        });
+        return *rule_cache;
+    }
     case CascadeOrigin::User:
         return *m_user_rule_cache;
     case CascadeOrigin::UserAgent:
@@ -433,7 +446,10 @@ Vector<MatchingRule> StyleComputer::collect_matching_rules(DOM::Element const& e
     else if (shadow_root)
         shadow_host = shadow_root->host();
 
-    auto const& rule_cache = rule_cache_for_cascade_origin(cascade_origin);
+    DOM::Node const* document_or_shadow_root = shadow_root ? shadow_root : static_cast<DOM::Node const*>(&document());
+    // VERIFY(is<DOM::Document>(*document_or_shadow_root));
+
+    auto const& rule_cache = rule_cache_for_cascade_origin(cascade_origin, document_or_shadow_root);
 
     bool is_hovered = SelectorEngine::matches_hover_pseudo_class(element);
 
@@ -2335,6 +2351,11 @@ GC::Ptr<ComputedProperties> StyleComputer::compute_style_impl(DOM::Element& elem
 
 GC::Ref<ComputedProperties> StyleComputer::compute_properties(DOM::Element& element, Optional<Selector::PseudoElement::Type> pseudo_element, CascadedProperties& cascaded_properties) const
 {
+    auto const& root_node = element.root();
+    auto shadow_root = is<DOM::ShadowRoot>(root_node) ? static_cast<DOM::ShadowRoot const*>(&root_node) : nullptr;
+    DOM::Node const* document_or_shadow_root = shadow_root ? shadow_root : static_cast<DOM::Node const*>(&document());
+    // VERIFY(is<DOM::Document>(*document_or_shadow_root));
+
     auto computed_style = document().heap().allocate<CSS::ComputedProperties>();
 
     for (auto i = to_underlying(first_longhand_property_id); i <= to_underlying(last_longhand_property_id); ++i) {
@@ -2402,7 +2423,7 @@ GC::Ref<ComputedProperties> StyleComputer::compute_properties(DOM::Element& elem
                 if (pseudo_element.has_value())
                     effect->set_pseudo_element(Selector::PseudoElement { pseudo_element.value() });
 
-                auto const& rule_cache = rule_cache_for_cascade_origin(CascadeOrigin::Author);
+                auto const& rule_cache = rule_cache_for_cascade_origin(CascadeOrigin::Author, document_or_shadow_root);
                 if (auto keyframe_set = rule_cache.rules_by_animation_keyframes.get(animation->id()); keyframe_set.has_value())
                     effect->set_key_frame_set(keyframe_set.value());
 
@@ -2472,7 +2493,16 @@ GC::Ref<ComputedProperties> StyleComputer::compute_properties(DOM::Element& elem
 
 void StyleComputer::build_rule_cache_if_needed() const
 {
-    if (m_author_rule_cache && m_user_rule_cache && m_user_agent_rule_cache)
+    // bool each_shadow_root_has_cache = true;
+    // if (!m_author_rule_cache.contains(&document())) {
+    //     each_shadow_root_has_cache = false;
+    // }
+    // document().for_each_shadow_root([&](DOM::ShadowRoot& shadow_root) {
+    //     if (!m_author_rule_cache.contains(&shadow_root))
+    //         each_shadow_root_has_cache = false;
+    // });
+    // dbgln(">each_shadow_root_has_cache={}", each_shadow_root_has_cache);
+    if (!m_author_rule_cache.is_empty() && m_user_rule_cache && m_user_agent_rule_cache)
         return;
     const_cast<StyleComputer&>(*this).build_rule_cache();
 }
@@ -2535,226 +2565,19 @@ void StyleComputer::collect_selector_insights(Selector const& selector, Selector
     }
 }
 
-NonnullOwnPtr<RuleCache> StyleComputer::make_rule_cache_for_cascade_origin(CascadeOrigin cascade_origin, SelectorInsights& insights)
-{
-    auto rule_cache = make<RuleCache>(cascade_origin);
-
-    /*
-    size_t num_class_rules = 0;
-    size_t num_id_rules = 0;
-    size_t num_tag_name_rules = 0;
-    size_t num_pseudo_element_rules = 0;
-    size_t num_root_rules = 0;
-    size_t num_attribute_rules = 0;
-    size_t num_hover_rules = 0;
-    */
-
-    Vector<MatchingRule> matching_rules;
-    // size_t style_sheet_index = 0;
-    for_each_stylesheet(cascade_origin, [&](auto& sheet, GC::Ptr<DOM::ShadowRoot> shadow_root) {
-        rule_cache->add_rules_from_stylesheet(sheet, shadow_root, insights);
-        /*
-        size_t rule_index = 0;
-        sheet.for_each_effective_style_producing_rule([&](auto const& rule) {
-            size_t selector_index = 0;
-            SelectorList const& absolutized_selectors = [&]() {
-                if (rule.type() == CSSRule::Type::Style)
-                    return static_cast<CSSStyleRule const&>(rule).absolutized_selectors();
-                if (rule.type() == CSSRule::Type::NestedDeclarations)
-                    return static_cast<CSSNestedDeclarations const&>(rule).parent_style_rule().absolutized_selectors();
-                VERIFY_NOT_REACHED();
-            }();
-            for (CSS::Selector const& selector : absolutized_selectors) {
-                MatchingRule matching_rule {
-                    shadow_root,
-                    &rule,
-                    sheet,
-                    style_sheet_index,
-                    rule_index,
-                    selector_index,
-                    selector.specificity(),
-                    cascade_origin,
-                    false,
-                    SelectorEngine::can_use_fast_matches(selector),
-                    false,
-                };
-
-                bool contains_root_pseudo_class = false;
-                Optional<CSS::Selector::PseudoElement::Type> pseudo_element;
-
-                collect_selector_insights(selector, insights);
-
-                for (auto const& simple_selector : selector.compound_selectors().last().simple_selectors) {
-                    if (!matching_rule.contains_pseudo_element) {
-                        if (simple_selector.type == CSS::Selector::SimpleSelector::Type::PseudoElement) {
-                            matching_rule.contains_pseudo_element = true;
-                            pseudo_element = simple_selector.pseudo_element().type();
-                            ++num_pseudo_element_rules;
-                        }
-                    }
-                    if (!contains_root_pseudo_class) {
-                        if (simple_selector.type == CSS::Selector::SimpleSelector::Type::PseudoClass
-                            && simple_selector.pseudo_class().type == CSS::PseudoClass::Root) {
-                            contains_root_pseudo_class = true;
-                            ++num_root_rules;
-                        }
-                    }
-
-                    if (!matching_rule.must_be_hovered) {
-                        if (simple_selector.type == CSS::Selector::SimpleSelector::Type::PseudoClass && simple_selector.pseudo_class().type == CSS::PseudoClass::Hover) {
-                            matching_rule.must_be_hovered = true;
-                            ++num_hover_rules;
-                        }
-                        if (simple_selector.type == CSS::Selector::SimpleSelector::Type::PseudoClass
-                            && (simple_selector.pseudo_class().type == CSS::PseudoClass::Is
-                                || simple_selector.pseudo_class().type == CSS::PseudoClass::Where)) {
-                            auto const& argument_selectors = simple_selector.pseudo_class().argument_selector_list;
-
-                            if (argument_selectors.size() == 1) {
-                                auto const& simple_argument_selector = argument_selectors.first()->compound_selectors().last().simple_selectors.last();
-                                if (simple_argument_selector.type == CSS::Selector::SimpleSelector::Type::PseudoClass
-                                    && simple_argument_selector.pseudo_class().type == CSS::PseudoClass::Hover) {
-                                    matching_rule.must_be_hovered = true;
-                                    ++num_hover_rules;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // NOTE: We traverse the simple selectors in reverse order to make sure that class/ID buckets are preferred over tag buckets
-                //       in the common case of div.foo or div#foo selectors.
-                bool added_to_bucket = false;
-
-                auto add_to_id_bucket = [&](FlyString const& name) {
-                    rule_cache->rules_by_id.ensure(name).append(move(matching_rule));
-                    ++num_id_rules;
-                    added_to_bucket = true;
-                };
-
-                auto add_to_class_bucket = [&](FlyString const& name) {
-                    rule_cache->rules_by_class.ensure(name).append(move(matching_rule));
-                    ++num_class_rules;
-                    added_to_bucket = true;
-                };
-
-                auto add_to_tag_name_bucket = [&](FlyString const& name) {
-                    rule_cache->rules_by_tag_name.ensure(name).append(move(matching_rule));
-                    ++num_tag_name_rules;
-                    added_to_bucket = true;
-                };
-
-                for (auto const& simple_selector : selector.compound_selectors().last().simple_selectors.in_reverse()) {
-                    if (simple_selector.type == CSS::Selector::SimpleSelector::Type::Id) {
-                        add_to_id_bucket(simple_selector.name());
-                        break;
-                    }
-                    if (simple_selector.type == CSS::Selector::SimpleSelector::Type::Class) {
-                        add_to_class_bucket(simple_selector.name());
-                        break;
-                    }
-                    if (simple_selector.type == CSS::Selector::SimpleSelector::Type::TagName) {
-                        add_to_tag_name_bucket(simple_selector.qualified_name().name.lowercase_name);
-                        break;
-                    }
-                    // NOTE: Selectors like `:is/where(.foo)` and `:is/where(.foo .bar)` are bucketed as class selectors for `foo` and `bar` respectively.
-                    if (auto simplified = is_roundabout_selector_bucketable_as_something_simpler(simple_selector); simplified.has_value()) {
-                        if (simplified->type == CSS::Selector::SimpleSelector::Type::TagName) {
-                            add_to_tag_name_bucket(simplified->name);
-                            break;
-                        }
-                        if (simplified->type == CSS::Selector::SimpleSelector::Type::Class) {
-                            add_to_class_bucket(simplified->name);
-                            break;
-                        }
-                        if (simplified->type == CSS::Selector::SimpleSelector::Type::Id) {
-                            add_to_id_bucket(simplified->name);
-                            break;
-                        }
-                    }
-                }
-                if (!added_to_bucket) {
-                    if (matching_rule.contains_pseudo_element) {
-                        if (CSS::Selector::PseudoElement::is_known_pseudo_element_type(pseudo_element.value())) {
-                            rule_cache->rules_by_pseudo_element[to_underlying(pseudo_element.value())].append(move(matching_rule));
-                        } else {
-                            // NOTE: We don't cache rules for unknown pseudo-elements. They can't match anything anyway.
-                        }
-                    } else if (contains_root_pseudo_class) {
-                        rule_cache->root_rules.append(move(matching_rule));
-                    } else {
-                        for (auto const& simple_selector : selector.compound_selectors().last().simple_selectors) {
-                            if (simple_selector.type == CSS::Selector::SimpleSelector::Type::Attribute) {
-                                rule_cache->rules_by_attribute_name.ensure(simple_selector.attribute().qualified_name.name.lowercase_name).append(move(matching_rule));
-                                ++num_attribute_rules;
-                                added_to_bucket = true;
-                                break;
-                            }
-                        }
-                        if (!added_to_bucket) {
-                            rule_cache->other_rules.append(move(matching_rule));
-                        }
-                    }
-                }
-
-                ++selector_index;
-            }
-            ++rule_index;
-        });
-
-        // Loosely based on https://drafts.csswg.org/css-animations-2/#keyframe-processing
-        sheet.for_each_effective_keyframes_at_rule([&](CSSKeyframesRule const& rule) {
-            auto keyframe_set = adopt_ref(*new Animations::KeyframeEffect::KeyFrameSet);
-            HashTable<PropertyID> animated_properties;
-
-            // Forwards pass, resolve all the user-specified keyframe properties.
-            for (auto const& keyframe_rule : *rule.css_rules()) {
-                auto const& keyframe = verify_cast<CSSKeyframeRule>(*keyframe_rule);
-                Animations::KeyframeEffect::KeyFrameSet::ResolvedKeyFrame resolved_keyframe;
-
-                auto key = static_cast<u64>(keyframe.key().value() * Animations::KeyframeEffect::AnimationKeyFrameKeyScaleFactor);
-                auto const& keyframe_style = *keyframe.style_as_property_owning_style_declaration();
-                for (auto const& it : keyframe_style.properties()) {
-                    // Unresolved properties will be resolved in collect_animation_into()
-                    for_each_property_expanding_shorthands(it.property_id, it.value, AllowUnresolved::Yes, [&](PropertyID shorthand_id, CSSStyleValue const& shorthand_value) {
-                        animated_properties.set(shorthand_id);
-                        resolved_keyframe.properties.set(shorthand_id, NonnullRefPtr<CSSStyleValue const> { shorthand_value });
-                    });
-                }
-
-                keyframe_set->keyframes_by_key.insert(key, resolved_keyframe);
-            }
-
-            Animations::KeyframeEffect::generate_initial_and_final_frames(keyframe_set, animated_properties);
-
-            if constexpr (LIBWEB_CSS_DEBUG) {
-                dbgln("Resolved keyframe set '{}' into {} keyframes:", rule.name(), keyframe_set->keyframes_by_key.size());
-                for (auto it = keyframe_set->keyframes_by_key.begin(); it != keyframe_set->keyframes_by_key.end(); ++it)
-                    dbgln("    - keyframe {}: {} properties", it.key(), it->properties.size());
-            }
-
-            rule_cache->rules_by_animation_keyframes.set(rule.name(), move(keyframe_set));
-        });
-        ++style_sheet_index;
-        */
-    });
-
-    /*
-    size_t total_rules = num_class_rules + num_id_rules + num_tag_name_rules + num_pseudo_element_rules + num_root_rules + num_attribute_rules + rule_cache->other_rules.size();
-    if constexpr (LIBWEB_CSS_DEBUG) {
-        dbgln("Built rule cache!");
-        dbgln("           ID: {}", num_id_rules);
-        dbgln("        Class: {}", num_class_rules);
-        dbgln("      TagName: {}", num_tag_name_rules);
-        dbgln("PseudoElement: {}", num_pseudo_element_rules);
-        dbgln("         Root: {}", num_root_rules);
-        dbgln("    Attribute: {}", num_attribute_rules);
-        dbgln("        Other: {}", rule_cache->other_rules.size());
-        dbgln("        Total: {}", total_rules);
-    }
-    */
-    return rule_cache;
-}
+// NonnullOwnPtr<RuleCache> StyleComputer::make_rule_cache_for_cascade_origin(CascadeOrigin cascade_origin, SelectorInsights& insights)
+// {
+//     VERIFY_NOT_REACHED();
+//
+//     auto rule_cache = make<RuleCache>(cascade_origin);
+//
+//     // Vector<MatchingRule> matching_rules;
+//     for_each_stylesheet(cascade_origin, [&](auto& sheet, GC::Ptr<DOM::ShadowRoot> shadow_root) {
+//         rule_cache->add_rules_from_stylesheet(sheet, shadow_root, insights);
+//     });
+//
+//     return rule_cache;
+// }
 
 struct LayerNode {
     OrderedHashMap<FlyString, LayerNode> children {};
@@ -2828,6 +2651,10 @@ void StyleComputer::build_qualified_layer_names_cache()
 
 void StyleComputer::build_rule_cache()
 {
+    dbgln(">>>StyleComputer::build_rule_cache() this={}", this);
+
+    VERIFY(m_author_rule_cache.is_empty());
+
     m_selector_insights = make<SelectorInsights>();
 
     if (auto user_style_source = document().page().user_style(); user_style_source.has_value()) {
@@ -2836,14 +2663,96 @@ void StyleComputer::build_rule_cache()
 
     build_qualified_layer_names_cache();
 
-    m_author_rule_cache = make_rule_cache_for_cascade_origin(CascadeOrigin::Author, *m_selector_insights);
-    m_user_rule_cache = make_rule_cache_for_cascade_origin(CascadeOrigin::User, *m_selector_insights);
-    m_user_agent_rule_cache = make_rule_cache_for_cascade_origin(CascadeOrigin::UserAgent, *m_selector_insights);
+    // m_author_rule_cache = make_rule_cache_for_cascade_origin(CascadeOrigin::Author, *m_selector_insights);
+    // m_user_rule_cache = make_rule_cache_for_cascade_origin(CascadeOrigin::User, *m_selector_insights);
+    // m_user_agent_rule_cache = make_rule_cache_for_cascade_origin(CascadeOrigin::UserAgent, *m_selector_insights);
+
+    m_user_rule_cache = make<RuleCache>(CascadeOrigin::User);
+    m_user_agent_rule_cache = make<RuleCache>(CascadeOrigin::UserAgent);
+
+    // if (cascade_origin == CascadeOrigin::UserAgent) {
+    m_user_agent_rule_cache->add_rules_from_stylesheet(default_stylesheet(document()), {}, *m_selector_insights);
+    if (document().in_quirks_mode())
+        m_user_agent_rule_cache->add_rules_from_stylesheet(quirks_mode_stylesheet(document()), {}, *m_selector_insights);
+    m_user_agent_rule_cache->add_rules_from_stylesheet(mathml_stylesheet(document()), {}, *m_selector_insights);
+    m_user_agent_rule_cache->add_rules_from_stylesheet(svg_stylesheet(document()), {}, *m_selector_insights);
+    // }
+    // if (cascade_origin == CascadeOrigin::User) {
+    if (m_user_style_sheet)
+        m_user_rule_cache->add_rules_from_stylesheet(*m_user_style_sheet, {}, *m_selector_insights);
+    // }
+    // if (cascade_origin == CascadeOrigin::Author) {
+    DOM::Node const* document_ptr = &document();
+    // m_author_rule_cache.ensure(document_ptr, []() {
+    //     return make<RuleCache>(CascadeOrigin::Author);
+    // });
+    m_author_rule_cache.set(document_ptr, make<RuleCache>(CascadeOrigin::Author));
+    document().for_each_shadow_root([&](auto& shadow_root) {
+        dbgln(">>>allocate RuleCache for shadow root");
+        m_author_rule_cache.set(&shadow_root, make<RuleCache>(CascadeOrigin::Author));
+    });
+    document().for_each_active_css_style_sheet([&](auto& sheet, auto shadow_root) {
+        dbgln(">>>>>>add style sheet shadow_root={}", shadow_root.ptr());
+        DOM::Node const* root = shadow_root ? static_cast<DOM::Node const*>(shadow_root.ptr()) : &document();
+        auto author_rule_cache = m_author_rule_cache.get(root);
+        VERIFY(author_rule_cache.has_value());
+        (*author_rule_cache)->add_rules_from_stylesheet(sheet, shadow_root, *m_selector_insights);
+    });
 }
 
-void StyleComputer::invalidate_rule_cache()
+void StyleComputer::invalidate_rule_cache(DOM::Node const& document_or_shadow_root, InvalidateRuleCacheReason reason)
 {
-    m_author_rule_cache = nullptr;
+    (void)document_or_shadow_root;
+
+    dbgln(">>>StyleComputer::invalidate_rule_cache()");
+    // enum InvalidateRuleCacheReason {
+    //     Unknown,
+    //     SetUserStyle,
+    //     InsertRule,
+    //     DeleteRule,
+    //     CreateAdoptedStyleSheetsList,
+    //     AddSheet,
+    //     SetSelectorText,
+    //     SetStyleSheet,
+    //     RemoveSheet,
+    //     EvaluateMediaRules,
+    // };
+    switch (reason) {
+    case Unknown:
+        dbgln(">>>InvalidateRuleCacheReason::Unknown");
+        break;
+    case SetUserStyle:
+        dbgln(">>>InvalidateRuleCacheReason::SetUserStyle");
+        break;
+    case InsertRule:
+        dbgln(">>>InvalidateRuleCacheReason::InsertRule");
+        break;
+    case DeleteRule:
+        dbgln(">>>InvalidateRuleCacheReason::DeleteRule");
+        break;
+    case CreateAdoptedStyleSheetsList:
+        dbgln(">>>InvalidateRuleCacheReason::CreateAdoptedStyleSheetsList");
+        break;
+    case AddSheet:
+        dbgln(">>>InvalidateRuleCacheReason::AddSheet");
+        break;
+    case SetSelectorText:
+        dbgln(">>>InvalidateRuleCacheReason::SetSelectorText");
+        break;
+    case SetStyleSheet:
+        dbgln(">>>InvalidateRuleCacheReason::SetStyleSheet");
+        break;
+    case RemoveSheet:
+        dbgln(">>>InvalidateRuleCacheReason::RemoveSheet");
+        break;
+    case EvaluateMediaRules:
+        dbgln(">>>InvalidateRuleCacheReason::EvaluateMediaRules");
+        break;
+    }
+
+    m_author_rule_cache.clear();
+    m_selector_insights = nullptr;
+    // m_author_rule_cache = nullptr;
 
     // NOTE: We could be smarter about keeping the user rule cache, and style sheet.
     //       Currently we are re-parsing the user style sheet every time we build the caches,
