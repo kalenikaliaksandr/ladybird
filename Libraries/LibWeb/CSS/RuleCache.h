@@ -49,20 +49,20 @@ public:
 
     void add_rules_from_stylesheet(CSSStyleSheet&, GC::Ptr<DOM::ShadowRoot> shadow_root, SelectorInsights& insights);
 
-    HashMap<FlyString, Vector<MatchingRule>> rules_by_id;
-    HashMap<FlyString, Vector<MatchingRule>> rules_by_class;
-    HashMap<FlyString, Vector<MatchingRule>> rules_by_tag_name;
-    HashMap<FlyString, Vector<MatchingRule>, AK::ASCIICaseInsensitiveFlyStringTraits> rules_by_attribute_name;
-    Array<Vector<MatchingRule>, to_underlying(Selector::PseudoElement::Type::KnownPseudoElementCount)> rules_by_pseudo_element;
-    Vector<MatchingRule> root_rules;
-    Vector<MatchingRule> other_rules;
-
     HashMap<FlyString, NonnullRefPtr<Animations::KeyframeEffect::KeyFrameSet>> rules_by_animation_keyframes;
 
     RuleCache(CascadeOrigin cascade_origin)
         : m_cascade_origin(cascade_origin)
     {
     }
+
+    Vector<MatchingRule> get_by_id(FlyString) const;
+    Vector<MatchingRule> get_by_class_name(FlyString) const;
+    Vector<MatchingRule> get_by_tag_name(FlyString) const;
+    Vector<MatchingRule> get_by_attribute(FlyString) const;
+    Vector<MatchingRule> get_by_pseudo_element(Selector::PseudoElement::Type) const;
+    Vector<MatchingRule> get_root_rules() const;
+    Vector<MatchingRule> get_other_rules() const;
 
 private:
     static void collect_selector_insights(Selector const& selector, SelectorInsights& insights);
@@ -79,6 +79,14 @@ private:
     size_t m_num_attribute_rules { 0 };
 
     // SelectorInsights m_insights;
+
+    HashMap<FlyString, Vector<MatchingRule>> m_rules_by_id;
+    HashMap<FlyString, Vector<MatchingRule>> m_rules_by_class;
+    HashMap<FlyString, Vector<MatchingRule>> m_rules_by_tag_name;
+    HashMap<FlyString, Vector<MatchingRule>, AK::ASCIICaseInsensitiveFlyStringTraits> m_rules_by_attribute_name;
+    Array<Vector<MatchingRule>, to_underlying(Selector::PseudoElement::Type::KnownPseudoElementCount)> m_rules_by_pseudo_element;
+    Vector<MatchingRule> m_root_rules;
+    Vector<MatchingRule> m_other_rules;
 };
 
 }

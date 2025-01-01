@@ -486,19 +486,19 @@ void RuleCache::add_rules_from_stylesheet(CSSStyleSheet& sheet, GC::Ptr<DOM::Sha
             bool added_to_bucket = false;
 
             auto add_to_id_bucket = [&](FlyString const& name) {
-                rules_by_id.ensure(name).append(move(matching_rule));
+                m_rules_by_id.ensure(name).append(move(matching_rule));
                 ++m_num_id_rules;
                 added_to_bucket = true;
             };
 
             auto add_to_class_bucket = [&](FlyString const& name) {
-                rules_by_class.ensure(name).append(move(matching_rule));
+                m_rules_by_class.ensure(name).append(move(matching_rule));
                 ++m_num_class_rules;
                 added_to_bucket = true;
             };
 
             auto add_to_tag_name_bucket = [&](FlyString const& name) {
-                rules_by_tag_name.ensure(name).append(move(matching_rule));
+                m_rules_by_tag_name.ensure(name).append(move(matching_rule));
                 ++m_num_tag_name_rules;
                 added_to_bucket = true;
             };
@@ -535,23 +535,23 @@ void RuleCache::add_rules_from_stylesheet(CSSStyleSheet& sheet, GC::Ptr<DOM::Sha
             if (!added_to_bucket) {
                 if (matching_rule.contains_pseudo_element) {
                     if (Selector::PseudoElement::is_known_pseudo_element_type(pseudo_element.value())) {
-                        rules_by_pseudo_element[to_underlying(pseudo_element.value())].append(move(matching_rule));
+                        m_rules_by_pseudo_element[to_underlying(pseudo_element.value())].append(move(matching_rule));
                     } else {
                         // NOTE: We don't cache rules for unknown pseudo-elements. They can't match anything anyway.
                     }
                 } else if (contains_root_pseudo_class) {
-                    root_rules.append(move(matching_rule));
+                    m_root_rules.append(move(matching_rule));
                 } else {
                     for (auto const& simple_selector : selector.compound_selectors().last().simple_selectors) {
                         if (simple_selector.type == CSS::Selector::SimpleSelector::Type::Attribute) {
-                            rules_by_attribute_name.ensure(simple_selector.attribute().qualified_name.name.lowercase_name).append(move(matching_rule));
+                            m_rules_by_attribute_name.ensure(simple_selector.attribute().qualified_name.name.lowercase_name).append(move(matching_rule));
                             ++m_num_attribute_rules;
                             added_to_bucket = true;
                             break;
                         }
                     }
                     if (!added_to_bucket) {
-                        other_rules.append(move(matching_rule));
+                        m_other_rules.append(move(matching_rule));
                     }
                 }
             }
@@ -596,6 +596,53 @@ void RuleCache::add_rules_from_stylesheet(CSSStyleSheet& sheet, GC::Ptr<DOM::Sha
     });
 
     ++m_style_sheet_index;
+}
+
+Vector<MatchingRule> RuleCache::get_by_id(FlyString id) const
+{
+    if (auto rules = m_rules_by_id.get(id); rules.has_value()) {
+        return rules.value();
+    }
+    return {};
+}
+
+Vector<MatchingRule> RuleCache::get_by_class_name(FlyString class_name) const
+{
+    if (auto rules = m_rules_by_class.get(class_name); rules.has_value()) {
+        return rules.value();
+    }
+    return {};
+}
+
+Vector<MatchingRule> RuleCache::get_by_tag_name(FlyString tag_name) const
+{
+    if (auto rules = m_rules_by_tag_name.get(tag_name); rules.has_value()) {
+        return rules.value();
+    }
+    return {};
+}
+
+Vector<MatchingRule> RuleCache::get_by_attribute(FlyString attribute_name) const
+{
+    if (auto rules = m_rules_by_attribute_name.get(attribute_name); rules.has_value()) {
+        return rules.value();
+    }
+    return {};
+}
+
+Vector<MatchingRule> RuleCache::get_by_pseudo_element(Selector::PseudoElement::Type type) const
+{
+    return m_rules_by_pseudo_element[to_underlying(type)];
+}
+
+Vector<MatchingRule> RuleCache::get_root_rules() const
+{
+    return m_root_rules;
+}
+
+Vector<MatchingRule> RuleCache::get_other_rules() const
+{
+    return m_other_rules;
 }
 
 }

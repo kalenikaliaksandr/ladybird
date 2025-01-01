@@ -474,33 +474,46 @@ Vector<MatchingRule> StyleComputer::collect_matching_rules(DOM::Element const& e
     };
 
     for (auto const& class_name : element.class_names()) {
-        if (auto it = rule_cache.rules_by_class.find(class_name); it != rule_cache.rules_by_class.end())
-            add_rules_to_run(it->value);
+        // if (auto it = rule_cache.rules_by_class.find(class_name); it != rule_cache.rules_by_class.end())
+        //     add_rules_to_run(it->value);
+        auto rules = rule_cache.get_by_class_name(class_name);
+        add_rules_to_run(rules);
     }
     if (auto id = element.id(); id.has_value()) {
-        if (auto it = rule_cache.rules_by_id.find(id.value()); it != rule_cache.rules_by_id.end())
-            add_rules_to_run(it->value);
+        // if (auto it = rule_cache.rules_by_id.find(id.value()); it != rule_cache.rules_by_id.end())
+        //     add_rules_to_run(it->value);
+        auto rules = rule_cache.get_by_id(id.value());
+        add_rules_to_run(rules);
     }
-    if (auto it = rule_cache.rules_by_tag_name.find(element.local_name()); it != rule_cache.rules_by_tag_name.end())
-        add_rules_to_run(it->value);
+    // if (auto it = rule_cache.rules_by_tag_name.find(element.local_name()); it != rule_cache.rules_by_tag_name.end())
+    //     add_rules_to_run(it->value);
+    auto tag_name_rules = rule_cache.get_by_tag_name(element.local_name());
+    add_rules_to_run(tag_name_rules);
+
     if (pseudo_element.has_value()) {
-        if (CSS::Selector::PseudoElement::is_known_pseudo_element_type(pseudo_element.value())) {
-            add_rules_to_run(rule_cache.rules_by_pseudo_element.at(to_underlying(pseudo_element.value())));
+        if (Selector::PseudoElement::is_known_pseudo_element_type(pseudo_element.value())) {
+            // add_rules_to_run(rule_cache.rules_by_pseudo_element.at(to_underlying(pseudo_element.value())));
+            auto rules = rule_cache.get_by_pseudo_element(pseudo_element.value());
+            add_rules_to_run(rules);
         } else {
             // NOTE: We don't cache rules for unknown pseudo-elements. They can't match anything anyway.
         }
     }
 
-    if (element.is_document_element())
-        add_rules_to_run(rule_cache.root_rules);
+    if (element.is_document_element()) {
+        // add_rules_to_run(rule_cache.root_rules);
+        add_rules_to_run(rule_cache.get_root_rules());
+    }
 
     element.for_each_attribute([&](auto& name, auto&) {
-        if (auto it = rule_cache.rules_by_attribute_name.find(name); it != rule_cache.rules_by_attribute_name.end()) {
-            add_rules_to_run(it->value);
-        }
+        // if (auto it = rule_cache.rules_by_attribute_name.find(name); it != rule_cache.rules_by_attribute_name.end()) {
+        //     add_rules_to_run(it->value);
+        // }
+        auto rules = rule_cache.get_by_attribute(name);
+        add_rules_to_run(rules);
     });
 
-    add_rules_to_run(rule_cache.other_rules);
+    add_rules_to_run(rule_cache.get_other_rules());
 
     size_t maximum_match_count = 0;
 
