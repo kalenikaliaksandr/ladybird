@@ -454,66 +454,47 @@ Vector<MatchingRule> StyleComputer::collect_matching_rules(DOM::Element const& e
     bool is_hovered = SelectorEngine::matches_hover_pseudo_class(element);
 
     Vector<MatchingRule, 512> rules_to_run;
-    auto add_rules_to_run = [&](Vector<MatchingRule> const& rules) {
-        rules_to_run.grow_capacity(rules_to_run.size() + rules.size());
+
+    Function<void(MatchingRule const&)> add_rule_to_run = [&](MatchingRule const& rule) {
         if (pseudo_element.has_value()) {
-            for (auto const& rule : rules) {
-                if (rule.must_be_hovered && !is_hovered)
-                    continue;
-                if (rule.contains_pseudo_element && filter_namespace_rule(element, rule) && filter_layer(qualified_layer_name, rule))
-                    rules_to_run.unchecked_append(rule);
-            }
+            if (rule.must_be_hovered && !is_hovered)
+                return;
+            if (rule.contains_pseudo_element && filter_namespace_rule(element, rule) && filter_layer(qualified_layer_name, rule))
+                rules_to_run.append(rule);
         } else {
-            for (auto const& rule : rules) {
-                if (rule.must_be_hovered && !is_hovered)
-                    continue;
-                if (!rule.contains_pseudo_element && filter_namespace_rule(element, rule) && filter_layer(qualified_layer_name, rule))
-                    rules_to_run.unchecked_append(rule);
-            }
+            if (rule.must_be_hovered && !is_hovered)
+                return;
+            if (!rule.contains_pseudo_element && filter_namespace_rule(element, rule) && filter_layer(qualified_layer_name, rule))
+                rules_to_run.append(rule);
         }
     };
 
     for (auto const& class_name : element.class_names()) {
-        // if (auto it = rule_cache.rules_by_class.find(class_name); it != rule_cache.rules_by_class.end())
-        //     add_rules_to_run(it->value);
-        auto rules = rule_cache.get_by_class_name(class_name);
-        add_rules_to_run(rules);
+        rule_cache.for_each_rule_with_class_name(class_name, add_rule_to_run);
     }
     if (auto id = element.id(); id.has_value()) {
-        // if (auto it = rule_cache.rules_by_id.find(id.value()); it != rule_cache.rules_by_id.end())
-        //     add_rules_to_run(it->value);
-        auto rules = rule_cache.get_by_id(id.value());
-        add_rules_to_run(rules);
+        rule_cache.for_each_rule_with_id(id.value(), add_rule_to_run);
     }
-    // if (auto it = rule_cache.rules_by_tag_name.find(element.local_name()); it != rule_cache.rules_by_tag_name.end())
-    //     add_rules_to_run(it->value);
-    auto tag_name_rules = rule_cache.get_by_tag_name(element.local_name());
-    add_rules_to_run(tag_name_rules);
+    rule_cache.for_each_rule_with_tag_name(element.local_name(), add_rule_to_run);
 
     if (pseudo_element.has_value()) {
         if (Selector::PseudoElement::is_known_pseudo_element_type(pseudo_element.value())) {
             // add_rules_to_run(rule_cache.rules_by_pseudo_element.at(to_underlying(pseudo_element.value())));
-            auto rules = rule_cache.get_by_pseudo_element(pseudo_element.value());
-            add_rules_to_run(rules);
+            rule_cache.for_each_rule_with_pseudo_element(pseudo_element.value(), add_rule_to_run);
         } else {
             // NOTE: We don't cache rules for unknown pseudo-elements. They can't match anything anyway.
         }
     }
 
     if (element.is_document_element()) {
-        // add_rules_to_run(rule_cache.root_rules);
-        add_rules_to_run(rule_cache.get_root_rules());
+        rule_cache.for_each_root_rule(add_rule_to_run);
     }
 
     element.for_each_attribute([&](auto& name, auto&) {
-        // if (auto it = rule_cache.rules_by_attribute_name.find(name); it != rule_cache.rules_by_attribute_name.end()) {
-        //     add_rules_to_run(it->value);
-        // }
-        auto rules = rule_cache.get_by_attribute(name);
-        add_rules_to_run(rules);
+        rule_cache.for_each_rule_with_attribute(name, add_rule_to_run);
     });
 
-    add_rules_to_run(rule_cache.get_other_rules());
+    rule_cache.for_each_other_rule(add_rule_to_run);
 
     size_t maximum_match_count = 0;
 

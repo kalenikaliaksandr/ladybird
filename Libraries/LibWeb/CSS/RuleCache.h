@@ -56,13 +56,13 @@ public:
     {
     }
 
-    Vector<MatchingRule> get_by_id(FlyString) const;
-    Vector<MatchingRule> get_by_class_name(FlyString) const;
-    Vector<MatchingRule> get_by_tag_name(FlyString) const;
-    Vector<MatchingRule> get_by_attribute(FlyString) const;
-    Vector<MatchingRule> get_by_pseudo_element(Selector::PseudoElement::Type) const;
-    Vector<MatchingRule> get_root_rules() const;
-    Vector<MatchingRule> get_other_rules() const;
+    void for_each_rule_with_id(FlyString const&, Function<void(MatchingRule const&)> const&) const;
+    void for_each_rule_with_class_name(FlyString const&, Function<void(MatchingRule const&)> const& callback) const;
+    void for_each_rule_with_tag_name(FlyString const&, Function<void(MatchingRule const&)> const& callback) const;
+    void for_each_rule_with_attribute(FlyString const&, Function<void(MatchingRule const&)> const& callback) const;
+    void for_each_rule_with_pseudo_element(Selector::PseudoElement::Type, Function<void(MatchingRule const&)> const& callback) const;
+    void for_each_root_rule(Function<void(MatchingRule const&)> const& callback) const;
+    void for_each_other_rule(Function<void(MatchingRule const&)> const& callback) const;
 
 private:
     static void collect_selector_insights(Selector const& selector, SelectorInsights& insights);

@@ -598,51 +598,61 @@ void RuleCache::add_rules_from_stylesheet(CSSStyleSheet& sheet, GC::Ptr<DOM::Sha
     ++m_style_sheet_index;
 }
 
-Vector<MatchingRule> RuleCache::get_by_id(FlyString id) const
+void RuleCache::for_each_rule_with_id(FlyString const& id, Function<void(MatchingRule const&)> const& callback) const
 {
     if (auto rules = m_rules_by_id.get(id); rules.has_value()) {
-        return rules.value();
+        for (auto const& rule : rules.value()) {
+            callback(rule);
+        }
     }
-    return {};
 }
 
-Vector<MatchingRule> RuleCache::get_by_class_name(FlyString class_name) const
+void RuleCache::for_each_rule_with_class_name(FlyString const& class_name, Function<void(MatchingRule const&)> const& callback) const
 {
     if (auto rules = m_rules_by_class.get(class_name); rules.has_value()) {
-        return rules.value();
+        for (auto const& rule : rules.value()) {
+            callback(rule);
+        }
     }
-    return {};
 }
 
-Vector<MatchingRule> RuleCache::get_by_tag_name(FlyString tag_name) const
+void RuleCache::for_each_rule_with_tag_name(FlyString const& tag_name, Function<void(MatchingRule const&)> const& callback) const
 {
     if (auto rules = m_rules_by_tag_name.get(tag_name); rules.has_value()) {
-        return rules.value();
+        for (auto const& rule : rules.value()) {
+            callback(rule);
+        }
     }
-    return {};
 }
 
-Vector<MatchingRule> RuleCache::get_by_attribute(FlyString attribute_name) const
+void RuleCache::for_each_rule_with_attribute(FlyString const& attribute_name, Function<void(MatchingRule const&)> const& callback) const
 {
     if (auto rules = m_rules_by_attribute_name.get(attribute_name); rules.has_value()) {
-        return rules.value();
+        for (auto const& rule : rules.value()) {
+            callback(rule);
+        }
     }
-    return {};
 }
 
-Vector<MatchingRule> RuleCache::get_by_pseudo_element(Selector::PseudoElement::Type type) const
+void RuleCache::for_each_rule_with_pseudo_element(Selector::PseudoElement::Type type, Function<void(MatchingRule const&)> const& callback) const
 {
-    return m_rules_by_pseudo_element[to_underlying(type)];
+    for (auto const& rule : m_rules_by_pseudo_element[to_underlying(type)]) {
+        callback(rule);
+    }
 }
 
-Vector<MatchingRule> RuleCache::get_root_rules() const
+void RuleCache::for_each_root_rule(Function<void(MatchingRule const&)> const& callback) const
 {
-    return m_root_rules;
+    for (auto const& rule : m_root_rules) {
+        callback(rule);
+    }
 }
 
-Vector<MatchingRule> RuleCache::get_other_rules() const
+void RuleCache::for_each_other_rule(Function<void(MatchingRule const&)> const& callback) const
 {
-    return m_other_rules;
+    for (auto const& rule : m_other_rules) {
+        callback(rule);
+    }
 }
 
 }
