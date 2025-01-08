@@ -262,6 +262,8 @@ public:
     NonnullRefPtr<Selector> relative_to(SimpleSelector const&) const;
     bool contains_the_nesting_selector() const { return m_contains_the_nesting_selector; }
     bool contains_hover_pseudo_class() const { return m_contains_hover_pseudo_class; }
+    bool contains_host_pseudo_class() const { return m_contains_host_pseudo_class; }
+    bool crosses_tree_scopes() const { return m_crosses_tree_scopes; }
     RefPtr<Selector> absolutized(SimpleSelector const& selector_for_nesting) const;
     u32 specificity() const;
     String serialize() const;
@@ -276,6 +278,8 @@ private:
     Optional<Selector::PseudoElement> m_pseudo_element;
     bool m_contains_the_nesting_selector { false };
     bool m_contains_hover_pseudo_class { false };
+    bool m_contains_host_pseudo_class { false };
+    bool m_crosses_tree_scopes { false };
 
     void collect_ancestor_hashes();
 

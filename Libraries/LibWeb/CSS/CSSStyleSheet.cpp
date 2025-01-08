@@ -9,11 +9,13 @@
 #include <LibWeb/Bindings/CSSStyleSheetPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/CSS/CSSImportRule.h>
+#include <LibWeb/CSS/CSSNestedDeclarations.h>
 #include <LibWeb/CSS/CSSStyleSheet.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/CSS/StyleSheetList.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
@@ -158,8 +160,9 @@ WebIDL::ExceptionOr<unsigned> CSSStyleSheet::insert_rule(StringView rule, unsign
         parsed_rule->set_parent_style_sheet(this);
 
         if (m_style_sheet_list) {
-            m_style_sheet_list->document().style_computer().invalidate_rule_cache();
-            m_style_sheet_list->document_or_shadow_root().invalidate_style(DOM::StyleInvalidationReason::StyleSheetInsertRule);
+            auto& style_scope = m_style_sheet_list->style_scope();
+            style_scope.style_computer().invalidate_rule_cache();
+            style_scope.dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetInsertRule);
         }
     }
 
@@ -179,8 +182,8 @@ WebIDL::ExceptionOr<void> CSSStyleSheet::delete_rule(unsigned index)
     auto result = m_rules->remove_a_css_rule(index);
     if (!result.is_exception()) {
         if (m_style_sheet_list) {
-            m_style_sheet_list->document().style_computer().invalidate_rule_cache();
-            m_style_sheet_list->document_or_shadow_root().invalidate_style(DOM::StyleInvalidationReason::StyleSheetDeleteRule);
+            m_style_sheet_list->style_scope().style_computer().invalidate_rule_cache();
+            m_style_sheet_list->style_scope().dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetDeleteRule);
         }
     }
     return result;
@@ -362,6 +365,7 @@ void CSSStyleSheet::recalculate_rule_caches()
     m_default_namespace_rule = nullptr;
     m_namespace_rules.clear();
     m_import_rules.clear();
+    m_has_host_selectors = false;
 
     for (auto const& rule : *m_rules) {
         // "Any @import rules must precede all other valid at-rules and style rules in a style sheet
@@ -375,6 +379,23 @@ void CSSStyleSheet::recalculate_rule_caches()
         // A syntactically invalid @namespace rule (whether malformed or misplaced) must be ignored."
         // https://drafts.csswg.org/css-namespaces/#syntax
         switch (rule->type()) {
+        case CSSRule::Type::Style:
+        case CSSRule::Type::NestedDeclarations: {
+            SelectorList const& selectors = [&]() {
+                if (rule->type() == CSSRule::Type::Style)
+                    return static_cast<CSSStyleRule const&>(*rule).selectors();
+                if (rule->type() == CSSRule::Type::NestedDeclarations)
+                    return static_cast<CSSNestedDeclarations const&>(*rule).parent_style_rule().selectors();
+                VERIFY_NOT_REACHED();
+            }();
+            for (auto const& selector : selectors) {
+                if (selector->contains_host_pseudo_class() || selector->crosses_tree_scopes()) {
+                    m_has_host_selectors = true;
+                    break;
+                }
+            }
+            break;
+        }
         case CSSRule::Type::Import: {
             // @import rules must appear before @namespace rules, so skip this if we've seen @namespace.
             if (!m_namespace_rules.is_empty())

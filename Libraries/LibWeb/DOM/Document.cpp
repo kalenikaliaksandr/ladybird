@@ -1320,7 +1320,9 @@ void Document::update_layout()
         if (node.is_element()) {
             if (auto shadow_root = static_cast<DOM::Element&>(node).shadow_root()) {
                 if (needs_full_style_update || shadow_root->needs_style_update() || shadow_root->child_needs_style_update()) {
-                    auto subtree_invalidation = update_style_recursively(*shadow_root, style_computer);
+                    auto& style_computer_for_shadow_root = shadow_root->style_computer();
+                    style_computer_for_shadow_root.reset_ancestor_filter();
+                    auto subtree_invalidation = update_style_recursively(*shadow_root, style_computer_for_shadow_root);
                     if (!is_display_none)
                         invalidation |= subtree_invalidation;
                 }
@@ -1365,6 +1367,9 @@ void Document::update_style()
 
     // Fetch the viewport rect once, instead of repeatedly, during style computation.
     style_computer().set_viewport_rect({}, viewport_rect());
+    for_each_shadow_root([this](auto& shadow_root) {
+        shadow_root.style_computer().set_viewport_rect({}, viewport_rect());
+    });
 
     evaluate_media_rules();
 
@@ -1575,12 +1580,15 @@ static Node* find_common_ancestor(Node* a, Node* b)
 
 void Document::invalidate_style_for_elements_affected_by_hover_change(Node& old_new_hovered_common_ancestor, GC::Ptr<Node> hovered_node)
 {
-    auto const& hover_rules = style_computer().get_hover_rules();
+    if (!old_new_hovered_common_ancestor.is_connected())
+        return;
+
+    auto const& hover_rules = old_new_hovered_common_ancestor.style_computer().get_hover_rules();
     if (hover_rules.is_empty())
         return;
 
     auto& invalidation_root = [&] -> Node& {
-        if (style_computer().has_has_selectors())
+        if (old_new_hovered_common_ancestor.style_computer().has_has_selectors())
             return old_new_hovered_common_ancestor;
         return old_new_hovered_common_ancestor;
     }();
@@ -3195,16 +3203,23 @@ void Document::evaluate_media_rules()
     if (!window)
         return;
 
-    bool any_media_queries_changed_match_state = false;
-    for_each_active_css_style_sheet([&](CSS::CSSStyleSheet& style_sheet, auto) {
-        if (style_sheet.evaluate_media_queries(*window))
-            any_media_queries_changed_match_state = true;
+    HashTable<ShadowRoot*> invalidated_shadow_roots;
+    for_each_active_css_style_sheet([&](CSS::CSSStyleSheet& style_sheet, auto shadow_root) {
+        if (style_sheet.evaluate_media_queries(*window)) {
+            invalidated_shadow_roots.set(shadow_root.ptr());
+            if (shadow_root) {
+                auto& style_scope = static_cast<StyleScope&>(*shadow_root);
+                style_scope.notify_media_query_changed(style_sheet);
+            } else {
+                auto& style_scope = static_cast<StyleScope&>(*this);
+                style_scope.notify_media_query_changed(style_sheet);
+            }
+        }
     });
 
-    if (any_media_queries_changed_match_state) {
-        style_computer().invalidate_rule_cache();
-        invalidate_style(StyleInvalidationReason::MediaQueryChangedMatchState);
+    if (!invalidated_shadow_roots.is_empty()) {
         invalidate_layout_tree();
+        invalidate_style(StyleInvalidationReason::MediaQueryChangedMatchState);
     }
 }
 
@@ -5573,7 +5588,7 @@ GC::Ref<WebIDL::ObservableArray> Document::adopted_style_sheets() const
 WebIDL::ExceptionOr<void> Document::set_adopted_style_sheets(JS::Value new_value)
 {
     if (!m_adopted_style_sheets)
-        m_adopted_style_sheets = create_adopted_style_sheets_list(const_cast<Document&>(*this));
+        m_adopted_style_sheets = create_adopted_style_sheets_list(*this);
 
     m_adopted_style_sheets->clear();
     auto iterator_record = TRY(get_iterator(vm(), new_value, JS::IteratorHint::Sync));

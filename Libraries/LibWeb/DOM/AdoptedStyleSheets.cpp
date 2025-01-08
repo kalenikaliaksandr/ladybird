@@ -10,10 +10,11 @@
 
 namespace Web::DOM {
 
-GC::Ref<WebIDL::ObservableArray> create_adopted_style_sheets_list(Document& document)
+GC::Ref<WebIDL::ObservableArray> create_adopted_style_sheets_list(StyleScope& style_scope)
 {
+    auto& document = style_scope.dom_node().document();
     auto adopted_style_sheets = WebIDL::ObservableArray::create(document.realm());
-    adopted_style_sheets->set_on_set_an_indexed_value_callback([&document](JS::Value& value) -> WebIDL::ExceptionOr<void> {
+    adopted_style_sheets->set_on_set_an_indexed_value_callback([&document, &style_scope](JS::Value& value) -> WebIDL::ExceptionOr<void> {
         auto& vm = document.vm();
         if (!value.is_object())
             return vm.throw_completion<JS::TypeError>(JS::ErrorType::NotAnObjectOfType, "CSSStyleSheet");
@@ -30,14 +31,11 @@ GC::Ref<WebIDL::ObservableArray> create_adopted_style_sheets_list(Document& docu
         if (!style_sheet.constructed() || style_sheet.constructor_document().ptr() != &document)
             return WebIDL::NotAllowedError::create(document.realm(), "Sharing a StyleSheet between documents is not allowed."_string);
 
-        document.style_computer().load_fonts_from_sheet(style_sheet);
-        document.style_computer().invalidate_rule_cache();
-        document.invalidate_style(DOM::StyleInvalidationReason::AdoptedStyleSheetsList);
+        style_scope.notify_about_added_stylesheet(style_sheet);
         return {};
     });
-    adopted_style_sheets->set_on_delete_an_indexed_value_callback([&document]() -> WebIDL::ExceptionOr<void> {
-        document.style_computer().invalidate_rule_cache();
-        document.invalidate_style(DOM::StyleInvalidationReason::AdoptedStyleSheetsList);
+    adopted_style_sheets->set_on_delete_an_indexed_value_callback([&style_scope]() -> WebIDL::ExceptionOr<void> {
+        style_scope.notify_about_removed_stylesheet({});
         return {};
     });
 

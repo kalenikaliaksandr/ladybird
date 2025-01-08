@@ -401,14 +401,29 @@ GC::Ptr<HTML::Navigable> Node::navigable() const
     }
 }
 
+CSS::StyleComputer& Node::style_computer()
+{
+    auto& root = this->root();
+    if (root.is_document())
+        return root.document().style_computer();
+    if (root.is_shadow_root())
+        return static_cast<ShadowRoot&>(root).style_computer();
+    VERIFY_NOT_REACHED();
+}
+
 void Node::invalidate_style(StyleInvalidationReason reason)
 {
     if (is_character_data())
         return;
 
+    bool style_includes_has_selectors = true;
+    if (is_connected()) {
+        style_includes_has_selectors = style_computer().has_has_selectors();
+    }
+
     // FIXME: This is very not optimal! We should figure out a smaller set of elements to invalidate,
     //        but right now the :has() selector means we have to invalidate everything.
-    if (!is_document() && document().style_computer().has_has_selectors()) {
+    if (!is_document() && style_includes_has_selectors) {
         document().invalidate_style(reason);
         return;
     }

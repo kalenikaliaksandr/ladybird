@@ -551,7 +551,7 @@ Optional<StyleProperty> ResolvedCSSStyleDeclaration::property(PropertyID propert
     }
 
     if (!layout_node) {
-        auto style = m_element->document().style_computer().compute_style(const_cast<DOM::Element&>(*m_element), m_pseudo_element);
+        auto style = m_element->style_computer().compute_style(const_cast<DOM::Element&>(*m_element), m_pseudo_element);
 
         // FIXME: This is a stopgap until we implement shorthand -> longhand conversion.
         auto const* value = style->maybe_null_property(property_id);

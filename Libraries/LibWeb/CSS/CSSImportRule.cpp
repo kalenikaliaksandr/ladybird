@@ -17,6 +17,7 @@
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/StyleScope.h>
 #include <LibWeb/HTML/Window.h>
 
 namespace Web::CSS {
@@ -157,9 +158,8 @@ void CSSImportRule::set_style_sheet(GC::Ref<CSSStyleSheet> style_sheet)
 {
     m_style_sheet = style_sheet;
     m_style_sheet->set_owner_css_rule(this);
-    m_document->style_computer().invalidate_rule_cache();
-    m_document->style_computer().load_fonts_from_sheet(*m_style_sheet);
-    m_document->invalidate_style(DOM::StyleInvalidationReason::CSSImportRule);
+    auto& style_scope = static_cast<DOM::StyleScope&>(*m_document);
+    style_scope.notify_about_added_stylesheet(style_sheet);
 }
 
 }

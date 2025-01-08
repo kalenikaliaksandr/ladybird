@@ -9,6 +9,7 @@
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/CSS/StyleSheetList.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/ShadowRoot.h>
 
 namespace Web::CSS {
 
@@ -107,9 +108,8 @@ void StyleSheetList::add_sheet(CSSStyleSheet& sheet)
         return;
     }
 
-    document().style_computer().invalidate_rule_cache();
-    document().style_computer().load_fonts_from_sheet(sheet);
-    document_or_shadow_root().invalidate_style(DOM::StyleInvalidationReason::StyleSheetListAddSheet);
+    auto& style_scope = this->style_scope();
+    style_scope.notify_about_added_stylesheet(sheet);
 }
 
 void StyleSheetList::remove_sheet(CSSStyleSheet& sheet)
@@ -123,9 +123,8 @@ void StyleSheetList::remove_sheet(CSSStyleSheet& sheet)
         return;
     }
 
-    m_document_or_shadow_root->document().style_computer().unload_fonts_from_sheet(sheet);
-    m_document_or_shadow_root->document().style_computer().invalidate_rule_cache();
-    document_or_shadow_root().invalidate_style(DOM::StyleInvalidationReason::StyleSheetListRemoveSheet);
+    auto& style_scope = this->style_scope();
+    style_scope.notify_about_removed_stylesheet(sheet);
 }
 
 GC::Ref<StyleSheetList> StyleSheetList::create(GC::Ref<DOM::Node> document_or_shadow_root)
@@ -170,6 +169,19 @@ DOM::Document& StyleSheetList::document()
 DOM::Document const& StyleSheetList::document() const
 {
     return m_document_or_shadow_root->document();
+}
+
+DOM::StyleScope& StyleSheetList::style_scope()
+{
+    if (m_document_or_shadow_root->is_document()) {
+        auto& document = verify_cast<DOM::Document>(*m_document_or_shadow_root);
+        return static_cast<DOM::StyleScope&>(document);
+    }
+    if (m_document_or_shadow_root->is_shadow_root()) {
+        auto& shadow_root = verify_cast<DOM::ShadowRoot>(*m_document_or_shadow_root);
+        return static_cast<DOM::StyleScope&>(shadow_root);
+    }
+    VERIFY_NOT_REACHED();
 }
 
 }

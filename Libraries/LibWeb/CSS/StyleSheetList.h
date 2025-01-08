@@ -9,6 +9,9 @@
 
 #include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/CSS/CSSStyleSheet.h>
+#include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/ShadowRoot.h>
+#include <LibWeb/DOM/StyleScope.h>
 
 namespace Web::CSS {
 
@@ -40,8 +43,11 @@ public:
     [[nodiscard]] DOM::Document& document();
     [[nodiscard]] DOM::Document const& document() const;
 
-    [[nodiscard]] DOM::Node& document_or_shadow_root() { return m_document_or_shadow_root; }
-    [[nodiscard]] DOM::Node const& document_or_shadow_root() const { return m_document_or_shadow_root; }
+    [[nodiscard]] DOM::StyleScope& style_scope();
+    [[nodiscard]] DOM::StyleScope const& style_scope() const
+    {
+        return const_cast<StyleSheetList&>(*this).style_scope();
+    }
 
 private:
     explicit StyleSheetList(GC::Ref<DOM::Node> document_or_shadow_root);

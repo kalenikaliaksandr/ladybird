@@ -192,7 +192,7 @@ void TreeBuilder::insert_node_into_inline_or_block_ancestor(Layout::Node& node, 
     }
 }
 
-void TreeBuilder::create_pseudo_element_if_needed(DOM::Element& element, CSS::Selector::PseudoElement::Type pseudo_element, AppendOrPrepend mode)
+void TreeBuilder::create_pseudo_element_if_needed(DOM::Element& element, CSS::StyleComputer& style_computer, CSS::Selector::PseudoElement::Type pseudo_element, AppendOrPrepend mode)
 {
     auto& document = element.document();
 
@@ -214,8 +214,6 @@ void TreeBuilder::create_pseudo_element_if_needed(DOM::Element& element, CSS::Se
     auto pseudo_element_node = DOM::Element::create_layout_node_for_display_type(document, pseudo_element_display, *pseudo_element_style, nullptr);
     if (!pseudo_element_node)
         return;
-
-    auto& style_computer = document.style_computer();
 
     // FIXME: This code actually computes style for element::marker, and shouldn't for element::pseudo::marker
     if (is<ListItemBox>(*pseudo_element_node)) {
@@ -306,7 +304,7 @@ i32 TreeBuilder::calculate_list_item_index(DOM::Node& dom_node)
     return 1;
 }
 
-void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& context)
+void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& context, CSS::StyleComputer& style_computer)
 {
     if (dom_node.is_element()) {
         auto& element = static_cast<DOM::Element&>(dom_node);
@@ -314,11 +312,11 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
             return;
     }
     if (dom_node.is_element())
-        dom_node.document().style_computer().push_ancestor(static_cast<DOM::Element const&>(dom_node));
+        style_computer.push_ancestor(static_cast<DOM::Element const&>(dom_node));
 
     ScopeGuard pop_ancestor_guard = [&] {
         if (dom_node.is_element())
-            dom_node.document().style_computer().pop_ancestor(static_cast<DOM::Element const&>(dom_node));
+            style_computer.pop_ancestor(static_cast<DOM::Element const&>(dom_node));
     };
 
     GC::Ptr<Layout::Node> layout_node;
@@ -345,7 +343,6 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
     }
 
     auto& document = dom_node.document();
-    auto& style_computer = document.style_computer();
     GC::Ptr<CSS::ComputedProperties> style;
     CSS::Display display;
 
@@ -405,20 +402,22 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
     if (is<DOM::Element>(dom_node) && layout_node->can_have_children() && !element_has_content_visibility_hidden) {
         auto& element = static_cast<DOM::Element&>(dom_node);
         push_parent(verify_cast<NodeWithStyle>(*layout_node));
-        create_pseudo_element_if_needed(element, CSS::Selector::PseudoElement::Type::Before, AppendOrPrepend::Prepend);
+        create_pseudo_element_if_needed(element, style_computer, CSS::Selector::PseudoElement::Type::Before, AppendOrPrepend::Prepend);
         pop_parent();
     }
 
     if ((dom_node.has_children() || shadow_root) && layout_node->can_have_children() && !element_has_content_visibility_hidden) {
         push_parent(verify_cast<NodeWithStyle>(*layout_node));
         if (shadow_root) {
+            auto& style_computer_for_shadow_root = shadow_root->style_computer();
+            style_computer_for_shadow_root.reset_ancestor_filter();
             for (auto* node = shadow_root->first_child(); node; node = node->next_sibling()) {
-                create_layout_tree(*node, context);
+                create_layout_tree(*node, context, style_computer_for_shadow_root);
             }
         } else {
             // This is the same as verify_cast<DOM::ParentNode>(dom_node).for_each_child
             for (auto* node = verify_cast<DOM::ParentNode>(dom_node).first_child(); node; node = node->next_sibling())
-                create_layout_tree(*node, context);
+                create_layout_tree(*node, context, style_computer);
         }
 
         if (dom_node.is_document()) {
@@ -426,7 +425,7 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
             // generate boxes as if they were siblings of the root element.
             TemporaryChange<bool> layout_mask(context.layout_top_layer, true);
             for (auto const& top_layer_element : document.top_layer_elements())
-                create_layout_tree(top_layer_element, context);
+                create_layout_tree(top_layer_element, context, style_computer);
         }
         pop_parent();
     }
@@ -450,7 +449,7 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
         push_parent(verify_cast<NodeWithStyle>(*layout_node));
 
         for (auto const& slottable : slottables)
-            slottable.visit([&](auto& node) { create_layout_tree(node, context); });
+            slottable.visit([&](auto& node) { create_layout_tree(node, context, style_computer); });
 
         pop_parent();
     }
@@ -464,7 +463,7 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
         auto layout_mask_or_clip_path = [&](GC::Ptr<SVG::SVGElement const> mask_or_clip_path) {
             TemporaryChange<bool> layout_mask(context.layout_svg_mask_or_clip_path, true);
             push_parent(verify_cast<NodeWithStyle>(*layout_node));
-            create_layout_tree(const_cast<SVG::SVGElement&>(*mask_or_clip_path), context);
+            create_layout_tree(const_cast<SVG::SVGElement&>(*mask_or_clip_path), context, style_computer);
             pop_parent();
         };
         if (auto mask = graphics_element.mask())
@@ -537,7 +536,7 @@ void TreeBuilder::create_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
     if (is<DOM::Element>(dom_node) && layout_node->can_have_children() && !element_has_content_visibility_hidden) {
         auto& element = static_cast<DOM::Element&>(dom_node);
         push_parent(verify_cast<NodeWithStyle>(*layout_node));
-        create_pseudo_element_if_needed(element, CSS::Selector::PseudoElement::Type::After, AppendOrPrepend::Append);
+        create_pseudo_element_if_needed(element, style_computer, CSS::Selector::PseudoElement::Type::After, AppendOrPrepend::Append);
         pop_parent();
     }
 }
@@ -550,7 +549,7 @@ GC::Ptr<Layout::Node> TreeBuilder::build(DOM::Node& dom_node)
 
     Context context;
     m_quote_nesting_level = 0;
-    create_layout_tree(dom_node, context);
+    create_layout_tree(dom_node, context, dom_node.document().style_computer());
 
     if (auto* root = dom_node.document().layout_node())
         fixup_tables(*root);

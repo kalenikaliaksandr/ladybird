@@ -91,6 +91,8 @@ public:
     }
     bool has_associated_font_loader(FontLoader& font_loader) const;
 
+    bool has_host_selectors() const { return m_has_host_selectors; }
+
 private:
     CSSStyleSheet(JS::Realm&, CSSRuleList&, MediaList&, Optional<URL::URL> location);
 
@@ -119,6 +121,8 @@ private:
     Optional<bool> m_did_match;
 
     Vector<WeakPtr<FontLoader const>> m_associated_font_loaders;
+
+    bool m_has_host_selectors { false };
 };
 
 }

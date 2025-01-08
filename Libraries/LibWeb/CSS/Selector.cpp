@@ -56,9 +56,20 @@ Selector::Selector(Vector<CompoundSelector>&& compound_selectors)
                 m_contains_the_nesting_selector = true;
                 break;
             }
+            if (simple_selector.type == SimpleSelector::Type::PseudoElement) {
+                if (simple_selector.pseudo_element().type() == PseudoElement::Type::DetailsContent) {
+                    m_crosses_tree_scopes = true;
+                }
+                if (simple_selector.pseudo_element().type() == PseudoElement::Type::FileSelectorButton) {
+                    m_crosses_tree_scopes = true;
+                }
+            }
             if (simple_selector.type == SimpleSelector::Type::PseudoClass) {
                 if (simple_selector.pseudo_class().type == PseudoClass::Hover) {
                     m_contains_hover_pseudo_class = true;
+                }
+                if (simple_selector.pseudo_class().type == PseudoClass::Host) {
+                    m_contains_host_pseudo_class = true;
                 }
                 for (auto const& child_selector : simple_selector.pseudo_class().argument_selector_list) {
                     if (child_selector->contains_the_nesting_selector()) {
@@ -66,6 +77,12 @@ Selector::Selector(Vector<CompoundSelector>&& compound_selectors)
                     }
                     if (child_selector->contains_hover_pseudo_class()) {
                         m_contains_hover_pseudo_class = true;
+                    }
+                    if (child_selector->contains_host_pseudo_class()) {
+                        m_contains_host_pseudo_class = true;
+                    }
+                    if (child_selector->crosses_tree_scopes()) {
+                        m_crosses_tree_scopes = true;
                     }
                 }
                 if (m_contains_the_nesting_selector)

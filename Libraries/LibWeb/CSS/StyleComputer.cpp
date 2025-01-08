@@ -171,11 +171,12 @@ OwnFontFaceKey::operator FontFaceKey() const
 
 static DOM::Element const* element_to_inherit_style_from(DOM::Element const*, Optional<CSS::Selector::PseudoElement::Type>);
 
-StyleComputer::StyleComputer(DOM::Document& document)
-    : m_document(document)
+StyleComputer::StyleComputer(DOM::Node& node)
+    : m_document_or_shadow_root(node)
     , m_default_font_metrics(16, Platform::FontPlugin::the().default_font(16)->pixel_metrics())
     , m_root_element_font_metrics(m_default_font_metrics)
 {
+    VERIFY(node.is_document() || node.is_shadow_root());
     m_qualified_layer_names_in_order.append({});
 }
 
@@ -246,7 +247,7 @@ void FontLoader::start_loading_next_url()
 
     // HACK: We're crudely computing the referer value and shoving it into the
     //       request until fetch infrastructure is used here.
-    auto referrer_url = ReferrerPolicy::strip_url_for_use_as_referrer(m_style_computer.document().url());
+    auto referrer_url = ReferrerPolicy::strip_url_for_use_as_referrer(m_style_computer.document({}).url());
     if (referrer_url.has_value() && !request.headers().contains("Referer"))
         request.set_header("Referer", referrer_url->serialize().to_byte_string());
 
@@ -362,19 +363,20 @@ Optional<String> StyleComputer::user_agent_style_sheet_source(StringView name)
 template<typename Callback>
 void StyleComputer::for_each_stylesheet(CascadeOrigin cascade_origin, Callback callback) const
 {
+    auto& document = m_document_or_shadow_root->document();
     if (cascade_origin == CascadeOrigin::UserAgent) {
-        callback(default_stylesheet(document()), {});
-        if (document().in_quirks_mode())
-            callback(quirks_mode_stylesheet(document()), {});
-        callback(mathml_stylesheet(document()), {});
-        callback(svg_stylesheet(document()), {});
+        callback(default_stylesheet(document), {});
+        if (document.in_quirks_mode())
+            callback(quirks_mode_stylesheet(document), {});
+        callback(mathml_stylesheet(document), {});
+        callback(svg_stylesheet(document), {});
     }
     if (cascade_origin == CascadeOrigin::User) {
         if (m_user_style_sheet)
             callback(*m_user_style_sheet, {});
     }
     if (cascade_origin == CascadeOrigin::Author) {
-        document().for_each_active_css_style_sheet([&](auto& sheet, auto shadow_root) {
+        document.for_each_active_css_style_sheet([&](auto& sheet, auto shadow_root) {
             callback(sheet, shadow_root);
         });
     }
@@ -954,19 +956,21 @@ void StyleComputer::cascade_declarations(
     Important important,
     Optional<FlyString> layer_name) const
 {
+    auto& document = m_document_or_shadow_root->document();
+
     for (auto const& match : matching_rules) {
         for (auto const& property : match.declaration().properties()) {
             if (important != property.important)
                 continue;
 
             if (property.property_id == CSS::PropertyID::All) {
-                set_all_properties(cascaded_properties, element, pseudo_element, property.value, m_document, &match.declaration(), cascade_origin, important, layer_name);
+                set_all_properties(cascaded_properties, element, pseudo_element, property.value, document, &match.declaration(), cascade_origin, important, layer_name);
                 continue;
             }
 
             auto property_value = property.value;
             if (property.value->is_unresolved())
-                property_value = Parser::Parser::resolve_unresolved_style_value(Parser::ParsingContext { document() }, element, pseudo_element, property.property_id, property.value->as_unresolved());
+                property_value = Parser::Parser::resolve_unresolved_style_value(Parser::ParsingContext { document }, element, pseudo_element, property.property_id, property.value->as_unresolved());
             if (!property_value->is_unresolved())
                 set_property_expanding_shorthands(cascaded_properties, property.property_id, property_value, &match.declaration(), cascade_origin, important, layer_name);
         }
@@ -979,13 +983,13 @@ void StyleComputer::cascade_declarations(
                     continue;
 
                 if (property.property_id == CSS::PropertyID::All) {
-                    set_all_properties(cascaded_properties, element, pseudo_element, property.value, m_document, inline_style, cascade_origin, important, layer_name);
+                    set_all_properties(cascaded_properties, element, pseudo_element, property.value, document, inline_style, cascade_origin, important, layer_name);
                     continue;
                 }
 
                 auto property_value = property.value;
                 if (property.value->is_unresolved())
-                    property_value = Parser::Parser::resolve_unresolved_style_value(Parser::ParsingContext { document() }, element, pseudo_element, property.property_id, property.value->as_unresolved());
+                    property_value = Parser::Parser::resolve_unresolved_style_value(Parser::ParsingContext { document }, element, pseudo_element, property.property_id, property.value->as_unresolved());
                 if (!property_value->is_unresolved())
                     set_property_expanding_shorthands(cascaded_properties, property.property_id, property_value, inline_style, cascade_origin, important, layer_name);
             }
@@ -1304,6 +1308,8 @@ void StyleComputer::start_needed_transitions(ComputedProperties const& previous_
     if (pseudo_element.has_value())
         return;
 
+    auto& document = m_document_or_shadow_root->document();
+
     // https://drafts.csswg.org/css-transitions/#transition-combined-duration
     auto combined_duration = [](Animations::Animatable::TransitionAttributes const& transition_attributes) {
         // Define the combined duration of the transition as the sum of max(matching transition duration, 0s) and the matching transition delay.
@@ -1311,7 +1317,7 @@ void StyleComputer::start_needed_transitions(ComputedProperties const& previous_
     };
 
     // For each element and property, the implementation must act as follows:
-    auto style_change_event_time = m_document->timeline()->current_time().value();
+    auto style_change_event_time = document.timeline()->current_time().value();
 
     for (auto i = to_underlying(CSS::first_longhand_property_id); i <= to_underlying(CSS::last_longhand_property_id); ++i) {
         auto property_id = static_cast<CSS::PropertyID>(i);
@@ -1326,7 +1332,7 @@ void StyleComputer::start_needed_transitions(ComputedProperties const& previous_
         auto start_a_transition = [&](auto start_time, auto end_time, auto const& start_value, auto const& end_value, auto const& reversing_adjusted_start_value, auto reversing_shortening_factor) {
             dbgln_if(CSS_TRANSITIONS_DEBUG, "Starting a transition of {} from {} to {}", string_from_property_id(property_id), start_value->to_string(), end_value->to_string());
 
-            auto transition = CSSTransition::start_a_transition(element, property_id, document().transition_generation(),
+            auto transition = CSSTransition::start_a_transition(element, property_id, document.transition_generation(),
                 start_time, end_time, start_value, end_value, reversing_adjusted_start_value, reversing_shortening_factor);
             // Immediately set the property's value to the transition's current value, to prevent single-frame jumps.
             new_style.set_animated_property(property_id, transition->value_at_time(style_change_event_time));
@@ -1494,7 +1500,7 @@ void StyleComputer::start_needed_transitions(ComputedProperties const& previous_
 // https://drafts.csswg.org/css-cascade-5/#layering
 GC::Ref<CascadedProperties> StyleComputer::compute_cascaded_values(DOM::Element& element, Optional<CSS::Selector::PseudoElement::Type> pseudo_element, bool& did_match_any_pseudo_element_rules, bool& did_match_any_hover_rules, ComputeStyleMode mode) const
 {
-    auto cascaded_properties = m_document->heap().allocate<CascadedProperties>();
+    auto cascaded_properties = m_document_or_shadow_root->heap().allocate<CascadedProperties>();
 
     // First, we collect all the CSS rules whose selectors match `element`:
     MatchingRuleSet matching_rule_set;
@@ -2261,7 +2267,7 @@ void StyleComputer::transform_box_type_if_needed(ComputedProperties& style, DOM:
 
 GC::Ref<ComputedProperties> StyleComputer::create_document_style() const
 {
-    auto style = document().heap().allocate<CSS::ComputedProperties>();
+    auto style = m_document_or_shadow_root->heap().allocate<CSS::ComputedProperties>();
     compute_math_depth(style, nullptr, {});
     compute_font(style, nullptr, {});
     compute_defaulted_values(style, nullptr, {});
@@ -2345,7 +2351,7 @@ GC::Ptr<ComputedProperties> StyleComputer::compute_style_impl(DOM::Element& elem
 
 GC::Ref<ComputedProperties> StyleComputer::compute_properties(DOM::Element& element, Optional<Selector::PseudoElement::Type> pseudo_element, CascadedProperties& cascaded_properties) const
 {
-    auto computed_style = document().heap().allocate<CSS::ComputedProperties>();
+    auto computed_style = m_document_or_shadow_root->heap().allocate<CSS::ComputedProperties>();
 
     for (auto i = to_underlying(first_longhand_property_id); i <= to_underlying(last_longhand_property_id); ++i) {
         auto property_id = static_cast<CSS::PropertyID>(i);
@@ -2355,6 +2361,7 @@ GC::Ref<ComputedProperties> StyleComputer::compute_properties(DOM::Element& elem
         if ((!value && is_inherited_property(property_id))
             || (value && value->is_inherit())) {
             if (auto inheritance_parent = element_to_inherit_style_from(&element, pseudo_element)) {
+                VERIFY(inheritance_parent->computed_properties());
                 value = inheritance_parent->computed_properties()->property(property_id);
                 inherited = ComputedProperties::Inherited::Yes;
             } else {
@@ -2404,11 +2411,12 @@ GC::Ref<ComputedProperties> StyleComputer::compute_properties(DOM::Element& elem
 
                 auto effect = Animations::KeyframeEffect::create(realm);
                 auto animation = CSSAnimation::create(realm);
+                auto& document = m_document_or_shadow_root->document();
                 animation->set_id(animation_name.release_value());
-                animation->set_timeline(m_document->timeline());
+                animation->set_timeline(document.timeline());
                 animation->set_owning_element(element);
                 animation->set_effect(effect);
-                apply_animation_properties(m_document, cascaded_properties, animation);
+                apply_animation_properties(document, cascaded_properties, animation);
                 if (pseudo_element.has_value())
                     effect->set_pseudo_element(Selector::PseudoElement { pseudo_element.value() });
 
@@ -2423,8 +2431,10 @@ GC::Ref<ComputedProperties> StyleComputer::compute_properties(DOM::Element& elem
                 animation->play().release_value_but_fixme_should_propagate_errors();
             } else {
                 // The animation hasn't changed, but some properties of the animation may have
-                if (auto animation = element.cached_animation_name_animation(pseudo_element); animation)
-                    apply_animation_properties(m_document, cascaded_properties, *animation);
+                if (auto animation = element.cached_animation_name_animation(pseudo_element); animation) {
+                    auto& document = m_document_or_shadow_root->document();
+                    apply_animation_properties(document, cascaded_properties, *animation);
+                }
             }
         }
     } else {
@@ -2559,6 +2569,7 @@ NonnullOwnPtr<StyleComputer::RuleCache> StyleComputer::make_rule_cache_for_casca
 
     Vector<MatchingRule> matching_rules;
     size_t style_sheet_index = 0;
+    auto current_shadow_root = m_document_or_shadow_root->is_shadow_root() ? static_cast<DOM::ShadowRoot*>(m_document_or_shadow_root.ptr()) : nullptr;
     for_each_stylesheet(cascade_origin, [&](auto& sheet, GC::Ptr<DOM::ShadowRoot> shadow_root) {
         size_t rule_index = 0;
         sheet.for_each_effective_style_producing_rule([&](auto const& rule) {
@@ -2571,6 +2582,12 @@ NonnullOwnPtr<StyleComputer::RuleCache> StyleComputer::make_rule_cache_for_casca
                 VERIFY_NOT_REACHED();
             }();
             for (CSS::Selector const& selector : absolutized_selectors) {
+                auto crosses_tree_scopes = selector.crosses_tree_scopes();
+                auto contains_host_pseudo_class = selector.contains_host_pseudo_class();
+                if (!crosses_tree_scopes && !contains_host_pseudo_class && cascade_origin == CascadeOrigin::Author && current_shadow_root != shadow_root.ptr()) {
+                    continue;
+                }
+
                 MatchingRule matching_rule {
                     shadow_root,
                     &rule,
@@ -2835,10 +2852,12 @@ void StyleComputer::build_qualified_layer_names_cache()
 
 void StyleComputer::build_rule_cache()
 {
+    auto& document = m_document_or_shadow_root->document();
+
     m_selector_insights = make<SelectorInsights>();
 
-    if (auto user_style_source = document().page().user_style(); user_style_source.has_value()) {
-        m_user_style_sheet = GC::make_root(parse_css_stylesheet(CSS::Parser::ParsingContext(document()), user_style_source.value()));
+    if (auto user_style_source = document.page().user_style(); user_style_source.has_value()) {
+        m_user_style_sheet = GC::make_root(parse_css_stylesheet(CSS::Parser::ParsingContext(document), user_style_source.value()));
     }
 
     build_qualified_layer_names_cache();
@@ -2867,7 +2886,7 @@ void StyleComputer::invalidate_rule_cache()
 
 void StyleComputer::did_load_font(FlyString const&)
 {
-    document().invalidate_style(DOM::StyleInvalidationReason::CSSFontLoaded);
+    m_document_or_shadow_root->invalidate_style(DOM::StyleInvalidationReason::CSSFontLoaded);
 }
 
 Optional<FontLoader&> StyleComputer::load_font_face(ParsedFontFace const& font_face, Function<void(FontLoader const&)> on_load, Function<void()> on_fail)
@@ -2887,8 +2906,10 @@ Optional<FontLoader&> StyleComputer::load_font_face(ParsedFontFace const& font_f
     Vector<URL::URL> urls;
     for (auto const& source : font_face.sources()) {
         // FIXME: These should be loaded relative to the stylesheet URL instead of the document URL.
-        if (source.local_or_url.has<URL::URL>())
-            urls.append(m_document->encoding_parse_url(source.local_or_url.get<URL::URL>().to_string()));
+        if (source.local_or_url.has<URL::URL>()) {
+            auto& document = m_document_or_shadow_root->document();
+            urls.append(document.encoding_parse_url(source.local_or_url.get<URL::URL>().to_string()));
+        }
         // FIXME: Handle local()
     }
 
@@ -3031,7 +3052,8 @@ size_t StyleComputer::number_of_css_font_faces_with_loading_in_progress() const
 
 bool StyleComputer::has_has_selectors() const
 {
-    if (!document().is_active())
+    auto& document = m_document_or_shadow_root->document();
+    if (!document.is_active())
         return false;
 
     build_rule_cache_if_needed();
@@ -3040,7 +3062,8 @@ bool StyleComputer::has_has_selectors() const
 
 bool StyleComputer::has_defined_selectors() const
 {
-    if (!document().is_active())
+    auto& document = m_document_or_shadow_root->document();
+    if (!document.is_active())
         return false;
 
     build_rule_cache_if_needed();
@@ -3049,7 +3072,8 @@ bool StyleComputer::has_defined_selectors() const
 
 bool StyleComputer::has_attribute_selector(FlyString const& attribute_name) const
 {
-    if (!document().is_active())
+    auto& document = m_document_or_shadow_root->document();
+    if (!document.is_active())
         return false;
 
     build_rule_cache_if_needed();

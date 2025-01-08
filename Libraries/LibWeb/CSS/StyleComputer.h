@@ -131,11 +131,10 @@ public:
 
     static Optional<String> user_agent_style_sheet_source(StringView name);
 
-    explicit StyleComputer(DOM::Document&);
+    explicit StyleComputer(DOM::Node&);
     ~StyleComputer();
 
-    DOM::Document& document() { return m_document; }
-    DOM::Document const& document() const { return m_document; }
+    DOM::Document& document(Badge<FontLoader>) { return m_document_or_shadow_root->document(); }
 
     void reset_ancestor_filter();
     void push_ancestor(DOM::Element const&);
@@ -248,7 +247,7 @@ private:
     void build_rule_cache();
     void build_rule_cache_if_needed() const;
 
-    GC::Ref<DOM::Document> m_document;
+    GC::Ref<DOM::Node> m_document_or_shadow_root;
 
     struct SelectorInsights {
         bool has_has_selectors { false };

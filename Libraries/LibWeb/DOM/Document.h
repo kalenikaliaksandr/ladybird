@@ -26,6 +26,7 @@
 #include <LibWeb/Cookie/Cookie.h>
 #include <LibWeb/DOM/NonElementParentNode.h>
 #include <LibWeb/DOM/ParentNode.h>
+#include <LibWeb/DOM/StyleScope.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/CrossOrigin/OpenerPolicy.h>
 #include <LibWeb/HTML/DocumentReadyState.h>
@@ -85,7 +86,8 @@ enum class PolicyControlledFeature {
 class Document
     : public ParentNode
     , public NonElementParentNode<Document>
-    , public HTML::GlobalEventHandlers {
+    , public HTML::GlobalEventHandlers
+    , public StyleScope {
     WEB_PLATFORM_OBJECT(Document, ParentNode);
     GC_DECLARE_ALLOCATOR(Document);
 
@@ -160,8 +162,9 @@ public:
     URL::URL encoding_parse_url(StringView) const;
     Optional<String> encoding_parse_and_serialize_url(StringView) const;
 
-    CSS::StyleComputer& style_computer() { return *m_style_computer; }
+    virtual CSS::StyleComputer& style_computer() override { return *m_style_computer; }
     const CSS::StyleComputer& style_computer() const { return *m_style_computer; }
+    virtual Node& dom_node() override { return *this; }
 
     CSS::StyleSheetList& style_sheets();
     CSS::StyleSheetList const& style_sheets() const;

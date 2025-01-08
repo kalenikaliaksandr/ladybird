@@ -8,11 +8,13 @@
 
 #include <LibWeb/Bindings/ShadowRootPrototype.h>
 #include <LibWeb/DOM/DocumentFragment.h>
+#include <LibWeb/DOM/StyleScope.h>
 #include <LibWeb/WebIDL/ObservableArray.h>
 
 namespace Web::DOM {
 
-class ShadowRoot final : public DocumentFragment {
+class ShadowRoot final : public DocumentFragment
+    , public StyleScope {
     WEB_PLATFORM_OBJECT(ShadowRoot, DocumentFragment);
     GC_DECLARE_ALLOCATOR(ShadowRoot);
 
@@ -64,6 +66,9 @@ public:
 
     virtual void finalize() override;
 
+    virtual CSS::StyleComputer& style_computer() override { return *m_style_computer; }
+    virtual Node& dom_node() override { return *this; }
+
 protected:
     virtual void visit_edges(Cell::Visitor&) override;
 
@@ -74,6 +79,8 @@ private:
     // ^Node
     virtual FlyString node_name() const override { return "#shadow-root"_fly_string; }
     virtual bool is_shadow_root() const final { return true; }
+
+    OwnPtr<CSS::StyleComputer> m_style_computer;
 
     // NOTE: The specification doesn't seem to specify a default value for mode. Assuming closed for now.
     Bindings::ShadowRootMode m_mode { Bindings::ShadowRootMode::Closed };

@@ -6,11 +6,12 @@
 
 #pragma once
 
+#include <LibWeb/DOM/StyleScope.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/WebIDL/ObservableArray.h>
 
 namespace Web::DOM {
 
-GC::Ref<WebIDL::ObservableArray> create_adopted_style_sheets_list(Document& document);
+GC::Ref<WebIDL::ObservableArray> create_adopted_style_sheets_list(StyleScope&);
 
 }

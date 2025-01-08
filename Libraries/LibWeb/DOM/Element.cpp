@@ -489,7 +489,8 @@ CSS::RequiredInvalidationAfterStyleChange Element::recompute_style()
 {
     VERIFY(parent());
 
-    auto& style_computer = document().style_computer();
+    auto& style_computer = this->style_computer();
+
     auto new_computed_properties = style_computer.compute_style(*this);
 
     // Tables must not inherit -libweb-* values for text-align.
@@ -583,8 +584,9 @@ CSS::RequiredInvalidationAfterStyleChange Element::recompute_inherited_style()
         invalidation |= CSS::compute_property_invalidation(property_id, old_value, new_value);
     }
 
-    document().style_computer().compute_font(*computed_properties, this, {});
-    document().style_computer().absolutize_values(*computed_properties);
+    auto& style_computer = this->style_computer();
+    style_computer.compute_font(*computed_properties, this, {});
+    style_computer.absolutize_values(*computed_properties);
 
     layout_node()->apply_style(*computed_properties);
     return invalidation;
@@ -1944,17 +1946,25 @@ static bool attribute_name_may_affect_selectors(Element const& element, FlyStrin
         return true;
     }
 
-    return element.document().style_computer().has_attribute_selector(attribute_name);
+    if (!element.is_connected())
+        return true;
+
+    return const_cast<Element&>(element).style_computer().has_attribute_selector(attribute_name);
 }
 
 void Element::invalidate_style_after_attribute_change(FlyString const& attribute_name)
 {
     // FIXME: Only invalidate if the attribute can actually affect style.
 
+    bool style_attribute_is_present_in_some_selector = true;
+    if (is_connected()) {
+        style_attribute_is_present_in_some_selector = style_computer().has_attribute_selector(HTML::AttributeNames::style);
+    }
+
     // OPTIMIZATION: For the `style` attribute, unless it's referenced by an attribute selector,
     //               only invalidate the element itself, then let inheritance propagate to descendants.
     if (attribute_name == HTML::AttributeNames::style) {
-        if (!document().style_computer().has_attribute_selector(HTML::AttributeNames::style)) {
+        if (!style_attribute_is_present_in_some_selector) {
             set_needs_style_update(true);
             for_each_shadow_including_descendant([](Node& node) {
                 if (!node.is_element())
@@ -2294,8 +2304,13 @@ void Element::set_custom_element_state(CustomElementState state)
         return;
     m_custom_element_state = state;
 
-    if (document().style_computer().has_defined_selectors())
+    auto has_defined_selectors = true;
+    if (is_connected()) {
+        has_defined_selectors = style_computer().has_defined_selectors();
+    }
+    if (has_defined_selectors) {
         invalidate_style(StyleInvalidationReason::CustomElementStateChange);
+    }
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#html-element-constructors

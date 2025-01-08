@@ -41,23 +41,30 @@ void ObservableArray::set_on_delete_an_indexed_value_callback(DeleteAnIndexedVal
 
 JS::ThrowCompletionOr<bool> ObservableArray::internal_set(JS::PropertyKey const& property_key, JS::Value value, JS::Value receiver, JS::CacheablePropertyMetadata* metadata)
 {
+    auto result = TRY(Base::internal_set(property_key, value, receiver, metadata));
     if (property_key.is_number() && m_on_set_an_indexed_value)
-        TRY(Bindings::throw_dom_exception_if_needed(vm(), [&] { return m_on_set_an_indexed_value->function()(value); }));
-    return TRY(Base::internal_set(property_key, value, receiver, metadata));
+        MUST(Bindings::throw_dom_exception_if_needed(vm(), [&] { return m_on_set_an_indexed_value->function()(value); }));
+    return result;
 }
 
 JS::ThrowCompletionOr<bool> ObservableArray::internal_delete(JS::PropertyKey const& property_key)
 {
+    auto result = JS::Array::internal_delete(property_key);
     if (property_key.is_number() && m_on_delete_an_indexed_value)
-        TRY(Bindings::throw_dom_exception_if_needed(vm(), [&] { return m_on_delete_an_indexed_value->function()(); }));
-    return JS::Array::internal_delete(property_key);
+        MUST(Bindings::throw_dom_exception_if_needed(vm(), [&] { return m_on_delete_an_indexed_value->function()(); }));
+    return result;
 }
 
 JS::ThrowCompletionOr<void> ObservableArray::append(JS::Value value)
 {
-    if (m_on_set_an_indexed_value)
-        TRY(Bindings::throw_dom_exception_if_needed(vm(), [&] { return m_on_set_an_indexed_value->function()(value); }));
     indexed_properties().append(value);
+    if (m_on_set_an_indexed_value) {
+        auto maybe_exception = Bindings::throw_dom_exception_if_needed(vm(), [&] { return m_on_set_an_indexed_value->function()(value); });
+        if (maybe_exception.is_error()) {
+            indexed_properties().remove(indexed_properties().array_like_size() - 1);
+            return maybe_exception.release_error();
+        }
+    }
     return {};
 }
 

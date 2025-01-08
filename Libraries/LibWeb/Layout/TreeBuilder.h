@@ -29,7 +29,7 @@ private:
 
     i32 calculate_list_item_index(DOM::Node&);
 
-    void create_layout_tree(DOM::Node&, Context&);
+    void create_layout_tree(DOM::Node&, Context&, CSS::StyleComputer&);
 
     void push_parent(Layout::NodeWithStyle& node) { m_ancestor_stack.append(node); }
     void pop_parent() { m_ancestor_stack.take_last(); }
@@ -51,7 +51,7 @@ private:
         Prepend,
     };
     void insert_node_into_inline_or_block_ancestor(Layout::Node&, CSS::Display, AppendOrPrepend);
-    void create_pseudo_element_if_needed(DOM::Element&, CSS::Selector::PseudoElement::Type, AppendOrPrepend);
+    void create_pseudo_element_if_needed(DOM::Element&, CSS::StyleComputer&, CSS::Selector::PseudoElement::Type, AppendOrPrepend);
 
     GC::Ptr<Layout::Node> m_layout_root;
     Vector<GC::Ref<Layout::NodeWithStyle>> m_ancestor_stack;
