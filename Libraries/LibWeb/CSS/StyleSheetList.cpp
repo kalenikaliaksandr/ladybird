@@ -171,17 +171,4 @@ DOM::Document const& StyleSheetList::document() const
     return m_document_or_shadow_root->document();
 }
 
-DOM::StyleScope& StyleSheetList::style_scope()
-{
-    if (m_document_or_shadow_root->is_document()) {
-        auto& document = verify_cast<DOM::Document>(*m_document_or_shadow_root);
-        return static_cast<DOM::StyleScope&>(document);
-    }
-    if (m_document_or_shadow_root->is_shadow_root()) {
-        auto& shadow_root = verify_cast<DOM::ShadowRoot>(*m_document_or_shadow_root);
-        return static_cast<DOM::StyleScope&>(shadow_root);
-    }
-    VERIFY_NOT_REACHED();
-}
-
 }

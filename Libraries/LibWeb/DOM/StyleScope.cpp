@@ -7,7 +7,6 @@
 #include <LibWeb/CSS/CSSStyleSheet.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/DOM/Document.h>
-#include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/DOM/StyleScope.h>
 
 namespace Web::DOM {
@@ -20,18 +19,11 @@ void StyleScope::notify_about_added_stylesheet(CSS::CSSStyleSheet& sheet)
 
     if (sheet.has_host_selectors()) {
         for (auto* ancestor = dom_node().parent_or_shadow_host(); ancestor; ancestor = ancestor->parent_or_shadow_host()) {
-            if (ancestor->is_document()) {
-                auto& document = verify_cast<DOM::Document>(*ancestor);
-                auto& style_scope = static_cast<DOM::StyleScope&>(document);
+            if (ancestor->is_shadow_root() || ancestor->is_document()) {
+                auto& style_scope = ancestor->style_scope();
                 style_scope.style_computer().invalidate_rule_cache();
                 style_scope.style_computer().load_fonts_from_sheet(sheet);
-                style_scope.dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetListAddSheet);
-            } else if (ancestor->is_shadow_root()) {
-                auto& shadow_root = verify_cast<DOM::ShadowRoot>(*ancestor);
-                auto& style_scope = static_cast<DOM::StyleScope&>(shadow_root);
-                style_scope.style_computer().invalidate_rule_cache();
-                style_scope.style_computer().load_fonts_from_sheet(sheet);
-                style_scope.dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetListAddSheet);
+                style_scope.dom_node().invalidate_style(StyleInvalidationReason::StyleSheetListAddSheet);
             }
         }
     }
@@ -42,27 +34,19 @@ void StyleScope::notify_about_removed_stylesheet(Optional<CSS::CSSStyleSheet&> s
     style_computer().invalidate_rule_cache();
     if (sheet.has_value())
         style_computer().unload_fonts_from_sheet(sheet.value());
-    dom_node().invalidate_style(DOM::StyleInvalidationReason::AdoptedStyleSheetsList);
+    dom_node().invalidate_style(StyleInvalidationReason::AdoptedStyleSheetsList);
 }
 
-void StyleScope::notify_media_query_changed(CSS::CSSStyleSheet& sheet)
+void StyleScope::notify_media_query_changed_match_state(CSS::CSSStyleSheet& sheet)
 {
     style_computer().invalidate_rule_cache();
-    dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetListAddSheet);
+    dom_node().invalidate_style(StyleInvalidationReason::MediaQueryChangedMatchState);
 
     if (sheet.has_host_selectors()) {
-        for (auto* ancestor = dom_node().parent_or_shadow_host(); ancestor; ancestor = ancestor->parent_or_shadow_host()) {
-            if (ancestor->is_document()) {
-                auto& document = verify_cast<DOM::Document>(*ancestor);
-                auto& style_scope = static_cast<DOM::StyleScope&>(document);
-                style_scope.style_computer().invalidate_rule_cache();
-                style_scope.dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetListAddSheet);
-            } else if (ancestor->is_shadow_root()) {
-                auto& shadow_root = verify_cast<DOM::ShadowRoot>(*ancestor);
-                auto& style_scope = static_cast<DOM::StyleScope&>(shadow_root);
-                style_scope.style_computer().invalidate_rule_cache();
-                style_scope.dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetListAddSheet);
-            }
+        if (auto* ancestor = dom_node().parent_or_shadow_host()) {
+            auto& style_scope = ancestor->style_scope();
+            style_scope.style_computer().invalidate_rule_cache();
+            style_scope.dom_node().invalidate_style(DOM::StyleInvalidationReason::MediaQueryChangedMatchState);
         }
     }
 }

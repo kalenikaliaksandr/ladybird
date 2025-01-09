@@ -3203,23 +3203,17 @@ void Document::evaluate_media_rules()
     if (!window)
         return;
 
-    HashTable<ShadowRoot*> invalidated_shadow_roots;
+    bool did_invalidate = false;
     for_each_active_css_style_sheet([&](CSS::CSSStyleSheet& style_sheet, auto shadow_root) {
         if (style_sheet.evaluate_media_queries(*window)) {
-            invalidated_shadow_roots.set(shadow_root.ptr());
-            if (shadow_root) {
-                auto& style_scope = static_cast<StyleScope&>(*shadow_root);
-                style_scope.notify_media_query_changed(style_sheet);
-            } else {
-                auto& style_scope = static_cast<StyleScope&>(*this);
-                style_scope.notify_media_query_changed(style_sheet);
-            }
+            auto& style_scope = shadow_root ? static_cast<StyleScope&>(*shadow_root) : static_cast<StyleScope&>(*this);
+            style_scope.notify_media_query_changed_match_state(style_sheet);
+            did_invalidate = true;
         }
     });
 
-    if (!invalidated_shadow_roots.is_empty()) {
+    if (did_invalidate) {
         invalidate_layout_tree();
-        invalidate_style(StyleInvalidationReason::MediaQueryChangedMatchState);
     }
 }
 

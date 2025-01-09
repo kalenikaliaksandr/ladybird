@@ -17,6 +17,7 @@
 #include <LibWeb/DOM/AccessibilityTreeNode.h>
 #include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/DOM/Slottable.h>
+#include <LibWeb/DOM/StyleScope.h>
 #include <LibWeb/DOMParsing/XMLSerializer.h>
 #include <LibWeb/TraversalDecision.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
@@ -745,6 +746,7 @@ public:
     Optional<String> lookup_prefix(Optional<String> namespace_) const;
     bool is_default_namespace(Optional<String> namespace_) const;
 
+    StyleScope& style_scope();
     CSS::StyleComputer& style_computer();
 
 protected:

@@ -401,14 +401,21 @@ GC::Ptr<HTML::Navigable> Node::navigable() const
     }
 }
 
-CSS::StyleComputer& Node::style_computer()
+StyleScope& Node::style_scope()
 {
     auto& root = this->root();
-    if (root.is_document())
-        return root.document().style_computer();
-    if (root.is_shadow_root())
-        return static_cast<ShadowRoot&>(root).style_computer();
+    if (root.is_document()) {
+        return static_cast<Document&>(root);
+    }
+    if (root.is_shadow_root()) {
+        return static_cast<ShadowRoot&>(root);
+    }
     VERIFY_NOT_REACHED();
+}
+
+CSS::StyleComputer& Node::style_computer()
+{
+    return style_scope().style_computer();
 }
 
 void Node::invalidate_style(StyleInvalidationReason reason)

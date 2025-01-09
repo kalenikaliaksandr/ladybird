@@ -43,7 +43,10 @@ public:
     [[nodiscard]] DOM::Document& document();
     [[nodiscard]] DOM::Document const& document() const;
 
-    [[nodiscard]] DOM::StyleScope& style_scope();
+    [[nodiscard]] DOM::StyleScope& style_scope()
+    {
+        return m_document_or_shadow_root->style_scope();
+    }
     [[nodiscard]] DOM::StyleScope const& style_scope() const
     {
         return const_cast<StyleSheetList&>(*this).style_scope();
