@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <LibGC/Cell.h>
 #include <LibWeb/DOM/StyleScope.h>
 #include <LibWeb/Forward.h>
 
@@ -19,6 +20,8 @@ public:
     void notify_about_added_stylesheet(CSS::CSSStyleSheet&);
     void notify_about_removed_stylesheet(Optional<CSS::CSSStyleSheet&>);
     void notify_media_query_changed_match_state(CSS::CSSStyleSheet&);
+
+    void visit_edges(GC::Cell::Visitor& visitor);
 };
 
 }

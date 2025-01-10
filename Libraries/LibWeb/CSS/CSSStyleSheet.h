@@ -13,6 +13,7 @@
 #include <LibWeb/CSS/CSSRuleList.h>
 #include <LibWeb/CSS/CSSStyleRule.h>
 #include <LibWeb/CSS/StyleSheet.h>
+#include <LibWeb/DOM/StyleScope.h>
 #include <LibWeb/WebIDL/Types.h>
 
 namespace Web::CSS {
@@ -62,8 +63,11 @@ public:
     bool evaluate_media_queries(HTML::Window const&);
     void for_each_effective_keyframes_at_rule(Function<void(CSSKeyframesRule const&)> const& callback) const;
 
-    GC::Ptr<StyleSheetList> style_sheet_list() const { return m_style_sheet_list; }
-    void set_style_sheet_list(Badge<StyleSheetList>, StyleSheetList*);
+    // GC::Ptr<StyleSheetList> style_sheet_list() const { return m_style_sheet_list; }
+    // void set_style_sheet_list(Badge<StyleSheetList>, StyleSheetList*);
+
+    void add_owning_style_scope(DOM::StyleScope&);
+    void remove_owning_style_scope(DOM::StyleScope&);
 
     Optional<FlyString> default_namespace() const;
     GC::Ptr<CSSNamespaceRule> default_namespace_rule() const { return m_default_namespace_rule; }
@@ -93,6 +97,8 @@ public:
 
     bool has_host_selectors() const { return m_has_host_selectors; }
 
+    void invalidate_style_scopes();
+
 private:
     CSSStyleSheet(JS::Realm&, CSSRuleList&, MediaList&, Optional<URL::URL> location);
 
@@ -113,6 +119,8 @@ private:
 
     GC::Ptr<StyleSheetList> m_style_sheet_list;
     GC::Ptr<CSSRule> m_owner_css_rule;
+
+    HashTable<DOM::StyleScope*> m_style_scopes;
 
     Optional<URL::URL> m_base_url;
     GC::Ptr<DOM::Document const> m_constructor_document;

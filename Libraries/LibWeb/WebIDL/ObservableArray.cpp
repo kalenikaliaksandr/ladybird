@@ -49,9 +49,20 @@ JS::ThrowCompletionOr<bool> ObservableArray::internal_set(JS::PropertyKey const&
 
 JS::ThrowCompletionOr<bool> ObservableArray::internal_delete(JS::PropertyKey const& property_key)
 {
+    JS::Value value;
+    auto maybe_property_descriptor = internal_get_own_property(property_key);
+    if (!maybe_property_descriptor.is_error()) {
+        auto property_descriptor = maybe_property_descriptor.value();
+        if (property_descriptor.has_value()) {
+            if (property_descriptor.value().value.has_value()) {
+                value = property_descriptor.value().value.value();
+            }
+        }
+    }
+
     auto result = JS::Array::internal_delete(property_key);
     if (property_key.is_number() && m_on_delete_an_indexed_value)
-        MUST(Bindings::throw_dom_exception_if_needed(vm(), [&] { return m_on_delete_an_indexed_value->function()(); }));
+        MUST(Bindings::throw_dom_exception_if_needed(vm(), [&] { return m_on_delete_an_indexed_value->function()(value); }));
     return result;
 }
 

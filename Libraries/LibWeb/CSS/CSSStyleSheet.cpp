@@ -129,6 +129,8 @@ void CSSStyleSheet::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_constructor_document);
     visitor.visit(m_namespace_rules);
     visitor.visit(m_import_rules);
+    for (auto& style_scope : m_style_scopes)
+        style_scope->visit_edges(visitor);
 }
 
 // https://www.w3.org/TR/cssom/#dom-cssstylesheet-insertrule
@@ -159,11 +161,12 @@ WebIDL::ExceptionOr<unsigned> CSSStyleSheet::insert_rule(StringView rule, unsign
         // NOTE: The spec doesn't say where to set the parent style sheet, so we'll do it here.
         parsed_rule->set_parent_style_sheet(this);
 
-        if (m_style_sheet_list) {
-            auto& style_scope = m_style_sheet_list->style_scope();
-            style_scope.style_computer().invalidate_rule_cache();
-            style_scope.dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetInsertRule);
-        }
+        // if (m_style_sheet_list) {
+        //     auto& style_scope = m_style_sheet_list->style_scope();
+        //     style_scope.style_computer().invalidate_rule_cache();
+        //     style_scope.dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetInsertRule);
+        // }
+        invalidate_style_scopes();
     }
 
     return result;
@@ -181,10 +184,11 @@ WebIDL::ExceptionOr<void> CSSStyleSheet::delete_rule(unsigned index)
     // 3. Remove a CSS rule in the CSS rules at index.
     auto result = m_rules->remove_a_css_rule(index);
     if (!result.is_exception()) {
-        if (m_style_sheet_list) {
-            m_style_sheet_list->style_scope().style_computer().invalidate_rule_cache();
-            m_style_sheet_list->style_scope().dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetDeleteRule);
-        }
+        invalidate_style_scopes();
+        // if (m_style_sheet_list) {
+        //     m_style_sheet_list->style_scope().style_computer().invalidate_rule_cache();
+        //     m_style_sheet_list->style_scope().dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetDeleteRule);
+        // }
     }
     return result;
 }
@@ -339,9 +343,19 @@ bool CSSStyleSheet::evaluate_media_queries(HTML::Window const& window)
     return any_media_queries_changed_match_state;
 }
 
-void CSSStyleSheet::set_style_sheet_list(Badge<StyleSheetList>, StyleSheetList* list)
+// void CSSStyleSheet::set_style_sheet_list(Badge<StyleSheetList>, StyleSheetList* list)
+// {
+//     m_style_sheet_list = list;
+// }
+
+void CSSStyleSheet::add_owning_style_scope(DOM::StyleScope& style_scope)
 {
-    m_style_sheet_list = list;
+    m_style_scopes.set(&style_scope);
+}
+
+void CSSStyleSheet::remove_owning_style_scope(DOM::StyleScope& style_scope)
+{
+    m_style_scopes.remove(&style_scope);
 }
 
 Optional<FlyString> CSSStyleSheet::default_namespace() const
@@ -435,6 +449,14 @@ bool CSSStyleSheet::has_associated_font_loader(FontLoader& font_loader) const
             return true;
     }
     return false;
+}
+
+void CSSStyleSheet::invalidate_style_scopes()
+{
+    for (auto& style_scope : m_style_scopes.values()) {
+        style_scope->style_computer().invalidate_rule_cache();
+        style_scope->dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetInsertRule);
+    }
 }
 
 }
