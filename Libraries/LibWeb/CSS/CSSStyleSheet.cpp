@@ -129,8 +129,9 @@ void CSSStyleSheet::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_constructor_document);
     visitor.visit(m_namespace_rules);
     visitor.visit(m_import_rules);
-    for (auto& style_scope : m_style_scopes)
-        style_scope->visit_edges(visitor);
+    for (auto& style_scope : m_style_scopes) {
+        style_scope->visit_document_or_shadow_root(visitor);
+    }
 }
 
 // https://www.w3.org/TR/cssom/#dom-cssstylesheet-insertrule
@@ -455,7 +456,8 @@ void CSSStyleSheet::invalidate_style_scopes()
 {
     for (auto& style_scope : m_style_scopes.values()) {
         style_scope->style_computer().invalidate_rule_cache();
-        style_scope->dom_node().invalidate_style(DOM::StyleInvalidationReason::StyleSheetInsertRule);
+        // FIXME: Use correct invalidation reason
+        style_scope->document_or_shadow_root().invalidate_style(DOM::StyleInvalidationReason::StyleSheetInsertRule);
     }
 }
 

@@ -2571,6 +2571,7 @@ NonnullOwnPtr<StyleComputer::RuleCache> StyleComputer::make_rule_cache_for_casca
     size_t style_sheet_index = 0;
     auto current_shadow_root = m_document_or_shadow_root->is_shadow_root() ? static_cast<DOM::ShadowRoot*>(m_document_or_shadow_root.ptr()) : nullptr;
     for_each_stylesheet(cascade_origin, [&](auto& sheet, GC::Ptr<DOM::ShadowRoot> shadow_root) {
+        // FIXME: Early return if shadow root does not match for SC and does not have have selectors that cross shadow boundary
         size_t rule_index = 0;
         sheet.for_each_effective_style_producing_rule([&](auto const& rule) {
             size_t selector_index = 0;

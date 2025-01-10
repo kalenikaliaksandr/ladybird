@@ -67,7 +67,7 @@ public:
     virtual void finalize() override;
 
     virtual CSS::StyleComputer& style_computer() override { return *m_style_computer; }
-    virtual Node& dom_node() override { return *this; }
+    virtual Node& document_or_shadow_root() override { return *this; }
 
 protected:
     virtual void visit_edges(Cell::Visitor&) override;

@@ -14,14 +14,16 @@ namespace Web::DOM {
 
 class StyleScope {
 public:
+    virtual ~StyleScope() = default;
+
     virtual CSS::StyleComputer& style_computer() = 0;
-    virtual Node& dom_node() = 0;
+    virtual Node& document_or_shadow_root() = 0;
 
     void notify_about_added_stylesheet(CSS::CSSStyleSheet&);
     void notify_about_removed_stylesheet(CSS::CSSStyleSheet&);
     void notify_media_query_changed_match_state(CSS::CSSStyleSheet&);
 
-    void visit_edges(GC::Cell::Visitor& visitor);
+    void visit_document_or_shadow_root(GC::Cell::Visitor& visitor);
 };
 
 }

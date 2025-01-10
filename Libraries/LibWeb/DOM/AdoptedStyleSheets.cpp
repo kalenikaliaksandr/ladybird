@@ -12,7 +12,7 @@ namespace Web::DOM {
 
 GC::Ref<WebIDL::ObservableArray> create_adopted_style_sheets_list(StyleScope& style_scope)
 {
-    auto& document = style_scope.dom_node().document();
+    auto& document = style_scope.document_or_shadow_root().document();
     auto adopted_style_sheets = WebIDL::ObservableArray::create(document.realm());
     adopted_style_sheets->set_on_set_an_indexed_value_callback([&document, &style_scope](JS::Value value) -> WebIDL::ExceptionOr<void> {
         auto& vm = document.vm();

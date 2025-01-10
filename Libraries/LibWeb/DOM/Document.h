@@ -164,7 +164,7 @@ public:
 
     virtual CSS::StyleComputer& style_computer() override { return *m_style_computer; }
     const CSS::StyleComputer& style_computer() const { return *m_style_computer; }
-    virtual Node& dom_node() override { return *this; }
+    virtual Node& document_or_shadow_root() override { return *this; }
 
     CSS::StyleSheetList& style_sheets();
     CSS::StyleSheetList const& style_sheets() const;
