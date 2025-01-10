@@ -42,7 +42,7 @@ GC::Ref<WebIDL::ObservableArray> create_adopted_style_sheets_list(StyleScope& st
             return vm.throw_completion<JS::TypeError>(JS::ErrorType::NotAnObjectOfType, "CSSStyleSheet");
         auto& style_sheet = static_cast<CSS::CSSStyleSheet&>(object);
         style_sheet.remove_owning_style_scope(style_scope);
-        style_scope.notify_about_removed_stylesheet({});
+        style_scope.notify_about_removed_stylesheet(style_sheet);
         return {};
     });
 
