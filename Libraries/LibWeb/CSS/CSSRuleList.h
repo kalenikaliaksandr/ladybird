@@ -61,7 +61,7 @@ public:
     // Returns whether the match state of any media queries changed after evaluation.
     bool evaluate_media_queries(HTML::Window const&);
 
-    void set_rules(Badge<CSSStyleSheet>, Vector<GC::Ref<CSSRule>> rules) { m_rules = move(rules); }
+    void set_rules(Badge<CSSStyleSheet>, Vector<GC::Ref<CSSRule>> rules);
 
     Function<void()> on_change;
 
