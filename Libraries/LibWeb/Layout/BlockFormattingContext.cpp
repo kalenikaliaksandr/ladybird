@@ -70,6 +70,11 @@ static bool margins_collapse_through(Box const& box, LayoutState& state)
 
 void BlockFormattingContext::run(AvailableSpace const& available_space)
 {
+    VERIFY(!m_did_run);
+    ScopeGuard guard = [this] {
+        m_did_run = true;
+    };
+
     if (is<Viewport>(root())) {
         layout_viewport(available_space);
         return;
@@ -474,9 +479,11 @@ void BlockFormattingContext::resolve_used_height_if_treated_as_auto(Box const& b
 
     CSSPixels height = 0;
     if (box_is_sized_as_replaced_element(box)) {
+        // VERIFY_NOT_REACHED();
         height = compute_height_for_replaced_element(box, available_space);
     } else {
         if (box_formatting_context) {
+            // VERIFY_NOT_REACHED();
             height = box_formatting_context->automatic_content_height();
         } else {
             height = compute_auto_height_for_block_level_element(box, m_state.get(box).available_inner_space_or_constraints_from(available_space));
@@ -705,7 +712,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
     // NOTE: In quirks mode, the html element's height matches the viewport so it can be treated as definite
     if (box_state.has_definite_height() || box_is_html_element_in_quirks_mode) {
-        resolve_used_height_if_treated_as_auto(box, available_space);
+        resolve_used_height_if_treated_as_auto(box, available_space, nullptr);
     }
 
     auto independent_formatting_context = create_independent_formatting_context_if_needed(m_state, m_layout_mode, box);
@@ -758,8 +765,32 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     resolve_used_height_if_not_treated_as_auto(box, available_space_for_height_resolution);
 
     // NOTE: Flex containers with `auto` height are treated as `max-content`, so we can compute their height early.
-    if (box.is_replaced_box() || box.display().is_flex_inside()) {
-        resolve_used_height_if_treated_as_auto(box, available_space_for_height_resolution);
+    // if (box.is_replaced_box() || box.display().is_flex_inside()) {
+    //     resolve_used_height_if_treated_as_auto(box, available_space_for_height_resolution, nullptr);
+    //
+
+    auto const& computed_values = box.computed_values();
+    Optional<CSSPixels> auto_height;
+    if (box_is_sized_as_replaced_element(box)) {
+        auto_height = compute_height_for_replaced_element(box, available_space);
+        box_state.set_content_height(auto_height.value());
+    }
+    if (should_treat_height_as_auto(box, available_space) && box.display().is_flex_inside()) {
+        auto_height = calculate_max_content_height(box, box_state.content_width());
+        if (!computed_values.min_height().is_auto()) {
+            auto min_height = calculate_inner_height(box, available_space, computed_values.min_height());
+            if (auto_height.value() < min_height) {
+                auto_height = min_height;
+            }
+        }
+        if (!should_treat_max_height_as_none(box, available_space.height)) {
+            auto max_height = calculate_inner_height(box, available_space, computed_values.max_height());
+            if (auto_height.value() > max_height) {
+                auto_height = max_height;
+            }
+        }
+
+        box_state.set_content_height(auto_height.value());
     }
 
     // Before we insert the children of a list item we need to know the location of the marker.
@@ -809,8 +840,68 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
     // Tables already set their height during the independent formatting context run. When multi-line text cells are involved, using different
     // available space here than during the independent formatting context run can result in different line breaks and thus a different height.
-    if (!box.display().is_table_inside()) {
-        resolve_used_height_if_treated_as_auto(box, available_space_for_height_resolution, independent_formatting_context);
+    if (should_treat_height_as_auto(box, available_space) && independent_formatting_context) {
+        if (!auto_height.has_value()) {
+            auto_height = independent_formatting_context->automatic_content_height();
+        }
+
+        if (box.document().in_quirks_mode()
+            && box.dom_node()
+            && box.dom_node()->is_html_html_element()
+            && box.computed_values().height().is_auto()) {
+            // 3.6. The html element fills the viewport quirk
+            // https://quirks.spec.whatwg.org/#the-html-element-fills-the-viewport-quirk
+            // FIXME: Handle vertical writing mode.
+
+            // 1. Let margins be sum of the used values of the margin-left and margin-right properties of element
+            //    if element has a vertical writing mode, otherwise let margins be the sum of the used values of
+            //    the margin-top and margin-bottom properties of element.
+            auto margins = box_state.margin_top + box_state.margin_bottom;
+
+            // 2. Let size be the size of the initial containing block in the block flow direction minus margins.
+            auto size = box_state.containing_block_used_values()->content_height() - margins;
+
+            // 3. Return the bigger value of size and the normal border box size the element would have
+            //    according to the CSS specification.
+            auto_height = max(size, auto_height.value());
+
+            // NOTE: The height of the root element when affected by this quirk is considered to be definite.
+            box_state.set_has_definite_height(true);
+        }
+
+        Optional<CSSPixels> height_to_use_for_another_layout_pass;
+        if (!should_treat_max_height_as_none(box, available_space.height)) {
+            if (!computed_values.max_height().is_auto()) {
+                auto max_height = calculate_inner_height(box, available_space, computed_values.max_height());
+                if (auto_height.value() > max_height) {
+                    height_to_use_for_another_layout_pass = max_height;
+                }
+            }
+        }
+        if (!computed_values.min_height().is_auto()) {
+            auto min_height = calculate_inner_height(box, available_space, computed_values.min_height());
+            if (auto_height.value() < min_height) {
+                height_to_use_for_another_layout_pass = min_height;
+            }
+        }
+
+        if (height_to_use_for_another_layout_pass.has_value()) {
+            // dbgln(">needs to relayout with different height {}", height_to_use_for_another_layout_pass.value());
+            auto new_available_space = box_state.available_inner_space_or_constraints_from(available_space);
+            new_available_space.height = AvailableSize::make_definite(*height_to_use_for_another_layout_pass);
+            independent_formatting_context = layout_inside(box, LayoutMode::Normal, new_available_space);
+            // auto_height = independent_formatting_context->automatic_content_height();
+            // dbgln(">height after relayout {}", auto_height.value());
+            auto_height = height_to_use_for_another_layout_pass.value();
+            dbgln(">height after another layout pass is {}", auto_height.value());
+        }
+
+        // dbgln(">SET HEIGHT OF FC {} heigth {}", box.debug_description(), auto_height.value());
+        box_state.set_content_height(auto_height.value());
+    } else {
+        if (!box.display().is_table_inside()) {
+            resolve_used_height_if_treated_as_auto(box, available_space_for_height_resolution, independent_formatting_context);
+        }
     }
 
     if (independent_formatting_context || !margins_collapse_through(box, m_state)) {
@@ -1036,7 +1127,7 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
 
     // NOTE: Flex containers with `auto` height are treated as `max-content`, so we can compute their height early.
     if (box.is_replaced_box() || box.display().is_flex_inside()) {
-        resolve_used_height_if_treated_as_auto(box, available_space);
+        resolve_used_height_if_treated_as_auto(box, available_space, nullptr);
     }
 
     auto independent_formatting_context = layout_inside(box, m_layout_mode, box_state.available_inner_space_or_constraints_from(available_space));

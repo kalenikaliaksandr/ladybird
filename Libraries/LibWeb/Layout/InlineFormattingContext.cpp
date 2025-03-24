@@ -181,13 +181,13 @@ void InlineFormattingContext::dimension_box_on_line(Box const& box, LayoutMode l
 
     // NOTE: Flex containers with `auto` height are treated as `max-content`, so we can compute their height early.
     if (box.display().is_flex_inside())
-        parent().resolve_used_height_if_treated_as_auto(box, AvailableSpace(AvailableSize::make_definite(width), AvailableSize::make_indefinite()));
+        parent().resolve_used_height_if_treated_as_auto(box, AvailableSpace(AvailableSize::make_definite(width), AvailableSize::make_indefinite()), nullptr);
 
     auto independent_formatting_context = layout_inside(box, layout_mode, box_state.available_inner_space_or_constraints_from(*m_available_space));
 
     if (should_treat_height_as_auto(box, *m_available_space)) {
         // FIXME: (10.6.6) If 'height' is 'auto', the height depends on the element's descendants per 10.6.7.
-        parent().resolve_used_height_if_treated_as_auto(box, *m_available_space);
+        parent().resolve_used_height_if_treated_as_auto(box, *m_available_space, nullptr);
     } else {
         parent().resolve_used_height_if_not_treated_as_auto(box, *m_available_space);
     }
