@@ -41,13 +41,25 @@ public:
     void resolve_used_height_if_treated_as_auto(Box const&, AvailableSpace const&, FormattingContext const* box_formatting_context = nullptr);
 
     template<typename Callback>
-    void for_each_floating_box(Callback callback)
+    void for_each_floating_box(Callback callback, CSSPixels y)
     {
-        for (auto const& floating_box : m_left_floats.all_boxes) {
-            if (callback(*floating_box) == IterationDecision::Break)
-                return;
+        Vector<FloatingBox const*> boxes;
+        for (auto& floating_box : m_left_floats.all_boxes) {
+            if (floating_box->margin_box_rect_in_root_coordinate_space.bottom() >= y) {
+                boxes.append(floating_box.ptr());
+            }
         }
-        for (auto const& floating_box : m_right_floats.all_boxes) {
+        for (auto& floating_box : m_right_floats.all_boxes) {
+            if (floating_box->margin_box_rect_in_root_coordinate_space.bottom() >= y) {
+                boxes.append(floating_box);
+            }
+        }
+
+        AK::quick_sort(boxes, [](auto& a, auto& b) {
+            return a->margin_box_rect_in_root_coordinate_space.bottom() < b->margin_box_rect_in_root_coordinate_space.bottom();
+        });
+
+        for (auto& floating_box : boxes) {
             if (callback(*floating_box) == IterationDecision::Break)
                 return;
         }

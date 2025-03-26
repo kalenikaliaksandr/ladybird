@@ -145,7 +145,8 @@ CSSPixels LineBuilder::y_for_float_to_be_inserted_here(Box const& box)
         // candidate_block_offset needs to stay relative to the current box
         candidate_block_offset = float_box.margin_box_rect_in_root_coordinate_space.bottom() - box_in_root_rect.y();
         return IterationDecision::Continue;
-    });
+    },
+        box_in_root_rect.y() + candidate_block_offset, box.computed_values().float_() == CSS::Float::Left);
     return candidate_block_offset;
 }
 
