@@ -8,6 +8,7 @@
 #pragma once
 
 #include <LibIPC/UnprocessedFileDescriptors.h>
+#include <LibThreading/RWLock.h>
 
 namespace IPC {
 
@@ -48,6 +49,7 @@ private:
     ErrorOr<void> transfer(ReadonlyBytes, Vector<int, 1> const& unowned_fds);
 
     NonnullOwnPtr<Core::LocalSocket> m_socket;
+    NonnullOwnPtr<Threading::RWLock> m_socket_rw_lock;
     ByteBuffer m_unprocessed_bytes;
     UnprocessedFileDescriptors m_unprocessed_fds;
 };
