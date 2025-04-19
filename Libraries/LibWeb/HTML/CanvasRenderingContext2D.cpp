@@ -236,8 +236,11 @@ Gfx::Path CanvasRenderingContext2D::text_path(StringView text, float x, float y,
     dbgln(">>>use font: {}", font.family());
 
     Gfx::Path path;
-    path.move_to({ x, y });
-    path.text(Utf8View { text }, font);
+    // path.move_to({ x, y });
+    // path.text(Utf8View { text }, font);
+
+    auto glyph_run = Gfx::shape_text({ x, y }, 0, Utf8View(text), font, Gfx::GlyphRun::TextType::Ltr, {});
+    path.glyph_run(*glyph_run);
 
     auto text_width = path.bounding_box().width();
     Gfx::AffineTransform transform = {};

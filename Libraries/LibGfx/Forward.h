@@ -8,6 +8,8 @@
 
 namespace Gfx {
 
+class GlyphRun;
+
 class Bitmap;
 class CMYKBitmap;
 class ImmutableBitmap;
