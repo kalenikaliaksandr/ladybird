@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2020, Andreas Kling <andreas@ladybird.org>
  * Copyright (c) 2021, sin-ack <sin-ack@protonmail.com>
+ * Copyright (c) 2024-2025, Aliaksandr Kalenik <kalenik.aliaksandr@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,6 +12,43 @@
 #include <harfbuzz/hb.h>
 
 namespace Gfx {
+
+Vector<NonnullRefPtr<GlyphRun>> shape_text(FloatPoint baseline_start, Utf8View string, FontCascadeList const& font_cascade_list)
+{
+    if (string.length() == 0)
+        return {};
+
+    Vector<NonnullRefPtr<GlyphRun>> runs;
+    auto iterator = string.begin();
+    auto substring_begin_offset = string.iterator_offset(iterator);
+    auto substring_end_offset = string.iterator_offset(iterator);
+    Font const* last_font = &font_cascade_list.font_for_code_point(*iterator);
+    FloatPoint last_position = baseline_start;
+    while (iterator != string.end()) {
+        auto code_point = *iterator;
+        auto const* font = &font_cascade_list.font_for_code_point(code_point);
+        if (font != last_font) {
+            auto substring = string.substring_view(substring_begin_offset, substring_end_offset - substring_begin_offset);
+            auto run = shape_text(last_position, 0, substring, *last_font, GlyphRun::TextType::Common, {});
+            last_font = font;
+            substring_begin_offset = string.iterator_offset(iterator);
+            last_position.translate_by(run->width(), 0);
+            runs.append(*run);
+        }
+        ++iterator;
+        substring_end_offset = string.iterator_offset(iterator);
+    }
+
+    auto end_offset = string.iterator_offset(iterator);
+    if (substring_begin_offset < end_offset) {
+        auto substring = string.substring_view(substring_begin_offset, end_offset - substring_begin_offset);
+        auto run = shape_text(last_position, 0, substring, *last_font, GlyphRun::TextType::Common, {});
+        last_position.translate_by(run->width(), 0);
+        runs.append(*run);
+    }
+
+    return runs;
+}
 
 RefPtr<GlyphRun> shape_text(FloatPoint baseline_start, float letter_spacing, Utf8View string, Gfx::Font const& font, GlyphRun::TextType text_type, ShapeFeatures const& features)
 {
