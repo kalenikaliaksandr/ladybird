@@ -17,7 +17,7 @@ class Emoji;
 class Font;
 class ImageDecoder;
 struct FontPixelMetrics;
-class ScaledFont;
+class Font;
 
 template<typename T>
 class Line;
