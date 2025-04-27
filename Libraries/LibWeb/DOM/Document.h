@@ -814,10 +814,8 @@ public:
 
     bool cursor_blink_state() const { return m_cursor_blink_state; }
 
-    // Cached pointer to the last known node navigable.
-    // If this document is currently the "active document" of the cached navigable, the cache is still valid.
-    GC::Ptr<HTML::Navigable> cached_navigable();
-    void set_cached_navigable(GC::Ptr<HTML::Navigable>);
+    GC::Ptr<HTML::Navigable> navigable() const { return m_navigable; }
+    void set_navigable(GC::Ptr<HTML::Navigable> navigable) { m_navigable = navigable; }
 
     void set_needs_display(InvalidateDisplayList = InvalidateDisplayList::Yes);
     void set_needs_display(CSSPixelRect const&, InvalidateDisplayList = InvalidateDisplayList::Yes);
@@ -1214,8 +1212,7 @@ private:
     RefPtr<Core::Timer> m_cursor_blink_timer;
     bool m_cursor_blink_state { false };
 
-    // NOTE: This is WeakPtr, not GCPtr, on purpose. We don't want the document to keep some old detached navigable alive.
-    WeakPtr<HTML::Navigable> m_cached_navigable;
+    GC::Ptr<HTML::Navigable> m_navigable;
 
     bool m_enable_cookies_on_file_domains { false };
 

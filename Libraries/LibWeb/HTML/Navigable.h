@@ -68,7 +68,7 @@ public:
     bool is_delaying_load_events() const { return m_delaying_the_load_event.has_value(); }
 
     GC::Ptr<SessionHistoryEntry> active_session_history_entry() const { return m_active_session_history_entry; }
-    void set_active_session_history_entry(GC::Ptr<SessionHistoryEntry> entry) { m_active_session_history_entry = entry; }
+    void set_active_session_history_entry(GC::Ptr<SessionHistoryEntry> entry);
     GC::Ptr<SessionHistoryEntry> current_session_history_entry() const { return m_current_session_history_entry; }
     void set_current_session_history_entry(GC::Ptr<SessionHistoryEntry> entry) { m_current_session_history_entry = entry; }
 
@@ -109,8 +109,6 @@ public:
     ChosenNavigable choose_a_navigable(StringView name, TokenizedFeature::NoOpener no_opener, ActivateTab = ActivateTab::Yes, Optional<TokenizedFeature::Map const&> window_features = {});
 
     GC::Ptr<Navigable> find_a_navigable_by_target_name(StringView name);
-
-    static GC::Ptr<Navigable> navigable_with_active_document(GC::Ref<DOM::Document>);
 
     enum class Traversal {
         Tag

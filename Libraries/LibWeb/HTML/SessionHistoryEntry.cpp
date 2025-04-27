@@ -5,6 +5,7 @@
  */
 
 #include <LibWeb/Crypto/Crypto.h>
+#include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/DocumentState.h>
 #include <LibWeb/HTML/SessionHistoryEntry.h>
@@ -19,6 +20,7 @@ void SessionHistoryEntry::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_document_state);
     visitor.visit(m_original_source_browsing_context);
     visitor.visit(m_policy_container);
+    visitor.visit(m_active_in_navigable);
 }
 
 SessionHistoryEntry::SessionHistoryEntry()
@@ -43,6 +45,7 @@ GC::Ref<SessionHistoryEntry> SessionHistoryEntry::clone() const
     entry->m_policy_container = m_policy_container;
     entry->m_browsing_context_name = m_browsing_context_name;
     entry->m_original_source_browsing_context = m_original_source_browsing_context;
+    entry->m_active_in_navigable = m_active_in_navigable;
     return entry;
 }
 
@@ -53,6 +56,22 @@ GC::Ptr<DOM::Document> SessionHistoryEntry::document() const
     if (!m_document_state)
         return {};
     return m_document_state->document();
+}
+
+void SessionHistoryEntry::set_document_state(GC::Ptr<DocumentState> document_state)
+{
+    if (m_document_state)
+        m_document_state->set_belongs_to_active_session_history_entry_of_navigable(nullptr);
+    m_document_state = document_state;
+    if (m_document_state)
+        m_document_state->set_belongs_to_active_session_history_entry_of_navigable(m_active_in_navigable);
+}
+
+void SessionHistoryEntry::set_active_in_navigable(GC::Ptr<Navigable> active_navigable)
+{
+    m_active_in_navigable = active_navigable;
+    if (m_document_state)
+        m_document_state->set_belongs_to_active_session_history_entry_of_navigable(m_active_in_navigable);
 }
 
 }

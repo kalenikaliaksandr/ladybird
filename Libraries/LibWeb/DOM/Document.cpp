@@ -598,6 +598,8 @@ void Document::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_session_storage_holder);
     visitor.visit(m_render_blocking_elements);
     visitor.visit(m_policy_container);
+
+    visitor.visit(m_navigable);
 }
 
 // https://w3c.github.io/selection-api/#dom-document-getselection
@@ -6313,16 +6315,6 @@ GC::Ptr<DOM::Document> Document::container_document() const
 
     // 2. Return document's node navigable's container document.
     return node_navigable->container_document();
-}
-
-GC::Ptr<HTML::Navigable> Document::cached_navigable()
-{
-    return m_cached_navigable.ptr();
-}
-
-void Document::set_cached_navigable(GC::Ptr<HTML::Navigable> navigable)
-{
-    m_cached_navigable = navigable.ptr();
 }
 
 void Document::set_needs_display(InvalidateDisplayList should_invalidate_display_list)

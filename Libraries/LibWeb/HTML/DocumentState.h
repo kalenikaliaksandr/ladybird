@@ -38,7 +38,7 @@ public:
     };
 
     [[nodiscard]] GC::Ptr<DOM::Document> document() const { return m_document; }
-    void set_document(GC::Ptr<DOM::Document> document) { m_document = document; }
+    void set_document(GC::Ptr<DOM::Document> document);
 
     [[nodiscard]] Variant<GC::Ref<PolicyContainer>, Client> history_policy_container() const { return m_history_policy_container; }
     void set_history_policy_container(Variant<GC::Ref<PolicyContainer>, Client> history_policy_container) { m_history_policy_container = move(history_policy_container); }
@@ -72,6 +72,8 @@ public:
 
     [[nodiscard]] String navigable_target_name() const { return m_navigable_target_name; }
     void set_navigable_target_name(String navigable_target_name) { m_navigable_target_name = navigable_target_name; }
+
+    void set_belongs_to_active_session_history_entry_of_navigable(GC::Ptr<Navigable> active_navigable);
 
 private:
     DocumentState();
@@ -113,6 +115,10 @@ private:
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#document-state-nav-target-name
     String m_navigable_target_name;
+
+    GC::Ptr<Navigable> m_belongs_to_active_session_history_entry_of_navigable;
+
+    bool m_cloned { false };
 };
 
 }

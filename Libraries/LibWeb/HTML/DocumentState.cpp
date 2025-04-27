@@ -31,6 +31,8 @@ GC::Ref<DocumentState> DocumentState::clone() const
     cloned->m_reload_pending = m_reload_pending;
     cloned->m_ever_populated = m_ever_populated;
     cloned->m_navigable_target_name = m_navigable_target_name;
+    cloned->m_belongs_to_active_session_history_entry_of_navigable = m_belongs_to_active_session_history_entry_of_navigable;
+    cloned->m_cloned = true;
     return cloned;
 }
 
@@ -44,6 +46,23 @@ void DocumentState::visit_edges(Cell::Visitor& visitor)
     for (auto& nested_history : m_nested_histories) {
         visitor.visit(nested_history.entries);
     }
+    visitor.visit(m_belongs_to_active_session_history_entry_of_navigable);
+}
+
+void DocumentState::set_document(GC::Ptr<DOM::Document> document)
+{
+    if (m_document && !m_cloned)
+        m_document->set_navigable(nullptr);
+    m_document = document;
+    if (m_document && !m_cloned)
+        m_document->set_navigable(m_belongs_to_active_session_history_entry_of_navigable);
+}
+
+void DocumentState::set_belongs_to_active_session_history_entry_of_navigable(GC::Ptr<Navigable> active_navigable)
+{
+    m_belongs_to_active_session_history_entry_of_navigable = active_navigable;
+    if (m_document)
+        m_document->set_navigable(active_navigable);
 }
 
 }

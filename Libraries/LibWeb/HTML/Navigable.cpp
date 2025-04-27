@@ -173,15 +173,6 @@ void Navigable::set_delaying_load_events(bool value)
     }
 }
 
-GC::Ptr<Navigable> Navigable::navigable_with_active_document(GC::Ref<DOM::Document> document)
-{
-    for (auto navigable : all_navigables()) {
-        if (navigable->active_document() == document)
-            return navigable;
-    }
-    return nullptr;
-}
-
 // https://html.spec.whatwg.org/multipage/document-sequences.html#initialize-the-navigable
 ErrorOr<void> Navigable::initialize_navigable(GC::Ref<DocumentState> document_state, GC::Ptr<Navigable> parent)
 {
@@ -202,7 +193,7 @@ ErrorOr<void> Navigable::initialize_navigable(GC::Ref<DocumentState> document_st
     m_current_session_history_entry = entry;
 
     // 4. Set navigable's active session history entry to entry.
-    m_active_session_history_entry = entry;
+    set_active_session_history_entry(entry);
 
     // 5. Set navigable's parent to parent.
     m_parent = parent;
@@ -244,7 +235,7 @@ void Navigable::activate_history_entry(GC::Ptr<SessionHistoryEntry> entry)
     VERIFY(!new_document->is_initial_about_blank());
 
     // 4. Set navigable's active session history entry to entry.
-    m_active_session_history_entry = entry;
+    set_active_session_history_entry(entry);
 
     // 5. Make active newDocument.
     new_document->make_active();
@@ -1787,7 +1778,7 @@ void Navigable::navigate_to_a_fragment(URL::URL const& url, HistoryHandlingBehav
     }
 
     // 12. Set navigable's active session history entry to historyEntry.
-    m_active_session_history_entry = history_entry;
+    set_active_session_history_entry(history_entry);
 
     // 13. Update document for history step application given navigable's active document, historyEntry, true, scriptHistoryIndex, and scriptHistoryLength.
     // AD HOC: Skip updating the navigation api entries twice here
@@ -2485,6 +2476,15 @@ void Navigable::set_has_session_history_entry_and_ready_for_navigation()
         auto navigation_params = m_pending_navigations.take_first();
         begin_navigation(navigation_params);
     }
+}
+
+void Navigable::set_active_session_history_entry(GC::Ptr<SessionHistoryEntry> entry)
+{
+    if (m_active_session_history_entry)
+        m_active_session_history_entry->set_active_in_navigable(nullptr);
+    m_active_session_history_entry = entry;
+    if (m_active_session_history_entry)
+        m_active_session_history_entry->set_active_in_navigable(this);
 }
 
 }
