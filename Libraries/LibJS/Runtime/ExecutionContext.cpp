@@ -16,9 +16,9 @@ namespace JS {
 
 class ExecutionContextAllocator {
 public:
-    NonnullOwnPtr<ExecutionContext> allocate(u32 registers_and_constants_and_locals_count, u32 arguments_count)
+    NonnullOwnPtr<ExecutionContext> allocate(StackFrameLayout layout)
     {
-        auto tail_size = registers_and_constants_and_locals_count + arguments_count;
+        auto tail_size = layout.constants_count + layout.registers_count + layout.locals_count + layout.arguments_count;
 
         void* slot = nullptr;
         if (tail_size <= 4 && !m_execution_contexts_with_4_tail.is_empty()) {
@@ -36,7 +36,7 @@ public:
         }
 
         if (slot) {
-            return adopt_own(*new (slot) ExecutionContext(registers_and_constants_and_locals_count, arguments_count));
+            return adopt_own(*new (slot) ExecutionContext(layout));
         }
 
         auto tail_allocation_size = [tail_size] -> u32 {
@@ -56,7 +56,7 @@ public:
         };
 
         auto* memory = ::operator new(sizeof(ExecutionContext) + tail_allocation_size() * sizeof(Value));
-        return adopt_own(*::new (memory) ExecutionContext(registers_and_constants_and_locals_count, arguments_count));
+        return adopt_own(*::new (memory) ExecutionContext(layout));
     }
     void deallocate(void* ptr, u32 tail_size)
     {
@@ -88,9 +88,9 @@ private:
 
 static NeverDestroyed<ExecutionContextAllocator> s_execution_context_allocator;
 
-NonnullOwnPtr<ExecutionContext> ExecutionContext::create(u32 registers_and_constants_and_locals_count, u32 arguments_count)
+NonnullOwnPtr<ExecutionContext> ExecutionContext::create(StackFrameLayout descriptor)
 {
-    return s_execution_context_allocator->allocate(registers_and_constants_and_locals_count, arguments_count);
+    return s_execution_context_allocator->allocate(descriptor);
 }
 
 void ExecutionContext::operator delete(void* ptr)
@@ -99,12 +99,12 @@ void ExecutionContext::operator delete(void* ptr)
     s_execution_context_allocator->deallocate(ptr, execution_context->registers_and_constants_and_locals_and_arguments_count);
 }
 
-ExecutionContext::ExecutionContext(u32 registers_and_constants_and_locals_count, u32 arguments_count)
+ExecutionContext::ExecutionContext(StackFrameLayout layout)
 {
-    registers_and_constants_and_locals_and_arguments_count = registers_and_constants_and_locals_count + arguments_count;
-    arguments_offset = registers_and_constants_and_locals_count;
+    registers_and_constants_and_locals_and_arguments_count = layout.constants_count + layout.registers_count + layout.locals_count + layout.arguments_count;
+    arguments_offset = layout.constants_count + layout.registers_count + layout.locals_count;
     auto* registers_and_constants_and_locals_and_arguments = this->registers_and_constants_and_locals_and_arguments();
-    for (size_t i = 0; i < registers_and_constants_and_locals_count; ++i)
+    for (size_t i = 0; i < layout.constants_count + layout.registers_count + layout.locals_count; ++i)
         registers_and_constants_and_locals_and_arguments[i] = js_special_empty_value();
     arguments = { registers_and_constants_and_locals_and_arguments + arguments_offset, registers_and_constants_and_locals_and_arguments_count - arguments_offset };
 }
@@ -115,7 +115,14 @@ ExecutionContext::~ExecutionContext()
 
 NonnullOwnPtr<ExecutionContext> ExecutionContext::copy() const
 {
-    auto copy = create(registers_and_constants_and_locals_and_arguments_count, arguments.size());
+    StackFrameLayout layout;
+    layout.arguments_count = (u32)arguments.size();
+    if (executable) {
+        layout.constants_count = (u32)executable->constants.size();
+        layout.registers_count = (u32)executable->number_of_registers;
+        layout.locals_count = (u32)executable->local_variable_names.size();
+    }
+    auto copy = create(layout);
     copy->function = function;
     copy->realm = realm;
     copy->script_or_module = script_or_module;

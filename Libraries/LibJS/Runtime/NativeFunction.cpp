@@ -179,7 +179,7 @@ ThrowCompletionOr<GC::Ref<Object>> NativeFunction::internal_construct(ReadonlySp
     // 2. If callerContext is not already suspended, suspend callerContext.
     // 3. Let calleeContext be a new execution context.
     ExecutionContext* callee_context = nullptr;
-    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(callee_context, 0, arguments_list.size());
+    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(callee_context, StackFrameLayout { .arguments_count = (u32)arguments_list.size() });
     // 8. Perform any necessary implementation-defined initialization of calleeContext.
     for (size_t i = 0; i < arguments_list.size(); ++i)
         callee_context->arguments[i] = arguments_list[i];

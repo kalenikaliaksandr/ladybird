@@ -57,10 +57,10 @@ ThrowCompletionOr<Value> BoundFunction::internal_call(ExecutionContext& outer_co
     // 4. Let args be the list-concatenation of boundArgs and argumentsList.
 
     ExecutionContext* callee_context = nullptr;
-    size_t registers_and_constants_and_locals_count = 0;
-    size_t argument_count = bound_args.size() + outer_context.arguments.size();
-    TRY(target.get_stack_frame_size(registers_and_constants_and_locals_count, argument_count));
-    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(callee_context, registers_and_constants_and_locals_count, argument_count);
+    StackFrameLayout stack_frame_layout;
+    TRY(target.get_stack_frame_size(stack_frame_layout));
+    stack_frame_layout.arguments_count = max(stack_frame_layout.arguments_count, bound_args.size() + outer_context.arguments.size());
+    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(callee_context, stack_frame_layout);
 
     auto* argument_values = callee_context->arguments.data();
     for (size_t i = 0; i < bound_args.size(); ++i)

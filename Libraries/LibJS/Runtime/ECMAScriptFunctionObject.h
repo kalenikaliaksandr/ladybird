@@ -116,7 +116,7 @@ public:
     virtual void initialize(Realm&) override;
     virtual ~ECMAScriptFunctionObject() override = default;
 
-    virtual ThrowCompletionOr<void> get_stack_frame_size(size_t& registers_and_constants_and_locals_slots, size_t& argument_count) override;
+    virtual ThrowCompletionOr<void> get_stack_frame_size(StackFrameLayout&) override;
     virtual ThrowCompletionOr<Value> internal_call(ExecutionContext&, Value this_argument) override;
     virtual ThrowCompletionOr<GC::Ref<Object>> internal_construct(ReadonlySpan<Value> arguments_list, FunctionObject& new_target) override;
 

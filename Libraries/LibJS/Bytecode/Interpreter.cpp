@@ -239,14 +239,16 @@ ThrowCompletionOr<Value> Interpreter::run(Script& script_record, GC::Ptr<Environ
         }
     }
 
-    u32 registers_and_constants_and_locals_count = 0;
+    StackFrameLayout stack_frame_layout;
     if (executable) {
-        registers_and_constants_and_locals_count = executable->number_of_registers + executable->constants.size() + executable->local_variable_names.size();
+        stack_frame_layout.registers_count = executable->number_of_registers;
+        stack_frame_layout.constants_count = executable->constants.size();
+        stack_frame_layout.locals_count = executable->local_variable_names.size();
     }
 
     // 2. Let scriptContext be a new ECMAScript code execution context.
     ExecutionContext* script_context = nullptr;
-    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(script_context, registers_and_constants_and_locals_count, 0);
+    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(script_context, stack_frame_layout);
 
     // 3. Set the Function of scriptContext to null.
     // NOTE: This was done during execution context construction.
@@ -2619,10 +2621,10 @@ ThrowCompletionOr<void> Call::execute_impl(Bytecode::Interpreter& interpreter) c
     auto& function = callee.as_function();
 
     ExecutionContext* callee_context = nullptr;
-    size_t registers_and_constants_and_locals_count = 0;
-    size_t argument_count = m_argument_count;
-    TRY(function.get_stack_frame_size(registers_and_constants_and_locals_count, argument_count));
-    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK_WITHOUT_CLEARING_ARGS(callee_context, registers_and_constants_and_locals_count, max(m_argument_count, argument_count));
+    StackFrameLayout stack_frame_layout;
+    TRY(function.get_stack_frame_size(stack_frame_layout));
+    stack_frame_layout.arguments_count = max(stack_frame_layout.arguments_count, m_argument_count);
+    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK_WITHOUT_CLEARING_ARGS(callee_context, stack_frame_layout);
 
     auto* callee_context_argument_values = callee_context->arguments.data();
     auto const callee_context_argument_count = callee_context->arguments.size();

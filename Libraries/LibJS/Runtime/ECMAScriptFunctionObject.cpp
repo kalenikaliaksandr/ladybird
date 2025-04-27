@@ -481,7 +481,7 @@ void ECMAScriptFunctionObject::initialize(Realm& realm)
     }
 }
 
-ThrowCompletionOr<void> ECMAScriptFunctionObject::get_stack_frame_size(size_t& registers_and_constants_and_locals_count, size_t& argument_count)
+ThrowCompletionOr<void> ECMAScriptFunctionObject::get_stack_frame_size(StackFrameLayout& layout)
 {
     if (!m_bytecode_executable) {
         if (!ecmascript_code().bytecode_executable()) {
@@ -493,8 +493,10 @@ ThrowCompletionOr<void> ECMAScriptFunctionObject::get_stack_frame_size(size_t& r
         }
         m_bytecode_executable = ecmascript_code().bytecode_executable();
     }
-    registers_and_constants_and_locals_count = m_bytecode_executable->number_of_registers + m_bytecode_executable->constants.size() + m_bytecode_executable->local_variable_names.size();
-    argument_count = max(argument_count, formal_parameters().size());
+    layout.constants_count = m_bytecode_executable->constants.size();
+    layout.registers_count = m_bytecode_executable->number_of_registers;
+    layout.locals_count = m_bytecode_executable->local_variable_names.size();
+    layout.arguments_count = formal_parameters().size();
     return {};
 }
 
@@ -559,10 +561,14 @@ ThrowCompletionOr<GC::Ref<Object>> ECMAScriptFunctionObject::internal_construct(
         m_bytecode_executable = ecmascript_code().bytecode_executable();
     }
 
-    u32 arguments_count = max(arguments_list.size(), formal_parameters().size());
-    auto registers_and_constants_and_locals_count = m_bytecode_executable->number_of_registers + m_bytecode_executable->constants.size() + m_bytecode_executable->local_variable_names.size();
     ExecutionContext* callee_context = nullptr;
-    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(callee_context, registers_and_constants_and_locals_count, arguments_count);
+    StackFrameLayout stack_frame_layout {
+        .constants_count = (u32)m_bytecode_executable->constants.size(),
+        .registers_count = (u32)m_bytecode_executable->number_of_registers,
+        .locals_count = (u32)m_bytecode_executable->local_variable_names.size(),
+        .arguments_count = (u32)max(arguments_list.size(), formal_parameters().size()),
+    };
+    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(callee_context, stack_frame_layout);
 
     // Non-standard
     auto arguments = callee_context->arguments;

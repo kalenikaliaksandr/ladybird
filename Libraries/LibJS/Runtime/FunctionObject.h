@@ -12,6 +12,7 @@
 #include <LibJS/Runtime/Object.h>
 #include <LibJS/Runtime/PrivateEnvironment.h>
 #include <LibJS/Runtime/PropertyKey.h>
+#include <LibJS/Runtime/StackFrameLayout.h>
 
 namespace JS {
 
@@ -23,7 +24,7 @@ public:
 
     // Table 5: Additional Essential Internal Methods of Function Objects, https://tc39.es/ecma262/#table-additional-essential-internal-methods-of-function-objects
 
-    virtual ThrowCompletionOr<void> get_stack_frame_size([[maybe_unused]] size_t& registers_and_constants_and_locals_count, [[maybe_unused]] size_t& argument_count) { return {}; }
+    virtual ThrowCompletionOr<void> get_stack_frame_size([[maybe_unused]] StackFrameLayout&) { return {}; }
     virtual ThrowCompletionOr<Value> internal_call(ExecutionContext&, Value this_argument) = 0;
     virtual ThrowCompletionOr<GC::Ref<Object>> internal_construct([[maybe_unused]] ReadonlySpan<Value> arguments_list, [[maybe_unused]] FunctionObject& new_target) { VERIFY_NOT_REACHED(); }
 

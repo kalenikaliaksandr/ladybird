@@ -133,8 +133,12 @@ ThrowCompletionOr<Value> perform_shadow_realm_eval(VM& vm, StringView source_tex
     auto executable = maybe_executable.release_value();
 
     // 6. Let evalContext be GetShadowRealmContext(evalRealm, strictEval).
-    u32 registers_and_constants_and_locals_count = executable->number_of_registers + executable->constants.size() + executable->local_variable_names.size();
-    auto eval_context = get_shadow_realm_context(eval_realm, strict_eval, registers_and_constants_and_locals_count);
+    StackFrameLayout stack_frame_layout {
+        .constants_count = (u32)executable->constants.size(),
+        .registers_count = (u32)executable->number_of_registers,
+        .locals_count = (u32)executable->local_variable_names.size()
+    };
+    auto eval_context = get_shadow_realm_context(eval_realm, strict_eval, stack_frame_layout);
 
     // 7. Let lexEnv be evalContext's LexicalEnvironment.
     auto lexical_environment = eval_context->lexical_environment;
@@ -194,7 +198,7 @@ ThrowCompletionOr<Value> shadow_realm_import_value(VM& vm, String specifier_stri
     auto& realm = *vm.current_realm();
 
     // 1. Let evalContext be GetShadowRealmContext(evalRealm, true).
-    auto eval_context = get_shadow_realm_context(eval_realm, true, 0);
+    auto eval_context = get_shadow_realm_context(eval_realm, true, {});
 
     // 2. Let innerCapability be ! NewPromiseCapability(%Promise%).
     auto inner_capability = MUST(new_promise_capability(vm, realm.intrinsics().promise_constructor()));
@@ -287,7 +291,7 @@ ThrowCompletionOr<Value> get_wrapped_value(VM& vm, Realm& caller_realm, Value va
 }
 
 // 3.1.7 GetShadowRealmContext ( shadowRealmRecord, strictEval ), https://tc39.es/proposal-shadowrealm/#sec-getshadowrealmcontext
-NonnullOwnPtr<ExecutionContext> get_shadow_realm_context(Realm& shadow_realm, bool strict_eval, u32 registers_and_constants_and_locals_count)
+NonnullOwnPtr<ExecutionContext> get_shadow_realm_context(Realm& shadow_realm, bool strict_eval, StackFrameLayout stack_frame_layout)
 {
     // 1. Let lexEnv be NewDeclarativeEnvironment(shadowRealmRecord.[[GlobalEnv]]).
     Environment* lexical_environment = new_declarative_environment(shadow_realm.global_environment()).ptr();
@@ -300,7 +304,7 @@ NonnullOwnPtr<ExecutionContext> get_shadow_realm_context(Realm& shadow_realm, bo
         variable_environment = lexical_environment;
 
     // 4. Let context be a new ECMAScript code execution context.
-    auto context = ExecutionContext::create(registers_and_constants_and_locals_count, 0);
+    auto context = ExecutionContext::create(stack_frame_layout);
 
     // 5. Set context's Function to null.
     context->function = nullptr;

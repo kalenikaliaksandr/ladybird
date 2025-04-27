@@ -61,10 +61,10 @@ ThrowCompletionOr<Value> call_impl(VM& vm, Value function, Value this_value, Rea
     // 3. Return ? F.[[Call]](V, argumentsList).
     ExecutionContext* callee_context = nullptr;
     auto& function_object = function.as_function();
-    size_t registers_and_constants_and_locals_count = 0;
-    size_t argument_count = arguments_list.size();
-    TRY(function_object.get_stack_frame_size(registers_and_constants_and_locals_count, argument_count));
-    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(callee_context, registers_and_constants_and_locals_count, argument_count);
+    StackFrameLayout stack_frame_layout;
+    TRY(function_object.get_stack_frame_size(stack_frame_layout));
+    stack_frame_layout.arguments_count = max(stack_frame_layout.arguments_count, (u32)arguments_list.size());
+    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(callee_context, stack_frame_layout);
 
     auto* argument_values = callee_context->arguments.data();
     for (size_t i = 0; i < arguments_list.size(); ++i)
@@ -83,10 +83,10 @@ ThrowCompletionOr<Value> call_impl(VM&, FunctionObject& function, Value this_val
 
     // 3. Return ? F.[[Call]](V, argumentsList).
     ExecutionContext* callee_context = nullptr;
-    size_t registers_and_constants_and_locals_count = 0;
-    size_t argument_count = arguments_list.size();
-    TRY(function.get_stack_frame_size(registers_and_constants_and_locals_count, argument_count));
-    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(callee_context, registers_and_constants_and_locals_count, argument_count);
+    StackFrameLayout stack_frame_layout;
+    TRY(function.get_stack_frame_size(stack_frame_layout));
+    stack_frame_layout.arguments_count = max(stack_frame_layout.arguments_count, (u32)arguments_list.size());
+    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(callee_context, stack_frame_layout);
 
     auto* argument_values = callee_context->arguments.data();
     for (size_t i = 0; i < arguments_list.size(); ++i)
@@ -683,7 +683,12 @@ ThrowCompletionOr<Value> perform_eval(VM& vm, Value x, CallerMode strict_caller,
 
     // 20. Let evalContext be a new ECMAScript code execution context.
     ExecutionContext* eval_context = nullptr;
-    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(eval_context, executable->number_of_registers + executable->constants.size() + executable->local_variable_names.size(), 0);
+    StackFrameLayout stack_frame_layout {
+        .constants_count = (u32)executable->constants.size(),
+        .registers_count = (u32)executable->number_of_registers,
+        .locals_count = (u32)executable->local_variable_names.size(),
+    };
+    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(eval_context, stack_frame_layout);
 
     // 21. Set evalContext's Function to null.
     // NOTE: This was done in the construction of eval_context.

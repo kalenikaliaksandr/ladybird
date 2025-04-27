@@ -14,6 +14,7 @@
 #include <LibJS/Forward.h>
 #include <LibJS/Module.h>
 #include <LibJS/Runtime/PrivateEnvironment.h>
+#include <LibJS/Runtime/StackFrameLayout.h>
 #include <LibJS/Runtime/Value.h>
 #include <LibJS/SourceRange.h>
 
@@ -33,7 +34,7 @@ struct CachedSourceRange : public RefCounted<CachedSourceRange> {
 
 // 9.4 Execution Contexts, https://tc39.es/ecma262/#sec-execution-contexts
 struct ExecutionContext {
-    static NonnullOwnPtr<ExecutionContext> create(u32 registers_and_constants_and_locals_count, u32 arguments_count);
+    static NonnullOwnPtr<ExecutionContext> create(StackFrameLayout);
     [[nodiscard]] NonnullOwnPtr<ExecutionContext> copy() const;
 
     ~ExecutionContext();
@@ -44,7 +45,7 @@ private:
     friend class ExecutionContextAllocator;
 
 public:
-    ExecutionContext(u32 registers_and_constants_and_locals_count, u32 arguments_count);
+    ExecutionContext(StackFrameLayout);
 
     void operator delete(void* ptr);
 
@@ -114,30 +115,28 @@ private:
     u32 registers_and_constants_and_locals_and_arguments_count { 0 };
 };
 
-#define ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK_WITHOUT_CLEARING_ARGS(execution_context,  \
-    registers_and_constants_and_locals_count,                                                \
-    arguments_count)                                                                         \
-    auto execution_context_size = sizeof(JS::ExecutionContext)                               \
-        + (((registers_and_constants_and_locals_count) + (arguments_count))                  \
-            * sizeof(JS::Value));                                                            \
-                                                                                             \
-    void* execution_context_memory = alloca(execution_context_size);                         \
-                                                                                             \
-    execution_context = new (execution_context_memory)                                       \
-        JS::ExecutionContext((registers_and_constants_and_locals_count), (arguments_count)); \
-                                                                                             \
-    ScopeGuard run_execution_context_destructor([execution_context] {                        \
-        execution_context->~ExecutionContext();                                              \
+#define ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK_WITHOUT_CLEARING_ARGS(execution_context,                                         \
+    descriptor)                                                                                                                     \
+    auto execution_context_size = sizeof(JS::ExecutionContext)                                                                      \
+        + (((descriptor.constants_count) + (descriptor.registers_count) + (descriptor.locals_count) + (descriptor.arguments_count)) \
+            * sizeof(JS::Value));                                                                                                   \
+                                                                                                                                    \
+    void* execution_context_memory = alloca(execution_context_size);                                                                \
+                                                                                                                                    \
+    execution_context = new (execution_context_memory)                                                                              \
+        JS::ExecutionContext(descriptor);                                                                                           \
+                                                                                                                                    \
+    ScopeGuard run_execution_context_destructor([execution_context] {                                                               \
+        execution_context->~ExecutionContext();                                                                                     \
     })
 
-#define ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(execution_context, registers_and_constants_and_locals_count, \
-    arguments_count)                                                                                            \
-    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK_WITHOUT_CLEARING_ARGS(execution_context,                         \
-        registers_and_constants_and_locals_count, arguments_count);                                             \
-    do {                                                                                                        \
-        for (size_t i = 0; i < execution_context->arguments.size(); i++) {                                      \
-            execution_context->arguments[i] = JS::js_undefined();                                               \
-        }                                                                                                       \
+#define ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK(execution_context, descriptor)       \
+    ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK_WITHOUT_CLEARING_ARGS(execution_context, \
+        descriptor);                                                                    \
+    do {                                                                                \
+        for (size_t i = 0; i < execution_context->arguments.size(); i++) {              \
+            execution_context->arguments[i] = JS::js_undefined();                       \
+        }                                                                               \
     } while (0)
 
 struct StackTraceElement {
