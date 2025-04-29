@@ -316,12 +316,12 @@ CodeGenerationErrorOr<GC::Ref<Executable>> Generator::compile(VM& vm, ASTNode co
             instruction.visit_operands([number_of_registers, number_of_constants, number_of_locals](Operand& operand) {
                 switch (operand.type()) {
                 case Operand::Type::Register:
+                    operand.offset_index_by(number_of_constants);
                     break;
                 case Operand::Type::Local:
                     operand.offset_index_by(number_of_registers + number_of_constants);
                     break;
                 case Operand::Type::Constant:
-                    operand.offset_index_by(number_of_registers);
                     break;
                 case Operand::Type::Argument:
                     operand.offset_index_by(number_of_registers + number_of_constants + number_of_locals);
@@ -334,10 +334,6 @@ CodeGenerationErrorOr<GC::Ref<Executable>> Generator::compile(VM& vm, ASTNode co
             ++it;
         }
     }
-
-    // Also rewrite the `undefined` constant if we have one for inserting End.
-    if (undefined_constant.has_value())
-        undefined_constant.value().operand().offset_index_by(number_of_registers);
 
     for (auto& block : generator.m_root_basic_blocks) {
         basic_block_start_offsets.append(bytecode.size());

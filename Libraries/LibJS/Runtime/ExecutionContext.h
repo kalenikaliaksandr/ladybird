@@ -72,12 +72,12 @@ public:
     // FIXME: Move this out of LibJS (e.g. by using the CustomData concept), as it's used exclusively by LibWeb.
     size_t skip_when_determining_incumbent_counter { 0 };
 
-    Span<Value> registers_and_constants_and_locals_and_arguments_span()
+    Span<Value> constants_and_registers_and_locals_and_arguments_span()
     {
-        return { registers_and_constants_and_locals_and_arguments(), registers_and_constants_and_locals_and_arguments_count };
+        return { constants_and_registers_and_locals_and_arguments(), constants_and_registers_and_locals_and_arguments_count };
     }
 
-    Value const* registers_and_constants_and_locals_and_arguments() const
+    Value const* constants_and_registers_and_locals_and_arguments() const
     {
         return reinterpret_cast<Value*>(reinterpret_cast<uintptr_t>(this) + sizeof(ExecutionContext));
     }
@@ -91,7 +91,7 @@ public:
 
     Value& local(size_t index)
     {
-        return registers_and_constants_and_locals_and_arguments()[index];
+        return constants_and_registers_and_locals_and_arguments()[index];
     }
 
     u32 arguments_offset { 0 };
@@ -107,12 +107,12 @@ public:
 private:
     friend class Bytecode::Interpreter;
 
-    Value* registers_and_constants_and_locals_and_arguments()
+    Value* constants_and_registers_and_locals_and_arguments()
     {
         return reinterpret_cast<Value*>(reinterpret_cast<uintptr_t>(this) + sizeof(ExecutionContext));
     }
 
-    u32 registers_and_constants_and_locals_and_arguments_count { 0 };
+    u32 constants_and_registers_and_locals_and_arguments_count { 0 };
 };
 
 #define ALLOCATE_EXECUTION_CONTEXT_ON_NATIVE_STACK_WITHOUT_CLEARING_ARGS(execution_context,                                         \

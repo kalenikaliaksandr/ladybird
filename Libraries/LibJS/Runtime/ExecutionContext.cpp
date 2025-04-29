@@ -96,17 +96,17 @@ NonnullOwnPtr<ExecutionContext> ExecutionContext::create(StackFrameLayout descri
 void ExecutionContext::operator delete(void* ptr)
 {
     auto const* execution_context = static_cast<ExecutionContext const*>(ptr);
-    s_execution_context_allocator->deallocate(ptr, execution_context->registers_and_constants_and_locals_and_arguments_count);
+    s_execution_context_allocator->deallocate(ptr, execution_context->constants_and_registers_and_locals_and_arguments_count);
 }
 
 ExecutionContext::ExecutionContext(StackFrameLayout layout)
 {
-    registers_and_constants_and_locals_and_arguments_count = layout.constants_count + layout.registers_count + layout.locals_count + layout.arguments_count;
+    constants_and_registers_and_locals_and_arguments_count = layout.constants_count + layout.registers_count + layout.locals_count + layout.arguments_count;
     arguments_offset = layout.constants_count + layout.registers_count + layout.locals_count;
-    auto* registers_and_constants_and_locals_and_arguments = this->registers_and_constants_and_locals_and_arguments();
+    auto* constants_and_registers_and_locals_and_arguments = this->constants_and_registers_and_locals_and_arguments();
     for (size_t i = 0; i < layout.constants_count + layout.registers_count + layout.locals_count; ++i)
-        registers_and_constants_and_locals_and_arguments[i] = js_special_empty_value();
-    arguments = { registers_and_constants_and_locals_and_arguments + arguments_offset, registers_and_constants_and_locals_and_arguments_count - arguments_offset };
+        constants_and_registers_and_locals_and_arguments[i] = js_special_empty_value();
+    arguments = { constants_and_registers_and_locals_and_arguments + arguments_offset, constants_and_registers_and_locals_and_arguments_count - arguments_offset };
 }
 
 ExecutionContext::~ExecutionContext()
@@ -139,10 +139,10 @@ NonnullOwnPtr<ExecutionContext> ExecutionContext::copy() const
     copy->unwind_contexts = unwind_contexts;
     copy->saved_lexical_environments = saved_lexical_environments;
     copy->previously_scheduled_jumps = previously_scheduled_jumps;
-    copy->registers_and_constants_and_locals_and_arguments_count = registers_and_constants_and_locals_and_arguments_count;
-    for (size_t i = 0; i < registers_and_constants_and_locals_and_arguments_count; ++i)
-        copy->registers_and_constants_and_locals_and_arguments()[i] = registers_and_constants_and_locals_and_arguments()[i];
-    copy->arguments = { copy->registers_and_constants_and_locals_and_arguments() + copy->arguments_offset, arguments.size() };
+    copy->constants_and_registers_and_locals_and_arguments_count = constants_and_registers_and_locals_and_arguments_count;
+    for (size_t i = 0; i < constants_and_registers_and_locals_and_arguments_count; ++i)
+        copy->constants_and_registers_and_locals_and_arguments()[i] = constants_and_registers_and_locals_and_arguments()[i];
+    copy->arguments = { copy->constants_and_registers_and_locals_and_arguments() + copy->arguments_offset, arguments.size() };
     return copy;
 }
 
@@ -158,7 +158,7 @@ void ExecutionContext::visit_edges(Cell::Visitor& visitor)
         visitor.visit(*this_value);
     visitor.visit(executable);
     visitor.visit(function_name);
-    visitor.visit(registers_and_constants_and_locals_and_arguments_span());
+    visitor.visit(constants_and_registers_and_locals_and_arguments_span());
     for (auto& context : unwind_contexts) {
         visitor.visit(context.lexical_environment);
     }

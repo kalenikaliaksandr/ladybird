@@ -77,7 +77,7 @@ static ByteString format_operand(StringView name, Operand operand, Bytecode::Exe
         if (operand.index() == Register::this_value().index()) {
             builder.appendff("\033[33mthis\033[0m");
         } else {
-            builder.appendff("\033[33mreg{}\033[0m", operand.index());
+            builder.appendff("\033[33mreg{}\033[0m", operand.index() + executable.constants.size());
         }
         break;
     case Operand::Type::Local:
@@ -88,7 +88,7 @@ static ByteString format_operand(StringView name, Operand operand, Bytecode::Exe
         break;
     case Operand::Type::Constant: {
         builder.append("\033[36m"sv);
-        auto value = executable.constants[operand.index() - executable.number_of_registers];
+        auto value = executable.constants[operand.index()];
         if (value.is_special_empty_value())
             builder.append("<Empty>"sv);
         else if (value.is_boolean())
@@ -187,12 +187,12 @@ Interpreter::~Interpreter()
 
 ALWAYS_INLINE Value Interpreter::get(Operand op) const
 {
-    return m_registers_and_constants_and_locals_arguments.data()[op.index()];
+    return m_constants_and_registers_and_locals_arguments.data()[op.index()];
 }
 
 ALWAYS_INLINE void Interpreter::set(Operand op, Value value)
 {
-    m_registers_and_constants_and_locals_arguments.data()[op.index()] = value;
+    m_constants_and_registers_and_locals_arguments.data()[op.index()] = value;
 }
 
 ALWAYS_INLINE Value Interpreter::do_yield(Value value, Optional<Label> continuation)
@@ -730,10 +730,13 @@ Interpreter::ResultAndReturnRegister Interpreter::run_executable(Executable& exe
 
     auto& running_execution_context = vm().running_execution_context();
     u32 registers_and_constants_and_locals_count = executable.number_of_registers + executable.constants.size() + executable.local_variable_names.size();
-    VERIFY(registers_and_constants_and_locals_count <= running_execution_context.registers_and_constants_and_locals_and_arguments_span().size());
+    VERIFY(registers_and_constants_and_locals_count <= running_execution_context.constants_and_registers_and_locals_and_arguments_span().size());
 
     TemporaryChange restore_running_execution_context { m_running_execution_context, &running_execution_context };
-    TemporaryChange restore_registers_and_constants_and_locals { m_registers_and_constants_and_locals_arguments, running_execution_context.registers_and_constants_and_locals_and_arguments_span() };
+    TemporaryChange restore_registers_and_constants_and_locals { m_constants_and_registers_and_locals_arguments, running_execution_context.constants_and_registers_and_locals_and_arguments_span() };
+
+    auto registers_span = m_constants_and_registers_and_locals_arguments.slice(executable.constants.size(), executable.number_of_registers);
+    TemporaryChange restore_registers { m_registers, registers_span };
 
     reg(Register::accumulator()) = initial_accumulator_value;
     reg(Register::return_value()) = js_special_empty_value();
@@ -747,9 +750,9 @@ Interpreter::ResultAndReturnRegister Interpreter::run_executable(Executable& exe
 
     running_execution_context.executable = &executable;
 
-    auto* registers_and_constants_and_locals_and_arguments = running_execution_context.registers_and_constants_and_locals_and_arguments();
+    auto* constants_and_registers_constants_and_locals_and_arguments = running_execution_context.constants_and_registers_and_locals_and_arguments();
     for (size_t i = 0; i < executable.constants.size(); ++i) {
-        registers_and_constants_and_locals_and_arguments[executable.number_of_registers + i] = executable.constants[i];
+        constants_and_registers_constants_and_locals_and_arguments[i] = executable.constants[i];
     }
 
     run_bytecode(entry_point.value_or(0));
@@ -759,10 +762,10 @@ Interpreter::ResultAndReturnRegister Interpreter::run_executable(Executable& exe
     if constexpr (JS_BYTECODE_DEBUG) {
         for (size_t i = 0; i < executable.number_of_registers; ++i) {
             String value_string;
-            if (registers_and_constants_and_locals_and_arguments[i].is_special_empty_value())
+            if (constants_and_registers_constants_and_locals_and_arguments[i + executable.constants.size()].is_special_empty_value())
                 value_string = "(empty)"_string;
             else
-                value_string = registers_and_constants_and_locals_and_arguments[i].to_string_without_side_effects();
+                value_string = constants_and_registers_constants_and_locals_and_arguments[i + executable.constants.size()].to_string_without_side_effects();
             dbgln("[{:3}] {}", i, value_string);
         }
     }
@@ -776,8 +779,8 @@ Interpreter::ResultAndReturnRegister Interpreter::run_executable(Executable& exe
     vm().finish_execution_generation();
 
     if (!exception.is_special_empty_value())
-        return { throw_completion(exception), registers_and_constants_and_locals_and_arguments[0] };
-    return { return_value, registers_and_constants_and_locals_and_arguments[0] };
+        return { throw_completion(exception), constants_and_registers_constants_and_locals_and_arguments[executable.constants.size()] };
+    return { return_value, constants_and_registers_constants_and_locals_and_arguments[executable.constants.size()] };
 }
 
 void Interpreter::enter_unwind_context()
