@@ -104,7 +104,7 @@ ExecutionContext::ExecutionContext(StackFrameLayout layout)
     constants_and_registers_and_locals_and_arguments_count = layout.constants_count + layout.registers_count + layout.locals_count + layout.arguments_count;
     arguments_offset = layout.constants_count + layout.registers_count + layout.locals_count;
     auto* constants_and_registers_and_locals_and_arguments = this->constants_and_registers_and_locals_and_arguments();
-    for (size_t i = 0; i < layout.constants_count + layout.registers_count + layout.locals_count; ++i)
+    for (size_t i = layout.constants_count; i < layout.constants_count + layout.registers_count + layout.locals_count; ++i)
         constants_and_registers_and_locals_and_arguments[i] = js_special_empty_value();
     arguments = { constants_and_registers_and_locals_and_arguments + arguments_offset, constants_and_registers_and_locals_and_arguments_count - arguments_offset };
 }
