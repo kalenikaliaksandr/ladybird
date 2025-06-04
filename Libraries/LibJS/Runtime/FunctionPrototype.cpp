@@ -80,9 +80,8 @@ JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::apply)
     auto* storage = arg_array_object.indexed_properties().storage();
     if (!arg_array_object.may_interfere_with_indexed_property_access() && storage && storage->is_simple_storage()) {
         auto length = TRY(length_of_array_like(vm, arg_array_object));
-        auto const* simple_storage = static_cast<SimpleIndexedPropertyStorage*>(storage);
-        auto storage_elements = simple_storage->elements().span();
-        if (!simple_storage->has_empty_elements() && storage_elements.size() >= length)
+        auto storage_elements = storage->elements().span();
+        if (!storage->has_empty_elements() && storage_elements.size() >= length)
             return TRY(JS::call(vm, function, this_arg, storage_elements.slice(0, length)));
     }
 

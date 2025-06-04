@@ -10,26 +10,7 @@
 
 namespace JS {
 
-constexpr size_t const SPARSE_ARRAY_HOLE_THRESHOLD = 200;
-constexpr size_t const LENGTH_SETTER_GENERIC_STORAGE_THRESHOLD = 4 * MiB;
-
-SimpleIndexedPropertyStorage::SimpleIndexedPropertyStorage(Vector<Value>&& initial_values)
-    : IndexedPropertyStorage(IsSimpleStorage::Yes, initial_values.size())
-    , m_packed_elements(move(initial_values))
-{
-}
-
-bool SimpleIndexedPropertyStorage::has_index(u32 index) const
-{
-    return inline_has_index(index);
-}
-
-Optional<ValueAndAttributes> SimpleIndexedPropertyStorage::get(u32 index) const
-{
-    return inline_get(index);
-}
-
-void SimpleIndexedPropertyStorage::grow_storage_if_needed()
+void IndexedPropertyStorage::grow_storage_if_needed()
 {
     if (m_array_size <= m_packed_elements.size())
         return;
@@ -42,111 +23,29 @@ void SimpleIndexedPropertyStorage::grow_storage_if_needed()
     }
 }
 
-void SimpleIndexedPropertyStorage::put(u32 index, Value value, PropertyAttributes attributes)
+void IndexedPropertyStorage::remove(u32 index)
 {
-    VERIFY(attributes == default_attributes);
-
-    if (index >= m_array_size) {
-        m_number_of_empty_elements += index - m_array_size;
-        m_array_size = index + 1;
-        grow_storage_if_needed();
-    } else {
-        if (m_packed_elements[index].is_special_empty_value()) {
-            --m_number_of_empty_elements;
-        }
-    }
-    m_packed_elements[index] = value;
-    if (value.is_special_empty_value()) {
+    if (m_is_simple_storage) {
+        VERIFY(index < m_array_size);
         ++m_number_of_empty_elements;
-    }
-}
-
-void SimpleIndexedPropertyStorage::remove(u32 index)
-{
-    VERIFY(index < m_array_size);
-    ++m_number_of_empty_elements;
-    m_packed_elements[index] = js_special_empty_value();
-}
-
-ValueAndAttributes SimpleIndexedPropertyStorage::take_first()
-{
-    if (m_packed_elements.first().is_special_empty_value()) {
-        --m_number_of_empty_elements;
-    }
-    m_array_size--;
-    return { m_packed_elements.take_first(), default_attributes };
-}
-
-ValueAndAttributes SimpleIndexedPropertyStorage::take_last()
-{
-    m_array_size--;
-    auto last_element = m_packed_elements[m_array_size];
-    if (last_element.is_special_empty_value()) {
-        --m_number_of_empty_elements;
-    }
-    m_packed_elements[m_array_size] = js_special_empty_value();
-    return { last_element, default_attributes };
-}
-
-bool SimpleIndexedPropertyStorage::set_array_like_size(size_t new_size)
-{
-    if (new_size == m_array_size)
-        return true;
-
-    auto old_size = m_array_size;
-    m_array_size = new_size;
-    m_packed_elements.resize_with_default_value_and_keep_capacity(new_size, js_special_empty_value());
-
-    if (old_size <= m_array_size) {
-        m_number_of_empty_elements += m_array_size - old_size;
-    } else {
-        m_number_of_empty_elements = 0;
-        for (auto& value : m_packed_elements) {
-            if (value.is_special_empty_value())
-                ++m_number_of_empty_elements;
-        }
+        m_packed_elements[index] = js_special_empty_value();
+        return;
     }
 
-    return true;
-}
-
-GenericIndexedPropertyStorage::GenericIndexedPropertyStorage(SimpleIndexedPropertyStorage&& storage)
-    : IndexedPropertyStorage(IsSimpleStorage::No, storage.array_like_size())
-{
-    for (size_t i = 0; i < storage.m_packed_elements.size(); ++i) {
-        auto value = storage.m_packed_elements[i];
-        if (!value.is_special_empty_value())
-            m_sparse_elements.set(i, { value, default_attributes });
-    }
-}
-
-bool GenericIndexedPropertyStorage::has_index(u32 index) const
-{
-    return m_sparse_elements.contains(index);
-}
-
-Optional<ValueAndAttributes> GenericIndexedPropertyStorage::get(u32 index) const
-{
-    if (index >= m_array_size)
-        return {};
-    return m_sparse_elements.get(index).copy();
-}
-
-void GenericIndexedPropertyStorage::put(u32 index, Value value, PropertyAttributes attributes)
-{
-    if (index >= m_array_size)
-        m_array_size = index + 1;
-    m_sparse_elements.set(index, { value, attributes });
-}
-
-void GenericIndexedPropertyStorage::remove(u32 index)
-{
     VERIFY(index < m_array_size);
     m_sparse_elements.remove(index);
 }
 
-ValueAndAttributes GenericIndexedPropertyStorage::take_first()
+ValueAndAttributes IndexedPropertyStorage::take_first()
 {
+    if (m_is_simple_storage) {
+        if (m_packed_elements.first().is_special_empty_value()) {
+            --m_number_of_empty_elements;
+        }
+        m_array_size--;
+        return { m_packed_elements.take_first(), default_attributes };
+    }
+
     VERIFY(m_array_size > 0);
     m_array_size--;
 
@@ -159,8 +58,18 @@ ValueAndAttributes GenericIndexedPropertyStorage::take_first()
     return first_element;
 }
 
-ValueAndAttributes GenericIndexedPropertyStorage::take_last()
+ValueAndAttributes IndexedPropertyStorage::take_last()
 {
+    if (m_is_simple_storage) {
+        m_array_size--;
+        auto last_element = m_packed_elements[m_array_size];
+        if (last_element.is_special_empty_value()) {
+            --m_number_of_empty_elements;
+        }
+        m_packed_elements[m_array_size] = js_special_empty_value();
+        return { last_element, default_attributes };
+    }
+
     VERIFY(m_array_size > 0);
     m_array_size--;
 
@@ -171,10 +80,28 @@ ValueAndAttributes GenericIndexedPropertyStorage::take_last()
     return result.value();
 }
 
-bool GenericIndexedPropertyStorage::set_array_like_size(size_t new_size)
+bool IndexedPropertyStorage::set_array_like_size(size_t new_size)
 {
     if (new_size == m_array_size)
         return true;
+
+    if (m_is_simple_storage) {
+        auto old_size = m_array_size;
+        m_array_size = new_size;
+        m_packed_elements.resize_with_default_value_and_keep_capacity(new_size, js_special_empty_value());
+
+        if (old_size <= m_array_size) {
+            m_number_of_empty_elements += m_array_size - old_size;
+        } else {
+            m_number_of_empty_elements = 0;
+            for (auto& value : m_packed_elements) {
+                if (value.is_special_empty_value())
+                    ++m_number_of_empty_elements;
+            }
+        }
+
+        return true;
+    }
 
     if (new_size >= m_array_size) {
         m_array_size = new_size;
@@ -189,8 +116,7 @@ bool GenericIndexedPropertyStorage::set_array_like_size(size_t new_size)
         if (entry.key >= new_size) {
             if (entry.value.attributes.is_configurable())
                 continue;
-            else
-                any_failed = true;
+            any_failed = true;
         }
         new_sparse_elements.set(entry.key, entry.value);
         highest_index = max(highest_index, entry.key);
@@ -203,6 +129,17 @@ bool GenericIndexedPropertyStorage::set_array_like_size(size_t new_size)
 
     m_sparse_elements = move(new_sparse_elements);
     return !any_failed;
+}
+
+void IndexedPropertyStorage::switch_to_generic_storage()
+{
+    VERIFY(m_is_simple_storage);
+    for (size_t i = 0; i < m_packed_elements.size(); ++i) {
+        auto value = m_packed_elements[i];
+        if (!value.is_special_empty_value())
+            m_sparse_elements.set(i, { value, default_attributes });
+    }
+    m_is_simple_storage = false;
 }
 
 IndexedPropertyIterator::IndexedPropertyIterator(IndexedProperties const& indexed_properties, u32 staring_index, bool skip_empty)
@@ -249,23 +186,6 @@ void IndexedPropertyIterator::skip_empty_indices()
     m_index = m_indexed_properties.array_like_size();
 }
 
-Optional<ValueAndAttributes> IndexedProperties::get(u32 index) const
-{
-    if (!m_storage)
-        return {};
-    return m_storage->get(index);
-}
-
-void IndexedProperties::put(u32 index, Value value, PropertyAttributes attributes)
-{
-    ensure_storage();
-    if (m_storage->is_simple_storage() && (attributes != default_attributes || index > (array_like_size() + SPARSE_ARRAY_HOLE_THRESHOLD))) {
-        switch_to_generic_storage();
-    }
-
-    m_storage->put(index, value, attributes);
-}
-
 void IndexedProperties::remove(u32 index)
 {
     VERIFY(m_storage);
@@ -284,7 +204,7 @@ bool IndexedProperties::set_array_like_size(size_t new_size)
     if (m_storage->is_simple_storage()
         && (new_size > NumericLimits<i32>::max()
             || (current_array_like_size < LENGTH_SETTER_GENERIC_STORAGE_THRESHOLD && new_size > LENGTH_SETTER_GENERIC_STORAGE_THRESHOLD))) {
-        switch_to_generic_storage();
+        m_storage->switch_to_generic_storage();
     }
 
     return m_storage->set_array_like_size(new_size);
@@ -295,15 +215,16 @@ size_t IndexedProperties::real_size() const
     if (!m_storage)
         return 0;
     if (m_storage->is_simple_storage()) {
-        auto& packed_elements = static_cast<SimpleIndexedPropertyStorage const&>(*m_storage).elements();
+        auto const& packed_elements = m_storage->elements();
         size_t size = 0;
-        for (auto& element : packed_elements) {
+        for (auto const& element : packed_elements) {
             if (!element.is_special_empty_value())
                 ++size;
         }
         return size;
     }
-    return static_cast<GenericIndexedPropertyStorage const&>(*m_storage).size();
+
+    return m_storage->size();
 }
 
 Vector<u32> IndexedProperties::indices() const
@@ -311,7 +232,7 @@ Vector<u32> IndexedProperties::indices() const
     if (!m_storage)
         return {};
     if (m_storage->is_simple_storage()) {
-        auto const& storage = static_cast<SimpleIndexedPropertyStorage const&>(*m_storage);
+        auto const& storage = *m_storage;
         auto const& elements = storage.elements();
         Vector<u32> indices;
         indices.ensure_capacity(storage.array_like_size());
@@ -321,26 +242,16 @@ Vector<u32> IndexedProperties::indices() const
         }
         return indices;
     }
-    auto const& storage = static_cast<GenericIndexedPropertyStorage const&>(*m_storage);
-    auto indices = storage.sparse_elements().keys();
+
+    auto indices = m_storage->sparse_elements().keys();
     quick_sort(indices);
     return indices;
-}
-
-void IndexedProperties::switch_to_generic_storage()
-{
-    if (!m_storage) {
-        m_storage = make<GenericIndexedPropertyStorage>();
-        return;
-    }
-    auto& storage = static_cast<SimpleIndexedPropertyStorage&>(*m_storage);
-    m_storage = make<GenericIndexedPropertyStorage>(move(storage));
 }
 
 void IndexedProperties::ensure_storage()
 {
     if (!m_storage)
-        m_storage = make<SimpleIndexedPropertyStorage>();
+        m_storage = make<IndexedPropertyStorage>();
 }
 
 }

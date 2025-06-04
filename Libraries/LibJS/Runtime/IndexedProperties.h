@@ -12,6 +12,9 @@
 
 namespace JS {
 
+constexpr size_t const SPARSE_ARRAY_HOLE_THRESHOLD = 200;
+constexpr size_t const LENGTH_SETTER_GENERIC_STORAGE_THRESHOLD = 4 * MiB;
+
 struct ValueAndAttributes {
     Value value;
     PropertyAttributes attributes { default_attributes };
@@ -21,110 +24,84 @@ struct ValueAndAttributes {
 
 class IndexedProperties;
 class IndexedPropertyIterator;
-class GenericIndexedPropertyStorage;
 
 class IndexedPropertyStorage {
 public:
-    virtual ~IndexedPropertyStorage() = default;
-
-    enum class IsSimpleStorage {
-        No,
-        Yes,
-    };
-
-    virtual bool has_index(u32 index) const = 0;
-    virtual Optional<ValueAndAttributes> get(u32 index) const = 0;
-    virtual void put(u32 index, Value value, PropertyAttributes attributes = default_attributes) = 0;
-    virtual void remove(u32 index) = 0;
-
-    virtual ValueAndAttributes take_first() = 0;
-    virtual ValueAndAttributes take_last() = 0;
-
-    virtual size_t size() const = 0;
-    size_t array_like_size() const { return m_array_size; }
-    virtual bool set_array_like_size(size_t new_size) = 0;
+    IndexedPropertyStorage() = default;
+    explicit IndexedPropertyStorage(Vector<Value>&& initial_values);
 
     bool is_simple_storage() const { return m_is_simple_storage; }
 
-protected:
-    explicit IndexedPropertyStorage(IsSimpleStorage is_simple_storage, size_t array_size = 0)
-        : m_array_size(array_size)
-        , m_is_simple_storage(is_simple_storage == IsSimpleStorage::Yes)
+    ALWAYS_INLINE bool has_index(u32 index) const
     {
+        if (m_is_simple_storage) [[likely]] {
+            return index < m_array_size && !m_packed_elements.data()[index].is_special_empty_value();
+        }
+
+        return m_sparse_elements.contains(index);
     }
 
-    size_t m_array_size { 0 };
-
-private:
-    bool m_is_simple_storage { false };
-};
-
-class SimpleIndexedPropertyStorage final : public IndexedPropertyStorage {
-public:
-    SimpleIndexedPropertyStorage()
-        : IndexedPropertyStorage(IsSimpleStorage::Yes)
+    ALWAYS_INLINE Optional<ValueAndAttributes> get(u32 index) const
     {
-    }
-    explicit SimpleIndexedPropertyStorage(Vector<Value>&& initial_values);
-
-    virtual bool has_index(u32 index) const override;
-    virtual Optional<ValueAndAttributes> get(u32 index) const override;
-    virtual void put(u32 index, Value value, PropertyAttributes attributes = default_attributes) override;
-    virtual void remove(u32 index) override;
-
-    virtual ValueAndAttributes take_first() override;
-    virtual ValueAndAttributes take_last() override;
-
-    virtual size_t size() const override { return m_packed_elements.size(); }
-    virtual bool set_array_like_size(size_t new_size) override;
-
-    Vector<Value> const& elements() const { return m_packed_elements; }
-
-    [[nodiscard]] bool inline_has_index(u32 index) const
-    {
-        return index < m_array_size && !m_packed_elements.data()[index].is_special_empty_value();
-    }
-
-    [[nodiscard]] Optional<ValueAndAttributes> inline_get(u32 index) const
-    {
-        if (!inline_has_index(index))
+        if (m_is_simple_storage) [[likely]] {
+            if (has_index(index))
+                return ValueAndAttributes { m_packed_elements.data()[index], default_attributes };
             return {};
-        return ValueAndAttributes { m_packed_elements.data()[index], default_attributes };
+        }
+
+        if (index >= m_array_size)
+            return {};
+        return m_sparse_elements.get(index).copy();
     }
+
+    ALWAYS_INLINE void put(u32 index, Value value, PropertyAttributes attributes = default_attributes)
+    {
+        if (m_is_simple_storage) [[likely]] {
+            if (index >= m_array_size) {
+                m_number_of_empty_elements += index - m_array_size;
+                m_array_size = index + 1;
+                grow_storage_if_needed();
+            } else {
+                if (m_packed_elements[index].is_special_empty_value()) {
+                    --m_number_of_empty_elements;
+                }
+            }
+            m_packed_elements[index] = value;
+            if (value.is_special_empty_value()) {
+                ++m_number_of_empty_elements;
+            }
+            return;
+        }
+
+        if (index >= m_array_size)
+            m_array_size = index + 1;
+        m_sparse_elements.set(index, { value, attributes });
+    }
+    void remove(u32 index);
+
+    ValueAndAttributes take_first();
+    ValueAndAttributes take_last();
+
+    size_t size() const { return m_is_simple_storage ? m_packed_elements.size() : m_sparse_elements.size(); }
+
+    size_t array_like_size() const { return m_array_size; }
+    bool set_array_like_size(size_t new_size);
+
+    auto const& sparse_elements() const { return m_sparse_elements; }
+    Vector<Value> const& elements() const { return m_packed_elements; }
 
     bool has_empty_elements() const { return m_number_of_empty_elements.value() > 0; }
 
 private:
-    friend GenericIndexedPropertyStorage;
+    friend IndexedProperties;
 
     void grow_storage_if_needed();
+    void switch_to_generic_storage();
 
+    bool m_is_simple_storage { true };
+    size_t m_array_size { 0 };
     Checked<size_t> m_number_of_empty_elements { 0 };
     Vector<Value> m_packed_elements;
-};
-
-class GenericIndexedPropertyStorage final : public IndexedPropertyStorage {
-public:
-    explicit GenericIndexedPropertyStorage(SimpleIndexedPropertyStorage&&);
-    explicit GenericIndexedPropertyStorage()
-        : IndexedPropertyStorage(IsSimpleStorage::No)
-    {
-    }
-
-    virtual bool has_index(u32 index) const override;
-    virtual Optional<ValueAndAttributes> get(u32 index) const override;
-    virtual void put(u32 index, Value value, PropertyAttributes attributes = default_attributes) override;
-    virtual void remove(u32 index) override;
-
-    virtual ValueAndAttributes take_first() override;
-    virtual ValueAndAttributes take_last() override;
-
-    virtual size_t size() const override { return m_sparse_elements.size(); }
-    virtual bool set_array_like_size(size_t new_size) override;
-
-    HashMap<u32, ValueAndAttributes> const& sparse_elements() const { return m_sparse_elements; }
-
-private:
     HashMap<u32, ValueAndAttributes> m_sparse_elements;
 };
 
@@ -155,12 +132,25 @@ public:
     explicit IndexedProperties(Vector<Value> values)
     {
         if (!values.is_empty())
-            m_storage = make<SimpleIndexedPropertyStorage>(move(values));
+            m_storage = make<IndexedPropertyStorage>(move(values));
     }
 
     bool has_index(u32 index) const { return m_storage ? m_storage->has_index(index) : false; }
-    Optional<ValueAndAttributes> get(u32 index) const;
-    void put(u32 index, Value value, PropertyAttributes attributes = default_attributes);
+    ALWAYS_INLINE Optional<ValueAndAttributes> get(u32 index) const
+    {
+        if (!m_storage)
+            return {};
+        return m_storage->get(index);
+    }
+    ALWAYS_INLINE void put(u32 index, Value value, PropertyAttributes attributes = default_attributes)
+    {
+        ensure_storage();
+        if (m_storage->is_simple_storage() && (attributes != default_attributes || index > (array_like_size() + SPARSE_ARRAY_HOLE_THRESHOLD))) [[unlikely]] {
+            m_storage->switch_to_generic_storage();
+        }
+
+        m_storage->put(index, value, attributes);
+    }
     void remove(u32 index);
 
     void append(Value value, PropertyAttributes attributes = default_attributes) { put(array_like_size(), value, attributes); }
@@ -185,16 +175,15 @@ public:
         if (!m_storage)
             return;
         if (m_storage->is_simple_storage()) {
-            for (auto& value : static_cast<SimpleIndexedPropertyStorage&>(*m_storage).elements())
+            for (auto& value : m_storage->elements())
                 callback(value);
         } else {
-            for (auto& element : static_cast<GenericIndexedPropertyStorage const&>(*m_storage).sparse_elements())
+            for (auto& element : m_storage->sparse_elements())
                 callback(element.value.value);
         }
     }
 
 private:
-    void switch_to_generic_storage();
     void ensure_storage();
 
     OwnPtr<IndexedPropertyStorage> m_storage;

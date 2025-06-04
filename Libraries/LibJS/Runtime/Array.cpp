@@ -279,8 +279,7 @@ ThrowCompletionOr<Optional<PropertyDescriptor>> Array::internal_get_own_property
     // OPTIMIZATION: Fast path for arrays with simple indexed properties storage.
     auto const* storage = indexed_properties().storage();
     if (property_key.is_number() && storage && storage->is_simple_storage()) {
-        auto const& simple_storage = static_cast<SimpleIndexedPropertyStorage const&>(*storage);
-        auto value_and_attributes = simple_storage.get(property_key.as_number());
+        auto value_and_attributes = storage->get(property_key.as_number());
         if (value_and_attributes.has_value()) {
             PropertyDescriptor descriptor;
             descriptor.value = value_and_attributes->value;
@@ -428,8 +427,7 @@ ThrowCompletionOr<bool> Array::internal_has_property(PropertyKey const& property
 {
     auto const* storage = indexed_properties().storage();
     if (property_key.is_number() && !m_is_proxy_target && storage && storage->is_simple_storage()) {
-        auto const& simple_storage = static_cast<SimpleIndexedPropertyStorage const&>(*storage);
-        if (!simple_storage.has_empty_elements() && property_key.as_number() < simple_storage.array_like_size()) {
+        if (!storage->has_empty_elements() && property_key.as_number() < storage->array_like_size()) {
             return true;
         }
     }
