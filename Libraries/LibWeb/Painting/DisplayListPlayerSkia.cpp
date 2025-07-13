@@ -1055,10 +1055,10 @@ void DisplayListPlayerSkia::apply_filters(ApplyFilter const& command)
 
 void DisplayListPlayerSkia::apply_transform(ApplyTransform const& command)
 {
-    auto affine_transform = Gfx::extract_2d_affine_transform(command.matrix);
+    // auto affine_transform = Gfx::extract_2d_affine_transform(command.matrix);
     auto new_transform = Gfx::AffineTransform {}
                              .translate(command.origin)
-                             .multiply(affine_transform)
+                             .multiply(command.matrix)
                              .translate(-command.origin);
     auto matrix = to_skia_matrix(new_transform);
     surface().canvas().concat(matrix);

@@ -32,15 +32,15 @@ public:
     void set_device_viewport_rect(DevicePixelRect const& rect) { m_device_viewport_rect = rect; }
     CSSPixelRect css_viewport_rect() const;
 
-    void set_svg_transform(Gfx::AffineTransform transform)
-    {
-        m_svg_transform = transform;
-    }
-
-    Gfx::AffineTransform const& svg_transform() const
-    {
-        return m_svg_transform;
-    }
+    // void set_svg_transform(Gfx::AffineTransform transform)
+    // {
+    //     m_svg_transform = transform;
+    // }
+    //
+    // Gfx::AffineTransform const& svg_transform() const
+    // {
+    //     return m_svg_transform;
+    // }
 
     bool draw_svg_geometry_for_clip_path() const
     {

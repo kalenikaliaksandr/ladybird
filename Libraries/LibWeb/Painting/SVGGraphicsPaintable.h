@@ -29,18 +29,25 @@ public:
         ComputedTransforms() = default;
 
         Gfx::AffineTransform const& svg_to_viewbox_transform() const { return m_svg_to_viewbox_transform; }
-        Gfx::AffineTransform const& svg_transform() const { return m_svg_transform; }
+        Gfx::AffineTransform svg_transform() const { return m_svg_transform; }
 
-        Gfx::AffineTransform svg_to_css_pixels_transform(
-            Optional<Gfx::AffineTransform const&> additional_svg_transform = {}) const
+        Gfx::AffineTransform svg_to_css_pixels_transform() const
         {
-            return Gfx::AffineTransform {}.multiply(svg_to_viewbox_transform()).multiply(additional_svg_transform.value_or(Gfx::AffineTransform {})).multiply(svg_transform());
+            return Gfx::AffineTransform {}.multiply(svg_to_viewbox_transform());
         }
 
         Gfx::AffineTransform svg_to_device_pixels_transform(PaintContext const& context) const
         {
             auto css_scale = context.device_pixels_per_css_pixel();
-            return Gfx::AffineTransform {}.scale({ css_scale, css_scale }).multiply(svg_to_css_pixels_transform(context.svg_transform()));
+            return Gfx::AffineTransform {}.scale({ css_scale, css_scale }).multiply(svg_to_css_pixels_transform());
+        }
+
+        Gfx::AffineTransform device_pixels_svg_transform(PaintContext const& context) const
+        {
+            auto css_scale = context.device_pixels_per_css_pixel();
+            return Gfx::AffineTransform {}.scale({ css_scale, css_scale }).multiply(svg_transform());
+            // auto scale = Gfx::AffineTransform{}.scale(css_scale, css_scale);
+            // return svg_transform().multiply(scale);
         }
 
     private:

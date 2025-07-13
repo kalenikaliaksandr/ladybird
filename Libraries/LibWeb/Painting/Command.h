@@ -426,7 +426,7 @@ struct ApplyFilter {
 
 struct ApplyTransform {
     Gfx::FloatPoint origin;
-    Gfx::FloatMatrix4x4 matrix;
+    Gfx::AffineTransform matrix;
 
     void translate_by(Gfx::IntPoint const& offset)
     {

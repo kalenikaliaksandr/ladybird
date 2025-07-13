@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "SVGGraphicsPaintable.h"
+
 #include <LibWeb/Layout/ImageBox.h>
 #include <LibWeb/Painting/Blending.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
@@ -29,14 +31,14 @@ Layout::SVGSVGBox const& SVGSVGPaintable::layout_box() const
     return static_cast<Layout::SVGSVGBox const&>(layout_node());
 }
 
-static Gfx::FloatMatrix4x4 matrix_with_scaled_translation(Gfx::FloatMatrix4x4 matrix, float scale)
-{
-    auto* m = matrix.elements();
-    m[0][3] *= scale;
-    m[1][3] *= scale;
-    m[2][3] *= scale;
-    return matrix;
-}
+// static Gfx::FloatMatrix4x4 matrix_with_scaled_translation(Gfx::FloatMatrix4x4 matrix, float scale)
+// {
+//     auto* m = matrix.elements();
+//     m[0][3] *= scale;
+//     m[1][3] *= scale;
+//     m[2][3] *= scale;
+//     return matrix;
+// }
 
 void SVGSVGPaintable::paint_svg_box(PaintContext& context, PaintableBox const& svg_box, PaintPhase phase)
 {
@@ -48,6 +50,23 @@ void SVGSVGPaintable::paint_svg_box(PaintContext& context, PaintableBox const& s
     Gfx::CompositingAndBlendingOperator compositing_and_blending_operator = mix_blend_mode_to_compositing_and_blending_operator(computed_values.mix_blend_mode());
 
     auto needs_to_save_state = computed_values.isolation() == CSS::Isolation::Isolate || compositing_and_blending_operator != Gfx::CompositingAndBlendingOperator::Normal || svg_box.has_css_transform() || masking_area.has_value();
+
+    if (is<SVGGraphicsPaintable>(svg_box)) {
+        auto const& svg_graphics_paintable = static_cast<SVGGraphicsPaintable const&>(svg_box);
+        auto const& computed_transforms = svg_graphics_paintable.computed_transforms();
+        if (!computed_transforms.svg_transform().is_identity()) {
+            // auto const& viewbox_transform = svg_svg_paintable.viewbox_transform().value();
+            // dbgln(">svg svg paintable has viewbox transform ({}) ({}) ({})", viewbox_transform.offset, viewbox_transform.scale_factor_x, viewbox_transform.scale_factor_y);
+            needs_to_save_state = true;
+
+            // construct FloatMatrix4x4
+            // Gfx::AffineTransform matrix;
+            // matrix.translate(viewbox_transform.offset.to_type<float>());
+            // matrix.scale(viewbox_transform.scale_factor_x, viewbox_transform.scale_factor_y);
+
+            context.display_list_recorder().apply_transform({}, computed_transforms.svg_transform());
+        }
+    }
 
     if (needs_to_save_state) {
         context.display_list_recorder().save();
@@ -65,12 +84,12 @@ void SVGSVGPaintable::paint_svg_box(PaintContext& context, PaintableBox const& s
         context.display_list_recorder().apply_compositing_and_blending_operator(compositing_and_blending_operator);
     }
 
-    if (svg_box.has_css_transform()) {
-        auto transform_matrix = svg_box.transform();
-        Gfx::FloatPoint transform_origin = svg_box.transform_origin().template to_type<float>();
-        auto to_device_pixels_scale = float(context.device_pixels_per_css_pixel());
-        context.display_list_recorder().apply_transform(transform_origin.scaled(to_device_pixels_scale), matrix_with_scaled_translation(transform_matrix, to_device_pixels_scale));
-    }
+    // if (svg_box.has_css_transform()) {
+    //     auto transform_matrix = svg_box.transform();
+    //     Gfx::FloatPoint transform_origin = svg_box.transform_origin().template to_type<float>();
+    //     auto to_device_pixels_scale = float(context.device_pixels_per_css_pixel());
+    //     context.display_list_recorder().apply_transform(transform_origin.scaled(to_device_pixels_scale), matrix_with_scaled_translation(transform_matrix, to_device_pixels_scale));
+    // }
 
     bool skip_painting = false;
     if (masking_area.has_value()) {

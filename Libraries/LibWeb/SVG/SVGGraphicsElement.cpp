@@ -124,11 +124,12 @@ Gfx::AffineTransform transform_from_transform_list(ReadonlySpan<Transform> trans
 
 Gfx::AffineTransform SVGGraphicsElement::get_transform() const
 {
-    Gfx::AffineTransform transform = m_transform;
-    for (auto* svg_ancestor = shadow_including_first_ancestor_of_type<SVGGraphicsElement>(); svg_ancestor; svg_ancestor = svg_ancestor->shadow_including_first_ancestor_of_type<SVGGraphicsElement>()) {
-        transform = Gfx::AffineTransform { svg_ancestor->element_transform() }.multiply(transform);
-    }
-    return transform;
+    // Gfx::AffineTransform transform = m_transform;
+    // for (auto* svg_ancestor = shadow_including_first_ancestor_of_type<SVGGraphicsElement>(); svg_ancestor; svg_ancestor = svg_ancestor->shadow_including_first_ancestor_of_type<SVGGraphicsElement>()) {
+    //     transform = Gfx::AffineTransform { svg_ancestor->element_transform() }.multiply(transform);
+    // }
+    // return transform;
+    return m_transform;
 }
 
 static FillRule to_svg_fill_rule(CSS::FillRule fill_rule)

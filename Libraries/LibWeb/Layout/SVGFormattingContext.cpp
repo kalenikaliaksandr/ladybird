@@ -394,8 +394,8 @@ void SVGFormattingContext::layout_path_like_element(SVGGraphicsBox const& graphi
     VERIFY(graphics_box_state.computed_svg_transforms().has_value());
 
     auto to_css_pixels_transform = Gfx::AffineTransform {}
-                                       .multiply(m_current_viewbox_transform)
-                                       .multiply(graphics_box_state.computed_svg_transforms()->svg_transform());
+                                       .multiply(m_current_viewbox_transform);
+    // .multiply(graphics_box_state.computed_svg_transforms()->svg_transform());
 
     Gfx::Path path;
     if (is<SVGGeometryBox>(graphics_box)) {

@@ -448,7 +448,7 @@ void DisplayListRecorder::apply_filter(Gfx::Filter filter)
     APPEND(ApplyFilter { .filter = move(filter) });
 }
 
-void DisplayListRecorder::apply_transform(Gfx::FloatPoint origin, Gfx::FloatMatrix4x4 matrix)
+void DisplayListRecorder::apply_transform(Gfx::FloatPoint origin, Gfx::AffineTransform matrix)
 {
     APPEND(ApplyTransform {
         .origin = origin,
