@@ -21,7 +21,7 @@ public:
     static ErrorOr<GC::Ref<SVGDecodedImageData>> create(JS::Realm&, GC::Ref<Page>, URL::URL const&, ByteBuffer encoded_svg);
     virtual ~SVGDecodedImageData() override;
 
-    virtual RefPtr<Gfx::ImmutableBitmap> bitmap(size_t frame_index, Gfx::IntSize) const override;
+    virtual RefPtr<HTML::BitmapPromise> bitmap(size_t frame_index, Gfx::IntSize) const override;
 
     virtual Optional<CSSPixels> intrinsic_width() const override;
     virtual Optional<CSSPixels> intrinsic_height() const override;
@@ -40,9 +40,9 @@ public:
 private:
     SVGDecodedImageData(GC::Ref<Page>, GC::Ref<SVGPageClient>, GC::Ref<DOM::Document>, GC::Ref<SVG::SVGSVGElement>);
 
-    RefPtr<Gfx::ImmutableBitmap> render(Gfx::IntSize) const;
+    RefPtr<Gfx::ImmutableBitmap const> render(Gfx::IntSize) const;
 
-    mutable HashMap<Gfx::IntSize, NonnullRefPtr<Gfx::ImmutableBitmap>> m_cached_rendered_bitmaps;
+    mutable HashMap<Gfx::IntSize, NonnullRefPtr<Gfx::ImmutableBitmap const>> m_cached_rendered_bitmaps;
 
     GC::Ref<Page> m_page;
     GC::Ref<SVGPageClient> m_page_client;

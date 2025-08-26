@@ -237,21 +237,39 @@ Optional<CSSPixelFraction> SVGImageElement::intrinsic_aspect_ratio() const
     return {};
 }
 
-RefPtr<Gfx::ImmutableBitmap> SVGImageElement::default_image_bitmap(Gfx::IntSize size) const
+RefPtr<Gfx::ImmutableBitmap const> SVGImageElement::default_image_bitmap(Gfx::IntSize size) const
 {
     if (!m_resource_request)
         return {};
-    if (auto data = m_resource_request->image_data())
-        return data->bitmap(0, size);
+    if (auto data = m_resource_request->image_data()) {
+        auto promise = data->bitmap(0, size);
+        if (!promise)
+            return {};
+        if (promise->is_resolved())
+            return MUST(promise->await());
+        promise->when_resolved([weak_self = make_weak_ptr<SVGImageElement>()](auto) {
+            if (weak_self && weak_self->paintable())
+                weak_self->paintable()->set_needs_display();
+        });
+    }
     return {};
 }
 
-RefPtr<Gfx::ImmutableBitmap> SVGImageElement::current_image_bitmap(Gfx::IntSize size) const
+RefPtr<Gfx::ImmutableBitmap const> SVGImageElement::current_image_bitmap(Gfx::IntSize size) const
 {
     if (!m_resource_request)
         return {};
-    if (auto data = m_resource_request->image_data())
-        return data->bitmap(m_current_frame_index, size);
+    if (auto data = m_resource_request->image_data()) {
+        auto promise = data->bitmap(0, size);
+        if (!promise)
+            return {};
+        if (promise->is_resolved())
+            return MUST(promise->await());
+        promise->when_resolved([weak_self = make_weak_ptr<SVGImageElement>()](auto) {
+            if (weak_self && weak_self->paintable())
+                weak_self->paintable()->set_needs_display();
+        });
+    }
     return {};
 }
 

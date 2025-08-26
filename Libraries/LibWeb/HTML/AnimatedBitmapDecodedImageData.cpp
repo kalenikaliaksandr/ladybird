@@ -27,11 +27,13 @@ AnimatedBitmapDecodedImageData::AnimatedBitmapDecodedImageData(Vector<Frame>&& f
 
 AnimatedBitmapDecodedImageData::~AnimatedBitmapDecodedImageData() = default;
 
-RefPtr<Gfx::ImmutableBitmap> AnimatedBitmapDecodedImageData::bitmap(size_t frame_index, Gfx::IntSize) const
+RefPtr<BitmapPromise> AnimatedBitmapDecodedImageData::bitmap(size_t frame_index, Gfx::IntSize) const
 {
     if (frame_index >= m_frames.size())
         return nullptr;
-    return m_frames[frame_index].bitmap;
+    auto promise = BitmapPromise::construct();
+    promise->resolve(*m_frames[frame_index].bitmap);
+    return promise;
 }
 
 int AnimatedBitmapDecodedImageData::frame_duration(size_t frame_index) const

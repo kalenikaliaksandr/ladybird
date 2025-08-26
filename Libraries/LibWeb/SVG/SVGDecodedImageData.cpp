@@ -95,7 +95,7 @@ void SVGDecodedImageData::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_root_element);
 }
 
-RefPtr<Gfx::ImmutableBitmap> SVGDecodedImageData::render(Gfx::IntSize size) const
+RefPtr<Gfx::ImmutableBitmap const> SVGDecodedImageData::render(Gfx::IntSize size) const
 {
     auto navigable = m_document->navigable();
     auto skia_backend_context = navigable->skia_backend_context();
@@ -120,13 +120,16 @@ RefPtr<Gfx::ImmutableBitmap> SVGDecodedImageData::render(Gfx::IntSize size) cons
     return Gfx::ImmutableBitmap::create_snapshot_from_painting_surface(*painting_surface);
 }
 
-RefPtr<Gfx::ImmutableBitmap> SVGDecodedImageData::bitmap(size_t, Gfx::IntSize size) const
+RefPtr<HTML::BitmapPromise> SVGDecodedImageData::bitmap(size_t, Gfx::IntSize size) const
 {
     if (size.is_empty())
-        return nullptr;
+        return {};
 
-    if (auto it = m_cached_rendered_bitmaps.find(size); it != m_cached_rendered_bitmaps.end())
-        return it->value;
+    auto promise = HTML::BitmapPromise::construct();
+    if (auto it = m_cached_rendered_bitmaps.find(size); it != m_cached_rendered_bitmaps.end()) {
+        promise->resolve(it->value);
+        return promise;
+    }
 
     // Prevent the cache from growing too big.
     // FIXME: Evict least used entries.
@@ -136,7 +139,8 @@ RefPtr<Gfx::ImmutableBitmap> SVGDecodedImageData::bitmap(size_t, Gfx::IntSize si
     auto immutable_bitmap = render(size);
     if (immutable_bitmap)
         m_cached_rendered_bitmaps.set(size, *immutable_bitmap);
-    return immutable_bitmap;
+    promise->resolve(move(immutable_bitmap));
+    return promise;
 }
 
 Optional<CSSPixels> SVGDecodedImageData::intrinsic_width() const

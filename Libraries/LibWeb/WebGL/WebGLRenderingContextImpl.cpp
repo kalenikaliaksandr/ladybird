@@ -152,10 +152,10 @@ static Optional<ConvertedTexture> read_and_pixel_convert_texture_image_source(Te
     //        a SECURITY_ERR exception must be thrown. See Origin Restrictions.
     // FIXME: If source is null then an INVALID_VALUE error is generated.
     auto bitmap = source.visit(
-        [](GC::Root<HTMLImageElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [](GC::Root<HTMLImageElement> const& source) -> RefPtr<Gfx::ImmutableBitmap const> {
             return source->immutable_bitmap();
         },
-        [](GC::Root<HTMLCanvasElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [](GC::Root<HTMLCanvasElement> const& source) -> RefPtr<Gfx::ImmutableBitmap const> {
             auto surface = source->surface();
             if (!surface)
                 return {};
@@ -163,16 +163,16 @@ static Optional<ConvertedTexture> read_and_pixel_convert_texture_image_source(Te
             surface->read_into_bitmap(*bitmap);
             return Gfx::ImmutableBitmap::create(*bitmap);
         },
-        [](GC::Root<OffscreenCanvas> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [](GC::Root<OffscreenCanvas> const& source) -> RefPtr<Gfx::ImmutableBitmap const> {
             return Gfx::ImmutableBitmap::create(*source->bitmap());
         },
-        [](GC::Root<HTMLVideoElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [](GC::Root<HTMLVideoElement> const& source) -> RefPtr<Gfx::ImmutableBitmap const> {
             return Gfx::ImmutableBitmap::create(*source->bitmap());
         },
-        [](GC::Root<ImageBitmap> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [](GC::Root<ImageBitmap> const& source) -> RefPtr<Gfx::ImmutableBitmap const> {
             return Gfx::ImmutableBitmap::create(*source->bitmap());
         },
-        [](GC::Root<ImageData> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [](GC::Root<ImageData> const& source) -> RefPtr<Gfx::ImmutableBitmap const> {
             return Gfx::ImmutableBitmap::create(source->bitmap());
         });
     if (!bitmap)

@@ -612,10 +612,17 @@ Optional<CSSPixelFraction> HTMLObjectElement::intrinsic_aspect_ratio() const
     return {};
 }
 
-RefPtr<Gfx::ImmutableBitmap> HTMLObjectElement::current_image_bitmap(Gfx::IntSize size) const
+RefPtr<Gfx::ImmutableBitmap const> HTMLObjectElement::current_image_bitmap(Gfx::IntSize size) const
 {
-    if (auto image_data = this->image_data())
-        return image_data->bitmap(0, size);
+    if (auto image_data = this->image_data()) {
+        auto promise = image_data->bitmap(0, size);
+        if (promise->is_resolved())
+            return MUST(promise->await());
+        promise->when_resolved([weak_self = make_weak_ptr<HTMLObjectElement>()](auto) {
+            if (weak_self && weak_self->paintable())
+                weak_self->paintable()->set_needs_display();
+        });
+    }
     return nullptr;
 }
 

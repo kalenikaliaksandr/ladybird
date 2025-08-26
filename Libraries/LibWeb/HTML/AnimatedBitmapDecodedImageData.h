@@ -24,7 +24,7 @@ public:
     static ErrorOr<GC::Ref<AnimatedBitmapDecodedImageData>> create(JS::Realm&, Vector<Frame>&&, size_t loop_count, bool animated);
     virtual ~AnimatedBitmapDecodedImageData() override;
 
-    virtual RefPtr<Gfx::ImmutableBitmap> bitmap(size_t frame_index, Gfx::IntSize = {}) const override;
+    virtual RefPtr<BitmapPromise> bitmap(size_t frame_index, Gfx::IntSize = {}) const override;
     virtual int frame_duration(size_t frame_index) const override;
 
     virtual size_t frame_count() const override { return m_frames.size(); }

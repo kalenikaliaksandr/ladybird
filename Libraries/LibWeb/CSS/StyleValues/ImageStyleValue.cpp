@@ -112,8 +112,17 @@ bool ImageStyleValue::is_paintable() const
 
 Gfx::ImmutableBitmap const* ImageStyleValue::bitmap(size_t frame_index, Gfx::IntSize size) const
 {
-    if (auto image_data = this->image_data())
-        return image_data->bitmap(frame_index, size);
+    if (auto image_data = this->image_data()) {
+        auto promise = image_data->bitmap(frame_index, size);
+        if (!promise)
+            return {};
+        if (promise->is_resolved())
+            return MUST(promise->await());
+        // promise->when_resolved([weak_self = make_weak_ptr<ImageStyleValue>()](auto) {
+        //     if (weak_self && weak_self->paintable())
+        //         paintable->set_needs_display();
+        // });
+    }
     return nullptr;
 }
 

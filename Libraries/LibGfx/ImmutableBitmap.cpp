@@ -100,7 +100,7 @@ NonnullRefPtr<ImmutableBitmap> ImmutableBitmap::create(NonnullRefPtr<Bitmap> bit
     return create(source_bitmap, move(color_space));
 }
 
-NonnullRefPtr<ImmutableBitmap> ImmutableBitmap::create_snapshot_from_painting_surface(NonnullRefPtr<PaintingSurface> painting_surface)
+NonnullRefPtr<ImmutableBitmap const> ImmutableBitmap::create_snapshot_from_painting_surface(NonnullRefPtr<PaintingSurface> painting_surface)
 {
     ImmutableBitmapImpl impl;
     impl.sk_image = painting_surface->sk_image_snapshot<sk_sp<SkImage>>();

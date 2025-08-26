@@ -7,11 +7,14 @@
 #pragma once
 
 #include <AK/RefCounted.h>
+#include <LibCore/Promise.h>
 #include <LibGfx/Size.h>
 #include <LibJS/Heap/Cell.h>
 #include <LibWeb/PixelUnits.h>
 
 namespace Web::HTML {
+
+using BitmapPromise = Core::Promise<RefPtr<Gfx::ImmutableBitmap const>>;
 
 // https://html.spec.whatwg.org/multipage/images.html#img-req-data
 class DecodedImageData : public JS::Cell {
@@ -20,7 +23,7 @@ class DecodedImageData : public JS::Cell {
 public:
     virtual ~DecodedImageData();
 
-    virtual RefPtr<Gfx::ImmutableBitmap> bitmap(size_t frame_index, Gfx::IntSize = {}) const = 0;
+    virtual RefPtr<BitmapPromise> bitmap(size_t frame_index, Gfx::IntSize = {}) const = 0;
     virtual int frame_duration(size_t frame_index) const = 0;
 
     virtual size_t frame_count() const = 0;

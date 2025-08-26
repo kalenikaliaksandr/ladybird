@@ -168,15 +168,24 @@ void HTMLImageElement::adjust_computed_style(CSS::ComputedProperties& style)
         style.set_property(CSS::PropertyID::Display, CSS::DisplayStyleValue::create(CSS::Display::from_short(CSS::Display::Short::None)));
 }
 
-RefPtr<Gfx::ImmutableBitmap> HTMLImageElement::immutable_bitmap() const
+RefPtr<Gfx::ImmutableBitmap const> HTMLImageElement::immutable_bitmap() const
 {
     return current_image_bitmap();
 }
 
-RefPtr<Gfx::ImmutableBitmap> HTMLImageElement::default_image_bitmap(Gfx::IntSize size) const
+RefPtr<Gfx::ImmutableBitmap const> HTMLImageElement::default_image_bitmap(Gfx::IntSize size) const
 {
-    if (auto data = m_current_request->image_data())
-        return data->bitmap(0, size);
+    if (auto data = m_current_request->image_data()) {
+        auto promise = data->bitmap(0, size);
+        if (!promise)
+            return {};
+        if (promise->is_resolved())
+            return MUST(promise->await());
+        promise->when_resolved([weak_self = make_weak_ptr<HTMLImageElement>()](auto) {
+            if (weak_self && weak_self->paintable())
+                weak_self->paintable()->set_needs_display();
+        });
+    }
     return nullptr;
 }
 
@@ -206,10 +215,19 @@ Optional<CSSPixelFraction> HTMLImageElement::intrinsic_aspect_ratio() const
     return {};
 }
 
-RefPtr<Gfx::ImmutableBitmap> HTMLImageElement::current_image_bitmap(Gfx::IntSize size) const
+RefPtr<Gfx::ImmutableBitmap const> HTMLImageElement::current_image_bitmap(Gfx::IntSize size) const
 {
-    if (auto data = m_current_request->image_data())
-        return data->bitmap(m_current_frame_index, size);
+    if (auto data = m_current_request->image_data()) {
+        auto promise = data->bitmap(0, size);
+        if (!promise)
+            return {};
+        if (promise->is_resolved())
+            return MUST(promise->await());
+        promise->when_resolved([weak_self = make_weak_ptr<HTMLImageElement>()](auto) {
+            if (weak_self && weak_self->paintable())
+                weak_self->paintable()->set_needs_display();
+        });
+    }
     return nullptr;
 }
 
