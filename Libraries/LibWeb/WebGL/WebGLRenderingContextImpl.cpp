@@ -153,7 +153,12 @@ static Optional<ConvertedTexture> read_and_pixel_convert_texture_image_source(Te
     // FIXME: If source is null then an INVALID_VALUE error is generated.
     auto bitmap = source.visit(
         [](GC::Root<HTMLImageElement> const& source) -> RefPtr<Gfx::ImmutableBitmap const> {
-            return source->immutable_bitmap();
+            // return source->immutable_bitmap();
+            if (auto bitmap_promise = source->current_image_bitmap({}); bitmap_promise) {
+                if (bitmap_promise->is_resolved())
+                    return MUST(bitmap_promise->await());
+            }
+            return {};
         },
         [](GC::Root<HTMLCanvasElement> const& source) -> RefPtr<Gfx::ImmutableBitmap const> {
             auto surface = source->surface();

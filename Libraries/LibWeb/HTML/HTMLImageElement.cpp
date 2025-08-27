@@ -93,6 +93,12 @@ void HTMLImageElement::visit_edges(Cell::Visitor& visitor)
     visit_lazy_loading_element(visitor);
 }
 
+void HTMLImageElement::satisfied_bitmap_for_requsted_size()
+{
+    if (auto* paintable = this->paintable())
+        paintable->set_needs_display();
+}
+
 bool HTMLImageElement::is_presentational_hint(FlyString const& name) const
 {
     if (Base::is_presentational_hint(name))
@@ -168,11 +174,6 @@ void HTMLImageElement::adjust_computed_style(CSS::ComputedProperties& style)
         style.set_property(CSS::PropertyID::Display, CSS::DisplayStyleValue::create(CSS::Display::from_short(CSS::Display::Short::None)));
 }
 
-RefPtr<Gfx::ImmutableBitmap const> HTMLImageElement::immutable_bitmap() const
-{
-    return current_image_bitmap();
-}
-
 RefPtr<Gfx::ImmutableBitmap const> HTMLImageElement::default_image_bitmap(Gfx::IntSize size) const
 {
     if (auto data = m_current_request->image_data()) {
@@ -215,18 +216,10 @@ Optional<CSSPixelFraction> HTMLImageElement::intrinsic_aspect_ratio() const
     return {};
 }
 
-RefPtr<Gfx::ImmutableBitmap const> HTMLImageElement::current_image_bitmap(Gfx::IntSize size) const
+RefPtr<BitmapPromise> HTMLImageElement::current_image_bitmap(Gfx::IntSize size) const
 {
     if (auto data = m_current_request->image_data()) {
-        auto promise = data->bitmap(0, size);
-        if (!promise)
-            return {};
-        if (promise->is_resolved())
-            return MUST(promise->await());
-        promise->when_resolved([weak_self = make_weak_ptr<HTMLImageElement>()](auto) {
-            if (weak_self && weak_self->paintable())
-                weak_self->paintable()->set_needs_display();
-        });
+        return data->bitmap(0, size);
     }
     return nullptr;
 }
@@ -253,8 +246,10 @@ WebIDL::UnsignedLong HTMLImageElement::width() const
 
     // ...or else the density-corrected intrinsic width and height of the image, in CSS pixels,
     // if the image has intrinsic dimensions and is available but not being rendered.
-    if (auto bitmap = current_image_bitmap())
-        return bitmap->width();
+    // if (auto bitmap = current_image_bitmap())
+    //     return bitmap->width();
+    if (is_image_available())
+        return intrinsic_width()->to_int();
 
     // ...or else 0, if the image is not available or does not have intrinsic dimensions.
     return 0;
@@ -284,8 +279,10 @@ WebIDL::UnsignedLong HTMLImageElement::height() const
 
     // ...or else the density-corrected intrinsic height and height of the image, in CSS pixels,
     // if the image has intrinsic dimensions and is available but not being rendered.
-    if (auto bitmap = current_image_bitmap())
-        return bitmap->height();
+    // if (auto bitmap = current_image_bitmap())
+    //     return bitmap->height();
+    if (is_image_available())
+        return intrinsic_height()->to_int();
 
     // ...or else 0, if the image is not available or does not have intrinsic dimensions.
     return 0;
@@ -303,8 +300,8 @@ unsigned HTMLImageElement::natural_width() const
 {
     // Return the density-corrected intrinsic width of the image, in CSS pixels,
     // if the image has intrinsic dimensions and is available.
-    if (auto bitmap = current_image_bitmap())
-        return bitmap->width();
+    if (is_image_available())
+        return intrinsic_width()->to_int();
 
     // ...or else 0.
     return 0;
@@ -315,8 +312,8 @@ unsigned HTMLImageElement::natural_height() const
 {
     // Return the density-corrected intrinsic height of the image, in CSS pixels,
     // if the image has intrinsic dimensions and is available.
-    if (auto bitmap = current_image_bitmap())
-        return bitmap->height();
+    if (is_image_available())
+        return intrinsic_height()->to_int();
 
     // ...or else 0.
     return 0;

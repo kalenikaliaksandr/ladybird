@@ -9,6 +9,7 @@
 #include <LibGC/Cell.h>
 #include <LibGfx/Size.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/HTML/DecodedImageData.h>
 #include <LibWeb/PixelUnits.h>
 
 namespace Web::Layout {
@@ -23,13 +24,15 @@ public:
     virtual Optional<CSSPixels> intrinsic_height() const = 0;
     virtual Optional<CSSPixelFraction> intrinsic_aspect_ratio() const = 0;
 
-    virtual RefPtr<Gfx::ImmutableBitmap const> current_image_bitmap(Gfx::IntSize) const = 0;
+    virtual RefPtr<HTML::BitmapPromise> current_image_bitmap(Gfx::IntSize) const = 0;
     virtual void set_visible_in_viewport(bool) = 0;
 
     virtual void image_provider_visit_edges(GC::Cell::Visitor& visitor) const
     {
         visitor.visit(to_html_element());
     }
+
+    virtual void satisfied_bitmap_for_requsted_size() = 0;
 
 protected:
     virtual GC::Ptr<DOM::Element const> to_html_element() const = 0;

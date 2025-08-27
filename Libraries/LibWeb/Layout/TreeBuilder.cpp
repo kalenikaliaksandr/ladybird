@@ -206,7 +206,7 @@ public:
     virtual Optional<CSSPixels> intrinsic_height() const override { return m_image->natural_height(); }
     virtual Optional<CSSPixelFraction> intrinsic_aspect_ratio() const override { return m_image->natural_aspect_ratio(); }
 
-    virtual RefPtr<Gfx::ImmutableBitmap const> current_image_bitmap(Gfx::IntSize size) const override
+    virtual RefPtr<HTML::BitmapPromise> current_image_bitmap(Gfx::IntSize size) const override
     {
         auto rect = DevicePixelRect { DevicePixelPoint {}, size.to_type<DevicePixels>() };
         return m_image->current_frame_bitmap(rect);
@@ -224,6 +224,12 @@ public:
     void set_layout_node(GC::Ref<Layout::Node> layout_node)
     {
         m_layout_node = layout_node;
+    }
+
+    virtual void satisfied_bitmap_for_requsted_size() override
+    {
+        if (m_layout_node && m_layout_node->first_paintable())
+            m_layout_node->first_paintable()->set_needs_display();
     }
 
 private:

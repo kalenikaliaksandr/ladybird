@@ -1781,15 +1781,17 @@ LengthOrCalculated Parser::parse_as_sizes_attribute(DOM::Element const& element,
         // 3. If size is auto, and img is not null, and img is being rendered, and img allows auto-sizes,
         //    then set size to the concrete object size width of img, in CSS pixels.
         // FIXME: "img is being rendered" - we just see if it has a bitmap for now
-        if (size_is_auto() && img && img->immutable_bitmap() && img->allows_auto_sizes()) {
-            // FIXME: The spec doesn't seem to tell us how to determine the concrete size of an <img>, so use the default sizing algorithm.
-            //        Should this use some of the methods from FormattingContext?
-            auto concrete_size = run_default_sizing_algorithm(
-                img->width(), img->height(),
-                img->natural_width(), img->natural_height(), img->intrinsic_aspect_ratio(),
-                // NOTE: https://html.spec.whatwg.org/multipage/rendering.html#img-contain-size
-                CSSPixelSize { 300, 150 });
-            size = Length::make_px(concrete_size.width());
+        if (size_is_auto() && img && img->allows_auto_sizes()) {
+            if (auto bitmap_promise = img->current_image_bitmap(); bitmap_promise && bitmap_promise->is_resolved()) {
+                // FIXME: The spec doesn't seem to tell us how to determine the concrete size of an <img>, so use the default sizing algorithm.
+                //        Should this use some of the methods from FormattingContext?
+                auto concrete_size = run_default_sizing_algorithm(
+                    img->width(), img->height(),
+                    img->natural_width(), img->natural_height(), img->intrinsic_aspect_ratio(),
+                    // NOTE: https://html.spec.whatwg.org/multipage/rendering.html#img-contain-size
+                    CSSPixelSize { 300, 150 });
+                size = Length::make_px(concrete_size.width());
+            }
         }
 
         // 4. Remove all consecutive <whitespace-token>s from the end of unparsed size.

@@ -14,9 +14,9 @@ static void default_source_size(CanvasImageSource const& image, float& source_wi
 {
     image.visit(
         [&source_width, &source_height](GC::Root<HTMLImageElement> const& source) {
-            if (source->immutable_bitmap()) {
-                source_width = source->immutable_bitmap()->width();
-                source_height = source->immutable_bitmap()->height();
+            if (source->is_image_available()) {
+                source_width = source->intrinsic_width()->to_float();
+                source_height = source->intrinsic_height()->to_float();
             } else {
                 // FIXME: This is very janky and not correct.
                 source_width = source->width();
@@ -24,9 +24,9 @@ static void default_source_size(CanvasImageSource const& image, float& source_wi
             }
         },
         [&source_width, &source_height](GC::Root<SVG::SVGImageElement> const& source) {
-            if (source->current_image_bitmap()) {
-                source_width = source->current_image_bitmap()->width();
-                source_height = source->current_image_bitmap()->height();
+            if (source->is_image_available()) {
+                source_width = source->intrinsic_width()->to_float();
+                source_height = source->intrinsic_height()->to_float();
             } else {
                 // FIXME: This is very janky and not correct.
                 source_width = source->width()->anim_val()->value();

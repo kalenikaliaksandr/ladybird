@@ -14,6 +14,7 @@
 #include <LibWeb/CSS/StyleValues/AbstractImageStyleValue.h>
 #include <LibWeb/CSS/URL.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/HTML/DecodedImageData.h>
 
 namespace Web::CSS {
 
@@ -54,8 +55,8 @@ public:
     virtual bool is_paintable() const override;
     void paint(DisplayListRecordingContext& context, DevicePixelRect const& dest_rect, CSS::ImageRendering image_rendering) const override;
 
-    virtual Optional<Gfx::Color> color_if_single_pixel_bitmap() const override;
-    Gfx::ImmutableBitmap const* current_frame_bitmap(DevicePixelRect const& dest_rect) const;
+    // virtual Optional<Gfx::Color> color_if_single_pixel_bitmap() const override;
+    RefPtr<HTML::BitmapPromise> current_frame_bitmap(DevicePixelRect const& dest_rect) const;
 
     mutable Function<void()> on_animate;
 
@@ -73,7 +74,7 @@ private:
     virtual ValueComparingNonnullRefPtr<StyleValue const> absolutized(CSSPixelRect const& viewport_rect, Length::FontMetrics const& font_metrics, Length::FontMetrics const& root_font_metrics) const override;
 
     void animate();
-    Gfx::ImmutableBitmap const* bitmap(size_t frame_index, Gfx::IntSize = {}) const;
+    RefPtr<HTML::BitmapPromise> bitmap(size_t frame_index, Gfx::IntSize = {}) const;
 
     GC::Ptr<HTML::SharedResourceRequest> m_resource_request;
     GC::Ptr<CSSStyleSheet> m_style_sheet;

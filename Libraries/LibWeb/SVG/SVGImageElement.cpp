@@ -255,20 +255,12 @@ RefPtr<Gfx::ImmutableBitmap const> SVGImageElement::default_image_bitmap(Gfx::In
     return {};
 }
 
-RefPtr<Gfx::ImmutableBitmap const> SVGImageElement::current_image_bitmap(Gfx::IntSize size) const
+RefPtr<HTML::BitmapPromise> SVGImageElement::current_image_bitmap(Gfx::IntSize size) const
 {
     if (!m_resource_request)
         return {};
     if (auto data = m_resource_request->image_data()) {
-        auto promise = data->bitmap(0, size);
-        if (!promise)
-            return {};
-        if (promise->is_resolved())
-            return MUST(promise->await());
-        promise->when_resolved([weak_self = make_weak_ptr<SVGImageElement>()](auto) {
-            if (weak_self && weak_self->paintable())
-                weak_self->paintable()->set_needs_display();
-        });
+        return data->bitmap(0, size);
     }
     return {};
 }
@@ -296,6 +288,12 @@ void SVGImageElement::animate()
 
     if (paintable())
         paintable()->set_needs_display();
+}
+
+void SVGImageElement::satisfied_bitmap_for_requsted_size()
+{
+    if (auto* paintable = this->paintable())
+        paintable->set_needs_display();
 }
 
 }

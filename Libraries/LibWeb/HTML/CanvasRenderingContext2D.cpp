@@ -130,10 +130,17 @@ WebIDL::ExceptionOr<void> CanvasRenderingContext2D::draw_image_internal(CanvasIm
 
     auto bitmap = image.visit(
         [](GC::Root<HTMLImageElement> const& source) -> RefPtr<Gfx::ImmutableBitmap const> {
-            return source->immutable_bitmap();
+            // return source->immutable_bitmap();
+            if (auto bitmap_promise = source->current_image_bitmap({}); bitmap_promise && bitmap_promise->is_resolved()) {
+                return MUST(bitmap_promise->await());
+            }
+            return {};
         },
         [](GC::Root<SVG::SVGImageElement> const& source) -> RefPtr<Gfx::ImmutableBitmap const> {
-            return source->current_image_bitmap();
+            if (auto bitmap_promise = source->current_image_bitmap({}); bitmap_promise && bitmap_promise->is_resolved()) {
+                return MUST(bitmap_promise->await());
+            }
+            return {};
         },
         [](GC::Root<OffscreenCanvas> const& source) -> RefPtr<Gfx::ImmutableBitmap const> { return Gfx::ImmutableBitmap::create(*source->bitmap()); },
         [](GC::Root<HTMLCanvasElement> const& source) -> RefPtr<Gfx::ImmutableBitmap const> {
@@ -713,11 +720,11 @@ WebIDL::ExceptionOr<CanvasImageSourceUsability> check_usability_of_image(CanvasI
             // FIXME: If image's current request's state is broken, then throw an "InvalidStateError" DOMException.
 
             // If image is not fully decodable, then return bad.
-            if (!image_element->immutable_bitmap())
+            if (!image_element->is_image_available())
                 return { CanvasImageSourceUsability::Bad };
 
             // If image has an intrinsic width or intrinsic height (or both) equal to zero, then return bad.
-            if (image_element->immutable_bitmap()->width() == 0 || image_element->immutable_bitmap()->height() == 0)
+            if (image_element->intrinsic_width() == 0 || image_element->intrinsic_height() == 0)
                 return { CanvasImageSourceUsability::Bad };
             return Optional<CanvasImageSourceUsability> {};
         },
@@ -726,11 +733,11 @@ WebIDL::ExceptionOr<CanvasImageSourceUsability> check_usability_of_image(CanvasI
             // FIXME: If image's current request's state is broken, then throw an "InvalidStateError" DOMException.
 
             // If image is not fully decodable, then return bad.
-            if (!image_element->current_image_bitmap())
+            if (!image_element->is_image_available())
                 return { CanvasImageSourceUsability::Bad };
 
             // If image has an intrinsic width or intrinsic height (or both) equal to zero, then return bad.
-            if (image_element->current_image_bitmap()->width() == 0 || image_element->current_image_bitmap()->height() == 0)
+            if (image_element->intrinsic_width() == 0 || image_element->intrinsic_height() == 0)
                 return { CanvasImageSourceUsability::Bad };
             return Optional<CanvasImageSourceUsability> {};
         },

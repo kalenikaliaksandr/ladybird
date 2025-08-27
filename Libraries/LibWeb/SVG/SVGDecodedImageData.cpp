@@ -95,7 +95,7 @@ void SVGDecodedImageData::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_root_element);
 }
 
-RefPtr<Gfx::ImmutableBitmap const> SVGDecodedImageData::render(Gfx::IntSize size) const
+RefPtr<HTML::BitmapPromise> SVGDecodedImageData::render(Gfx::IntSize size) const
 {
     auto navigable = m_document->navigable();
     auto skia_backend_context = navigable->skia_backend_context();
@@ -109,15 +109,16 @@ RefPtr<Gfx::ImmutableBitmap const> SVGDecodedImageData::render(Gfx::IntSize size
         return {};
 
     auto& rendering_thread = navigable->rendering_thread();
-    IGNORE_USE_IN_ESCAPING_LAMBDA bool did_render = false;
-    rendering_thread.enqueue_rendering_task(*display_list, {}, *painting_surface, [&did_render] {
-        did_render = true;
-    });
-    Platform::EventLoopPlugin::the().spin_until(GC::create_function(heap(), [&] {
-        return did_render;
-    }));
 
-    return Gfx::ImmutableBitmap::create_snapshot_from_painting_surface(*painting_surface);
+    auto promise = HTML::BitmapPromise::construct();
+    // IGNORE_USE_IN_ESCAPING_LAMBDA bool did_render = false;
+    rendering_thread.enqueue_rendering_task(*display_list, {}, *painting_surface, [painting_surface, promise] {
+        auto immutable_bitmap = Gfx::ImmutableBitmap::create_snapshot_from_painting_surface(*painting_surface);
+        // dbgln(">resolved SVG bitmap promise ({}x{})", immutable_bitmap->width(), immutable_bitmap->height());
+        promise->resolve(move(immutable_bitmap));
+    });
+
+    return promise;
 }
 
 RefPtr<HTML::BitmapPromise> SVGDecodedImageData::bitmap(size_t, Gfx::IntSize size) const
@@ -125,9 +126,10 @@ RefPtr<HTML::BitmapPromise> SVGDecodedImageData::bitmap(size_t, Gfx::IntSize siz
     if (size.is_empty())
         return {};
 
-    auto promise = HTML::BitmapPromise::construct();
     if (auto it = m_cached_rendered_bitmaps.find(size); it != m_cached_rendered_bitmaps.end()) {
-        promise->resolve(it->value);
+        // dbgln(">return cached promise for size {}", size);
+        auto promise = it->value;
+        dbgln(">is_resolved: {}", promise->is_resolved());
         return promise;
     }
 
@@ -136,11 +138,11 @@ RefPtr<HTML::BitmapPromise> SVGDecodedImageData::bitmap(size_t, Gfx::IntSize siz
     if (m_cached_rendered_bitmaps.size() > 10)
         m_cached_rendered_bitmaps.remove(m_cached_rendered_bitmaps.begin());
 
-    auto immutable_bitmap = render(size);
-    if (immutable_bitmap)
-        m_cached_rendered_bitmaps.set(size, *immutable_bitmap);
-    promise->resolve(move(immutable_bitmap));
-    return promise;
+    auto bitmap_promise = render(size);
+    if (bitmap_promise) {
+        VERIFY(m_cached_rendered_bitmaps.set(size, *bitmap_promise) == HashSetResult::InsertedNewEntry);
+    }
+    return bitmap_promise;
 }
 
 Optional<CSSPixels> SVGDecodedImageData::intrinsic_width() const

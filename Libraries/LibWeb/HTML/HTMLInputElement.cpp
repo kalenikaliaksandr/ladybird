@@ -2109,18 +2109,10 @@ Optional<CSSPixelFraction> HTMLInputElement::intrinsic_aspect_ratio() const
     return {};
 }
 
-RefPtr<Gfx::ImmutableBitmap const> HTMLInputElement::current_image_bitmap(Gfx::IntSize size) const
+RefPtr<BitmapPromise> HTMLInputElement::current_image_bitmap(Gfx::IntSize size) const
 {
     if (auto data = this->image_data()) {
-        auto promise = data->bitmap(0, size);
-        if (!promise)
-            return {};
-        if (promise->is_resolved())
-            return MUST(promise->await());
-        promise->when_resolved([weak_self = make_weak_ptr<HTMLInputElement>()](auto) {
-            if (weak_self && weak_self->paintable())
-                weak_self->paintable()->set_needs_display();
-        });
+        return data->bitmap(0, size);
     }
     return nullptr;
 }
@@ -2212,8 +2204,10 @@ WebIDL::UnsignedLong HTMLInputElement::height() const
     }
 
     // ...or else the natural height and height of the image, in CSS pixels, if an image is available but not being rendered
-    if (auto bitmap = current_image_bitmap())
-        return bitmap->height();
+    // if (auto bitmap = current_image_bitmap())
+    //     return bitmap->height();
+    if (is_image_available())
+        return intrinsic_height()->to_int();
 
     // ...or else 0, if the image is not available or does not have intrinsic dimensions.
     return 0;
@@ -2247,8 +2241,8 @@ WebIDL::UnsignedLong HTMLInputElement::width() const
     }
 
     // ...or else the natural width and height of the image, in CSS pixels, if an image is available but not being rendered
-    if (auto bitmap = current_image_bitmap())
-        return bitmap->width();
+    if (is_image_available())
+        return intrinsic_width()->to_int();
 
     // ...or else 0, if the image is not available or does not have intrinsic dimensions.
     return 0;
@@ -3650,6 +3644,12 @@ bool HTMLInputElement::uses_button_layout() const
 
     return first_is_one_of(type_state(), TypeAttributeState::SubmitButton, TypeAttributeState::ResetButton,
         TypeAttributeState::Button, TypeAttributeState::Color, TypeAttributeState::FileUpload);
+}
+
+void HTMLInputElement::satisfied_bitmap_for_requsted_size()
+{
+    if (auto* paintable = this->paintable())
+        paintable->set_needs_display();
 }
 
 }

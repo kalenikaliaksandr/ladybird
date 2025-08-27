@@ -110,18 +110,10 @@ bool ImageStyleValue::is_paintable() const
     return image_data();
 }
 
-Gfx::ImmutableBitmap const* ImageStyleValue::bitmap(size_t frame_index, Gfx::IntSize size) const
+RefPtr<HTML::BitmapPromise> ImageStyleValue::bitmap(size_t frame_index, Gfx::IntSize size) const
 {
     if (auto image_data = this->image_data()) {
-        auto promise = image_data->bitmap(frame_index, size);
-        if (!promise)
-            return {};
-        if (promise->is_resolved())
-            return MUST(promise->await());
-        // promise->when_resolved([weak_self = make_weak_ptr<ImageStyleValue>()](auto) {
-        //     if (weak_self && weak_self->paintable())
-        //         paintable->set_needs_display();
-        // });
+        return image_data->bitmap(frame_index, size);
     }
     return nullptr;
 }
@@ -161,14 +153,20 @@ Optional<CSSPixelFraction> ImageStyleValue::natural_aspect_ratio() const
 
 void ImageStyleValue::paint(DisplayListRecordingContext& context, DevicePixelRect const& dest_rect, CSS::ImageRendering image_rendering) const
 {
-    if (auto const* b = bitmap(m_current_frame_index, dest_rect.size().to_type<int>()); b != nullptr) {
+    (void)context;
+    (void)dest_rect;
+    (void)image_rendering;
+    // VERIFY_NOT_REACHED();
+
+    if (auto bitmap_promise = bitmap(m_current_frame_index, dest_rect.size().to_type<int>()); bitmap_promise && bitmap_promise->is_resolved()) {
+        auto b = MUST(bitmap_promise->await());
         auto scaling_mode = to_gfx_scaling_mode(image_rendering, b->rect(), dest_rect.to_type<int>());
         auto dest_int_rect = dest_rect.to_type<int>();
         context.display_list_recorder().draw_scaled_immutable_bitmap(dest_int_rect, dest_int_rect, *b, scaling_mode);
     }
 }
 
-Gfx::ImmutableBitmap const* ImageStyleValue::current_frame_bitmap(DevicePixelRect const& dest_rect) const
+RefPtr<HTML::BitmapPromise> ImageStyleValue::current_frame_bitmap(DevicePixelRect const& dest_rect) const
 {
     return bitmap(m_current_frame_index, dest_rect.size().to_type<int>());
 }
@@ -180,14 +178,14 @@ GC::Ptr<HTML::DecodedImageData> ImageStyleValue::image_data() const
     return m_resource_request->image_data();
 }
 
-Optional<Gfx::Color> ImageStyleValue::color_if_single_pixel_bitmap() const
-{
-    if (auto const* b = bitmap(m_current_frame_index)) {
-        if (b->width() == 1 && b->height() == 1)
-            return b->get_pixel(0, 0);
-    }
-    return {};
-}
+// Optional<Gfx::Color> ImageStyleValue::color_if_single_pixel_bitmap() const
+// {
+//     if (auto const* b = bitmap(m_current_frame_index)) {
+//         if (b->width() == 1 && b->height() == 1)
+//             return b->get_pixel(0, 0);
+//     }
+//     return {};
+// }
 
 void ImageStyleValue::set_style_sheet(GC::Ptr<CSSStyleSheet> style_sheet)
 {
