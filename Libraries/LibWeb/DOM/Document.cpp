@@ -4213,7 +4213,7 @@ void Document::destroy_a_document_and_its_descendants(GC::Ptr<GC::Function<void(
     }
 
     // 2. Let childNavigables be document's child navigables.
-    IGNORE_USE_IN_ESCAPING_LAMBDA auto child_navigables = document_tree_child_navigables();
+    auto child_navigables = document_tree_child_navigables();
 
     // NOTE: Not in the spec but we could avoid allocating destruction state in case there's no child navigables.
     if (child_navigables.is_empty()) {
@@ -4408,6 +4408,43 @@ void Document::unload(GC::Ptr<Document>)
     did_stop_being_active_document_in_navigable();
 }
 
+struct DocumentUnloadState : public GC::Cell {
+    GC_CELL(DocumentUnloadState, GC::Cell);
+    GC_DECLARE_ALLOCATOR(DocumentUnloadState);
+
+    DocumentUnloadState(GC::Ref<Document> document, size_t remaining, GC::Ref<GC::Function<void()>> after)
+        : remaining_children(remaining)
+        , document(document)
+        , after_all(after)
+    {
+    }
+
+    virtual void visit_edges(Visitor& visitor) override
+    {
+        Base::visit_edges(visitor);
+        visitor.visit(document);
+        visitor.visit(after_all);
+    }
+
+    void decrement_unloaded()
+    {
+        VERIFY(remaining_children > 0);
+        --remaining_children;
+        if (remaining_children > 0)
+            return;
+
+        queue_global_task(HTML::Task::Source::NavigationAndTraversal, relevant_global_object(document), GC::create_function(heap(), [after_all = move(after_all)] {
+            after_all->function()();
+        }));
+    }
+
+    size_t remaining_children { 0 };
+    GC::Ref<Document> document;
+    GC::Ref<GC::Function<void()>> after_all;
+};
+
+GC_DEFINE_ALLOCATOR(DocumentUnloadState);
+
 // https://html.spec.whatwg.org/multipage/document-lifecycle.html#unload-a-document-and-its-descendants
 void Document::unload_a_document_and_its_descendants(GC::Ptr<Document> new_document, GC::Ptr<GC::Function<void()>> after_all_unloads)
 {
@@ -4433,8 +4470,6 @@ void Document::unload_a_document_and_its_descendants(GC::Ptr<Document> new_docum
     // This way we maintain the invariant that all navigable containers present in the DOM tree
     // have an active document while the document is being unloaded.
 
-    IGNORE_USE_IN_ESCAPING_LAMBDA size_t number_unloaded = 0;
-
     auto navigable = this->navigable();
 
     Vector<GC::Root<HTML::Navigable>> descendant_navigables;
@@ -4443,25 +4478,22 @@ void Document::unload_a_document_and_its_descendants(GC::Ptr<Document> new_docum
             descendant_navigables.append(other_navigable);
     }
 
-    IGNORE_USE_IN_ESCAPING_LAMBDA auto unloaded_documents_count = descendant_navigables.size() + 1;
+    auto unloaded_documents_count = descendant_navigables.size() + 1;
+    auto document_unload_state = heap().allocate<DocumentUnloadState>(*this, unloaded_documents_count, GC::create_function(heap(), [this, after_all_unloads = move(after_all_unloads)] {
+        destroy_a_document_and_its_descendants(move(after_all_unloads));
+    }));
 
-    HTML::queue_global_task(HTML::Task::Source::NavigationAndTraversal, HTML::relevant_global_object(*this), GC::create_function(heap(), [&number_unloaded, this, new_document] {
+    HTML::queue_global_task(HTML::Task::Source::NavigationAndTraversal, HTML::relevant_global_object(*this), GC::create_function(heap(), [document_unload_state, this, new_document] {
         unload(new_document);
-        ++number_unloaded;
+        document_unload_state->decrement_unloaded();
     }));
 
     for (auto& descendant_navigable : descendant_navigables) {
-        HTML::queue_global_task(HTML::Task::Source::NavigationAndTraversal, *descendant_navigable->active_window(), GC::create_function(heap(), [&number_unloaded, descendant_navigable = descendant_navigable.ptr()] {
+        HTML::queue_global_task(HTML::Task::Source::NavigationAndTraversal, *descendant_navigable->active_window(), GC::create_function(heap(), [document_unload_state, descendant_navigable = descendant_navigable.ptr()] {
             descendant_navigable->active_document()->unload();
-            ++number_unloaded;
+            document_unload_state->decrement_unloaded();
         }));
     }
-
-    HTML::main_thread_event_loop().spin_until(GC::create_function(heap(), [&] {
-        return number_unloaded == unloaded_documents_count;
-    }));
-
-    destroy_a_document_and_its_descendants(move(after_all_unloads));
 }
 
 // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#allowed-to-use

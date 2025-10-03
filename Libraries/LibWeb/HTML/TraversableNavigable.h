@@ -65,14 +65,10 @@ public:
         Applied,
     };
 
-    HistoryStepResult apply_the_traverse_history_step(int, GC::Ptr<SourceSnapshotParams>, GC::Ptr<Navigable>, UserNavigationInvolvement);
-    HistoryStepResult apply_the_reload_history_step(UserNavigationInvolvement);
-    enum class SynchronousNavigation : bool {
-        Yes,
-        No,
-    };
-    HistoryStepResult apply_the_push_or_replace_history_step(int step, HistoryHandlingBehavior history_handling, UserNavigationInvolvement, SynchronousNavigation);
-    HistoryStepResult update_for_navigable_creation_or_destruction();
+    void apply_the_traverse_history_step(int, GC::Ptr<SourceSnapshotParams>, GC::Ptr<Navigable>, UserNavigationInvolvement, GC::Ptr<GC::Function<void(HistoryStepResult)>>);
+    void apply_the_reload_history_step(UserNavigationInvolvement, GC::Ptr<GC::Function<void(HistoryStepResult)>>);
+    void apply_the_push_or_replace_history_step(int step, HistoryHandlingBehavior history_handling, UserNavigationInvolvement, GC::Ptr<GC::Function<void(HistoryStepResult)>>);
+    void update_for_navigable_creation_or_destruction(GC::Ptr<GC::Function<void(HistoryStepResult)>>);
 
     int get_the_used_step(int step) const;
     Vector<GC::Root<Navigable>> get_all_navigables_whose_current_session_history_entry_will_change_or_reload(int) const;
@@ -87,15 +83,11 @@ public:
     void definitely_close_top_level_traversable();
     void destroy_top_level_traversable();
 
-    void append_session_history_traversal_steps(GC::Ref<GC::Function<void()>> steps)
-    {
-        m_session_history_traversal_queue->append(steps);
-    }
+    void add_session_history_traversal_queue_appended_to_callback(GC::Ref<GC::Function<void()>> callback);
+    void remove_session_history_traversal_queue_appended_to_callback(GC::Ref<GC::Function<void()>> callback);
 
-    void append_session_history_synchronous_navigation_steps(GC::Ref<Navigable> target_navigable, GC::Ref<GC::Function<void()>> steps)
-    {
-        m_session_history_traversal_queue->append_sync(steps, target_navigable);
-    }
+    void append_session_history_traversal_steps(GC::Ref<GC::Function<void()>> steps);
+    void append_session_history_synchronous_navigation_steps(GC::Ref<Navigable> target_navigable, GC::Ref<GC::Function<void()>> steps);
 
     String window_handle() const { return m_window_handle; }
     void set_window_handle(String window_handle) { m_window_handle = move(window_handle); }
@@ -107,7 +99,7 @@ public:
         CanceledByNavigate,
         Continue,
     };
-    CheckIfUnloadingIsCanceledResult check_if_unloading_is_canceled(Vector<GC::Root<Navigable>> navigables_that_need_before_unload);
+    void check_if_unloading_is_canceled(Vector<GC::Root<Navigable>> navigables_that_need_before_unload, GC::Ref<GC::Function<void(CheckIfUnloadingIsCanceledResult)>> completion_steps);
 
     StorageAPI::StorageShed& storage_shed() { return m_storage_shed; }
     StorageAPI::StorageShed const& storage_shed() const { return m_storage_shed; }
@@ -130,17 +122,57 @@ private:
 
     virtual void visit_edges(Cell::Visitor&) override;
 
+    struct ChangingNavigableContinuationState : public JS::Cell {
+        GC_CELL(ChangingNavigableContinuationState, JS::Cell);
+        GC_DECLARE_ALLOCATOR(ChangingNavigableContinuationState);
+
+        GC::Ptr<DOM::Document> displayed_document;
+        GC::Ptr<SessionHistoryEntry> target_entry;
+        GC::Ptr<Navigable> navigable;
+        bool update_only = false;
+
+        GC::Ptr<SessionHistoryEntry> populated_target_entry;
+        bool populated_cloned_target_session_history_entry = false;
+
+        virtual void visit_edges(Cell::Visitor& visitor) override;
+    };
+
+    struct ChangingNavigableContinuationStateQueue : public JS::Cell {
+        GC_CELL(ChangingNavigableContinuationStateQueue, GC::Cell);
+        GC_DECLARE_ALLOCATOR(ChangingNavigableContinuationStateQueue);
+
+        ChangingNavigableContinuationStateQueue(GC::Ref<TraversableNavigable> traversable_navigable, size_t remaining, GC::Ref<GC::Function<void()>> after_all_changed);
+
+        GC::Ref<TraversableNavigable> traversable_navigable;
+        Vector<GC::Ref<ChangingNavigableContinuationState>> changing_navigable_continuations;
+        HashTable<GC::Ref<Navigable>> navigables_that_must_wait_before_handling_sync_navigation;
+        int step { 0 };
+        Optional<Bindings::NavigationType> navigation_type;
+        UserNavigationInvolvement user_involvement;
+
+        size_t remaining_change_jobs { 0 };
+        GC::Ref<GC::Function<void()>> session_history_queue_appended_to_callback;
+        GC::Ref<GC::Function<void()>> after_all_changed;
+
+        virtual void visit_edges(Visitor& visitor) override;
+
+        void decrement_remaining_change_jobs();
+        void enqueue_changing_navigable_continuation(GC::Ref<ChangingNavigableContinuationState>);
+    };
+
+    void step_once_through_changing_navigable_queue(GC::Ref<ChangingNavigableContinuationStateQueue> changing_navigable_continuation_state_queue);
+
     // FIXME: Fix spec typo cancelation --> cancellation
-    HistoryStepResult apply_the_history_step(
+    void apply_the_history_step(
         int step,
         bool check_for_cancelation,
         GC::Ptr<SourceSnapshotParams>,
         GC::Ptr<Navigable> initiator_to_check,
         UserNavigationInvolvement user_involvement,
         Optional<Bindings::NavigationType> navigation_type,
-        SynchronousNavigation);
+        GC::Ptr<GC::Function<void(HistoryStepResult)>> completion_steps);
 
-    CheckIfUnloadingIsCanceledResult check_if_unloading_is_canceled(Vector<GC::Root<Navigable>> navigables_that_need_before_unload, GC::Ptr<TraversableNavigable> traversable, Optional<int> target_step, Optional<UserNavigationInvolvement> user_involvement_for_navigate_events);
+    void check_if_unloading_is_canceled(Vector<GC::Root<Navigable>> navigables_that_need_before_unload, GC::Ptr<TraversableNavigable> traversable, Optional<int> target_step, Optional<UserNavigationInvolvement> user_involvement_for_navigate_events, GC::Ref<GC::Function<void(CheckIfUnloadingIsCanceledResult)>> completion_steps);
 
     Vector<GC::Ref<SessionHistoryEntry>> get_session_history_entries_for_the_navigation_api(GC::Ref<Navigable>, int);
 
@@ -168,6 +200,7 @@ private:
     GC::Ref<StorageAPI::StorageShed> m_storage_shed;
 
     GC::Ref<SessionHistoryTraversalQueue> m_session_history_traversal_queue;
+    HashTable<GC::Ref<GC::Function<void()>>> m_session_history_traversal_queue_appended_to_callbacks;
 
     String m_window_handle;
 
