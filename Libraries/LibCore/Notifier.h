@@ -43,6 +43,8 @@ private:
     bool m_is_enabled { false };
     pthread_t m_owner_thread {};
     Type m_type { Type::None };
+
+    EventLoop* m_owner_event_loop { nullptr };
 };
 
 }

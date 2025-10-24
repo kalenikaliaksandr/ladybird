@@ -29,10 +29,18 @@ void Notifier::set_enabled(bool enabled)
     if (enabled == m_is_enabled)
         return;
     m_is_enabled = enabled;
-    if (enabled)
-        Core::EventLoop::register_notifier({}, *this);
-    else
-        Core::EventLoop::unregister_notifier({}, *this);
+    if (enabled) {
+        ref();
+        m_owner_event_loop = &EventLoop::current();
+        // dbgln(">did register notifier on event loop {:p} thread={}", m_owner_event_loop, pthread_self());
+        EventLoop::register_notifier({}, *this);
+    } else {
+        VERIFY(m_owner_event_loop);
+        m_owner_event_loop->deferred_invoke([strong_this = NonnullRefPtr<Notifier>(*this)] {
+            EventLoop::unregister_notifier({}, *strong_this);
+            strong_this->unref();
+        });
+    }
 }
 
 void Notifier::close()
@@ -57,6 +65,9 @@ void Notifier::set_type(Type type)
 
 void Notifier::event(Core::Event& event)
 {
+    // VERIFY(m_is_enabled);
+    if (!m_is_enabled)
+        return;
     if (event.type() == Core::Event::NotifierActivation) {
         if (on_activation)
             on_activation();

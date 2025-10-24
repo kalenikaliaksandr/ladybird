@@ -655,11 +655,15 @@ void EventLoopManagerUnix::register_notifier(Notifier& notifier)
     auto events = notification_type_to_poll_events(notifier.type());
     thread_data.poll_fds.append({ .fd = notifier.fd(), .events = events, .revents = 0 });
 
+    dbgln(">EventLoopManagerUnix::register_notifier thread={} fd={} events={}", pthread_self(), notifier.fd(), events);
+
     notifier.set_owner_thread(s_thread_id);
 }
 
 void EventLoopManagerUnix::unregister_notifier(Notifier& notifier)
 {
+    dbgln(">EventLoopManagerUnix::unregister_notifier thread={} fd={}", pthread_self(), notifier.fd());
+
     auto* thread_data = ThreadData::for_thread(notifier.owner_thread());
     if (!thread_data)
         return;

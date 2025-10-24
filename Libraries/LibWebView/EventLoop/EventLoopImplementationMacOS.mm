@@ -38,12 +38,22 @@ struct ThreadData {
         }
 
         // If we didn't have a notifier for the provided FD, it should have been unregistered.
+        //        dbgln(">cannot find notifier for fd {}", fd);
         VERIFY_NOT_REACHED();
+    }
+
+    ~ThreadData()
+    {
+        //        dbgln(">>>~ThreadData {:p}", this);
     }
 
     IDAllocator timer_id_allocator;
     HashMap<int, CFRunLoopTimerRef> timers;
-    HashMap<Core::Notifier*, CFRunLoopSourceRef> notifiers;
+    struct Data {
+        CFRunLoopSourceRef source { nullptr };
+        CFSocketRef socket { nullptr };
+    };
+    HashMap<Core::Notifier*, Data> notifiers;
 };
 
 class SignalHandlers : public RefCounted<SignalHandlers> {
@@ -282,6 +292,8 @@ void EventLoopManagerMacOS::unregister_timer(intptr_t timer_id)
 
 static void socket_notifier(CFSocketRef socket, CFSocketCallBackType notification_type, CFDataRef, void const*, void*)
 {
+    //    dbgln(">socket notifier thread={} socket={} thread_data={:p} fd={}", pthread_self(), socket, &ThreadData::the(), CFSocketGetNative(socket));
+
     auto& notifier = ThreadData::the().notifier_by_fd(CFSocketGetNative(socket));
 
     // This socket callback is not quite re-entrant. If Core::Notifier::dispatch_event blocks, e.g.
@@ -317,6 +329,8 @@ void EventLoopManagerMacOS::register_notifier(Core::Notifier& notifier)
     CFSocketContext context { .version = 0, .info = nullptr, .retain = nullptr, .release = nullptr, .copyDescription = nullptr };
     auto* socket = CFSocketCreateWithNative(kCFAllocatorDefault, notifier.fd(), notification_type, &socket_notifier, &context);
 
+    dbgln(">>>register_notifier {:p} thread={} socket={:p} thread_data={:p} fd={}", &notifier, pthread_self(), socket, &ThreadData::the(), CFSocketGetNative(socket));
+
     CFOptionFlags sockopt = CFSocketGetSocketFlags(socket);
     sockopt &= ~kCFSocketAutomaticallyReenableReadCallBack;
     sockopt &= ~kCFSocketCloseOnInvalidate;
@@ -327,14 +341,20 @@ void EventLoopManagerMacOS::register_notifier(Core::Notifier& notifier)
 
     CFRelease(socket);
 
-    ThreadData::the().notifiers.set(&notifier, source);
+    ThreadData::the().notifiers.set(&notifier, { source, socket });
+    //    dbgln(">notifiers.count={}", ThreadData::the().notifiers.size());
 }
 
 void EventLoopManagerMacOS::unregister_notifier(Core::Notifier& notifier)
 {
     if (auto source = ThreadData::the().notifiers.take(&notifier); source.has_value()) {
-        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), *source, kCFRunLoopCommonModes);
-        CFRelease(*source);
+        //        dbgln(">>>unregister_notifier {:p} thread={} socket={:p} thread_data={:p} fd={}", &notifier, pthread_self(), source->socket, &ThreadData::the(), CFSocketGetNative(source->socket));
+        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source->source, kCFRunLoopCommonModes);
+        CFRelease(source->source);
+    } else {
+        dbgln(">WHYYYYYY");
+        VERIFY_NOT_REACHED();
+        ;
     }
 }
 

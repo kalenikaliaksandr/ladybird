@@ -159,6 +159,8 @@ void TransportSocket::set_up_read_hook(Function<void()> hook)
     m_on_read_hook = move(hook);
     m_read_hook_notifier = Core::Notifier::construct(m_notify_hook_read_fd->value(), Core::NotificationType::Read);
     m_read_hook_notifier->on_activation = [this] {
+        if (!m_notify_hook_read_fd)
+            return;
         VERIFY(m_notify_hook_read_fd);
         char buf[64];
         (void)Core::System::read(m_notify_hook_read_fd->value(), { buf, sizeof(buf) });
