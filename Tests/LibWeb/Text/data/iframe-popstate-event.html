@@ -3,6 +3,7 @@
     window.history.pushState({}, '', window.location.href + '#test');
 
     window.addEventListener('popstate', (e) => {
+        console.log(">>>>>>>popstate event in iframe");
         const url = new URL(window.location.href);
         const pathWithHash = url.pathname.split('/').pop() + url.hash;
         parent.postMessage(`popstate event from iframe new_path=${pathWithHash}`, '*');

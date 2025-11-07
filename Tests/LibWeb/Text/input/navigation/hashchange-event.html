@@ -5,6 +5,7 @@
     asyncTest(done => {
         let messageCount = 0;
         window.addEventListener("message", event => {
+            console.log(">message", event.data);
             println(event.data);
             messageCount++;
             if (messageCount == 2)

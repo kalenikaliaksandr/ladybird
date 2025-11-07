@@ -1002,7 +1002,6 @@ struct CheckIfUnloadingCancelledContinuationState : public GC::Cell {
     {
     }
 
-
     TraversableNavigable::CheckIfUnloadingIsCanceledResult final_status { TraversableNavigable::CheckIfUnloadingIsCanceledResult::Continue };
     UnloadPromptShown unload_prompt_shown { UnloadPromptShown::No };
 
@@ -1300,6 +1299,8 @@ bool TraversableNavigable::can_go_forward() const
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta
 void TraversableNavigable::traverse_the_history_by_delta(int delta, GC::Ptr<DOM::Document> source_document)
 {
+    dbgln(">traverse_the_history_by_delta delta={}", delta);
+
     // 1. Let sourceSnapshotParams and initiatorToCheck be null.
     GC::Ptr<SourceSnapshotParams> source_snapshot_params = nullptr;
     GC::Ptr<Navigable> initiator_to_check = nullptr;
@@ -1325,18 +1326,21 @@ void TraversableNavigable::traverse_the_history_by_delta(int delta, GC::Ptr<DOM:
         auto all_steps = get_all_used_history_steps();
 
         // 2. Let currentStepIndex be the index of traversable's current session history step within allSteps.
-        auto current_step_index = *all_steps.find_first_index(current_session_history_step());
+        int current_step_index = *all_steps.find_first_index(current_session_history_step());
+        dbgln(">current_step_index={}", current_step_index);
 
         // 3. Let targetStepIndex be currentStepIndex plus delta
         auto target_step_index = current_step_index + delta;
 
         // 4. If allSteps[targetStepIndex] does not exist, then abort these steps.
-        if (target_step_index >= all_steps.size()) {
+        if (target_step_index < 0 || target_step_index >= (int)all_steps.size()) {
+            dbgln(">early return from traverse_the_history_by_delta because target_step_index={} >= all_steps.size={}", target_step_index, all_steps.size());
             return;
         }
 
         // 5. Apply the traverse history step allSteps[targetStepIndex] to traversable, given sourceSnapshotParams,
         //    initiatorToCheck, and userInvolvement.
+        dbgln(">traverse_the_history_by_delta target_step_index={}", target_step_index);
         apply_the_traverse_history_step(all_steps[target_step_index], source_snapshot_params, initiator_to_check, user_involvement, nullptr);
     }));
 }

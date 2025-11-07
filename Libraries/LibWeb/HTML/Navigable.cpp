@@ -430,8 +430,7 @@ void Navigable::set_ongoing_navigation(Variant<Empty, Traversal, String> ongoing
         [](String const& string) {
             (void)string;
             // dbgln("{}", string);
-        }
-    );
+        });
     // 1. If navigable's ongoing navigation is equal to newValue, then return.
     if (m_ongoing_navigation == ongoing_navigation)
         return;
@@ -2419,6 +2418,8 @@ void perform_url_and_history_update_steps(DOM::Document& document, URL::URL new_
 
     // 13. Append the following session history synchronous navigation steps involving navigable to traversable:
     traversable->append_session_history_synchronous_navigation_steps(*navigable, GC::create_function(document.realm().heap(), [traversable, navigable, new_entry, entry_to_replace, history_handling] {
+        dbgln(">finalize_a_same_document_navigation initiated by perform_url_and_history_update_steps");
+
         // 1. Finalize a same-document navigation given traversable, navigable, newEntry, entryToReplace, historyHandling, and "none".
         finalize_a_same_document_navigation(*traversable, *navigable, new_entry, entry_to_replace, history_handling, UserNavigationInvolvement::None);
 
