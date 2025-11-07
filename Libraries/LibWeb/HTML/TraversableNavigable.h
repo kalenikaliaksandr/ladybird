@@ -58,13 +58,6 @@ public:
     };
     HistoryObjectLengthAndIndex get_the_history_object_length_and_index(int) const;
 
-    enum class HistoryStepResult {
-        InitiatorDisallowed,
-        CanceledByBeforeUnload,
-        CanceledByNavigate,
-        Applied,
-    };
-
     void apply_the_traverse_history_step(int, GC::Ptr<SourceSnapshotParams>, GC::Ptr<Navigable>, UserNavigationInvolvement, GC::Ptr<GC::Function<void(HistoryStepResult)>>);
     void apply_the_reload_history_step(UserNavigationInvolvement, GC::Ptr<GC::Function<void(HistoryStepResult)>>);
     void apply_the_push_or_replace_history_step(int step, HistoryHandlingBehavior history_handling, UserNavigationInvolvement, GC::Ptr<GC::Function<void(HistoryStepResult)>>);
@@ -86,8 +79,8 @@ public:
     void add_session_history_traversal_queue_appended_to_callback(GC::Ref<GC::Function<void()>> callback);
     void remove_session_history_traversal_queue_appended_to_callback(GC::Ref<GC::Function<void()>> callback);
 
-    void append_session_history_traversal_steps(GC::Ref<GC::Function<void()>> steps);
-    void append_session_history_synchronous_navigation_steps(GC::Ref<Navigable> target_navigable, GC::Ref<GC::Function<void()>> steps);
+    void append_session_history_traversal_steps(GC::Ref<SessionHistoryTraversalSteps> steps);
+    void append_session_history_synchronous_navigation_steps(GC::Ref<Navigable> target_navigable, GC::Ref<SessionHistoryTraversalSteps> steps);
 
     String window_handle() const { return m_window_handle; }
     void set_window_handle(String window_handle) { m_window_handle = move(window_handle); }
@@ -219,7 +212,7 @@ struct BrowsingContextAndDocument {
 };
 
 WebIDL::ExceptionOr<BrowsingContextAndDocument> create_a_new_top_level_browsing_context_and_document(GC::Ref<Page> page);
-void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversable, GC::Ref<Navigable> target_navigable, GC::Ref<SessionHistoryEntry> target_entry, GC::Ptr<SessionHistoryEntry> entry_to_replace, HistoryHandlingBehavior, UserNavigationInvolvement);
+void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversable, GC::Ref<Navigable> target_navigable, GC::Ref<SessionHistoryEntry> target_entry, GC::Ptr<SessionHistoryEntry> entry_to_replace, HistoryHandlingBehavior, UserNavigationInvolvement, GC::Ptr<GC::Function<void(HistoryStepResult)>>);
 
 template<>
 inline bool Navigable::fast_is<TraversableNavigable>() const { return is_traversable(); }

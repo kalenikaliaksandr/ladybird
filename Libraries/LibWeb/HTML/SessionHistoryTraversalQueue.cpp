@@ -12,7 +12,7 @@ namespace Web::HTML {
 GC_DEFINE_ALLOCATOR(SessionHistoryTraversalQueue);
 GC_DEFINE_ALLOCATOR(SessionHistoryTraversalQueueEntry);
 
-GC::Ref<SessionHistoryTraversalQueueEntry> SessionHistoryTraversalQueueEntry::create(JS::VM& vm, GC::Ref<GC::Function<void()>> steps, GC::Ptr<HTML::Navigable> target_navigable)
+GC::Ref<SessionHistoryTraversalQueueEntry> SessionHistoryTraversalQueueEntry::create(JS::VM& vm, GC::Ref<SessionHistoryTraversalSteps> steps, GC::Ptr<HTML::Navigable> target_navigable)
 {
     return vm.heap().allocate<SessionHistoryTraversalQueueEntry>(steps, target_navigable);
 }
@@ -26,18 +26,19 @@ void SessionHistoryTraversalQueueEntry::visit_edges(JS::Cell::Visitor& visitor)
 
 SessionHistoryTraversalQueue::SessionHistoryTraversalQueue()
 {
-    m_timer = Core::Timer::create_single_shot(0, [this] {
-        if (m_is_task_running && m_queue.size() > 0) {
-            m_timer->start();
-            return;
-        }
-        while (m_queue.size() > 0) {
-            m_is_task_running = true;
-            auto entry = m_queue.take_first();
-            entry->execute_steps();
-            m_is_task_running = false;
-        }
-    });
+    // m_timer = Core::Timer::create_single_shot(0, [this] {
+    //     if (m_is_task_running && m_queue.size() > 0) {
+    //         m_timer->start();
+    //         return;
+    //     }
+    //     while (m_queue.size() > 0) {
+    //         m_is_task_running = true;
+    //         auto entry = m_queue.take_first();
+    //         auto promise = Core::Promise<Empty>::construct();
+    //         entry->execute_steps(promise);
+    //         m_is_task_running = false;
+    //     }
+    // });
 }
 
 void SessionHistoryTraversalQueue::visit_edges(JS::Cell::Visitor& visitor)
@@ -46,20 +47,53 @@ void SessionHistoryTraversalQueue::visit_edges(JS::Cell::Visitor& visitor)
     visitor.visit(m_queue);
 }
 
-void SessionHistoryTraversalQueue::append(GC::Ref<GC::Function<void()>> steps)
+void SessionHistoryTraversalQueue::process()
 {
-    m_queue.append(SessionHistoryTraversalQueueEntry::create(vm(), steps, nullptr));
-    if (!m_timer->is_active()) {
-        m_timer->start();
-    }
+    // m_current_promise.clear();
+    VERIFY(!m_is_task_running);
+    if (m_queue.is_empty())
+        return;
+    auto task = m_queue.take_first();
+
+    auto promise = Core::Promise<Empty>::construct();
+    promise->when_resolved([weak_this = GC::Weak { *this }](auto&) {
+        // dbgln(">when resolved");
+        if (!weak_this)
+            return;
+        weak_this->m_is_task_running = false;
+        // dbgln(">queue size after resolve: {}", weak_this->m_queue.size());
+        weak_this->process();
+    });
+    promise->when_rejected([weak_this = GC::Weak { *this }](auto&) {
+        // dbgln(">when rejected");
+        if (!weak_this)
+            return;
+        weak_this->m_is_task_running = false;
+        weak_this->process();
+    });
+
+    m_is_task_running = true;
+    task->execute_steps(promise);
 }
 
-void SessionHistoryTraversalQueue::append_sync(GC::Ref<GC::Function<void()>> steps, GC::Ptr<Navigable> target_navigable)
+void SessionHistoryTraversalQueue::append(GC::Ref<SessionHistoryTraversalSteps> steps)
+{
+    m_queue.append(SessionHistoryTraversalQueueEntry::create(vm(), steps, nullptr));
+    // if (!m_timer->is_active()) {
+    //     m_timer->start();
+    // }
+    if (!m_is_task_running)
+        process();
+}
+
+void SessionHistoryTraversalQueue::append_sync(GC::Ref<SessionHistoryTraversalSteps> steps, GC::Ptr<Navigable> target_navigable)
 {
     m_queue.append(SessionHistoryTraversalQueueEntry::create(vm(), steps, target_navigable));
-    if (!m_timer->is_active()) {
-        m_timer->start();
-    }
+    // if (!m_timer->is_active()) {
+    //     m_timer->start();
+    // }
+    if (!m_is_task_running)
+        process();
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#sync-navigations-jump-queue

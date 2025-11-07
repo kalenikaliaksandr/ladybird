@@ -18,18 +18,20 @@
 
 namespace Web::HTML {
 
+using SessionHistoryTraversalSteps = GC::Function<void(NonnullRefPtr<Core::Promise<Empty>>)>;
+
 struct SessionHistoryTraversalQueueEntry : public JS::Cell {
     GC_CELL(SessionHistoryTraversalQueueEntry, JS::Cell);
     GC_DECLARE_ALLOCATOR(SessionHistoryTraversalQueueEntry);
 
 public:
-    static GC::Ref<SessionHistoryTraversalQueueEntry> create(JS::VM& vm, GC::Ref<GC::Function<void()>> steps, GC::Ptr<HTML::Navigable> target_navigable);
+    static GC::Ref<SessionHistoryTraversalQueueEntry> create(JS::VM& vm, GC::Ref<SessionHistoryTraversalSteps> steps, GC::Ptr<HTML::Navigable> target_navigable);
 
     GC::Ptr<HTML::Navigable> target_navigable() const { return m_target_navigable; }
-    void execute_steps() const { m_steps->function()(); }
+    void execute_steps(NonnullRefPtr<Core::Promise<Empty>> promise) const { m_steps->function()(promise); }
 
 private:
-    SessionHistoryTraversalQueueEntry(GC::Ref<GC::Function<void()>> steps, GC::Ptr<HTML::Navigable> target_navigable)
+    SessionHistoryTraversalQueueEntry(GC::Ref<SessionHistoryTraversalSteps> steps, GC::Ptr<HTML::Navigable> target_navigable)
         : m_steps(steps)
         , m_target_navigable(target_navigable)
     {
@@ -37,7 +39,7 @@ private:
 
     virtual void visit_edges(Cell::Visitor&) override;
 
-    GC::Ref<GC::Function<void()>> m_steps;
+    GC::Ref<SessionHistoryTraversalSteps> m_steps;
     GC::Ptr<HTML::Navigable> m_target_navigable;
 };
 
@@ -49,17 +51,18 @@ class WEB_API SessionHistoryTraversalQueue : public JS::Cell {
 public:
     SessionHistoryTraversalQueue();
 
-    void append(GC::Ref<GC::Function<void()>> steps);
-    void append_sync(GC::Ref<GC::Function<void()>> steps, GC::Ptr<Navigable> target_navigable);
+    void append(GC::Ref<SessionHistoryTraversalSteps> steps);
+    void append_sync(GC::Ref<SessionHistoryTraversalSteps> steps, GC::Ptr<Navigable> target_navigable);
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#sync-navigations-jump-queue
     GC::Ptr<SessionHistoryTraversalQueueEntry> first_synchronous_navigation_steps_with_target_navigable_not_contained_in(HashTable<GC::Ref<Navigable>> const&);
 
 private:
     virtual void visit_edges(Cell::Visitor&) override;
+    void process();
 
     Vector<GC::Ref<SessionHistoryTraversalQueueEntry>> m_queue;
-    RefPtr<Core::Timer> m_timer;
+    // RefPtr<Core::Timer> m_timer;
     bool m_is_task_running { false };
 };
 

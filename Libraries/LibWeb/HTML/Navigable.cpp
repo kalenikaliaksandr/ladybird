@@ -1886,18 +1886,22 @@ void Navigable::begin_navigation(NavigateParams params)
             //    cspNavigationType, with allowPOST set to true and completionSteps set to the following step:
             populate_session_history_entry_document(history_entry, source_snapshot_params, target_snapshot_params, user_involvement, navigation_id, navigation_params, csp_navigation_type, true, GC::create_function(heap(), [this, history_entry, history_handling, navigation_id, user_involvement] {
                 // 1. Append session history traversal steps to navigable's traversable to finalize a cross-document navigation given navigable, historyHandling, userInvolvement, and historyEntry.
-                traversable_navigable()->append_session_history_traversal_steps(GC::create_function(heap(), [this, history_entry, history_handling, navigation_id, user_involvement] {
+                traversable_navigable()->append_session_history_traversal_steps(GC::create_function(heap(), [this, history_entry, history_handling, navigation_id, user_involvement](NonnullRefPtr<Core::Promise<Empty>> promise) {
                     if (this->has_been_destroyed()) {
                         // NOTE: This check is not in the spec but we should not continue navigation if navigable has been destroyed.
                         set_delaying_load_events(false);
+                        promise->resolve({});
                         return;
                     }
                     if (this->ongoing_navigation() != navigation_id) {
                         // NOTE: This check is not in the spec but we should not continue navigation if ongoing navigation id has changed.
                         set_delaying_load_events(false);
+                        promise->resolve({});
                         return;
                     }
-                    finalize_a_cross_document_navigation(*this, to_history_handling_behavior(history_handling), user_involvement, history_entry);
+                    finalize_a_cross_document_navigation(*this, to_history_handling_behavior(history_handling), user_involvement, history_entry, GC::create_function(heap(), [promise](HistoryStepResult) {
+                        promise->resolve({});
+                    }));
                 }));
             }));
         }));
@@ -1979,9 +1983,11 @@ void Navigable::navigate_to_a_fragment(URL::URL const& url, HistoryHandlingBehav
     auto traversable = traversable_navigable();
 
     // 17. Append the following session history synchronous navigation steps involving navigable to traversable:
-    traversable->append_session_history_synchronous_navigation_steps(*this, GC::create_function(heap(), [this, traversable, history_entry, entry_to_replace, navigation_id, history_handling, user_involvement] {
+    traversable->append_session_history_synchronous_navigation_steps(*this, GC::create_function(heap(), [this, traversable, history_entry, entry_to_replace, navigation_id, history_handling, user_involvement](NonnullRefPtr<Core::Promise<Empty>> promise) {
         // 1. Finalize a same-document navigation given traversable, navigable, historyEntry, entryToReplace, historyHandling, and userInvolvement.
-        finalize_a_same_document_navigation(*traversable, *this, history_entry, entry_to_replace, history_handling, user_involvement);
+        finalize_a_same_document_navigation(*traversable, *this, history_entry, entry_to_replace, history_handling, user_involvement, GC::create_function(heap(), [promise](HistoryStepResult) {
+            promise->resolve({});
+        }));
 
         // FIXME: 2. Invoke WebDriver BiDi fragment navigated with navigable and a new WebDriver BiDi
         //            navigation status whose id is navigationId, url is url, and status is "complete".
@@ -2178,8 +2184,9 @@ void Navigable::navigate_to_a_javascript_url(URL::URL const& url, HistoryHandlin
     history_entry->set_document_state(document_state);
 
     // 13. Append session history traversal steps to targetNavigable's traversable to finalize a cross-document navigation with targetNavigable, historyHandling, userInvolvement, and historyEntry.
-    traversable_navigable()->append_session_history_traversal_steps(GC::create_function(heap(), [this, history_entry, history_handling, user_involvement] {
-        finalize_a_cross_document_navigation(*this, history_handling, user_involvement, history_entry);
+    traversable_navigable()->append_session_history_traversal_steps(GC::create_function(heap(), [this, history_entry, history_handling, user_involvement](NonnullRefPtr<Core::Promise<Empty>> promise) {
+        finalize_a_cross_document_navigation(*this, history_handling, user_involvement, history_entry, {});
+        promise->resolve({});
     }));
 }
 
@@ -2193,9 +2200,11 @@ void Navigable::reload(UserNavigationInvolvement user_involvement)
     auto traversable = traversable_navigable();
 
     // 3. Append the following session history traversal steps to traversable:
-    traversable->append_session_history_traversal_steps(GC::create_function(heap(), [traversable, user_involvement] {
+    traversable->append_session_history_traversal_steps(GC::create_function(heap(), [traversable, user_involvement](NonnullRefPtr<Core::Promise<Empty>> promise) {
         // 1. Apply the reload history step to traversable given userInvolvement.
-        traversable->apply_the_reload_history_step(user_involvement, nullptr);
+        traversable->apply_the_reload_history_step(user_involvement, GC::create_function(traversable->heap(), [promise](HistoryStepResult) {
+            promise->resolve({});
+        }));
     }));
 }
 
@@ -2278,11 +2287,15 @@ TargetSnapshotParams Navigable::snapshot_target_snapshot_params()
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
-void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryHandlingBehavior history_handling, UserNavigationInvolvement user_involvement, GC::Ref<SessionHistoryEntry> history_entry)
+void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryHandlingBehavior history_handling, UserNavigationInvolvement user_involvement, GC::Ref<SessionHistoryEntry> history_entry, GC::Ptr<GC::Function<void(HistoryStepResult)>> completion_steps)
 {
     // NOTE: This is not in the spec but we should not navigate destroyed navigable.
-    if (navigable->has_been_destroyed())
+    if (navigable->has_been_destroyed()) {
+        if (completion_steps) {
+            completion_steps->function()(HistoryStepResult::CanceledByNavigate);
+        }
         return;
+    }
 
     // 1. FIXME: Assert: this is running on navigable's traversable navigable's session history traversal queue.
 
@@ -2290,8 +2303,12 @@ void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryH
     navigable->set_delaying_load_events(false);
 
     // 3. If historyEntry's document is null, then return.
-    if (!history_entry->document())
+    if (!history_entry->document()) {
+        if (completion_steps) {
+            completion_steps->function()(HistoryStepResult::CanceledByNavigate);
+        }
         return;
+    }
 
     // 4. If all of the following are true:
     //    - navigable's parent is null;
@@ -2347,7 +2364,11 @@ void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryH
     }
 
     // 10. Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.
-    traversable->apply_the_push_or_replace_history_step(target_step, history_handling, user_involvement, GC::create_function(navigable->heap(), [navigable](TraversableNavigable::HistoryStepResult) {
+    traversable->apply_the_push_or_replace_history_step(target_step, history_handling, user_involvement, GC::create_function(navigable->heap(), [navigable, completion_steps](HistoryStepResult result) {
+        if (completion_steps) {
+            completion_steps->function()(result);
+        }
+
         // AD-HOC: If we're inside a navigable container, let's trigger a relayout in the container document.
         //         This allows size negotiation between the containing document and SVG documents to happen.
         if (auto container = navigable->container()) {
@@ -2417,11 +2438,13 @@ void perform_url_and_history_update_steps(DOM::Document& document, URL::URL new_
     auto traversable = navigable->traversable_navigable();
 
     // 13. Append the following session history synchronous navigation steps involving navigable to traversable:
-    traversable->append_session_history_synchronous_navigation_steps(*navigable, GC::create_function(document.realm().heap(), [traversable, navigable, new_entry, entry_to_replace, history_handling] {
+    traversable->append_session_history_synchronous_navigation_steps(*navigable, GC::create_function(document.realm().heap(), [traversable, navigable, new_entry, entry_to_replace, history_handling](NonnullRefPtr<Core::Promise<Empty>> promise) {
         dbgln(">finalize_a_same_document_navigation initiated by perform_url_and_history_update_steps");
 
         // 1. Finalize a same-document navigation given traversable, navigable, newEntry, entryToReplace, historyHandling, and "none".
-        finalize_a_same_document_navigation(*traversable, *navigable, new_entry, entry_to_replace, history_handling, UserNavigationInvolvement::None);
+        finalize_a_same_document_navigation(*traversable, *navigable, new_entry, entry_to_replace, history_handling, UserNavigationInvolvement::None, GC::create_function(traversable->heap(), [promise](HistoryStepResult) {
+            promise->resolve({});
+        }));
 
         // 2. FIXME: Invoke WebDriver BiDi history updated with navigable.
     }));

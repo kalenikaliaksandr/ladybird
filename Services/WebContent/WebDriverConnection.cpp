@@ -402,18 +402,22 @@ Messages::WebDriverClient::BackResponse WebDriverConnection::back()
 
         // 7. If the previous step completed results in a pageHide event firing, wait until pageShow event fires or
         //    timer' timeout fired flag to be set, whichever occurs first.
-        current_top_level_browsing_context()->top_level_traversable()->append_session_history_traversal_steps(GC::create_function(realm.heap(), [this, timer, on_complete]() {
-            if (timer->is_timed_out())
+        current_top_level_browsing_context()->top_level_traversable()->append_session_history_traversal_steps(GC::create_function(realm.heap(), [this, timer, on_complete](NonnullRefPtr<Core::Promise<Empty>> promise) {
+            if (timer->is_timed_out()) {
+                promise->resolve({});
                 return;
+            }
 
             if (auto* document = current_top_level_browsing_context()->active_document(); document->page_showing()) {
                 on_complete->function()();
+                promise->resolve({});
             } else {
                 auto& realm = document->realm();
 
                 m_document_observer = realm.create<Web::DOM::DocumentObserver>(realm, *document);
-                m_document_observer->set_document_page_showing_observer([on_complete](auto) {
+                m_document_observer->set_document_page_showing_observer([on_complete, promise](auto) {
                     on_complete->function()();
+                    promise->resolve({});
                 });
             }
         }));
@@ -472,18 +476,22 @@ Messages::WebDriverClient::ForwardResponse WebDriverConnection::forward()
 
         // 7. If the previous step completed results in a pageHide event firing, wait until pageShow event fires or
         //    timer' timeout fired flag to be set, whichever occurs first.
-        current_top_level_browsing_context()->top_level_traversable()->append_session_history_traversal_steps(GC::create_function(realm.heap(), [this, timer, on_complete]() {
-            if (timer->is_timed_out())
+        current_top_level_browsing_context()->top_level_traversable()->append_session_history_traversal_steps(GC::create_function(realm.heap(), [this, timer, on_complete](NonnullRefPtr<Core::Promise<Empty>> promise) {
+            if (timer->is_timed_out()) {
+                promise->resolve({});
                 return;
+            }
 
             if (auto* document = current_top_level_browsing_context()->active_document(); document->page_showing()) {
                 on_complete->function()();
+                promise->resolve({});
             } else {
                 auto& realm = document->realm();
 
                 m_document_observer = realm.create<Web::DOM::DocumentObserver>(realm, *document);
-                m_document_observer->set_document_page_showing_observer([on_complete](auto) {
+                m_document_observer->set_document_page_showing_observer([on_complete, promise](auto) {
                     on_complete->function()();
+                    promise->resolve({});
                 });
             }
         }));

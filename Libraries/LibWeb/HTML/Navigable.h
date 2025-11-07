@@ -40,6 +40,13 @@ struct TargetSnapshotParams {
     SandboxingFlagSet sandboxing_flags {};
 };
 
+enum class HistoryStepResult {
+    InitiatorDisallowed,
+    CanceledByBeforeUnload,
+    CanceledByNavigate,
+    Applied,
+};
+
 // https://html.spec.whatwg.org/multipage/document-sequences.html#navigable
 class WEB_API Navigable : public JS::Cell {
     GC_CELL(Navigable, JS::Cell);
@@ -290,7 +297,7 @@ private:
 WEB_API HashTable<GC::RawRef<Navigable>>& all_navigables();
 
 bool navigation_must_be_a_replace(URL::URL const& url, DOM::Document const& document);
-void finalize_a_cross_document_navigation(GC::Ref<Navigable>, HistoryHandlingBehavior, UserNavigationInvolvement, GC::Ref<SessionHistoryEntry>);
+void finalize_a_cross_document_navigation(GC::Ref<Navigable>, HistoryHandlingBehavior, UserNavigationInvolvement, GC::Ref<SessionHistoryEntry>, GC::Ptr<GC::Function<void(HistoryStepResult)>>);
 void perform_url_and_history_update_steps(DOM::Document& document, URL::URL new_url, Optional<SerializationRecord> = {}, HistoryHandlingBehavior history_handling = HistoryHandlingBehavior::Replace);
 
 }

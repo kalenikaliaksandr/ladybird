@@ -422,14 +422,14 @@ void TraversableNavigable::remove_session_history_traversal_queue_appended_to_ca
     VERIFY(was_removed);
 }
 
-void TraversableNavigable::append_session_history_traversal_steps(GC::Ref<GC::Function<void()>> steps)
+void TraversableNavigable::append_session_history_traversal_steps(GC::Ref<SessionHistoryTraversalSteps> steps)
 {
     m_session_history_traversal_queue->append(steps);
     for (auto callback : m_session_history_traversal_queue_appended_to_callbacks)
         callback->function()();
 }
 
-void TraversableNavigable::append_session_history_synchronous_navigation_steps(GC::Ref<Navigable> target_navigable, GC::Ref<GC::Function<void()>> steps)
+void TraversableNavigable::append_session_history_synchronous_navigation_steps(GC::Ref<Navigable> target_navigable, GC::Ref<SessionHistoryTraversalSteps> steps)
 {
     m_session_history_traversal_queue->append_sync(steps, target_navigable);
     for (auto callback : m_session_history_traversal_queue_appended_to_callbacks)
@@ -508,7 +508,9 @@ void TraversableNavigable::step_once_through_changing_navigable_queue(GC::Ref<Ch
             m_running_nested_apply_history_step = true;
 
             // 4. Run steps.
-            entry->execute_steps();
+            auto promise = Core::Promise<Empty>::construct();
+            entry->execute_steps(promise);
+            MUST(promise->await());
 
             // 5. Set traversable's running nested apply history step to false.
             m_running_nested_apply_history_step = false;
@@ -1299,7 +1301,7 @@ bool TraversableNavigable::can_go_forward() const
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta
 void TraversableNavigable::traverse_the_history_by_delta(int delta, GC::Ptr<DOM::Document> source_document)
 {
-    dbgln(">traverse_the_history_by_delta delta={}", delta);
+    // dbgln(">traverse_the_history_by_delta delta={}", delta);
 
     // 1. Let sourceSnapshotParams and initiatorToCheck be null.
     GC::Ptr<SourceSnapshotParams> source_snapshot_params = nullptr;
@@ -1321,27 +1323,29 @@ void TraversableNavigable::traverse_the_history_by_delta(int delta, GC::Ptr<DOM:
     }
 
     // 4. Append the following session history traversal steps to traversable:
-    append_session_history_traversal_steps(GC::create_function(heap(), [this, delta, source_snapshot_params, initiator_to_check, user_involvement] {
+    append_session_history_traversal_steps(GC::create_function(heap(), [this, delta, source_snapshot_params, initiator_to_check, user_involvement](NonnullRefPtr<Core::Promise<Empty>> promise) {
         // 1. Let allSteps be the result of getting all used history steps for traversable.
         auto all_steps = get_all_used_history_steps();
 
         // 2. Let currentStepIndex be the index of traversable's current session history step within allSteps.
         int current_step_index = *all_steps.find_first_index(current_session_history_step());
-        dbgln(">current_step_index={}", current_step_index);
+        // dbgln(">current_step_index={}", current_step_index);
 
         // 3. Let targetStepIndex be currentStepIndex plus delta
         auto target_step_index = current_step_index + delta;
 
         // 4. If allSteps[targetStepIndex] does not exist, then abort these steps.
         if (target_step_index < 0 || target_step_index >= (int)all_steps.size()) {
-            dbgln(">early return from traverse_the_history_by_delta because target_step_index={} >= all_steps.size={}", target_step_index, all_steps.size());
+            // dbgln(">early return from traverse_the_history_by_delta because target_step_index={} >= all_steps.size={}", target_step_index, all_steps.size());
             return;
         }
 
         // 5. Apply the traverse history step allSteps[targetStepIndex] to traversable, given sourceSnapshotParams,
         //    initiatorToCheck, and userInvolvement.
-        dbgln(">traverse_the_history_by_delta target_step_index={}", target_step_index);
-        apply_the_traverse_history_step(all_steps[target_step_index], source_snapshot_params, initiator_to_check, user_involvement, nullptr);
+        // dbgln(">traverse_the_history_by_delta target_step_index={}", target_step_index);
+        apply_the_traverse_history_step(all_steps[target_step_index], source_snapshot_params, initiator_to_check, user_involvement, GC::create_function(heap(), [promise](HistoryStepResult) {
+            promise->resolve({});
+        }));
     }));
 }
 
@@ -1404,10 +1408,11 @@ void TraversableNavigable::definitely_close_top_level_traversable()
             return;
 
         // 3. Append the following session history traversal steps to traversable:
-        append_session_history_traversal_steps(GC::create_function(heap(), [this] {
+        append_session_history_traversal_steps(GC::create_function(heap(), [this](NonnullRefPtr<Core::Promise<Empty>> promise) {
             // 1. Let afterAllUnloads be an algorithm step which destroys traversable.
-            auto after_all_unloads = GC::create_function(heap(), [this] {
+            auto after_all_unloads = GC::create_function(heap(), [this, promise] {
                 destroy_top_level_traversable();
+                promise->resolve({});
             });
 
             // 2. Unload a document and its descendants given traversable's active document, null, and afterAllUnloads.
@@ -1454,16 +1459,21 @@ void TraversableNavigable::destroy_top_level_traversable()
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-same-document-navigation
-void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversable, GC::Ref<Navigable> target_navigable, GC::Ref<SessionHistoryEntry> target_entry, GC::Ptr<SessionHistoryEntry> entry_to_replace, HistoryHandlingBehavior history_handling, UserNavigationInvolvement user_involvement)
+void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversable, GC::Ref<Navigable> target_navigable, GC::Ref<SessionHistoryEntry> target_entry, GC::Ptr<SessionHistoryEntry> entry_to_replace, HistoryHandlingBehavior history_handling, UserNavigationInvolvement user_involvement, GC::Ptr<GC::Function<void(HistoryStepResult)>> completion_steps)
 {
     // NOTE: This is not in the spec but we should not navigate destroyed navigable.
-    if (target_navigable->has_been_destroyed())
+    if (target_navigable->has_been_destroyed()) {
+        if (completion_steps)
+            completion_steps->function()(HistoryStepResult::CanceledByNavigate);
         return;
+    }
 
     // FIXME: 1. Assert: this is running on traversable's session history traversal queue.
 
     // 2. If targetNavigable's active session history entry is not targetEntry, then return.
     if (target_navigable->active_session_history_entry() != target_entry) {
+        if (completion_steps)
+            completion_steps->function()(HistoryStepResult::CanceledByNavigate);
         return;
     }
 
@@ -1500,7 +1510,7 @@ void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversab
     }
 
     // 6. Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.
-    traversable->apply_the_push_or_replace_history_step(*target_step, history_handling, user_involvement, nullptr);
+    traversable->apply_the_push_or_replace_history_step(*target_step, history_handling, user_involvement, completion_steps);
 }
 
 // https://html.spec.whatwg.org/multipage/interaction.html#system-visibility-state
