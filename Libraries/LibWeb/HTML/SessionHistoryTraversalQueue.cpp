@@ -24,6 +24,18 @@ void SessionHistoryTraversalQueueEntry::visit_edges(JS::Cell::Visitor& visitor)
     visitor.visit(m_target_navigable);
 }
 
+// void SessionHistoryTraversalQueueEntry::execute_steps_with_completion(GC::Ref<GC::Function<void()>> callback) const
+// {
+//     auto promise = Core::Promise<Empty>::construct();
+//     m_steps->function()(promise);
+//     promise->when_resolved([callback = GC::Root { callback }](auto&) {
+//         callback->function()();
+//     });
+//     promise->when_rejected([callback = GC::Root { callback }](auto&) {
+//         callback->function()();
+//     });
+// }
+
 SessionHistoryTraversalQueue::SessionHistoryTraversalQueue()
 {
     // m_timer = Core::Timer::create_single_shot(0, [this] {
@@ -56,7 +68,15 @@ void SessionHistoryTraversalQueue::process()
     auto task = m_queue.take_first();
 
     auto promise = Core::Promise<Empty>::construct();
-    promise->when_resolved([weak_this = GC::Weak { *this }](auto&) {
+
+    auto timeout = Core::Timer::create_single_shot(10 * 1000, [promise] {
+        dbgln(">SHTQ JOB TIMEOUT");
+        promise->resolve({});
+        VERIFY_NOT_REACHED();
+    });
+
+    promise->when_resolved([weak_this = GC::Weak { *this }, timeout](auto&) {
+        timeout->stop();
         // dbgln(">when resolved");
         if (!weak_this)
             return;
@@ -64,13 +84,16 @@ void SessionHistoryTraversalQueue::process()
         // dbgln(">queue size after resolve: {}", weak_this->m_queue.size());
         weak_this->process();
     });
-    promise->when_rejected([weak_this = GC::Weak { *this }](auto&) {
+    promise->when_rejected([weak_this = GC::Weak { *this }, timeout](auto&) {
+        timeout->stop();
         // dbgln(">when rejected");
         if (!weak_this)
             return;
         weak_this->m_is_task_running = false;
         weak_this->process();
     });
+
+    timeout->start();
 
     m_is_task_running = true;
     task->execute_steps(promise);
@@ -94,6 +117,43 @@ void SessionHistoryTraversalQueue::append_sync(GC::Ref<SessionHistoryTraversalSt
     // }
     if (!m_is_task_running)
         process();
+}
+
+void SessionHistoryTraversalQueue::execute_all_sync_steps(HashTable<GC::Ref<Navigable>> const& set, GC::Root<GC::Function<void()>> callback)
+{
+    auto task = first_synchronous_navigation_steps_with_target_navigable_not_contained_in(set);
+    if (!task) {
+        callback->function()();
+        return;
+    }
+
+    auto promise = Core::Promise<Empty>::construct();
+
+    auto timeout = Core::Timer::create_single_shot(10 * 1000, [promise] {
+        dbgln(">SHTQ JOB TIMEOUT");
+        promise->resolve({});
+        VERIFY_NOT_REACHED();
+    });
+
+    promise->when_resolved([weak_this = GC::Weak { *this }, timeout, set, callback](auto&) {
+        timeout->stop();
+        if (!weak_this)
+            return;
+        weak_this->m_is_task_running = false;
+        weak_this->execute_all_sync_steps(set, callback);
+    });
+    promise->when_rejected([weak_this = GC::Weak { *this }, timeout, set, callback](auto&) {
+        timeout->stop();
+        if (!weak_this)
+            return;
+        weak_this->m_is_task_running = false;
+        weak_this->execute_all_sync_steps(set, callback);
+    });
+
+    timeout->start();
+
+    m_is_task_running = true;
+    task->execute_steps(promise);
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#sync-navigations-jump-queue

@@ -135,6 +135,11 @@ private:
         GC_DECLARE_ALLOCATOR(ChangingNavigableContinuationStateQueue);
 
         ChangingNavigableContinuationStateQueue(GC::Ref<TraversableNavigable> traversable_navigable, size_t remaining, GC::Ref<GC::Function<void()>> after_all_changed);
+        ~ChangingNavigableContinuationStateQueue() override
+        {
+            // dbgln(">> ~ChangingNavigableContinuationStateQueue remaining_change_jobs={}", remaining_change_jobs);
+            VERIFY(remaining_change_jobs == 0);
+        }
 
         GC::Ref<TraversableNavigable> traversable_navigable;
         Vector<GC::Ref<ChangingNavigableContinuationState>> changing_navigable_continuations;
@@ -147,6 +152,8 @@ private:
         GC::Ref<GC::Function<void()>> session_history_queue_appended_to_callback;
         GC::Ref<GC::Function<void()>> after_all_changed;
 
+        GC::Ptr<Platform::Timer> timer;
+
         virtual void visit_edges(Visitor& visitor) override;
 
         void decrement_remaining_change_jobs();
@@ -154,6 +161,7 @@ private:
     };
 
     void step_once_through_changing_navigable_queue(GC::Ref<ChangingNavigableContinuationStateQueue> changing_navigable_continuation_state_queue);
+    void step_once_through_changing_navigable_queue__steps(GC::Ref<ChangingNavigableContinuationStateQueue> changing_navigable_continuation_state_queue);
 
     // FIXME: Fix spec typo cancelation --> cancellation
     void apply_the_history_step(

@@ -29,6 +29,7 @@ public:
 
     GC::Ptr<HTML::Navigable> target_navigable() const { return m_target_navigable; }
     void execute_steps(NonnullRefPtr<Core::Promise<Empty>> promise) const { m_steps->function()(promise); }
+    // void execute_steps_with_completion(GC::Ref<GC::Function<void()>>) const;
 
 private:
     SessionHistoryTraversalQueueEntry(GC::Ref<SessionHistoryTraversalSteps> steps, GC::Ptr<HTML::Navigable> target_navigable)
@@ -53,6 +54,8 @@ public:
 
     void append(GC::Ref<SessionHistoryTraversalSteps> steps);
     void append_sync(GC::Ref<SessionHistoryTraversalSteps> steps, GC::Ptr<Navigable> target_navigable);
+
+    void execute_all_sync_steps(HashTable<GC::Ref<Navigable>> const& set, GC::Root<GC::Function<void()>> callback);
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#sync-navigations-jump-queue
     GC::Ptr<SessionHistoryTraversalQueueEntry> first_synchronous_navigation_steps_with_target_navigable_not_contained_in(HashTable<GC::Ref<Navigable>> const&);
