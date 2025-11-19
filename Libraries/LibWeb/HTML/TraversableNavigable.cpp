@@ -992,7 +992,7 @@ TraversableNavigable::CheckIfUnloadingIsCanceledResult TraversableNavigable::che
     }
 
     // 8. Wait for completedTasks to be totalTasks.
-    main_thread_event_loop().spin_until(GC::create_function(heap(), [&] {
+    main_thread_event_loop().spin_processing_tasks_with_source_until(Task::Source::NavigationAndTraversal, GC::create_function(heap(), [&] {
         return completed_tasks == total_tasks;
     }));
 

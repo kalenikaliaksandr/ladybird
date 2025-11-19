@@ -21,8 +21,10 @@ namespace Web::HTML {
 
 #pragma GCC diagnostic ignored "-Wunused-label"
 
-#define CONSUME_NEXT_INPUT_CHARACTER \
-    current_input_character = next_code_point(stop_at_insertion_point);
+#define CONSUME_NEXT_INPUT_CHARACTER                                    \
+    current_input_character = next_code_point(stop_at_insertion_point); \
+    if (!current_input_character.has_value())                           \
+        return {};
 
 #define SWITCH_TO(new_state)                       \
     do {                                           \
@@ -104,7 +106,7 @@ namespace Web::HTML {
     if (current_input_character.has_value() && current_input_character.value() == code_point)
 
 #define ON_EOF \
-    if (!current_input_character.has_value())
+    if (m_explicit_eof_inserted)
 
 #define ON_ASCII_ALPHA \
     if (current_input_character.has_value() && is_ascii_alpha(current_input_character.value()))
@@ -260,8 +262,11 @@ HTMLToken::Position HTMLTokenizer::nth_last_position(size_t n)
     return m_source_positions.at(m_source_positions.size() - 1 - n);
 }
 
-Optional<HTMLToken> HTMLTokenizer::next_token(StopAtInsertionPoint stop_at_insertion_point)
+__attribute__((noinline)) Optional<HTMLToken> HTMLTokenizer::next_token(StopAtInsertionPoint stop_at_insertion_point)
 {
+    if (m_explicit_eof_inserted)
+        return HTMLToken { HTMLToken::Type::EndOfFile };
+
     if (!m_source_positions.is_empty()) {
         auto last_position = m_source_positions.last();
         m_source_positions.clear_with_capacity();
@@ -279,6 +284,9 @@ _StartOfFunction:
             return {};
 
         auto current_input_character = next_code_point(stop_at_insertion_point);
+        if (!current_input_character.has_value()) {
+            return {};
+        }
         switch (m_state) {
             // 13.2.5.1 Data state, https://html.spec.whatwg.org/multipage/parsing.html#data-state
             BEGIN_STATE(Data)
@@ -2910,10 +2918,10 @@ void HTMLTokenizer::parser_did_run(Badge<HTMLParser>)
     }
 }
 
-void HTMLTokenizer::insert_input_at_insertion_point(StringView input)
+void HTMLTokenizer::insert_input_at_insertion_point(ReadonlyBytes input)
 {
     Vector<u32> new_decoded_input;
-    new_decoded_input.ensure_capacity(m_decoded_input.size() + input.length());
+    new_decoded_input.ensure_capacity(m_decoded_input.size() + input.size());
 
     auto before = m_decoded_input.span().slice(0, *m_insertion_point);
     new_decoded_input.append(before.data(), before.size());
@@ -2930,6 +2938,33 @@ void HTMLTokenizer::insert_input_at_insertion_point(StringView input)
     m_decoded_input = move(new_decoded_input);
 
     m_insertion_point.value() += code_points_inserted;
+}
+
+// HTMLTokenizer::HTMLTokenizer(StringView input, ByteString const& encoding)
+// {
+//     auto decoder = TextCodec::decoder_for(encoding);
+//     VERIFY(decoder.has_value());
+//     m_source = MUST(decoder->to_utf8(input));
+//     m_decoded_input.ensure_capacity(m_source.bytes().size());
+//     for (auto code_point : m_source.code_points())
+//         m_decoded_input.append(code_point);
+//     m_current_offset = 0;
+//     m_prev_offset = 0;
+//     m_source_positions.empend(0u, 0u);
+// }
+
+void HTMLTokenizer::append_to_input_stream(ReadonlyBytes input, StringView encoding)
+{
+    auto decoder = TextCodec::decoder_for(encoding);
+    VERIFY(decoder.has_value());
+    m_input_buffer.append(input);
+    if (!decoder->validate(m_input_buffer))
+        return;
+    auto utf8_to_insert = MUST(decoder->to_utf8(input));
+    m_input_buffer.clear();
+    for (auto code_point : utf8_to_insert.code_points()) {
+        m_decoded_input.append(code_point);
+    }
 }
 
 void HTMLTokenizer::insert_eof()

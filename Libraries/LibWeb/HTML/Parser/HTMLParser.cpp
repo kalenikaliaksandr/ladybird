@@ -310,8 +310,9 @@ void HTMLParser::the_end(GC::Ref<DOM::Document> document, GC::Ptr<HTMLParser> pa
     // FIXME: 1. If the active speculative HTML parser is not null, then stop the speculative HTML parser and return.
 
     // 2. Set the insertion point to undefined.
-    if (parser)
+    if (parser) {
         parser->m_tokenizer.undefine_insertion_point();
+    }
 
     // 3. Update the current document readiness to "interactive".
     document->update_readiness(HTML::DocumentReadyState::Interactive);

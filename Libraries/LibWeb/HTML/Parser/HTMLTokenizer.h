@@ -131,7 +131,8 @@ public:
 
     auto const& source() const { return m_source; }
 
-    void insert_input_at_insertion_point(StringView input);
+    void insert_input_at_insertion_point(ReadonlyBytes input);
+    void append_to_input_stream(ReadonlyBytes input, StringView encoding);
     void insert_eof();
     bool is_eof_inserted();
 
@@ -219,6 +220,8 @@ private:
     bool m_aborted { false };
 
     Vector<HTMLToken::Position> m_source_positions;
+
+    ByteBuffer m_input_buffer;
 };
 
 }

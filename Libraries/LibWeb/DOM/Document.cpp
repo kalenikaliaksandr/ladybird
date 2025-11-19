@@ -727,7 +727,7 @@ WebIDL::ExceptionOr<void> Document::run_the_document_write_steps(Vector<TrustedT
     }
 
     // 10. Insert string into the input stream just before the insertion point.
-    m_parser->tokenizer().insert_input_at_insertion_point(string.string_view());
+    m_parser->tokenizer().insert_input_at_insertion_point(string.string_view().bytes());
 
     // 11. If document's pending parsing-blocking script is null, then have the HTML parser process string, one code
     //     point at a time, processing resulting tokens as they are emitted, and stopping when the tokenizer reaches
@@ -4434,7 +4434,7 @@ void Document::unload_a_document_and_its_descendants(GC::Ptr<Document> new_docum
         }));
     }
 
-    HTML::main_thread_event_loop().spin_until(GC::create_function(heap(), [&] {
+    HTML::main_thread_event_loop().spin_processing_tasks_with_source_until(HTML::Task::Source::NavigationAndTraversal, GC::create_function(heap(), [&] {
         return number_unloaded == unloaded_documents_count;
     }));
 

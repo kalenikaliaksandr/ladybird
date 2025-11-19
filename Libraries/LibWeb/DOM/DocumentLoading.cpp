@@ -92,19 +92,47 @@ static WebIDL::ExceptionOr<GC::Ref<DOM::Document>> load_html_document(HTML::Navi
     //    causes a load event to be fired.
     else {
         // FIXME: Parse as we receive the document data, instead of waiting for the whole document to be fetched first.
-        auto process_body = GC::create_function(document->heap(), [document, url = navigation_params.response->url().value(), mime_type = navigation_params.response->header_list()->extract_mime_type()](ByteBuffer data) {
-            Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(document->heap(), [document = document, data = move(data), url = url, mime_type] {
-                auto parser = HTML::HTMLParser::create_with_uncertain_encoding(document, data, mime_type);
-                parser->run(url);
-            }));
+        // auto process_body = GC::create_function(document->heap(), [document, url = navigation_params.response->url().value(), mime_type = navigation_params.response->header_list()->extract_mime_type()](ByteBuffer data) {
+        //     Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(document->heap(), [document = document, data = move(data), url = url, mime_type] {
+        //         auto parser = HTML::HTMLParser::create_with_uncertain_encoding(document, data, mime_type);
+        //         parser->run(url);
+        //     }));
+        // });
+
+        document->set_url(navigation_params.response->url().value());
+
+        auto parser = HTML::HTMLParser::create_for_scripting(document);
+        parser->tokenizer().update_insertion_point();
+
+        auto process_body_chunk = GC::create_function(document->heap(), [parser, document, mime_type = navigation_params.response->header_list()->extract_mime_type()](ByteBuffer data) {
+            if (!document->has_encoding()) {
+                auto encoding = run_encoding_sniffing_algorithm(document, data, mime_type);
+                auto standardized_encoding = TextCodec::get_standardized_encoding(encoding);
+                VERIFY(standardized_encoding.has_value());
+                document->set_encoding(MUST(String::from_utf8(standardized_encoding.value())));
+            }
+
+            parser->tokenizer().append_to_input_stream(data, *document->encoding());
+            parser->run();
         });
 
         auto process_body_error = GC::create_function(document->heap(), [](JS::Value) {
             dbgln("FIXME: Load html page with an error if read of body failed.");
         });
 
+        auto process_end_of_body = GC::create_function(document->heap(), [parser, document, url = navigation_params.response->url().value()]() {
+            (void)url;
+            parser->tokenizer().insert_eof();
+            parser->run();
+            document->set_source(parser->tokenizer().source());
+            // parser->run();
+            HTML::queue_a_task(HTML::Task::Source::DOMManipulation, {}, document, GC::create_function(document->heap(), [document, parser] {
+                HTML::HTMLParser::the_end(*document, parser);
+            }));
+        });
+
         auto& realm = document->realm();
-        navigation_params.response->body()->fully_read(realm, process_body, process_body_error, GC::Ref { realm.global_object() });
+        navigation_params.response->body()->incrementally_read(process_body_chunk, process_end_of_body, process_body_error, GC::Ref { realm.global_object() });
     }
 
     // 4. Return document.
@@ -235,7 +263,7 @@ static WebIDL::ExceptionOr<GC::Ref<DOM::Document>> load_text_document(HTML::Navi
         auto parser = HTML::HTMLParser::create_for_scripting(document);
         parser->tokenizer().update_insertion_point();
 
-        parser->tokenizer().insert_input_at_insertion_point("<pre>\n"sv);
+        parser->tokenizer().insert_input_at_insertion_point("<pre>\n"sv.bytes());
         parser->run();
 
         parser->tokenizer().switch_to(HTML::HTMLTokenizer::State::PLAINTEXT);
