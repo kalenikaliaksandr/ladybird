@@ -122,6 +122,11 @@ static WebIDL::ExceptionOr<GC::Ref<DOM::Document>> load_html_document(HTML::Navi
 
         auto process_end_of_body = GC::create_function(document->heap(), [parser, document, url = navigation_params.response->url().value()]() {
             (void)url;
+            // parser->tokenizer().append_to_input_stream({}, *document->encoding());
+            if (document->encoding().has_value()) {
+                parser->tokenizer().flush_input_stream(*document->encoding());
+                parser->run();
+            }
             parser->tokenizer().insert_eof();
             parser->run();
             document->set_source(parser->tokenizer().source());

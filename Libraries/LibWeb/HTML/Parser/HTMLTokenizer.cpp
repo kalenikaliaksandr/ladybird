@@ -2955,12 +2955,30 @@ void HTMLTokenizer::insert_input_at_insertion_point(ReadonlyBytes input)
 
 void HTMLTokenizer::append_to_input_stream(ReadonlyBytes input, StringView encoding)
 {
+    // dbgln(">encoding={}", encoding);
     auto decoder = TextCodec::decoder_for(encoding);
     VERIFY(decoder.has_value());
     m_input_buffer.append(input);
-    if (!decoder->validate(m_input_buffer))
+    if (encoding != "UTF-8"sv)
         return;
-    auto utf8_to_insert = MUST(decoder->to_utf8(input));
+    if (!decoder->validate(m_input_buffer)) {
+        // dbgln(">return because invalid encoding={}", encoding);
+        return;
+    }
+    // dbgln(">process because valid");
+    auto utf8_to_insert = MUST(decoder->to_utf8(m_input_buffer));
+    m_input_buffer.clear();
+    for (auto code_point : utf8_to_insert.code_points()) {
+        m_decoded_input.append(code_point);
+    }
+}
+
+void HTMLTokenizer::flush_input_stream(StringView encoding)
+{
+    // dbgln(">flush_input_stream encoding={}", encoding);
+    auto decoder = TextCodec::decoder_for(encoding);
+    VERIFY(decoder.has_value());
+    auto utf8_to_insert = MUST(decoder->to_utf8(m_input_buffer));
     m_input_buffer.clear();
     for (auto code_point : utf8_to_insert.code_points()) {
         m_decoded_input.append(code_point);

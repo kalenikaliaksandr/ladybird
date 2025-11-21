@@ -133,6 +133,7 @@ public:
 
     void insert_input_at_insertion_point(ReadonlyBytes input);
     void append_to_input_stream(ReadonlyBytes input, StringView encoding);
+    void flush_input_stream(StringView encoding);
     void insert_eof();
     bool is_eof_inserted();
 
