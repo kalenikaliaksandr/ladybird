@@ -39,6 +39,8 @@ public:
 
     virtual DecoderErrorOr<CodedFrame> get_next_sample_for_track(Track const&) override;
 
+    virtual DecoderErrorOr<AK::Duration> buffered_duration() override;
+
 private:
     struct TrackContext {
         TrackContext(NonnullOwnPtr<FFmpegIOContext>&& io_context)

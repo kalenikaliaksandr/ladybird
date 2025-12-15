@@ -179,17 +179,31 @@ void MediaPaintable::paint_control_bar_timeline(DisplayListRecordingContext& con
     if (components.timeline_rect.is_empty())
         return;
 
+    auto duration = media_element.duration();
+    auto buffered_duration = media_element.buffered_duration();
+
     auto playback_percentage = isnan(media_element.duration()) ? 0.0 : media_element.layout_display_time({}) / media_element.duration();
     auto playback_position = static_cast<double>(static_cast<int>(components.timeline_rect.width())) * playback_percentage;
     auto timeline_button_offset_x = static_cast<DevicePixels>(round(playback_position));
+
+    auto buffered_playback_percentage = buffered_duration / duration;
+    auto buffered_playback_position = static_cast<double>(static_cast<int>(components.timeline_rect.width())) * buffered_playback_percentage;
+
+    auto timeline_future_rect = components.timeline_rect;
+    timeline_future_rect.take_from_left(timeline_button_offset_x);
+    context.display_list_recorder().fill_rect(timeline_future_rect.to_type<int>(), Color::Black);
+
+    auto timeline_buffered_rect = components.timeline_rect;
+    timeline_buffered_rect.set_width(round(buffered_playback_position));
+    context.display_list_recorder().fill_rect(timeline_buffered_rect.to_type<int>(), Color::MidGray);
 
     auto timeline_past_rect = components.timeline_rect;
     timeline_past_rect.set_width(timeline_button_offset_x);
     context.display_list_recorder().fill_rect(timeline_past_rect.to_type<int>(), CONTROL_HIGHLIGHT_COLOR);
 
-    auto timeline_future_rect = components.timeline_rect;
-    timeline_future_rect.take_from_left(timeline_button_offset_x);
-    context.display_list_recorder().fill_rect(timeline_future_rect.to_type<int>(), Color::Black);
+    // auto timeline_future_rect = components.timeline_rect;
+    // timeline_future_rect.take_from_left(timeline_button_offset_x);
+    // context.display_list_recorder().fill_rect(timeline_future_rect.to_type<int>(), Color::Black);
 }
 
 void MediaPaintable::paint_control_bar_timestamp(DisplayListRecordingContext& context, Components const& components)

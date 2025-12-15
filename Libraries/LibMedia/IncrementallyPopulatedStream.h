@@ -51,6 +51,12 @@ public:
 
         bool is_blocked() const { return m_blocked; }
 
+        i64 buffered_size()
+        {
+            Threading::MutexLocker locker { m_stream->m_mutex };
+            return m_stream->m_buffer.size();
+        }
+
     private:
         friend class IncrementallyPopulatedStream;
 
@@ -64,6 +70,8 @@ public:
     {
         return adopt_ref(*new Cursor(NonnullRefPtr { *this }));
     }
+
+    bool wait_for_append_or_eof();
 
 private:
     IncrementallyPopulatedStream(ByteBuffer buffer, bool is_complete)

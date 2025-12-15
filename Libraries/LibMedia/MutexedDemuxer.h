@@ -89,6 +89,13 @@ public:
         });
     }
 
+    virtual DecoderErrorOr<AK::Duration> buffered_duration() override
+    {
+        return m_demuxer.with_locked([&](auto& demuxer) {
+            return demuxer->buffered_duration();
+        });
+    }
+
 private:
     Threading::MutexProtected<NonnullRefPtr<Demuxer>> m_demuxer;
 };

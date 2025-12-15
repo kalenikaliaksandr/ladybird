@@ -40,6 +40,8 @@ public:
 
     DecoderErrorOr<CodedFrame> get_next_sample_for_track(Track const&) override;
 
+    DecoderErrorOr<AK::Duration> buffered_duration() override;
+
 private:
     struct TrackStatus {
         SampleIterator iterator;

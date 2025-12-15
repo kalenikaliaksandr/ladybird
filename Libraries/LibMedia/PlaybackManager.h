@@ -81,6 +81,7 @@ public:
     Function<void(TrackType, Track const&)> on_track_added;
     Function<void()> on_playback_state_change;
     Function<void(AK::Duration)> on_duration_change;
+    Function<void(AK::Duration)> on_buffered_duration_change;
     Function<void(DecoderError&&)> on_error;
 
     void add_media_source(NonnullRefPtr<IncrementallyPopulatedStream>);

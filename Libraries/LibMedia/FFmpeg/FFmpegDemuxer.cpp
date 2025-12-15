@@ -280,6 +280,38 @@ DecoderErrorOr<CodedFrame> FFmpegDemuxer::get_next_sample_for_track(Track const&
     }
 }
 
+DecoderErrorOr<AK::Duration> FFmpegDemuxer::buffered_duration()
+{
+    Optional<AK::Duration> intersection_end;
+    i64 buffered_size = m_io_context->stream_cursor().buffered_size();
+
+    auto buffered_end_from_ffmpeg_index = [buffered_size](AVStream* stream) -> i64 {
+        int n = avformat_index_get_entries_count(stream);
+        for (int i = n - 1; i >= 0; --i) {
+            AVIndexEntry const* e = avformat_index_get_entry(stream, i);
+            if (!e)
+                continue;
+
+            int64_t end_pos = e->pos + e->size;
+            if (end_pos <= buffered_size)
+                return e->timestamp;
+        }
+        return 0.0;
+    };
+
+    for (auto const& [track, context] : m_track_contexts) {
+        AVStream* stream = context->format_context->streams[track.identifier()];
+        auto temp = buffered_end_from_ffmpeg_index(stream);
+        auto duration = time_units_to_duration(temp, stream->time_base);
+        if (intersection_end.has_value()) {
+            intersection_end = min(*intersection_end, duration);
+        } else {
+            intersection_end = duration;
+        }
+    }
+    return intersection_end.value_or(AK::Duration::zero());
+}
+
 FFmpegDemuxer::TrackContext::~TrackContext()
 {
     av_packet_free(&packet);

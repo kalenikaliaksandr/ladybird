@@ -190,4 +190,22 @@ DecoderErrorOr<AK::Duration> MatroskaDemuxer::duration_of_track(Track const&)
     return total_duration();
 }
 
+DecoderErrorOr<AK::Duration> MatroskaDemuxer::buffered_duration()
+{
+    Optional<AK::Duration> intersection_end;
+    for (auto const& [track, status] : m_track_statuses) {
+        auto maybe_buffered_end = TRY(m_reader.buffered_end_timestamp_for_track(track.identifier()));
+        if (!maybe_buffered_end.has_value())
+            continue;
+
+        if (intersection_end.has_value()) {
+            intersection_end = min(intersection_end.value(), maybe_buffered_end.value());
+        } else {
+            intersection_end = maybe_buffered_end;
+        }
+    }
+
+    return intersection_end.value_or(AK::Duration::zero());
+}
+
 }

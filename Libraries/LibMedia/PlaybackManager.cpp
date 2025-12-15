@@ -81,6 +81,36 @@ DecoderErrorOr<void> PlaybackManager::prepare_playback_from_media_data(NonnullRe
 
     auto duration = demuxer->total_duration().value_or(AK::Duration::zero());
 
+    auto buffered_duration_update_thread = Threading::Thread::construct([weak_self = m_weak_wrapper, demuxer, stream, main_thread_event_loop_reference] -> int {
+        Optional<AK::Duration> previous_buffered_duration;
+        while (true) {
+            if (stream->wait_for_append_or_eof())
+                break;
+            auto buffered_duration_or_error = demuxer->buffered_duration();
+            if (buffered_duration_or_error.is_error()) {
+                dbgln("PlaybackManager: failed to obtain buffered duration: {}", buffered_duration_or_error.error());
+                continue;
+            }
+            auto buffered_duration = buffered_duration_or_error.release_value();
+            if (buffered_duration == previous_buffered_duration)
+                continue;
+            previous_buffered_duration = buffered_duration;
+            auto playback_manager = weak_self->take_strong();
+            if (!playback_manager)
+                break;
+            auto main_thread_event_loop = main_thread_event_loop_reference->take();
+            if (!main_thread_event_loop)
+                break;
+            main_thread_event_loop->deferred_invoke([buffered_duration, playback_manager] {
+                if (playback_manager->on_buffered_duration_change)
+                    playback_manager->on_buffered_duration_change(buffered_duration);
+            });
+        }
+        return 0;
+    });
+    buffered_duration_update_thread->start();
+    buffered_duration_update_thread->detach();
+
     auto main_thread_event_loop = main_thread_event_loop_reference->take();
     main_thread_event_loop->deferred_invoke([playback_manager = NonnullRefPtr { *this }, video_tracks = move(supported_video_tracks), video_track_datas = move(supported_video_track_datas), preferred_video_track, audio_tracks = move(supported_audio_tracks), audio_track_datas = move(supported_audio_track_datas), preferred_audio_track, duration] mutable {
         playback_manager->m_video_tracks.extend(move(video_tracks));

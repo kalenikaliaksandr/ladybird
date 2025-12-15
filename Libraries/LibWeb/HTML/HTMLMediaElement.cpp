@@ -370,6 +370,13 @@ void HTMLMediaElement::set_duration(double duration)
         paintable->set_needs_display();
 }
 
+void HTMLMediaElement::set_buffered_duration(double buffered_duration)
+{
+    m_buffered_duration = buffered_duration;
+    if (auto* paintable = this->paintable())
+        paintable->set_needs_display();
+}
+
 GC::Ref<WebIDL::Promise> HTMLMediaElement::play()
 {
     auto& realm = this->realm();
@@ -1314,6 +1321,11 @@ void HTMLMediaElement::on_metadata_parsed()
     m_playback_manager->on_duration_change = [weak_self = GC::Weak(*this)](AK::Duration duration) {
         if (weak_self)
             weak_self->set_duration(duration.to_seconds_f64());
+    };
+
+    m_playback_manager->on_buffered_duration_change = [weak_self = GC::Weak(*this)](AK::Duration buffered_duration) {
+        if (weak_self)
+            weak_self->set_buffered_duration(buffered_duration.to_seconds_f64());
     };
 
     // 5. For video elements, set the videoWidth and videoHeight attributes, and queue a media element task given the media element to fire an event
@@ -2324,6 +2336,11 @@ void HTMLMediaElement::set_layout_display_time(Badge<Painting::MediaPaintable>, 
 double HTMLMediaElement::layout_display_time(Badge<Painting::MediaPaintable>) const
 {
     return m_display_time.value_or(current_time());
+}
+
+double HTMLMediaElement::buffered_duration() const
+{
+    return m_buffered_duration;
 }
 
 }

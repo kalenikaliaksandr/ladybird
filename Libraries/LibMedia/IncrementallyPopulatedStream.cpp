@@ -106,4 +106,13 @@ void IncrementallyPopulatedStream::Cursor::abort()
     m_stream->m_state_changed.broadcast();
 }
 
+bool IncrementallyPopulatedStream::wait_for_append_or_eof()
+{
+    Threading::MutexLocker locker { m_mutex };
+    auto previous_size = m_buffer.size();
+    while (!m_closed && previous_size == m_buffer.size())
+        m_state_changed.wait();
+    return m_closed;
+}
+
 }

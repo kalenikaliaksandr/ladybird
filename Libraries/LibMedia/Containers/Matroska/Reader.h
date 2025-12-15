@@ -43,6 +43,8 @@ public:
     DecoderErrorOr<Optional<Vector<CuePoint> const&>> cue_points_for_track(u64 track_number);
     DecoderErrorOr<bool> has_cues_for_track(u64 track_number);
 
+    DecoderErrorOr<Optional<AK::Duration>> buffered_end_timestamp_for_track(u64 track_number);
+
 private:
     Reader(IncrementallyPopulatedStream::Cursor& stream_cursor)
         : m_stream_cursor(stream_cursor)

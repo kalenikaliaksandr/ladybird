@@ -55,6 +55,8 @@ public:
 
     virtual DecoderErrorOr<AK::Duration> duration_of_track(Track const&) = 0;
     virtual DecoderErrorOr<AK::Duration> total_duration() = 0;
+
+    virtual DecoderErrorOr<AK::Duration> buffered_duration() = 0;
 };
 
 }

@@ -173,6 +173,8 @@ public:
 
     RefPtr<Media::DisplayingVideoSink> const& selected_video_track_sink() const { return m_selected_video_track_sink; }
 
+    double buffered_duration() const;
+
 protected:
     HTMLMediaElement(DOM::Document&, DOM::QualifiedName);
 
@@ -222,6 +224,8 @@ private:
     void set_paused(bool);
     void set_duration(double);
     void set_ended(bool);
+
+    void set_buffered_duration(double);
 
     void volume_or_muted_attribute_changed();
     void update_volume();
@@ -296,6 +300,8 @@ private:
 
     // https://html.spec.whatwg.org/multipage/media.html#dom-media-duration
     double m_duration { NAN };
+
+    double m_buffered_duration { NAN };
 
     // https://html.spec.whatwg.org/multipage/media.html#list-of-pending-play-promises
     Vector<GC::Ref<WebIDL::Promise>> m_pending_play_promises;

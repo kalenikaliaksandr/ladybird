@@ -22,6 +22,8 @@ public:
 
     AVIOContext* avio_context() const { return m_avio_context; }
 
+    IncrementallyPopulatedStream::Cursor& stream_cursor() const { return *m_stream_cursor; }
+
 private:
     NonnullRefPtr<IncrementallyPopulatedStream::Cursor> m_stream_cursor;
     AVIOContext* m_avio_context { nullptr };

@@ -1138,6 +1138,26 @@ DecoderErrorOr<bool> Reader::has_cues_for_track(u64 track_number)
     return m_cues.contains(track_number);
 }
 
+DecoderErrorOr<Optional<AK::Duration>> Reader::buffered_end_timestamp_for_track(u64 track_number)
+{
+    TRY(ensure_cues_are_parsed());
+
+    auto maybe_cue_points = m_cues.get(track_number);
+    if (!maybe_cue_points.has_value())
+        return Optional<AK::Duration> {};
+
+    auto available_in_segment = m_stream_cursor->buffered_size() - m_segment_contents_position;
+    for (auto const& cue_point : maybe_cue_points->in_reverse()) {
+        auto maybe_position_for_track = cue_point.position_for_track(track_number);
+        if (!maybe_position_for_track.has_value())
+            continue;
+        if (maybe_position_for_track->cluster_position() < available_in_segment)
+            return cue_point.timestamp();
+    }
+
+    return Optional<AK::Duration> {};
+}
+
 DecoderErrorOr<SampleIterator> Reader::seek_to_random_access_point(SampleIterator iterator, AK::Duration timestamp)
 {
     timestamp -= AK::Duration::from_nanoseconds(AK::clamp_to<i64>(iterator.m_track->seek_pre_roll()));
