@@ -25,6 +25,7 @@
 #include <LibJS/Runtime/DeclarativeEnvironment.h>
 #include <LibJS/Runtime/GlobalEnvironment.h>
 #include <LibJS/Runtime/JSONObject.h>
+#include <LibJS/Runtime/SamplingProfiler.h>
 #include <LibJS/Runtime/StringPrototype.h>
 #include <LibJS/Runtime/ValueInlines.h>
 #include <LibJS/SourceTextModule.h>
@@ -819,6 +820,9 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     bool disable_debug_printing = false;
     bool use_test262_global = false;
     bool parse_only = false;
+    bool enable_profiling = false;
+    StringView profile_output_path;
+    u64 profile_interval_us = 1000; // Default: 1ms (1000Hz)
     StringView evaluate_script;
     Vector<StringView> script_paths;
 
@@ -837,6 +841,9 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     args_parser.add_option(disable_debug_printing, "Disable debug output", "disable-debug-output", {});
     args_parser.add_option(evaluate_script, "Evaluate argument as a script", "evaluate", 'c', "script");
     args_parser.add_option(use_test262_global, "Use test262 global ($262)", "use-test262-global", {});
+    args_parser.add_option(enable_profiling, "Enable sampling profiler", "profile", {});
+    args_parser.add_option(profile_output_path, "Write profiler output to file (collapsed stack format)", "profile-output", {}, "path");
+    args_parser.add_option(profile_interval_us, "Profiler sample interval in microseconds (default: 1000)", "profile-interval", {}, "us");
     args_parser.add_positional_argument(script_paths, "Path to script files", "scripts", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
 
@@ -921,8 +928,27 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
 
         // We resolve modules as if it is the first file
 
+        if (enable_profiling)
+            g_vm->start_profiling(profile_interval_us);
+
         if (!TRY(parse_and_run(realm, builder.string_view(), source_name, parse_only)))
             return 1;
+
+        if (enable_profiling) {
+            g_vm->stop_profiling();
+            auto output = g_vm->profiler_output();
+
+            if (!profile_output_path.is_empty()) {
+                auto file = TRY(Core::File::open(profile_output_path, Core::File::OpenMode::Write));
+                TRY(file->write_until_depleted(output.bytes()));
+                warnln("Profiler output written to: {}", profile_output_path);
+            } else {
+                outln("{}", output);
+            }
+
+            if (auto* profiler = g_vm->profiler())
+                warnln("Profiler collected {} samples", profiler->total_samples());
+        }
     }
 
     return s_exit_code;

@@ -894,6 +894,10 @@ void Application::initialize_actions()
     m_debug_menu->add_action(Action::create("Collect Garbage"sv, ActionID::CollectGarbage, debug_request("collect-garbage"sv)));
     m_debug_menu->add_separator();
 
+    m_debug_menu->add_action(Action::create("Start Profiler"sv, ActionID::StartProfiler, debug_request("start-profiler"sv)));
+    m_debug_menu->add_action(Action::create("Stop Profiler"sv, ActionID::StopProfiler, debug_request("stop-profiler"sv)));
+    m_debug_menu->add_separator();
+
     auto spoof_user_agent_menu = Menu::create_group("Spoof User Agent"sv);
     m_user_agent_string = m_web_content_options.user_agent_preset.has_value()
         ? *WebView::user_agents.get(*m_web_content_options.user_agent_preset)

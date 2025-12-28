@@ -183,6 +183,7 @@ set(SOURCES
     Runtime/RawJSONObject.cpp
     Runtime/Realm.cpp
     Runtime/Reference.cpp
+    Runtime/SamplingProfiler.cpp
     Runtime/ReflectObject.cpp
     Runtime/RegExpConstructor.cpp
     Runtime/RegExpLegacyStaticProperties.cpp

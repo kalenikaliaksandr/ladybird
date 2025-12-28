@@ -41,6 +41,7 @@
 #include <LibJS/Runtime/Realm.h>
 #include <LibJS/Runtime/Reference.h>
 #include <LibJS/Runtime/RegExpObject.h>
+#include <LibJS/Runtime/SamplingProfiler.h>
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibJS/Runtime/Value.h>
 #include <LibJS/Runtime/ValueInlines.h>
@@ -287,6 +288,10 @@ void Interpreter::run_bytecode(size_t entry_point)
 
     for (;;) {
     start:
+        // Process any pending profiler sample at jump targets (loop iterations, branches)
+        if (auto* profiler = vm().profiler(); profiler && profiler->is_running()) [[unlikely]]
+            profiler->process_pending_sample();
+
         for (;;) {
             goto* bytecode_dispatch_table[static_cast<size_t>((*reinterpret_cast<Instruction const*>(&bytecode[program_counter])).type())];
 

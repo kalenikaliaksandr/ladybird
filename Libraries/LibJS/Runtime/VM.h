@@ -33,6 +33,8 @@
 
 namespace JS {
 
+class SamplingProfiler;
+
 class Identifier;
 struct BindingPattern;
 
@@ -298,6 +300,13 @@ public:
 
     [[nodiscard]] GC::ConservativeVector<StackTraceElement> stack_trace() const;
 
+    // Profiler support
+    SamplingProfiler* profiler() { return m_profiler.ptr(); }
+    SamplingProfiler const* profiler() const { return m_profiler.ptr(); }
+    void start_profiling(u64 sample_interval_us = 1000);
+    void stop_profiling();
+    String profiler_output() const;
+
 private:
     using ErrorMessages = AK::Array<Utf16String, to_underlying(ErrorMessage::__Count)>;
 
@@ -365,6 +374,8 @@ private:
     OwnPtr<Bytecode::Interpreter> m_bytecode_interpreter;
 
     bool m_dynamic_imports_allowed { false };
+
+    OwnPtr<SamplingProfiler> m_profiler;
 };
 
 template<typename GlobalObjectType, typename... Args>

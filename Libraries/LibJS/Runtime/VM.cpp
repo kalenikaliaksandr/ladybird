@@ -29,6 +29,7 @@
 #include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/PromiseCapability.h>
 #include <LibJS/Runtime/Reference.h>
+#include <LibJS/Runtime/SamplingProfiler.h>
 #include <LibJS/Runtime/Symbol.h>
 #include <LibJS/Runtime/Temporal/Instant.h>
 #include <LibJS/Runtime/VM.h>
@@ -799,6 +800,29 @@ GC::ConservativeVector<StackTraceElement> VM::stack_trace() const
     }
 
     return stack_trace;
+}
+
+void VM::start_profiling(u64 sample_interval_us)
+{
+    if (!m_profiler)
+        m_profiler = SamplingProfiler::create(*this);
+
+    m_profiler->set_sample_interval_us(sample_interval_us);
+    m_profiler->start();
+}
+
+void VM::stop_profiling()
+{
+    if (m_profiler)
+        m_profiler->stop();
+}
+
+String VM::profiler_output() const
+{
+    if (!m_profiler)
+        return String {};
+
+    return m_profiler->to_collapsed_stack();
 }
 
 }

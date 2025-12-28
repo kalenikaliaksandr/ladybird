@@ -86,6 +86,9 @@ enum class ActionID {
     EnableScripting,
     EnableContentFiltering,
     BlockPopUps,
+
+    StartProfiler,
+    StopProfiler,
 };
 
 class WEBVIEW_API Action

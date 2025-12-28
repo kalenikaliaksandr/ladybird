@@ -12,6 +12,7 @@
 #include <AK/JsonObject.h>
 #include <AK/QuickSort.h>
 #include <LibCore/EventLoop.h>
+#include <LibCore/File.h>
 #include <LibCore/System.h>
 #include <LibGC/Heap.h>
 #include <LibGfx/Bitmap.h>
@@ -19,6 +20,7 @@
 #include <LibGfx/SystemTheme.h>
 #include <LibJS/Runtime/ConsoleObject.h>
 #include <LibJS/Runtime/Date.h>
+#include <LibJS/Runtime/SamplingProfiler.h>
 #include <LibUnicode/TimeZone.h>
 #include <LibWeb/ARIA/RoleType.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
@@ -437,6 +439,32 @@ void ConnectionFromClient::debug_request(u64 page_id, ByteString request, ByteSt
 
     if (request == "content-filtering") {
         Web::ContentFilter::the().set_filtering_enabled(argument == "on");
+        return;
+    }
+
+    if (request == "start-profiler") {
+        auto& vm = Web::Bindings::main_thread_vm();
+        vm.start_profiling(1000); // 1ms sample interval
+        dbgln("\033[32;1mProfiler started\033[0m");
+        return;
+    }
+
+    if (request == "stop-profiler") {
+        auto& vm = Web::Bindings::main_thread_vm();
+        vm.stop_profiling();
+
+        if (auto* profiler = vm.profiler()) {
+            auto output = profiler->to_collapsed_stack();
+            dbgln("\033[33;1mProfiler stopped - {} samples collected\033[0m", profiler->total_samples());
+
+            // Write to a temporary file for easy access
+            auto path = "/tmp/ladybird-profile.collapsed"sv;
+            auto file = Core::File::open(path, Core::File::OpenMode::Write);
+            if (!file.is_error()) {
+                (void)file.value()->write_until_depleted(output.bytes());
+                dbgln("\033[33;1mProfile written to: {}\033[0m", path);
+            }
+        }
         return;
     }
 }
