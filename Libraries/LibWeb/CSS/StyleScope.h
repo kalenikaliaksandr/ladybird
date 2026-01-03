@@ -66,6 +66,27 @@ struct SelectorInsights {
     bool has_has_selectors { false };
 };
 
+struct PseudoClassSelectorEntry {
+    Selector const& selector;
+    GC::Ptr<DOM::ShadowRoot const> shadow_root;
+    CascadeOrigin cascade_origin;
+};
+
+struct PseudoClassSelectorKey {
+    String selector_text;
+    GC::Ptr<DOM::ShadowRoot const> shadow_root;
+    CascadeOrigin cascade_origin;
+
+    bool operator==(PseudoClassSelectorKey const&) const = default;
+};
+
+struct PseudoClassSelectorCache {
+    Vector<PseudoClassSelectorEntry> entries;
+    HashTable<PseudoClassSelectorKey> seen_selectors;
+
+    void add_selector_if_unique(Selector const&, GC::Ptr<DOM::ShadowRoot const>, CascadeOrigin);
+};
+
 class StyleScope {
 public:
     explicit StyleScope(GC::Ref<DOM::Node>);
@@ -80,7 +101,7 @@ public:
     [[nodiscard]] bool has_valid_rule_cache() const { return m_author_rule_cache; }
     void invalidate_rule_cache();
 
-    [[nodiscard]] RuleCache const& get_pseudo_class_rule_cache(PseudoClass) const;
+    [[nodiscard]] PseudoClassSelectorCache const& get_pseudo_class_selector_cache(PseudoClass) const;
 
     template<typename Callback>
     void for_each_stylesheet(CascadeOrigin, Callback) const;
@@ -107,7 +128,7 @@ public:
 
     Vector<FlyString> m_qualified_layer_names_in_order;
     OwnPtr<SelectorInsights> m_selector_insights;
-    Array<OwnPtr<RuleCache>, to_underlying(PseudoClass::__Count)> m_pseudo_class_rule_cache;
+    Array<OwnPtr<PseudoClassSelectorCache>, to_underlying(PseudoClass::__Count)> m_pseudo_class_selector_cache;
     OwnPtr<StyleInvalidationData> m_style_invalidation_data;
     OwnPtr<RuleCaches> m_author_rule_cache;
     OwnPtr<RuleCaches> m_user_rule_cache;
@@ -121,3 +142,13 @@ public:
 };
 
 }
+
+template<>
+struct AK::Traits<Web::CSS::PseudoClassSelectorKey> : public DefaultTraits<Web::CSS::PseudoClassSelectorKey> {
+    static unsigned hash(Web::CSS::PseudoClassSelectorKey const& key)
+    {
+        return pair_int_hash(
+            pair_int_hash(key.selector_text.hash(), ptr_hash(key.shadow_root.ptr())),
+            to_underlying(key.cascade_origin));
+    }
+};

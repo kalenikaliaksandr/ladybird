@@ -1818,75 +1818,60 @@ static Node* find_common_ancestor(Node* a, Node* b)
 void Document::invalidate_style_for_elements_affected_by_pseudo_class_change(CSS::PseudoClass pseudo_class, auto& element_slot, Node& old_new_common_ancestor, auto node)
 {
     auto& root = old_new_common_ancestor.root();
-    auto shadow_root = is<ShadowRoot>(root) ? static_cast<ShadowRoot const*>(&root) : nullptr;
+    auto* shadow_root = as_if<ShadowRoot>(root);
     auto& style_scope = shadow_root ? shadow_root->style_scope() : this->style_scope();
-
-    auto const& rules = style_scope.get_pseudo_class_rule_cache(pseudo_class);
-
+    auto const& selector_cache = style_scope.get_pseudo_class_selector_cache(pseudo_class);
     auto& style_computer = this->style_computer();
-    auto does_rule_match_on_element = [&](Element const& element, CSS::MatchingRule const& rule) {
-        auto rule_root = rule.shadow_root;
-        auto from_user_agent_or_user_stylesheet = rule.cascade_origin == CSS::CascadeOrigin::UserAgent || rule.cascade_origin == CSS::CascadeOrigin::User;
-        bool rule_is_relevant_for_current_scope = rule_root == shadow_root
-            || (element.is_shadow_host() && rule_root == element.shadow_root())
-            || from_user_agent_or_user_stylesheet;
-        if (!rule_is_relevant_for_current_scope)
-            return false;
 
-        auto const& selector = rule.selector;
+    auto selector_matches = [](CSS::Selector const& selector, Element& element, CSS::StyleComputer& style_computer) {
         if (selector.can_use_ancestor_filter() && style_computer.should_reject_with_ancestor_filter(selector))
             return false;
-
         SelectorEngine::MatchContext context;
         if (SelectorEngine::matches(selector, element, {}, context, {}))
             return true;
-        if (element.has_pseudo_element(CSS::PseudoElement::Before)) {
-            if (SelectorEngine::matches(selector, element, {}, context, CSS::PseudoElement::Before))
-                return true;
-        }
-        if (element.has_pseudo_element(CSS::PseudoElement::After)) {
-            if (SelectorEngine::matches(selector, element, {}, context, CSS::PseudoElement::After))
-                return true;
-        }
+        if (element.has_pseudo_element(CSS::PseudoElement::Before) && SelectorEngine::matches(selector, element, {}, context, CSS::PseudoElement::Before))
+            return true;
+        if (element.has_pseudo_element(CSS::PseudoElement::After) && SelectorEngine::matches(selector, element, {}, context, CSS::PseudoElement::After))
+            return true;
         return false;
     };
 
-    auto matches_different_set_of_rules_after_state_change = [&](Element& element) {
-        bool result = false;
-        rules.for_each_matching_rules({ element }, [&](auto& rules) {
-            for (auto& rule : rules) {
-                bool before = does_rule_match_on_element(element, rule);
-                TemporaryChange change { element_slot, node };
-                bool after = does_rule_match_on_element(element, rule);
-                if (before != after) {
-                    result = true;
-                    return IterationDecision::Break;
-                }
-            }
-            return IterationDecision::Continue;
-        });
-        return result;
-    };
+    auto invalidate_element_if_affected = [&](Element& element) {
+        if (!element.affected_by_pseudo_class(pseudo_class))
+            return;
 
-    Function<void(Node&)> invalidate_affected_elements_recursively = [&](Node& node) -> void {
-        if (node.is_element()) {
-            auto& element = static_cast<Element&>(node);
-            style_computer.push_ancestor(element);
-            if (element.affected_by_pseudo_class(pseudo_class) && matches_different_set_of_rules_after_state_change(element)) {
+        for (auto const& entry : selector_cache.entries) {
+            bool rule_is_relevant_for_current_scope = entry.shadow_root == shadow_root
+                || (element.is_shadow_host() && entry.shadow_root == element.shadow_root())
+                || entry.cascade_origin == CSS::CascadeOrigin::UserAgent
+                || entry.cascade_origin == CSS::CascadeOrigin::User;
+            if (!rule_is_relevant_for_current_scope)
+                continue;
+
+            bool before = selector_matches(entry.selector, element, style_computer);
+            TemporaryChange change { element_slot, node };
+            bool after = selector_matches(entry.selector, element, style_computer);
+
+            if (before != after) {
                 element.set_needs_style_update(true);
+                return;
             }
         }
-
-        node.for_each_child([&](auto& child) {
-            invalidate_affected_elements_recursively(child);
-            return IterationDecision::Continue;
-        });
-
-        if (node.is_element())
-            style_computer.pop_ancestor(static_cast<Element&>(node));
     };
 
-    invalidate_affected_elements_recursively(root);
+    Function<void(Node&)> visit = [&](Node& descendant) {
+        if (auto* element = as_if<Element>(descendant)) {
+            style_computer.push_ancestor(*element);
+            invalidate_element_if_affected(*element);
+        }
+        descendant.for_each_child([&](auto& child) {
+            visit(child);
+            return IterationDecision::Continue;
+        });
+        if (descendant.is_element())
+            style_computer.pop_ancestor(static_cast<Element&>(descendant));
+    };
+    visit(root);
 }
 
 void Document::set_hovered_node(GC::Ptr<Node> node)

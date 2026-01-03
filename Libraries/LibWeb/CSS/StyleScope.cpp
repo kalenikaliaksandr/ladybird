@@ -48,12 +48,12 @@ void StyleScope::build_rule_cache()
 
     build_qualified_layer_names_cache();
 
-    m_pseudo_class_rule_cache[to_underlying(PseudoClass::Hover)] = make<RuleCache>();
-    m_pseudo_class_rule_cache[to_underlying(PseudoClass::Active)] = make<RuleCache>();
-    m_pseudo_class_rule_cache[to_underlying(PseudoClass::Focus)] = make<RuleCache>();
-    m_pseudo_class_rule_cache[to_underlying(PseudoClass::FocusWithin)] = make<RuleCache>();
-    m_pseudo_class_rule_cache[to_underlying(PseudoClass::FocusVisible)] = make<RuleCache>();
-    m_pseudo_class_rule_cache[to_underlying(PseudoClass::Target)] = make<RuleCache>();
+    m_pseudo_class_selector_cache[to_underlying(PseudoClass::Hover)] = make<PseudoClassSelectorCache>();
+    m_pseudo_class_selector_cache[to_underlying(PseudoClass::Active)] = make<PseudoClassSelectorCache>();
+    m_pseudo_class_selector_cache[to_underlying(PseudoClass::Focus)] = make<PseudoClassSelectorCache>();
+    m_pseudo_class_selector_cache[to_underlying(PseudoClass::FocusWithin)] = make<PseudoClassSelectorCache>();
+    m_pseudo_class_selector_cache[to_underlying(PseudoClass::FocusVisible)] = make<PseudoClassSelectorCache>();
+    m_pseudo_class_selector_cache[to_underlying(PseudoClass::Target)] = make<PseudoClassSelectorCache>();
 
     make_rule_cache_for_cascade_origin(CascadeOrigin::Author, *m_selector_insights);
     make_rule_cache_for_cascade_origin(CascadeOrigin::User, *m_selector_insights);
@@ -74,7 +74,7 @@ void StyleScope::invalidate_rule_cache()
     //       If we are sure that it's safe, we could keep it as an optimization.
     m_user_agent_rule_cache = nullptr;
 
-    m_pseudo_class_rule_cache = {};
+    m_pseudo_class_selector_cache = {};
     m_style_invalidation_data = nullptr;
 }
 
@@ -222,12 +222,11 @@ void StyleScope::make_rule_cache_for_cascade_origin(CascadeOrigin cascade_origin
 
                 for (size_t i = 0; i < to_underlying(PseudoClass::__Count); ++i) {
                     auto pseudo_class = static_cast<PseudoClass>(i);
-                    // If we're not building a rule cache for this pseudo class, just ignore it.
-                    if (!m_pseudo_class_rule_cache[i])
+                    // If we're not building a selector cache for this pseudo class, just ignore it.
+                    if (!m_pseudo_class_selector_cache[i])
                         continue;
                     if (selector.contains_pseudo_class(pseudo_class)) {
-                        // For pseudo class rule caches we intentionally pass no pseudo-element, because we don't want to bucket pseudo class rules by pseudo-element type.
-                        m_pseudo_class_rule_cache[i]->add_rule(matching_rule, {}, contains_root_pseudo_class);
+                        m_pseudo_class_selector_cache[i]->add_selector_if_unique(selector, scope_shadow_root, cascade_origin);
                     }
                 }
 
@@ -391,10 +390,19 @@ DOM::Document& StyleScope::document() const
     return m_node->document();
 }
 
-RuleCache const& StyleScope::get_pseudo_class_rule_cache(PseudoClass pseudo_class) const
+PseudoClassSelectorCache const& StyleScope::get_pseudo_class_selector_cache(PseudoClass pseudo_class) const
 {
     build_rule_cache_if_needed();
-    return *m_pseudo_class_rule_cache[to_underlying(pseudo_class)];
+    return *m_pseudo_class_selector_cache[to_underlying(pseudo_class)];
+}
+
+void PseudoClassSelectorCache::add_selector_if_unique(Selector const& selector, GC::Ptr<DOM::ShadowRoot const> shadow_root, CascadeOrigin cascade_origin)
+{
+    PseudoClassSelectorKey key { selector.serialize(), shadow_root, cascade_origin };
+    if (seen_selectors.contains(key))
+        return;
+    seen_selectors.set(move(key));
+    entries.empend(selector, shadow_root, cascade_origin);
 }
 
 void StyleScope::for_each_active_css_style_sheet(Function<void(CSS::CSSStyleSheet&)>&& callback) const
