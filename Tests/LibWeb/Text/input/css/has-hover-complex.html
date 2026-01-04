@@ -1,0 +1,117 @@
+<!doctype html>
+<style>
+    .container {
+        width: 200px;
+        height: 100px;
+    }
+    /* Case 1: :hover inside :has() only */
+    .item1:has(.trigger1:hover) {
+        background-color: lime;
+    }
+    /* Case 2: :hover both inside :has() and on subject */
+    .item2:has(.trigger2:hover):hover {
+        background-color: lime;
+    }
+    /* Case 3: :has() without :hover, :hover on subject */
+    .item3:has(.trigger3):hover {
+        background-color: lime;
+    }
+    /* Case 4: :has() in non-subject, :hover inside :has() (non-subject) */
+    .item4:has(.trigger4:hover) .target4 {
+        background-color: lime;
+    }
+    /* Case 5: :has() in non-subject, :hover on subject */
+    .item5:has(.trigger5) .target5:hover {
+        background-color: lime;
+    }
+    /* Case 6: :has() in non-subject with :hover inside, :hover also on subject */
+    .item6:has(.trigger6:hover) .target6:hover {
+        background-color: lime;
+    }
+    .trigger1, .trigger2, .trigger3, .trigger4, .trigger5 {
+        width: 50px;
+        height: 25px;
+        background-color: blue;
+    }
+    .trigger6 {
+        width: 50px;
+        height: 50px;
+        background-color: blue;
+    }
+    .target4, .target5 {
+        width: 50px;
+        height: 25px;
+        background-color: red;
+        margin-top: 10px;
+    }
+    .target6 {
+        width: 40px;
+        height: 25px;
+        background-color: red;
+        margin: 5px;
+    }
+</style>
+<script src="../include.js"></script>
+<div class="container item1" id="item1">
+    <div class="trigger1" id="trigger1"></div>
+</div>
+<div class="container item2" id="item2">
+    <div class="trigger2" id="trigger2"></div>
+</div>
+<div class="container item3" id="item3">
+    <div class="trigger3" id="trigger3"></div>
+</div>
+<div class="container item4" id="item4">
+    <div class="trigger4" id="trigger4"></div>
+    <div class="target4" id="target4"></div>
+</div>
+<div class="container item5" id="item5">
+    <div class="trigger5" id="trigger5"></div>
+    <div class="target5" id="target5"></div>
+</div>
+<script>
+    test(() => {
+        const item1 = document.getElementById('item1');
+        const item2 = document.getElementById('item2');
+        const item3 = document.getElementById('item3');
+
+        println('=== Case 1: :hover inside :has() only ===');
+        println('Initial item1 bg: ' + getComputedStyle(item1).backgroundColor);
+        internals.movePointerTo(25, 12); // Hover trigger1
+        println('After hover trigger1, item1 bg: ' + getComputedStyle(item1).backgroundColor);
+        internals.movePointerTo(300, 300); // Move away
+        println('After unhover, item1 bg: ' + getComputedStyle(item1).backgroundColor);
+
+        println('=== Case 2: :hover both inside :has() and on subject ===');
+        println('Initial item2 bg: ' + getComputedStyle(item2).backgroundColor);
+        internals.movePointerTo(25, 112); // Hover trigger2
+        println('After hover trigger2, item2 bg: ' + getComputedStyle(item2).backgroundColor);
+        internals.movePointerTo(300, 300); // Move away
+        println('After unhover, item2 bg: ' + getComputedStyle(item2).backgroundColor);
+
+        println('=== Case 3: :has() without :hover, :hover on subject ===');
+        println('Initial item3 bg: ' + getComputedStyle(item3).backgroundColor);
+        internals.movePointerTo(25, 212); // Hover trigger3
+        println('After hover trigger3, item3 bg: ' + getComputedStyle(item3).backgroundColor);
+        internals.movePointerTo(300, 300); // Move away
+        println('After unhover, item3 bg: ' + getComputedStyle(item3).backgroundColor);
+
+        const target4 = document.getElementById('target4');
+        const target5 = document.getElementById('target5');
+        const target6 = document.getElementById('target6');
+
+        println('=== Case 4: :has() in non-subject, :hover inside :has() ===');
+        println('Initial target4 bg: ' + getComputedStyle(target4).backgroundColor);
+        internals.movePointerTo(25, 312); // Hover trigger4
+        println('After hover trigger4, target4 bg: ' + getComputedStyle(target4).backgroundColor);
+        internals.movePointerTo(300, 300); // Move away
+        println('After unhover, target4 bg: ' + getComputedStyle(target4).backgroundColor);
+
+        println('=== Case 5: :has() in non-subject, :hover on subject ===');
+        println('Initial target5 bg: ' + getComputedStyle(target5).backgroundColor);
+        internals.movePointerTo(25, 447); // Hover target5
+        println('After hover target5, target5 bg: ' + getComputedStyle(target5).backgroundColor);
+        internals.movePointerTo(300, 300); // Move away
+        println('After unhover, target5 bg: ' + getComputedStyle(target5).backgroundColor);
+    });
+</script>

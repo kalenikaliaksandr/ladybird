@@ -1,0 +1,20 @@
+=== Case 1: :hover inside :has() only ===
+Initial item1 bg: rgba(0, 0, 0, 0)
+After hover trigger1, item1 bg: rgb(0, 255, 0)
+After unhover, item1 bg: rgba(0, 0, 0, 0)
+=== Case 2: :hover both inside :has() and on subject ===
+Initial item2 bg: rgba(0, 0, 0, 0)
+After hover trigger2, item2 bg: rgb(0, 255, 0)
+After unhover, item2 bg: rgba(0, 0, 0, 0)
+=== Case 3: :has() without :hover, :hover on subject ===
+Initial item3 bg: rgba(0, 0, 0, 0)
+After hover trigger3, item3 bg: rgb(0, 255, 0)
+After unhover, item3 bg: rgba(0, 0, 0, 0)
+=== Case 4: :has() in non-subject, :hover inside :has() ===
+Initial target4 bg: rgb(255, 0, 0)
+After hover trigger4, target4 bg: rgb(0, 255, 0)
+After unhover, target4 bg: rgb(255, 0, 0)
+=== Case 5: :has() in non-subject, :hover on subject ===
+Initial target5 bg: rgb(255, 0, 0)
+After hover target5, target5 bg: rgb(0, 255, 0)
+After unhover, target5 bg: rgb(255, 0, 0)
