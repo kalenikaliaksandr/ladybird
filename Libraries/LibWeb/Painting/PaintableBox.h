@@ -20,7 +20,6 @@
 #include <LibWeb/Painting/PaintableFragment.h>
 #include <LibWeb/Painting/ShouldAntiAlias.h>
 #include <LibWeb/Painting/StackedRenderState.h>
-#include <LibWeb/Painting/TransformFrame.h>
 
 namespace Web::Painting {
 
@@ -34,8 +33,8 @@ public:
     static GC::Ref<PaintableBox> create(Layout::InlineNode const&);
     virtual ~PaintableBox();
 
-    virtual void before_paint(DisplayListRecordingContext&, PaintPhase) const override;
-    virtual void after_paint(DisplayListRecordingContext&, PaintPhase) const override;
+    virtual void before_paint(DisplayListRecordingContext&) const override;
+    virtual void after_paint(DisplayListRecordingContext&) const override;
 
     virtual void paint(DisplayListRecordingContext&, PaintPhase) const override;
 
@@ -136,12 +135,6 @@ public:
     void set_overflow_data(OverflowData data) { m_overflow_data = move(data); }
 
     virtual void set_needs_display(InvalidateDisplayList = InvalidateDisplayList::Yes) override;
-
-    void apply_scroll_offset(DisplayListRecordingContext&) const;
-    void reset_scroll_offset(DisplayListRecordingContext&) const;
-
-    void apply_clip_overflow_rect(DisplayListRecordingContext&, PaintPhase) const;
-    void clear_clip_overflow_rect(DisplayListRecordingContext&, PaintPhase) const;
 
     [[nodiscard]] virtual TraversalDecision hit_test(CSSPixelPoint position, HitTestType type, Function<TraversalDecision(HitTestResult)> const& callback) const override;
     Optional<HitTestResult> hit_test(CSSPixelPoint, HitTestType) const;
@@ -248,9 +241,9 @@ public:
     void set_enclosing_clip_frame(RefPtr<ClipFrame const> const& clip_frame) { m_enclosing_clip_frame = clip_frame; }
     void set_own_clip_frame(RefPtr<ClipFrame const> const& clip_frame) { m_own_clip_frame = clip_frame; }
 
-    void set_own_transform_frame(RefPtr<TransformFrame const> frame) { m_own_transform_frame = move(frame); }
+    void set_own_transform_frame(RefPtr<TransformFrame> frame) { m_own_transform_frame = move(frame); }
     [[nodiscard]] RefPtr<TransformFrame const> own_transform_frame() const { return m_own_transform_frame; }
-    void set_stacked_render_state(RefPtr<StackedRenderState const> state) { m_stacked_render_state = move(state); }
+    void set_stacked_render_state(RefPtr<StackedRenderState const> node) { m_stacked_render_state = move(node); }
     [[nodiscard]] RefPtr<StackedRenderState const> stacked_render_state() const { return m_stacked_render_state; }
 
     [[nodiscard]] RefPtr<ScrollFrame const> enclosing_scroll_frame() const { return m_enclosing_scroll_frame; }
@@ -332,7 +325,7 @@ private:
     RefPtr<ScrollFrame const> m_own_scroll_frame;
     RefPtr<ClipFrame const> m_enclosing_clip_frame;
     RefPtr<ClipFrame const> m_own_clip_frame;
-    RefPtr<TransformFrame const> m_own_transform_frame;
+    RefPtr<TransformFrame> m_own_transform_frame;
     RefPtr<StackedRenderState const> m_stacked_render_state;
 
     Optional<BordersDataWithElementKind> m_override_borders_data;

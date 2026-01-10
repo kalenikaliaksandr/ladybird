@@ -26,18 +26,9 @@
 #include <LibWeb/Painting/PaintBoxShadowParams.h>
 #include <LibWeb/Painting/PaintStyle.h>
 #include <LibWeb/Painting/ShouldAntiAlias.h>
+#include <LibWeb/Painting/StackedRenderState.h>
 
 namespace Web::Painting {
-
-struct StackingContextTransform {
-    Gfx::FloatPoint origin;
-    Gfx::FloatMatrix4x4 matrix;
-    Optional<Gfx::FloatMatrix4x4> parent_perspective_matrix;
-
-    StackingContextTransform(Gfx::FloatPoint origin, Gfx::FloatMatrix4x4 matrix, Optional<Gfx::FloatMatrix4x4> parent_perspective_matrix, float scale);
-
-    [[nodiscard]] bool is_identity() const { return matrix.is_identity(); }
-};
 
 class WEB_API DisplayListRecorder {
     AK_MAKE_NONCOPYABLE(DisplayListRecorder);
@@ -95,11 +86,8 @@ public:
 
     void translate(Gfx::IntPoint delta);
 
-    void push_scroll_frame_id(Optional<i32> id);
-    void pop_scroll_frame_id();
-
-    void push_clip_frame(RefPtr<ClipFrame const>);
-    void pop_clip_frame();
+    void set_context(RefPtr<StackedRenderState const> context) { m_current_context = move(context); }
+    RefPtr<StackedRenderState const> context() const { return m_current_context; }
 
     void save();
     void save_layer();
@@ -109,7 +97,6 @@ public:
         float opacity;
         Gfx::CompositingAndBlendingOperator compositing_and_blending_operator;
         bool isolate;
-        StackingContextTransform transform;
         Optional<Gfx::Path> clip_path = {};
         Optional<Gfx::IntRect> bounding_rect {};
     };
@@ -145,8 +132,7 @@ public:
     int m_save_nesting_level { 0 };
 
 private:
-    Vector<Optional<i32>> m_scroll_frame_id_stack;
-    Vector<RefPtr<ClipFrame const>> m_clip_frame_stack;
+    RefPtr<StackedRenderState const> m_current_context;
     Vector<size_t> m_push_sc_index_stack;
     DisplayList& m_display_list;
 };

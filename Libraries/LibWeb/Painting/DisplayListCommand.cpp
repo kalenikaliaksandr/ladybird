@@ -9,13 +9,6 @@
 
 namespace Web::Painting {
 
-void DrawGlyphRun::translate_by(Gfx::IntPoint const& offset)
-{
-    rect.translate_by(offset);
-    translation.translate_by(offset.to_type<float>());
-    bounding_rectangle.translate_by(offset);
-}
-
 Gfx::IntRect PaintOuterBoxShadow::bounding_rect() const
 {
     auto shadow_rect = box_shadow_params.device_content_rect;
@@ -30,16 +23,6 @@ Gfx::IntRect PaintOuterBoxShadow::bounding_rect() const
 Gfx::IntRect PaintInnerBoxShadow::bounding_rect() const
 {
     return box_shadow_params.device_content_rect;
-}
-
-void PaintOuterBoxShadow::translate_by(Gfx::IntPoint const& offset)
-{
-    box_shadow_params.device_content_rect.translate_by(offset);
-}
-
-void PaintInnerBoxShadow::translate_by(Gfx::IntPoint const& offset)
-{
-    box_shadow_params.device_content_rect.translate_by(offset);
 }
 
 void DrawGlyphRun::dump(StringBuilder& builder) const
@@ -94,8 +77,7 @@ void AddClipRect::dump(StringBuilder& builder) const
 
 void PushStackingContext::dump(StringBuilder& builder) const
 {
-    auto affine_transform = extract_2d_affine_transform(transform.matrix);
-    builder.appendff("PushStackingContext opacity={} isolate={} has_clip_path={} transform={} bounding_rect={}", opacity, isolate, clip_path.has_value(), affine_transform, bounding_rect);
+    builder.appendff("PushStackingContext opacity={} isolate={} has_clip_path={} bounding_rect={}", opacity, isolate, clip_path.has_value(), bounding_rect);
 }
 
 void PopStackingContext::dump(StringBuilder& builder) const

@@ -22,15 +22,16 @@ struct ClipRectWithScrollFrame {
 };
 
 struct WEB_API ClipFrame : public AtomicRefCounted<ClipFrame> {
-    Vector<ClipRectWithScrollFrame> const& clip_rects() const { return m_clip_rects; }
-    void add_clip_rect(CSSPixelRect rect, BorderRadiiData radii, RefPtr<ScrollFrame const> enclosing_scroll_frame);
+    ClipFrame(CSSPixelRect rect, BorderRadiiData radii, RefPtr<ScrollFrame const> enclosing_scroll_frame);
+
+    ClipRectWithScrollFrame const& clip_rect() const { return m_clip_rect; }
 
     CSSPixelRect clip_rect_for_hit_testing() const;
 
     bool includes_rect_from_clip_property { false };
 
 private:
-    Vector<ClipRectWithScrollFrame> m_clip_rects;
+    ClipRectWithScrollFrame m_clip_rect;
 };
 
 }

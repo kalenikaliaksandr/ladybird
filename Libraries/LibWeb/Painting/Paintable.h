@@ -73,8 +73,8 @@ public:
     bool has_stacking_context() const;
     StackingContext* enclosing_stacking_context();
 
-    virtual void before_paint(DisplayListRecordingContext&, PaintPhase) const { }
-    virtual void after_paint(DisplayListRecordingContext&, PaintPhase) const { }
+    virtual void before_paint(DisplayListRecordingContext&) const { }
+    virtual void after_paint(DisplayListRecordingContext&) const { }
 
     virtual void paint(DisplayListRecordingContext&, PaintPhase) const { }
     void paint_inspector_overlay(DisplayListRecordingContext&) const;

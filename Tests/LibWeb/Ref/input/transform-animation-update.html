@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/transform-animation-update-ref.html" />
+<style>
+    body { margin: 0; }
+    #box {
+        width: 100px;
+        height: 100px;
+        background-color: green;
+        transform: translate(10px, 10px);
+        animation: move 0.001s forwards;
+    }
+    @keyframes move {
+        to {
+            transform: translate(50px, 50px);
+        }
+    }
+</style>
+<div id="box"></div>

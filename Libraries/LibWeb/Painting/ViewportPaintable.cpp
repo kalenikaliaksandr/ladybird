@@ -123,13 +123,47 @@ void ViewportPaintable::assign_scroll_frames()
 
 void ViewportPaintable::assign_clip_frames()
 {
+    // First pass: Create ClipFrames for paintables that need clipping.
+    // We compute the clip rect immediately and create the ClipFrame with it.
     for_each_in_subtree_of_type<PaintableBox>([&](auto const& paintable_box) {
         auto overflow_x = paintable_box.computed_values().overflow_x();
         auto overflow_y = paintable_box.computed_values().overflow_y();
-        // Note: Overflow may be clip on one axis and visible on the other.
         auto has_hidden_overflow = overflow_x != CSS::Overflow::Visible || overflow_y != CSS::Overflow::Visible;
-        if (has_hidden_overflow || paintable_box.get_clip_rect().has_value() || paintable_box.layout_node().has_paint_containment()) {
-            auto clip_frame = adopt_ref(*new ClipFrame());
+
+        if (!has_hidden_overflow && !paintable_box.get_clip_rect().has_value() && !paintable_box.layout_node().has_paint_containment()) {
+            return TraversalDecision::Continue;
+        }
+
+        bool clip_x = overflow_x != CSS::Overflow::Visible;
+        bool clip_y = overflow_y != CSS::Overflow::Visible;
+
+        auto clip_rect = paintable_box.overflow_clip_edge_rect();
+        bool includes_rect_from_clip_property = false;
+
+        if (paintable_box.get_clip_rect().has_value()) {
+            includes_rect_from_clip_property = true;
+            clip_rect = paintable_box.get_clip_rect().value();
+            clip_x = true;
+            clip_y = true;
+        }
+
+        if (paintable_box.layout_node().has_paint_containment()) {
+            clip_x = true;
+            clip_y = true;
+        }
+
+        if (clip_x || clip_y) {
+            if (!clip_x) {
+                clip_rect.set_left(0);
+                clip_rect.set_right(CSSPixels::max_integer_value);
+            }
+            if (!clip_y) {
+                clip_rect.set_top(0);
+                clip_rect.set_bottom(CSSPixels::max_integer_value);
+            }
+            auto radii = (clip_x && clip_y) ? paintable_box.normalized_border_radii_data(ShrinkRadiiForBorders::Yes) : BorderRadiiData {};
+            auto clip_frame = adopt_ref(*new ClipFrame(clip_rect, radii, paintable_box.enclosing_scroll_frame()));
+            clip_frame->includes_rect_from_clip_property = includes_rect_from_clip_property;
             m_clip_state.set(paintable_box, move(clip_frame));
         }
         return TraversalDecision::Continue;
@@ -156,72 +190,6 @@ void ViewportPaintable::assign_clip_frames()
         }
         return TraversalDecision::Continue;
     });
-
-    for (auto& it : m_clip_state) {
-        auto const& paintable_box = *it.key;
-        auto& clip_frame = *it.value;
-        for (auto const* block = &paintable_box.layout_node_with_style_and_box_metrics(); !block->is_viewport(); block = block->containing_block()) {
-            auto const& paintable = block->first_paintable();
-            if (!paintable->is_paintable_box()) {
-                continue;
-            }
-            auto const& block_paintable_box = static_cast<PaintableBox const&>(*paintable);
-            bool clip_x = paintable->computed_values().overflow_x() != CSS::Overflow::Visible;
-            bool clip_y = paintable->computed_values().overflow_y() != CSS::Overflow::Visible;
-
-            auto clip_rect = block_paintable_box.overflow_clip_edge_rect();
-            if (block_paintable_box.get_clip_rect().has_value()) {
-                clip_frame.includes_rect_from_clip_property = true;
-                clip_rect.intersect(block_paintable_box.get_clip_rect().value());
-                clip_x = true;
-                clip_y = true;
-            }
-
-            // https://drafts.csswg.org/css-contain-2/#paint-containment
-            // 1. The contents of the element including any ink or scrollable overflow must be clipped to the overflow clip
-            //    edge of the paint containment box, taking corner clipping into account. This does not include the creation of
-            //    any mechanism to access or indicate the presence of the clipped content; nor does it inhibit the creation of
-            //    any such mechanism through other properties, such as overflow, resize, or text-overflow.
-            //    NOTE: This clipping shape respects overflow-clip-margin, allowing an element with paint containment
-            //          to still slightly overflow its normal bounds.
-            if (block->has_paint_containment()) {
-                // NOTE: Note: The behavior is described in this paragraph is equivalent to changing 'overflow-x: visible' into
-                //       'overflow-x: clip' and 'overflow-y: visible' into 'overflow-y: clip' at used value time, while leaving other
-                //       values of 'overflow-x' and 'overflow-y' unchanged.
-                clip_x = true;
-                clip_y = true;
-            }
-
-            if (clip_x || clip_y) {
-                // https://drafts.csswg.org/css-overflow-3/#corner-clipping
-                // As mentioned in CSS Backgrounds 3 § 4.3 Corner Clipping, the clipping region established by overflow can be
-                // rounded:
-                if (clip_x && clip_y) {
-                    // - When overflow-x and overflow-y compute to hidden, scroll, or auto, the clipping region is rounded
-                    //   based on the border radius, adjusted to the padding edge, as described in CSS Backgrounds 3 § 4.2 Corner
-                    //   Shaping.
-                    // - When both overflow-x and overflow-y compute to clip, the clipping region is rounded as described in § 3.2
-                    //   Expanding Clipping Bounds: the overflow-clip-margin property.
-                    // FIXME: Implement overflow-clip-margin
-                    clip_frame.add_clip_rect(clip_rect, block_paintable_box.normalized_border_radii_data(ShrinkRadiiForBorders::Yes), block_paintable_box.enclosing_scroll_frame());
-                } else {
-                    // - However, when one of overflow-x or overflow-y computes to clip and the other computes to visible, the
-                    //   clipping region is not rounded.
-                    if (clip_x) {
-                        clip_rect.set_top(0);
-                        clip_rect.set_bottom(CSSPixels::max_integer_value);
-                    } else {
-                        clip_rect.set_left(0);
-                        clip_rect.set_right(CSSPixels::max_integer_value);
-                    }
-                    clip_frame.add_clip_rect(clip_rect, {}, block_paintable_box.enclosing_scroll_frame());
-                }
-            }
-            if (block->has_css_transform()) {
-                break;
-            }
-        }
-    }
 }
 
 void ViewportPaintable::assign_transform_frames()
@@ -291,9 +259,8 @@ void ViewportPaintable::assign_stacked_render_states()
         // If it's viewport, set fixed_ancestor to self to prevent viewport scroll.
         // If it's a transformed element, leave fixed_ancestor as-is to allow that scroll.
         if (paintable_box.is_fixed_position()) {
-            auto const* containing_block = paintable_box.containing_block();
             // If containing block is the viewport (no transform trapping), prevent scroll
-            if (containing_block && is<ViewportPaintable>(*containing_block))
+            if (is<ViewportPaintable>(paintable_box.containing_block()))
                 fixed_ancestor = &paintable_box;
         }
 
@@ -446,16 +413,22 @@ void ViewportPaintable::refresh_scroll_state()
 
         auto border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor = sticky_box.border_box_rect_relative_to_nearest_scrollable_ancestor();
 
-        // By default, the sticky box is shifted by the scroll offset of the nearest scrollable ancestor.
-        CSSPixelPoint sticky_offset = -nearest_scrollable_ancestor->scroll_offset();
-        CSSPixelRect const scrollport_rect { nearest_scrollable_ancestor->scroll_offset(), nearest_scrollable_ancestor->absolute_rect().size() };
+        // The sticky frame's own_offset is the DELTA from the natural scrolled position.
+        // The parent scroll frame's offset is applied separately via cumulative_offset.
+        // So we calculate: total_needed_offset - parent_scroll_offset = sticky_delta
+        CSSPixelPoint sticky_offset = { 0, 0 };
+        auto scroll_offset = nearest_scrollable_ancestor->scroll_offset();
+        CSSPixelRect const scrollport_rect { scroll_offset, nearest_scrollable_ancestor->absolute_rect().size() };
 
         if (sticky_insets.top.has_value()) {
             auto top_inset = sticky_insets.top.value();
             auto stick_to_top_scroll_offset_threshold = border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor.top() - top_inset;
             if (scrollport_rect.top() > stick_to_top_scroll_offset_threshold) {
-                sticky_offset.translate_by({ 0, -border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor.top() });
-                sticky_offset.translate_by({ 0, min(scrollport_rect.top() + top_inset, max_y_offset_relative_to_nearest_scrollable_ancestor) });
+                // Calculate the position where sticky should appear (in content coordinates)
+                auto desired_content_y = min(scrollport_rect.top() + top_inset, max_y_offset_relative_to_nearest_scrollable_ancestor);
+                // Natural position after parent scroll would be: border_rect.top
+                // Delta needed: desired - natural
+                sticky_offset.translate_by({ 0, desired_content_y - border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor.top() });
             }
         }
 
@@ -463,8 +436,8 @@ void ViewportPaintable::refresh_scroll_state()
             auto left_inset = sticky_insets.left.value();
             auto stick_to_left_scroll_offset_threshold = border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor.left() - left_inset;
             if (scrollport_rect.left() > stick_to_left_scroll_offset_threshold) {
-                sticky_offset.translate_by({ -border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor.left(), 0 });
-                sticky_offset.translate_by({ min(scrollport_rect.left() + left_inset, max_x_offset_relative_to_nearest_scrollable_ancestor), 0 });
+                auto desired_content_x = min(scrollport_rect.left() + left_inset, max_x_offset_relative_to_nearest_scrollable_ancestor);
+                sticky_offset.translate_by({ desired_content_x - border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor.left(), 0 });
             }
         }
 
@@ -472,8 +445,8 @@ void ViewportPaintable::refresh_scroll_state()
             auto bottom_inset = sticky_insets.bottom.value();
             auto stick_to_bottom_scroll_offset_threshold = border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor.bottom() + bottom_inset;
             if (scrollport_rect.bottom() < stick_to_bottom_scroll_offset_threshold) {
-                sticky_offset.translate_by({ 0, -border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor.top() });
-                sticky_offset.translate_by({ 0, max(scrollport_rect.bottom() - sticky_box.absolute_border_box_rect().height() - bottom_inset, min_y_offset_relative_to_nearest_scrollable_ancestor) });
+                auto desired_content_y = max(scrollport_rect.bottom() - sticky_box.absolute_border_box_rect().height() - bottom_inset, min_y_offset_relative_to_nearest_scrollable_ancestor);
+                sticky_offset.translate_by({ 0, desired_content_y - border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor.top() });
             }
         }
 
@@ -481,8 +454,8 @@ void ViewportPaintable::refresh_scroll_state()
             auto right_inset = sticky_insets.right.value();
             auto stick_to_right_scroll_offset_threshold = border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor.right() + right_inset;
             if (scrollport_rect.right() < stick_to_right_scroll_offset_threshold) {
-                sticky_offset.translate_by({ -border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor.left(), 0 });
-                sticky_offset.translate_by({ max(scrollport_rect.right() - sticky_box.absolute_border_box_rect().width() - right_inset, min_x_offset_relative_to_nearest_scrollable_ancestor), 0 });
+                auto desired_content_x = max(scrollport_rect.right() - sticky_box.absolute_border_box_rect().width() - right_inset, min_x_offset_relative_to_nearest_scrollable_ancestor);
+                sticky_offset.translate_by({ desired_content_x - border_rect_of_sticky_box_relative_to_nearest_scrollable_ancestor.left(), 0 });
             }
         }
 

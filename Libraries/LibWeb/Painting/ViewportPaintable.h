@@ -28,6 +28,7 @@ public:
     void refresh_scroll_state();
 
     void assign_clip_frames();
+
     void assign_transform_frames();
     void assign_stacked_render_states();
 

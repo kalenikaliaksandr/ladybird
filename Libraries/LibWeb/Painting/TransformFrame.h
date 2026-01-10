@@ -22,6 +22,9 @@ public:
     Gfx::FloatMatrix4x4 const& matrix() const { return m_matrix; }
     CSSPixelPoint origin() const { return m_origin; }
 
+    void set_matrix(Gfx::FloatMatrix4x4 const& matrix) { m_matrix = matrix; }
+    void set_origin(CSSPixelPoint origin) { m_origin = origin; }
+
 private:
     TransformFrame(Gfx::FloatMatrix4x4 const& matrix, CSSPixelPoint origin)
         : m_matrix(matrix)
