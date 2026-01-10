@@ -239,7 +239,6 @@ public:
 
     void set_enclosing_scroll_frame(RefPtr<ScrollFrame const> const& scroll_frame) { m_enclosing_scroll_frame = scroll_frame; }
     void set_own_scroll_frame(RefPtr<ScrollFrame> const& scroll_frame) { m_own_scroll_frame = scroll_frame; }
-    void set_enclosing_clip_frame(RefPtr<ClipFrame const> const& clip_frame) { m_enclosing_clip_frame = clip_frame; }
     void set_own_clip_frame(RefPtr<ClipFrame const> const& clip_frame) { m_own_clip_frame = clip_frame; }
 
     void set_own_transform_frame(RefPtr<TransformFrame> frame) { m_own_transform_frame = move(frame); }
@@ -260,7 +259,6 @@ public:
         return {};
     }
 
-    [[nodiscard]] RefPtr<ClipFrame const> enclosing_clip_frame() const { return m_enclosing_clip_frame; }
     [[nodiscard]] RefPtr<ClipFrame const> own_clip_frame() const { return m_own_clip_frame; }
 
     Optional<Gfx::Filter> resolve_filter(DisplayListRecordingContext&, CSS::Filter const& computed_filter) const;
@@ -324,7 +322,6 @@ private:
 
     RefPtr<ScrollFrame const> m_enclosing_scroll_frame;
     RefPtr<ScrollFrame const> m_own_scroll_frame;
-    RefPtr<ClipFrame const> m_enclosing_clip_frame;
     RefPtr<ClipFrame const> m_own_clip_frame;
     RefPtr<TransformFrame> m_own_transform_frame;
     RefPtr<EffectiveRenderState const> m_effective_render_state;

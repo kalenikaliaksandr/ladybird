@@ -55,7 +55,6 @@ private:
 
     virtual void visit_edges(Visitor&) override;
 
-    HashMap<GC::Ptr<PaintableBox const>, RefPtr<ClipFrame>> m_clip_state;
     ScrollState m_scroll_state;
     bool m_needs_to_refresh_scroll_state { true };
 

@@ -123,9 +123,7 @@ void ViewportPaintable::assign_scroll_frames()
 
 void ViewportPaintable::assign_clip_frames()
 {
-    // First pass: Create ClipFrames for paintables that need clipping.
-    // We compute the clip rect immediately and create the ClipFrame with it.
-    for_each_in_subtree_of_type<PaintableBox>([&](auto const& paintable_box) {
+    for_each_in_subtree_of_type<PaintableBox>([&](auto& paintable_box) {
         auto overflow_x = paintable_box.computed_values().overflow_x();
         auto overflow_y = paintable_box.computed_values().overflow_y();
         auto has_hidden_overflow = overflow_x != CSS::Overflow::Visible || overflow_y != CSS::Overflow::Visible;
@@ -164,29 +162,7 @@ void ViewportPaintable::assign_clip_frames()
             auto radii = (clip_x && clip_y) ? paintable_box.normalized_border_radii_data(ShrinkRadiiForBorders::Yes) : BorderRadiiData {};
             auto clip_frame = adopt_ref(*new ClipFrame(clip_rect, radii, paintable_box.enclosing_scroll_frame()));
             clip_frame->includes_rect_from_clip_property = includes_rect_from_clip_property;
-            m_clip_state.set(paintable_box, move(clip_frame));
-        }
-        return TraversalDecision::Continue;
-    });
-
-    for_each_in_subtree([&](auto& paintable) {
-        if (paintable.is_paintable_box()) {
-            auto& paintable_box = static_cast<PaintableBox&>(paintable);
-            if (auto clip_frame = m_clip_state.get(paintable_box); clip_frame.has_value()) {
-                paintable_box.set_own_clip_frame(clip_frame.value());
-            }
-        }
-        for (auto block = paintable.containing_block(); !block->is_viewport_paintable(); block = block->containing_block()) {
-            if (auto clip_frame = m_clip_state.get(block); clip_frame.has_value()) {
-                if (paintable.is_paintable_box()) {
-                    auto& paintable_box = static_cast<PaintableBox&>(paintable);
-                    paintable_box.set_enclosing_clip_frame(clip_frame.value());
-                }
-                break;
-            }
-            if (block->has_css_transform()) {
-                break;
-            }
+            paintable_box.set_own_clip_frame(clip_frame);
         }
         return TraversalDecision::Continue;
     });
@@ -569,7 +545,6 @@ bool ViewportPaintable::handle_mousewheel(Badge<EventHandler>, CSSPixelPoint, un
 void ViewportPaintable::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    visitor.visit(m_clip_state);
     visitor.visit(m_paintable_boxes_with_auto_content_visibility);
 }
 
