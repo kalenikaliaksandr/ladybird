@@ -119,7 +119,6 @@ private:
 
     AK::SegmentedVector<DisplayListCommandWithScrollAndClip, 512> m_commands;
     double m_device_pixels_per_css_pixel;
-    Optional<Gfx::FloatMatrix4x4> m_visual_viewport_transform;
 };
 
 }
