@@ -16,13 +16,4 @@ ClipFrame::ClipFrame(CSSPixelRect rect, BorderRadiiData radii, RefPtr<ScrollFram
     m_clip_rect = ClipRectWithScrollFrame { rect, radii, move(enclosing_scroll_frame), enclosing_scroll_frame_id };
 }
 
-CSSPixelRect ClipFrame::clip_rect_for_hit_testing() const
-{
-    auto rect = m_clip_rect.rect;
-    if (m_clip_rect.enclosing_scroll_frame) {
-        rect.translate_by(m_clip_rect.enclosing_scroll_frame->cumulative_offset());
-    }
-    return rect;
-}
-
 }
