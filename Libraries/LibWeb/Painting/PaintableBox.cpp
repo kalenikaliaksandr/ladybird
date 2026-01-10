@@ -31,6 +31,7 @@
 #include <LibWeb/Painting/StackingContext.h>
 #include <LibWeb/Painting/TableBordersPainting.h>
 #include <LibWeb/Painting/TextPaintable.h>
+#include <LibWeb/Painting/TransformFrame.h>
 #include <LibWeb/Painting/ViewportPaintable.h>
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWeb/SVG/SVGFilterElement.h>
@@ -335,47 +336,38 @@ bool PaintableBox::wants_mouse_events() const
     return false;
 }
 
-void PaintableBox::before_paint(DisplayListRecordingContext& context, PaintPhase phase) const
+void PaintableBox::before_paint(DisplayListRecordingContext& context) const
 {
     if (!is_visible())
         return;
+    context.display_list_recorder().set_effective_render_state(effective_render_state());
 
-    auto const& own_clip_frame = this->own_clip_frame();
-    bool apply_own_clip_frame = [&] {
-        if (phase == PaintPhase::Background)
-            return own_clip_frame && own_clip_frame->includes_rect_from_clip_property;
-        if (phase == PaintPhase::Foreground)
-            return !own_clip_frame.is_null();
-        return false;
-    }();
-    if (apply_own_clip_frame) {
-        context.display_list_recorder().push_clip_frame(own_clip_frame);
-    } else if (!has_css_transform()) {
-        apply_clip_overflow_rect(context, phase);
+    bool should_apply_css_clip = own_clip_frame() && own_clip_frame()->includes_rect_from_clip_property;
+    if (should_apply_css_clip) {
+        context.display_list_recorder().save();
+        auto const& clip_rect = own_clip_frame()->clip_rect();
+        // CSS clip property can have negative dimensions (e.g., right < left).
+        // In that case, nothing should be visible, so use an empty clip rect.
+        Gfx::IntRect device_rect;
+        if (clip_rect.rect.width() < 0 || clip_rect.rect.height() < 0) {
+            device_rect = Gfx::IntRect { 0, 0, 0, 0 };
+        } else {
+            device_rect = context.rounded_device_rect(clip_rect.rect).to_type<int>();
+        }
+        auto corner_radii = clip_rect.corner_radii.as_corners(context.device_pixel_converter());
+        if (corner_radii.has_any_radius()) {
+            context.display_list_recorder().add_rounded_rect_clip(corner_radii, device_rect, CornerClip::Outside);
+        } else {
+            context.display_list_recorder().add_clip_rect(device_rect);
+        }
     }
-
-    apply_scroll_offset(context);
 }
 
-void PaintableBox::after_paint(DisplayListRecordingContext& context, PaintPhase phase) const
+void PaintableBox::after_paint(DisplayListRecordingContext& context) const
 {
-    if (!is_visible())
-        return;
-
-    reset_scroll_offset(context);
-
-    auto const& own_clip_frame = this->own_clip_frame();
-    bool reset_own_clip_frame = [&] {
-        if (phase == PaintPhase::Background)
-            return own_clip_frame && own_clip_frame->includes_rect_from_clip_property;
-        if (phase == PaintPhase::Foreground)
-            return !own_clip_frame.is_null();
-        return false;
-    }();
-    if (reset_own_clip_frame) {
-        context.display_list_recorder().pop_clip_frame();
-    } else if (!has_css_transform()) {
-        clear_clip_overflow_rect(context, phase);
+    bool should_apply_css_clip = own_clip_frame() && own_clip_frame()->includes_rect_from_clip_property;
+    if (should_apply_css_clip) {
+        context.display_list_recorder().restore();
     }
 }
 
@@ -676,42 +668,6 @@ Optional<CSSPixelRect> PaintableBox::clip_rect_for_hit_testing() const
     if (m_enclosing_clip_frame)
         return m_enclosing_clip_frame->clip_rect_for_hit_testing();
     return {};
-}
-
-void PaintableBox::apply_scroll_offset(DisplayListRecordingContext& context) const
-{
-    if (scroll_frame_id().has_value()) {
-        context.display_list_recorder().push_scroll_frame_id(scroll_frame_id().value());
-    }
-}
-
-void PaintableBox::reset_scroll_offset(DisplayListRecordingContext& context) const
-{
-    if (scroll_frame_id().has_value()) {
-        context.display_list_recorder().pop_scroll_frame_id();
-    }
-}
-
-void PaintableBox::apply_clip_overflow_rect(DisplayListRecordingContext& context, PaintPhase phase) const
-{
-    if (!enclosing_clip_frame())
-        return;
-
-    if (!AK::first_is_one_of(phase, PaintPhase::Background, PaintPhase::Border, PaintPhase::TableCollapsedBorder, PaintPhase::Foreground, PaintPhase::Outline))
-        return;
-
-    context.display_list_recorder().push_clip_frame(enclosing_clip_frame());
-}
-
-void PaintableBox::clear_clip_overflow_rect(DisplayListRecordingContext& context, PaintPhase phase) const
-{
-    if (!enclosing_clip_frame())
-        return;
-
-    if (!AK::first_is_one_of(phase, PaintPhase::Background, PaintPhase::Border, PaintPhase::TableCollapsedBorder, PaintPhase::Foreground, PaintPhase::Outline))
-        return;
-
-    context.display_list_recorder().pop_clip_frame();
 }
 
 void paint_cursor_if_needed(DisplayListRecordingContext& context, TextPaintable const& paintable, PaintableFragment const& fragment)
@@ -1028,6 +984,25 @@ void PaintableWithLines::paint(DisplayListRecordingContext& context, PaintPhase 
 
     PaintableBox::paint(context, phase);
 
+    // For foreground phase, apply own_clip_frame to clip text content.
+    // This is needed for overflow: hidden and text-overflow: ellipsis to work correctly.
+    // The own_clip_frame is not included in effective_render_state (which only has ancestor clips)
+    // because overflow: hidden should not clip the element's own background.
+    // Note: Don't apply this clip if includes_rect_from_clip_property is true, because
+    // CSS clip property clipping is handled in before_paint/after_paint.
+    bool should_apply_own_clip = phase == PaintPhase::Foreground && own_clip_frame() && !own_clip_frame()->includes_rect_from_clip_property;
+    if (should_apply_own_clip) {
+        context.display_list_recorder().save();
+        auto const& clip = own_clip_frame()->clip_rect();
+        auto device_rect = context.rounded_device_rect(clip.rect).to_type<int>();
+        auto corner_radii = clip.corner_radii.as_corners(context.device_pixel_converter());
+        if (corner_radii.has_any_radius()) {
+            context.display_list_recorder().add_rounded_rect_clip(corner_radii, device_rect, CornerClip::Outside);
+        } else {
+            context.display_list_recorder().add_clip_rect(device_rect);
+        }
+    }
+
     // Text shadows
     // This is yet another loop, but done here because all shadows should appear under all text.
     // So, we paint the shadows before painting any text.
@@ -1040,6 +1015,10 @@ void PaintableWithLines::paint(DisplayListRecordingContext& context, PaintPhase 
     for (auto const& fragment : m_fragments) {
         if (is<TextPaintable>(fragment.paintable()))
             paint_text_fragment(context, static_cast<TextPaintable const&>(fragment.paintable()), fragment, phase);
+    }
+
+    if (should_apply_own_clip) {
+        context.display_list_recorder().restore();
     }
 }
 
@@ -1558,6 +1537,13 @@ void PaintableBox::resolve_paint_properties()
     auto x = reference_box.left() + transform_origin.x.to_px(layout_node, reference_box.width());
     auto y = reference_box.top() + transform_origin.y.to_px(layout_node, reference_box.height());
     set_transform_origin({ x, y });
+
+    // Update existing TransformFrame with new values, so EffectiveRenderState
+    // objects that reference it will see the updated transform.
+    if (m_own_transform_frame) {
+        m_own_transform_frame->set_matrix(matrix);
+        m_own_transform_frame->set_origin({ x, y });
+    }
 
     // https://drafts.csswg.org/css-transforms-2/#perspective-matrix
     if (auto perspective = computed_values.perspective(); perspective.has_value()) {

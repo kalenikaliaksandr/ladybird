@@ -17,6 +17,7 @@
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/ClipFrame.h>
 #include <LibWeb/Painting/DisplayListCommand.h>
+#include <LibWeb/Painting/EffectiveRenderState.h>
 #include <LibWeb/Painting/ScrollState.h>
 
 namespace Web::Painting {
@@ -72,9 +73,6 @@ private:
     virtual void apply_mask_bitmap(ApplyMaskBitmap const&) = 0;
     virtual bool would_be_fully_clipped_by_painter(Gfx::IntRect) const = 0;
 
-    void apply_clip_frame(ClipFrame const&, ScrollStateSnapshot const&, DevicePixelConverter const&);
-    void remove_clip_frame(ClipFrame const&);
-
     Vector<NonnullRefPtr<Gfx::PaintingSurface>, 1> m_surfaces;
 };
 
@@ -85,11 +83,10 @@ public:
         return adopt_ref(*new DisplayList(device_pixels_per_css_pixel));
     }
 
-    void append(DisplayListCommand&& command, Optional<i32> scroll_frame_id, RefPtr<ClipFrame const>);
+    void append(DisplayListCommand&& command, RefPtr<EffectiveRenderState const> context);
 
-    struct DisplayListCommandWithScrollAndClip {
-        Optional<i32> scroll_frame_id;
-        RefPtr<ClipFrame const> clip_frame;
+    struct CommandListItem {
+        RefPtr<EffectiveRenderState const> context;
         DisplayListCommand command;
     };
 
@@ -103,7 +100,7 @@ public:
     void for_each_command_in_range(size_t start, size_t end, Callback callback)
     {
         for (auto index = start; index < end; ++index) {
-            if (callback(m_commands[index].command, m_commands[index].scroll_frame_id) == IterationDecision::Break)
+            if (callback(m_commands[index].command, m_commands[index].context) == IterationDecision::Break)
                 break;
         }
     }
@@ -117,9 +114,8 @@ private:
     {
     }
 
-    AK::SegmentedVector<DisplayListCommandWithScrollAndClip, 512> m_commands;
+    AK::SegmentedVector<CommandListItem, 512> m_commands;
     double m_device_pixels_per_css_pixel;
-    Optional<Gfx::FloatMatrix4x4> m_visual_viewport_transform;
 };
 
 }

@@ -30,9 +30,9 @@ static void paint_node(Paintable const& paintable, DisplayListRecordingContext& 
 {
     TemporaryChange save_nesting_level(context.display_list_recorder().m_save_nesting_level, 0);
 
-    paintable.before_paint(context, phase);
+    paintable.before_paint(context);
     paintable.paint(context, phase);
-    paintable.after_paint(context, phase);
+    paintable.after_paint(context);
 
     VERIFY(context.display_list_recorder().m_save_nesting_level == 0);
 }
@@ -122,9 +122,9 @@ void StackingContext::paint_svg(DisplayListRecordingContext& context, PaintableB
 
     paint_node(paintable, context, PaintPhase::Background);
     paint_node(paintable, context, PaintPhase::Border);
-    paintable.before_paint(context, PaintPhase::Foreground);
+    paintable.before_paint(context);
     SVGSVGPaintable::paint_svg_box(context, paintable, phase);
-    paintable.after_paint(context, PaintPhase::Foreground);
+    paintable.after_paint(context);
 }
 
 void StackingContext::paint_descendants(DisplayListRecordingContext& context, Paintable const& paintable, StackingContextPaintPhase phase)
@@ -223,9 +223,9 @@ void StackingContext::paint_internal(DisplayListRecordingContext& context) const
         paint_node(svg_svg_paintable, context, PaintPhase::Background);
         paint_node(svg_svg_paintable, context, PaintPhase::Border);
 
-        svg_svg_paintable.before_paint(context, PaintPhase::Foreground);
+        svg_svg_paintable.before_paint(context);
         SVGSVGPaintable::paint_descendants(context, svg_svg_paintable, PaintPhase::Foreground);
-        svg_svg_paintable.after_paint(context, PaintPhase::Foreground);
+        svg_svg_paintable.after_paint(context);
 
         paint_node(svg_svg_paintable, context, PaintPhase::Outline);
         if (context.should_paint_overlay()) {
@@ -234,11 +234,6 @@ void StackingContext::paint_internal(DisplayListRecordingContext& context) const
         }
         return;
     }
-
-    context.display_list_recorder().push_scroll_frame_id({});
-    ScopeGuard restore_scroll_frame_id([&] {
-        context.display_list_recorder().pop_scroll_frame_id();
-    });
 
     // For a more elaborate description of the algorithm, see CSS 2.1 Appendix E
     // Draw the background and borders for the context root (steps 1, 2)
@@ -314,19 +309,7 @@ void StackingContext::paint(DisplayListRecordingContext& context) const
         VERIFY(context.display_list_recorder().m_save_nesting_level == 0);
     });
 
-    auto to_device_pixels_scale = float(context.device_pixels_per_css_pixel());
     auto source_paintable_rect = context.enclosing_device_rect(paintable_box().absolute_paint_rect()).to_type<int>();
-
-    auto transform_matrix = paintable_box().transform();
-    // https://drafts.csswg.org/css-transforms-2/#perspective
-    // Second, the 'perspective' and 'perspective-origin' properties can be applied to an element to influence the
-    // rendering of its 3d-transformed children, giving them a shared perspective that provides the impression of
-    // them living in the same three-dimensional scene.
-    Optional<Gfx::FloatMatrix4x4> parent_perspective_matrix;
-    if (auto const* parent = as_if<PaintableBox>(paintable_box().parent()))
-        parent_perspective_matrix = parent->perspective_matrix();
-
-    auto transform_origin = paintable_box().transform_origin().to_type<float>();
 
     Gfx::CompositingAndBlendingOperator compositing_and_blending_operator = mix_blend_mode_to_compositing_and_blending_operator(paintable_box().computed_values().mix_blend_mode());
 
@@ -334,7 +317,6 @@ void StackingContext::paint(DisplayListRecordingContext& context) const
         .opacity = opacity,
         .compositing_and_blending_operator = compositing_and_blending_operator,
         .isolate = paintable_box().computed_values().isolation() == CSS::Isolation::Isolate,
-        .transform = StackingContextTransform(transform_origin, transform_matrix, parent_perspective_matrix, to_device_pixels_scale),
     };
 
     auto const& computed_values = paintable_box().computed_values();
@@ -350,12 +332,6 @@ void StackingContext::paint(DisplayListRecordingContext& context) const
         push_stacking_context_params.bounding_rect = context.enclosing_device_rect(paintable_box().overflow_clip_edge_rect());
     }
 
-    auto has_css_transform = paintable_box().has_css_transform();
-    if (has_css_transform) {
-        paintable_box().apply_clip_overflow_rect(context, PaintPhase::Foreground);
-    }
-    paintable_box().apply_scroll_offset(context);
-
     auto mask_image = computed_values.mask_image();
     Optional<Gfx::Filter> resolved_filter;
     if (computed_values.filter().has_filters())
@@ -363,11 +339,12 @@ void StackingContext::paint(DisplayListRecordingContext& context) const
 
     bool needs_to_save_state = mask_image || paintable_box().get_masking_area().has_value();
 
-    bool needs_to_push_stacking_context = push_stacking_context_params.opacity != 1.0f
-        || push_stacking_context_params.compositing_and_blending_operator != Gfx::CompositingAndBlendingOperator::Normal
+    bool needs_to_push_stacking_context = opacity != 1.0f
+        || compositing_and_blending_operator != Gfx::CompositingAndBlendingOperator::Normal
         || push_stacking_context_params.isolate
-        || push_stacking_context_params.clip_path.has_value()
-        || has_css_transform;
+        || push_stacking_context_params.clip_path.has_value();
+
+    context.display_list_recorder().set_effective_render_state(paintable_box().effective_render_state());
 
     if (needs_to_push_stacking_context) {
         context.display_list_recorder().push_stacking_context(push_stacking_context_params);
@@ -395,19 +372,20 @@ void StackingContext::paint(DisplayListRecordingContext& context) const
         }
     }
 
+    auto context_before_children = context.display_list_recorder().effective_render_state();
+
     paint_internal(context);
 
     if (resolved_filter.has_value())
         context.display_list_recorder().restore();
+
+    context.display_list_recorder().set_effective_render_state(context_before_children);
 
     if (needs_to_push_stacking_context) {
         context.display_list_recorder().pop_stacking_context();
     } else if (needs_to_save_state) {
         context.display_list_recorder().restore();
     }
-    paintable_box().reset_scroll_offset(context);
-    if (has_css_transform)
-        paintable_box().clear_clip_overflow_rect(context, PaintPhase::Foreground);
 }
 
 TraversalDecision StackingContext::hit_test(CSSPixelPoint position, HitTestType type, Function<TraversalDecision(HitTestResult)> const& callback) const
