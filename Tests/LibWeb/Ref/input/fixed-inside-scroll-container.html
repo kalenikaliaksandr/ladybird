@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/fixed-inside-scroll-container-ref.html" />
+<style>
+body { margin: 0; }
+#scroll-container {
+    width: 200px;
+    height: 200px;
+    overflow: auto;
+    scrollbar-width: none;
+    background: lightgray;
+}
+.spacer {
+    height: 1000px;
+}
+#fixed-element {
+    position: fixed;
+    top: 50px;
+    left: 50px;
+    width: 100px;
+    height: 100px;
+    background: green;
+}
+</style>
+<!-- Fixed element inside a scroll container should NOT scroll with the container -->
+<div id="scroll-container">
+    <div id="fixed-element"></div>
+    <div class="spacer"></div>
+</div>
+<script>
+    document.getElementById("scroll-container").scrollTop = 500;
+</script>
