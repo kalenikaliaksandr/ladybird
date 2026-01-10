@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<style>
+body { margin: 0; }
+#transformed-scroll-container {
+    width: 200px;
+    height: 200px;
+    background: lightgray;
+    transform: translateX(0);
+}
+#fixed-element {
+    /* After scrolling 50px, the element at top:50px should appear at y=0 relative to container */
+    position: absolute;
+    top: 0px;
+    left: 50px;
+    width: 100px;
+    height: 100px;
+    background: green;
+}
+</style>
+<!-- Reference: Fixed element scrolled up by 50px, so it appears at top of container -->
+<div id="transformed-scroll-container">
+    <div id="fixed-element"></div>
+</div>
