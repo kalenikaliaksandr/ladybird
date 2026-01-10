@@ -19,6 +19,7 @@
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/PaintableFragment.h>
 #include <LibWeb/Painting/ShouldAntiAlias.h>
+#include <LibWeb/Painting/StackedRenderState.h>
 #include <LibWeb/Painting/TransformFrame.h>
 
 namespace Web::Painting {
@@ -249,6 +250,8 @@ public:
 
     void set_own_transform_frame(RefPtr<TransformFrame const> frame) { m_own_transform_frame = move(frame); }
     [[nodiscard]] RefPtr<TransformFrame const> own_transform_frame() const { return m_own_transform_frame; }
+    void set_stacked_render_state(RefPtr<StackedRenderState const> state) { m_stacked_render_state = move(state); }
+    [[nodiscard]] RefPtr<StackedRenderState const> stacked_render_state() const { return m_stacked_render_state; }
 
     [[nodiscard]] RefPtr<ScrollFrame const> enclosing_scroll_frame() const { return m_enclosing_scroll_frame; }
     [[nodiscard]] Optional<int> scroll_frame_id() const;
@@ -330,6 +333,7 @@ private:
     RefPtr<ClipFrame const> m_enclosing_clip_frame;
     RefPtr<ClipFrame const> m_own_clip_frame;
     RefPtr<TransformFrame const> m_own_transform_frame;
+    RefPtr<StackedRenderState const> m_stacked_render_state;
 
     Optional<BordersDataWithElementKind> m_override_borders_data;
     Optional<TableCellCoordinates> m_table_cell_coordinates;

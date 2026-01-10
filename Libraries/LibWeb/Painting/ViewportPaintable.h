@@ -29,6 +29,7 @@ public:
 
     void assign_clip_frames();
     void assign_transform_frames();
+    void assign_stacked_render_states();
 
     void resolve_paint_only_properties();
 
