@@ -9,6 +9,7 @@
 #include <AK/RefCounted.h>
 #include <LibGfx/Matrix4x4.h>
 #include <LibWeb/Painting/ClipFrame.h>
+#include <LibWeb/Painting/ScrollState.h>
 #include <LibWeb/Painting/TransformFrame.h>
 
 namespace Web::Painting {
@@ -36,6 +37,13 @@ public:
 
     // Depth in the tree (1 for root node). Used for efficient LCA computation.
     size_t depth() const { return m_depth; }
+
+    // For hit-testing: transforms a screen-space point to local coordinates by walking
+    // the context tree and applying inverse transformations. Returns nullopt if the point
+    // is outside any clip region or if a transform is singular (non-invertible).
+    Optional<CSSPixelPoint> transform_point_for_hit_test(
+        CSSPixelPoint screen_point,
+        ScrollStateSnapshot const& scroll_state) const;
 
 private:
     EffectiveRenderState(

@@ -250,7 +250,6 @@ public:
     [[nodiscard]] RefPtr<ScrollFrame const> enclosing_scroll_frame() const { return m_enclosing_scroll_frame; }
     [[nodiscard]] Optional<int> scroll_frame_id() const;
     [[nodiscard]] CSSPixelPoint cumulative_offset_of_enclosing_scroll_frame() const;
-    [[nodiscard]] Optional<CSSPixelRect> clip_rect_for_hit_testing() const;
 
     [[nodiscard]] RefPtr<ScrollFrame const> own_scroll_frame() const { return m_own_scroll_frame; }
     [[nodiscard]] Optional<int> own_scroll_frame_id() const;
@@ -299,7 +298,6 @@ protected:
     [[nodiscard]] bool could_be_scrolled_by_wheel_event(ScrollDirection) const;
 
     TraversalDecision hit_test_scrollbars(CSSPixelPoint position, Function<TraversalDecision(HitTestResult)> const& callback) const;
-    CSSPixelPoint adjust_position_for_cumulative_scroll_offset(CSSPixelPoint) const;
 
 private:
     [[nodiscard]] virtual bool is_paintable_box() const final { return true; }
@@ -311,6 +309,8 @@ private:
 
     bool scrollbar_contains_mouse_position(ScrollDirection, CSSPixelPoint);
     void scroll_to_mouse_position(CSSPixelPoint);
+
+    CSSPixelPoint transform_to_local_coordinates(CSSPixelPoint screen_position) const;
 
     GC::Ptr<StackingContext> m_stacking_context;
 

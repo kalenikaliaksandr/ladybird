@@ -26,8 +26,6 @@ struct WEB_API ClipFrame : public AtomicRefCounted<ClipFrame> {
 
     ClipRectWithScrollFrame const& clip_rect() const { return m_clip_rect; }
 
-    CSSPixelRect clip_rect_for_hit_testing() const;
-
     bool includes_rect_from_clip_property { false };
 
 private:

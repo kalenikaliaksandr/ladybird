@@ -830,6 +830,7 @@ set(SOURCES
     Painting/ScrollFrame.cpp
     Painting/ScrollState.cpp
     Painting/ShadowPainting.cpp
+    Painting/EffectiveRenderState.cpp
     Painting/StackingContext.cpp
     Painting/SVGClipPaintable.cpp
     Painting/SVGForeignObjectPaintable.cpp
