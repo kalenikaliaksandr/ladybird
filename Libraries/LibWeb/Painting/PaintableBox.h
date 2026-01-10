@@ -19,6 +19,7 @@
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/PaintableFragment.h>
 #include <LibWeb/Painting/ShouldAntiAlias.h>
+#include <LibWeb/Painting/TransformFrame.h>
 
 namespace Web::Painting {
 
@@ -246,6 +247,9 @@ public:
     void set_enclosing_clip_frame(RefPtr<ClipFrame const> const& clip_frame) { m_enclosing_clip_frame = clip_frame; }
     void set_own_clip_frame(RefPtr<ClipFrame const> const& clip_frame) { m_own_clip_frame = clip_frame; }
 
+    void set_own_transform_frame(RefPtr<TransformFrame const> frame) { m_own_transform_frame = move(frame); }
+    [[nodiscard]] RefPtr<TransformFrame const> own_transform_frame() const { return m_own_transform_frame; }
+
     [[nodiscard]] RefPtr<ScrollFrame const> enclosing_scroll_frame() const { return m_enclosing_scroll_frame; }
     [[nodiscard]] Optional<int> scroll_frame_id() const;
     [[nodiscard]] CSSPixelPoint cumulative_offset_of_enclosing_scroll_frame() const;
@@ -325,6 +329,7 @@ private:
     RefPtr<ScrollFrame const> m_own_scroll_frame;
     RefPtr<ClipFrame const> m_enclosing_clip_frame;
     RefPtr<ClipFrame const> m_own_clip_frame;
+    RefPtr<TransformFrame const> m_own_transform_frame;
 
     Optional<BordersDataWithElementKind> m_override_borders_data;
     Optional<TableCellCoordinates> m_table_cell_coordinates;

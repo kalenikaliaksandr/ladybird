@@ -221,6 +221,17 @@ void ViewportPaintable::assign_clip_frames()
     }
 }
 
+void ViewportPaintable::assign_transform_frames()
+{
+    for_each_in_subtree_of_type<PaintableBox>([&](auto& paintable_box) {
+        if (paintable_box.has_css_transform()) {
+            auto frame = TransformFrame::create(paintable_box.transform(), paintable_box.transform_origin());
+            paintable_box.set_own_transform_frame(frame);
+        }
+        return TraversalDecision::Continue;
+    });
+}
+
 void ViewportPaintable::refresh_scroll_state()
 {
     if (!m_needs_to_refresh_scroll_state)
