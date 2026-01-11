@@ -16,6 +16,7 @@
 #include <LibWeb/Painting/BorderPainting.h>
 #include <LibWeb/Painting/BoxModelMetrics.h>
 #include <LibWeb/Painting/ClipFrame.h>
+#include <LibWeb/Painting/EffectiveRenderState.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/PaintableFragment.h>
 #include <LibWeb/Painting/ShouldAntiAlias.h>
@@ -249,6 +250,8 @@ public:
 
     void set_own_transform_frame(RefPtr<TransformFrame const> frame) { m_own_transform_frame = move(frame); }
     [[nodiscard]] RefPtr<TransformFrame const> own_transform_frame() const { return m_own_transform_frame; }
+    void set_effective_render_state(RefPtr<EffectiveRenderState const> state) { m_effective_render_state = move(state); }
+    [[nodiscard]] RefPtr<EffectiveRenderState const> effective_render_state() const { return m_effective_render_state; }
 
     [[nodiscard]] RefPtr<ScrollFrame const> enclosing_scroll_frame() const { return m_enclosing_scroll_frame; }
     [[nodiscard]] Optional<int> scroll_frame_id() const;
@@ -330,6 +333,7 @@ private:
     RefPtr<ClipFrame const> m_enclosing_clip_frame;
     RefPtr<ClipFrame const> m_own_clip_frame;
     RefPtr<TransformFrame const> m_own_transform_frame;
+    RefPtr<EffectiveRenderState const> m_effective_render_state;
 
     Optional<BordersDataWithElementKind> m_override_borders_data;
     Optional<TableCellCoordinates> m_table_cell_coordinates;

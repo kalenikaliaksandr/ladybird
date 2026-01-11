@@ -1468,8 +1468,9 @@ void Document::update_layout(UpdateLayoutReason reason)
     update_paint_and_hit_testing_properties_if_needed();
     paintable()->assign_clip_frames();
 
-    // assign_transform_frames() needs transforms to be resolved
+    // assign_transform_frames() and assign_effective_render_states() need transforms to be resolved
     paintable()->assign_transform_frames();
+    paintable()->assign_effective_render_states();
 
     if (auto range = get_selection()->range()) {
         paintable()->recompute_selection_states(*range);
