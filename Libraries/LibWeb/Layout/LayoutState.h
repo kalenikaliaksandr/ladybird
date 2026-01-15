@@ -198,13 +198,22 @@ struct LayoutState {
 
     ~LayoutState();
 
+    // Pre-layout: assign formatting context indices to all nodes
+    static void assign_formatting_context_indices(Viewport& root);
+
     // Commits the used values produced by layout and builds a paintable tree.
     void commit(Box& root);
 
     UsedValues& get_mutable(NodeWithStyle const&);
     UsedValues const& get(NodeWithStyle const&) const;
 
+    // Receive committed UsedValues from formatting contexts
+    void set_used_values_for_fc(size_t fc_id, size_t index, UsedValues);
+
     OrderedHashMap<GC::Ref<Layout::Node const>, NonnullOwnPtr<UsedValues>> used_values_per_layout_node;
+
+    // Storage for committed results, indexed by [fc_id][index_in_fc]
+    Vector<Vector<Optional<UsedValues>>> m_committed_used_values;
 
 private:
     void resolve_relative_positions();

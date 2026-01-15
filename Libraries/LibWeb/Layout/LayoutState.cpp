@@ -9,6 +9,7 @@
 #include <AK/Debug.h>
 #include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/Layout/AvailableSpace.h>
+#include <LibWeb/Layout/FormattingContext.h>
 #include <LibWeb/Layout/InlineNode.h>
 #include <LibWeb/Layout/LayoutState.h>
 #include <LibWeb/Layout/Viewport.h>
@@ -672,6 +673,89 @@ void LayoutState::UsedValues::set_indefinite_content_width()
 void LayoutState::UsedValues::set_indefinite_content_height()
 {
     m_has_definite_height = false;
+}
+
+static size_t determine_formatting_context_for_node(NodeWithStyle const& node)
+{
+    auto const* box = as_if<Box>(node);
+
+    // Box establishes formatting context -> belongs to that context
+    if (box && box->established_formatting_context_id().has_value())
+        return *box->established_formatting_context_id();
+
+    // Absolutely positioned -> formatting context of containing block's establisher
+    if (box && box->is_absolutely_positioned()) {
+        for (GC::Ptr<Box const> cb = box->containing_block(); cb; cb = cb->containing_block()) {
+            if (cb->established_formatting_context_id().has_value())
+                return *cb->established_formatting_context_id();
+        }
+    }
+
+    // Float -> nearest ancestor block formatting context
+    if (box && box->is_floating()) {
+        for (auto const* ancestor = node.parent(); ancestor; ancestor = ancestor->parent()) {
+            if (auto const* b = as_if<Box>(*ancestor); b && b->established_formatting_context_id().has_value()) {
+                auto type = FormattingContext::formatting_context_type_created_by_box(*b);
+                if (type == FormattingContext::Type::Block)
+                    return *b->established_formatting_context_id();
+            }
+        }
+    }
+
+    // Normal flow -> nearest ancestor formatting context
+    for (auto const* ancestor = node.parent(); ancestor; ancestor = ancestor->parent()) {
+        if (auto const* b = as_if<Box>(*ancestor); b && b->established_formatting_context_id().has_value())
+            return *b->established_formatting_context_id();
+    }
+
+    return 0;
+}
+
+void LayoutState::assign_formatting_context_indices(Viewport& root)
+{
+    // Pass 1: Assign IDs to boxes that establish formatting contexts
+    size_t next_formatting_context_id = 0;
+    root.for_each_in_inclusive_subtree_of_type<Box>([&](Box& box) {
+        if (FormattingContext::formatting_context_type_created_by_box(box).has_value()) {
+            box.set_established_formatting_context_id(next_formatting_context_id++);
+        }
+        return TraversalDecision::Continue;
+    });
+
+    // Track node count per formatting context
+    Vector<size_t> nodes_per_formatting_context;
+    nodes_per_formatting_context.resize(next_formatting_context_id);
+
+    // Pass 2: Assign each node to its formatting context
+    root.for_each_in_inclusive_subtree_of_type<NodeWithStyle>([&](NodeWithStyle& node) {
+        size_t fc_id = determine_formatting_context_for_node(node);
+        size_t index = nodes_per_formatting_context[fc_id]++;
+        node.set_formatting_context_id(fc_id);
+        node.set_index_in_formatting_context(index);
+        return TraversalDecision::Continue;
+    });
+
+    // Store node counts on establishing boxes (for FC initialization)
+    root.for_each_in_inclusive_subtree_of_type<Box>([&](Box& box) {
+        if (box.established_formatting_context_id().has_value()) {
+            auto fc_id = *box.established_formatting_context_id();
+            box.set_node_count_in_formatting_context(nodes_per_formatting_context[fc_id]);
+        }
+        return TraversalDecision::Continue;
+    });
+}
+
+void LayoutState::set_used_values_for_fc(size_t fc_id, size_t index, UsedValues used_values)
+{
+    // Ensure storage exists
+    if (fc_id >= m_committed_used_values.size())
+        m_committed_used_values.resize(fc_id + 1);
+
+    auto& fc_storage = m_committed_used_values[fc_id];
+    if (index >= fc_storage.size())
+        fc_storage.resize(index + 1);
+
+    fc_storage[index] = move(used_values);
 }
 
 }

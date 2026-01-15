@@ -26,9 +26,100 @@ FormattingContext::FormattingContext(Type type, LayoutMode layout_mode, LayoutSt
     , m_context_box(context_box)
     , m_state(state)
 {
+    // Pre-allocate storage for FC-local UsedValues
+    if (context_box.established_formatting_context_id().has_value()) {
+        m_used_values.resize(context_box.node_count_in_formatting_context());
+    }
 }
 
 FormattingContext::~FormattingContext() = default;
+
+LayoutState::UsedValues& FormattingContext::get_mutable(NodeWithStyle const& node)
+{
+    // If this FC doesn't have local storage (e.g., wasn't assigned an FC ID yet),
+    // fall back to global state
+    if (m_used_values.is_empty())
+        return m_state.get_mutable(node);
+
+    auto my_fc_id = m_context_box->established_formatting_context_id();
+    if (!my_fc_id.has_value() || node.formatting_context_id() != *my_fc_id) {
+        // Node belongs to a different FC - delegate to parent or global state
+        return m_state.get_mutable(node);
+    }
+
+    auto index = node.index_in_formatting_context();
+    auto& slot = m_used_values[index];
+    if (!slot.has_value()) {
+        slot.emplace();
+        LayoutState::UsedValues const* cb_used_values = nullptr;
+        if (!node.is_viewport()) {
+            cb_used_values = &get_containing_block_used_values(node);
+        }
+        slot->set_node(node, cb_used_values);
+    }
+    return slot.value();
+}
+
+LayoutState::UsedValues const& FormattingContext::get(NodeWithStyle const& node) const
+{
+    // If this FC doesn't have local storage, fall back to global state
+    if (m_used_values.is_empty())
+        return m_state.get(node);
+
+    auto my_fc_id = m_context_box->established_formatting_context_id();
+    if (!my_fc_id.has_value() || node.formatting_context_id() != *my_fc_id) {
+        // Node belongs to a different FC - delegate to parent or global state
+        return m_state.get(node);
+    }
+
+    auto index = node.index_in_formatting_context();
+    auto const& slot = m_used_values[index];
+    if (slot.has_value())
+        return slot.value();
+
+    // Lazy creation
+    return const_cast<FormattingContext*>(this)->get_mutable(node);
+}
+
+LayoutState::UsedValues const& FormattingContext::get_containing_block_used_values(NodeWithStyle const& node) const
+{
+    GC::Ptr<Box const> cb = node.containing_block();
+    VERIFY(cb);
+
+    auto cb_fc_id = cb->formatting_context_id();
+    auto my_fc_id = m_context_box->established_formatting_context_id();
+
+    if (my_fc_id.has_value() && cb_fc_id == *my_fc_id) {
+        // Same FC - use local storage
+        return get(*cb);
+    }
+
+    // Different FC - check parent chain first, then global state
+    for (auto* parent_fc = m_parent; parent_fc; parent_fc = parent_fc->m_parent) {
+        auto parent_fc_id = parent_fc->context_box().established_formatting_context_id();
+        if (parent_fc_id.has_value() && *parent_fc_id == cb_fc_id) {
+            return parent_fc->get(*cb);
+        }
+    }
+
+    // Fall back to global state
+    return m_state.get(*cb);
+}
+
+void FormattingContext::commit_to_global_state()
+{
+    auto my_fc_id = m_context_box->established_formatting_context_id();
+    if (!my_fc_id.has_value())
+        return;
+
+    for (size_t i = 0; i < m_used_values.size(); ++i) {
+        auto& slot = m_used_values[i];
+        if (slot.has_value()) {
+            m_state.set_used_values_for_fc(*my_fc_id, i, move(slot.value()));
+            slot.clear();
+        }
+    }
+}
 
 // https://developer.mozilla.org/en-US/docs/Web/Guide/CSS/Block_formatting_context
 bool FormattingContext::creates_block_formatting_context(Box const& box)

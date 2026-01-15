@@ -247,6 +247,12 @@ public:
     CSS::ImmutableComputedValues const& computed_values() const { return static_cast<CSS::ImmutableComputedValues const&>(*m_computed_values); }
     CSS::MutableComputedValues& mutable_computed_values() { return static_cast<CSS::MutableComputedValues&>(*m_computed_values); }
 
+    size_t formatting_context_id() const { return m_formatting_context_id; }
+    void set_formatting_context_id(size_t id) { m_formatting_context_id = id; }
+
+    size_t index_in_formatting_context() const { return m_index_in_formatting_context; }
+    void set_index_in_formatting_context(size_t index) { m_index_in_formatting_context = index; }
+
     void apply_style(CSS::ComputedProperties const&);
 
     Gfx::Font const& first_available_font() const;
@@ -277,6 +283,9 @@ private:
 
     NonnullOwnPtr<CSS::ComputedValues> m_computed_values;
     RefPtr<CSS::AbstractImageStyleValue const> m_list_style_image;
+
+    size_t m_formatting_context_id { 0 };
+    size_t m_index_in_formatting_context { 0 };
 };
 
 template<>

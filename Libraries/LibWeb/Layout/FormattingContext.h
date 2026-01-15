@@ -74,6 +74,13 @@ public:
     FormattingContext* parent() { return m_parent; }
     FormattingContext const* parent() const { return m_parent; }
 
+    // FC-local UsedValues access
+    LayoutState::UsedValues& get_mutable(NodeWithStyle const&);
+    LayoutState::UsedValues const& get(NodeWithStyle const&) const;
+
+    // Commit final results to global LayoutState
+    void commit_to_global_state();
+
     Type type() const { return m_type; }
 
     virtual bool inhibits_floating() const { return false; }
@@ -184,6 +191,8 @@ protected:
 
     [[nodiscard]] Box const* box_child_to_derive_baseline_from(Box const&) const;
 
+    LayoutState::UsedValues const& get_containing_block_used_values(NodeWithStyle const&) const;
+
     Type m_type {};
     LayoutMode m_layout_mode;
 
@@ -191,6 +200,9 @@ protected:
     GC::Ref<Box const> m_context_box;
 
     LayoutState& m_state;
+
+    // FC-local storage for UsedValues during layout
+    mutable Vector<Optional<LayoutState::UsedValues>> m_used_values;
 };
 
 #if FORMATTING_CONTEXT_TRACE_DEBUG
