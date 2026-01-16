@@ -83,6 +83,17 @@ private:
     Vector<GC::Ref<Node>> m_contained_abspos_children;
 
     OwnPtr<IntrinsicSizes> mutable m_cached_intrinsic_sizes;
+
+    // Formatting context establishment info for FC-local UsedValues storage
+    Optional<size_t> m_established_formatting_context_id;
+    size_t m_node_count_in_formatting_context { 0 };
+
+public:
+    Optional<size_t> established_formatting_context_id() const { return m_established_formatting_context_id; }
+    void set_established_formatting_context_id(size_t id) { m_established_formatting_context_id = id; }
+
+    size_t node_count_in_formatting_context() const { return m_node_count_in_formatting_context; }
+    void set_node_count_in_formatting_context(size_t count) { m_node_count_in_formatting_context = count; }
 };
 
 template<>

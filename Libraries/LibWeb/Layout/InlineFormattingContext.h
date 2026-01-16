@@ -26,6 +26,11 @@ public:
     virtual void run(AvailableSpace const&) override;
     virtual CSSPixels automatic_content_height() const override;
     virtual CSSPixels automatic_content_width() const override;
+
+    // IFC delegates to parent BFC since inline nodes belong to the parent's FC
+    virtual LayoutState::UsedValues& get_mutable(NodeWithStyle const&) override;
+    virtual LayoutState::UsedValues const& get(NodeWithStyle const&) const override;
+
     StaticPositionRect calculate_static_position_rect(Box const&) const;
 
     void dimension_box_on_line(Box const&, LayoutMode);

@@ -1437,6 +1437,9 @@ void Document::update_layout(UpdateLayoutReason reason)
         return TraversalDecision::Continue;
     });
 
+    // Assign formatting context indices to all nodes (Phase 1 infrastructure for FC-local UsedValues)
+    Layout::LayoutState::assign_formatting_context_indices(static_cast<Layout::Viewport&>(*m_layout_root));
+
     Layout::LayoutState layout_state;
 
     {

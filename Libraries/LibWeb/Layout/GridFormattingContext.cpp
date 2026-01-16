@@ -198,8 +198,11 @@ GridFormattingContext::GridTrack GridFormattingContext::GridTrack::create_gap(CS
 
 GridFormattingContext::GridFormattingContext(LayoutState& state, LayoutMode layout_mode, Box const& grid_container, FormattingContext* parent)
     : FormattingContext(Type::Grid, layout_mode, state, grid_container, parent)
-    , m_grid_container_used_values(state.get_mutable(grid_container))
+    , m_grid_container_used_values(get_mutable(grid_container))
 {
+    // Pre-allocate FC-local UsedValues storage to prevent vector resizing
+    // which would invalidate GridItem::used_values references
+    m_used_values.resize(grid_container.node_count_in_formatting_context());
 }
 
 GridFormattingContext::~GridFormattingContext() = default;
@@ -381,7 +384,7 @@ void GridFormattingContext::place_item_with_row_and_column_position(Box const& c
 
     record_grid_placement(GridItem {
         .box = child_box,
-        .used_values = m_state.get_mutable(child_box),
+        .used_values = get_mutable(child_box),
         .row = row_start,
         .row_span = row_span,
         .column = column_start,
@@ -412,7 +415,7 @@ void GridFormattingContext::place_item_with_row_position(Box const& child_box)
 
     record_grid_placement(GridItem {
         .box = child_box,
-        .used_values = m_state.get_mutable(child_box),
+        .used_values = get_mutable(child_box),
         .row = row_start,
         .row_span = row_span,
         .column = column_start,
@@ -447,7 +450,7 @@ void GridFormattingContext::place_item_with_column_position(Box const& child_box
 
     record_grid_placement(GridItem {
         .box = child_box,
-        .used_values = m_state.get_mutable(child_box),
+        .used_values = get_mutable(child_box),
         .row = auto_placement_cursor_y,
         .row_span = row_span,
         .column = column_start,
@@ -543,7 +546,7 @@ void GridFormattingContext::place_item_with_no_declared_position(Box const& chil
 
     record_grid_placement(GridItem {
         .box = child_box,
-        .used_values = m_state.get_mutable(child_box),
+        .used_values = get_mutable(child_box),
         .row = row_start,
         .row_span = row_span,
         .column = column_start,

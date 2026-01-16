@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/HashMap.h>
+#include <AK/RefCounted.h>
 #include <LibGfx/Path.h>
 #include <LibGfx/Point.h>
 #include <LibWeb/Layout/Box.h>
@@ -55,7 +56,7 @@ struct StaticPositionRect {
 };
 
 struct LayoutState {
-    struct UsedValues {
+    struct UsedValues : public RefCounted<UsedValues> {
         NodeWithStyle const& node() const { return *m_node; }
         NodeWithStyle& node() { return const_cast<NodeWithStyle&>(*m_node); }
         void set_node(NodeWithStyle const&, UsedValues const* containing_block_used_values);
@@ -198,13 +199,16 @@ struct LayoutState {
 
     ~LayoutState();
 
+    // Pre-layout: assign FC indices to all nodes
+    static void assign_formatting_context_indices(Layout::Viewport& root);
+
     // Commits the used values produced by layout and builds a paintable tree.
     void commit(Box& root);
 
     UsedValues& get_mutable(NodeWithStyle const&);
     UsedValues const& get(NodeWithStyle const&) const;
 
-    OrderedHashMap<GC::Ref<Layout::Node const>, NonnullOwnPtr<UsedValues>> used_values_per_layout_node;
+    OrderedHashMap<GC::Ref<Layout::Node const>, NonnullRefPtr<UsedValues>> used_values_per_layout_node;
 
 private:
     void resolve_relative_positions();

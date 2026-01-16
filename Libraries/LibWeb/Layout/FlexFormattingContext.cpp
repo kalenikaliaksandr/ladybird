@@ -36,9 +36,12 @@ CSSPixels FlexFormattingContext::get_pixel_height(FlexItem const& item, CSS::Siz
 
 FlexFormattingContext::FlexFormattingContext(LayoutState& state, LayoutMode layout_mode, Box const& flex_container, FormattingContext* parent)
     : FormattingContext(Type::Flex, layout_mode, state, flex_container, parent)
-    , m_flex_container_state(m_state.get_mutable(flex_container))
+    , m_flex_container_state(get_mutable(flex_container))
     , m_flex_direction(flex_container.computed_values().flex_direction())
 {
+    // Pre-allocate FC-local UsedValues storage to prevent vector resizing
+    // which would invalidate FlexItem::used_values references
+    m_used_values.resize(flex_container.node_count_in_formatting_context());
 }
 
 FlexFormattingContext::~FlexFormattingContext() = default;
@@ -236,6 +239,7 @@ void FlexFormattingContext::run(AvailableSpace const& available_space)
         // This is a normal layout (not intrinsic sizing).
         // AD-HOC: Finally, layout the inside of all flex items.
         copy_dimensions_from_flex_items_to_boxes();
+
         for (auto& item : m_flex_items) {
             if (auto independent_formatting_context = layout_inside(item.box, LayoutMode::Normal, item.used_values.available_inner_space_or_constraints_from(m_available_space_for_items->space)))
                 independent_formatting_context->parent_context_did_dimension_child_root_box();
@@ -351,7 +355,7 @@ void FlexFormattingContext::generate_anonymous_flex_items()
             return IterationDecision::Continue;
 
         child_box.set_flex_item(true);
-        FlexItem item = { child_box, m_state.get_mutable(child_box) };
+        FlexItem item = { child_box, get_mutable(child_box) };
         populate_specified_margins(item, m_flex_direction);
 
         auto& order_bucket = order_item_bucket.ensure(child_box.computed_values().order());

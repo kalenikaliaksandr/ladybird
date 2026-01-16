@@ -6,7 +6,7 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
       SVGSVGBox <svg> at [8,8] [0+0+0 100 0+0+0] [0+0+0 100 0+0+0] [SVG] children: not-inline
         SVGForeignObjectBox <foreignObject> at [8,8] [0+0+0 40 0+0+0] [0+0+0 40 0+0+0] [BFC] children: not-inline
           BlockContainer <div#lol> at [8,8] [0+0+0 100 0+0+-60] [0+0+0 100 0+0+0] children: not-inline
-          SVGMaskBox <mask#theMask> at [8,8] [0+0+0 40 0+0+0] [0+0+0 40 0+0+0] children: not-inline
+          SVGMaskBox <mask#theMask> at [8,8] [0+0+0 40 0+0+0] [0+0+0 40 0+0+0] [SVG] children: not-inline
             SVGGeometryBox <circle> at [8,8] [0+0+0 40 0+0+0] [0+0+0 40 0+0+0] children: not-inline
 
 ViewportPaintable (Viewport<#document>) [0,0 800x600] overflow: [0,0 808x808]

@@ -277,6 +277,16 @@ private:
 
     NonnullOwnPtr<CSS::ComputedValues> m_computed_values;
     RefPtr<CSS::AbstractImageStyleValue const> m_list_style_image;
+
+    // Formatting context assignment for FC-local UsedValues storage
+    size_t m_formatting_context_id { 0 };
+    size_t m_index_in_formatting_context { 0 };
+
+public:
+    size_t formatting_context_id() const { return m_formatting_context_id; }
+    size_t index_in_formatting_context() const { return m_index_in_formatting_context; }
+    void set_formatting_context_id(size_t id) { m_formatting_context_id = id; }
+    void set_index_in_formatting_context(size_t index) { m_index_in_formatting_context = index; }
 };
 
 template<>

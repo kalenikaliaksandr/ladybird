@@ -75,6 +75,11 @@ public:
     FormattingContext const* parent() const { return m_parent; }
 
     Type type() const { return m_type; }
+    LayoutMode layout_mode() const { return m_layout_mode; }
+
+    // FC-local UsedValues access (dual-path: local storage or global fallback)
+    virtual LayoutState::UsedValues& get_mutable(NodeWithStyle const&);
+    virtual LayoutState::UsedValues const& get(NodeWithStyle const&) const;
 
     virtual bool inhibits_floating() const { return false; }
 
@@ -191,6 +196,14 @@ protected:
     GC::Ref<Box const> m_context_box;
 
     LayoutState& m_state;
+
+    // FC-local UsedValues storage for children in this formatting context
+    // The context box itself uses global state since the parent FC computes it
+    // Uses RefPtr to allow sharing with global state when committed
+    mutable Vector<RefPtr<LayoutState::UsedValues>> m_used_values;
+
+    // Helper to get containing block's UsedValues
+    LayoutState::UsedValues const& get_containing_block_used_values(NodeWithStyle const&) const;
 };
 
 #if FORMATTING_CONTEXT_TRACE_DEBUG

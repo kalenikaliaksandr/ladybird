@@ -26,6 +26,9 @@ public:
     virtual CSSPixels automatic_content_width() const override;
     virtual CSSPixels automatic_content_height() const override;
 
+    virtual LayoutState::UsedValues& get_mutable(NodeWithStyle const&) override;
+    virtual LayoutState::UsedValues const& get(NodeWithStyle const&) const override;
+
     auto const& left_side_floats() const { return m_left_floats; }
     auto const& right_side_floats() const { return m_right_floats; }
 

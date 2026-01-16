@@ -6,7 +6,7 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
         TextNode <#text> (not painted)
         TextNode <#text> (not painted)
         SVGGeometryBox <rect> at [8,8] [0+0+0 200 0+0+0] [0+0+0 200 0+0+0] children: not-inline
-          SVGMaskBox <mask#myMask> at [8,8] [0+0+0 200 0+0+0] [0+0+0 200 0+0+0] children: inline
+          SVGMaskBox <mask#myMask> at [8,8] [0+0+0 200 0+0+0] [0+0+0 200 0+0+0] [SVG] children: inline
             TextNode <#text> (not painted)
             SVGGeometryBox <rect> at [8,8] [0+0+0 200 0+0+0] [0+0+0 200 0+0+0] children: not-inline
             TextNode <#text> (not painted)
@@ -14,7 +14,7 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
             TextNode <#text> (not painted)
         TextNode <#text> (not painted)
         SVGGeometryBox <rect> at [208,208] [0+0+0 200 0+0+0] [0+0+0 100 0+0+0] children: not-inline
-          SVGMaskBox <mask#myMask> at [208,208] [0+0+0 200 0+0+0] [0+0+0 100 0+0+0] children: inline
+          SVGMaskBox <mask#myMask> at [208,208] [0+0+0 200 0+0+0] [0+0+0 100 0+0+0] [SVG] children: inline
             TextNode <#text> (not painted)
             SVGGeometryBox <rect> at [208,208] [0+0+0 200 0+0+0] [0+0+0 100 0+0+0] children: not-inline
             TextNode <#text> (not painted)
