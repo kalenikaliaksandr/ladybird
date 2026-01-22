@@ -9,9 +9,15 @@ DisplayList:
 Save@0
   ApplyTransform@0 matrix=[1 0 0 1 0 0]
   SaveLayer@0
-    FillPath@1 path_bounding_rect=[8,8 102x82]
+    FillRect@1 rect=[8,8 102x1] color=rgb(0, 0, 0)
+    FillRect@1 rect=[109,8 1x82] color=rgb(0, 0, 0)
+    FillRect@1 rect=[8,89 102x1] color=rgb(0, 0, 0)
+    FillRect@1 rect=[8,8 1x82] color=rgb(0, 0, 0)
     FillRect@3 rect=[9,9 150x120] color=rgb(240, 128, 128)
-    FillPath@1 path_bounding_rect=[130,8 102x82]
+    FillRect@1 rect=[130,8 102x1] color=rgb(0, 0, 0)
+    FillRect@1 rect=[231,8 1x82] color=rgb(0, 0, 0)
+    FillRect@1 rect=[130,89 102x1] color=rgb(0, 0, 0)
+    FillRect@1 rect=[130,8 1x82] color=rgb(0, 0, 0)
     FillRect@5 rect=[131,9 150x120] color=rgb(144, 238, 144)
     DrawGlyphRun@3 rect=[9,9 110x18] translation=[9,22.796875] color=rgb(0, 0, 0) scale=1
     DrawGlyphRun@5 rect=[131,9 119x18] translation=[131,22.796875] color=rgb(0, 0, 0) scale=1

@@ -12,9 +12,18 @@ DisplayList:
 Save@0
   ApplyTransform@0 matrix=[1 0 0 1 0 0]
   SaveLayer@0
-    FillPath@1 path_bounding_rect=[8,8 404x204]
-    FillPath@2 path_bounding_rect=[10,10 195x200]
-    FillPath@2 path_bounding_rect=[215,10 195x200]
+    FillRect@1 rect=[8,8 404x2] color=rgb(0, 0, 0)
+    FillRect@1 rect=[410,8 2x204] color=rgb(0, 0, 0)
+    FillRect@1 rect=[8,210 404x2] color=rgb(0, 0, 0)
+    FillRect@1 rect=[8,8 2x204] color=rgb(0, 0, 0)
+    FillRect@2 rect=[10,10 195x1] color=rgb(128, 128, 128)
+    FillRect@2 rect=[204,10 1x200] color=rgb(128, 128, 128)
+    FillRect@2 rect=[10,209 195x1] color=rgb(128, 128, 128)
+    FillRect@2 rect=[10,10 1x200] color=rgb(128, 128, 128)
+    FillRect@2 rect=[215,10 195x1] color=rgb(128, 128, 128)
+    FillRect@2 rect=[409,10 1x200] color=rgb(128, 128, 128)
+    FillRect@2 rect=[215,209 195x1] color=rgb(128, 128, 128)
+    FillRect@2 rect=[215,10 1x200] color=rgb(128, 128, 128)
     FillRect@4 rect=[16,16 150x80] color=rgb(255, 0, 0)
     DrawGlyphRun@4 rect=[16,16 15x18] translation=[16,29.796875] color=rgb(0, 0, 0) scale=1
     FillRect@5 rect=[16,101 150x80] color=rgb(0, 128, 0)

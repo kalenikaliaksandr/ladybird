@@ -245,6 +245,27 @@ void paint_border(DisplayListRecorder& painter, BorderEdge edge, DevicePixelRect
         return;
     }
 
+    // Fast path: solid border with no rounded corners, use simple rectangle fill.
+    // Skip this optimization when the border rect is small relative to adjacent border
+    // widths, as diagonal miters would dominate the shape (e.g., CSS triangle trick).
+    if (!radius && !opposite_radius) {
+        bool dominated_by_miters = false;
+        switch (edge) {
+        case BorderEdge::Top:
+        case BorderEdge::Bottom:
+            dominated_by_miters = rect.width() <= borders_data.left.width + borders_data.right.width;
+            break;
+        case BorderEdge::Left:
+        case BorderEdge::Right:
+            dominated_by_miters = rect.height() <= borders_data.top.width + borders_data.bottom.width;
+            break;
+        }
+        if (!dominated_by_miters) {
+            painter.fill_rect(rect.to_type<int>(), color);
+            return;
+        }
+    }
+
     auto draw_border = [&](Vector<Gfx::FloatPoint> const& points, bool joined_corner_has_inner_corner, bool opposite_joined_corner_has_inner_corner, Gfx::FloatSize joined_inner_corner_offset, Gfx::FloatSize opposite_joined_inner_corner_offset, bool ready_to_draw) {
         int current = 0;
         path.move_to(points[current++]);
