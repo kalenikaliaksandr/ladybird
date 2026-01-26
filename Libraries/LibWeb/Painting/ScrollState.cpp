@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/DOM/Element.h>
 #include <LibWeb/Painting/PaintableBox.h>
 #include <LibWeb/Painting/ScrollState.h>
 
@@ -19,6 +20,9 @@ ScrollStateSnapshot ScrollStateSnapshot::create(Vector<NonnullRefPtr<ScrollFrame
 
         // Current offset
         data.own_offset = scroll_frame->own_offset();
+
+        // Store stable ID for sync back to main thread
+        data.stable_id = scroll_frame->stable_id();
 
         // Compute max offset from scrollable overflow and padding box
         auto const& paintable_box = scroll_frame->paintable_box();
@@ -36,6 +40,14 @@ ScrollStateSnapshot ScrollStateSnapshot::create(Vector<NonnullRefPtr<ScrollFrame
             if (!parent->is_sticky()) {
                 data.scrollable_parent_id = parent->id();
                 break;
+            }
+        }
+
+        // Get generation from the DOM element (which persists across relayouts)
+        if (auto dom_node = paintable_box.dom_node()) {
+            if (auto const* element = as_if<DOM::Element>(*dom_node)) {
+                auto pseudo = paintable_box.layout_node().generated_for_pseudo_element();
+                data.generation = element->scroll_generation(pseudo);
             }
         }
 

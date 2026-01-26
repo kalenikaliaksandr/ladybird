@@ -6,6 +6,7 @@
  */
 
 #include <LibWeb/CSS/VisualViewport.h>
+#include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/Range.h>
 #include <LibWeb/Layout/TextNode.h>
 #include <LibWeb/Layout/Viewport.h>
@@ -88,13 +89,41 @@ void ViewportPaintable::paint_all_phases(DisplayListRecordingContext& context)
     context.finalize_scroll_hit_test_scene();
 }
 
+static Optional<StableScrollFrameID> compute_stable_scroll_frame_id(PaintableBox const& paintable_box)
+{
+    auto const& layout_node = paintable_box.layout_node();
+
+    // Case: Pseudo-element
+    if (auto pseudo_type = layout_node.generated_for_pseudo_element(); pseudo_type.has_value()) {
+        auto const* generator = layout_node.pseudo_element_generator();
+        if (!generator)
+            return {};
+        return StableScrollFrameID {
+            .node_id = generator->unique_id(),
+            .pseudo_element = pseudo_type
+        };
+    }
+
+    // Case: Regular DOM element
+    if (auto dom_node = paintable_box.dom_node()) {
+        return StableScrollFrameID {
+            .node_id = dom_node->unique_id(),
+            .pseudo_element = {}
+        };
+    }
+
+    // Case: Anonymous box - skip (no stable ID)
+    return {};
+}
+
 void ViewportPaintable::assign_scroll_frames()
 {
     for_each_in_inclusive_subtree_of_type<PaintableBox>([&](auto& paintable_box) {
         RefPtr<ScrollFrame> sticky_scroll_frame;
         if (paintable_box.is_sticky_position()) {
             auto parent_scroll_frame = paintable_box.nearest_scroll_frame();
-            sticky_scroll_frame = m_scroll_state.create_sticky_frame_for(paintable_box, parent_scroll_frame);
+            auto stable_id = compute_stable_scroll_frame_id(paintable_box);
+            sticky_scroll_frame = m_scroll_state.create_sticky_frame_for(paintable_box, parent_scroll_frame, move(stable_id));
 
             paintable_box.set_enclosing_scroll_frame(sticky_scroll_frame);
             paintable_box.set_own_scroll_frame(sticky_scroll_frame);
@@ -107,7 +136,8 @@ void ViewportPaintable::assign_scroll_frames()
             } else {
                 parent_scroll_frame = paintable_box.nearest_scroll_frame();
             }
-            auto scroll_frame = m_scroll_state.create_scroll_frame_for(paintable_box, parent_scroll_frame);
+            auto stable_id = compute_stable_scroll_frame_id(paintable_box);
+            auto scroll_frame = m_scroll_state.create_scroll_frame_for(paintable_box, parent_scroll_frame, move(stable_id));
             paintable_box.set_own_scroll_frame(scroll_frame);
         }
 
@@ -354,7 +384,10 @@ void ViewportPaintable::refresh_scroll_state()
     });
 
     m_scroll_state.for_each_scroll_frame([&](auto& scroll_frame) {
-        scroll_frame->set_own_offset(-scroll_frame->paintable_box().scroll_offset());
+        auto offset = scroll_frame->paintable_box().scroll_offset();
+        dbgln("[ViewportPaintable] refresh_scroll_state: frame id={}, scroll_offset=({}, {})",
+            scroll_frame->id(), offset.x(), offset.y());
+        scroll_frame->set_own_offset(-offset);
     });
 
     m_scroll_state_snapshot = m_scroll_state.snapshot();

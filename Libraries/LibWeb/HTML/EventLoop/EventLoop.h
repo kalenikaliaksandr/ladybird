@@ -101,6 +101,7 @@ private:
     virtual void visit_edges(Visitor&) override;
 
     void process_input_events() const;
+    void apply_pending_scroll_state_updates();
     void update_the_rendering();
 
     Type m_type { Type::Window };

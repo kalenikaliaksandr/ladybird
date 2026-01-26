@@ -1952,7 +1952,9 @@ double Element::scroll_top() const
 
     // 9. Return the y-coordinate of the scrolling area at the alignment point with the top of the padding edge of the element.
     // FIXME: Is this correct?
-    return paintable_box()->scroll_offset().y().to_double();
+    auto offset = paintable_box()->scroll_offset();
+    dbgln("[Element::scroll_top] returning {}, node_id={}", offset.y().to_double(), unique_id().value());
+    return offset.y().to_double();
 }
 
 // https://drafts.csswg.org/cssom-view/#dom-element-scrollleft
@@ -3723,17 +3725,31 @@ CSSPixelPoint Element::scroll_offset(Optional<CSS::PseudoElement> pseudo_element
             return pseudo_element->scroll_offset();
         return {};
     }
+    dbgln("[Element] scroll_offset() -> ({}, {}), node_id={}", m_scroll_offset.x(), m_scroll_offset.y(), unique_id().value());
     return m_scroll_offset;
 }
 
 void Element::set_scroll_offset(Optional<CSS::PseudoElement> pseudo_element_type, CSSPixelPoint offset)
 {
     if (pseudo_element_type.has_value()) {
+        // PseudoElement::set_scroll_offset increments its generation internally
         if (auto pseudo_element = get_pseudo_element(*pseudo_element_type); pseudo_element.has_value())
             pseudo_element->set_scroll_offset(offset);
     } else {
+        dbgln("[Element] set_scroll_offset({}, {}), node_id={}", offset.x(), offset.y(), unique_id().value());
         m_scroll_offset = offset;
+        ++m_scroll_generation;
     }
+}
+
+u64 Element::scroll_generation(Optional<CSS::PseudoElement> pseudo_element_type) const
+{
+    if (pseudo_element_type.has_value()) {
+        if (auto pseudo_element = get_pseudo_element(*pseudo_element_type); pseudo_element.has_value())
+            return pseudo_element->scroll_generation();
+        return 0;
+    }
+    return m_scroll_generation;
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#translation-mode

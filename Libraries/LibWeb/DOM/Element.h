@@ -415,6 +415,8 @@ public:
     CSSPixelPoint scroll_offset(Optional<CSS::PseudoElement> type) const;
     void set_scroll_offset(Optional<CSS::PseudoElement> type, CSSPixelPoint offset);
 
+    u64 scroll_generation(Optional<CSS::PseudoElement> type) const;
+
     enum class TranslationMode {
         TranslateEnabled,
         NoTranslate
@@ -642,6 +644,7 @@ private:
     GC::Ptr<CSS::StylePropertyMapReadOnly> m_computed_style_map_cache;
 
     CSSPixelPoint m_scroll_offset;
+    u64 m_scroll_generation { 0 };
 
     bool m_in_top_layer : 1 { false };
     bool m_rendered_in_top_layer : 1 { false };

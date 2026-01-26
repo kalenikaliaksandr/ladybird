@@ -9,11 +9,12 @@
 
 namespace Web::Painting {
 
-ScrollFrame::ScrollFrame(PaintableBox const& paintable_box, size_t id, bool sticky, RefPtr<ScrollFrame const> parent)
+ScrollFrame::ScrollFrame(PaintableBox const& paintable_box, size_t id, bool sticky, RefPtr<ScrollFrame const> parent, Optional<StableScrollFrameID> stable_id)
     : m_paintable_box(paintable_box)
     , m_id(id)
     , m_sticky(sticky)
     , m_parent(move(parent))
+    , m_stable_id(move(stable_id))
 {
 }
 

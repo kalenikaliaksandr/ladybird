@@ -15,6 +15,7 @@
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/EventLoop/EventLoop.h>
 #include <LibWeb/HTML/HTMLMediaElement.h>
+#include <LibWeb/HTML/RenderingThread.h>
 #include <LibWeb/HTML/Scripting/Agent.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
@@ -25,6 +26,7 @@
 #include <LibWeb/IndexedDB/Internal/Algorithms.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/PaintableBox.h>
+#include <LibWeb/Painting/ScrollState.h>
 #include <LibWeb/Painting/ViewportPaintable.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/Timer.h>
@@ -262,6 +264,60 @@ void EventLoop::queue_task_to_update_the_rendering()
     }
 }
 
+void EventLoop::apply_pending_scroll_state_updates()
+{
+    // Get all traversable navigables
+    auto documents = documents_in_this_event_loop_matching([&](auto const& document) {
+        if (document.is_decoded_svg())
+            return false;
+        if (!document.navigable())
+            return false;
+        if (!document.navigable()->is_traversable())
+            return false;
+        return true;
+    });
+
+    for (auto const& document : documents) {
+        auto navigable = document->navigable();
+        auto& rendering_thread = navigable->rendering_thread();
+        auto updates = rendering_thread.drain_pending_scroll_updates();
+
+        dbgln("[EventLoop] apply_pending_scroll_state_updates: {} updates drained", updates.size());
+
+        for (auto const& update : updates) {
+            dbgln("[EventLoop] Processing update: node_id={}, offset=({}, {})",
+                update.scroll_frame_id.node_id.value(), update.offset.x(), update.offset.y());
+
+            auto* viewport_paintable = document->paintable();
+            if (!viewport_paintable) {
+                dbgln("[EventLoop] WARNING: no viewport_paintable");
+                continue;
+            }
+
+            auto& scroll_state = viewport_paintable->scroll_state();
+            auto scroll_frame = scroll_state.scroll_frame_for_stable_id(update.scroll_frame_id);
+            if (!scroll_frame) {
+                dbgln("[EventLoop] WARNING: scroll_frame_for_stable_id returned null for node_id={}",
+                    update.scroll_frame_id.node_id.value());
+                continue;
+            }
+
+            dbgln("[EventLoop] Found scroll_frame id={}, applying offset ({}, {})",
+                scroll_frame->id(), update.offset.x(), update.offset.y());
+
+            // FIXME: Use generation counter to skip stale updates when main thread
+            //        has scrolled (e.g., via JS) since the snapshot was created.
+            //        Current implementation has issues with generation comparison logic.
+
+            // Apply scroll offset via PaintableBox
+            // This will queue the scroll event to pending_scroll_events
+            auto const& paintable_box = scroll_frame->paintable_box();
+            auto result = const_cast<Painting::PaintableBox&>(paintable_box).set_scroll_offset(update.offset);
+            dbgln("[EventLoop] set_scroll_offset result: {}", result == Painting::PaintableBox::ScrollHandled::Yes ? "Yes" : "No");
+        }
+    }
+}
+
 void EventLoop::process_input_events() const
 {
     auto process_input_events_queue = [&](Page& page) {
@@ -277,6 +333,24 @@ void EventLoop::process_input_events() const
             // Skip events that are not intended for this page
             if (event.page_id != page_client.id()) {
                 events_for_other_pages.enqueue(move(event));
+                continue;
+            }
+
+            // Handle wheel events asynchronously through the rendering thread.
+            if (auto* mouse_event = event.event.get_pointer<MouseEvent>();
+                mouse_event && mouse_event->type == MouseEvent::Type::MouseWheel) {
+                for (size_t i = 0; i < event.coalesced_event_count; ++i)
+                    page_client.report_finished_handling_input_event(event.page_id, EventResult::Dropped);
+
+                auto* navigable = page.top_level_traversable().ptr();
+                navigable->route_wheel_event_through_rendering_thread(
+                    event.page_id, mouse_event->position, mouse_event->screen_position,
+                    to_underlying(mouse_event->button), to_underlying(mouse_event->buttons),
+                    to_underlying(mouse_event->modifiers),
+                    mouse_event->wheel_delta_x, mouse_event->wheel_delta_y,
+                    [&page_client, page_id = event.page_id](EventResult result) {
+                        page_client.report_finished_handling_input_event(page_id, result);
+                    });
                 continue;
             }
 
@@ -301,7 +375,8 @@ void EventLoop::process_input_events() const
                     case MouseEvent::Type::MouseLeave:
                         return page.handle_mouseleave();
                     case MouseEvent::Type::MouseWheel:
-                        return page.handle_mousewheel(mouse_event.position, mouse_event.screen_position, mouse_event.button, mouse_event.buttons, mouse_event.modifiers, mouse_event.wheel_delta_x, mouse_event.wheel_delta_y);
+                        // Wheel events are handled asynchronously through the rendering thread above.
+                        VERIFY_NOT_REACHED();
                     case MouseEvent::Type::DoubleClick:
                         return page.handle_doubleclick(mouse_event.position, mouse_event.screen_position, mouse_event.button, mouse_event.buttons, mouse_event.modifiers);
                     }
@@ -350,6 +425,10 @@ void EventLoop::update_the_rendering()
     ScopeGuard const guard = [this] {
         m_running_rendering_task = false;
     };
+
+    // Apply pending scroll state updates from rendering thread FIRST
+    // This ensures input events see correct scroll positions
+    apply_pending_scroll_state_updates();
 
     process_input_events();
 

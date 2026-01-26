@@ -40,7 +40,13 @@ class WEB_API PseudoElement : public JS::Cell {
     void set_counters_set(OwnPtr<CSS::CountersSet>&&);
 
     CSSPixelPoint scroll_offset() const { return m_scroll_offset; }
-    void set_scroll_offset(CSSPixelPoint value) { m_scroll_offset = value; }
+    void set_scroll_offset(CSSPixelPoint value)
+    {
+        m_scroll_offset = value;
+        ++m_scroll_generation;
+    }
+
+    u64 scroll_generation() const { return m_scroll_generation; }
 
     virtual void visit_edges(JS::Cell::Visitor&) override;
 
@@ -51,6 +57,7 @@ private:
     OrderedHashMap<FlyString, CSS::StyleProperty> m_custom_properties;
     OwnPtr<CSS::CountersSet> m_counters_set;
     CSSPixelPoint m_scroll_offset {};
+    u64 m_scroll_generation { 0 };
 };
 
 // https://drafts.csswg.org/css-view-transitions/#pseudo-element-tree

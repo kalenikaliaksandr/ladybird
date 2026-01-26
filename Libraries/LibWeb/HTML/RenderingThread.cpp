@@ -9,6 +9,7 @@
 #include <LibWeb/HTML/RenderingThread.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/Painting/DisplayListPlayerSkia.h>
+#include <LibWeb/PixelUnits.h>
 
 namespace Web::HTML {
 
@@ -44,7 +45,19 @@ struct ScreenshotCommand {
     Function<void()> callback;
 };
 
-using CompositorCommand = Variant<UpdateDisplayListCommand, UpdateBackingStoresCommand, ScreenshotCommand>;
+struct WheelEventCommand {
+    u64 page_id;
+    DevicePixelPoint position;
+    DevicePixelPoint screen_position;
+    u32 button;
+    u32 buttons;
+    u32 modifiers;
+    int wheel_delta_x;
+    int wheel_delta_y;
+    Function<void(u64, DevicePixelPoint, DevicePixelPoint, u32, u32, u32, int, int, Optional<size_t>)> callback;
+};
+
+using CompositorCommand = Variant<UpdateDisplayListCommand, UpdateBackingStoresCommand, ScreenshotCommand, WheelEventCommand>;
 
 class RenderingThread::ThreadData final : public AtomicRefCounted<ThreadData> {
 public:
@@ -86,6 +99,81 @@ public:
         m_command_ready.signal();
     }
 
+    void process_wheel_event(WheelEventCommand& cmd)
+    {
+        VERIFY(m_cached_display_list);
+
+        auto scroll_hit_test_scene = m_cached_display_list->scroll_hit_test_scene();
+        if (!scroll_hit_test_scene)
+            return;
+
+        // Convert DevicePixelPoint to CSSPixelPoint
+        double dppx = m_cached_display_list->device_pixels_per_css_pixel();
+        CSSPixelPoint css_position {
+            CSSPixels::nearest_value_for(cmd.position.x().value() / dppx),
+            CSSPixels::nearest_value_for(cmd.position.y().value() / dppx)
+        };
+
+        // Look up scroll state snapshot for this display list
+        auto it = m_cached_scroll_state_snapshot.find(*m_cached_display_list);
+        if (it == m_cached_scroll_state_snapshot.end())
+            return;
+
+        auto& snapshot = it->value;
+
+        // Hit-test to find scroll frame
+        auto scroll_frame_id = scroll_hit_test_scene->hit_test_scroll(css_position, snapshot);
+
+        dbgln("[RenderingThread] Wheel event: css_position=({}, {}), hit_test scroll_frame_id={}",
+            css_position.x(), css_position.y(),
+            scroll_frame_id.has_value() ? scroll_frame_id.value() : -1);
+
+        if (scroll_frame_id.has_value()) {
+            // Apply scroll delta directly to the snapshot
+            CSSPixelPoint delta {
+                CSSPixels(cmd.wheel_delta_x),
+                CSSPixels(cmd.wheel_delta_y)
+            };
+            dbgln("[RenderingThread] Applying delta ({}, {}) to frame {}", delta.x(), delta.y(), scroll_frame_id.value());
+            auto result = snapshot.scroll_frame_by_delta(scroll_frame_id.value(), delta);
+            dbgln("[RenderingThread] scroll_frame_by_delta result: scrolled={}, stable_id={}, new_offset=({}, {})",
+                result.scrolled, result.stable_id.has_value(), result.new_offset.x(), result.new_offset.y());
+            if (result.scrolled) {
+                // Scroll was applied - trigger a frame presentation
+                m_needs_present = true;
+                m_pending_viewport_rect = m_last_viewport_rect;
+
+                // Queue update for main thread sync
+                if (result.stable_id.has_value()) {
+                    // Convert negated offset back to positive scroll offset
+                    CSSPixelPoint scroll_offset { -result.new_offset.x(), -result.new_offset.y() };
+                    dbgln("[RenderingThread] Queuing scroll update: stable_id node={}, offset=({}, {})",
+                        result.stable_id->node_id.value(), scroll_offset.x(), scroll_offset.y());
+                    queue_scroll_update({ .scroll_frame_id = *result.stable_id,
+                        .offset = scroll_offset,
+                        .generation = result.generation });
+                } else {
+                    dbgln("[RenderingThread] WARNING: scrolled but no stable_id!");
+                }
+            }
+        }
+
+        // Still notify main thread asynchronously (fire-and-forget)
+        invoke_on_main_thread([page_id = cmd.page_id,
+                                  position = cmd.position,
+                                  screen_position = cmd.screen_position,
+                                  button = cmd.button,
+                                  buttons = cmd.buttons,
+                                  modifiers = cmd.modifiers,
+                                  wheel_delta_x = cmd.wheel_delta_x,
+                                  wheel_delta_y = cmd.wheel_delta_y,
+                                  scroll_frame_id,
+                                  callback = move(cmd.callback)]() mutable {
+            callback(page_id, position, screen_position, button, buttons, modifiers,
+                wheel_delta_x, wheel_delta_y, scroll_frame_id);
+        });
+    }
+
     void compositor_loop()
     {
         while (true) {
@@ -111,8 +199,34 @@ public:
 
                 command->visit(
                     [this](UpdateDisplayListCommand& cmd) {
+                        dbgln("[RenderingThread] UpdateDisplayListCommand received, replacing snapshot");
+                        // Log the old snapshot's scroll offsets before replacing
+                        if (m_cached_display_list) {
+                            auto it = m_cached_scroll_state_snapshot.find(*m_cached_display_list);
+                            if (it != m_cached_scroll_state_snapshot.end()) {
+                                auto old_offset = it->value.own_offset_for_frame_with_id(1);
+                                dbgln("[RenderingThread] Old snapshot frame 1 offset: ({}, {})", old_offset.x(), old_offset.y());
+                            }
+                        }
                         m_cached_display_list = move(cmd.display_list);
                         m_cached_scroll_state_snapshot = move(cmd.scroll_state_snapshot);
+                        // Log the new snapshot's scroll offsets
+                        if (m_cached_display_list) {
+                            auto it = m_cached_scroll_state_snapshot.find(*m_cached_display_list);
+                            if (it != m_cached_scroll_state_snapshot.end()) {
+                                auto new_offset = it->value.own_offset_for_frame_with_id(1);
+                                dbgln("[RenderingThread] New snapshot frame 1 offset: ({}, {})", new_offset.x(), new_offset.y());
+                            }
+                        }
+
+                        // Process any wheel events that were queued while waiting for display list
+                        if (!m_pending_wheel_events.is_empty()) {
+                            dbgln("[RenderingThread] Processing {} pending wheel events", m_pending_wheel_events.size());
+                            for (auto& pending_cmd : m_pending_wheel_events) {
+                                process_wheel_event(pending_cmd);
+                            }
+                            m_pending_wheel_events.clear();
+                        }
                     },
                     [this](UpdateBackingStoresCommand& cmd) {
                         m_backing_stores.front_store = move(cmd.front_store);
@@ -129,6 +243,15 @@ public:
                                 callback();
                             });
                         }
+                    },
+                    [this](WheelEventCommand& cmd) {
+                        if (!m_cached_display_list) {
+                            // Queue wheel event until display list is available
+                            dbgln("[RenderingThread] WheelEventCommand queued (no display list yet)");
+                            m_pending_wheel_events.append(move(cmd));
+                            return;
+                        }
+                        process_wheel_event(cmd);
                     });
 
                 if (m_exit)
@@ -166,6 +289,7 @@ public:
                     m_backing_stores.swap();
 
                     m_queued_rasterization_tasks++;
+                    m_last_viewport_rect = viewport_rect;
 
                     invoke_on_main_thread([this, viewport_rect, rendered_bitmap_id]() {
                         m_presentation_callback(viewport_rect, rendered_bitmap_id);
@@ -205,6 +329,12 @@ private:
 
     bool m_needs_present { false };
     Gfx::IntRect m_pending_viewport_rect;
+    Gfx::IntRect m_last_viewport_rect;
+
+    Vector<WheelEventCommand> m_pending_wheel_events;
+
+    Threading::Mutex m_scroll_updates_mutex;
+    Vector<Painting::ScrollStateUpdate> m_pending_scroll_updates;
 
 public:
     void decrement_queued_tasks()
@@ -213,6 +343,18 @@ public:
         VERIFY(m_queued_rasterization_tasks >= 1 && m_queued_rasterization_tasks <= 2);
         m_queued_rasterization_tasks--;
         m_ready_to_paint.signal();
+    }
+
+    void queue_scroll_update(Painting::ScrollStateUpdate update)
+    {
+        Threading::MutexLocker const locker { m_scroll_updates_mutex };
+        m_pending_scroll_updates.append(move(update));
+    }
+
+    Vector<Painting::ScrollStateUpdate> drain_scroll_updates()
+    {
+        Threading::MutexLocker const locker { m_scroll_updates_mutex };
+        return move(m_pending_scroll_updates);
     }
 };
 
@@ -274,6 +416,21 @@ void RenderingThread::request_screenshot(NonnullRefPtr<Gfx::PaintingSurface> tar
 void RenderingThread::ready_to_paint()
 {
     m_thread_data->decrement_queued_tasks();
+}
+
+void RenderingThread::enqueue_wheel_event(u64 page_id, DevicePixelPoint position,
+    DevicePixelPoint screen_position, u32 button, u32 buttons, u32 modifiers,
+    int wheel_delta_x, int wheel_delta_y,
+    Function<void(u64, DevicePixelPoint, DevicePixelPoint, u32, u32, u32, int, int, Optional<size_t>)>&& callback)
+{
+    m_thread_data->enqueue_command(WheelEventCommand {
+        page_id, position, screen_position, button, buttons, modifiers,
+        wheel_delta_x, wheel_delta_y, move(callback) });
+}
+
+Vector<Painting::ScrollStateUpdate> RenderingThread::drain_pending_scroll_updates()
+{
+    return m_thread_data->drain_scroll_updates();
 }
 
 }

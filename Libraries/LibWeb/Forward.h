@@ -46,6 +46,7 @@ class DisplayListPlayerSkia;
 class DisplayListRecorder;
 class SVGGradientPaintStyle;
 class ScrollStateSnapshot;
+struct StableScrollFrameID;
 using PaintStyle = RefPtr<SVGGradientPaintStyle>;
 using PaintStyleOrColor = Variant<PaintStyle, Gfx::Color>;
 using ScrollStateSnapshotByDisplayList = HashMap<NonnullRefPtr<DisplayList>, ScrollStateSnapshot>;

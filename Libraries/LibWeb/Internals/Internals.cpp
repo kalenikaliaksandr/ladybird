@@ -24,6 +24,7 @@
 #include <LibWeb/HTML/HTMLElement.h>
 #include <LibWeb/HTML/Navigable.h>
 #include <LibWeb/HTML/PaintConfig.h>
+#include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/Internals/InternalGamepad.h>
 #include <LibWeb/Internals/Internals.h>
@@ -345,9 +346,18 @@ void Internals::move_pointer_to(double x, double y)
 void Internals::wheel(double x, double y, double delta_x, double delta_y)
 {
     auto& page = this->page();
-
     auto position = page.css_to_device_point({ x, y });
-    page.handle_mousewheel(position, position, 0, 0, 0, delta_x, delta_y);
+
+    // Route through rendering thread to test async scroll sync
+    if (auto* navigable = page.top_level_traversable().ptr()) {
+        navigable->route_wheel_event_through_rendering_thread(
+            0, position, position, 0, 0, 0,
+            static_cast<int>(delta_x), static_cast<int>(delta_y),
+            [](EventResult) { });
+    } else {
+        // Fallback to direct handling if no navigable
+        page.handle_mousewheel(position, position, 0, 0, 0, delta_x, delta_y);
+    }
 }
 
 void Internals::pinch(double x, double y, double scale_delta)

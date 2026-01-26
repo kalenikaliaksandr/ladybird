@@ -6,20 +6,38 @@
 
 #pragma once
 
+#include <AK/HashFunctions.h>
 #include <AK/RefCounted.h>
+#include <AK/Traits.h>
 #include <LibGC/Weak.h>
+#include <LibWeb/CSS/PseudoElement.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/PixelUnits.h>
 
 namespace Web::Painting {
 
+struct StableScrollFrameID {
+    UniqueNodeID node_id;
+    Optional<CSS::PseudoElement> pseudo_element;
+
+    bool operator==(StableScrollFrameID const&) const = default;
+
+    unsigned hash() const
+    {
+        return pair_int_hash(
+            static_cast<u32>(node_id.value() & 0xFFFFFFFF),
+            pseudo_element.has_value() ? to_underlying(*pseudo_element) : 0xFF);
+    }
+};
+
 class ScrollFrame : public RefCounted<ScrollFrame> {
 public:
-    ScrollFrame(PaintableBox const& paintable_box, size_t id, bool sticky, RefPtr<ScrollFrame const> parent);
+    ScrollFrame(PaintableBox const& paintable_box, size_t id, bool sticky, RefPtr<ScrollFrame const> parent, Optional<StableScrollFrameID> stable_id);
 
     PaintableBox const& paintable_box() const { return *m_paintable_box; }
 
     size_t id() const { return m_id; }
+    Optional<StableScrollFrameID> const& stable_id() const { return m_stable_id; }
 
     bool is_sticky() const { return m_sticky; }
 
@@ -47,6 +65,7 @@ private:
     size_t m_id { 0 };
     bool m_sticky { false };
     RefPtr<ScrollFrame const> m_parent;
+    Optional<StableScrollFrameID> m_stable_id;
     CSSPixelPoint m_own_offset;
 
     // Caching here relies on the fact that offsets of all scroll frames are invalidated when any of them changes,
@@ -55,3 +74,8 @@ private:
 };
 
 }
+
+template<>
+struct AK::Traits<Web::Painting::StableScrollFrameID> : public DefaultTraits<Web::Painting::StableScrollFrameID> {
+    static unsigned hash(Web::Painting::StableScrollFrameID const& id) { return id.hash(); }
+};
