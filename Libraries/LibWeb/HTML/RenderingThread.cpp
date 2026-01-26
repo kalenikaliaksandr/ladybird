@@ -9,6 +9,7 @@
 #include <LibWeb/HTML/RenderingThread.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/Painting/DisplayListPlayerSkia.h>
+#include <LibWeb/PixelUnits.h>
 
 namespace Web::HTML {
 
@@ -44,7 +45,19 @@ struct ScreenshotCommand {
     Function<void()> callback;
 };
 
-using CompositorCommand = Variant<UpdateDisplayListCommand, UpdateBackingStoresCommand, ScreenshotCommand>;
+struct WheelEventCommand {
+    u64 page_id;
+    DevicePixelPoint position;
+    DevicePixelPoint screen_position;
+    u32 button;
+    u32 buttons;
+    u32 modifiers;
+    int wheel_delta_x;
+    int wheel_delta_y;
+    Function<void(u64, DevicePixelPoint, DevicePixelPoint, u32, u32, u32, int, int, Optional<size_t>)> callback;
+};
+
+using CompositorCommand = Variant<UpdateDisplayListCommand, UpdateBackingStoresCommand, ScreenshotCommand, WheelEventCommand>;
 
 class RenderingThread::ThreadData final : public AtomicRefCounted<ThreadData> {
 public:
@@ -129,6 +142,59 @@ public:
                                 callback();
                             });
                         }
+                    },
+                    [this](WheelEventCommand& cmd) {
+                        if (!m_cached_display_list)
+                            return;
+
+                        auto scroll_hit_test_scene = m_cached_display_list->scroll_hit_test_scene();
+                        if (!scroll_hit_test_scene)
+                            return;
+
+                        // Convert DevicePixelPoint to CSSPixelPoint
+                        double dppx = m_cached_display_list->device_pixels_per_css_pixel();
+                        CSSPixelPoint css_position {
+                            CSSPixels::nearest_value_for(cmd.position.x().value() / dppx),
+                            CSSPixels::nearest_value_for(cmd.position.y().value() / dppx)
+                        };
+
+                        // Look up scroll state snapshot for this display list
+                        auto it = m_cached_scroll_state_snapshot.find(*m_cached_display_list);
+                        if (it == m_cached_scroll_state_snapshot.end())
+                            return;
+
+                        auto& snapshot = it->value;
+
+                        // Hit-test to find scroll frame
+                        auto scroll_frame_id = scroll_hit_test_scene->hit_test_scroll(css_position, snapshot);
+
+                        if (scroll_frame_id.has_value()) {
+                            // Apply scroll delta directly to the snapshot
+                            CSSPixelPoint delta {
+                                CSSPixels(cmd.wheel_delta_x),
+                                CSSPixels(cmd.wheel_delta_y)
+                            };
+                            if (snapshot.scroll_frame_by_delta(scroll_frame_id.value(), delta)) {
+                                // Scroll was applied - trigger a frame presentation
+                                m_needs_present = true;
+                                m_pending_viewport_rect = m_last_viewport_rect;
+                            }
+                        }
+
+                        // Still notify main thread asynchronously (fire-and-forget)
+                        invoke_on_main_thread([page_id = cmd.page_id,
+                                                  position = cmd.position,
+                                                  screen_position = cmd.screen_position,
+                                                  button = cmd.button,
+                                                  buttons = cmd.buttons,
+                                                  modifiers = cmd.modifiers,
+                                                  wheel_delta_x = cmd.wheel_delta_x,
+                                                  wheel_delta_y = cmd.wheel_delta_y,
+                                                  scroll_frame_id,
+                                                  callback = move(cmd.callback)]() mutable {
+                            callback(page_id, position, screen_position, button, buttons, modifiers,
+                                wheel_delta_x, wheel_delta_y, scroll_frame_id);
+                        });
                     });
 
                 if (m_exit)
@@ -166,6 +232,7 @@ public:
                     m_backing_stores.swap();
 
                     m_queued_rasterization_tasks++;
+                    m_last_viewport_rect = viewport_rect;
 
                     invoke_on_main_thread([this, viewport_rect, rendered_bitmap_id]() {
                         m_presentation_callback(viewport_rect, rendered_bitmap_id);
@@ -205,6 +272,7 @@ private:
 
     bool m_needs_present { false };
     Gfx::IntRect m_pending_viewport_rect;
+    Gfx::IntRect m_last_viewport_rect;
 
 public:
     void decrement_queued_tasks()
@@ -274,6 +342,16 @@ void RenderingThread::request_screenshot(NonnullRefPtr<Gfx::PaintingSurface> tar
 void RenderingThread::ready_to_paint()
 {
     m_thread_data->decrement_queued_tasks();
+}
+
+void RenderingThread::enqueue_wheel_event(u64 page_id, DevicePixelPoint position,
+    DevicePixelPoint screen_position, u32 button, u32 buttons, u32 modifiers,
+    int wheel_delta_x, int wheel_delta_y,
+    Function<void(u64, DevicePixelPoint, DevicePixelPoint, u32, u32, u32, int, int, Optional<size_t>)>&& callback)
+{
+    m_thread_data->enqueue_command(WheelEventCommand {
+        page_id, position, screen_position, button, buttons, modifiers,
+        wheel_delta_x, wheel_delta_y, move(callback) });
 }
 
 }

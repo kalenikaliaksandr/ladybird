@@ -41,6 +41,44 @@ public:
         return m_frames[id].scrollable_parent_id;
     }
 
+    // Apply scroll delta to a frame, returns true if scroll was applied
+    bool apply_scroll_delta(size_t frame_id, CSSPixelPoint delta)
+    {
+        if (frame_id >= m_frames.size())
+            return false;
+
+        auto& frame = m_frames[frame_id];
+        auto current = frame.own_offset; // Note: this is negated scroll offset
+        auto max = frame.max_offset;
+
+        // own_offset is negative, so we subtract delta to scroll down/right
+        CSSPixelPoint new_offset {
+            clamp(current.x() - delta.x(), -max.x(), CSSPixels(0)),
+            clamp(current.y() - delta.y(), -max.y(), CSSPixels(0))
+        };
+
+        if (new_offset == current)
+            return false;
+
+        frame.own_offset = new_offset;
+        return true;
+    }
+
+    // Walk parent chain trying to apply scroll
+    bool scroll_frame_by_delta(size_t frame_id, CSSPixelPoint delta)
+    {
+        size_t current_id = frame_id;
+        while (true) {
+            if (apply_scroll_delta(current_id, delta))
+                return true;
+
+            auto parent_id = scrollable_parent_for_frame_with_id(current_id);
+            if (!parent_id.has_value())
+                return false;
+            current_id = parent_id.value();
+        }
+    }
+
 private:
     Vector<ScrollFrameData> m_frames;
 };

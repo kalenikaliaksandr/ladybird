@@ -1353,8 +1353,18 @@ PaintableBox const* PaintableBox::nearest_scrollable_ancestor() const
 {
     auto const* paintable = this->containing_block();
     while (paintable) {
-        if (paintable->could_be_scrolled_by_wheel_event())
-            return paintable;
+        auto scroll_frame = paintable->own_scroll_frame();
+        if (scroll_frame) {
+            // Has scroll frame - return if it's a regular (non-sticky) scroll frame.
+            // This handles overflow:hidden containers and normal scrollables.
+            if (!scroll_frame->is_sticky())
+                return paintable;
+        } else {
+            // No scroll frame yet - fall back to wheel scrollability check.
+            // This handles the timing issue where scroll frames aren't created yet.
+            if (paintable->could_be_scrolled_by_wheel_event())
+                return paintable;
+        }
         if (paintable->is_fixed_position())
             return nullptr;
         paintable = paintable->containing_block();

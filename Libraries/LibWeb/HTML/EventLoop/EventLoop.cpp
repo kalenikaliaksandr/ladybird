@@ -280,6 +280,24 @@ void EventLoop::process_input_events() const
                 continue;
             }
 
+            // Handle wheel events asynchronously through the rendering thread.
+            if (auto* mouse_event = event.event.get_pointer<MouseEvent>();
+                mouse_event && mouse_event->type == MouseEvent::Type::MouseWheel) {
+                for (size_t i = 0; i < event.coalesced_event_count; ++i)
+                    page_client.report_finished_handling_input_event(event.page_id, EventResult::Dropped);
+
+                auto* navigable = page.top_level_traversable().ptr();
+                navigable->route_wheel_event_through_rendering_thread(
+                    event.page_id, mouse_event->position, mouse_event->screen_position,
+                    to_underlying(mouse_event->button), to_underlying(mouse_event->buttons),
+                    to_underlying(mouse_event->modifiers),
+                    mouse_event->wheel_delta_x, mouse_event->wheel_delta_y,
+                    [&page_client, page_id = event.page_id](EventResult result) {
+                        page_client.report_finished_handling_input_event(page_id, result);
+                    });
+                continue;
+            }
+
             auto result = event.event.visit(
                 [&](KeyEvent const& key_event) {
                     switch (key_event.type) {
@@ -301,7 +319,8 @@ void EventLoop::process_input_events() const
                     case MouseEvent::Type::MouseLeave:
                         return page.handle_mouseleave();
                     case MouseEvent::Type::MouseWheel:
-                        return page.handle_mousewheel(mouse_event.position, mouse_event.screen_position, mouse_event.button, mouse_event.buttons, mouse_event.modifiers, mouse_event.wheel_delta_x, mouse_event.wheel_delta_y);
+                        // Wheel events are handled asynchronously through the rendering thread above.
+                        VERIFY_NOT_REACHED();
                     case MouseEvent::Type::DoubleClick:
                         return page.handle_doubleclick(mouse_event.position, mouse_event.screen_position, mouse_event.button, mouse_event.buttons, mouse_event.modifiers);
                     }

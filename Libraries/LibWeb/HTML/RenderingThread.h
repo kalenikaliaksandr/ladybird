@@ -14,6 +14,7 @@
 #include <LibThreading/Mutex.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Page/Page.h>
+#include <LibWeb/PixelUnits.h>
 
 namespace Web::HTML {
 
@@ -34,8 +35,11 @@ public:
 
     void update_display_list(NonnullRefPtr<Painting::DisplayList>, Painting::ScrollStateSnapshotByDisplayList&&);
     void update_backing_stores(RefPtr<Gfx::PaintingSurface> front, RefPtr<Gfx::PaintingSurface> back, i32 front_id, i32 back_id);
-    void present_frame(Gfx::IntRect);
+void present_frame(Gfx::IntRect);
     void request_screenshot(NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&& callback);
+    void enqueue_wheel_event(u64 page_id, DevicePixelPoint position, DevicePixelPoint screen_position,
+        u32 button, u32 buttons, u32 modifiers, int wheel_delta_x, int wheel_delta_y,
+        Function<void(u64, DevicePixelPoint, DevicePixelPoint, u32, u32, u32, int, int, Optional<size_t>)>&& callback);
 
     void ready_to_paint();
 

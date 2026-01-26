@@ -2934,4 +2934,29 @@ bool Navigable::has_inclusive_ancestor_with_visibility_hidden() const
     return false;
 }
 
+void Navigable::route_wheel_event_through_rendering_thread(u64 page_id,
+    DevicePixelPoint position, DevicePixelPoint screen_position,
+    u32 button, u32 buttons, u32 modifiers, int wheel_delta_x, int wheel_delta_y,
+    Function<void(EventResult)>&& callback)
+{
+    // For SVG pages, there's no rendering thread - handle directly on main thread.
+    if (is_svg_page()) {
+        auto result = page().handle_mousewheel(position, screen_position, button, buttons,
+            modifiers, DevicePixels(wheel_delta_x), DevicePixels(wheel_delta_y));
+        callback(result);
+        return;
+    }
+
+    // Fire-and-forget to rendering thread - it handles scroll directly
+    m_rendering_thread.enqueue_wheel_event(
+        page_id, position, screen_position, button, buttons, modifiers,
+        wheel_delta_x, wheel_delta_y,
+        [](u64, DevicePixelPoint, DevicePixelPoint, u32, u32, u32, int, int, Optional<size_t>) {
+            // No-op callback - rendering thread handles scroll directly
+        });
+
+    // Return immediately - don't wait for main thread sync
+    callback(EventResult::Handled);
+}
+
 }

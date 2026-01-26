@@ -227,6 +227,10 @@ public:
     GC::Ref<WebIDL::Promise> perform_a_scroll_of_the_viewport(CSSPixelPoint position);
     void reset_zoom();
 
+    void route_wheel_event_through_rendering_thread(u64 page_id, DevicePixelPoint position,
+        DevicePixelPoint screen_position, u32 button, u32 buttons, u32 modifiers,
+        int wheel_delta_x, int wheel_delta_y, Function<void(EventResult)>&& callback);
+
 protected:
     explicit Navigable(GC::Ref<Page>, bool is_svg_page);
 
