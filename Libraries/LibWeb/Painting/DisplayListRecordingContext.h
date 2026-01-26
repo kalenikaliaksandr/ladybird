@@ -14,6 +14,7 @@
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/ChromeMetrics.h>
 #include <LibWeb/Painting/DevicePixelConverter.h>
+#include <LibWeb/Painting/ScrollHitTestScene.h>
 #include <LibWeb/PixelUnits.h>
 
 namespace Web {
@@ -69,6 +70,11 @@ public:
     CSSPixelSize scale_to_css_size(DevicePixelSize) const;
     CSSPixelRect scale_to_css_rect(DevicePixelRect) const;
 
+    // Scroll hit-testing support
+    void begin_scroll_hit_test_scene();
+    void emit_scroll_hit_test_item(Painting::PaintableBox const&);
+    void finalize_scroll_hit_test_scene();
+
     DisplayListRecordingContext clone(Painting::DisplayListRecorder& painter) const
     {
         auto clone = DisplayListRecordingContext(painter, m_palette, m_device_pixel_converter.device_pixels_per_css_pixel(), m_chrome_metrics);
@@ -94,6 +100,9 @@ private:
     bool m_draw_svg_geometry_for_clip_path { false };
     Gfx::AffineTransform m_svg_transform;
     u64 m_paint_generation_id { 0 };
+
+    RefPtr<Painting::ScrollHitTestScene> m_scroll_hit_test_scene;
+    size_t m_scroll_hit_test_stacking_order { 0 };
 };
 
 }

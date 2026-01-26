@@ -17,6 +17,7 @@
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/DisplayListCommand.h>
+#include <LibWeb/Painting/ScrollHitTestScene.h>
 #include <LibWeb/Painting/ScrollState.h>
 
 namespace Web::Painting {
@@ -90,6 +91,9 @@ public:
     auto const& commands() const { return m_commands; }
     double device_pixels_per_css_pixel() const { return m_device_pixels_per_css_pixel; }
 
+    void set_scroll_hit_test_scene(NonnullRefPtr<ScrollHitTestScene> scene) { m_scroll_hit_test_scene = move(scene); }
+    RefPtr<ScrollHitTestScene const> scroll_hit_test_scene() const { return m_scroll_hit_test_scene; }
+
 private:
     DisplayList(double device_pixels_per_css_pixel)
         : m_device_pixels_per_css_pixel(device_pixels_per_css_pixel)
@@ -98,6 +102,7 @@ private:
 
     AK::SegmentedVector<CommandListItem, 512> m_commands;
     double m_device_pixels_per_css_pixel;
+    RefPtr<ScrollHitTestScene> m_scroll_hit_test_scene;
 };
 
 }

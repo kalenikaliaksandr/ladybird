@@ -78,9 +78,14 @@ void ViewportPaintable::build_stacking_context_tree()
 void ViewportPaintable::paint_all_phases(DisplayListRecordingContext& context)
 {
     build_stacking_context_tree_if_needed();
+
+    context.begin_scroll_hit_test_scene();
+
     context.display_list_recorder().save_layer();
     stacking_context()->paint(context);
     context.display_list_recorder().restore();
+
+    context.finalize_scroll_hit_test_scene();
 }
 
 void ViewportPaintable::assign_scroll_frames()

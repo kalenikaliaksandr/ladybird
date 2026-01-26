@@ -23,12 +23,16 @@
 #include <LibWeb/Fetch/Fetching/Fetching.h>
 #include <LibWeb/HTML/HTMLElement.h>
 #include <LibWeb/HTML/Navigable.h>
+#include <LibWeb/HTML/PaintConfig.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/Internals/InternalGamepad.h>
 #include <LibWeb/Internals/Internals.h>
 #include <LibWeb/Page/InputEvent.h>
 #include <LibWeb/Page/Page.h>
+#include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/PaintableBox.h>
+#include <LibWeb/Painting/ScrollHitTestScene.h>
+#include <LibWeb/Painting/ViewportPaintable.h>
 
 namespace Web::Internals {
 
@@ -173,6 +177,41 @@ JS::Object* Internals::hit_test(double x, double y)
         return hit_testing_result;
     }
     return nullptr;
+}
+
+Optional<i32> Internals::scroll_hit_test(double x, double y)
+{
+    auto& active_document = window().associated_document();
+
+    // Force layout update
+    active_document.update_layout(DOM::UpdateLayoutReason::InternalsHitTest);
+
+    auto* viewport_paintable = active_document.paintable_box();
+    if (!viewport_paintable)
+        return {};
+
+    auto& document_paintable = as<Painting::ViewportPaintable>(*viewport_paintable);
+
+    // Scene is built during paint_all_phases() and stored in the display list.
+    // update_layout() invalidates the display list, so we need to regenerate it.
+    auto display_list = active_document.record_display_list(HTML::PaintConfig {});
+    if (!display_list)
+        return {};
+
+    auto scroll_hit_test_scene = display_list->scroll_hit_test_scene();
+    if (!scroll_hit_test_scene)
+        return {};
+
+    // Get current scroll state snapshot
+    auto const& scroll_state = document_paintable.scroll_state_snapshot();
+
+    auto result = scroll_hit_test_scene->hit_test_scroll(
+        CSSPixelPoint { x, y }, scroll_state);
+
+    if (result.has_value())
+        return static_cast<i32>(result.value());
+
+    return {};
 }
 
 struct WebDriverKeyData {

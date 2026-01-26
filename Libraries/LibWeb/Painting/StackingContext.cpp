@@ -31,8 +31,13 @@ static void paint_node(Paintable const& paintable, DisplayListRecordingContext& 
 {
     TemporaryChange save_nesting_level(context.display_list_recorder().m_save_nesting_level, 0);
 
-    if (auto const* paintable_box = as_if<PaintableBox>(paintable))
+    if (auto const* paintable_box = as_if<PaintableBox>(paintable)) {
         context.display_list_recorder().set_accumulated_visual_context(paintable_box->accumulated_visual_context());
+
+        // Emit hit-test item when painting background (first phase for this element)
+        if (phase == PaintPhase::Background)
+            context.emit_scroll_hit_test_item(*paintable_box);
+    }
     paintable.paint(context, phase);
     context.display_list_recorder().set_accumulated_visual_context({});
 

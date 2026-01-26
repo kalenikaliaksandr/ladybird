@@ -1,0 +1,5 @@
+Normal scroller hit: frame_id=1
+Transformed scroller center hit: frame_id=2
+Transformed scroller corner (hits viewport): frame_id=null
+Normal and transformed are different: true
+Corner doesn't hit transformed scroller: true

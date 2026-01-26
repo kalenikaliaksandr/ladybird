@@ -1,0 +1,4 @@
+Outside scrollers: 0
+Inside outer, outside inner: frame_id=1
+Inside inner: frame_id=2
+Inner different from outer: true

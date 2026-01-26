@@ -116,6 +116,8 @@ public:
     DisplayListRecorder(DisplayList&);
     ~DisplayListRecorder();
 
+    DisplayList& display_list() { return m_display_list; }
+
     int m_save_nesting_level { 0 };
 
 private:

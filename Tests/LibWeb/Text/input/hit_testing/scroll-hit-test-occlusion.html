@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    #scroller {
+        position: absolute;
+        left: 50px;
+        top: 50px;
+        width: 200px;
+        height: 200px;
+        overflow: scroll;
+        scrollbar-width: none;
+        z-index: 1;
+    }
+    .content {
+        width: 400px;
+        height: 400px;
+        background: lightblue;
+    }
+    #overlay {
+        position: absolute;
+        left: 100px;
+        top: 100px;
+        width: 100px;
+        height: 100px;
+        background: red;
+        z-index: 2;  /* On top of scroller */
+    }
+    #inside-scroller {
+        position: absolute;
+        left: 20px;
+        top: 20px;
+        width: 50px;
+        height: 50px;
+        background: green;
+    }
+</style>
+
+<div id="scroller">
+    <div class="content">
+        <div id="inside-scroller"></div>
+    </div>
+</div>
+<div id="overlay"></div>
+
+<script>
+asyncTest(done => {
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            // Point on scroller directly (not covered by overlay)
+            let scrollerResult = internals.scrollHitTest(60, 60);
+            println(`Direct scroller hit: frame_id=${scrollerResult}`);
+
+            // Point on overlay (should return viewport scroll frame, not scroller's frame)
+            let overlayResult = internals.scrollHitTest(150, 150);
+            println(`Overlay hit: frame_id=${overlayResult}`);
+
+            // Point on #inside-scroller (should scroll parent scroller)
+            let insideResult = internals.scrollHitTest(80, 80);
+            println(`Inside element hit: frame_id=${insideResult}`);
+
+            // Verify: overlay returns different scroll frame than scroller (viewport vs scroller)
+            println(`Overlay uses different scroll frame than scroller: ${overlayResult !== scrollerResult}`);
+
+            // Verify: inside element scrolls same scroller
+            println(`Inside element uses same scroller: ${insideResult === scrollerResult}`);
+            done();
+        });
+    });
+});
+</script>

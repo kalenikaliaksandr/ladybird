@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    .scroller {
+        width: 200px;
+        height: 200px;
+        overflow: scroll;
+        scrollbar-width: none;
+    }
+    .content {
+        width: 400px;
+        height: 400px;
+        background: linear-gradient(red, blue);
+    }
+    #outer { position: absolute; left: 50px; top: 50px; }
+    #inner { position: absolute; left: 50px; top: 50px; width: 100px; height: 100px; }
+</style>
+
+<div id="outer" class="scroller">
+    <div class="content">
+        <div id="inner" class="scroller">
+            <div class="content"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+asyncTest(done => {
+    // Wait for initial paint
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            // Point outside any scroller (should return null for viewport)
+            let result1 = internals.scrollHitTest(10, 10);
+            println(`Outside scrollers: ${result1}`);
+
+            // Point inside outer scroller but outside inner (hits .content, which is inside outer)
+            let result2 = internals.scrollHitTest(60, 60);
+            println(`Inside outer, outside inner: frame_id=${result2}`);
+
+            // Point inside inner scroller (should return inner's frame_id)
+            let result3 = internals.scrollHitTest(110, 110);
+            println(`Inside inner: frame_id=${result3}`);
+
+            // Verify inner is different from outer
+            if (result3 !== null && result2 !== null) {
+                println(`Inner different from outer: ${result3 !== result2}`);
+            }
+            done();
+        });
+    });
+});
+</script>

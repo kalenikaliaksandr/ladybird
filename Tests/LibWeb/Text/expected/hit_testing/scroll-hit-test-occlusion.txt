@@ -1,0 +1,5 @@
+Direct scroller hit: frame_id=1
+Overlay hit: frame_id=0
+Inside element hit: frame_id=1
+Overlay uses different scroll frame than scroller: true
+Inside element uses same scroller: true

@@ -15,6 +15,7 @@ interface Internals {
 
     undefined gc();
     object hitTest(double x, double y);
+    long? scrollHitTest(double x, double y);
 
     const unsigned short MOD_NONE = 0;
     const unsigned short MOD_ALT = 1;
