@@ -5,7 +5,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/CSS/ComputedValues.h>
+#include <LibWeb/Painting/DisplayListRecorder.h>
 #include <LibWeb/Painting/DisplayListRecordingContext.h>
+#include <LibWeb/Painting/PaintableBox.h>
+#include <LibWeb/Painting/ScrollHitTestScene.h>
 
 namespace Web {
 
@@ -102,6 +106,50 @@ CSSPixelRect DisplayListRecordingContext::scale_to_css_rect(DevicePixelRect rect
         scale_to_css_point(rect.location()),
         scale_to_css_size(rect.size())
     };
+}
+
+void DisplayListRecordingContext::begin_scroll_hit_test_scene()
+{
+    m_scroll_hit_test_scene = Painting::ScrollHitTestScene::create();
+    m_scroll_hit_test_stacking_order = 0;
+}
+
+void DisplayListRecordingContext::emit_scroll_hit_test_item(Painting::PaintableBox const& paintable)
+{
+    if (!m_scroll_hit_test_scene)
+        return;
+
+    // Determine opaqueness
+    auto opaqueness = Painting::HitTestOpaqueness::Opaque;
+    auto const& computed_values = paintable.computed_values();
+    if (computed_values.opacity() == 0.0f)
+        opaqueness = Painting::HitTestOpaqueness::Transparent;
+    if (computed_values.pointer_events() == CSS::PointerEvents::None)
+        opaqueness = Painting::HitTestOpaqueness::Transparent;
+
+    // Determine if this element is scrollable
+    Optional<size_t> scroll_frame_id;
+    if (paintable.has_scrollable_overflow()) {
+        if (auto scroll_frame = paintable.own_scroll_frame()) {
+            if (!scroll_frame->is_sticky())
+                scroll_frame_id = scroll_frame->id();
+        }
+    }
+
+    m_scroll_hit_test_scene->add_item({
+        .hit_rect = paintable.absolute_border_box_rect(),
+        .visual_context = paintable.accumulated_visual_context(),
+        .stacking_order = m_scroll_hit_test_stacking_order++,
+        .scroll_frame_id = scroll_frame_id,
+        .opaqueness = opaqueness,
+    });
+}
+
+void DisplayListRecordingContext::finalize_scroll_hit_test_scene()
+{
+    VERIFY(m_scroll_hit_test_scene);
+    m_scroll_hit_test_scene->finalize();
+    m_display_list_recorder.display_list().set_scroll_hit_test_scene(m_scroll_hit_test_scene.release_nonnull());
 }
 
 }

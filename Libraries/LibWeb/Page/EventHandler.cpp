@@ -32,9 +32,11 @@
 #include <LibWeb/Page/ElementResizeAction.h>
 #include <LibWeb/Page/EventHandler.h>
 #include <LibWeb/Page/Page.h>
+#include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/NavigableContainerViewportPaintable.h>
 #include <LibWeb/Painting/PaintableBox.h>
 #include <LibWeb/Painting/TextPaintable.h>
+#include <LibWeb/Painting/ViewportPaintable.h>
 #include <LibWeb/Selection/Selection.h>
 #include <LibWeb/UIEvents/EventNames.h>
 #include <LibWeb/UIEvents/InputEvent.h>
@@ -424,22 +426,51 @@ EventResult EventHandler::handle_mousewheel(CSSPixelPoint visual_viewport_positi
 
     auto handled_event = EventResult::Dropped;
 
+    auto& viewport_paintable = as<Painting::ViewportPaintable>(*paint_root());
+
+    // Use ScrollHitTestScene to find scroll target (stored in the display list)
+    auto display_list = document->cached_display_list();
+    auto scroll_hit_test_scene = display_list ? display_list->scroll_hit_test_scene() : nullptr;
+    bool use_scroll_hit_test_scene = scroll_hit_test_scene != nullptr;
+    if (use_scroll_hit_test_scene) {
+        auto const& scroll_state_snapshot = viewport_paintable.scroll_state_snapshot();
+
+        auto scroll_frame_id = scroll_hit_test_scene->hit_test_scroll(viewport_position, scroll_state_snapshot);
+        if (scroll_frame_id.has_value()) {
+            auto scroll_frame = viewport_paintable.scroll_state().scroll_frame_by_id(scroll_frame_id.value());
+            // Walk up the scroll frame parent chain until one handles the scroll
+            while (scroll_frame) {
+                auto& paintable_box = const_cast<Painting::PaintableBox&>(scroll_frame->paintable_box());
+                if (paintable_box.handle_mousewheel({}, viewport_position, buttons, modifiers, wheel_delta_x, wheel_delta_y)) {
+                    dbgln(">>>>handled");
+                    return EventResult::Handled;
+                }
+                // Try parent scroll frame
+                scroll_frame = scroll_frame->parent();
+            }
+        }
+        // Empty result or no scroll frame could handle it - viewport should scroll
+    }
+
     GC::Ptr<Painting::Paintable> paintable;
     if (auto result = target_for_mouse_position(viewport_position); result.has_value())
         paintable = result->paintable;
 
     if (paintable) {
-        Painting::Paintable* containing_block = paintable;
-        while (containing_block) {
-            auto handled_scroll_event = containing_block->handle_mousewheel({}, viewport_position, buttons, modifiers, wheel_delta_x, wheel_delta_y);
-            if (handled_scroll_event)
+        // Fallback: use containing-block walk only when ScrollHitTestScene is not available
+        if (!use_scroll_hit_test_scene) {
+            Painting::Paintable* containing_block = paintable;
+            while (containing_block) {
+                auto handled_scroll_event = containing_block->handle_mousewheel({}, viewport_position, buttons, modifiers, wheel_delta_x, wheel_delta_y);
+                if (handled_scroll_event)
+                    return EventResult::Handled;
+
+                containing_block = containing_block->containing_block();
+            }
+
+            if (paintable->handle_mousewheel({}, viewport_position, buttons, modifiers, wheel_delta_x, wheel_delta_y))
                 return EventResult::Handled;
-
-            containing_block = containing_block->containing_block();
         }
-
-        if (paintable->handle_mousewheel({}, viewport_position, buttons, modifiers, wheel_delta_x, wheel_delta_y))
-            return EventResult::Handled;
 
         auto node = dom_node_for_event_dispatch(*paintable);
 

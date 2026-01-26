@@ -30,6 +30,7 @@ public:
 
     void gc();
     JS::Object* hit_test(double x, double y);
+    Optional<i32> scroll_hit_test(double x, double y);
 
     void send_text(HTML::HTMLElement&, String const&, WebIDL::UnsignedShort modifiers);
     void send_key(HTML::HTMLElement&, String const&, WebIDL::UnsignedShort modifiers);

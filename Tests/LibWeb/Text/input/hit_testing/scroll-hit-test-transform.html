@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    .scroller {
+        width: 100px;
+        height: 100px;
+        overflow: scroll;
+        scrollbar-width: none;
+        position: absolute;
+    }
+    .content {
+        width: 200px;
+        height: 200px;
+        background: green;
+    }
+    #transformed {
+        left: 100px;
+        top: 100px;
+        transform: rotate(45deg);
+    }
+</style>
+
+<div id="normal" class="scroller" style="left: 0; top: 0;">
+    <div class="content"></div>
+</div>
+
+<div id="transformed" class="scroller">
+    <div class="content"></div>
+</div>
+
+<script>
+asyncTest(done => {
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            // Hit test on normal scroller
+            let normalResult = internals.scrollHitTest(50, 50);
+            println(`Normal scroller hit: frame_id=${normalResult}`);
+
+            // Hit test on center of transformed scroller (150, 150)
+            let transformedResult = internals.scrollHitTest(150, 150);
+            println(`Transformed scroller center hit: frame_id=${transformedResult}`);
+
+            // Hit test on corner of transformed scroller's original position
+            // Due to 45deg rotation, this point is outside the rotated scroller
+            // and hits the viewport instead
+            let cornerResult = internals.scrollHitTest(100, 100);
+            println(`Transformed scroller corner (hits viewport): frame_id=${cornerResult}`);
+
+            // Verify: normal and transformed scrollers have different frame IDs
+            println(`Normal and transformed are different: ${normalResult !== transformedResult}`);
+
+            // Verify: corner point doesn't hit the transformed scroller
+            println(`Corner doesn't hit transformed scroller: ${cornerResult !== transformedResult}`);
+            done();
+        });
+    });
+});
+</script>
