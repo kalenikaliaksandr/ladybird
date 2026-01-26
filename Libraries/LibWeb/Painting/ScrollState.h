@@ -10,19 +10,39 @@
 
 namespace Web::Painting {
 
+struct ScrollFrameData {
+    CSSPixelPoint own_offset;
+    CSSPixelPoint max_offset;
+    Optional<size_t> scrollable_parent_id;
+};
+
 class ScrollStateSnapshot {
 public:
     static ScrollStateSnapshot create(Vector<NonnullRefPtr<ScrollFrame>> const& scroll_frames);
 
     CSSPixelPoint own_offset_for_frame_with_id(size_t id) const
     {
-        if (id >= own_offsets.size())
+        if (id >= m_frames.size())
             return {};
-        return own_offsets[id];
+        return m_frames[id].own_offset;
+    }
+
+    CSSPixelPoint max_offset_for_frame_with_id(size_t id) const
+    {
+        if (id >= m_frames.size())
+            return {};
+        return m_frames[id].max_offset;
+    }
+
+    Optional<size_t> scrollable_parent_for_frame_with_id(size_t id) const
+    {
+        if (id >= m_frames.size())
+            return {};
+        return m_frames[id].scrollable_parent_id;
     }
 
 private:
-    Vector<CSSPixelPoint> own_offsets;
+    Vector<ScrollFrameData> m_frames;
 };
 
 class ScrollState {
@@ -44,6 +64,13 @@ public:
     CSSPixelPoint own_offset_for_frame_with_id(size_t id) const
     {
         return m_scroll_frames[id]->own_offset();
+    }
+
+    RefPtr<ScrollFrame const> scroll_frame_by_id(size_t id) const
+    {
+        if (id >= m_scroll_frames.size())
+            return nullptr;
+        return m_scroll_frames[id];
     }
 
     template<typename Callback>
