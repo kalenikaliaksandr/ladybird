@@ -384,10 +384,7 @@ void ViewportPaintable::refresh_scroll_state()
     });
 
     m_scroll_state.for_each_scroll_frame([&](auto& scroll_frame) {
-        auto offset = scroll_frame->paintable_box().scroll_offset();
-        dbgln("[ViewportPaintable] refresh_scroll_state: frame id={}, scroll_offset=({}, {})",
-            scroll_frame->id(), offset.x(), offset.y());
-        scroll_frame->set_own_offset(-offset);
+        scroll_frame->set_own_offset(-scroll_frame->paintable_box().scroll_offset());
     });
 
     m_scroll_state_snapshot = m_scroll_state.snapshot();

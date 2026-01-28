@@ -124,20 +124,13 @@ public:
         // Hit-test to find scroll frame
         auto scroll_frame_id = scroll_hit_test_scene->hit_test_scroll(css_position, snapshot);
 
-        dbgln("[RenderingThread] Wheel event: css_position=({}, {}), hit_test scroll_frame_id={}",
-            css_position.x(), css_position.y(),
-            scroll_frame_id.has_value() ? scroll_frame_id.value() : -1);
-
         if (scroll_frame_id.has_value()) {
             // Apply scroll delta directly to the snapshot
             CSSPixelPoint delta {
                 CSSPixels(cmd.wheel_delta_x),
                 CSSPixels(cmd.wheel_delta_y)
             };
-            dbgln("[RenderingThread] Applying delta ({}, {}) to frame {}", delta.x(), delta.y(), scroll_frame_id.value());
             auto result = snapshot.scroll_frame_by_delta(scroll_frame_id.value(), delta);
-            dbgln("[RenderingThread] scroll_frame_by_delta result: scrolled={}, stable_id={}, new_offset=({}, {})",
-                result.scrolled, result.stable_id.has_value(), result.new_offset.x(), result.new_offset.y());
             if (result.scrolled) {
                 // Scroll was applied - trigger a frame presentation
                 m_needs_present = true;
@@ -147,13 +140,9 @@ public:
                 if (result.stable_id.has_value()) {
                     // Convert negated offset back to positive scroll offset
                     CSSPixelPoint scroll_offset { -result.new_offset.x(), -result.new_offset.y() };
-                    dbgln("[RenderingThread] Queuing scroll update: stable_id node={}, offset=({}, {})",
-                        result.stable_id->node_id.value(), scroll_offset.x(), scroll_offset.y());
                     queue_scroll_update({ .scroll_frame_id = *result.stable_id,
                         .offset = scroll_offset,
                         .generation = result.generation });
-                } else {
-                    dbgln("[RenderingThread] WARNING: scrolled but no stable_id!");
                 }
             }
         }
@@ -199,29 +188,11 @@ public:
 
                 command->visit(
                     [this](UpdateDisplayListCommand& cmd) {
-                        dbgln("[RenderingThread] UpdateDisplayListCommand received, replacing snapshot");
-                        // Log the old snapshot's scroll offsets before replacing
-                        if (m_cached_display_list) {
-                            auto it = m_cached_scroll_state_snapshot.find(*m_cached_display_list);
-                            if (it != m_cached_scroll_state_snapshot.end()) {
-                                auto old_offset = it->value.own_offset_for_frame_with_id(1);
-                                dbgln("[RenderingThread] Old snapshot frame 1 offset: ({}, {})", old_offset.x(), old_offset.y());
-                            }
-                        }
                         m_cached_display_list = move(cmd.display_list);
                         m_cached_scroll_state_snapshot = move(cmd.scroll_state_snapshot);
-                        // Log the new snapshot's scroll offsets
-                        if (m_cached_display_list) {
-                            auto it = m_cached_scroll_state_snapshot.find(*m_cached_display_list);
-                            if (it != m_cached_scroll_state_snapshot.end()) {
-                                auto new_offset = it->value.own_offset_for_frame_with_id(1);
-                                dbgln("[RenderingThread] New snapshot frame 1 offset: ({}, {})", new_offset.x(), new_offset.y());
-                            }
-                        }
 
                         // Process any wheel events that were queued while waiting for display list
                         if (!m_pending_wheel_events.is_empty()) {
-                            dbgln("[RenderingThread] Processing {} pending wheel events", m_pending_wheel_events.size());
                             for (auto& pending_cmd : m_pending_wheel_events) {
                                 process_wheel_event(pending_cmd);
                             }
@@ -247,7 +218,6 @@ public:
                     [this](WheelEventCommand& cmd) {
                         if (!m_cached_display_list) {
                             // Queue wheel event until display list is available
-                            dbgln("[RenderingThread] WheelEventCommand queued (no display list yet)");
                             m_pending_wheel_events.append(move(cmd));
                             return;
                         }

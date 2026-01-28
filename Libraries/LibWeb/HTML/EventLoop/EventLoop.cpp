@@ -282,28 +282,15 @@ void EventLoop::apply_pending_scroll_state_updates()
         auto& rendering_thread = navigable->rendering_thread();
         auto updates = rendering_thread.drain_pending_scroll_updates();
 
-        dbgln("[EventLoop] apply_pending_scroll_state_updates: {} updates drained", updates.size());
-
         for (auto const& update : updates) {
-            dbgln("[EventLoop] Processing update: node_id={}, offset=({}, {})",
-                update.scroll_frame_id.node_id.value(), update.offset.x(), update.offset.y());
-
             auto* viewport_paintable = document->paintable();
-            if (!viewport_paintable) {
-                dbgln("[EventLoop] WARNING: no viewport_paintable");
+            if (!viewport_paintable)
                 continue;
-            }
 
             auto& scroll_state = viewport_paintable->scroll_state();
             auto scroll_frame = scroll_state.scroll_frame_for_stable_id(update.scroll_frame_id);
-            if (!scroll_frame) {
-                dbgln("[EventLoop] WARNING: scroll_frame_for_stable_id returned null for node_id={}",
-                    update.scroll_frame_id.node_id.value());
+            if (!scroll_frame)
                 continue;
-            }
-
-            dbgln("[EventLoop] Found scroll_frame id={}, applying offset ({}, {})",
-                scroll_frame->id(), update.offset.x(), update.offset.y());
 
             // FIXME: Use generation counter to skip stale updates when main thread
             //        has scrolled (e.g., via JS) since the snapshot was created.
@@ -312,8 +299,7 @@ void EventLoop::apply_pending_scroll_state_updates()
             // Apply scroll offset via PaintableBox
             // This will queue the scroll event to pending_scroll_events
             auto const& paintable_box = scroll_frame->paintable_box();
-            auto result = const_cast<Painting::PaintableBox&>(paintable_box).set_scroll_offset(update.offset);
-            dbgln("[EventLoop] set_scroll_offset result: {}", result == Painting::PaintableBox::ScrollHandled::Yes ? "Yes" : "No");
+            (void)const_cast<Painting::PaintableBox&>(paintable_box).set_scroll_offset(update.offset);
         }
     }
 }
