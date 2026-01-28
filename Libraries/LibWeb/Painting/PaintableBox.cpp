@@ -151,7 +151,9 @@ PaintableBox::ScrollHandled PaintableBox::set_scroll_offset(CSSPixelPoint offset
         return ScrollHandled::No;
 
     auto& node = layout_node();
-    if (auto pseudo_element = node.generated_for_pseudo_element(); pseudo_element.has_value()) {
+    if (is_viewport_paintable()) {
+        document().navigable()->perform_scroll_of_viewport_scrolling_box(offset);
+    } else if (auto pseudo_element = node.generated_for_pseudo_element(); pseudo_element.has_value()) {
         node.pseudo_element_generator()->set_scroll_offset(*pseudo_element, offset);
     } else if (auto* element = as_if<DOM::Element>(*dom_node())) {
         element->set_scroll_offset({}, offset);
