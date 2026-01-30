@@ -923,10 +923,6 @@ CSS::RequiredInvalidationAfterStyleChange Element::recompute_style(bool& did_cha
     if (!invalidation.rebuild_layout_tree && layout_node()) {
         // If we're keeping the layout tree, we can just apply the new style to the existing layout tree.
         layout_node()->apply_style(*m_computed_properties);
-        if (invalidation.repaint && paintable()) {
-            paintable()->set_needs_paint_only_properties_update(true);
-            paintable()->set_needs_display();
-        }
 
         // Do the same for pseudo-elements.
         for (auto i = 0; i < to_underlying(CSS::PseudoElement::KnownPseudoElementCount); i++) {
@@ -1422,8 +1418,8 @@ Vector<CSSPixelRect> Element::get_client_rects() const
 
         if (auto const& accumulated_visual_context = paintable_box->accumulated_visual_context()) {
             auto const& viewport_paintable = *document().paintable();
-            auto const& scroll_state = viewport_paintable.scroll_state_snapshot();
-            auto transformed_rect = accumulated_visual_context->transform_rect_to_viewport(absolute_rect, scroll_state);
+            auto const& snapshot = viewport_paintable.visual_context_snapshot();
+            auto transformed_rect = accumulated_visual_context->transform_rect_to_viewport(absolute_rect, snapshot);
             rects.append(transformed_rect);
         } else {
             rects.append(absolute_rect);

@@ -113,10 +113,10 @@ TraversalDecision PaintableWithLines::hit_test(CSSPixelPoint position, HitTestTy
         return TraversalDecision::Continue;
 
     auto const& viewport_paintable = *document().paintable();
-    auto const& scroll_state = viewport_paintable.scroll_state_snapshot();
+    auto const& snapshot = viewport_paintable.visual_context_snapshot();
     Optional<CSSPixelPoint> local_position;
     if (auto state = accumulated_visual_context())
-        local_position = state->transform_point_for_hit_test(position, scroll_state);
+        local_position = state->transform_point_for_hit_test(position, snapshot);
     else
         local_position = position;
 

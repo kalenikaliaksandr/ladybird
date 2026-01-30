@@ -35,10 +35,11 @@ ViewportPaintable::~ViewportPaintable() = default;
 
 void ViewportPaintable::reset_for_relayout()
 {
+    m_accumulated_visual_contexts.clear();
     PaintableWithLines::reset_for_relayout();
     m_scroll_state.clear();
-    m_scroll_state_snapshot = {};
-    m_needs_to_refresh_scroll_state = true;
+    m_visual_context_snapshot = {};
+    m_needs_to_refresh_snapshot = true;
     m_paintable_boxes_with_auto_content_visibility.clear();
     m_next_accumulated_visual_context_id = 1;
 }
@@ -155,19 +156,15 @@ void ViewportPaintable::assign_scroll_frames()
     });
 }
 
-static CSSPixelRect effective_css_clip_rect(CSSPixelRect const& css_clip)
-{
-    if (css_clip.width() < 0 || css_clip.height() < 0)
-        return CSSPixelRect { 0, 0, 0, 0 };
-    return css_clip;
-}
-
 void ViewportPaintable::assign_accumulated_visual_contexts()
 {
+    m_accumulated_visual_contexts.clear();
     m_next_accumulated_visual_context_id = 1;
 
-    auto append_node = [&](RefPtr<AccumulatedVisualContext const> parent, VisualContextData data) {
-        return AccumulatedVisualContext::create(allocate_accumulated_visual_context_id(), move(data), parent);
+    auto append_node = [&](RefPtr<AccumulatedVisualContext const> parent, VisualContextData data, PaintableBox const* source_paintable = nullptr) {
+        auto node = AccumulatedVisualContext::create(allocate_accumulated_visual_context_id(), move(data), parent, source_paintable);
+        m_accumulated_visual_contexts.append(*node);
+        return node;
     };
 
     // Create visual viewport transform as root (if not identity)
@@ -224,13 +221,13 @@ void ViewportPaintable::assign_accumulated_visual_contexts()
         };
 
         if (effects.needs_layer())
-            own_state = append_node(own_state, move(effects));
+            own_state = append_node(own_state, move(effects), &paintable_box);
 
         if (paintable_box.has_css_transform())
-            own_state = append_node(own_state, TransformData { paintable_box.transform(), paintable_box.transform_origin() });
+            own_state = append_node(own_state, TransformData { paintable_box.transform(), paintable_box.transform_origin() }, &paintable_box);
 
         if (auto css_clip = paintable_box.get_clip_rect(); css_clip.has_value())
-            own_state = append_node(own_state, ClipData { effective_css_clip_rect(*css_clip), {} });
+            own_state = append_node(own_state, ClipData { effective_css_clip_rect(*css_clip), {} }, &paintable_box);
 
         // FIXME: Support other geometry boxes. See: https://drafts.fxtf.org/css-masking/#typedef-geometry-box
         if (auto const& clip_path = computed_values.clip_path(); clip_path.has_value() && clip_path->is_basic_shape()) {
@@ -243,7 +240,7 @@ void ViewportPaintable::assign_accumulated_visual_contexts()
                 [](CSS::Polygon const& polygon) { return polygon.fill_rule; },
                 [](CSS::Path const& path) { return path.fill_rule; },
                 [](auto const&) { return Gfx::WindingRule::Nonzero; });
-            own_state = append_node(own_state, ClipPathData { move(path), masking_area, fill_rule });
+            own_state = append_node(own_state, ClipPathData { move(path), masking_area, fill_rule }, &paintable_box);
         }
 
         paintable_box.set_accumulated_visual_context(own_state);
@@ -252,7 +249,7 @@ void ViewportPaintable::assign_accumulated_visual_contexts()
         RefPtr<AccumulatedVisualContext const> state_for_descendants = own_state;
 
         if (auto perspective = paintable_box.perspective_matrix(); perspective.has_value())
-            state_for_descendants = append_node(state_for_descendants, PerspectiveData { *perspective });
+            state_for_descendants = append_node(state_for_descendants, PerspectiveData { *perspective }, &paintable_box);
 
         auto overflow_x = computed_values.overflow_x();
         auto overflow_y = computed_values.overflow_y();
@@ -289,13 +286,23 @@ void ViewportPaintable::assign_accumulated_visual_contexts()
 
         return TraversalDecision::Continue;
     });
+
+    m_needs_to_refresh_snapshot = true;
 }
 
-void ViewportPaintable::refresh_scroll_state()
+void ViewportPaintable::refresh_accumulated_visual_contexts()
 {
-    if (!m_needs_to_refresh_scroll_state)
+    for (auto& visual_context : m_accumulated_visual_contexts)
+        visual_context.refresh();
+
+    m_needs_to_refresh_snapshot = true;
+}
+
+void ViewportPaintable::refresh_snapshot()
+{
+    if (!m_needs_to_refresh_snapshot)
         return;
-    m_needs_to_refresh_scroll_state = false;
+    m_needs_to_refresh_snapshot = false;
 
     m_scroll_state.for_each_sticky_frame([&](auto& scroll_frame) {
         auto nearest_scrolling_ancestor_frame = scroll_frame->nearest_scrolling_ancestor();
@@ -351,7 +358,16 @@ void ViewportPaintable::refresh_scroll_state()
         scroll_frame->set_own_offset(-scroll_frame->paintable_box().scroll_offset());
     });
 
-    m_scroll_state_snapshot = m_scroll_state.snapshot();
+    // Build unified snapshot with both scroll offsets and accumulated visual context data
+    m_visual_context_snapshot = {};
+    m_scroll_state.populate_scroll_offsets(m_visual_context_snapshot);
+
+    // Populate accumulated visual context data indexed by id
+    m_visual_context_snapshot.m_context_data.ensure_capacity(m_next_accumulated_visual_context_id);
+    for (size_t i = 0; i < m_next_accumulated_visual_context_id; ++i)
+        m_visual_context_snapshot.m_context_data.unchecked_append(ScrollData { 0, false });
+    for (auto const& visual_context : m_accumulated_visual_contexts)
+        visual_context.copy_data_into_snapshot(m_visual_context_snapshot);
 }
 
 static void resolve_paint_only_properties_in_subtree(Paintable& root)

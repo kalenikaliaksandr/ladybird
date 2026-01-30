@@ -1482,7 +1482,7 @@ void Document::update_layout(UpdateLayoutReason reason)
 
     paintable()->assign_scroll_frames();
 
-    set_needs_accumulated_visual_contexts_update(true);
+    set_needs_accumulated_visual_contexts_update(VisualContextUpdateKind::Rebuild);
     update_paint_and_hit_testing_properties_if_needed();
 
     if (auto range = get_selection()->range()) {
@@ -1633,11 +1633,28 @@ void Document::update_style()
     build_registered_properties_cache();
 
     auto invalidation = update_style_recursively(*this, style_computer(), false, false, false);
-    if (!invalidation.is_none())
-        invalidate_display_list();
 
-    if (invalidation.rebuild_accumulated_visual_contexts)
-        set_needs_accumulated_visual_contexts_update(true);
+    if (invalidation.rebuild_accumulated_visual_contexts) {
+        set_needs_accumulated_visual_contexts_update(VisualContextUpdateKind::Rebuild);
+    } else if (invalidation.refresh_accumulated_visual_contexts) {
+        set_needs_accumulated_visual_contexts_update(VisualContextUpdateKind::Refresh);
+        set_needs_to_resolve_paint_only_properties();
+    }
+
+    if (!invalidation.is_none()) {
+        // Skip display list invalidation when the only visual change is an accumulated visual context refresh.
+        // Data is patched in-place, so the existing display list picks up the new values.
+        bool is_visual_context_refresh_only = invalidation.refresh_accumulated_visual_contexts
+            && !invalidation.rebuild_accumulated_visual_contexts
+            && !invalidation.relayout
+            && !invalidation.rebuild_layout_tree
+            && !invalidation.rebuild_stacking_context_tree;
+        if (is_visual_context_refresh_only) {
+            set_needs_display(InvalidateDisplayList::No);
+        } else {
+            set_needs_display();
+        }
+    }
 
     if (invalidation.rebuild_stacking_context_tree)
         invalidate_stacking_context_tree();
@@ -1665,10 +1682,6 @@ void Document::update_animated_style_if_needed()
 
 void Document::update_paint_and_hit_testing_properties_if_needed()
 {
-    if (auto* paintable = this->paintable()) {
-        paintable->refresh_scroll_state();
-    }
-
     if (m_needs_to_resolve_paint_only_properties) {
         m_needs_to_resolve_paint_only_properties = false;
         if (auto* paintable = this->paintable()) {
@@ -1676,11 +1689,23 @@ void Document::update_paint_and_hit_testing_properties_if_needed()
         }
     }
 
-    if (m_needs_accumulated_visual_contexts_update) {
-        m_needs_accumulated_visual_contexts_update = false;
-        if (auto* paintable = this->paintable()) {
+    switch (m_visual_context_update_kind) {
+    case VisualContextUpdateKind::Rebuild:
+        m_visual_context_update_kind = VisualContextUpdateKind::None;
+        if (auto* paintable = this->paintable())
             paintable->assign_accumulated_visual_contexts();
-        }
+        break;
+    case VisualContextUpdateKind::Refresh:
+        m_visual_context_update_kind = VisualContextUpdateKind::None;
+        if (auto* paintable = this->paintable())
+            paintable->refresh_accumulated_visual_contexts();
+        break;
+    case VisualContextUpdateKind::None:
+        break;
+    }
+
+    if (auto* paintable = this->paintable()) {
+        paintable->refresh_snapshot();
     }
 }
 
@@ -6329,10 +6354,10 @@ GC::Ptr<HTML::HTMLElement> Document::topmost_auto_or_hint_popover()
     return {};
 }
 
-void Document::set_needs_to_refresh_scroll_state(bool b)
+void Document::set_needs_to_refresh_snapshot(bool b)
 {
     if (auto* paintable = this->paintable())
-        paintable->set_needs_to_refresh_scroll_state(b);
+        paintable->set_needs_to_refresh_snapshot(b);
 }
 
 Vector<GC::Root<Range>> Document::find_matching_text(String const& query, CaseSensitivity case_sensitivity)
@@ -6615,6 +6640,8 @@ RefPtr<Painting::DisplayList> Document::cached_display_list() const
 
 RefPtr<Painting::DisplayList> Document::record_display_list(HTML::PaintConfig config)
 {
+    update_paint_and_hit_testing_properties_if_needed();
+
     if (m_cached_display_list && m_cached_display_list_paint_config == config)
         return m_cached_display_list;
 
@@ -6662,8 +6689,6 @@ RefPtr<Painting::DisplayList> Document::record_display_list(HTML::PaintConfig co
     context.set_device_viewport_rect(viewport_rect);
     context.set_should_show_line_box_borders(config.should_show_line_box_borders);
     context.set_should_paint_overlay(config.paint_overlay);
-
-    update_paint_and_hit_testing_properties_if_needed();
 
     auto& viewport_paintable = *paintable();
 

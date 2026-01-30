@@ -17,7 +17,6 @@
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/DisplayListCommand.h>
-#include <LibWeb/Painting/ScrollState.h>
 
 namespace Web::Painting {
 
@@ -25,13 +24,13 @@ class DisplayListPlayer {
 public:
     virtual ~DisplayListPlayer() = default;
 
-    void execute(DisplayList&, ScrollStateSnapshotByDisplayList&&, RefPtr<Gfx::PaintingSurface>);
+    void execute(DisplayList&, VisualContextSnapshotMap&&, RefPtr<Gfx::PaintingSurface>);
 
 protected:
     Gfx::PaintingSurface& surface() const { return m_surfaces.last(); }
-    void execute_impl(DisplayList&, ScrollStateSnapshot const& scroll_state, RefPtr<Gfx::PaintingSurface>);
+    void execute_impl(DisplayList&, AccumulatedVisualContextSnapshot const& snapshot, RefPtr<Gfx::PaintingSurface>);
 
-    ScrollStateSnapshotByDisplayList m_scroll_state_snapshots_by_display_list;
+    VisualContextSnapshotMap m_snapshots_by_display_list;
 
 private:
     virtual void flush() = 0;
@@ -60,7 +59,7 @@ private:
     virtual void apply_backdrop_filter(ApplyBackdropFilter const&) = 0;
     virtual void draw_rect(DrawRect const&) = 0;
     virtual void add_rounded_rect_clip(AddRoundedRectClip const&) = 0;
-    virtual void add_mask(AddMask const&) = 0;
+    virtual void add_mask(AddMask const&, AccumulatedVisualContextSnapshot const&) = 0;
     virtual void paint_nested_display_list(PaintNestedDisplayList const&) = 0;
     virtual void paint_scrollbar(PaintScrollBar const&) = 0;
     virtual void apply_effects(ApplyEffects const&) = 0;

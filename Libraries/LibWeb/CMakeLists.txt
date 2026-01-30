@@ -831,7 +831,6 @@ set(SOURCES
     Painting/RadioButtonPaintable.cpp
     Painting/ResolvedCSSFilter.cpp
     Painting/ScrollFrame.cpp
-    Painting/ScrollState.cpp
     Painting/ShadowPainting.cpp
     Painting/StackingContext.cpp
     Painting/SVGClipPaintable.cpp

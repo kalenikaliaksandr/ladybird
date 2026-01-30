@@ -755,15 +755,14 @@ DisplayListPlayerSkia::CachedRuntimeEffects& DisplayListPlayerSkia::cached_runti
     return *m_cached_runtime_effects;
 }
 
-void DisplayListPlayerSkia::add_mask(AddMask const& command)
+void DisplayListPlayerSkia::add_mask(AddMask const& command, AccumulatedVisualContextSnapshot const& snapshot)
 {
     auto const& rect = command.rect;
     if (rect.is_empty())
         return;
     auto mask_surface = Gfx::PaintingSurface::create_with_size(m_context, rect.size(), Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied);
 
-    ScrollStateSnapshot scroll_state_snapshot;
-    execute_impl(*command.display_list, scroll_state_snapshot, mask_surface);
+    execute_impl(*command.display_list, snapshot, mask_surface);
 
     SkMatrix mask_matrix;
     mask_matrix.setTranslate(rect.x(), rect.y());
@@ -817,8 +816,8 @@ void DisplayListPlayerSkia::paint_nested_display_list(PaintNestedDisplayList con
 {
     auto& canvas = surface().canvas();
     canvas.translate(command.rect.x(), command.rect.y());
-    ScrollStateSnapshot scroll_state_snapshot = m_scroll_state_snapshots_by_display_list.get(*command.display_list).value_or({});
-    execute_impl(*command.display_list, scroll_state_snapshot, {});
+    auto nested_snapshot = m_snapshots_by_display_list.get(*command.display_list).value_or({});
+    execute_impl(*command.display_list, nested_snapshot, {});
 }
 
 void DisplayListPlayerSkia::paint_scrollbar(PaintScrollBar const& command)

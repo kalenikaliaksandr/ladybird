@@ -38,14 +38,14 @@ static bool command_is_clip_or_mask(DisplayListCommand const& command)
         });
 }
 
-void DisplayListPlayer::execute(DisplayList& display_list, ScrollStateSnapshotByDisplayList&& scroll_state_snapshot_by_display_list, RefPtr<Gfx::PaintingSurface> surface)
+void DisplayListPlayer::execute(DisplayList& display_list, VisualContextSnapshotMap&& snapshots, RefPtr<Gfx::PaintingSurface> surface)
 {
-    TemporaryChange change { m_scroll_state_snapshots_by_display_list, move(scroll_state_snapshot_by_display_list) };
+    TemporaryChange change { m_snapshots_by_display_list, move(snapshots) };
     if (surface) {
         surface->lock_context();
     }
-    auto scroll_state_snapshot = m_scroll_state_snapshots_by_display_list.get(display_list).value_or({});
-    execute_impl(display_list, scroll_state_snapshot, surface);
+    auto snapshot = m_snapshots_by_display_list.get(display_list).value_or({});
+    execute_impl(display_list, snapshot, surface);
     if (surface) {
         surface->unlock_context();
     }
@@ -76,7 +76,7 @@ static Gfx::FloatMatrix4x4 scale_matrix_translation(Gfx::FloatMatrix4x4 matrix, 
     return matrix;
 }
 
-void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnapshot const& scroll_state, RefPtr<Gfx::PaintingSurface> surface)
+void DisplayListPlayer::execute_impl(DisplayList& display_list, AccumulatedVisualContextSnapshot const& snapshot, RefPtr<Gfx::PaintingSurface> surface)
 {
     if (surface)
         m_surfaces.append(*surface);
@@ -100,7 +100,7 @@ void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnaps
     };
 
     auto apply_accumulated_visual_context = [&](AccumulatedVisualContext const& node) {
-        node.data().visit(
+        snapshot.visual_context_data(node.id()).visit(
             [&](EffectsData const& effects) {
                 Optional<Gfx::Filter> gfx_filter;
                 if (effects.filter.has_filters())
@@ -114,7 +114,7 @@ void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnaps
             },
             [&](ScrollData const& scroll) {
                 save({});
-                auto own_offset = scroll_state.own_offset_for_frame_with_id(scroll.scroll_frame_id);
+                auto own_offset = snapshot.scroll_offset_for_frame_id(scroll.scroll_frame_id);
                 if (!own_offset.is_zero()) {
                     auto scroll_offset = own_offset.to_type<double>().scaled(device_pixels_per_css_pixel).to_type<int>();
                     translate({ .delta = scroll_offset });
@@ -188,7 +188,7 @@ void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnaps
         if (command.has<PaintScrollBar>()) {
             auto translated_command = command;
             auto& paint_scroll_bar = translated_command.get<PaintScrollBar>();
-            auto scroll_offset = scroll_state.own_offset_for_frame_with_id(paint_scroll_bar.scroll_frame_id);
+            auto scroll_offset = snapshot.scroll_offset_for_frame_id(paint_scroll_bar.scroll_frame_id);
             if (paint_scroll_bar.vertical) {
                 auto offset = scroll_offset.y() * paint_scroll_bar.scroll_size;
                 paint_scroll_bar.thumb_rect.translate_by(0, -offset.to_int() * device_pixels_per_css_pixel);
@@ -244,7 +244,7 @@ void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnaps
         else HANDLE_COMMAND(ApplyBackdropFilter, apply_backdrop_filter)
         else HANDLE_COMMAND(DrawRect, draw_rect)
         else HANDLE_COMMAND(AddRoundedRectClip, add_rounded_rect_clip)
-        else HANDLE_COMMAND(AddMask, add_mask)
+        else if (command.has<AddMask>()) { add_mask(command.get<AddMask>(), snapshot); }
         else HANDLE_COMMAND(PaintNestedDisplayList, paint_nested_display_list)
         else HANDLE_COMMAND(ApplyEffects, apply_effects)
         else VERIFY_NOT_REACHED();

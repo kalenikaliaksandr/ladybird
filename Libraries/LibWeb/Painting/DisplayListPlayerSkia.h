@@ -48,7 +48,7 @@ private:
     void paint_radial_gradient(PaintRadialGradient const&) override;
     void paint_conic_gradient(PaintConicGradient const&) override;
     void add_rounded_rect_clip(AddRoundedRectClip const&) override;
-    void add_mask(AddMask const&) override;
+    void add_mask(AddMask const&, AccumulatedVisualContextSnapshot const&) override;
     void paint_scrollbar(PaintScrollBar const&) override;
     void paint_nested_display_list(PaintNestedDisplayList const&) override;
     void apply_effects(ApplyEffects const&) override;

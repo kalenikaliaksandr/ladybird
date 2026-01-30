@@ -32,7 +32,7 @@ public:
     void start(DisplayListPlayerType);
     void set_skia_player(OwnPtr<Painting::DisplayListPlayerSkia>&& player);
 
-    void update_display_list(NonnullRefPtr<Painting::DisplayList>, Painting::ScrollStateSnapshotByDisplayList&&);
+    void update_display_list(NonnullRefPtr<Painting::DisplayList>, Painting::VisualContextSnapshotMap&&);
     void update_backing_stores(RefPtr<Gfx::PaintingSurface> front, RefPtr<Gfx::PaintingSurface> back, i32 front_id, i32 back_id);
     void present_frame(Gfx::IntRect);
     void request_screenshot(NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&& callback);

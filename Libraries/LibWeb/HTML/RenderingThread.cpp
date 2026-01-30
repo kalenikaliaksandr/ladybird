@@ -29,7 +29,7 @@ struct BackingStoreState {
 
 struct UpdateDisplayListCommand {
     NonnullRefPtr<Painting::DisplayList> display_list;
-    Painting::ScrollStateSnapshotByDisplayList scroll_state_snapshot;
+    Painting::VisualContextSnapshotMap snapshot;
 };
 
 struct UpdateBackingStoresCommand {
@@ -112,7 +112,7 @@ public:
                 command->visit(
                     [this](UpdateDisplayListCommand& cmd) {
                         m_cached_display_list = move(cmd.display_list);
-                        m_cached_scroll_state_snapshot = move(cmd.scroll_state_snapshot);
+                        m_cached_snapshot = move(cmd.snapshot);
                     },
                     [this](UpdateBackingStoresCommand& cmd) {
                         m_backing_stores.front_store = move(cmd.front_store);
@@ -123,7 +123,7 @@ public:
                     [this](ScreenshotCommand& cmd) {
                         if (!m_cached_display_list)
                             return;
-                        m_skia_player->execute(*m_cached_display_list, Painting::ScrollStateSnapshotByDisplayList(m_cached_scroll_state_snapshot), *cmd.target_surface);
+                        m_skia_player->execute(*m_cached_display_list, Painting::VisualContextSnapshotMap(m_cached_snapshot), *cmd.target_surface);
                         if (cmd.callback) {
                             invoke_on_main_thread([callback = move(cmd.callback)]() mutable {
                                 callback();
@@ -161,7 +161,7 @@ public:
                 }
 
                 if (m_cached_display_list && m_backing_stores.is_valid()) {
-                    m_skia_player->execute(*m_cached_display_list, Painting::ScrollStateSnapshotByDisplayList(m_cached_scroll_state_snapshot), *m_backing_stores.back_store);
+                    m_skia_player->execute(*m_cached_display_list, Painting::VisualContextSnapshotMap(m_cached_snapshot), *m_backing_stores.back_store);
                     i32 rendered_bitmap_id = m_backing_stores.back_bitmap_id;
                     m_backing_stores.swap();
 
@@ -197,7 +197,7 @@ private:
 
     OwnPtr<Painting::DisplayListPlayerSkia> m_skia_player;
     RefPtr<Painting::DisplayList> m_cached_display_list;
-    Painting::ScrollStateSnapshotByDisplayList m_cached_scroll_state_snapshot;
+    Painting::VisualContextSnapshotMap m_cached_snapshot;
     BackingStoreState m_backing_stores;
 
     Atomic<i32> m_queued_rasterization_tasks { 0 };
@@ -251,9 +251,9 @@ void RenderingThread::set_skia_player(OwnPtr<Painting::DisplayListPlayerSkia>&& 
     m_thread_data->set_skia_player(move(player));
 }
 
-void RenderingThread::update_display_list(NonnullRefPtr<Painting::DisplayList> display_list, Painting::ScrollStateSnapshotByDisplayList&& scroll_state_snapshot)
+void RenderingThread::update_display_list(NonnullRefPtr<Painting::DisplayList> display_list, Painting::VisualContextSnapshotMap&& snapshot)
 {
-    m_thread_data->enqueue_command(UpdateDisplayListCommand { move(display_list), move(scroll_state_snapshot) });
+    m_thread_data->enqueue_command(UpdateDisplayListCommand { move(display_list), move(snapshot) });
 }
 
 void RenderingThread::update_backing_stores(RefPtr<Gfx::PaintingSurface> front, RefPtr<Gfx::PaintingSurface> back, i32 front_id, i32 back_id)

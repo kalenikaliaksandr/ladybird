@@ -6,24 +6,10 @@
 
 #pragma once
 
+#include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/ScrollFrame.h>
 
 namespace Web::Painting {
-
-class ScrollStateSnapshot {
-public:
-    static ScrollStateSnapshot create(Vector<NonnullRefPtr<ScrollFrame>> const& scroll_frames);
-
-    CSSPixelPoint own_offset_for_frame_with_id(size_t id) const
-    {
-        if (id >= own_offsets.size())
-            return {};
-        return own_offsets[id];
-    }
-
-private:
-    Vector<CSSPixelPoint> own_offsets;
-};
 
 class ScrollState {
 public:
@@ -74,9 +60,11 @@ public:
 private:
     friend class ViewportPaintable;
 
-    ScrollStateSnapshot snapshot() const
+    void populate_scroll_offsets(AccumulatedVisualContextSnapshot& snapshot) const
     {
-        return ScrollStateSnapshot::create(m_scroll_frames);
+        snapshot.m_scroll_offsets.ensure_capacity(m_scroll_frames.size());
+        for (auto const& scroll_frame : m_scroll_frames)
+            snapshot.m_scroll_offsets.append(scroll_frame->own_offset());
     }
 
     Vector<NonnullRefPtr<ScrollFrame>> m_scroll_frames;

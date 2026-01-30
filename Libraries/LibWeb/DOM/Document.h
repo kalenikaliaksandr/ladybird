@@ -59,6 +59,12 @@ enum class QuirksMode {
     Yes
 };
 
+enum class VisualContextUpdateKind : u8 {
+    None = 0,
+    Refresh = 1,
+    Rebuild = 2,
+};
+
 #define ENUMERATE_INVALIDATE_LAYOUT_TREE_REASONS(X)       \
     X(DocumentAddAnElementToTheTopLayer)                  \
     X(DocumentRequestAnElementToBeRemovedFromTheTopLayer) \
@@ -620,7 +626,7 @@ public:
     [[nodiscard]] bool needs_full_layout_tree_update() const { return m_needs_full_layout_tree_update; }
     void set_needs_full_layout_tree_update(bool b) { m_needs_full_layout_tree_update = b; }
 
-    void set_needs_to_refresh_scroll_state(bool b);
+    void set_needs_to_refresh_snapshot(bool b);
 
     bool has_active_favicon() const { return m_active_favicon; }
     void check_favicon_after_loading_link_resource();
@@ -807,8 +813,11 @@ public:
     void set_needs_to_resolve_paint_only_properties() { m_needs_to_resolve_paint_only_properties = true; }
     void set_needs_animated_style_update() { m_needs_animated_style_update = true; }
 
-    void set_needs_accumulated_visual_contexts_update(bool value) { m_needs_accumulated_visual_contexts_update = value; }
-    bool needs_accumulated_visual_contexts_update() const { return m_needs_accumulated_visual_contexts_update; }
+    void set_needs_accumulated_visual_contexts_update(VisualContextUpdateKind kind)
+    {
+        if (to_underlying(kind) > to_underlying(m_visual_context_update_kind))
+            m_visual_context_update_kind = kind;
+    }
 
     virtual JS::Value named_item_value(FlyString const& name) const override;
     virtual Vector<FlyString> supported_property_names() const override;
@@ -1285,7 +1294,7 @@ private:
     bool m_design_mode_enabled { false };
 
     bool m_needs_to_resolve_paint_only_properties { true };
-    bool m_needs_accumulated_visual_contexts_update { false };
+    VisualContextUpdateKind m_visual_context_update_kind { VisualContextUpdateKind::None };
 
     mutable GC::Ptr<WebIDL::ObservableArray> m_adopted_style_sheets;
 

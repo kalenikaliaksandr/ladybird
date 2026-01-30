@@ -2572,7 +2572,7 @@ void Navigable::perform_scroll_of_viewport_scrolling_box(CSSPixelPoint new_posit
 
         if (auto document = active_document()) {
             document->set_needs_display(InvalidateDisplayList::No);
-            document->set_needs_to_refresh_scroll_state(true);
+            document->set_needs_to_refresh_snapshot(true);
             document->inform_all_viewport_clients_about_the_current_viewport_rect();
         }
     }
@@ -2769,6 +2769,27 @@ void Navigable::ready_to_paint()
     m_rendering_thread.ready_to_paint();
 }
 
+static void collect_nested_navigable_snapshots(Painting::ViewportPaintable& document_paintable, Painting::VisualContextSnapshotMap& snapshot_by_display_list)
+{
+    document_paintable.for_each_in_inclusive_subtree_of_type<Painting::NavigableContainerViewportPaintable>([&snapshot_by_display_list](auto& navigable_container_paintable) {
+        auto const* hosted_document = navigable_container_paintable.navigable_container().content_document_without_origin_check();
+        if (!hosted_document || !hosted_document->paintable())
+            return TraversalDecision::Continue;
+        // We are only interested in collecting snapshots for visible nested navigables, which is
+        // detectable by checking if they have a cached display list that should've been populated by
+        // record_display_list() on top-level document.
+        auto navigable_display_list = hosted_document->cached_display_list();
+        if (!navigable_display_list)
+            return TraversalDecision::Continue;
+        auto& hosted_paintable = *const_cast<DOM::Document&>(*hosted_document).paintable();
+        hosted_paintable.refresh_snapshot();
+        snapshot_by_display_list.set(*navigable_display_list, hosted_paintable.visual_context_snapshot());
+        // Recursively collect snapshots for navigables nested within this child document
+        collect_nested_navigable_snapshots(hosted_paintable, snapshot_by_display_list);
+        return TraversalDecision::Continue;
+    });
+}
+
 void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
 {
     m_needs_repaint = false;
@@ -2781,26 +2802,13 @@ void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
         return;
 
     auto& document_paintable = *document->paintable();
-    Painting::ScrollStateSnapshotByDisplayList scroll_state_snapshot_by_display_list;
-    document_paintable.refresh_scroll_state();
-    scroll_state_snapshot_by_display_list.set(*display_list, document_paintable.scroll_state_snapshot());
-    // Collect scroll state snapshots for each nested navigable
-    document_paintable.for_each_in_inclusive_subtree_of_type<Painting::NavigableContainerViewportPaintable>([&scroll_state_snapshot_by_display_list](auto& navigable_container_paintable) {
-        auto const* hosted_document = navigable_container_paintable.navigable_container().content_document_without_origin_check();
-        if (!hosted_document || !hosted_document->paintable())
-            return TraversalDecision::Continue;
-        // We are only interested in collecting scroll state snapshots for visible nested navigables, which is
-        // detectable by checking if they have a cached display list that should've been populated by
-        // record_display_list() on top-level document.
-        auto navigable_display_list = hosted_document->cached_display_list();
-        if (!navigable_display_list)
-            return TraversalDecision::Continue;
-        const_cast<DOM::Document&>(*hosted_document).paintable()->refresh_scroll_state();
-        scroll_state_snapshot_by_display_list.set(*navigable_display_list, hosted_document->paintable()->scroll_state_snapshot());
-        return TraversalDecision::Continue;
-    });
+    Painting::VisualContextSnapshotMap snapshot_by_display_list;
+    document_paintable.refresh_snapshot();
+    snapshot_by_display_list.set(*display_list, document_paintable.visual_context_snapshot());
+    // Collect snapshots for all nested navigables, recursively
+    collect_nested_navigable_snapshots(document_paintable, snapshot_by_display_list);
 
-    m_rendering_thread.update_display_list(*display_list, move(scroll_state_snapshot_by_display_list));
+    m_rendering_thread.update_display_list(*display_list, move(snapshot_by_display_list));
 }
 
 void Navigable::paint_next_frame()

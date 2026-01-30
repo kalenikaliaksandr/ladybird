@@ -65,7 +65,7 @@ void Paintable::resolve_paint_properties()
 bool Paintable::is_visible() const
 {
     auto const& computed_values = this->computed_values();
-    return computed_values.visibility() == CSS::Visibility::Visible && computed_values.opacity() != 0;
+    return computed_values.visibility() == CSS::Visibility::Visible;
 }
 
 DOM::Document const& Paintable::document() const

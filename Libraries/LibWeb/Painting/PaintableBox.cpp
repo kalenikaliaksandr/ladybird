@@ -137,7 +137,7 @@ PaintableBox::ScrollHandled PaintableBox::set_scroll_offset(CSSPixelPoint offset
     if (!scrollable_overflow_rect.has_value())
         return ScrollHandled::No;
 
-    document().set_needs_to_refresh_scroll_state(true);
+    document().set_needs_to_refresh_snapshot(true);
 
     auto padding_rect = absolute_padding_box_rect();
     auto max_x_offset = max(scrollable_overflow_rect->width() - padding_rect.width(), 0);
@@ -713,8 +713,8 @@ CSSPixelPoint PaintableBox::transform_to_local_coordinates(CSSPixelPoint screen_
         return screen_position;
 
     auto const& viewport_paintable = *document().paintable();
-    auto const& scroll_state = viewport_paintable.scroll_state_snapshot();
-    auto local_pos = accumulated_visual_context()->transform_point_for_hit_test(screen_position, scroll_state);
+    auto const& snapshot = viewport_paintable.visual_context_snapshot();
+    auto local_pos = accumulated_visual_context()->transform_point_for_hit_test(screen_position, snapshot);
     return local_pos.value_or(screen_position);
 }
 
@@ -957,7 +957,7 @@ TraversalDecision PaintableBox::hit_test(CSSPixelPoint position, HitTestType typ
         auto& viewport_paintable = const_cast<ViewportPaintable&>(static_cast<ViewportPaintable const&>(*this));
         viewport_paintable.build_stacking_context_tree_if_needed();
         viewport_paintable.document().update_paint_and_hit_testing_properties_if_needed();
-        viewport_paintable.refresh_scroll_state();
+        viewport_paintable.refresh_snapshot();
         return stacking_context()->hit_test(position, type, callback);
     }
 
@@ -972,10 +972,10 @@ TraversalDecision PaintableBox::hit_test(CSSPixelPoint position, HitTestType typ
         return TraversalDecision::Continue;
 
     auto const& viewport_paintable = *document().paintable();
-    auto const& scroll_state = viewport_paintable.scroll_state_snapshot();
+    auto const& snapshot = viewport_paintable.visual_context_snapshot();
     Optional<CSSPixelPoint> local_position;
     if (auto state = accumulated_visual_context())
-        local_position = state->transform_point_for_hit_test(position, scroll_state);
+        local_position = state->transform_point_for_hit_test(position, snapshot);
     else
         local_position = position;
 

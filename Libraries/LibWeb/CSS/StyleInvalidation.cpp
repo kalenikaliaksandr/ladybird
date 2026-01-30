@@ -14,7 +14,7 @@
 
 namespace Web::CSS {
 
-static bool is_stacking_context_creating_value(CSS::PropertyID property_id, RefPtr<StyleValue const> const& value)
+static bool is_visual_context_creating_value(CSS::PropertyID property_id, RefPtr<StyleValue const> const& value)
 {
     if (!value)
         return false;
@@ -51,9 +51,11 @@ static bool is_stacking_context_creating_value(CSS::PropertyID property_id, RefP
     case CSS::PropertyID::Perspective:
     case CSS::PropertyID::TransformStyle:
         return value->to_keyword() != CSS::Keyword::None && value->to_keyword() != CSS::Keyword::Flat;
+    case CSS::PropertyID::Clip:
+        return value->to_keyword() != CSS::Keyword::Auto;
     default:
         // For properties we haven't optimized (contain, container-type, will-change, all),
-        // assume any value creates stacking context to be safe
+        // assume any value creates a visual context to be safe
         return true;
     }
 }
@@ -107,30 +109,41 @@ RequiredInvalidationAfterStyleChange compute_property_invalidation(CSS::Property
     if (CSS::property_affects_stacking_context(property_id)) {
         // OPTIMIZATION: Only rebuild stacking context tree when property crosses from a neutral value (doesn't create
         //               stacking context) to a creating value or vice versa.
-        bool old_creates = is_stacking_context_creating_value(property_id, old_value);
-        bool new_creates = is_stacking_context_creating_value(property_id, new_value);
+        bool old_creates = is_visual_context_creating_value(property_id, old_value);
+        bool new_creates = is_visual_context_creating_value(property_id, new_value);
         if (old_creates != new_creates) {
             invalidation.rebuild_stacking_context_tree = true;
         }
     }
     invalidation.repaint = true;
 
-    // Transform, perspective, clip, clip-path, and effects properties require rebuilding AccumulatedVisualContext tree.
+    // OPTIMIZATION: For accumulated-visual-context-affecting properties, only rebuild the tree when the property crosses
+    // from a neutral value to an active value or vice versa (structural change). Value-to-value
+    // changes only need a refresh (in-place data update).
     if (AK::first_is_one_of(property_id,
             CSS::PropertyID::Transform,
             CSS::PropertyID::Rotate,
             CSS::PropertyID::Scale,
             CSS::PropertyID::Translate,
             CSS::PropertyID::Perspective,
-            CSS::PropertyID::TransformOrigin,
-            CSS::PropertyID::PerspectiveOrigin,
             CSS::PropertyID::Clip,
             CSS::PropertyID::ClipPath,
             CSS::PropertyID::Opacity,
             CSS::PropertyID::MixBlendMode,
             CSS::PropertyID::Filter,
             CSS::PropertyID::Isolation)) {
-        invalidation.rebuild_accumulated_visual_contexts = true;
+        bool old_creates = is_visual_context_creating_value(property_id, old_value);
+        bool new_creates = is_visual_context_creating_value(property_id, new_value);
+        if (old_creates != new_creates) {
+            invalidation.rebuild_accumulated_visual_contexts = true;
+        } else {
+            invalidation.refresh_accumulated_visual_contexts = true;
+        }
+    } else if (AK::first_is_one_of(property_id,
+                   CSS::PropertyID::TransformOrigin,
+                   CSS::PropertyID::PerspectiveOrigin)) {
+        // These properties always have values (no "none" state), so any change is always value-to-value.
+        invalidation.refresh_accumulated_visual_contexts = true;
     }
 
     return invalidation;

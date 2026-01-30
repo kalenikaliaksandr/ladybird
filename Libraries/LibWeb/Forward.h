@@ -39,16 +39,16 @@ AK_TYPEDEF_DISTINCT_NUMERIC_GENERAL(i64, UniqueNodeID, Comparison, Increment, Ca
 
 namespace Web::Painting {
 
+class AccumulatedVisualContextSnapshot;
 class BackingStore;
 class DevicePixelConverter;
 class DisplayList;
 class DisplayListPlayerSkia;
 class DisplayListRecorder;
 class SVGGradientPaintStyle;
-class ScrollStateSnapshot;
 using PaintStyle = RefPtr<SVGGradientPaintStyle>;
 using PaintStyleOrColor = Variant<PaintStyle, Gfx::Color>;
-using ScrollStateSnapshotByDisplayList = HashMap<NonnullRefPtr<DisplayList>, ScrollStateSnapshot>;
+using VisualContextSnapshotMap = HashMap<NonnullRefPtr<DisplayList>, AccumulatedVisualContextSnapshot>;
 
 }
 
@@ -975,7 +975,6 @@ class MediaPaintable;
 class Paintable;
 class PaintableBox;
 class PaintableWithLines;
-class ScrollStateSnapshot;
 class StackingContext;
 class TextPaintable;
 class VideoPaintable;

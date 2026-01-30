@@ -290,9 +290,6 @@ Gfx::AffineTransform StackingContext::affine_transform_matrix() const
 
 void StackingContext::paint(DisplayListRecordingContext& context) const
 {
-    if (paintable_box().computed_values().opacity() == 0.0f)
-        return;
-
     TemporaryChange save_nesting_level(context.display_list_recorder().m_save_nesting_level, 0);
     ScopeGuard verify_save_and_restore_are_balanced([&] {
         VERIFY(context.display_list_recorder().m_save_nesting_level == 0);
@@ -394,10 +391,10 @@ TraversalDecision StackingContext::hit_test(CSSPixelPoint position, HitTestType 
         if (is<PaintableWithLines>(paintable_box())) {
             auto const& paintable_with_lines = as<PaintableWithLines>(paintable_box());
             auto const& viewport_paintable = *paintable_box().document().paintable();
-            auto const& scroll_state = viewport_paintable.scroll_state_snapshot();
+            auto const& snapshot = viewport_paintable.visual_context_snapshot();
             Optional<CSSPixelPoint> local_position;
             if (auto state = paintable_box().accumulated_visual_context())
-                local_position = state->transform_point_for_hit_test(position, scroll_state);
+                local_position = state->transform_point_for_hit_test(position, snapshot);
             else
                 local_position = position;
 
@@ -442,10 +439,10 @@ TraversalDecision StackingContext::hit_test(CSSPixelPoint position, HitTestType 
         return TraversalDecision::Continue;
 
     auto const& viewport_paintable = *paintable_box().document().paintable();
-    auto const& scroll_state = viewport_paintable.scroll_state_snapshot();
+    auto const& snapshot = viewport_paintable.visual_context_snapshot();
     Optional<CSSPixelPoint> local_position;
     if (auto state = paintable_box().accumulated_visual_context())
-        local_position = state->transform_point_for_hit_test(position, scroll_state);
+        local_position = state->transform_point_for_hit_test(position, snapshot);
     else
         local_position = position;
 

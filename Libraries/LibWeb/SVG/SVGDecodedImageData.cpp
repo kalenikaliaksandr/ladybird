@@ -19,6 +19,7 @@
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/DisplayListPlayerSkia.h>
 #include <LibWeb/Painting/DisplayListRecordingContext.h>
+#include <LibWeb/Painting/ViewportPaintable.h>
 #include <LibWeb/SVG/SVGDecodedImageData.h>
 #include <LibWeb/SVG/SVGSVGElement.h>
 #include <LibWeb/XML/XMLDocumentBuilder.h>
@@ -117,11 +118,15 @@ RefPtr<Gfx::PaintingSurface> SVGDecodedImageData::render_to_surface(Gfx::IntSize
     if (!display_list)
         return nullptr;
 
+    Painting::VisualContextSnapshotMap snapshot_by_display_list;
+    if (auto* viewport_paintable = m_document->paintable())
+        snapshot_by_display_list.set(*display_list, viewport_paintable->visual_context_snapshot());
+
     switch (m_page_client->display_list_player_type()) {
     case DisplayListPlayerType::SkiaGPUIfAvailable:
     case DisplayListPlayerType::SkiaCPU: {
         Painting::DisplayListPlayerSkia display_list_player;
-        display_list_player.execute(*display_list, {}, surface);
+        display_list_player.execute(*display_list, move(snapshot_by_display_list), surface);
         break;
     }
     default:
