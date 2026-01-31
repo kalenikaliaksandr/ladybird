@@ -221,6 +221,8 @@ public:
     CSSPixelRect transform_reference_box() const;
     virtual void resolve_paint_properties() override;
 
+    ResolvedCSSFilter resolve_css_filter(CSS::Filter const&) const;
+
     RefPtr<ScrollFrame const> nearest_scroll_frame() const;
 
     PaintableBox const* nearest_scrollable_ancestor() const;

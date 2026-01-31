@@ -7,6 +7,9 @@
 
 #include <AK/StringBuilder.h>
 #include <LibGfx/Matrix4x4.h>
+#include <LibWeb/CSS/PropertyID.h>
+#include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
+#include <LibWeb/CSS/StyleValues/TransformationStyleValue.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/Blending.h>
 #include <LibWeb/Painting/PaintableBox.h>
@@ -159,22 +162,51 @@ void AccumulatedVisualContext::refresh()
     auto source = m_source_paintable.ptr();
     if (!source)
         return;
+    auto const& cv = source->computed_values();
+    auto const& layout_node = source->layout_node();
     m_data.visit(
         [&](TransformData const&) {
-            m_data = TransformData { source->transform(), source->transform_origin() };
+            auto const& transformations = cv.transformations();
+            auto const& translate = cv.translate();
+            auto const& rotate = cv.rotate();
+            auto const& scale = cv.scale();
+            auto matrix = Gfx::FloatMatrix4x4::identity();
+            if (translate)
+                matrix = matrix * translate->to_matrix(*source).release_value();
+            if (rotate)
+                matrix = matrix * rotate->to_matrix(*source).release_value();
+            if (scale)
+                matrix = matrix * scale->to_matrix(*source).release_value();
+            for (auto const& transform : transformations)
+                matrix = matrix * transform->to_matrix(*source).release_value();
+
+            auto const& transform_origin = cv.transform_origin();
+            auto reference_box = source->transform_reference_box();
+            auto x = reference_box.left() + transform_origin.x.to_px(layout_node, reference_box.width());
+            auto y = reference_box.top() + transform_origin.y.to_px(layout_node, reference_box.height());
+
+            m_data = TransformData { matrix, { x, y } };
         },
         [&](PerspectiveData const&) {
             // Refresh is only called for value-to-value changes, so the source must still have a perspective.
-            auto perspective = source->perspective_matrix();
+            auto perspective = cv.perspective();
             VERIFY(perspective.has_value());
-            m_data = PerspectiveData { *perspective };
+
+            auto reference_box = source->transform_reference_box();
+            auto perspective_origin = cv.perspective_origin().resolved(layout_node, reference_box).to_type<float>();
+            auto computed_x = perspective_origin.x();
+            auto computed_y = perspective_origin.y();
+            auto perspective_matrix = Gfx::translation_matrix(Vector3<float>(computed_x, computed_y, 0));
+            perspective_matrix = perspective_matrix * CSS::TransformationStyleValue::create(CSS::PropertyID::Transform, CSS::TransformFunction::Perspective, CSS::StyleValueVector { CSS::LengthStyleValue::create(CSS::Length::make_px(perspective.value())) })->to_matrix({}).release_value();
+            perspective_matrix = perspective_matrix * Gfx::translation_matrix(Vector3<float>(-computed_x, -computed_y, 0));
+
+            m_data = PerspectiveData { perspective_matrix };
         },
         [&](EffectsData const&) {
-            auto const& cv = source->computed_values();
             m_data = EffectsData {
                 cv.opacity(),
                 mix_blend_mode_to_compositing_and_blending_operator(cv.mix_blend_mode()),
-                source->filter(),
+                source->resolve_css_filter(cv.filter()),
                 cv.isolation() == CSS::Isolation::Isolate
             };
         },
@@ -186,12 +218,12 @@ void AccumulatedVisualContext::refresh()
         },
         [&](ClipPathData const&) {
             // Refresh is only called for value-to-value changes, so the source must still have a clip path.
-            auto const& clip_path = source->computed_values().clip_path();
+            auto const& clip_path = cv.clip_path();
             VERIFY(clip_path.has_value() && clip_path->is_basic_shape());
             auto masking_area = source->absolute_border_box_rect();
             auto reference_box = CSSPixelRect { {}, masking_area.size() };
             auto const& basic_shape = clip_path->basic_shape();
-            auto path = basic_shape.to_path(reference_box, source->layout_node());
+            auto path = basic_shape.to_path(reference_box, layout_node);
             path.offset(masking_area.top_left().template to_type<float>());
             auto fill_rule = basic_shape.basic_shape().visit(
                 [](CSS::Polygon const& polygon) { return polygon.fill_rule; },

@@ -1638,22 +1638,14 @@ void Document::update_style()
         set_needs_accumulated_visual_contexts_update(VisualContextUpdateKind::Rebuild);
     } else if (invalidation.refresh_accumulated_visual_contexts) {
         set_needs_accumulated_visual_contexts_update(VisualContextUpdateKind::Refresh);
-        set_needs_to_resolve_paint_only_properties();
     }
 
-    if (!invalidation.is_none()) {
-        // Skip display list invalidation when the only visual change is an accumulated visual context refresh.
-        // Data is patched in-place, so the existing display list picks up the new values.
-        bool is_visual_context_refresh_only = invalidation.refresh_accumulated_visual_contexts
-            && !invalidation.rebuild_accumulated_visual_contexts
-            && !invalidation.relayout
-            && !invalidation.rebuild_layout_tree
-            && !invalidation.rebuild_stacking_context_tree;
-        if (is_visual_context_refresh_only) {
-            set_needs_display(InvalidateDisplayList::No);
-        } else {
-            set_needs_display();
-        }
+    if (invalidation.rebuild_accumulated_visual_contexts || invalidation.rebuild_display_list
+        || invalidation.relayout || invalidation.rebuild_layout_tree
+        || invalidation.rebuild_stacking_context_tree) {
+        set_needs_display();
+    } else if (invalidation.refresh_accumulated_visual_contexts) {
+        set_needs_display(InvalidateDisplayList::No);
     }
 
     if (invalidation.rebuild_stacking_context_tree)

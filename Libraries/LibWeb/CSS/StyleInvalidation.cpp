@@ -79,7 +79,7 @@ RequiredInvalidationAfterStyleChange compute_property_invalidation(CSS::Property
     if (property_id == CSS::PropertyID::TextTransform) {
         invalidation.rebuild_layout_tree = true;
         invalidation.relayout = true;
-        invalidation.repaint = true;
+        invalidation.rebuild_display_list = true;
         return invalidation;
     }
 
@@ -101,7 +101,7 @@ RequiredInvalidationAfterStyleChange compute_property_invalidation(CSS::Property
         if ((old_value && old_value->to_keyword() == CSS::Keyword::Collapse) != (new_value && new_value->to_keyword() == CSS::Keyword::Collapse))
             invalidation.relayout = true;
         // Of course, we still have to repaint on any visibility change.
-        invalidation.repaint = true;
+        invalidation.rebuild_display_list = true;
     } else if (CSS::property_affects_layout(property_id)) {
         invalidation.relayout = true;
     }
@@ -115,11 +115,10 @@ RequiredInvalidationAfterStyleChange compute_property_invalidation(CSS::Property
             invalidation.rebuild_stacking_context_tree = true;
         }
     }
-    invalidation.repaint = true;
-
     // OPTIMIZATION: For accumulated-visual-context-affecting properties, only rebuild the tree when the property crosses
     // from a neutral value to an active value or vice versa (structural change). Value-to-value
     // changes only need a refresh (in-place data update).
+    // AVC-only property changes skip rebuild_display_list since data is patched in-place.
     if (AK::first_is_one_of(property_id,
             CSS::PropertyID::Transform,
             CSS::PropertyID::Rotate,
@@ -136,6 +135,7 @@ RequiredInvalidationAfterStyleChange compute_property_invalidation(CSS::Property
         bool new_creates = is_visual_context_creating_value(property_id, new_value);
         if (old_creates != new_creates) {
             invalidation.rebuild_accumulated_visual_contexts = true;
+            invalidation.rebuild_display_list = true;
         } else {
             invalidation.refresh_accumulated_visual_contexts = true;
         }
@@ -144,6 +144,8 @@ RequiredInvalidationAfterStyleChange compute_property_invalidation(CSS::Property
                    CSS::PropertyID::PerspectiveOrigin)) {
         // These properties always have values (no "none" state), so any change is always value-to-value.
         invalidation.refresh_accumulated_visual_contexts = true;
+    } else {
+        invalidation.rebuild_display_list = true;
     }
 
     return invalidation;

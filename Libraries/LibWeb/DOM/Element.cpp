@@ -917,7 +917,7 @@ CSS::RequiredInvalidationAfterStyleChange Element::recompute_style(bool& did_cha
     if (invalidation.is_none())
         return invalidation;
 
-    if (invalidation.repaint && paintable())
+    if (invalidation.rebuild_display_list && paintable())
         paintable()->set_needs_paint_only_properties_update(true);
 
     if (!invalidation.rebuild_layout_tree && layout_node()) {
@@ -937,7 +937,7 @@ CSS::RequiredInvalidationAfterStyleChange Element::recompute_style(bool& did_cha
 
             if (auto node_with_style = pseudo_element->layout_node()) {
                 node_with_style->apply_style(*pseudo_element_style);
-                if (invalidation.repaint && node_with_style->first_paintable()) {
+                if (invalidation.rebuild_display_list && node_with_style->first_paintable()) {
                     node_with_style->first_paintable()->set_needs_paint_only_properties_update(true);
                     node_with_style->first_paintable()->set_needs_display();
                 }

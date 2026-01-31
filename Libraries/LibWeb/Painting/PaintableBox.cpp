@@ -1116,6 +1116,76 @@ CSSPixelRect PaintableBox::transform_reference_box() const
     VERIFY_NOT_REACHED();
 }
 
+ResolvedCSSFilter PaintableBox::resolve_css_filter(CSS::Filter const& computed_filter) const
+{
+    auto const& computed_values = this->computed_values();
+    ResolvedCSSFilter result;
+    for (auto const& filter_operation : computed_filter.filters()) {
+        filter_operation.visit(
+            [&](CSS::FilterOperation::Blur const& blur) {
+                auto resolved_radius = blur.resolved_radius(layout_node_with_style_and_box_metrics());
+                result.operations.empend(ResolvedCSSFilter::Blur {
+                    .radius = CSSPixels::nearest_value_for(resolved_radius),
+                });
+            },
+            [&](CSS::FilterOperation::DropShadow const& drop_shadow) {
+                CSS::CalculationResolutionContext resolution_context {
+                    .length_resolution_context = CSS::Length::ResolutionContext::for_layout_node(layout_node_with_style_and_box_metrics()),
+                };
+                auto to_css_px = [&](CSS::LengthOrCalculated const& length) {
+                    return CSSPixels::nearest_value_for(length.resolved(resolution_context).map([&](auto&& it) { return it.to_px(layout_node_with_style_and_box_metrics()).to_double(); }).value_or(0.0));
+                };
+                auto color_context = CSS::ColorResolutionContext::for_layout_node_with_style(layout_node_with_style_and_box_metrics());
+                auto resolved_color = drop_shadow.color
+                    ? drop_shadow.color->to_color(color_context).value_or(computed_values.color())
+                    : computed_values.color();
+
+                result.operations.empend(ResolvedCSSFilter::DropShadow {
+                    .offset_x = to_css_px(drop_shadow.offset_x),
+                    .offset_y = to_css_px(drop_shadow.offset_y),
+                    .radius = drop_shadow.radius.has_value() ? to_css_px(*drop_shadow.radius) : CSSPixels(0),
+                    .color = resolved_color,
+                });
+            },
+            [&](CSS::FilterOperation::Color const& color_operation) {
+                result.operations.empend(ResolvedCSSFilter::Color {
+                    .operation = color_operation.operation,
+                    .amount = color_operation.resolved_amount(),
+                });
+            },
+            [&](CSS::FilterOperation::HueRotate const& hue_rotate) {
+                result.operations.empend(ResolvedCSSFilter::HueRotate {
+                    .angle_degrees = hue_rotate.angle_degrees(layout_node_with_style_and_box_metrics()),
+                });
+            },
+            [&](CSS::URL const& css_url) {
+                auto& url_string = css_url.url();
+                if (url_string.is_empty() || !url_string.starts_with('#'))
+                    return;
+                auto fragment_or_error = url_string.substring_from_byte_offset(1);
+                if (fragment_or_error.is_error())
+                    return;
+                auto maybe_filter = document().get_element_by_id(fragment_or_error.value());
+                if (!maybe_filter)
+                    return;
+                if (auto* filter_element = as_if<SVG::SVGFilterElement>(*maybe_filter)) {
+                    auto& node = layout_node_with_style_and_box_metrics();
+                    result.svg_filter = filter_element->gfx_filter(node);
+                    // Compute bounds for triggering filter application.
+                    // For empty elements (like <use> with no href), use the containing SVG's viewport.
+                    auto bounds = absolute_border_box_rect();
+                    if (bounds.is_empty()) {
+                        if (auto const* svg_ancestor = first_ancestor_of_type<SVGSVGPaintable>())
+                            result.svg_filter_bounds = svg_ancestor->absolute_rect();
+                    }
+                    if (!bounds.is_empty())
+                        result.svg_filter_bounds = bounds;
+                }
+            });
+    }
+    return result;
+}
+
 void PaintableBox::resolve_paint_properties()
 {
     Base::resolve_paint_properties();
@@ -1252,74 +1322,6 @@ void PaintableBox::resolve_paint_properties()
     }
 
     // Filters
-    auto resolve_css_filter = [&](CSS::Filter const& computed_filter) -> ResolvedCSSFilter {
-        ResolvedCSSFilter result;
-        for (auto const& filter_operation : computed_filter.filters()) {
-            filter_operation.visit(
-                [&](CSS::FilterOperation::Blur const& blur) {
-                    auto resolved_radius = blur.resolved_radius(layout_node_with_style_and_box_metrics());
-                    result.operations.empend(ResolvedCSSFilter::Blur {
-                        .radius = CSSPixels::nearest_value_for(resolved_radius),
-                    });
-                },
-                [&](CSS::FilterOperation::DropShadow const& drop_shadow) {
-                    CSS::CalculationResolutionContext resolution_context {
-                        .length_resolution_context = CSS::Length::ResolutionContext::for_layout_node(layout_node_with_style_and_box_metrics()),
-                    };
-                    auto to_css_px = [&](CSS::LengthOrCalculated const& length) {
-                        return CSSPixels::nearest_value_for(length.resolved(resolution_context).map([&](auto&& it) { return it.to_px(layout_node_with_style_and_box_metrics()).to_double(); }).value_or(0.0));
-                    };
-                    auto color_context = CSS::ColorResolutionContext::for_layout_node_with_style(layout_node_with_style_and_box_metrics());
-                    auto resolved_color = drop_shadow.color
-                        ? drop_shadow.color->to_color(color_context).value_or(computed_values.color())
-                        : computed_values.color();
-
-                    result.operations.empend(ResolvedCSSFilter::DropShadow {
-                        .offset_x = to_css_px(drop_shadow.offset_x),
-                        .offset_y = to_css_px(drop_shadow.offset_y),
-                        .radius = drop_shadow.radius.has_value() ? to_css_px(*drop_shadow.radius) : CSSPixels(0),
-                        .color = resolved_color,
-                    });
-                },
-                [&](CSS::FilterOperation::Color const& color_operation) {
-                    result.operations.empend(ResolvedCSSFilter::Color {
-                        .operation = color_operation.operation,
-                        .amount = color_operation.resolved_amount(),
-                    });
-                },
-                [&](CSS::FilterOperation::HueRotate const& hue_rotate) {
-                    result.operations.empend(ResolvedCSSFilter::HueRotate {
-                        .angle_degrees = hue_rotate.angle_degrees(layout_node_with_style_and_box_metrics()),
-                    });
-                },
-                [&](CSS::URL const& css_url) {
-                    auto& url_string = css_url.url();
-                    if (url_string.is_empty() || !url_string.starts_with('#'))
-                        return;
-                    auto fragment_or_error = url_string.substring_from_byte_offset(1);
-                    if (fragment_or_error.is_error())
-                        return;
-                    auto maybe_filter = document().get_element_by_id(fragment_or_error.value());
-                    if (!maybe_filter)
-                        return;
-                    if (auto* filter_element = as_if<SVG::SVGFilterElement>(*maybe_filter)) {
-                        auto& node = layout_node_with_style_and_box_metrics();
-                        result.svg_filter = filter_element->gfx_filter(node);
-                        // Compute bounds for triggering filter application.
-                        // For empty elements (like <use> with no href), use the containing SVG's viewport.
-                        auto bounds = absolute_border_box_rect();
-                        if (bounds.is_empty()) {
-                            if (auto const* svg_ancestor = first_ancestor_of_type<SVGSVGPaintable>())
-                                result.svg_filter_bounds = svg_ancestor->absolute_rect();
-                        }
-                        if (!bounds.is_empty())
-                            result.svg_filter_bounds = bounds;
-                    }
-                });
-        }
-        return result;
-    };
-
     if (computed_values.filter().has_filters())
         set_filter(resolve_css_filter(computed_values.filter()));
     else

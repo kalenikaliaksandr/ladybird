@@ -797,19 +797,19 @@ AnimationUpdateContext::~AnimationUpdateContext()
                 target->set_needs_layout_tree_update(true, DOM::SetNeedsLayoutTreeUpdateReason::KeyframeEffect);
             }
         }
-        if (invalidation.repaint) {
+        if (invalidation.rebuild_display_list) {
             if (target->paintable())
                 target->paintable()->set_needs_paint_only_properties_update(true);
+        }
 
-            if (invalidation.rebuild_accumulated_visual_contexts) {
-                element.document().set_needs_accumulated_visual_contexts_update(DOM::VisualContextUpdateKind::Rebuild);
-                element.document().set_needs_display();
-            } else if (invalidation.refresh_accumulated_visual_contexts) {
-                element.document().set_needs_accumulated_visual_contexts_update(DOM::VisualContextUpdateKind::Refresh);
-                element.document().set_needs_display(InvalidateDisplayList::No);
-            } else {
-                element.document().set_needs_display();
-            }
+        if (invalidation.rebuild_accumulated_visual_contexts) {
+            element.document().set_needs_accumulated_visual_contexts_update(DOM::VisualContextUpdateKind::Rebuild);
+            element.document().set_needs_display();
+        } else if (invalidation.refresh_accumulated_visual_contexts) {
+            element.document().set_needs_accumulated_visual_contexts_update(DOM::VisualContextUpdateKind::Refresh);
+            element.document().set_needs_display(InvalidateDisplayList::No);
+        } else if (invalidation.rebuild_display_list) {
+            element.document().set_needs_display();
         }
         if (invalidation.rebuild_stacking_context_tree)
             element.document().invalidate_stacking_context_tree();
