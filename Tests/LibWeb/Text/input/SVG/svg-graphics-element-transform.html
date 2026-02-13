@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<svg id="svg" xmlns="http://www.w3.org/2000/svg">
+    <rect id="r1" transform="translate(10, 20) scale(2, 3) rotate(45, 5, 5) skewX(30) skewY(15)" />
+    <rect id="r2" transform="matrix(1, 0, 0, 1, 50, 60)" />
+    <rect id="r3" />
+</svg>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        const r1 = document.getElementById("r1");
+        const r2 = document.getElementById("r2");
+        const r3 = document.getElementById("r3");
+
+        // [SameObject] identity
+        println(`transform same object: ${r1.transform === r1.transform}`);
+        println(`baseVal same object: ${r1.transform.baseVal === r1.transform.baseVal}`);
+        println(`animVal same object: ${r1.transform.animVal === r1.transform.animVal}`);
+
+        // r1 has 5 transforms
+        const baseVal = r1.transform.baseVal;
+        println(`r1 numberOfItems: ${baseVal.numberOfItems}`);
+        println(`r1 length: ${baseVal.length}`);
+
+        // translate(10, 20) -> type=2
+        const t0 = baseVal.getItem(0);
+        println(`t0 type: ${t0.type}`);
+        println(`t0 angle: ${t0.angle}`);
+        println(`t0 matrix a: ${t0.matrix.a}`);
+        println(`t0 matrix d: ${t0.matrix.d}`);
+        println(`t0 matrix e: ${t0.matrix.e}`);
+        println(`t0 matrix f: ${t0.matrix.f}`);
+
+        // scale(2, 3) -> type=3
+        const t1 = baseVal.getItem(1);
+        println(`t1 type: ${t1.type}`);
+        println(`t1 angle: ${t1.angle}`);
+        println(`t1 matrix a: ${t1.matrix.a}`);
+        println(`t1 matrix d: ${t1.matrix.d}`);
+
+        // rotate(45, 5, 5) -> type=4
+        const t2 = baseVal.getItem(2);
+        println(`t2 type: ${t2.type}`);
+        println(`t2 angle: ${t2.angle}`);
+
+        // skewX(30) -> type=5
+        const t3 = baseVal.getItem(3);
+        println(`t3 type: ${t3.type}`);
+        println(`t3 angle: ${t3.angle}`);
+
+        // skewY(15) -> type=6
+        const t4 = baseVal.getItem(4);
+        println(`t4 type: ${t4.type}`);
+        println(`t4 angle: ${t4.angle}`);
+
+        // matrix(1, 0, 0, 1, 50, 60) -> type=1
+        const m0 = r2.transform.baseVal.getItem(0);
+        println(`m0 type: ${m0.type}`);
+        println(`m0 matrix a: ${m0.matrix.a}`);
+        println(`m0 matrix b: ${m0.matrix.b}`);
+        println(`m0 matrix c: ${m0.matrix.c}`);
+        println(`m0 matrix d: ${m0.matrix.d}`);
+        println(`m0 matrix e: ${m0.matrix.e}`);
+        println(`m0 matrix f: ${m0.matrix.f}`);
+
+        // r3 has no transform
+        println(`r3 numberOfItems: ${r3.transform.baseVal.numberOfItems}`);
+
+        // animVal is read-only
+        let threw = false;
+        try {
+            r1.transform.animVal.clear();
+        } catch (e) {
+            threw = true;
+            println(`animVal clear threw: ${e.constructor.name}`);
+        }
+        println(`animVal threw: ${threw}`);
+
+        // Dynamic update via setAttribute
+        r3.setAttribute("transform", "translate(100, 200)");
+        println(`r3 after setAttribute numberOfItems: ${r3.transform.baseVal.numberOfItems}`);
+        const r3t0 = r3.transform.baseVal.getItem(0);
+        println(`r3t0 type: ${r3t0.type}`);
+        println(`r3t0 matrix e: ${r3t0.matrix.e}`);
+        println(`r3t0 matrix f: ${r3t0.matrix.f}`);
+
+        // [SameObject] for matrix
+        println(`matrix same object: ${t0.matrix === t0.matrix}`);
+    });
+</script>

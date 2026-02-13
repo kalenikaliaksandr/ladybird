@@ -1,0 +1,36 @@
+transform same object: true
+baseVal same object: true
+animVal same object: true
+r1 numberOfItems: 5
+r1 length: 5
+t0 type: 2
+t0 angle: 0
+t0 matrix a: 1
+t0 matrix d: 1
+t0 matrix e: 10
+t0 matrix f: 20
+t1 type: 3
+t1 angle: 0
+t1 matrix a: 2
+t1 matrix d: 3
+t2 type: 4
+t2 angle: 45
+t3 type: 5
+t3 angle: 30
+t4 type: 6
+t4 angle: 15
+m0 type: 1
+m0 matrix a: 1
+m0 matrix b: 0
+m0 matrix c: 0
+m0 matrix d: 1
+m0 matrix e: 50
+m0 matrix f: 60
+r3 numberOfItems: 0
+animVal clear threw: DOMException
+animVal threw: true
+r3 after setAttribute numberOfItems: 1
+r3t0 type: 2
+r3t0 matrix e: 100
+r3t0 matrix f: 200
+matrix same object: true
