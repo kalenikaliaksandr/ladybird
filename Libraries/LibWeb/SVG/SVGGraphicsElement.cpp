@@ -41,6 +41,12 @@ void SVGGraphicsElement::initialize(JS::Realm& realm)
     Base::initialize(realm);
 }
 
+void SVGGraphicsElement::visit_edges(Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_transform_list);
+}
+
 void SVGGraphicsElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value, Optional<FlyString> const& namespace_)
 {
     Base::attribute_changed(name, old_value, value, namespace_);
@@ -49,6 +55,16 @@ void SVGGraphicsElement::attribute_changed(FlyString const& name, Optional<Strin
         auto transform_list = AttributeParser::parse_transform(value.value_or(String {}));
         if (transform_list.has_value())
             m_transform = transform_from_transform_list(*transform_list);
+
+        // Keep the cached SVGAnimatedTransformList in sync if it exists.
+        if (m_transform_list) {
+            auto svg_transforms = parse_transform_attribute_to_svg_transforms(value.value_or(String {}));
+            m_transform_list->base_val()->clear().release_value_but_fixme_should_propagate_errors();
+            for (auto& t : svg_transforms)
+                m_transform_list->base_val()->append_item(t).release_value_but_fixme_should_propagate_errors();
+            m_transform_list->anim_val()->set_items(move(svg_transforms));
+        }
+
         if (layout_node())
             layout_node()->set_needs_layout_update(DOM::SetNeedsLayoutReason::SVGGraphicsElementTransformChange);
     }
@@ -356,12 +372,53 @@ WebIDL::ExceptionOr<GC::Ref<Geometry::DOMRect>> SVGGraphicsElement::get_b_box(Op
     return Geometry::DOMRect::create(realm(), rect);
 }
 
-GC::Ref<SVGAnimatedTransformList> SVGGraphicsElement::transform() const
+static GC::Ref<SVGTransform> create_svg_transform_from_parsed(JS::Realm& realm, Transform const& parsed)
 {
-    dbgln("(STUBBED) SVGGraphicsElement::transform(). Called on: {}", debug_description());
-    auto base_val = SVGTransformList::create(realm(), ReadOnlyList::Yes);
-    auto anim_val = SVGTransformList::create(realm(), ReadOnlyList::Yes);
-    return SVGAnimatedTransformList::create(realm(), base_val, anim_val);
+    return parsed.operation.visit(
+        [&](Transform::Translate const& translate) -> GC::Ref<SVGTransform> {
+            return SVGTransform::create(realm, SVGTransform::Type::Translate, 0, translate.x, translate.y);
+        },
+        [&](Transform::Scale const& scale) -> GC::Ref<SVGTransform> {
+            return SVGTransform::create(realm, SVGTransform::Type::Scale, 0, scale.x, scale.y);
+        },
+        [&](Transform::Rotate const& rotate) -> GC::Ref<SVGTransform> {
+            return SVGTransform::create(realm, SVGTransform::Type::Rotate, rotate.a, rotate.x, rotate.y);
+        },
+        [&](Transform::SkewX const& skew_x) -> GC::Ref<SVGTransform> {
+            return SVGTransform::create(realm, SVGTransform::Type::SkewX, skew_x.a, 0, 0);
+        },
+        [&](Transform::SkewY const& skew_y) -> GC::Ref<SVGTransform> {
+            return SVGTransform::create(realm, SVGTransform::Type::SkewY, skew_y.a, 0, 0);
+        },
+        [&](Transform::Matrix const& matrix) -> GC::Ref<SVGTransform> {
+            return SVGTransform::create_matrix(realm, matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f);
+        });
+}
+
+Vector<GC::Ref<SVGTransform>> SVGGraphicsElement::parse_transform_attribute_to_svg_transforms(StringView attribute_value)
+{
+    Vector<GC::Ref<SVGTransform>> result;
+    auto parsed = AttributeParser::parse_transform(attribute_value);
+    if (parsed.has_value()) {
+        result.ensure_capacity(parsed->size());
+        for (auto const& t : *parsed)
+            result.append(create_svg_transform_from_parsed(realm(), t));
+    }
+    return result;
+}
+
+GC::Ref<SVGAnimatedTransformList> SVGGraphicsElement::transform()
+{
+    if (!m_transform_list) {
+        auto attribute_value = get_attribute("transform"_fly_string);
+        auto svg_transforms = parse_transform_attribute_to_svg_transforms(
+            attribute_value.value_or(String {}));
+
+        auto base_val = SVGTransformList::create(realm(), Vector<GC::Ref<SVGTransform>>(svg_transforms), ReadOnlyList::No);
+        auto anim_val = SVGTransformList::create(realm(), move(svg_transforms), ReadOnlyList::Yes);
+        m_transform_list = SVGAnimatedTransformList::create(realm(), base_val, anim_val);
+    }
+    return *m_transform_list;
 }
 
 GC::Ptr<Geometry::DOMMatrix> SVGGraphicsElement::get_screen_ctm()

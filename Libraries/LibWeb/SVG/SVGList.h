@@ -45,6 +45,8 @@ protected:
 
     ReadOnlyList read_only() const { return m_read_only; }
 
+    void set_items_internal(Vector<T> items) { m_items = move(items); }
+
 private:
     GC::Ref<JS::Realm> m_realm;
     Vector<T> m_items;

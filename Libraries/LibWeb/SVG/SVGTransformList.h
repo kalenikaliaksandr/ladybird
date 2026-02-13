@@ -24,6 +24,8 @@ public:
     [[nodiscard]] static GC::Ref<SVGTransformList> create(JS::Realm& realm, ReadOnlyList);
     virtual ~SVGTransformList() override = default;
 
+    void set_items(Vector<GC::Ref<SVGTransform>> items) { set_items_internal(move(items)); }
+
 private:
     SVGTransformList(JS::Realm&, Vector<GC::Ref<SVGTransform>>, ReadOnlyList);
     SVGTransformList(JS::Realm&, ReadOnlyList);

@@ -22,7 +22,7 @@ public:
 
     GC::Ref<SVGTransformList> base_val() const
     {
-        return m_anim_val;
+        return m_base_val;
     }
 
     GC::Ref<SVGTransformList> anim_val() const

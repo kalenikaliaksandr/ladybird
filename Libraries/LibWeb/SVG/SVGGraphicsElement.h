@@ -69,7 +69,7 @@ public:
     GC::Ptr<SVG::SVGClipPathElement const> clip_path() const;
 
     WebIDL::ExceptionOr<GC::Ref<Geometry::DOMRect>> get_b_box(Optional<SVGBoundingBoxOptions>);
-    GC::Ref<SVGAnimatedTransformList> transform() const;
+    GC::Ref<SVGAnimatedTransformList> transform();
 
     GC::Ptr<Geometry::DOMMatrix> get_ctm();
     GC::Ptr<Geometry::DOMMatrix> get_screen_ctm();
@@ -83,10 +83,12 @@ protected:
     SVGGraphicsElement(DOM::Document&, DOM::QualifiedName);
 
     virtual void initialize(JS::Realm&) override;
+    virtual void visit_edges(Cell::Visitor&) override;
 
     Optional<Painting::PaintStyle> svg_paint_computed_value_to_gfx_paint_style(SVGPaintContext const& paint_context, Optional<CSS::SVGPaint> const& paint_value) const;
 
     Gfx::AffineTransform m_transform = {};
+    GC::Ptr<SVGAnimatedTransformList> m_transform_list;
 
     GC::Ptr<DOM::Element> resolve_url_to_element(CSS::URL const& url) const;
 
@@ -99,6 +101,7 @@ protected:
 private:
     virtual bool is_svg_graphics_element() const final { return true; }
     float resolve_relative_to_viewport_size(CSS::LengthPercentage const& length_percentage) const;
+    Vector<GC::Ref<SVGTransform>> parse_transform_attribute_to_svg_transforms(StringView attribute_value);
 };
 
 Gfx::AffineTransform transform_from_transform_list(ReadonlySpan<Transform> transform_list);
