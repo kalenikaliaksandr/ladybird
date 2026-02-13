@@ -12,6 +12,7 @@
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/ShadowRoot.h>
+#include <LibWeb/Geometry/DOMMatrix.h>
 #include <LibWeb/Geometry/DOMRect.h>
 #include <LibWeb/Layout/Node.h>
 #include <LibWeb/Painting/PaintStyle.h>
@@ -421,16 +422,50 @@ GC::Ref<SVGAnimatedTransformList> SVGGraphicsElement::transform()
     return *m_transform_list;
 }
 
-GC::Ptr<Geometry::DOMMatrix> SVGGraphicsElement::get_screen_ctm()
+static GC::Ref<Geometry::DOMMatrix> dom_matrix_from_affine_transform(JS::Realm& realm, Gfx::AffineTransform const& t)
 {
-    dbgln("(STUBBED) SVGGraphicsElement::get_screen_ctm(). Called on: {}", debug_description());
-    return Geometry::DOMMatrix::create(realm());
+    auto matrix = Geometry::DOMMatrix::create(realm);
+    matrix->set_a(t.a());
+    matrix->set_b(t.b());
+    matrix->set_c(t.c());
+    matrix->set_d(t.d());
+    matrix->set_e(t.e());
+    matrix->set_f(t.f());
+    return matrix;
 }
 
+// https://svgwg.org/svg2-draft/types.html#__svg__SVGGraphicsElement__getScreenCTM
+GC::Ptr<Geometry::DOMMatrix> SVGGraphicsElement::get_screen_ctm()
+{
+    const_cast<DOM::Document&>(document()).update_layout(DOM::UpdateLayoutReason::SVGGraphicsElementGetCTM);
+    auto* pb = paintable_box();
+    if (!pb)
+        return nullptr;
+    auto& svg_paintable = static_cast<Painting::SVGGraphicsPaintable&>(*pb);
+    auto const& transforms = svg_paintable.computed_transforms();
+    auto ctm = transforms.svg_to_css_pixels_transform();
+
+    auto svg_element = owner_svg_element();
+    if (svg_element) {
+        if (auto svg_pb = svg_element->paintable_box()) {
+            auto svg_location = svg_pb->absolute_rect().location();
+            ctm = Gfx::AffineTransform {}.translate({ svg_location.to_type<float>().x(), svg_location.to_type<float>().y() }).multiply(ctm);
+        }
+    }
+
+    return dom_matrix_from_affine_transform(realm(), ctm);
+}
+
+// https://svgwg.org/svg2-draft/types.html#__svg__SVGGraphicsElement__getCTM
 GC::Ptr<Geometry::DOMMatrix> SVGGraphicsElement::get_ctm()
 {
-    dbgln("(STUBBED) SVGGraphicsElement::get_ctm(). Called on: {}", debug_description());
-    return Geometry::DOMMatrix::create(realm());
+    const_cast<DOM::Document&>(document()).update_layout(DOM::UpdateLayoutReason::SVGGraphicsElementGetCTM);
+    auto* pb = paintable_box();
+    if (!pb)
+        return nullptr;
+    auto& svg_paintable = static_cast<Painting::SVGGraphicsPaintable&>(*pb);
+    auto ctm = svg_paintable.computed_transforms().svg_to_css_pixels_transform();
+    return dom_matrix_from_affine_transform(realm(), ctm);
 }
 
 }

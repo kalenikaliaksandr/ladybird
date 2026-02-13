@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<svg id="svg1" width="200" height="200" style="position: absolute; left: 50px; top: 30px;">
+    <rect id="bare" x="0" y="0" width="10" height="10" />
+    <rect id="translated" x="0" y="0" width="10" height="10" transform="translate(10, 20)" />
+    <g id="group" transform="translate(5, 5)">
+        <rect id="nested" x="0" y="0" width="10" height="10" transform="translate(10, 20)" />
+    </g>
+</svg>
+<svg id="svg2" width="200" height="200" viewBox="0 0 100 100" style="position: absolute; left: 100px; top: 60px;">
+    <rect id="viewboxed" x="0" y="0" width="10" height="10" transform="translate(10, 20)" />
+</svg>
+<svg id="svg3" width="200" height="200">
+    <defs>
+        <rect id="in-defs" x="0" y="0" width="10" height="10" />
+    </defs>
+</svg>
+<script>
+test(() => {
+    function matrixStr(m) {
+        if (m === null) return "null";
+        return `a=${m.a} b=${m.b} c=${m.c} d=${m.d} e=${m.e} f=${m.f}`;
+    }
+
+    // Identity matrix when no transforms are applied
+    let bare = document.getElementById("bare");
+    println(`bare getCTM: ${matrixStr(bare.getCTM())}`);
+
+    // getCTM with translate transform
+    let translated = document.getElementById("translated");
+    println(`translated getCTM: ${matrixStr(translated.getCTM())}`);
+
+    // getCTM with nested transforms (group + element)
+    let nested = document.getElementById("nested");
+    println(`nested getCTM: ${matrixStr(nested.getCTM())}`);
+
+    // getCTM with viewBox scaling (200/100 = 2x scale)
+    let viewboxed = document.getElementById("viewboxed");
+    println(`viewboxed getCTM: ${matrixStr(viewboxed.getCTM())}`);
+
+    // getScreenCTM includes SVG viewport offset
+    println(`bare getScreenCTM: ${matrixStr(bare.getScreenCTM())}`);
+    println(`translated getScreenCTM: ${matrixStr(translated.getScreenCTM())}`);
+
+    // getScreenCTM with viewBox includes both scaling and offset
+    println(`viewboxed getScreenCTM: ${matrixStr(viewboxed.getScreenCTM())}`);
+
+    // getScreenCTM differs from getCTM by viewport offset
+    let bareCTM = bare.getCTM();
+    let bareScreen = bare.getScreenCTM();
+    println(`screen-ctm offset: e_diff=${bareScreen.e - bareCTM.e} f_diff=${bareScreen.f - bareCTM.f}`);
+
+    // null for non-rendered elements
+    let inDefs = document.getElementById("in-defs");
+    println(`in-defs getCTM: ${matrixStr(inDefs.getCTM())}`);
+    println(`in-defs getScreenCTM: ${matrixStr(inDefs.getScreenCTM())}`);
+});
+</script>
