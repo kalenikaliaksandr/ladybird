@@ -32,7 +32,8 @@ public:
 
     CSSPixels leftmost_inline_offset_at(CSSPixels y) const;
     AvailableSize available_space_for_line(CSSPixels y) const;
-    bool any_floats_intrude_at_block_offset(CSSPixels block_offset) const;
+    CSSPixels total_available_width() const;
+    bool any_floats_present_at_block_offset(CSSPixels block_offset) const;
     bool can_fit_new_line_at_block_offset(CSSPixels block_offset) const;
 
     CSSPixels vertical_float_clearance() const;

@@ -156,19 +156,6 @@ public:
 
     void compute_inset(NodeWithStyleAndBoxModelMetrics const&, CSSPixelSize containing_block_size);
 
-protected:
-    FormattingContext(Type, LayoutMode, LayoutState&, Box const&, FormattingContext* parent = nullptr);
-
-    [[nodiscard]] bool should_treat_width_as_auto(Box const&, AvailableSpace const&) const;
-    [[nodiscard]] bool should_treat_height_as_auto(Box const&, AvailableSpace const&) const;
-
-    [[nodiscard]] bool should_treat_max_width_as_none(Box const&, AvailableSize const&) const;
-    [[nodiscard]] bool should_treat_max_height_as_none(Box const&, AvailableSize const&) const;
-
-    [[nodiscard]] bool box_is_sized_as_replaced_element(Box const&, AvailableSpace const&) const;
-
-    OwnPtr<FormattingContext> layout_inside(Box const&, LayoutMode, AvailableSpace const&);
-
     struct SpaceUsedByFloats {
         CSSPixels left { 0 };
         CSSPixels right { 0 };
@@ -185,6 +172,19 @@ protected:
         GC::Ptr<Box const> matching_left_float_box;
         GC::Ptr<Box const> matching_right_float_box;
     };
+
+protected:
+    FormattingContext(Type, LayoutMode, LayoutState&, Box const&, FormattingContext* parent = nullptr);
+
+    [[nodiscard]] bool should_treat_width_as_auto(Box const&, AvailableSpace const&) const;
+    [[nodiscard]] bool should_treat_height_as_auto(Box const&, AvailableSpace const&) const;
+
+    [[nodiscard]] bool should_treat_max_width_as_none(Box const&, AvailableSize const&) const;
+    [[nodiscard]] bool should_treat_max_height_as_none(Box const&, AvailableSize const&) const;
+
+    [[nodiscard]] bool box_is_sized_as_replaced_element(Box const&, AvailableSpace const&) const;
+
+    OwnPtr<FormattingContext> layout_inside(Box const&, LayoutMode, AvailableSpace const&);
 
     struct ShrinkToFitResult {
         CSSPixels preferred_width { 0 };

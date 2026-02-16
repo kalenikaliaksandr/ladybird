@@ -738,6 +738,7 @@ set(SOURCES
     Layout/BreakNode.cpp
     Layout/CanvasBox.cpp
     Layout/CheckBox.cpp
+    Layout/FloatState.cpp
     Layout/FieldSetBox.cpp
     Layout/FlexFormattingContext.cpp
     Layout/FormattingContext.cpp

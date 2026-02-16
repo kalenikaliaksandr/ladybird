@@ -36,13 +36,13 @@ void LineBuilder::break_line(ForcedBreak forced_break, Optional<CSSPixels> next_
     update_last_line();
 
     size_t break_count = 0;
-    bool floats_intrude_at_current_y = false;
+    bool floats_present_at_current_y = false;
     do {
         m_containing_block_used_values.line_boxes.append(LineBox(m_direction, m_writing_mode));
         begin_new_line(true, break_count == 0, forced_break);
         break_count++;
-        floats_intrude_at_current_y = m_context.any_floats_intrude_at_block_offset(m_current_block_offset);
-    } while (floats_intrude_at_current_y
+        floats_present_at_current_y = m_context.any_floats_present_at_block_offset(m_current_block_offset);
+    } while (floats_present_at_current_y
         && (!m_context.can_fit_new_line_at_block_offset(m_current_block_offset)
             || (next_item_width.value_or(0) > m_available_width_for_current_line)));
 }
@@ -51,20 +51,19 @@ void LineBuilder::begin_new_line(bool increment_y, bool is_first_break_in_sequen
 {
     if (increment_y) {
         if (is_first_break_in_sequence) {
-            // First break is simple, just go to the start of the next line.
             m_current_block_offset += max(m_max_height_on_current_line, m_context.containing_block().computed_values().line_height());
         } else {
-            // We're doing more than one break in a row.
-            // This means we're trying to squeeze past intruding floats.
-            // Scan 1px at a time until we find a Y value where a new line can fit.
-            // FIXME: This is super dumb and inefficient.
-            CSSPixels candidate_block_offset = m_current_block_offset + 1;
-            while (true) {
-                if (m_context.can_fit_new_line_at_block_offset(candidate_block_offset))
-                    break;
-                ++candidate_block_offset;
-            }
-            m_current_block_offset = candidate_block_offset;
+            // Squeeze past floats at this block offset.
+            auto const& float_state = m_context.parent().float_state();
+            auto line_height = m_context.containing_block().computed_values().line_height();
+            auto available_width = m_context.total_available_width();
+            m_current_block_offset = float_state.find_opportunity_box_y(
+                m_containing_block_used_values,
+                m_current_block_offset + 1,
+                line_height,
+                available_width,
+                m_context.parent(),
+                m_context.parent().root());
         }
     }
     recalculate_available_space();
@@ -137,9 +136,10 @@ CSSPixels LineBuilder::y_for_float_to_be_inserted_here(Box const& box)
 
     // New floats will always be placed vertically at or below the lowest float.
     // This applies to all floats, so the last inserted float will always be the lowest.
-    auto last_float = m_context.parent().last_inserted_float();
+    auto const& float_state = m_context.parent().float_state();
+    auto last_float = float_state.last_float();
     if (last_float.has_value()) {
-        auto float_box_top = last_float->margin_box_rect_in_root_coordinate_space.top() - box_in_root_rect.y();
+        auto float_box_top = last_float->margin_box_in_root_coords.top() - box_in_root_rect.y();
         candidate_block_offset = max(candidate_block_offset, float_box_top);
     }
 
@@ -148,9 +148,9 @@ CSSPixels LineBuilder::y_for_float_to_be_inserted_here(Box const& box)
         Optional<CSSPixels> highest_intersection_bottom;
         auto candidate_block_bottom = candidate_block_offset + height;
 
-        m_context.parent().for_each_floating_box([&](auto const& float_box) {
-            auto float_box_top = float_box.margin_box_rect_in_root_coordinate_space.top() - box_in_root_rect.y();
-            auto float_box_bottom = float_box.margin_box_rect_in_root_coordinate_space.bottom() - box_in_root_rect.y();
+        float_state.for_each_float([&](auto const& float_item) {
+            auto float_box_top = float_item.margin_box_in_root_coords.top() - box_in_root_rect.y();
+            auto float_box_bottom = float_item.margin_box_in_root_coords.bottom() - box_in_root_rect.y();
             if (float_box_bottom <= candidate_block_offset)
                 return IterationDecision::Continue;
 
@@ -186,11 +186,11 @@ bool LineBuilder::should_break(CSSPixels next_item_width)
 
     auto const& line_boxes = m_containing_block_used_values.line_boxes;
     if (line_boxes.is_empty() || line_boxes.last().is_empty()) {
-        // If we don't have a single line box yet *and* there are no floats intruding
+        // If we don't have a single line box yet *and* there are no floats
         // at this Y coordinate, we don't need to break before inserting anything.
-        if (!m_context.any_floats_intrude_at_block_offset(m_current_block_offset))
+        if (!m_context.any_floats_present_at_block_offset(m_current_block_offset))
             return false;
-        if (!m_context.any_floats_intrude_at_block_offset(m_current_block_offset + m_context.containing_block().computed_values().line_height()))
+        if (!m_context.any_floats_present_at_block_offset(m_current_block_offset + m_context.containing_block().computed_values().line_height()))
             return false;
     }
     auto current_line_width = ensure_last_line_box().width();
