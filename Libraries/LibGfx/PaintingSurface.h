@@ -57,6 +57,9 @@ public:
     template<typename T>
     T sk_image_snapshot() const;
 
+    template<typename T>
+    T make_gpu_snapshot() const;
+
     void flush();
 
     ~PaintingSurface();

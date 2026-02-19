@@ -418,6 +418,21 @@ NonnullRefPtr<ImmutableBitmap> ImmutableBitmap::create_snapshot_from_painting_su
     return adopt_ref(*new ImmutableBitmap(make<ImmutableBitmapImpl>(move(impl))));
 }
 
+NonnullRefPtr<ImmutableBitmap> ImmutableBitmap::create_snapshot_from_painting_surface_gpu(NonnullRefPtr<PaintingSurface> painting_surface)
+{
+    auto sk_image = painting_surface->make_gpu_snapshot<sk_sp<SkImage>>();
+    VERIFY(sk_image);
+    ImmutableBitmapImpl impl {
+        .context = nullptr,
+        .sk_image = move(sk_image),
+        .sk_bitmap = {},
+        .bitmap = nullptr,
+        .color_space = {},
+        .yuv_data = nullptr,
+    };
+    return adopt_ref(*new ImmutableBitmap(make<ImmutableBitmapImpl>(move(impl))));
+}
+
 ImmutableBitmap::ImmutableBitmap(NonnullOwnPtr<ImmutableBitmapImpl> impl)
     : m_impl(move(impl))
 {

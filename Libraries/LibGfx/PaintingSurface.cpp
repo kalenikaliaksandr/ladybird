@@ -210,6 +210,17 @@ sk_sp<SkImage> PaintingSurface::sk_image_snapshot() const
     return m_impl->surface->makeImageSnapshot();
 }
 
+template<>
+sk_sp<SkImage> PaintingSurface::make_gpu_snapshot() const
+{
+    lock_context();
+    if (m_impl->context)
+        m_impl->context->flush_and_submit(m_impl->surface.get());
+    auto image = m_impl->surface->makeImageSnapshot();
+    unlock_context();
+    return image;
+}
+
 void PaintingSurface::flush()
 {
     if (on_flush)

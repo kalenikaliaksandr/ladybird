@@ -9,6 +9,7 @@
 #include <LibGfx/Forward.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibWeb/HTML/HTMLElement.h>
+#include <LibWeb/Painting/ExternalContentSource.h>
 #include <LibWeb/WebIDL/Types.h>
 
 namespace Web::HTML {
@@ -48,6 +49,8 @@ public:
     RefPtr<Gfx::PaintingSurface> surface() const;
     void allocate_painting_surface_if_needed();
 
+    Painting::ExternalContentSource& ensure_external_content_source();
+
 private:
     HTMLCanvasElement(DOM::Document&, DOM::QualifiedName);
 
@@ -66,6 +69,7 @@ private:
     void notify_context_about_canvas_size_change();
 
     Variant<GC::Ref<HTML::CanvasRenderingContext2D>, GC::Ref<WebGL::WebGLRenderingContext>, GC::Ref<WebGL::WebGL2RenderingContext>, Empty> m_context;
+    RefPtr<Painting::ExternalContentSource> m_external_content_source;
 };
 
 }

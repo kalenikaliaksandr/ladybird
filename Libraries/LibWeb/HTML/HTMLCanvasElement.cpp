@@ -130,8 +130,17 @@ WebIDL::UnsignedLong HTMLCanvasElement::height() const
     return 150;
 }
 
+Painting::ExternalContentSource& HTMLCanvasElement::ensure_external_content_source()
+{
+    if (!m_external_content_source)
+        m_external_content_source = Painting::ExternalContentSource::create();
+    return *m_external_content_source;
+}
+
 void HTMLCanvasElement::reset_context_to_default_state()
 {
+    if (m_external_content_source)
+        m_external_content_source->clear();
     m_context.visit(
         [](GC::Ref<CanvasRenderingContext2D>& context) {
             context->reset_to_default_state();
@@ -390,9 +399,7 @@ RefPtr<Gfx::Bitmap> HTMLCanvasElement::get_bitmap_from_surface()
 
 void HTMLCanvasElement::present()
 {
-    if (auto surface = this->surface())
-        surface->flush();
-
+    // 1. Context-specific present (WebGL transfers backbuffer to display surface).
     m_context.visit(
         [](GC::Ref<CanvasRenderingContext2D>&) {
             // Do nothing, CRC2D writes directly to the canvas bitmap.
@@ -406,6 +413,15 @@ void HTMLCanvasElement::present()
         [](Empty) {
             // Do nothing.
         });
+
+    // 2. Snapshot the surface for the rendering thread.
+    //    create_snapshot_from_painting_surface_gpu() calls PaintingSurface::make_gpu_snapshot()
+    //    which handles context locking and GPU flush internally.
+    if (auto surface = this->surface()) {
+        surface->flush();
+        auto snapshot = Gfx::ImmutableBitmap::create_snapshot_from_painting_surface_gpu(*surface);
+        ensure_external_content_source().update(snapshot);
+    }
 }
 
 RefPtr<Gfx::PaintingSurface> HTMLCanvasElement::surface() const

@@ -52,6 +52,7 @@ public:
     static NonnullRefPtr<ImmutableBitmap> create(NonnullRefPtr<Bitmap> bitmap, ColorSpace color_space = {});
     static NonnullRefPtr<ImmutableBitmap> create(NonnullRefPtr<Bitmap> bitmap, AlphaType, ColorSpace color_space = {});
     static NonnullRefPtr<ImmutableBitmap> create_snapshot_from_painting_surface(NonnullRefPtr<PaintingSurface>);
+    static NonnullRefPtr<ImmutableBitmap> create_snapshot_from_painting_surface_gpu(NonnullRefPtr<PaintingSurface>);
     static ErrorOr<NonnullRefPtr<ImmutableBitmap>> create_from_yuv(NonnullOwnPtr<YUVData>);
 
     ~ImmutableBitmap();
@@ -71,7 +72,7 @@ public:
 
     Color get_pixel(int x, int y) const;
 
-    // Returns nullptr for YUV-backed bitmaps
+    // Returns nullptr for YUV-backed and GPU-only bitmaps
     RefPtr<Bitmap const> bitmap() const;
 
 private:
