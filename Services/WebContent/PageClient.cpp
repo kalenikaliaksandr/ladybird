@@ -79,7 +79,9 @@ PageClient::PageClient(PageHost& owner, u64 id)
     //        to 62.5 FPS.
     int refresh_interval = static_cast<int>(1000.0 / m_maximum_frames_per_second);
 
-    m_paint_refresh_timer = Core::Timer::create_repeating(refresh_interval, [] {
+    m_paint_refresh_timer = Core::Timer::create_repeating(refresh_interval, [this] {
+        if (page().top_level_traversable_is_initialized() && page().top_level_traversable()->show_fps_overlay())
+            page().top_level_traversable()->set_needs_repaint();
         Web::HTML::main_thread_event_loop().queue_task_to_update_the_rendering();
     });
 

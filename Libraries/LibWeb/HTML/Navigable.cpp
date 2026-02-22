@@ -2864,6 +2864,12 @@ void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
     m_rendering_thread.update_display_list(*display_list, move(scroll_state_snapshot_by_display_list));
 }
 
+void Navigable::set_show_fps_overlay(bool value)
+{
+    m_show_fps_overlay = value;
+    m_rendering_thread.set_show_fps_overlay(value);
+}
+
 void Navigable::paint_next_frame()
 {
     if (!is_top_level_traversable())

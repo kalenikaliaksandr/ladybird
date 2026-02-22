@@ -34,7 +34,7 @@ struct TypefaceSkia::Impl {
     sk_sp<SkTypeface> skia_typeface;
 };
 
-static SkFontMgr& font_manager()
+SkFontMgr& platform_font_manager()
 {
     if (!s_font_manager) {
 #ifdef AK_OS_MACOS
@@ -71,7 +71,7 @@ static SkFontStyle::Slant slope_to_skia_slant(u8 slope)
 ErrorOr<NonnullRefPtr<TypefaceSkia>> TypefaceSkia::load_from_buffer(AK::ReadonlyBytes buffer, int ttc_index)
 {
     auto data = SkData::MakeWithoutCopy(buffer.data(), buffer.size());
-    auto skia_typeface = font_manager().makeFromData(data, ttc_index);
+    auto skia_typeface = platform_font_manager().makeFromData(data, ttc_index);
 
     if (!skia_typeface) {
         return Error::from_string_literal("Failed to load typeface from buffer");
@@ -84,7 +84,7 @@ ErrorOr<RefPtr<TypefaceSkia>> TypefaceSkia::find_typeface_for_code_point(u32 cod
 {
     SkFontStyle style(weight, width, slope_to_skia_slant(slope));
 
-    auto skia_typeface = font_manager().matchFamilyStyleCharacter(
+    auto skia_typeface = platform_font_manager().matchFamilyStyleCharacter(
         nullptr, style, nullptr, 0, code_point);
 
     if (!skia_typeface)
@@ -139,7 +139,7 @@ RefPtr<TypefaceSkia const> TypefaceSkia::clone_with_variations(Vector<FontVariat
 
     auto data = SkData::MakeWithoutCopy(m_buffer.data(), m_buffer.size());
     auto stream = std::make_unique<SkMemoryStream>(data);
-    auto skia_typeface = font_manager().makeFromStream(std::move(stream), font_args);
+    auto skia_typeface = platform_font_manager().makeFromStream(std::move(stream), font_args);
 
     if (!skia_typeface)
         return {};

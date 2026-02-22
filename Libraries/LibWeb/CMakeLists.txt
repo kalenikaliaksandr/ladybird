@@ -837,6 +837,7 @@ set(SOURCES
     Painting/DisplayListRecorder.cpp
     Painting/DisplayListRecordingContext.cpp
     Painting/ExternalContentSource.cpp
+    Painting/FPSOverlay.cpp
     Painting/FieldSetPaintable.cpp
     Painting/GradientPainting.cpp
     Painting/ImagePaintable.cpp

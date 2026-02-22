@@ -10,6 +10,7 @@
 #include <LibWeb/HTML/RenderingThread.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/Painting/DisplayListPlayerSkia.h>
+#include <LibWeb/Painting/FPSOverlay.h>
 
 namespace Web::HTML {
 
@@ -64,6 +65,11 @@ public:
 
     bool has_skia_player() const { return m_skia_player != nullptr; }
 
+    void set_show_fps_overlay(bool value)
+    {
+        m_show_fps_overlay.store(value, AK::MemoryOrder::memory_order_relaxed);
+    }
+
     void exit()
     {
         Threading::MutexLocker const locker { m_mutex };
@@ -85,6 +91,16 @@ public:
         m_needs_present = true;
         m_pending_viewport_rect = viewport_rect;
         m_command_ready.signal();
+    }
+
+    void draw_fps_overlay_if_needed(Gfx::PaintingSurface& surface)
+    {
+        if (!m_show_fps_overlay.load(AK::MemoryOrder::memory_order_relaxed))
+            return;
+        surface.lock_context();
+        m_fps_overlay.draw(surface);
+        m_skia_player->flush(surface);
+        surface.unlock_context();
     }
 
     void compositor_loop()
@@ -163,6 +179,9 @@ public:
 
                 if (m_cached_display_list && m_backing_stores.is_valid()) {
                     m_skia_player->execute(*m_cached_display_list, Painting::ScrollStateSnapshotByDisplayList(m_cached_scroll_state_snapshot), *m_backing_stores.back_store);
+
+                    draw_fps_overlay_if_needed(*m_backing_stores.back_store);
+
                     i32 rendered_bitmap_id = m_backing_stores.back_bitmap_id;
                     m_backing_stores.swap();
 
@@ -206,6 +225,9 @@ private:
 
     bool m_needs_present { false };
     Gfx::IntRect m_pending_viewport_rect;
+
+    Atomic<bool> m_show_fps_overlay { false };
+    Painting::FPSOverlay m_fps_overlay;
 
 public:
     void decrement_queued_tasks()
@@ -275,6 +297,11 @@ void RenderingThread::request_screenshot(NonnullRefPtr<Gfx::PaintingSurface> tar
 void RenderingThread::ready_to_paint()
 {
     m_thread_data->decrement_queued_tasks();
+}
+
+void RenderingThread::set_show_fps_overlay(bool value)
+{
+    m_thread_data->set_show_fps_overlay(value);
 }
 
 }

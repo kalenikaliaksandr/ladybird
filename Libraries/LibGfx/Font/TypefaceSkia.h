@@ -6,10 +6,15 @@
 
 #pragma once
 
+#include <AK/FlyString.h>
 #include <LibGfx/Font/FontData.h>
 #include <LibGfx/Font/Typeface.h>
 
+class SkFontMgr;
+
 namespace Gfx {
+
+SkFontMgr& platform_font_manager();
 
 class TypefaceSkia : public Gfx::Typeface {
     AK_MAKE_NONCOPYABLE(TypefaceSkia);

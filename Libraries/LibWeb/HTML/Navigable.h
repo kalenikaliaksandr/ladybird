@@ -207,6 +207,7 @@ public:
     void render_screenshot(Gfx::PaintingSurface&, PaintConfig, Function<void()>&& callback);
 
     bool needs_repaint() const { return m_needs_repaint; }
+    bool show_fps_overlay() const { return m_show_fps_overlay; }
     void set_needs_repaint() { m_needs_repaint = true; }
 
     [[nodiscard]] bool has_inclusive_ancestor_with_visibility_hidden() const;
@@ -219,6 +220,7 @@ public:
     bool pending_set_browser_zoom_request() const { return m_pending_set_browser_zoom_request; }
 
     void set_should_show_line_box_borders(bool value) { m_should_show_line_box_borders = value; }
+    void set_show_fps_overlay(bool);
 
     bool is_svg_page() const { return m_is_svg_page; }
 
@@ -287,6 +289,7 @@ private:
 
     bool m_is_svg_page { false };
     bool m_needs_repaint { true };
+    bool m_show_fps_overlay { false };
     bool m_pending_set_browser_zoom_request { false };
     bool m_should_show_line_box_borders { false };
     GC::Ref<Painting::BackingStoreManager> m_backing_store_manager;

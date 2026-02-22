@@ -81,6 +81,7 @@ enum class ActionID {
     DumpLocalStorage,
     DumpGCGraph,
     ShowLineBoxBorders,
+    ShowFPSOverlay,
     CollectGarbage,
     SpoofUserAgent,
     NavigatorCompatibilityMode,

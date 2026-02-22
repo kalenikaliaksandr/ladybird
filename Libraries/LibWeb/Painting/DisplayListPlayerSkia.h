@@ -21,6 +21,8 @@ public:
     DisplayListPlayerSkia();
     ~DisplayListPlayerSkia();
 
+    void flush(Gfx::PaintingSurface&);
+
 private:
     void flush() override;
     void draw_glyph_run(DrawGlyphRun const&) override;

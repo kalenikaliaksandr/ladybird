@@ -38,6 +38,7 @@ public:
     void request_screenshot(NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&& callback);
 
     void ready_to_paint();
+    void set_show_fps_overlay(bool);
 
 private:
     NonnullRefPtr<ThreadData> m_thread_data;

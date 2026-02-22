@@ -102,6 +102,13 @@ void DisplayListPlayerSkia::flush()
     surface().flush();
 }
 
+void DisplayListPlayerSkia::flush(Gfx::PaintingSurface& surface)
+{
+    if (m_context)
+        m_context->flush_and_submit(&surface.sk_surface());
+    surface.flush();
+}
+
 void DisplayListPlayerSkia::draw_glyph_run(DrawGlyphRun const& command)
 {
     auto* blob = command.glyph_run->cached_skia_text_blob();
