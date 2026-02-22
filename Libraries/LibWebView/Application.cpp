@@ -60,6 +60,7 @@ struct ApplicationSettingsObserver : public SettingsObserver {
 
 Application::Application(Optional<ByteString> ladybird_binary_path)
     : m_settings(Settings::create({}))
+    , m_bookmark_store(BookmarkStore::create({}))
 {
     VERIFY(!s_the);
     s_the = this;

@@ -1,4 +1,5 @@
 set(TEST_SOURCES
+    TestBookmarkStore.cpp
     TestWebViewURL.cpp
 )
 

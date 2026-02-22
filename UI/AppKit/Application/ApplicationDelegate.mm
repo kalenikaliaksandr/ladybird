@@ -4,7 +4,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibURL/Parser.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/BookmarkStore.h>
+#include <LibWebView/ViewImplementation.h>
 
 #import <Application/ApplicationDelegate.h>
 #import <Interface/InfoBar.h>
@@ -24,16 +27,20 @@
 @property (nonatomic, weak) Tab* active_tab;
 
 @property (nonatomic, strong) InfoBar* info_bar;
+@property (nonatomic, strong) NSMenu* bookmarks_submenu;
 
 - (NSMenuItem*)createApplicationMenu;
 - (NSMenuItem*)createFileMenu;
 - (NSMenuItem*)createEditMenu;
 - (NSMenuItem*)createViewMenu;
+- (NSMenuItem*)createBookmarksMenu;
 - (NSMenuItem*)createHistoryMenu;
 - (NSMenuItem*)createInspectMenu;
 - (NSMenuItem*)createDebugMenu;
 - (NSMenuItem*)createWindowMenu;
 - (NSMenuItem*)createHelpMenu;
+
+- (void)rebuildBookmarksMenu;
 
 @end
 
@@ -48,6 +55,7 @@
         [[NSApp mainMenu] addItem:[self createFileMenu]];
         [[NSApp mainMenu] addItem:[self createEditMenu]];
         [[NSApp mainMenu] addItem:[self createViewMenu]];
+        [[NSApp mainMenu] addItem:[self createBookmarksMenu]];
         [[NSApp mainMenu] addItem:[self createHistoryMenu]];
         [[NSApp mainMenu] addItem:[self createInspectMenu]];
         [[NSApp mainMenu] addItem:[self createDebugMenu]];
@@ -336,6 +344,87 @@
     return menu;
 }
 
+- (NSMenuItem*)createBookmarksMenu
+{
+    auto* menu = [[NSMenuItem alloc] init];
+    auto* submenu = [[NSMenu alloc] initWithTitle:@"Bookmarks"];
+
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Add Bookmark"
+                                                action:@selector(toggleBookmark:)
+                                         keyEquivalent:@"d"]];
+    [submenu addItem:[NSMenuItem separatorItem]];
+
+    self.bookmarks_submenu = submenu;
+    [self rebuildBookmarksMenu];
+
+    WebView::Application::bookmark_store().on_bookmarks_changed = [self] {
+        [self rebuildBookmarksMenu];
+    };
+
+    [menu setSubmenu:submenu];
+    return menu;
+}
+
+- (void)rebuildBookmarksMenu
+{
+    // Remove all items after the separator (index 2+).
+    while ([self.bookmarks_submenu numberOfItems] > 2)
+        [self.bookmarks_submenu removeItemAtIndex:2];
+
+    auto const& bookmarks = WebView::Application::bookmark_store().bookmarks();
+    for (auto const& bookmark : bookmarks) {
+        auto title = bookmark.title.is_empty()
+            ? bookmark.url.serialize()
+            : bookmark.title;
+
+        auto* item = [[NSMenuItem alloc] initWithTitle:Ladybird::string_to_ns_string(title)
+                                                action:@selector(openBookmark:)
+                                         keyEquivalent:@""];
+        [item setRepresentedObject:Ladybird::string_to_ns_string(bookmark.url.serialize())];
+        [self.bookmarks_submenu addItem:item];
+    }
+}
+
+- (void)toggleBookmark:(id)sender
+{
+    auto* current_window = [NSApp keyWindow];
+    if (![current_window isKindOfClass:[Tab class]])
+        return;
+
+    auto* tab = (Tab*)current_window;
+    auto& view = [[tab web_view] view];
+
+    auto const& url = view.url();
+    auto& store = WebView::Application::bookmark_store();
+
+    if (store.is_bookmarked(url)) {
+        store.remove_bookmark(url);
+    } else {
+        auto const& title = view.title();
+        auto title_string = title.to_well_formed_utf8();
+
+        if (title_string.is_empty())
+            store.add_bookmark(url, url.serialize());
+        else
+            store.add_bookmark(url, title_string);
+    }
+}
+
+- (void)openBookmark:(id)sender
+{
+    auto* url_string = (NSString*)[sender representedObject];
+    auto url = URL::Parser::basic_parse(Ladybird::ns_string_to_string(url_string));
+    if (!url.has_value())
+        return;
+
+    auto* current_window = [NSApp keyWindow];
+    if (![current_window isKindOfClass:[Tab class]])
+        return;
+
+    auto* controller = (TabController*)[current_window windowController];
+    [controller loadURL:url.release_value()];
+}
+
 - (NSMenuItem*)createHistoryMenu
 {
     auto* menu = [[NSMenuItem alloc] init];
@@ -441,6 +530,22 @@
 
     if (action == @selector(closeCurrentTab:)) {
         return [[NSApp keyWindow] isKindOfClass:[Tab class]];
+    }
+
+    if (action == @selector(toggleBookmark:)) {
+        auto* current_window = [NSApp keyWindow];
+        if (![current_window isKindOfClass:[Tab class]])
+            return NO;
+
+        auto* tab = (Tab*)current_window;
+        auto const& url = [[tab web_view] view].url();
+
+        if (WebView::Application::bookmark_store().is_bookmarked(url))
+            [menu setTitle:@"Remove Bookmark"];
+        else
+            [menu setTitle:@"Add Bookmark"];
+
+        return YES;
     }
 
     return YES;

@@ -23,6 +23,7 @@
 #include <LibWeb/CSS/PreferredMotion.h>
 #include <LibWeb/Clipboard/SystemClipboard.h>
 #include <LibWeb/HTML/ActivateTab.h>
+#include <LibWebView/BookmarkStore.h>
 #include <LibWebView/FileDownloader.h>
 #include <LibWebView/Forward.h>
 #include <LibWebView/Options.h>
@@ -46,6 +47,7 @@ public:
     static Application& the() { return *s_the; }
 
     static Settings& settings() { return the().m_settings; }
+    static BookmarkStore& bookmark_store() { return the().m_bookmark_store; }
 
     static BrowserOptions const& browser_options() { return the().m_browser_options; }
     static RequestServerOptions const& request_server_options() { return the().m_request_server_options; }
@@ -202,6 +204,7 @@ private:
     static Application* s_the;
 
     Settings m_settings;
+    BookmarkStore m_bookmark_store;
     OwnPtr<ApplicationSettingsObserver> m_settings_observer;
 
     Main::Arguments m_arguments;
