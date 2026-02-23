@@ -83,6 +83,7 @@ signals:
     void title_changed(int id, QString const&);
     void favicon_changed(int id, QIcon const&);
     void audio_play_state_changed(int id, Web::HTML::AudioPlayState);
+    void url_changed();
 
 private:
     virtual void resizeEvent(QResizeEvent*) override;

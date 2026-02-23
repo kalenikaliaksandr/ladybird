@@ -104,6 +104,11 @@ private:
 
     void set_window_rect(Optional<Web::DevicePixels> x, Optional<Web::DevicePixels> y, Optional<Web::DevicePixels> width, Optional<Web::DevicePixels> height);
 
+    void rebuild_bookmarks_menu();
+    void toggle_bookmark();
+    void open_bookmark(URL::URL const&);
+    void update_bookmark_action_text();
+
     QScreen* m_current_screen { nullptr };
     double m_device_pixel_ratio { 0 };
     double m_refresh_rate { 60.0 };
@@ -118,6 +123,9 @@ private:
     QAction* m_new_tab_action { nullptr };
     QAction* m_new_window_action { nullptr };
     QAction* m_find_in_page_action { nullptr };
+
+    QMenu* m_bookmarks_menu { nullptr };
+    QAction* m_toggle_bookmark_action { nullptr };
 
     IsPopupWindow m_is_popup_window { IsPopupWindow::No };
 };

@@ -10,6 +10,7 @@
 
 #include <AK/TypeCasts.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/BookmarkStore.h>
 #include <UI/Qt/Application.h>
 #include <UI/Qt/BrowserWindow.h>
 #include <UI/Qt/Icon.h>
@@ -199,6 +200,21 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, IsPopupWindow
         Settings::the()->set_show_menubar(checked);
     });
 
+    m_bookmarks_menu = new QMenu("&Bookmarks", this);
+    m_toggle_bookmark_action = new QAction("Add Bookmark", this);
+    m_toggle_bookmark_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
+    QObject::connect(m_toggle_bookmark_action, &QAction::triggered, this, &BrowserWindow::toggle_bookmark);
+    m_bookmarks_menu->addAction(m_toggle_bookmark_action);
+    m_bookmarks_menu->addSeparator();
+    m_hamburger_menu->addMenu(m_bookmarks_menu);
+    menuBar()->addMenu(m_bookmarks_menu);
+
+    rebuild_bookmarks_menu();
+
+    WebView::Application::bookmark_store().on_bookmarks_changed = [this] {
+        rebuild_bookmarks_menu();
+    };
+
     auto* inspect_menu = create_application_menu(*m_hamburger_menu, Application::the().inspect_menu());
     m_hamburger_menu->addMenu(inspect_menu);
     menuBar()->addMenu(inspect_menu);
@@ -236,6 +252,7 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, IsPopupWindow
             setWindowTitle(QString("%1 - Ladybird").arg(tab->title()));
 
         set_current_tab(tab);
+        update_bookmark_action_text();
     });
     QObject::connect(m_tabs_container, &QTabWidget::tabCloseRequested, this, &BrowserWindow::request_to_close_tab);
     QObject::connect(close_current_tab_action, &QAction::triggered, this, &BrowserWindow::request_to_close_current_tab);
@@ -350,6 +367,7 @@ void BrowserWindow::initialize_tab(Tab* tab)
     QObject::connect(tab, &Tab::title_changed, this, &BrowserWindow::tab_title_changed);
     QObject::connect(tab, &Tab::favicon_changed, this, &BrowserWindow::tab_favicon_changed);
     QObject::connect(tab, &Tab::audio_play_state_changed, this, &BrowserWindow::tab_audio_play_state_changed);
+    QObject::connect(tab, &Tab::url_changed, this, &BrowserWindow::update_bookmark_action_text);
 
     QObject::connect(&tab->view(), &WebContentView::urls_dropped, this, [this](auto& urls) {
         VERIFY(urls.size());
@@ -652,6 +670,77 @@ void BrowserWindow::closeEvent(QCloseEvent* event)
     QObject::deleteLater();
 
     QMainWindow::closeEvent(event);
+}
+
+void BrowserWindow::toggle_bookmark()
+{
+    if (!m_current_tab)
+        return;
+
+    auto const& url = m_current_tab->view().url();
+    auto& store = WebView::Application::bookmark_store();
+
+    if (store.is_bookmarked(url)) {
+        store.remove_bookmark(url);
+    } else {
+        auto const& title = m_current_tab->view().title();
+        auto title_string = title.to_well_formed_utf8();
+
+        if (title_string.is_empty())
+            store.add_bookmark(url, url.serialize());
+        else
+            store.add_bookmark(url, title_string);
+    }
+}
+
+void BrowserWindow::rebuild_bookmarks_menu()
+{
+    auto actions = m_bookmarks_menu->actions();
+    for (int i = actions.size() - 1; i >= 0; --i) {
+        auto* action = actions[i];
+        if (action == m_toggle_bookmark_action || action->isSeparator())
+            continue;
+        m_bookmarks_menu->removeAction(action);
+        delete action;
+    }
+
+    auto const& bookmarks = WebView::Application::bookmark_store().bookmarks();
+    for (auto const& bookmark : bookmarks) {
+        auto title = bookmark.title.is_empty()
+            ? bookmark.url.serialize()
+            : bookmark.title;
+
+        auto* action = new QAction(qstring_from_ak_string(title), this);
+        auto url = bookmark.url;
+        QObject::connect(action, &QAction::triggered, this, [this, url] {
+            open_bookmark(url);
+        });
+        m_bookmarks_menu->addAction(action);
+    }
+
+    update_bookmark_action_text();
+}
+
+void BrowserWindow::open_bookmark(URL::URL const& url)
+{
+    if (m_current_tab)
+        m_current_tab->navigate(url);
+}
+
+void BrowserWindow::update_bookmark_action_text()
+{
+    if (!m_current_tab) {
+        m_toggle_bookmark_action->setEnabled(false);
+        return;
+    }
+
+    m_toggle_bookmark_action->setEnabled(true);
+
+    auto const& url = m_current_tab->view().url();
+    if (WebView::Application::bookmark_store().is_bookmarked(url))
+        m_toggle_bookmark_action->setText("Remove Bookmark");
+    else
+        m_toggle_bookmark_action->setText("Add Bookmark");
 }
 
 }
