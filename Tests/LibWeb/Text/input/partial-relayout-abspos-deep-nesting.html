@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 300px; height: 300px; overflow: hidden;">
+        <div style="padding: 10px;">
+            <div style="padding: 10px;">
+                <div style="padding: 10px;">
+                    <div id="deep-child" style="width: 100px; height: 50px;"></div>
+                    <div id="deep-sibling" style="height: 30px;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("deep-child").offsetWidth;
+
+    // Modify deeply nested child
+    document.getElementById("deep-child").style.width = "200px";
+    document.getElementById("deep-child").style.height = "80px";
+
+    // Partial relayout
+    let childPartial = document.getElementById("deep-child").getBoundingClientRect();
+    let siblingPartial = document.getElementById("deep-sibling").getBoundingClientRect();
+
+    let cp_w = childPartial.width;
+    let cp_h = childPartial.height;
+    let sp_y = siblingPartial.y;
+
+    // Force full relayout
+    println("child partial: " + cp_w + "x" + cp_h);
+    println("sibling partial y: " + sp_y);
+
+    // Full relayout
+    let childFull = document.getElementById("deep-child").getBoundingClientRect();
+    let siblingFull = document.getElementById("deep-sibling").getBoundingClientRect();
+
+    println("child full: " + childFull.width + "x" + childFull.height);
+    println("sibling full y: " + siblingFull.y);
+
+    println("child match: " + (cp_w === childFull.width && cp_h === childFull.height));
+    println("sibling match: " + (sp_y === siblingFull.y));
+});
+</script>

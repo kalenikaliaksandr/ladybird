@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 600px; height: 400px;">
+    <!-- Two separate abspos boundaries -->
+    <div id="boundary1" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 150px; overflow: hidden;">
+        <div id="child1" style="width: 100px; height: 50px;"></div>
+    </div>
+    <div id="boundary2" style="position: absolute; left: 250px; top: 10px; width: 200px; height: 150px; overflow: hidden;">
+        <div id="child2" style="width: 100px; height: 50px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child1").offsetWidth;
+
+    // Modify both boundaries' children
+    document.getElementById("child1").style.width = "150px";
+    document.getElementById("child2").style.height = "80px";
+
+    // Partial relayout (both boundaries should be relaid out)
+    let child1Partial = document.getElementById("child1").getBoundingClientRect();
+    let child2Partial = document.getElementById("child2").getBoundingClientRect();
+
+    let c1_w = child1Partial.width;
+    let c2_h = child2Partial.height;
+
+    // Force full relayout
+    println("child1 partial w: " + c1_w);
+    println("child2 partial h: " + c2_h);
+
+    // Full relayout
+    let child1Full = document.getElementById("child1").getBoundingClientRect();
+    let child2Full = document.getElementById("child2").getBoundingClientRect();
+
+    println("child1 full w: " + child1Full.width);
+    println("child2 full h: " + child2Full.height);
+
+    println("child1 match: " + (c1_w === child1Full.width));
+    println("child2 match: " + (c2_h === child2Full.height));
+});
+</script>

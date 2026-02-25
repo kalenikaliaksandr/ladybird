@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden; columns: 2; column-gap: 10px;">
+        <div id="child1" style="height: 50px; break-inside: avoid;"></div>
+        <div id="child2" style="height: 50px; break-inside: avoid;"></div>
+        <div id="child3" style="height: 50px; break-inside: avoid;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child1").offsetWidth;
+
+    // Modify child heights to affect column distribution
+    document.getElementById("child1").style.height = "100px";
+
+    // Partial relayout
+    let c1 = document.getElementById("child1").getBoundingClientRect();
+    let c2 = document.getElementById("child2").getBoundingClientRect();
+    let c3 = document.getElementById("child3").getBoundingClientRect();
+
+    let c1_h = c1.height;
+    let c2_x = c2.x;
+    let c2_y = c2.y;
+    let c3_x = c3.x;
+    let c3_y = c3.y;
+
+    println("c1 partial h: " + c1_h);
+    println("c2 partial: " + c2_x + "," + c2_y);
+    println("c3 partial: " + c3_x + "," + c3_y);
+
+    // Full relayout
+    let c1f = document.getElementById("child1").getBoundingClientRect();
+    let c2f = document.getElementById("child2").getBoundingClientRect();
+    let c3f = document.getElementById("child3").getBoundingClientRect();
+
+    println("c1 full h: " + c1f.height);
+    println("c2 full: " + c2f.x + "," + c2f.y);
+    println("c3 full: " + c3f.x + "," + c3f.y);
+
+    println("c1 match: " + (c1_h === c1f.height));
+    println("c2 match: " + (c2_x === c2f.x && c2_y === c2f.y));
+    println("c3 match: " + (c3_x === c3f.x && c3_y === c3f.y));
+});
+</script>

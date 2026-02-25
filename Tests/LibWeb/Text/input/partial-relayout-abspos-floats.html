@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="float-left" style="float: left; width: 50px; height: 80px;"></div>
+        <div id="float-right" style="float: right; width: 40px; height: 60px;"></div>
+        <div id="content" style="height: 30px;">Text content</div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("float-left").offsetWidth;
+
+    // Modify float dimensions
+    document.getElementById("float-left").style.width = "80px";
+    document.getElementById("float-right").style.width = "60px";
+
+    // Partial relayout
+    let floatLeftPartial = document.getElementById("float-left").getBoundingClientRect();
+    let floatRightPartial = document.getElementById("float-right").getBoundingClientRect();
+    let contentPartial = document.getElementById("content").getBoundingClientRect();
+
+    let fl_x = floatLeftPartial.x;
+    let fl_w = floatLeftPartial.width;
+    let fr_x = floatRightPartial.x;
+    let fr_w = floatRightPartial.width;
+    let c_x = contentPartial.x;
+    let c_w = contentPartial.width;
+
+    // Force full relayout
+    println("float-left partial: x=" + fl_x + " w=" + fl_w);
+    println("float-right partial: x=" + fr_x + " w=" + fr_w);
+    println("content partial: x=" + c_x + " w=" + c_w);
+
+    // Full relayout
+    let floatLeftFull = document.getElementById("float-left").getBoundingClientRect();
+    let floatRightFull = document.getElementById("float-right").getBoundingClientRect();
+    let contentFull = document.getElementById("content").getBoundingClientRect();
+
+    println("float-left full: x=" + floatLeftFull.x + " w=" + floatLeftFull.width);
+    println("float-right full: x=" + floatRightFull.x + " w=" + floatRightFull.width);
+    println("content full: x=" + contentFull.x + " w=" + contentFull.width);
+
+    println("float-left match: " + (fl_x === floatLeftFull.x && fl_w === floatLeftFull.width));
+    println("float-right match: " + (fr_x === floatRightFull.x && fr_w === floatRightFull.width));
+    println("content match: " + (c_x === contentFull.x && c_w === contentFull.width));
+});
+</script>

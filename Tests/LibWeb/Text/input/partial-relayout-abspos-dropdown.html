@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- Simulates a dropdown menu pattern -->
+        <div id="trigger" style="position: relative; width: 120px; height: 30px;">
+            Trigger
+            <!-- Dropdown positioned below trigger -->
+            <div id="dropdown" style="position: absolute; top: 100%; left: 0; width: 150px; display: none;">
+                <div style="height: 25px;">Item 1</div>
+                <div style="height: 25px;">Item 2</div>
+                <div style="height: 25px;">Item 3</div>
+            </div>
+        </div>
+        <div id="content" style="height: 50px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("trigger").offsetWidth;
+
+    // Show the dropdown
+    document.getElementById("dropdown").style.display = "block";
+
+    let dropdown = document.getElementById("dropdown").getBoundingClientRect();
+    let content = document.getElementById("content").getBoundingClientRect();
+
+    let dd_y = dropdown.y;
+    let dd_h = dropdown.height;
+    let ct_y = content.y;
+
+    println("dropdown partial: y=" + dd_y + " h=" + dd_h);
+    println("content partial y: " + ct_y);
+
+    let dropdownFull = document.getElementById("dropdown").getBoundingClientRect();
+    let contentFull = document.getElementById("content").getBoundingClientRect();
+
+    println("dropdown full: y=" + dropdownFull.y + " h=" + dropdownFull.height);
+    println("content full y: " + contentFull.y);
+
+    println("dropdown match: " + (dd_y === dropdownFull.y && dd_h === dropdownFull.height));
+    println("content match: " + (ct_y === contentFull.y));
+});
+</script>

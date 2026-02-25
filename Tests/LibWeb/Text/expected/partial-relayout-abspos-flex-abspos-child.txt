@@ -1,0 +1,12 @@
+flex-item1 partial h: 80
+flex-item2 partial h: 50
+flex-abspos partial: 180,10
+after partial y: 90
+flex-item1 full h: 80
+flex-item2 full h: 50
+flex-abspos full: 180,10
+after full y: 90
+fi1 match: true
+fi2 match: true
+abspos match: true
+after match: true

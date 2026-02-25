@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="float1" style="float: left; width: 60px; height: 80px;"></div>
+        <div id="float2" style="float: right; width: 60px; height: 50px;"></div>
+        <div id="clear" style="clear: both; height: 20px;"></div>
+        <div id="after" style="height: 30px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("float1").offsetWidth;
+
+    // Resize float to affect clear position
+    document.getElementById("float1").style.height = "120px";
+
+    let clearPartial = document.getElementById("clear").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let cl_y = clearPartial.y;
+    let a_y = afterPartial.y;
+
+    println("clear partial y: " + cl_y);
+    println("after partial y: " + a_y);
+
+    let clearFull = document.getElementById("clear").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("clear full y: " + clearFull.y);
+    println("after full y: " + afterFull.y);
+
+    println("clear match: " + (cl_y === clearFull.y));
+    println("after match: " + (a_y === afterFull.y));
+});
+</script>

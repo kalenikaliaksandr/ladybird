@@ -1,0 +1,6 @@
+child partial: w=80 x=10
+sibling partial x: 10
+child full: w=80 x=10
+sibling full x: 10
+child match: true
+sibling match: true

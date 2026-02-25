@@ -1,0 +1,9 @@
+c1 partial h: 100
+c2 partial: 10,110
+c3 partial: 10,160
+c1 full h: 100
+c2 full: 10,110
+c3 full: 10,160
+c1 match: true
+c2 match: true
+c3 match: true

@@ -1,0 +1,6 @@
+stretched partial: 200x200
+child partial: 150x80
+stretched full: 200x200
+child full: 150x80
+stretched match: true
+child match: true

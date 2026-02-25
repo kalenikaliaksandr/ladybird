@@ -1,0 +1,6 @@
+hidden partial h: 30
+after partial y: 90
+hidden full h: 30
+after full y: 90
+hidden h match: true
+after match: true

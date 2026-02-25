@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- will-change:transform creates a new stacking context and containing block -->
+        <div id="will-change-wrapper" style="will-change: transform; width: 180px; height: 180px;">
+            <div id="child" style="width: 100px; height: 50px;"></div>
+            <!-- This abspos is contained by will-change-wrapper (not boundary) -->
+            <div id="inner-abspos" style="position: absolute; left: 10px; top: 10px; width: 40px; height: 40px;"></div>
+            <!-- This fixed element is contained by will-change-wrapper (not viewport) -->
+            <div id="inner-fixed" style="position: fixed; left: 5px; top: 5px; width: 30px; height: 30px;"></div>
+        </div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    document.getElementById("child").style.width = "150px";
+    document.getElementById("child").style.height = "80px";
+
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let absPartial = document.getElementById("inner-abspos").getBoundingClientRect();
+    let fixedPartial = document.getElementById("inner-fixed").getBoundingClientRect();
+
+    let cp_w = childPartial.width;
+    let ap_x = absPartial.x;
+    let ap_y = absPartial.y;
+    let fp_x = fixedPartial.x;
+    let fp_y = fixedPartial.y;
+
+    println("child partial w: " + cp_w);
+    println("abspos partial: " + ap_x + "," + ap_y);
+    println("fixed partial: " + fp_x + "," + fp_y);
+
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let absFull = document.getElementById("inner-abspos").getBoundingClientRect();
+    let fixedFull = document.getElementById("inner-fixed").getBoundingClientRect();
+
+    println("child full w: " + childFull.width);
+    println("abspos full: " + absFull.x + "," + absFull.y);
+    println("fixed full: " + fixedFull.x + "," + fixedFull.y);
+
+    println("child match: " + (cp_w === childFull.width));
+    println("abspos match: " + (ap_x === absFull.x && ap_y === absFull.y));
+    println("fixed match: " + (fp_x === fixedFull.x && fp_y === fixedFull.y));
+});
+</script>

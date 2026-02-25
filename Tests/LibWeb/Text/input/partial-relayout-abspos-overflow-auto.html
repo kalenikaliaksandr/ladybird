@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+    * { scrollbar-width: none; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <!-- overflow:auto boundary - scrollbar may appear/disappear -->
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: auto;">
+        <div id="child" style="width: 100px; height: 50px;"></div>
+        <div id="spacer" style="height: 100px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    // Make content overflow (height: 50 + 100 = 150, fits in 200px boundary)
+    // Then grow to make it exceed boundary
+    document.getElementById("spacer").style.height = "300px";
+
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let spacerPartial = document.getElementById("spacer").getBoundingClientRect();
+
+    let cp_w = childPartial.width;
+    let sp_h = spacerPartial.height;
+
+    println("child partial w: " + cp_w);
+    println("spacer partial h: " + sp_h);
+
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let spacerFull = document.getElementById("spacer").getBoundingClientRect();
+
+    println("child full w: " + childFull.width);
+    println("spacer full h: " + spacerFull.height);
+
+    println("child match: " + (cp_w === childFull.width));
+    println("spacer match: " + (sp_h === spacerFull.height));
+});
+</script>

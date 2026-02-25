@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="child" style="width: 100px; height: auto;"></div>
+        <div id="child2" style="width: auto; height: 50px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child").offsetWidth;
+
+    // Modify children
+    document.getElementById("child").style.width = "150px";
+
+    // Use getComputedStyle to check resolved values after partial relayout
+    let cs1 = getComputedStyle(document.getElementById("child"));
+    let partialWidth = cs1.width;
+    let partialHeight = cs1.height;
+
+    let cs2 = getComputedStyle(document.getElementById("child2"));
+    let partialWidth2 = cs2.width;
+
+    // Force full relayout
+    println("child partial: w=" + partialWidth + " h=" + partialHeight);
+    println("child2 partial: w=" + partialWidth2);
+
+    // Full relayout
+    let cs1Full = getComputedStyle(document.getElementById("child"));
+    let cs2Full = getComputedStyle(document.getElementById("child2"));
+
+    println("child full: w=" + cs1Full.width + " h=" + cs1Full.height);
+    println("child2 full: w=" + cs2Full.width);
+
+    println("child w match: " + (partialWidth === cs1Full.width));
+    println("child2 w match: " + (partialWidth2 === cs2Full.width));
+});
+</script>

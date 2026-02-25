@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="spacer" style="height: 30px;"></div>
+        <span style="position: relative;" id="inline-cb">
+            Some text
+            <div style="position: absolute; top: 5px; left: 5px; width: 50px; height: 25px;" id="inner-abspos"></div>
+        </span>
+        <div id="after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("spacer").offsetWidth;
+
+    // Change spacer height (affects inline position)
+    document.getElementById("spacer").style.height = "60px";
+
+    // Partial relayout
+    let innerPartial = document.getElementById("inner-abspos").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let ip_x = innerPartial.x;
+    let ip_y = innerPartial.y;
+    let ap_y = afterPartial.y;
+
+    // Force full relayout
+    println("inner-abspos partial: " + ip_x + "," + ip_y);
+    println("after partial y: " + ap_y);
+
+    // Full relayout
+    let innerFull = document.getElementById("inner-abspos").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("inner-abspos full: " + innerFull.x + "," + innerFull.y);
+    println("after full y: " + afterFull.y);
+
+    println("inner-abspos match: " + (ip_x === innerFull.x && ip_y === innerFull.y));
+    println("after match: " + (ap_y === afterFull.y));
+});
+</script>

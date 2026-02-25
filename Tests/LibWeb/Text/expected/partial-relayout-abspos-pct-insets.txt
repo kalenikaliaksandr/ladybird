@@ -1,0 +1,6 @@
+inner-abspos partial: 30,30
+child partial: 150x80
+inner-abspos full: 30,30
+child full: 150x80
+abspos match: true
+child match: true

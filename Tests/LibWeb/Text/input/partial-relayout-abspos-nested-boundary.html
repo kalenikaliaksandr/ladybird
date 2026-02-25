@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <!-- Outer boundary -->
+    <div id="outer-boundary" style="position: absolute; left: 10px; top: 10px; width: 300px; height: 300px; overflow: hidden;">
+        <div id="spacer" style="height: 30px;"></div>
+        <!-- Inner boundary (nested) -->
+        <div id="inner-boundary" style="position: absolute; left: 5px; top: 50px; width: 150px; height: 150px; overflow: hidden;">
+            <div id="inner-child" style="width: 80px; height: 40px;"></div>
+        </div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("inner-child").offsetWidth;
+
+    // Modify inside the INNER boundary only
+    document.getElementById("inner-child").style.width = "120px";
+    document.getElementById("inner-child").style.height = "60px";
+
+    // Partial relayout (should only relayout inner boundary, not outer)
+    let innerChildPartial = document.getElementById("inner-child").getBoundingClientRect();
+    let spacerPartial = document.getElementById("spacer").getBoundingClientRect();
+
+    let ic_w = innerChildPartial.width;
+    let ic_h = innerChildPartial.height;
+    let s_h = spacerPartial.height;
+
+    // Force full relayout
+    println("inner-child partial: " + ic_w + "x" + ic_h);
+    println("spacer partial h: " + s_h);
+
+    // Full relayout
+    let innerChildFull = document.getElementById("inner-child").getBoundingClientRect();
+    let spacerFull = document.getElementById("spacer").getBoundingClientRect();
+
+    println("inner-child full: " + innerChildFull.width + "x" + innerChildFull.height);
+    println("spacer full h: " + spacerFull.height);
+
+    println("inner-child match: " + (ic_w === innerChildFull.width && ic_h === innerChildFull.height));
+    println("spacer match: " + (s_h === spacerFull.height));
+});
+</script>

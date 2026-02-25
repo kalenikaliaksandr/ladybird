@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- Grid container with an abspos child that's placed in a grid area -->
+        <div style="display: grid; grid-template-columns: 100px 100px; grid-template-rows: 50px 50px; position: relative;">
+            <div id="cell1" style="background: red;"></div>
+            <div id="cell2" style="background: blue;"></div>
+            <div id="cell3" style="background: green;"></div>
+            <div id="cell4" style="background: yellow;"></div>
+            <!-- Abspos child placed in grid area -->
+            <div id="grid-abspos" style="position: absolute; grid-column: 2; grid-row: 2; width: 40px; height: 30px;"></div>
+        </div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("cell1").offsetWidth;
+
+    // Change a cell's min-height
+    document.getElementById("cell3").style.minHeight = "80px";
+
+    let c3 = document.getElementById("cell3").getBoundingClientRect();
+    let ga = document.getElementById("grid-abspos").getBoundingClientRect();
+
+    let c3_h = c3.height;
+    let ga_x = ga.x;
+    let ga_y = ga.y;
+
+    println("cell3 partial h: " + c3_h);
+    println("grid-abspos partial: " + ga_x + "," + ga_y);
+
+    let c3f = document.getElementById("cell3").getBoundingClientRect();
+    let gaf = document.getElementById("grid-abspos").getBoundingClientRect();
+
+    println("cell3 full h: " + c3f.height);
+    println("grid-abspos full: " + gaf.x + "," + gaf.y);
+
+    println("cell3 match: " + (c3_h === c3f.height));
+    println("abspos match: " + (ga_x === gaf.x && ga_y === gaf.y));
+});
+</script>

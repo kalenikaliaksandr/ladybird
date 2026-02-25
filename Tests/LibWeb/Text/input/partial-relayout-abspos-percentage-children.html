@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="child" style="width: 50%; height: 25%;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child").offsetWidth;
+
+    // Modify child percentage dimensions
+    document.getElementById("child").style.width = "75%";
+    document.getElementById("child").style.height = "50%";
+
+    // Partial relayout
+    let partial = document.getElementById("child").getBoundingClientRect();
+    let pw = partial.width;
+    let ph = partial.height;
+
+    // Force full relayout
+    println("partial: " + pw + "x" + ph);
+
+    // Full relayout
+    let full = document.getElementById("child").getBoundingClientRect();
+    println("full: " + full.width + "x" + full.height);
+    println("match: " + (pw === full.width && ph === full.height));
+});
+</script>

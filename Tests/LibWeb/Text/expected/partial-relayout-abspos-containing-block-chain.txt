@@ -1,0 +1,6 @@
+abspos partial: 15,15 40x40
+child partial: 120x80
+abspos full: 15,15 40x40
+child full: 120x80
+abspos match: true
+child match: true

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="child" style="width: 100px; height: 50px;"></div>
+        <div id="after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child").offsetWidth;
+
+    // First partial relayout
+    document.getElementById("child").style.width = "150px";
+    let c1 = document.getElementById("child").getBoundingClientRect();
+    let first_w = c1.width;
+
+    // Second partial relayout (change again without full layout in between)
+    document.getElementById("child").style.height = "80px";
+    let c2 = document.getElementById("child").getBoundingClientRect();
+    let second_w = c2.width;
+    let second_h = c2.height;
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+    let a_y = afterPartial.y;
+
+    println("first partial w: " + first_w);
+    println("second partial: " + second_w + "x" + second_h);
+    println("after partial y: " + a_y);
+
+    // Full relayout
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("full: " + childFull.width + "x" + childFull.height);
+    println("after full y: " + afterFull.y);
+
+    println("w match: " + (second_w === childFull.width));
+    println("h match: " + (second_h === childFull.height));
+    println("after match: " + (a_y === afterFull.y));
+});
+</script>

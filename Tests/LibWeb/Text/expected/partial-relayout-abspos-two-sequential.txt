@@ -1,0 +1,8 @@
+first partial w: 150
+second partial: 150x80
+after partial y: 90
+full: 150x80
+after full y: 90
+w match: true
+h match: true
+after match: true

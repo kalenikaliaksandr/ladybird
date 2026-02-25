@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+    #child::before {
+        content: "Before ";
+        display: inline;
+    }
+    #child::after {
+        content: " After";
+        display: inline;
+    }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="child" style="width: 150px;">Middle</div>
+        <div id="after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    // Change width - pseudo-elements should reflow
+    document.getElementById("child").style.width = "80px";
+
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let cp_h = childPartial.height;
+    let cp_w = childPartial.width;
+    let ap_y = afterPartial.y;
+
+    println("child partial: " + cp_w + "x" + cp_h);
+    println("after partial y: " + ap_y);
+
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("child full: " + childFull.width + "x" + childFull.height);
+    println("after full y: " + afterFull.y);
+
+    println("child match: " + (cp_w === childFull.width && cp_h === childFull.height));
+    println("after match: " + (ap_y === afterFull.y));
+});
+</script>

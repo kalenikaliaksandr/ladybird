@@ -1,0 +1,6 @@
+child partial: x=52 w=150
+sibling partial x: 130
+child full: x=52 w=150
+sibling full x: 130
+child match: true
+sibling match: true

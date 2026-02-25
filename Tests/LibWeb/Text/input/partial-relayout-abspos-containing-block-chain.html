@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- position:relative creates a containing block inside boundary -->
+        <div id="inner-cb" style="position: relative; width: 150px; height: 150px; padding: 10px;">
+            <!-- This abspos is contained by inner-cb, not boundary -->
+            <div id="inner-abspos" style="position: absolute; left: 5px; top: 5px; width: 40px; height: 40px;"></div>
+            <div id="child" style="width: 80px; height: 50px;"></div>
+        </div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child").offsetWidth;
+
+    // Modify child
+    document.getElementById("child").style.width = "120px";
+    document.getElementById("child").style.height = "80px";
+
+    // Partial relayout
+    let absPartial = document.getElementById("inner-abspos").getBoundingClientRect();
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+
+    let ap_x = absPartial.x;
+    let ap_y = absPartial.y;
+    let ap_w = absPartial.width;
+    let cp_w = childPartial.width;
+
+    println("abspos partial: " + ap_x + "," + ap_y + " " + ap_w + "x" + absPartial.height);
+    println("child partial: " + cp_w + "x" + childPartial.height);
+
+    // Full relayout
+    let absFull = document.getElementById("inner-abspos").getBoundingClientRect();
+    let childFull = document.getElementById("child").getBoundingClientRect();
+
+    println("abspos full: " + absFull.x + "," + absFull.y + " " + absFull.width + "x" + absFull.height);
+    println("child full: " + childFull.width + "x" + childFull.height);
+
+    println("abspos match: " + (ap_x === absFull.x && ap_y === absFull.y && ap_w === absFull.width));
+    println("child match: " + (cp_w === childFull.width));
+});
+</script>

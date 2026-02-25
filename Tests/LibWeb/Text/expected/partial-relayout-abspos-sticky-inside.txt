@@ -1,0 +1,3 @@
+sticky partial y: 110 h: 30
+sticky full y: 110 h: 30
+sticky match: true

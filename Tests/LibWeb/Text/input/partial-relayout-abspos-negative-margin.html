@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="child1" style="width: 100px; height: 60px;"></div>
+        <!-- Negative margin pulls child2 up -->
+        <div id="child2" style="margin-top: -20px; height: 40px;"></div>
+        <div id="after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child1").offsetWidth;
+
+    // Change child1 height - affects child2 position due to negative margin
+    document.getElementById("child1").style.height = "100px";
+
+    let c2Partial = document.getElementById("child2").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let c2_y = c2Partial.y;
+    let a_y = afterPartial.y;
+
+    println("child2 partial y: " + c2_y);
+    println("after partial y: " + a_y);
+
+    let c2Full = document.getElementById("child2").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("child2 full y: " + c2Full.y);
+    println("after full y: " + afterFull.y);
+
+    println("child2 match: " + (c2_y === c2Full.y));
+    println("after match: " + (a_y === afterFull.y));
+});
+</script>

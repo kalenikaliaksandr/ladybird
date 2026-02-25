@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- Abspos child with margin:auto centering (left:0, right:0, margin-left:auto, margin-right:auto) -->
+        <div id="centered" style="position: absolute; left: 0; right: 0; margin-left: auto; margin-right: auto; width: 80px; height: 40px;"></div>
+        <div id="child" style="width: 100px; height: 50px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    // Change centered element's width - centering should adjust
+    document.getElementById("centered").style.width = "120px";
+
+    let centeredPartial = document.getElementById("centered").getBoundingClientRect();
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+
+    let cp_x = centeredPartial.x;
+    let cp_w = centeredPartial.width;
+    let ch_w = childPartial.width;
+
+    println("centered partial: x=" + cp_x + " w=" + cp_w);
+    println("child partial w: " + ch_w);
+
+    let centeredFull = document.getElementById("centered").getBoundingClientRect();
+    let childFull = document.getElementById("child").getBoundingClientRect();
+
+    println("centered full: x=" + centeredFull.x + " w=" + centeredFull.width);
+    println("child full w: " + childFull.width);
+
+    println("centered match: " + (cp_x === centeredFull.x && cp_w === centeredFull.width));
+    println("child match: " + (ch_w === childFull.width));
+});
+</script>

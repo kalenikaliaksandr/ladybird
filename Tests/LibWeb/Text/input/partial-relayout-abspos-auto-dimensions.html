@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <!-- Auto width with fixed left+right insets, auto height with fixed top+bottom insets -->
+    <div id="boundary" style="position: absolute; left: 20px; right: 20px; top: 30px; bottom: 30px; overflow: hidden;">
+        <div id="child" style="width: 50%; height: 50%;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    let boundaryRect = document.getElementById("boundary").getBoundingClientRect();
+    let initialBW = boundaryRect.width;
+    let initialBH = boundaryRect.height;
+
+    // Modify child inside boundary
+    document.getElementById("child").style.width = "75%";
+    document.getElementById("child").style.height = "25%";
+
+    // Partial relayout
+    let partial = document.getElementById("child").getBoundingClientRect();
+    let pw = partial.width;
+    let ph = partial.height;
+    // Also check boundary dimensions didn't change
+    let boundaryPartial = document.getElementById("boundary").getBoundingClientRect();
+    let bpw = boundaryPartial.width;
+    let bph = boundaryPartial.height;
+
+    // Force full relayout
+    println("boundary initial: " + initialBW + "x" + initialBH);
+    println("boundary partial: " + bpw + "x" + bph);
+    println("child partial: " + pw + "x" + ph);
+
+    // Full relayout
+    let full = document.getElementById("child").getBoundingClientRect();
+    let boundaryFull = document.getElementById("boundary").getBoundingClientRect();
+    println("boundary full: " + boundaryFull.width + "x" + boundaryFull.height);
+    println("child full: " + full.width + "x" + full.height);
+    println("child match: " + (pw === full.width && ph === full.height));
+    println("boundary match: " + (bpw === boundaryFull.width && bph === boundaryFull.height));
+});
+</script>

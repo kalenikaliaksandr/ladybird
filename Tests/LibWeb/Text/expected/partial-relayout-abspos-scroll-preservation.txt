@@ -1,0 +1,7 @@
+scroll before: 100
+scroll after partial: 100
+child partial: 150x80
+scroll after full: 100
+child full: 150x80
+scroll preserved: true
+child match: true

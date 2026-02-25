@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden; writing-mode: vertical-rl;">
+        <div id="child" style="width: 50px; height: 100px;"></div>
+        <div id="sibling" style="width: 30px; height: 80px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child").offsetWidth;
+
+    // Modify child
+    document.getElementById("child").style.width = "80px";
+
+    // Partial relayout
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let siblingPartial = document.getElementById("sibling").getBoundingClientRect();
+
+    let cp_w = childPartial.width;
+    let cp_x = childPartial.x;
+    let sp_x = siblingPartial.x;
+
+    println("child partial: w=" + cp_w + " x=" + cp_x);
+    println("sibling partial x: " + sp_x);
+
+    // Full relayout
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let siblingFull = document.getElementById("sibling").getBoundingClientRect();
+
+    println("child full: w=" + childFull.width + " x=" + childFull.x);
+    println("sibling full x: " + siblingFull.x);
+
+    println("child match: " + (cp_w === childFull.width && cp_x === childFull.x));
+    println("sibling match: " + (sp_x === siblingFull.x));
+});
+</script>

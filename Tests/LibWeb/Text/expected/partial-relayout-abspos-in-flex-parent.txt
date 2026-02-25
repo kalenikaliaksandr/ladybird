@@ -1,0 +1,6 @@
+child partial: 180x80
+sibling partial y: 130
+child full: 180x80
+sibling full y: 130
+child match: true
+sibling match: true

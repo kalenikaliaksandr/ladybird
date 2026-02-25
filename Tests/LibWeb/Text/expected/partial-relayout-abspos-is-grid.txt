@@ -1,0 +1,6 @@
+cell1 partial h: 50
+cell3 partial h: 50
+cell1 full h: 50
+cell3 full h: 50
+cell1 match: true
+cell3 match: true

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- Stacking context with z-index children -->
+        <div id="back" style="position: relative; z-index: 1; width: 100px; height: 100px;"></div>
+        <div id="front" style="position: relative; z-index: 2; width: 80px; height: 60px; margin-top: -50px;"></div>
+        <div id="after" style="height: 30px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("back").offsetWidth;
+
+    // Modify elements
+    document.getElementById("back").style.height = "150px";
+
+    // Partial relayout
+    let backPartial = document.getElementById("back").getBoundingClientRect();
+    let frontPartial = document.getElementById("front").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let bp_h = backPartial.height;
+    let fp_y = frontPartial.y;
+    let ap_y = afterPartial.y;
+
+    println("back partial h: " + bp_h);
+    println("front partial y: " + fp_y);
+    println("after partial y: " + ap_y);
+
+    // Full relayout
+    let backFull = document.getElementById("back").getBoundingClientRect();
+    let frontFull = document.getElementById("front").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("back full h: " + backFull.height);
+    println("front full y: " + frontFull.y);
+    println("after full y: " + afterFull.y);
+
+    println("back match: " + (bp_h === backFull.height));
+    println("front match: " + (fp_y === frontFull.y));
+    println("after match: " + (ap_y === afterFull.y));
+});
+</script>

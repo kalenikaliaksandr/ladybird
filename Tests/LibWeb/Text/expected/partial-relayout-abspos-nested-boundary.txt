@@ -1,0 +1,6 @@
+inner-child partial: 120x60
+spacer partial h: 30
+inner-child full: 120x60
+spacer full h: 30
+inner-child match: true
+spacer match: true

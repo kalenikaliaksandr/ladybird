@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="child" style="width: 150px;">Short text</div>
+        <div id="after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child").offsetWidth;
+
+    // Change text content (this changes the inline content, may trigger tree rebuild)
+    document.getElementById("child").textContent = "Much longer text that should wrap to multiple lines in the container";
+
+    // Partial relayout (or full if tree rebuild)
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let cp_h = childPartial.height;
+    let ap_y = afterPartial.y;
+
+    println("child partial h: " + cp_h);
+    println("after partial y: " + ap_y);
+
+    // Full relayout
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("child full h: " + childFull.height);
+    println("after full y: " + afterFull.y);
+
+    println("child match: " + (cp_h === childFull.height));
+    println("after match: " + (ap_y === afterFull.y));
+});
+</script>

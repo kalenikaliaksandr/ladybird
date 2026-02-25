@@ -1,0 +1,3 @@
+child partial (unclipped): 180x130
+child full (unclipped): 180x130
+child match: true

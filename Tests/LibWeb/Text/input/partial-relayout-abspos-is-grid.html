@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <!-- The boundary itself is a grid container -->
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 300px; height: 200px; overflow: hidden; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 50px 50px; gap: 10px;">
+        <div id="cell1" style="min-height: 0;"></div>
+        <div id="cell2" style="min-height: 0;"></div>
+        <div id="cell3" style="min-height: 0;"></div>
+        <div id="cell4" style="min-height: 0;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("cell1").offsetWidth;
+
+    // Change a CHILD's style (not the boundary's) to trigger partial relayout
+    document.getElementById("cell1").style.minHeight = "30px";
+    document.getElementById("cell3").style.minHeight = "40px";
+
+    // Partial relayout
+    let cell1Partial = document.getElementById("cell1").getBoundingClientRect();
+    let cell3Partial = document.getElementById("cell3").getBoundingClientRect();
+
+    let c1_h = cell1Partial.height;
+    let c3_h = cell3Partial.height;
+
+    // Force full relayout
+    println("cell1 partial h: " + c1_h);
+    println("cell3 partial h: " + c3_h);
+
+    // Full relayout
+    let cell1Full = document.getElementById("cell1").getBoundingClientRect();
+    let cell3Full = document.getElementById("cell3").getBoundingClientRect();
+
+    println("cell1 full h: " + cell1Full.height);
+    println("cell3 full h: " + cell3Full.height);
+
+    println("cell1 match: " + (c1_h === cell1Full.height));
+    println("cell3 match: " + (c3_h === cell3Full.height));
+});
+</script>

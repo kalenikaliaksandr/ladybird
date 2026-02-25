@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 300px; height: 200px; overflow: hidden;">
+        <div id="flex" style="display: flex; width: 100%; height: 100px;">
+            <div id="item1" style="flex: 1; height: 50px;"></div>
+            <div id="item2" style="flex: 1; height: 50px;"></div>
+            <div id="item3" style="flex: 1; height: 50px;"></div>
+        </div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("item1").offsetWidth;
+
+    // Change flex ratios
+    document.getElementById("item1").style.flex = "2";
+    document.getElementById("item3").style.flex = "3";
+
+    // Partial relayout
+    let item1Partial = document.getElementById("item1").getBoundingClientRect();
+    let item2Partial = document.getElementById("item2").getBoundingClientRect();
+    let item3Partial = document.getElementById("item3").getBoundingClientRect();
+
+    let i1_w = item1Partial.width;
+    let i2_w = item2Partial.width;
+    let i3_w = item3Partial.width;
+    let i1_x = item1Partial.x;
+    let i2_x = item2Partial.x;
+    let i3_x = item3Partial.x;
+
+    // Force full relayout
+    println("item1 partial: x=" + i1_x + " w=" + i1_w);
+    println("item2 partial: x=" + i2_x + " w=" + i2_w);
+    println("item3 partial: x=" + i3_x + " w=" + i3_w);
+
+    // Full relayout
+    let item1Full = document.getElementById("item1").getBoundingClientRect();
+    let item2Full = document.getElementById("item2").getBoundingClientRect();
+    let item3Full = document.getElementById("item3").getBoundingClientRect();
+
+    println("item1 full: x=" + item1Full.x + " w=" + item1Full.width);
+    println("item2 full: x=" + item2Full.x + " w=" + item2Full.width);
+    println("item3 full: x=" + item3Full.x + " w=" + item3Full.width);
+
+    println("item1 match: " + (i1_w === item1Full.width && i1_x === item1Full.x));
+    println("item2 match: " + (i2_w === item2Full.width && i2_x === item2Full.x));
+    println("item3 match: " + (i3_w === item3Full.width && i3_x === item3Full.x));
+});
+</script>

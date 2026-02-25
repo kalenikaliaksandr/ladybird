@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- contain:layout creates a containing block for all descendants -->
+        <div id="contain-wrapper" style="contain: layout; width: 180px; height: 180px;">
+            <div id="child" style="width: 100px; height: 50px;"></div>
+            <div id="inner-abspos" style="position: absolute; left: 10px; top: 10px; width: 40px; height: 40px;"></div>
+        </div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    document.getElementById("child").style.width = "150px";
+    document.getElementById("child").style.height = "80px";
+
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let absPartial = document.getElementById("inner-abspos").getBoundingClientRect();
+
+    let cp_w = childPartial.width;
+    let cp_h = childPartial.height;
+    let ap_x = absPartial.x;
+    let ap_y = absPartial.y;
+
+    println("child partial: " + cp_w + "x" + cp_h);
+    println("abspos partial: " + ap_x + "," + ap_y);
+
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let absFull = document.getElementById("inner-abspos").getBoundingClientRect();
+
+    println("child full: " + childFull.width + "x" + childFull.height);
+    println("abspos full: " + absFull.x + "," + absFull.y);
+
+    println("child match: " + (cp_w === childFull.width && cp_h === childFull.height));
+    println("abspos match: " + (ap_x === absFull.x && ap_y === absFull.y));
+});
+</script>

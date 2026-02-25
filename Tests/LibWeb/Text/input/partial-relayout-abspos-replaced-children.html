@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 300px; height: 300px; overflow: hidden;">
+        <!-- Inline-block children that create independent FCs -->
+        <div id="ib1" style="display: inline-block; width: 100px; height: 50px; vertical-align: top;"></div>
+        <div id="ib2" style="display: inline-block; width: 80px; height: 40px; vertical-align: top;"></div>
+        <div id="block-after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("ib1").offsetWidth;
+
+    // Modify inline-block dimensions
+    document.getElementById("ib1").style.width = "150px";
+    document.getElementById("ib1").style.height = "70px";
+
+    // Partial relayout
+    let ib1Partial = document.getElementById("ib1").getBoundingClientRect();
+    let ib2Partial = document.getElementById("ib2").getBoundingClientRect();
+    let blockPartial = document.getElementById("block-after").getBoundingClientRect();
+
+    let i1_w = ib1Partial.width;
+    let i1_h = ib1Partial.height;
+    let i2_x = ib2Partial.x;
+    let b_y = blockPartial.y;
+
+    // Force full relayout
+    println("ib1 partial: " + i1_w + "x" + i1_h);
+    println("ib2 partial x: " + i2_x);
+    println("block partial y: " + b_y);
+
+    // Full relayout
+    let ib1Full = document.getElementById("ib1").getBoundingClientRect();
+    let ib2Full = document.getElementById("ib2").getBoundingClientRect();
+    let blockFull = document.getElementById("block-after").getBoundingClientRect();
+
+    println("ib1 full: " + ib1Full.width + "x" + ib1Full.height);
+    println("ib2 full x: " + ib2Full.x);
+    println("block full y: " + blockFull.y);
+
+    println("ib1 match: " + (i1_w === ib1Full.width && i1_h === ib1Full.height));
+    println("ib2 x match: " + (i2_x === ib2Full.x));
+    println("block y match: " + (b_y === blockFull.y));
+});
+</script>
