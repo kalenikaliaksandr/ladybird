@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 300px; height: 300px; overflow: hidden;">
+        <!-- Mix of different child types -->
+        <div id="block1" style="height: 40px;"></div>
+        <div style="display: flex; height: 60px;">
+            <div id="flex-item" style="flex: 1;"></div>
+        </div>
+        <div style="position: relative;" id="relative-parent">
+            <div id="abspos-in-relative" style="position: absolute; top: 5px; left: 5px; width: 40px; height: 20px;"></div>
+        </div>
+        <div id="block2" style="height: 30px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("block1").offsetWidth;
+
+    // Modify first block height
+    document.getElementById("block1").style.height = "80px";
+
+    // Partial relayout
+    let block2Partial = document.getElementById("block2").getBoundingClientRect();
+    let flexItemPartial = document.getElementById("flex-item").getBoundingClientRect();
+    let absposPartial = document.getElementById("abspos-in-relative").getBoundingClientRect();
+    let relativePartial = document.getElementById("relative-parent").getBoundingClientRect();
+
+    let b2_y = block2Partial.y;
+    let fi_y = flexItemPartial.y;
+    let ap_y = absposPartial.y;
+    let rp_y = relativePartial.y;
+
+    // Force full relayout
+    println("block2 partial y: " + b2_y);
+    println("flex-item partial y: " + fi_y);
+    println("abspos partial y: " + ap_y);
+    println("relative partial y: " + rp_y);
+
+    // Full relayout
+    let block2Full = document.getElementById("block2").getBoundingClientRect();
+    let flexItemFull = document.getElementById("flex-item").getBoundingClientRect();
+    let absposFull = document.getElementById("abspos-in-relative").getBoundingClientRect();
+    let relativeFull = document.getElementById("relative-parent").getBoundingClientRect();
+
+    println("block2 full y: " + block2Full.y);
+    println("flex-item full y: " + flexItemFull.y);
+    println("abspos full y: " + absposFull.y);
+    println("relative full y: " + relativeFull.y);
+
+    println("block2 y match: " + (b2_y === block2Full.y));
+    println("flex-item y match: " + (fi_y === flexItemFull.y));
+    println("abspos y match: " + (ap_y === absposFull.y));
+    println("relative y match: " + (rp_y === relativeFull.y));
+});
+</script>

@@ -1,0 +1,6 @@
+child partial: w=150px h=0px
+child2 partial: w=200px
+child full: w=150px h=0px
+child2 full: w=200px
+child w match: true
+child2 w match: true

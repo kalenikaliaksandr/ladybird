@@ -1,0 +1,12 @@
+ctx1 partial h: 80
+ctx2 partial w: 150
+ctx3 partial y: 90
+after partial y: 140
+ctx1 full h: 80
+ctx2 full w: 150
+ctx3 full y: 90
+after full y: 140
+ctx1 match: true
+ctx2 match: true
+ctx3 match: true
+after match: true

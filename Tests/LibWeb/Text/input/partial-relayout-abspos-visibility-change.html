@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="visible-child" style="height: 50px;"></div>
+        <div id="hidden-child" style="display: none; height: 30px;"></div>
+        <div id="after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("visible-child").offsetWidth;
+
+    // Show the hidden child
+    document.getElementById("hidden-child").style.display = "block";
+
+    // This may trigger full layout (tree rebuild) or partial relayout
+    let hiddenPartial = document.getElementById("hidden-child").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let hp_h = hiddenPartial.height;
+    let ap_y = afterPartial.y;
+
+    // Force full relayout
+    println("hidden partial h: " + hp_h);
+    println("after partial y: " + ap_y);
+
+    // Full relayout
+    let hiddenFull = document.getElementById("hidden-child").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("hidden full h: " + hiddenFull.height);
+    println("after full y: " + afterFull.y);
+
+    println("hidden h match: " + (hp_h === hiddenFull.height));
+    println("after match: " + (ap_y === afterFull.y));
+});
+</script>

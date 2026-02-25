@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="first" style="height: 50px;"></div>
+        <div id="second" style="height: 30px;"></div>
+        <div id="third" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("first").offsetWidth;
+
+    // Change first child's height - should affect sibling positions
+    document.getElementById("first").style.height = "100px";
+
+    // Partial relayout: read sibling positions
+    let secondPartial = document.getElementById("second").getBoundingClientRect();
+    let thirdPartial = document.getElementById("third").getBoundingClientRect();
+    let sp_y = secondPartial.y;
+    let tp_y = thirdPartial.y;
+
+    // Force full relayout
+    println("partial second.y: " + sp_y);
+    println("partial third.y: " + tp_y);
+
+    // Full relayout: read sibling positions
+    let secondFull = document.getElementById("second").getBoundingClientRect();
+    let thirdFull = document.getElementById("third").getBoundingClientRect();
+    println("full second.y: " + secondFull.y);
+    println("full third.y: " + thirdFull.y);
+    println("second match: " + (sp_y === secondFull.y));
+    println("third match: " + (tp_y === thirdFull.y));
+});
+</script>

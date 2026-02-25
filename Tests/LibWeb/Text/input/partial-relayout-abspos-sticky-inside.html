@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: auto;">
+        <div id="spacer" style="height: 50px;"></div>
+        <div id="sticky" style="position: sticky; top: 0; width: 100px; height: 30px;"></div>
+        <div id="after-sticky" style="height: 300px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("spacer").offsetWidth;
+
+    // Change spacer height
+    document.getElementById("spacer").style.height = "100px";
+
+    // Partial relayout
+    let stickyPartial = document.getElementById("sticky").getBoundingClientRect();
+    let sp_y = stickyPartial.y;
+    let sp_h = stickyPartial.height;
+
+    // Force full relayout
+    println("sticky partial y: " + sp_y + " h: " + sp_h);
+
+    // Full relayout
+    let stickyFull = document.getElementById("sticky").getBoundingClientRect();
+    println("sticky full y: " + stickyFull.y + " h: " + stickyFull.height);
+
+    println("sticky match: " + (sp_y === stickyFull.y && sp_h === stickyFull.height));
+});
+</script>

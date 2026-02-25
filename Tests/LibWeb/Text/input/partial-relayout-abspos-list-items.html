@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <ul id="list" style="margin: 0; padding: 0 0 0 30px;">
+            <li id="item1" style="height: 30px;">Item 1</li>
+            <li id="item2" style="height: 30px;">Item 2</li>
+            <li id="item3" style="height: 30px;">Item 3</li>
+        </ul>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("item1").offsetWidth;
+
+    // Change list item sizes
+    document.getElementById("item1").style.height = "60px";
+
+    let i2Partial = document.getElementById("item2").getBoundingClientRect();
+    let i3Partial = document.getElementById("item3").getBoundingClientRect();
+
+    let i2_y = i2Partial.y;
+    let i3_y = i3Partial.y;
+
+    println("item2 partial y: " + i2_y);
+    println("item3 partial y: " + i3_y);
+
+    let i2Full = document.getElementById("item2").getBoundingClientRect();
+    let i3Full = document.getElementById("item3").getBoundingClientRect();
+
+    println("item2 full y: " + i2Full.y);
+    println("item3 full y: " + i3Full.y);
+
+    println("item2 match: " + (i2_y === i2Full.y));
+    println("item3 match: " + (i3_y === i3Full.y));
+});
+</script>

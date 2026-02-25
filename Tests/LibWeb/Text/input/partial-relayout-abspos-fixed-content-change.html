@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- Change is INSIDE the fixed element itself -->
+        <div id="fixed-child" style="position: fixed; top: 50px; left: 50px; width: 80px; height: 40px;">
+            <div id="fixed-content" style="width: 50px; height: 20px;"></div>
+        </div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("fixed-content").offsetWidth;
+
+    // Modify content inside the fixed element
+    document.getElementById("fixed-content").style.width = "70px";
+    document.getElementById("fixed-content").style.height = "30px";
+
+    // Partial relayout
+    let fixedPartial = document.getElementById("fixed-child").getBoundingClientRect();
+    let contentPartial = document.getElementById("fixed-content").getBoundingClientRect();
+
+    let fp_x = fixedPartial.x;
+    let fp_y = fixedPartial.y;
+    let cp_w = contentPartial.width;
+    let cp_h = contentPartial.height;
+
+    // Force full relayout
+    println("fixed partial: " + fp_x + "," + fp_y);
+    println("content partial: " + cp_w + "x" + cp_h);
+
+    // Full relayout
+    let fixedFull = document.getElementById("fixed-child").getBoundingClientRect();
+    let contentFull = document.getElementById("fixed-content").getBoundingClientRect();
+
+    println("fixed full: " + fixedFull.x + "," + fixedFull.y);
+    println("content full: " + contentFull.width + "x" + contentFull.height);
+
+    println("fixed pos match: " + (fp_x === fixedFull.x && fp_y === fixedFull.y));
+    println("content size match: " + (cp_w === contentFull.width && cp_h === contentFull.height));
+});
+</script>

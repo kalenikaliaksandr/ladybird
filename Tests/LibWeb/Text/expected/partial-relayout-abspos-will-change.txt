@@ -1,0 +1,9 @@
+child partial w: 150
+abspos partial: 20,20
+fixed partial: 15,15
+child full w: 150
+abspos full: 20,20
+fixed full: 15,15
+child match: true
+abspos match: true
+fixed match: true

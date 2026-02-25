@@ -1,0 +1,9 @@
+float-left partial: x=10 w=80
+float-right partial: x=150 w=60
+content partial: x=10 w=200
+float-left full: x=10 w=80
+float-right full: x=150 w=60
+content full: x=10 w=200
+float-left match: true
+float-right match: true
+content match: true

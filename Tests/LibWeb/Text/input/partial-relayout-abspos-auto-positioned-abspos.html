@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="spacer" style="height: 40px;"></div>
+        <!-- Auto-positioned abspos: left/top are auto, so it uses static position -->
+        <div id="auto-abspos" style="position: absolute; width: 60px; height: 40px;"></div>
+        <div id="child" style="width: 100px; height: 50px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    // Change spacer height - this affects static position of auto-positioned abspos
+    document.getElementById("spacer").style.height = "80px";
+
+    let absPartial = document.getElementById("auto-abspos").getBoundingClientRect();
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+
+    let ap_y = absPartial.y;
+    let ap_w = absPartial.width;
+    let cp_y = childPartial.y;
+
+    println("auto-abspos partial: y=" + ap_y + " w=" + ap_w);
+    println("child partial y: " + cp_y);
+
+    let absFull = document.getElementById("auto-abspos").getBoundingClientRect();
+    let childFull = document.getElementById("child").getBoundingClientRect();
+
+    println("auto-abspos full: y=" + absFull.y + " w=" + absFull.width);
+    println("child full y: " + childFull.y);
+
+    println("abspos match: " + (ap_y === absFull.y && ap_w === absFull.width));
+    println("child match: " + (cp_y === childFull.y));
+});
+</script>

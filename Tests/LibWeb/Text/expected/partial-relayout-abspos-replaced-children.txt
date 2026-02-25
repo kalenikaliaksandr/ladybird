@@ -1,0 +1,9 @@
+ib1 partial: 150x70
+ib2 partial x: 168
+block partial y: 80
+ib1 full: 150x70
+ib2 full x: 168
+block full y: 80
+ib1 match: true
+ib2 x match: true
+block y match: true

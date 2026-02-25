@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="child" style="width: 100px; height: 50px;"></div>
+        <div id="sibling" style="height: 30px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    document.getElementById("child").style.width = "150px";
+    document.getElementById("child").style.height = "80px";
+
+    // Test offsetLeft/offsetTop/offsetWidth/offsetHeight (these also trigger layout)
+    let oLeft = document.getElementById("child").offsetLeft;
+    let oTop = document.getElementById("child").offsetTop;
+    let oWidth = document.getElementById("child").offsetWidth;
+    let oHeight = document.getElementById("child").offsetHeight;
+
+    let sTop = document.getElementById("sibling").offsetTop;
+
+    println("child offset: " + oLeft + "," + oTop + " " + oWidth + "x" + oHeight);
+    println("sibling offsetTop: " + sTop);
+
+    // Full relayout
+    let oLeftFull = document.getElementById("child").offsetLeft;
+    let oTopFull = document.getElementById("child").offsetTop;
+    let oWidthFull = document.getElementById("child").offsetWidth;
+    let oHeightFull = document.getElementById("child").offsetHeight;
+    let sTopFull = document.getElementById("sibling").offsetTop;
+
+    println("child offset full: " + oLeftFull + "," + oTopFull + " " + oWidthFull + "x" + oHeightFull);
+    println("sibling offsetTop full: " + sTopFull);
+
+    println("child match: " + (oLeft === oLeftFull && oTop === oTopFull && oWidth === oWidthFull && oHeight === oHeightFull));
+    println("sibling match: " + (sTop === sTopFull));
+});
+</script>

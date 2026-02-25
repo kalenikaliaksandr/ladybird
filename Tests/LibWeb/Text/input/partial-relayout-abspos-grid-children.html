@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 300px; height: 200px; overflow: hidden;">
+        <div id="grid" style="display: grid; grid-template-columns: 1fr 2fr; grid-template-rows: 50px 50px; width: 100%; gap: 10px;">
+            <div id="cell1"></div>
+            <div id="cell2"></div>
+            <div id="cell3"></div>
+            <div id="cell4"></div>
+        </div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("cell1").offsetWidth;
+
+    // Change grid template
+    document.getElementById("grid").style.gridTemplateColumns = "2fr 1fr";
+    document.getElementById("grid").style.gridTemplateRows = "80px 30px";
+
+    // Partial relayout
+    let cell1Partial = document.getElementById("cell1").getBoundingClientRect();
+    let cell2Partial = document.getElementById("cell2").getBoundingClientRect();
+    let cell3Partial = document.getElementById("cell3").getBoundingClientRect();
+    let cell4Partial = document.getElementById("cell4").getBoundingClientRect();
+
+    let c1_w = cell1Partial.width;
+    let c2_w = cell2Partial.width;
+    let c3_h = cell3Partial.height;
+    let c4_y = cell4Partial.y;
+
+    // Force full relayout
+    println("cell1 partial w: " + c1_w);
+    println("cell2 partial w: " + c2_w);
+    println("cell3 partial h: " + c3_h);
+    println("cell4 partial y: " + c4_y);
+
+    // Full relayout
+    let cell1Full = document.getElementById("cell1").getBoundingClientRect();
+    let cell2Full = document.getElementById("cell2").getBoundingClientRect();
+    let cell3Full = document.getElementById("cell3").getBoundingClientRect();
+    let cell4Full = document.getElementById("cell4").getBoundingClientRect();
+
+    println("cell1 full w: " + cell1Full.width);
+    println("cell2 full w: " + cell2Full.width);
+    println("cell3 full h: " + cell3Full.height);
+    println("cell4 full y: " + cell4Full.y);
+
+    println("cell1 w match: " + (c1_w === cell1Full.width));
+    println("cell2 w match: " + (c2_w === cell2Full.width));
+    println("cell3 h match: " + (c3_h === cell3Full.height));
+    println("cell4 y match: " + (c4_y === cell4Full.y));
+});
+</script>

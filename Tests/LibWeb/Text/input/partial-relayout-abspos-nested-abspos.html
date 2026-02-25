@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="spacer" style="height: 50px;"></div>
+        <!-- Abspos child with auto insets (uses static position) -->
+        <div id="inner-abspos" style="position: absolute; width: 80px; height: 40px;"></div>
+        <!-- Abspos child with explicit insets -->
+        <div id="inner-abspos2" style="position: absolute; top: 10px; left: 10px; width: 60px; height: 30px;"></div>
+        <!-- Relatively positioned child with abspos grandchild -->
+        <div id="relative" style="position: relative; height: 40px;">
+            <div id="grandchild-abspos" style="position: absolute; top: 5px; left: 5px; width: 50px; height: 25px;"></div>
+        </div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("spacer").offsetWidth;
+
+    // Change spacer height - affects static position of inner-abspos
+    document.getElementById("spacer").style.height = "100px";
+
+    // Partial relayout
+    let innerPartial = document.getElementById("inner-abspos").getBoundingClientRect();
+    let inner2Partial = document.getElementById("inner-abspos2").getBoundingClientRect();
+    let grandchildPartial = document.getElementById("grandchild-abspos").getBoundingClientRect();
+    let relativePartial = document.getElementById("relative").getBoundingClientRect();
+
+    let ip_y = innerPartial.y;
+    let i2p_x = inner2Partial.x;
+    let i2p_y = inner2Partial.y;
+    let gp_x = grandchildPartial.x;
+    let gp_y = grandchildPartial.y;
+    let rp_y = relativePartial.y;
+
+    // Force full relayout
+    println("inner-abspos partial y: " + ip_y);
+    println("inner-abspos2 partial: " + i2p_x + "," + i2p_y);
+    println("grandchild partial: " + gp_x + "," + gp_y);
+    println("relative partial y: " + rp_y);
+
+    // Full relayout
+    let innerFull = document.getElementById("inner-abspos").getBoundingClientRect();
+    let inner2Full = document.getElementById("inner-abspos2").getBoundingClientRect();
+    let grandchildFull = document.getElementById("grandchild-abspos").getBoundingClientRect();
+    let relativeFull = document.getElementById("relative").getBoundingClientRect();
+
+    println("inner-abspos full y: " + innerFull.y);
+    println("inner-abspos2 full: " + inner2Full.x + "," + inner2Full.y);
+    println("grandchild full: " + grandchildFull.x + "," + grandchildFull.y);
+    println("relative full y: " + relativeFull.y);
+
+    println("inner-abspos y match: " + (ip_y === innerFull.y));
+    println("inner-abspos2 match: " + (i2p_x === inner2Full.x && i2p_y === inner2Full.y));
+    println("grandchild match: " + (gp_x === grandchildFull.x && gp_y === grandchildFull.y));
+    println("relative y match: " + (rp_y === relativeFull.y));
+});
+</script>

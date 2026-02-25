@@ -1,0 +1,3 @@
+child partial: 150x80
+child full: 150x80
+child match: true

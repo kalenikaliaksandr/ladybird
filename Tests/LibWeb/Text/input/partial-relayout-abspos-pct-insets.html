@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- Abspos child with percentage insets, positioned relative to boundary -->
+        <div id="inner-abspos" style="position: absolute; left: 10%; top: 10%; width: 50px; height: 50px;"></div>
+        <div id="child" style="width: 100px; height: 50px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child").offsetWidth;
+
+    // Modify normal flow child
+    document.getElementById("child").style.width = "150px";
+    document.getElementById("child").style.height = "80px";
+
+    // Partial relayout - check abspos child with percentage insets
+    let absPartial = document.getElementById("inner-abspos").getBoundingClientRect();
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+
+    let ap_x = absPartial.x;
+    let ap_y = absPartial.y;
+    let cp_w = childPartial.width;
+    let cp_h = childPartial.height;
+
+    println("inner-abspos partial: " + ap_x + "," + ap_y);
+    println("child partial: " + cp_w + "x" + cp_h);
+
+    // Full relayout
+    let absFull = document.getElementById("inner-abspos").getBoundingClientRect();
+    let childFull = document.getElementById("child").getBoundingClientRect();
+
+    println("inner-abspos full: " + absFull.x + "," + absFull.y);
+    println("child full: " + childFull.width + "x" + childFull.height);
+
+    println("abspos match: " + (ap_x === absFull.x && ap_y === absFull.y));
+    println("child match: " + (cp_w === childFull.width && cp_h === childFull.height));
+});
+</script>

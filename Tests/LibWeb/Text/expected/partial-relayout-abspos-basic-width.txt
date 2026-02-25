@@ -1,0 +1,3 @@
+partial: 150x50
+full: 150x50
+match: true

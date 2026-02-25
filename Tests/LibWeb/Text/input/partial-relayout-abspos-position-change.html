@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="spacer" style="height: 50px;"></div>
+        <div id="target" style="width: 80px; height: 40px;">Target</div>
+        <div id="after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("target").offsetWidth;
+
+    // Change target from static to absolute positioning
+    document.getElementById("target").style.position = "absolute";
+    document.getElementById("target").style.top = "10px";
+    document.getElementById("target").style.left = "10px";
+
+    // Partial relayout (or full - depends on whether position change triggers tree rebuild)
+    let targetPartial = document.getElementById("target").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let tp_x = targetPartial.x;
+    let tp_y = targetPartial.y;
+    let ap_y = afterPartial.y;
+
+    // Force full relayout
+    println("target partial: " + tp_x + "," + tp_y);
+    println("after partial y: " + ap_y);
+
+    // Full relayout
+    let targetFull = document.getElementById("target").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("target full: " + targetFull.x + "," + targetFull.y);
+    println("after full y: " + afterFull.y);
+
+    println("target match: " + (tp_x === targetFull.x && tp_y === targetFull.y));
+    println("after match: " + (ap_y === afterFull.y));
+});
+</script>

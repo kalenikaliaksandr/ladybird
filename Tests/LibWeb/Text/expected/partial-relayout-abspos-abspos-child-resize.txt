@@ -1,0 +1,6 @@
+abspos partial: 40,40 100x100
+normal partial: 100
+abspos full: 40,40 100x100
+normal full: 100
+abspos match: true
+normal match: true

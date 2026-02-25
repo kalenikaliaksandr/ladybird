@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="child1" style="width: 150px; height: 100px;"></div>
+        <div id="child2" style="height: 50px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child1").offsetWidth;
+
+    // SHRINK child (going smaller, not larger)
+    document.getElementById("child1").style.width = "50px";
+    document.getElementById("child1").style.height = "30px";
+
+    // Partial relayout
+    let c1Partial = document.getElementById("child1").getBoundingClientRect();
+    let c2Partial = document.getElementById("child2").getBoundingClientRect();
+
+    let c1_w = c1Partial.width;
+    let c1_h = c1Partial.height;
+    let c2_y = c2Partial.y;
+
+    println("child1 partial: " + c1_w + "x" + c1_h);
+    println("child2 partial y: " + c2_y);
+
+    // Full relayout
+    let c1Full = document.getElementById("child1").getBoundingClientRect();
+    let c2Full = document.getElementById("child2").getBoundingClientRect();
+
+    println("child1 full: " + c1Full.width + "x" + c1Full.height);
+    println("child2 full y: " + c2Full.y);
+
+    println("child1 match: " + (c1_w === c1Full.width && c1_h === c1Full.height));
+    println("child2 match: " + (c2_y === c2Full.y));
+});
+</script>

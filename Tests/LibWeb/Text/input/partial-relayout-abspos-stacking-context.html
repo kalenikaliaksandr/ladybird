@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- Multiple stacking contexts inside boundary -->
+        <div id="ctx1" style="position: relative; z-index: 1; width: 100px; height: 50px;"></div>
+        <div id="ctx2" style="position: relative; z-index: 2; width: 100px; height: 50px; margin-top: -25px;"></div>
+        <div id="ctx3" style="position: relative; z-index: 3; width: 100px; height: 50px; margin-top: -25px;"></div>
+        <div id="after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("ctx1").offsetWidth;
+
+    // Change sizes
+    document.getElementById("ctx1").style.height = "80px";
+    document.getElementById("ctx2").style.width = "150px";
+
+    // Partial relayout
+    let c1 = document.getElementById("ctx1").getBoundingClientRect();
+    let c2 = document.getElementById("ctx2").getBoundingClientRect();
+    let c3 = document.getElementById("ctx3").getBoundingClientRect();
+    let after = document.getElementById("after").getBoundingClientRect();
+
+    let c1_h = c1.height;
+    let c2_w = c2.width;
+    let c3_y = c3.y;
+    let a_y = after.y;
+
+    println("ctx1 partial h: " + c1_h);
+    println("ctx2 partial w: " + c2_w);
+    println("ctx3 partial y: " + c3_y);
+    println("after partial y: " + a_y);
+
+    // Full relayout
+    let c1f = document.getElementById("ctx1").getBoundingClientRect();
+    let c2f = document.getElementById("ctx2").getBoundingClientRect();
+    let c3f = document.getElementById("ctx3").getBoundingClientRect();
+    let af = document.getElementById("after").getBoundingClientRect();
+
+    println("ctx1 full h: " + c1f.height);
+    println("ctx2 full w: " + c2f.width);
+    println("ctx3 full y: " + c3f.y);
+    println("after full y: " + af.y);
+
+    println("ctx1 match: " + (c1_h === c1f.height));
+    println("ctx2 match: " + (c2_w === c2f.width));
+    println("ctx3 match: " + (c3_y === c3f.y));
+    println("after match: " + (a_y === af.y));
+});
+</script>

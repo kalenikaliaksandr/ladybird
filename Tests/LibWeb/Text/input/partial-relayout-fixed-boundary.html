@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<!-- The boundary itself is position: fixed (which IS absolutely positioned) -->
+<div id="boundary" style="position: fixed; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+    <div id="child" style="width: 100px; height: 50px;"></div>
+    <div id="sibling" style="height: 30px;"></div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child").offsetWidth;
+
+    // Modify child
+    document.getElementById("child").style.width = "150px";
+    document.getElementById("child").style.height = "80px";
+
+    // Partial relayout
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let siblingPartial = document.getElementById("sibling").getBoundingClientRect();
+
+    let cp_w = childPartial.width;
+    let cp_h = childPartial.height;
+    let sp_y = siblingPartial.y;
+
+    // Force full relayout
+    println("child partial: " + cp_w + "x" + cp_h);
+    println("sibling partial y: " + sp_y);
+
+    // Full relayout
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let siblingFull = document.getElementById("sibling").getBoundingClientRect();
+
+    println("child full: " + childFull.width + "x" + childFull.height);
+    println("sibling full y: " + siblingFull.y);
+
+    println("child match: " + (cp_w === childFull.width && cp_h === childFull.height));
+    println("sibling match: " + (sp_y === siblingFull.y));
+});
+</script>

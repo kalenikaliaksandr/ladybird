@@ -1,0 +1,6 @@
+child partial: 160x90
+after partial y: 100
+child full: 160x90
+after full y: 100
+child match: true
+after match: true

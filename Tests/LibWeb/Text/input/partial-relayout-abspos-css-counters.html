@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+    #boundary { counter-reset: item; }
+    .counted::before {
+        counter-increment: item;
+        content: counter(item) ". ";
+    }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="item1" class="counted" style="height: 40px;">Item A</div>
+        <div id="item2" class="counted" style="height: 40px;">Item B</div>
+        <div id="item3" class="counted" style="height: 40px;">Item C</div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("item1").offsetWidth;
+
+    // Change height
+    document.getElementById("item1").style.height = "80px";
+
+    let i2Partial = document.getElementById("item2").getBoundingClientRect();
+    let i3Partial = document.getElementById("item3").getBoundingClientRect();
+
+    let i2_y = i2Partial.y;
+    let i3_y = i3Partial.y;
+
+    println("item2 partial y: " + i2_y);
+    println("item3 partial y: " + i3_y);
+
+    let i2Full = document.getElementById("item2").getBoundingClientRect();
+    let i3Full = document.getElementById("item3").getBoundingClientRect();
+
+    println("item2 full y: " + i2Full.y);
+    println("item3 full y: " + i3Full.y);
+
+    println("item2 match: " + (i2_y === i2Full.y));
+    println("item3 match: " + (i3_y === i3Full.y));
+});
+</script>

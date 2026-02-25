@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <fieldset id="fieldset" style="margin: 0; padding: 10px;">
+            <legend>Legend</legend>
+            <div id="child" style="width: 100px; height: 50px;"></div>
+        </fieldset>
+        <div id="after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    document.getElementById("child").style.height = "100px";
+
+    let fieldPartial = document.getElementById("fieldset").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let fp_h = fieldPartial.height;
+    let ap_y = afterPartial.y;
+
+    println("fieldset partial h: " + fp_h);
+    println("after partial y: " + ap_y);
+
+    let fieldFull = document.getElementById("fieldset").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("fieldset full h: " + fieldFull.height);
+    println("after full y: " + afterFull.y);
+
+    println("fieldset match: " + (fp_h === fieldFull.height));
+    println("after match: " + (ap_y === afterFull.y));
+});
+</script>

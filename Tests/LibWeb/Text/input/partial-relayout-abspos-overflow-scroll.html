@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+    * { scrollbar-width: none; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: scroll;">
+        <div id="tall-child" style="width: 100px; height: 100px;"></div>
+        <div id="bottom-child" style="width: 50px; height: 30px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("tall-child").offsetWidth;
+
+    // Make the tall child overflow the boundary
+    document.getElementById("tall-child").style.height = "300px";
+
+    // Partial relayout
+    let tallPartial = document.getElementById("tall-child").getBoundingClientRect();
+    let bottomPartial = document.getElementById("bottom-child").getBoundingClientRect();
+    let boundaryEl = document.getElementById("boundary");
+    let scrollH = boundaryEl.scrollHeight;
+
+    let tp_h = tallPartial.height;
+    let bp_y = bottomPartial.y;
+
+    // Force full relayout
+    println("tall partial h: " + tp_h);
+    println("bottom partial y: " + bp_y);
+    println("scrollHeight partial: " + scrollH);
+
+    // Full relayout
+    let tallFull = document.getElementById("tall-child").getBoundingClientRect();
+    let bottomFull = document.getElementById("bottom-child").getBoundingClientRect();
+    let scrollHFull = document.getElementById("boundary").scrollHeight;
+
+    println("tall full h: " + tallFull.height);
+    println("bottom full y: " + bottomFull.y);
+    println("scrollHeight full: " + scrollHFull);
+
+    println("tall h match: " + (tp_h === tallFull.height));
+    println("bottom y match: " + (bp_y === bottomFull.y));
+    println("scrollHeight match: " + (scrollH === scrollHFull));
+});
+</script>

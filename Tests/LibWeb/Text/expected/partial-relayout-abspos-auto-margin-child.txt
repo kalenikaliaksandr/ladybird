@@ -1,0 +1,4 @@
+partial: x=35 y=70 w=150 h=80
+full: x=35 y=70 w=150 h=80
+pos match: true
+size match: true

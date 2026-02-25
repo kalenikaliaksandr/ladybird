@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- Stretched abspos child (inset:0 on boundary) -->
+        <div id="stretched" style="position: absolute; left: 0; right: 0; top: 0; bottom: 0; padding: 10px;">
+            <div id="child" style="width: 100px; height: 50px;"></div>
+        </div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    document.getElementById("child").style.width = "150px";
+    document.getElementById("child").style.height = "80px";
+
+    // Partial relayout
+    let stretchedPartial = document.getElementById("stretched").getBoundingClientRect();
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+
+    let sp_w = stretchedPartial.width;
+    let sp_h = stretchedPartial.height;
+    let cp_w = childPartial.width;
+    let cp_h = childPartial.height;
+
+    println("stretched partial: " + sp_w + "x" + sp_h);
+    println("child partial: " + cp_w + "x" + cp_h);
+
+    // Full relayout
+    let stretchedFull = document.getElementById("stretched").getBoundingClientRect();
+    let childFull = document.getElementById("child").getBoundingClientRect();
+
+    println("stretched full: " + stretchedFull.width + "x" + stretchedFull.height);
+    println("child full: " + childFull.width + "x" + childFull.height);
+
+    println("stretched match: " + (sp_w === stretchedFull.width && sp_h === stretchedFull.height));
+    println("child match: " + (cp_w === childFull.width && cp_h === childFull.height));
+});
+</script>

@@ -1,0 +1,6 @@
+auto-abspos partial: y=90 w=60
+child partial y: 90
+auto-abspos full: y=90 w=60
+child full y: 90
+abspos match: true
+child match: true

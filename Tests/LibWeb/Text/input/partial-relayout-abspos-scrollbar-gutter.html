@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+    * { scrollbar-width: none; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: scroll;">
+        <div id="child" style="width: 100px; height: 50px;"></div>
+        <div id="spacer" style="height: 300px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child").offsetWidth;
+
+    // Modify child in scrollable boundary
+    document.getElementById("child").style.width = "150px";
+    document.getElementById("child").style.height = "80px";
+
+    // Partial relayout
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let cp_w = childPartial.width;
+    let cp_h = childPartial.height;
+
+    println("child partial: " + cp_w + "x" + cp_h);
+
+    // Full relayout
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    println("child full: " + childFull.width + "x" + childFull.height);
+    println("child match: " + (cp_w === childFull.width && cp_h === childFull.height));
+});
+</script>

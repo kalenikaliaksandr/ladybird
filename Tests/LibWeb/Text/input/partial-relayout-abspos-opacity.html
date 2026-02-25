@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- opacity creates a stacking context but NOT a containing block for abspos -->
+        <div id="opacity-wrapper" style="opacity: 0.5;">
+            <div id="child" style="width: 100px; height: 50px;"></div>
+            <!-- This abspos is contained by boundary, not opacity-wrapper -->
+            <div id="inner-abspos" style="position: absolute; left: 5px; top: 5px; width: 40px; height: 40px;"></div>
+        </div>
+        <div id="after" style="height: 30px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child").offsetWidth;
+
+    // Modify child inside opacity wrapper
+    document.getElementById("child").style.width = "150px";
+    document.getElementById("child").style.height = "80px";
+
+    // Partial relayout
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let absPartial = document.getElementById("inner-abspos").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let cp_w = childPartial.width;
+    let cp_h = childPartial.height;
+    let ap_x = absPartial.x;
+    let ap_y = absPartial.y;
+    let af_y = afterPartial.y;
+
+    println("child partial: " + cp_w + "x" + cp_h);
+    println("abspos partial: " + ap_x + "," + ap_y);
+    println("after partial y: " + af_y);
+
+    // Full relayout
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let absFull = document.getElementById("inner-abspos").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("child full: " + childFull.width + "x" + childFull.height);
+    println("abspos full: " + absFull.x + "," + absFull.y);
+    println("after full y: " + afterFull.y);
+
+    println("child match: " + (cp_w === childFull.width && cp_h === childFull.height));
+    println("abspos match: " + (ap_x === absFull.x && ap_y === absFull.y));
+    println("after match: " + (af_y === afterFull.y));
+});
+</script>

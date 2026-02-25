@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="normal-child" style="height: 50px;"></div>
+        <div id="fixed-child" style="position: fixed; top: 50px; left: 50px; width: 80px; height: 40px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("normal-child").offsetWidth;
+
+    // Modify the normal child - this should trigger partial relayout of boundary
+    document.getElementById("normal-child").style.height = "100px";
+
+    // Partial relayout
+    let normalPartial = document.getElementById("normal-child").getBoundingClientRect();
+    let fixedPartial = document.getElementById("fixed-child").getBoundingClientRect();
+
+    let np_h = normalPartial.height;
+    let fp_x = fixedPartial.x;
+    let fp_y = fixedPartial.y;
+    let fp_w = fixedPartial.width;
+    let fp_h = fixedPartial.height;
+
+    // Force full relayout
+    println("normal partial h: " + np_h);
+    println("fixed partial: " + fp_x + "," + fp_y + " " + fp_w + "x" + fp_h);
+
+    // Full relayout
+    let normalFull = document.getElementById("normal-child").getBoundingClientRect();
+    let fixedFull = document.getElementById("fixed-child").getBoundingClientRect();
+
+    println("normal full h: " + normalFull.height);
+    println("fixed full: " + fixedFull.x + "," + fixedFull.y + " " + fixedFull.width + "x" + fixedFull.height);
+
+    println("normal h match: " + (np_h === normalFull.height));
+    println("fixed match: " + (fp_x === fixedFull.x && fp_y === fixedFull.y && fp_w === fixedFull.width && fp_h === fixedFull.height));
+});
+</script>

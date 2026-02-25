@@ -1,0 +1,6 @@
+fixed partial: 50,50
+content partial: 70x30
+fixed full: 50,50
+content full: 70x30
+fixed pos match: true
+content size match: true

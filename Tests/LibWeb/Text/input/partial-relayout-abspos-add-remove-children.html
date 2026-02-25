@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="child1" style="width: 100px; height: 50px;"></div>
+        <div id="child2" style="height: 30px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("child1").offsetWidth;
+
+    // Add a new child to the boundary
+    let newChild = document.createElement("div");
+    newChild.id = "new-child";
+    newChild.style.width = "120px";
+    newChild.style.height = "40px";
+    document.getElementById("boundary").insertBefore(newChild, document.getElementById("child2"));
+
+    // This likely triggers full layout (tree rebuild), but let's verify correctness
+    let newPartial = document.getElementById("new-child").getBoundingClientRect();
+    let c2Partial = document.getElementById("child2").getBoundingClientRect();
+
+    let np_w = newPartial.width;
+    let np_h = newPartial.height;
+    let c2_y = c2Partial.y;
+
+    println("new partial: " + np_w + "x" + np_h);
+    println("child2 partial y: " + c2_y);
+
+    // Full relayout
+    let newFull = document.getElementById("new-child").getBoundingClientRect();
+    let c2Full = document.getElementById("child2").getBoundingClientRect();
+
+    println("new full: " + newFull.width + "x" + newFull.height);
+    println("child2 full y: " + c2Full.y);
+
+    println("new match: " + (np_w === newFull.width && np_h === newFull.height));
+    println("child2 match: " + (c2_y === c2Full.y));
+});
+</script>

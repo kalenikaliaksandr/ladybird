@@ -1,0 +1,7 @@
+boundary initial: 360x340
+boundary partial: 360x340
+child partial: 270x85
+boundary full: 360x340
+child full: 270x85
+child match: true
+boundary match: true

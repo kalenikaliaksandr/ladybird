@@ -1,0 +1,6 @@
+centered partial: x=50 w=120
+child partial w: 100
+centered full: x=50 w=120
+child full w: 100
+centered match: true
+child match: true

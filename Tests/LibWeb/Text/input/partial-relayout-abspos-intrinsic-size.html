@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- Child with width:min-content -->
+        <div id="child" style="width: min-content;">
+            <span id="text-span" style="white-space: nowrap;">Hello World</span>
+        </div>
+        <div id="after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    // Change the text content
+    document.getElementById("text-span").textContent = "A much longer text that should make the min-content wider";
+
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let cp_w = childPartial.width;
+    let cp_h = childPartial.height;
+    let ap_y = afterPartial.y;
+
+    println("child partial: w=" + cp_w + " h=" + cp_h);
+    println("after partial y: " + ap_y);
+
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("child full: w=" + childFull.width + " h=" + childFull.height);
+    println("after full y: " + afterFull.y);
+
+    println("child match: " + (cp_w === childFull.width && cp_h === childFull.height));
+    println("after match: " + (ap_y === afterFull.y));
+});
+</script>

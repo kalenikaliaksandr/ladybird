@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- transform on child creates a stacking context and containing block -->
+        <div id="transformed" style="transform: rotate(0deg); width: 150px; height: 100px;">
+            <div id="child" style="width: 80px; height: 40px;"></div>
+            <!-- This abspos is contained by the transformed element -->
+            <div id="inner-abs" style="position: absolute; left: 5px; top: 5px; width: 30px; height: 30px;"></div>
+        </div>
+        <div id="after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    document.getElementById("child").style.width = "120px";
+    document.getElementById("child").style.height = "70px";
+
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let absPartial = document.getElementById("inner-abs").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let cp_w = childPartial.width;
+    let cp_h = childPartial.height;
+    let ap_x = absPartial.x;
+    let ap_y = absPartial.y;
+    let af_y = afterPartial.y;
+
+    println("child partial: " + cp_w + "x" + cp_h);
+    println("abspos partial: " + ap_x + "," + ap_y);
+    println("after partial y: " + af_y);
+
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let absFull = document.getElementById("inner-abs").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("child full: " + childFull.width + "x" + childFull.height);
+    println("abspos full: " + absFull.x + "," + absFull.y);
+    println("after full y: " + afterFull.y);
+
+    println("child match: " + (cp_w === childFull.width && cp_h === childFull.height));
+    println("abspos match: " + (ap_x === absFull.x && ap_y === absFull.y));
+    println("after match: " + (af_y === afterFull.y));
+});
+</script>

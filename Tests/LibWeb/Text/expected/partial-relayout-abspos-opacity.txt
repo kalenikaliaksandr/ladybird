@@ -1,0 +1,9 @@
+child partial: 150x80
+abspos partial: 15,15
+after partial y: 90
+child full: 150x80
+abspos full: 15,15
+after full y: 90
+child match: true
+abspos match: true
+after match: true

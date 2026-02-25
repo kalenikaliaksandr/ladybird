@@ -1,0 +1,6 @@
+child partial w: 100
+spacer partial h: 300
+child full w: 100
+spacer full h: 300
+child match: true
+spacer match: true

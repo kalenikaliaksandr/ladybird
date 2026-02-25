@@ -1,0 +1,6 @@
+normal partial h: 100
+fixed partial: 50,50 80x40
+normal full h: 100
+fixed full: 50,50 80x40
+normal h match: true
+fixed match: true

@@ -1,0 +1,6 @@
+new partial: 120x40
+child2 partial y: 100
+new full: 120x40
+child2 full y: 100
+new match: true
+child2 match: true

@@ -1,0 +1,9 @@
+child1 partial w: 80
+child2 partial h: 60
+after partial y: 120
+child1 full w: 80
+child2 full h: 60
+after full y: 120
+child1 match: true
+child2 match: true
+after match: true

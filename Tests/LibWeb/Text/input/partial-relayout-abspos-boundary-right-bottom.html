@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <!-- Boundary positioned with right/bottom instead of left/top -->
+    <div id="boundary" style="position: absolute; right: 10px; bottom: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <div id="child" style="width: 100px; height: 50px;"></div>
+        <div id="sibling" style="height: 30px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    document.getElementById("child").style.width = "150px";
+    document.getElementById("child").style.height = "80px";
+
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let sibPartial = document.getElementById("sibling").getBoundingClientRect();
+
+    let cp_w = childPartial.width;
+    let cp_h = childPartial.height;
+    let sp_y = sibPartial.y;
+
+    println("child partial: " + cp_w + "x" + cp_h);
+    println("sibling partial y: " + sp_y);
+
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let sibFull = document.getElementById("sibling").getBoundingClientRect();
+
+    println("child full: " + childFull.width + "x" + childFull.height);
+    println("sibling full y: " + sibFull.y);
+
+    println("child match: " + (cp_w === childFull.width && cp_h === childFull.height));
+    println("sibling match: " + (sp_y === sibFull.y));
+});
+</script>

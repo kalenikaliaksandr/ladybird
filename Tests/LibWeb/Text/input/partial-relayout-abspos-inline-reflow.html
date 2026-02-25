@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden; font-size: 16px;">
+        <span id="inline1">Hello world</span>
+        <div id="block-after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("inline1").offsetWidth;
+
+    // Change inline content that causes reflow
+    document.getElementById("inline1").textContent = "This is a much longer text that should cause different line breaking and potentially more lines of text in the inline content";
+
+    // Partial relayout
+    let inlinePartial = document.getElementById("inline1").getBoundingClientRect();
+    let blockPartial = document.getElementById("block-after").getBoundingClientRect();
+
+    let ip_h = inlinePartial.height;
+    let bp_y = blockPartial.y;
+
+    // Force full relayout
+    println("inline partial h: " + ip_h);
+    println("block-after partial y: " + bp_y);
+
+    // Full relayout
+    let inlineFull = document.getElementById("inline1").getBoundingClientRect();
+    let blockFull = document.getElementById("block-after").getBoundingClientRect();
+
+    println("inline full h: " + inlineFull.height);
+    println("block-after full y: " + blockFull.y);
+
+    println("inline h match: " + (ip_h === inlineFull.height));
+    println("block-after y match: " + (bp_y === blockFull.y));
+});
+</script>

@@ -1,0 +1,9 @@
+item1 partial: x=10 w=100
+item2 partial: x=110 w=50
+item3 partial: x=160 w=150
+item1 full: x=10 w=100
+item2 full: x=110 w=50
+item3 full: x=160 w=150
+item1 match: true
+item2 match: true
+item3 match: true

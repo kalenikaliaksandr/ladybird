@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- Flex container inside boundary with an abspos child -->
+        <div style="display: flex; gap: 10px; position: relative;">
+            <div id="flex-item1" style="flex: 1; height: 50px;"></div>
+            <div id="flex-item2" style="flex: 1; height: 50px;"></div>
+            <!-- Abspos child of the flex container -->
+            <div id="flex-abspos" style="position: absolute; right: 0; top: 0; width: 30px; height: 30px;"></div>
+        </div>
+        <div id="after" style="height: 20px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    document.getElementById("flex-item1").offsetWidth;
+
+    // Change flex items
+    document.getElementById("flex-item1").style.height = "80px";
+
+    let fi1 = document.getElementById("flex-item1").getBoundingClientRect();
+    let fi2 = document.getElementById("flex-item2").getBoundingClientRect();
+    let fa = document.getElementById("flex-abspos").getBoundingClientRect();
+    let after = document.getElementById("after").getBoundingClientRect();
+
+    let fi1_h = fi1.height;
+    let fi2_h = fi2.height;
+    let fa_x = fa.x;
+    let fa_y = fa.y;
+    let a_y = after.y;
+
+    println("flex-item1 partial h: " + fi1_h);
+    println("flex-item2 partial h: " + fi2_h);
+    println("flex-abspos partial: " + fa_x + "," + fa_y);
+    println("after partial y: " + a_y);
+
+    let fi1f = document.getElementById("flex-item1").getBoundingClientRect();
+    let fi2f = document.getElementById("flex-item2").getBoundingClientRect();
+    let faf = document.getElementById("flex-abspos").getBoundingClientRect();
+    let af = document.getElementById("after").getBoundingClientRect();
+
+    println("flex-item1 full h: " + fi1f.height);
+    println("flex-item2 full h: " + fi2f.height);
+    println("flex-abspos full: " + faf.x + "," + faf.y);
+    println("after full y: " + af.y);
+
+    println("fi1 match: " + (fi1_h === fi1f.height));
+    println("fi2 match: " + (fi2_h === fi2f.height));
+    println("abspos match: " + (fa_x === faf.x && fa_y === faf.y));
+    println("after match: " + (a_y === af.y));
+});
+</script>

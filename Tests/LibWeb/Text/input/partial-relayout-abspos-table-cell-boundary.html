@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<table style="position: relative; border-collapse: collapse;">
+    <tr>
+        <td>
+            <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+                <div id="child" style="width: 100px; height: 50px;"></div>
+                <div id="after" style="height: 30px;"></div>
+            </div>
+        </td>
+    </tr>
+</table>
+<script>
+test(() => {
+    document.getElementById("child").offsetWidth;
+
+    document.getElementById("child").style.width = "150px";
+    document.getElementById("child").style.height = "80px";
+
+    let childPartial = document.getElementById("child").getBoundingClientRect();
+    let afterPartial = document.getElementById("after").getBoundingClientRect();
+
+    let cp_w = childPartial.width;
+    let cp_h = childPartial.height;
+    let ap_y = afterPartial.y;
+
+    println("child partial: " + cp_w + "x" + cp_h);
+    println("after partial y: " + ap_y);
+
+    let childFull = document.getElementById("child").getBoundingClientRect();
+    let afterFull = document.getElementById("after").getBoundingClientRect();
+
+    println("child full: " + childFull.width + "x" + childFull.height);
+    println("after full y: " + afterFull.y);
+
+    println("child match: " + (cp_w === childFull.width && cp_h === childFull.height));
+    println("after match: " + (ap_y === afterFull.y));
+});
+</script>

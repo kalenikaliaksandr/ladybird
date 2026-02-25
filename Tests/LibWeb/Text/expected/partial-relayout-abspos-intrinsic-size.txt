@@ -1,0 +1,6 @@
+child partial: w=488.90625 h=18
+after partial y: 28
+child full: w=488.90625 h=18
+after full y: 28
+child match: true
+after match: true

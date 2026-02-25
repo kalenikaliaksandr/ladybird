@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+</style>
+<div style="position: relative; width: 400px; height: 400px;">
+    <div id="boundary" style="position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; overflow: hidden;">
+        <!-- Abspos child of boundary (contained by boundary since boundary is position:absolute) -->
+        <div id="inner-abspos" style="position: absolute; left: 20px; top: 20px; width: 60px; height: 60px;"></div>
+        <div id="normal-child" style="width: 100px; height: 50px;"></div>
+    </div>
+</div>
+<script>
+test(() => {
+    // Ensure initial full layout
+    document.getElementById("inner-abspos").offsetWidth;
+
+    // Modify the abspos child itself
+    document.getElementById("inner-abspos").style.width = "100px";
+    document.getElementById("inner-abspos").style.height = "100px";
+    document.getElementById("inner-abspos").style.left = "30px";
+    document.getElementById("inner-abspos").style.top = "30px";
+
+    // Partial relayout
+    let absPartial = document.getElementById("inner-abspos").getBoundingClientRect();
+    let normalPartial = document.getElementById("normal-child").getBoundingClientRect();
+
+    let ap_x = absPartial.x;
+    let ap_y = absPartial.y;
+    let ap_w = absPartial.width;
+    let ap_h = absPartial.height;
+    let np_w = normalPartial.width;
+
+    println("abspos partial: " + ap_x + "," + ap_y + " " + ap_w + "x" + ap_h);
+    println("normal partial: " + np_w);
+
+    // Full relayout
+    let absFull = document.getElementById("inner-abspos").getBoundingClientRect();
+    let normalFull = document.getElementById("normal-child").getBoundingClientRect();
+
+    println("abspos full: " + absFull.x + "," + absFull.y + " " + absFull.width + "x" + absFull.height);
+    println("normal full: " + normalFull.width);
+
+    println("abspos match: " + (ap_x === absFull.x && ap_y === absFull.y && ap_w === absFull.width && ap_h === absFull.height));
+    println("normal match: " + (np_w === normalFull.width));
+});
+</script>
