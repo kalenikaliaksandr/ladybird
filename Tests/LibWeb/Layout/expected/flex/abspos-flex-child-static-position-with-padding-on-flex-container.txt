@@ -13,10 +13,10 @@ ViewportPaintable (Viewport<#document>) [0,0 800x600]
   PaintableWithLines (BlockContainer<HTML>) [0,0 800x54]
     PaintableWithLines (BlockContainer<BODY>) [8,8 784x38]
       PaintableBox (Box<DIV>#flex-container) [8,8 784x38]
-        PaintableWithLines (BlockContainer<DIV>#absolute) [18,18 50x50]
-          PaintableWithLines (BlockContainer<DIV>#orange) [18,18 50x50]
         PaintableWithLines (BlockContainer<DIV>#red) [18,18 9.703125x18]
           TextPaintable (TextNode<#text>)
+  PaintableWithLines (BlockContainer<DIV>#absolute) [18,18 50x50]
+    PaintableWithLines (BlockContainer<DIV>#orange) [18,18 50x50]
 
 SC for Viewport<#document> [0,0 800x600] [children: 1] (z-index: auto)
  SC for BlockContainer<HTML> [0,0 800x54] [children: 0] (z-index: auto)

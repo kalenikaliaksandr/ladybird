@@ -56,7 +56,6 @@ void ViewportPaintable::build_stacking_context_tree()
 {
     set_stacking_context(heap().allocate<StackingContext>(*this, nullptr, 0));
 
-    size_t index_in_tree_order = 1;
     for_each_in_subtree_of_type<PaintableBox>([&](auto& paintable_box) {
         paintable_box.invalidate_stacking_context();
         auto* parent_context = paintable_box.enclosing_stacking_context();
@@ -70,9 +69,14 @@ void ViewportPaintable::build_stacking_context_tree()
             return TraversalDecision::Continue;
         }
         VERIFY(parent_context);
-        paintable_box.set_stacking_context(heap().allocate<StackingContext>(paintable_box, parent_context, index_in_tree_order++));
+        auto tree_order = static_cast<Layout::NodeWithStyle const&>(paintable_box.layout_node()).layout_index();
+        paintable_box.set_stacking_context(heap().allocate<StackingContext>(paintable_box, parent_context, tree_order));
         return TraversalDecision::Continue;
     });
+
+    // Sort positioned descendants and floating descendants by DOM order (layout_index),
+    // since the paintable tree traversal order no longer matches DOM order for abspos elements.
+    stacking_context()->sort_positioned_descendants_by_layout_index();
 
     stacking_context()->sort();
 }
@@ -328,13 +332,17 @@ void ViewportPaintable::assign_accumulated_visual_contexts()
 
             // Abspos elements escape scroll containers and overflow clips of non-positioned
             // ancestors, but cannot escape stacking contexts created by intermediate effects
-            // (opacity, mix-blend-mode, isolation). Walk from visual parent to containing
-            // block and collect these intermediate effects.
+            // (opacity, mix-blend-mode, isolation). Walk layout tree (DOM ancestry) from
+            // layout parent to containing block and collect these intermediate effects.
             // NOTE: transforms/perspectives/filters establish containing blocks for abspos,
             //       so they cannot appear as intermediates.
             Vector<VisualContextData, 4> intermediate_effects;
-            for (Paintable* paintable = visual_parent; paintable && paintable != containing; paintable = paintable->parent()) {
-                auto* ancestor_box = as_if<PaintableBox>(paintable);
+            for (auto* layout_ancestor = paintable_box.layout_node().parent();
+                layout_ancestor;
+                layout_ancestor = layout_ancestor->parent()) {
+                auto* ancestor_box = as_if<PaintableBox>(layout_ancestor->first_paintable());
+                if (ancestor_box == containing)
+                    break;
                 if (!ancestor_box)
                     continue;
                 if (auto effects = make_effects_data(*ancestor_box); effects.has_value())

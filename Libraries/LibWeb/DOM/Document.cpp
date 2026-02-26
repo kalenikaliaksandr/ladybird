@@ -1375,6 +1375,8 @@ static void relayout_subtree(Layout::Box& root)
     }
 
     // Pre-populate the viewport for position:fixed descendants.
+    // The FC still encounters fixed-position elements during layout (e.g., via the
+    // absolute_boxes list in IFC) and needs the viewport's used values.
     auto& viewport = root.root();
     if (auto const* paintable = viewport.paintable_box())
         layout_state.populate_from_paintable(viewport, *paintable);

@@ -237,19 +237,52 @@ void LayoutState::resolve_relative_positions()
     });
 }
 
-static void build_paint_tree(Node& node, Painting::Paintable* parent_paintable = nullptr)
+// Returns true if the node is an OOF element whose containing block is outside the partial relayout subtree.
+// Such nodes (and their subtrees) should be preserved during partial relayout commit.
+static bool is_oof_outside_subtree(Node const& node, NodeWithStyle const* subtree_root)
 {
+    if (!subtree_root)
+        return false;
+    if (&node == subtree_root)
+        return false;
+    auto const* box = as_if<Box>(node);
+    if (!box || !box->is_absolutely_positioned())
+        return false;
+    auto cb = box->containing_block();
+    return cb && !subtree_root->is_inclusive_ancestor_of(*cb);
+}
+
+static void build_paint_tree(Node& node, Painting::Paintable* parent_paintable = nullptr, NodeWithStyle const* subtree_root = nullptr)
+{
+    // During partial relayout, skip OOF elements whose containing block is outside the subtree.
+    // Their paintables are already correctly parented under the containing block's paintable
+    // (which is outside the subtree) and should not be disturbed.
+    if (is_oof_outside_subtree(node, subtree_root))
+        return;
+
     for (auto& paintable : node.paintables()) {
-        if (parent_paintable && !paintable.forms_unconnected_subtree()) {
+        auto* actual_parent = parent_paintable;
+
+        // Reparent abspos/fixed paintables to their containing block's paintable.
+        // This ensures partial relayout of a subtree won't touch OOF elements whose
+        // containing block is outside that subtree.
+        if (auto const* box = as_if<Box>(node); box && box->is_absolutely_positioned()) {
+            if (auto cb = box->containing_block()) {
+                if (auto* cb_paintable = const_cast<Box&>(*cb).first_paintable())
+                    actual_parent = cb_paintable;
+            }
+        }
+
+        if (actual_parent && !paintable.forms_unconnected_subtree()) {
             VERIFY(!paintable.parent());
-            parent_paintable->append_child(paintable);
+            actual_parent->append_child(paintable);
         }
         paintable.set_dom_node(node.dom_node());
         if (node.dom_node())
             node.dom_node()->set_paintable(paintable);
     }
     for (auto* child = node.first_child(); child; child = child->next_sibling()) {
-        build_paint_tree(*child, node.first_paintable());
+        build_paint_tree(*child, node.first_paintable(), subtree_root);
     }
 }
 
@@ -267,6 +300,11 @@ void LayoutState::commit(Box& root)
     // Cache existing paintables before clearing.
     GC::RootHashMap<Node const*, GC::Ref<Painting::PaintableBox>> paintable_cache(root.document().heap());
     root.for_each_in_inclusive_subtree([&](Node& node) {
+        // During partial relayout, OOF elements with containing block outside the subtree
+        // are preserved — their paintables remain correctly parented under the CB's paintable.
+        if (is_oof_outside_subtree(node, m_subtree_root))
+            return TraversalDecision::SkipChildrenAndContinue;
+
         if (auto* paintable_box = as_if<Painting::PaintableBox>(node.first_paintable())) {
             // InlineNodes are excluded because they can span multiple lines, with a separate
             // InlinePaintable created for each line via create_paintable_for_line_with_index().
@@ -280,7 +318,9 @@ void LayoutState::commit(Box& root)
 
     // Go through the layout tree and detach all paintables. The layout tree should only point to the new paintable tree
     // which we're about to build.
-    root.for_each_in_inclusive_subtree([](Node& node) {
+    root.for_each_in_inclusive_subtree([&](Node& node) {
+        if (is_oof_outside_subtree(node, m_subtree_root))
+            return TraversalDecision::SkipChildrenAndContinue;
         node.clear_paintables();
         return TraversalDecision::Continue;
     });
@@ -290,6 +330,8 @@ void LayoutState::commit(Box& root)
     HashTable<Layout::InlineNode*> inline_nodes;
 
     root.for_each_in_inclusive_subtree([&](Node& node) {
+        if (is_oof_outside_subtree(node, m_subtree_root))
+            return TraversalDecision::SkipChildrenAndContinue;
         if (auto* dom_node = node.dom_node())
             dom_node->clear_paintable();
         if (is<InlineNode>(node) && node.dom_node()) {
@@ -337,6 +379,10 @@ void LayoutState::commit(Box& root)
         auto& node = used_values.node();
 
         if (m_subtree_root && !m_subtree_root->is_inclusive_ancestor_of(node))
+            return;
+
+        // During partial relayout, skip OOF elements whose containing block is outside the subtree.
+        if (is_oof_outside_subtree(node, m_subtree_root))
             return;
 
         GC::Ptr<Painting::Paintable> paintable;
@@ -446,7 +492,7 @@ void LayoutState::commit(Box& root)
     for (auto* text_node : text_nodes)
         text_node->add_paintable(text_node->create_paintable());
 
-    build_paint_tree(root, parent_paintable);
+    build_paint_tree(root, parent_paintable, m_subtree_root);
 
     resolve_relative_positions();
 

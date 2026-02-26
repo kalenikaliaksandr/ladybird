@@ -162,11 +162,18 @@ bool Paintable::has_stacking_context() const
 
 StackingContext* Paintable::enclosing_stacking_context()
 {
-    for (auto* ancestor = parent(); ancestor; ancestor = ancestor->parent()) {
-        if (!ancestor->is_paintable_box())
+    // Walk layout tree (DOM order) to find stacking context, not paintable tree,
+    // because stacking contexts follow DOM ancestry, not containing block ancestry.
+    // This matters because abspos/fixed paintables are reparented under their
+    // containing block's paintable, but their stacking context must still follow
+    // the DOM tree (e.g. an abspos inside an opacity:0.5 div must be in that div's
+    // stacking context).
+    for (auto* ancestor = m_layout_node->parent(); ancestor; ancestor = ancestor->parent()) {
+        auto const* paintable_box = as_if<PaintableBox>(ancestor->first_paintable());
+        if (!paintable_box)
             continue;
-        if (auto* stacking_context = static_cast<PaintableBox&>(*ancestor).stacking_context())
-            return const_cast<StackingContext*>(stacking_context);
+        if (auto* sc = paintable_box->stacking_context())
+            return const_cast<StackingContext*>(sc);
     }
     // We should always reach the viewport's stacking context.
     VERIFY_NOT_REACHED();

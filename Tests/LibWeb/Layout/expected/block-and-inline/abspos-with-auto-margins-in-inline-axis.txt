@@ -8,9 +8,9 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
 ViewportPaintable (Viewport<#document>) [0,0 800x600]
   PaintableWithLines (BlockContainer<HTML>) [0,0 800x20]
     PaintableWithLines (BlockContainer<BODY>) [9,9 782x2]
-      PaintableWithLines (BlockContainer<DIV>#foo) [349,0 102x102]
-      PaintableWithLines (BlockContainer<DIV>#bar) [698,100 102x102]
-      PaintableWithLines (BlockContainer<DIV>#baz) [0,200 102x102]
+  PaintableWithLines (BlockContainer<DIV>#foo) [349,0 102x102]
+  PaintableWithLines (BlockContainer<DIV>#bar) [698,100 102x102]
+  PaintableWithLines (BlockContainer<DIV>#baz) [0,200 102x102]
 
 SC for Viewport<#document> [0,0 800x600] [children: 1] (z-index: auto)
  SC for BlockContainer<HTML> [1,1 798x18] [children: 0] (z-index: auto)

@@ -15,7 +15,7 @@ ViewportPaintable (Viewport<#document>) [0,0 800x600]
       PaintableWithLines (BlockContainer<BUTTON>) [8,8 42x42]
         PaintableWithLines (BlockContainer(anonymous)) [29,29 0x0]
           PaintableWithLines (BlockContainer(anonymous)) [29,29 0x0]
-            PaintableWithLines (BlockContainer(anonymous)) [9,9 40x40]
+        PaintableWithLines (BlockContainer(anonymous)) [9,9 40x40]
 
 SC for Viewport<#document> [0,0 800x600] [children: 1] (z-index: auto)
  SC for BlockContainer<HTML> [0,0 800x58] [children: 0] (z-index: auto)

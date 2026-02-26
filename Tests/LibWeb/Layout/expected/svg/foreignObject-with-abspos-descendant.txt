@@ -20,7 +20,7 @@ ViewportPaintable (Viewport<#document>) [0,0 800x600]
       SVGSVGPaintable (SVGSVGBox<svg>) [8,8 300x150] overflow: [8,8 300x200]
         SVGForeignObjectPaintable (SVGForeignObjectBox<foreignObject>) [8,8 100x200]
           PaintableWithLines (BlockContainer(anonymous)) [8,8 100x0]
-            PaintableWithLines (BlockContainer<DIV>.el) [8,8 50x60]
+          PaintableWithLines (BlockContainer<DIV>.el) [8,8 50x60]
       PaintableWithLines (BlockContainer(anonymous)) [8,158 784x0]
 
 SC for Viewport<#document> [0,0 800x600] [children: 1] (z-index: auto)

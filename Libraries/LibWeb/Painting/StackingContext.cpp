@@ -48,6 +48,21 @@ StackingContext::StackingContext(PaintableBox& paintable, StackingContext* paren
         m_parent->m_children.append(*this);
 }
 
+void StackingContext::sort_positioned_descendants_by_layout_index()
+{
+    auto layout_index_of = [](PaintableBox const& pb) -> u32 {
+        return static_cast<Layout::NodeWithStyle const&>(pb.layout_node()).layout_index();
+    };
+    quick_sort(m_positioned_descendants_and_stacking_contexts_with_stack_level_0, [&](auto& a, auto& b) {
+        return layout_index_of(a) < layout_index_of(b);
+    });
+    quick_sort(m_non_positioned_floating_descendants, [&](auto& a, auto& b) {
+        return layout_index_of(a) < layout_index_of(b);
+    });
+    for (auto child : m_children)
+        child->sort_positioned_descendants_by_layout_index();
+}
+
 void StackingContext::sort()
 {
     quick_sort(m_children, [](auto& a, auto& b) {

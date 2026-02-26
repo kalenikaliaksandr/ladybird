@@ -43,6 +43,7 @@ public:
     void dump(StringBuilder&, int indent = 0) const;
 
     void sort();
+    void sort_positioned_descendants_by_layout_index();
 
     void set_last_paint_generation_id(u64 generation_id);
 
