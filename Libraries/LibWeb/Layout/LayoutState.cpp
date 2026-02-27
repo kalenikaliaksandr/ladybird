@@ -59,8 +59,9 @@ LayoutState::UsedValues& LayoutState::ensure_used_values_for(NodeWithStyle const
     if (auto* used_values = m_used_values_store.get(index))
         return *used_values;
 
-    // During subtree layout, all nodes outside the subtree must be pre-populated before running the formatting context
-    VERIFY(!m_subtree_root || m_subtree_root == &node || m_subtree_root->is_inclusive_ancestor_of(node));
+    // During subtree layout, only nodes inside the subtree or ancestors of the subtree root are allowed.
+    // Ancestors are allowed because formatting contexts may walk up the containing block chain.
+    VERIFY(!m_subtree_root || m_subtree_root == &node || m_subtree_root->is_inclusive_ancestor_of(node) || node.is_inclusive_ancestor_of(*m_subtree_root));
 
     auto const* containing_block_used_values = (node.is_viewport() || m_subtree_root == &node) ? nullptr : &get(*node.containing_block());
 

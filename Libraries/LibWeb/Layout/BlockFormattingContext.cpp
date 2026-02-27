@@ -878,6 +878,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         if (should_treat_height_as_auto(box, available_space) && !box.computed_values().min_height().is_auto()) {
             LayoutState throwaway_state;
             auto measuring_context = create_independent_formatting_context_if_needed(throwaway_state, m_layout_mode, box);
+            throwaway_state.set_subtree_root(box);
             measuring_context->run(inner_available_space);
             auto content_height = measuring_context->automatic_content_height();
             auto min_height = calculate_inner_height(box, available_space, box.computed_values().min_height());

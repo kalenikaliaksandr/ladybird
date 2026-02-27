@@ -474,6 +474,8 @@ CSSPixels FormattingContext::compute_table_box_width_inside_table_wrapper(Box co
             throwaway_state.get_mutable(*wrapper_containing_block).set_content_width(containing_block_state.content_width());
     }
 
+    throwaway_state.set_subtree_root(box);
+
     auto context = make<TableFormattingContext>(throwaway_state, LayoutMode::IntrinsicSizing, *table_box, this);
     context->run_until_width_calculation(m_state.get(*table_box).available_inner_space_or_constraints_from(available_space));
 
@@ -502,6 +504,7 @@ CSSPixels FormattingContext::compute_table_box_height_inside_table_wrapper(Box c
     LayoutState throwaway_state;
 
     auto context = create_independent_formatting_context_if_needed(throwaway_state, LayoutMode::IntrinsicSizing, box);
+    throwaway_state.set_subtree_root(box);
     VERIFY(context);
     context->run(m_state.get(box).available_inner_space_or_constraints_from(available_space));
 
@@ -1693,6 +1696,8 @@ CSSPixels FormattingContext::calculate_min_content_width(Layout::Box const& box)
     box_state.width_constraint = SizeConstraint::MinContent;
     box_state.set_indefinite_content_width();
 
+    throwaway_state.set_subtree_root(box);
+
     auto context = const_cast<FormattingContext*>(this)->create_independent_formatting_context(throwaway_state, LayoutMode::IntrinsicSizing, box);
 
     auto available_width = AvailableSize::make_min_content();
@@ -1734,6 +1739,8 @@ CSSPixels FormattingContext::calculate_max_content_width(Layout::Box const& box)
 
     box_state.border_right = actual_box_state.border_right;
     box_state.padding_right = actual_box_state.padding_right;
+
+    throwaway_state.set_subtree_root(box);
 
     auto context = const_cast<FormattingContext*>(this)->create_independent_formatting_context(throwaway_state, LayoutMode::IntrinsicSizing, box);
 
@@ -1777,6 +1784,8 @@ CSSPixels FormattingContext::calculate_min_content_height(Layout::Box const& box
     box_state.set_indefinite_content_height();
     box_state.set_content_width(width);
 
+    throwaway_state.set_subtree_root(box);
+
     auto context = const_cast<FormattingContext*>(this)->create_independent_formatting_context(throwaway_state, LayoutMode::IntrinsicSizing, box);
 
     context->run(AvailableSpace(AvailableSize::make_definite(width), AvailableSize::make_min_content()));
@@ -1808,6 +1817,8 @@ CSSPixels FormattingContext::calculate_max_content_height(Layout::Box const& box
     box_state.height_constraint = SizeConstraint::MaxContent;
     box_state.set_indefinite_content_height();
     box_state.set_content_width(width);
+
+    throwaway_state.set_subtree_root(box);
 
     auto context = const_cast<FormattingContext*>(this)->create_independent_formatting_context(throwaway_state, LayoutMode::IntrinsicSizing, box);
 
