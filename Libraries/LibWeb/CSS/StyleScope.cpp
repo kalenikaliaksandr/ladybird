@@ -45,6 +45,8 @@ void StyleScope::visit_edges(GC::Cell::Visitor& visitor)
         m_user_rule_cache->visit_edges(visitor);
     if (m_user_agent_rule_cache)
         m_user_agent_rule_cache->visit_edges(visitor);
+    for (auto& pending : m_pending_has_invalidations)
+        visitor.visit(pending.node);
 }
 
 void MatchingRule::visit_edges(GC::Cell::Visitor& visitor)
@@ -469,48 +471,71 @@ void StyleScope::for_each_active_css_style_sheet(Function<void(CSS::CSSStyleShee
     }
 }
 
-void StyleScope::schedule_ancestors_style_invalidation_due_to_presence_of_has(DOM::Node& node)
+void StyleScope::schedule_has_invalidation(DOM::Node& node, HasInvalidationTraversal traversal)
 {
-    m_pending_nodes_for_style_invalidation_due_to_presence_of_has.set(node);
+    for (auto& pending : m_pending_has_invalidations) {
+        if (pending.node == &node) {
+            pending.traversal.widen(traversal);
+            document().set_needs_invalidation_of_elements_affected_by_has();
+            return;
+        }
+    }
+    m_pending_has_invalidations.append({ node, traversal });
     document().set_needs_invalidation_of_elements_affected_by_has();
+}
+
+static void check_siblings_for_has_invalidation(DOM::Node& node, HasSiblingTraversal sibling_reach)
+{
+    auto* element = as_if<DOM::Element>(node);
+    if (!element)
+        return;
+
+    if (sibling_reach == HasSiblingTraversal::PrevSibling) {
+        if (auto* prev = element->previous_element_sibling())
+            prev->invalidate_style_if_affected_by_has();
+    } else {
+        for (auto* sibling = element->previous_element_sibling(); sibling; sibling = sibling->previous_element_sibling())
+            sibling->invalidate_style_if_affected_by_has();
+    }
+
+    // Also check later siblings: the :has() anchor could be a later sibling of the changed
+    // node (e.g., ".b:has(+ .a)" where .a changes — .b is a later sibling of .a).
+    for (auto* sibling = element->next_element_sibling(); sibling; sibling = sibling->next_element_sibling()) {
+        if (sibling->affected_by_has_pseudo_class_with_relative_selector_that_has_sibling_combinator())
+            sibling->invalidate_style_if_affected_by_has();
+    }
 }
 
 void StyleScope::invalidate_style_of_elements_affected_by_has()
 {
-    if (m_pending_nodes_for_style_invalidation_due_to_presence_of_has.is_empty()) {
+    if (m_pending_has_invalidations.is_empty())
         return;
-    }
-
-    ScopeGuard clear_pending_nodes_guard = [&] {
-        m_pending_nodes_for_style_invalidation_due_to_presence_of_has.clear();
-    };
 
     // It's ok to call have_has_selectors() instead of may_have_has_selectors() here and force
     // rule cache build, because it's going to be built soon anyway, since we could get here
     // only from update_style().
     if (!have_has_selectors()) {
+        m_pending_has_invalidations.clear();
         return;
     }
 
-    auto nodes = move(m_pending_nodes_for_style_invalidation_due_to_presence_of_has);
-    for (auto& node : nodes) {
-        for (auto* ancestor = &node; ancestor; ancestor = ancestor->parent_or_shadow_host()) {
-            if (!ancestor->is_element())
-                continue;
-            auto& element = static_cast<DOM::Element&>(*ancestor);
-            element.invalidate_style_if_affected_by_has();
+    auto pending = move(m_pending_has_invalidations);
+    for (auto& [node, traversal] : pending) {
+        // Check siblings at the changed node's own level.
+        if (traversal.sibling != HasSiblingTraversal::None)
+            check_siblings_for_has_invalidation(*node, traversal.sibling);
 
-            auto* parent = ancestor->parent_or_shadow_host();
-            if (!parent)
-                return;
+        if (traversal.ancestor != HasAncestorTraversal::None) {
+            for (auto* ancestor = &*node; ancestor; ancestor = ancestor->parent_or_shadow_host()) {
+                if (auto* element = as_if<DOM::Element>(ancestor))
+                    element->invalidate_style_if_affected_by_has();
 
-            // If any ancestor's sibling was tested against selectors like ".a:has(+ .b)" or ".a:has(~ .b)"
-            // its style might be affected by the change in descendant node.
-            parent->for_each_child_of_type<DOM::Element>([&](auto& ancestor_sibling_element) {
-                if (ancestor_sibling_element.affected_by_has_pseudo_class_with_relative_selector_that_has_sibling_combinator())
-                    ancestor_sibling_element.invalidate_style_if_affected_by_has();
-                return IterationDecision::Continue;
-            });
+                if (traversal.sibling != HasSiblingTraversal::None)
+                    check_siblings_for_has_invalidation(*ancestor, traversal.sibling);
+
+                if (traversal.ancestor == HasAncestorTraversal::Parent && ancestor != &*node)
+                    break;
+            }
         }
     }
 }

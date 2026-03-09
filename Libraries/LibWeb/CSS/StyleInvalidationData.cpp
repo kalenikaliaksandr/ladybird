@@ -63,27 +63,78 @@ static void for_each_consecutive_simple_selector_group(Selector const& selector,
         callback(simple_selectors, combinator, is_rightmost);
 }
 
-static void collect_properties_used_in_has(Selector::SimpleSelector const& selector, StyleInvalidationData& style_invalidation_data, bool in_has)
+static HasInvalidationTraversal classify_has_argument(Selector const& selector)
+{
+    auto const& compounds = selector.compound_selectors();
+    if (compounds.is_empty())
+        return { HasAncestorTraversal::Ancestors, HasSiblingTraversal::EarlierSiblings };
+
+    auto relative_combinator = compounds[0].combinator;
+
+    bool has_subtree = false;
+    for (size_t i = 1; i < compounds.size(); ++i) {
+        auto combinator = compounds[i].combinator;
+        if (combinator == Selector::Combinator::Descendant || combinator == Selector::Combinator::ImmediateChild) {
+            has_subtree = true;
+            break;
+        }
+    }
+
+    HasInvalidationTraversal result;
+    switch (relative_combinator) {
+    case Selector::Combinator::Descendant:
+        result.ancestor = HasAncestorTraversal::Ancestors;
+        break;
+    case Selector::Combinator::ImmediateChild:
+        result.ancestor = has_subtree ? HasAncestorTraversal::Ancestors : HasAncestorTraversal::Parent;
+        break;
+    case Selector::Combinator::NextSibling:
+        result.sibling = HasSiblingTraversal::PrevSibling;
+        if (has_subtree)
+            result.ancestor = HasAncestorTraversal::Ancestors;
+        break;
+    case Selector::Combinator::SubsequentSibling:
+        result.sibling = HasSiblingTraversal::EarlierSiblings;
+        if (has_subtree)
+            result.ancestor = HasAncestorTraversal::Ancestors;
+        break;
+    default:
+        result.ancestor = HasAncestorTraversal::Ancestors;
+        result.sibling = HasSiblingTraversal::EarlierSiblings;
+        break;
+    }
+    return result;
+}
+
+static void add_has_invalidation_property(StyleInvalidationData& data, InvalidationSet::Property property, HasInvalidationTraversal traversal)
+{
+    auto& entry = data.has_invalidation_map.ensure(move(property), [] {
+        return HasInvalidationTraversal {};
+    });
+    entry.widen(traversal);
+}
+
+static void collect_properties_used_in_has(Selector::SimpleSelector const& selector, StyleInvalidationData& style_invalidation_data, Optional<HasInvalidationTraversal> traversal)
 {
     switch (selector.type) {
     case Selector::SimpleSelector::Type::Id: {
-        if (in_has)
-            style_invalidation_data.ids_used_in_has_selectors.set(selector.name());
+        if (traversal.has_value())
+            add_has_invalidation_property(style_invalidation_data, { InvalidationSet::Property::Type::Id, selector.name() }, *traversal);
         break;
     }
     case Selector::SimpleSelector::Type::Class: {
-        if (in_has)
-            style_invalidation_data.class_names_used_in_has_selectors.set(selector.name());
+        if (traversal.has_value())
+            add_has_invalidation_property(style_invalidation_data, { InvalidationSet::Property::Type::Class, selector.name() }, *traversal);
         break;
     }
     case Selector::SimpleSelector::Type::Attribute: {
-        if (in_has)
-            style_invalidation_data.attribute_names_used_in_has_selectors.set(selector.attribute().qualified_name.name.lowercase_name);
+        if (traversal.has_value())
+            add_has_invalidation_property(style_invalidation_data, { InvalidationSet::Property::Type::Attribute, selector.attribute().qualified_name.name.lowercase_name }, *traversal);
         break;
     }
     case Selector::SimpleSelector::Type::TagName: {
-        if (in_has)
-            style_invalidation_data.tag_names_used_in_has_selectors.set(selector.qualified_name().name.lowercase_name);
+        if (traversal.has_value())
+            add_has_invalidation_property(style_invalidation_data, { InvalidationSet::Property::Type::TagName, selector.qualified_name().name.lowercase_name }, *traversal);
         break;
     }
     case Selector::SimpleSelector::Type::PseudoClass: {
@@ -100,16 +151,19 @@ static void collect_properties_used_in_has(Selector::SimpleSelector const& selec
         case PseudoClass::AnyLink:
         case PseudoClass::LocalLink:
         case PseudoClass::Default:
-            if (in_has)
-                style_invalidation_data.pseudo_classes_used_in_has_selectors.set(pseudo_class.type);
+            if (traversal.has_value())
+                add_has_invalidation_property(style_invalidation_data, { InvalidationSet::Property::Type::PseudoClass, pseudo_class.type }, *traversal);
             break;
         default:
             break;
         }
         for (auto const& child_selector : pseudo_class.argument_selector_list) {
+            Optional<HasInvalidationTraversal> child_traversal = traversal;
+            if (!traversal.has_value() && pseudo_class.type == PseudoClass::Has)
+                child_traversal = classify_has_argument(*child_selector);
             for (auto const& compound_selector : child_selector->compound_selectors()) {
                 for (auto const& simple_selector : compound_selector.simple_selectors)
-                    collect_properties_used_in_has(simple_selector, style_invalidation_data, in_has || pseudo_class.type == PseudoClass::Has);
+                    collect_properties_used_in_has(simple_selector, style_invalidation_data, child_traversal);
             }
         }
         break;
@@ -382,15 +436,9 @@ static InvalidationSet build_invalidation_sets_for_selector_impl(StyleInvalidati
     Optional<SelectorRighthand> selector_righthand;
     for_each_consecutive_simple_selector_group(selector, [&](Vector<Selector::SimpleSelector const&> const& simple_selectors, Selector::Combinator combinator, bool is_rightmost) {
         // Collect properties used in :has() so we can decide if only specific properties
-        // trigger descendant invalidation or if the entire document must be invalidated.
+        // trigger ancestor/sibling invalidation for :has() re-evaluation.
         for (auto const& simple_selector : simple_selectors) {
-            bool in_has = false;
-            if (simple_selector.type == Selector::SimpleSelector::Type::PseudoClass) {
-                auto const& pseudo_class = simple_selector.pseudo_class();
-                if (pseudo_class.type == PseudoClass::Has)
-                    in_has = true;
-            }
-            collect_properties_used_in_has(simple_selector, style_invalidation_data, in_has);
+            collect_properties_used_in_has(simple_selector, style_invalidation_data, {});
         }
 
         auto invalidation_properties = build_invalidation_set_for_simple_selectors(simple_selectors, ExcludePropertiesNestedInNotPseudoClass::No, style_invalidation_data, inside_nth_child_pseudo_class);

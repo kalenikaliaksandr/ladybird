@@ -443,9 +443,12 @@ void Node::invalidate_style(StyleInvalidationReason reason)
     auto& style_scope = root().is_shadow_root() ? static_cast<ShadowRoot&>(root()).style_scope() : document().style_scope();
 
     if (style_scope.may_have_has_selectors()) {
+        // Structural changes (node insert/remove, pseudo-class state changes) don't have specific
+        // properties to look up, so we use full traversal as the safe fallback.
+        CSS::HasInvalidationTraversal full_traversal { CSS::HasAncestorTraversal::Ancestors, CSS::HasSiblingTraversal::EarlierSiblings };
         if (reason == StyleInvalidationReason::NodeRemove) {
             if (auto* parent = parent_or_shadow_host(); parent) {
-                style_scope.schedule_ancestors_style_invalidation_due_to_presence_of_has(*parent);
+                style_scope.schedule_has_invalidation(*parent, full_traversal);
                 parent->for_each_child_of_type<Element>([&](auto& element) {
                     if (element.affected_by_has_pseudo_class_with_relative_selector_that_has_sibling_combinator())
                         element.invalidate_style_if_affected_by_has();
@@ -453,7 +456,7 @@ void Node::invalidate_style(StyleInvalidationReason reason)
                 });
             }
         } else if (reason_may_affect_has_selectors(reason)) {
-            style_scope.schedule_ancestors_style_invalidation_due_to_presence_of_has(*this);
+            style_scope.schedule_has_invalidation(*this, full_traversal);
         }
     }
 
@@ -542,16 +545,27 @@ void Node::invalidate_style(StyleInvalidationReason reason, Vector<CSS::Invalida
             shadow_style_scope = &element_shadow_root->style_scope();
     }
 
-    bool properties_used_in_has_selectors = false;
-    for (auto const& property : properties) {
-        properties_used_in_has_selectors |= document().style_computer().invalidation_property_used_in_has_selector(property, style_scope);
-        if (shadow_style_scope)
-            properties_used_in_has_selectors |= document().style_computer().invalidation_property_used_in_has_selector(property, *shadow_style_scope);
-    }
-    if (properties_used_in_has_selectors) {
-        style_scope.schedule_ancestors_style_invalidation_due_to_presence_of_has(*this);
-        if (shadow_style_scope)
-            shadow_style_scope->schedule_ancestors_style_invalidation_due_to_presence_of_has(*this);
+    auto accumulate_has_traversal = [&](Optional<CSS::HasInvalidationTraversal>& accumulated, CSS::StyleScope const& scope) {
+        for (auto const& property : properties) {
+            if (auto t = document().style_computer().has_invalidation_traversal_for_property(property, scope); t.has_value()) {
+                if (accumulated.has_value())
+                    accumulated->widen(*t);
+                else
+                    accumulated = *t;
+            }
+        }
+    };
+
+    Optional<CSS::HasInvalidationTraversal> has_traversal;
+    accumulate_has_traversal(has_traversal, style_scope);
+    if (has_traversal.has_value())
+        style_scope.schedule_has_invalidation(*this, *has_traversal);
+
+    if (shadow_style_scope) {
+        Optional<CSS::HasInvalidationTraversal> shadow_has_traversal;
+        accumulate_has_traversal(shadow_has_traversal, *shadow_style_scope);
+        if (shadow_has_traversal.has_value())
+            shadow_style_scope->schedule_has_invalidation(*this, *shadow_has_traversal);
     }
 
     if (options.invalidate_self)

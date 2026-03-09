@@ -11,7 +11,6 @@
 #include <AK/Optional.h>
 #include <AK/Vector.h>
 #include <LibGC/Ptr.h>
-#include <LibGC/WeakHashSet.h>
 #include <LibWeb/Animations/KeyframeEffect.h>
 #include <LibWeb/CSS/CascadeOrigin.h>
 #include <LibWeb/CSS/Selector.h>
@@ -107,7 +106,7 @@ public:
 
     void invalidate_style_of_elements_affected_by_has();
 
-    void schedule_ancestors_style_invalidation_due_to_presence_of_has(DOM::Node& node);
+    void schedule_has_invalidation(DOM::Node& node, HasInvalidationTraversal traversal);
 
     void visit_edges(GC::Cell::Visitor&);
 
@@ -121,7 +120,11 @@ public:
 
     GC::Ptr<CSSStyleSheet> m_user_style_sheet;
 
-    GC::WeakHashSet<DOM::Node> m_pending_nodes_for_style_invalidation_due_to_presence_of_has;
+    struct PendingHasInvalidation {
+        GC::Ref<DOM::Node> node;
+        HasInvalidationTraversal traversal;
+    };
+    Vector<PendingHasInvalidation> m_pending_has_invalidations;
 
     GC::Ref<DOM::Node> m_node;
 };

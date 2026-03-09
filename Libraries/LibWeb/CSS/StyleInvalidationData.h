@@ -58,17 +58,38 @@ struct InvalidationPlan final : RefCounted<InvalidationPlan> {
     Vector<SiblingInvalidationRule> sibling_rules;
 };
 
+enum class HasAncestorTraversal : u8 {
+    None,
+    Parent,
+    Ancestors,
+};
+
+enum class HasSiblingTraversal : u8 {
+    None,
+    PrevSibling,
+    EarlierSiblings,
+};
+
+struct HasInvalidationTraversal {
+    HasAncestorTraversal ancestor { HasAncestorTraversal::None };
+    HasSiblingTraversal sibling { HasSiblingTraversal::None };
+
+    void widen(HasInvalidationTraversal const& other)
+    {
+        if (to_underlying(other.ancestor) > to_underlying(ancestor))
+            ancestor = other.ancestor;
+        if (to_underlying(other.sibling) > to_underlying(sibling))
+            sibling = other.sibling;
+    }
+};
+
 struct StyleInvalidationData;
 
 void build_invalidation_sets_for_simple_selector(Selector::SimpleSelector const&, InvalidationSet&, ExcludePropertiesNestedInNotPseudoClass, StyleInvalidationData&, InsideNthChildPseudoClass);
 
 struct StyleInvalidationData {
     HashMap<InvalidationSet::Property, NonnullRefPtr<InvalidationPlan>> invalidation_plans;
-    HashTable<FlyString> ids_used_in_has_selectors;
-    HashTable<FlyString> class_names_used_in_has_selectors;
-    HashTable<FlyString> attribute_names_used_in_has_selectors;
-    HashTable<FlyString> tag_names_used_in_has_selectors;
-    HashTable<PseudoClass> pseudo_classes_used_in_has_selectors;
+    HashMap<InvalidationSet::Property, HasInvalidationTraversal> has_invalidation_map;
 
     void build_invalidation_sets_for_selector(Selector const& selector);
 };
