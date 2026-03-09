@@ -199,6 +199,91 @@ static NonnullRefPtr<InvalidationPlan> build_invalidation_for_combinator(Selecto
     return invalidation;
 }
 
+static void register_has_plan_for_selector_with_continuation(StyleInvalidationData&, Selector const&, InvalidationPlan const&);
+
+static void register_has_plan_for_simple_selector_with_continuation(StyleInvalidationData& style_invalidation_data, Selector::SimpleSelector const& simple_selector, InvalidationPlan const& continuation)
+{
+    if (simple_selector.type != Selector::SimpleSelector::Type::PseudoClass)
+        return;
+    auto const& pseudo_class = simple_selector.pseudo_class();
+    if (pseudo_class.type == PseudoClass::Is || pseudo_class.type == PseudoClass::Where || pseudo_class.type == PseudoClass::Not) {
+        for (auto const& nested_selector : pseudo_class.argument_selector_list)
+            register_has_plan_for_selector_with_continuation(style_invalidation_data, *nested_selector, continuation);
+    }
+}
+
+// For a selector that is an argument of :is()/:where()/:not() and contains :has(),
+// builds the :has invalidation plan composed with the outer continuation.
+// E.g., for :is(A:has(.b) C) + D, this processes "A:has(.b) C" with continuation = {sibling: +D → invalidate_self}
+// and registers :has → {descendant: C → {sibling: +D → invalidate_self}}.
+static void register_has_plan_for_selector_with_continuation(StyleInvalidationData& style_invalidation_data, Selector const& selector, InvalidationPlan const& continuation)
+{
+    Selector::Combinator previous_compound_combinator = Selector::Combinator::None;
+    Optional<SelectorRighthand> selector_righthand;
+    for_each_consecutive_simple_selector_group(selector, [&](Vector<Selector::SimpleSelector const&> const& simple_selectors, Selector::Combinator combinator, bool is_rightmost) {
+        auto subject_match_set = build_invalidation_set_for_simple_selectors(simple_selectors, ExcludePropertiesNestedInNotPseudoClass::Yes, style_invalidation_data, InsideNthChildPseudoClass::No);
+        bool subject_matches_any = subject_match_set.is_empty() && simple_selector_group_matches_any(simple_selectors);
+
+        if (is_rightmost) {
+            // Use the outer continuation as the base plan instead of invalidate_self.
+            auto root_plan = InvalidationPlan::create();
+            root_plan->include_all_from(continuation);
+            root_plan->invalidate_self = true;
+
+            // If this rightmost compound directly contains :has(), register the continuation
+            // as the :has plan (since :has is at the boundary, the full path to the subject
+            // is exactly the continuation).
+            for (auto const& simple_selector : simple_selectors) {
+                if (simple_selector.type == Selector::SimpleSelector::Type::PseudoClass && simple_selector.pseudo_class().type == PseudoClass::Has) {
+                    InvalidationSet has_only;
+                    has_only.set_needs_invalidate_pseudo_class(PseudoClass::Has);
+                    add_invalidation_plan_for_properties(style_invalidation_data, has_only, continuation);
+                }
+                // Also recurse into :is()/:where()/:not() at the rightmost level.
+                register_has_plan_for_simple_selector_with_continuation(style_invalidation_data, simple_selector, continuation);
+            }
+
+            selector_righthand = SelectorRighthand {
+                .subject_match_set = move(subject_match_set),
+                .subject_matches_any = subject_matches_any,
+                .payload = root_plan,
+            };
+        } else {
+            VERIFY(previous_compound_combinator != Selector::Combinator::None);
+            VERIFY(selector_righthand.has_value());
+
+            auto plan = build_invalidation_for_combinator(previous_compound_combinator, *selector_righthand);
+
+            // If this compound contains :has() directly, register the composed plan.
+            bool has_direct_has = false;
+            for (auto const& simple_selector : simple_selectors) {
+                if (simple_selector.type == Selector::SimpleSelector::Type::PseudoClass && simple_selector.pseudo_class().type == PseudoClass::Has) {
+                    has_direct_has = true;
+                    break;
+                }
+            }
+            if (has_direct_has) {
+                InvalidationSet has_only;
+                has_only.set_needs_invalidate_pseudo_class(PseudoClass::Has);
+                add_invalidation_plan_for_properties(style_invalidation_data, has_only, *plan);
+            }
+
+            // If this compound contains :is()/:where()/:not() with :has inside, recurse.
+            for (auto const& simple_selector : simple_selectors) {
+                register_has_plan_for_simple_selector_with_continuation(style_invalidation_data, simple_selector, *plan);
+            }
+
+            selector_righthand = SelectorRighthand {
+                .subject_match_set = move(subject_match_set),
+                .subject_matches_any = subject_matches_any,
+                .payload = move(plan),
+            };
+        }
+
+        previous_compound_combinator = combinator;
+    });
+}
+
 void build_invalidation_sets_for_simple_selector(Selector::SimpleSelector const& selector, InvalidationSet& invalidation_set, ExcludePropertiesNestedInNotPseudoClass exclude_properties_nested_in_not_pseudo_class, StyleInvalidationData& style_invalidation_data, InsideNthChildPseudoClass inside_nth_child_selector)
 {
     switch (selector.type) {
@@ -342,17 +427,12 @@ static InvalidationSet build_invalidation_sets_for_selector_impl(StyleInvalidati
             auto plan = build_invalidation_for_combinator(previous_compound_combinator, *selector_righthand);
             add_invalidation_plan_for_properties(style_invalidation_data, invalidation_properties, *plan);
 
-            // TODO: Fine-grained :has() invalidation is not yet implemented.
-            bool has_pseudo_class_has = false;
-            invalidation_properties.for_each_property([&](auto const& property) {
-                if (property.type == InvalidationSet::Property::Type::PseudoClass && property.value.template get<PseudoClass>() == PseudoClass::Has)
-                    has_pseudo_class_has = true;
-                return IterationDecision::Continue;
-            });
-            if (has_pseudo_class_has) {
-                InvalidationSet has_only;
-                has_only.set_needs_invalidate_pseudo_class(PseudoClass::Has);
-                add_invalidation_plan_for_properties(style_invalidation_data, has_only, *make_invalidate_whole_subtree_invalidation());
+            // For :is()/:where()/:not() simple selectors that contain :has() inside their arguments,
+            // build composed :has invalidation plans that correctly chain the inner path (from the :has
+            // anchor to the :is() subject) with the outer continuation (from the :is() compound to
+            // the selector subject). This handles CSS nesting where :has() ends up inside :is() wrappers.
+            for (auto const& simple_selector : simple_selectors) {
+                register_has_plan_for_simple_selector_with_continuation(style_invalidation_data, simple_selector, *plan);
             }
 
             selector_righthand = SelectorRighthand {
