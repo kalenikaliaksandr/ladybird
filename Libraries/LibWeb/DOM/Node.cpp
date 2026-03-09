@@ -21,6 +21,7 @@
 #include <LibWeb/Bindings/NodePrototype.h>
 #include <LibWeb/CSS/ComputedProperties.h>
 #include <LibWeb/CSS/StyleComputer.h>
+#include <LibWeb/CSS/StyleInvalidationTracing.h>
 #include <LibWeb/DOM/AccessibilityTreeNode.h>
 #include <LibWeb/DOM/Attr.h>
 #include <LibWeb/DOM/CDATASection.h>
@@ -465,18 +466,31 @@ void Node::invalidate_style(StyleInvalidationReason reason)
     if (is_document()) {
         auto& document = static_cast<DOM::Document&>(*this);
         document.set_needs_full_style_update(true);
+        if (CSS::g_enable_style_invalidation_tracing) {
+            dbgln("[STYLE_INVAL] {{\"type\":\"trigger\",\"cycle\":{},\"reason\":\"{}\",\"element\":\"#document\",\"path\":\"whole_subtree\"}}",
+                CSS::g_style_invalidation_cycle_counter, to_string(reason));
+        }
         return;
     }
 
     // If the document is already marked for a full style update, there's no need to do anything here.
     if (document().needs_full_style_update()) {
+        if (CSS::g_enable_style_invalidation_tracing) {
+            dbgln("[STYLE_INVAL] {{\"type\":\"trigger\",\"cycle\":{},\"reason\":\"{}\",\"element\":\"{}\",\"path\":\"whole_subtree\",\"noop\":true}}",
+                CSS::g_style_invalidation_cycle_counter, to_string(reason), debug_description());
+        }
         return;
     }
 
     // If any ancestor is already marked for an entire subtree update, there's no need to do anything here.
     for (auto* ancestor = this->parent_or_shadow_host(); ancestor; ancestor = ancestor->parent_or_shadow_host()) {
-        if (ancestor->entire_subtree_needs_style_update())
+        if (ancestor->entire_subtree_needs_style_update()) {
+            if (CSS::g_enable_style_invalidation_tracing) {
+                dbgln("[STYLE_INVAL] {{\"type\":\"trigger\",\"cycle\":{},\"reason\":\"{}\",\"element\":\"{}\",\"path\":\"whole_subtree\",\"noop\":true,\"has_ancestor_scheduled\":true}}",
+                    CSS::g_style_invalidation_cycle_counter, to_string(reason), debug_description());
+            }
             return;
+        }
     }
 
     // When invalidating style for a node, we actually invalidate:
@@ -491,6 +505,11 @@ void Node::invalidate_style(StyleInvalidationReason reason)
     };
 
     mark_entire_subtree_for_style_update(*this);
+
+    if (CSS::g_enable_style_invalidation_tracing) {
+        dbgln("[STYLE_INVAL] {{\"type\":\"trigger\",\"cycle\":{},\"reason\":\"{}\",\"element\":\"{}\",\"path\":\"whole_subtree\"}}",
+            CSS::g_style_invalidation_cycle_counter, to_string(reason), debug_description());
+    }
 
     auto previous_sibling_needs_structural_invalidation = [](Element const& element) {
         return element.affected_by_backward_structural_changes();
@@ -557,6 +576,19 @@ void Node::invalidate_style(StyleInvalidationReason reason, Vector<CSS::Invalida
 
     if (options.invalidate_self)
         set_needs_style_update(true);
+
+    if (CSS::g_enable_style_invalidation_tracing) {
+        StringBuilder props_builder;
+        props_builder.append('[');
+        for (size_t i = 0; i < properties.size(); ++i) {
+            if (i > 0)
+                props_builder.append(',');
+            props_builder.appendff("\"{}\"", properties[i]);
+        }
+        props_builder.append(']');
+        dbgln("[STYLE_INVAL] {{\"type\":\"trigger\",\"cycle\":{},\"reason\":\"{}\",\"element\":\"{}\",\"path\":\"property_driven\",\"properties\":{},\"has_ancestor_scheduled\":{}}}",
+            CSS::g_style_invalidation_cycle_counter, to_string(reason), debug_description(), props_builder.string_view(), properties_used_in_has_selectors);
+    }
 
     auto invalidate_for_style_scope = [this, reason, &properties](CSS::StyleScope& style_scope) {
         auto plan = document().style_computer().invalidation_plan_for_properties(properties, style_scope);

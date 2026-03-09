@@ -17,6 +17,7 @@
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/PropertyID.h>
 #include <LibWeb/CSS/StyleComputer.h>
+#include <LibWeb/CSS/StyleInvalidationTracing.h>
 #include <LibWeb/CSS/StyleScope.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/Page/Page.h>
@@ -493,9 +494,18 @@ void StyleScope::invalidate_style_of_elements_affected_by_has()
     }
 
     HashTable<DOM::Element*> elements_already_invalidated_for_has;
+
+    [[maybe_unused]] size_t tracing_pending_nodes = 0;
+    [[maybe_unused]] size_t tracing_ancestors_visited = 0;
+    [[maybe_unused]] size_t tracing_elements_marked = 0;
+
     auto nodes = move(m_pending_nodes_for_style_invalidation_due_to_presence_of_has);
     for (auto& node : nodes) {
+        if (CSS::g_enable_style_invalidation_tracing)
+            ++tracing_pending_nodes;
         for (auto* ancestor = &node; ancestor; ancestor = ancestor->parent_or_shadow_host()) {
+            if (CSS::g_enable_style_invalidation_tracing)
+                ++tracing_ancestors_visited;
             if (!ancestor->is_element())
                 continue;
             auto& element = static_cast<DOM::Element&>(*ancestor);
@@ -503,7 +513,10 @@ void StyleScope::invalidate_style_of_elements_affected_by_has()
             if (elements_already_invalidated_for_has.set(&element) != AK::HashSetResult::InsertedNewEntry)
                 break;
 
+            bool was_needing_update = element.needs_style_update();
             element.invalidate_style_if_affected_by_has();
+            if (CSS::g_enable_style_invalidation_tracing && !was_needing_update && element.needs_style_update())
+                ++tracing_elements_marked;
 
             auto* parent = ancestor->parent_or_shadow_host();
             if (!parent)
@@ -516,10 +529,23 @@ void StyleScope::invalidate_style_of_elements_affected_by_has()
                     if (elements_already_invalidated_for_has.set(&ancestor_sibling_element) != AK::HashSetResult::InsertedNewEntry)
                         return IterationDecision::Continue;
 
+                    bool was_needing = ancestor_sibling_element.needs_style_update();
                     ancestor_sibling_element.invalidate_style_if_affected_by_has();
+                    if (CSS::g_enable_style_invalidation_tracing && !was_needing && ancestor_sibling_element.needs_style_update())
+                        ++tracing_elements_marked;
                 }
                 return IterationDecision::Continue;
             });
+        }
+    }
+
+    if (CSS::g_enable_style_invalidation_tracing) {
+        dbgln("[STYLE_INVAL] {{\"type\":\"has_pass\",\"cycle\":{},\"pending_nodes\":{},\"ancestors_visited\":{},\"elements_marked\":{}}}",
+            CSS::g_style_invalidation_cycle_counter, tracing_pending_nodes, tracing_ancestors_visited, tracing_elements_marked);
+        if (auto* stats = CSS::g_current_cycle_stats) {
+            stats->has_pending_nodes += tracing_pending_nodes;
+            stats->has_ancestors_visited += tracing_ancestors_visited;
+            stats->has_elements_marked += tracing_elements_marked;
         }
     }
 }

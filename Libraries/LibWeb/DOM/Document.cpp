@@ -17,10 +17,12 @@
 #include <AK/InsertionSort.h>
 #include <AK/JsonObjectSerializer.h>
 #include <AK/Random.h>
+#include <AK/ScopeGuard.h>
 #include <AK/StringBuilder.h>
 #include <AK/TemporaryChange.h>
 #include <AK/Time.h>
 #include <AK/Utf8View.h>
+#include <LibCore/ElapsedTimer.h>
 #include <LibCore/Timer.h>
 #include <LibGC/RootVector.h>
 #include <LibHTTP/Cookie/Cookie.h>
@@ -59,6 +61,7 @@
 #include <LibWeb/CSS/SelectorEngine.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/CSS/StyleInvalidation.h>
+#include <LibWeb/CSS/StyleInvalidationTracing.h>
 #include <LibWeb/CSS/StyleSheetIdentifier.h>
 #include <LibWeb/CSS/StyleSheetList.h>
 #include <LibWeb/CSS/StyleValues/ColorSchemeStyleValue.h>
@@ -1666,8 +1669,12 @@ bool Document::layout_is_up_to_date() const
 
         if (needs_full_style_update || node.needs_style_update() || parent_display_changed || (recompute_elements_depending_on_custom_properties && element.style_uses_var_css_function()) || needs_style_update_due_to_if_media) {
             node_invalidation = element.recompute_style(did_change_custom_properties);
+            if (auto* stats = CSS::g_current_cycle_stats)
+                ++stats->elements_recomputed;
         } else if (needs_inherited_style_update) {
             node_invalidation = element.recompute_inherited_style();
+            if (auto* stats = CSS::g_current_cycle_stats)
+                ++stats->elements_inherited_only;
         }
         is_display_none = static_cast<Element&>(node).computed_properties()->display().is_none();
 
@@ -1753,18 +1760,45 @@ void Document::update_style()
     // style change event. [CSS-Transitions-2]
     m_transition_generation++;
 
+    bool const tracing = CSS::g_enable_style_invalidation_tracing;
+    CSS::StyleInvalidationCycleStats cycle_stats;
+    if (tracing) {
+        ++CSS::g_style_invalidation_cycle_counter;
+        CSS::g_current_cycle_stats = &cycle_stats;
+    }
+    ScopeGuard clear_cycle_stats = [&] {
+        if (tracing)
+            CSS::g_current_cycle_stats = nullptr;
+    };
+
+    auto total_timer = Core::ElapsedTimer(Core::TimerType::Precise);
+    i64 has_us = 0;
+    i64 invalidator_us = 0;
+    if (tracing)
+        total_timer.start();
+
+    bool const full_document = m_needs_full_style_update;
+
     if (m_needs_invalidation_of_elements_affected_by_has) {
         m_needs_invalidation_of_elements_affected_by_has = false;
+        auto has_timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
         style_scope().invalidate_style_of_elements_affected_by_has();
         for_each_shadow_root([&](auto& shadow_root) {
             shadow_root.style_scope().invalidate_style_of_elements_affected_by_has();
         });
+        if (tracing)
+            has_us = has_timer.elapsed_time().to_microseconds();
     }
 
     if (!m_style_invalidator->has_pending_invalidations() && !needs_full_style_update() && !needs_style_update() && !child_needs_style_update())
         return;
 
-    m_style_invalidator->invalidate(*this);
+    {
+        auto invalidator_timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
+        m_style_invalidator->invalidate(*this);
+        if (tracing)
+            invalidator_us = invalidator_timer.elapsed_time().to_microseconds();
+    }
 
     // NOTE: If this is a document hosting <template> contents, style update is unnecessary.
     if (m_created_for_appropriate_template_contents)
@@ -1783,7 +1817,16 @@ void Document::update_style()
     // FIXME: We don't need to rebuild this cache on every style update, just if a @counter-style rule has changed.
     build_counter_style_cache();
 
+    auto recompute_timer = Core::ElapsedTimer(Core::TimerType::Precise);
+    if (tracing)
+        recompute_timer.start();
+
     auto invalidation = update_style_recursively(*this, style_computer(), false, false, false);
+
+    i64 recompute_us = 0;
+    if (tracing)
+        recompute_us = recompute_timer.elapsed_time().to_microseconds();
+
     if (!invalidation.is_none())
         invalidate_display_list();
 
@@ -1793,6 +1836,14 @@ void Document::update_style()
     if (invalidation.rebuild_stacking_context_tree)
         invalidate_stacking_context_tree();
     m_needs_full_style_update = false;
+
+    if (tracing) {
+        auto total_us = total_timer.elapsed_time().to_microseconds();
+        dbgln("[STYLE_INVAL] {{\"type\":\"cycle_summary\",\"cycle\":{},\"full_document\":{},\"elements_recomputed\":{},\"elements_inherited_only\":{},\"total_us\":{},\"has_us\":{},\"invalidator_us\":{},\"recompute_us\":{}}}",
+            CSS::g_style_invalidation_cycle_counter, full_document,
+            cycle_stats.elements_recomputed, cycle_stats.elements_inherited_only,
+            total_us, has_us, invalidator_us, recompute_us);
+    }
 }
 
 void Document::update_style_if_needed_for_element(AbstractElement const& abstract_element)

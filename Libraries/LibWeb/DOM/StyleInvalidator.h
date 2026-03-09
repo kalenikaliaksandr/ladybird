@@ -37,6 +37,11 @@ private:
 
     HashMap<GC::Ref<Node>, Vector<PendingDescendantInvalidation>> m_pending_invalidations;
     Vector<PendingDescendantInvalidation> m_active_descendant_invalidations;
+
+    // Tracing counters (only used when g_enable_style_invalidation_tracing is true)
+    size_t m_tracing_nodes_visited { 0 };
+    size_t m_tracing_nodes_marked_subtree { 0 };
+    size_t m_tracing_nodes_matched_rule { 0 };
 };
 
 }

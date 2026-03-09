@@ -5,6 +5,7 @@
  */
 
 #include <AK/ScopeGuard.h>
+#include <LibWeb/CSS/StyleInvalidationTracing.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/ShadowRoot.h>
@@ -28,7 +29,23 @@ void StyleInvalidator::visit_edges(Cell::Visitor& visitor)
 
 void StyleInvalidator::invalidate(Node& node)
 {
+    m_tracing_nodes_visited = 0;
+    m_tracing_nodes_marked_subtree = 0;
+    m_tracing_nodes_matched_rule = 0;
+
     perform_pending_style_invalidations(node, false);
+
+    if (CSS::g_enable_style_invalidation_tracing) {
+        dbgln("[STYLE_INVAL] {{\"type\":\"invalidator_walk\",\"cycle\":{},\"nodes_visited\":{},\"nodes_marked_subtree\":{},\"nodes_matched_rule\":{},\"pending_count\":{}}}",
+            CSS::g_style_invalidation_cycle_counter, m_tracing_nodes_visited, m_tracing_nodes_marked_subtree,
+            m_tracing_nodes_matched_rule, m_pending_invalidations.size());
+        if (auto* stats = CSS::g_current_cycle_stats) {
+            stats->nodes_visited_in_invalidator = m_tracing_nodes_visited;
+            stats->nodes_marked_subtree = m_tracing_nodes_marked_subtree;
+            stats->nodes_matched_rule = m_tracing_nodes_matched_rule;
+        }
+    }
+
     m_pending_invalidations.clear();
 }
 
@@ -36,6 +53,13 @@ bool StyleInvalidator::enqueue_invalidation_plan(Node& node, StyleInvalidationRe
 {
     if (plan.is_empty())
         return false;
+
+    if (CSS::g_enable_style_invalidation_tracing) {
+        dbgln("[STYLE_INVAL] {{\"type\":\"plan\",\"cycle\":{},\"element\":\"{}\",\"whole_subtree_fallback\":{},\"self\":{},\"desc_rules\":{},\"sib_rules\":{}}}",
+            CSS::g_style_invalidation_cycle_counter, node.debug_description(),
+            plan.invalidate_whole_subtree, plan.invalidate_self,
+            plan.descendant_rules.size(), plan.sibling_rules.size());
+    }
 
     if (plan.invalidate_whole_subtree) {
         node.invalidate_style(reason);
@@ -119,9 +143,15 @@ void StyleInvalidator::apply_sibling_invalidation(Element& element, StyleInvalid
 // - applies descendant invalidation rules to matching elements
 void StyleInvalidator::perform_pending_style_invalidations(Node& node, bool invalidate_entire_subtree)
 {
+    if (CSS::g_enable_style_invalidation_tracing)
+        ++m_tracing_nodes_visited;
+
+    bool was_already_subtree = invalidate_entire_subtree;
     invalidate_entire_subtree |= node.entire_subtree_needs_style_update();
 
     if (invalidate_entire_subtree) {
+        if (CSS::g_enable_style_invalidation_tracing && !was_already_subtree && node.entire_subtree_needs_style_update())
+            ++m_tracing_nodes_marked_subtree;
         node.set_needs_style_update_internal(true);
         if (node.has_child_nodes())
             node.set_child_needs_style_update(true);
@@ -142,6 +172,9 @@ void StyleInvalidator::perform_pending_style_invalidations(Node& node, bool inva
                 auto const& pending_invalidation = m_active_descendant_invalidations[invalidation_index++];
                 if (!element_matches_invalidation_rule(*element, pending_invalidation.rule.match_set, pending_invalidation.rule.match_any))
                     continue;
+
+                if (CSS::g_enable_style_invalidation_tracing)
+                    ++m_tracing_nodes_matched_rule;
 
                 apply_invalidation_plan(*element, pending_invalidation.reason, *pending_invalidation.rule.payload, invalidate_entire_subtree);
                 if (invalidate_entire_subtree)

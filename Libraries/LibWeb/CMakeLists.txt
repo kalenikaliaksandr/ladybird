@@ -224,6 +224,7 @@ set(SOURCES
     CSS/StyleComputer.cpp
     CSS/StyleInvalidation.cpp
     CSS/StyleInvalidationData.cpp
+    CSS/StyleInvalidationTracing.cpp
     CSS/StyleProperty.cpp
     CSS/StylePropertyMapReadOnly.cpp
     CSS/StylePropertyMap.cpp
