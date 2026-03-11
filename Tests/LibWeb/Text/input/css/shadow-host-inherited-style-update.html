@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<link rel="author" href="mailto:alexander@ladybird.org">
+<script src="../include.js"></script>
+<div id="host"></div>
+<div id="nested-host"></div>
+<script>
+    test(() => {
+        // Test 1-3: Changing inherited properties on the shadow host should
+        // propagate into shadow root children.
+        const host = document.getElementById("host");
+        const shadow = host.attachShadow({ mode: "open" });
+        const inner = document.createElement("span");
+        inner.textContent = "Hello";
+        shadow.appendChild(inner);
+
+        // Force initial style computation.
+        getComputedStyle(inner).color;
+
+        // 1. Initial: shadow child inherits default color.
+        println(`1: ${getComputedStyle(inner).color}`);
+
+        // 2. Change host's color via inline style.
+        //    Shadow child must inherit the new color even though no element
+        //    inside the shadow root is individually marked for style update.
+        host.style.color = "red";
+        println(`2: ${getComputedStyle(inner).color}`);
+
+        // 3. Change again to verify repeated updates work.
+        host.style.color = "blue";
+        println(`3: ${getComputedStyle(inner).color}`);
+
+        // 4. Another inherited property (font-size).
+        host.style.fontSize = "24px";
+        println(`4: ${getComputedStyle(inner).fontSize}`);
+
+        // Test 5: Nested shadow DOM — change on outer host propagates through
+        // an intermediate shadow host to a deeply nested shadow child.
+        const outerHost = document.getElementById("nested-host");
+        const outerShadow = outerHost.attachShadow({ mode: "open" });
+        const innerHost = document.createElement("div");
+        outerShadow.appendChild(innerHost);
+        const innerShadow = innerHost.attachShadow({ mode: "open" });
+        const deepChild = document.createElement("span");
+        deepChild.textContent = "Deep";
+        innerShadow.appendChild(deepChild);
+
+        // Force initial style computation.
+        getComputedStyle(deepChild).color;
+
+        outerHost.style.color = "green";
+        println(`5: ${getComputedStyle(deepChild).color}`);
+    });
+</script>
