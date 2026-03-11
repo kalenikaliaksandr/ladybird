@@ -1704,7 +1704,11 @@ bool Document::layout_is_up_to_date() const
         recompute_elements_depending_on_custom_properties = true;
     }
 
-    bool children_need_inherited_style_update = !invalidation.is_none();
+    // For non-Element nodes (e.g., ShadowRoot), no style recomputation happens,
+    // so we must pass through the incoming needs_inherited_style_update flag.
+    // For Element nodes, recompute_style/recompute_inherited_style determines
+    // whether children need inherited style updates based on actual style changes.
+    bool children_need_inherited_style_update = !invalidation.is_none() || (needs_inherited_style_update && !node.is_element());
     // NB: When display changes to/from flex/grid/contents, children may need to be blockified or un-blockified.
     //     This requires a full style recompute, not just inherited style update.
     bool children_need_full_style_recompute = node_invalidation.rebuild_layout_tree;
