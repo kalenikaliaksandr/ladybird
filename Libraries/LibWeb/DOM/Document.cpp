@@ -1711,7 +1711,7 @@ bool Document::layout_is_up_to_date() const
     if (needs_full_style_update || node.child_needs_style_update() || children_need_inherited_style_update || recompute_elements_depending_on_custom_properties || children_need_full_style_recompute) {
         if (node.is_element()) {
             if (auto shadow_root = static_cast<DOM::Element&>(node).shadow_root()) {
-                if (needs_full_style_update || shadow_root->needs_style_update() || shadow_root->child_needs_style_update()) {
+                if (needs_full_style_update || shadow_root->needs_style_update() || shadow_root->child_needs_style_update() || children_need_inherited_style_update || recompute_elements_depending_on_custom_properties || children_need_full_style_recompute) {
                     auto subtree_invalidation = update_style_recursively(*shadow_root, style_computer, children_need_inherited_style_update, recompute_elements_depending_on_custom_properties, children_need_full_style_recompute);
                     if (!is_display_none)
                         invalidation |= subtree_invalidation;
