@@ -140,12 +140,12 @@ Messages::RequestServer::ConnectNewClientsResponse ConnectionFromClient::connect
 ErrorOr<IPC::File> ConnectionFromClient::create_client_socket()
 {
     auto paired = TRY(IPC::Transport::create_paired());
-    auto peer_fd = TRY(paired.remote->release_underlying_transport_for_transfer());
+    auto peer_file = TRY(paired.remote->release_for_transfer());
 
     // Note: A ref is stored in the m_connections map
     auto client = adopt_ref(*new ConnectionFromClient(move(paired.local), IsPrimaryConnection::No, m_connections, m_disk_cache));
 
-    return IPC::File::adopt_fd(peer_fd);
+    return peer_file;
 }
 
 void ConnectionFromClient::set_disk_cache_settings(HTTP::DiskCacheSettings disk_cache_settings)

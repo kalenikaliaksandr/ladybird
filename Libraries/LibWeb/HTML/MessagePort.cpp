@@ -8,12 +8,9 @@
 
 #include <AK/ByteReader.h>
 #include <AK/MemoryStream.h>
-#include <LibCore/Socket.h>
-#include <LibCore/System.h>
 #include <LibGC/WeakHashSet.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
-#include <LibIPC/File.h>
 #include <LibIPC/Transport.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Bindings/Intrinsics.h>
@@ -107,13 +104,10 @@ WebIDL::ExceptionOr<void> MessagePort::transfer_steps(HTML::TransferDataEncoder&
         if (m_remote_port)
             m_remote_port->m_has_been_shipped = true;
 
-        auto fd = MUST(m_transport->release_underlying_transport_for_transfer());
-        m_transport.clear();
-
         // 2. Set dataHolder.[[RemotePort]] to remotePort.
-        // TODO: Mach IPC
         data_holder.encode(IPC_FILE_TAG);
-        data_holder.encode(IPC::File::adopt_fd(fd));
+        MUST(m_transport->encode_for_transfer(data_holder.encoder()));
+        m_transport.clear();
     }
     // 4. Otherwise, set dataHolder.[[RemotePort]] to null.
     else {
@@ -135,9 +129,7 @@ WebIDL::ExceptionOr<void> MessagePort::transfer_receiving_steps(HTML::TransferDa
     // 3. If dataHolder.[[RemotePort]] is not null, then entangle dataHolder.[[RemotePort]] and value.
     //     (This will disentangle dataHolder.[[RemotePort]] from the original port that was transferred.)
     if (auto fd_tag = data_holder.decode<u8>(); fd_tag == IPC_FILE_TAG) {
-        // TODO: Mach IPC
-        auto fd = data_holder.decode<IPC::File>();
-        m_transport = make<IPC::Transport>(MUST(Core::LocalSocket::adopt_fd(fd.take_fd())));
+        m_transport = MUST(IPC::Transport::decode_from_transfer(data_holder.decoder()));
 
         m_transport->set_up_read_hook([strong_this = GC::make_root(this)]() {
             if (strong_this->m_enabled)

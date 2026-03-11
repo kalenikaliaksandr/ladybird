@@ -16,10 +16,10 @@ template<typename WebUIType>
 static ErrorOr<NonnullRefPtr<WebUIType>> create_web_ui(WebContentClient& client, String host)
 {
     auto paired = TRY(IPC::Transport::create_paired());
-    auto peer_fd = TRY(paired.remote->release_underlying_transport_for_transfer());
+    auto peer_file = TRY(paired.remote->release_for_transfer());
 
     auto web_ui = WebUIType::create(client, move(paired.local), move(host));
-    client.async_connect_to_web_ui(0, IPC::File::adopt_fd(peer_fd));
+    client.async_connect_to_web_ui(0, move(peer_file));
 
     return web_ui;
 }

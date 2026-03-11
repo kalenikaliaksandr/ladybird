@@ -57,12 +57,12 @@ Messages::ImageDecoderServer::InitTransportResponse ConnectionFromClient::init_t
 ErrorOr<IPC::File> ConnectionFromClient::connect_new_client()
 {
     auto paired = TRY(IPC::Transport::create_paired());
-    auto peer_fd = TRY(paired.remote->release_underlying_transport_for_transfer());
+    auto peer_file = TRY(paired.remote->release_for_transfer());
 
     // Note: A ref is stored in the static s_connections map
     auto client = adopt_ref(*new ConnectionFromClient(move(paired.local)));
 
-    return IPC::File::adopt_fd(peer_fd);
+    return peer_file;
 }
 
 Messages::ImageDecoderServer::ConnectNewClientsResponse ConnectionFromClient::connect_new_clients(size_t count)

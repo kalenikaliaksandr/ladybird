@@ -10,6 +10,8 @@
 #include <AK/ScopeGuard.h>
 #include <AK/Types.h>
 #include <LibCore/System.h>
+#include <LibIPC/Decoder.h>
+#include <LibIPC/Encoder.h>
 #include <LibIPC/HandleType.h>
 #include <LibIPC/Limits.h>
 #include <LibIPC/TransportSocketWindows.h>
@@ -272,14 +274,29 @@ TransportSocketWindows::ShouldShutdown TransportSocketWindows::read_as_many_mess
     return should_shutdown;
 }
 
-ErrorOr<int> TransportSocketWindows::release_underlying_transport_for_transfer()
-{
-    return m_socket->release_fd();
-}
-
 ErrorOr<IPC::File> TransportSocketWindows::clone_for_transfer()
 {
     return IPC::File::clone_fd(m_socket->fd().value());
+}
+
+ErrorOr<void> TransportSocketWindows::encode_for_transfer(IPC::Encoder& encoder)
+{
+    auto file = TRY(release_for_transfer());
+    TRY(encoder.encode(file));
+    return {};
+}
+
+ErrorOr<NonnullOwnPtr<TransportSocketWindows>> TransportSocketWindows::decode_from_transfer(IPC::Decoder& decoder)
+{
+    auto file = TRY(decoder.decode<IPC::File>());
+    auto socket = TRY(Core::LocalSocket::adopt_fd(file.take_fd()));
+    return make<TransportSocketWindows>(move(socket));
+}
+
+ErrorOr<IPC::File> TransportSocketWindows::release_for_transfer()
+{
+    auto fd = TRY(m_socket->release_fd());
+    return IPC::File::adopt_fd(fd);
 }
 
 }

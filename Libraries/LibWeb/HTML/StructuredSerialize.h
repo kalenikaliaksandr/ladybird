@@ -35,6 +35,8 @@ public:
     void append(SerializationRecord&&);
     void extend(Vector<TransferDataEncoder>);
 
+    IPC::Encoder& encoder() { return m_encoder; }
+
     IPC::MessageBuffer const& buffer() const { return m_buffer; }
     IPC::MessageBuffer take_buffer() { return move(m_buffer); }
 
@@ -56,6 +58,8 @@ public:
     }
 
     WebIDL::ExceptionOr<ByteBuffer> decode_buffer(JS::Realm&);
+
+    IPC::Decoder& decoder() { return m_decoder; }
 
 private:
     IPC::MessageBuffer m_buffer;

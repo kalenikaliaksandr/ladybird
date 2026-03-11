@@ -17,6 +17,9 @@
 
 namespace IPC {
 
+class Decoder;
+class Encoder;
+
 class SendQueue : public AtomicRefCounted<SendQueue> {
 public:
     void enqueue_message(ReadonlyBytes header, ReadonlyBytes payload, Vector<int>&& fds);
@@ -69,8 +72,9 @@ public:
     };
     ShouldShutdown read_as_many_messages_as_possible_without_blocking(Function<void(Message&&)>&&);
 
-    // Obnoxious name to make it clear that this is a dangerous operation.
-    ErrorOr<int> release_underlying_transport_for_transfer();
+    ErrorOr<void> encode_for_transfer(IPC::Encoder& encoder);
+    static ErrorOr<NonnullOwnPtr<TransportSocket>> decode_from_transfer(IPC::Decoder& decoder);
+    ErrorOr<IPC::File> release_for_transfer();
 
     ErrorOr<IPC::File> clone_for_transfer();
 

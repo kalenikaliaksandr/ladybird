@@ -11,6 +11,8 @@
 #include <AK/Types.h>
 #include <LibCore/Socket.h>
 #include <LibCore/System.h>
+#include <LibIPC/Decoder.h>
+#include <LibIPC/Encoder.h>
 #include <LibIPC/Limits.h>
 #include <LibIPC/TransportSocket.h>
 #include <LibThreading/Thread.h>
@@ -503,15 +505,30 @@ TransportSocket::ShouldShutdown TransportSocket::read_as_many_messages_as_possib
     return m_peer_eof ? ShouldShutdown::Yes : ShouldShutdown::No;
 }
 
-ErrorOr<int> TransportSocket::release_underlying_transport_for_transfer()
-{
-    stop_io_thread(IOThreadState::SendPendingMessagesAndStop);
-    return m_socket->release_fd();
-}
-
 ErrorOr<IPC::File> TransportSocket::clone_for_transfer()
 {
     return IPC::File::clone_fd(m_socket->fd().value());
+}
+
+ErrorOr<void> TransportSocket::encode_for_transfer(IPC::Encoder& encoder)
+{
+    auto file = TRY(release_for_transfer());
+    TRY(encoder.encode(file));
+    return {};
+}
+
+ErrorOr<NonnullOwnPtr<TransportSocket>> TransportSocket::decode_from_transfer(IPC::Decoder& decoder)
+{
+    auto file = TRY(decoder.decode<IPC::File>());
+    auto socket = TRY(Core::LocalSocket::adopt_fd(file.take_fd()));
+    return make<TransportSocket>(move(socket));
+}
+
+ErrorOr<IPC::File> TransportSocket::release_for_transfer()
+{
+    stop_io_thread(IOThreadState::SendPendingMessagesAndStop);
+    auto fd = TRY(m_socket->release_fd());
+    return IPC::File::adopt_fd(fd);
 }
 
 }
