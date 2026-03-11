@@ -1,0 +1,58 @@
+/*
+ * Copyright (c) 2025, Aliaksandr Kalenik <kalenik.aliaksandr@gmail.com>
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+#pragma once
+
+#include <AK/Error.h>
+#include <AK/Noncopyable.h>
+#include <AK/NonnullOwnPtr.h>
+#include <AK/Platform.h>
+#include <LibIPC/File.h>
+#include <LibIPC/Forward.h>
+
+namespace IPC {
+
+#if !defined(AK_OS_WINDOWS)
+class TransportSocket;
+using Transport = TransportSocket;
+#else
+class TransportSocketWindows;
+using Transport = TransportSocketWindows;
+#endif
+
+// Forward-declare specializations before the class so they can be friended
+class TransportHandle;
+template<>
+ErrorOr<void> encode(Encoder&, TransportHandle const&);
+template<>
+ErrorOr<TransportHandle> decode(Decoder&);
+
+class TransportHandle {
+    AK_MAKE_NONCOPYABLE(TransportHandle);
+
+public:
+    TransportHandle() = default;
+    TransportHandle(TransportHandle&&) = default;
+    TransportHandle& operator=(TransportHandle&&) = default;
+
+    static ErrorOr<TransportHandle> from_transport(Transport& transport);
+    static ErrorOr<TransportHandle> clone_from_transport(Transport& transport);
+
+    ErrorOr<NonnullOwnPtr<Transport>> create_transport() const;
+
+    int fd() const;
+    ErrorOr<void> clear_close_on_exec();
+
+private:
+    explicit TransportHandle(File);
+
+    friend ErrorOr<void> encode<>(Encoder&, TransportHandle const&);
+    friend ErrorOr<TransportHandle> decode<>(Decoder&);
+
+    mutable File m_file;
+};
+
+}
