@@ -13,11 +13,18 @@
 #endif
 
 #include <LibCore/Export.h>
+#include <LibCore/MachPort.h>
 #include <LibCore/Platform/ProcessStatistics.h>
 #include <mach/mach.h>
 
 namespace Core::Platform {
 
-CORE_API MachPort register_with_mach_server(ByteString const& server_name);
+struct MachServerRegistration {
+    MachPort server_port;
+    MachPort ipc_receive_right;
+    MachPort ipc_send_right;
+};
+
+CORE_API MachServerRegistration register_with_mach_server(ByteString const& server_name);
 
 }
