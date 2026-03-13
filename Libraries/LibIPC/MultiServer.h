@@ -9,7 +9,9 @@
 #include <AK/Error.h>
 #include <AK/Function.h>
 #include <LibCore/LocalServer.h>
+#include <LibCore/Socket.h>
 #include <LibIPC/ConnectionFromClient.h>
+#include <LibIPC/Transport.h>
 
 namespace IPC {
 
@@ -30,7 +32,8 @@ private:
         m_server->on_accept = [&](auto client_socket) {
             auto client_id = ++m_next_client_id;
 
-            auto client = IPC::new_client_connection<ConnectionFromClientType>(make<IPC::Transport>(move(client_socket)), client_id);
+            auto transport = MUST(IPC::Transport::from_socket(move(client_socket)));
+            auto client = IPC::new_client_connection<ConnectionFromClientType>(move(transport), client_id);
             if (on_new_client)
                 on_new_client(*client);
         };

@@ -13,15 +13,13 @@
 #include <LibIPC/File.h>
 #include <LibIPC/Forward.h>
 
+#if defined(AK_OS_MACOS)
+#    include <LibCore/MachPort.h>
+#endif
+
 namespace IPC {
 
-#if !defined(AK_OS_WINDOWS)
 class TransportSocket;
-using Transport = TransportSocket;
-#else
-class TransportSocketWindows;
-using Transport = TransportSocketWindows;
-#endif
 
 class TransportHandle {
     AK_MAKE_NONCOPYABLE(TransportHandle);
@@ -31,18 +29,29 @@ public:
     TransportHandle(TransportHandle&&) = default;
     TransportHandle& operator=(TransportHandle&&) = default;
 
-    ErrorOr<NonnullOwnPtr<Transport>> create_transport() const;
-
     explicit TransportHandle(File);
+#if defined(AK_OS_MACOS)
+    TransportHandle(Core::MachPort receive_right, Core::MachPort send_right);
+#endif
+
+    ErrorOr<NonnullOwnPtr<Transport>> create_transport() const;
+    ErrorOr<NonnullOwnPtr<TransportSocket>> create_socket_transport() const;
 
 private:
+    enum class Kind : u8 { File,
+        MachPorts };
+    Kind m_kind { Kind::File };
+    mutable File m_file;
+#if defined(AK_OS_MACOS)
+    mutable Core::MachPort m_receive_right;
+    mutable Core::MachPort m_send_right;
+#endif
+
     template<typename U>
     friend ErrorOr<void> encode(Encoder&, U const&);
 
     template<typename U>
     friend ErrorOr<U> decode(Decoder&);
-
-    mutable File m_file;
 };
 
 }
