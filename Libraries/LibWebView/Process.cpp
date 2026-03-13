@@ -14,6 +14,13 @@
 
 #include <fcntl.h>
 
+#if defined(AK_OS_MACOS)
+#    include <LibCore/Platform/MachMessageTypes.h>
+#    include <LibIPC/TransportMachPort.h>
+#    include <LibThreading/Mutex.h>
+#    include <mach/mach.h>
+#endif
+
 #if defined(AK_OS_WINDOWS)
 #    include <AK/ScopeGuard.h>
 #    include <AK/Windows.h>
@@ -34,22 +41,53 @@ Process::~Process()
         m_connection->shutdown();
 }
 
+#if defined(AK_OS_MACOS)
+static Threading::Mutex s_pending_ipc_ports_mutex;
+static HashMap<pid_t, Process::PendingIPCPorts> s_pending_ipc_ports;
+
+void Process::register_pending_ipc_ports(pid_t pid, Core::MachPort receive_right, Core::MachPort send_right)
+{
+    Threading::MutexLocker locker(s_pending_ipc_ports_mutex);
+    s_pending_ipc_ports.set(pid, PendingIPCPorts { move(receive_right), move(send_right) });
+}
+
+Optional<Process::PendingIPCPorts> Process::take_pending_ipc_ports(pid_t pid)
+{
+    Threading::MutexLocker locker(s_pending_ipc_ports_mutex);
+    auto it = s_pending_ipc_ports.find(pid);
+    if (it == s_pending_ipc_ports.end())
+        return {};
+    auto ports = move(it->value);
+    s_pending_ipc_ports.remove(it);
+    return ports;
+}
+
+void Process::send_ipc_ports_to_child(Core::MachPort& reply_port, Core::MachPort receive_right, Core::MachPort send_right)
+{
+    Core::Platform::MessageWithIPCChannelPorts message {};
+    message.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE, 0) | MACH_MSGH_BITS_COMPLEX;
+    message.header.msgh_size = sizeof(message);
+    message.header.msgh_remote_port = reply_port.release();
+    message.header.msgh_local_port = MACH_PORT_NULL;
+    message.header.msgh_id = Core::Platform::IPC_CHANNEL_PORTS_MESSAGE_ID;
+    message.body.msgh_descriptor_count = 2;
+    message.receive_port.name = receive_right.release();
+    message.receive_port.disposition = MACH_MSG_TYPE_MOVE_RECEIVE;
+    message.receive_port.type = MACH_MSG_PORT_DESCRIPTOR;
+    message.send_port.name = send_right.release();
+    message.send_port.disposition = MACH_MSG_TYPE_MOVE_SEND;
+    message.send_port.type = MACH_MSG_PORT_DESCRIPTOR;
+
+    mach_msg_timeout_t const timeout = 5000; // 5 seconds
+    auto const ret = mach_msg(&message.header, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof(message), 0, MACH_PORT_NULL, timeout, MACH_PORT_NULL);
+    if (ret != KERN_SUCCESS) {
+        dbgln("Failed to send IPC channel ports to child: {}", mach_error_string(ret));
+    }
+}
+#endif
+
 ErrorOr<Process::ProcessAndIPCTransport> Process::spawn_and_connect_to_process(Core::ProcessSpawnOptions const& options, bool capture_output)
 {
-    // TODO: Mach IPC
-
-    int socket_fds[2] {};
-    TRY(Core::System::socketpair(AF_LOCAL, SOCK_STREAM, 0, socket_fds));
-
-    ArmedScopeGuard guard_fd_0 { [&] { MUST(Core::System::close(socket_fds[0])); } };
-    ArmedScopeGuard guard_fd_1 { [&] { MUST(Core::System::close(socket_fds[1])); } };
-
-    // Note: Core::System::socketpair creates inheritable sockets both on Linux and Windows unless SOCK_CLOEXEC is specified.
-    TRY(Core::System::set_close_on_exec(socket_fds[0], true));
-
-    auto takeover_string = MUST(String::formatted("{}:{}", options.name, socket_fds[1]));
-    TRY(Core::Environment::set("SOCKET_TAKEOVER"sv, takeover_string, Core::Environment::Overwrite::Yes));
-
     // Set up pipes for stdout/stderr capture if requested
     ProcessOutputCapture output_capture;
     Array<int, 2> stdout_pipe {};
@@ -72,23 +110,49 @@ ErrorOr<Process::ProcessAndIPCTransport> Process::spawn_and_connect_to_process(C
         spawn_options.file_actions.append(Core::FileAction::CloseFile { .fd = stderr_pipe[1] });
     }
 
+#if defined(AK_OS_MACOS)
+    // Create Mach port pairs: local (receives on A, sends to B) and remote (receives on B, sends to A).
+    // Only the local side needs a full TransportMachPort; the remote ports are sent to the child as-is.
+    auto port_a_recv = TRY(Core::MachPort::create_with_right(Core::MachPort::PortRight::Receive));
+    auto port_a_send = TRY(port_a_recv.insert_right(Core::MachPort::MessageRight::MakeSend));
+    auto port_b_recv = TRY(Core::MachPort::create_with_right(Core::MachPort::PortRight::Receive));
+    auto port_b_send = TRY(port_b_recv.insert_right(Core::MachPort::MessageRight::MakeSend));
+
     auto process = TRY(Core::Process::spawn(spawn_options));
 
-    if (capture_output) {
-        // Close write ends in parent
-        MUST(Core::System::close(stdout_pipe[1]));
-        MUST(Core::System::close(stderr_pipe[1]));
+    register_pending_ipc_ports(process.pid(), move(port_b_recv), move(port_a_send));
 
-        // Wrap read ends in File objects
-        output_capture.stdout_file = TRY(Core::File::adopt_fd(stdout_pipe[0], Core::File::OpenMode::Read));
-        output_capture.stderr_file = TRY(Core::File::adopt_fd(stderr_pipe[0], Core::File::OpenMode::Read));
-    }
+    auto transport = make<IPC::TransportMachPort>(move(port_a_recv), move(port_b_send));
+#else
+    int socket_fds[2] {};
+    TRY(Core::System::socketpair(AF_LOCAL, SOCK_STREAM, 0, socket_fds));
+
+    ArmedScopeGuard guard_fd_0 { [&] { MUST(Core::System::close(socket_fds[0])); } };
+    ArmedScopeGuard guard_fd_1 { [&] { MUST(Core::System::close(socket_fds[1])); } };
+
+    // Note: Core::System::socketpair creates inheritable sockets both on Linux and Windows unless SOCK_CLOEXEC is specified.
+    TRY(Core::System::set_close_on_exec(socket_fds[0], true));
+
+    auto takeover_string = MUST(String::formatted("{}:{}", options.name, socket_fds[1]));
+    TRY(Core::Environment::set("SOCKET_TAKEOVER"sv, takeover_string, Core::Environment::Overwrite::Yes));
+
+    auto process = TRY(Core::Process::spawn(spawn_options));
 
     auto ipc_socket = TRY(Core::LocalSocket::adopt_fd(socket_fds[0]));
     guard_fd_0.disarm();
     TRY(ipc_socket->set_blocking(true));
 
-    return ProcessAndIPCTransport { move(process), make<IPC::Transport>(move(ipc_socket)), move(output_capture) };
+    auto transport = make<IPC::Transport>(move(ipc_socket));
+#endif
+
+    if (capture_output) {
+        MUST(Core::System::close(stdout_pipe[1]));
+        MUST(Core::System::close(stderr_pipe[1]));
+        output_capture.stdout_file = TRY(Core::File::adopt_fd(stdout_pipe[0], Core::File::OpenMode::Read));
+        output_capture.stderr_file = TRY(Core::File::adopt_fd(stderr_pipe[0], Core::File::OpenMode::Read));
+    }
+
+    return ProcessAndIPCTransport { move(process), move(transport), move(output_capture) };
 }
 
 ErrorOr<Optional<pid_t>> Process::get_process_pid(StringView process_name, StringView pid_path)

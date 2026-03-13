@@ -76,7 +76,7 @@ ErrorOr<void> update_process_statistics(ProcessStatistics& statistics)
     return {};
 }
 
-MachPort register_with_mach_server(ByteString const& server_name)
+MachServerRegistration register_with_mach_server(ByteString const& server_name)
 {
     auto server_port_or_error = Core::MachPort::look_up_from_bootstrap_server(server_name);
     if (server_port_or_error.is_error()) {
@@ -85,12 +85,16 @@ MachPort register_with_mach_server(ByteString const& server_name)
     }
     auto server_port = server_port_or_error.release_value();
 
+    // Create a temporary reply port so the server can send IPC channel ports back
+    auto reply_port = MUST(Core::MachPort::create_with_right(Core::MachPort::PortRight::Receive));
+
     // Send our own task port to the server so they can query statistics about us
+    // Also include reply port so server can send IPC channel ports back
     MessageWithSelfTaskPort message {};
-    message.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSGH_BITS_ZERO) | MACH_MSGH_BITS_COMPLEX;
+    message.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND_ONCE) | MACH_MSGH_BITS_COMPLEX;
     message.header.msgh_size = sizeof(message);
     message.header.msgh_remote_port = server_port.port();
-    message.header.msgh_local_port = MACH_PORT_NULL;
+    message.header.msgh_local_port = reply_port.port();
     message.header.msgh_id = SELF_TASK_PORT_MESSAGE_ID;
     message.body.msgh_descriptor_count = 1;
     message.port_descriptor.name = mach_task_self();
@@ -105,7 +109,30 @@ MachPort register_with_mach_server(ByteString const& server_name)
         VERIFY_NOT_REACHED();
     }
 
-    return server_port;
+    // Wait for reply with IPC channel ports
+    ReceivedIPCChannelPortsMessage reply {};
+    mach_msg_timeout_t const reply_timeout = 5000; // 5 seconds
+
+    auto const recv_result = mach_msg(&reply.header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof(reply),
+        reply_port.port(), reply_timeout, MACH_PORT_NULL);
+    if (recv_result != KERN_SUCCESS) {
+        dbgln("Failed to receive IPC channel ports: {}", mach_error_string(recv_result));
+        VERIFY_NOT_REACHED();
+    }
+
+    if (reply.header.msgh_id != IPC_CHANNEL_PORTS_MESSAGE_ID) {
+        dbgln("Received unexpected reply message id: {}", reply.header.msgh_id);
+        VERIFY_NOT_REACHED();
+    }
+
+    auto ipc_receive_right = Core::MachPort::adopt_right(reply.receive_port.name, Core::MachPort::PortRight::Receive);
+    auto ipc_send_right = Core::MachPort::adopt_right(reply.send_port.name, Core::MachPort::PortRight::Send);
+
+    return MachServerRegistration {
+        move(server_port),
+        move(ipc_receive_right),
+        move(ipc_send_right),
+    };
 }
 
 }

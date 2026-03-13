@@ -10,11 +10,14 @@
 #include <LibCore/ArgsParser.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/Process.h>
-#include <LibIPC/SingleServer.h>
+#include <LibIPC/ConnectionFromClient.h>
+#include <LibIPC/Transport.h>
 #include <LibMain/Main.h>
 
 #if defined(AK_OS_MACOS)
 #    include <LibCore/Platform/ProcessStatisticsMach.h>
+#else
+#    include <LibIPC/SingleServer.h>
 #endif
 
 ErrorOr<int> ladybird_main(Main::Arguments arguments)
@@ -35,11 +38,14 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     Core::EventLoop event_loop;
 
 #if defined(AK_OS_MACOS)
-    if (!mach_server_name.is_empty())
-        Core::Platform::register_with_mach_server(mach_server_name);
-#endif
-
+    VERIFY(!mach_server_name.is_empty());
+    auto registration = Core::Platform::register_with_mach_server(mach_server_name);
+    auto client = IPC::new_client_connection<ImageDecoder::ConnectionFromClient>(
+        make<IPC::Transport>(move(registration.ipc_receive_right), move(registration.ipc_send_right)));
+#else
+    (void)mach_server_name;
     auto client = TRY(IPC::take_over_accepted_client_from_system_server<ImageDecoder::ConnectionFromClient>());
+#endif
 
     return event_loop.exec();
 }

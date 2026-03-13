@@ -6,9 +6,11 @@
 
 #include <AK/ByteString.h>
 #include <LibCore/Process.h>
+#include <LibCore/Socket.h>
 #include <LibCore/StandardPaths.h>
 #include <LibCore/System.h>
 #include <LibIPC/ConnectionToServer.h>
+#include <LibIPC/Transport.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/BrowserProcess.h>
 #include <LibWebView/URL.h>
@@ -47,9 +49,9 @@ ErrorOr<BrowserProcess::ProcessDisposition> BrowserProcess::connect(Vector<ByteS
 
 ErrorOr<void> BrowserProcess::connect_as_client(ByteString const& socket_path, Vector<ByteString> const& raw_urls, NewWindow new_window)
 {
-    // TODO: Mach IPC
     auto socket = TRY(Core::LocalSocket::connect(socket_path));
-    auto client = UIProcessClient::construct(make<IPC::Transport>(move(socket)));
+    auto transport = TRY(IPC::create_transport_from_socket(move(socket)));
+    auto client = UIProcessClient::construct(move(transport));
 
     if (new_window == NewWindow::Yes) {
         if (!client->send_sync_but_allow_failure<Messages::UIProcessServer::CreateNewWindow>(raw_urls))
@@ -64,7 +66,6 @@ ErrorOr<void> BrowserProcess::connect_as_client(ByteString const& socket_path, V
 
 ErrorOr<void> BrowserProcess::connect_as_server(ByteString const& socket_path)
 {
-    // TODO: Mach IPC
     auto socket_fd = TRY(Process::create_ipc_socket(socket_path));
     m_socket_path = socket_path;
     auto local_server = Core::LocalServer::construct();
