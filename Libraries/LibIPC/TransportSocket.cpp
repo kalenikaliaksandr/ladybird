@@ -20,6 +20,11 @@
 
 namespace IPC {
 
+ErrorOr<NonnullOwnPtr<TransportSocket>> TransportSocket::from_socket(NonnullOwnPtr<Core::LocalSocket> socket)
+{
+    return make<TransportSocket>(move(socket));
+}
+
 ErrorOr<TransportSocket::Paired> TransportSocket::create_paired()
 {
     int fds[2] {};
@@ -36,7 +41,6 @@ ErrorOr<TransportSocket::Paired> TransportSocket::create_paired()
     TRY(Core::System::set_close_on_exec(fds[1], true));
     guard_fd_1.disarm();
 
-    // Local side gets a full transport; remote side is just a handle containing the raw fd for transfer to another process.
     return Paired {
         make<TransportSocket>(move(socket0)),
         TransportHandle { File::adopt_fd(fds[1]) },

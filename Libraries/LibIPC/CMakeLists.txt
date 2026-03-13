@@ -6,7 +6,13 @@ set(SOURCES
     TransportHandle.cpp
 )
 
-if (UNIX)
+if (APPLE AND NOT IOS)
+    list(APPEND SOURCES
+        AttachmentMachPort.cpp
+        File.cpp
+        Message.cpp
+        TransportMachPort.cpp)
+elseif (UNIX)
     list(APPEND SOURCES
         Attachment.cpp
         File.cpp

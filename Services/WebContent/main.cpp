@@ -11,7 +11,6 @@
 #include <LibCore/Process.h>
 #include <LibCore/Resource.h>
 #include <LibCore/System.h>
-#include <LibCore/SystemServerTakeover.h>
 #include <LibCrypto/OpenSSLForward.h>
 #include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Font/PathFontProvider.h>
@@ -46,6 +45,9 @@
 
 #if defined(AK_OS_MACOS)
 #    include <LibCore/Platform/ProcessStatisticsMach.h>
+#    include <LibIPC/Transport.h>
+#else
+#    include <LibIPC/SingleServer.h>
 #endif
 
 #if defined(AK_OS_WINDOWS)
@@ -223,13 +225,6 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
             VERIFY_NOT_REACHED();
     }
 
-#if defined(AK_OS_MACOS)
-    if (!mach_server_name.is_empty()) {
-        auto server_port = Core::Platform::register_with_mach_server(mach_server_name);
-        Web::Painting::BackingStoreManager::set_browser_mach_port(move(server_port));
-    }
-#endif
-
     OPENSSL_TRY(OSSL_set_max_threads(nullptr, Core::System::hardware_concurrency()));
 
     Web::HTML::Window::set_enable_test_mode(enable_test_mode);
@@ -255,8 +250,15 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     if (maybe_content_filter_error.is_error())
         dbgln("Failed to load content filters: {}", maybe_content_filter_error.error());
 
-    auto webcontent_socket = TRY(Core::take_over_socket_from_system_server("WebContent"sv));
-    auto webcontent_client = WebContent::ConnectionFromClient::construct(make<IPC::Transport>(move(webcontent_socket)));
+#if defined(AK_OS_MACOS)
+    VERIFY(!mach_server_name.is_empty());
+    auto registration = Core::Platform::register_with_mach_server(mach_server_name);
+    Web::Painting::BackingStoreManager::set_browser_mach_port(move(registration.server_port));
+    auto webcontent_client = WebContent::ConnectionFromClient::construct(
+        make<IPC::Transport>(move(registration.ipc_receive_right), move(registration.ipc_send_right)));
+#else
+    auto webcontent_client = TRY(IPC::take_over_accepted_client_from_system_server<WebContent::ConnectionFromClient>(mach_server_name));
+#endif
 
     auto& heap = Web::Bindings::main_thread_vm().heap();
     webcontent_client->on_request_server_connection = [&heap](auto const& handle) {

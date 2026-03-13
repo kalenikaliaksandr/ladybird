@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibIPC/Limits.h>
 #include <LibIPC/Message.h>
 
 namespace IPC {
@@ -44,6 +43,7 @@ ErrorOr<void> MessageBuffer::extend(MessageBuffer&& buffer)
     return {};
 }
 
+#ifndef AK_OS_WINDOWS
 ErrorOr<void> MessageBuffer::transfer_message(Transport& transport)
 {
     VERIFY(m_data.size() <= MAX_MESSAGE_PAYLOAD_SIZE);
@@ -52,5 +52,6 @@ ErrorOr<void> MessageBuffer::transfer_message(Transport& transport)
     transport.post_message(m_data, m_attachments);
     return {};
 }
+#endif
 
 }
