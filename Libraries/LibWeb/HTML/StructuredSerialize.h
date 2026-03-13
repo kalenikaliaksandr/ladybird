@@ -10,6 +10,7 @@
 
 #include <AK/MemoryStream.h>
 #include <AK/Vector.h>
+#include <LibIPC/Attachment.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
 #include <LibIPC/Message.h>

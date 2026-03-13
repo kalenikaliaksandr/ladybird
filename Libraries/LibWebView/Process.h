@@ -15,6 +15,10 @@
 #include <LibWebView/Forward.h>
 #include <LibWebView/ProcessType.h>
 
+#if defined(AK_OS_MACOS)
+#    include <LibCore/MachPort.h>
+#endif
+
 namespace WebView {
 
 struct ProcessOutputCapture {
@@ -61,6 +65,16 @@ public:
     static ErrorOr<ProcessPaths> paths_for_process(StringView process_name);
     static ErrorOr<Optional<pid_t>> get_process_pid(StringView process_name, StringView pid_path);
     static ErrorOr<int> create_ipc_socket(ByteString const& socket_path);
+
+#if defined(AK_OS_MACOS)
+    struct PendingIPCPorts {
+        Core::MachPort receive_right;
+        Core::MachPort send_right;
+    };
+    static void register_pending_ipc_ports(pid_t pid, Core::MachPort receive_right, Core::MachPort send_right);
+    static void handle_child_mach_port_registration(pid_t pid, Core::MachPort reply_port);
+    static void send_ipc_ports_to_child(Core::MachPort& reply_port, Core::MachPort receive_right, Core::MachPort send_right);
+#endif
 
 private:
     struct ProcessAndIPCTransport {

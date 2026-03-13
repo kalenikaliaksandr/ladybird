@@ -12,8 +12,8 @@
 #include <LibGC/WeakHashSet.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
-#include <LibIPC/Transport.h>
 #include <LibIPC/TransportHandle.h>
+#include <LibIPC/TransportSocket.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Bindings/MessagePortPrototype.h>
@@ -134,7 +134,7 @@ WebIDL::ExceptionOr<void> MessagePort::transfer_receiving_steps(HTML::TransferDa
     //     (This will disentangle dataHolder.[[RemotePort]] from the original port that was transferred.)
     if (auto fd_tag = data_holder.decode<u8>(); fd_tag == IPC_FILE_TAG) {
         auto handle = data_holder.decode<IPC::TransportHandle>();
-        m_transport = MUST(handle.create_transport());
+        m_transport = MUST(handle.create_socket_transport());
 
         m_transport->set_up_read_hook([strong_this = GC::make_root(this)]() {
             if (strong_this->m_enabled)
@@ -180,9 +180,9 @@ void MessagePort::entangle_with(MessagePort& remote_port)
     remote_port.m_remote_port = this;
     m_remote_port = &remote_port;
 
-    auto paired = MUST(IPC::Transport::create_paired());
+    auto paired = MUST(IPC::TransportSocket::create_paired());
     m_transport = move(paired.local);
-    m_remote_port->m_transport = MUST(paired.remote_handle.create_transport());
+    m_remote_port->m_transport = MUST(paired.remote_handle.create_socket_transport());
 
     m_transport->set_up_read_hook([strong_this = GC::make_root(this)]() {
         if (strong_this->m_enabled)
@@ -300,7 +300,7 @@ void MessagePort::read_from_transport()
         }));
     });
 
-    if (schedule_shutdown == IPC::Transport::ShouldShutdown::Yes) {
+    if (schedule_shutdown == IPC::TransportSocket::ShouldShutdown::Yes) {
         queue_global_task(Task::Source::PostedMessage, relevant_global_object(*this), GC::create_function(heap(), [this] {
             this->close();
         }));

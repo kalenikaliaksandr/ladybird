@@ -94,9 +94,13 @@ void MachPortServer::thread_loop()
             auto const& task_port_message = message.body.parent;
             auto pid = static_cast<pid_t>(task_port_message.trailer.msgh_audit.val[5]);
             auto child_port = Core::MachPort::adopt_right(task_port_message.port_descriptor.name, Core::MachPort::PortRight::Send);
-            dbgln_if(MACH_PORT_DEBUG, "Received child port {:x} from pid {}", child_port.port(), pid);
+
+            // Extract reply port from the message header (kernel swaps local/remote on receive)
+            auto reply_port = Core::MachPort::adopt_right(message.header.msgh_remote_port, Core::MachPort::PortRight::SendOnce);
+
+            dbgln_if(MACH_PORT_DEBUG, "Received child port {:x} from pid {} (reply port {:x})", child_port.port(), pid, reply_port.port());
             if (on_receive_child_mach_port)
-                on_receive_child_mach_port(pid, move(child_port));
+                on_receive_child_mach_port(pid, move(child_port), move(reply_port));
             continue;
         }
 

@@ -11,6 +11,7 @@
 #include <AK/Vector.h>
 #include <LibIPC/Attachment.h>
 #include <LibIPC/Forward.h>
+#include <LibIPC/Limits.h>
 #include <LibIPC/Transport.h>
 
 namespace IPC {
@@ -33,7 +34,18 @@ public:
 
     ErrorOr<void> extend(MessageBuffer&& buffer);
 
+#ifdef AK_OS_WINDOWS
     ErrorOr<void> transfer_message(Transport& transport);
+#else
+    template<typename TransportType>
+    ErrorOr<void> transfer_message(TransportType& transport)
+    {
+        VERIFY(m_data.size() <= MAX_MESSAGE_PAYLOAD_SIZE);
+        VERIFY(m_attachments.size() <= MAX_MESSAGE_FD_COUNT);
+        transport.post_message(m_data, m_attachments);
+        return {};
+    }
+#endif
 
     MessageDataType const& data() const { return m_data; }
     MessageDataType take_data() { return move(m_data); }

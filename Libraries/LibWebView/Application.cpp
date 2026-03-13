@@ -90,8 +90,9 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     m_mach_port_server = make<MachPortServer>();
     set_mach_server_name(m_mach_port_server->server_port_name());
 
-    m_mach_port_server->on_receive_child_mach_port = [this](auto pid, auto port) {
+    m_mach_port_server->on_receive_child_mach_port = [this](auto pid, auto port, auto reply_port) {
         set_process_mach_port(pid, move(port));
+        Process::handle_child_mach_port_registration(pid, move(reply_port));
     };
     m_mach_port_server->on_receive_backing_stores = [](MachPortServer::BackingStoresMessage message) {
         if (auto view = WebContentClient::view_for_pid_and_page_id(message.pid, message.page_id); view.has_value())
