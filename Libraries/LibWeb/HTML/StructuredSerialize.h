@@ -10,6 +10,7 @@
 
 #include <AK/MemoryStream.h>
 #include <AK/Vector.h>
+#include <LibIPC/Attachment.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
 #include <LibIPC/Message.h>
@@ -61,7 +62,7 @@ private:
     IPC::MessageBuffer m_buffer;
 
     FixedMemoryStream m_stream;
-    Queue<IPC::File> m_files;
+    Queue<IPC::Attachment> m_attachments;
 
     IPC::Decoder m_decoder;
 };

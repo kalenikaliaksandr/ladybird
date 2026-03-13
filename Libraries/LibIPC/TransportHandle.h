@@ -10,18 +10,15 @@
 #include <AK/Noncopyable.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/Platform.h>
-#include <LibIPC/File.h>
 #include <LibIPC/Forward.h>
 
-namespace IPC {
-
-#if !defined(AK_OS_WINDOWS)
-class TransportSocket;
-using Transport = TransportSocket;
+#if defined(AK_OS_MACOS)
+#    include <LibCore/MachPort.h>
 #else
-class TransportSocketWindows;
-using Transport = TransportSocketWindows;
+#    include <LibIPC/File.h>
 #endif
+
+namespace IPC {
 
 class TransportHandle {
     AK_MAKE_NONCOPYABLE(TransportHandle);
@@ -36,15 +33,22 @@ public:
     ErrorOr<NonnullOwnPtr<Transport>> create_transport() const;
 
 private:
+#if defined(AK_OS_MACOS)
+    TransportHandle(Core::MachPort receive_right, Core::MachPort send_right);
+
+    mutable Core::MachPort m_receive_right;
+    mutable Core::MachPort m_send_right;
+#else
     explicit TransportHandle(File);
+
+    mutable File m_file;
+#endif
 
     template<typename U>
     friend ErrorOr<void> encode(Encoder&, U const&);
 
     template<typename U>
     friend ErrorOr<U> decode(Decoder&);
-
-    mutable File m_file;
 };
 
 }

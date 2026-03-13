@@ -6,8 +6,12 @@
 
 #pragma once
 
-#include <LibCore/SystemServerTakeover.h>
-#include <LibIPC/ConnectionFromClient.h>
+#include <AK/Platform.h>
+
+#if !defined(AK_OS_MACOS)
+
+#    include <LibCore/SystemServerTakeover.h>
+#    include <LibIPC/ConnectionFromClient.h>
 
 namespace IPC {
 
@@ -19,3 +23,5 @@ ErrorOr<NonnullRefPtr<ConnectionFromClientType>> take_over_accepted_client_from_
 }
 
 }
+
+#endif

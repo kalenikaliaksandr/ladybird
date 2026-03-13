@@ -22,6 +22,8 @@
 
 #if defined(AK_OS_MACOS)
 #    include <LibCore/Platform/ProcessStatisticsMach.h>
+#    include <LibIPC/ConnectionFromClient.h>
+#    include <LibIPC/Transport.h>
 #endif
 
 namespace RequestServer {
@@ -83,8 +85,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
 #endif
 
 #if defined(AK_OS_MACOS)
-    if (!mach_server_name.is_empty())
-        Core::Platform::register_with_mach_server(mach_server_name);
+    VERIFY(!mach_server_name.is_empty());
+    auto mach_registration = Core::Platform::register_with_mach_server(mach_server_name);
 #endif
 
     Optional<HTTP::DiskCache> disk_cache;
@@ -110,8 +112,14 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     // crashes from notifiers trying to unregister from already-destroyed thread data during process exit.
     RequestServer::ConnectionFromClient::ConnectionMap connections;
 
+#if defined(AK_OS_MACOS)
+    auto client = IPC::new_client_connection<RequestServer::ConnectionFromClient>(
+        make<IPC::Transport>(move(mach_registration.ipc_receive_right), move(mach_registration.ipc_send_right)),
+        RequestServer::ConnectionFromClient::IsPrimaryConnection::Yes, connections, disk_cache);
+#else
     auto client = TRY(IPC::take_over_accepted_client_from_system_server<RequestServer::ConnectionFromClient>(
         RequestServer::ConnectionFromClient::IsPrimaryConnection::Yes, connections, disk_cache));
+#endif
 
     return event_loop.exec();
 }
