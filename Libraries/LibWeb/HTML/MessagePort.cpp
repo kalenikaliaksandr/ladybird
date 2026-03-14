@@ -6,12 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <AK/ByteReader.h>
-#include <AK/MemoryStream.h>
-#include <LibCore/System.h>
 #include <LibGC/WeakHashSet.h>
-#include <LibIPC/Decoder.h>
-#include <LibIPC/Encoder.h>
 #include <LibIPC/TransportHandle.h>
 #include <LibIPC/TransportSocket.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
@@ -78,6 +73,15 @@ void MessagePort::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_worker_event_target);
 }
 
+void MessagePort::install_read_hook()
+{
+    VERIFY(m_transport);
+    m_transport->set_up_read_hook([strong_this = GC::make_root(this)]() {
+        if (strong_this->m_enabled)
+            strong_this->read_from_transport();
+    });
+}
+
 bool MessagePort::is_entangled() const
 {
     return m_transport;
@@ -106,7 +110,60 @@ WebIDL::ExceptionOr<void> MessagePort::transfer_steps(HTML::TransferDataEncoder&
         if (m_remote_port)
             m_remote_port->m_has_been_shipped = true;
 
-        auto handle = MUST(m_transport->release_for_transfer());
+        // If currently using in-process transport, upgrade to socket-based
+        if (is<InProcessTransport>(*m_transport)) {
+            auto paired = MUST(IPC::TransportSocket::create_paired());
+
+            if (m_remote_port) {
+                // Take both sides' buffered incoming messages before replacing transports
+                auto& peer_in_proc = as<InProcessTransport>(*m_remote_port->m_transport);
+                auto peer_buffered = peer_in_proc.take_incoming();
+
+                auto& self_in_proc = as<InProcessTransport>(*m_transport);
+                auto self_buffered = self_in_proc.take_incoming();
+
+                // Create socket transport for peer
+                auto peer_socket = MUST(paired.remote_handle.create_socket_transport());
+                m_remote_port->m_transport = make<CrossProcessTransport>(move(peer_socket));
+                m_remote_port->install_read_hook();
+
+                // Create socket transport for self
+                m_transport = make<CrossProcessTransport>(move(paired.local));
+
+                // Re-inject peer's buffered messages (sent by us, going to peer)
+                for (auto& msg : peer_buffered)
+                    m_transport->post_message(move(msg));
+
+                // Re-inject our buffered messages (sent by peer, going to us)
+                // Send through peer's socket so they arrive on our fd before transfer
+                for (auto& msg : self_buffered)
+                    m_remote_port->m_transport->post_message(move(msg));
+            } else {
+                auto& self_in_proc = as<InProcessTransport>(*m_transport);
+                auto self_buffered = self_in_proc.take_incoming();
+                m_transport.clear();
+
+                // Release the local fd first (stops its IO thread) so it won't
+                // consume data we're about to write from the remote end.
+                auto handle = MUST(paired.local->release_for_transfer());
+
+                // Re-inject buffered messages through the remote end of the socket pair.
+                // Data arrives in the kernel buffer on the (now released) local fd.
+                if (!self_buffered.is_empty()) {
+                    auto remote_socket = MUST(paired.remote_handle.create_socket_transport());
+                    auto remote_transport = make<CrossProcessTransport>(move(remote_socket));
+                    for (auto& msg : self_buffered)
+                        remote_transport->post_message(move(msg));
+                    remote_transport->close_after_sending_pending();
+                }
+
+                data_holder.encode(IPC_FILE_TAG);
+                data_holder.encode(handle);
+                return {};
+            }
+        }
+
+        auto handle = MUST(as<CrossProcessTransport>(*m_transport).release_for_transfer());
         m_transport.clear();
 
         // 2. Set dataHolder.[[RemotePort]] to remotePort.
@@ -134,12 +191,10 @@ WebIDL::ExceptionOr<void> MessagePort::transfer_receiving_steps(HTML::TransferDa
     //     (This will disentangle dataHolder.[[RemotePort]] from the original port that was transferred.)
     if (auto fd_tag = data_holder.decode<u8>(); fd_tag == IPC_FILE_TAG) {
         auto handle = data_holder.decode<IPC::TransportHandle>();
-        m_transport = MUST(handle.create_socket_transport());
+        auto socket = MUST(handle.create_socket_transport());
+        m_transport = make<CrossProcessTransport>(move(socket));
 
-        m_transport->set_up_read_hook([strong_this = GC::make_root(this)]() {
-            if (strong_this->m_enabled)
-                strong_this->read_from_transport();
-        });
+        install_read_hook();
     } else if (fd_tag != 0) {
         dbgln("Unexpected byte {:x} in MessagePort transfer data", fd_tag);
         VERIFY_NOT_REACHED();
@@ -156,7 +211,7 @@ void MessagePort::disentangle()
     }
 
     if (m_transport) {
-        m_transport->close_after_sending_all_pending_messages();
+        m_transport->close_after_sending_pending();
         m_transport.clear();
     }
 
@@ -180,19 +235,12 @@ void MessagePort::entangle_with(MessagePort& remote_port)
     remote_port.m_remote_port = this;
     m_remote_port = &remote_port;
 
-    auto paired = MUST(IPC::TransportSocket::create_paired());
-    m_transport = move(paired.local);
-    m_remote_port->m_transport = MUST(paired.remote_handle.create_socket_transport());
+    auto [local, remote] = InProcessTransport::create();
+    m_transport = move(local);
+    m_remote_port->m_transport = move(remote);
 
-    m_transport->set_up_read_hook([strong_this = GC::make_root(this)]() {
-        if (strong_this->m_enabled)
-            strong_this->read_from_transport();
-    });
-
-    m_remote_port->m_transport->set_up_read_hook([remote_port = GC::make_root(m_remote_port)]() {
-        if (remote_port->m_enabled)
-            remote_port->read_from_transport();
-    });
+    install_read_hook();
+    m_remote_port->install_read_hook();
 }
 
 // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-messageport-postmessage-options
@@ -250,57 +298,39 @@ WebIDL::ExceptionOr<void> MessagePort::message_port_post_message_steps(GC::Ptr<M
     auto serialize_with_transfer_result = TRY(structured_serialize_with_transfer(vm, message, transfer));
 
     // 6. If targetPort is null, or if doomed is true, then return.
-    // IMPLEMENTATION DEFINED: Actually check the socket here, not the target port.
+    // IMPLEMENTATION DEFINED: Actually check the transport here, not the target port.
     //     If there's no target message port in the same realm, we still want to send the message over IPC
-    if (!m_transport || doomed) {
+    if (!is_entangled() || doomed) {
         return {};
     }
 
     // 7. Add a task that runs the following steps to the port message queue of targetPort:
-    post_port_message(serialize_with_transfer_result);
+    post_port_message(move(serialize_with_transfer_result));
 
     return {};
 }
 
-ErrorOr<void> MessagePort::send_message_on_transport(SerializedTransferRecord const& serialize_with_transfer_result)
-{
-    IPC::MessageBuffer buffer;
-    IPC::Encoder encoder(buffer);
-    MUST(encoder.encode(serialize_with_transfer_result));
-
-    TRY(buffer.transfer_message(*m_transport));
-    return {};
-}
-
-void MessagePort::post_port_message(SerializedTransferRecord const& serialize_with_transfer_result)
+void MessagePort::post_port_message(SerializedTransferRecord&& record)
 {
     if (!m_transport || !m_transport->is_open())
         return;
-    if (auto result = send_message_on_transport(serialize_with_transfer_result); result.is_error()) {
-        dbgln("Failed to post message: {}", result.error());
-        disentangle();
-    }
+    m_transport->post_message(move(record));
 }
 
 void MessagePort::read_from_transport()
 {
     VERIFY(m_enabled);
 
-    if (!is_entangled())
+    if (!m_transport)
         return;
 
-    auto schedule_shutdown = m_transport->read_as_many_messages_as_possible_without_blocking([this](auto&& raw_message) {
-        FixedMemoryStream stream { raw_message.bytes.span(), FixedMemoryStream::Mode::ReadOnly };
-        IPC::Decoder decoder { stream, raw_message.attachments };
-
-        auto serialized_transfer_record = MUST(decoder.decode<SerializedTransferRecord>());
-
-        queue_global_task(Task::Source::PostedMessage, relevant_global_object(*this), GC::create_function(heap(), [this, serialized_transfer_record = move(serialized_transfer_record)]() mutable {
-            this->post_message_task_steps(serialized_transfer_record);
+    auto result = m_transport->drain_incoming_messages([this](SerializedTransferRecord&& record) {
+        queue_global_task(Task::Source::PostedMessage, relevant_global_object(*this), GC::create_function(heap(), [this, record = move(record)]() mutable {
+            this->post_message_task_steps(record);
         }));
     });
 
-    if (schedule_shutdown == IPC::TransportSocket::ShouldShutdown::Yes) {
+    if (result == MessagePortTransport::ReadResult::PeerClosed) {
         queue_global_task(Task::Source::PostedMessage, relevant_global_object(*this), GC::create_function(heap(), [this] {
             this->close();
         }));
@@ -375,8 +405,6 @@ void MessagePort::start()
 {
     if (!is_entangled())
         return;
-
-    VERIFY(m_transport);
 
     // The start() method steps are to enable this's port message queue, if it is not already enabled.
     enable();

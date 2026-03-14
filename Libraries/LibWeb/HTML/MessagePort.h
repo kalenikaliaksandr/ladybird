@@ -10,13 +10,11 @@
 
 #include <AK/RefCounted.h>
 #include <AK/Weakable.h>
-#include <LibCore/Socket.h>
-#include <LibIPC/File.h>
-#include <LibIPC/TransportSocket.h>
 #include <LibWeb/Bindings/Transferable.h>
 #include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/HTML/MessagePortTransport.h>
 
 namespace Web::HTML {
 
@@ -80,8 +78,8 @@ private:
     bool is_entangled() const;
 
     void post_message_task_steps(SerializedTransferRecord&);
-    void post_port_message(SerializedTransferRecord const&);
-    ErrorOr<void> send_message_on_transport(SerializedTransferRecord const&);
+    void post_port_message(SerializedTransferRecord&&);
+    void install_read_hook();
     void read_from_transport();
 
     // The HTML spec implies(!) that this is MessagePort.[[RemotePort]]
@@ -90,7 +88,7 @@ private:
     // https://html.spec.whatwg.org/multipage/web-messaging.html#has-been-shipped
     bool m_has_been_shipped { false };
 
-    OwnPtr<IPC::TransportSocket> m_transport;
+    OwnPtr<MessagePortTransport> m_transport;
 
     GC::Ptr<DOM::EventTarget> m_worker_event_target;
 

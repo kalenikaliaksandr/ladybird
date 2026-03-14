@@ -600,6 +600,7 @@ set(SOURCES
     HTML/MessageChannel.cpp
     HTML/MessageEvent.cpp
     HTML/MessagePort.cpp
+    HTML/MessagePortTransport.cpp
     HTML/MimeType.cpp
     HTML/MimeTypeArray.cpp
     HTML/Navigable.cpp
