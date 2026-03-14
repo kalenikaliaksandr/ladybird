@@ -71,6 +71,13 @@ ErrorOr<NonnullOwnPtr<TransportMachPort>> TransportMachPort::from_socket(Nonnull
     // (the other side will look it up). Just drop it.
     (void)our_send;
 
+    // Synchronize: ensure peer has looked up our port before we proceed.
+    // Without this, our local send right (our_send) might be the only one,
+    // and dropping it at function return would trigger NO_SENDERS immediately.
+    u8 ack = 1;
+    TRY(Core::System::write(socket_fd, { &ack, 1 }));
+    TRY(Core::System::read(socket_fd, { &ack, 1 }));
+
     return make<TransportMachPort>(move(our_recv), move(their_send));
 }
 
@@ -122,18 +129,23 @@ void TransportMachPort::initialize()
     // Increase receive port queue limit
     set_mach_port_queue_limit(m_receive_port.port());
 
-    // Request dead-name notification for the send port. When the peer process
-    // exits, its receive port is destroyed, our send right becomes a dead name,
-    // and the kernel delivers a notification to m_receive_port (which is in
-    // the port set the IO thread blocks on).
+    // Request no-senders notification on our receive port. When the peer
+    // process exits, its send right is destroyed, the sender count drops
+    // to zero, and the kernel delivers MACH_NOTIFY_NO_SENDERS to
+    // m_receive_port (which is in the port set the IO thread blocks on).
+    // Unlike dead-name notifications (which watch a send right and can be
+    // lost during port transfers), no-senders notifications watch the
+    // receive right that we own, making them reliable across all scenarios.
     mach_port_t prev = MACH_PORT_NULL;
     mach_port_request_notification(mach_task_self(),
-        m_send_port.port(),
-        MACH_NOTIFY_DEAD_NAME,
+        m_receive_port.port(),
+        MACH_NOTIFY_NO_SENDERS,
         0,
         m_receive_port.port(),
         MACH_MSG_TYPE_MAKE_SEND_ONCE,
         &prev);
+    if (MACH_PORT_VALID(prev))
+        mach_port_deallocate(mach_task_self(), prev);
 
     m_io_thread = Threading::Thread::construct("IPC IO (Mach)"sv, [this] { return io_thread_loop(); });
     m_io_thread->start();
@@ -229,9 +241,15 @@ intptr_t TransportMachPort::io_thread_loop()
         if (header->msgh_local_port == m_receive_port.port()) {
             if (header->msgh_id == IPC_DATA_MESSAGE_ID) {
                 process_received_message(buffer.data());
+            } else if (header->msgh_id == MACH_NOTIFY_NO_SENDERS) {
+                // All send rights to our receive port have been destroyed.
+                // The peer process has exited or closed its end of the connection.
+                m_io_thread_state = IOThreadState::Stopped;
+                break;
+            } else if (header->msgh_id == MACH_NOTIFY_SEND_ONCE) {
+                // A send-once right was destroyed without being used (e.g., a
+                // previous notification was cleared). This is expected — ignore it.
             } else if (header->msgh_id == MACH_NOTIFY_DEAD_NAME) {
-                // Peer's receive port was destroyed (peer process exited).
-                // Deallocate the dead name carried in the notification.
                 auto* notif = reinterpret_cast<mach_dead_name_notification_t*>(buffer.data());
                 mach_port_deallocate(mach_task_self(), notif->not_port);
                 m_io_thread_state = IOThreadState::Stopped;
@@ -471,9 +489,25 @@ TransportMachPort::ShouldShutdown TransportMachPort::read_as_many_messages_as_po
 Core::MachPort TransportMachPort::release_receive_right()
 {
     stop_io_thread(IOThreadState::Stopped);
-    // Remove from port set before releasing
-    if (MACH_PORT_VALID(m_receive_port.port()) && MACH_PORT_VALID(m_port_set.port()))
-        mach_port_extract_member(mach_task_self(), m_receive_port.port(), m_port_set.port());
+
+    if (MACH_PORT_VALID(m_receive_port.port())) {
+        // Clear the no-senders notification before releasing the port to
+        // prevent spurious firing during transfer to another process.
+        mach_port_t prev = MACH_PORT_NULL;
+        mach_port_request_notification(mach_task_self(),
+            m_receive_port.port(),
+            MACH_NOTIFY_NO_SENDERS,
+            0,
+            MACH_PORT_NULL,
+            MACH_MSG_TYPE_MAKE_SEND_ONCE,
+            &prev);
+        if (MACH_PORT_VALID(prev))
+            mach_port_deallocate(mach_task_self(), prev);
+
+        if (MACH_PORT_VALID(m_port_set.port()))
+            mach_port_extract_member(mach_task_self(), m_receive_port.port(), m_port_set.port());
+    }
+
     return move(m_receive_port);
 }
 
