@@ -12,7 +12,7 @@
 #include <AK/Weakable.h>
 #include <LibCore/Socket.h>
 #include <LibIPC/File.h>
-#include <LibIPC/Transport.h>
+#include <LibIPC/TransportSocket.h>
 #include <LibWeb/Bindings/Transferable.h>
 #include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/Export.h>
@@ -90,7 +90,7 @@ private:
     // https://html.spec.whatwg.org/multipage/web-messaging.html#has-been-shipped
     bool m_has_been_shipped { false };
 
-    OwnPtr<IPC::Transport> m_transport;
+    OwnPtr<IPC::TransportSocket> m_transport;
 
     GC::Ptr<DOM::EventTarget> m_worker_event_target;
 

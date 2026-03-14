@@ -11,7 +11,8 @@ if (APPLE AND NOT IOS)
         AttachmentMachPort.cpp
         File.cpp
         Message.cpp
-        TransportMachPort.cpp)
+        TransportMachPort.cpp
+        TransportSocket.cpp)
 elseif (UNIX)
     list(APPEND SOURCES
         Attachment.cpp
