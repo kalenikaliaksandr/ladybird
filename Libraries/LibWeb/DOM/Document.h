@@ -41,6 +41,12 @@
 #include <LibWeb/TrustedTypes/InjectionSink.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 
+namespace Web::HTML {
+
+class HTMLParserEndState;
+
+}
+
 namespace Web::DOM {
 
 enum class QuirksMode {
@@ -541,7 +547,7 @@ public:
     String input_encoding() const { return encoding_or_default(); }
 
     bool ready_for_post_load_tasks() const { return m_ready_for_post_load_tasks; }
-    void set_ready_for_post_load_tasks(bool ready) { m_ready_for_post_load_tasks = ready; }
+    void set_ready_for_post_load_tasks(bool ready);
 
     void completely_finish_loading();
 
@@ -575,6 +581,9 @@ public:
     bool anything_is_delaying_the_load_event() const;
     void increment_number_of_things_delaying_the_load_event(Badge<DocumentLoadEventDelayer>);
     void decrement_number_of_things_delaying_the_load_event(Badge<DocumentLoadEventDelayer>);
+
+    void set_html_parser_end_state(GC::Ptr<HTML::HTMLParserEndState>);
+    void schedule_html_parser_end_check();
 
     void add_pending_css_import_rule(Badge<CSS::CSSImportRule>, GC::Ref<CSS::CSSImportRule>);
     void remove_pending_css_import_rule(Badge<CSS::CSSImportRule>, GC::Ref<CSS::CSSImportRule>);
@@ -1214,6 +1223,8 @@ private:
     GC::Ptr<HTML::History> m_history;
 
     size_t m_number_of_things_delaying_the_load_event { 0 };
+    GC::Ptr<HTML::HTMLParserEndState> m_html_parser_end_state;
+    bool m_parser_end_check_pending { false };
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#concept-document-salvageable
     bool m_salvageable { true };

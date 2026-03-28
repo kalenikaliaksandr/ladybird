@@ -49,12 +49,14 @@
 #include <LibWeb/Infra/Strings.h>
 #include <LibWeb/MathML/TagNames.h>
 #include <LibWeb/Namespace.h>
+#include <LibWeb/Platform/Timer.h>
 #include <LibWeb/SVG/SVGScriptElement.h>
 #include <LibWeb/SVG/TagNames.h>
 
 namespace Web::HTML {
 
 GC_DEFINE_ALLOCATOR(HTMLParser);
+GC_DEFINE_ALLOCATOR(HTMLParserEndState);
 
 static inline void log_parse_error(SourceLocation const& location = SourceLocation::current())
 {
@@ -272,11 +274,14 @@ void HTMLParser::run(URL::URL const& url, HTMLTokenizer::StopAtInsertionPoint st
     the_end(*m_document, this);
 }
 
+void HTMLParser::detach_parser_from_document(GC::Ref<DOM::Document> document)
+{
+    document->detach_parser({});
+}
+
 // https://html.spec.whatwg.org/multipage/parsing.html#the-end
 void HTMLParser::the_end(GC::Ref<DOM::Document> document, GC::Ptr<HTMLParser> parser)
 {
-    auto& heap = document->heap();
-
     // Once the user agent stops parsing the document, the user agent must run the following steps:
 
     // NOTE: This is a static method because the spec sometimes wants us to "act as if the user agent had stopped
@@ -332,33 +337,133 @@ void HTMLParser::the_end(GC::Ref<DOM::Document> document, GC::Ptr<HTMLParser> pa
         return;
     }
 
-    // 5. While the list of scripts that will execute when the document has finished parsing is not empty:
-    while (!document->scripts_to_execute_when_parsing_has_finished().is_empty()) {
-        // 1. Spin the event loop until the first script in the list of scripts that will execute when the document has finished parsing
-        //    has its "ready to be parser-executed" flag set and the parser's Document has no style sheet that is blocking scripts.
-        main_thread_event_loop().spin_until(GC::create_function(heap, [document] {
-            return document->scripts_to_execute_when_parsing_has_finished().first()->is_ready_to_be_parser_executed()
-                && !document->has_a_style_sheet_that_is_blocking_scripts();
-        }));
+    // Steps 5-11 are handled by the HTMLParserEndState state machine.
+    auto state = HTMLParserEndState::create(document, parser);
+    document->set_html_parser_end_state(state);
+    state->check_progress();
+}
 
-        // 2. Execute the first script in the list of scripts that will execute when the document has finished parsing.
-        document->scripts_to_execute_when_parsing_has_finished().first()->execute_script();
+// ---- HTMLParserEndState implementation ----
 
-        // 3. Remove the first script element from the list of scripts that will execute when the document has finished parsing (i.e. shift out the first entry in the list).
-        (void)document->scripts_to_execute_when_parsing_has_finished().take_first();
+static constexpr int THE_END_TIMEOUT_MS = 15000;
+
+GC::Ref<HTMLParserEndState> HTMLParserEndState::create(GC::Ref<DOM::Document> document, GC::Ptr<HTMLParser> parser)
+{
+    return document->heap().allocate<HTMLParserEndState>(document, parser);
+}
+
+HTMLParserEndState::HTMLParserEndState(GC::Ref<DOM::Document> document, GC::Ptr<HTMLParser> parser)
+    : m_document(document)
+    , m_parser(parser)
+    , m_timeout(Platform::Timer::create_single_shot(heap(), THE_END_TIMEOUT_MS, GC::create_function(heap(), [this] {
+        if (!m_completed)
+            dbgln("HTMLParserEndState: timed out in phase {}", to_underlying(m_phase));
+    })))
+{
+    m_timeout->start();
+}
+
+void HTMLParserEndState::visit_edges(Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_document);
+    visitor.visit(m_parser);
+    visitor.visit(m_timeout);
+}
+
+void HTMLParserEndState::check_progress()
+{
+    if (m_completed)
+        return;
+
+    // Re-entrancy guard: script execution during Phase 1 can trigger notifications
+    // that would re-enter check_progress() via the timer.
+    if (m_checking_progress)
+        return;
+    m_checking_progress = true;
+    ScopeGuard guard = [this] { m_checking_progress = false; };
+
+    // NOTE: spin_until saves/clears the JS execution context stack and performs a microtask
+    //       checkpoint before checking its condition. We must do the same, as pending microtasks
+    //       (e.g. image load event delayer creation from update_the_image_data step 8) must be
+    //       processed before we check conditions.
+    auto& vm = main_thread_event_loop().vm();
+    vm.save_execution_context_stack();
+    vm.clear_execution_context_stack();
+    main_thread_event_loop().perform_a_microtask_checkpoint();
+    vm.restore_execution_context_stack();
+
+    // Re-check completion after microtask checkpoint, as it may have changed state.
+    if (m_completed)
+        return;
+
+    switch (m_phase) {
+    case Phase::WaitingForDeferredScripts:
+        // 5. While the list of scripts that will execute when the document has finished parsing is not empty:
+        while (!m_document->scripts_to_execute_when_parsing_has_finished().is_empty()) {
+            auto& first_script = *m_document->scripts_to_execute_when_parsing_has_finished().first();
+
+            // 1. Spin the event loop until the first script in the list of scripts that will execute when the document has finished parsing
+            //    has its "ready to be parser-executed" flag set and the parser's Document has no style sheet that is blocking scripts.
+            if (!first_script.is_ready_to_be_parser_executed() || m_document->has_a_style_sheet_that_is_blocking_scripts())
+                return;
+
+            // 2. Execute the first script in the list of scripts that will execute when the document has finished parsing.
+            first_script.execute_script();
+
+            // 3. Remove the first script element from the list of scripts that will execute when the document has finished parsing (i.e. shift out the first entry in the list).
+            (void)m_document->scripts_to_execute_when_parsing_has_finished().take_first();
+        }
+
+        advance_to_asap_scripts_phase();
+        [[fallthrough]];
+
+    case Phase::WaitingForASAPScripts:
+        // 7. Spin the event loop until the set of scripts that will execute as soon as possible and the list of scripts
+        //    that will execute in order as soon as possible are empty.
+        // AD-HOC: Also bail out if the document is no longer fully active.
+        if (!m_document->is_fully_active()) {
+            complete();
+            return;
+        }
+        if (!m_document->scripts_to_execute_as_soon_as_possible().is_empty()
+            || !m_document->scripts_to_execute_in_order_as_soon_as_possible().is_empty())
+            return;
+
+        advance_to_load_event_delay_phase();
+        [[fallthrough]];
+
+    case Phase::WaitingForLoadEventDelay:
+        // 8. Spin the event loop until there is nothing that delays the load event in the Document.
+        // NOTE: Notification triggers (decrement_number_of_things_delaying_the_load_event,
+        //       set_ready_for_post_load_tasks, NavigableContainer state changes) call
+        //       schedule_html_parser_end_check() which re-invokes check_progress().
+        if (!m_document->is_fully_active()) {
+            complete();
+            return;
+        }
+        if (!m_document->anything_is_delaying_the_load_event()) {
+            complete();
+            return;
+        }
+        break;
     }
+}
 
+void HTMLParserEndState::advance_to_asap_scripts_phase()
+{
     // AD-HOC: We need to scroll to the fragment on page load somewhere.
     // But a script that ran in step 5 above may have scrolled the page already,
     // so only do this if there is an actual fragment to avoid resetting the scroll position unexpectedly.
     // Spec bug: https://github.com/whatwg/html/issues/10914
-    auto indicated_part = document->determine_the_indicated_part();
+    auto indicated_part = m_document->determine_the_indicated_part();
     if (indicated_part.has<DOM::Element*>() && indicated_part.get<DOM::Element*>() != nullptr) {
-        document->scroll_to_the_fragment();
+        m_document->scroll_to_the_fragment();
     }
 
     // 6. Queue a global task on the DOM manipulation task source given the Document's relevant global object to run the following substeps:
-    queue_global_task(HTML::Task::Source::DOMManipulation, *document, GC::create_function(heap, [document] {
+    auto document = m_document;
+    queue_global_task(HTML::Task::Source::DOMManipulation, *document, GC::create_function(m_document->heap(), [document] {
         // 1. Set the Document's load timing info's DOM content loaded event start time to the current high resolution time given the Document's relevant global object.
         document->load_timing_info().dom_content_loaded_event_start_time = HighResolutionTime::current_high_resolution_time(relevant_global_object(*document));
 
@@ -375,23 +480,23 @@ void HTMLParser::the_end(GC::Ref<DOM::Document> document, GC::Ptr<HTMLParser> pa
         // FIXME: 5. Invoke WebDriver BiDi DOM content loaded with the Document's browsing context, and a new WebDriver BiDi navigation status whose id is the Document object's navigation id, status is "pending", and url is the Document object's URL.
     }));
 
-    // 7. Spin the event loop until the set of scripts that will execute as soon as possible and the list of scripts that will execute in order as soon as possible are empty.
-    main_thread_event_loop().spin_until(GC::create_function(heap, [document] {
-        // AD-HOC: Also bail out if the document is no longer fully active (e.g. navigated away from).
-        //         Otherwise this spin_until stays on the call stack indefinitely, and all subsequent
-        //         event processing on the same event loop happens in nested spin_until pumping.
-        if (!document->is_fully_active())
-            return true;
-        return document->scripts_to_execute_as_soon_as_possible().is_empty();
-    }));
+    m_phase = Phase::WaitingForASAPScripts;
+}
 
-    // 8. Spin the event loop until there is nothing that delays the load event in the Document.
-    main_thread_event_loop().spin_until(GC::create_function(heap, [document] {
-        // AD-HOC: Bail out if the document is no longer fully active.
-        if (!document->is_fully_active())
-            return true;
-        return !document->anything_is_delaying_the_load_event();
-    }));
+void HTMLParserEndState::advance_to_load_event_delay_phase()
+{
+    m_phase = Phase::WaitingForLoadEventDelay;
+}
+
+void HTMLParserEndState::complete()
+{
+    if (m_completed)
+        return;
+
+    auto document = m_document;
+    auto parser = m_parser;
+
+    cleanup();
 
     // 9. Queue a global task on the DOM manipulation task source given the Document's relevant global object to run the following steps:
     queue_global_task(HTML::Task::Source::DOMManipulation, *document, GC::create_function(document->heap(), [document, parser] {
@@ -400,7 +505,7 @@ void HTMLParser::the_end(GC::Ref<DOM::Document> document, GC::Ptr<HTMLParser> pa
 
         // AD-HOC: We need to wait until the document ready state is complete before detaching the parser, otherwise the DOM complete time will not be set correctly.
         if (parser)
-            document->detach_parser({});
+            HTMLParser::detach_parser_from_document(document);
 
         // 2. If the Document object's browsing context is null, then abort these steps.
         if (!document->browsing_context())
@@ -443,6 +548,13 @@ void HTMLParser::the_end(GC::Ref<DOM::Document> document, GC::Ptr<HTMLParser> pa
 
     // 11. The Document is now ready for post-load tasks.
     document->set_ready_for_post_load_tasks(true);
+}
+
+void HTMLParserEndState::cleanup()
+{
+    m_completed = true;
+    m_timeout->stop();
+    m_document->set_html_parser_end_state(nullptr);
 }
 
 void HTMLParser::process_using_the_rules_for(InsertionMode mode, HTMLToken& token)

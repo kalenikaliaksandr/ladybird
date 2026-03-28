@@ -14,6 +14,7 @@
 #include <LibWeb/HTML/Parser/ListOfActiveFormattingElements.h>
 #include <LibWeb/HTML/Parser/StackOfOpenElements.h>
 #include <LibWeb/MimeSniff/MimeType.h>
+#include <LibWeb/Platform/Timer.h>
 
 namespace Web::HTML {
 
@@ -57,6 +58,7 @@ public:
     void run(URL::URL const&, HTMLTokenizer::StopAtInsertionPoint = HTMLTokenizer::StopAtInsertionPoint::No);
 
     static void the_end(GC::Ref<DOM::Document>, GC::Ptr<HTMLParser> = nullptr);
+    static void detach_parser_from_document(GC::Ref<DOM::Document>);
 
     DOM::Document& document();
     enum class AllowDeclarativeShadowRoots {
@@ -215,6 +217,40 @@ private:
 
     GC::Ptr<DOM::Text> m_character_insertion_node;
     StringBuilder m_character_insertion_builder { StringBuilder::Mode::UTF16 };
+};
+
+class HTMLParserEndState final : public JS::Cell {
+    GC_CELL(HTMLParserEndState, JS::Cell);
+    GC_DECLARE_ALLOCATOR(HTMLParserEndState);
+
+public:
+    static GC::Ref<HTMLParserEndState> create(GC::Ref<DOM::Document>, GC::Ptr<HTMLParser>);
+
+    void check_progress();
+
+private:
+    enum class Phase {
+        WaitingForDeferredScripts,
+        WaitingForASAPScripts,
+        WaitingForLoadEventDelay,
+    };
+
+    HTMLParserEndState(GC::Ref<DOM::Document>, GC::Ptr<HTMLParser>);
+
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    void advance_to_asap_scripts_phase();
+    void advance_to_load_event_delay_phase();
+    void complete();
+    void cleanup();
+
+    Phase m_phase { Phase::WaitingForDeferredScripts };
+    bool m_completed { false };
+    bool m_checking_progress { false };
+
+    GC::Ref<DOM::Document> m_document;
+    GC::Ptr<HTMLParser> m_parser;
+    GC::Ref<Platform::Timer> m_timeout;
 };
 
 RefPtr<CSS::StyleValue const> parse_dimension_value(StringView);

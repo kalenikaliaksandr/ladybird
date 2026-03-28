@@ -15,6 +15,7 @@
 #include <LibWeb/ContentSecurityPolicy/Violation.h>
 #include <LibWeb/Crypto/Crypto.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/DocumentLoadEventDelayer.h>
 #include <LibWeb/DOM/DocumentLoading.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/Range.h>
@@ -356,6 +357,16 @@ void Navigable::set_delaying_load_events(bool value)
     } else {
         m_delaying_the_load_event.clear();
     }
+}
+
+void Navigable::set_navigation_load_event_guard(DOM::Document& parent_doc)
+{
+    m_navigation_load_event_guard.emplace(parent_doc);
+}
+
+void Navigable::clear_navigation_load_event_guard()
+{
+    m_navigation_load_event_guard.clear();
 }
 
 GC::Ptr<Navigable> Navigable::navigable_with_active_document(GC::Ref<DOM::Document> document)
@@ -2564,6 +2575,15 @@ void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryH
     // 1. FIXME: Assert: this is running on navigable's traversable navigable's session history traversal queue.
 
     // 2. Set navigable's is delaying load events to false.
+    // AD-HOC: Like Chromium's Frame::SwapImpl, guard the parent document's load event delay count
+    //         across the async history step. Without this guard, decrementing the navigable's delay
+    //         counter triggers schedule_load_event_delay_check on the parent, which can see the
+    //         about:blank (ready_for_post_load_tasks=true) before the session history traversal
+    //         activates the new document. The guard is cleared when the new document becomes ready
+    //         for post-load tasks (via set_ready_for_post_load_tasks in Document.cpp).
+    if (auto container_doc = navigable->container_document(); container_doc && history_entry->document())
+        navigable->set_navigation_load_event_guard(*container_doc);
+
     navigable->set_delaying_load_events(false);
 
     // 3. If historyEntry's document is null, then return.
