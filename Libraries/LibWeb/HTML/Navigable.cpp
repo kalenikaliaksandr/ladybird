@@ -2131,13 +2131,14 @@ void Navigable::begin_navigation(NavigateParams params)
                                 signal_to_continue_session_history_processing->resolve({});
                                 return signal_to_continue_session_history_processing;
                             }
-                            finalize_a_cross_document_navigation(*this, to_history_handling_behavior(history_handling), user_involvement, history_entry);
-
-                            // AD-HOC: If the document isn't active or is still loading session history traversal queue will wait
-                            //         for it to load else resolve the signal_to_continue_session_history_processing.
-                            if (history_entry->document() && (!history_entry->document()->is_active() || history_entry->document()->ready_state() != "loading")) {
-                                signal_to_continue_session_history_processing->resolve({});
-                            }
+                            finalize_a_cross_document_navigation(*this, to_history_handling_behavior(history_handling), user_involvement, history_entry,
+                                GC::create_function(heap(), [history_entry, signal_to_continue_session_history_processing] {
+                                    // AD-HOC: If the document isn't active or is still loading session history traversal queue will wait
+                                    //         for it to load else resolve the signal_to_continue_session_history_processing.
+                                    if (history_entry->document() && (!history_entry->document()->is_active() || history_entry->document()->ready_state() != "loading")) {
+                                        signal_to_continue_session_history_processing->resolve({});
+                                    }
+                                }));
                             return signal_to_continue_session_history_processing;
                         }));
                     }));
@@ -2224,9 +2225,11 @@ void Navigable::navigate_to_a_fragment(URL::URL const& url, HistoryHandlingBehav
         // NB: Use Core::Promise to signal SessionHistoryTraversalQueue that it can continue to execute next entry.
         auto signal_to_continue_session_history_processing = Core::Promise<Empty>::construct();
         // 1. Finalize a same-document navigation given traversable, navigable, historyEntry, entryToReplace, historyHandling, and userInvolvement.
-        finalize_a_same_document_navigation(*traversable, *this, history_entry, entry_to_replace, history_handling, user_involvement);
+        finalize_a_same_document_navigation(*traversable, *this, history_entry, entry_to_replace, history_handling, user_involvement,
+            GC::create_function(heap(), [signal_to_continue_session_history_processing] {
+                signal_to_continue_session_history_processing->resolve({});
+            }));
 
-        signal_to_continue_session_history_processing->resolve({});
         // FIXME: 2. Invoke WebDriver BiDi fragment navigated with navigable and a new WebDriver BiDi
         //            navigation status whose id is navigationId, url is url, and status is "complete".
         (void)navigation_id;
@@ -2565,11 +2568,14 @@ TargetSnapshotParams Navigable::snapshot_target_snapshot_params()
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
-void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryHandlingBehavior history_handling, UserNavigationInvolvement user_involvement, GC::Ref<SessionHistoryEntry> history_entry)
+void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryHandlingBehavior history_handling, UserNavigationInvolvement user_involvement, GC::Ref<SessionHistoryEntry> history_entry, GC::Ptr<GC::Function<void()>> on_complete)
 {
     // NOTE: This is not in the spec but we should not navigate destroyed navigable.
-    if (navigable->has_been_destroyed())
+    if (navigable->has_been_destroyed()) {
+        if (on_complete)
+            on_complete->function()();
         return;
+    }
 
     // 1. FIXME: Assert: this is running on navigable's traversable navigable's session history traversal queue.
 
@@ -2584,8 +2590,11 @@ void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryH
     navigable->set_delaying_load_events(false);
 
     // 3. If historyEntry's document is null, then return.
-    if (!history_entry->document())
+    if (!history_entry->document()) {
+        if (on_complete)
+            on_complete->function()();
         return;
+    }
 
     // 4. If all of the following are true:
     //    - navigable's parent is null;
@@ -2641,12 +2650,22 @@ void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryH
     }
 
     // 10. Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.
-    traversable->apply_the_push_or_replace_history_step(target_step, history_handling, user_involvement, TraversableNavigable::SynchronousNavigation::No);
-
-    // AD-HOC: If we're inside a navigable container, let's trigger a relayout in the container document.
-    //         This allows size negotiation between the containing document and SVG documents to happen.
-    if (auto container = navigable->container())
-        container->set_needs_layout_update(DOM::SetNeedsLayoutReason::FinalizeACrossDocumentNavigation);
+    GC::Ptr<GC::Function<void()>> wrapped_on_complete;
+    if (on_complete) {
+        wrapped_on_complete = GC::create_function(navigable->heap(), [navigable, on_complete] {
+            // AD-HOC: If we're inside a navigable container, let's trigger a relayout in the container document.
+            //         This allows size negotiation between the containing document and SVG documents to happen.
+            if (auto container = navigable->container())
+                container->set_needs_layout_update(DOM::SetNeedsLayoutReason::FinalizeACrossDocumentNavigation);
+            on_complete->function()();
+        });
+    } else {
+        // AD-HOC: If we're inside a navigable container, let's trigger a relayout in the container document.
+        //         This allows size negotiation between the containing document and SVG documents to happen.
+        if (auto container = navigable->container())
+            container->set_needs_layout_update(DOM::SetNeedsLayoutReason::FinalizeACrossDocumentNavigation);
+    }
+    traversable->apply_the_push_or_replace_history_step(target_step, history_handling, user_involvement, TraversableNavigable::SynchronousNavigation::No, wrapped_on_complete);
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#url-and-history-update-steps
@@ -2713,8 +2732,10 @@ void perform_url_and_history_update_steps(DOM::Document& document, URL::URL new_
         // NB: Use Core::Promise to signal SessionHistoryTraversalQueue that it can continue to execute next entry.
         auto signal_to_continue_session_history_processing = Core::Promise<Empty>::construct();
         // 1. Finalize a same-document navigation given traversable, navigable, newEntry, entryToReplace, historyHandling, and "none".
-        finalize_a_same_document_navigation(*traversable, *navigable, new_entry, entry_to_replace, history_handling, UserNavigationInvolvement::None);
-        signal_to_continue_session_history_processing->resolve({});
+        finalize_a_same_document_navigation(*traversable, *navigable, new_entry, entry_to_replace, history_handling, UserNavigationInvolvement::None,
+            GC::create_function(navigable->heap(), [signal_to_continue_session_history_processing] {
+                signal_to_continue_session_history_processing->resolve({});
+            }));
         // 2. FIXME: Invoke WebDriver BiDi history updated with navigable.
         return signal_to_continue_session_history_processing;
     }));

@@ -143,12 +143,13 @@ WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable(GC::Ptr
         parent_doc_state->nested_histories().append(move(nested_history));
 
         // 7. Update for navigable creation/destruction given traversable
-        traversable->update_for_navigable_creation_or_destruction();
-
-        if (after_session_history_update) {
-            after_session_history_update->function()();
-        }
-        signal_to_continue_session_history_processing->resolve({});
+        traversable->update_for_navigable_creation_or_destruction(
+            GC::create_function(traversable->heap(), [after_session_history_update, signal_to_continue_session_history_processing] {
+                if (after_session_history_update) {
+                    after_session_history_update->function()();
+                }
+                signal_to_continue_session_history_processing->resolve({});
+            }));
         return signal_to_continue_session_history_processing;
     }));
 
@@ -333,8 +334,10 @@ void NavigableContainer::destroy_the_child_navigable()
             // NB: Use Core::Promise to signal SessionHistoryTraversalQueue that it can continue to execute next entry.
             auto signal_to_continue_session_history_processing = Core::Promise<Empty>::construct();
             // 1. Update for navigable creation/destruction given traversable.
-            traversable->update_for_navigable_creation_or_destruction();
-            signal_to_continue_session_history_processing->resolve({});
+            traversable->update_for_navigable_creation_or_destruction(
+                GC::create_function(traversable->heap(), [signal_to_continue_session_history_processing] {
+                    signal_to_continue_session_history_processing->resolve({});
+                }));
             return signal_to_continue_session_history_processing;
         }));
     }));

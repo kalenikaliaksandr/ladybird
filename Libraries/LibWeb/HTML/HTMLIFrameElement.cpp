@@ -112,6 +112,11 @@ void HTMLIFrameElement::post_connection()
     // The iframe HTML element post-connection steps, given insertedNode, are:
     // 1. Create a new child navigable for insertedNode.
     MUST(create_new_child_navigable(GC::create_function(realm().heap(), [this] {
+        // AD-HOC: The content navigable may have been destroyed between when this callback was
+        //         created and when it fires (due to async session history processing).
+        if (!content_navigable())
+            return;
+
         // 2. If insertedNode has a sandbox attribute, then parse the sandboxing directive given the attribute's
         //    value and insertedNode's iframe sandboxing flag set.
         if (has_attribute(AttributeNames::sandbox)) {
