@@ -38,6 +38,14 @@ namespace Web::HTML {
 
 struct PopulateSessionHistoryEntryDocumentOutput;
 
+enum class HistoryStepResult {
+    InitiatorDisallowed,
+    CanceledByBeforeUnload,
+    CanceledByNavigate,
+    Applied,
+};
+using OnApplyHistoryStepComplete = GC::Function<void(HistoryStepResult)>;
+
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#target-snapshot-params
 struct TargetSnapshotParams {
     SandboxingFlagSet sandboxing_flags {};
@@ -335,7 +343,7 @@ private:
 WEB_API HashTable<GC::RawRef<Navigable>>& all_navigables();
 
 bool navigation_must_be_a_replace(URL::URL const& url, DOM::Document const& document);
-void finalize_a_cross_document_navigation(GC::Ref<Navigable>, HistoryHandlingBehavior, UserNavigationInvolvement, GC::Ref<SessionHistoryEntry>);
+void finalize_a_cross_document_navigation(GC::Ref<Navigable>, HistoryHandlingBehavior, UserNavigationInvolvement, GC::Ref<SessionHistoryEntry>, GC::Ref<OnApplyHistoryStepComplete> on_complete);
 void perform_url_and_history_update_steps(DOM::Document& document, URL::URL new_url, Optional<SerializationRecord> = {}, HistoryHandlingBehavior history_handling = HistoryHandlingBehavior::Replace);
 
 }

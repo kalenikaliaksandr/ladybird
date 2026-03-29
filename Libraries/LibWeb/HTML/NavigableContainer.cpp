@@ -115,10 +115,13 @@ WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable(GC::Ptr
     // AD-HOC: Let the initial about:blank document inherit the system visibility state from traversable.
     document->update_the_visibility_state(traversable->system_visibility_state());
 
-    // 12. Append the following session history traversal steps to traversable:
-    traversable->append_session_history_traversal_steps(GC::create_function(heap(), [traversable, navigable, parent_navigable, history_entry, after_session_history_update] {
-        // NB: Use Core::Promise to signal SessionHistoryTraversalQueue that it can continue to execute next entry.
-        auto signal_to_continue_session_history_processing = Core::Promise<Empty>::construct();
+    // AD-HOC: Steps 1-6 below are done synchronously (not inside the traversal step) so that
+    //         the navigable's session history entries are immediately findable via get_session_history_entries().
+    //         Without this, document.open() on a child navigable can fail because the nested history
+    //         hasn't been appended yet. The spec says these should run as session history traversal steps,
+    //         but deferring them causes crashes when document.open()/document.write() runs before
+    //         the traversal step fires. Chromium also does not defer this setup.
+    {
         // 1. Let parentDocState be parentNavigable's active session history entry's document state.
         auto parent_doc_state = parent_navigable->active_session_history_entry()->document_state();
 
@@ -141,15 +144,24 @@ WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable(GC::Ptr
 
         // 6. Append nestedHistory to parentDocState's nested histories.
         parent_doc_state->nested_histories().append(move(nested_history));
+    }
 
+    // AD-HOC: Delay the parent's load event until the after_session_history_update callback runs
+    //         (which triggers process_the_iframe_attributes / process_the_frame_attributes).
+    //         Without this, the parent's load event fires before the iframe's content loads.
+    Optional<DOM::DocumentLoadEventDelayer> load_event_delayer;
+    if (after_session_history_update)
+        load_event_delayer.emplace(Node::document());
+
+    // 12. Append the following session history traversal steps to traversable:
+    traversable->append_session_history_traversal_steps(GC::create_function(heap(), [traversable, after_session_history_update, load_event_delayer = move(load_event_delayer)](NonnullRefPtr<Core::Promise<Empty>> signal) mutable {
         // 7. Update for navigable creation/destruction given traversable
-        traversable->update_for_navigable_creation_or_destruction();
-
-        if (after_session_history_update) {
-            after_session_history_update->function()();
-        }
-        signal_to_continue_session_history_processing->resolve({});
-        return signal_to_continue_session_history_processing;
+        traversable->update_for_navigable_creation_or_destruction(GC::create_function(traversable->heap(), [after_session_history_update, signal, load_event_delayer = move(load_event_delayer)](HistoryStepResult) mutable {
+            if (after_session_history_update)
+                after_session_history_update->function()();
+            load_event_delayer.clear();
+            signal->resolve({});
+        }));
     }));
 
     return {};
@@ -212,7 +224,12 @@ Optional<URL::URL> NavigableContainer::shared_attribute_processing_steps_for_ifr
     if (!m_content_navigable)
         return {};
 
-    if (initial_insertion == InitialInsertion::Yes && m_content_navigable->has_pending_navigations()) {
+    // AD-HOC: If the content navigable already has a navigation in progress or pending,
+    //         skip the initial attribute processing. Without this, the about:blank URL update
+    //         from perform_url_and_history_update_steps creates a state machine that clobbers the
+    //         navigable's ongoing_navigation, causing the real navigation to be dropped when its
+    //         populate completion callback checks ongoing_navigation != navigation_id.
+    if (initial_insertion == InitialInsertion::Yes && (m_content_navigable->has_pending_navigations() || !m_content_navigable->ongoing_navigation().has<Empty>())) {
         return {};
     }
 
@@ -329,13 +346,11 @@ void NavigableContainer::destroy_the_child_navigable()
         auto traversable = this->navigable()->traversable_navigable();
 
         // 9. Append the following session history traversal steps to traversable:
-        traversable->append_session_history_traversal_steps(GC::create_function(heap(), [traversable] {
-            // NB: Use Core::Promise to signal SessionHistoryTraversalQueue that it can continue to execute next entry.
-            auto signal_to_continue_session_history_processing = Core::Promise<Empty>::construct();
+        traversable->append_session_history_traversal_steps(GC::create_function(heap(), [traversable](NonnullRefPtr<Core::Promise<Empty>> signal) {
             // 1. Update for navigable creation/destruction given traversable.
-            traversable->update_for_navigable_creation_or_destruction();
-            signal_to_continue_session_history_processing->resolve({});
-            return signal_to_continue_session_history_processing;
+            traversable->update_for_navigable_creation_or_destruction(GC::create_function(traversable->heap(), [signal](HistoryStepResult) {
+                signal->resolve({});
+            }));
         }));
     }));
 }

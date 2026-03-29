@@ -12,7 +12,7 @@ namespace Web::HTML {
 GC_DEFINE_ALLOCATOR(SessionHistoryTraversalQueue);
 GC_DEFINE_ALLOCATOR(SessionHistoryTraversalQueueEntry);
 
-GC::Ref<SessionHistoryTraversalQueueEntry> SessionHistoryTraversalQueueEntry::create(JS::VM& vm, GC::Ref<GC::Function<NonnullRefPtr<Core::Promise<Empty>>()>> steps, GC::Ptr<HTML::Navigable> target_navigable)
+GC::Ref<SessionHistoryTraversalQueueEntry> SessionHistoryTraversalQueueEntry::create(JS::VM& vm, GC::Ref<SessionHistoryTraversalSteps> steps, GC::Ptr<HTML::Navigable> target_navigable)
 {
     return vm.heap().allocate<SessionHistoryTraversalQueueEntry>(steps, target_navigable);
 }
@@ -24,28 +24,22 @@ void SessionHistoryTraversalQueueEntry::visit_edges(JS::Cell::Visitor& visitor)
     visitor.visit(m_target_navigable);
 }
 
-SessionHistoryTraversalQueue::SessionHistoryTraversalQueue()
+SessionHistoryTraversalQueue::SessionHistoryTraversalQueue() = default;
+
+void SessionHistoryTraversalQueue::process_queue()
 {
-    m_timer = Core::Timer::create_single_shot(0, [this] {
-        if (m_is_task_running && m_queue.size() > 0) {
-            m_timer->start();
+    while (m_queue.size() > 0) {
+        if (m_current_promise && !m_current_promise->is_resolved() && !m_current_promise->is_rejected()) {
+            m_current_promise->when_resolved([this](Empty) {
+                process_queue();
+            });
             return;
         }
 
-        while (m_queue.size() > 0) {
-            if (m_current_promise && !m_current_promise->is_resolved() && !m_current_promise->is_rejected()) {
-                m_timer->start();
-                return;
-            }
-
-            m_is_task_running = true;
-            auto entry = m_queue.take_first();
-            m_current_promise = entry->execute_steps();
-            m_is_task_running = false;
-        }
-
-        m_current_promise = {};
-    });
+        auto entry = m_queue.take_first();
+        m_current_promise = Core::Promise<Empty>::construct();
+        entry->execute_steps(*m_current_promise);
+    }
 }
 
 void SessionHistoryTraversalQueue::visit_edges(JS::Cell::Visitor& visitor)
@@ -54,19 +48,26 @@ void SessionHistoryTraversalQueue::visit_edges(JS::Cell::Visitor& visitor)
     visitor.visit(m_queue);
 }
 
-void SessionHistoryTraversalQueue::append(GC::Ref<GC::Function<NonnullRefPtr<Core::Promise<Empty>>()>> steps)
+void SessionHistoryTraversalQueue::append(GC::Ref<SessionHistoryTraversalSteps> steps)
 {
     m_queue.append(SessionHistoryTraversalQueueEntry::create(vm(), steps, nullptr));
-    if (!m_timer->is_active()) {
-        m_timer->start();
-    }
+    schedule_processing();
 }
 
-void SessionHistoryTraversalQueue::append_sync(GC::Ref<GC::Function<NonnullRefPtr<Core::Promise<Empty>>()>> steps, GC::Ptr<Navigable> target_navigable)
+void SessionHistoryTraversalQueue::append_sync(GC::Ref<SessionHistoryTraversalSteps> steps, GC::Ptr<Navigable> target_navigable)
 {
     m_queue.append(SessionHistoryTraversalQueueEntry::create(vm(), steps, target_navigable));
-    if (!m_timer->is_active()) {
-        m_timer->start();
+    schedule_processing();
+}
+
+void SessionHistoryTraversalQueue::schedule_processing()
+{
+    if (!m_processing_scheduled) {
+        m_processing_scheduled = true;
+        Core::deferred_invoke([this] {
+            m_processing_scheduled = false;
+            process_queue();
+        });
     }
 }
 
