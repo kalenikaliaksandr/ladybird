@@ -819,6 +819,11 @@ WebIDL::ExceptionOr<Document*> Document::open(Optional<String> const&, Optional<
         return this;
 
     // FIXME: 8. If document's browsing context is non-null and there is an existing attempt to navigate document's browsing context, then stop document loading given document.
+    if (auto navigable = this->navigable()) {
+        navigable->clear_pending_navigations();
+        if (navigable->ongoing_navigation().has<String>())
+            navigable->stop_loading();
+    }
 
     // FIXME: 9. For each shadow-including inclusive descendant node of document, erase all event listeners and handlers given node.
 

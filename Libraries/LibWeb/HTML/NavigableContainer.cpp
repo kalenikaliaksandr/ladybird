@@ -62,7 +62,7 @@ GC::Ptr<NavigableContainer> NavigableContainer::navigable_container_with_content
 }
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#create-a-new-child-navigable
-WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable(GC::Ptr<GC::Function<void()>> after_session_history_update)
+WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable()
 {
     // 1. Let parentNavigable be element's node navigable.
     auto parent_navigable = navigable();
@@ -115,13 +115,8 @@ WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable(GC::Ptr
     // AD-HOC: Let the initial about:blank document inherit the system visibility state from traversable.
     document->update_the_visibility_state(traversable->system_visibility_state());
 
-    // AD-HOC: Steps 1-6 below are done synchronously (not inside the traversal step) so that
-    //         the navigable's session history entries are immediately findable via get_session_history_entries().
-    //         Without this, document.open() on a child navigable can fail because the nested history
-    //         hasn't been appended yet. The spec says these should run as session history traversal steps,
-    //         but deferring them causes crashes when document.open()/document.write() runs before
-    //         the traversal step fires. Chromium also does not defer this setup.
-    {
+    // 12. Append the following session history traversal steps to traversable:
+    traversable->append_session_history_traversal_steps(GC::create_function(heap(), [this, navigable, parent_navigable, history_entry, traversable](NonnullRefPtr<Core::Promise<Empty>> signal) mutable {
         // 1. Let parentDocState be parentNavigable's active session history entry's document state.
         auto parent_doc_state = parent_navigable->active_session_history_entry()->document_state();
 
@@ -144,22 +139,19 @@ WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable(GC::Ptr
 
         // 6. Append nestedHistory to parentDocState's nested histories.
         parent_doc_state->nested_histories().append(move(nested_history));
-    }
 
-    // AD-HOC: Delay the parent's load event until the after_session_history_update callback runs
-    //         (which triggers process_the_iframe_attributes / process_the_frame_attributes).
-    //         Without this, the parent's load event fires before the iframe's content loads.
-    Optional<DOM::DocumentLoadEventDelayer> load_event_delayer;
-    if (after_session_history_update)
-        load_event_delayer.emplace(Node::document());
-
-    // 12. Append the following session history traversal steps to traversable:
-    traversable->append_session_history_traversal_steps(GC::create_function(heap(), [traversable, after_session_history_update, load_event_delayer = move(load_event_delayer)](NonnullRefPtr<Core::Promise<Empty>> signal) mutable {
         // 7. Update for navigable creation/destruction given traversable
-        traversable->update_for_navigable_creation_or_destruction(GC::create_function(traversable->heap(), [after_session_history_update, signal, load_event_delayer = move(load_event_delayer)](HistoryStepResult) mutable {
-            if (after_session_history_update)
-                after_session_history_update->function()();
-            load_event_delayer.clear();
+        traversable->update_for_navigable_creation_or_destruction(GC::create_function(traversable->heap(), [signal](HistoryStepResult) {
+            signal->resolve({});
+        }));
+
+        traversable->append_session_history_traversal_steps(GC::create_function(traversable->heap(), [this, navigable](NonnullRefPtr<Core::Promise<Empty>> signal) {
+            if (navigable->has_been_destroyed() || content_navigable() != navigable) {
+                signal->resolve({});
+                return;
+            }
+
+            set_content_navigable_has_session_history_entry_and_ready_for_navigation();
             signal->resolve({});
         }));
     }));
