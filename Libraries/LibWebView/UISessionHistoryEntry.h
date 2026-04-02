@@ -109,6 +109,15 @@ struct UINestedHistory {
 
 Vector<int> get_all_used_history_steps(Vector<UISessionHistoryEntry> const&);
 
+// IPC-transportable plan data for a navigable in a traversal.
+struct NavigablePlanIPC {
+    u64 navigable_id { 0 };
+    UISessionHistoryEntry target_entry;
+    u64 history_length { 0 };
+    u64 history_index { 0 };
+    Vector<UISessionHistoryEntry> navigation_api_entries;
+};
+
 }
 
 namespace IPC {
@@ -137,5 +146,10 @@ template<>
 WEBVIEW_API ErrorOr<void> encode(Encoder&, WebView::UINestedHistory const&);
 template<>
 WEBVIEW_API ErrorOr<WebView::UINestedHistory> decode(Decoder&);
+
+template<>
+WEBVIEW_API ErrorOr<void> encode(Encoder&, WebView::NavigablePlanIPC const&);
+template<>
+WEBVIEW_API ErrorOr<WebView::NavigablePlanIPC> decode(Decoder&);
 
 }

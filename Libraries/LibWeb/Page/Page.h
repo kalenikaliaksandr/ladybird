@@ -98,6 +98,7 @@ public:
     void apply_session_history_step(int step);
     void apply_session_history_step_for_traversal(int step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement);
     void execute_push_or_replace_history_step(u64 callback_token, u64 pending_document_token, int step, u8 history_handling, u8 user_involvement, bool is_synchronous);
+    void execute_traversal_plan(Vector<WebView::NavigablePlanIPC> changing, Vector<WebView::NavigablePlanIPC> non_changing, int target_step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement, u8 navigation_type, bool check_for_cancelation);
 
     u64 allocate_session_history_entry_id() { return m_next_session_history_entry_id++; }
 

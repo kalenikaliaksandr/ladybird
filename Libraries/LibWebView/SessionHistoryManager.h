@@ -46,7 +46,22 @@ public:
     struct NavigableInfo {
         u64 parent_id { 0 };
         bool ready_for_navigation { false };
+        Optional<u64> current_entry_document_id;
     };
+
+    // Plan data built by UI, to be sent to WebContent for traversal execution.
+    struct NavigablePlanData {
+        u64 navigable_id { 0 };
+        UISessionHistoryEntry target_entry;
+        u64 history_length { 0 };
+        u64 history_index { 0 };
+        Vector<UISessionHistoryEntry> navigation_api_entries;
+    };
+    struct PlanDataForStep {
+        Vector<NavigablePlanData> changing;
+        Vector<NavigablePlanData> non_changing;
+    };
+    PlanDataForStep build_plan_data_for_step(int target_step) const;
     void register_navigable(u64 navigable_id, u64 parent_navigable_id);
     void unregister_navigable(u64 navigable_id);
     void set_navigable_ready_for_navigation(u64 navigable_id);

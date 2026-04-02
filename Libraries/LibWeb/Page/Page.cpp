@@ -171,6 +171,26 @@ void Page::execute_push_or_replace_history_step(u64 callback_token, u64 pending_
     top_level_traversable()->apply_the_push_or_replace_history_step(step, history_handling, user_involvement, sync_navigation, pending_document, on_complete);
 }
 
+void Page::execute_traversal_plan(Vector<WebView::NavigablePlanIPC> changing, Vector<WebView::NavigablePlanIPC> non_changing, int target_step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement_value, u8, bool)
+{
+    auto source_snapshot_params = source_snapshot_token != 0 ? consume_source_snapshot(source_snapshot_token) : nullptr;
+    GC::Ptr<HTML::Navigable> initiator_to_check;
+    if (initiator_navigable_id != 0) {
+        for (auto& navigable : HTML::all_navigables()) {
+            if (navigable->ui_navigable_id() == initiator_navigable_id) {
+                initiator_to_check = navigable;
+                break;
+            }
+        }
+    }
+    auto user_involvement = static_cast<HTML::UserNavigationInvolvement>(user_involvement_value);
+
+    top_level_traversable()->apply_the_history_step_from_plan(
+        target_step, move(changing), move(non_changing),
+        source_snapshot_params, initiator_to_check, user_involvement,
+        GC::create_function(heap(), [](HTML::HistoryStepResult) { }));
+}
+
 u64 Page::retain_traversal_step(GC::Ref<TraversalStepClosure> closure)
 {
     auto token = m_next_retention_token++;

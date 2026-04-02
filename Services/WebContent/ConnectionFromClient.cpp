@@ -214,6 +214,12 @@ void ConnectionFromClient::execute_queued_traversal_step(u64 page_id, u64 step_t
         page->page().execute_queued_traversal_step(step_token);
 }
 
+void ConnectionFromClient::execute_traversal_plan(u64 page_id, Vector<WebView::NavigablePlanIPC> changing, Vector<WebView::NavigablePlanIPC> non_changing, i32 target_step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement, u8 navigation_type, bool check_for_cancelation)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().execute_traversal_plan(move(changing), move(non_changing), target_step, source_snapshot_token, initiator_navigable_id, user_involvement, navigation_type, check_for_cancelation);
+}
+
 void ConnectionFromClient::set_viewport(u64 page_id, Web::DevicePixelSize size, double device_pixel_ratio, Web::ViewportIsFullscreen is_fullscreen)
 {
     if (auto page = this->page(page_id); page.has_value()) {

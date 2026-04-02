@@ -453,6 +453,18 @@ class ApplyHistoryStepState : public GC::Cell {
     GC_DECLARE_ALLOCATOR(ApplyHistoryStepState);
 
 public:
+    // Pre-computed data for each navigable, replacing tree queries.
+    struct NavigablePlan {
+        GC::Ref<SessionHistoryEntry> target_entry;
+        u64 history_length { 0 };
+        u64 history_index { 0 };
+        Vector<GC::Ref<SessionHistoryEntry>> navigation_api_entries;
+    };
+    struct PlanData {
+        HashMap<GC::RawRef<Navigable>, NavigablePlan> changing;
+        HashMap<GC::RawRef<Navigable>, NavigablePlan> non_changing;
+    };
+
     static constexpr int TIMEOUT_MS = 15000;
 
     ApplyHistoryStepState(
@@ -591,30 +603,27 @@ private:
     HashTable<GC::Ref<Navigable>> m_navigables_that_must_wait_before_handling_sync_navigation;
 
     size_t m_completed_non_changing_jobs { 0 };
+
+    Optional<PlanData> m_plan_data;
+
+public:
+    void set_plan_data(PlanData plan_data) { m_plan_data = move(plan_data); }
 };
 
 GC_DEFINE_ALLOCATOR(ApplyHistoryStepState);
 
 void ApplyHistoryStepState::start()
 {
-    // 7. Let nonchangingNavigablesThatStillNeedUpdates be the result of getting all navigables that only need history object length/index update given traversable and targetStep.
-    auto non_changing_navigables = m_traversable->get_all_navigables_that_only_need_history_object_length_index_update(m_target_step);
-    for (auto& nav : non_changing_navigables)
-        m_non_changing_navigables.append(*nav);
+    VERIFY(m_plan_data.has_value());
 
-    // 8. For each navigable of changingNavigables:
-    auto changing_navigables = m_traversable->get_all_navigables_whose_current_session_history_entry_will_change_or_reload(m_target_step);
-    for (auto& navigable : changing_navigables) {
-        // 1. Let targetEntry be the result of getting the target history entry given navigable and targetStep.
-        auto target_entry = navigable->get_the_target_history_entry(m_target_step);
+    for (auto& [navigable_ref, plan] : m_plan_data->non_changing)
+        m_non_changing_navigables.append(navigable_ref);
 
-        // 2. Set navigable's current session history entry to targetEntry.
-        navigable->set_current_session_history_entry(target_entry);
-
-        // 3. Set navigable's ongoing navigation to "traversal".
-        navigable->set_ongoing_navigation(HTML::Navigable::Traversal::Tag);
-
-        m_changing_navigables.append(*navigable);
+    for (auto& [navigable_ref, plan] : m_plan_data->changing) {
+        auto& navigable = *navigable_ref;
+        navigable.set_current_session_history_entry(plan.target_entry);
+        navigable.set_ongoing_navigation(HTML::Navigable::Traversal::Tag);
+        m_changing_navigables.append(navigable);
     }
 
     // 12. For each navigable of changingNavigables, queue a global task on the navigation and traversal task source.
@@ -847,20 +856,27 @@ void ApplyHistoryStepState::process_continuations()
             continue;
         }
 
-        // AD-HOC: We re-compute targetStep here, since it might have changed since the last time we computed it.
-        //         This can happen if navigables are destroyed while we wait for tasks to complete.
-        m_target_step = m_traversable->get_the_used_step(m_step);
+        u64 script_history_length;
+        u64 script_history_index;
+        Optional<Vector<GC::Ref<SessionHistoryEntry>>> plan_nav_api_entries;
 
-        // 7. Let (scriptHistoryLength, scriptHistoryIndex) be the result of getting the history object length and index given traversable and targetStep.
-        auto history_object_length_and_index = m_traversable->get_the_history_object_length_and_index(m_target_step);
-        auto script_history_length = history_object_length_and_index.script_history_length;
-        auto script_history_index = history_object_length_and_index.script_history_index;
+        if (auto it = m_plan_data->changing.find(*navigable); it != m_plan_data->changing.end()) {
+            script_history_length = it->value.history_length;
+            script_history_index = it->value.history_index;
+            plan_nav_api_entries = it->value.navigation_api_entries;
+        } else {
+            auto length_and_index = m_traversable->get_the_history_object_length_and_index(m_target_step);
+            script_history_length = length_and_index.script_history_length;
+            script_history_index = length_and_index.script_history_index;
+        }
 
         // 8. Append navigable to navigablesThatMustWaitBeforeHandlingSyncNavigation.
         m_navigables_that_must_wait_before_handling_sync_navigation.set(*navigable);
 
         // 9. Let entriesForNavigationAPI be the result of getting session history entries for the navigation API given navigable and targetStep.
-        auto entries_for_navigation_api = m_traversable->get_session_history_entries_for_the_navigation_api(*navigable, m_target_step);
+        auto entries_for_navigation_api = plan_nav_api_entries.has_value()
+            ? move(plan_nav_api_entries.value())
+            : m_traversable->get_session_history_entries_for_the_navigation_api(*navigable, m_target_step);
 
         // NOTE: Steps 10 and 11 come after step 12.
 
@@ -946,14 +962,23 @@ void ApplyHistoryStepState::process_continuations()
 
 void ApplyHistoryStepState::enter_waiting_for_non_changing_jobs()
 {
-    // AD-HOC: We re-compute targetStep here, since it might have changed since the last time we computed it.
-    //         This can happen if navigables are destroyed while we wait for tasks to complete.
-    m_target_step = m_traversable->get_the_used_step(m_step);
+    u64 script_history_length;
+    u64 script_history_index;
 
-    // 17. Let (scriptHistoryLength, scriptHistoryIndex) be the result of getting the history object length and index given traversable and targetStep.
-    auto length_and_index = m_traversable->get_the_history_object_length_and_index(m_target_step);
-    auto script_history_length = length_and_index.script_history_length;
-    auto script_history_index = length_and_index.script_history_index;
+    if (!m_non_changing_navigables.is_empty()) {
+        if (auto it = m_plan_data->non_changing.find(*m_non_changing_navigables[0]); it != m_plan_data->non_changing.end()) {
+            script_history_length = it->value.history_length;
+            script_history_index = it->value.history_index;
+        } else {
+            m_target_step = m_traversable->get_the_used_step(m_step);
+            auto length_and_index = m_traversable->get_the_history_object_length_and_index(m_target_step);
+            script_history_length = length_and_index.script_history_length;
+            script_history_index = length_and_index.script_history_index;
+        }
+    } else {
+        script_history_length = 0;
+        script_history_index = 0;
+    }
 
     // 18. For each navigable of nonchangingNavigablesThatStillNeedUpdates, queue a global task on the navigation and traversal task source given navigable's active window to run the steps:
     for (auto& navigable : m_non_changing_navigables) {
@@ -1094,9 +1119,103 @@ void TraversableNavigable::apply_the_history_step_after_unload_check(
     auto state = heap().allocate<ApplyHistoryStepState>(*this, step, target_step, source_snapshot_params,
         user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete);
 
+    // Build PlanData from the local tree so ApplyHistoryStepState doesn't need to query it directly.
+    ApplyHistoryStepState::PlanData plan_data;
+
+    auto non_changing = get_all_navigables_that_only_need_history_object_length_index_update(target_step);
+    auto changing = get_all_navigables_whose_current_session_history_entry_will_change_or_reload(target_step);
+    auto length_and_index = get_the_history_object_length_and_index(target_step);
+
+    for (auto& nav : changing) {
+        auto target_entry = nav->get_the_target_history_entry(target_step);
+        auto nav_api_entries = get_session_history_entries_for_the_navigation_api(*nav, target_step);
+        plan_data.changing.set(*nav, {
+                                         .target_entry = *target_entry,
+                                         .history_length = length_and_index.script_history_length,
+                                         .history_index = length_and_index.script_history_index,
+                                         .navigation_api_entries = move(nav_api_entries),
+                                     });
+    }
+
+    for (auto& nav : non_changing) {
+        plan_data.non_changing.set(*nav, {
+                                             .target_entry = *nav->active_session_history_entry(),
+                                             .history_length = length_and_index.script_history_length,
+                                             .history_index = length_and_index.script_history_index,
+                                         });
+    }
+
+    state->set_plan_data(move(plan_data));
+
     VERIFY(!m_apply_history_step_state || m_paused_apply_history_step_state);
     m_apply_history_step_state = state;
 
+    state->start();
+}
+
+void TraversableNavigable::apply_the_history_step_from_plan(int target_step, Vector<WebView::NavigablePlanIPC> changing_plan, Vector<WebView::NavigablePlanIPC> non_changing_plan, GC::Ptr<SourceSnapshotParams> source_snapshot_params, GC::Ptr<Navigable>, UserNavigationInvolvement user_involvement, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete)
+{
+    VERIFY(!m_apply_history_step_state || m_paused_apply_history_step_state);
+
+    auto state = heap().allocate<ApplyHistoryStepState>(*this, target_step, target_step, source_snapshot_params,
+        user_involvement, Bindings::NavigationType::Traverse, SynchronousNavigation::No, nullptr, on_complete);
+
+    // Convert IPC plan data to ApplyHistoryStepState::PlanData.
+    ApplyHistoryStepState::PlanData plan_data;
+
+    for (auto& plan_entry : changing_plan) {
+        GC::Ptr<Navigable> navigable;
+        for (auto& nav : all_navigables()) {
+            if (nav->ui_navigable_id() == plan_entry.navigable_id) {
+                navigable = nav;
+                break;
+            }
+        }
+        if (!navigable)
+            continue;
+
+        auto target_entry = heap().allocate<SessionHistoryEntry>();
+        auto doc_state = heap().allocate<DocumentState>();
+        target_entry->set_document_state(doc_state);
+        apply_ui_session_history_entry(plan_entry.target_entry, *target_entry, heap());
+
+        Vector<GC::Ref<SessionHistoryEntry>> nav_api_entries;
+        for (auto const& ui_entry : plan_entry.navigation_api_entries) {
+            auto e = heap().allocate<SessionHistoryEntry>();
+            auto ds = heap().allocate<DocumentState>();
+            e->set_document_state(ds);
+            apply_ui_session_history_entry(ui_entry, *e, heap());
+            nav_api_entries.append(*e);
+        }
+
+        plan_data.changing.set(*navigable, {
+                                               .target_entry = *target_entry,
+                                               .history_length = plan_entry.history_length,
+                                               .history_index = plan_entry.history_index,
+                                               .navigation_api_entries = move(nav_api_entries),
+                                           });
+    }
+
+    for (auto const& plan_entry : non_changing_plan) {
+        GC::Ptr<Navigable> navigable;
+        for (auto& nav : all_navigables()) {
+            if (nav->ui_navigable_id() == plan_entry.navigable_id) {
+                navigable = nav;
+                break;
+            }
+        }
+        if (!navigable)
+            continue;
+
+        plan_data.non_changing.set(*navigable, {
+                                                   .target_entry = *navigable->active_session_history_entry(),
+                                                   .history_length = plan_entry.history_length,
+                                                   .history_index = plan_entry.history_index,
+                                               });
+    }
+
+    state->set_plan_data(move(plan_data));
+    m_apply_history_step_state = state;
     state->start();
 }
 

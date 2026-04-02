@@ -198,8 +198,8 @@ void ViewImplementation::traverse_the_history_by_delta(int delta)
     if (!target_step.has_value())
         return;
 
-    // Send directly — WebContent's apply_session_history_step will enqueue on the
-    // UI traversal queue via append_session_history_traversal_steps.
+    // Send directly — WebContent will enqueue via append_session_history_traversal_steps,
+    // which routes through UI's queue, building plan data locally.
     client().async_apply_session_history_step(page_id(), *target_step);
 }
 

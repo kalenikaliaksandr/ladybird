@@ -159,3 +159,26 @@ ErrorOr<WebView::UINestedHistory> IPC::decode(Decoder& decoder)
     auto entries = TRY(decoder.decode<Vector<WebView::UISessionHistoryEntry>>());
     return WebView::UINestedHistory { move(navigable_id), move(entries) };
 }
+
+template<>
+ErrorOr<void> IPC::encode(Encoder& encoder, WebView::NavigablePlanIPC const& plan)
+{
+    TRY(encoder.encode(plan.navigable_id));
+    TRY(encoder.encode(plan.target_entry));
+    TRY(encoder.encode(plan.history_length));
+    TRY(encoder.encode(plan.history_index));
+    TRY(encoder.encode(plan.navigation_api_entries));
+    return {};
+}
+
+template<>
+ErrorOr<WebView::NavigablePlanIPC> IPC::decode(Decoder& decoder)
+{
+    WebView::NavigablePlanIPC plan;
+    plan.navigable_id = TRY(decoder.decode<u64>());
+    plan.target_entry = TRY(decoder.decode<WebView::UISessionHistoryEntry>());
+    plan.history_length = TRY(decoder.decode<u64>());
+    plan.history_index = TRY(decoder.decode<u64>());
+    plan.navigation_api_entries = TRY(decoder.decode<Vector<WebView::UISessionHistoryEntry>>());
+    return plan;
+}

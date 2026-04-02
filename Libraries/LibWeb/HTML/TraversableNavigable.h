@@ -61,6 +61,7 @@ public:
     HistoryObjectLengthAndIndex get_the_history_object_length_and_index(int) const;
 
     void apply_the_traverse_history_step(int, GC::Ptr<SourceSnapshotParams>, GC::Ptr<Navigable>, UserNavigationInvolvement, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete);
+    void apply_the_history_step_from_plan(int target_step, Vector<WebView::NavigablePlanIPC> changing, Vector<WebView::NavigablePlanIPC> non_changing, GC::Ptr<SourceSnapshotParams>, GC::Ptr<Navigable> initiator, UserNavigationInvolvement, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete);
     void apply_the_reload_history_step(UserNavigationInvolvement, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete);
     enum class SynchronousNavigation : bool {
         Yes,

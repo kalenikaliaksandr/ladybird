@@ -111,4 +111,151 @@ bool SessionHistoryManager::is_navigable_ready_for_navigation(u64 navigable_id) 
     return false;
 }
 
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index
+static void compute_history_length_and_index(Vector<UISessionHistoryEntry> const& entries, int target_step, u64& out_length, u64& out_index)
+{
+    // Count top-level entries with assigned steps.
+    u64 length = 0;
+    u64 index = 0;
+    for (auto const& entry : entries) {
+        if (entry.step.has_value()) {
+            if (entry.step.value() <= target_step)
+                index = length;
+            length++;
+        }
+    }
+    out_length = length;
+    out_index = index;
+}
+
+// Get target entry for the top-level navigable at a given step.
+static UISessionHistoryEntry const* get_target_entry_at_step(Vector<UISessionHistoryEntry> const& entries, int target_step)
+{
+    UISessionHistoryEntry const* best = nullptr;
+    for (auto const& entry : entries) {
+        if (entry.step.has_value() && entry.step.value() <= target_step)
+            best = &entry;
+    }
+    return best;
+}
+
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#getting-session-history-entries-for-the-navigation-api
+static Vector<UISessionHistoryEntry> get_navigation_api_entries(Vector<UISessionHistoryEntry> const& raw_entries, int target_step)
+{
+    if (raw_entries.is_empty())
+        return {};
+
+    // Find starting index: entry with greatest step <= target_step
+    int starting_index = 0;
+    int max_step = -1;
+    for (int i = 0; i < static_cast<int>(raw_entries.size()); ++i) {
+        auto const& entry = raw_entries[i];
+        if (entry.step.has_value()) {
+            auto step = entry.step.value();
+            if (step <= target_step && step > max_step) {
+                starting_index = i;
+                max_step = step;
+            }
+        }
+    }
+
+    Vector<UISessionHistoryEntry> result;
+    result.append(raw_entries[starting_index]);
+
+    auto const& starting_origin = raw_entries[starting_index].document_state.origin;
+
+    // Walk backward from starting_index
+    for (int i = starting_index - 1; i >= 0; --i) {
+        auto const& entry_origin = raw_entries[i].document_state.origin;
+        if (starting_origin.has_value() && entry_origin.has_value() && !entry_origin->is_same_origin(*starting_origin))
+            break;
+        result.prepend(raw_entries[i]);
+    }
+
+    // Walk forward from starting_index
+    for (int i = starting_index + 1; i < static_cast<int>(raw_entries.size()); ++i) {
+        auto const& entry_origin = raw_entries[i].document_state.origin;
+        if (starting_origin.has_value() && entry_origin.has_value() && !entry_origin->is_same_origin(*starting_origin))
+            break;
+        result.append(raw_entries[i]);
+    }
+
+    return result;
+}
+
+SessionHistoryManager::PlanDataForStep SessionHistoryManager::build_plan_data_for_step(int target_step) const
+{
+    PlanDataForStep plan;
+
+    u64 history_length = 0;
+    u64 history_index = 0;
+    compute_history_length_and_index(m_entries, target_step, history_length, history_index);
+
+    // For the top-level navigable: determine if it's changing.
+    auto const* target_entry = get_target_entry_at_step(m_entries, target_step);
+    if (!target_entry)
+        return plan;
+
+    auto nav_api_entries = get_navigation_api_entries(m_entries, target_step);
+
+    // Find the top-level navigable ID.
+    u64 top_level_nav_id = 0;
+    for (auto const& [nav_id, info] : m_navigable_tree) {
+        if (info.parent_id == 0) {
+            top_level_nav_id = nav_id;
+            break;
+        }
+    }
+
+    if (top_level_nav_id != 0) {
+        plan.changing.append({
+            .navigable_id = top_level_nav_id,
+            .target_entry = *target_entry,
+            .history_length = history_length,
+            .history_index = history_index,
+            .navigation_api_entries = move(nav_api_entries),
+        });
+    }
+
+    // Child navigables: check nested histories for entries at target_step.
+    // For each child navigable tracked by UI, check if it has an entry at target_step
+    // in its parent's nested histories.
+    for (auto const& nested : target_entry->document_state.nested_histories) {
+        // Find the navigable ID for this nested history.
+        u64 child_nav_id = 0;
+        for (auto const& [nav_id, info] : m_navigable_tree) {
+            if (info.parent_id == top_level_nav_id) {
+                // FIXME: Match by navigable ID stored in nested history vs ui_navigable_id.
+                // For now, use the first child navigable.
+                child_nav_id = nav_id;
+                break;
+            }
+        }
+
+        if (child_nav_id == 0)
+            continue;
+
+        auto const* child_target = get_target_entry_at_step(nested.entries, target_step);
+        if (child_target) {
+            auto child_nav_api = get_navigation_api_entries(nested.entries, target_step);
+            plan.changing.append({
+                .navigable_id = child_nav_id,
+                .target_entry = *child_target,
+                .history_length = history_length,
+                .history_index = history_index,
+                .navigation_api_entries = move(child_nav_api),
+            });
+        } else {
+            plan.non_changing.append({
+                .navigable_id = child_nav_id,
+                .target_entry = {},
+                .history_length = history_length,
+                .history_index = history_index,
+            });
+        }
+    }
+
+    return plan;
+}
+
 }
