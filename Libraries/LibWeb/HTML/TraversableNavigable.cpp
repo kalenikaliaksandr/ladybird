@@ -51,6 +51,7 @@ void TraversableNavigable::visit_edges(Cell::Visitor& visitor)
     if (m_emulated_position_data.has<GC::Ref<Geolocation::GeolocationCoordinates>>())
         visitor.visit(m_emulated_position_data.get<GC::Ref<Geolocation::GeolocationCoordinates>>());
     visitor.visit(m_session_history_entries);
+    visitor.visit(m_sync_nav_steps);
     visitor.visit(m_session_history_traversal_queue);
     visitor.visit(m_storage_shed);
     visitor.visit(m_apply_history_step_state);
@@ -186,54 +187,6 @@ GC::Ref<TraversableNavigable> TraversableNavigable::create_a_fresh_top_level_tra
 
     // 3. Return traversable.
     return traversable;
-}
-
-static GC::Ref<SessionHistoryEntry> create_session_history_entry_from_ui(GC::Heap& heap, WebView::UISessionHistoryEntry const& ui_entry)
-{
-    auto entry = heap.allocate<SessionHistoryEntry>();
-    auto document_state = heap.allocate<DocumentState>();
-    entry->set_document_state(document_state);
-    apply_ui_session_history_entry(ui_entry, *entry, heap);
-
-    // Reconstruct nested histories.
-    for (auto const& ui_nested : ui_entry.document_state.nested_histories) {
-        DocumentState::NestedHistory nested;
-        nested.id = ui_nested.navigable_id;
-        for (auto const& ui_nested_entry : ui_nested.entries)
-            nested.entries.append(create_session_history_entry_from_ui(heap, ui_nested_entry));
-        document_state->nested_histories().append(move(nested));
-    }
-
-    return entry;
-}
-
-void TraversableNavigable::initialize_session_history_from_ui(Vector<WebView::UISessionHistoryEntry> const& ui_entries, int current_step)
-{
-    // The new process already has an initial about:blank entry at step 0 with a valid Document.
-    // We must NOT replace it, because the navigable's active/current entry pointers reference it.
-    // Instead, we:
-    // 1. Reconstruct historical entries (steps < current_step) and prepend them
-    // 2. Re-number the initial entry to use current_step + 1 (the next navigation will set it properly)
-    // 3. Update m_current_session_history_step
-
-    // Collect historical entries (entries before the current step that represent "back" history).
-    Vector<GC::Ref<SessionHistoryEntry>> historical_entries;
-    for (auto const& ui_entry : ui_entries) {
-        if (ui_entry.step.has_value() && ui_entry.step.value() <= current_step)
-            historical_entries.append(create_session_history_entry_from_ui(heap(), ui_entry));
-    }
-
-    // Assign the current step to the initial entry (so it sits at the right position).
-    if (!m_session_history_entries.is_empty()) {
-        auto& initial_entry = m_session_history_entries[0];
-        initial_entry->set_step(current_step + 1);
-    }
-
-    // Prepend historical entries before the initial entry.
-    for (int i = static_cast<int>(historical_entries.size()) - 1; i >= 0; --i)
-        m_session_history_entries.prepend(historical_entries[i]);
-
-    m_current_session_history_step = current_step;
 }
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#top-level-traversable
@@ -1536,6 +1489,33 @@ bool TraversableNavigable::can_go_forward() const
     return false;
 }
 
+void TraversableNavigable::append_session_history_traversal_steps(GC::Ref<SessionHistoryTraversalSteps> steps)
+{
+    m_session_history_traversal_queue->append(steps);
+}
+
+void TraversableNavigable::append_session_history_synchronous_navigation_steps(GC::Ref<Navigable> target_navigable, GC::Ref<SessionHistoryTraversalSteps> steps)
+{
+    m_session_history_traversal_queue->append_sync(steps, target_navigable);
+}
+
+GC::Ptr<SessionHistoryTraversalQueueEntry> TraversableNavigable::take_first_eligible_sync_nav_step(HashTable<GC::Ref<Navigable>> const& navigables_that_must_wait)
+{
+    auto index = m_sync_nav_steps.find_first_index_if([&navigables_that_must_wait](auto const& entry) -> bool {
+        auto target_navigable = entry->target_navigable();
+        if (target_navigable == nullptr)
+            return false;
+        if (navigables_that_must_wait.contains(*target_navigable))
+            return false;
+        if (!target_navigable->has_session_history_entry_and_ready_for_navigation())
+            return false;
+        return true;
+    });
+    if (index.has_value())
+        return m_sync_nav_steps.take(*index);
+    return {};
+}
+
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta
 void TraversableNavigable::traverse_the_history_by_delta(int delta, GC::Ptr<DOM::Document> source_document)
 {
@@ -1763,12 +1743,7 @@ void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversab
     }
 
     // 6. Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.
-    // Route through UI process: retain callback, send IPC. Synchronous nav steps are handled with queue-jumping in UI.
-    auto callback_token = traversable->page().retain_history_step_callback(on_complete);
-
-    traversable->page().client().page_did_request_push_or_replace_history_step(
-        callback_token, 0, *target_step,
-        static_cast<u8>(history_handling), static_cast<u8>(user_involvement), true);
+    traversable->apply_the_push_or_replace_history_step(*target_step, history_handling, user_involvement, TraversableNavigable::SynchronousNavigation::Yes, nullptr, on_complete);
 }
 
 // https://html.spec.whatwg.org/multipage/interaction.html#system-visibility-state

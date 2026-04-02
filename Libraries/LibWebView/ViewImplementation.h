@@ -170,6 +170,8 @@ public:
     void did_navigable_become_ready_for_navigation(Badge<WebContentClient>, u64 ui_navigable_id);
     void did_request_traverse_by_delta(Badge<WebContentClient>, i32 delta, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement);
     void did_request_push_or_replace_history_step(Badge<WebContentClient>, u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous);
+    void did_enqueue_traversal_step(Badge<WebContentClient>, u64 step_token);
+    void did_complete_queued_traversal_step(Badge<WebContentClient>);
 
     void did_append_session_history_entry(Badge<WebContentClient>, UISessionHistoryEntry entry);
     void did_replace_session_history_entry(Badge<WebContentClient>, UISessionHistoryEntry entry);

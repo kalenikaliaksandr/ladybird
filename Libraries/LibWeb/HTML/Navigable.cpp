@@ -2697,22 +2697,13 @@ void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryH
     }
 
     // 10. Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.
-    // Route through UI process: retain callback and pending_document, send IPC, UI enqueues on UITraversalQueue.
-    auto wrapped_on_complete = GC::create_function(navigable->heap(), [on_complete, navigable](HistoryStepResult result) {
-        // AD-HOC: Trigger a relayout in the container document for size negotiation with SVG documents.
-        if (auto container = navigable->container())
-            container->set_needs_layout_update(DOM::SetNeedsLayoutReason::FinalizeACrossDocumentNavigation);
-        on_complete->function()(result);
-    });
-
-    auto callback_token = traversable->page().retain_history_step_callback(wrapped_on_complete);
-    u64 pending_document_token = 0;
-    if (pending_document)
-        pending_document_token = traversable->page().retain_pending_document(*pending_document);
-
-    traversable->page().client().page_did_request_push_or_replace_history_step(
-        callback_token, pending_document_token, target_step,
-        static_cast<u8>(history_handling), static_cast<u8>(user_involvement), false);
+    traversable->apply_the_push_or_replace_history_step(target_step, history_handling, user_involvement, TraversableNavigable::SynchronousNavigation::No, pending_document,
+        GC::create_function(navigable->heap(), [on_complete, navigable](HistoryStepResult result) {
+            // AD-HOC: Trigger a relayout in the container document for size negotiation with SVG documents.
+            if (auto container = navigable->container())
+                container->set_needs_layout_update(DOM::SetNeedsLayoutReason::FinalizeACrossDocumentNavigation);
+            on_complete->function()(result);
+        }));
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#url-and-history-update-steps

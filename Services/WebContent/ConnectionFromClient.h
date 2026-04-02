@@ -71,11 +71,10 @@ private:
     virtual void load_url(u64 page_id, URL::URL) override;
     virtual void load_html(u64 page_id, ByteString) override;
     virtual void reload(u64 page_id) override;
-    virtual void traverse_the_history_by_delta(u64 page_id, i32 delta) override;
     virtual void apply_session_history_step(u64 page_id, i32 step) override;
     virtual void apply_session_history_step_for_traversal(u64 page_id, i32 step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement) override;
     virtual void execute_push_or_replace_history_step(u64 page_id, u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous) override;
-    virtual void initialize_session_history(u64 page_id, Vector<WebView::UISessionHistoryEntry> entries, i32 current_step) override;
+    virtual void execute_queued_traversal_step(u64 page_id, u64 step_token) override;
     virtual void set_viewport(u64 page_id, Web::DevicePixelSize, double device_pixel_ratio, Web::ViewportIsFullscreen is_fullscreen) override;
     virtual void key_event(u64 page_id, Web::KeyEvent) override;
     virtual void mouse_event(u64 page_id, Web::MouseEvent) override;

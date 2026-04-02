@@ -71,6 +71,8 @@ void Page::visit_edges(JS::Cell::Visitor& visitor)
         visitor.visit(document);
     for (auto& [_, callback] : m_retained_history_step_callbacks)
         visitor.visit(callback);
+    for (auto& [_, step] : m_retained_traversal_steps)
+        visitor.visit(step);
 }
 
 HTML::Navigable& Page::focused_navigable()
@@ -169,9 +171,36 @@ void Page::execute_push_or_replace_history_step(u64 callback_token, u64 pending_
     top_level_traversable()->apply_the_push_or_replace_history_step(step, history_handling, user_involvement, sync_navigation, pending_document, on_complete);
 }
 
-void Page::initialize_session_history(Vector<WebView::UISessionHistoryEntry> entries, int current_step)
+u64 Page::retain_traversal_step(GC::Ref<TraversalStepClosure> closure)
 {
-    top_level_traversable()->initialize_session_history_from_ui(entries, current_step);
+    auto token = m_next_retention_token++;
+    m_retained_traversal_steps.set(token, closure);
+    return token;
+}
+
+GC::Ptr<Page::TraversalStepClosure> Page::consume_traversal_step(u64 token)
+{
+    auto it = m_retained_traversal_steps.find(token);
+    if (it == m_retained_traversal_steps.end())
+        return nullptr;
+    auto closure = it->value;
+    m_retained_traversal_steps.remove(it);
+    return closure;
+}
+
+void Page::execute_queued_traversal_step(u64 token)
+{
+    auto closure = consume_traversal_step(token);
+    if (!closure)
+        return;
+
+    auto promise = Core::Promise<Empty>::construct();
+    closure->function()(promise);
+
+    // When the step completes, notify UI so it can advance the queue.
+    promise->when_resolved([this](Empty) {
+        client().page_did_complete_queued_traversal_step();
+    });
 }
 
 u64 Page::retain_source_snapshot(GC::Ref<HTML::SourceSnapshotParams> snapshot)

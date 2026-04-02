@@ -706,6 +706,16 @@ void PageClient::page_did_request_traverse_by_delta(i32 delta, u64 source_snapsh
     client().async_did_request_traverse_by_delta(m_id, delta, source_snapshot_token, initiator_navigable_id, user_involvement);
 }
 
+void PageClient::page_did_enqueue_traversal_step(u64 step_token)
+{
+    client().async_did_enqueue_traversal_step(m_id, step_token);
+}
+
+void PageClient::page_did_complete_queued_traversal_step()
+{
+    client().async_did_complete_queued_traversal_step(m_id);
+}
+
 void PageClient::page_did_request_push_or_replace_history_step(u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous)
 {
     client().async_did_request_push_or_replace_history_step(m_id, callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous);

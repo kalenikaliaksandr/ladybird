@@ -190,12 +190,6 @@ void ConnectionFromClient::reload(u64 page_id)
         page->page().reload();
 }
 
-void ConnectionFromClient::traverse_the_history_by_delta(u64 page_id, i32 delta)
-{
-    if (auto page = this->page(page_id); page.has_value())
-        page->page().traverse_the_history_by_delta(delta);
-}
-
 void ConnectionFromClient::apply_session_history_step(u64 page_id, i32 step)
 {
     if (auto page = this->page(page_id); page.has_value())
@@ -214,10 +208,10 @@ void ConnectionFromClient::execute_push_or_replace_history_step(u64 page_id, u64
         page->page().execute_push_or_replace_history_step(callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous);
 }
 
-void ConnectionFromClient::initialize_session_history(u64 page_id, Vector<WebView::UISessionHistoryEntry> entries, i32 current_step)
+void ConnectionFromClient::execute_queued_traversal_step(u64 page_id, u64 step_token)
 {
     if (auto page = this->page(page_id); page.has_value())
-        page->page().initialize_session_history(move(entries), current_step);
+        page->page().execute_queued_traversal_step(step_token);
 }
 
 void ConnectionFromClient::set_viewport(u64 page_id, Web::DevicePixelSize size, double device_pixel_ratio, Web::ViewportIsFullscreen is_fullscreen)

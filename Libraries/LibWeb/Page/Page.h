@@ -98,7 +98,6 @@ public:
     void apply_session_history_step(int step);
     void apply_session_history_step_for_traversal(int step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement);
     void execute_push_or_replace_history_step(u64 callback_token, u64 pending_document_token, int step, u8 history_handling, u8 user_involvement, bool is_synchronous);
-    void initialize_session_history(Vector<WebView::UISessionHistoryEntry> entries, int current_step);
 
     u64 allocate_session_history_entry_id() { return m_next_session_history_entry_id++; }
 
@@ -111,6 +110,11 @@ public:
     using HistoryStepCallback = GC::Function<void(HTML::HistoryStepResult)>;
     u64 retain_history_step_callback(GC::Ref<HistoryStepCallback>);
     GC::Ptr<HistoryStepCallback> consume_history_step_callback(u64 token);
+
+    using TraversalStepClosure = GC::Function<void(NonnullRefPtr<Core::Promise<Empty>>)>;
+    u64 retain_traversal_step(GC::Ref<TraversalStepClosure>);
+    GC::Ptr<TraversalStepClosure> consume_traversal_step(u64 token);
+    void execute_queued_traversal_step(u64 token);
 
     CSSPixelPoint device_to_css_point(DevicePixelPoint) const;
     DevicePixelPoint css_to_device_point(CSSPixelPoint) const;
@@ -379,6 +383,7 @@ private:
     HashMap<u64, GC::Ref<HTML::SourceSnapshotParams>> m_retained_source_snapshots;
     HashMap<u64, GC::Ref<DOM::Document>> m_retained_pending_documents;
     HashMap<u64, GC::Ref<HistoryStepCallback>> m_retained_history_step_callbacks;
+    HashMap<u64, GC::Ref<TraversalStepClosure>> m_retained_traversal_steps;
 };
 
 enum class DisplayListPlayerType {
@@ -472,6 +477,8 @@ public:
     virtual void page_did_navigable_become_ready_for_navigation([[maybe_unused]] u64 ui_navigable_id) { }
     virtual void page_did_request_traverse_by_delta([[maybe_unused]] i32 delta, [[maybe_unused]] u64 source_snapshot_token, [[maybe_unused]] u64 initiator_navigable_id, [[maybe_unused]] u8 user_involvement) { }
     virtual void page_did_request_push_or_replace_history_step([[maybe_unused]] u64 callback_token, [[maybe_unused]] u64 pending_document_token, [[maybe_unused]] i32 step, [[maybe_unused]] u8 history_handling, [[maybe_unused]] u8 user_involvement, [[maybe_unused]] bool is_synchronous) { }
+    virtual void page_did_enqueue_traversal_step([[maybe_unused]] u64 step_token) { }
+    virtual void page_did_complete_queued_traversal_step() { }
 
     virtual void page_did_append_session_history_entry([[maybe_unused]] WebView::UISessionHistoryEntry entry) { }
     virtual void page_did_replace_session_history_entry([[maybe_unused]] WebView::UISessionHistoryEntry entry) { }

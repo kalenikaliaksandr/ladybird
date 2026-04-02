@@ -40,11 +40,10 @@ endpoint WebContentServer
     load_url(u64 page_id, URL::URL url) =|
     load_html(u64 page_id, ByteString html) =|
     reload(u64 page_id) =|
-    traverse_the_history_by_delta(u64 page_id, i32 delta) =|
     apply_session_history_step(u64 page_id, i32 step) =|
     apply_session_history_step_for_traversal(u64 page_id, i32 step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement) =|
     execute_push_or_replace_history_step(u64 page_id, u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous) =|
-    initialize_session_history(u64 page_id, Vector<WebView::UISessionHistoryEntry> entries, i32 current_step) =|
+    execute_queued_traversal_step(u64 page_id, u64 step_token) =|
 
     ready_to_paint(u64 page_id) =|
 

@@ -198,10 +198,9 @@ void ViewImplementation::traverse_the_history_by_delta(int delta)
     if (!target_step.has_value())
         return;
 
-    auto step = *target_step;
-    m_session_history.traversal_queue().append([this, step] {
-        client().async_apply_session_history_step(page_id(), step);
-    });
+    // Send directly — WebContent's apply_session_history_step will enqueue on the
+    // UI traversal queue via append_session_history_traversal_steps.
+    client().async_apply_session_history_step(page_id(), *target_step);
 }
 
 void ViewImplementation::zoom_in()
@@ -613,19 +612,25 @@ void ViewImplementation::did_navigable_become_ready_for_navigation(Badge<WebCont
     m_session_history.set_navigable_ready_for_navigation(ui_navigable_id);
 }
 
+void ViewImplementation::did_enqueue_traversal_step(Badge<WebContentClient>, u64 step_token)
+{
+    m_session_history.traversal_queue().append([this, step_token] {
+        client().async_execute_queued_traversal_step(page_id(), step_token);
+    });
+}
+
+void ViewImplementation::did_complete_queued_traversal_step(Badge<WebContentClient>)
+{
+    if (m_session_history.traversal_queue().is_processing())
+        m_session_history.traversal_queue().did_complete_current_step();
+}
+
 void ViewImplementation::did_request_push_or_replace_history_step(Badge<WebContentClient>, u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous)
 {
-    // For synchronous navigation steps (pushState during traversal), execute immediately
-    // without going through the queue — this matches the queue-jumping behavior.
-    if (is_synchronous) {
-        client().async_execute_push_or_replace_history_step(page_id(), callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous);
-        return;
-    }
-
-    // For async steps, enqueue on UITraversalQueue.
-    m_session_history.traversal_queue().append([this, callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous] {
-        client().async_execute_push_or_replace_history_step(page_id(), callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous);
-    });
+    // Push/replace steps are called from within an already-queued traversal step
+    // (from finalize_a_cross_document_navigation or finalize_a_same_document_navigation).
+    // Execute immediately — they must not be enqueued separately or it deadlocks.
+    client().async_execute_push_or_replace_history_step(page_id(), callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous);
 }
 
 void ViewImplementation::did_request_traverse_by_delta(Badge<WebContentClient>, i32 delta, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement)
@@ -656,10 +661,6 @@ void ViewImplementation::did_update_session_history_step(Badge<WebContentClient>
 {
     m_session_history.set_current_step(step);
     update_navigation_buttons_state();
-
-    // Signal completion to the UI traversal queue (if a UI-initiated step is in progress).
-    if (m_session_history.traversal_queue().is_processing())
-        m_session_history.traversal_queue().did_complete_current_step();
 }
 
 void ViewImplementation::update_navigation_buttons_state()

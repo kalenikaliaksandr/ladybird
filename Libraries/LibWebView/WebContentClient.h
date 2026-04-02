@@ -151,6 +151,8 @@ private:
     virtual void did_navigable_become_ready_for_navigation(u64 page_id, u64 ui_navigable_id) override;
     virtual void did_request_traverse_by_delta(u64 page_id, i32 delta, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement) override;
     virtual void did_request_push_or_replace_history_step(u64 page_id, u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous) override;
+    virtual void did_enqueue_traversal_step(u64 page_id, u64 step_token) override;
+    virtual void did_complete_queued_traversal_step(u64 page_id) override;
     virtual void did_append_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry entry) override;
     virtual void did_replace_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry entry) override;
     virtual void did_clear_forward_session_history(u64 page_id, i32 from_step) override;

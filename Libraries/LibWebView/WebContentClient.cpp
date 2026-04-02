@@ -791,6 +791,18 @@ void WebContentClient::did_request_traverse_by_delta(u64 page_id, i32 delta, u64
         view->did_request_traverse_by_delta({}, delta, source_snapshot_token, initiator_navigable_id, user_involvement);
 }
 
+void WebContentClient::did_enqueue_traversal_step(u64 page_id, u64 step_token)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_enqueue_traversal_step({}, step_token);
+}
+
+void WebContentClient::did_complete_queued_traversal_step(u64 page_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_complete_queued_traversal_step({});
+}
+
 void WebContentClient::did_request_push_or_replace_history_step(u64 page_id, u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous)
 {
     if (auto view = view_for_page_id(page_id); view.has_value())
