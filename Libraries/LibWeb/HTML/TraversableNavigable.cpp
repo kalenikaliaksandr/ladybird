@@ -1037,6 +1037,36 @@ void ApplyHistoryStepState::complete()
         m_on_complete->function()(HistoryStepResult::Applied);
 }
 
+TraversalPlanData TraversableNavigable::build_plan_data_from_tree(int target_step)
+{
+    TraversalPlanData plan_data;
+
+    auto non_changing = get_all_navigables_that_only_need_history_object_length_index_update(target_step);
+    auto changing = get_all_navigables_whose_current_session_history_entry_will_change_or_reload(target_step);
+    auto length_and_index = get_the_history_object_length_and_index(target_step);
+
+    for (auto& nav : changing) {
+        auto target_entry = nav->get_the_target_history_entry(target_step);
+        auto nav_api_entries = get_session_history_entries_for_the_navigation_api(*nav, target_step);
+        plan_data.changing.set(*nav, {
+                                         .target_entry = *target_entry,
+                                         .history_length = length_and_index.script_history_length,
+                                         .history_index = length_and_index.script_history_index,
+                                         .navigation_api_entries = move(nav_api_entries),
+                                     });
+    }
+
+    for (auto& nav : non_changing) {
+        plan_data.non_changing.set(*nav, {
+                                             .target_entry = *nav->active_session_history_entry(),
+                                             .history_length = length_and_index.script_history_length,
+                                             .history_index = length_and_index.script_history_index,
+                                         });
+    }
+
+    return plan_data;
+}
+
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#apply-the-history-step
 void TraversableNavigable::apply_the_history_step(
     int step,
@@ -1053,27 +1083,30 @@ void TraversableNavigable::apply_the_history_step(
     // FIXME: 1. Assert: This is running within traversable's session history traversal queue.
 
     VERIFY(!m_apply_history_step_state || m_paused_apply_history_step_state);
+    VERIFY(plan_data.has_value());
 
     // 2. Let targetStep be the result of getting the used step given traversable and step.
     auto target_step = get_the_used_step(step);
 
     // 3. If initiatorToCheck is not null, then:
     if (initiator_to_check != nullptr) {
-        // 1. Assert: sourceSnapshotParams is not null.
         VERIFY(source_snapshot_params);
 
-        // 2. For each navigable of get all navigables whose current session history entry will change or reload:
-        //    if initiatorToCheck is not allowed by sandboxing to navigate navigable given sourceSnapshotParams, then return "initiator-disallowed".
-        for (auto const& navigable : get_all_navigables_whose_current_session_history_entry_will_change_or_reload(target_step)) {
-            if (!initiator_to_check->allowed_by_sandboxing_to_navigate(*navigable, *source_snapshot_params)) {
+        for (auto const& [navigable_ref, _] : plan_data->changing) {
+            if (!initiator_to_check->allowed_by_sandboxing_to_navigate(*navigable_ref, *source_snapshot_params)) {
                 on_complete->function()(HistoryStepResult::InitiatorDisallowed);
                 return;
             }
         }
     }
 
-    // 4. Let navigablesCrossingDocuments be the result of getting all navigables that might experience a cross-document traversal given traversable and targetStep.
-    auto navigables_crossing_documents = get_all_navigables_that_might_experience_a_cross_document_traversal(target_step);
+    // 4. Let navigablesCrossingDocuments — derived from plan data.
+    Vector<GC::Root<Navigable>> navigables_crossing_documents;
+    for (auto const& [navigable_ref, nav_plan] : plan_data->changing) {
+        auto& navigable = *navigable_ref;
+        if (nav_plan.target_entry->document_state() && nav_plan.target_entry->document_state()->document_id() != navigable.active_document_id())
+            navigables_crossing_documents.append(navigable);
+    }
 
     // 5. If checkForCancelation is true, and the result of checking if unloading is canceled given navigablesCrossingDocuments, traversable, targetStep,
     //    and userInvolvement is not "continue", then return that result.
@@ -1111,37 +1144,8 @@ void TraversableNavigable::apply_the_history_step_after_unload_check(
     auto state = heap().allocate<ApplyHistoryStepState>(*this, step, target_step, source_snapshot_params,
         user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete);
 
-    if (plan_data.has_value()) {
-        state->set_plan_data(move(plan_data.value()));
-    } else {
-        // Build PlanData from the local tree.
-        TraversalPlanData built_plan_data;
-
-        auto non_changing = get_all_navigables_that_only_need_history_object_length_index_update(target_step);
-        auto changing = get_all_navigables_whose_current_session_history_entry_will_change_or_reload(target_step);
-        auto length_and_index = get_the_history_object_length_and_index(target_step);
-
-        for (auto& nav : changing) {
-            auto target_entry = nav->get_the_target_history_entry(target_step);
-            auto nav_api_entries = get_session_history_entries_for_the_navigation_api(*nav, target_step);
-            built_plan_data.changing.set(*nav, {
-                                                   .target_entry = *target_entry,
-                                                   .history_length = length_and_index.script_history_length,
-                                                   .history_index = length_and_index.script_history_index,
-                                                   .navigation_api_entries = move(nav_api_entries),
-                                               });
-        }
-
-        for (auto& nav : non_changing) {
-            built_plan_data.non_changing.set(*nav, {
-                                                       .target_entry = *nav->active_session_history_entry(),
-                                                       .history_length = length_and_index.script_history_length,
-                                                       .history_index = length_and_index.script_history_index,
-                                                   });
-        }
-
-        state->set_plan_data(move(built_plan_data));
-    }
+    VERIFY(plan_data.has_value());
+    state->set_plan_data(move(plan_data.value()));
 
     VERIFY(!m_apply_history_step_state || m_paused_apply_history_step_state);
     m_apply_history_step_state = state;
@@ -1630,35 +1634,31 @@ void TraversableNavigable::traverse_the_history_by_delta(int delta, GC::Ptr<DOM:
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#update-for-navigable-creation/destruction
 void TraversableNavigable::update_for_navigable_creation_or_destruction(GC::Ref<OnApplyHistoryStepComplete> on_complete)
 {
-    // 1. Let step be traversable's current session history step.
     auto step = current_session_history_step();
-
-    // 2. Return the result of applying the history step to traversable given false, null, null, null, and null.
-    apply_the_history_step(step, false, {}, {}, UserNavigationInvolvement::None, {}, SynchronousNavigation::No, nullptr, on_complete);
+    auto target_step = get_the_used_step(step);
+    apply_the_history_step(step, false, {}, {}, UserNavigationInvolvement::None, {}, SynchronousNavigation::No, nullptr, on_complete, build_plan_data_from_tree(target_step));
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#apply-the-reload-history-step
 void TraversableNavigable::apply_the_reload_history_step(UserNavigationInvolvement user_involvement, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete)
 {
-    // 1. Let step be traversable's current session history step.
     auto step = current_session_history_step();
-
-    // 2. Return the result of applying the history step step to traversable given true, null, null, null, and "reload".
-    apply_the_history_step(step, true, {}, {}, user_involvement, Bindings::NavigationType::Reload, SynchronousNavigation::No, nullptr, on_complete);
+    auto target_step = get_the_used_step(step);
+    apply_the_history_step(step, true, {}, {}, user_involvement, Bindings::NavigationType::Reload, SynchronousNavigation::No, nullptr, on_complete, build_plan_data_from_tree(target_step));
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#apply-the-push/replace-history-step
 void TraversableNavigable::apply_the_push_or_replace_history_step(int step, HistoryHandlingBehavior history_handling, UserNavigationInvolvement user_involvement, SynchronousNavigation synchronous_navigation, GC::Ptr<DOM::Document> pending_document, GC::Ref<OnApplyHistoryStepComplete> on_complete)
 {
-    // 1. Return the result of applying the history step step to traversable given false, null, null, userInvolvement, and historyHandling.
     auto navigation_type = history_handling == HistoryHandlingBehavior::Replace ? Bindings::NavigationType::Replace : Bindings::NavigationType::Push;
-    apply_the_history_step(step, false, {}, {}, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete);
+    auto target_step = get_the_used_step(step);
+    apply_the_history_step(step, false, {}, {}, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete, build_plan_data_from_tree(target_step));
 }
 
 void TraversableNavigable::apply_the_traverse_history_step(int step, GC::Ptr<SourceSnapshotParams> source_snapshot_params, GC::Ptr<Navigable> initiator_to_check, UserNavigationInvolvement user_involvement, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete)
 {
-    // 1. Return the result of applying the history step step to traversable given true, sourceSnapshotParams, initiatorToCheck, userInvolvement, and "traverse".
-    apply_the_history_step(step, true, source_snapshot_params, initiator_to_check, user_involvement, Bindings::NavigationType::Traverse, SynchronousNavigation::No, nullptr, on_complete);
+    auto target_step = get_the_used_step(step);
+    apply_the_history_step(step, true, source_snapshot_params, initiator_to_check, user_involvement, Bindings::NavigationType::Traverse, SynchronousNavigation::No, nullptr, on_complete, build_plan_data_from_tree(target_step));
 }
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#close-a-top-level-traversable

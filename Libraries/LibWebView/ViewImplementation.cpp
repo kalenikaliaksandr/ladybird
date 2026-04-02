@@ -643,11 +643,17 @@ void ViewImplementation::did_request_push_or_replace_history_step(Badge<WebConte
 
 void ViewImplementation::did_request_traverse_by_delta(Badge<WebContentClient>, i32 delta, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement)
 {
-    auto target_step = m_session_history.get_target_step_for_delta(delta);
-    if (!target_step.has_value())
-        return;
+    // Enqueue on UITraversalQueue — target step computation is deferred so preceding
+    // sync nav steps (pushState) have already updated the history.
+    m_session_history.traversal_queue().append([this, delta, source_snapshot_token, initiator_navigable_id, user_involvement] {
+        auto target_step = m_session_history.get_target_step_for_delta(delta);
+        if (!target_step.has_value()) {
+            m_session_history.traversal_queue().did_complete_current_step();
+            return;
+        }
 
-    client().async_apply_session_history_step_for_traversal(page_id(), *target_step, source_snapshot_token, initiator_navigable_id, user_involvement);
+        client().async_apply_session_history_step_for_traversal(page_id(), *target_step, source_snapshot_token, initiator_navigable_id, user_involvement);
+    });
 }
 
 void ViewImplementation::did_append_session_history_entry(Badge<WebContentClient>, UISessionHistoryEntry entry)

@@ -133,7 +133,6 @@ void Page::apply_session_history_step_for_traversal(int step, u64 source_snapsho
 {
     auto source_snapshot_params = source_snapshot_token != 0 ? consume_source_snapshot(source_snapshot_token) : nullptr;
 
-    // Find the initiator navigable by UI navigable ID.
     GC::Ptr<HTML::Navigable> initiator_to_check;
     if (initiator_navigable_id != 0) {
         for (auto& navigable : HTML::all_navigables()) {
@@ -146,12 +145,11 @@ void Page::apply_session_history_step_for_traversal(int step, u64 source_snapsho
 
     auto user_involvement = static_cast<HTML::UserNavigationInvolvement>(user_involvement_value);
 
-    top_level_traversable()->append_session_history_traversal_steps(GC::create_function(top_level_traversable()->heap(), [traversable = top_level_traversable(), step, source_snapshot_params, initiator_to_check, user_involvement](NonnullRefPtr<Core::Promise<Empty>> signal) {
-        traversable->apply_the_traverse_history_step(step, source_snapshot_params, initiator_to_check, user_involvement,
-            GC::create_function(traversable->heap(), [signal](HTML::HistoryStepResult) {
-                signal->resolve({});
-            }));
-    }));
+    // Execute directly — this is already scheduled by UI's traversal queue.
+    top_level_traversable()->apply_the_traverse_history_step(step, source_snapshot_params, initiator_to_check, user_involvement,
+        GC::create_function(heap(), [this](HTML::HistoryStepResult) {
+            client().page_did_complete_queued_traversal_step();
+        }));
 }
 
 void Page::execute_push_or_replace_history_step(u64 callback_token, u64 pending_document_token, int step, u8 history_handling_value, u8 user_involvement_value, bool is_synchronous)
