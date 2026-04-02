@@ -17,6 +17,7 @@
 #include <LibWeb/HTML/VisibilityState.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/StorageAPI/StorageShed.h>
+#include <LibWebView/Forward.h>
 
 #ifdef AK_OS_MACOS
 #    include <LibGfx/MetalContext.h>
@@ -46,6 +47,8 @@ public:
     int current_session_history_step() const { return m_current_session_history_step; }
     Vector<GC::Ref<SessionHistoryEntry>>& session_history_entries() { return m_session_history_entries; }
     Vector<GC::Ref<SessionHistoryEntry>> const& session_history_entries() const { return m_session_history_entries; }
+
+    void initialize_session_history_from_ui(Vector<WebView::UISessionHistoryEntry> const& entries, int current_step);
 
     VisibilityState system_visibility_state() const { return m_system_visibility_state; }
     void set_system_visibility_state(VisibilityState);

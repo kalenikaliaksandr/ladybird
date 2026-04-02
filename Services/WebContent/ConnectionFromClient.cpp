@@ -202,6 +202,12 @@ void ConnectionFromClient::apply_session_history_step(u64 page_id, i32 step)
         page->page().apply_session_history_step(step);
 }
 
+void ConnectionFromClient::initialize_session_history(u64 page_id, Vector<WebView::UISessionHistoryEntry> entries, i32 current_step)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().initialize_session_history(move(entries), current_step);
+}
+
 void ConnectionFromClient::set_viewport(u64 page_id, Web::DevicePixelSize size, double device_pixel_ratio, Web::ViewportIsFullscreen is_fullscreen)
 {
     if (auto page = this->page(page_id); page.has_value()) {

@@ -186,6 +186,54 @@ GC::Ref<TraversableNavigable> TraversableNavigable::create_a_fresh_top_level_tra
     return traversable;
 }
 
+static GC::Ref<SessionHistoryEntry> create_session_history_entry_from_ui(GC::Heap& heap, WebView::UISessionHistoryEntry const& ui_entry)
+{
+    auto entry = heap.allocate<SessionHistoryEntry>();
+    auto document_state = heap.allocate<DocumentState>();
+    entry->set_document_state(document_state);
+    apply_ui_session_history_entry(ui_entry, *entry, heap);
+
+    // Reconstruct nested histories.
+    for (auto const& ui_nested : ui_entry.document_state.nested_histories) {
+        DocumentState::NestedHistory nested;
+        nested.id = ui_nested.navigable_id;
+        for (auto const& ui_nested_entry : ui_nested.entries)
+            nested.entries.append(create_session_history_entry_from_ui(heap, ui_nested_entry));
+        document_state->nested_histories().append(move(nested));
+    }
+
+    return entry;
+}
+
+void TraversableNavigable::initialize_session_history_from_ui(Vector<WebView::UISessionHistoryEntry> const& ui_entries, int current_step)
+{
+    // The new process already has an initial about:blank entry at step 0 with a valid Document.
+    // We must NOT replace it, because the navigable's active/current entry pointers reference it.
+    // Instead, we:
+    // 1. Reconstruct historical entries (steps < current_step) and prepend them
+    // 2. Re-number the initial entry to use current_step + 1 (the next navigation will set it properly)
+    // 3. Update m_current_session_history_step
+
+    // Collect historical entries (entries before the current step that represent "back" history).
+    Vector<GC::Ref<SessionHistoryEntry>> historical_entries;
+    for (auto const& ui_entry : ui_entries) {
+        if (ui_entry.step.has_value() && ui_entry.step.value() <= current_step)
+            historical_entries.append(create_session_history_entry_from_ui(heap(), ui_entry));
+    }
+
+    // Assign the current step to the initial entry (so it sits at the right position).
+    if (!m_session_history_entries.is_empty()) {
+        auto& initial_entry = m_session_history_entries[0];
+        initial_entry->set_step(current_step + 1);
+    }
+
+    // Prepend historical entries before the initial entry.
+    for (int i = static_cast<int>(historical_entries.size()) - 1; i >= 0; --i)
+        m_session_history_entries.prepend(historical_entries[i]);
+
+    m_current_session_history_step = current_step;
+}
+
 // https://html.spec.whatwg.org/multipage/document-sequences.html#top-level-traversable
 bool TraversableNavigable::is_top_level_traversable() const
 {

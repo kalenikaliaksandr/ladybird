@@ -42,6 +42,7 @@ endpoint WebContentServer
     reload(u64 page_id) =|
     traverse_the_history_by_delta(u64 page_id, i32 delta) =|
     apply_session_history_step(u64 page_id, i32 step) =|
+    initialize_session_history(u64 page_id, Vector<WebView::UISessionHistoryEntry> entries, i32 current_step) =|
 
     ready_to_paint(u64 page_id) =|
 

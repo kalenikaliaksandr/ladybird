@@ -120,6 +120,11 @@ void Page::apply_session_history_step(int step)
     }));
 }
 
+void Page::initialize_session_history(Vector<WebView::UISessionHistoryEntry> entries, int current_step)
+{
+    top_level_traversable()->initialize_session_history_from_ui(entries, current_step);
+}
+
 Gfx::Palette Page::palette() const
 {
     return m_client->palette();
