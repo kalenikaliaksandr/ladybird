@@ -797,6 +797,12 @@ void WebContentClient::did_enqueue_traversal_step(u64 page_id, u64 step_token)
         view->did_enqueue_traversal_step({}, step_token);
 }
 
+void WebContentClient::did_enqueue_sync_navigation_step(u64 page_id, u64 step_token, u64 navigable_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_enqueue_sync_navigation_step({}, step_token, navigable_id);
+}
+
 void WebContentClient::did_complete_queued_traversal_step(u64 page_id)
 {
     if (auto view = view_for_page_id(page_id); view.has_value())

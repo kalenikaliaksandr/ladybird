@@ -478,6 +478,7 @@ public:
     virtual void page_did_request_traverse_by_delta([[maybe_unused]] i32 delta, [[maybe_unused]] u64 source_snapshot_token, [[maybe_unused]] u64 initiator_navigable_id, [[maybe_unused]] u8 user_involvement) { }
     virtual void page_did_request_push_or_replace_history_step([[maybe_unused]] u64 callback_token, [[maybe_unused]] u64 pending_document_token, [[maybe_unused]] i32 step, [[maybe_unused]] u8 history_handling, [[maybe_unused]] u8 user_involvement, [[maybe_unused]] bool is_synchronous) { }
     virtual void page_did_enqueue_traversal_step([[maybe_unused]] u64 step_token) { }
+    virtual void page_did_enqueue_sync_navigation_step([[maybe_unused]] u64 step_token, [[maybe_unused]] u64 navigable_id) { }
     virtual void page_did_complete_queued_traversal_step() { }
 
     virtual void page_did_append_session_history_entry([[maybe_unused]] WebView::UISessionHistoryEntry entry) { }

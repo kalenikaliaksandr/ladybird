@@ -711,6 +711,11 @@ void PageClient::page_did_enqueue_traversal_step(u64 step_token)
     client().async_did_enqueue_traversal_step(m_id, step_token);
 }
 
+void PageClient::page_did_enqueue_sync_navigation_step(u64 step_token, u64 navigable_id)
+{
+    client().async_did_enqueue_sync_navigation_step(m_id, step_token, navigable_id);
+}
+
 void PageClient::page_did_complete_queued_traversal_step()
 {
     client().async_did_complete_queued_traversal_step(m_id);

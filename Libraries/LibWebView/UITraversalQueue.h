@@ -8,31 +8,54 @@
 
 #include <AK/Function.h>
 #include <AK/Queue.h>
-#include <AK/Variant.h>
 
 namespace WebView {
 
-// UI-side traversal queue — determines WHEN traversal steps execute.
-// Step bodies are executed in WebContent via IPC; this queue only manages ordering and completion.
+class SessionHistoryManager;
+
+// UI-side traversal queue replacing WebContent's SessionHistoryTraversalQueue.
+// Manages ordering of traversal steps and sync nav queue-jumping.
+// Step bodies execute in WebContent via IPC — this queue only schedules.
 class UITraversalQueue {
 public:
     UITraversalQueue() = default;
 
-    // A traversal step that the queue will execute by calling the provided function.
-    // The function should initiate the step (e.g., send IPC to WebContent).
-    // Call did_complete_current_step() when the step finishes.
     using StepFunction = Function<void()>;
 
+    // Enqueue an async traversal step.
     void append(StepFunction step);
+
+    // Enqueue a sync navigation step associated with a navigable.
+    // May be queue-jumped during an active traversal.
+    void append_sync(StepFunction step, u64 navigable_id);
+
+    // Called when the currently executing step completes.
     void did_complete_current_step();
 
     bool is_processing() const { return m_processing; }
 
+    // Used by the traversal executor (ApplyHistoryStepState) to jump the queue.
+    // Returns and removes the first eligible sync nav step, or nullptr.
+    struct SyncNavEntry {
+        StepFunction step;
+        u64 navigable_id;
+    };
+    SyncNavEntry* take_first_eligible_sync_nav_step(
+        SessionHistoryManager const&,
+        Function<bool(u64 navigable_id)> const& should_skip);
+
 private:
+    void schedule_processing();
     void process_next();
 
-    Queue<StepFunction> m_queue;
+    struct QueueEntry {
+        StepFunction step;
+        u64 navigable_id { 0 }; // 0 = async, non-zero = sync nav step
+    };
+
+    Queue<QueueEntry> m_queue;
     bool m_processing { false };
+    bool m_processing_scheduled { false };
 };
 
 }

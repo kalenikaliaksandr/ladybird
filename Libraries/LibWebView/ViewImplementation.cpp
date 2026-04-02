@@ -619,6 +619,14 @@ void ViewImplementation::did_enqueue_traversal_step(Badge<WebContentClient>, u64
     });
 }
 
+void ViewImplementation::did_enqueue_sync_navigation_step(Badge<WebContentClient>, u64 step_token, u64 navigable_id)
+{
+    m_session_history.traversal_queue().append_sync([this, step_token] {
+        client().async_execute_queued_traversal_step(page_id(), step_token);
+    },
+        navigable_id);
+}
+
 void ViewImplementation::did_complete_queued_traversal_step(Badge<WebContentClient>)
 {
     if (m_session_history.traversal_queue().is_processing())

@@ -86,9 +86,6 @@ public:
 
     void append_session_history_synchronous_navigation_steps(GC::Ref<Navigable> target_navigable, GC::Ref<SessionHistoryTraversalSteps> steps);
 
-    // Sync nav step buffer for queue-jumping (used by ApplyHistoryStepState::process_continuations)
-    GC::Ptr<SessionHistoryTraversalQueueEntry> take_first_eligible_sync_nav_step(HashTable<GC::Ref<Navigable>> const& navigables_that_must_wait);
-
     String window_handle() const { return m_window_handle; }
     void set_window_handle(String window_handle) { m_window_handle = move(window_handle); }
 
@@ -172,13 +169,6 @@ private:
     // https://storage.spec.whatwg.org/#traversable-navigable-storage-shed
     // A traversable navigable holds a storage shed, which is a storage shed. A traversable navigable’s storage shed holds all session storage data.
     GC::Ref<StorageAPI::StorageShed> m_storage_shed;
-
-    // Sync nav step buffer — holds synchronous navigation steps locally for queue-jumping
-    // by ApplyHistoryStepState::process_continuations(). These steps need to be available
-    // immediately when process_continuations checks, not after an IPC round-trip.
-    Vector<GC::Ref<SessionHistoryTraversalQueueEntry>> m_sync_nav_steps;
-
-    GC::Ref<SessionHistoryTraversalQueue> m_session_history_traversal_queue;
 
     String m_window_handle;
 

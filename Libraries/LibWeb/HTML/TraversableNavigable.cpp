@@ -39,7 +39,6 @@ GC_DEFINE_ALLOCATOR(TraversableNavigable);
 TraversableNavigable::TraversableNavigable(GC::Ref<Page> page)
     : Navigable(page, page->client().is_svg_page_client())
     , m_storage_shed(StorageAPI::StorageShed::create(page->heap()))
-    , m_session_history_traversal_queue(vm().heap().allocate<SessionHistoryTraversalQueue>())
 {
 }
 
@@ -51,8 +50,6 @@ void TraversableNavigable::visit_edges(Cell::Visitor& visitor)
     if (m_emulated_position_data.has<GC::Ref<Geolocation::GeolocationCoordinates>>())
         visitor.visit(m_emulated_position_data.get<GC::Ref<Geolocation::GeolocationCoordinates>>());
     visitor.visit(m_session_history_entries);
-    visitor.visit(m_sync_nav_steps);
-    visitor.visit(m_session_history_traversal_queue);
     visitor.visit(m_storage_shed);
     visitor.visit(m_apply_history_step_state);
     visitor.visit(m_paused_apply_history_step_state);
@@ -813,43 +810,9 @@ void ApplyHistoryStepState::start()
 void ApplyHistoryStepState::process_continuations()
 {
     for (;;) {
-        // NOTE: Synchronous navigations that are intended to take place before this traversal jump the queue at this point,
-        //       so they can be added to the correct place in traversable's session history entries before this traversal
-        //       potentially unloads their document. More details can be found here (https://html.spec.whatwg.org/multipage/browsing-the-web.html#sync-navigation-steps-queue-jumping-examples)
-        // 1. If traversable's running nested apply history step is false, then:
-        if (!m_traversable->m_paused_apply_history_step_state) {
-            // 1. While traversable's session history traversal queue's algorithm set contains one or more synchronous
-            //    navigation steps with a target navigable not contained in navigablesThatMustWaitBeforeHandlingSyncNavigation:
-            //   1. Let steps be the first item in traversable's session history traversal queue's algorithm set
-            //    that is synchronous navigation steps with a target navigable not contained in navigablesThatMustWaitBeforeHandlingSyncNavigation.
-            //   2. Remove steps from traversable's session history traversal queue's algorithm set.
-            while (true) {
-                auto entry = m_traversable->m_session_history_traversal_queue->first_synchronous_navigation_steps_with_target_navigable_not_contained_in(m_navigables_that_must_wait_before_handling_sync_navigation);
-                if (!entry)
-                    break;
-
-                VERIFY(!m_traversable->m_paused_apply_history_step_state);
-                m_traversable->m_paused_apply_history_step_state = this;
-
-                // 4. Run steps.
-                auto promise = Core::Promise<Empty>::construct();
-                entry->execute_steps(promise);
-
-                // GC safety: `this` is kept alive by m_paused_apply_history_step_state (visited).
-                // The promise is kept alive by m_pending_sync_nav_promise (RefPtr).
-                VERIFY(!m_pending_sync_nav_promise);
-                m_pending_sync_nav_promise = promise;
-                promise->when_resolved([this](Empty) {
-                    // 5. Set traversable's running nested apply history step to false.
-                    VERIFY(m_pending_sync_nav_promise);
-                    m_pending_sync_nav_promise = nullptr;
-                    m_traversable->m_apply_history_step_state = this;
-                    m_traversable->m_paused_apply_history_step_state = nullptr;
-                    process_continuations();
-                });
-                return;
-            }
-        }
+        // NOTE: Synchronous navigation queue-jumping is now handled by UI's traversal queue.
+        // Sync nav steps enqueued during this traversal will be executed by UI in order,
+        // after the current traversal step completes.
 
         if (m_continuation_index == m_continuations.size()) {
             if (m_phase == Phase::ProcessingContinuations) {
@@ -1491,29 +1454,14 @@ bool TraversableNavigable::can_go_forward() const
 
 void TraversableNavigable::append_session_history_traversal_steps(GC::Ref<SessionHistoryTraversalSteps> steps)
 {
-    m_session_history_traversal_queue->append(steps);
+    auto token = page().retain_traversal_step(steps);
+    page().client().page_did_enqueue_traversal_step(token);
 }
 
 void TraversableNavigable::append_session_history_synchronous_navigation_steps(GC::Ref<Navigable> target_navigable, GC::Ref<SessionHistoryTraversalSteps> steps)
 {
-    m_session_history_traversal_queue->append_sync(steps, target_navigable);
-}
-
-GC::Ptr<SessionHistoryTraversalQueueEntry> TraversableNavigable::take_first_eligible_sync_nav_step(HashTable<GC::Ref<Navigable>> const& navigables_that_must_wait)
-{
-    auto index = m_sync_nav_steps.find_first_index_if([&navigables_that_must_wait](auto const& entry) -> bool {
-        auto target_navigable = entry->target_navigable();
-        if (target_navigable == nullptr)
-            return false;
-        if (navigables_that_must_wait.contains(*target_navigable))
-            return false;
-        if (!target_navigable->has_session_history_entry_and_ready_for_navigation())
-            return false;
-        return true;
-    });
-    if (index.has_value())
-        return m_sync_nav_steps.take(*index);
-    return {};
+    auto token = page().retain_traversal_step(steps);
+    page().client().page_did_enqueue_sync_navigation_step(token, target_navigable->ui_navigable_id());
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta
