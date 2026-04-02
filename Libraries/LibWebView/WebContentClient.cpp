@@ -767,6 +767,36 @@ void WebContentClient::did_update_navigation_buttons_state(u64 page_id, bool bac
         view->did_update_navigation_buttons_state({}, back_enabled, forward_enabled);
 }
 
+void WebContentClient::did_update_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry)
+{
+    // TODO: Phase 1 - forward to ViewImplementation for shadow history
+    (void)page_id;
+}
+
+void WebContentClient::did_append_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry)
+{
+    // TODO: Phase 1 - forward to ViewImplementation for shadow history
+    (void)page_id;
+}
+
+void WebContentClient::did_replace_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry)
+{
+    // TODO: Phase 1 - forward to ViewImplementation for shadow history
+    (void)page_id;
+}
+
+void WebContentClient::did_clear_forward_session_history(u64 page_id, i32)
+{
+    // TODO: Phase 1 - forward to ViewImplementation for shadow history
+    (void)page_id;
+}
+
+void WebContentClient::did_update_session_history_step(u64 page_id, i32)
+{
+    // TODO: Phase 1 - forward to ViewImplementation for shadow history
+    (void)page_id;
+}
+
 void WebContentClient::did_allocate_backing_stores(u64 page_id, i32 front_bitmap_id, Web::SharedBackingStore front_backing_store, i32 back_bitmap_id, Web::SharedBackingStore back_backing_store)
 {
     if (auto view = view_for_page_id(page_id); view.has_value())

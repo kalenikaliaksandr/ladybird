@@ -34,6 +34,10 @@ struct DOMNodeProperties;
 struct Mutation;
 struct ProcessHandle;
 struct SearchEngine;
+struct UIDocumentState;
+struct UINestedHistory;
+struct UIPostResource;
+struct UISessionHistoryEntry;
 struct WebContentOptions;
 
 }

@@ -23,6 +23,7 @@ set(SOURCES
     SiteIsolation.cpp
     SourceHighlighter.cpp
     StorageJar.cpp
+    UISessionHistoryEntry.cpp
     URL.cpp
     UserAgent.cpp
     Utilities.cpp

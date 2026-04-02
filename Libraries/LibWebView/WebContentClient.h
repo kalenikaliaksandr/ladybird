@@ -146,6 +146,11 @@ private:
     virtual void did_request_clipboard_entries(u64 page_id, u64 request_id) override;
     virtual void did_change_audio_play_state(u64 page_id, Web::HTML::AudioPlayState) override;
     virtual void did_update_navigation_buttons_state(u64 page_id, bool back_enabled, bool forward_enabled) override;
+    virtual void did_update_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry entry) override;
+    virtual void did_append_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry entry) override;
+    virtual void did_replace_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry entry) override;
+    virtual void did_clear_forward_session_history(u64 page_id, i32 from_step) override;
+    virtual void did_update_session_history_step(u64 page_id, i32 step) override;
     virtual void did_allocate_backing_stores(u64 page_id, i32 front_bitmap_id, Web::SharedBackingStore front_backing_store, i32 back_bitmap_id, Web::SharedBackingStore back_backing_store) override;
     virtual Messages::WebContentClient::RequestWorkerAgentResponse request_worker_agent(u64 page_id, Web::Bindings::AgentType worker_type) override;
 
