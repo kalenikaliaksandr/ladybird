@@ -767,34 +767,34 @@ void WebContentClient::did_update_navigation_buttons_state(u64 page_id, bool bac
         view->did_update_navigation_buttons_state({}, back_enabled, forward_enabled);
 }
 
-void WebContentClient::did_update_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry)
+void WebContentClient::did_update_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry entry)
 {
-    // TODO: Phase 1 - forward to ViewImplementation for shadow history
-    (void)page_id;
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_update_session_history_entry({}, move(entry));
 }
 
-void WebContentClient::did_append_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry)
+void WebContentClient::did_append_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry entry)
 {
-    // TODO: Phase 1 - forward to ViewImplementation for shadow history
-    (void)page_id;
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_append_session_history_entry({}, move(entry));
 }
 
-void WebContentClient::did_replace_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry)
+void WebContentClient::did_replace_session_history_entry(u64 page_id, WebView::UISessionHistoryEntry entry)
 {
-    // TODO: Phase 1 - forward to ViewImplementation for shadow history
-    (void)page_id;
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_replace_session_history_entry({}, move(entry));
 }
 
-void WebContentClient::did_clear_forward_session_history(u64 page_id, i32)
+void WebContentClient::did_clear_forward_session_history(u64 page_id, i32 from_step)
 {
-    // TODO: Phase 1 - forward to ViewImplementation for shadow history
-    (void)page_id;
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_clear_forward_session_history({}, from_step);
 }
 
-void WebContentClient::did_update_session_history_step(u64 page_id, i32)
+void WebContentClient::did_update_session_history_step(u64 page_id, i32 step)
 {
-    // TODO: Phase 1 - forward to ViewImplementation for shadow history
-    (void)page_id;
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_update_session_history_step({}, step);
 }
 
 void WebContentClient::did_allocate_backing_stores(u64 page_id, i32 front_bitmap_id, Web::SharedBackingStore front_backing_store, i32 back_bitmap_id, Web::SharedBackingStore back_backing_store)

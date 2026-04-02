@@ -104,6 +104,8 @@ struct UINestedHistory {
     Vector<UISessionHistoryEntry> entries;
 };
 
+Vector<int> get_all_used_history_steps(Vector<UISessionHistoryEntry> const&);
+
 }
 
 namespace IPC {

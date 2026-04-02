@@ -110,6 +110,16 @@ void Page::traverse_the_history_by_delta(int delta)
     top_level_traversable()->traverse_the_history_by_delta(delta);
 }
 
+void Page::apply_session_history_step(int step)
+{
+    top_level_traversable()->append_session_history_traversal_steps(GC::create_function(top_level_traversable()->heap(), [traversable = top_level_traversable(), step](NonnullRefPtr<Core::Promise<Empty>> signal) {
+        traversable->apply_the_traverse_history_step(step, nullptr, nullptr, HTML::UserNavigationInvolvement::BrowserUI,
+            GC::create_function(traversable->heap(), [signal](HTML::HistoryStepResult) {
+                signal->resolve({});
+            }));
+    }));
+}
+
 Gfx::Palette Page::palette() const
 {
     return m_client->palette();

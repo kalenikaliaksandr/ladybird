@@ -4,9 +4,39 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/QuickSort.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
 #include <LibWebView/UISessionHistoryEntry.h>
+
+namespace WebView {
+
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-all-used-history-steps
+Vector<int> get_all_used_history_steps(Vector<UISessionHistoryEntry> const& entries)
+{
+    OrderedHashTable<int> steps;
+
+    Vector<Vector<UISessionHistoryEntry> const*> entry_lists;
+    entry_lists.append(&entries);
+
+    while (!entry_lists.is_empty()) {
+        auto const* entry_list = entry_lists.take_first();
+
+        for (auto const& entry : *entry_list) {
+            if (entry.step.has_value())
+                steps.set(entry.step.value());
+
+            for (auto const& nested_history : entry.document_state.nested_histories)
+                entry_lists.append(&nested_history.entries);
+        }
+    }
+
+    auto sorted_steps = steps.values();
+    quick_sort(sorted_steps);
+    return sorted_steps;
+}
+
+}
 
 template<>
 ErrorOr<void> IPC::encode(Encoder& encoder, WebView::UIPostResource::Directive const& directive)

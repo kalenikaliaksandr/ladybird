@@ -21,6 +21,7 @@
 #include <LibWeb/HTML/NavigationParams.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/HTML/SessionHistoryEntry.h>
+#include <LibWeb/HTML/SessionHistoryEntrySerialization.h>
 #include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/HTML/Window.h>
@@ -122,6 +123,9 @@ GC::Ref<TraversableNavigable> TraversableNavigable::create_a_new_top_level_trave
     // 9. Append initialHistoryEntry to traversable's session history entries.
     traversable->m_session_history_entries.append(*initial_history_entry);
     traversable->set_has_session_history_entry_and_ready_for_navigation();
+
+    // AD-HOC: Notify the UI process about the initial session history entry.
+    traversable->page().client().page_did_append_session_history_entry(serialize_session_history_entry(*initial_history_entry));
 
     // FIXME: 10. If opener is non-null, then legacy-clone a traversable storage shed given opener's top-level traversable and traversable. [STORAGE]
 
@@ -1031,6 +1035,9 @@ void ApplyHistoryStepState::complete()
     // 20. Set traversable's current session history step to targetStep.
     m_traversable->m_current_session_history_step = m_target_step;
 
+    // AD-HOC: Notify the UI process about the step change.
+    m_traversable->page().client().page_did_update_session_history_step(m_target_step);
+
     // Not in the spec:
     auto back_enabled = m_traversable->m_current_session_history_step > 0;
     VERIFY(m_traversable->m_session_history_entries.size() > 0);
@@ -1452,6 +1459,9 @@ void TraversableNavigable::clear_the_forward_session_history()
             }
         }
     }
+
+    // AD-HOC: Notify the UI process about the forward history clear.
+    page().client().page_did_clear_forward_session_history(step);
 }
 
 bool TraversableNavigable::can_go_forward() const
@@ -1653,6 +1663,8 @@ void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversab
             if (auto it = target_entries.find(*entry_to_replace); it != target_entries.end()) {
                 target_entry->set_step(entry_to_replace->step());
                 *it = target_entry;
+                // AD-HOC: Notify the UI process about the replaced entry.
+                traversable->page().client().page_did_replace_session_history_entry(serialize_session_history_entry(*target_entry));
             }
         }
         on_complete->function()(HistoryStepResult::Applied);
@@ -1680,6 +1692,9 @@ void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversab
 
         // 4. Append targetEntry to targetEntries.
         target_entries.append(target_entry);
+
+        // AD-HOC: Notify the UI process about the new entry.
+        traversable->page().client().page_did_append_session_history_entry(serialize_session_history_entry(*target_entry));
     } else {
         // 1. Replace entryToReplace with targetEntry in targetEntries.
         *(target_entries.find(*entry_to_replace)) = target_entry;
@@ -1689,6 +1704,9 @@ void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversab
 
         // 3. Set targetStep to traversable's current session history step.
         target_step = traversable->current_session_history_step();
+
+        // AD-HOC: Notify the UI process about the replaced entry.
+        traversable->page().client().page_did_replace_session_history_entry(serialize_session_history_entry(*target_entry));
     }
 
     // 6. Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.

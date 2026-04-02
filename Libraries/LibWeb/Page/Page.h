@@ -53,6 +53,7 @@
 #include <LibWeb/StorageAPI/StorageEndpoint.h>
 #include <LibWeb/UIEvents/KeyCode.h>
 #include <LibWebView/StorageSetResult.h>
+#include <LibWebView/UISessionHistoryEntry.h>
 
 namespace Web {
 
@@ -93,6 +94,7 @@ public:
     void reload();
 
     void traverse_the_history_by_delta(int delta);
+    void apply_session_history_step(int step);
 
     CSSPixelPoint device_to_css_point(DevicePixelPoint) const;
     DevicePixelPoint css_to_device_point(CSSPixelPoint) const;
@@ -441,6 +443,12 @@ public:
     virtual void page_did_request_activate_tab() { }
     virtual void page_did_close_top_level_traversable() { }
     virtual void page_did_update_navigation_buttons_state([[maybe_unused]] bool back_enabled, [[maybe_unused]] bool forward_enabled) { }
+
+    virtual void page_did_append_session_history_entry([[maybe_unused]] WebView::UISessionHistoryEntry entry) { }
+    virtual void page_did_replace_session_history_entry([[maybe_unused]] WebView::UISessionHistoryEntry entry) { }
+    virtual void page_did_update_session_history_entry([[maybe_unused]] WebView::UISessionHistoryEntry entry) { }
+    virtual void page_did_clear_forward_session_history([[maybe_unused]] int from_step) { }
+    virtual void page_did_update_session_history_step([[maybe_unused]] int step) { }
     virtual void page_did_allocate_backing_stores([[maybe_unused]] i32 front_bitmap_id, [[maybe_unused]] SharedBackingStore front_backing_store, [[maybe_unused]] i32 back_bitmap_id, [[maybe_unused]] SharedBackingStore back_backing_store) { }
 
     virtual void request_file(FileRequest) = 0;

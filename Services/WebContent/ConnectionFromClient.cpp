@@ -198,9 +198,8 @@ void ConnectionFromClient::traverse_the_history_by_delta(u64 page_id, i32 delta)
 
 void ConnectionFromClient::apply_session_history_step(u64 page_id, i32 step)
 {
-    // TODO: Phase 2 - call apply_the_traverse_history_step on the TraversableNavigable
-    (void)page_id;
-    (void)step;
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().apply_session_history_step(step);
 }
 
 void ConnectionFromClient::set_viewport(u64 page_id, Web::DevicePixelSize size, double device_pixel_ratio, Web::ViewportIsFullscreen is_fullscreen)

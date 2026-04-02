@@ -194,7 +194,16 @@ void ViewImplementation::reload()
 
 void ViewImplementation::traverse_the_history_by_delta(int delta)
 {
-    client().async_traverse_the_history_by_delta(page_id(), delta);
+    auto all_steps = get_all_used_history_steps(m_session_history_entries);
+    auto current_step_index = all_steps.find_first_index(m_current_session_history_step);
+    if (!current_step_index.has_value())
+        return;
+
+    auto target_step_index = static_cast<int>(*current_step_index) + delta;
+    if (target_step_index < 0 || target_step_index >= static_cast<int>(all_steps.size()))
+        return;
+
+    client().async_apply_session_history_step(page_id(), all_steps[target_step_index]);
 }
 
 void ViewImplementation::zoom_in()
@@ -587,6 +596,75 @@ void ViewImplementation::did_change_audio_play_state(Badge<WebContentClient>, We
 
 void ViewImplementation::did_update_navigation_buttons_state(Badge<WebContentClient>, bool back_enabled, bool forward_enabled) const
 {
+    m_navigate_back_action->set_enabled(back_enabled);
+    m_navigate_forward_action->set_enabled(forward_enabled);
+}
+
+void ViewImplementation::did_append_session_history_entry(Badge<WebContentClient>, UISessionHistoryEntry entry)
+{
+    m_session_history_entries.append(move(entry));
+}
+
+void ViewImplementation::did_replace_session_history_entry(Badge<WebContentClient>, UISessionHistoryEntry entry)
+{
+    if (!entry.step.has_value())
+        return;
+    auto step = entry.step.value();
+    for (auto& existing : m_session_history_entries) {
+        if (existing.step.has_value() && existing.step.value() == step) {
+            existing = move(entry);
+            return;
+        }
+    }
+}
+
+void ViewImplementation::did_update_session_history_entry(Badge<WebContentClient>, UISessionHistoryEntry entry)
+{
+    if (!entry.step.has_value())
+        return;
+    auto step = entry.step.value();
+    for (auto& existing : m_session_history_entries) {
+        if (existing.step.has_value() && existing.step.value() == step) {
+            existing = move(entry);
+            return;
+        }
+    }
+}
+
+void ViewImplementation::did_clear_forward_session_history(Badge<WebContentClient>, int from_step)
+{
+    m_session_history_entries.remove_all_matching([from_step](auto& entry) {
+        return entry.step.has_value() && entry.step.value() > from_step;
+    });
+}
+
+void ViewImplementation::did_update_session_history_step(Badge<WebContentClient>, int step)
+{
+    m_current_session_history_step = step;
+    update_navigation_buttons_state();
+}
+
+void ViewImplementation::update_navigation_buttons_state()
+{
+    bool back_enabled = m_current_session_history_step > 0;
+
+    bool forward_enabled = false;
+    Vector<Vector<UISessionHistoryEntry> const*> entry_lists;
+    entry_lists.append(&m_session_history_entries);
+    while (!entry_lists.is_empty()) {
+        auto const* entry_list = entry_lists.take_first();
+        for (auto const& entry : *entry_list) {
+            if (entry.step.has_value() && entry.step.value() > m_current_session_history_step) {
+                forward_enabled = true;
+                break;
+            }
+            for (auto const& nested : entry.document_state.nested_histories)
+                entry_lists.append(&nested.entries);
+        }
+        if (forward_enabled)
+            break;
+    }
+
     m_navigate_back_action->set_enabled(back_enabled);
     m_navigate_forward_action->set_enabled(forward_enabled);
 }

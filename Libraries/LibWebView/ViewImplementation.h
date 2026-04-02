@@ -37,6 +37,7 @@
 #include <LibWebView/Forward.h>
 #include <LibWebView/PageInfo.h>
 #include <LibWebView/Settings.h>
+#include <LibWebView/UISessionHistoryEntry.h>
 #include <LibWebView/WebContentClient.h>
 
 namespace WebView {
@@ -163,6 +164,13 @@ public:
     Web::HTML::AudioPlayState audio_play_state() const { return m_audio_play_state; }
 
     void did_update_navigation_buttons_state(Badge<WebContentClient>, bool back_enabled, bool forward_enabled) const;
+
+    void did_append_session_history_entry(Badge<WebContentClient>, UISessionHistoryEntry entry);
+    void did_replace_session_history_entry(Badge<WebContentClient>, UISessionHistoryEntry entry);
+    void did_update_session_history_entry(Badge<WebContentClient>, UISessionHistoryEntry entry);
+    void did_clear_forward_session_history(Badge<WebContentClient>, int from_step);
+    void did_update_session_history_step(Badge<WebContentClient>, int step);
+    void update_navigation_buttons_state();
 
     void did_allocate_backing_stores(Badge<WebContentClient>, i32 front_bitmap_id, Web::SharedBackingStore front_backing_store, i32 back_bitmap_id, Web::SharedBackingStore back_backing_store);
 
@@ -411,6 +419,10 @@ protected:
     u64 m_next_navigation_listener_id { 1 };
 
     bool m_devtools_connected { false };
+
+    // Shadow session history (mirrors WebContent's authoritative state).
+    Vector<UISessionHistoryEntry> m_session_history_entries;
+    int m_current_session_history_step { 0 };
 };
 
 }

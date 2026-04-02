@@ -686,6 +686,31 @@ void PageClient::page_did_update_navigation_buttons_state(bool back_enabled, boo
     client().async_did_update_navigation_buttons_state(m_id, back_enabled, forward_enabled);
 }
 
+void PageClient::page_did_append_session_history_entry(WebView::UISessionHistoryEntry entry)
+{
+    client().async_did_append_session_history_entry(m_id, move(entry));
+}
+
+void PageClient::page_did_replace_session_history_entry(WebView::UISessionHistoryEntry entry)
+{
+    client().async_did_replace_session_history_entry(m_id, move(entry));
+}
+
+void PageClient::page_did_update_session_history_entry(WebView::UISessionHistoryEntry entry)
+{
+    client().async_did_update_session_history_entry(m_id, move(entry));
+}
+
+void PageClient::page_did_clear_forward_session_history(int from_step)
+{
+    client().async_did_clear_forward_session_history(m_id, from_step);
+}
+
+void PageClient::page_did_update_session_history_step(int step)
+{
+    client().async_did_update_session_history_step(m_id, step);
+}
+
 void PageClient::request_file(Web::FileRequest file_request)
 {
     client().request_file(m_id, move(file_request));

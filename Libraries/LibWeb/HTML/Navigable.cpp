@@ -42,6 +42,7 @@
 #include <LibWeb/HTML/Scripting/ClassicScript.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/SessionHistoryEntry.h>
+#include <LibWeb/HTML/SessionHistoryEntrySerialization.h>
 #include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/HTML/Window.h>
@@ -2662,6 +2663,9 @@ void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryH
 
         // 4. Append historyEntry to targetEntries.
         target_entries.append(history_entry);
+
+        // AD-HOC: Notify the UI process about the new entry.
+        traversable->page().client().page_did_append_session_history_entry(serialize_session_history_entry(*history_entry));
     } else {
         // 1. Replace entryToReplace with historyEntry in targetEntries.
         *(target_entries.find(*entry_to_replace)) = history_entry;
@@ -2677,6 +2681,9 @@ void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryH
 
         // 4. Set targetStep to traversable's current session history step.
         target_step = traversable->current_session_history_step();
+
+        // AD-HOC: Notify the UI process about the replaced entry.
+        traversable->page().client().page_did_replace_session_history_entry(serialize_session_history_entry(*history_entry));
     }
 
     // 10. Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.
