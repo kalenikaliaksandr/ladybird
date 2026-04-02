@@ -134,7 +134,7 @@ void NavigableContainer::create_new_child_navigable()
 
         // 5. Let nestedHistory be a new nested history whose id is navigable's id and entries list is « historyEntry ».
         DocumentState::NestedHistory nested_history {
-            .id = navigable->id(),
+            .id = navigable->ui_navigable_id(),
             .entries { *history_entry },
         };
 
@@ -341,7 +341,7 @@ void NavigableContainer::destroy_the_child_navigable()
 
         // 7. Remove the nested history from parentDocState's nested histories whose id equals navigable's id.
         parent_doc_state->nested_histories().remove_all_matching([&](auto& nested_history) {
-            return navigable->id() == nested_history.id;
+            return navigable->ui_navigable_id() == nested_history.id;
         });
 
         // 8. Let traversable be container's node navigable's traversable navigable.

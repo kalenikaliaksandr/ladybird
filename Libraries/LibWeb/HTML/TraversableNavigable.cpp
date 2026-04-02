@@ -21,6 +21,8 @@
 #include <LibWeb/HTML/NavigationParams.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/HTML/SessionHistoryEntry.h>
+#include <LibWeb/HTML/SessionHistoryEntrySerialization.h>
+#include <LibWeb/HTML/SourceSnapshotParams.h>
 #include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/HTML/Window.h>
@@ -37,7 +39,6 @@ GC_DEFINE_ALLOCATOR(TraversableNavigable);
 TraversableNavigable::TraversableNavigable(GC::Ref<Page> page)
     : Navigable(page, page->client().is_svg_page_client())
     , m_storage_shed(StorageAPI::StorageShed::create(page->heap()))
-    , m_session_history_traversal_queue(vm().heap().allocate<SessionHistoryTraversalQueue>())
 {
 }
 
@@ -49,7 +50,6 @@ void TraversableNavigable::visit_edges(Cell::Visitor& visitor)
     if (m_emulated_position_data.has<GC::Ref<Geolocation::GeolocationCoordinates>>())
         visitor.visit(m_emulated_position_data.get<GC::Ref<Geolocation::GeolocationCoordinates>>());
     visitor.visit(m_session_history_entries);
-    visitor.visit(m_session_history_traversal_queue);
     visitor.visit(m_storage_shed);
     visitor.visit(m_apply_history_step_state);
     visitor.visit(m_paused_apply_history_step_state);
@@ -122,6 +122,10 @@ GC::Ref<TraversableNavigable> TraversableNavigable::create_a_new_top_level_trave
     // 9. Append initialHistoryEntry to traversable's session history entries.
     traversable->m_session_history_entries.append(*initial_history_entry);
     traversable->set_has_session_history_entry_and_ready_for_navigation();
+
+    // AD-HOC: Assign a stable entry ID and notify the UI process about the initial session history entry.
+    initial_history_entry->set_ui_id(traversable->page().allocate_session_history_entry_id());
+    traversable->page().client().page_did_append_session_history_entry(traversable->ui_navigable_id(), serialize_session_history_entry(*initial_history_entry));
 
     // FIXME: 10. If opener is non-null, then legacy-clone a traversable storage shed given opener's top-level traversable and traversable. [STORAGE]
 
@@ -449,6 +453,8 @@ class ApplyHistoryStepState : public GC::Cell {
     GC_DECLARE_ALLOCATOR(ApplyHistoryStepState);
 
 public:
+    using PlanData = TraversalPlanData;
+
     static constexpr int TIMEOUT_MS = 15000;
 
     ApplyHistoryStepState(
@@ -587,30 +593,27 @@ private:
     HashTable<GC::Ref<Navigable>> m_navigables_that_must_wait_before_handling_sync_navigation;
 
     size_t m_completed_non_changing_jobs { 0 };
+
+    Optional<PlanData> m_plan_data;
+
+public:
+    void set_plan_data(PlanData plan_data) { m_plan_data = move(plan_data); }
 };
 
 GC_DEFINE_ALLOCATOR(ApplyHistoryStepState);
 
 void ApplyHistoryStepState::start()
 {
-    // 7. Let nonchangingNavigablesThatStillNeedUpdates be the result of getting all navigables that only need history object length/index update given traversable and targetStep.
-    auto non_changing_navigables = m_traversable->get_all_navigables_that_only_need_history_object_length_index_update(m_target_step);
-    for (auto& nav : non_changing_navigables)
-        m_non_changing_navigables.append(*nav);
+    VERIFY(m_plan_data.has_value());
 
-    // 8. For each navigable of changingNavigables:
-    auto changing_navigables = m_traversable->get_all_navigables_whose_current_session_history_entry_will_change_or_reload(m_target_step);
-    for (auto& navigable : changing_navigables) {
-        // 1. Let targetEntry be the result of getting the target history entry given navigable and targetStep.
-        auto target_entry = navigable->get_the_target_history_entry(m_target_step);
+    for (auto& [navigable_ref, plan] : m_plan_data->non_changing)
+        m_non_changing_navigables.append(navigable_ref);
 
-        // 2. Set navigable's current session history entry to targetEntry.
-        navigable->set_current_session_history_entry(target_entry);
-
-        // 3. Set navigable's ongoing navigation to "traversal".
-        navigable->set_ongoing_navigation(HTML::Navigable::Traversal::Tag);
-
-        m_changing_navigables.append(*navigable);
+    for (auto& [navigable_ref, plan] : m_plan_data->changing) {
+        auto& navigable = *navigable_ref;
+        navigable.set_current_session_history_entry(plan.target_entry);
+        navigable.set_ongoing_navigation(HTML::Navigable::Traversal::Tag);
+        m_changing_navigables.append(navigable);
     }
 
     // 12. For each navigable of changingNavigables, queue a global task on the navigation and traversal task source.
@@ -806,43 +809,9 @@ void ApplyHistoryStepState::start()
 void ApplyHistoryStepState::process_continuations()
 {
     for (;;) {
-        // NOTE: Synchronous navigations that are intended to take place before this traversal jump the queue at this point,
-        //       so they can be added to the correct place in traversable's session history entries before this traversal
-        //       potentially unloads their document. More details can be found here (https://html.spec.whatwg.org/multipage/browsing-the-web.html#sync-navigation-steps-queue-jumping-examples)
-        // 1. If traversable's running nested apply history step is false, then:
-        if (!m_traversable->m_paused_apply_history_step_state) {
-            // 1. While traversable's session history traversal queue's algorithm set contains one or more synchronous
-            //    navigation steps with a target navigable not contained in navigablesThatMustWaitBeforeHandlingSyncNavigation:
-            //   1. Let steps be the first item in traversable's session history traversal queue's algorithm set
-            //    that is synchronous navigation steps with a target navigable not contained in navigablesThatMustWaitBeforeHandlingSyncNavigation.
-            //   2. Remove steps from traversable's session history traversal queue's algorithm set.
-            while (true) {
-                auto entry = m_traversable->m_session_history_traversal_queue->first_synchronous_navigation_steps_with_target_navigable_not_contained_in(m_navigables_that_must_wait_before_handling_sync_navigation);
-                if (!entry)
-                    break;
-
-                VERIFY(!m_traversable->m_paused_apply_history_step_state);
-                m_traversable->m_paused_apply_history_step_state = this;
-
-                // 4. Run steps.
-                auto promise = Core::Promise<Empty>::construct();
-                entry->execute_steps(promise);
-
-                // GC safety: `this` is kept alive by m_paused_apply_history_step_state (visited).
-                // The promise is kept alive by m_pending_sync_nav_promise (RefPtr).
-                VERIFY(!m_pending_sync_nav_promise);
-                m_pending_sync_nav_promise = promise;
-                promise->when_resolved([this](Empty) {
-                    // 5. Set traversable's running nested apply history step to false.
-                    VERIFY(m_pending_sync_nav_promise);
-                    m_pending_sync_nav_promise = nullptr;
-                    m_traversable->m_apply_history_step_state = this;
-                    m_traversable->m_paused_apply_history_step_state = nullptr;
-                    process_continuations();
-                });
-                return;
-            }
-        }
+        // NOTE: Synchronous navigation queue-jumping is now handled by UI's traversal queue.
+        // Sync nav steps enqueued during this traversal will be executed by UI in order,
+        // after the current traversal step completes.
 
         if (m_continuation_index == m_continuations.size()) {
             if (m_phase == Phase::ProcessingContinuations) {
@@ -877,20 +846,27 @@ void ApplyHistoryStepState::process_continuations()
             continue;
         }
 
-        // AD-HOC: We re-compute targetStep here, since it might have changed since the last time we computed it.
-        //         This can happen if navigables are destroyed while we wait for tasks to complete.
-        m_target_step = m_traversable->get_the_used_step(m_step);
+        u64 script_history_length;
+        u64 script_history_index;
+        Optional<Vector<GC::Ref<SessionHistoryEntry>>> plan_nav_api_entries;
 
-        // 7. Let (scriptHistoryLength, scriptHistoryIndex) be the result of getting the history object length and index given traversable and targetStep.
-        auto history_object_length_and_index = m_traversable->get_the_history_object_length_and_index(m_target_step);
-        auto script_history_length = history_object_length_and_index.script_history_length;
-        auto script_history_index = history_object_length_and_index.script_history_index;
+        if (auto it = m_plan_data->changing.find(*navigable); it != m_plan_data->changing.end()) {
+            script_history_length = it->value.history_length;
+            script_history_index = it->value.history_index;
+            plan_nav_api_entries = it->value.navigation_api_entries;
+        } else {
+            auto length_and_index = m_traversable->get_the_history_object_length_and_index(m_target_step);
+            script_history_length = length_and_index.script_history_length;
+            script_history_index = length_and_index.script_history_index;
+        }
 
         // 8. Append navigable to navigablesThatMustWaitBeforeHandlingSyncNavigation.
         m_navigables_that_must_wait_before_handling_sync_navigation.set(*navigable);
 
         // 9. Let entriesForNavigationAPI be the result of getting session history entries for the navigation API given navigable and targetStep.
-        auto entries_for_navigation_api = m_traversable->get_session_history_entries_for_the_navigation_api(*navigable, m_target_step);
+        auto entries_for_navigation_api = plan_nav_api_entries.has_value()
+            ? move(plan_nav_api_entries.value())
+            : m_traversable->get_session_history_entries_for_the_navigation_api(*navigable, m_target_step);
 
         // NOTE: Steps 10 and 11 come after step 12.
 
@@ -976,14 +952,23 @@ void ApplyHistoryStepState::process_continuations()
 
 void ApplyHistoryStepState::enter_waiting_for_non_changing_jobs()
 {
-    // AD-HOC: We re-compute targetStep here, since it might have changed since the last time we computed it.
-    //         This can happen if navigables are destroyed while we wait for tasks to complete.
-    m_target_step = m_traversable->get_the_used_step(m_step);
+    u64 script_history_length;
+    u64 script_history_index;
 
-    // 17. Let (scriptHistoryLength, scriptHistoryIndex) be the result of getting the history object length and index given traversable and targetStep.
-    auto length_and_index = m_traversable->get_the_history_object_length_and_index(m_target_step);
-    auto script_history_length = length_and_index.script_history_length;
-    auto script_history_index = length_and_index.script_history_index;
+    if (!m_non_changing_navigables.is_empty()) {
+        if (auto it = m_plan_data->non_changing.find(*m_non_changing_navigables[0]); it != m_plan_data->non_changing.end()) {
+            script_history_length = it->value.history_length;
+            script_history_index = it->value.history_index;
+        } else {
+            m_target_step = m_traversable->get_the_used_step(m_step);
+            auto length_and_index = m_traversable->get_the_history_object_length_and_index(m_target_step);
+            script_history_length = length_and_index.script_history_length;
+            script_history_index = length_and_index.script_history_index;
+        }
+    } else {
+        script_history_length = 0;
+        script_history_index = 0;
+    }
 
     // 18. For each navigable of nonchangingNavigablesThatStillNeedUpdates, queue a global task on the navigation and traversal task source given navigable's active window to run the steps:
     for (auto& navigable : m_non_changing_navigables) {
@@ -1031,6 +1016,9 @@ void ApplyHistoryStepState::complete()
     // 20. Set traversable's current session history step to targetStep.
     m_traversable->m_current_session_history_step = m_target_step;
 
+    // AD-HOC: Notify the UI process about the step change.
+    m_traversable->page().client().page_did_update_session_history_step(m_target_step);
+
     // Not in the spec:
     auto back_enabled = m_traversable->m_current_session_history_step > 0;
     VERIFY(m_traversable->m_session_history_entries.size() > 0);
@@ -1049,9 +1037,79 @@ void ApplyHistoryStepState::complete()
         m_on_complete->function()(HistoryStepResult::Applied);
 }
 
-// https://html.spec.whatwg.org/multipage/browsing-the-web.html#apply-the-history-step
-void TraversableNavigable::apply_the_history_step(
+TraversalPlanData TraversableNavigable::build_plan_data_from_tree(int target_step)
+{
+    TraversalPlanData plan_data;
+
+    auto non_changing = get_all_navigables_that_only_need_history_object_length_index_update(target_step);
+    auto changing = get_all_navigables_whose_current_session_history_entry_will_change_or_reload(target_step);
+    auto length_and_index = get_the_history_object_length_and_index(target_step);
+
+    for (auto& nav : changing) {
+        auto target_entry = nav->get_the_target_history_entry(target_step);
+        auto nav_api_entries = get_session_history_entries_for_the_navigation_api(*nav, target_step);
+        plan_data.changing.set(*nav, {
+                                         .target_entry = *target_entry,
+                                         .history_length = length_and_index.script_history_length,
+                                         .history_index = length_and_index.script_history_index,
+                                         .navigation_api_entries = move(nav_api_entries),
+                                     });
+    }
+
+    for (auto& nav : non_changing) {
+        plan_data.non_changing.set(*nav, {
+                                             .target_entry = *nav->active_session_history_entry(),
+                                             .history_length = length_and_index.script_history_length,
+                                             .history_index = length_and_index.script_history_index,
+                                         });
+    }
+
+    return plan_data;
+}
+
+struct SerializedTraversalPlanData {
+    Vector<WebView::NavigablePlanIPC> changing;
+    Vector<WebView::NavigablePlanIPC> non_changing;
+};
+
+static SerializedTraversalPlanData serialize_traversal_plan_data(TraversalPlanData const& plan_data)
+{
+    SerializedTraversalPlanData serialized_plan_data;
+
+    serialized_plan_data.changing.ensure_capacity(plan_data.changing.size());
+    for (auto const& [navigable_ref, navigable_plan] : plan_data.changing) {
+        Vector<WebView::UISessionHistoryEntry> navigation_api_entries;
+        navigation_api_entries.ensure_capacity(navigable_plan.navigation_api_entries.size());
+        for (auto const& entry : navigable_plan.navigation_api_entries)
+            navigation_api_entries.append(serialize_session_history_entry(entry));
+
+        serialized_plan_data.changing.append({
+            .navigable_id = navigable_ref->ui_navigable_id(),
+            .target_entry = serialize_session_history_entry(navigable_plan.target_entry),
+            .history_length = navigable_plan.history_length,
+            .history_index = navigable_plan.history_index,
+            .navigation_api_entries = move(navigation_api_entries),
+        });
+    }
+
+    serialized_plan_data.non_changing.ensure_capacity(plan_data.non_changing.size());
+    for (auto const& [navigable_ref, navigable_plan] : plan_data.non_changing) {
+        serialized_plan_data.non_changing.append({
+            .navigable_id = navigable_ref->ui_navigable_id(),
+            .target_entry = serialize_session_history_entry(navigable_plan.target_entry),
+            .history_length = navigable_plan.history_length,
+            .history_index = navigable_plan.history_index,
+            .navigation_api_entries = {},
+        });
+    }
+
+    return serialized_plan_data;
+}
+
+void TraversableNavigable::apply_the_history_step_with_plan(
     int step,
+    int target_step,
+    TraversalPlanData plan_data,
     bool check_for_cancelation,
     GC::Ptr<SourceSnapshotParams> source_snapshot_params,
     GC::Ptr<Navigable> initiator_to_check,
@@ -1065,32 +1123,36 @@ void TraversableNavigable::apply_the_history_step(
 
     VERIFY(!m_apply_history_step_state || m_paused_apply_history_step_state);
 
-    // 2. Let targetStep be the result of getting the used step given traversable and step.
-    auto target_step = get_the_used_step(step);
+    GC::Ptr<SessionHistoryEntry> top_level_target_entry;
 
-    // 3. If initiatorToCheck is not null, then:
     if (initiator_to_check != nullptr) {
-        // 1. Assert: sourceSnapshotParams is not null.
         VERIFY(source_snapshot_params);
 
-        // 2. For each navigable of get all navigables whose current session history entry will change or reload:
-        //    if initiatorToCheck is not allowed by sandboxing to navigate navigable given sourceSnapshotParams, then return "initiator-disallowed".
-        for (auto const& navigable : get_all_navigables_whose_current_session_history_entry_will_change_or_reload(target_step)) {
-            if (!initiator_to_check->allowed_by_sandboxing_to_navigate(*navigable, *source_snapshot_params)) {
+        for (auto const& [navigable_ref, _] : plan_data.changing) {
+            if (!initiator_to_check->allowed_by_sandboxing_to_navigate(*navigable_ref, *source_snapshot_params)) {
                 on_complete->function()(HistoryStepResult::InitiatorDisallowed);
                 return;
             }
         }
     }
 
-    // 4. Let navigablesCrossingDocuments be the result of getting all navigables that might experience a cross-document traversal given traversable and targetStep.
-    auto navigables_crossing_documents = get_all_navigables_that_might_experience_a_cross_document_traversal(target_step);
+    Vector<GC::Root<Navigable>> navigables_crossing_documents;
+    for (auto const& [navigable_ref, nav_plan] : plan_data.changing) {
+        auto& navigable = *navigable_ref;
+        if (&navigable == this)
+            top_level_target_entry = nav_plan.target_entry;
+        if (nav_plan.target_entry->document_state() && nav_plan.target_entry->document_state()->document_id() != navigable.active_document_id())
+            navigables_crossing_documents.append(navigable);
+    }
 
-    // 5. If checkForCancelation is true, and the result of checking if unloading is canceled given navigablesCrossingDocuments, traversable, targetStep,
-    //    and userInvolvement is not "continue", then return that result.
+    if (!top_level_target_entry) {
+        if (auto it = plan_data.non_changing.find(*this); it != plan_data.non_changing.end())
+            top_level_target_entry = it->value.target_entry;
+    }
+
     if (check_for_cancelation) {
-        check_if_unloading_is_canceled(navigables_crossing_documents, *this, target_step, user_involvement,
-            GC::create_function(heap(), [this, step, target_step, source_snapshot_params, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete](CheckIfUnloadingIsCanceledResult result) mutable {
+        check_if_unloading_is_canceled(navigables_crossing_documents, *this, target_step, top_level_target_entry, user_involvement,
+            GC::create_function(heap(), [this, step, target_step, source_snapshot_params, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete, plan_data = move(plan_data)](CheckIfUnloadingIsCanceledResult result) mutable {
                 if (result == CheckIfUnloadingIsCanceledResult::CanceledByBeforeUnload) {
                     on_complete->function()(HistoryStepResult::CanceledByBeforeUnload);
                     return;
@@ -1099,13 +1161,12 @@ void TraversableNavigable::apply_the_history_step(
                     on_complete->function()(HistoryStepResult::CanceledByNavigate);
                     return;
                 }
-                apply_the_history_step_after_unload_check(step, target_step, source_snapshot_params, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete);
+                apply_the_history_step_after_unload_check(step, target_step, source_snapshot_params, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete, move(plan_data));
             }));
         return;
     }
 
-    // 6. Let changingNavigables be the result of get all navigables whose current session history entry will change or reload given traversable and targetStep.
-    apply_the_history_step_after_unload_check(step, target_step, source_snapshot_params, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete);
+    apply_the_history_step_after_unload_check(step, target_step, source_snapshot_params, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete, move(plan_data));
 }
 
 void TraversableNavigable::apply_the_history_step_after_unload_check(
@@ -1116,15 +1177,95 @@ void TraversableNavigable::apply_the_history_step_after_unload_check(
     Optional<Bindings::NavigationType> navigation_type,
     SynchronousNavigation synchronous_navigation,
     GC::Ptr<DOM::Document> pending_document,
-    GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete)
+    GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete,
+    Optional<TraversalPlanData> plan_data)
 {
     auto state = heap().allocate<ApplyHistoryStepState>(*this, step, target_step, source_snapshot_params,
         user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete);
+
+    VERIFY(plan_data.has_value());
+    state->set_plan_data(move(plan_data.value()));
 
     VERIFY(!m_apply_history_step_state || m_paused_apply_history_step_state);
     m_apply_history_step_state = state;
 
     state->start();
+}
+
+static GC::Ptr<Navigable> find_navigable_by_ui_id(u64 ui_navigable_id)
+{
+    for (auto& navigable : all_navigables()) {
+        if (navigable->ui_navigable_id() == ui_navigable_id)
+            return navigable;
+    }
+    return nullptr;
+}
+
+static GC::Ref<SessionHistoryEntry> materialize_planned_session_history_entry(GC::Heap& heap, WebView::UISessionHistoryEntry const& ui_entry)
+{
+    GC::Ptr<SessionHistoryEntry> entry;
+
+    if (ui_entry.id != 0) {
+        for (auto& navigable : all_navigables()) {
+            auto& entries = navigable->get_session_history_entries();
+            auto it = entries.find_if([ui_id = ui_entry.id](auto const& candidate) {
+                return candidate->ui_id() == ui_id;
+            });
+            if (it == entries.end())
+                continue;
+            entry = *it;
+            break;
+        }
+    }
+
+    if (!entry) {
+        entry = heap.allocate<SessionHistoryEntry>();
+        entry->set_document_state(heap.allocate<DocumentState>());
+    } else if (!entry->document_state()) {
+        entry->set_document_state(heap.allocate<DocumentState>());
+    }
+
+    apply_ui_session_history_entry(ui_entry, *entry, heap);
+    return *entry;
+}
+
+void TraversableNavigable::apply_the_history_step_from_plan(int step, int target_step, Vector<WebView::NavigablePlanIPC> changing_plan, Vector<WebView::NavigablePlanIPC> non_changing_plan, GC::Ptr<SourceSnapshotParams> source_snapshot_params, GC::Ptr<Navigable> initiator_to_check, UserNavigationInvolvement user_involvement, Optional<Bindings::NavigationType> navigation_type, bool check_for_cancelation, SynchronousNavigation synchronous_navigation, GC::Ptr<DOM::Document> pending_document, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete)
+{
+    TraversalPlanData plan_data;
+
+    for (auto& plan_entry : changing_plan) {
+        auto navigable = find_navigable_by_ui_id(plan_entry.navigable_id);
+        if (!navigable)
+            continue;
+
+        auto target_entry = materialize_planned_session_history_entry(heap(), plan_entry.target_entry);
+
+        Vector<GC::Ref<SessionHistoryEntry>> nav_api_entries;
+        for (auto const& ui_entry : plan_entry.navigation_api_entries) {
+            nav_api_entries.append(materialize_planned_session_history_entry(heap(), ui_entry));
+        }
+
+        plan_data.changing.set(*navigable, {
+                                               .target_entry = *target_entry,
+                                               .history_length = plan_entry.history_length,
+                                               .history_index = plan_entry.history_index,
+                                               .navigation_api_entries = move(nav_api_entries),
+                                           });
+    }
+
+    for (auto const& plan_entry : non_changing_plan) {
+        auto navigable = find_navigable_by_ui_id(plan_entry.navigable_id);
+        if (!navigable)
+            continue;
+
+        plan_data.non_changing.set(*navigable, {
+                                                   .target_entry = *navigable->active_session_history_entry(),
+                                                   .history_length = plan_entry.history_length,
+                                                   .history_index = plan_entry.history_index,
+                                               });
+    }
+
+    apply_the_history_step_with_plan(step, target_step, move(plan_data), check_for_cancelation, source_snapshot_params, initiator_to_check, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete);
 }
 
 class CheckUnloadingCanceledState : public GC::Cell {
@@ -1164,7 +1305,7 @@ public:
     }
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#checking-if-unloading-is-canceled
-    void start(Vector<GC::Root<Navigable>> const& navigables_that_need_before_unload, Optional<int> target_step)
+    void start(Vector<GC::Root<Navigable>> const& navigables_that_need_before_unload, Optional<int> target_step, GC::Ptr<SessionHistoryEntry> target_entry)
     {
         // 1. Let documentsToFireBeforeunload be the active document of each item in navigablesThatNeedBeforeUnload.
         for (auto& navigable : navigables_that_need_before_unload)
@@ -1179,8 +1320,9 @@ public:
             // 1. Assert: targetStep and userInvolvementForNavigateEvent were given.
             // NOTE: This assertion is enforced by the caller.
 
-            // 2. Let targetEntry be the result of getting the target history entry given traversable and targetStep.
-            m_target_entry = m_traversable->get_the_target_history_entry(target_step.value());
+            m_target_entry = target_entry;
+            if (!m_target_entry)
+                m_target_entry = m_traversable->get_the_target_history_entry(target_step.value());
 
             // 3. If targetEntry is not traversable's current session history entry, and targetEntry's document state's origin is not the same as
             //    traversable's current session history entry's document state's origin, then:
@@ -1337,6 +1479,7 @@ void TraversableNavigable::check_if_unloading_is_canceled(
     Vector<GC::Root<Navigable>> navigables_that_need_before_unload,
     GC::Ptr<TraversableNavigable> traversable,
     Optional<int> target_step,
+    GC::Ptr<SessionHistoryEntry> target_entry,
     Optional<UserNavigationInvolvement> user_involvement_for_navigate_events,
     GC::Ref<GC::Function<void(CheckIfUnloadingIsCanceledResult)>> callback)
 {
@@ -1344,12 +1487,12 @@ void TraversableNavigable::check_if_unloading_is_canceled(
         traversable,
         user_involvement_for_navigate_events,
         callback);
-    state->start(navigables_that_need_before_unload, target_step);
+    state->start(navigables_that_need_before_unload, target_step, target_entry);
 }
 
 void TraversableNavigable::check_if_unloading_is_canceled(Vector<GC::Root<Navigable>> navigables_that_need_before_unload, GC::Ref<GC::Function<void(CheckIfUnloadingIsCanceledResult)>> callback)
 {
-    check_if_unloading_is_canceled(move(navigables_that_need_before_unload), {}, {}, {}, callback);
+    check_if_unloading_is_canceled(move(navigables_that_need_before_unload), {}, {}, nullptr, {}, callback);
 }
 
 Vector<GC::Ref<SessionHistoryEntry>> TraversableNavigable::get_session_history_entries_for_the_navigation_api(GC::Ref<Navigable> navigable, int target_step)
@@ -1452,6 +1595,9 @@ void TraversableNavigable::clear_the_forward_session_history()
             }
         }
     }
+
+    // AD-HOC: Notify the UI process about the forward history clear.
+    page().client().page_did_clear_forward_session_history(step);
 }
 
 bool TraversableNavigable::can_go_forward() const
@@ -1476,6 +1622,18 @@ bool TraversableNavigable::can_go_forward() const
     return false;
 }
 
+void TraversableNavigable::append_session_history_traversal_steps(GC::Ref<SessionHistoryTraversalSteps> steps)
+{
+    auto token = page().retain_traversal_step(steps);
+    page().client().page_did_enqueue_traversal_step(token);
+}
+
+void TraversableNavigable::append_session_history_synchronous_navigation_steps(GC::Ref<Navigable> target_navigable, GC::Ref<SessionHistoryTraversalSteps> steps)
+{
+    auto token = page().retain_traversal_step(steps);
+    page().client().page_did_enqueue_sync_navigation_step(token, target_navigable->ui_navigable_id());
+}
+
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta
 void TraversableNavigable::traverse_the_history_by_delta(int delta, GC::Ptr<DOM::Document> source_document)
 {
@@ -1498,64 +1656,49 @@ void TraversableNavigable::traverse_the_history_by_delta(int delta, GC::Ptr<DOM:
         user_involvement = UserNavigationInvolvement::None;
     }
 
-    // 4. Append the following session history traversal steps to traversable:
-    append_session_history_traversal_steps(GC::create_function(heap(), [this, delta, source_snapshot_params, initiator_to_check, user_involvement](NonnullRefPtr<Core::Promise<Empty>> signal) {
-        // 1. Let allSteps be the result of getting all used history steps for traversable.
-        auto all_steps = get_all_used_history_steps();
+    u64 source_snapshot_token = 0;
+    if (source_snapshot_params)
+        source_snapshot_token = page().retain_source_snapshot(*source_snapshot_params);
 
-        // 2. Let currentStepIndex be the index of traversable's current session history step within allSteps.
-        auto current_step_index = *all_steps.find_first_index(current_session_history_step());
+    auto initiator_navigable_id = initiator_to_check ? initiator_to_check->ui_navigable_id() : 0;
 
-        // 3. Let targetStepIndex be currentStepIndex plus delta
-        auto target_step_index = current_step_index + delta;
-
-        // 4. If allSteps[targetStepIndex] does not exist, then abort these steps.
-        if (target_step_index >= all_steps.size()) {
-            signal->resolve({});
-            return;
-        }
-
-        // 5. Apply the traverse history step allSteps[targetStepIndex] to traversable, given sourceSnapshotParams,
-        //    initiatorToCheck, and userInvolvement.
-        apply_the_traverse_history_step(all_steps[target_step_index], source_snapshot_params, initiator_to_check, user_involvement,
-            GC::create_function(heap(), [signal](HistoryStepResult) {
-                signal->resolve({});
-            }));
-    }));
+    // Defer target-step selection to the UI process, where the traversal queue and
+    // authoritative session history live.
+    page().client().page_did_request_traverse_by_delta(delta, source_snapshot_token, initiator_navigable_id, static_cast<u8>(user_involvement));
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#update-for-navigable-creation/destruction
 void TraversableNavigable::update_for_navigable_creation_or_destruction(GC::Ref<OnApplyHistoryStepComplete> on_complete)
 {
-    // 1. Let step be traversable's current session history step.
     auto step = current_session_history_step();
-
-    // 2. Return the result of applying the history step to traversable given false, null, null, null, and null.
-    apply_the_history_step(step, false, {}, {}, UserNavigationInvolvement::None, {}, SynchronousNavigation::No, nullptr, on_complete);
+    auto target_step = get_the_used_step(step);
+    auto serialized_plan_data = serialize_traversal_plan_data(build_plan_data_from_tree(target_step));
+    apply_the_history_step_from_plan(step, target_step, move(serialized_plan_data.changing), move(serialized_plan_data.non_changing), {}, {}, UserNavigationInvolvement::None, {}, false, SynchronousNavigation::No, nullptr, on_complete);
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#apply-the-reload-history-step
 void TraversableNavigable::apply_the_reload_history_step(UserNavigationInvolvement user_involvement, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete)
 {
-    // 1. Let step be traversable's current session history step.
     auto step = current_session_history_step();
-
-    // 2. Return the result of applying the history step step to traversable given true, null, null, null, and "reload".
-    apply_the_history_step(step, true, {}, {}, user_involvement, Bindings::NavigationType::Reload, SynchronousNavigation::No, nullptr, on_complete);
+    auto target_step = get_the_used_step(step);
+    auto serialized_plan_data = serialize_traversal_plan_data(build_plan_data_from_tree(target_step));
+    apply_the_history_step_from_plan(step, target_step, move(serialized_plan_data.changing), move(serialized_plan_data.non_changing), {}, {}, user_involvement, Bindings::NavigationType::Reload, true, SynchronousNavigation::No, nullptr, on_complete);
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#apply-the-push/replace-history-step
 void TraversableNavigable::apply_the_push_or_replace_history_step(int step, HistoryHandlingBehavior history_handling, UserNavigationInvolvement user_involvement, SynchronousNavigation synchronous_navigation, GC::Ptr<DOM::Document> pending_document, GC::Ref<OnApplyHistoryStepComplete> on_complete)
 {
-    // 1. Return the result of applying the history step step to traversable given false, null, null, userInvolvement, and historyHandling.
     auto navigation_type = history_handling == HistoryHandlingBehavior::Replace ? Bindings::NavigationType::Replace : Bindings::NavigationType::Push;
-    apply_the_history_step(step, false, {}, {}, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete);
+    auto target_step = get_the_used_step(step);
+    auto serialized_plan_data = serialize_traversal_plan_data(build_plan_data_from_tree(target_step));
+    apply_the_history_step_from_plan(step, target_step, move(serialized_plan_data.changing), move(serialized_plan_data.non_changing), {}, {}, user_involvement, navigation_type, false, synchronous_navigation, pending_document, on_complete);
 }
 
 void TraversableNavigable::apply_the_traverse_history_step(int step, GC::Ptr<SourceSnapshotParams> source_snapshot_params, GC::Ptr<Navigable> initiator_to_check, UserNavigationInvolvement user_involvement, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete)
 {
-    // 1. Return the result of applying the history step step to traversable given true, sourceSnapshotParams, initiatorToCheck, userInvolvement, and "traverse".
-    apply_the_history_step(step, true, source_snapshot_params, initiator_to_check, user_involvement, Bindings::NavigationType::Traverse, SynchronousNavigation::No, nullptr, on_complete);
+    auto target_step = get_the_used_step(step);
+    auto serialized_plan_data = serialize_traversal_plan_data(build_plan_data_from_tree(target_step));
+    apply_the_history_step_from_plan(step, target_step, move(serialized_plan_data.changing), move(serialized_plan_data.non_changing), source_snapshot_params, initiator_to_check, user_involvement, Bindings::NavigationType::Traverse, true, SynchronousNavigation::No, nullptr, on_complete);
 }
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#close-a-top-level-traversable
@@ -1653,6 +1796,9 @@ void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversab
             if (auto it = target_entries.find(*entry_to_replace); it != target_entries.end()) {
                 target_entry->set_step(entry_to_replace->step());
                 *it = target_entry;
+                // AD-HOC: Assign a stable entry ID and notify the UI process about the replaced entry.
+                target_entry->set_ui_id(traversable->page().allocate_session_history_entry_id());
+                traversable->page().client().page_did_replace_session_history_entry(target_navigable->ui_navigable_id(), serialize_session_history_entry(*target_entry));
             }
         }
         on_complete->function()(HistoryStepResult::Applied);
@@ -1680,6 +1826,10 @@ void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversab
 
         // 4. Append targetEntry to targetEntries.
         target_entries.append(target_entry);
+
+        // AD-HOC: Assign a stable entry ID and notify the UI process about the new entry.
+        target_entry->set_ui_id(traversable->page().allocate_session_history_entry_id());
+        traversable->page().client().page_did_append_session_history_entry(target_navigable->ui_navigable_id(), serialize_session_history_entry(*target_entry));
     } else {
         // 1. Replace entryToReplace with targetEntry in targetEntries.
         *(target_entries.find(*entry_to_replace)) = target_entry;
@@ -1689,6 +1839,10 @@ void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversab
 
         // 3. Set targetStep to traversable's current session history step.
         target_step = traversable->current_session_history_step();
+
+        // AD-HOC: Assign a stable entry ID and notify the UI process about the replaced entry.
+        target_entry->set_ui_id(traversable->page().allocate_session_history_entry_id());
+        traversable->page().client().page_did_replace_session_history_entry(target_navigable->ui_navigable_id(), serialize_session_history_entry(*target_entry));
     }
 
     // 6. Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.

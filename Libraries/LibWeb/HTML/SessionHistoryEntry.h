@@ -74,6 +74,10 @@ public:
     [[nodiscard]] GC::Ptr<BrowsingContext> original_source_browsing_context() const { return m_original_source_browsing_context; }
     void set_original_source_browsing_context(GC::Ptr<BrowsingContext> original_source_browsing_context) { m_original_source_browsing_context = original_source_browsing_context; }
 
+    // UI-assigned stable identity for this entry. 0 means "not yet assigned".
+    [[nodiscard]] u64 ui_id() const { return m_ui_id; }
+    void set_ui_id(u64 ui_id) { m_ui_id = ui_id; }
+
 private:
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#she-step
     // step, a non-negative integer or "pending", initially "pending".
@@ -120,6 +124,8 @@ private:
     // NOTE: This is where we could remember the state of form controls, for example.
 
     GC::Ptr<BrowsingContext> m_original_source_browsing_context;
+
+    u64 m_ui_id { 0 };
 };
 
 }

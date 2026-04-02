@@ -13,6 +13,7 @@
 #include <LibGfx/ImageFormats/PNGWriter.h>
 #include <LibURL/Parser.h>
 #include <LibWeb/Crypto/Crypto.h>
+#include <LibWeb/HTML/NavigationType.h>
 #include <LibWeb/Infra/Strings.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/BookmarkStore.h>
@@ -31,6 +32,22 @@ namespace WebView {
 
 static HashMap<u64, ViewImplementation*> s_all_views;
 static u64 s_view_count = 1; // This has to start at 1 for Firefox DevTools.
+
+static Vector<NavigablePlanIPC> to_ipc_plan(Vector<SessionHistoryManager::NavigablePlanData> plan_entries)
+{
+    Vector<NavigablePlanIPC> ipc_entries;
+    ipc_entries.ensure_capacity(plan_entries.size());
+    for (auto& plan_entry : plan_entries) {
+        ipc_entries.append({
+            .navigable_id = plan_entry.navigable_id,
+            .target_entry = move(plan_entry.target_entry),
+            .history_length = plan_entry.history_length,
+            .history_index = plan_entry.history_index,
+            .navigation_api_entries = move(plan_entry.navigation_api_entries),
+        });
+    }
+    return ipc_entries;
+}
 
 void ViewImplementation::for_each_view(Function<IterationDecision(ViewImplementation&)> callback)
 {
@@ -189,12 +206,27 @@ void ViewImplementation::load_html(StringView html)
 
 void ViewImplementation::reload()
 {
-    client().async_reload(page_id());
+    // Route browser UI reload through the UI traversal queue so it uses the same
+    // plan execution path as other UI-driven history traversals.
+    m_session_history.traversal_queue().append([this] {
+        if (!dispatch_traversal_plan_for_target_step(m_session_history.current_step(), 0, 0, static_cast<u8>(Web::HTML::UserNavigationInvolvement::BrowserUI), static_cast<u8>(Web::Bindings::NavigationType::Reload), true)) {
+            m_session_history.traversal_queue().did_complete_current_step();
+            return;
+        }
+    });
 }
 
 void ViewImplementation::traverse_the_history_by_delta(int delta)
 {
-    client().async_traverse_the_history_by_delta(page_id(), delta);
+    // Defer target-step computation until this reaches the UI traversal queue so any
+    // preceding sync navigation steps have already updated session history.
+    m_session_history.traversal_queue().append([this, delta] {
+        auto target_step = m_session_history.get_target_step_for_delta(delta);
+        if (!target_step.has_value() || !dispatch_traversal_plan_for_target_step(*target_step, 0, 0, static_cast<u8>(Web::HTML::UserNavigationInvolvement::BrowserUI), static_cast<u8>(Web::Bindings::NavigationType::Traverse), true)) {
+            m_session_history.traversal_queue().did_complete_current_step();
+            return;
+        }
+    });
 }
 
 void ViewImplementation::zoom_in()
@@ -589,6 +621,102 @@ void ViewImplementation::did_update_navigation_buttons_state(Badge<WebContentCli
 {
     m_navigate_back_action->set_enabled(back_enabled);
     m_navigate_forward_action->set_enabled(forward_enabled);
+}
+
+void ViewImplementation::did_create_navigable(Badge<WebContentClient>, u64 ui_navigable_id, Optional<u64> parent_ui_navigable_id)
+{
+    m_session_history.register_navigable(ui_navigable_id, parent_ui_navigable_id.value_or(0));
+}
+
+void ViewImplementation::did_destroy_navigable(Badge<WebContentClient>, u64 ui_navigable_id)
+{
+    m_session_history.unregister_navigable(ui_navigable_id);
+}
+
+void ViewImplementation::did_navigable_become_ready_for_navigation(Badge<WebContentClient>, u64 ui_navigable_id)
+{
+    m_session_history.set_navigable_ready_for_navigation(ui_navigable_id);
+}
+
+void ViewImplementation::did_enqueue_traversal_step(Badge<WebContentClient>, u64 step_token)
+{
+    m_session_history.traversal_queue().append([this, step_token] {
+        client().async_execute_queued_traversal_step(page_id(), step_token);
+    });
+}
+
+void ViewImplementation::did_enqueue_sync_navigation_step(Badge<WebContentClient>, u64 step_token, u64 navigable_id)
+{
+    m_session_history.traversal_queue().append_sync([this, step_token] {
+        client().async_execute_queued_traversal_step(page_id(), step_token);
+    },
+        navigable_id);
+}
+
+void ViewImplementation::did_complete_queued_traversal_step(Badge<WebContentClient>)
+{
+    if (m_session_history.traversal_queue().is_processing())
+        m_session_history.traversal_queue().did_complete_current_step();
+}
+
+void ViewImplementation::did_request_push_or_replace_history_step(Badge<WebContentClient>, u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous)
+{
+    // Push/replace steps are called from within an already-queued traversal step
+    // (from finalize_a_cross_document_navigation or finalize_a_same_document_navigation).
+    // Execute immediately — they must not be enqueued separately or it deadlocks.
+    client().async_execute_push_or_replace_history_step(page_id(), callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous);
+}
+
+void ViewImplementation::did_request_traverse_by_delta(Badge<WebContentClient>, i32 delta, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement)
+{
+    // Enqueue on UITraversalQueue — target step computation is deferred so preceding
+    // sync nav steps (pushState) have already updated the history.
+    m_session_history.traversal_queue().append([this, delta, source_snapshot_token, initiator_navigable_id, user_involvement] {
+        auto target_step = m_session_history.get_target_step_for_delta(delta);
+        if (!target_step.has_value() || !dispatch_traversal_plan_for_target_step(*target_step, source_snapshot_token, initiator_navigable_id, user_involvement, static_cast<u8>(Web::Bindings::NavigationType::Traverse), true)) {
+            m_session_history.traversal_queue().did_complete_current_step();
+            return;
+        }
+    });
+}
+
+bool ViewImplementation::dispatch_traversal_plan_for_target_step(int target_step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement, u8 navigation_type, bool check_for_cancelation)
+{
+    auto plan_data = m_session_history.build_plan_data_for_step(target_step);
+    auto changing = to_ipc_plan(move(plan_data.changing));
+    auto non_changing = to_ipc_plan(move(plan_data.non_changing));
+    if (changing.is_empty() && non_changing.is_empty())
+        return false;
+
+    client().async_execute_traversal_plan(page_id(), move(changing), move(non_changing), target_step, source_snapshot_token, initiator_navigable_id, user_involvement, navigation_type, check_for_cancelation);
+    return true;
+}
+
+void ViewImplementation::did_append_session_history_entry(Badge<WebContentClient>, u64 navigable_id, UISessionHistoryEntry entry)
+{
+    m_session_history.append_entry(navigable_id, move(entry));
+}
+
+void ViewImplementation::did_replace_session_history_entry(Badge<WebContentClient>, u64 navigable_id, UISessionHistoryEntry entry)
+{
+    m_session_history.replace_entry(navigable_id, move(entry));
+}
+
+void ViewImplementation::did_clear_forward_session_history(Badge<WebContentClient>, int from_step)
+{
+    m_session_history.clear_forward_history(from_step);
+}
+
+void ViewImplementation::did_update_session_history_step(Badge<WebContentClient>, int step)
+{
+    m_session_history.set_current_step(step);
+    update_navigation_buttons_state();
+}
+
+void ViewImplementation::update_navigation_buttons_state()
+{
+    m_navigate_back_action->set_enabled(m_session_history.can_go_back());
+    m_navigate_forward_action->set_enabled(m_session_history.can_go_forward());
 }
 
 void ViewImplementation::did_allocate_backing_stores(Badge<WebContentClient>, i32 front_bitmap_id, Web::SharedBackingStore front_backing_store, i32 back_bitmap_id, Web::SharedBackingStore back_backing_store)

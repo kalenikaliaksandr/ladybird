@@ -7,6 +7,7 @@
 #pragma once
 
 #include <LibWeb/ContentSecurityPolicy/SerializedPolicy.h>
+#include <LibWeb/Forward.h>
 #include <LibWeb/HTML/EmbedderPolicy.h>
 #include <LibWeb/ReferrerPolicy/ReferrerPolicy.h>
 
@@ -23,9 +24,9 @@ struct SerializedPolicyContainer {
 namespace IPC {
 
 template<>
-ErrorOr<void> encode(Encoder&, Web::HTML::SerializedPolicyContainer const&);
+WEB_API ErrorOr<void> encode(Encoder&, Web::HTML::SerializedPolicyContainer const&);
 
 template<>
-ErrorOr<Web::HTML::SerializedPolicyContainer> decode(Decoder&);
+WEB_API ErrorOr<Web::HTML::SerializedPolicyContainer> decode(Decoder&);
 
 }

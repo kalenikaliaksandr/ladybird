@@ -25,7 +25,7 @@ class DocumentState final : public JS::Cell {
 
 public:
     struct NestedHistory {
-        String id;
+        u64 id { 0 };
         Vector<GC::Ref<SessionHistoryEntry>> entries;
     };
 

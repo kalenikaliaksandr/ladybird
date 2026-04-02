@@ -174,6 +174,18 @@ private:
     virtual void page_did_request_activate_tab() override;
     virtual void page_did_close_top_level_traversable() override;
     virtual void page_did_update_navigation_buttons_state(bool back_enabled, bool forward_enabled) override;
+    virtual void page_did_create_navigable(u64 ui_navigable_id, Optional<u64> parent_ui_navigable_id) override;
+    virtual void page_did_destroy_navigable(u64 ui_navigable_id) override;
+    virtual void page_did_navigable_become_ready_for_navigation(u64 ui_navigable_id) override;
+    virtual void page_did_request_traverse_by_delta(i32 delta, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement) override;
+    virtual void page_did_request_push_or_replace_history_step(u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous) override;
+    virtual void page_did_enqueue_traversal_step(u64 step_token) override;
+    virtual void page_did_enqueue_sync_navigation_step(u64 step_token, u64 navigable_id) override;
+    virtual void page_did_complete_queued_traversal_step() override;
+    virtual void page_did_append_session_history_entry(u64 navigable_id, WebView::UISessionHistoryEntry entry) override;
+    virtual void page_did_replace_session_history_entry(u64 navigable_id, WebView::UISessionHistoryEntry entry) override;
+    virtual void page_did_clear_forward_session_history(int from_step) override;
+    virtual void page_did_update_session_history_step(int step) override;
     virtual void request_file(Web::FileRequest) override;
     virtual void page_did_request_color_picker(Color current_color) override;
     virtual void page_did_request_file_picker(Web::HTML::FileFilter const& accepted_file_types, Web::HTML::AllowMultipleFiles) override;

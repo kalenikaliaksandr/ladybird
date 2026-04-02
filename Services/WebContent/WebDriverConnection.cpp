@@ -415,7 +415,7 @@ Messages::WebDriverClient::BackResponse WebDriverConnection::back()
         }
 
         // 6. Traverse the history by a delta –1 for session's current browsing context.
-        current_top_level_browsing_context()->top_level_traversable()->traverse_the_history_by_delta(-1);
+        current_top_level_browsing_context()->page().traverse_the_history_by_delta(-1);
 
         // 7. If the previous step completed results in a pageHide event firing, wait until pageShow event fires or
         //    timer' timeout fired flag to be set, whichever occurs first.
@@ -489,7 +489,7 @@ Messages::WebDriverClient::ForwardResponse WebDriverConnection::forward()
         }
 
         // 6. Traverse the history by a delta 1 for session's current browsing context.
-        current_top_level_browsing_context()->top_level_traversable()->traverse_the_history_by_delta(1);
+        current_top_level_browsing_context()->page().traverse_the_history_by_delta(1);
 
         // 7. If the previous step completed results in a pageHide event firing, wait until pageShow event fires or
         //    timer' timeout fired flag to be set, whichever occurs first.

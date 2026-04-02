@@ -40,6 +40,7 @@
 #include <LibWeb/HTML/AudioPlayState.h>
 #include <LibWeb/HTML/ColorPickerUpdateState.h>
 #include <LibWeb/HTML/FileFilter.h>
+#include <LibWeb/HTML/HistoryStepResult.h>
 #include <LibWeb/HTML/SelectItem.h>
 #include <LibWeb/HTML/TokenizedFeatures.h>
 #include <LibWeb/HTML/WebViewHints.h>
@@ -53,6 +54,7 @@
 #include <LibWeb/StorageAPI/StorageEndpoint.h>
 #include <LibWeb/UIEvents/KeyCode.h>
 #include <LibWebView/StorageSetResult.h>
+#include <LibWebView/UISessionHistoryEntry.h>
 
 namespace Web {
 
@@ -90,9 +92,26 @@ public:
 
     void load_html(StringView);
 
-    void reload();
-
     void traverse_the_history_by_delta(int delta);
+    void execute_push_or_replace_history_step(u64 callback_token, u64 pending_document_token, int step, u8 history_handling, u8 user_involvement, bool is_synchronous);
+    void execute_traversal_plan(Vector<WebView::NavigablePlanIPC> changing, Vector<WebView::NavigablePlanIPC> non_changing, int target_step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement, u8 navigation_type, bool check_for_cancelation);
+
+    u64 allocate_session_history_entry_id() { return m_next_session_history_entry_id++; }
+
+    u64 retain_source_snapshot(GC::Ref<HTML::SourceSnapshotParams>);
+    GC::Ptr<HTML::SourceSnapshotParams> consume_source_snapshot(u64 token);
+
+    u64 retain_pending_document(GC::Ref<DOM::Document>);
+    GC::Ptr<DOM::Document> consume_pending_document(u64 token);
+
+    using HistoryStepCallback = GC::Function<void(HTML::HistoryStepResult)>;
+    u64 retain_history_step_callback(GC::Ref<HistoryStepCallback>);
+    GC::Ptr<HistoryStepCallback> consume_history_step_callback(u64 token);
+
+    using TraversalStepClosure = GC::Function<void(NonnullRefPtr<Core::Promise<Empty>>)>;
+    u64 retain_traversal_step(GC::Ref<TraversalStepClosure>);
+    GC::Ptr<TraversalStepClosure> consume_traversal_step(u64 token);
+    void execute_queued_traversal_step(u64 token);
 
     CSSPixelPoint device_to_css_point(DevicePixelPoint) const;
     DevicePixelPoint css_to_device_point(CSSPixelPoint) const;
@@ -354,6 +373,14 @@ private:
     ViewportIsFullscreen m_viewport_is_fullscreen { ViewportIsFullscreen::No };
     bool m_fullscreen_ipc_sent_to_ui { false };
     bool m_processing_fullscreen_operations { false };
+
+    u64 m_next_session_history_entry_id { 1 };
+
+    u64 m_next_retention_token { 1 };
+    HashMap<u64, GC::Ref<HTML::SourceSnapshotParams>> m_retained_source_snapshots;
+    HashMap<u64, GC::Ref<DOM::Document>> m_retained_pending_documents;
+    HashMap<u64, GC::Ref<HistoryStepCallback>> m_retained_history_step_callbacks;
+    HashMap<u64, GC::Ref<TraversalStepClosure>> m_retained_traversal_steps;
 };
 
 enum class DisplayListPlayerType {
@@ -441,6 +468,20 @@ public:
     virtual void page_did_request_activate_tab() { }
     virtual void page_did_close_top_level_traversable() { }
     virtual void page_did_update_navigation_buttons_state([[maybe_unused]] bool back_enabled, [[maybe_unused]] bool forward_enabled) { }
+
+    virtual void page_did_create_navigable([[maybe_unused]] u64 ui_navigable_id, [[maybe_unused]] Optional<u64> parent_ui_navigable_id) { }
+    virtual void page_did_destroy_navigable([[maybe_unused]] u64 ui_navigable_id) { }
+    virtual void page_did_navigable_become_ready_for_navigation([[maybe_unused]] u64 ui_navigable_id) { }
+    virtual void page_did_request_traverse_by_delta([[maybe_unused]] i32 delta, [[maybe_unused]] u64 source_snapshot_token, [[maybe_unused]] u64 initiator_navigable_id, [[maybe_unused]] u8 user_involvement) { }
+    virtual void page_did_request_push_or_replace_history_step([[maybe_unused]] u64 callback_token, [[maybe_unused]] u64 pending_document_token, [[maybe_unused]] i32 step, [[maybe_unused]] u8 history_handling, [[maybe_unused]] u8 user_involvement, [[maybe_unused]] bool is_synchronous) { }
+    virtual void page_did_enqueue_traversal_step([[maybe_unused]] u64 step_token) { }
+    virtual void page_did_enqueue_sync_navigation_step([[maybe_unused]] u64 step_token, [[maybe_unused]] u64 navigable_id) { }
+    virtual void page_did_complete_queued_traversal_step() { }
+
+    virtual void page_did_append_session_history_entry([[maybe_unused]] u64 navigable_id, [[maybe_unused]] WebView::UISessionHistoryEntry entry) { }
+    virtual void page_did_replace_session_history_entry([[maybe_unused]] u64 navigable_id, [[maybe_unused]] WebView::UISessionHistoryEntry entry) { }
+    virtual void page_did_clear_forward_session_history([[maybe_unused]] int from_step) { }
+    virtual void page_did_update_session_history_step([[maybe_unused]] int step) { }
     virtual void page_did_allocate_backing_stores([[maybe_unused]] i32 front_bitmap_id, [[maybe_unused]] SharedBackingStore front_backing_store, [[maybe_unused]] i32 back_bitmap_id, [[maybe_unused]] SharedBackingStore back_backing_store) { }
 
     virtual void request_file(FileRequest) = 0;

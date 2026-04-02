@@ -24,6 +24,7 @@
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/SelectedFile.h>
+#include <LibWeb/HTML/SourceSnapshotParams.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/Page/Page.h>
@@ -64,6 +65,14 @@ void Page::visit_edges(JS::Cell::Visitor& visitor)
                 visitor.visit(exit_operation.promise);
             });
     });
+    for (auto& [_, snapshot] : m_retained_source_snapshots)
+        visitor.visit(snapshot);
+    for (auto& [_, document] : m_retained_pending_documents)
+        visitor.visit(document);
+    for (auto& [_, callback] : m_retained_history_step_callbacks)
+        visitor.visit(callback);
+    for (auto& [_, step] : m_retained_traversal_steps)
+        visitor.visit(step);
 }
 
 HTML::Navigable& Page::focused_navigable()
@@ -100,14 +109,135 @@ void Page::load_html(StringView html)
         .user_involvement = HTML::UserNavigationInvolvement::BrowserUI });
 }
 
-void Page::reload()
-{
-    top_level_traversable()->reload();
-}
-
 void Page::traverse_the_history_by_delta(int delta)
 {
     top_level_traversable()->traverse_the_history_by_delta(delta);
+}
+
+void Page::execute_push_or_replace_history_step(u64 callback_token, u64 pending_document_token, int step, u8 history_handling_value, u8 user_involvement_value, bool is_synchronous)
+{
+    auto pending_document = pending_document_token != 0 ? consume_pending_document(pending_document_token) : nullptr;
+    auto on_complete_callback = callback_token != 0 ? consume_history_step_callback(callback_token) : nullptr;
+
+    auto history_handling = static_cast<HTML::HistoryHandlingBehavior>(history_handling_value);
+    auto user_involvement = static_cast<HTML::UserNavigationInvolvement>(user_involvement_value);
+    auto sync_navigation = is_synchronous ? HTML::TraversableNavigable::SynchronousNavigation::Yes : HTML::TraversableNavigable::SynchronousNavigation::No;
+
+    auto on_complete = GC::create_function(heap(), [on_complete_callback](HTML::HistoryStepResult result) {
+        if (on_complete_callback)
+            on_complete_callback->function()(result);
+    });
+
+    top_level_traversable()->apply_the_push_or_replace_history_step(step, history_handling, user_involvement, sync_navigation, pending_document, on_complete);
+}
+
+void Page::execute_traversal_plan(Vector<WebView::NavigablePlanIPC> changing, Vector<WebView::NavigablePlanIPC> non_changing, int target_step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement_value, u8 navigation_type, bool check_for_cancelation)
+{
+    auto source_snapshot_params = source_snapshot_token != 0 ? consume_source_snapshot(source_snapshot_token) : nullptr;
+    GC::Ptr<HTML::Navigable> initiator_to_check;
+    if (initiator_navigable_id != 0) {
+        for (auto& navigable : HTML::all_navigables()) {
+            if (navigable->ui_navigable_id() == initiator_navigable_id) {
+                initiator_to_check = navigable;
+                break;
+            }
+        }
+    }
+    auto user_involvement = static_cast<HTML::UserNavigationInvolvement>(user_involvement_value);
+
+    top_level_traversable()->apply_the_history_step_from_plan(
+        target_step, target_step, move(changing), move(non_changing),
+        source_snapshot_params, initiator_to_check, user_involvement,
+        static_cast<Bindings::NavigationType>(navigation_type),
+        check_for_cancelation,
+        HTML::TraversableNavigable::SynchronousNavigation::No,
+        nullptr,
+        GC::create_function(heap(), [this](HTML::HistoryStepResult) {
+            client().page_did_complete_queued_traversal_step();
+        }));
+}
+
+u64 Page::retain_traversal_step(GC::Ref<TraversalStepClosure> closure)
+{
+    auto token = m_next_retention_token++;
+    m_retained_traversal_steps.set(token, closure);
+    return token;
+}
+
+GC::Ptr<Page::TraversalStepClosure> Page::consume_traversal_step(u64 token)
+{
+    auto it = m_retained_traversal_steps.find(token);
+    if (it == m_retained_traversal_steps.end())
+        return nullptr;
+    auto closure = it->value;
+    m_retained_traversal_steps.remove(it);
+    return closure;
+}
+
+void Page::execute_queued_traversal_step(u64 token)
+{
+    auto closure = consume_traversal_step(token);
+    if (!closure)
+        return;
+
+    auto promise = Core::Promise<Empty>::construct();
+    closure->function()(promise);
+
+    // When the step completes, notify UI so it can advance the queue.
+    promise->when_resolved([this](Empty) {
+        client().page_did_complete_queued_traversal_step();
+    });
+}
+
+u64 Page::retain_source_snapshot(GC::Ref<HTML::SourceSnapshotParams> snapshot)
+{
+    auto token = m_next_retention_token++;
+    m_retained_source_snapshots.set(token, snapshot);
+    return token;
+}
+
+GC::Ptr<HTML::SourceSnapshotParams> Page::consume_source_snapshot(u64 token)
+{
+    auto it = m_retained_source_snapshots.find(token);
+    if (it == m_retained_source_snapshots.end())
+        return nullptr;
+    auto snapshot = it->value;
+    m_retained_source_snapshots.remove(it);
+    return snapshot;
+}
+
+u64 Page::retain_pending_document(GC::Ref<DOM::Document> document)
+{
+    auto token = m_next_retention_token++;
+    m_retained_pending_documents.set(token, document);
+    return token;
+}
+
+GC::Ptr<DOM::Document> Page::consume_pending_document(u64 token)
+{
+    auto it = m_retained_pending_documents.find(token);
+    if (it == m_retained_pending_documents.end())
+        return nullptr;
+    auto document = it->value;
+    m_retained_pending_documents.remove(it);
+    return document;
+}
+
+u64 Page::retain_history_step_callback(GC::Ref<HistoryStepCallback> callback)
+{
+    auto token = m_next_retention_token++;
+    m_retained_history_step_callbacks.set(token, callback);
+    return token;
+}
+
+GC::Ptr<Page::HistoryStepCallback> Page::consume_history_step_callback(u64 token)
+{
+    auto it = m_retained_history_step_callbacks.find(token);
+    if (it == m_retained_history_step_callbacks.end())
+        return nullptr;
+    auto callback = it->value;
+    m_retained_history_step_callbacks.remove(it);
+    return callback;
 }
 
 Gfx::Palette Page::palette() const

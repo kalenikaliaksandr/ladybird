@@ -42,6 +42,7 @@
 #include <LibWeb/HTML/Scripting/ClassicScript.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/SessionHistoryEntry.h>
+#include <LibWeb/HTML/SessionHistoryEntrySerialization.h>
 #include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/HTML/Window.h>
@@ -302,6 +303,8 @@ Navigable::~Navigable() = default;
 void Navigable::set_has_been_destroyed()
 {
     m_has_been_destroyed = true;
+    if (m_ui_navigable_id != 0)
+        page().client().page_did_destroy_navigable(m_ui_navigable_id);
 }
 
 void Navigable::remove_from_all_navigables()
@@ -386,6 +389,12 @@ void Navigable::initialize_navigable(GC::Ref<DocumentState> document_state, GC::
 {
     static int next_id = 0;
     m_id = String::number(next_id++);
+
+    // Assign a stable navigable ID and notify UI.
+    static u64 next_ui_navigable_id = 1;
+    m_ui_navigable_id = next_ui_navigable_id++;
+    auto parent_ui_id = parent ? Optional<u64> { parent->ui_navigable_id() } : OptionalNone {};
+    page().client().page_did_create_navigable(m_ui_navigable_id, parent_ui_id);
 
     // 1. Assert: documentState's document is non-null.
     // NOTE: DocumentState no longer owns the document; it is passed separately and owned by the Navigable.
@@ -858,7 +867,7 @@ Vector<GC::Ref<SessionHistoryEntry>>& Navigable::get_session_history_entries() c
         // 1. For each nestedHistory of docState's nested histories:
         for (auto& nested_history : doc_state->nested_histories()) {
             // 1. If nestedHistory's id equals navigable's id, return nestedHistory's entries.
-            if (nested_history.id == id())
+            if (nested_history.id == ui_navigable_id())
                 return nested_history.entries;
 
             // 2. For each entry of nestedHistory's entries, append entry's document state to docStates.
@@ -2662,6 +2671,10 @@ void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryH
 
         // 4. Append historyEntry to targetEntries.
         target_entries.append(history_entry);
+
+        // AD-HOC: Assign a stable entry ID and notify the UI process about the new entry.
+        history_entry->set_ui_id(traversable->page().allocate_session_history_entry_id());
+        traversable->page().client().page_did_append_session_history_entry(navigable->ui_navigable_id(), serialize_session_history_entry(*history_entry));
     } else {
         // 1. Replace entryToReplace with historyEntry in targetEntries.
         *(target_entries.find(*entry_to_replace)) = history_entry;
@@ -2677,6 +2690,10 @@ void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryH
 
         // 4. Set targetStep to traversable's current session history step.
         target_step = traversable->current_session_history_step();
+
+        // AD-HOC: Assign a stable entry ID and notify the UI process about the replaced entry.
+        history_entry->set_ui_id(traversable->page().allocate_session_history_entry_id());
+        traversable->page().client().page_did_replace_session_history_entry(navigable->ui_navigable_id(), serialize_session_history_entry(*history_entry));
     }
 
     // 10. Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.
@@ -3064,6 +3081,8 @@ void Navigable::stop_loading()
 void Navigable::set_has_session_history_entry_and_ready_for_navigation()
 {
     m_has_session_history_entry_and_ready_for_navigation = true;
+    if (m_ui_navigable_id != 0)
+        page().client().page_did_navigable_become_ready_for_navigation(m_ui_navigable_id);
     while (!m_pending_navigations.is_empty()) {
         auto navigation_params = m_pending_navigations.take_first();
         begin_navigation(navigation_params);

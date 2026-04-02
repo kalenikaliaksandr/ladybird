@@ -17,6 +17,7 @@
 #include <LibWeb/HTML/VisibilityState.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/StorageAPI/StorageShed.h>
+#include <LibWebView/Forward.h>
 
 #ifdef AK_OS_MACOS
 #    include <LibGfx/MetalContext.h>
@@ -29,6 +30,18 @@
 namespace Web::HTML {
 
 class ApplyHistoryStepState;
+
+// Pre-computed traversal data for a single navigable, used by ApplyHistoryStepState.
+struct TraversalNavigablePlan {
+    GC::Ref<SessionHistoryEntry> target_entry;
+    u64 history_length { 0 };
+    u64 history_index { 0 };
+    Vector<GC::Ref<SessionHistoryEntry>> navigation_api_entries;
+};
+struct TraversalPlanData {
+    HashMap<GC::RawRef<Navigable>, TraversalNavigablePlan> changing;
+    HashMap<GC::RawRef<Navigable>, TraversalNavigablePlan> non_changing;
+};
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#traversable-navigable
 class WEB_API TraversableNavigable final : public Navigable {
@@ -59,14 +72,17 @@ public:
     };
     HistoryObjectLengthAndIndex get_the_history_object_length_and_index(int) const;
 
-    void apply_the_traverse_history_step(int, GC::Ptr<SourceSnapshotParams>, GC::Ptr<Navigable>, UserNavigationInvolvement, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete);
-    void apply_the_reload_history_step(UserNavigationInvolvement, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete);
     enum class SynchronousNavigation : bool {
         Yes,
         No,
     };
+    void apply_the_traverse_history_step(int, GC::Ptr<SourceSnapshotParams>, GC::Ptr<Navigable>, UserNavigationInvolvement, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete);
+    void apply_the_history_step_from_plan(int step, int target_step, Vector<WebView::NavigablePlanIPC> changing, Vector<WebView::NavigablePlanIPC> non_changing, GC::Ptr<SourceSnapshotParams>, GC::Ptr<Navigable> initiator, UserNavigationInvolvement, Optional<Bindings::NavigationType>, bool check_for_cancelation, SynchronousNavigation, GC::Ptr<DOM::Document> pending_document, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete);
+    void apply_the_reload_history_step(UserNavigationInvolvement, GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete);
     void apply_the_push_or_replace_history_step(int step, HistoryHandlingBehavior history_handling, UserNavigationInvolvement, SynchronousNavigation, GC::Ptr<DOM::Document> pending_document, GC::Ref<OnApplyHistoryStepComplete> on_complete);
     void update_for_navigable_creation_or_destruction(GC::Ref<OnApplyHistoryStepComplete> on_complete);
+
+    TraversalPlanData build_plan_data_from_tree(int target_step);
 
     int get_the_used_step(int step) const;
     Vector<GC::Root<Navigable>> get_all_navigables_whose_current_session_history_entry_will_change_or_reload(int) const;
@@ -81,15 +97,9 @@ public:
     void definitely_close_top_level_traversable();
     void destroy_top_level_traversable();
 
-    void append_session_history_traversal_steps(GC::Ref<SessionHistoryTraversalSteps> steps)
-    {
-        m_session_history_traversal_queue->append(steps);
-    }
+    void append_session_history_traversal_steps(GC::Ref<SessionHistoryTraversalSteps> steps);
 
-    void append_session_history_synchronous_navigation_steps(GC::Ref<Navigable> target_navigable, GC::Ref<SessionHistoryTraversalSteps> steps)
-    {
-        m_session_history_traversal_queue->append_sync(steps, target_navigable);
-    }
+    void append_session_history_synchronous_navigation_steps(GC::Ref<Navigable> target_navigable, GC::Ref<SessionHistoryTraversalSteps> steps);
 
     String window_handle() const { return m_window_handle; }
     void set_window_handle(String window_handle) { m_window_handle = move(window_handle); }
@@ -126,9 +136,21 @@ private:
 
     virtual void visit_edges(Cell::Visitor&) override;
 
-    // FIXME: Fix spec typo cancelation --> cancellation
-    void apply_the_history_step(
+    void apply_the_history_step_after_unload_check(
         int step,
+        int target_step,
+        GC::Ptr<SourceSnapshotParams> source_snapshot_params,
+        UserNavigationInvolvement user_involvement,
+        Optional<Bindings::NavigationType> navigation_type,
+        SynchronousNavigation,
+        GC::Ptr<DOM::Document> pending_document,
+        GC::Ref<OnApplyHistoryStepComplete> on_complete,
+        Optional<TraversalPlanData> plan_data = {});
+
+    void apply_the_history_step_with_plan(
+        int step,
+        int target_step,
+        TraversalPlanData plan_data,
         bool check_for_cancelation,
         GC::Ptr<SourceSnapshotParams>,
         GC::Ptr<Navigable> initiator_to_check,
@@ -138,17 +160,7 @@ private:
         GC::Ptr<DOM::Document> pending_document,
         GC::Ref<OnApplyHistoryStepComplete> on_complete);
 
-    void apply_the_history_step_after_unload_check(
-        int step,
-        int target_step,
-        GC::Ptr<SourceSnapshotParams> source_snapshot_params,
-        UserNavigationInvolvement user_involvement,
-        Optional<Bindings::NavigationType> navigation_type,
-        SynchronousNavigation,
-        GC::Ptr<DOM::Document> pending_document,
-        GC::Ref<OnApplyHistoryStepComplete> on_complete);
-
-    void check_if_unloading_is_canceled(Vector<GC::Root<Navigable>> navigables_that_need_before_unload, GC::Ptr<TraversableNavigable> traversable, Optional<int> target_step, Optional<UserNavigationInvolvement> user_involvement_for_navigate_events, GC::Ref<GC::Function<void(CheckIfUnloadingIsCanceledResult)>> callback);
+    void check_if_unloading_is_canceled(Vector<GC::Root<Navigable>> navigables_that_need_before_unload, GC::Ptr<TraversableNavigable> traversable, Optional<int> target_step, GC::Ptr<SessionHistoryEntry> target_entry, Optional<UserNavigationInvolvement> user_involvement_for_navigate_events, GC::Ref<GC::Function<void(CheckIfUnloadingIsCanceledResult)>> callback);
 
     Vector<GC::Ref<SessionHistoryEntry>> get_session_history_entries_for_the_navigation_api(GC::Ref<Navigable>, int);
 
@@ -174,8 +186,6 @@ private:
     // https://storage.spec.whatwg.org/#traversable-navigable-storage-shed
     // A traversable navigable holds a storage shed, which is a storage shed. A traversable navigable’s storage shed holds all session storage data.
     GC::Ref<StorageAPI::StorageShed> m_storage_shed;
-
-    GC::Ref<SessionHistoryTraversalQueue> m_session_history_traversal_queue;
 
     String m_window_handle;
 

@@ -36,6 +36,7 @@
 #include <LibWebView/DOMNodeProperties.h>
 #include <LibWebView/Forward.h>
 #include <LibWebView/PageInfo.h>
+#include <LibWebView/SessionHistoryManager.h>
 #include <LibWebView/Settings.h>
 #include <LibWebView/WebContentClient.h>
 
@@ -163,6 +164,21 @@ public:
     Web::HTML::AudioPlayState audio_play_state() const { return m_audio_play_state; }
 
     void did_update_navigation_buttons_state(Badge<WebContentClient>, bool back_enabled, bool forward_enabled) const;
+
+    void did_create_navigable(Badge<WebContentClient>, u64 ui_navigable_id, Optional<u64> parent_ui_navigable_id);
+    void did_destroy_navigable(Badge<WebContentClient>, u64 ui_navigable_id);
+    void did_navigable_become_ready_for_navigation(Badge<WebContentClient>, u64 ui_navigable_id);
+    void did_request_traverse_by_delta(Badge<WebContentClient>, i32 delta, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement);
+    void did_request_push_or_replace_history_step(Badge<WebContentClient>, u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous);
+    void did_enqueue_traversal_step(Badge<WebContentClient>, u64 step_token);
+    void did_enqueue_sync_navigation_step(Badge<WebContentClient>, u64 step_token, u64 navigable_id);
+    void did_complete_queued_traversal_step(Badge<WebContentClient>);
+
+    void did_append_session_history_entry(Badge<WebContentClient>, u64 navigable_id, UISessionHistoryEntry entry);
+    void did_replace_session_history_entry(Badge<WebContentClient>, u64 navigable_id, UISessionHistoryEntry entry);
+    void did_clear_forward_session_history(Badge<WebContentClient>, int from_step);
+    void did_update_session_history_step(Badge<WebContentClient>, int step);
+    void update_navigation_buttons_state();
 
     void did_allocate_backing_stores(Badge<WebContentClient>, i32 front_bitmap_id, Web::SharedBackingStore front_backing_store, i32 back_bitmap_id, Web::SharedBackingStore back_backing_store);
 
@@ -310,6 +326,7 @@ protected:
 
     virtual void bookmarks_changed() override;
     void update_bookmark_action();
+    bool dispatch_traversal_plan_for_target_step(int target_step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement, u8 navigation_type, bool check_for_cancelation);
 
     void initialize_context_menus();
 
@@ -411,6 +428,8 @@ protected:
     u64 m_next_navigation_listener_id { 1 };
 
     bool m_devtools_connected { false };
+
+    SessionHistoryManager m_session_history;
 };
 
 }

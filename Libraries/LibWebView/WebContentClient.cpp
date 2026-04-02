@@ -767,6 +767,78 @@ void WebContentClient::did_update_navigation_buttons_state(u64 page_id, bool bac
         view->did_update_navigation_buttons_state({}, back_enabled, forward_enabled);
 }
 
+void WebContentClient::did_create_navigable(u64 page_id, u64 ui_navigable_id, Optional<u64> parent_ui_navigable_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_create_navigable({}, ui_navigable_id, parent_ui_navigable_id);
+}
+
+void WebContentClient::did_destroy_navigable(u64 page_id, u64 ui_navigable_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_destroy_navigable({}, ui_navigable_id);
+}
+
+void WebContentClient::did_navigable_become_ready_for_navigation(u64 page_id, u64 ui_navigable_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_navigable_become_ready_for_navigation({}, ui_navigable_id);
+}
+
+void WebContentClient::did_request_traverse_by_delta(u64 page_id, i32 delta, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_request_traverse_by_delta({}, delta, source_snapshot_token, initiator_navigable_id, user_involvement);
+}
+
+void WebContentClient::did_enqueue_traversal_step(u64 page_id, u64 step_token)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_enqueue_traversal_step({}, step_token);
+}
+
+void WebContentClient::did_enqueue_sync_navigation_step(u64 page_id, u64 step_token, u64 navigable_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_enqueue_sync_navigation_step({}, step_token, navigable_id);
+}
+
+void WebContentClient::did_complete_queued_traversal_step(u64 page_id)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_complete_queued_traversal_step({});
+}
+
+void WebContentClient::did_request_push_or_replace_history_step(u64 page_id, u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_request_push_or_replace_history_step({}, callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous);
+}
+
+void WebContentClient::did_append_session_history_entry(u64 page_id, u64 navigable_id, WebView::UISessionHistoryEntry entry)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_append_session_history_entry({}, navigable_id, move(entry));
+}
+
+void WebContentClient::did_replace_session_history_entry(u64 page_id, u64 navigable_id, WebView::UISessionHistoryEntry entry)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_replace_session_history_entry({}, navigable_id, move(entry));
+}
+
+void WebContentClient::did_clear_forward_session_history(u64 page_id, i32 from_step)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_clear_forward_session_history({}, from_step);
+}
+
+void WebContentClient::did_update_session_history_step(u64 page_id, i32 step)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_update_session_history_step({}, step);
+}
+
 void WebContentClient::did_allocate_backing_stores(u64 page_id, i32 front_bitmap_id, Web::SharedBackingStore front_backing_store, i32 back_bitmap_id, Web::SharedBackingStore back_backing_store)
 {
     if (auto view = view_for_page_id(page_id); view.has_value())
