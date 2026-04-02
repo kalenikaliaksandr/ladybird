@@ -453,17 +453,7 @@ class ApplyHistoryStepState : public GC::Cell {
     GC_DECLARE_ALLOCATOR(ApplyHistoryStepState);
 
 public:
-    // Pre-computed data for each navigable, replacing tree queries.
-    struct NavigablePlan {
-        GC::Ref<SessionHistoryEntry> target_entry;
-        u64 history_length { 0 };
-        u64 history_index { 0 };
-        Vector<GC::Ref<SessionHistoryEntry>> navigation_api_entries;
-    };
-    struct PlanData {
-        HashMap<GC::RawRef<Navigable>, NavigablePlan> changing;
-        HashMap<GC::RawRef<Navigable>, NavigablePlan> non_changing;
-    };
+    using PlanData = TraversalPlanData;
 
     static constexpr int TIMEOUT_MS = 15000;
 
@@ -1057,7 +1047,8 @@ void TraversableNavigable::apply_the_history_step(
     Optional<Bindings::NavigationType> navigation_type,
     SynchronousNavigation synchronous_navigation,
     GC::Ptr<DOM::Document> pending_document,
-    GC::Ref<OnApplyHistoryStepComplete> on_complete)
+    GC::Ref<OnApplyHistoryStepComplete> on_complete,
+    Optional<TraversalPlanData> plan_data)
 {
     // FIXME: 1. Assert: This is running within traversable's session history traversal queue.
 
@@ -1088,7 +1079,7 @@ void TraversableNavigable::apply_the_history_step(
     //    and userInvolvement is not "continue", then return that result.
     if (check_for_cancelation) {
         check_if_unloading_is_canceled(navigables_crossing_documents, *this, target_step, user_involvement,
-            GC::create_function(heap(), [this, step, target_step, source_snapshot_params, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete](CheckIfUnloadingIsCanceledResult result) mutable {
+            GC::create_function(heap(), [this, step, target_step, source_snapshot_params, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete, plan_data = move(plan_data)](CheckIfUnloadingIsCanceledResult result) mutable {
                 if (result == CheckIfUnloadingIsCanceledResult::CanceledByBeforeUnload) {
                     on_complete->function()(HistoryStepResult::CanceledByBeforeUnload);
                     return;
@@ -1097,13 +1088,13 @@ void TraversableNavigable::apply_the_history_step(
                     on_complete->function()(HistoryStepResult::CanceledByNavigate);
                     return;
                 }
-                apply_the_history_step_after_unload_check(step, target_step, source_snapshot_params, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete);
+                apply_the_history_step_after_unload_check(step, target_step, source_snapshot_params, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete, move(plan_data));
             }));
         return;
     }
 
     // 6. Let changingNavigables be the result of get all navigables whose current session history entry will change or reload given traversable and targetStep.
-    apply_the_history_step_after_unload_check(step, target_step, source_snapshot_params, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete);
+    apply_the_history_step_after_unload_check(step, target_step, source_snapshot_params, user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete, move(plan_data));
 }
 
 void TraversableNavigable::apply_the_history_step_after_unload_check(
@@ -1114,38 +1105,43 @@ void TraversableNavigable::apply_the_history_step_after_unload_check(
     Optional<Bindings::NavigationType> navigation_type,
     SynchronousNavigation synchronous_navigation,
     GC::Ptr<DOM::Document> pending_document,
-    GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete)
+    GC::Ref<GC::Function<void(HistoryStepResult)>> on_complete,
+    Optional<TraversalPlanData> plan_data)
 {
     auto state = heap().allocate<ApplyHistoryStepState>(*this, step, target_step, source_snapshot_params,
         user_involvement, navigation_type, synchronous_navigation, pending_document, on_complete);
 
-    // Build PlanData from the local tree so ApplyHistoryStepState doesn't need to query it directly.
-    ApplyHistoryStepState::PlanData plan_data;
+    if (plan_data.has_value()) {
+        state->set_plan_data(move(plan_data.value()));
+    } else {
+        // Build PlanData from the local tree.
+        TraversalPlanData built_plan_data;
 
-    auto non_changing = get_all_navigables_that_only_need_history_object_length_index_update(target_step);
-    auto changing = get_all_navigables_whose_current_session_history_entry_will_change_or_reload(target_step);
-    auto length_and_index = get_the_history_object_length_and_index(target_step);
+        auto non_changing = get_all_navigables_that_only_need_history_object_length_index_update(target_step);
+        auto changing = get_all_navigables_whose_current_session_history_entry_will_change_or_reload(target_step);
+        auto length_and_index = get_the_history_object_length_and_index(target_step);
 
-    for (auto& nav : changing) {
-        auto target_entry = nav->get_the_target_history_entry(target_step);
-        auto nav_api_entries = get_session_history_entries_for_the_navigation_api(*nav, target_step);
-        plan_data.changing.set(*nav, {
-                                         .target_entry = *target_entry,
-                                         .history_length = length_and_index.script_history_length,
-                                         .history_index = length_and_index.script_history_index,
-                                         .navigation_api_entries = move(nav_api_entries),
-                                     });
+        for (auto& nav : changing) {
+            auto target_entry = nav->get_the_target_history_entry(target_step);
+            auto nav_api_entries = get_session_history_entries_for_the_navigation_api(*nav, target_step);
+            built_plan_data.changing.set(*nav, {
+                                                   .target_entry = *target_entry,
+                                                   .history_length = length_and_index.script_history_length,
+                                                   .history_index = length_and_index.script_history_index,
+                                                   .navigation_api_entries = move(nav_api_entries),
+                                               });
+        }
+
+        for (auto& nav : non_changing) {
+            built_plan_data.non_changing.set(*nav, {
+                                                       .target_entry = *nav->active_session_history_entry(),
+                                                       .history_length = length_and_index.script_history_length,
+                                                       .history_index = length_and_index.script_history_index,
+                                                   });
+        }
+
+        state->set_plan_data(move(built_plan_data));
     }
-
-    for (auto& nav : non_changing) {
-        plan_data.non_changing.set(*nav, {
-                                             .target_entry = *nav->active_session_history_entry(),
-                                             .history_length = length_and_index.script_history_length,
-                                             .history_index = length_and_index.script_history_index,
-                                         });
-    }
-
-    state->set_plan_data(move(plan_data));
 
     VERIFY(!m_apply_history_step_state || m_paused_apply_history_step_state);
     m_apply_history_step_state = state;
@@ -1160,8 +1156,8 @@ void TraversableNavigable::apply_the_history_step_from_plan(int target_step, Vec
     auto state = heap().allocate<ApplyHistoryStepState>(*this, target_step, target_step, source_snapshot_params,
         user_involvement, Bindings::NavigationType::Traverse, SynchronousNavigation::No, nullptr, on_complete);
 
-    // Convert IPC plan data to ApplyHistoryStepState::PlanData.
-    ApplyHistoryStepState::PlanData plan_data;
+    // Convert IPC plan data to TraversalPlanData.
+    TraversalPlanData plan_data;
 
     for (auto& plan_entry : changing_plan) {
         GC::Ptr<Navigable> navigable;

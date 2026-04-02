@@ -31,6 +31,18 @@ namespace Web::HTML {
 
 class ApplyHistoryStepState;
 
+// Pre-computed traversal data for a single navigable, used by ApplyHistoryStepState.
+struct TraversalNavigablePlan {
+    GC::Ref<SessionHistoryEntry> target_entry;
+    u64 history_length { 0 };
+    u64 history_index { 0 };
+    Vector<GC::Ref<SessionHistoryEntry>> navigation_api_entries;
+};
+struct TraversalPlanData {
+    HashMap<GC::RawRef<Navigable>, TraversalNavigablePlan> changing;
+    HashMap<GC::RawRef<Navigable>, TraversalNavigablePlan> non_changing;
+};
+
 // https://html.spec.whatwg.org/multipage/document-sequences.html#traversable-navigable
 class WEB_API TraversableNavigable final : public Navigable {
     GC_CELL(TraversableNavigable, Navigable);
@@ -132,7 +144,8 @@ private:
         Optional<Bindings::NavigationType> navigation_type,
         SynchronousNavigation,
         GC::Ptr<DOM::Document> pending_document,
-        GC::Ref<OnApplyHistoryStepComplete> on_complete);
+        GC::Ref<OnApplyHistoryStepComplete> on_complete,
+        Optional<TraversalPlanData> plan_data = {});
 
     void apply_the_history_step_after_unload_check(
         int step,
@@ -142,7 +155,8 @@ private:
         Optional<Bindings::NavigationType> navigation_type,
         SynchronousNavigation,
         GC::Ptr<DOM::Document> pending_document,
-        GC::Ref<OnApplyHistoryStepComplete> on_complete);
+        GC::Ref<OnApplyHistoryStepComplete> on_complete,
+        Optional<TraversalPlanData> plan_data = {});
 
     void check_if_unloading_is_canceled(Vector<GC::Root<Navigable>> navigables_that_need_before_unload, GC::Ptr<TraversableNavigable> traversable, Optional<int> target_step, Optional<UserNavigationInvolvement> user_involvement_for_navigate_events, GC::Ref<GC::Function<void(CheckIfUnloadingIsCanceledResult)>> callback);
 
