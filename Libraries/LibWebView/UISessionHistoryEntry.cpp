@@ -112,6 +112,7 @@ ErrorOr<WebView::UIDocumentState> IPC::decode(Decoder& decoder)
 template<>
 ErrorOr<void> IPC::encode(Encoder& encoder, WebView::UISessionHistoryEntry const& entry)
 {
+    TRY(encoder.encode(entry.id));
     TRY(encoder.encode(entry.step));
     TRY(encoder.encode(entry.url));
     TRY(encoder.encode(entry.document_state));
@@ -129,6 +130,7 @@ template<>
 ErrorOr<WebView::UISessionHistoryEntry> IPC::decode(Decoder& decoder)
 {
     WebView::UISessionHistoryEntry entry;
+    entry.id = TRY(decoder.decode<u64>());
     entry.step = TRY(decoder.decode<Optional<int>>());
     entry.url = TRY(decoder.decode<URL::URL>());
     entry.document_state = TRY(decoder.decode<WebView::UIDocumentState>());

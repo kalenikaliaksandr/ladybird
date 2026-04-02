@@ -81,6 +81,9 @@ enum class UIScrollRestorationMode : u8 {
 // Serializable mirror of Web::HTML::SessionHistoryEntry.
 // This is the IPC-transferable representation used by the UI process to maintain session history.
 struct UISessionHistoryEntry {
+    // UI-assigned stable identity for this entry. 0 means "not yet assigned".
+    u64 id { 0 };
+
     // step: nullopt means "pending" (entry not yet assigned a step number)
     Optional<int> step;
 

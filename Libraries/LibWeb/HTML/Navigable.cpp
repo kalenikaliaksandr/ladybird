@@ -303,6 +303,8 @@ Navigable::~Navigable() = default;
 void Navigable::set_has_been_destroyed()
 {
     m_has_been_destroyed = true;
+    if (m_ui_navigable_id != 0)
+        page().client().page_did_destroy_navigable(m_ui_navigable_id);
 }
 
 void Navigable::remove_from_all_navigables()
@@ -387,6 +389,12 @@ void Navigable::initialize_navigable(GC::Ref<DocumentState> document_state, GC::
 {
     static int next_id = 0;
     m_id = String::number(next_id++);
+
+    // Assign a stable navigable ID and notify UI.
+    static u64 next_ui_navigable_id = 1;
+    m_ui_navigable_id = next_ui_navigable_id++;
+    auto parent_ui_id = parent ? Optional<u64> { parent->ui_navigable_id() } : OptionalNone {};
+    page().client().page_did_create_navigable(m_ui_navigable_id, parent_ui_id);
 
     // 1. Assert: documentState's document is non-null.
     // NOTE: DocumentState no longer owns the document; it is passed separately and owned by the Navigable.
@@ -2664,7 +2672,8 @@ void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryH
         // 4. Append historyEntry to targetEntries.
         target_entries.append(history_entry);
 
-        // AD-HOC: Notify the UI process about the new entry.
+        // AD-HOC: Assign a stable entry ID and notify the UI process about the new entry.
+        history_entry->set_ui_id(traversable->page().allocate_session_history_entry_id());
         traversable->page().client().page_did_append_session_history_entry(serialize_session_history_entry(*history_entry));
     } else {
         // 1. Replace entryToReplace with historyEntry in targetEntries.
@@ -2682,18 +2691,28 @@ void finalize_a_cross_document_navigation(GC::Ref<Navigable> navigable, HistoryH
         // 4. Set targetStep to traversable's current session history step.
         target_step = traversable->current_session_history_step();
 
-        // AD-HOC: Notify the UI process about the replaced entry.
+        // AD-HOC: Assign a stable entry ID and notify the UI process about the replaced entry.
+        history_entry->set_ui_id(traversable->page().allocate_session_history_entry_id());
         traversable->page().client().page_did_replace_session_history_entry(serialize_session_history_entry(*history_entry));
     }
 
     // 10. Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.
-    traversable->apply_the_push_or_replace_history_step(target_step, history_handling, user_involvement, TraversableNavigable::SynchronousNavigation::No, pending_document,
-        GC::create_function(navigable->heap(), [on_complete, navigable](HistoryStepResult result) {
-            // AD-HOC: Trigger a relayout in the container document for size negotiation with SVG documents.
-            if (auto container = navigable->container())
-                container->set_needs_layout_update(DOM::SetNeedsLayoutReason::FinalizeACrossDocumentNavigation);
-            on_complete->function()(result);
-        }));
+    // Route through UI process: retain callback and pending_document, send IPC, UI enqueues on UITraversalQueue.
+    auto wrapped_on_complete = GC::create_function(navigable->heap(), [on_complete, navigable](HistoryStepResult result) {
+        // AD-HOC: Trigger a relayout in the container document for size negotiation with SVG documents.
+        if (auto container = navigable->container())
+            container->set_needs_layout_update(DOM::SetNeedsLayoutReason::FinalizeACrossDocumentNavigation);
+        on_complete->function()(result);
+    });
+
+    auto callback_token = traversable->page().retain_history_step_callback(wrapped_on_complete);
+    u64 pending_document_token = 0;
+    if (pending_document)
+        pending_document_token = traversable->page().retain_pending_document(*pending_document);
+
+    traversable->page().client().page_did_request_push_or_replace_history_step(
+        callback_token, pending_document_token, target_step,
+        static_cast<u8>(history_handling), static_cast<u8>(user_involvement), false);
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#url-and-history-update-steps
@@ -3071,6 +3090,8 @@ void Navigable::stop_loading()
 void Navigable::set_has_session_history_entry_and_ready_for_navigation()
 {
     m_has_session_history_entry_and_ready_for_navigation = true;
+    if (m_ui_navigable_id != 0)
+        page().client().page_did_navigable_become_ready_for_navigation(m_ui_navigable_id);
     while (!m_pending_navigations.is_empty()) {
         auto navigation_params = m_pending_navigations.take_first();
         begin_navigation(navigation_params);

@@ -40,6 +40,7 @@
 #include <LibWeb/HTML/AudioPlayState.h>
 #include <LibWeb/HTML/ColorPickerUpdateState.h>
 #include <LibWeb/HTML/FileFilter.h>
+#include <LibWeb/HTML/HistoryStepResult.h>
 #include <LibWeb/HTML/SelectItem.h>
 #include <LibWeb/HTML/TokenizedFeatures.h>
 #include <LibWeb/HTML/WebViewHints.h>
@@ -95,7 +96,21 @@ public:
 
     void traverse_the_history_by_delta(int delta);
     void apply_session_history_step(int step);
+    void apply_session_history_step_for_traversal(int step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement);
+    void execute_push_or_replace_history_step(u64 callback_token, u64 pending_document_token, int step, u8 history_handling, u8 user_involvement, bool is_synchronous);
     void initialize_session_history(Vector<WebView::UISessionHistoryEntry> entries, int current_step);
+
+    u64 allocate_session_history_entry_id() { return m_next_session_history_entry_id++; }
+
+    u64 retain_source_snapshot(GC::Ref<HTML::SourceSnapshotParams>);
+    GC::Ptr<HTML::SourceSnapshotParams> consume_source_snapshot(u64 token);
+
+    u64 retain_pending_document(GC::Ref<DOM::Document>);
+    GC::Ptr<DOM::Document> consume_pending_document(u64 token);
+
+    using HistoryStepCallback = GC::Function<void(HTML::HistoryStepResult)>;
+    u64 retain_history_step_callback(GC::Ref<HistoryStepCallback>);
+    GC::Ptr<HistoryStepCallback> consume_history_step_callback(u64 token);
 
     CSSPixelPoint device_to_css_point(DevicePixelPoint) const;
     DevicePixelPoint css_to_device_point(CSSPixelPoint) const;
@@ -357,6 +372,13 @@ private:
     ViewportIsFullscreen m_viewport_is_fullscreen { ViewportIsFullscreen::No };
     bool m_fullscreen_ipc_sent_to_ui { false };
     bool m_processing_fullscreen_operations { false };
+
+    u64 m_next_session_history_entry_id { 1 };
+
+    u64 m_next_retention_token { 1 };
+    HashMap<u64, GC::Ref<HTML::SourceSnapshotParams>> m_retained_source_snapshots;
+    HashMap<u64, GC::Ref<DOM::Document>> m_retained_pending_documents;
+    HashMap<u64, GC::Ref<HistoryStepCallback>> m_retained_history_step_callbacks;
 };
 
 enum class DisplayListPlayerType {
@@ -445,9 +467,14 @@ public:
     virtual void page_did_close_top_level_traversable() { }
     virtual void page_did_update_navigation_buttons_state([[maybe_unused]] bool back_enabled, [[maybe_unused]] bool forward_enabled) { }
 
+    virtual void page_did_create_navigable([[maybe_unused]] u64 ui_navigable_id, [[maybe_unused]] Optional<u64> parent_ui_navigable_id) { }
+    virtual void page_did_destroy_navigable([[maybe_unused]] u64 ui_navigable_id) { }
+    virtual void page_did_navigable_become_ready_for_navigation([[maybe_unused]] u64 ui_navigable_id) { }
+    virtual void page_did_request_traverse_by_delta([[maybe_unused]] i32 delta, [[maybe_unused]] u64 source_snapshot_token, [[maybe_unused]] u64 initiator_navigable_id, [[maybe_unused]] u8 user_involvement) { }
+    virtual void page_did_request_push_or_replace_history_step([[maybe_unused]] u64 callback_token, [[maybe_unused]] u64 pending_document_token, [[maybe_unused]] i32 step, [[maybe_unused]] u8 history_handling, [[maybe_unused]] u8 user_involvement, [[maybe_unused]] bool is_synchronous) { }
+
     virtual void page_did_append_session_history_entry([[maybe_unused]] WebView::UISessionHistoryEntry entry) { }
     virtual void page_did_replace_session_history_entry([[maybe_unused]] WebView::UISessionHistoryEntry entry) { }
-    virtual void page_did_update_session_history_entry([[maybe_unused]] WebView::UISessionHistoryEntry entry) { }
     virtual void page_did_clear_forward_session_history([[maybe_unused]] int from_step) { }
     virtual void page_did_update_session_history_step([[maybe_unused]] int step) { }
     virtual void page_did_allocate_backing_stores([[maybe_unused]] i32 front_bitmap_id, [[maybe_unused]] SharedBackingStore front_backing_store, [[maybe_unused]] i32 back_bitmap_id, [[maybe_unused]] SharedBackingStore back_backing_store) { }

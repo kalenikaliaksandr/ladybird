@@ -202,6 +202,18 @@ void ConnectionFromClient::apply_session_history_step(u64 page_id, i32 step)
         page->page().apply_session_history_step(step);
 }
 
+void ConnectionFromClient::apply_session_history_step_for_traversal(u64 page_id, i32 step, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().apply_session_history_step_for_traversal(step, source_snapshot_token, initiator_navigable_id, user_involvement);
+}
+
+void ConnectionFromClient::execute_push_or_replace_history_step(u64 page_id, u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->page().execute_push_or_replace_history_step(callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous);
+}
+
 void ConnectionFromClient::initialize_session_history(u64 page_id, Vector<WebView::UISessionHistoryEntry> entries, i32 current_step)
 {
     if (auto page = this->page(page_id); page.has_value())

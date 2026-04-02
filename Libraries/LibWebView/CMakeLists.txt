@@ -19,11 +19,13 @@ set(SOURCES
     ProcessHandle.cpp
     ProcessManager.cpp
     SearchEngine.cpp
+    SessionHistoryManager.cpp
     Settings.cpp
     SiteIsolation.cpp
     SourceHighlighter.cpp
     StorageJar.cpp
     UISessionHistoryEntry.cpp
+    UITraversalQueue.cpp
     URL.cpp
     UserAgent.cpp
     Utilities.cpp

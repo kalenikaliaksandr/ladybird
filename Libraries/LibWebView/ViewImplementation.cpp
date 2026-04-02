@@ -194,16 +194,14 @@ void ViewImplementation::reload()
 
 void ViewImplementation::traverse_the_history_by_delta(int delta)
 {
-    auto all_steps = get_all_used_history_steps(m_session_history_entries);
-    auto current_step_index = all_steps.find_first_index(m_current_session_history_step);
-    if (!current_step_index.has_value())
+    auto target_step = m_session_history.get_target_step_for_delta(delta);
+    if (!target_step.has_value())
         return;
 
-    auto target_step_index = static_cast<int>(*current_step_index) + delta;
-    if (target_step_index < 0 || target_step_index >= static_cast<int>(all_steps.size()))
-        return;
-
-    client().async_apply_session_history_step(page_id(), all_steps[target_step_index]);
+    auto step = *target_step;
+    m_session_history.traversal_queue().append([this, step] {
+        client().async_apply_session_history_step(page_id(), step);
+    });
 }
 
 void ViewImplementation::zoom_in()
@@ -600,73 +598,74 @@ void ViewImplementation::did_update_navigation_buttons_state(Badge<WebContentCli
     m_navigate_forward_action->set_enabled(forward_enabled);
 }
 
+void ViewImplementation::did_create_navigable(Badge<WebContentClient>, u64 ui_navigable_id, Optional<u64> parent_ui_navigable_id)
+{
+    m_session_history.register_navigable(ui_navigable_id, parent_ui_navigable_id.value_or(0));
+}
+
+void ViewImplementation::did_destroy_navigable(Badge<WebContentClient>, u64 ui_navigable_id)
+{
+    m_session_history.unregister_navigable(ui_navigable_id);
+}
+
+void ViewImplementation::did_navigable_become_ready_for_navigation(Badge<WebContentClient>, u64 ui_navigable_id)
+{
+    m_session_history.set_navigable_ready_for_navigation(ui_navigable_id);
+}
+
+void ViewImplementation::did_request_push_or_replace_history_step(Badge<WebContentClient>, u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous)
+{
+    // For synchronous navigation steps (pushState during traversal), execute immediately
+    // without going through the queue — this matches the queue-jumping behavior.
+    if (is_synchronous) {
+        client().async_execute_push_or_replace_history_step(page_id(), callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous);
+        return;
+    }
+
+    // For async steps, enqueue on UITraversalQueue.
+    m_session_history.traversal_queue().append([this, callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous] {
+        client().async_execute_push_or_replace_history_step(page_id(), callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous);
+    });
+}
+
+void ViewImplementation::did_request_traverse_by_delta(Badge<WebContentClient>, i32 delta, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement)
+{
+    auto target_step = m_session_history.get_target_step_for_delta(delta);
+    if (!target_step.has_value())
+        return;
+
+    client().async_apply_session_history_step_for_traversal(page_id(), *target_step, source_snapshot_token, initiator_navigable_id, user_involvement);
+}
+
 void ViewImplementation::did_append_session_history_entry(Badge<WebContentClient>, UISessionHistoryEntry entry)
 {
-    m_session_history_entries.append(move(entry));
+    m_session_history.append_entry(move(entry));
 }
 
 void ViewImplementation::did_replace_session_history_entry(Badge<WebContentClient>, UISessionHistoryEntry entry)
 {
-    if (!entry.step.has_value())
-        return;
-    auto step = entry.step.value();
-    for (auto& existing : m_session_history_entries) {
-        if (existing.step.has_value() && existing.step.value() == step) {
-            existing = move(entry);
-            return;
-        }
-    }
-}
-
-void ViewImplementation::did_update_session_history_entry(Badge<WebContentClient>, UISessionHistoryEntry entry)
-{
-    if (!entry.step.has_value())
-        return;
-    auto step = entry.step.value();
-    for (auto& existing : m_session_history_entries) {
-        if (existing.step.has_value() && existing.step.value() == step) {
-            existing = move(entry);
-            return;
-        }
-    }
+    m_session_history.replace_entry(move(entry));
 }
 
 void ViewImplementation::did_clear_forward_session_history(Badge<WebContentClient>, int from_step)
 {
-    m_session_history_entries.remove_all_matching([from_step](auto& entry) {
-        return entry.step.has_value() && entry.step.value() > from_step;
-    });
+    m_session_history.clear_forward_history(from_step);
 }
 
 void ViewImplementation::did_update_session_history_step(Badge<WebContentClient>, int step)
 {
-    m_current_session_history_step = step;
+    m_session_history.set_current_step(step);
     update_navigation_buttons_state();
+
+    // Signal completion to the UI traversal queue (if a UI-initiated step is in progress).
+    if (m_session_history.traversal_queue().is_processing())
+        m_session_history.traversal_queue().did_complete_current_step();
 }
 
 void ViewImplementation::update_navigation_buttons_state()
 {
-    bool back_enabled = m_current_session_history_step > 0;
-
-    bool forward_enabled = false;
-    Vector<Vector<UISessionHistoryEntry> const*> entry_lists;
-    entry_lists.append(&m_session_history_entries);
-    while (!entry_lists.is_empty()) {
-        auto const* entry_list = entry_lists.take_first();
-        for (auto const& entry : *entry_list) {
-            if (entry.step.has_value() && entry.step.value() > m_current_session_history_step) {
-                forward_enabled = true;
-                break;
-            }
-            for (auto const& nested : entry.document_state.nested_histories)
-                entry_lists.append(&nested.entries);
-        }
-        if (forward_enabled)
-            break;
-    }
-
-    m_navigate_back_action->set_enabled(back_enabled);
-    m_navigate_forward_action->set_enabled(forward_enabled);
+    m_navigate_back_action->set_enabled(m_session_history.can_go_back());
+    m_navigate_forward_action->set_enabled(m_session_history.can_go_forward());
 }
 
 void ViewImplementation::did_allocate_backing_stores(Badge<WebContentClient>, i32 front_bitmap_id, Web::SharedBackingStore front_backing_store, i32 back_bitmap_id, Web::SharedBackingStore back_backing_store)

@@ -18,6 +18,7 @@
 #include <LibWeb/HTML/ActivateTab.h>
 #include <LibWeb/HTML/DocumentState.h>
 #include <LibWeb/HTML/HistoryHandlingBehavior.h>
+#include <LibWeb/HTML/HistoryStepResult.h>
 #include <LibWeb/HTML/InitialInsertion.h>
 #include <LibWeb/HTML/NavigationObserver.h>
 #include <LibWeb/HTML/NavigationParams.h>
@@ -38,12 +39,6 @@ namespace Web::HTML {
 
 struct PopulateSessionHistoryEntryDocumentOutput;
 
-enum class HistoryStepResult {
-    InitiatorDisallowed,
-    CanceledByBeforeUnload,
-    CanceledByNavigate,
-    Applied,
-};
 using OnApplyHistoryStepComplete = GC::Function<void(HistoryStepResult)>;
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#target-snapshot-params
@@ -74,6 +69,9 @@ public:
     virtual bool is_traversable() const { return false; }
 
     String const& id() const { return m_id; }
+
+    u64 ui_navigable_id() const { return m_ui_navigable_id; }
+
     GC::Ptr<Navigable> parent() const { return m_parent; }
     bool is_ancestor_of(GC::Ref<Navigable>) const;
 
@@ -275,6 +273,9 @@ private:
 
     // https://html.spec.whatwg.org/multipage/document-sequences.html#nav-id
     String m_id;
+
+    // UI-assigned stable navigable identity. Survives process swaps.
+    u64 m_ui_navigable_id { 0 };
 
     // https://html.spec.whatwg.org/multipage/document-sequences.html#nav-parent
     GC::Ptr<Navigable> m_parent;

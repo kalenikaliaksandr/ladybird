@@ -686,6 +686,31 @@ void PageClient::page_did_update_navigation_buttons_state(bool back_enabled, boo
     client().async_did_update_navigation_buttons_state(m_id, back_enabled, forward_enabled);
 }
 
+void PageClient::page_did_create_navigable(u64 ui_navigable_id, Optional<u64> parent_ui_navigable_id)
+{
+    client().async_did_create_navigable(m_id, ui_navigable_id, parent_ui_navigable_id);
+}
+
+void PageClient::page_did_destroy_navigable(u64 ui_navigable_id)
+{
+    client().async_did_destroy_navigable(m_id, ui_navigable_id);
+}
+
+void PageClient::page_did_navigable_become_ready_for_navigation(u64 ui_navigable_id)
+{
+    client().async_did_navigable_become_ready_for_navigation(m_id, ui_navigable_id);
+}
+
+void PageClient::page_did_request_traverse_by_delta(i32 delta, u64 source_snapshot_token, u64 initiator_navigable_id, u8 user_involvement)
+{
+    client().async_did_request_traverse_by_delta(m_id, delta, source_snapshot_token, initiator_navigable_id, user_involvement);
+}
+
+void PageClient::page_did_request_push_or_replace_history_step(u64 callback_token, u64 pending_document_token, i32 step, u8 history_handling, u8 user_involvement, bool is_synchronous)
+{
+    client().async_did_request_push_or_replace_history_step(m_id, callback_token, pending_document_token, step, history_handling, user_involvement, is_synchronous);
+}
+
 void PageClient::page_did_append_session_history_entry(WebView::UISessionHistoryEntry entry)
 {
     client().async_did_append_session_history_entry(m_id, move(entry));
@@ -694,11 +719,6 @@ void PageClient::page_did_append_session_history_entry(WebView::UISessionHistory
 void PageClient::page_did_replace_session_history_entry(WebView::UISessionHistoryEntry entry)
 {
     client().async_did_replace_session_history_entry(m_id, move(entry));
-}
-
-void PageClient::page_did_update_session_history_entry(WebView::UISessionHistoryEntry entry)
-{
-    client().async_did_update_session_history_entry(m_id, move(entry));
 }
 
 void PageClient::page_did_clear_forward_session_history(int from_step)

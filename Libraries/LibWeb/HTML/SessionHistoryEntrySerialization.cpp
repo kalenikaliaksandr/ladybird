@@ -92,6 +92,8 @@ WebView::UISessionHistoryEntry serialize_session_history_entry(SessionHistoryEnt
 {
     WebView::UISessionHistoryEntry ui_entry;
 
+    ui_entry.id = entry.ui_id();
+
     // step: Variant<int, Pending> -> Optional<int>
     entry.step().visit(
         [&](int step) { ui_entry.step = step; },
@@ -175,6 +177,8 @@ void apply_ui_document_state(WebView::UIDocumentState const& ui_state, DocumentS
 
 void apply_ui_session_history_entry(WebView::UISessionHistoryEntry const& ui_entry, SessionHistoryEntry& entry, GC::Heap& heap)
 {
+    entry.set_ui_id(ui_entry.id);
+
     // step: Optional<int> -> Variant<int, Pending>
     if (ui_entry.step.has_value())
         entry.set_step(ui_entry.step.value());

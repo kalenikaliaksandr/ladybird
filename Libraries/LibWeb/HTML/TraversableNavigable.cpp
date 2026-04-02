@@ -22,6 +22,7 @@
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/HTML/SessionHistoryEntry.h>
 #include <LibWeb/HTML/SessionHistoryEntrySerialization.h>
+#include <LibWeb/HTML/SourceSnapshotParams.h>
 #include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/HTML/Window.h>
@@ -124,7 +125,8 @@ GC::Ref<TraversableNavigable> TraversableNavigable::create_a_new_top_level_trave
     traversable->m_session_history_entries.append(*initial_history_entry);
     traversable->set_has_session_history_entry_and_ready_for_navigation();
 
-    // AD-HOC: Notify the UI process about the initial session history entry.
+    // AD-HOC: Assign a stable entry ID and notify the UI process about the initial session history entry.
+    initial_history_entry->set_ui_id(traversable->page().allocate_session_history_entry_id());
     traversable->page().client().page_did_append_session_history_entry(serialize_session_history_entry(*initial_history_entry));
 
     // FIXME: 10. If opener is non-null, then legacy-clone a traversable storage shed given opener's top-level traversable and traversable. [STORAGE]
@@ -1711,7 +1713,8 @@ void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversab
             if (auto it = target_entries.find(*entry_to_replace); it != target_entries.end()) {
                 target_entry->set_step(entry_to_replace->step());
                 *it = target_entry;
-                // AD-HOC: Notify the UI process about the replaced entry.
+                // AD-HOC: Assign a stable entry ID and notify the UI process about the replaced entry.
+                target_entry->set_ui_id(traversable->page().allocate_session_history_entry_id());
                 traversable->page().client().page_did_replace_session_history_entry(serialize_session_history_entry(*target_entry));
             }
         }
@@ -1741,7 +1744,8 @@ void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversab
         // 4. Append targetEntry to targetEntries.
         target_entries.append(target_entry);
 
-        // AD-HOC: Notify the UI process about the new entry.
+        // AD-HOC: Assign a stable entry ID and notify the UI process about the new entry.
+        target_entry->set_ui_id(traversable->page().allocate_session_history_entry_id());
         traversable->page().client().page_did_append_session_history_entry(serialize_session_history_entry(*target_entry));
     } else {
         // 1. Replace entryToReplace with targetEntry in targetEntries.
@@ -1753,12 +1757,18 @@ void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversab
         // 3. Set targetStep to traversable's current session history step.
         target_step = traversable->current_session_history_step();
 
-        // AD-HOC: Notify the UI process about the replaced entry.
+        // AD-HOC: Assign a stable entry ID and notify the UI process about the replaced entry.
+        target_entry->set_ui_id(traversable->page().allocate_session_history_entry_id());
         traversable->page().client().page_did_replace_session_history_entry(serialize_session_history_entry(*target_entry));
     }
 
     // 6. Apply the push/replace history step targetStep to traversable given historyHandling and userInvolvement.
-    traversable->apply_the_push_or_replace_history_step(*target_step, history_handling, user_involvement, TraversableNavigable::SynchronousNavigation::Yes, nullptr, on_complete);
+    // Route through UI process: retain callback, send IPC. Synchronous nav steps are handled with queue-jumping in UI.
+    auto callback_token = traversable->page().retain_history_step_callback(on_complete);
+
+    traversable->page().client().page_did_request_push_or_replace_history_step(
+        callback_token, 0, *target_step,
+        static_cast<u8>(history_handling), static_cast<u8>(user_involvement), true);
 }
 
 // https://html.spec.whatwg.org/multipage/interaction.html#system-visibility-state
