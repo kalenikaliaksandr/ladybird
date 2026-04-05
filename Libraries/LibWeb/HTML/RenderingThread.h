@@ -30,10 +30,12 @@ public:
 
     void start(DisplayListPlayerType);
     void set_skia_player(OwnPtr<Painting::DisplayListPlayerSkia>&& player);
+    void set_external_content_source(RefPtr<Painting::ExternalContentSource>);
 
     void update_display_list(NonnullRefPtr<Painting::DisplayList>, Painting::ScrollStateSnapshotByDisplayList&&);
     void update_backing_stores(RefPtr<Gfx::PaintingSurface> front, RefPtr<Gfx::PaintingSurface> back, i32 front_id, i32 back_id);
-    void present_frame(Gfx::IntRect);
+    u64 present_frame(Gfx::IntRect);
+    void wait_for_frame(u64 frame_id);
     void request_screenshot(NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&& callback);
 
     void ready_to_paint();

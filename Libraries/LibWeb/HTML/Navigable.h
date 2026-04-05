@@ -229,7 +229,7 @@ public:
 
     void ready_to_paint();
     void record_display_list_and_scroll_state(PaintConfig);
-    void paint_next_frame();
+    u64 paint_next_frame();
     void render_screenshot(Gfx::PaintingSurface&, PaintConfig, Function<void()>&& callback);
 
     bool needs_repaint() const { return m_needs_repaint; }
@@ -238,6 +238,8 @@ public:
     [[nodiscard]] bool has_inclusive_ancestor_with_visibility_hidden() const;
 
     RenderingThread& rendering_thread() { return m_rendering_thread; }
+
+    Painting::ExternalContentSource& ensure_external_content_source();
 
     void set_pending_set_browser_zoom_request(bool value) { m_pending_set_browser_zoom_request = value; }
     bool pending_set_browser_zoom_request() const { return m_pending_set_browser_zoom_request; }
@@ -322,6 +324,7 @@ private:
     bool m_should_show_line_box_borders { false };
     GC::Ref<Painting::BackingStoreManager> m_backing_store_manager;
     RenderingThread m_rendering_thread;
+    RefPtr<Painting::ExternalContentSource> m_external_content_source;
 };
 
 struct PopulateSessionHistoryEntryDocumentOutput final : public JS::Cell {

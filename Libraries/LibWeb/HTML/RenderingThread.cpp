@@ -5,11 +5,16 @@
  */
 
 #include <LibCore/EventLoop.h>
+#include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibThreading/Thread.h>
 #include <LibWeb/HTML/RenderingThread.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/Painting/DisplayListPlayerSkia.h>
+#include <LibWeb/Painting/ExternalContentSource.h>
+
+#include <core/SkCanvas.h>
+#include <core/SkColor.h>
 
 #include <LibCore/Platform/ScopedAutoreleasePool.h>
 
@@ -66,12 +71,19 @@ public:
 
     bool has_skia_player() const { return m_skia_player != nullptr; }
 
+    void set_external_content_source(RefPtr<Painting::ExternalContentSource> source)
+    {
+        Threading::MutexLocker const locker { m_mutex };
+        m_external_content_source = move(source);
+    }
+
     void exit()
     {
         Threading::MutexLocker const locker { m_mutex };
         m_exit = true;
         m_command_ready.signal();
         m_ready_to_paint.signal();
+        m_frame_completed.broadcast();
     }
 
     void enqueue_command(CompositorCommand&& command)
@@ -81,12 +93,27 @@ public:
         m_command_ready.signal();
     }
 
-    void set_needs_present(Gfx::IntRect viewport_rect)
+    u64 set_needs_present(Gfx::IntRect viewport_rect)
     {
         Threading::MutexLocker const locker { m_mutex };
         m_needs_present = true;
         m_pending_viewport_rect = viewport_rect;
+        m_submitted_frame_id++;
         m_command_ready.signal();
+        return m_submitted_frame_id;
+    }
+
+    void wait_for_frame(u64 frame_id)
+    {
+        bool diagnostic_emitted = false;
+        Threading::MutexLocker const locker { m_mutex };
+        while (m_completed_frame_id < frame_id && !m_exit) {
+            if (!m_frame_completed.wait_for_ms(5000) && !diagnostic_emitted && m_completed_frame_id < frame_id && !m_exit) {
+                dbgln("RenderingThread[{}]: wait_for_frame({}) stuck >5s — completed={} submitted={} needs_present={} queued_tasks={} have_dl={} have_stores={} external_source={}",
+                    (void*)this, frame_id, m_completed_frame_id, m_submitted_frame_id, m_needs_present, m_queued_rasterization_tasks.load(), m_cached_display_list != nullptr, m_backing_stores.is_valid(), (void*)m_external_content_source.ptr());
+                diagnostic_emitted = true;
+            }
+        }
     }
 
     void compositor_loop()
@@ -147,11 +174,13 @@ public:
 
             bool should_present = false;
             Gfx::IntRect viewport_rect;
+            u64 presenting_frame_id = 0;
             {
                 Threading::MutexLocker const locker { m_mutex };
                 if (m_needs_present) {
                     should_present = true;
                     viewport_rect = m_pending_viewport_rect;
+                    presenting_frame_id = m_submitted_frame_id;
                     m_needs_present = false;
                 }
             }
@@ -168,15 +197,55 @@ public:
                 }
 
                 if (m_cached_display_list && m_backing_stores.is_valid()) {
+                    // For iframe navigables (identified by external content source being set),
+                    // clear the back store to transparent before executing the display list. Their
+                    // PaintConfig has no canvas_fill_rect so otherwise the backing store would
+                    // retain content from two frames ago (double-buffered).
+                    {
+                        Threading::MutexLocker const locker { m_mutex };
+                        if (m_external_content_source) {
+                            m_backing_stores.back_store->canvas().clear(SK_ColorTRANSPARENT);
+                        }
+                    }
                     m_skia_player->execute(*m_cached_display_list, Painting::ScrollStateSnapshotByDisplayList(m_cached_scroll_state_snapshot), *m_backing_stores.back_store);
                     i32 rendered_bitmap_id = m_backing_stores.back_bitmap_id;
                     m_backing_stores.swap();
 
-                    m_queued_rasterization_tasks++;
+                    // If an external content source is configured (iframe navigable), snapshot the
+                    // just-swapped front surface and publish to the source. Otherwise (top-level
+                    // traversable), invoke the presentation callback to IPC the bitmap to the UI.
+                    RefPtr<Painting::ExternalContentSource> external_source;
+                    {
+                        Threading::MutexLocker const locker { m_mutex };
+                        external_source = m_external_content_source;
+                    }
 
-                    invoke_on_main_thread([this, viewport_rect, rendered_bitmap_id]() {
-                        m_presentation_callback(viewport_rect, rendered_bitmap_id);
-                    });
+                    if (external_source) {
+                        auto snapshot = Gfx::ImmutableBitmap::create_snapshot_from_painting_surface(*m_backing_stores.front_store);
+                        external_source->update(move(snapshot));
+                    }
+
+                    {
+                        Threading::MutexLocker const locker { m_mutex };
+                        m_completed_frame_id = presenting_frame_id;
+                        m_frame_completed.broadcast();
+                    }
+
+                    if (!external_source) {
+                        // Top-level path: back-pressure is released when the UI process ACKs via
+                        // page_did_paint → Navigable::ready_to_paint() → decrement_queued_tasks().
+                        m_queued_rasterization_tasks++;
+                        invoke_on_main_thread([this, viewport_rect, rendered_bitmap_id]() {
+                            m_presentation_callback(viewport_rect, rendered_bitmap_id);
+                        });
+                    }
+                    // Iframe path: main thread's wait_for_frame() provides flow control, no
+                    // back-pressure counter needed.
+                } else {
+                    // Nothing to rasterize — still mark the submitted frame as complete so waiters don't hang.
+                    Threading::MutexLocker const locker { m_mutex };
+                    m_completed_frame_id = presenting_frame_id;
+                    m_frame_completed.broadcast();
                 }
             }
         }
@@ -209,12 +278,17 @@ private:
     RefPtr<Painting::DisplayList> m_cached_display_list;
     Painting::ScrollStateSnapshotByDisplayList m_cached_scroll_state_snapshot;
     BackingStoreState m_backing_stores;
+    RefPtr<Painting::ExternalContentSource> m_external_content_source;
 
     Atomic<i32> m_queued_rasterization_tasks { 0 };
     mutable Threading::ConditionVariable m_ready_to_paint { m_mutex };
 
     bool m_needs_present { false };
     Gfx::IntRect m_pending_viewport_rect;
+
+    u64 m_submitted_frame_id { 0 };
+    u64 m_completed_frame_id { 0 };
+    mutable Threading::ConditionVariable m_frame_completed { m_mutex };
 
 public:
     void decrement_queued_tasks()
@@ -252,6 +326,11 @@ void RenderingThread::set_skia_player(OwnPtr<Painting::DisplayListPlayerSkia>&& 
     m_thread_data->set_skia_player(move(player));
 }
 
+void RenderingThread::set_external_content_source(RefPtr<Painting::ExternalContentSource> source)
+{
+    m_thread_data->set_external_content_source(move(source));
+}
+
 void RenderingThread::update_display_list(NonnullRefPtr<Painting::DisplayList> display_list, Painting::ScrollStateSnapshotByDisplayList&& scroll_state_snapshot)
 {
     m_thread_data->enqueue_command(UpdateDisplayListCommand { move(display_list), move(scroll_state_snapshot) });
@@ -262,9 +341,14 @@ void RenderingThread::update_backing_stores(RefPtr<Gfx::PaintingSurface> front, 
     m_thread_data->enqueue_command(UpdateBackingStoresCommand { move(front), move(back), front_id, back_id });
 }
 
-void RenderingThread::present_frame(Gfx::IntRect viewport_rect)
+u64 RenderingThread::present_frame(Gfx::IntRect viewport_rect)
 {
-    m_thread_data->set_needs_present(viewport_rect);
+    return m_thread_data->set_needs_present(viewport_rect);
+}
+
+void RenderingThread::wait_for_frame(u64 frame_id)
+{
+    m_thread_data->wait_for_frame(frame_id);
 }
 
 void RenderingThread::request_screenshot(NonnullRefPtr<Gfx::PaintingSurface> target_surface, Function<void()>&& callback)

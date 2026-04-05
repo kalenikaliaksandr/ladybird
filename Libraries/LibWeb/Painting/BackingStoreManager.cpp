@@ -129,7 +129,7 @@ void BackingStoreManager::reallocate_backing_stores(Gfx::IntSize size)
 
 void BackingStoreManager::resize_backing_stores_if_needed(WindowResizingInProgress window_resize_in_progress)
 {
-    if (!m_navigable->is_top_level_traversable() || m_navigable->is_svg_page())
+    if (m_navigable->is_svg_page())
         return;
 
     auto viewport_size = m_navigable->page().css_to_device_rect(m_navigable->viewport_rect()).size();
@@ -138,7 +138,11 @@ void BackingStoreManager::resize_backing_stores_if_needed(WindowResizingInProgre
 
     Web::DevicePixelSize minimum_needed_size;
     bool force_reallocate = false;
-    if (window_resize_in_progress == WindowResizingInProgress::Yes) {
+    // For iframe navigables the backing store's size directly determines the bitmap dimensions
+    // read by DrawExternalContent in the parent's display list, so we must size it exactly to
+    // the viewport. Padding only helps the top-level traversable avoid churn during window
+    // resizes where the UI process crops to the viewport anyway.
+    if (window_resize_in_progress == WindowResizingInProgress::Yes && m_navigable->is_top_level_traversable()) {
         // Pad the minimum needed size so that we don't have to keep reallocating backing stores while the window is being resized.
         minimum_needed_size = { viewport_size.width() + 256, viewport_size.height() + 256 };
     } else {

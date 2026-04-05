@@ -482,15 +482,55 @@ void EventLoop::update_the_rendering()
     // FIXME: 21. For each doc of docs, mark paint timing for doc.
 
     // 22. For each doc of docs, update the rendering or user interface of doc and its node navigable to reflect the current state.
+    // Process screenshot requests on traversable navigables first.
     for (auto& document : docs) {
         auto navigable = document->navigable();
         if (!navigable->is_traversable())
             continue;
         auto traversable = navigable->traversable_navigable();
         traversable->process_screenshot_requests();
+    }
+
+    // Walk navigables in post-order (deepest iframes first, top-level last) so that by the time
+    // a parent navigable rasterizes, each child iframe has already published its current-frame
+    // bitmap to its ExternalContentSource. Siblings at the same depth submit concurrently; the
+    // main thread blocks once per depth until all submissions publish.
+    Vector<Vector<GC::Ref<Navigable>>> navigables_by_depth;
+    for (auto& document : docs) {
+        auto navigable = document->navigable();
         if (!navigable->needs_repaint())
             continue;
-        navigable->paint_next_frame();
+        // SVG page navigables don't have a rendering thread — they render via SVGDecodedImageData
+        // which executes display lists synchronously on the main thread. Skip them here.
+        if (navigable->is_svg_page())
+            continue;
+        size_t depth = 0;
+        for (auto ancestor = navigable->parent(); ancestor; ancestor = ancestor->parent())
+            ++depth;
+        if (navigables_by_depth.size() <= depth)
+            navigables_by_depth.resize(depth + 1);
+        navigables_by_depth[depth].append(*navigable);
+    }
+
+    for (size_t i = navigables_by_depth.size(); i > 0; --i) {
+        auto& at_depth = navigables_by_depth[i - 1];
+        Vector<u64> submitted_frame_ids;
+        submitted_frame_ids.ensure_capacity(at_depth.size());
+        for (auto& navigable : at_depth) {
+            // Layout may have been invalidated after step 16 (e.g., parent's layout set a new
+            // iframe viewport size). Ensure layout is current before recording the display list.
+            if (auto document = navigable->active_document())
+                document->update_layout(DOM::UpdateLayoutReason::HTMLEventLoopRenderingUpdate);
+            submitted_frame_ids.append(navigable->paint_next_frame());
+        }
+        // Only wait for iframe navigables: the top-level traversable has its own back-pressure
+        // via the page_did_paint → ready_to_paint IPC round-trip, and that IPC is handled on
+        // the main thread — so blocking the main thread here would deadlock the top-level.
+        for (size_t j = 0; j < at_depth.size(); ++j) {
+            if (at_depth[j]->is_top_level_traversable())
+                continue;
+            at_depth[j]->rendering_thread().wait_for_frame(submitted_frame_ids[j]);
+        }
     }
 
     // 23. For each doc of docs, process top layer removals given doc.

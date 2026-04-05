@@ -53,7 +53,7 @@
 #include <LibWeb/Loader/GeneratedPagesLoader.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/DisplayListPlayerSkia.h>
-#include <LibWeb/Painting/NavigableContainerViewportPaintable.h>
+#include <LibWeb/Painting/ExternalContentSource.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/PaintableBox.h>
 #include <LibWeb/Painting/ViewportPaintable.h>
@@ -3088,6 +3088,13 @@ void Navigable::ready_to_paint()
     m_rendering_thread.ready_to_paint();
 }
 
+Painting::ExternalContentSource& Navigable::ensure_external_content_source()
+{
+    if (!m_external_content_source)
+        m_external_content_source = Painting::ExternalContentSource::create();
+    return *m_external_content_source;
+}
+
 void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
 {
     m_needs_repaint = false;
@@ -3104,45 +3111,30 @@ void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
     document_paintable.refresh_scroll_state();
     scroll_state_snapshot_by_display_list.set(*display_list, document_paintable.scroll_state_snapshot());
 
-    // Collect scroll state snapshots for each nested navigable
-    document_paintable.for_each_in_inclusive_subtree_of_type<Painting::NavigableContainerViewportPaintable>([&scroll_state_snapshot_by_display_list](auto& navigable_container_paintable) {
-        auto* hosted_document = navigable_container_paintable.navigable_container().content_document_without_origin_check();
-        if (!hosted_document)
-            return TraversalDecision::Continue;
-
-        // We can use unsafe_paintable() here since the scroll state collection only reads scroll offsets, which are
-        // valid even when layout is stale (e.g., a render-blocked iframe whose DOM was modified but whose scroll
-        // positions haven't changed).
-        auto* hosted_paintable = const_cast<Painting::ViewportPaintable*>(hosted_document->unsafe_paintable());
-        if (!hosted_paintable)
-            return TraversalDecision::Continue;
-
-        // We are only interested in collecting scroll state snapshots for visible nested navigables, which is
-        // detectable by checking if they have a cached display list that should've been populated by
-        // record_display_list() on top-level document.
-        auto navigable_display_list = hosted_document->cached_display_list();
-        if (!navigable_display_list)
-            return TraversalDecision::Continue;
-
-        hosted_paintable->refresh_scroll_state();
-        scroll_state_snapshot_by_display_list.set(*navigable_display_list, hosted_paintable->scroll_state_snapshot());
-        return TraversalDecision::Continue;
-    });
-
     m_rendering_thread.update_display_list(*display_list, move(scroll_state_snapshot_by_display_list));
 }
 
-void Navigable::paint_next_frame()
+u64 Navigable::paint_next_frame()
 {
-    if (!is_top_level_traversable())
-        return;
-
     auto viewport_rect = page().css_to_device_rect(this->viewport_rect()).to_type<int>();
-    PaintConfig paint_config { .paint_overlay = true, .should_show_line_box_borders = m_should_show_line_box_borders, .canvas_fill_rect = Gfx::IntRect { {}, viewport_rect.size() } };
+    PaintConfig paint_config { .paint_overlay = true, .should_show_line_box_borders = m_should_show_line_box_borders };
+    if (is_top_level_traversable()) {
+        // The top-level traversable fills its backing store with the system canvas color so the
+        // rasterized bitmap can be shipped to the UI without any transparent area.
+        paint_config.canvas_fill_rect = Gfx::IntRect { {}, viewport_rect.size() };
+    } else {
+        // For iframe navigables, configure the rendering thread to publish the rasterized frame
+        // to an ExternalContentSource rather than IPC-ing to the UI. The parent navigable's
+        // display list reads this source via a DrawExternalContent command. Leave the canvas
+        // unfilled so the iframe's background_color (transparent by default) composites over the
+        // container element's background in the parent's display list.
+        auto& source = ensure_external_content_source();
+        m_rendering_thread.set_external_content_source(&source);
+    }
 
     record_display_list_and_scroll_state(paint_config);
 
-    m_rendering_thread.present_frame(viewport_rect);
+    return m_rendering_thread.present_frame(viewport_rect);
 }
 
 void Navigable::render_screenshot(Gfx::PaintingSurface& painting_surface, PaintConfig paint_config, Function<void()>&& callback)

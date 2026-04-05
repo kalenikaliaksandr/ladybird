@@ -7384,33 +7384,26 @@ void Document::set_needs_repaint(InvalidateDisplayList should_invalidate_display
     if (!navigable)
         return;
 
+    // Mark this navigable's needs_repaint so the event loop's depth walk picks it up.
+    navigable->set_needs_repaint();
+
     if (navigable->is_traversable()) {
-        navigable->traversable_navigable()->set_needs_repaint();
         Web::HTML::main_thread_event_loop().schedule();
         return;
     }
 
+    // Iframe: propagate to the parent document so the parent re-composites our new bitmap
+    // via DrawExternalContent. The parent's cached display list does NOT need to be
+    // invalidated — it holds a reference to our ExternalContentSource, which is read
+    // live on each replay.
     if (auto container = navigable->container()) {
-        container->document().set_needs_repaint(should_invalidate_display_list);
+        container->document().set_needs_repaint(InvalidateDisplayList::No);
     }
 }
 
 void Document::invalidate_display_list()
 {
     m_cached_display_list.clear();
-
-    auto navigable = this->navigable();
-    if (!navigable)
-        return;
-
-    if (auto container = navigable->container()) {
-        // The container's paintable may have cached paint commands that include a PaintNestedDisplayList
-        // holding a stale reference to this document's old display list. Clear the cache so the container
-        // re-executes paint() and picks up the freshly recorded display list.
-        if (auto* paintable_box = container->unsafe_paintable_box())
-            paintable_box->invalidate_paint_cache();
-        container->document().invalidate_display_list();
-    }
 }
 
 RefPtr<Painting::DisplayList> Document::cached_display_list() const
