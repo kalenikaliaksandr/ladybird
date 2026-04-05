@@ -316,7 +316,12 @@ void EventLoop::update_the_rendering()
     // 1. Let frameTimestamp be eventLoop's last render opportunity time.
     auto frame_timestamp = m_last_render_opportunity_time;
 
-    // FIXME: 2. Let docs be all fully active Document objects whose relevant agent's event loop is eventLoop, sorted arbitrarily except that the following conditions must be met:
+    // 2. Let docs be all fully active Document objects whose relevant agent's event loop is
+    //    eventLoop, sorted arbitrarily except that the following conditions must be met:
+    //    - Any Document B whose container document is A must be listed after A in the list.
+    //    - If there are two documents A and B that both have the same non-null container document
+    //      C, then the order of A and B in the list must match the shadow-including tree order
+    //      of their respective navigable containers in C's node tree.
     // 3. Filter non-renderable documents: Remove from docs any Document object doc for which any of the following are true:
     auto docs = documents_in_this_event_loop_matching([&](auto const& document) {
         if (!document.is_fully_active())
@@ -345,6 +350,37 @@ void EventLoop::update_the_rendering()
 
         return true;
     });
+
+    // Sort docs so each document appears after its container document. Stable w.r.t. the input
+    // order (m_documents insertion order), so siblings already in shadow-including tree order
+    // stay in tree order.
+    {
+        HashMap<DOM::Document*, size_t> doc_to_index;
+        for (size_t i = 0; i < docs.size(); ++i)
+            doc_to_index.set(docs[i].ptr(), i);
+
+        Vector<bool> visited;
+        visited.resize(docs.size());
+        Vector<GC::Root<DOM::Document>> sorted_docs;
+        sorted_docs.ensure_capacity(docs.size());
+
+        auto visit = [&](auto& self, size_t idx) -> void {
+            if (visited[idx])
+                return;
+            visited[idx] = true;
+            if (auto navigable = docs[idx]->navigable()) {
+                if (auto container_doc = navigable->container_document()) {
+                    if (auto container_idx = doc_to_index.get(container_doc.ptr()); container_idx.has_value())
+                        self(self, *container_idx);
+                }
+            }
+            sorted_docs.append(docs[idx]);
+        };
+        for (size_t i = 0; i < docs.size(); ++i)
+            visit(visit, i);
+
+        docs = move(sorted_docs);
+    }
 
     // AD-HOC: Update all the displayed video frames on HTMLMediaElements in documents' pages.
     for (auto& document : docs)
@@ -491,46 +527,26 @@ void EventLoop::update_the_rendering()
         traversable->process_screenshot_requests();
     }
 
-    // Walk navigables in post-order (deepest iframes first, top-level last) so that by the time
-    // a parent navigable rasterizes, each child iframe has already published its current-frame
-    // bitmap to its ExternalContentSource. Siblings at the same depth submit concurrently; the
-    // main thread blocks once per depth until all submissions publish.
-    Vector<Vector<GC::Ref<Navigable>>> navigables_by_depth;
-    for (auto& document : docs) {
-        auto navigable = document->navigable();
+    // Walk navigables in reverse docs order (children before parents per the sort above) so that
+    // by the time a parent rasterizes, each descendant has already published its current-frame
+    // bitmap to its ExternalContentSource. The top-level traversable is NOT waited on from the
+    // main thread — its page_did_paint → ready_to_paint IPC back-pressure handles its own flow
+    // control, and blocking main would deadlock the top-level.
+    for (size_t i = docs.size(); i > 0; --i) {
+        auto navigable = docs[i - 1]->navigable();
         if (!navigable->needs_repaint())
             continue;
         // SVG page navigables don't have a rendering thread — they render via SVGDecodedImageData
         // which executes display lists synchronously on the main thread. Skip them here.
         if (navigable->is_svg_page())
             continue;
-        size_t depth = 0;
-        for (auto ancestor = navigable->parent(); ancestor; ancestor = ancestor->parent())
-            ++depth;
-        if (navigables_by_depth.size() <= depth)
-            navigables_by_depth.resize(depth + 1);
-        navigables_by_depth[depth].append(*navigable);
-    }
-
-    for (size_t i = navigables_by_depth.size(); i > 0; --i) {
-        auto& at_depth = navigables_by_depth[i - 1];
-        Vector<u64> submitted_frame_ids;
-        submitted_frame_ids.ensure_capacity(at_depth.size());
-        for (auto& navigable : at_depth) {
-            // Layout may have been invalidated after step 16 (e.g., parent's layout set a new
-            // iframe viewport size). Ensure layout is current before recording the display list.
-            if (auto document = navigable->active_document())
-                document->update_layout(DOM::UpdateLayoutReason::HTMLEventLoopRenderingUpdate);
-            submitted_frame_ids.append(navigable->paint_next_frame());
-        }
-        // Only wait for iframe navigables: the top-level traversable has its own back-pressure
-        // via the page_did_paint → ready_to_paint IPC round-trip, and that IPC is handled on
-        // the main thread — so blocking the main thread here would deadlock the top-level.
-        for (size_t j = 0; j < at_depth.size(); ++j) {
-            if (at_depth[j]->is_top_level_traversable())
-                continue;
-            at_depth[j]->rendering_thread().wait_for_frame(submitted_frame_ids[j]);
-        }
+        // Layout may have been invalidated after step 16 (e.g., parent's layout set a new iframe
+        // viewport size). Ensure layout is current before recording the display list.
+        if (auto document = navigable->active_document())
+            document->update_layout(DOM::UpdateLayoutReason::HTMLEventLoopRenderingUpdate);
+        auto submitted_frame_id = navigable->paint_next_frame();
+        if (!navigable->is_top_level_traversable())
+            navigable->rendering_thread().wait_for_frame(submitted_frame_id);
     }
 
     // 23. For each doc of docs, process top layer removals given doc.
