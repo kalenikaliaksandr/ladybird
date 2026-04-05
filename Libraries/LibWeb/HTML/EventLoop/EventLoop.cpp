@@ -351,37 +351,6 @@ void EventLoop::update_the_rendering()
         return true;
     });
 
-    // Sort docs so each document appears after its container document. Stable w.r.t. the input
-    // order (m_documents insertion order), so siblings already in shadow-including tree order
-    // stay in tree order.
-    {
-        HashMap<DOM::Document*, size_t> doc_to_index;
-        for (size_t i = 0; i < docs.size(); ++i)
-            doc_to_index.set(docs[i].ptr(), i);
-
-        Vector<bool> visited;
-        visited.resize(docs.size());
-        Vector<GC::Root<DOM::Document>> sorted_docs;
-        sorted_docs.ensure_capacity(docs.size());
-
-        auto visit = [&](auto& self, size_t idx) -> void {
-            if (visited[idx])
-                return;
-            visited[idx] = true;
-            if (auto navigable = docs[idx]->navigable()) {
-                if (auto container_doc = navigable->container_document()) {
-                    if (auto container_idx = doc_to_index.get(container_doc.ptr()); container_idx.has_value())
-                        self(self, *container_idx);
-                }
-            }
-            sorted_docs.append(docs[idx]);
-        };
-        for (size_t i = 0; i < docs.size(); ++i)
-            visit(visit, i);
-
-        docs = move(sorted_docs);
-    }
-
     // AD-HOC: Update all the displayed video frames on HTMLMediaElements in documents' pages.
     for (auto& document : docs)
         document->page().update_all_media_element_video_sinks();
@@ -690,6 +659,7 @@ void EventLoop::perform_a_microtask_checkpoint()
 
 Vector<GC::Root<DOM::Document>> EventLoop::documents_in_this_event_loop_matching(Function<bool(DOM::Document&)> callback) const
 {
+    ensure_documents_sorted();
     Vector<GC::Root<DOM::Document>> documents;
     for (auto& document : m_documents) {
         VERIFY(document);
@@ -705,12 +675,56 @@ Vector<GC::Root<DOM::Document>> EventLoop::documents_in_this_event_loop_matching
 void EventLoop::register_document(Badge<DOM::Document>, DOM::Document& document)
 {
     m_documents.append(&document);
+    // Appending preserves the container-before-contained invariant as long as the new document's
+    // eventual container was registered earlier. That's the typical case, but since a document's
+    // navigable can be reassigned later (e.g. Navigable::set_active_document), be defensive and
+    // re-sort lazily next time it's needed.
+    m_documents_sort_dirty = true;
 }
 
 void EventLoop::unregister_document(Badge<DOM::Document>, DOM::Document& document)
 {
     bool did_remove = m_documents.remove_first_matching([&](auto& entry) { return entry.ptr() == &document; });
     VERIFY(did_remove);
+    // Removal preserves relative order, so no re-sort required.
+}
+
+void EventLoop::ensure_documents_sorted() const
+{
+    if (!m_documents_sort_dirty)
+        return;
+    m_documents_sort_dirty = false;
+
+    // Topologically sort m_documents so each document appears after its container document.
+    // Stable w.r.t. the existing order, so siblings already in shadow-including tree order
+    // stay in tree order.
+    auto const n = m_documents.size();
+    HashMap<DOM::Document*, size_t> doc_to_index;
+    doc_to_index.ensure_capacity(n);
+    for (size_t i = 0; i < n; ++i)
+        doc_to_index.set(m_documents[i].ptr(), i);
+
+    Vector<bool> visited;
+    visited.resize(n);
+    Vector<GC::Weak<DOM::Document>> sorted;
+    sorted.ensure_capacity(n);
+
+    auto visit = [&](auto& self, size_t idx) -> void {
+        if (visited[idx])
+            return;
+        visited[idx] = true;
+        if (auto navigable = m_documents[idx]->navigable()) {
+            if (auto container_doc = navigable->container_document()) {
+                if (auto container_idx = doc_to_index.get(container_doc.ptr()); container_idx.has_value())
+                    self(self, *container_idx);
+            }
+        }
+        sorted.append(m_documents[idx]);
+    };
+    for (size_t i = 0; i < n; ++i)
+        visit(visit, i);
+
+    m_documents = move(sorted);
 }
 
 void EventLoop::push_onto_backup_incumbent_realm_stack(JS::Realm& realm)

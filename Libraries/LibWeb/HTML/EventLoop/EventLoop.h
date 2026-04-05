@@ -124,7 +124,14 @@ private:
     // https://html.spec.whatwg.org/multipage/webappapis.html#performing-a-microtask-checkpoint
     bool m_performing_a_microtask_checkpoint { false };
 
-    Vector<GC::Weak<DOM::Document>> m_documents;
+    // m_documents is kept sorted so each document appears after its container document. The
+    // filtered docs list in update_the_rendering inherits that order. The dirty flag is set
+    // whenever m_documents is mutated in a way that could invalidate the sort; the sort is
+    // re-run lazily the next time it is needed. Mutable since maintaining the sort is a cache
+    // invariant that doesn't change the logical contents.
+    mutable Vector<GC::Weak<DOM::Document>> m_documents;
+    mutable bool m_documents_sort_dirty { false };
+    void ensure_documents_sorted() const;
 
     // Used to implement step 4 of "perform a microtask checkpoint".
     // NOTE: These are weak references! ESO registers and unregisters itself from the event loop manually.
