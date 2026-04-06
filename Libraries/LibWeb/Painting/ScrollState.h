@@ -22,6 +22,15 @@ public:
         return m_device_offsets[index.value()];
     }
 
+    Vector<Gfx::FloatPoint> const& device_offsets() const { return m_device_offsets; }
+
+    static ScrollStateSnapshot create_from_offsets(Vector<Gfx::FloatPoint> offsets)
+    {
+        ScrollStateSnapshot snapshot;
+        snapshot.m_device_offsets = move(offsets);
+        return snapshot;
+    }
+
 private:
     Vector<Gfx::FloatPoint> m_device_offsets;
 };

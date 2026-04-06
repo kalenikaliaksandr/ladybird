@@ -99,6 +99,8 @@ public:
     bool is_effect(VisualContextIndex i) const { return m_nodes[i.value()].data.has<EffectsData>(); }
     bool has_empty_effective_clip(VisualContextIndex i) const { return m_nodes[i.value()].has_empty_effective_clip; }
 
+    size_t node_count() const { return m_nodes.size(); }
+
 private:
     AccumulatedVisualContextTree() = default;
 

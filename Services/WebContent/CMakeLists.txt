@@ -36,7 +36,7 @@ target_link_libraries(webcontentservice PRIVATE SDL3::SDL3)
 
 add_executable(WebContent main.cpp)
 
-target_link_libraries(WebContent PRIVATE webcontentservice LibURL)
+target_link_libraries(WebContent PRIVATE webcontentservice LibGPUProcessClient LibURL)
 
 if(WIN32)
     lagom_windows_bin(WebContent CONSOLE)

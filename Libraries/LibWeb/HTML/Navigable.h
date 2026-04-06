@@ -34,6 +34,12 @@
 #include <LibWeb/PixelUnits.h>
 #include <LibWeb/XHR/FormDataEntry.h>
 
+namespace Web::Painting {
+
+class GPURasterizer;
+
+}
+
 namespace Web::HTML {
 
 struct PopulateSessionHistoryEntryDocumentOutput;
@@ -239,6 +245,9 @@ public:
 
     RenderingThread& rendering_thread() { return m_rendering_thread; }
 
+    void set_gpu_rasterizer(OwnPtr<Painting::GPURasterizer>);
+    Painting::GPURasterizer* gpu_rasterizer() { return m_gpu_rasterizer.ptr(); }
+
     void set_pending_set_browser_zoom_request(bool value) { m_pending_set_browser_zoom_request = value; }
     bool pending_set_browser_zoom_request() const { return m_pending_set_browser_zoom_request; }
 
@@ -322,6 +331,7 @@ private:
     bool m_should_show_line_box_borders { false };
     GC::Ref<Painting::BackingStoreManager> m_backing_store_manager;
     RenderingThread m_rendering_thread;
+    OwnPtr<Painting::GPURasterizer> m_gpu_rasterizer;
 };
 
 struct PopulateSessionHistoryEntryDocumentOutput final : public JS::Cell {

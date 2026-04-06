@@ -492,6 +492,92 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
     }
 }
 
+ErrorOr<NonnullRefPtr<AccumulatedVisualContextTree>> DisplayListDeserializer::deserialize_visual_context_tree()
+{
+    auto tree = AccumulatedVisualContextTree::create();
+
+    auto node_count = TRY(read_u32());
+    for (u32 i = 0; i < node_count; ++i) {
+        auto parent_index = VisualContextIndex(TRY(read_u32()));
+        auto depth = TRY(read_u32());
+        auto has_empty_effective_clip = TRY(read_bool());
+        (void)depth;
+        (void)has_empty_effective_clip;
+
+        auto variant_index = TRY(read_u8());
+        VisualContextData data = ScrollData { {}, false };
+
+        switch (variant_index) {
+        case 0: { // ScrollData
+            auto scroll_frame_index = ScrollFrameIndex(TRY(read_u64()));
+            auto is_sticky = TRY(read_bool());
+            data = ScrollData { scroll_frame_index, is_sticky };
+            break;
+        }
+        case 1: { // ClipData
+            auto x = TRY(read_i32());
+            auto y = TRY(read_i32());
+            auto w = TRY(read_i32());
+            auto h = TRY(read_i32());
+            auto corner_radii = TRY(read_corner_radii());
+            data = ClipData(DevicePixelRect(x, y, w, h), corner_radii);
+            break;
+        }
+        case 2: { // TransformData
+            Gfx::FloatMatrix4x4 matrix;
+            if (m_offset + sizeof(float) * 16 > m_buffer.size())
+                return Error::from_string_literal("Buffer underflow");
+            memcpy(matrix.elements(), m_buffer.data() + m_offset, sizeof(float) * 16);
+            m_offset += sizeof(float) * 16;
+            auto origin = TRY(read_float_point());
+            data = TransformData { matrix, origin };
+            break;
+        }
+        case 3: { // PerspectiveData
+            Gfx::FloatMatrix4x4 matrix;
+            if (m_offset + sizeof(float) * 16 > m_buffer.size())
+                return Error::from_string_literal("Buffer underflow");
+            memcpy(matrix.elements(), m_buffer.data() + m_offset, sizeof(float) * 16);
+            m_offset += sizeof(float) * 16;
+            data = PerspectiveData { matrix };
+            break;
+        }
+        case 4: { // ClipPathData
+            // FIXME: Deserialize Gfx::Path
+            data = ClipPathData { {}, {}, Gfx::WindingRule::Nonzero };
+            break;
+        }
+        case 5: { // EffectsData
+            auto opacity = TRY(read_float());
+            auto blend_mode = static_cast<Gfx::CompositingAndBlendingOperator>(TRY(read_u8()));
+            auto has_filter = TRY(read_bool());
+            (void)has_filter;
+            // FIXME: Deserialize Gfx::Filter
+            data = EffectsData { opacity, blend_mode, {} };
+            break;
+        }
+        default:
+            return Error::from_string_literal("Unknown visual context variant");
+        }
+
+        if (i > 0)
+            tree->append(move(data), parent_index);
+    }
+
+    return tree;
+}
+
+ErrorOr<ScrollStateSnapshot> DisplayListDeserializer::deserialize_scroll_state()
+{
+    auto offset_count = TRY(read_u32());
+    Vector<Gfx::FloatPoint> offsets;
+    TRY(offsets.try_ensure_capacity(offset_count));
+    for (u32 i = 0; i < offset_count; ++i) {
+        offsets.unchecked_append(TRY(read_float_point()));
+    }
+    return ScrollStateSnapshot::create_from_offsets(move(offsets));
+}
+
 ErrorOr<NonnullRefPtr<DisplayList>> DisplayListDeserializer::do_deserialize()
 {
     // Read and validate header
@@ -503,10 +589,11 @@ ErrorOr<NonnullRefPtr<DisplayList>> DisplayListDeserializer::do_deserialize()
     if (version != DISPLAY_LIST_VERSION)
         return Error::from_string_literal("Unsupported display list version");
 
-    // FIXME: Deserialize visual context tree
-    auto visual_context_tree = AccumulatedVisualContextTree::create();
+    // Deserialize visual context tree
+    auto visual_context_tree = TRY(deserialize_visual_context_tree());
 
-    // FIXME: Deserialize scroll state
+    // Deserialize scroll state
+    m_scroll_state = TRY(deserialize_scroll_state());
 
     // Deserialize commands
     auto command_count = TRY(read_u32());
@@ -522,12 +609,16 @@ ErrorOr<NonnullRefPtr<DisplayList>> DisplayListDeserializer::do_deserialize()
     return display_list;
 }
 
-ErrorOr<NonnullRefPtr<DisplayList>> DisplayListDeserializer::deserialize(
+ErrorOr<DisplayListDeserializer::Result> DisplayListDeserializer::deserialize(
     ReadonlyBytes buffer,
     ResourceRegistries const& registries)
 {
     DisplayListDeserializer deserializer(buffer, registries);
-    return deserializer.do_deserialize();
+    auto display_list = TRY(deserializer.do_deserialize());
+    return Result {
+        .display_list = move(display_list),
+        .scroll_state = move(deserializer.m_scroll_state),
+    };
 }
 
 }

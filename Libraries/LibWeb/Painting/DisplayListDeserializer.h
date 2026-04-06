@@ -10,7 +10,9 @@
 #include <LibCore/AnonymousBuffer.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/ImmutableBitmap.h>
+#include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/DisplayList.h>
+#include <LibWeb/Painting/ScrollState.h>
 
 namespace Web::Painting {
 
@@ -21,7 +23,12 @@ public:
         HashMap<u64, NonnullRefPtr<Gfx::ImmutableBitmap>> const& images;
     };
 
-    static ErrorOr<NonnullRefPtr<DisplayList>> deserialize(
+    struct Result {
+        NonnullRefPtr<DisplayList> display_list;
+        ScrollStateSnapshot scroll_state;
+    };
+
+    static ErrorOr<Result> deserialize(
         ReadonlyBytes buffer,
         ResourceRegistries const&);
 
@@ -29,6 +36,8 @@ private:
     DisplayListDeserializer(ReadonlyBytes buffer, ResourceRegistries const&);
 
     ErrorOr<NonnullRefPtr<DisplayList>> do_deserialize();
+    ErrorOr<NonnullRefPtr<AccumulatedVisualContextTree>> deserialize_visual_context_tree();
+    ErrorOr<ScrollStateSnapshot> deserialize_scroll_state();
     ErrorOr<DisplayListCommand> deserialize_command(u8 type_index);
 
     template<typename T>
@@ -49,6 +58,7 @@ private:
     ReadonlyBytes m_buffer;
     size_t m_offset { 0 };
     ResourceRegistries const& m_registries;
+    ScrollStateSnapshot m_scroll_state;
 };
 
 }

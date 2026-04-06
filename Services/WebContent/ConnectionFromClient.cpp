@@ -146,6 +146,12 @@ void ConnectionFromClient::connect_to_image_decoder(IPC::TransportHandle handle)
         on_image_decoder_connection(handle);
 }
 
+void ConnectionFromClient::connect_to_gpu_process(IPC::TransportHandle handle)
+{
+    if (on_gpu_process_connection)
+        on_gpu_process_connection(handle);
+}
+
 void ConnectionFromClient::connect_to_request_server(IPC::TransportHandle handle)
 {
     if (on_request_server_connection)

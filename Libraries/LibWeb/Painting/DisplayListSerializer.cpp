@@ -84,19 +84,76 @@ ErrorOr<void> DisplayListSerializer::write_corner_radii(CornerRadii const& radii
     return {};
 }
 
-ErrorOr<void> DisplayListSerializer::serialize_visual_context_tree(AccumulatedVisualContextTree const&)
+ErrorOr<void> DisplayListSerializer::serialize_visual_context_tree(AccumulatedVisualContextTree const& tree)
 {
-    // FIXME: Add an accessor to iterate all nodes in AccumulatedVisualContextTree
-    //        and serialize them here.
+    TRY(write_u32(tree.node_count()));
+
+    for (size_t i = 0; i < tree.node_count(); ++i) {
+        auto const& node = tree.node_at(VisualContextIndex(i));
+
+        TRY(write_u32(node.parent_index.value()));
+        TRY(write_u32(node.depth));
+        TRY(write_bool(node.has_empty_effective_clip));
+
+        // Serialize the variant data
+        TRY(write_u8(node.data.index()));
+
+        TRY(node.data.visit(
+            [&](ScrollData const& data) -> ErrorOr<void> {
+                TRY(write_u64(data.scroll_frame_index.value()));
+                TRY(write_bool(data.is_sticky));
+                return {};
+            },
+            [&](ClipData const& data) -> ErrorOr<void> {
+                TRY(write_i32(data.rect.x().value()));
+                TRY(write_i32(data.rect.y().value()));
+                TRY(write_i32(data.rect.width().value()));
+                TRY(write_i32(data.rect.height().value()));
+                TRY(write_corner_radii(data.corner_radii));
+                return {};
+            },
+            [&](TransformData const& data) -> ErrorOr<void> {
+                TRY(write_bytes({ reinterpret_cast<u8 const*>(data.matrix.elements()), sizeof(float) * 16 }));
+                TRY(write_float_point(data.origin));
+                return {};
+            },
+            [&](PerspectiveData const& data) -> ErrorOr<void> {
+                TRY(write_bytes({ reinterpret_cast<u8 const*>(data.matrix.elements()), sizeof(float) * 16 }));
+                return {};
+            },
+            [&](ClipPathData const&) -> ErrorOr<void> {
+                // FIXME: Serialize Gfx::Path for clip paths
+                return {};
+            },
+            [&](EffectsData const& data) -> ErrorOr<void> {
+                TRY(write_float(data.opacity));
+                TRY(write_u8(static_cast<u8>(data.blend_mode)));
+                TRY(write_bool(data.gfx_filter.has_value()));
+                // FIXME: Serialize Gfx::Filter
+                return {};
+            }));
+    }
+
     return {};
 }
 
 ErrorOr<void> DisplayListSerializer::serialize_scroll_state(
-    ScrollStateSnapshotByDisplayList const&,
-    DisplayList const&)
+    ScrollStateSnapshotByDisplayList const& scroll_states,
+    DisplayList const& main_display_list)
 {
-    // FIXME: ScrollStateSnapshot doesn't expose its internal vector.
-    //        We need to add an accessor or serialize differently.
+    // For now, only serialize the main display list's scroll state.
+    // FIXME: Serialize scroll states for nested display lists too.
+    auto it = scroll_states.find(NonnullRefPtr<DisplayList>(const_cast<DisplayList&>(main_display_list)));
+    if (it != scroll_states.end()) {
+        auto const& offsets = it->value.device_offsets();
+        TRY(write_u32(offsets.size()));
+        for (auto const& offset : offsets) {
+            TRY(write_float_point(offset));
+        }
+    } else {
+        TRY(write_u32(0));
+    }
+
     return {};
 }
 

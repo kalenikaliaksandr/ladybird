@@ -53,6 +53,7 @@
 #include <LibWeb/Loader/GeneratedPagesLoader.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/DisplayListPlayerSkia.h>
+#include <LibWeb/Painting/GPURasterizer.h>
 #include <LibWeb/Painting/NavigableContainerViewportPaintable.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/PaintableBox.h>
@@ -293,6 +294,11 @@ Navigable::Navigable(GC::Ref<Page> page, bool is_svg_page)
 }
 
 Navigable::~Navigable() = default;
+
+void Navigable::set_gpu_rasterizer(OwnPtr<Painting::GPURasterizer> rasterizer)
+{
+    m_gpu_rasterizer = move(rasterizer);
+}
 
 void Navigable::set_has_been_destroyed()
 {
@@ -3127,6 +3133,15 @@ void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
         scroll_state_snapshot_by_display_list.set(*navigable_display_list, hosted_paintable->scroll_state_snapshot());
         return TraversalDecision::Continue;
     });
+
+    // If we have a GPU rasterizer, also send the display list to the GPU process
+    if (m_gpu_rasterizer) {
+        Painting::ScrollStateSnapshotByDisplayList scroll_state_copy;
+        for (auto& [dl, snapshot] : scroll_state_snapshot_by_display_list) {
+            scroll_state_copy.set(dl, Painting::ScrollStateSnapshot::create_from_offsets(Vector(snapshot.device_offsets())));
+        }
+        m_gpu_rasterizer->update_display_list(*display_list, move(scroll_state_copy));
+    }
 
     m_rendering_thread.update_display_list(*display_list, move(scroll_state_snapshot_by_display_list));
 }

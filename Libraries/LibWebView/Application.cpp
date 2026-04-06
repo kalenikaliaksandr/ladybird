@@ -371,6 +371,7 @@ static ErrorOr<NonnullRefPtr<WebContentClient>> create_web_content_client(Option
 {
     auto request_server_handle = TRY(connect_new_request_server_client());
     auto image_decoder_handle = TRY(connect_new_image_decoder_client());
+    auto gpu_process_handle = TRY(connect_new_gpu_process_client());
 
     NonnullRefPtr<WebContentClient> client = view.has_value()
         ? TRY(WebView::launch_web_content_process(*view))
@@ -378,6 +379,7 @@ static ErrorOr<NonnullRefPtr<WebContentClient>> create_web_content_client(Option
 
     client->async_connect_to_request_server(move(request_server_handle));
     client->async_connect_to_image_decoder(move(image_decoder_handle));
+    client->async_connect_to_gpu_process(move(gpu_process_handle));
 
     return client;
 }

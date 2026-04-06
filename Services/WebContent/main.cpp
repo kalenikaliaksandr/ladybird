@@ -12,6 +12,7 @@
 #include <LibCore/Resource.h>
 #include <LibCore/System.h>
 #include <LibCrypto/OpenSSLForward.h>
+#include <LibGPUProcessClient/Client.h>
 #include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Font/PathFontProvider.h>
 #include <LibGfx/SkiaBackendContext.h>
@@ -104,6 +105,7 @@ static ErrorOr<void> load_content_filters(StringView config_path);
 
 static ErrorOr<void> connect_to_resource_loader(GC::Heap& heap, IPC::TransportHandle const& handle);
 static ErrorOr<void> connect_to_image_decoder(IPC::TransportHandle const& handle);
+static ErrorOr<void> connect_to_gpu_process(IPC::TransportHandle const& handle);
 
 ErrorOr<int> ladybird_main(Main::Arguments arguments)
 {
@@ -268,6 +270,10 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
         if (auto result = connect_to_image_decoder(handle); result.is_error())
             dbgln("Failed to connect to image decoder: {}", result.error());
     };
+    webcontent_client->on_gpu_process_connection = [](auto const& handle) {
+        if (auto result = connect_to_gpu_process(handle); result.is_error())
+            dbgln("Failed to connect to GPU process: {}", result.error());
+    };
 
     return event_loop.exec();
 }
@@ -308,6 +314,19 @@ ErrorOr<void> connect_to_resource_loader(GC::Heap& heap, IPC::TransportHandle co
         Web::ResourceLoader::the().set_client(move(request_client));
     else
         Web::ResourceLoader::initialize(heap, move(request_client));
+    return {};
+}
+
+static RefPtr<GPUProcessClient::Client> s_gpu_process_client;
+
+ErrorOr<void> connect_to_gpu_process(IPC::TransportHandle const& handle)
+{
+    auto transport = TRY(handle.create_transport());
+    s_gpu_process_client = TRY(try_make_ref_counted<GPUProcessClient::Client>(move(transport)));
+#ifdef AK_OS_WINDOWS
+    auto response = s_gpu_process_client->send_sync<Messages::GPUProcessServer::InitTransport>(Core::System::getpid());
+    s_gpu_process_client->transport().set_peer_pid(response->peer_pid());
+#endif
     return {};
 }
 
