@@ -16,4 +16,13 @@ endpoint GPUProcessServer
     release_typeface(u64 typeface_id) =|
     release_font(u64 font_id) =|
     release_image(u64 image_id) =|
+
+    // Display list submission
+    submit_display_list(u64 page_id, Core::AnonymousBuffer display_list_buffer) =|
+
+    // Scroll state update (fast path — reuse cached display list)
+    update_scroll_state(u64 page_id, Core::AnonymousBuffer scroll_state_buffer) =|
+
+    // Presentation
+    present_frame(u64 page_id, Gfx::IntRect viewport_rect) =|
 }

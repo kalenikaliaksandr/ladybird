@@ -125,4 +125,32 @@ void ConnectionFromClient::release_image(u64 image_id)
     m_images.remove(image_id);
 }
 
+void ConnectionFromClient::submit_display_list(u64 page_id, Core::AnonymousBuffer display_list_buffer)
+{
+    (void)page_id;
+
+    if (!display_list_buffer.is_valid()) {
+        dbgln("GPUProcess: Invalid display list buffer");
+        return;
+    }
+
+    m_cached_display_list_buffer = move(display_list_buffer);
+
+    // FIXME: Deserialize and pass to rendering thread
+}
+
+void ConnectionFromClient::update_scroll_state(u64 page_id, Core::AnonymousBuffer scroll_state_buffer)
+{
+    // FIXME: Update cached scroll state without replacing display list
+    (void)page_id;
+    (void)scroll_state_buffer;
+}
+
+void ConnectionFromClient::present_frame(u64 page_id, Gfx::IntRect viewport_rect)
+{
+    // FIXME: Execute display list on rendering thread and send did_paint
+    (void)page_id;
+    (void)viewport_rect;
+}
+
 }

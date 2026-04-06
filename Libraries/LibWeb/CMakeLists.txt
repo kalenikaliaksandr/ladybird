@@ -848,6 +848,7 @@ set(SOURCES
     Painting/DisplayListRecordingContext.cpp
     Painting/DisplayListSerializer.cpp
     Painting/ExternalContentSource.cpp
+    Painting/GPURasterizer.cpp
     Painting/GPUResourceRegistry.cpp
     Painting/FieldSetPaintable.cpp
     Painting/GradientPainting.cpp
@@ -1232,7 +1233,7 @@ ladybird_lib(LibWeb web EXPLICIT_SYMBOL_EXPORT)
 
 find_package(LibXml2 REQUIRED)
 
-target_link_libraries(LibWeb PRIVATE LibCore LibCompress LibCrypto LibJS LibHTTP LibGfx LibIPC LibRegex LibSyntax LibTextCodec LibUnicode LibMedia LibWasm LibXML LibIDL LibURL LibTLS LibRequests LibGC LibThreading skia ${ANGLE_TARGETS} SDL3::SDL3 LibXml2::LibXml2)
+target_link_libraries(LibWeb PRIVATE LibCore LibCompress LibCrypto LibGPUProcessClient LibJS LibHTTP LibGfx LibIPC LibRegex LibSyntax LibTextCodec LibUnicode LibMedia LibWasm LibXML LibIDL LibURL LibTLS LibRequests LibGC LibThreading skia ${ANGLE_TARGETS} SDL3::SDL3 LibXml2::LibXml2)
 
 if (HAS_FONTCONFIG)
     target_link_libraries(LibWeb PRIVATE Fontconfig::Fontconfig)
