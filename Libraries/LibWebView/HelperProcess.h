@@ -8,6 +8,7 @@
 
 #include <AK/Error.h>
 #include <AK/Optional.h>
+#include <LibGPUProcessClient/Client.h>
 #include <LibIPC/TransportHandle.h>
 #include <LibImageDecoderClient/Client.h>
 #include <LibRequests/RequestClient.h>
@@ -23,10 +24,12 @@ WEBVIEW_API ErrorOr<NonnullRefPtr<WebView::WebContentClient>> launch_web_content
 
 WEBVIEW_API ErrorOr<NonnullRefPtr<WebView::WebContentClient>> launch_spare_web_content_process();
 
+WEBVIEW_API ErrorOr<NonnullRefPtr<GPUProcessClient::Client>> launch_gpu_process();
 WEBVIEW_API ErrorOr<NonnullRefPtr<ImageDecoderClient::Client>> launch_image_decoder_process();
 WEBVIEW_API ErrorOr<NonnullRefPtr<Web::HTML::WebWorkerClient>> launch_web_worker_process(Web::Bindings::AgentType);
 WEBVIEW_API ErrorOr<NonnullRefPtr<Requests::RequestClient>> launch_request_server_process();
 
+WEBVIEW_API ErrorOr<IPC::TransportHandle> connect_new_gpu_process_client();
 WEBVIEW_API ErrorOr<IPC::TransportHandle> connect_new_request_server_client();
 WEBVIEW_API ErrorOr<IPC::TransportHandle> connect_new_image_decoder_client();
 

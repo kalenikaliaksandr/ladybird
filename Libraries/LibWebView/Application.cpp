@@ -470,6 +470,7 @@ ErrorOr<void> Application::launch_services()
 
     TRY(launch_request_server());
     TRY(launch_image_decoder_server());
+    TRY(launch_gpu_process_server());
 
     if (m_browser_options.devtools_port.has_value())
         TRY(launch_devtools_server());
@@ -541,6 +542,25 @@ ErrorOr<void> Application::launch_image_decoder_server()
             client.async_connect_to_image_decoder(handles.take_last());
             return IterationDecision::Continue;
         });
+    };
+
+    return {};
+}
+
+ErrorOr<void> Application::launch_gpu_process_server()
+{
+    m_gpu_process_client = TRY(launch_gpu_process());
+
+    m_gpu_process_client->on_death = [this]() {
+        m_gpu_process_client = nullptr;
+
+        if (Core::EventLoop::current().was_exit_requested())
+            return;
+
+        if (auto result = launch_gpu_process_server(); result.is_error()) {
+            dbgln("Failed to restart GPU process: {}", result.error());
+            VERIFY_NOT_REACHED();
+        }
     };
 
     return {};
@@ -702,6 +722,13 @@ void Application::process_did_exit(Process&& process)
         break;
     case ProcessType::WebWorker:
         dbgln_if(WEBVIEW_PROCESS_DEBUG, "WebWorker {} died, not sure what to do.", process.pid());
+        break;
+    case ProcessType::GPUProcess:
+        if (auto client = process.client<GPUProcessClient::Client>(); client.has_value()) {
+            dbgln_if(WEBVIEW_PROCESS_DEBUG, "Restart GPU process");
+            if (auto on_death = move(client->on_death))
+                on_death();
+        }
         break;
     case ProcessType::Browser:
         dbgln("Invalid process type to be dying: Browser");

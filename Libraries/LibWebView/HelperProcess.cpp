@@ -153,6 +153,17 @@ ErrorOr<NonnullRefPtr<WebView::WebContentClient>> launch_spare_web_content_proce
     return launch_web_content_process_impl();
 }
 
+ErrorOr<NonnullRefPtr<GPUProcessClient::Client>> launch_gpu_process()
+{
+    Vector<ByteString> arguments;
+    if (auto server = mach_server_name(); server.has_value()) {
+        arguments.append("--mach-server-name"sv);
+        arguments.append(server.value());
+    }
+
+    return launch_server_process<GPUProcessClient::Client>("GPUProcess"sv, arguments);
+}
+
 ErrorOr<NonnullRefPtr<ImageDecoderClient::Client>> launch_image_decoder_process()
 {
     Vector<ByteString> arguments;
@@ -251,6 +262,18 @@ ErrorOr<NonnullRefPtr<Requests::RequestClient>> launch_request_server_process()
         });
 
     return client;
+}
+
+ErrorOr<IPC::TransportHandle> connect_new_gpu_process_client()
+{
+    auto response = Application::gpu_process_client().send_sync_but_allow_failure<Messages::GPUProcessServer::ConnectNewClients>(1);
+    if (!response)
+        return Error::from_string_literal("Failed to connect to GPUProcess");
+
+    auto handles = response->take_handles();
+    if (handles.size() != 1)
+        return Error::from_string_literal("Failed to connect to GPUProcess");
+    return handles.take_last();
 }
 
 ErrorOr<IPC::TransportHandle> connect_new_request_server_client()
