@@ -53,6 +53,7 @@
 #include <LibWeb/Loader/GeneratedPagesLoader.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/DisplayListPlayerSkia.h>
+#include <LibWeb/Painting/GPUProcessConnection.h>
 #include <LibWeb/Painting/GPURasterizer.h>
 #include <LibWeb/Painting/NavigableContainerViewportPaintable.h>
 #include <LibWeb/Painting/Paintable.h>
@@ -290,6 +291,15 @@ Navigable::Navigable(GC::Ref<Page> page, bool is_svg_page)
         auto display_list_player_type = page->client().display_list_player_type();
         m_rendering_thread.set_skia_player(make<Painting::DisplayListPlayerSkia>());
         m_rendering_thread.start(display_list_player_type);
+
+        if (Painting::GPUProcessConnection::is_initialized()) {
+            auto& gpu_client = Painting::GPUProcessConnection::the();
+            m_gpu_rasterizer = make<Painting::GPURasterizer>(
+                [](Gfx::IntRect const&, i32) {
+                    // GPU process presentation callback — not used yet
+                },
+                gpu_client);
+        }
     }
 }
 

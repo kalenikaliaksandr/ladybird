@@ -848,6 +848,7 @@ set(SOURCES
     Painting/DisplayListRecordingContext.cpp
     Painting/DisplayListSerializer.cpp
     Painting/ExternalContentSource.cpp
+    Painting/GPUProcessConnection.cpp
     Painting/GPURasterizer.cpp
     Painting/GPUResourceRegistry.cpp
     Painting/FieldSetPaintable.cpp

@@ -119,6 +119,9 @@ public:
 
     void transform(Gfx::AffineTransform const& transform) { m_impl = impl().copy_transformed(transform); }
 
+    ErrorOr<ByteBuffer> serialize_to_bytes() const;
+    static ErrorOr<Path> deserialize_from_bytes(ReadonlyBytes);
+
     PathImpl& impl() { return *m_impl; }
     PathImpl const& impl() const { return *m_impl; }
 

@@ -31,6 +31,7 @@
 #include <LibWeb/Loader/GeneratedPagesLoader.h>
 #include <LibWeb/Loader/ResourceLoader.h>
 #include <LibWeb/Painting/BackingStoreManager.h>
+#include <LibWeb/Painting/GPUProcessConnection.h>
 #include <LibWeb/Painting/PaintableBox.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/FontPlugin.h>
@@ -317,16 +318,15 @@ ErrorOr<void> connect_to_resource_loader(GC::Heap& heap, IPC::TransportHandle co
     return {};
 }
 
-static RefPtr<GPUProcessClient::Client> s_gpu_process_client;
-
 ErrorOr<void> connect_to_gpu_process(IPC::TransportHandle const& handle)
 {
     auto transport = TRY(handle.create_transport());
-    s_gpu_process_client = TRY(try_make_ref_counted<GPUProcessClient::Client>(move(transport)));
+    auto client = TRY(try_make_ref_counted<GPUProcessClient::Client>(move(transport)));
 #ifdef AK_OS_WINDOWS
-    auto response = s_gpu_process_client->send_sync<Messages::GPUProcessServer::InitTransport>(Core::System::getpid());
-    s_gpu_process_client->transport().set_peer_pid(response->peer_pid());
+    auto response = client->send_sync<Messages::GPUProcessServer::InitTransport>(Core::System::getpid());
+    client->transport().set_peer_pid(response->peer_pid());
 #endif
+    Web::Painting::GPUProcessConnection::install(move(client));
     return {};
 }
 

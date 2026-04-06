@@ -261,4 +261,24 @@ String PathImplSkia::to_svg_string() const
     return MUST(String::from_utf8(StringView { svg_string.c_str(), svg_string.size() }));
 }
 
+ErrorOr<ByteBuffer> Path::serialize_to_bytes() const
+{
+    auto const& sk_path = static_cast<PathImplSkia const&>(impl()).sk_path();
+    auto size = sk_path.writeToMemory(nullptr);
+    auto buffer = TRY(ByteBuffer::create_uninitialized(size));
+    sk_path.writeToMemory(buffer.data());
+    return buffer;
+}
+
+ErrorOr<Path> Path::deserialize_from_bytes(ReadonlyBytes bytes)
+{
+    SkPath sk_path;
+    auto bytes_read = sk_path.readFromMemory(bytes.data(), bytes.size());
+    if (bytes_read == 0)
+        return Error::from_string_literal("Failed to deserialize SkPath");
+    auto impl = PathImplSkia::create();
+    impl->sk_path() = move(sk_path);
+    return Path { move(impl) };
+}
+
 }

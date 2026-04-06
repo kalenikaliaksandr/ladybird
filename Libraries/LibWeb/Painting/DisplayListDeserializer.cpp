@@ -347,35 +347,65 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
     }
     case 17: { // FillPath
         auto path_bounding_rect = TRY(read_int_rect());
-        // FIXME: Deserialize Gfx::Path
-        // FIXME: Deserialize PaintStyleOrColor
+        auto path_size = TRY(read_u32());
+        if (m_offset + path_size > m_buffer.size())
+            return Error::from_string_literal("Buffer underflow");
+        auto path = TRY(Gfx::Path::deserialize_from_bytes(m_buffer.slice(m_offset, path_size)));
+        m_offset += path_size;
         auto opacity = TRY(read_float());
+        auto style_type = TRY(read_u8());
+        PaintStyleOrColor paint_style = Gfx::Color(Gfx::Color::Transparent);
+        if (style_type == 0)
+            paint_style = TRY(read_color());
+        // FIXME: Deserialize SVG paint styles
         auto winding_rule = static_cast<Gfx::WindingRule>(TRY(read_u8()));
         auto should_anti_alias = static_cast<ShouldAntiAlias>(TRY(read_u8()));
-        (void)opacity;
-        (void)winding_rule;
-        (void)should_anti_alias;
-        // FIXME: Return actual FillPath command once Path serialization is implemented
-        return DisplayListCommand(FillRect { .rect = path_bounding_rect, .color = Gfx::Color::Transparent });
+        return DisplayListCommand(FillPath {
+            .path_bounding_rect = path_bounding_rect,
+            .path = move(path),
+            .opacity = opacity,
+            .paint_style_or_color = move(paint_style),
+            .winding_rule = winding_rule,
+            .should_anti_alias = should_anti_alias,
+        });
     }
     case 18: { // StrokePath
         auto path_bounding_rect = TRY(read_int_rect());
-        // FIXME: Deserialize Gfx::Path
-        // FIXME: Deserialize PaintStyleOrColor
+        auto path_size = TRY(read_u32());
+        if (m_offset + path_size > m_buffer.size())
+            return Error::from_string_literal("Buffer underflow");
+        auto path = TRY(Gfx::Path::deserialize_from_bytes(m_buffer.slice(m_offset, path_size)));
+        m_offset += path_size;
         auto opacity = TRY(read_float());
+        auto style_type = TRY(read_u8());
+        PaintStyleOrColor paint_style = Gfx::Color(Gfx::Color::Transparent);
+        if (style_type == 0)
+            paint_style = TRY(read_color());
+        // FIXME: Deserialize SVG paint styles
         auto thickness = TRY(read_float());
         auto cap_style = static_cast<Gfx::Path::CapStyle>(TRY(read_u8()));
         auto join_style = static_cast<Gfx::Path::JoinStyle>(TRY(read_u8()));
         auto miter_limit = TRY(read_float());
+        auto dash_count = TRY(read_u32());
+        Vector<float> dash_array;
+        TRY(dash_array.try_ensure_capacity(dash_count));
+        for (u32 i = 0; i < dash_count; ++i)
+            dash_array.unchecked_append(TRY(read_float()));
+        auto dash_offset = TRY(read_float());
         auto should_anti_alias = static_cast<ShouldAntiAlias>(TRY(read_u8()));
-        (void)opacity;
-        (void)thickness;
-        (void)cap_style;
-        (void)join_style;
-        (void)miter_limit;
-        (void)should_anti_alias;
-        // FIXME: Return actual StrokePath command once Path serialization is implemented
-        return DisplayListCommand(FillRect { .rect = path_bounding_rect, .color = Gfx::Color::Transparent });
+        return DisplayListCommand(StrokePath {
+            .cap_style = cap_style,
+            .join_style = join_style,
+            .miter_limit = miter_limit,
+            .dash_array = move(dash_array),
+            .dash_offset = dash_offset,
+            .path_bounding_rect = path_bounding_rect,
+            .path = move(path),
+            .opacity = opacity,
+            .paint_style_or_color = move(paint_style),
+            .thickness = thickness,
+            .should_anti_alias = should_anti_alias,
+        });
     }
     case 19: { // DrawEllipse
         auto rect = TRY(read_int_rect());

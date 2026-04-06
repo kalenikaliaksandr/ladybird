@@ -319,22 +319,36 @@ ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const&
         },
         [&](FillPath const& cmd) -> ErrorOr<void> {
             TRY(write_int_rect(cmd.path_bounding_rect));
-            // FIXME: Serialize Gfx::Path
-            // FIXME: Serialize PaintStyleOrColor
+            auto path_bytes = TRY(cmd.path.serialize_to_bytes());
+            TRY(write_u32(path_bytes.size()));
+            TRY(write_bytes(path_bytes));
             TRY(write_float(cmd.opacity));
+            // Serialize PaintStyleOrColor as just a color for now
+            TRY(write_u8(cmd.paint_style_or_color.has<Gfx::Color>() ? 0 : 1));
+            if (cmd.paint_style_or_color.has<Gfx::Color>())
+                TRY(write_color(cmd.paint_style_or_color.get<Gfx::Color>()));
             TRY(write_u8(static_cast<u8>(cmd.winding_rule)));
             TRY(write_u8(static_cast<u8>(cmd.should_anti_alias)));
             return {};
         },
         [&](StrokePath const& cmd) -> ErrorOr<void> {
             TRY(write_int_rect(cmd.path_bounding_rect));
-            // FIXME: Serialize Gfx::Path
-            // FIXME: Serialize PaintStyleOrColor
+            auto path_bytes = TRY(cmd.path.serialize_to_bytes());
+            TRY(write_u32(path_bytes.size()));
+            TRY(write_bytes(path_bytes));
             TRY(write_float(cmd.opacity));
+            // Serialize PaintStyleOrColor as just a color for now
+            TRY(write_u8(cmd.paint_style_or_color.has<Gfx::Color>() ? 0 : 1));
+            if (cmd.paint_style_or_color.has<Gfx::Color>())
+                TRY(write_color(cmd.paint_style_or_color.get<Gfx::Color>()));
             TRY(write_float(cmd.thickness));
             TRY(write_u8(static_cast<u8>(cmd.cap_style)));
             TRY(write_u8(static_cast<u8>(cmd.join_style)));
             TRY(write_float(cmd.miter_limit));
+            TRY(write_u32(cmd.dash_array.size()));
+            for (auto dash : cmd.dash_array)
+                TRY(write_float(dash));
+            TRY(write_float(cmd.dash_offset));
             TRY(write_u8(static_cast<u8>(cmd.should_anti_alias)));
             return {};
         },
