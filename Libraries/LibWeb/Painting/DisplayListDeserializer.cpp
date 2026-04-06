@@ -196,6 +196,7 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
         for (u32 i = 0; i < glyph_count; ++i) {
             Gfx::DrawGlyph glyph;
             glyph.position = TRY(read_float_point());
+            glyph.length_in_code_units = TRY(read_u32());
             glyph.glyph_id = TRY(read_u32());
             glyph.glyph_width = TRY(read_float());
             glyphs.unchecked_append(glyph);
@@ -431,6 +432,7 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
         for (u32 i = 0; i < glyph_count; ++i) {
             Gfx::DrawGlyph glyph;
             glyph.position = TRY(read_float_point());
+            glyph.length_in_code_units = TRY(read_u32());
             glyph.glyph_id = TRY(read_u32());
             glyph.glyph_width = TRY(read_float());
             glyphs.unchecked_append(glyph);

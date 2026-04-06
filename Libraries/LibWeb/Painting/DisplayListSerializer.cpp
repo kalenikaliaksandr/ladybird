@@ -253,6 +253,7 @@ ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const&
             TRY(write_u32(cmd.glyph_run->glyphs().size()));
             for (auto const& glyph : cmd.glyph_run->glyphs()) {
                 TRY(write_float_point(glyph.position));
+                TRY(write_u32(static_cast<u32>(glyph.length_in_code_units)));
                 TRY(write_u32(glyph.glyph_id));
                 TRY(write_float(glyph.glyph_width));
             }
@@ -402,6 +403,7 @@ ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const&
             TRY(write_u32(cmd.glyph_run->glyphs().size()));
             for (auto const& glyph : cmd.glyph_run->glyphs()) {
                 TRY(write_float_point(glyph.position));
+                TRY(write_u32(static_cast<u32>(glyph.length_in_code_units)));
                 TRY(write_u32(glyph.glyph_id));
                 TRY(write_float(glyph.glyph_width));
             }
