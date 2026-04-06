@@ -630,8 +630,17 @@ ErrorOr<NonnullRefPtr<AccumulatedVisualContextTree>> DisplayListDeserializer::de
             break;
         }
         case 4: { // ClipPathData
-            // FIXME: Deserialize Gfx::Path
-            data = ClipPathData { {}, {}, Gfx::WindingRule::Nonzero };
+            auto path_size = TRY(read_u32());
+            if (m_offset + path_size > m_buffer.size())
+                return Error::from_string_literal("Buffer underflow");
+            auto path = TRY(Gfx::Path::deserialize_from_bytes(m_buffer.slice(m_offset, path_size)));
+            m_offset += path_size;
+            auto x = TRY(read_i32());
+            auto y = TRY(read_i32());
+            auto w = TRY(read_i32());
+            auto h = TRY(read_i32());
+            auto fill_rule = static_cast<Gfx::WindingRule>(TRY(read_u8()));
+            data = ClipPathData { move(path), DevicePixelRect(x, y, w, h), fill_rule };
             break;
         }
         case 5: { // EffectsData

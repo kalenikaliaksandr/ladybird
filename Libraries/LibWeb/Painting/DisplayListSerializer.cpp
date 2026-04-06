@@ -173,8 +173,15 @@ ErrorOr<void> DisplayListSerializer::serialize_visual_context_tree(AccumulatedVi
                 TRY(write_bytes({ reinterpret_cast<u8 const*>(data.matrix.elements()), sizeof(float) * 16 }));
                 return {};
             },
-            [&](ClipPathData const&) -> ErrorOr<void> {
-                // FIXME: Serialize Gfx::Path for clip paths
+            [&](ClipPathData const& data) -> ErrorOr<void> {
+                auto path_bytes = TRY(data.path.serialize_to_bytes());
+                TRY(write_u32(path_bytes.size()));
+                TRY(write_bytes(path_bytes));
+                TRY(write_i32(data.bounding_rect.x().value()));
+                TRY(write_i32(data.bounding_rect.y().value()));
+                TRY(write_i32(data.bounding_rect.width().value()));
+                TRY(write_i32(data.bounding_rect.height().value()));
+                TRY(write_u8(static_cast<u8>(data.fill_rule)));
                 return {};
             },
             [&](EffectsData const& data) -> ErrorOr<void> {
