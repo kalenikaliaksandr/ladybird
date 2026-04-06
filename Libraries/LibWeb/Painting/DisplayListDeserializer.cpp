@@ -92,6 +92,19 @@ ErrorOr<CornerRadii> DisplayListDeserializer::read_corner_radii()
     return radii;
 }
 
+ErrorOr<CSS::ColorInterpolationMethodStyleValue::ColorInterpolationMethod> DisplayListDeserializer::read_interpolation_method()
+{
+    auto type = TRY(read_u8());
+    if (type == 0) {
+        return CSS::ColorInterpolationMethodStyleValue::ColorInterpolationMethod(
+            static_cast<CSS::RectangularColorSpace>(TRY(read_u8())));
+    }
+    auto color_space = static_cast<CSS::PolarColorSpace>(TRY(read_u8()));
+    auto hue_method = static_cast<CSS::HueInterpolationMethod>(TRY(read_u8()));
+    return CSS::ColorInterpolationMethodStyleValue::ColorInterpolationMethod(
+        CSS::ColorInterpolationMethodStyleValue::PolarColorInterpolationMethod { color_space, hue_method });
+}
+
 ErrorOr<GradientPaintData> DisplayListDeserializer::read_gradient_paint_data()
 {
     GradientPaintData gradient;
@@ -323,8 +336,7 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
             .linear_gradient_data = LinearGradientData {
                 .gradient_angle = gradient_angle,
                 .color_stops = ColorStopData { .list = move(stops), .repeat_length = repeat_length, .repeating = repeating },
-                // FIXME: Deserialize interpolation_method
-                .interpolation_method = CSS::RectangularColorSpace::Srgb,
+                .interpolation_method = TRY(read_interpolation_method()),
             },
         });
     }

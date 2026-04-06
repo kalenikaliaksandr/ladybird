@@ -10,6 +10,7 @@
 #include <LibCore/AnonymousBuffer.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/ImmutableBitmap.h>
+#include <LibWeb/CSS/StyleValues/ColorInterpolationMethodStyleValue.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/DisplayList.h>
@@ -58,6 +59,7 @@ private:
     ErrorOr<CornerRadii> read_corner_radii();
     ErrorOr<GradientPaintData> read_gradient_paint_data();
     ErrorOr<PaintStyleOrColor> read_paint_style_or_color();
+    ErrorOr<CSS::ColorInterpolationMethodStyleValue::ColorInterpolationMethod> read_interpolation_method();
 
     ReadonlyBytes m_buffer;
     size_t m_offset { 0 };

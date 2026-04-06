@@ -5,6 +5,7 @@
  */
 
 #include <LibCore/AnonymousBuffer.h>
+#include <LibWeb/CSS/StyleValues/ColorInterpolationMethodStyleValue.h>
 #include <LibWeb/Painting/DisplayListSerializer.h>
 
 namespace Web::Painting {
@@ -223,8 +224,8 @@ ErrorOr<void> DisplayListSerializer::serialize_scroll_state(
     ScrollStateSnapshotByDisplayList const& scroll_states,
     DisplayList const& main_display_list)
 {
-    // For now, only serialize the main display list's scroll state.
-    // FIXME: Serialize scroll states for nested display lists too.
+    // Serialize the main display list's scroll state here.
+    // Nested display list scroll states are serialized in serialize_nested_display_lists().
     auto it = scroll_states.find(NonnullRefPtr<DisplayList>(const_cast<DisplayList&>(main_display_list)));
     if (it != scroll_states.end()) {
         auto const& offsets = it->value.device_offsets();
@@ -333,7 +334,17 @@ ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const&
             TRY(write_bool(cmd.linear_gradient_data.color_stops.repeat_length.has_value()));
             if (cmd.linear_gradient_data.color_stops.repeat_length.has_value())
                 TRY(write_float(*cmd.linear_gradient_data.color_stops.repeat_length));
-            // FIXME: Serialize interpolation_method
+            // Serialize interpolation_method (Variant<RectangularColorSpace, PolarColorInterpolationMethod>)
+            auto const& method = cmd.linear_gradient_data.interpolation_method;
+            if (method.has<CSS::RectangularColorSpace>()) {
+                TRY(write_u8(0));
+                TRY(write_u8(to_underlying(method.get<CSS::RectangularColorSpace>())));
+            } else {
+                TRY(write_u8(1));
+                auto const& polar = method.get<CSS::ColorInterpolationMethodStyleValue::PolarColorInterpolationMethod>();
+                TRY(write_u8(to_underlying(polar.color_space)));
+                TRY(write_u8(to_underlying(polar.hue_interpolation_method)));
+            }
             return {};
         },
         [&](PaintRadialGradient const& cmd) -> ErrorOr<void> {
@@ -353,7 +364,16 @@ ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const&
             TRY(write_bool(cmd.radial_gradient_data.color_stops.repeat_length.has_value()));
             if (cmd.radial_gradient_data.color_stops.repeat_length.has_value())
                 TRY(write_float(*cmd.radial_gradient_data.color_stops.repeat_length));
-            // FIXME: Serialize interpolation_method
+            auto const& method = cmd.radial_gradient_data.interpolation_method;
+            if (method.has<CSS::RectangularColorSpace>()) {
+                TRY(write_u8(0));
+                TRY(write_u8(to_underlying(method.get<CSS::RectangularColorSpace>())));
+            } else {
+                TRY(write_u8(1));
+                auto const& polar = method.get<CSS::ColorInterpolationMethodStyleValue::PolarColorInterpolationMethod>();
+                TRY(write_u8(to_underlying(polar.color_space)));
+                TRY(write_u8(to_underlying(polar.hue_interpolation_method)));
+            }
             return {};
         },
         [&](PaintConicGradient const& cmd) -> ErrorOr<void> {
@@ -373,7 +393,16 @@ ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const&
             TRY(write_bool(cmd.conic_gradient_data.color_stops.repeat_length.has_value()));
             if (cmd.conic_gradient_data.color_stops.repeat_length.has_value())
                 TRY(write_float(*cmd.conic_gradient_data.color_stops.repeat_length));
-            // FIXME: Serialize interpolation_method
+            auto const& method = cmd.conic_gradient_data.interpolation_method;
+            if (method.has<CSS::RectangularColorSpace>()) {
+                TRY(write_u8(0));
+                TRY(write_u8(to_underlying(method.get<CSS::RectangularColorSpace>())));
+            } else {
+                TRY(write_u8(1));
+                auto const& polar = method.get<CSS::ColorInterpolationMethodStyleValue::PolarColorInterpolationMethod>();
+                TRY(write_u8(to_underlying(polar.color_space)));
+                TRY(write_u8(to_underlying(polar.hue_interpolation_method)));
+            }
             return {};
         },
         [&](PaintOuterBoxShadow const& cmd) -> ErrorOr<void> {
