@@ -842,10 +842,13 @@ set(SOURCES
     Painting/CheckBoxPaintable.cpp
     Painting/DisplayList.cpp
     Painting/DisplayListCommand.cpp
+    Painting/DisplayListDeserializer.cpp
     Painting/DisplayListPlayerSkia.cpp
     Painting/DisplayListRecorder.cpp
     Painting/DisplayListRecordingContext.cpp
+    Painting/DisplayListSerializer.cpp
     Painting/ExternalContentSource.cpp
+    Painting/GPUResourceRegistry.cpp
     Painting/FieldSetPaintable.cpp
     Painting/GradientPainting.cpp
     Painting/ImagePaintable.cpp

@@ -1,0 +1,391 @@
+/*
+ * Copyright (c) 2026, Aliaksandr Kalenik <kalenik.aliaksandr@gmail.com>
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+#include <LibCore/AnonymousBuffer.h>
+#include <LibWeb/Painting/DisplayListSerializer.h>
+
+namespace Web::Painting {
+
+static constexpr u32 DISPLAY_LIST_MAGIC = 0x444C5354; // "DLST"
+static constexpr u32 DISPLAY_LIST_VERSION = 1;
+
+DisplayListSerializer::DisplayListSerializer(GPUResourceRegistry& registry)
+    : m_registry(registry)
+{
+}
+
+ErrorOr<void> DisplayListSerializer::write_bytes(ReadonlyBytes bytes)
+{
+    TRY(m_buffer.try_append(bytes.data(), bytes.size()));
+    return {};
+}
+
+template<typename T>
+ErrorOr<void> DisplayListSerializer::write(T const& value)
+{
+    return write_bytes({ &value, sizeof(T) });
+}
+
+ErrorOr<void> DisplayListSerializer::write_u8(u8 value) { return write(value); }
+ErrorOr<void> DisplayListSerializer::write_u32(u32 value) { return write(value); }
+ErrorOr<void> DisplayListSerializer::write_u64(u64 value) { return write(value); }
+ErrorOr<void> DisplayListSerializer::write_i32(i32 value) { return write(value); }
+ErrorOr<void> DisplayListSerializer::write_float(float value) { return write(value); }
+ErrorOr<void> DisplayListSerializer::write_bool(bool value) { return write_u8(value ? 1 : 0); }
+
+ErrorOr<void> DisplayListSerializer::write_color(Gfx::Color color)
+{
+    return write_u32(color.value());
+}
+
+ErrorOr<void> DisplayListSerializer::write_int_rect(Gfx::IntRect rect)
+{
+    TRY(write_i32(rect.x()));
+    TRY(write_i32(rect.y()));
+    TRY(write_i32(rect.width()));
+    TRY(write_i32(rect.height()));
+    return {};
+}
+
+ErrorOr<void> DisplayListSerializer::write_float_point(Gfx::FloatPoint point)
+{
+    TRY(write_float(point.x()));
+    TRY(write_float(point.y()));
+    return {};
+}
+
+ErrorOr<void> DisplayListSerializer::write_int_point(Gfx::IntPoint point)
+{
+    TRY(write_i32(point.x()));
+    TRY(write_i32(point.y()));
+    return {};
+}
+
+ErrorOr<void> DisplayListSerializer::write_int_size(Gfx::IntSize size)
+{
+    TRY(write_i32(size.width()));
+    TRY(write_i32(size.height()));
+    return {};
+}
+
+ErrorOr<void> DisplayListSerializer::write_corner_radii(CornerRadii const& radii)
+{
+    TRY(write_i32(radii.top_left.horizontal_radius));
+    TRY(write_i32(radii.top_left.vertical_radius));
+    TRY(write_i32(radii.top_right.horizontal_radius));
+    TRY(write_i32(radii.top_right.vertical_radius));
+    TRY(write_i32(radii.bottom_right.horizontal_radius));
+    TRY(write_i32(radii.bottom_right.vertical_radius));
+    TRY(write_i32(radii.bottom_left.horizontal_radius));
+    TRY(write_i32(radii.bottom_left.vertical_radius));
+    return {};
+}
+
+ErrorOr<void> DisplayListSerializer::serialize_visual_context_tree(AccumulatedVisualContextTree const&)
+{
+    // FIXME: Add an accessor to iterate all nodes in AccumulatedVisualContextTree
+    //        and serialize them here.
+    return {};
+}
+
+ErrorOr<void> DisplayListSerializer::serialize_scroll_state(
+    ScrollStateSnapshotByDisplayList const&,
+    DisplayList const&)
+{
+    // FIXME: ScrollStateSnapshot doesn't expose its internal vector.
+    //        We need to add an accessor or serialize differently.
+    return {};
+}
+
+ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const& command)
+{
+    // Write the variant index (command type)
+    TRY(write_u8(static_cast<u8>(command.index())));
+
+    return command.visit(
+        [&](DrawGlyphRun const& cmd) -> ErrorOr<void> {
+            auto font_id = m_registry.ensure_font_id(cmd.glyph_run->font());
+            TRY(write_u64(font_id));
+            TRY(write_u32(cmd.glyph_run->glyphs().size()));
+            for (auto const& glyph : cmd.glyph_run->glyphs()) {
+                TRY(write_float_point(glyph.position));
+                TRY(write_u32(glyph.glyph_id));
+                TRY(write_float(glyph.glyph_width));
+            }
+            TRY(write_int_rect(cmd.rect));
+            TRY(write_float_point(cmd.translation));
+            TRY(write_color(cmd.color));
+            TRY(write_u8(static_cast<u8>(cmd.orientation)));
+            return {};
+        },
+        [&](FillRect const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.rect));
+            TRY(write_color(cmd.color));
+            return {};
+        },
+        [&](DrawScaledImmutableBitmap const& cmd) -> ErrorOr<void> {
+            auto image_id = m_registry.ensure_image_id(*cmd.bitmap);
+            TRY(write_int_rect(cmd.dst_rect));
+            TRY(write_int_rect(cmd.clip_rect));
+            TRY(write_u64(image_id));
+            TRY(write_u8(static_cast<u8>(cmd.scaling_mode)));
+            return {};
+        },
+        [&](DrawRepeatedImmutableBitmap const& cmd) -> ErrorOr<void> {
+            auto image_id = m_registry.ensure_image_id(*cmd.bitmap);
+            TRY(write_int_rect(cmd.dst_rect));
+            TRY(write_int_rect(cmd.clip_rect));
+            TRY(write_u64(image_id));
+            TRY(write_u8(static_cast<u8>(cmd.scaling_mode)));
+            TRY(write_bool(cmd.repeat.x));
+            TRY(write_bool(cmd.repeat.y));
+            return {};
+        },
+        [&](DrawExternalContent const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.dst_rect));
+            // Snapshot external content to an image
+            auto bitmap = cmd.source->current_bitmap();
+            if (bitmap) {
+                auto image_id = m_registry.ensure_image_id(*bitmap);
+                TRY(write_bool(true));
+                TRY(write_u64(image_id));
+            } else {
+                TRY(write_bool(false));
+            }
+            TRY(write_u8(static_cast<u8>(cmd.scaling_mode)));
+            return {};
+        },
+        [&](Save const&) -> ErrorOr<void> {
+            return {};
+        },
+        [&](SaveLayer const&) -> ErrorOr<void> {
+            return {};
+        },
+        [&](Restore const&) -> ErrorOr<void> {
+            return {};
+        },
+        [&](Translate const& cmd) -> ErrorOr<void> {
+            TRY(write_int_point(cmd.delta));
+            return {};
+        },
+        [&](AddClipRect const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.rect));
+            return {};
+        },
+        [&](PaintLinearGradient const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.gradient_rect));
+            TRY(write_float(cmd.linear_gradient_data.gradient_angle));
+            auto const& stops = cmd.linear_gradient_data.color_stops.list;
+            TRY(write_u32(stops.size()));
+            for (auto const& stop : stops) {
+                TRY(write_color(stop.color));
+                TRY(write_float(stop.position));
+            }
+            TRY(write_bool(cmd.linear_gradient_data.color_stops.repeat_length.has_value()));
+            if (cmd.linear_gradient_data.color_stops.repeat_length.has_value())
+                TRY(write_float(*cmd.linear_gradient_data.color_stops.repeat_length));
+            return {};
+        },
+        [&](PaintRadialGradient const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.rect));
+            TRY(write_int_point(cmd.center));
+            TRY(write_int_size(cmd.size));
+            auto const& stops = cmd.radial_gradient_data.color_stops.list;
+            TRY(write_u32(stops.size()));
+            for (auto const& stop : stops) {
+                TRY(write_color(stop.color));
+                TRY(write_float(stop.position));
+            }
+            TRY(write_bool(cmd.radial_gradient_data.color_stops.repeat_length.has_value()));
+            if (cmd.radial_gradient_data.color_stops.repeat_length.has_value())
+                TRY(write_float(*cmd.radial_gradient_data.color_stops.repeat_length));
+            return {};
+        },
+        [&](PaintConicGradient const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.rect));
+            TRY(write_int_point(cmd.position));
+            TRY(write_float(cmd.conic_gradient_data.start_angle));
+            auto const& stops = cmd.conic_gradient_data.color_stops.list;
+            TRY(write_u32(stops.size()));
+            for (auto const& stop : stops) {
+                TRY(write_color(stop.color));
+                TRY(write_float(stop.position));
+            }
+            TRY(write_bool(cmd.conic_gradient_data.color_stops.repeat_length.has_value()));
+            if (cmd.conic_gradient_data.color_stops.repeat_length.has_value())
+                TRY(write_float(*cmd.conic_gradient_data.color_stops.repeat_length));
+            return {};
+        },
+        [&](PaintOuterBoxShadow const& cmd) -> ErrorOr<void> {
+            TRY(write_color(cmd.color));
+            TRY(write_i32(cmd.blur_radius));
+            TRY(write_int_rect(cmd.device_content_rect));
+            TRY(write_corner_radii(cmd.content_corner_radii));
+            TRY(write_int_rect(cmd.shadow_rect));
+            TRY(write_corner_radii(cmd.shadow_corner_radii));
+            return {};
+        },
+        [&](PaintInnerBoxShadow const& cmd) -> ErrorOr<void> {
+            TRY(write_color(cmd.color));
+            TRY(write_i32(cmd.blur_radius));
+            TRY(write_int_rect(cmd.device_content_rect));
+            TRY(write_corner_radii(cmd.content_corner_radii));
+            TRY(write_int_rect(cmd.outer_shadow_rect));
+            TRY(write_int_rect(cmd.inner_shadow_rect));
+            TRY(write_corner_radii(cmd.inner_shadow_corner_radii));
+            return {};
+        },
+        [&](PaintTextShadow const& cmd) -> ErrorOr<void> {
+            auto font_id = m_registry.ensure_font_id(cmd.glyph_run->font());
+            TRY(write_u64(font_id));
+            TRY(write_u32(cmd.glyph_run->glyphs().size()));
+            for (auto const& glyph : cmd.glyph_run->glyphs()) {
+                TRY(write_float_point(glyph.position));
+                TRY(write_u32(glyph.glyph_id));
+                TRY(write_float(glyph.glyph_width));
+            }
+            TRY(write_int_rect(cmd.shadow_bounding_rect));
+            TRY(write_int_rect(cmd.text_rect));
+            TRY(write_float_point(cmd.draw_location));
+            TRY(write_i32(cmd.blur_radius));
+            TRY(write_color(cmd.color));
+            return {};
+        },
+        [&](FillRectWithRoundedCorners const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.rect));
+            TRY(write_color(cmd.color));
+            TRY(write_corner_radii(cmd.corner_radii));
+            return {};
+        },
+        [&](FillPath const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.path_bounding_rect));
+            // FIXME: Serialize Gfx::Path
+            // FIXME: Serialize PaintStyleOrColor
+            TRY(write_float(cmd.opacity));
+            TRY(write_u8(static_cast<u8>(cmd.winding_rule)));
+            TRY(write_u8(static_cast<u8>(cmd.should_anti_alias)));
+            return {};
+        },
+        [&](StrokePath const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.path_bounding_rect));
+            // FIXME: Serialize Gfx::Path
+            // FIXME: Serialize PaintStyleOrColor
+            TRY(write_float(cmd.opacity));
+            TRY(write_float(cmd.thickness));
+            TRY(write_u8(static_cast<u8>(cmd.cap_style)));
+            TRY(write_u8(static_cast<u8>(cmd.join_style)));
+            TRY(write_float(cmd.miter_limit));
+            TRY(write_u8(static_cast<u8>(cmd.should_anti_alias)));
+            return {};
+        },
+        [&](DrawEllipse const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.rect));
+            TRY(write_color(cmd.color));
+            TRY(write_i32(cmd.thickness));
+            return {};
+        },
+        [&](FillEllipse const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.rect));
+            TRY(write_color(cmd.color));
+            return {};
+        },
+        [&](DrawLine const& cmd) -> ErrorOr<void> {
+            TRY(write_color(cmd.color));
+            TRY(write_int_point(cmd.from));
+            TRY(write_int_point(cmd.to));
+            TRY(write_i32(cmd.thickness));
+            TRY(write_u8(static_cast<u8>(cmd.style)));
+            TRY(write_color(cmd.alternate_color));
+            return {};
+        },
+        [&](ApplyBackdropFilter const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.backdrop_region));
+            TRY(write_corner_radii(cmd.corner_radii));
+            // FIXME: Serialize Gfx::Filter
+            TRY(write_bool(cmd.backdrop_filter.has_value()));
+            return {};
+        },
+        [&](DrawRect const& cmd) -> ErrorOr<void> {
+            TRY(write_int_rect(cmd.rect));
+            TRY(write_color(cmd.color));
+            TRY(write_bool(cmd.rough));
+            return {};
+        },
+        [&](AddRoundedRectClip const& cmd) -> ErrorOr<void> {
+            TRY(write_corner_radii(cmd.corner_radii));
+            TRY(write_int_rect(cmd.border_rect));
+            TRY(write_u8(static_cast<u8>(cmd.corner_clip)));
+            return {};
+        },
+        [&](PaintNestedDisplayList const& cmd) -> ErrorOr<void> {
+            // FIXME: Serialize nested display lists
+            TRY(write_bool(cmd.display_list != nullptr));
+            TRY(write_int_rect(cmd.rect));
+            return {};
+        },
+        [&](PaintScrollBar const& cmd) -> ErrorOr<void> {
+            TRY(write_u64(cmd.scroll_frame_index.value()));
+            TRY(write_int_rect(cmd.gutter_rect));
+            TRY(write_int_rect(cmd.thumb_rect));
+            TRY(write(cmd.scroll_size));
+            TRY(write_color(cmd.thumb_color));
+            TRY(write_color(cmd.track_color));
+            TRY(write_bool(cmd.vertical));
+            return {};
+        },
+        [&](ApplyEffects const& cmd) -> ErrorOr<void> {
+            TRY(write_float(cmd.opacity));
+            TRY(write_u8(static_cast<u8>(cmd.compositing_and_blending_operator)));
+            // FIXME: Serialize Gfx::Filter
+            TRY(write_bool(cmd.filter.has_value()));
+            TRY(write_bool(cmd.mask_kind.has_value()));
+            if (cmd.mask_kind.has_value())
+                TRY(write_u8(static_cast<u8>(*cmd.mask_kind)));
+            return {};
+        });
+}
+
+ErrorOr<void> DisplayListSerializer::serialize_commands(DisplayList const& display_list)
+{
+    auto const& commands = display_list.commands();
+    TRY(write_u32(commands.size()));
+
+    for (auto const& item : commands) {
+        TRY(write_u32(item.context_index.value()));
+        TRY(serialize_command(item.command));
+    }
+
+    return {};
+}
+
+ErrorOr<Core::AnonymousBuffer> DisplayListSerializer::serialize(
+    DisplayList const& display_list,
+    ScrollStateSnapshotByDisplayList const& scroll_states,
+    GPUResourceRegistry& registry)
+{
+    DisplayListSerializer serializer(registry);
+
+    // Write header
+    TRY(serializer.write_u32(DISPLAY_LIST_MAGIC));
+    TRY(serializer.write_u32(DISPLAY_LIST_VERSION));
+
+    // Serialize the visual context tree
+    TRY(serializer.serialize_visual_context_tree(display_list.visual_context_tree()));
+
+    // Serialize scroll state
+    TRY(serializer.serialize_scroll_state(scroll_states, display_list));
+
+    // Serialize commands
+    TRY(serializer.serialize_commands(display_list));
+
+    // Copy to anonymous buffer for shared memory transfer
+    auto anon_buffer = TRY(Core::AnonymousBuffer::create_with_size(serializer.m_buffer.size()));
+    memcpy(anon_buffer.data<void>(), serializer.m_buffer.data(), serializer.m_buffer.size());
+
+    return anon_buffer;
+}
+
+}
