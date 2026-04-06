@@ -46,9 +46,7 @@ ErrorOr<IPC::TransportHandle> ConnectionFromClient::connect_new_client()
 {
     auto paired = TRY(IPC::Transport::create_paired());
     auto handle = move(paired.remote_handle);
-
     auto client = adopt_ref(*new ConnectionFromClient(move(paired.local)));
-
     return handle;
 }
 
@@ -94,7 +92,6 @@ void ConnectionFromClient::register_font(u64 font_id, u64 typeface_id, float poi
         return;
     }
 
-    // FIXME: Pass font variation settings and shape features
     auto font = typeface_it->value->font(point_size);
     m_fonts.set(font_id, move(font));
 }
@@ -135,22 +132,29 @@ void ConnectionFromClient::submit_display_list(u64 page_id, Core::AnonymousBuffe
     }
 
     m_cached_display_list_buffer = move(display_list_buffer);
-
-    // FIXME: Deserialize and pass to rendering thread
+    dbgln("GPUProcess: Received display list ({} bytes)", m_cached_display_list_buffer.size());
 }
 
 void ConnectionFromClient::update_scroll_state(u64 page_id, Core::AnonymousBuffer scroll_state_buffer)
 {
-    // FIXME: Update cached scroll state without replacing display list
     (void)page_id;
     (void)scroll_state_buffer;
 }
 
 void ConnectionFromClient::present_frame(u64 page_id, Gfx::IntRect viewport_rect)
 {
-    // FIXME: Execute display list on rendering thread and send did_paint
     (void)page_id;
-    (void)viewport_rect;
+
+    if (!m_cached_display_list_buffer.is_valid()) {
+        return;
+    }
+
+    dbgln("GPUProcess: present_frame for {}x{} viewport",
+        viewport_rect.width(), viewport_rect.height());
+
+    // FIXME: Deserialize display list, execute with DisplayListPlayerSkia,
+    //        render into backing store, and send did_paint back to WebContent.
+    //        This requires resolving the LibWeb symbol export issue first.
 }
 
 }

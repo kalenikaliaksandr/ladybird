@@ -10,13 +10,14 @@
 #include <LibCore/AnonymousBuffer.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/ImmutableBitmap.h>
+#include <LibWeb/Export.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/ScrollState.h>
 
 namespace Web::Painting {
 
-class DisplayListDeserializer {
+class WEB_API DisplayListDeserializer {
 public:
     struct ResourceRegistries {
         HashMap<u64, NonnullRefPtr<Gfx::Font>> const& fonts;

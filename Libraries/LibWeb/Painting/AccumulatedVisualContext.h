@@ -17,6 +17,7 @@
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
 #include <LibGfx/WindingRule.h>
+#include <LibWeb/Export.h>
 #include <LibWeb/Painting/BorderRadiiData.h>
 #include <LibWeb/Painting/ScrollFrame.h>
 #include <LibWeb/PixelUnits.h>

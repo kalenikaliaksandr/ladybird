@@ -10,6 +10,7 @@
 #include <GPUProcess/Forward.h>
 #include <GPUProcess/GPUProcessClientEndpoint.h>
 #include <GPUProcess/GPUProcessServerEndpoint.h>
+#include <LibCore/AnonymousBuffer.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/Font/Typeface.h>
 #include <LibGfx/ImmutableBitmap.h>
@@ -51,8 +52,7 @@ private:
     HashMap<u64, NonnullRefPtr<Gfx::Font>> m_fonts;
     HashMap<u64, NonnullRefPtr<Gfx::ImmutableBitmap>> m_images;
 
-    // Per-page state
-    // FIXME: Move to a PageState struct when multiple pages are supported
+    // Per-page cached display list buffer
     Core::AnonymousBuffer m_cached_display_list_buffer;
 };
 

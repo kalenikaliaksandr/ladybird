@@ -12,6 +12,7 @@
 #include <LibGfx/InterpolationColorSpace.h>
 #include <LibGfx/PaintStyle.h>
 #include <LibGfx/Rect.h>
+#include <LibWeb/Export.h>
 
 namespace Web::Painting {
 
