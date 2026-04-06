@@ -99,8 +99,16 @@ ErrorOr<void> DisplayListSerializer::write_gradient_paint_data(GradientPaintData
         TRY(write_float(*gradient.repeat_length));
     TRY(write_u8(static_cast<u8>(gradient.spread_method)));
     TRY(write_u8(static_cast<u8>(gradient.color_space)));
-    // FIXME: Serialize gradient_transform
     TRY(write_bool(gradient.gradient_transform.has_value()));
+    if (gradient.gradient_transform.has_value()) {
+        auto const& t = *gradient.gradient_transform;
+        TRY(write_float(t.a()));
+        TRY(write_float(t.b()));
+        TRY(write_float(t.c()));
+        TRY(write_float(t.d()));
+        TRY(write_float(t.e()));
+        TRY(write_float(t.f()));
+    }
     return {};
 }
 
@@ -129,9 +137,24 @@ ErrorOr<void> DisplayListSerializer::write_paint_style_or_color(PaintStyleOrColo
             TRY(write_float(radial.end_radius));
             return {};
         },
-        [&](SVGPatternPaintStyle const&) -> ErrorOr<void> {
-            // FIXME: Serialize SVGPatternPaintStyle (needs nested display list)
+        [&](SVGPatternPaintStyle const& pattern) -> ErrorOr<void> {
             TRY(write_u8(3));
+            auto index = register_nested_display_list(pattern.tile_display_list);
+            TRY(write_u32(index));
+            TRY(write_float(pattern.tile_rect.x()));
+            TRY(write_float(pattern.tile_rect.y()));
+            TRY(write_float(pattern.tile_rect.width()));
+            TRY(write_float(pattern.tile_rect.height()));
+            TRY(write_bool(pattern.pattern_transform.has_value()));
+            if (pattern.pattern_transform.has_value()) {
+                auto const& t = *pattern.pattern_transform;
+                TRY(write_float(t.a()));
+                TRY(write_float(t.b()));
+                TRY(write_float(t.c()));
+                TRY(write_float(t.d()));
+                TRY(write_float(t.e()));
+                TRY(write_float(t.f()));
+            }
             return {};
         });
 }
@@ -558,11 +581,21 @@ ErrorOr<Core::AnonymousBuffer> DisplayListSerializer::serialize(
     TRY(serializer.serialize_scroll_state(scroll_states, display_list));
 
     // Collect nested display lists from the command stream first
+    auto collect_from_paint_style = [&](PaintStyleOrColor const& style) {
+        if (style.has<SVGPatternPaintStyle>())
+            serializer.register_nested_display_list(style.get<SVGPatternPaintStyle>().tile_display_list);
+    };
     for (auto const& item : display_list.commands()) {
         item.command.visit(
             [&](PaintNestedDisplayList const& cmd) {
                 if (cmd.display_list)
                     serializer.register_nested_display_list(cmd.display_list);
+            },
+            [&](FillPath const& cmd) {
+                collect_from_paint_style(cmd.paint_style_or_color);
+            },
+            [&](StrokePath const& cmd) {
+                collect_from_paint_style(cmd.paint_style_or_color);
             },
             [](auto const&) {});
     }

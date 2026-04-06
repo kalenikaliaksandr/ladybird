@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibGfx/AffineTransform.h>
 #include <LibGfx/TextLayout.h>
 #include <LibWeb/CSS/StyleValues/ColorInterpolationMethodStyleValue.h>
 #include <LibWeb/Painting/DisplayListDeserializer.h>
@@ -109,9 +110,16 @@ ErrorOr<GradientPaintData> DisplayListDeserializer::read_gradient_paint_data()
         gradient.repeat_length = TRY(read_float());
     gradient.spread_method = static_cast<GradientPaintData::SpreadMethod>(TRY(read_u8()));
     gradient.color_space = static_cast<Gfx::InterpolationColorSpace>(TRY(read_u8()));
-    // FIXME: Deserialize gradient_transform
     auto has_transform = TRY(read_bool());
-    (void)has_transform;
+    if (has_transform) {
+        auto a = TRY(read_float());
+        auto b = TRY(read_float());
+        auto c = TRY(read_float());
+        auto d = TRY(read_float());
+        auto e = TRY(read_float());
+        auto f = TRY(read_float());
+        gradient.gradient_transform = Gfx::AffineTransform(a, b, c, d, e, f);
+    }
     return gradient;
 }
 
@@ -145,8 +153,31 @@ ErrorOr<PaintStyleOrColor> DisplayListDeserializer::read_paint_style_or_color()
             .end_radius = end_radius,
         });
     }
-    case 3: // SVGPattern — FIXME
+    case 3: { // SVGPattern
+        auto nested_index = TRY(read_u32());
+        auto tile_x = TRY(read_float());
+        auto tile_y = TRY(read_float());
+        auto tile_w = TRY(read_float());
+        auto tile_h = TRY(read_float());
+        auto has_transform = TRY(read_bool());
+        Optional<Gfx::AffineTransform> pattern_transform;
+        if (has_transform) {
+            auto a = TRY(read_float());
+            auto b = TRY(read_float());
+            auto c = TRY(read_float());
+            auto d = TRY(read_float());
+            auto e = TRY(read_float());
+            auto f = TRY(read_float());
+            pattern_transform = Gfx::AffineTransform(a, b, c, d, e, f);
+        }
+        if (nested_index < m_nested_display_lists.size() && m_nested_display_lists[nested_index]) {
+            return PaintStyleOrColor(SVGPatternPaintStyle(
+                *m_nested_display_lists[nested_index],
+                Gfx::FloatRect(tile_x, tile_y, tile_w, tile_h),
+                pattern_transform));
+        }
         return PaintStyleOrColor(Gfx::Color(Gfx::Color::Transparent));
+    }
     default:
         return Error::from_string_literal("Unknown paint style type");
     }
@@ -232,15 +263,26 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
             .repeat = { .x = repeat_x, .y = repeat_y },
         });
     }
-    case 4: { // DrawExternalContent
+    case 4: { // DrawExternalContent — reconstructed as DrawScaledImmutableBitmap
         auto dst_rect = TRY(read_int_rect());
         auto has_bitmap = TRY(read_bool());
-        if (has_bitmap)
-            TRY(read_u64()); // image_id — skip for now
-        auto scaling_mode = static_cast<Gfx::ScalingMode>(TRY(read_u8()));
-        (void)scaling_mode;
-        // FIXME: Reconstruct DrawExternalContent from image
-        return DisplayListCommand(FillRect { .rect = dst_rect, .color = Gfx::Color::Transparent });
+        if (has_bitmap) {
+            auto image_id = TRY(read_u64());
+            auto scaling_mode = static_cast<Gfx::ScalingMode>(TRY(read_u8()));
+            auto image_it = m_registries.images.find(image_id);
+            if (image_it != m_registries.images.end()) {
+                return DisplayListCommand(DrawScaledImmutableBitmap {
+                    .dst_rect = dst_rect,
+                    .clip_rect = dst_rect,
+                    .bitmap = image_it->value,
+                    .scaling_mode = scaling_mode,
+                });
+            }
+        } else {
+            TRY(read_u8()); // scaling_mode
+        }
+        // Fallback: transparent rect if no bitmap available
+        return DisplayListCommand(FillRect { .rect = dst_rect, .color = Gfx::Color(Gfx::Color::Transparent) });
     }
     case 5: // Save
         return DisplayListCommand(Save {});
