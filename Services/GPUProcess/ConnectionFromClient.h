@@ -14,6 +14,7 @@
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/Font/Typeface.h>
 #include <LibGfx/ImmutableBitmap.h>
+#include <LibGfx/PaintingSurface.h>
 #include <LibIPC/ConnectionFromClient.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/ScrollState.h>
@@ -48,6 +49,8 @@ private:
     virtual void release_font(u64 font_id) override;
     virtual void release_image(u64 image_id) override;
 
+    virtual void update_backing_stores(u64 page_id, i32 front_bitmap_id, Gfx::ShareableBitmap front_bitmap, i32 back_bitmap_id, Gfx::ShareableBitmap back_bitmap) override;
+
     virtual void submit_display_list(u64 page_id, Core::AnonymousBuffer display_list_buffer) override;
     virtual void update_scroll_state(u64 page_id, Core::AnonymousBuffer scroll_state_buffer) override;
     virtual void present_frame(u64 page_id, Gfx::IntRect viewport_rect) override;
@@ -62,6 +65,12 @@ private:
     RefPtr<Web::Painting::DisplayList> m_cached_display_list;
     Web::Painting::ScrollStateSnapshot m_cached_scroll_state;
     OwnPtr<Web::Painting::DisplayListPlayerSkia> m_skia_player;
+
+    // Backing store state
+    i32 m_front_bitmap_id { -1 };
+    i32 m_back_bitmap_id { -1 };
+    RefPtr<Gfx::PaintingSurface> m_front_surface;
+    RefPtr<Gfx::PaintingSurface> m_back_surface;
 };
 
 }

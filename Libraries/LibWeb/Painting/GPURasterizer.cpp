@@ -50,11 +50,9 @@ void GPURasterizer::update_display_list(NonnullRefPtr<DisplayList> display_list,
     m_gpu_client->async_submit_display_list(m_page_id, buffer_or_error.release_value());
 }
 
-void GPURasterizer::update_backing_stores(i32 front_id, i32 back_id)
+void GPURasterizer::update_backing_stores(i32 front_id, Gfx::ShareableBitmap front_bitmap, i32 back_id, Gfx::ShareableBitmap back_bitmap)
 {
-    // FIXME: Send backing stores to GPU process
-    (void)front_id;
-    (void)back_id;
+    m_gpu_client->async_update_backing_stores(m_page_id, front_id, move(front_bitmap), back_id, move(back_bitmap));
 }
 
 void GPURasterizer::present_frame(Gfx::IntRect viewport_rect)

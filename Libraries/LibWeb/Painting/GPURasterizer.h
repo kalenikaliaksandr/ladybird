@@ -9,6 +9,7 @@
 #include <AK/Function.h>
 #include <AK/Noncopyable.h>
 #include <LibGPUProcessClient/Client.h>
+#include <LibGfx/ShareableBitmap.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/GPUResourceRegistry.h>
 #include <LibWeb/Painting/ScrollState.h>
@@ -26,7 +27,7 @@ public:
     ~GPURasterizer();
 
     void update_display_list(NonnullRefPtr<DisplayList>, ScrollStateSnapshotByDisplayList&&);
-    void update_backing_stores(i32 front_id, i32 back_id);
+    void update_backing_stores(i32 front_id, Gfx::ShareableBitmap front_bitmap, i32 back_id, Gfx::ShareableBitmap back_bitmap);
     void present_frame(Gfx::IntRect);
 
     void ready_to_paint();

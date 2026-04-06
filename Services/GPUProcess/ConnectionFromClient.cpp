@@ -125,6 +125,24 @@ void ConnectionFromClient::release_image(u64 image_id)
     m_images.remove(image_id);
 }
 
+void ConnectionFromClient::update_backing_stores(u64 page_id, i32 front_bitmap_id, Gfx::ShareableBitmap front_bitmap, i32 back_bitmap_id, Gfx::ShareableBitmap back_bitmap)
+{
+    (void)page_id;
+
+    m_front_bitmap_id = front_bitmap_id;
+    m_back_bitmap_id = back_bitmap_id;
+
+    if (front_bitmap.is_valid())
+        m_front_surface = Gfx::PaintingSurface::wrap_bitmap(*front_bitmap.bitmap());
+    else
+        m_front_surface = nullptr;
+
+    if (back_bitmap.is_valid())
+        m_back_surface = Gfx::PaintingSurface::wrap_bitmap(*back_bitmap.bitmap());
+    else
+        m_back_surface = nullptr;
+}
+
 void ConnectionFromClient::submit_display_list(u64 page_id, Core::AnonymousBuffer display_list_buffer)
 {
     (void)page_id;
@@ -170,15 +188,24 @@ void ConnectionFromClient::present_frame(u64 page_id, Gfx::IntRect viewport_rect
         return;
     }
 
-    dbgln("GPUProcess: Rendering {} commands for {}x{} viewport",
-        m_cached_display_list->commands().size(),
-        viewport_rect.width(), viewport_rect.height());
+    if (!m_back_surface) {
+        dbgln("GPUProcess: No backing store to render into");
+        return;
+    }
 
-    // FIXME: Execute display list into actual backing store surface and send did_paint
-    // For now we just confirm deserialization succeeded by logging the command count.
-    // Full rendering requires: backing store transfer, PaintingSurface creation,
-    // m_skia_player->execute(*m_cached_display_list, scroll_states, surface),
-    // and async_did_paint() back to WebContent.
+    // Build scroll state map for the display list player
+    Web::Painting::ScrollStateSnapshotByDisplayList scroll_states;
+    scroll_states.set(*m_cached_display_list, m_cached_scroll_state);
+
+    // Execute the display list into the back buffer
+    m_skia_player->execute(*m_cached_display_list, move(scroll_states), m_back_surface);
+
+    // Swap front and back
+    swap(m_front_surface, m_back_surface);
+    swap(m_front_bitmap_id, m_back_bitmap_id);
+
+    // Notify WebContent that painting is done
+    async_did_paint(0, viewport_rect, m_front_bitmap_id);
 }
 
 }
