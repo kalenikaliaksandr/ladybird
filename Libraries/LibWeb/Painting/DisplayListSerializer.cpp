@@ -319,45 +319,60 @@ ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const&
         [&](PaintLinearGradient const& cmd) -> ErrorOr<void> {
             TRY(write_int_rect(cmd.gradient_rect));
             TRY(write_float(cmd.linear_gradient_data.gradient_angle));
+            TRY(write_bool(cmd.linear_gradient_data.color_stops.repeating));
             auto const& stops = cmd.linear_gradient_data.color_stops.list;
             TRY(write_u32(stops.size()));
             for (auto const& stop : stops) {
                 TRY(write_color(stop.color));
                 TRY(write_float(stop.position));
+                TRY(write_bool(stop.transition_hint.has_value()));
+                if (stop.transition_hint.has_value())
+                    TRY(write_float(*stop.transition_hint));
             }
             TRY(write_bool(cmd.linear_gradient_data.color_stops.repeat_length.has_value()));
             if (cmd.linear_gradient_data.color_stops.repeat_length.has_value())
                 TRY(write_float(*cmd.linear_gradient_data.color_stops.repeat_length));
+            // FIXME: Serialize interpolation_method
             return {};
         },
         [&](PaintRadialGradient const& cmd) -> ErrorOr<void> {
             TRY(write_int_rect(cmd.rect));
             TRY(write_int_point(cmd.center));
             TRY(write_int_size(cmd.size));
+            TRY(write_bool(cmd.radial_gradient_data.color_stops.repeating));
             auto const& stops = cmd.radial_gradient_data.color_stops.list;
             TRY(write_u32(stops.size()));
             for (auto const& stop : stops) {
                 TRY(write_color(stop.color));
                 TRY(write_float(stop.position));
+                TRY(write_bool(stop.transition_hint.has_value()));
+                if (stop.transition_hint.has_value())
+                    TRY(write_float(*stop.transition_hint));
             }
             TRY(write_bool(cmd.radial_gradient_data.color_stops.repeat_length.has_value()));
             if (cmd.radial_gradient_data.color_stops.repeat_length.has_value())
                 TRY(write_float(*cmd.radial_gradient_data.color_stops.repeat_length));
+            // FIXME: Serialize interpolation_method
             return {};
         },
         [&](PaintConicGradient const& cmd) -> ErrorOr<void> {
             TRY(write_int_rect(cmd.rect));
             TRY(write_int_point(cmd.position));
             TRY(write_float(cmd.conic_gradient_data.start_angle));
+            TRY(write_bool(cmd.conic_gradient_data.color_stops.repeating));
             auto const& stops = cmd.conic_gradient_data.color_stops.list;
             TRY(write_u32(stops.size()));
             for (auto const& stop : stops) {
                 TRY(write_color(stop.color));
                 TRY(write_float(stop.position));
+                TRY(write_bool(stop.transition_hint.has_value()));
+                if (stop.transition_hint.has_value())
+                    TRY(write_float(*stop.transition_hint));
             }
             TRY(write_bool(cmd.conic_gradient_data.color_stops.repeat_length.has_value()));
             if (cmd.conic_gradient_data.color_stops.repeat_length.has_value())
                 TRY(write_float(*cmd.conic_gradient_data.color_stops.repeat_length));
+            // FIXME: Serialize interpolation_method
             return {};
         },
         [&](PaintOuterBoxShadow const& cmd) -> ErrorOr<void> {

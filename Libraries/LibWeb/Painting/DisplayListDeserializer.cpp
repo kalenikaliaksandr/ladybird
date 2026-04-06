@@ -301,12 +301,16 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
     case 10: { // PaintLinearGradient
         auto gradient_rect = TRY(read_int_rect());
         auto gradient_angle = TRY(read_float());
+        auto repeating = TRY(read_bool());
         auto stop_count = TRY(read_u32());
         ColorStopList stops;
         for (u32 i = 0; i < stop_count; ++i) {
-            auto color = TRY(read_color());
-            auto position = TRY(read_float());
-            stops.append({ color, position });
+            Gfx::ColorStop stop;
+            stop.color = TRY(read_color());
+            stop.position = TRY(read_float());
+            if (TRY(read_bool()))
+                stop.transition_hint = TRY(read_float());
+            stops.append(move(stop));
         }
         auto has_repeat = TRY(read_bool());
         Optional<float> repeat_length;
@@ -317,7 +321,8 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
             .gradient_rect = gradient_rect,
             .linear_gradient_data = LinearGradientData {
                 .gradient_angle = gradient_angle,
-                .color_stops = ColorStopData { .list = move(stops), .repeat_length = repeat_length, .repeating = repeat_length.has_value() },
+                .color_stops = ColorStopData { .list = move(stops), .repeat_length = repeat_length, .repeating = repeating },
+                // FIXME: Deserialize interpolation_method
                 .interpolation_method = CSS::RectangularColorSpace::Srgb,
             },
         });
@@ -326,12 +331,16 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
         auto rect = TRY(read_int_rect());
         auto center = TRY(read_int_point());
         auto size = TRY(read_int_size());
+        auto repeating = TRY(read_bool());
         auto stop_count = TRY(read_u32());
         ColorStopList stops;
         for (u32 i = 0; i < stop_count; ++i) {
-            auto color = TRY(read_color());
-            auto position = TRY(read_float());
-            stops.append({ color, position });
+            Gfx::ColorStop stop;
+            stop.color = TRY(read_color());
+            stop.position = TRY(read_float());
+            if (TRY(read_bool()))
+                stop.transition_hint = TRY(read_float());
+            stops.append(move(stop));
         }
         auto has_repeat = TRY(read_bool());
         Optional<float> repeat_length;
@@ -341,7 +350,7 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
         return DisplayListCommand(PaintRadialGradient {
             .rect = rect,
             .radial_gradient_data = RadialGradientData {
-                .color_stops = ColorStopData { .list = move(stops), .repeat_length = repeat_length, .repeating = repeat_length.has_value() },
+                .color_stops = ColorStopData { .list = move(stops), .repeat_length = repeat_length, .repeating = repeating },
                 .interpolation_method = CSS::RectangularColorSpace::Srgb,
             },
             .center = center,
@@ -352,12 +361,16 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
         auto rect = TRY(read_int_rect());
         auto position = TRY(read_int_point());
         auto start_angle = TRY(read_float());
+        auto repeating = TRY(read_bool());
         auto stop_count = TRY(read_u32());
         ColorStopList stops;
         for (u32 i = 0; i < stop_count; ++i) {
-            auto color = TRY(read_color());
-            auto pos = TRY(read_float());
-            stops.append({ color, pos });
+            Gfx::ColorStop stop;
+            stop.color = TRY(read_color());
+            stop.position = TRY(read_float());
+            if (TRY(read_bool()))
+                stop.transition_hint = TRY(read_float());
+            stops.append(move(stop));
         }
         auto has_repeat = TRY(read_bool());
         Optional<float> repeat_length;
@@ -368,7 +381,7 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
             .rect = rect,
             .conic_gradient_data = ConicGradientData {
                 .start_angle = start_angle,
-                .color_stops = ColorStopData { .list = move(stops), .repeat_length = repeat_length, .repeating = repeat_length.has_value() },
+                .color_stops = ColorStopData { .list = move(stops), .repeat_length = repeat_length, .repeating = repeating },
                 .interpolation_method = CSS::RectangularColorSpace::Srgb,
             },
             .position = position,
