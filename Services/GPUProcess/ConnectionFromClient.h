@@ -63,7 +63,7 @@ private:
 
     Core::AnonymousBuffer m_cached_display_list_buffer;
     RefPtr<Web::Painting::DisplayList> m_cached_display_list;
-    Web::Painting::ScrollStateSnapshot m_cached_scroll_state;
+    Web::Painting::ScrollStateSnapshotByDisplayList m_cached_scroll_states;
     OwnPtr<Web::Painting::DisplayListPlayerSkia> m_skia_player;
 
     // Backing store state

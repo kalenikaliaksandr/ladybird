@@ -170,7 +170,7 @@ void ConnectionFromClient::submit_display_list(u64 page_id, Core::AnonymousBuffe
 
     auto result = result_or_error.release_value();
     m_cached_display_list = move(result.display_list);
-    m_cached_scroll_state = move(result.scroll_state);
+    m_cached_scroll_states = move(result.scroll_states);
 }
 
 void ConnectionFromClient::update_scroll_state(u64 page_id, Core::AnonymousBuffer scroll_state_buffer)
@@ -193,12 +193,8 @@ void ConnectionFromClient::present_frame(u64 page_id, Gfx::IntRect viewport_rect
         return;
     }
 
-    // Build scroll state map for the display list player
-    Web::Painting::ScrollStateSnapshotByDisplayList scroll_states;
-    scroll_states.set(*m_cached_display_list, m_cached_scroll_state);
-
     // Execute the display list into the back buffer
-    m_skia_player->execute(*m_cached_display_list, move(scroll_states), m_back_surface);
+    m_skia_player->execute(*m_cached_display_list, Web::Painting::ScrollStateSnapshotByDisplayList(m_cached_scroll_states), m_back_surface);
 
     // Swap front and back
     swap(m_front_surface, m_back_surface);

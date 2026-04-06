@@ -84,6 +84,58 @@ ErrorOr<void> DisplayListSerializer::write_corner_radii(CornerRadii const& radii
     return {};
 }
 
+ErrorOr<void> DisplayListSerializer::write_gradient_paint_data(GradientPaintData const& gradient)
+{
+    TRY(write_u32(gradient.color_stops.size()));
+    for (auto const& stop : gradient.color_stops) {
+        TRY(write_color(stop.color));
+        TRY(write_float(stop.position));
+        TRY(write_bool(stop.transition_hint.has_value()));
+        if (stop.transition_hint.has_value())
+            TRY(write_float(*stop.transition_hint));
+    }
+    TRY(write_bool(gradient.repeat_length.has_value()));
+    if (gradient.repeat_length.has_value())
+        TRY(write_float(*gradient.repeat_length));
+    TRY(write_u8(static_cast<u8>(gradient.spread_method)));
+    TRY(write_u8(static_cast<u8>(gradient.color_space)));
+    // FIXME: Serialize gradient_transform
+    TRY(write_bool(gradient.gradient_transform.has_value()));
+    return {};
+}
+
+ErrorOr<void> DisplayListSerializer::write_paint_style_or_color(PaintStyleOrColor const& style)
+{
+    // 0 = Color, 1 = SVGLinearGradient, 2 = SVGRadialGradient, 3 = SVGPattern
+    return style.visit(
+        [&](Gfx::Color const& color) -> ErrorOr<void> {
+            TRY(write_u8(0));
+            TRY(write_color(color));
+            return {};
+        },
+        [&](SVGLinearGradientPaintStyle const& linear) -> ErrorOr<void> {
+            TRY(write_u8(1));
+            TRY(write_gradient_paint_data(linear.gradient));
+            TRY(write_float_point(linear.start_point));
+            TRY(write_float_point(linear.end_point));
+            return {};
+        },
+        [&](SVGRadialGradientPaintStyle const& radial) -> ErrorOr<void> {
+            TRY(write_u8(2));
+            TRY(write_gradient_paint_data(radial.gradient));
+            TRY(write_float_point(radial.start_center));
+            TRY(write_float(radial.start_radius));
+            TRY(write_float_point(radial.end_center));
+            TRY(write_float(radial.end_radius));
+            return {};
+        },
+        [&](SVGPatternPaintStyle const&) -> ErrorOr<void> {
+            // FIXME: Serialize SVGPatternPaintStyle (needs nested display list)
+            TRY(write_u8(3));
+            return {};
+        });
+}
+
 ErrorOr<void> DisplayListSerializer::serialize_visual_context_tree(AccumulatedVisualContextTree const& tree)
 {
     TRY(write_u32(tree.node_count()));
@@ -323,10 +375,7 @@ ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const&
             TRY(write_u32(path_bytes.size()));
             TRY(write_bytes(path_bytes));
             TRY(write_float(cmd.opacity));
-            // Serialize PaintStyleOrColor as just a color for now
-            TRY(write_u8(cmd.paint_style_or_color.has<Gfx::Color>() ? 0 : 1));
-            if (cmd.paint_style_or_color.has<Gfx::Color>())
-                TRY(write_color(cmd.paint_style_or_color.get<Gfx::Color>()));
+            TRY(write_paint_style_or_color(cmd.paint_style_or_color));
             TRY(write_u8(static_cast<u8>(cmd.winding_rule)));
             TRY(write_u8(static_cast<u8>(cmd.should_anti_alias)));
             return {};
@@ -337,10 +386,7 @@ ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const&
             TRY(write_u32(path_bytes.size()));
             TRY(write_bytes(path_bytes));
             TRY(write_float(cmd.opacity));
-            // Serialize PaintStyleOrColor as just a color for now
-            TRY(write_u8(cmd.paint_style_or_color.has<Gfx::Color>() ? 0 : 1));
-            if (cmd.paint_style_or_color.has<Gfx::Color>())
-                TRY(write_color(cmd.paint_style_or_color.get<Gfx::Color>()));
+            TRY(write_paint_style_or_color(cmd.paint_style_or_color));
             TRY(write_float(cmd.thickness));
             TRY(write_u8(static_cast<u8>(cmd.cap_style)));
             TRY(write_u8(static_cast<u8>(cmd.join_style)));
@@ -392,8 +438,11 @@ ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const&
             return {};
         },
         [&](PaintNestedDisplayList const& cmd) -> ErrorOr<void> {
-            // FIXME: Serialize nested display lists
             TRY(write_bool(cmd.display_list != nullptr));
+            if (cmd.display_list) {
+                auto index = register_nested_display_list(cmd.display_list);
+                TRY(write_u32(index));
+            }
             TRY(write_int_rect(cmd.rect));
             return {};
         },
@@ -432,6 +481,54 @@ ErrorOr<void> DisplayListSerializer::serialize_commands(DisplayList const& displ
     return {};
 }
 
+u32 DisplayListSerializer::register_nested_display_list(RefPtr<DisplayList> const& display_list)
+{
+    if (!display_list)
+        return UINT32_MAX;
+
+    auto it = m_nested_display_list_indices.find(display_list.ptr());
+    if (it != m_nested_display_list_indices.end())
+        return it->value;
+
+    auto index = static_cast<u32>(m_nested_display_lists.size());
+    m_nested_display_lists.append(display_list);
+    m_nested_display_list_indices.set(display_list.ptr(), index);
+    return index;
+}
+
+ErrorOr<void> DisplayListSerializer::serialize_nested_display_lists(ScrollStateSnapshotByDisplayList const& scroll_states)
+{
+    TRY(write_u32(m_nested_display_lists.size()));
+
+    for (auto const& nested_dl : m_nested_display_lists) {
+        if (!nested_dl) {
+            TRY(write_u32(0)); // 0 commands
+            TRY(write_u32(0)); // 0 context nodes
+            TRY(write_u32(0)); // 0 scroll offsets
+            continue;
+        }
+
+        // Serialize the nested display list's visual context tree
+        TRY(serialize_visual_context_tree(nested_dl->visual_context_tree()));
+
+        // Serialize nested scroll state
+        auto it = scroll_states.find(*nested_dl);
+        if (it != scroll_states.end()) {
+            auto const& offsets = it->value.device_offsets();
+            TRY(write_u32(offsets.size()));
+            for (auto const& offset : offsets)
+                TRY(write_float_point(offset));
+        } else {
+            TRY(write_u32(0));
+        }
+
+        // Serialize nested commands
+        TRY(serialize_commands(*nested_dl));
+    }
+
+    return {};
+}
+
 ErrorOr<Core::AnonymousBuffer> DisplayListSerializer::serialize(
     DisplayList const& display_list,
     ScrollStateSnapshotByDisplayList const& scroll_states,
@@ -449,7 +546,21 @@ ErrorOr<Core::AnonymousBuffer> DisplayListSerializer::serialize(
     // Serialize scroll state
     TRY(serializer.serialize_scroll_state(scroll_states, display_list));
 
-    // Serialize commands
+    // Collect nested display lists from the command stream first
+    for (auto const& item : display_list.commands()) {
+        item.command.visit(
+            [&](PaintNestedDisplayList const& cmd) {
+                if (cmd.display_list)
+                    serializer.register_nested_display_list(cmd.display_list);
+            },
+            [](auto const&) {});
+    }
+
+    // Serialize nested display lists before commands so they're
+    // available during deserialization when commands reference them
+    TRY(serializer.serialize_nested_display_lists(scroll_states));
+
+    // Serialize main commands (nested DL indices are already assigned)
     TRY(serializer.serialize_commands(display_list));
 
     // Copy to anonymous buffer for shared memory transfer

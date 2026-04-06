@@ -26,7 +26,7 @@ public:
 
     struct Result {
         NonnullRefPtr<DisplayList> display_list;
-        ScrollStateSnapshot scroll_state;
+        ScrollStateSnapshotByDisplayList scroll_states;
     };
 
     static ErrorOr<Result> deserialize(
@@ -39,6 +39,7 @@ private:
     ErrorOr<NonnullRefPtr<DisplayList>> do_deserialize();
     ErrorOr<NonnullRefPtr<AccumulatedVisualContextTree>> deserialize_visual_context_tree();
     ErrorOr<ScrollStateSnapshot> deserialize_scroll_state();
+    ErrorOr<void> deserialize_nested_display_lists();
     ErrorOr<DisplayListCommand> deserialize_command(u8 type_index);
 
     template<typename T>
@@ -55,11 +56,15 @@ private:
     ErrorOr<Gfx::IntPoint> read_int_point();
     ErrorOr<Gfx::IntSize> read_int_size();
     ErrorOr<CornerRadii> read_corner_radii();
+    ErrorOr<GradientPaintData> read_gradient_paint_data();
+    ErrorOr<PaintStyleOrColor> read_paint_style_or_color();
 
     ReadonlyBytes m_buffer;
     size_t m_offset { 0 };
     ResourceRegistries const& m_registries;
     ScrollStateSnapshot m_scroll_state;
+    Vector<RefPtr<DisplayList>> m_nested_display_lists;
+    HashMap<RefPtr<DisplayList>, ScrollStateSnapshot> m_nested_scroll_states;
 };
 
 }

@@ -91,6 +91,67 @@ ErrorOr<CornerRadii> DisplayListDeserializer::read_corner_radii()
     return radii;
 }
 
+ErrorOr<GradientPaintData> DisplayListDeserializer::read_gradient_paint_data()
+{
+    GradientPaintData gradient;
+    auto stop_count = TRY(read_u32());
+    for (u32 i = 0; i < stop_count; ++i) {
+        ColorStop stop;
+        stop.color = TRY(read_color());
+        stop.position = TRY(read_float());
+        auto has_hint = TRY(read_bool());
+        if (has_hint)
+            stop.transition_hint = TRY(read_float());
+        gradient.color_stops.append(move(stop));
+    }
+    auto has_repeat = TRY(read_bool());
+    if (has_repeat)
+        gradient.repeat_length = TRY(read_float());
+    gradient.spread_method = static_cast<GradientPaintData::SpreadMethod>(TRY(read_u8()));
+    gradient.color_space = static_cast<Gfx::InterpolationColorSpace>(TRY(read_u8()));
+    // FIXME: Deserialize gradient_transform
+    auto has_transform = TRY(read_bool());
+    (void)has_transform;
+    return gradient;
+}
+
+ErrorOr<PaintStyleOrColor> DisplayListDeserializer::read_paint_style_or_color()
+{
+    auto type = TRY(read_u8());
+    switch (type) {
+    case 0: // Color
+        return PaintStyleOrColor(TRY(read_color()));
+    case 1: { // SVGLinearGradient
+        auto gradient = TRY(read_gradient_paint_data());
+        auto start_point = TRY(read_float_point());
+        auto end_point = TRY(read_float_point());
+        return PaintStyleOrColor(SVGLinearGradientPaintStyle {
+            .gradient = move(gradient),
+            .start_point = start_point,
+            .end_point = end_point,
+        });
+    }
+    case 2: { // SVGRadialGradient
+        auto gradient = TRY(read_gradient_paint_data());
+        auto start_center = TRY(read_float_point());
+        auto start_radius = TRY(read_float());
+        auto end_center = TRY(read_float_point());
+        auto end_radius = TRY(read_float());
+        return PaintStyleOrColor(SVGRadialGradientPaintStyle {
+            .gradient = move(gradient),
+            .start_center = start_center,
+            .start_radius = start_radius,
+            .end_center = end_center,
+            .end_radius = end_radius,
+        });
+    }
+    case 3: // SVGPattern — FIXME
+        return PaintStyleOrColor(Gfx::Color(Gfx::Color::Transparent));
+    default:
+        return Error::from_string_literal("Unknown paint style type");
+    }
+}
+
 ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type_index)
 {
     switch (type_index) {
@@ -353,11 +414,7 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
         auto path = TRY(Gfx::Path::deserialize_from_bytes(m_buffer.slice(m_offset, path_size)));
         m_offset += path_size;
         auto opacity = TRY(read_float());
-        auto style_type = TRY(read_u8());
-        PaintStyleOrColor paint_style = Gfx::Color(Gfx::Color::Transparent);
-        if (style_type == 0)
-            paint_style = TRY(read_color());
-        // FIXME: Deserialize SVG paint styles
+        auto paint_style = TRY(read_paint_style_or_color());
         auto winding_rule = static_cast<Gfx::WindingRule>(TRY(read_u8()));
         auto should_anti_alias = static_cast<ShouldAntiAlias>(TRY(read_u8()));
         return DisplayListCommand(FillPath {
@@ -377,11 +434,7 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
         auto path = TRY(Gfx::Path::deserialize_from_bytes(m_buffer.slice(m_offset, path_size)));
         m_offset += path_size;
         auto opacity = TRY(read_float());
-        auto style_type = TRY(read_u8());
-        PaintStyleOrColor paint_style = Gfx::Color(Gfx::Color::Transparent);
-        if (style_type == 0)
-            paint_style = TRY(read_color());
-        // FIXME: Deserialize SVG paint styles
+        auto paint_style = TRY(read_paint_style_or_color());
         auto thickness = TRY(read_float());
         auto cap_style = static_cast<Gfx::Path::CapStyle>(TRY(read_u8()));
         auto join_style = static_cast<Gfx::Path::JoinStyle>(TRY(read_u8()));
@@ -475,11 +528,15 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
     }
     case 25: { // PaintNestedDisplayList
         auto has_display_list = TRY(read_bool());
+        RefPtr<DisplayList> nested_dl;
+        if (has_display_list) {
+            auto nested_index = TRY(read_u32());
+            if (nested_index < m_nested_display_lists.size())
+                nested_dl = m_nested_display_lists[nested_index];
+        }
         auto rect = TRY(read_int_rect());
-        (void)has_display_list;
-        // FIXME: Deserialize nested display list
         return DisplayListCommand(PaintNestedDisplayList {
-            .display_list = nullptr,
+            .display_list = nested_dl,
             .rect = rect,
         });
     }
@@ -608,6 +665,31 @@ ErrorOr<ScrollStateSnapshot> DisplayListDeserializer::deserialize_scroll_state()
     return ScrollStateSnapshot::create_from_offsets(move(offsets));
 }
 
+ErrorOr<void> DisplayListDeserializer::deserialize_nested_display_lists()
+{
+    auto count = TRY(read_u32());
+
+    for (u32 i = 0; i < count; ++i) {
+        auto visual_context_tree = TRY(deserialize_visual_context_tree());
+        auto scroll_state = TRY(deserialize_scroll_state());
+
+        auto command_count = TRY(read_u32());
+        auto nested_dl = DisplayList::create(move(visual_context_tree));
+
+        for (u32 j = 0; j < command_count; ++j) {
+            auto context_index = VisualContextIndex(TRY(read_u32()));
+            auto type_index = TRY(read_u8());
+            auto command = TRY(deserialize_command(type_index));
+            nested_dl->append(move(command), context_index);
+        }
+
+        m_nested_scroll_states.set(nested_dl, move(scroll_state));
+        m_nested_display_lists.append(move(nested_dl));
+    }
+
+    return {};
+}
+
 ErrorOr<NonnullRefPtr<DisplayList>> DisplayListDeserializer::do_deserialize()
 {
     // Read and validate header
@@ -625,7 +707,11 @@ ErrorOr<NonnullRefPtr<DisplayList>> DisplayListDeserializer::do_deserialize()
     // Deserialize scroll state
     m_scroll_state = TRY(deserialize_scroll_state());
 
-    // Deserialize commands
+    // Deserialize nested display lists before main commands
+    // so PaintNestedDisplayList can reference them by index
+    TRY(deserialize_nested_display_lists());
+
+    // Deserialize main commands
     auto command_count = TRY(read_u32());
     auto display_list = DisplayList::create(move(visual_context_tree));
 
@@ -645,9 +731,16 @@ ErrorOr<DisplayListDeserializer::Result> DisplayListDeserializer::deserialize(
 {
     DisplayListDeserializer deserializer(buffer, registries);
     auto display_list = TRY(deserializer.do_deserialize());
+
+    // Build the scroll state map for the display list player
+    ScrollStateSnapshotByDisplayList scroll_states;
+    scroll_states.set(*display_list, move(deserializer.m_scroll_state));
+    for (auto& [nested_dl, nested_scroll] : deserializer.m_nested_scroll_states)
+        scroll_states.set(*nested_dl, move(nested_scroll));
+
     return Result {
         .display_list = move(display_list),
-        .scroll_state = move(deserializer.m_scroll_state),
+        .scroll_states = move(scroll_states),
     };
 }
 
