@@ -23,6 +23,7 @@ public:
     Client(NonnullOwnPtr<IPC::Transport>);
 
     Function<void()> on_death;
+    Function<void(u64 page_id, Gfx::IntRect content_rect, i32 bitmap_id)> on_paint_complete;
 
 private:
     virtual void die() override;

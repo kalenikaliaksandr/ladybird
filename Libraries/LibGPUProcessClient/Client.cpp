@@ -19,9 +19,10 @@ void Client::die()
         on_death();
 }
 
-void Client::did_paint(u64, Gfx::IntRect, i32)
+void Client::did_paint(u64 page_id, Gfx::IntRect content_rect, i32 bitmap_id)
 {
-    // FIXME: Forward paint completion to the appropriate page
+    if (on_paint_complete)
+        on_paint_complete(page_id, content_rect, bitmap_id);
 }
 
 void Client::ready_for_next_frame(u64)

@@ -10,6 +10,7 @@ set(SOURCES
     ColorSpace.cpp
     Cursor.cpp
     Filter.cpp
+    FilterDescription.cpp
     Font/Font.cpp
     Font/FontData.cpp
     Font/FontDatabase.cpp
