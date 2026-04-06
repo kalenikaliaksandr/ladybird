@@ -157,6 +157,8 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
     switch (type_index) {
     case 0: { // DrawGlyphRun
         auto font_id = TRY(read_u64());
+        auto text_type = static_cast<Gfx::GlyphRun::TextType>(TRY(read_u8()));
+        auto width = TRY(read_float());
         auto glyph_count = TRY(read_u32());
         Vector<Gfx::DrawGlyph> glyphs;
         TRY(glyphs.try_ensure_capacity(glyph_count));
@@ -176,7 +178,7 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
         if (font_it == m_registries.fonts.end())
             return Error::from_string_literal("Unknown font ID");
 
-        auto glyph_run = adopt_ref(*new Gfx::GlyphRun(move(glyphs), font_it->value, Gfx::GlyphRun::TextType::Common, 0));
+        auto glyph_run = adopt_ref(*new Gfx::GlyphRun(move(glyphs), font_it->value, text_type, width));
         return DisplayListCommand(DrawGlyphRun {
             .glyph_run = move(glyph_run),
             .rect = rect,
@@ -366,6 +368,8 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
     }
     case 15: { // PaintTextShadow
         auto font_id = TRY(read_u64());
+        auto text_type = static_cast<Gfx::GlyphRun::TextType>(TRY(read_u8()));
+        auto width = TRY(read_float());
         auto glyph_count = TRY(read_u32());
         Vector<Gfx::DrawGlyph> glyphs;
         TRY(glyphs.try_ensure_capacity(glyph_count));
@@ -386,7 +390,7 @@ ErrorOr<DisplayListCommand> DisplayListDeserializer::deserialize_command(u8 type
         if (font_it == m_registries.fonts.end())
             return Error::from_string_literal("Unknown font ID");
 
-        auto glyph_run = adopt_ref(*new Gfx::GlyphRun(move(glyphs), font_it->value, Gfx::GlyphRun::TextType::Common, 0));
+        auto glyph_run = adopt_ref(*new Gfx::GlyphRun(move(glyphs), font_it->value, text_type, width));
         return DisplayListCommand(PaintTextShadow {
             .glyph_run = move(glyph_run),
             .shadow_bounding_rect = shadow_bounding_rect,

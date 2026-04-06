@@ -225,6 +225,8 @@ ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const&
         [&](DrawGlyphRun const& cmd) -> ErrorOr<void> {
             auto font_id = m_registry.ensure_font_id(cmd.glyph_run->font());
             TRY(write_u64(font_id));
+            TRY(write_u8(static_cast<u8>(cmd.glyph_run->text_type())));
+            TRY(write_float(cmd.glyph_run->width()));
             TRY(write_u32(cmd.glyph_run->glyphs().size()));
             for (auto const& glyph : cmd.glyph_run->glyphs()) {
                 TRY(write_float_point(glyph.position));
@@ -357,6 +359,8 @@ ErrorOr<void> DisplayListSerializer::serialize_command(DisplayListCommand const&
         [&](PaintTextShadow const& cmd) -> ErrorOr<void> {
             auto font_id = m_registry.ensure_font_id(cmd.glyph_run->font());
             TRY(write_u64(font_id));
+            TRY(write_u8(static_cast<u8>(cmd.glyph_run->text_type())));
+            TRY(write_float(cmd.glyph_run->width()));
             TRY(write_u32(cmd.glyph_run->glyphs().size()));
             for (auto const& glyph : cmd.glyph_run->glyphs()) {
                 TRY(write_float_point(glyph.position));
