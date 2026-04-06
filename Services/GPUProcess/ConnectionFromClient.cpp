@@ -8,6 +8,8 @@
 #include <GPUProcess/ConnectionFromClient.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/System.h>
+#include <LibGfx/Bitmap.h>
+#include <LibGfx/Font/Typeface.h>
 #include <LibIPC/TransportHandle.h>
 
 namespace GPUProcess {
@@ -63,6 +65,64 @@ Messages::GPUProcessServer::ConnectNewClientsResponse ConnectionFromClient::conn
         handles.unchecked_append(handle_or_error.release_value());
     }
     return handles;
+}
+
+void ConnectionFromClient::register_typeface(u64 typeface_id, Core::AnonymousBuffer font_data, u32 ttc_index)
+{
+    if (!font_data.is_valid()) {
+        dbgln("GPUProcess: Invalid font data for typeface {}", typeface_id);
+        return;
+    }
+
+    auto typeface_or_error = Gfx::Typeface::try_load_from_externally_owned_memory(
+        ReadonlyBytes { font_data.data<u8>(), font_data.size() },
+        ttc_index);
+
+    if (typeface_or_error.is_error()) {
+        dbgln("GPUProcess: Failed to load typeface {}: {}", typeface_id, typeface_or_error.error());
+        return;
+    }
+
+    m_typefaces.set(typeface_id, typeface_or_error.release_value());
+}
+
+void ConnectionFromClient::register_font(u64 font_id, u64 typeface_id, float point_size)
+{
+    auto typeface_it = m_typefaces.find(typeface_id);
+    if (typeface_it == m_typefaces.end()) {
+        dbgln("GPUProcess: Unknown typeface {} for font {}", typeface_id, font_id);
+        return;
+    }
+
+    // FIXME: Pass font variation settings and shape features
+    auto font = typeface_it->value->font(point_size);
+    m_fonts.set(font_id, move(font));
+}
+
+void ConnectionFromClient::register_image(u64 image_id, Gfx::ShareableBitmap shareable_bitmap)
+{
+    if (!shareable_bitmap.is_valid()) {
+        dbgln("GPUProcess: Invalid bitmap for image {}", image_id);
+        return;
+    }
+
+    auto bitmap = Gfx::ImmutableBitmap::create(*shareable_bitmap.bitmap());
+    m_images.set(image_id, move(bitmap));
+}
+
+void ConnectionFromClient::release_typeface(u64 typeface_id)
+{
+    m_typefaces.remove(typeface_id);
+}
+
+void ConnectionFromClient::release_font(u64 font_id)
+{
+    m_fonts.remove(font_id);
+}
+
+void ConnectionFromClient::release_image(u64 image_id)
+{
+    m_images.remove(image_id);
 }
 
 }

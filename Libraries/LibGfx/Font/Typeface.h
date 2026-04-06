@@ -77,6 +77,9 @@ public:
 
     [[nodiscard]] NonnullRefPtr<Font> font(float point_size, FontVariationSettings const& variations = {}, Gfx::ShapeFeatures const& shape_features = {}) const;
 
+    ReadonlyBytes font_data() const { return buffer(); }
+    u32 font_data_ttc_index() const { return ttc_index(); }
+
     hb_face_t* harfbuzz_typeface() const;
 
     template<typename T>

@@ -79,6 +79,7 @@ public:
     NonnullRefPtr<Font> with_size(float point_size) const;
 
     Typeface const& typeface() const { return m_typeface; }
+    FontVariationSettings const& font_variation_settings() const { return m_font_variation_settings; }
 
     SkFont skia_font(float scale) const;
 
