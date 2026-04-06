@@ -21,7 +21,7 @@
 
 namespace Web::Painting {
 
-class DisplayListPlayer {
+class WEB_API DisplayListPlayer {
 public:
     virtual ~DisplayListPlayer() = default;
 

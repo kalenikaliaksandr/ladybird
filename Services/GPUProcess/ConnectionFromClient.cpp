@@ -11,6 +11,8 @@
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Font/Typeface.h>
 #include <LibIPC/TransportHandle.h>
+#include <LibWeb/Painting/DisplayListDeserializer.h>
+#include <LibWeb/Painting/DisplayListPlayerSkia.h>
 
 namespace GPUProcess {
 
@@ -21,6 +23,7 @@ ConnectionFromClient::ConnectionFromClient(NonnullOwnPtr<IPC::Transport> transpo
     : IPC::ConnectionFromClient<GPUProcessClientEndpoint, GPUProcessServerEndpoint>(*this, move(transport), s_client_ids.allocate())
 {
     s_connections.set(client_id(), *this);
+    m_skia_player = make<Web::Painting::DisplayListPlayerSkia>();
 }
 
 void ConnectionFromClient::die()
@@ -132,11 +135,29 @@ void ConnectionFromClient::submit_display_list(u64 page_id, Core::AnonymousBuffe
     }
 
     m_cached_display_list_buffer = move(display_list_buffer);
-    dbgln("GPUProcess: Received display list ({} bytes)", m_cached_display_list_buffer.size());
+
+    Web::Painting::DisplayListDeserializer::ResourceRegistries registries {
+        .fonts = m_fonts,
+        .images = m_images,
+    };
+
+    auto result_or_error = Web::Painting::DisplayListDeserializer::deserialize(
+        ReadonlyBytes { m_cached_display_list_buffer.data<u8>(), m_cached_display_list_buffer.size() },
+        registries);
+
+    if (result_or_error.is_error()) {
+        dbgln("GPUProcess: Failed to deserialize display list: {}", result_or_error.error());
+        return;
+    }
+
+    auto result = result_or_error.release_value();
+    m_cached_display_list = move(result.display_list);
+    m_cached_scroll_state = move(result.scroll_state);
 }
 
 void ConnectionFromClient::update_scroll_state(u64 page_id, Core::AnonymousBuffer scroll_state_buffer)
 {
+    // FIXME: Deserialize updated scroll state from buffer
     (void)page_id;
     (void)scroll_state_buffer;
 }
@@ -145,16 +166,19 @@ void ConnectionFromClient::present_frame(u64 page_id, Gfx::IntRect viewport_rect
 {
     (void)page_id;
 
-    if (!m_cached_display_list_buffer.is_valid()) {
+    if (!m_cached_display_list) {
         return;
     }
 
-    dbgln("GPUProcess: present_frame for {}x{} viewport",
+    dbgln("GPUProcess: Rendering {} commands for {}x{} viewport",
+        m_cached_display_list->commands().size(),
         viewport_rect.width(), viewport_rect.height());
 
-    // FIXME: Deserialize display list, execute with DisplayListPlayerSkia,
-    //        render into backing store, and send did_paint back to WebContent.
-    //        This requires resolving the LibWeb symbol export issue first.
+    // FIXME: Execute display list into actual backing store surface and send did_paint
+    // For now we just confirm deserialization succeeded by logging the command count.
+    // Full rendering requires: backing store transfer, PaintingSurface creation,
+    // m_skia_player->execute(*m_cached_display_list, scroll_states, surface),
+    // and async_did_paint() back to WebContent.
 }
 
 }

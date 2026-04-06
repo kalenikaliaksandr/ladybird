@@ -65,7 +65,7 @@ struct SVGRadialGradientPaintStyle {
 };
 
 // Out-of-line special members because DisplayList is incomplete here.
-struct SVGPatternPaintStyle {
+struct WEB_API SVGPatternPaintStyle {
     NonnullRefPtr<DisplayList> tile_display_list;
     Gfx::FloatRect tile_rect;
     Optional<Gfx::AffineTransform> pattern_transform;

@@ -15,6 +15,14 @@
 #include <LibGfx/Font/Typeface.h>
 #include <LibGfx/ImmutableBitmap.h>
 #include <LibIPC/ConnectionFromClient.h>
+#include <LibWeb/Painting/DisplayList.h>
+#include <LibWeb/Painting/ScrollState.h>
+
+namespace Web::Painting {
+
+class DisplayListPlayerSkia;
+
+}
 
 namespace GPUProcess {
 
@@ -33,7 +41,6 @@ private:
     virtual Messages::GPUProcessServer::InitTransportResponse init_transport(int peer_pid) override;
     virtual Messages::GPUProcessServer::ConnectNewClientsResponse connect_new_clients(size_t count) override;
 
-    // Resource registration
     virtual void register_typeface(u64 typeface_id, Core::AnonymousBuffer font_data, u32 ttc_index) override;
     virtual void register_font(u64 font_id, u64 typeface_id, float point_size) override;
     virtual void register_image(u64 image_id, Gfx::ShareableBitmap bitmap) override;
@@ -41,7 +48,6 @@ private:
     virtual void release_font(u64 font_id) override;
     virtual void release_image(u64 image_id) override;
 
-    // Display list and presentation
     virtual void submit_display_list(u64 page_id, Core::AnonymousBuffer display_list_buffer) override;
     virtual void update_scroll_state(u64 page_id, Core::AnonymousBuffer scroll_state_buffer) override;
     virtual void present_frame(u64 page_id, Gfx::IntRect viewport_rect) override;
@@ -52,8 +58,10 @@ private:
     HashMap<u64, NonnullRefPtr<Gfx::Font>> m_fonts;
     HashMap<u64, NonnullRefPtr<Gfx::ImmutableBitmap>> m_images;
 
-    // Per-page cached display list buffer
     Core::AnonymousBuffer m_cached_display_list_buffer;
+    RefPtr<Web::Painting::DisplayList> m_cached_display_list;
+    Web::Painting::ScrollStateSnapshot m_cached_scroll_state;
+    OwnPtr<Web::Painting::DisplayListPlayerSkia> m_skia_player;
 };
 
 }
