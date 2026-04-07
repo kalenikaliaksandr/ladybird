@@ -24,6 +24,7 @@ target_sources(ladybird PRIVATE
     ladybird.qrc
 )
 target_link_libraries(ladybird PRIVATE Qt::Core Qt::Gui Qt::Widgets)
+
 create_ladybird_bundle(ladybird)
 
 if (WIN32)
