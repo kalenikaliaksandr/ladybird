@@ -11,6 +11,7 @@
 #include <LibCore/StandardPaths.h>
 #include <LibCore/Timer.h>
 #include <LibGfx/ImageFormats/PNGWriter.h>
+#include <LibGfx/SharedImageBuffer.h>
 #include <LibURL/Parser.h>
 #include <LibWeb/Crypto/Crypto.h>
 #include <LibWeb/Infra/Strings.h>
@@ -21,11 +22,6 @@
 #include <LibWebView/URL.h>
 #include <LibWebView/UserAgent.h>
 #include <LibWebView/ViewImplementation.h>
-
-#ifdef AK_OS_MACOS
-#    include <LibCore/IOSurface.h>
-#    include <LibCore/MachPort.h>
-#endif
 
 namespace WebView {
 
@@ -591,7 +587,7 @@ void ViewImplementation::did_update_navigation_buttons_state(Badge<WebContentCli
     m_navigate_forward_action->set_enabled(forward_enabled);
 }
 
-void ViewImplementation::did_allocate_backing_stores(Badge<WebContentClient>, i32 front_bitmap_id, Web::SharedBackingStore front_backing_store, i32 back_bitmap_id, Web::SharedBackingStore back_backing_store)
+void ViewImplementation::did_allocate_backing_stores(Badge<WebContentClient>, i32 front_bitmap_id, Gfx::SharedImage front_backing_store, i32 back_bitmap_id, Gfx::SharedImage back_backing_store)
 {
     if (m_client_state.has_usable_bitmap) {
         // NOTE: We keep the outgoing front bitmap as a backup so we have something to paint until we get a new one.
@@ -603,22 +599,17 @@ void ViewImplementation::did_allocate_backing_stores(Badge<WebContentClient>, i3
     m_client_state.back_bitmap.id = back_bitmap_id;
 
 #ifdef AK_OS_MACOS
-    auto update_bitmap = [](SharedBitmap& target, Web::SharedBackingStore backing_store) {
-        auto iosurface_port = backing_store.release_iosurface_port();
-        auto iosurface = Core::IOSurfaceHandle::from_mach_port(iosurface_port);
-        auto size = Gfx::IntSize { iosurface.width(), iosurface.height() };
-        auto bytes_per_row = iosurface.bytes_per_row();
-        target.iosurface_ref = iosurface.core_foundation_pointer();
-
-        auto bitmap = Gfx::Bitmap::create_wrapper(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, size, bytes_per_row, iosurface.data(), [handle = move(iosurface)] { });
-        target.bitmap = bitmap.release_value_but_fixme_should_propagate_errors();
+    auto update_bitmap = [](SharedBitmap& target, Gfx::SharedImage backing_store) {
+        target.shared_image_buffer = make<Gfx::SharedImageBuffer>(Gfx::SharedImageBuffer::import_from_shared_image(move(backing_store)));
+        target.iosurface_ref = target.shared_image_buffer->iosurface_handle().core_foundation_pointer();
+        target.bitmap = target.shared_image_buffer->bitmap();
     };
 
     update_bitmap(m_client_state.front_bitmap, move(front_backing_store));
     update_bitmap(m_client_state.back_bitmap, move(back_backing_store));
 #else
-    auto update_bitmap = [](SharedBitmap& target, Web::SharedBackingStore backing_store) {
-        target.bitmap = backing_store.bitmap().bitmap();
+    auto update_bitmap = [](SharedBitmap& target, Gfx::SharedImage backing_store) {
+        target.bitmap = Gfx::SharedImageBuffer::import_from_shared_image(move(backing_store)).bitmap();
     };
 
     update_bitmap(m_client_state.front_bitmap, move(front_backing_store));
