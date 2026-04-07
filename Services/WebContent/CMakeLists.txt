@@ -1,5 +1,6 @@
 include(audio)
 include(SDL3)
+include(vulkan)
 
 set(SOURCES
     ConnectionFromClient.cpp
@@ -37,6 +38,15 @@ target_link_libraries(webcontentservice PRIVATE SDL3::SDL3)
 add_executable(WebContent main.cpp)
 
 target_link_libraries(WebContent PRIVATE webcontentservice LibURL)
+
+if (HAS_VULKAN)
+    target_compile_definitions(webcontentservice PRIVATE USE_VULKAN=1)
+    target_compile_definitions(WebContent PRIVATE USE_VULKAN=1)
+    if (USE_VULKAN_DMABUF_IMAGES)
+        target_compile_definitions(webcontentservice PRIVATE USE_VULKAN_DMABUF_IMAGES=1)
+        target_compile_definitions(WebContent PRIVATE USE_VULKAN_DMABUF_IMAGES=1)
+    endif()
+endif()
 
 if(WIN32)
     lagom_windows_bin(WebContent CONSOLE)

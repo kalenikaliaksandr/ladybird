@@ -1,4 +1,5 @@
 include(fontconfig)
+include(vulkan)
 
 set(SOURCES
     Application.cpp
@@ -76,6 +77,13 @@ compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/WebUIServer.ipc ${CMAKE_B
 
 ladybird_lib(LibWebView webview EXPLICIT_SYMBOL_EXPORT)
 target_link_libraries(LibWebView PRIVATE LibCore LibDatabase LibDevTools LibFileSystem LibGfx LibHTTP LibImageDecoderClient LibIPC LibRequests LibJS LibWeb LibUnicode LibURL LibSyntax LibTextCodec)
+
+if (HAS_VULKAN)
+    target_compile_definitions(LibWebView PRIVATE USE_VULKAN=1)
+    if (USE_VULKAN_DMABUF_IMAGES)
+        target_compile_definitions(LibWebView PRIVATE USE_VULKAN_DMABUF_IMAGES=1)
+    endif()
+endif()
 
 # Third-party
 if (HAS_FONTCONFIG)
