@@ -363,12 +363,40 @@ ErrorOr<NonnullRefPtr<VulkanImage>> create_shared_vulkan_image(VulkanContext con
     vkGetImageMemoryRequirements(context.logical_device, image->image, &mem_reqs);
     VkPhysicalDeviceMemoryProperties mem_props;
     vkGetPhysicalDeviceMemoryProperties(context.physical_device, &mem_props);
-    uint32_t mem_type_idx;
-    for (mem_type_idx = 0; mem_type_idx < mem_props.memoryTypeCount; ++mem_type_idx) {
-        if ((mem_reqs.memoryTypeBits & (1 << mem_type_idx)) && (mem_props.memoryTypes[mem_type_idx].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-            break;
+    bool const is_linear_image = format_mods.size() == 1 && format_mods[0] == DRM_FORMAT_MOD_LINEAR;
+    uint32_t mem_type_idx = mem_props.memoryTypeCount;
+
+    if (is_linear_image) {
+        for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
+            auto const property_flags = mem_props.memoryTypes[i].propertyFlags;
+            if ((mem_reqs.memoryTypeBits & (1u << i))
+                && (property_flags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
+                    == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) {
+                mem_type_idx = i;
+                break;
+            }
+        }
+        if (mem_type_idx == mem_props.memoryTypeCount) {
+            for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
+                auto const property_flags = mem_props.memoryTypes[i].propertyFlags;
+                if ((mem_reqs.memoryTypeBits & (1u << i))
+                    && (property_flags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+                        == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                    mem_type_idx = i;
+                    break;
+                }
+            }
+        }
+    } else {
+        for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
+            auto const property_flags = mem_props.memoryTypes[i].propertyFlags;
+            if ((mem_reqs.memoryTypeBits & (1u << i)) && (property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+                mem_type_idx = i;
+                break;
+            }
         }
     }
+
     if (mem_type_idx == mem_props.memoryTypeCount) {
         return Error::from_string_literal("unable to find suitable image memory type");
     }

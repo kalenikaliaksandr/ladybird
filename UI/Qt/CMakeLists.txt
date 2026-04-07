@@ -24,6 +24,15 @@ target_sources(ladybird PRIVATE
     ladybird.qrc
 )
 target_link_libraries(ladybird PRIVATE Qt::Core Qt::Gui Qt::Widgets)
+
+if (HAS_VULKAN)
+    target_compile_definitions(ladybird PRIVATE USE_VULKAN=1)
+
+    if (USE_VULKAN_IMAGES)
+        target_compile_definitions(ladybird PRIVATE USE_VULKAN_IMAGES=1)
+    endif()
+endif()
+
 create_ladybird_bundle(ladybird)
 
 if (WIN32)

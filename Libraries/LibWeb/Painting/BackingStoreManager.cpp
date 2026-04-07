@@ -12,6 +12,11 @@
 #include <LibWeb/Painting/BackingStoreManager.h>
 #include <WebContent/PageClient.h>
 
+#ifdef USE_VULKAN_IMAGES
+#    include <AK/Array.h>
+#    include <libdrm/drm_fourcc.h>
+#endif
+
 namespace Web::Painting {
 
 GC_DEFINE_ALLOCATOR(BackingStoreManager);
@@ -38,16 +43,19 @@ void BackingStoreManager::restart_resize_timer()
 void BackingStoreManager::reallocate_backing_stores(Gfx::IntSize size)
 {
     auto skia_backend_context = Gfx::SkiaBackendContext::the();
+    bool const is_top_level_traversable = m_navigable->is_top_level_traversable();
 
     RefPtr<Gfx::PaintingSurface> front_store;
     RefPtr<Gfx::PaintingSurface> back_store;
-    auto front_buffer = Gfx::SharedImageBuffer::allocate_for_compositing(size);
-    auto back_buffer = Gfx::SharedImageBuffer::allocate_for_compositing(size);
 
     m_front_bitmap_id = m_next_bitmap_id++;
     m_back_bitmap_id = m_next_bitmap_id++;
 
-    if (m_navigable->is_top_level_traversable()) {
+#ifdef AK_OS_MACOS
+    auto front_buffer = Gfx::SharedImageBuffer::allocate_for_compositing(size);
+    auto back_buffer = Gfx::SharedImageBuffer::allocate_for_compositing(size);
+
+    if (is_top_level_traversable) {
         auto& page_client = m_navigable->top_level_traversable()->page().client();
         page_client.page_did_allocate_backing_stores(
             m_front_bitmap_id,
@@ -56,7 +64,6 @@ void BackingStoreManager::reallocate_backing_stores(Gfx::IntSize size)
             back_buffer.export_shared_image());
     }
 
-#ifdef AK_OS_MACOS
     if (skia_backend_context) {
         front_store = Gfx::PaintingSurface::create_from_shared_image_buffer(front_buffer, *skia_backend_context);
         back_store = Gfx::PaintingSurface::create_from_shared_image_buffer(back_buffer, *skia_backend_context);
@@ -65,25 +72,46 @@ void BackingStoreManager::reallocate_backing_stores(Gfx::IntSize size)
         back_store = Gfx::PaintingSurface::wrap_bitmap(*back_buffer.bitmap());
     }
 #else
-#    ifdef USE_VULKAN
-    if (skia_backend_context) {
-        front_store = Gfx::PaintingSurface::create_with_size(size, Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied);
-        auto front_bitmap = front_buffer.bitmap();
-        front_store->on_flush = [front_bitmap = move(front_bitmap)](auto& surface) {
-            surface.read_into_bitmap(*front_bitmap);
-        };
-        back_store = Gfx::PaintingSurface::create_with_size(size, Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied);
-        auto back_bitmap = back_buffer.bitmap();
-        back_store->on_flush = [back_bitmap = move(back_bitmap)](auto& surface) {
-            surface.read_into_bitmap(*back_bitmap);
-        };
-    }
-#    endif
-
-    if (!front_store)
+    if (is_top_level_traversable) {
+        auto& page_client = m_navigable->top_level_traversable()->page().client();
+#    ifdef USE_VULKAN_IMAGES
+        if (skia_backend_context) {
+            static constexpr Array<uint64_t, 1> linear_modifier = { DRM_FORMAT_MOD_LINEAR };
+            auto front_buffer = Gfx::SharedImageBuffer::allocate_for_compositing_with_linux_dmabuf(skia_backend_context->vulkan_context(), size, linear_modifier.span());
+            auto back_buffer = Gfx::SharedImageBuffer::allocate_for_compositing_with_linux_dmabuf(skia_backend_context->vulkan_context(), size, linear_modifier.span());
+            page_client.page_did_allocate_backing_stores(
+                m_front_bitmap_id,
+                front_buffer.export_shared_image(),
+                m_back_bitmap_id,
+                back_buffer.export_shared_image());
+            front_store = Gfx::PaintingSurface::create_from_shared_image_buffer(front_buffer, *skia_backend_context);
+            back_store = Gfx::PaintingSurface::create_from_shared_image_buffer(back_buffer, *skia_backend_context);
+        } else {
+            auto front_buffer = Gfx::SharedImageBuffer::allocate_for_compositing(size);
+            auto back_buffer = Gfx::SharedImageBuffer::allocate_for_compositing(size);
+            page_client.page_did_allocate_backing_stores(
+                m_front_bitmap_id,
+                front_buffer.export_shared_image(),
+                m_back_bitmap_id,
+                back_buffer.export_shared_image());
+            front_store = Gfx::PaintingSurface::wrap_bitmap(*front_buffer.bitmap());
+            back_store = Gfx::PaintingSurface::wrap_bitmap(*back_buffer.bitmap());
+        }
+#    else
+        auto front_buffer = Gfx::SharedImageBuffer::allocate_for_compositing(size);
+        auto back_buffer = Gfx::SharedImageBuffer::allocate_for_compositing(size);
+        page_client.page_did_allocate_backing_stores(
+            m_front_bitmap_id,
+            front_buffer.export_shared_image(),
+            m_back_bitmap_id,
+            back_buffer.export_shared_image());
         front_store = Gfx::PaintingSurface::wrap_bitmap(*front_buffer.bitmap());
-    if (!back_store)
         back_store = Gfx::PaintingSurface::wrap_bitmap(*back_buffer.bitmap());
+#    endif
+    } else {
+        front_store = Gfx::PaintingSurface::create_with_size(size, Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied);
+        back_store = Gfx::PaintingSurface::create_with_size(size, Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied);
+    }
 #endif
 
     m_allocated_size = size;

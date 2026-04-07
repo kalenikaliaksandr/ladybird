@@ -347,8 +347,9 @@ void OpenGLContext::allocate_vkimage_painting_surface()
         }
     }
 
-    auto vulkan_image = MUST(Gfx::create_shared_vulkan_image(m_skia_backend_context->vulkan_context(), m_size.width(), m_size.height(), vulkan_format, renderable_modifiers.size(), renderable_modifiers.data()));
-    m_painting_surface = Gfx::PaintingSurface::create_from_vkimage(m_skia_backend_context, vulkan_image, Gfx::PaintingSurface::Origin::BottomLeft);
+    m_shared_image_buffer = make<Gfx::SharedImageBuffer>(Gfx::SharedImageBuffer::allocate_for_compositing_with_linux_dmabuf(m_skia_backend_context->vulkan_context(), m_size, renderable_modifiers.span()));
+    m_painting_surface = Gfx::PaintingSurface::create_from_shared_image_buffer(*m_shared_image_buffer, m_skia_backend_context, Gfx::PaintingSurface::Origin::BottomLeft);
+    auto const& dmabuf_info = m_shared_image_buffer->linux_dmabuf_info();
 
     EGLAttrib attribs[] = {
         EGL_WIDTH,
@@ -356,17 +357,17 @@ void OpenGLContext::allocate_vkimage_painting_surface()
         EGL_HEIGHT,
         m_size.height(),
         EGL_LINUX_DRM_FOURCC_EXT,
-        drm_format,
+        static_cast<EGLAttrib>(dmabuf_info.drm_format),
         EGL_DMA_BUF_PLANE0_FD_EXT,
-        vulkan_image->get_dma_buf_fd(), // EGL takes ownership of the fd
+        static_cast<EGLAttrib>(m_shared_image_buffer->duplicate_linux_dmabuf_fd()), // EGL takes ownership of the fd
         EGL_DMA_BUF_PLANE0_OFFSET_EXT,
         0,
         EGL_DMA_BUF_PLANE0_PITCH_EXT,
-        static_cast<uint32_t>(vulkan_image->info.row_pitch),
+        static_cast<EGLAttrib>(dmabuf_info.pitch),
         EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT,
-        static_cast<uint32_t>(vulkan_image->info.modifier & 0xffffffff),
+        static_cast<EGLAttrib>(dmabuf_info.modifier & 0xffffffff),
         EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT,
-        static_cast<uint32_t>(vulkan_image->info.modifier >> 32),
+        static_cast<EGLAttrib>(dmabuf_info.modifier >> 32),
         EGL_NONE,
     };
     m_impl->egl_image = eglCreateImage(m_impl->display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attribs);

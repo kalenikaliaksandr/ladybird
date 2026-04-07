@@ -598,23 +598,16 @@ void ViewImplementation::did_allocate_backing_stores(Badge<WebContentClient>, i3
     m_client_state.front_bitmap.id = front_bitmap_id;
     m_client_state.back_bitmap.id = back_bitmap_id;
 
-#ifdef AK_OS_MACOS
     auto update_bitmap = [](SharedBitmap& target, Gfx::SharedImage backing_store) {
         target.shared_image_buffer = make<Gfx::SharedImageBuffer>(Gfx::SharedImageBuffer::import_from_shared_image(move(backing_store)));
+#ifdef AK_OS_MACOS
         target.iosurface_ref = target.shared_image_buffer->iosurface_handle().core_foundation_pointer();
+#endif
         target.bitmap = target.shared_image_buffer->bitmap();
     };
 
     update_bitmap(m_client_state.front_bitmap, move(front_backing_store));
     update_bitmap(m_client_state.back_bitmap, move(back_backing_store));
-#else
-    auto update_bitmap = [](SharedBitmap& target, Gfx::SharedImage backing_store) {
-        target.bitmap = Gfx::SharedImageBuffer::import_from_shared_image(move(backing_store)).bitmap();
-    };
-
-    update_bitmap(m_client_state.front_bitmap, move(front_backing_store));
-    update_bitmap(m_client_state.back_bitmap, move(back_backing_store));
-#endif
 }
 
 void ViewImplementation::update_zoom()

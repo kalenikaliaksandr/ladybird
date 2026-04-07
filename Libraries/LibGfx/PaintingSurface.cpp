@@ -127,9 +127,10 @@ NonnullRefPtr<PaintingSurface> PaintingSurface::wrap_bitmap(Bitmap& bitmap)
     return adopt_ref(*new PaintingSurface(make<Impl>(RefPtr<SkiaBackendContext> {}, size, surface, bitmap)));
 }
 
-#ifdef AK_OS_MACOS
+#if defined(AK_OS_MACOS) || defined(USE_VULKAN_IMAGES)
 NonnullRefPtr<PaintingSurface> PaintingSurface::create_from_shared_image_buffer(SharedImageBuffer& shared_image_buffer, NonnullRefPtr<SkiaBackendContext> context, Origin origin)
 {
+#    ifdef AK_OS_MACOS
     context->lock();
     ScopeGuard unlock_guard([&context] {
         context->unlock();
@@ -144,6 +145,10 @@ NonnullRefPtr<PaintingSurface> PaintingSurface::create_from_shared_image_buffer(
     auto backend_render_target = GrBackendRenderTargets::MakeMtl(metal_texture->width(), metal_texture->height(), mtl_info);
     auto surface = SkSurfaces::WrapBackendRenderTarget(context->sk_context(), backend_render_target, origin_to_sk_origin(origin), kBGRA_8888_SkColorType, nullptr, nullptr);
     return adopt_ref(*new PaintingSurface(make<Impl>(context, size, surface, nullptr)));
+#    endif
+#    ifdef USE_VULKAN_IMAGES
+    return create_from_vkimage(move(context), shared_image_buffer.vulkan_image(), origin);
+#    endif
 }
 #endif
 
