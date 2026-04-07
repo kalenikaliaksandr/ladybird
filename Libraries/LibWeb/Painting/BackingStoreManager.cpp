@@ -124,12 +124,12 @@ void BackingStoreManager::reallocate_backing_stores(Gfx::IntSize size)
 
     m_allocated_size = size;
 
-    m_navigable->rendering_thread().update_backing_stores(front_store, back_store, m_front_bitmap_id, m_back_bitmap_id);
-
     if (m_navigable->gpu_rasterizer()) {
         m_navigable->gpu_rasterizer()->update_backing_stores(
             m_front_bitmap_id, front_bitmap->to_shareable_bitmap(),
             m_back_bitmap_id, back_bitmap->to_shareable_bitmap());
+    } else {
+        m_navigable->rendering_thread().update_backing_stores(front_store, back_store, m_front_bitmap_id, m_back_bitmap_id);
     }
 #endif
 }

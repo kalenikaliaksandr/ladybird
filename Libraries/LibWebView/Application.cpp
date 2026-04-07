@@ -88,6 +88,11 @@ Application::~Application()
     m_settings_observer.clear();
     m_bookmark_store_observer.clear();
 
+    // Clear callbacks on service clients before ProcessManager destroys them,
+    // to avoid calling into dying objects during shutdown.
+    if (m_gpu_process_client)
+        m_gpu_process_client->on_death = nullptr;
+
     s_the = nullptr;
 }
 
@@ -554,10 +559,10 @@ ErrorOr<void> Application::launch_gpu_process_server()
     m_gpu_process_client = TRY(launch_gpu_process());
 
     m_gpu_process_client->on_death = [this]() {
-        m_gpu_process_client = nullptr;
-
         if (Core::EventLoop::current().was_exit_requested())
             return;
+
+        m_gpu_process_client = nullptr;
 
         if (auto result = launch_gpu_process_server(); result.is_error()) {
             dbgln("Failed to restart GPU process: {}", result.error());

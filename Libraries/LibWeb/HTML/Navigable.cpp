@@ -288,18 +288,21 @@ Navigable::Navigable(GC::Ref<Page> page, bool is_svg_page)
     all_navigables().set(*this);
 
     if (!m_is_svg_page) {
-        auto display_list_player_type = page->client().display_list_player_type();
-        m_rendering_thread.set_skia_player(make<Painting::DisplayListPlayerSkia>());
-        m_rendering_thread.start(display_list_player_type);
-
         if (Painting::GPUProcessConnection::is_initialized()) {
             auto& gpu_client = Painting::GPUProcessConnection::the();
             m_gpu_rasterizer = make<Painting::GPURasterizer>(
-                [](Gfx::IntRect const&, i32) {
-                    // GPU process presentation callback — not used yet
+                [page_client = &page->client()](Gfx::IntRect const& viewport_rect, i32 bitmap_id) {
+                    if (page_client)
+                        page_client->page_did_paint(viewport_rect, bitmap_id);
                 },
                 gpu_client);
         }
+
+        // Always start the rendering thread — needed for screenshots
+        // and as fallback when GPU process is not available.
+        auto display_list_player_type = page->client().display_list_player_type();
+        m_rendering_thread.set_skia_player(make<Painting::DisplayListPlayerSkia>());
+        m_rendering_thread.start(display_list_player_type);
     }
 }
 
@@ -3100,7 +3103,10 @@ void Navigable::set_has_session_history_entry_and_ready_for_navigation()
 
 void Navigable::ready_to_paint()
 {
-    m_rendering_thread.ready_to_paint();
+    if (m_gpu_rasterizer)
+        m_gpu_rasterizer->ready_to_paint();
+    else
+        m_rendering_thread.ready_to_paint();
 }
 
 void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
@@ -3144,16 +3150,11 @@ void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
         return TraversalDecision::Continue;
     });
 
-    // If we have a GPU rasterizer, also send the display list to the GPU process
     if (m_gpu_rasterizer) {
-        Painting::ScrollStateSnapshotByDisplayList scroll_state_copy;
-        for (auto& [dl, snapshot] : scroll_state_snapshot_by_display_list) {
-            scroll_state_copy.set(dl, Painting::ScrollStateSnapshot::create_from_offsets(Vector(snapshot.device_offsets())));
-        }
-        m_gpu_rasterizer->update_display_list(*display_list, move(scroll_state_copy));
+        m_gpu_rasterizer->update_display_list(*display_list, move(scroll_state_snapshot_by_display_list));
+    } else {
+        m_rendering_thread.update_display_list(*display_list, move(scroll_state_snapshot_by_display_list));
     }
-
-    m_rendering_thread.update_display_list(*display_list, move(scroll_state_snapshot_by_display_list));
 }
 
 void Navigable::paint_next_frame()
@@ -3166,7 +3167,10 @@ void Navigable::paint_next_frame()
 
     record_display_list_and_scroll_state(paint_config);
 
-    m_rendering_thread.present_frame(viewport_rect);
+    if (m_gpu_rasterizer)
+        m_gpu_rasterizer->present_frame(viewport_rect);
+    else
+        m_rendering_thread.present_frame(viewport_rect);
 }
 
 void Navigable::render_screenshot(Gfx::PaintingSurface& painting_surface, PaintConfig paint_config, Function<void()>&& callback)

@@ -32,8 +32,8 @@ void ConnectionFromClient::die()
     s_connections.remove(client_id);
     s_client_ids.deallocate(client_id);
 
-    if (s_connections.is_empty())
-        Core::EventLoop::current().quit(0);
+    // Don't quit when connections drop to zero — the browser app
+    // manages our lifecycle and will create new connections.
 }
 
 Messages::GPUProcessServer::InitTransportResponse ConnectionFromClient::init_transport([[maybe_unused]] int peer_pid)

@@ -15,9 +15,18 @@ GPURasterizer::GPURasterizer(PresentationCallback callback, NonnullRefPtr<GPUPro
     : m_presentation_callback(move(callback))
     , m_gpu_client(move(gpu_client))
 {
+    // FIXME: Support multiple pages by routing page_id to the correct callback
+    m_gpu_client->on_paint_complete = [this](u64, Gfx::IntRect const& content_rect, i32 bitmap_id) {
+        if (m_presentation_callback)
+            m_presentation_callback(content_rect, bitmap_id);
+    };
 }
 
-GPURasterizer::~GPURasterizer() = default;
+GPURasterizer::~GPURasterizer()
+{
+    // Clear the callback to avoid use-after-free since the client outlives us
+    m_gpu_client->on_paint_complete = nullptr;
+}
 
 void GPURasterizer::update_display_list(NonnullRefPtr<DisplayList> display_list, ScrollStateSnapshotByDisplayList&& scroll_states)
 {
