@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <LibGfx/Forward.h>
 #include <LibWeb/SVG/SVGElement.h>
 #include <LibWeb/SVG/SVGFilterPrimitiveStandardAttributes.h>
 #include <LibWeb/SVG/SVGURIReference.h>
@@ -22,7 +23,7 @@ class SVGFEImageElement final
 public:
     virtual ~SVGFEImageElement() override = default;
 
-    RefPtr<Gfx::ImmutableBitmap> current_image_bitmap(Gfx::IntSize = {}) const;
+    RefPtr<Gfx::Bitmap const> current_image_bitmap(Gfx::IntSize = {}) const;
     Optional<Gfx::IntRect> content_rect() const;
 
 private:

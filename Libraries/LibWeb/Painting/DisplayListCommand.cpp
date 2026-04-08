@@ -35,12 +35,12 @@ void FillRect::dump(StringBuilder& builder) const
     builder.appendff(" rect={} color={}", rect, color);
 }
 
-void DrawScaledImmutableBitmap::dump(StringBuilder& builder) const
+void DrawScaledBitmap::dump(StringBuilder& builder) const
 {
     builder.appendff(" dst_rect={} clip_rect={}", dst_rect, clip_rect);
 }
 
-void DrawRepeatedImmutableBitmap::dump(StringBuilder& builder) const
+void DrawRepeatedBitmap::dump(StringBuilder& builder) const
 {
     builder.appendff(" dst_rect={} clip_rect={}", dst_rect, clip_rect);
 }

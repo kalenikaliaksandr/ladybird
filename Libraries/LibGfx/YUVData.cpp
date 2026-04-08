@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/SkiaBackendContext.h>
 #include <LibGfx/YUVData.h>
 

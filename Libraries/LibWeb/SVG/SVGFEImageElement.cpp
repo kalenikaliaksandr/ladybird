@@ -6,7 +6,7 @@
 
 #include "SVGFEImageElement.h"
 #include <LibCore/Timer.h>
-#include <LibGfx/ImmutableBitmap.h>
+#include <LibGfx/Bitmap.h>
 #include <LibWeb/Bindings/SVGFEImageElementPrototype.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/DecodedImageData.h>
@@ -80,7 +80,7 @@ void SVGFEImageElement::process_href(Optional<String> const& href)
     }
 }
 
-RefPtr<Gfx::ImmutableBitmap> SVGFEImageElement::current_image_bitmap(Gfx::IntSize size) const
+RefPtr<Gfx::Bitmap const> SVGFEImageElement::current_image_bitmap(Gfx::IntSize size) const
 {
     if (!m_resource_request)
         return {};

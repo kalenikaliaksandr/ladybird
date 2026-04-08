@@ -7,7 +7,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGfx/ImmutableBitmap.h>
 #include <LibWeb/CSS/CSSStyleSheet.h>
 #include <LibWeb/CSS/ComputedValues.h>
 #include <LibWeb/CSS/Fetch.h>
@@ -118,10 +117,10 @@ bool ImageStyleValue::is_paintable() const
     return image_data();
 }
 
-Gfx::ImmutableBitmap const* ImageStyleValue::bitmap(size_t frame_index, Gfx::IntSize size) const
+Gfx::Bitmap const* ImageStyleValue::bitmap(size_t frame_index, Gfx::IntSize size) const
 {
     if (auto image_data = this->image_data())
-        return image_data->bitmap(frame_index, size);
+        return image_data->bitmap(frame_index, size).ptr();
     return nullptr;
 }
 
@@ -170,7 +169,7 @@ void ImageStyleValue::paint(DisplayListRecordingContext& context, DevicePixelRec
     image_data->paint(context, m_current_frame_index, dest_int_rect, dest_int_rect, scaling_mode);
 }
 
-Gfx::ImmutableBitmap const* ImageStyleValue::current_frame_bitmap(DevicePixelRect const& dest_rect) const
+Gfx::Bitmap const* ImageStyleValue::current_frame_bitmap(DevicePixelRect const& dest_rect) const
 {
     return bitmap(m_current_frame_index, dest_rect.size().to_type<int>());
 }

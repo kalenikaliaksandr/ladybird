@@ -9,11 +9,11 @@
 #include <AK/Forward.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/Vector.h>
+#include <LibGfx/Bitmap.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/CompositingAndBlendingOperator.h>
 #include <LibGfx/Filter.h>
 #include <LibGfx/Forward.h>
-#include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/LineStyle.h>
 #include <LibGfx/PaintStyle.h>
 #include <LibGfx/Path.h>
@@ -58,20 +58,20 @@ struct FillRect {
     void dump(StringBuilder&) const;
 };
 
-struct DrawScaledImmutableBitmap {
-    static constexpr StringView command_name = "DrawScaledImmutableBitmap"sv;
+struct DrawScaledBitmap {
+    static constexpr StringView command_name = "DrawScaledBitmap"sv;
 
     Gfx::IntRect dst_rect;
     Gfx::IntRect clip_rect;
-    NonnullRefPtr<Gfx::ImmutableBitmap const> bitmap;
+    NonnullRefPtr<Gfx::Bitmap const> bitmap;
     Gfx::ScalingMode scaling_mode;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return clip_rect; }
     void dump(StringBuilder&) const;
 };
 
-struct DrawRepeatedImmutableBitmap {
-    static constexpr StringView command_name = "DrawRepeatedImmutableBitmap"sv;
+struct DrawRepeatedBitmap {
+    static constexpr StringView command_name = "DrawRepeatedBitmap"sv;
 
     struct Repeat {
         bool x { false };
@@ -80,7 +80,7 @@ struct DrawRepeatedImmutableBitmap {
 
     Gfx::IntRect dst_rect;
     Gfx::IntRect clip_rect;
-    NonnullRefPtr<Gfx::ImmutableBitmap const> bitmap;
+    NonnullRefPtr<Gfx::Bitmap const> bitmap;
     Gfx::ScalingMode scaling_mode;
     Repeat repeat;
 
@@ -377,8 +377,8 @@ struct ApplyEffects {
 using DisplayListCommand = Variant<
     DrawGlyphRun,
     FillRect,
-    DrawScaledImmutableBitmap,
-    DrawRepeatedImmutableBitmap,
+    DrawScaledBitmap,
+    DrawRepeatedBitmap,
     DrawExternalContent,
     Save,
     SaveLayer,

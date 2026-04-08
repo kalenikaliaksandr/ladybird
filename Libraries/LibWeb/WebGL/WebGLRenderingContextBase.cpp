@@ -264,7 +264,10 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
     // FIXME: If source is null then an INVALID_VALUE error is generated.
     auto bitmap = source.visit(
         [](GC::Root<HTML::HTMLImageElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
-            return source->immutable_bitmap();
+            auto bitmap = source->bitmap();
+            if (!bitmap)
+                return {};
+            return Gfx::ImmutableBitmap::create(const_cast<Gfx::Bitmap&>(*bitmap));
         },
         [](GC::Root<HTML::HTMLCanvasElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             auto surface = source->surface();

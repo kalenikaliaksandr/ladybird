@@ -9,7 +9,9 @@
 #include <AK/Bitmap.h>
 #include <AK/Checked.h>
 #include <LibGfx/Bitmap.h>
+#include <LibGfx/ColorSpace.h>
 #include <LibGfx/ShareableBitmap.h>
+#include <LibGfx/SkiaBackendContext.h>
 #include <LibGfx/SkiaUtils.h>
 
 #include <core/SkBitmap.h>
@@ -18,6 +20,8 @@
 #include <core/SkImageInfo.h>
 #include <core/SkPixmap.h>
 #include <errno.h>
+#include <gpu/ganesh/GrDirectContext.h>
+#include <gpu/ganesh/SkImageGanesh.h>
 
 #ifdef AK_OS_MACOS
 #    include <Accelerate/Accelerate.h>
@@ -29,6 +33,13 @@ struct BackingStore {
     void* data { nullptr };
     size_t pitch { 0 };
     size_t size_in_bytes { 0 };
+};
+
+struct BitmapSkImageCache {
+    u64 context_id { 0 };
+    u64 generation { 0 };
+    RefPtr<SkiaBackendContext> context;
+    sk_sp<SkImage> image;
 };
 
 StringView bitmap_format_name(BitmapFormat format)
@@ -168,6 +179,7 @@ ErrorOr<NonnullRefPtr<Gfx::Bitmap>> Bitmap::clone() const
 
     VERIFY(size_in_bytes() == new_bitmap->size_in_bytes());
     memcpy(new_bitmap->scanline(0), scanline(0), size_in_bytes());
+    new_bitmap->m_color_space = m_color_space;
 
     return new_bitmap;
 }
@@ -191,6 +203,7 @@ ErrorOr<NonnullRefPtr<Gfx::Bitmap>> Bitmap::cropped(Gfx::IntRect crop, Gfx::Colo
             }
         }
     }
+    new_bitmap->m_color_space = m_color_space;
     return new_bitmap;
 }
 
@@ -209,6 +222,7 @@ ErrorOr<NonnullRefPtr<Bitmap>> Bitmap::scaled(int const width, int const height,
     sk_sp<SkImage> source_sk_image = source_sk_bitmap.asImage();
     if (!source_sk_image->scalePixels(scaled_sk_pixmap, to_skia_sampling_options(scaling_mode)))
         return Error::from_string_literal("Unable to scale pixels for bitmap");
+    scaled_bitmap->m_color_space = m_color_space;
     return scaled_bitmap;
 }
 
@@ -221,11 +235,13 @@ ErrorOr<NonnullRefPtr<Bitmap>> Bitmap::to_bitmap_backed_by_anonymous_buffer() co
     auto buffer = TRY(Core::AnonymousBuffer::create_with_size(round_up_to_power_of_two(size_in_bytes(), PAGE_SIZE)));
     auto bitmap = TRY(Bitmap::create_with_anonymous_buffer(format(), alpha_type(), move(buffer), size()));
     memcpy(bitmap->scanline(0), scanline(0), size_in_bytes());
+    bitmap->m_color_space = m_color_space;
     return bitmap;
 }
 
 Bitmap::~Bitmap()
 {
+    invalidate_sk_image_cache();
     if (m_destruction_callback)
         m_destruction_callback();
     m_data = nullptr;
@@ -237,6 +253,7 @@ void Bitmap::strip_alpha_channel()
     for (BGRA8888& pixel : *this)
         pixel = 0xff000000 | (pixel & 0xffffff);
     m_format = BitmapFormat::BGRx8888;
+    invalidate_sk_image_cache();
 }
 
 Gfx::ShareableBitmap Bitmap::to_shareable_bitmap() const
@@ -365,6 +382,63 @@ void Bitmap::set_alpha_type_destructive(AlphaType alpha_type)
     VERIFY(ok);
 #endif
     m_alpha_type = alpha_type;
+    invalidate_sk_image_cache();
+}
+
+void Bitmap::set_color_space(ColorSpace color_space)
+{
+    m_color_space = move(color_space);
+    invalidate_sk_image_cache();
+}
+
+SkImage const& Bitmap::ensure_sk_image(RefPtr<SkiaBackendContext> const& context) const
+{
+    auto const& sk_color_space = m_color_space.color_space<sk_sp<SkColorSpace>>();
+    auto const context_id = context ? context->context_id() : 0;
+
+    if (m_sk_image_cache
+        && m_sk_image_cache->context_id == context_id
+        && m_sk_image_cache->generation == m_sk_image_generation) {
+        return *m_sk_image_cache->image;
+    }
+
+    invalidate_sk_image_cache();
+
+    SkBitmap sk_bitmap;
+    auto info = SkImageInfo::Make(width(), height(), to_skia_color_type(format()), to_skia_alpha_type(format(), alpha_type()), sk_color_space);
+    sk_bitmap.installPixels(info, const_cast<void*>(static_cast<void const*>(scanline(0))), pitch());
+    sk_bitmap.setImmutable();
+    auto sk_image = sk_bitmap.asImage();
+
+    auto* gr_context = context ? context->sk_context() : nullptr;
+    if (gr_context) {
+        context->lock();
+        ScopeGuard unlock_guard = [&context] { context->unlock(); };
+        auto gpu_image = SkImages::TextureFromImage(gr_context, sk_image.get(), skgpu::Mipmapped::kNo, skgpu::Budgeted::kYes);
+        if (gpu_image)
+            sk_image = move(gpu_image);
+    }
+
+    m_sk_image_cache = make<BitmapSkImageCache>(BitmapSkImageCache {
+        .context_id = context_id,
+        .generation = m_sk_image_generation,
+        .context = gr_context ? context : nullptr,
+        .image = move(sk_image),
+    });
+
+    return *m_sk_image_cache->image;
+}
+
+void Bitmap::invalidate_sk_image_cache() const
+{
+    if (!m_sk_image_cache)
+        return;
+    if (m_sk_image_cache->context) {
+        m_sk_image_cache->context->lock();
+        ScopeGuard unlock_guard = [this] { m_sk_image_cache->context->unlock(); };
+        m_sk_image_cache->image = nullptr;
+    }
+    m_sk_image_cache = nullptr;
 }
 
 }

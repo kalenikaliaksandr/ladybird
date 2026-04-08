@@ -14,8 +14,8 @@
 #include <AK/OwnPtr.h>
 #include <AK/String.h>
 #include <AK/TypeCasts.h>
+#include <LibGfx/Bitmap.h>
 #include <LibGfx/Filter.h>
-#include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/PainterSkia.h>
 #include <LibGfx/PathSkia.h>
 #include <LibGfx/SkiaUtils.h>
@@ -96,7 +96,8 @@ static void apply_paint_style(SkPaint& paint, PaintStyle const& style)
         auto image = canvas_pattern->image();
         if (!image)
             return;
-        auto const* sk_image = image->sk_image();
+
+        auto const& sk_image = image->ensure_sk_image(SkiaBackendContext::the());
 
         auto repetition = canvas_pattern->repetition();
         auto repeat_x = first_is_one_of(repetition, CanvasPatternPaintStyle::Repetition::Repeat, CanvasPatternPaintStyle::Repetition::RepeatX);
@@ -113,7 +114,7 @@ static void apply_paint_style(SkPaint& paint, PaintStyle const& style)
                 transform.b(), transform.d(), transform.f(),
                 0, 0, 1);
         }
-        auto shader = sk_image->makeShader(
+        auto shader = sk_image.makeShader(
             repeat_x ? SkTileMode::kRepeat : SkTileMode::kDecal,
             repeat_y ? SkTileMode::kRepeat : SkTileMode::kDecal,
             sk_sampling_options, transformation_matrix.has_value() ? &transformation_matrix.value() : nullptr);
@@ -169,8 +170,10 @@ void PainterSkia::fill_rect(Gfx::FloatRect const& rect, Color color)
     });
 }
 
-void PainterSkia::draw_bitmap(Gfx::FloatRect const& dst_rect, Gfx::ImmutableBitmap const& src_bitmap, Gfx::IntRect const& src_rect, Gfx::ScalingMode scaling_mode, Optional<Gfx::Filter> filter, float global_alpha, Gfx::CompositingAndBlendingOperator compositing_and_blending_operator)
+void PainterSkia::draw_bitmap(Gfx::FloatRect const& dst_rect, Gfx::Bitmap const& src_bitmap, Gfx::IntRect const& src_rect, Gfx::ScalingMode scaling_mode, Optional<Gfx::Filter> filter, float global_alpha, Gfx::CompositingAndBlendingOperator compositing_and_blending_operator)
 {
+    auto const& sk_image = src_bitmap.ensure_sk_image(SkiaBackendContext::the());
+
     SkPaint paint;
 
     if (filter.has_value())
@@ -181,7 +184,7 @@ void PainterSkia::draw_bitmap(Gfx::FloatRect const& dst_rect, Gfx::ImmutableBitm
 
     impl().with_canvas([&](auto& canvas) {
         canvas.drawImageRect(
-            src_bitmap.sk_image(),
+            &sk_image,
             to_skia_rect(src_rect),
             to_skia_rect(dst_rect),
             to_skia_sampling_options(scaling_mode),

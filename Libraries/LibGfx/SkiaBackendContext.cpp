@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Atomic.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/RefPtr.h>
 #include <LibGfx/Bitmap.h>
@@ -26,6 +27,13 @@
 #endif
 
 namespace Gfx {
+
+static Atomic<u64> s_next_context_id { 1 };
+
+SkiaBackendContext::SkiaBackendContext()
+    : m_context_id(s_next_context_id.fetch_add(1))
+{
+}
 
 static RefPtr<SkiaBackendContext> s_the;
 

@@ -90,17 +90,17 @@ public:
         NoRepeat
     };
 
-    static ErrorOr<NonnullRefPtr<CanvasPatternPaintStyle>> create(RefPtr<ImmutableBitmap> image, Repetition repetition);
+    static ErrorOr<NonnullRefPtr<CanvasPatternPaintStyle>> create(RefPtr<Bitmap const> image, Repetition repetition);
 
-    RefPtr<ImmutableBitmap> image() const;
+    RefPtr<Bitmap const> image() const;
     Repetition repetition() const { return m_repetition; }
     Optional<AffineTransform> const& transform() const { return m_transform; }
     void set_transform(AffineTransform const& transform) { m_transform = transform; }
 
 private:
-    CanvasPatternPaintStyle(RefPtr<ImmutableBitmap> image, Repetition repetition);
+    CanvasPatternPaintStyle(RefPtr<Bitmap const> image, Repetition repetition);
 
-    RefPtr<ImmutableBitmap> m_image;
+    RefPtr<Bitmap const> m_image;
     Repetition m_repetition { Repetition::Repeat };
     Optional<AffineTransform> m_transform;
 };

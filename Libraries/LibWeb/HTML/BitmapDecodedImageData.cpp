@@ -6,7 +6,6 @@
 
 #include <LibGC/Heap.h>
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/ImmutableBitmap.h>
 #include <LibJS/Runtime/Realm.h>
 #include <LibWeb/HTML/BitmapDecodedImageData.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
@@ -30,7 +29,7 @@ BitmapDecodedImageData::BitmapDecodedImageData(Vector<Frame>&& frames, size_t lo
 
 BitmapDecodedImageData::~BitmapDecodedImageData() = default;
 
-RefPtr<Gfx::ImmutableBitmap> BitmapDecodedImageData::bitmap(size_t frame_index, Gfx::IntSize) const
+RefPtr<Gfx::Bitmap const> BitmapDecodedImageData::bitmap(size_t frame_index, Gfx::IntSize) const
 {
     if (frame_index >= m_frames.size())
         return nullptr;
@@ -66,7 +65,8 @@ Optional<Gfx::IntRect> BitmapDecodedImageData::frame_rect(size_t frame_index) co
 
 void BitmapDecodedImageData::paint(DisplayListRecordingContext& context, size_t frame_index, Gfx::IntRect dst_rect, Gfx::IntRect clip_rect, Gfx::ScalingMode scaling_mode) const
 {
-    context.display_list_recorder().draw_scaled_immutable_bitmap(dst_rect, clip_rect, *m_frames[frame_index].bitmap, scaling_mode);
+    auto const& frame = m_frames[frame_index];
+    context.display_list_recorder().draw_scaled_bitmap(dst_rect, clip_rect, *frame.bitmap, scaling_mode);
 }
 
 }

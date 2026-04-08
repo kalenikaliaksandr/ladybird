@@ -7,11 +7,12 @@
 
 #define SK_SUPPORT_UNSPANNED_APIS
 
-#include <core/SkBitmap.h>
 #include <core/SkBlurTypes.h>
 #include <core/SkCanvas.h>
 #include <core/SkColorFilter.h>
+#include <core/SkColorSpace.h>
 #include <core/SkFont.h>
+#include <core/SkImage.h>
 #include <core/SkMaskFilter.h>
 #include <core/SkPath.h>
 #include <core/SkPathEffect.h>
@@ -149,10 +150,9 @@ void DisplayListPlayerSkia::draw_external_content(DrawExternalContent const& com
     canvas.drawImageRect(bitmap->sk_image(), src_rect, dst_rect, to_skia_sampling_options(command.scaling_mode), &paint, SkCanvas::kStrict_SrcRectConstraint);
 }
 
-void DisplayListPlayerSkia::draw_scaled_immutable_bitmap(DrawScaledImmutableBitmap const& command)
+void DisplayListPlayerSkia::draw_scaled_bitmap(DrawScaledBitmap const& command)
 {
-    if (Gfx::SkiaBackendContext::the() && !command.bitmap->ensure_sk_image(*Gfx::SkiaBackendContext::the()))
-        return;
+    auto const& sk_image = command.bitmap->ensure_sk_image(Gfx::SkiaBackendContext::the());
 
     auto dst_rect = to_skia_rect(command.dst_rect);
     auto clip_rect = to_skia_rect(command.clip_rect);
@@ -161,14 +161,13 @@ void DisplayListPlayerSkia::draw_scaled_immutable_bitmap(DrawScaledImmutableBitm
     paint.setAntiAlias(true);
     canvas.save();
     canvas.clipRect(clip_rect, true);
-    canvas.drawImageRect(command.bitmap->sk_image(), dst_rect, to_skia_sampling_options(command.scaling_mode), &paint);
+    canvas.drawImageRect(&sk_image, dst_rect, to_skia_sampling_options(command.scaling_mode), &paint);
     canvas.restore();
 }
 
-void DisplayListPlayerSkia::draw_repeated_immutable_bitmap(DrawRepeatedImmutableBitmap const& command)
+void DisplayListPlayerSkia::draw_repeated_bitmap(DrawRepeatedBitmap const& command)
 {
-    if (Gfx::SkiaBackendContext::the() && !command.bitmap->ensure_sk_image(*Gfx::SkiaBackendContext::the()))
-        return;
+    auto const& sk_image = command.bitmap->ensure_sk_image(Gfx::SkiaBackendContext::the());
 
     SkMatrix matrix;
     auto dst_rect = command.dst_rect.to_type<float>();
@@ -179,7 +178,7 @@ void DisplayListPlayerSkia::draw_repeated_immutable_bitmap(DrawRepeatedImmutable
 
     auto tile_mode_x = command.repeat.x ? SkTileMode::kRepeat : SkTileMode::kDecal;
     auto tile_mode_y = command.repeat.y ? SkTileMode::kRepeat : SkTileMode::kDecal;
-    auto shader = command.bitmap->sk_image()->makeShader(tile_mode_x, tile_mode_y, sampling_options, matrix);
+    auto shader = sk_image.makeShader(tile_mode_x, tile_mode_y, sampling_options, matrix);
 
     SkPaint paint;
     paint.setAntiAlias(true);

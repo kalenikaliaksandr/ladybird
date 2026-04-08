@@ -8,7 +8,6 @@
 #include <LibCore/Timer.h>
 #include <LibGC/Weak.h>
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/ImmutableBitmap.h>
 #include <LibWeb/ARIA/Roles.h>
 #include <LibWeb/Bindings/HTMLImageElementPrototype.h>
 #include <LibWeb/CSS/CascadedProperties.h>
@@ -202,12 +201,12 @@ void HTMLImageElement::adjust_computed_style(CSS::ComputedProperties& style)
         style.set_property(CSS::PropertyID::Display, CSS::DisplayStyleValue::create(CSS::Display::from_short(CSS::Display::Short::None)));
 }
 
-RefPtr<Gfx::ImmutableBitmap> HTMLImageElement::immutable_bitmap() const
+RefPtr<Gfx::Bitmap const> HTMLImageElement::bitmap() const
 {
     return current_image_bitmap();
 }
 
-RefPtr<Gfx::ImmutableBitmap> HTMLImageElement::default_image_bitmap_sized(Gfx::IntSize size) const
+RefPtr<Gfx::Bitmap const> HTMLImageElement::default_image_bitmap_sized(Gfx::IntSize size) const
 {
     if (auto data = m_current_request->image_data())
         return data->bitmap(0, size);
@@ -240,7 +239,7 @@ Optional<CSSPixelFraction> HTMLImageElement::intrinsic_aspect_ratio() const
     return {};
 }
 
-RefPtr<Gfx::ImmutableBitmap> HTMLImageElement::current_image_bitmap_sized(Gfx::IntSize size) const
+RefPtr<Gfx::Bitmap const> HTMLImageElement::current_image_bitmap_sized(Gfx::IntSize size) const
 {
     if (auto data = m_current_request->image_data())
         return data->bitmap(m_current_frame_index, size);

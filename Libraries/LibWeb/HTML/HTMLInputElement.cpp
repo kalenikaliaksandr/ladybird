@@ -13,7 +13,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGfx/ImmutableBitmap.h>
 #include <LibJS/Runtime/Date.h>
 #include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/RegExpObject.h>
@@ -2283,7 +2282,7 @@ Optional<CSSPixelFraction> HTMLInputElement::intrinsic_aspect_ratio() const
     return {};
 }
 
-RefPtr<Gfx::ImmutableBitmap> HTMLInputElement::current_image_bitmap_sized(Gfx::IntSize size) const
+RefPtr<Gfx::Bitmap const> HTMLInputElement::current_image_bitmap_sized(Gfx::IntSize size) const
 {
     if (auto image_data = this->image_data())
         return image_data->bitmap(0, size);

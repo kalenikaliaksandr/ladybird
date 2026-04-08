@@ -9,13 +9,19 @@
 
 #include <AK/AtomicRefCounted.h>
 #include <AK/Function.h>
+#include <AK/OwnPtr.h>
 #include <LibCore/AnonymousBuffer.h>
 #include <LibGfx/Color.h>
+#include <LibGfx/ColorSpace.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Rect.h>
 #include <LibGfx/ScalingMode.h>
 
+class SkImage;
+
 namespace Gfx {
+
+struct BitmapSkImageCache;
 
 // A pixel value that does not express any information about its component order
 using RawPixel = u32;
@@ -137,6 +143,12 @@ public:
     [[nodiscard]] AlphaType alpha_type() const { return m_alpha_type; }
     void set_alpha_type_destructive(AlphaType);
 
+    ColorSpace const& color_space() const { return m_color_space; }
+    void set_color_space(ColorSpace color_space);
+
+    SkImage const& ensure_sk_image(RefPtr<SkiaBackendContext> const&) const;
+    void invalidate_sk_image_cache() const;
+
 private:
     Bitmap(BitmapFormat, AlphaType, IntSize, BackingStore const&);
     Bitmap(BitmapFormat, AlphaType, IntSize, size_t pitch, void*, Function<void()>&& destruction_callback);
@@ -153,12 +165,17 @@ private:
     size_t m_pitch { 0 };
     BitmapFormat m_format { BitmapFormat::Invalid };
     AlphaType m_alpha_type { AlphaType::Premultiplied };
+    ColorSpace m_color_space;
     Core::AnonymousBuffer m_buffer;
     Function<void()> m_destruction_callback;
+
+    u64 m_sk_image_generation { 0 };
+    mutable OwnPtr<BitmapSkImageCache> m_sk_image_cache;
 };
 
 ALWAYS_INLINE u8* Bitmap::unchecked_scanline_u8(int y)
 {
+    ++m_sk_image_generation;
     return reinterpret_cast<u8*>(m_data) + (y * m_pitch);
 }
 
@@ -213,6 +230,7 @@ ALWAYS_INLINE RawPixel const* Bitmap::begin() const
 
 ALWAYS_INLINE RawPixel* Bitmap::end()
 {
+    ++m_sk_image_generation;
     return reinterpret_cast<RawPixel*>(reinterpret_cast<u8*>(m_data) + data_size());
 }
 

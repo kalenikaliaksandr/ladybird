@@ -6,7 +6,6 @@
  */
 
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/ImmutableBitmap.h>
 #include <LibMedia/Sinks/DisplayingVideoSink.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/HTMLMediaElement.h>
@@ -53,10 +52,9 @@ void VideoPaintable::paint(DisplayListRecordingContext& context, PaintPhase phas
     auto const& poster_frame = video_element.poster_frame();
 
     auto paint_bitmap = [&](auto const& bitmap) {
-        auto immutable = Gfx::ImmutableBitmap::create(*bitmap);
         auto dst_rect = video_rect.to_type<int>();
-        auto scaling_mode = to_gfx_scaling_mode(computed_values().image_rendering(), immutable->rect().size(), dst_rect.size());
-        context.display_list_recorder().draw_scaled_immutable_bitmap(dst_rect, dst_rect, *immutable, scaling_mode);
+        auto scaling_mode = to_gfx_scaling_mode(computed_values().image_rendering(), bitmap->rect().size(), dst_rect.size());
+        context.display_list_recorder().draw_scaled_bitmap(dst_rect, dst_rect, *bitmap, scaling_mode);
     };
 
     auto paint_video_frame = [&]() {

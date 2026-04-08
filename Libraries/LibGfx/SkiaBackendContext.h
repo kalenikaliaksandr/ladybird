@@ -42,7 +42,7 @@ public:
     static void initialize_gpu_backend();
     static RefPtr<SkiaBackendContext> the();
 
-    SkiaBackendContext() { }
+    SkiaBackendContext();
     virtual ~SkiaBackendContext() { }
 
     virtual void flush_and_submit(SkSurface*) { }
@@ -51,10 +51,13 @@ public:
     virtual MetalContext& metal_context() = 0;
     virtual VulkanContext const& vulkan_context() = 0;
 
+    u64 context_id() const { return m_context_id; }
+
     void lock() { m_mutex.lock(); }
     void unlock() { m_mutex.unlock(); }
 
 private:
+    u64 m_context_id { 0 };
     Threading::Mutex m_mutex;
 };
 

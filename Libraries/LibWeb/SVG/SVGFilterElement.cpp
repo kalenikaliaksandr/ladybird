@@ -7,7 +7,6 @@
  */
 
 #include <AK/StringConversions.h>
-#include <LibGfx/ImmutableBitmap.h>
 #include <LibWeb/Bindings/SVGFilterElementPrototype.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/PropertyID.h>

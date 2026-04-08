@@ -6,7 +6,6 @@
 
 #include <LibGC/Heap.h>
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/ImmutableBitmap.h>
 #include <LibJS/Runtime/Realm.h>
 #include <LibWeb/HTML/AnimatedDecodedImageData.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
@@ -68,7 +67,7 @@ GC::Ref<AnimatedDecodedImageData> AnimatedDecodedImageData::create(
     for (u32 i = 0; i < initial_bitmaps.size(); ++i) {
         auto& slot = data->m_buffer_slots[i % BUFFER_POOL_SIZE];
         slot.frame_index = i;
-        slot.bitmap = Gfx::ImmutableBitmap::create(*initial_bitmaps[i], data->m_color_space);
+        slot.bitmap = initial_bitmaps[i];
         slot.generation = ++data->m_write_generation;
     }
 
@@ -127,7 +126,7 @@ AnimatedDecodedImageData::BufferSlot& AnimatedDecodedImageData::evict_oldest_slo
     return *oldest;
 }
 
-RefPtr<Gfx::ImmutableBitmap> AnimatedDecodedImageData::bitmap(size_t frame_index, Gfx::IntSize) const
+RefPtr<Gfx::Bitmap const> AnimatedDecodedImageData::bitmap(size_t frame_index, Gfx::IntSize) const
 {
     if (frame_index >= m_frame_count)
         return m_last_displayed_bitmap;
@@ -137,7 +136,6 @@ RefPtr<Gfx::ImmutableBitmap> AnimatedDecodedImageData::bitmap(size_t frame_index
         return slot->bitmap;
     }
 
-    // Frame not in pool; return last displayed frame as fallback.
     return m_last_displayed_bitmap;
 }
 
@@ -170,10 +168,10 @@ Optional<Gfx::IntRect> AnimatedDecodedImageData::frame_rect(size_t) const
 
 void AnimatedDecodedImageData::paint(DisplayListRecordingContext& context, size_t frame_index, Gfx::IntRect dst_rect, Gfx::IntRect clip_rect, Gfx::ScalingMode scaling_mode) const
 {
-    auto immutable_bitmap = bitmap(frame_index);
-    if (!immutable_bitmap)
+    auto frame_bitmap = bitmap(frame_index);
+    if (!frame_bitmap)
         return;
-    context.display_list_recorder().draw_scaled_immutable_bitmap(dst_rect, clip_rect, *immutable_bitmap, scaling_mode);
+    context.display_list_recorder().draw_scaled_bitmap(dst_rect, clip_rect, *frame_bitmap, scaling_mode);
 }
 
 void AnimatedDecodedImageData::receive_frames(Vector<NonnullRefPtr<Gfx::Bitmap>> bitmaps, u32 start_frame_index)
@@ -189,9 +187,11 @@ void AnimatedDecodedImageData::receive_frames(Vector<NonnullRefPtr<Gfx::Bitmap>>
         if (find_slot(frame_index))
             continue;
 
+        bitmaps[i]->set_color_space(m_color_space);
+
         auto& slot = evict_oldest_slot();
         slot.frame_index = frame_index;
-        slot.bitmap = Gfx::ImmutableBitmap::create(*bitmaps[i], m_color_space);
+        slot.bitmap = bitmaps[i];
         slot.generation = ++m_write_generation;
     }
 }

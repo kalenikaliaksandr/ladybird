@@ -5,7 +5,6 @@
  */
 
 #include <LibGfx/Bitmap.h>
-#include <LibGfx/ImmutableBitmap.h>
 #include <LibWeb/Bindings/PrincipalHostDefined.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/Fetch/Fetching/Fetching.h>
@@ -162,6 +161,12 @@ void SharedResourceRequest::handle_successful_fetch(URL::URL const& url_string, 
     }
 
     auto handle_successful_bitmap_decode = [strong_this = GC::Root(*this)](Web::Platform::DecodedImage& result) -> ErrorOr<void> {
+        // Stamp color space onto each bitmap before storing.
+        for (auto& frame : result.frames) {
+            if (frame.bitmap)
+                frame.bitmap->set_color_space(result.color_space);
+        }
+
         if (result.session_id != 0) {
             // Streaming animated decode: create AnimatedDecodedImageData.
             Vector<NonnullRefPtr<Gfx::Bitmap>> initial_bitmaps;
@@ -186,7 +191,7 @@ void SharedResourceRequest::handle_successful_fetch(URL::URL const& url_string, 
             Vector<BitmapDecodedImageData::Frame> frames;
             for (auto& frame : result.frames) {
                 frames.append(BitmapDecodedImageData::Frame {
-                    .bitmap = Gfx::ImmutableBitmap::create(*frame.bitmap, result.color_space),
+                    .bitmap = frame.bitmap,
                     .duration = static_cast<int>(frame.duration),
                 });
             }

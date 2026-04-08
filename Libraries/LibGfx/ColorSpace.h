@@ -38,6 +38,9 @@ public:
     template<typename T>
     T& color_space();
 
+    template<typename T>
+    T const& color_space() const;
+
 private:
     template<typename T>
     friend ErrorOr<void> IPC::encode(IPC::Encoder&, T const&);

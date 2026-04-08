@@ -5,6 +5,7 @@
  */
 
 #include <LibGfx/Bitmap.h>
+#include <LibGfx/PaintingSurface.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/CSS/ComputedProperties.h>
 #include <LibWeb/DOM/Document.h>
@@ -143,7 +144,7 @@ RefPtr<Gfx::PaintingSurface> SVGDecodedImageData::render_to_surface(Gfx::IntSize
     return surface;
 }
 
-RefPtr<Gfx::ImmutableBitmap> SVGDecodedImageData::bitmap(size_t, Gfx::IntSize size) const
+RefPtr<Gfx::Bitmap const> SVGDecodedImageData::bitmap(size_t, Gfx::IntSize size) const
 {
     if (size.is_empty())
         return nullptr;
@@ -156,9 +157,11 @@ RefPtr<Gfx::ImmutableBitmap> SVGDecodedImageData::bitmap(size_t, Gfx::IntSize si
     if (m_cached_rendered_bitmaps.size() > 10)
         m_cached_rendered_bitmaps.remove(m_cached_rendered_bitmaps.begin());
 
-    auto immutable_bitmap = Gfx::ImmutableBitmap::create_snapshot_from_painting_surface(*render_to_surface(size));
-    m_cached_rendered_bitmaps.set(size, immutable_bitmap);
-    return immutable_bitmap;
+    auto surface = render_to_surface(size);
+    auto cpu_bitmap = MUST(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, size));
+    surface->read_into_bitmap(*cpu_bitmap);
+    m_cached_rendered_bitmaps.set(size, cpu_bitmap);
+    return cpu_bitmap;
 }
 
 Optional<CSSPixels> SVGDecodedImageData::intrinsic_width() const

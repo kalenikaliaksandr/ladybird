@@ -11,7 +11,6 @@
 
 #include <AK/Optional.h>
 #include <AK/TemporaryChange.h>
-#include <LibGfx/ImmutableBitmap.h>
 #include <LibWeb/CSS/ComputedProperties.h>
 #include <LibWeb/CSS/ComputedValues.h>
 #include <LibWeb/CSS/Enums.h>
@@ -216,10 +215,10 @@ public:
     virtual Optional<CSSPixels> intrinsic_height() const override { return m_image->natural_height(); }
     virtual Optional<CSSPixelFraction> intrinsic_aspect_ratio() const override { return m_image->natural_aspect_ratio(); }
 
-    virtual RefPtr<Gfx::ImmutableBitmap> current_image_bitmap_sized(Gfx::IntSize size) const override
+    virtual RefPtr<Gfx::Bitmap const> current_image_bitmap_sized(Gfx::IntSize size) const override
     {
         auto rect = DevicePixelRect { DevicePixelPoint {}, size.to_type<DevicePixels>() };
-        return const_cast<Gfx::ImmutableBitmap*>(m_image->current_frame_bitmap(rect));
+        return m_image->current_frame_bitmap(rect);
     }
 
     virtual void set_visible_in_viewport(bool) override { }

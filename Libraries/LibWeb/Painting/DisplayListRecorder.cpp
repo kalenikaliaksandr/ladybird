@@ -239,11 +239,11 @@ void DisplayListRecorder::draw_external_content(Gfx::IntRect const& dst_rect, No
     APPEND(DrawExternalContent { .dst_rect = dst_rect, .source = move(source), .scaling_mode = scaling_mode });
 }
 
-void DisplayListRecorder::draw_scaled_immutable_bitmap(Gfx::IntRect const& dst_rect, Gfx::IntRect const& clip_rect, Gfx::ImmutableBitmap const& bitmap, Gfx::ScalingMode scaling_mode)
+void DisplayListRecorder::draw_scaled_bitmap(Gfx::IntRect const& dst_rect, Gfx::IntRect const& clip_rect, Gfx::Bitmap const& bitmap, Gfx::ScalingMode scaling_mode)
 {
     if (dst_rect.is_empty())
         return;
-    APPEND(DrawScaledImmutableBitmap {
+    APPEND(DrawScaledBitmap {
         .dst_rect = dst_rect,
         .clip_rect = clip_rect,
         .bitmap = bitmap,
@@ -251,9 +251,9 @@ void DisplayListRecorder::draw_scaled_immutable_bitmap(Gfx::IntRect const& dst_r
     });
 }
 
-void DisplayListRecorder::draw_repeated_immutable_bitmap(Gfx::IntRect dst_rect, Gfx::IntRect clip_rect, NonnullRefPtr<Gfx::ImmutableBitmap const> bitmap, Gfx::ScalingMode scaling_mode, bool repeat_x, bool repeat_y)
+void DisplayListRecorder::draw_repeated_bitmap(Gfx::IntRect dst_rect, Gfx::IntRect clip_rect, NonnullRefPtr<Gfx::Bitmap const> bitmap, Gfx::ScalingMode scaling_mode, bool repeat_x, bool repeat_y)
 {
-    APPEND(DrawRepeatedImmutableBitmap {
+    APPEND(DrawRepeatedBitmap {
         .dst_rect = dst_rect,
         .clip_rect = clip_rect,
         .bitmap = move(bitmap),

@@ -7,7 +7,9 @@
 
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/ImmutableBitmap.h>
+#include <LibGfx/SkiaBackendContext.h>
 #include <LibWeb/HTML/Canvas/CanvasDrawImage.h>
+#include <LibWeb/HTML/DecodedImageData.h>
 #include <LibWeb/HTML/ImageBitmap.h>
 
 namespace Web::HTML {
@@ -16,15 +18,15 @@ Gfx::IntSize canvas_image_source_dimensions(CanvasImageSource const& image)
 {
     return image.visit(
         [](GC::Root<HTMLImageElement> const& source) -> Gfx::IntSize {
-            if (auto immutable_bitmap = source->immutable_bitmap())
-                return immutable_bitmap->size();
+            if (auto bitmap = source->bitmap())
+                return bitmap->size();
 
             // FIXME: This is very janky and not correct.
             return { source->width(), source->height() };
         },
         [](GC::Root<SVG::SVGImageElement> const& source) -> Gfx::IntSize {
-            if (auto immutable_bitmap = source->current_image_bitmap())
-                return immutable_bitmap->size();
+            if (auto bitmap = source->current_image_bitmap())
+                return bitmap->size();
 
             // FIXME: This is very janky and not correct.
             return { source->width()->anim_val()->value(), source->height()->anim_val()->value() };
@@ -51,27 +53,29 @@ Gfx::IntSize canvas_image_source_dimensions(CanvasImageSource const& image)
         });
 }
 
-RefPtr<Gfx::ImmutableBitmap> canvas_image_source_bitmap(CanvasImageSource const& image)
+RefPtr<Gfx::Bitmap const> canvas_image_source_bitmap(CanvasImageSource const& image)
 {
     return image.visit(
-        [](OneOf<GC::Root<HTMLImageElement>, GC::Root<SVG::SVGImageElement>> auto const& element) {
+        [](OneOf<GC::Root<HTMLImageElement>, GC::Root<SVG::SVGImageElement>> auto const& element) -> RefPtr<Gfx::Bitmap const> {
             return element->default_image_bitmap();
         },
-        [](GC::Root<HTMLCanvasElement> const& canvas) -> RefPtr<Gfx::ImmutableBitmap> {
+        [](GC::Root<HTMLCanvasElement> const& canvas) -> RefPtr<Gfx::Bitmap const> {
             canvas->present();
-            auto surface = canvas->surface();
-            if (!surface)
-                return Gfx::ImmutableBitmap::create(*canvas->get_bitmap_from_surface());
-            return Gfx::ImmutableBitmap::create_snapshot_from_painting_surface(*surface);
+            return canvas->get_bitmap_from_surface();
         },
-        [](OneOf<GC::Root<ImageBitmap>, GC::Root<OffscreenCanvas>> auto const& source) -> RefPtr<Gfx::ImmutableBitmap> {
-            auto bitmap = source->bitmap();
-            if (!bitmap)
-                return {};
-            return Gfx::ImmutableBitmap::create(*bitmap);
-        },
-        [](GC::Root<HTMLVideoElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [](OneOf<GC::Root<ImageBitmap>, GC::Root<OffscreenCanvas>> auto const& source) -> RefPtr<Gfx::Bitmap const> {
             return source->bitmap();
+        },
+        [](GC::Root<HTMLVideoElement> const& source) -> RefPtr<Gfx::Bitmap const> {
+            auto immutable = source->bitmap();
+            if (!immutable)
+                return {};
+            if (immutable->is_yuv_backed()) {
+                auto context = Gfx::SkiaBackendContext::the();
+                if (!context || !immutable->ensure_sk_image(*context))
+                    return {};
+            }
+            return immutable->bitmap();
         });
 }
 
