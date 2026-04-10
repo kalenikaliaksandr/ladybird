@@ -1371,6 +1371,11 @@ handler PutByValue
     load32 t5, [t3, OBJECT_INDEXED_ARRAY_LIKE_SIZE]
     branch_ge_unsigned t4, t5, .slow
     load64 t5, [t3, OBJECT_INDEXED_ELEMENTS]
+    # Fall back to C++ if head_offset != 0 (Array.prototype.shift lazily advances it).
+    mov t0, t5
+    sub t0, 4
+    load32 t0, [t0, 0]
+    branch_nonzero t0, .slow
     load_operand t1, m_src
     store64 [t5, t4, 8], t1
     dispatch_next
@@ -1381,6 +1386,10 @@ handler PutByValue
     branch_ge_unsigned t4, t5, .slow
     load64 t5, [t3, OBJECT_INDEXED_ELEMENTS]
     branch_zero t5, .try_holey_array_slow
+    mov t0, t5
+    sub t0, 4
+    load32 t0, [t0, 0]
+    branch_nonzero t0, .try_holey_array_slow
     mov t0, t5
     sub t0, 8
     load32 t0, [t0, 0]
@@ -1620,6 +1629,11 @@ handler GetByValue
     load32 t5, [t3, OBJECT_INDEXED_ARRAY_LIKE_SIZE]
     branch_ge_unsigned t4, t5, .slow
     load64 t5, [t3, OBJECT_INDEXED_ELEMENTS]
+    # Fall back to C++ if head_offset != 0 (Array.prototype.shift lazily advances it).
+    mov t0, t5
+    sub t0, 4
+    load32 t0, [t0, 0]
+    branch_nonzero t0, .slow
     load64 t0, [t5, t4, 8]
     # NB: No accessor check needed -- Packed/Holey storage
     #     can only hold default-attributed data properties.
@@ -1632,6 +1646,10 @@ handler GetByValue
     branch_ge_unsigned t4, t5, .slow
     load64 t5, [t3, OBJECT_INDEXED_ELEMENTS]
     branch_zero t5, .slow
+    mov t0, t5
+    sub t0, 4
+    load32 t0, [t0, 0]
+    branch_nonzero t0, .slow
     mov t0, t5
     sub t0, 8
     load32 t0, [t0, 0]

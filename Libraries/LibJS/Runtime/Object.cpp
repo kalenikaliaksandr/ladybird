@@ -1623,15 +1623,23 @@ void Object::visit_edges(Cell::Visitor& visitor)
     case IndexedStorageKind::None:
         break;
     case IndexedStorageKind::Packed:
-        for (u32 i = 0; i < m_indexed_array_like_size; ++i)
-            visitor.visit(m_indexed_elements[i]);
-        break;
-    case IndexedStorageKind::Holey:
-        for (u32 i = 0, available_elements = min(m_indexed_array_like_size, indexed_elements_capacity()); i < available_elements; ++i) {
-            if (!m_indexed_elements[i].is_special_empty_value())
-                visitor.visit(m_indexed_elements[i]);
+        if (m_indexed_array_like_size > 0) {
+            Value const* logical = indexed_elements_logical_ptr();
+            for (u32 i = 0; i < m_indexed_array_like_size; ++i)
+                visitor.visit(logical[i]);
         }
         break;
+    case IndexedStorageKind::Holey: {
+        u32 available_elements = min(m_indexed_array_like_size, indexed_elements_capacity());
+        if (available_elements > 0) {
+            Value const* logical = indexed_elements_logical_ptr();
+            for (u32 i = 0; i < available_elements; ++i) {
+                if (!logical[i].is_special_empty_value())
+                    visitor.visit(logical[i]);
+            }
+        }
+        break;
+    }
     case IndexedStorageKind::Dictionary:
         indexed_dictionary()->visit_edges(visitor);
         break;
@@ -1696,23 +1704,60 @@ GenericIndexedPropertyStorage* Object::indexed_dictionary() const
     return reinterpret_cast<GenericIndexedPropertyStorage*>(m_indexed_elements);
 }
 
+// Allocation header layout: [u32 raw_capacity][u32 head_offset][Value 0][Value 1]...
+// The head_offset slot lets Array.prototype.shift pop the logical front element in O(1)
+// by incrementing the offset instead of physically shifting the rest of the buffer.
+static u32 indexed_elements_head_offset_of(Value const* elements)
+{
+    return *reinterpret_cast<u32 const*>(reinterpret_cast<u8 const*>(elements) - sizeof(u32));
+}
+
+static void set_indexed_elements_head_offset(Value* elements, u32 value)
+{
+    *reinterpret_cast<u32*>(reinterpret_cast<u8*>(elements) - sizeof(u32)) = value;
+}
+
+static u32 indexed_elements_raw_capacity_of(Value const* elements)
+{
+    return *reinterpret_cast<u32 const*>(reinterpret_cast<u8 const*>(elements) - sizeof(u64));
+}
+
+u32 Object::indexed_elements_raw_capacity() const
+{
+    if (!m_indexed_elements)
+        return 0;
+    VERIFY(m_indexed_storage_kind == IndexedStorageKind::Packed || m_indexed_storage_kind == IndexedStorageKind::Holey);
+    return indexed_elements_raw_capacity_of(m_indexed_elements);
+}
+
 u32 Object::indexed_elements_capacity() const
 {
     if (!m_indexed_elements)
         return 0;
     VERIFY(m_indexed_storage_kind == IndexedStorageKind::Packed || m_indexed_storage_kind == IndexedStorageKind::Holey);
-    // Capacity is stored as a u32 at (m_indexed_elements - sizeof(u64))
-    return *reinterpret_cast<u32 const*>(reinterpret_cast<u8 const*>(m_indexed_elements) - sizeof(u64));
+    return indexed_elements_raw_capacity_of(m_indexed_elements) - indexed_elements_head_offset_of(m_indexed_elements);
+}
+
+Value* Object::indexed_elements_logical_ptr()
+{
+    VERIFY(m_indexed_elements);
+    return m_indexed_elements + indexed_elements_head_offset_of(m_indexed_elements);
+}
+
+Value const* Object::indexed_elements_logical_ptr() const
+{
+    VERIFY(m_indexed_elements);
+    return m_indexed_elements + indexed_elements_head_offset_of(m_indexed_elements);
 }
 
 static Value* allocate_indexed_elements(u32 capacity)
 {
-    // Layout: [u32 capacity] [u32 padding] [Value 0] [Value 1] ...
+    // Layout: [u32 capacity] [u32 head_offset=0] [Value 0] [Value 1] ...
     auto allocation_size = sizeof(u64) + capacity * sizeof(Value);
     auto* raw = static_cast<u8*>(kmalloc(allocation_size));
     VERIFY(raw);
     *reinterpret_cast<u32*>(raw) = capacity;
-    *reinterpret_cast<u32*>(raw + sizeof(u32)) = 0; // padding
+    *reinterpret_cast<u32*>(raw + sizeof(u32)) = 0; // head_offset
     auto* elements = reinterpret_cast<Value*>(raw + sizeof(u64));
     for (u32 i = 0; i < capacity; ++i)
         new (&elements[i]) Value(js_special_empty_value());
@@ -1741,28 +1786,59 @@ void Object::free_indexed_elements()
 
 void Object::ensure_indexed_elements(u32 needed_capacity)
 {
-    if (m_indexed_elements && indexed_elements_capacity() >= needed_capacity)
-        return;
+    if (m_indexed_elements) {
+        if (indexed_elements_capacity() >= needed_capacity)
+            return;
+        // Effective capacity (raw - head_offset) isn't enough. If the raw
+        // allocation is big enough, compaction (one memmove) frees the
+        // needed space without reallocating.
+        if (indexed_elements_raw_capacity() >= needed_capacity) {
+            compact_indexed_elements();
+            return;
+        }
+    }
     grow_indexed_elements(needed_capacity);
 }
 
 void Object::grow_indexed_elements(u32 needed_capacity)
 {
     // Grow by at least 50% to reduce copying during dense fills.
-    u32 old_capacity = m_indexed_elements ? indexed_elements_capacity() : 0;
-    u32 new_capacity = max(needed_capacity, old_capacity + old_capacity / 2);
+    u32 old_raw_capacity = m_indexed_elements ? indexed_elements_raw_capacity() : 0;
+    u32 new_capacity = max(needed_capacity, old_raw_capacity + old_raw_capacity / 2);
     new_capacity = max(new_capacity, static_cast<u32>(8));
 
     auto* new_elements = allocate_indexed_elements(new_capacity);
 
     if (m_indexed_elements) {
-        u32 copy_count = min(old_capacity, needed_capacity);
+        u32 old_head_offset = indexed_elements_head_offset_of(m_indexed_elements);
+        u32 old_effective_capacity = old_raw_capacity - old_head_offset;
+        u32 copy_count = min(old_effective_capacity, needed_capacity);
+        Value const* old_logical = m_indexed_elements + old_head_offset;
         for (u32 i = 0; i < copy_count; ++i)
-            new_elements[i] = m_indexed_elements[i];
+            new_elements[i] = old_logical[i];
         deallocate_indexed_elements(m_indexed_elements);
     }
 
     m_indexed_elements = new_elements;
+}
+
+void Object::compact_indexed_elements()
+{
+    if (!m_indexed_elements)
+        return;
+    if (m_indexed_storage_kind != IndexedStorageKind::Packed && m_indexed_storage_kind != IndexedStorageKind::Holey)
+        return;
+    u32 head_offset = indexed_elements_head_offset_of(m_indexed_elements);
+    if (head_offset == 0)
+        return;
+    u32 raw_capacity = indexed_elements_raw_capacity_of(m_indexed_elements);
+    u32 live = min(m_indexed_array_like_size, raw_capacity - head_offset);
+    if (live > 0)
+        memmove(m_indexed_elements, m_indexed_elements + head_offset, live * sizeof(Value));
+    // Clear the slots that previously held the logical head so they don't keep stale GC refs alive.
+    for (u32 i = live; i < live + head_offset; ++i)
+        m_indexed_elements[i] = js_special_empty_value();
+    set_indexed_elements_head_offset(m_indexed_elements, 0);
 }
 
 void Object::transition_to_dictionary()
@@ -1772,10 +1848,13 @@ void Object::transition_to_dictionary()
     if (m_indexed_storage_kind == IndexedStorageKind::Packed || m_indexed_storage_kind == IndexedStorageKind::Holey) {
         // Transfer existing elements
         u32 count = min(m_indexed_array_like_size, indexed_elements_capacity());
-        for (u32 i = 0; i < count; ++i) {
-            auto value = m_indexed_elements[i];
-            if (!value.is_special_empty_value())
-                dict->put(i, value, default_attributes);
+        if (count > 0) {
+            Value const* logical = indexed_elements_logical_ptr();
+            for (u32 i = 0; i < count; ++i) {
+                auto value = logical[i];
+                if (!value.is_special_empty_value())
+                    dict->put(i, value, default_attributes);
+            }
         }
         deallocate_indexed_elements(m_indexed_elements);
     }
@@ -1795,15 +1874,17 @@ Optional<ValueAndAttributes> Object::indexed_get(u32 index) const
     case IndexedStorageKind::Packed:
         if (index >= m_indexed_array_like_size)
             return {};
-        return ValueAndAttributes { m_indexed_elements[index], default_attributes };
-    case IndexedStorageKind::Holey:
+        return ValueAndAttributes { indexed_elements_logical_ptr()[index], default_attributes };
+    case IndexedStorageKind::Holey: {
         if (index >= m_indexed_array_like_size)
             return {};
         if (index >= indexed_elements_capacity())
             return {};
-        if (m_indexed_elements[index].is_special_empty_value())
+        auto value = indexed_elements_logical_ptr()[index];
+        if (value.is_special_empty_value())
             return {};
-        return ValueAndAttributes { m_indexed_elements[index], default_attributes };
+        return ValueAndAttributes { value, default_attributes };
+    }
     case IndexedStorageKind::Dictionary:
         return indexed_dictionary()->get(index);
     }
@@ -1845,7 +1926,7 @@ void Object::indexed_put(u32 index, Value value, PropertyAttributes attributes)
         m_indexed_storage_kind = storing_hole || index > 0 ? IndexedStorageKind::Holey : IndexedStorageKind::Packed;
         u32 needed = index + 1;
         ensure_indexed_elements(needed);
-        m_indexed_elements[index] = value;
+        indexed_elements_logical_ptr()[index] = value;
         m_indexed_array_like_size = max(m_indexed_array_like_size, index + 1);
         return;
     }
@@ -1870,14 +1951,15 @@ void Object::indexed_put(u32 index, Value value, PropertyAttributes attributes)
     if (m_indexed_storage_kind == IndexedStorageKind::Packed && storing_hole)
         m_indexed_storage_kind = IndexedStorageKind::Holey;
 
-    m_indexed_elements[index] = value;
+    indexed_elements_logical_ptr()[index] = value;
 
     // Promote Holey -> Packed when filling the last hole.
     // Only check when writing to the last index to avoid O(N^2) scanning.
     if (m_indexed_storage_kind == IndexedStorageKind::Holey && index == m_indexed_array_like_size - 1) {
         bool has_holes = false;
+        Value const* logical = indexed_elements_logical_ptr();
         for (u32 i = 0, available_elements = min(m_indexed_array_like_size, indexed_elements_capacity()); i < available_elements; ++i) {
-            if (m_indexed_elements[i].is_special_empty_value()) {
+            if (logical[i].is_special_empty_value()) {
                 has_holes = true;
                 break;
             }
@@ -1897,7 +1979,7 @@ bool Object::indexed_has(u32 index) const
     case IndexedStorageKind::Holey:
         return index < m_indexed_array_like_size
             && index < indexed_elements_capacity()
-            && !m_indexed_elements[index].is_special_empty_value();
+            && !indexed_elements_logical_ptr()[index].is_special_empty_value();
     case IndexedStorageKind::Dictionary:
         return indexed_dictionary()->has_index(index);
     }
@@ -1911,14 +1993,14 @@ void Object::indexed_delete(u32 index)
         return;
     case IndexedStorageKind::Packed:
         VERIFY(index < m_indexed_array_like_size);
-        m_indexed_elements[index] = js_special_empty_value();
+        indexed_elements_logical_ptr()[index] = js_special_empty_value();
         m_indexed_storage_kind = IndexedStorageKind::Holey;
         break;
     case IndexedStorageKind::Holey:
         VERIFY(index < m_indexed_array_like_size);
         if (index >= indexed_elements_capacity())
             return;
-        m_indexed_elements[index] = js_special_empty_value();
+        indexed_elements_logical_ptr()[index] = js_special_empty_value();
         break;
     case IndexedStorageKind::Dictionary:
         indexed_dictionary()->remove(index);
@@ -1960,8 +2042,11 @@ bool Object::set_indexed_array_like_size(size_t new_size)
     // Shrinking
     if (new_size_u32 < old_size) {
         u32 capacity = indexed_elements_capacity();
-        for (u32 i = new_size_u32; i < min(old_size, capacity); ++i)
-            m_indexed_elements[i] = js_special_empty_value();
+        if (capacity > 0) {
+            Value* logical = indexed_elements_logical_ptr();
+            for (u32 i = new_size_u32; i < min(old_size, capacity); ++i)
+                logical[i] = js_special_empty_value();
+        }
         m_indexed_array_like_size = new_size_u32;
     }
 
@@ -1982,22 +2067,30 @@ ValueAndAttributes Object::indexed_take_first()
     }
 
     VERIFY(m_indexed_array_like_size > 0);
-    if (m_indexed_storage_kind == IndexedStorageKind::None) {
+    if (m_indexed_storage_kind == IndexedStorageKind::None || !m_indexed_elements) {
         --m_indexed_array_like_size;
         return {};
     }
 
-    auto available_elements = min(m_indexed_array_like_size, indexed_elements_capacity());
-    auto first = available_elements > 0 ? m_indexed_elements[0] : js_special_empty_value();
+    // O(1) logical shift: read the element at the current head, clear the slot,
+    // then advance head_offset. The element stays reachable from GC via the
+    // returned value; cleared slots prevent the raw buffer from keeping stale
+    // references alive until the next compaction.
+    u32 head_offset = indexed_elements_head_offset_of(m_indexed_elements);
+    u32 raw_capacity = indexed_elements_raw_capacity_of(m_indexed_elements);
 
-    // Shift all elements left
-    for (u32 i = 0; i + 1 < available_elements; ++i)
-        m_indexed_elements[i] = m_indexed_elements[i + 1];
+    if (head_offset >= raw_capacity) {
+        --m_indexed_array_like_size;
+        return {};
+    }
 
-    m_indexed_array_like_size--;
-    if (available_elements > 0)
-        m_indexed_elements[available_elements - 1] = js_special_empty_value();
+    Value first = m_indexed_elements[head_offset];
+    m_indexed_elements[head_offset] = js_special_empty_value();
+    set_indexed_elements_head_offset(m_indexed_elements, head_offset + 1);
+    --m_indexed_array_like_size;
 
+    if (first.is_special_empty_value())
+        return {};
     return { first, default_attributes };
 }
 
@@ -2011,13 +2104,14 @@ ValueAndAttributes Object::indexed_take_last()
 
     VERIFY(m_indexed_array_like_size > 0);
     m_indexed_array_like_size--;
-    if (m_indexed_storage_kind == IndexedStorageKind::None)
+    if (m_indexed_storage_kind == IndexedStorageKind::None || !m_indexed_elements)
         return {};
     if (m_indexed_array_like_size >= indexed_elements_capacity())
         return {};
 
-    auto last = m_indexed_elements[m_indexed_array_like_size];
-    m_indexed_elements[m_indexed_array_like_size] = js_special_empty_value();
+    Value* logical = indexed_elements_logical_ptr();
+    auto last = logical[m_indexed_array_like_size];
+    logical[m_indexed_array_like_size] = js_special_empty_value();
 
     if (last.is_special_empty_value())
         return {};
@@ -2033,8 +2127,12 @@ size_t Object::indexed_real_size() const
         return m_indexed_array_like_size;
     case IndexedStorageKind::Holey: {
         size_t count = 0;
-        for (u32 i = 0, available_elements = min(m_indexed_array_like_size, indexed_elements_capacity()); i < available_elements; ++i) {
-            if (!m_indexed_elements[i].is_special_empty_value())
+        u32 available_elements = min(m_indexed_array_like_size, indexed_elements_capacity());
+        if (available_elements == 0)
+            return 0;
+        Value const* logical = indexed_elements_logical_ptr();
+        for (u32 i = 0; i < available_elements; ++i) {
+            if (!logical[i].is_special_empty_value())
                 ++count;
         }
         return count;
@@ -2061,8 +2159,11 @@ Vector<u32> Object::indexed_indices() const
         Vector<u32> indices;
         auto available_elements = min(m_indexed_array_like_size, indexed_elements_capacity());
         indices.ensure_capacity(available_elements);
+        if (available_elements == 0)
+            return indices;
+        Value const* logical = indexed_elements_logical_ptr();
         for (u32 i = 0; i < available_elements; ++i) {
-            if (!m_indexed_elements[i].is_special_empty_value())
+            if (!logical[i].is_special_empty_value())
                 indices.unchecked_append(i);
         }
         return indices;
@@ -2087,6 +2188,7 @@ void Object::set_indexed_property_elements(Vector<Value>&& values)
     m_indexed_storage_kind = IndexedStorageKind::Packed;
     m_indexed_array_like_size = size;
     m_indexed_elements = allocate_indexed_elements(size);
+    // Fresh allocation has head_offset == 0, so raw and logical indices coincide.
     for (u32 i = 0; i < size; ++i)
         m_indexed_elements[i] = values[i];
 }
@@ -2094,7 +2196,9 @@ void Object::set_indexed_property_elements(Vector<Value>&& values)
 ReadonlySpan<Value> Object::indexed_packed_elements_span() const
 {
     VERIFY(m_indexed_storage_kind == IndexedStorageKind::Packed);
-    return { m_indexed_elements, m_indexed_array_like_size };
+    if (m_indexed_array_like_size == 0)
+        return {};
+    return { indexed_elements_logical_ptr(), m_indexed_array_like_size };
 }
 
 void Object::convert_to_prototype_if_needed()

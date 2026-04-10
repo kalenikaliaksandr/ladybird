@@ -315,15 +315,23 @@ public:
         case IndexedStorageKind::None:
             break;
         case IndexedStorageKind::Packed:
-            for (u32 i = 0; i < m_indexed_array_like_size; ++i)
-                callback(m_indexed_elements[i]);
-            break;
-        case IndexedStorageKind::Holey:
-            for (u32 i = 0, available_elements = min(m_indexed_array_like_size, indexed_elements_capacity()); i < available_elements; ++i) {
-                if (!m_indexed_elements[i].is_special_empty_value())
-                    callback(m_indexed_elements[i]);
+            if (m_indexed_array_like_size > 0) {
+                Value* logical = indexed_elements_logical_ptr();
+                for (u32 i = 0; i < m_indexed_array_like_size; ++i)
+                    callback(logical[i]);
             }
             break;
+        case IndexedStorageKind::Holey: {
+            u32 available_elements = min(m_indexed_array_like_size, indexed_elements_capacity());
+            if (available_elements > 0) {
+                Value* logical = indexed_elements_logical_ptr();
+                for (u32 i = 0; i < available_elements; ++i) {
+                    if (!logical[i].is_special_empty_value())
+                        callback(logical[i]);
+                }
+            }
+            break;
+        }
         case IndexedStorageKind::Dictionary:
             for (auto& element : indexed_dictionary()->sparse_elements())
                 callback(element.value.value);
@@ -390,8 +398,12 @@ private:
     // Indexed storage helpers
     GenericIndexedPropertyStorage* indexed_dictionary() const;
     u32 indexed_elements_capacity() const;
+    u32 indexed_elements_raw_capacity() const;
+    Value* indexed_elements_logical_ptr();
+    Value const* indexed_elements_logical_ptr() const;
     void ensure_indexed_elements(u32 needed_capacity);
     void grow_indexed_elements(u32 needed_capacity);
+    void compact_indexed_elements();
     void transition_to_dictionary();
     void free_indexed_elements();
     void ensure_named_storage_capacity(u32 needed);
