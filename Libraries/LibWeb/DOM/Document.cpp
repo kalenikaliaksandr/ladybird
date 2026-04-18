@@ -7443,7 +7443,7 @@ RefPtr<Painting::DisplayList> Document::record_display_list(HTML::PaintConfig co
     update_paint_and_hit_testing_properties_if_needed();
     VERIFY(paintable());
 
-    auto display_list = Painting::DisplayList::create(paintable()->visual_context_tree());
+    auto display_list = Painting::DisplayList::create(paintable()->spatial_context_tree(), paintable()->clip_effect_context_tree());
     Painting::DisplayListRecorder display_list_recorder(display_list);
 
     // https://drafts.csswg.org/css-color-adjust-1/#color-scheme-effect
@@ -7826,50 +7826,60 @@ String Document::dump_display_list()
     if (!display_list)
         return "No display list"_string;
 
-    HashMap<size_t, Painting::PaintableBox const*> context_id_to_paintable;
+    HashMap<size_t, Painting::PaintableBox const*> spatial_context_id_to_paintable;
+    HashMap<size_t, Painting::PaintableBox const*> clip_effect_context_id_to_paintable;
     viewport_paintable->for_each_in_inclusive_subtree_of_type<Painting::PaintableBox>([&](auto const& paintable_box) {
-        auto visual_context_index = paintable_box.accumulated_visual_context_index();
-        if (visual_context_index.value())
-            (void)context_id_to_paintable.try_set(visual_context_index.value(), &paintable_box);
+        auto paint_context = paintable_box.paint_context();
+        if (paint_context.spatial_context_index.value())
+            (void)spatial_context_id_to_paintable.try_set(paint_context.spatial_context_index.value(), &paintable_box);
+        if (paint_context.clip_effect_context_index.value())
+            (void)clip_effect_context_id_to_paintable.try_set(paint_context.clip_effect_context_index.value(), &paintable_box);
         return TraversalDecision::Continue;
     });
 
     StringBuilder builder;
-    builder.append("AccumulatedVisualContext Tree:\n"sv);
+    auto dump_context_tree = [&](auto const& label, auto const& tree, auto index_getter, auto const& paintable_map, auto make_index) {
+        builder.appendff("{}:\n", label);
 
-    auto const& visual_context_tree = display_list->visual_context_tree();
-    HashTable<size_t> visited;
-    HashMap<size_t, Vector<size_t>> children;
-    Vector<size_t> root_contexts;
+        HashTable<size_t> visited;
+        HashMap<size_t, Vector<size_t>> children;
+        Vector<size_t> root_contexts;
 
-    for (auto const& item : display_list->commands()) {
-        if (!item.context_index.value())
-            continue;
-        for (size_t node_index = item.context_index.value(); node_index && !visited.contains(node_index); node_index = visual_context_tree.node_at(Painting::VisualContextIndex(node_index)).parent_index.value()) {
-            visited.set(node_index);
-            auto parent = visual_context_tree.node_at(Painting::VisualContextIndex(node_index)).parent_index.value();
-            if (parent)
-                children.ensure(parent).append(node_index);
-            else if (!root_contexts.contains_slow(node_index))
-                root_contexts.append(node_index);
+        for (auto const& item : display_list->commands()) {
+            auto context_index = index_getter(item.context);
+            if (!context_index.value())
+                continue;
+            for (size_t node_index = context_index.value(); node_index && !visited.contains(node_index); node_index = tree.node_at(make_index(node_index)).parent_index.value()) {
+                visited.set(node_index);
+                auto parent = tree.node_at(make_index(node_index)).parent_index.value();
+                if (parent)
+                    children.ensure(parent).append(node_index);
+                else if (!root_contexts.contains_slow(node_index))
+                    root_contexts.append(node_index);
+            }
         }
-    }
 
-    Function<void(size_t, size_t)> dump_context = [&](size_t node_index, size_t indent) {
-        builder.append_repeated(' ', indent * 2);
-        builder.appendff("[{}] ", node_index);
-        visual_context_tree.dump(Painting::VisualContextIndex(node_index), builder);
-        if (auto it = context_id_to_paintable.find(node_index); it != context_id_to_paintable.end())
-            builder.appendff(" ({})", it->value->debug_description());
+        Function<void(size_t, size_t)> dump_context = [&](size_t node_index, size_t indent) {
+            builder.append_repeated(' ', indent * 2);
+            builder.appendff("[{}] ", node_index);
+            tree.dump(make_index(node_index), builder);
+            if (auto it = paintable_map.find(node_index); it != paintable_map.end())
+                builder.appendff(" ({})", it->value->debug_description());
+            builder.append('\n');
+            for (auto child_node_index : children.get(node_index).value_or({}))
+                dump_context(child_node_index, indent + 1);
+        };
+
+        for (auto root : root_contexts)
+            dump_context(root, 1);
+
         builder.append('\n');
-        for (auto child_node_index : children.get(node_index).value_or({}))
-            dump_context(child_node_index, indent + 1);
     };
 
-    for (auto root : root_contexts)
-        dump_context(root, 1);
+    dump_context_tree("SpatialContext Tree"sv, display_list->spatial_context_tree(), [](auto const& paint_context) { return paint_context.spatial_context_index; }, spatial_context_id_to_paintable, [](size_t node_index) { return Painting::SpatialContextIndex(node_index); });
+    dump_context_tree("ClipEffectContext Tree"sv, display_list->clip_effect_context_tree(), [](auto const& paint_context) { return paint_context.clip_effect_context_index; }, clip_effect_context_id_to_paintable, [](size_t node_index) { return Painting::ClipEffectContextIndex(node_index); });
 
-    builder.append("\nDisplayList:\n"sv);
+    builder.append("DisplayList:\n"sv);
 
     Function<void(Painting::DisplayList const&, int)> dump_commands =
         [&](Painting::DisplayList const& list, int base_indent) {
@@ -7886,7 +7896,7 @@ String Document::dump_display_list()
 
                 builder.append_repeated(' ', indent * 2);
                 item.command.visit([&](auto const& command) {
-                    builder.appendff("{}@{}", command.command_name, item.context_index.value());
+                    builder.appendff("{}@S{}/C{}", command.command_name, item.context.spatial_context_index.value(), item.context.clip_effect_context_index.value());
                     command.dump(builder);
                 });
                 builder.append('\n');

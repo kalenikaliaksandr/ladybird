@@ -345,12 +345,23 @@ void SVGFormattingContext::layout_nested_viewport(Box const& viewport)
     auto nested_viewport_width = resolve_dimension(viewport, viewport.computed_values().width(), m_viewport_size.width());
     auto nested_viewport_height = resolve_dimension(viewport, viewport.computed_values().height(), m_viewport_size.height());
 
+    auto* svg_element = as_if<SVG::SVGSVGElement>(*viewport.dom_node());
+    if (svg_element) {
+        if (svg_element->attribute(SVG::AttributeNames::x).has_value())
+            nested_viewport_x = CSSPixels::nearest_value_for(svg_element->x()->base_val()->value());
+        if (svg_element->attribute(SVG::AttributeNames::y).has_value())
+            nested_viewport_y = CSSPixels::nearest_value_for(svg_element->y()->base_val()->value());
+        if (svg_element->attribute(SVG::AttributeNames::width).has_value())
+            nested_viewport_width = CSSPixels::nearest_value_for(svg_element->width()->base_val()->value());
+        if (svg_element->attribute(SVG::AttributeNames::height).has_value())
+            nested_viewport_height = CSSPixels::nearest_value_for(svg_element->height()->base_val()->value());
+    }
+
     CSSPixelPoint content_offset { nested_viewport_x, nested_viewport_y };
     auto content_width = nested_viewport_width;
     auto content_height = nested_viewport_height;
     auto parent_viewbox_transform = m_current_viewbox_transform;
 
-    auto* svg_element = as_if<SVG::SVGSVGElement>(*viewport.dom_node());
     if (svg_element && svg_element->view_box().has_value()) {
         // FIXME: Avoid converting SVG box to floats.
         Gfx::FloatRect nested_rect {

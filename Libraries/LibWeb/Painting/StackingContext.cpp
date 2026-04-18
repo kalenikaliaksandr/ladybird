@@ -37,9 +37,9 @@ static void paint_node(Paintable const& paintable, DisplayListRecordingContext& 
         // Text fragments in a PaintableWithLines are content of the block container.
         // They need the descendants' visual context, not the element's own visual context.
         if (is<PaintableWithLines>(paintable) && phase == PaintPhase::Foreground)
-            context.display_list_recorder().set_accumulated_visual_context(paintable_box->accumulated_visual_context_for_descendants_index());
+            context.display_list_recorder().set_paint_context(paintable_box->paint_context_for_descendants());
         else
-            context.display_list_recorder().set_accumulated_visual_context(paintable_box->accumulated_visual_context_index());
+            context.display_list_recorder().set_paint_context(paintable_box->paint_context());
     }
 
     bool const skip_cache = !paintable_box || context.should_show_line_box_borders();
@@ -53,7 +53,7 @@ static void paint_node(Paintable const& paintable, DisplayListRecordingContext& 
         paintable.paint(context, phase);
     }
 
-    context.display_list_recorder().set_accumulated_visual_context({});
+    context.display_list_recorder().set_paint_context({});
 
     VERIFY(context.display_list_recorder().m_save_nesting_level == 0);
 }
@@ -323,8 +323,8 @@ void StackingContext::paint(DisplayListRecordingContext& context) const
         mask_image->resolve_for_size(paintable_box().layout_node_with_style_and_box_metrics(), paintable_box().absolute_padding_box_rect().size());
     }
 
-    auto effective_context_index = paintable_box().accumulated_visual_context_index();
-    context.display_list_recorder().set_accumulated_visual_context(effective_context_index);
+    auto effective_paint_context = paintable_box().paint_context();
+    context.display_list_recorder().set_paint_context(effective_paint_context);
 
     // For elements with SVG filters, emit a transparent FillRect to trigger filter application.
     // This ensures content-generating filters (feFlood, feImage) work even with empty source.
@@ -337,7 +337,7 @@ void StackingContext::paint(DisplayListRecordingContext& context) const
     Vector<DisplayListRecorder::MaskInfo> masks;
 
     if (mask_image) {
-        auto mask_display_list = DisplayList::create(AccumulatedVisualContextTree::create());
+        auto mask_display_list = DisplayList::create();
         DisplayListRecorder display_list_recorder(*mask_display_list);
         auto mask_painting_context = context.clone(display_list_recorder);
         auto mask_rect_in_device_pixels = context.enclosing_device_rect(paintable_box().absolute_padding_box_rect());
@@ -362,11 +362,11 @@ void StackingContext::paint(DisplayListRecordingContext& context) const
 
     context.display_list_recorder().begin_masks(masks);
 
-    auto context_before_children = context.display_list_recorder().accumulated_visual_context();
+    auto context_before_children = context.display_list_recorder().paint_context();
 
     paint_internal(context);
 
-    context.display_list_recorder().set_accumulated_visual_context(context_before_children);
+    context.display_list_recorder().set_paint_context(context_before_children);
 
     context.display_list_recorder().end_masks(masks);
 }

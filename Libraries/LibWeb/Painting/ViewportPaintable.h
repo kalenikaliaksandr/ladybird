@@ -44,16 +44,29 @@ public:
     void set_paintable_boxes_with_auto_content_visibility(Vector<GC::Ref<PaintableBox>> paintable_boxes) { m_paintable_boxes_with_auto_content_visibility = move(paintable_boxes); }
     ReadonlySpan<GC::Ref<PaintableBox>> paintable_boxes_with_auto_content_visibility() const { return m_paintable_boxes_with_auto_content_visibility; }
 
-    AccumulatedVisualContextTree const& visual_context_tree() const
+    SpatialContextTree const& spatial_context_tree() const
     {
-        VERIFY(m_visual_context_tree);
-        return *m_visual_context_tree;
+        VERIFY(m_spatial_context_tree);
+        return *m_spatial_context_tree;
     }
-    AccumulatedVisualContextTree& visual_context_tree()
+    SpatialContextTree& spatial_context_tree()
     {
-        VERIFY(m_visual_context_tree);
-        return *m_visual_context_tree;
+        VERIFY(m_spatial_context_tree);
+        return *m_spatial_context_tree;
     }
+
+    ClipEffectContextTree const& clip_effect_context_tree() const
+    {
+        VERIFY(m_clip_effect_context_tree);
+        return *m_clip_effect_context_tree;
+    }
+    ClipEffectContextTree& clip_effect_context_tree()
+    {
+        VERIFY(m_clip_effect_context_tree);
+        return *m_clip_effect_context_tree;
+    }
+
+    SpatialContextIndex visual_viewport_spatial_context_index() const { return m_visual_viewport_spatial_context_index; }
 
 private:
     virtual bool is_viewport_paintable() const override { return true; }
@@ -70,8 +83,9 @@ private:
 
     Vector<GC::Ref<PaintableBox>> m_paintable_boxes_with_auto_content_visibility;
 
-    RefPtr<AccumulatedVisualContextTree> m_visual_context_tree;
-    VisualContextIndex m_visual_viewport_context_index {};
+    RefPtr<SpatialContextTree> m_spatial_context_tree;
+    RefPtr<ClipEffectContextTree> m_clip_effect_context_tree;
+    SpatialContextIndex m_visual_viewport_spatial_context_index {};
 };
 
 template<>

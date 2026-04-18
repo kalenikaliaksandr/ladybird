@@ -25,7 +25,15 @@ namespace Web::Painting {
 
 class ScrollStateSnapshot;
 
-AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, VisualContextIndex);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, SpatialContextIndex);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, ClipEffectContextIndex);
+
+struct PaintContext {
+    SpatialContextIndex spatial_context_index {};
+    ClipEffectContextIndex clip_effect_context_index {};
+
+    bool operator==(PaintContext const&) const = default;
+};
 
 struct ScrollData {
     ScrollFrameIndex scroll_frame_index;
@@ -35,10 +43,12 @@ struct ScrollData {
 struct ClipData {
     DevicePixelRect rect;
     CornerRadii corner_radii;
+    SpatialContextIndex spatial_context_index {};
 
-    ClipData(DevicePixelRect r, CornerRadii radii)
+    ClipData(DevicePixelRect r, CornerRadii radii, SpatialContextIndex spatial_context = {})
         : rect(r)
         , corner_radii(radii)
+        , spatial_context_index(spatial_context)
     {
     }
 
@@ -58,6 +68,7 @@ struct ClipPathData {
     Gfx::Path path;
     DevicePixelRect bounding_rect;
     Gfx::WindingRule fill_rule;
+    SpatialContextIndex spatial_context_index {};
 };
 
 struct EffectsData {
@@ -73,38 +84,66 @@ struct EffectsData {
     }
 };
 
-using VisualContextData = Variant<ScrollData, ClipData, TransformData, PerspectiveData, ClipPathData, EffectsData>;
+using SpatialContextData = Variant<ScrollData, TransformData, PerspectiveData>;
+using ClipEffectContextData = Variant<ClipData, ClipPathData, EffectsData>;
 
-struct AccumulatedVisualContextNode {
-    VisualContextData data;
-    VisualContextIndex parent_index {};
+struct SpatialContextNode {
+    SpatialContextData data;
+    SpatialContextIndex parent_index {};
+    size_t depth { 0 };
+};
+
+struct ClipEffectContextNode {
+    ClipEffectContextData data;
+    ClipEffectContextIndex parent_index {};
     size_t depth { 0 };
     bool has_empty_effective_clip { false };
 };
 
-class AccumulatedVisualContextTree : public AtomicRefCounted<AccumulatedVisualContextTree> {
+class SpatialContextTree : public AtomicRefCounted<SpatialContextTree> {
 public:
-    static NonnullRefPtr<AccumulatedVisualContextTree> create();
+    static NonnullRefPtr<SpatialContextTree> create();
 
-    VisualContextIndex append(VisualContextData data, VisualContextIndex parent_index);
+    SpatialContextIndex append(SpatialContextData data, SpatialContextIndex parent_index);
 
-    AccumulatedVisualContextNode const& node_at(VisualContextIndex index) const { return m_nodes[index.value()]; }
+    SpatialContextNode const& node_at(SpatialContextIndex index) const { return m_nodes[index.value()]; }
 
-    VisualContextIndex find_common_ancestor(VisualContextIndex a, VisualContextIndex b) const;
-    Optional<Gfx::FloatPoint> transform_point_for_hit_test(VisualContextIndex, Gfx::FloatPoint, ScrollStateSnapshot const&) const;
-    Gfx::FloatPoint inverse_transform_point(VisualContextIndex, Gfx::FloatPoint) const;
-    Gfx::FloatRect transform_rect_to_viewport(VisualContextIndex, Gfx::FloatRect const&, ScrollStateSnapshot const&) const;
-    void dump(VisualContextIndex, StringBuilder&) const;
-
-    bool is_effect(VisualContextIndex i) const { return m_nodes[i.value()].data.has<EffectsData>(); }
-    bool has_empty_effective_clip(VisualContextIndex i) const { return m_nodes[i.value()].has_empty_effective_clip; }
+    SpatialContextIndex find_common_ancestor(SpatialContextIndex a, SpatialContextIndex b) const;
+    Gfx::FloatPoint inverse_transform_point(SpatialContextIndex, Gfx::FloatPoint, ScrollStateSnapshot const&) const;
+    Gfx::FloatRect transform_rect_to_viewport(SpatialContextIndex, Gfx::FloatRect const&, ScrollStateSnapshot const&) const;
+    Gfx::FloatMatrix4x4 transform_matrix_to_viewport(SpatialContextIndex, ScrollStateSnapshot const&) const;
+    void dump(SpatialContextIndex, StringBuilder&) const;
 
 private:
-    AccumulatedVisualContextTree() = default;
+    SpatialContextTree() = default;
 
-    Vector<size_t, 8> build_ancestor_chain(VisualContextIndex index) const;
+    Vector<size_t, 8> build_ancestor_chain(SpatialContextIndex index) const;
 
-    Vector<AccumulatedVisualContextNode> m_nodes;
+    Vector<SpatialContextNode> m_nodes;
 };
+
+class ClipEffectContextTree : public AtomicRefCounted<ClipEffectContextTree> {
+public:
+    static NonnullRefPtr<ClipEffectContextTree> create();
+
+    ClipEffectContextIndex append(ClipEffectContextData data, ClipEffectContextIndex parent_index);
+
+    ClipEffectContextNode const& node_at(ClipEffectContextIndex index) const { return m_nodes[index.value()]; }
+
+    ClipEffectContextIndex find_common_ancestor(ClipEffectContextIndex a, ClipEffectContextIndex b) const;
+    bool has_empty_effective_clip(ClipEffectContextIndex i) const { return m_nodes[i.value()].has_empty_effective_clip; }
+    bool is_effect(ClipEffectContextIndex i) const { return m_nodes[i.value()].data.has<EffectsData>(); }
+    bool contains_point(ClipEffectContextIndex, DevicePixelPoint, SpatialContextTree const&, ScrollStateSnapshot const&) const;
+    void dump(ClipEffectContextIndex, StringBuilder&) const;
+
+private:
+    ClipEffectContextTree() = default;
+
+    Vector<size_t, 8> build_ancestor_chain(ClipEffectContextIndex index) const;
+
+    Vector<ClipEffectContextNode> m_nodes;
+};
+
+Optional<Gfx::FloatPoint> transform_point_for_hit_test(SpatialContextTree const&, ClipEffectContextTree const&, PaintContext, Gfx::FloatPoint, ScrollStateSnapshot const&);
 
 }

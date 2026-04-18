@@ -622,8 +622,7 @@ EventResult EventHandler::handle_mousewheel(CSSPixelPoint visual_viewport_positi
 
             auto page_offset = compute_mouse_event_page_offset(viewport_position);
             auto const& offset_paintable = layout_node->first_paintable() ? layout_node->first_paintable() : paintable.ptr();
-            auto scroll_offset = document->navigable()->viewport_scroll_offset();
-            auto offset = compute_mouse_event_offset(visual_viewport_position.translated(scroll_offset), *offset_paintable);
+            auto offset = compute_mouse_event_offset(viewport_position, *offset_paintable);
             bool could_scroll_viewport = document->paintable_box()->could_be_scrolled_by_wheel_event();
             if (node->dispatch_event(UIEvents::WheelEvent::create_from_platform_event(node->realm(), m_navigable->active_window_proxy(), UIEvents::EventNames::wheel, screen_position, page_offset, viewport_position, offset, wheel_delta_x, wheel_delta_y, button, buttons, modifiers).release_value_but_fixme_should_propagate_errors())) {
                 if (could_scroll_viewport) {
@@ -658,8 +657,7 @@ EventHandler::MouseEventCoordinates EventHandler::compute_mouse_event_coordinate
 {
     auto page_offset = compute_mouse_event_page_offset(viewport_position);
     auto const& offset_paintable = layout_node.first_paintable() ? layout_node.first_paintable() : &paintable;
-    auto scroll_offset = m_navigable->active_document()->navigable()->viewport_scroll_offset();
-    auto offset = compute_mouse_event_offset(visual_viewport_position.translated(scroll_offset), *offset_paintable);
+    auto offset = compute_mouse_event_offset(viewport_position, *offset_paintable);
     return { page_offset, visual_viewport_position, viewport_position, offset };
 }
 
@@ -1567,8 +1565,7 @@ EventResult EventHandler::handle_drag_and_drop_event(DragEvent::Type type, CSSPi
         return result.value();
 
     auto page_offset = compute_mouse_event_page_offset(viewport_position);
-    auto scroll_offset = document.navigable()->viewport_scroll_offset();
-    auto offset = compute_mouse_event_offset(visual_viewport_position.translated(scroll_offset), *paintable);
+    auto offset = compute_mouse_event_offset(viewport_position, *paintable);
 
     switch (type) {
     case DragEvent::Type::DragStart:

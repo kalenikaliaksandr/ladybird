@@ -10,11 +10,11 @@
 
 namespace Web::Painting {
 
-bool DisplayList::append(DisplayListCommand&& command, VisualContextIndex context_index)
+bool DisplayList::append(DisplayListCommand&& command, PaintContext context)
 {
-    if (context_index.value() && m_visual_context_tree->has_empty_effective_clip(context_index))
+    if (context.clip_effect_context_index.value() && m_clip_effect_context_tree->has_empty_effective_clip(context.clip_effect_context_index))
         return false;
-    m_commands.append({ context_index, move(command) });
+    m_commands.append({ context, move(command) });
     return true;
 }
 
@@ -65,22 +65,27 @@ void DisplayListPlayer::execute_display_list_into_surface(DisplayList& display_l
 void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnapshot const& scroll_state)
 {
     auto const& commands = display_list.commands();
-    auto const& visual_context_tree = display_list.visual_context_tree();
+    auto const& spatial_context_tree = display_list.spatial_context_tree();
+    auto const& clip_effect_context_tree = display_list.clip_effect_context_tree();
 
     VERIFY(m_surface);
 
-    auto for_each_node_from_common_ancestor_to_target = [&](this auto const& self, VisualContextIndex common_ancestor_index, VisualContextIndex target_index, auto&& callback) -> void {
+    auto for_each_spatial_node_from_common_ancestor_to_target = [&](this auto const& self, SpatialContextIndex common_ancestor_index, SpatialContextIndex target_index, auto&& callback) -> void {
         if (!target_index.value() || target_index == common_ancestor_index)
             return;
-        self(common_ancestor_index, visual_context_tree.node_at(target_index).parent_index, callback);
-        callback(visual_context_tree.node_at(target_index));
+        self(common_ancestor_index, spatial_context_tree.node_at(target_index).parent_index, callback);
+        callback(spatial_context_tree.node_at(target_index));
     };
 
-    auto apply_accumulated_visual_context = [&](AccumulatedVisualContextNode const& node) {
+    auto for_each_clip_effect_node_from_common_ancestor_to_target = [&](this auto const& self, ClipEffectContextIndex common_ancestor_index, ClipEffectContextIndex target_index, auto&& callback) -> void {
+        if (!target_index.value() || target_index == common_ancestor_index)
+            return;
+        self(common_ancestor_index, clip_effect_context_tree.node_at(target_index).parent_index, callback);
+        callback(clip_effect_context_tree.node_at(target_index));
+    };
+
+    auto apply_spatial_context = [&](SpatialContextNode const& node) {
         node.data.visit(
-            [&](EffectsData const& effects) {
-                apply_effects({ .opacity = effects.opacity, .compositing_and_blending_operator = effects.blend_mode, .filter = effects.gfx_filter });
-            },
             [&](PerspectiveData const& perspective) {
                 save({});
                 apply_transform({ 0, 0 }, perspective.matrix);
@@ -94,45 +99,94 @@ void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnaps
             [&](TransformData const& transform) {
                 save({});
                 apply_transform(transform.origin, transform.matrix);
-            },
-            [&](ClipData const& clip) {
-                save({});
-                if (clip.corner_radii.has_any_radius())
-                    add_rounded_rect_clip({ .corner_radii = clip.corner_radii, .border_rect = clip.rect.to_type<int>(), .corner_clip = CornerClip::Outside });
-                else
-                    add_clip_rect({ .rect = clip.rect.to_type<int>() });
-            },
-            [&](ClipPathData const& clip_path) {
-                save({});
-                add_clip_path(clip_path.path);
             });
     };
 
-    VisualContextIndex applied_context_index;
-    size_t applied_depth = 0;
+    auto apply_clip_effect_context = [&](ClipEffectContextNode const& node) {
+        node.data.visit(
+            [&](ClipData const& clip) {
+                save({});
+                auto clip_matrix = spatial_context_tree.transform_matrix_to_viewport(clip.spatial_context_index, scroll_state);
+                if (clip.corner_radii.has_any_radius())
+                    add_device_rounded_rect_clip({ .corner_radii = clip.corner_radii, .border_rect = clip.rect.to_type<int>(), .corner_clip = CornerClip::Outside }, clip_matrix);
+                else
+                    add_device_clip_rect({ .rect = clip.rect.to_type<int>() }, clip_matrix);
+            },
+            [&](ClipPathData const& clip_path) {
+                save({});
+                add_device_clip_path(clip_path.path, spatial_context_tree.transform_matrix_to_viewport(clip_path.spatial_context_index, scroll_state));
+            },
+            [&](EffectsData const& effects) {
+                apply_effects({ .opacity = effects.opacity, .compositing_and_blending_operator = effects.blend_mode, .filter = effects.gfx_filter });
+            });
+    };
 
-    auto switch_to_context = [&](VisualContextIndex target_index) {
-        if (applied_context_index == target_index)
+    SpatialContextIndex applied_spatial_context_index;
+    ClipEffectContextIndex applied_clip_effect_context_index;
+    size_t applied_spatial_depth = 0;
+    size_t applied_clip_effect_depth = 0;
+
+    auto restore_clip_effect_context_to = [&](ClipEffectContextIndex target_index) {
+        auto common_ancestor_depth = target_index.value() ? clip_effect_context_tree.node_at(target_index).depth : 0;
+        while (applied_clip_effect_depth > common_ancestor_depth) {
+            restore({});
+            applied_clip_effect_depth--;
+        }
+        applied_clip_effect_context_index = target_index;
+    };
+
+    auto restore_spatial_context_to = [&](SpatialContextIndex target_index) {
+        auto common_ancestor_depth = target_index.value() ? spatial_context_tree.node_at(target_index).depth : 0;
+        while (applied_spatial_depth > common_ancestor_depth) {
+            restore({});
+            applied_spatial_depth--;
+        }
+        applied_spatial_context_index = target_index;
+    };
+
+    auto apply_spatial_context_to = [&](SpatialContextIndex target_index) {
+        for_each_spatial_node_from_common_ancestor_to_target(applied_spatial_context_index, target_index, [&](SpatialContextNode const& node) {
+            apply_spatial_context(node);
+            applied_spatial_depth++;
+        });
+        applied_spatial_context_index = target_index;
+    };
+
+    auto apply_clip_effect_context_to = [&](ClipEffectContextIndex target_index) {
+        for_each_clip_effect_node_from_common_ancestor_to_target(applied_clip_effect_context_index, target_index, [&](ClipEffectContextNode const& node) {
+            apply_clip_effect_context(node);
+            applied_clip_effect_depth++;
+        });
+        applied_clip_effect_context_index = target_index;
+    };
+
+    auto switch_clip_effect_context = [&](ClipEffectContextIndex target_index) {
+        if (applied_clip_effect_context_index == target_index)
             return;
 
-        auto common_ancestor_index = visual_context_tree.find_common_ancestor(applied_context_index, target_index);
-        size_t common_ancestor_depth = common_ancestor_index.value() ? visual_context_tree.node_at(common_ancestor_index).depth : 0;
+        auto common_ancestor_index = clip_effect_context_tree.find_common_ancestor(applied_clip_effect_context_index, target_index);
+        restore_clip_effect_context_to(common_ancestor_index);
+        apply_clip_effect_context_to(target_index);
+    };
 
-        while (applied_depth > common_ancestor_depth) {
-            restore({});
-            applied_depth--;
+    auto switch_to_context = [&](PaintContext target_context) {
+        if (applied_spatial_context_index != target_context.spatial_context_index) {
+            // Spatial nodes live below clip/effect nodes on the painter save stack, so any spatial
+            // change requires tearing down the clip/effect stack first and rebuilding it afterwards.
+            restore_clip_effect_context_to({});
+
+            auto common_ancestor_index = spatial_context_tree.find_common_ancestor(applied_spatial_context_index, target_context.spatial_context_index);
+            restore_spatial_context_to(common_ancestor_index);
+            apply_spatial_context_to(target_context.spatial_context_index);
+            apply_clip_effect_context_to(target_context.clip_effect_context_index);
+            return;
         }
 
-        for_each_node_from_common_ancestor_to_target(common_ancestor_index, target_index, [&](AccumulatedVisualContextNode const& node) {
-            apply_accumulated_visual_context(node);
-            applied_depth++;
-        });
-
-        applied_context_index = target_index;
+        switch_clip_effect_context(target_context.clip_effect_context_index);
     };
 
     for (size_t command_index = 0; command_index < commands.size(); command_index++) {
-        auto const& [context_index, command] = commands[command_index];
+        auto const& [context, command] = commands[command_index];
 
         auto bounding_rect = command_bounding_rectangle(command);
 
@@ -143,13 +197,13 @@ void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnaps
         //               This avoids expensive saveLayer/restore cycles for off-screen elements with effects like blur.
         // NOTE: We must not do this for consecutive commands with the same context, as that would incorrectly restore
         //       and re-apply the effect layer, breaking blend mode compositing.
-        if (context_index.value() && applied_context_index != context_index && visual_context_tree.is_effect(context_index) && bounding_rect.has_value()) {
-            switch_to_context(visual_context_tree.node_at(context_index).parent_index);
+        if (context.clip_effect_context_index.value() && applied_clip_effect_context_index != context.clip_effect_context_index && clip_effect_context_tree.is_effect(context.clip_effect_context_index) && bounding_rect.has_value()) {
+            switch_to_context({ context.spatial_context_index, clip_effect_context_tree.node_at(context.clip_effect_context_index).parent_index });
             if (bounding_rect->is_empty() || would_be_fully_clipped_by_painter(*bounding_rect))
                 continue;
         }
 
-        switch_to_context(context_index);
+        switch_to_context(context);
 
         if (command.has<PaintScrollBar>()) {
             auto translated_command = command;
@@ -213,9 +267,13 @@ void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnaps
         // clang-format on
     }
 
-    while (applied_depth > 0) {
+    while (applied_clip_effect_depth > 0) {
         restore({});
-        applied_depth--;
+        applied_clip_effect_depth--;
+    }
+    while (applied_spatial_depth > 0) {
+        restore({});
+        applied_spatial_depth--;
     }
 }
 

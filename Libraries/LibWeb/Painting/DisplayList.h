@@ -20,6 +20,11 @@
 
 namespace Web::Painting {
 
+struct CommandListItem {
+    PaintContext context;
+    DisplayListCommand command;
+};
+
 class DisplayListPlayer {
 public:
     virtual ~DisplayListPlayer() = default;
@@ -58,6 +63,7 @@ private:
     virtual void apply_backdrop_filter(ApplyBackdropFilter const&) = 0;
     virtual void draw_rect(DrawRect const&) = 0;
     virtual void add_rounded_rect_clip(AddRoundedRectClip const&) = 0;
+    virtual void add_device_rounded_rect_clip(AddRoundedRectClip const&, Gfx::FloatMatrix4x4 const&) = 0;
     virtual void paint_nested_display_list(PaintNestedDisplayList const&) = 0;
     virtual void paint_scrollbar(PaintScrollBar const&) = 0;
     virtual void apply_effects(ApplyEffects const&) = 0;
@@ -65,36 +71,38 @@ private:
     virtual bool would_be_fully_clipped_by_painter(Gfx::IntRect) const = 0;
 
     virtual void add_clip_path(Gfx::Path const&) = 0;
+    virtual void add_device_clip_path(Gfx::Path const&, Gfx::FloatMatrix4x4 const&) = 0;
+    virtual void add_device_clip_rect(AddClipRect const&, Gfx::FloatMatrix4x4 const&) = 0;
 
     RefPtr<Gfx::PaintingSurface> m_surface;
 };
 
 class DisplayList : public AtomicRefCounted<DisplayList> {
 public:
-    static NonnullRefPtr<DisplayList> create(NonnullRefPtr<AccumulatedVisualContextTree const> visual_context_tree)
+    using CommandListItem = Painting::CommandListItem;
+
+    static NonnullRefPtr<DisplayList> create(NonnullRefPtr<SpatialContextTree const> spatial_context_tree = SpatialContextTree::create(), NonnullRefPtr<ClipEffectContextTree const> clip_effect_context_tree = ClipEffectContextTree::create())
     {
-        return adopt_ref(*new DisplayList(move(visual_context_tree)));
+        return adopt_ref(*new DisplayList(move(spatial_context_tree), move(clip_effect_context_tree)));
     }
 
-    bool append(DisplayListCommand&& command, VisualContextIndex context_index);
+    bool append(DisplayListCommand&& command, PaintContext context);
 
-    struct CommandListItem {
-        VisualContextIndex context_index {};
-        DisplayListCommand command;
-    };
-
-    AccumulatedVisualContextTree const& visual_context_tree() const { return *m_visual_context_tree; }
+    SpatialContextTree const& spatial_context_tree() const { return *m_spatial_context_tree; }
+    ClipEffectContextTree const& clip_effect_context_tree() const { return *m_clip_effect_context_tree; }
 
     auto& commands(Badge<DisplayListRecorder>) { return m_commands; }
     auto const& commands() const { return m_commands; }
 
 private:
-    explicit DisplayList(NonnullRefPtr<AccumulatedVisualContextTree const> visual_context_tree)
-        : m_visual_context_tree(move(visual_context_tree))
+    explicit DisplayList(NonnullRefPtr<SpatialContextTree const> spatial_context_tree, NonnullRefPtr<ClipEffectContextTree const> clip_effect_context_tree)
+        : m_spatial_context_tree(move(spatial_context_tree))
+        , m_clip_effect_context_tree(move(clip_effect_context_tree))
     {
     }
 
-    NonnullRefPtr<AccumulatedVisualContextTree const> const m_visual_context_tree;
+    NonnullRefPtr<SpatialContextTree const> const m_spatial_context_tree;
+    NonnullRefPtr<ClipEffectContextTree const> const m_clip_effect_context_tree;
     AK::SegmentedVector<CommandListItem, 512> m_commands;
 };
 

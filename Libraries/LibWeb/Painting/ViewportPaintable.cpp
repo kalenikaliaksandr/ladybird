@@ -20,6 +20,7 @@
 #include <LibWeb/Painting/ScrollFrame.h>
 #include <LibWeb/Painting/StackingContext.h>
 #include <LibWeb/Painting/ViewportPaintable.h>
+#include <LibWeb/SVG/SVGSVGElement.h>
 #include <LibWeb/Selection/Selection.h>
 
 namespace Web::Painting {
@@ -45,8 +46,9 @@ void ViewportPaintable::reset_for_relayout()
     m_scroll_state_snapshot = {};
     m_needs_to_refresh_scroll_state = true;
     m_paintable_boxes_with_auto_content_visibility.clear();
-    m_visual_context_tree = nullptr;
-    m_visual_viewport_context_index = {};
+    m_spatial_context_tree = nullptr;
+    m_clip_effect_context_tree = nullptr;
+    m_visual_viewport_spatial_context_index = {};
 }
 
 void ViewportPaintable::build_stacking_context_tree_if_needed()
@@ -240,7 +242,7 @@ static Optional<Gfx::FloatMatrix4x4> compute_perspective_matrix(PaintableBox con
     return perspective_matrix;
 }
 
-static Optional<ClipData> compute_clip_data(PaintableBox const& paintable_box, CSS::ComputedValues const& computed_values, DevicePixelConverter const& converter)
+static Optional<ClipData> compute_clip_data(PaintableBox const& paintable_box, CSS::ComputedValues const& computed_values, DevicePixelConverter const& converter, SpatialContextIndex spatial_context_index)
 {
     auto overflow_x = computed_values.overflow_x();
     auto overflow_y = computed_values.overflow_y();
@@ -296,7 +298,7 @@ static Optional<ClipData> compute_clip_data(PaintableBox const& paintable_box, C
         //   clipping region is not rounded.
         // FIXME: Adjust the border radii for the overflow-clip-margin case. (see https://drafts.csswg.org/css-overflow-4/#valdef-overflow-clip-margin-length-0 )
         auto radii = (overflow_x != CSS::Overflow::Visible && overflow_y != CSS::Overflow::Visible) ? paintable_box.normalized_border_radii_data(PaintableBox::ShrinkRadiiForBorders::Yes) : BorderRadiiData {};
-        return ClipData { converter.rounded_device_rect(clip_rect), radii.as_corners(converter) };
+        return ClipData { converter.rounded_device_rect(clip_rect), radii.as_corners(converter), spatial_context_index };
     }
 
     return {};
@@ -304,14 +306,19 @@ static Optional<ClipData> compute_clip_data(PaintableBox const& paintable_box, C
 
 void ViewportPaintable::assign_accumulated_visual_contexts()
 {
-    m_visual_context_tree = AccumulatedVisualContextTree::create();
+    m_spatial_context_tree = SpatialContextTree::create();
+    m_clip_effect_context_tree = ClipEffectContextTree::create();
 
     auto pixel_ratio = document().page().client().device_pixels_per_css_pixel();
     DevicePixelConverter converter { pixel_ratio };
     auto scale = static_cast<float>(pixel_ratio);
 
-    auto append_node = [&](VisualContextIndex parent_index, VisualContextData data) -> VisualContextIndex {
-        return m_visual_context_tree->append(move(data), parent_index);
+    auto append_spatial_node = [&](SpatialContextIndex parent_index, SpatialContextData data) -> SpatialContextIndex {
+        return m_spatial_context_tree->append(move(data), parent_index);
+    };
+
+    auto append_clip_effect_node = [&](ClipEffectContextIndex parent_index, ClipEffectContextData data) -> ClipEffectContextIndex {
+        return m_clip_effect_context_tree->append(move(data), parent_index);
     };
 
     auto make_effects_data = [&](PaintableBox const& box) -> Optional<EffectsData> {
@@ -328,18 +335,18 @@ void ViewportPaintable::assign_accumulated_visual_contexts()
     };
 
     // Create visual viewport transform as root (if not identity)
-    m_visual_viewport_context_index = {};
+    m_visual_viewport_spatial_context_index = {};
     auto transform = document().visual_viewport()->transform();
     if (!transform.is_identity()) {
         auto matrix = scale_matrix_for_device_pixels(transform.to_matrix(), scale);
-        m_visual_viewport_context_index = append_node({}, TransformData { matrix, { 0.f, 0.f } });
+        m_visual_viewport_spatial_context_index = append_spatial_node({}, TransformData { matrix, { 0.f, 0.f } });
     }
 
-    VisualContextIndex viewport_state_for_descendants = m_visual_viewport_context_index;
+    SpatialContextIndex viewport_spatial_context_for_descendants = m_visual_viewport_spatial_context_index;
     if (own_scroll_frame_index().value())
-        viewport_state_for_descendants = append_node(m_visual_viewport_context_index, ScrollData { own_scroll_frame_index(), false });
-    set_accumulated_visual_context({});
-    set_accumulated_visual_context_for_descendants(viewport_state_for_descendants);
+        viewport_spatial_context_for_descendants = append_spatial_node(m_visual_viewport_spatial_context_index, ScrollData { own_scroll_frame_index(), false });
+    set_paint_context({});
+    set_paint_context_for_descendants({ viewport_spatial_context_for_descendants, {} });
 
     for_each_in_subtree_of_type<PaintableBox>([&](auto& paintable_box) {
         auto* visual_parent = as_if<PaintableBox>(paintable_box.parent());
@@ -353,14 +360,18 @@ void ViewportPaintable::assign_accumulated_visual_contexts()
         else
             paintable_box.set_filter({});
 
-        VisualContextIndex inherited_state;
+        SpatialContextIndex inherited_spatial_context;
+        ClipEffectContextIndex inherited_clip_effect_context;
 
         if (paintable_box.is_fixed_position()) {
-            inherited_state = m_visual_viewport_context_index;
+            inherited_spatial_context = m_visual_viewport_spatial_context_index;
+            inherited_clip_effect_context = {};
         } else if (paintable_box.is_absolutely_positioned()) {
             // For position: absolute, use containing block's state to correctly escape scroll containers.
             auto* containing = paintable_box.containing_block();
-            inherited_state = containing->accumulated_visual_context_for_descendants_index();
+            auto containing_paint_context = containing->paint_context_for_descendants();
+            inherited_spatial_context = containing_paint_context.spatial_context_index;
+            inherited_clip_effect_context = containing_paint_context.clip_effect_context_index;
 
             // Abspos elements escape scroll containers and overflow clips of non-positioned
             // ancestors, but cannot escape stacking contexts created by intermediate effects
@@ -368,7 +379,7 @@ void ViewportPaintable::assign_accumulated_visual_contexts()
             // block and collect these intermediate effects.
             // NOTE: transforms/perspectives/filters establish containing blocks for abspos,
             //       so they cannot appear as intermediates.
-            Vector<VisualContextData, 4> intermediate_effects;
+            Vector<EffectsData, 4> intermediate_effects;
             for (Paintable* paintable = visual_parent; paintable && paintable != containing; paintable = paintable->parent()) {
                 auto* ancestor_box = as_if<PaintableBox>(paintable);
                 if (!ancestor_box)
@@ -377,39 +388,42 @@ void ViewportPaintable::assign_accumulated_visual_contexts()
                     intermediate_effects.append(effects.release_value());
             }
             for (auto& effects : intermediate_effects.in_reverse())
-                inherited_state = append_node(inherited_state, move(effects));
+                inherited_clip_effect_context = append_clip_effect_node(inherited_clip_effect_context, move(effects));
         } else {
             // For position: relative/static, use visual parent's state directly.
             // This avoids duplicate transform/perspective allocations that would occur with
             // the containing block + intermediate walk approach.
-            inherited_state = visual_parent->accumulated_visual_context_for_descendants_index();
+            auto parent_paint_context = visual_parent->paint_context_for_descendants();
+            inherited_spatial_context = parent_paint_context.spatial_context_index;
+            inherited_clip_effect_context = parent_paint_context.clip_effect_context_index;
         }
 
         // Build this element's own state from inherited state.
-        VisualContextIndex own_state = inherited_state;
+        SpatialContextIndex own_spatial_context = inherited_spatial_context;
+        ClipEffectContextIndex own_clip_effect_context = inherited_clip_effect_context;
 
         if (paintable_box.is_sticky_position()) {
             // For sticky elements, use enclosing_scroll_frame which holds the sticky frame.
             // own_scroll_frame may be a different scroll frame if the sticky element also has scrollable overflow.
             if (auto sticky_idx = paintable_box.enclosing_scroll_frame_index(); sticky_idx.value() && m_scroll_state.frame_at(sticky_idx).is_sticky())
-                own_state = append_node(own_state, ScrollData { sticky_idx, true });
+                own_spatial_context = append_spatial_node(own_spatial_context, ScrollData { sticky_idx, true });
         }
 
         auto const& computed_values = paintable_box.computed_values();
 
         if (auto effects = make_effects_data(paintable_box); effects.has_value())
-            own_state = append_node(own_state, effects.release_value());
+            own_clip_effect_context = append_clip_effect_node(own_clip_effect_context, effects.release_value());
 
         if (auto transform_data = compute_transform(paintable_box, computed_values, pixel_ratio); transform_data.has_value()) {
             paintable_box.set_has_non_invertible_css_transform(!transform_data->matrix.is_invertible());
-            own_state = append_node(own_state, *transform_data);
+            own_spatial_context = append_spatial_node(own_spatial_context, *transform_data);
         } else {
             paintable_box.set_has_non_invertible_css_transform(false);
         }
 
         if (auto css_clip = paintable_box.get_clip_rect(); css_clip.has_value()) {
             auto effective_rect = effective_css_clip_rect(*css_clip);
-            own_state = append_node(own_state, ClipData { converter.rounded_device_rect(effective_rect), {} });
+            own_clip_effect_context = append_clip_effect_node(own_clip_effect_context, ClipData { converter.rounded_device_rect(effective_rect), {}, own_spatial_context });
         }
 
         // FIXME: Support other geometry boxes. See: https://drafts.fxtf.org/css-masking/#typedef-geometry-box
@@ -425,29 +439,30 @@ void ViewportPaintable::assign_accumulated_visual_contexts()
                 [](auto const&) { return Gfx::WindingRule::Nonzero; });
             auto device_path = path.copy_transformed(Gfx::AffineTransform {}.set_scale(scale, scale));
             auto device_bounding_rect = converter.rounded_device_rect(masking_area);
-            own_state = append_node(own_state, ClipPathData { move(device_path), device_bounding_rect, fill_rule });
+            own_clip_effect_context = append_clip_effect_node(own_clip_effect_context, ClipPathData { move(device_path), device_bounding_rect, fill_rule, own_spatial_context });
         }
 
-        paintable_box.set_accumulated_visual_context(own_state);
+        paintable_box.set_paint_context({ own_spatial_context, own_clip_effect_context });
 
         // Build state for descendants: own state + perspective + clip + scroll.
-        VisualContextIndex state_for_descendants = own_state;
+        SpatialContextIndex spatial_context_for_descendants = own_spatial_context;
+        ClipEffectContextIndex clip_effect_context_for_descendants = own_clip_effect_context;
 
         if (auto perspective_matrix = compute_perspective_matrix(paintable_box, computed_values); perspective_matrix.has_value()) {
             auto scaled_matrix = scale_matrix_for_device_pixels(*perspective_matrix, scale);
-            state_for_descendants = append_node(state_for_descendants, PerspectiveData { scaled_matrix });
+            spatial_context_for_descendants = append_spatial_node(spatial_context_for_descendants, PerspectiveData { scaled_matrix });
         }
 
-        if (auto clip_data = compute_clip_data(paintable_box, computed_values, converter); clip_data.has_value())
-            state_for_descendants = append_node(state_for_descendants, clip_data.value());
+        if (auto clip_data = compute_clip_data(paintable_box, computed_values, converter, spatial_context_for_descendants); clip_data.has_value())
+            clip_effect_context_for_descendants = append_clip_effect_node(clip_effect_context_for_descendants, clip_data.value());
 
         if (paintable_box.own_scroll_frame_index().value()) {
             auto is_sticky_without_scrollable_overflow = paintable_box.is_sticky_position() && paintable_box.enclosing_scroll_frame_index() == paintable_box.own_scroll_frame_index();
             if (!is_sticky_without_scrollable_overflow)
-                state_for_descendants = append_node(state_for_descendants, ScrollData { paintable_box.own_scroll_frame_index(), false });
+                spatial_context_for_descendants = append_spatial_node(spatial_context_for_descendants, ScrollData { paintable_box.own_scroll_frame_index(), false });
         }
 
-        paintable_box.set_accumulated_visual_context_for_descendants(state_for_descendants);
+        paintable_box.set_paint_context_for_descendants({ spatial_context_for_descendants, clip_effect_context_for_descendants });
 
         return TraversalDecision::Continue;
     });

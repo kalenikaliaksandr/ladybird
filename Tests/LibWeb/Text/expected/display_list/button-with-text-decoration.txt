@@ -1,11 +1,13 @@
-AccumulatedVisualContext Tree:
+SpatialContext Tree:
   [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
 
+ClipEffectContext Tree:
+
 DisplayList:
-SaveLayer@0
-  FillRect@1 rect=[8,8 106x22] color=rgb(212, 208, 200)
-  FillPath@1 path_bounding_rect=[8,8 106x22]
-  DrawGlyphRun@1 rect=[13,10 96x18] translation=[13,23.796875] color=rgb(0, 0, 0)
-  DrawLine@1 from=[13,27] to=[109,27] color=rgb(0, 0, 0) thickness=2
-Restore@0
+SaveLayer@S0/C0
+  FillRect@S1/C0 rect=[8,8 106x22] color=rgb(212, 208, 200)
+  FillPath@S1/C0 path_bounding_rect=[8,8 106x22]
+  DrawGlyphRun@S1/C0 rect=[13,10 96x18] translation=[13,23.796875] color=rgb(0, 0, 0)
+  DrawLine@S1/C0 from=[13,27] to=[109,27] color=rgb(0, 0, 0) thickness=2
+Restore@S0/C0
 

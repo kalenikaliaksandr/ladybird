@@ -1,18 +1,22 @@
 Before z-index change:
-AccumulatedVisualContext Tree:
+SpatialContext Tree:
   [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
 
+ClipEffectContext Tree:
+
 DisplayList:
-SaveLayer@0
-  FillRect@1 rect=[8,8 50x50] color=rgb(0, 0, 255)
-Restore@0
+SaveLayer@S0/C0
+  FillRect@S1/C0 rect=[8,8 50x50] color=rgb(0, 0, 255)
+Restore@S0/C0
 
 After z-index change:
-AccumulatedVisualContext Tree:
+SpatialContext Tree:
   [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
 
+ClipEffectContext Tree:
+
 DisplayList:
-SaveLayer@0
-  FillRect@1 rect=[8,8 50x50] color=rgb(0, 0, 255)
-Restore@0
+SaveLayer@S0/C0
+  FillRect@S1/C0 rect=[8,8 50x50] color=rgb(0, 0, 255)
+Restore@S0/C0
 

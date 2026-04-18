@@ -156,34 +156,13 @@ void Paintable::paint_inspector_overlay(DisplayListRecordingContext& context) co
         paintable_box = first_ancestor_of_type<PaintableBox>();
 
     if (paintable_box) {
-        auto& visual_context_tree = const_cast<ViewportPaintable*>(document().paintable())->visual_context_tree();
-        auto visual_context_index = paintable_box->accumulated_visual_context_index();
-
-        if (visual_context_index.value()) {
-            Vector<VisualContextIndex> relevant_indices;
-            for (auto i = visual_context_index; i.value(); i = visual_context_tree.node_at(i).parent_index) {
-                auto should_keep = visual_context_tree.node_at(i).data.visit(
-                    [](ScrollData const&) { return true; },
-                    [](ClipData const&) { return false; },
-                    [](TransformData const&) { return true; },
-                    [](PerspectiveData const&) { return true; },
-                    [](ClipPathData const&) { return false; },
-                    [](EffectsData const&) { return false; });
-                if (should_keep)
-                    relevant_indices.append(i);
-            }
-
-            VisualContextIndex overlay_visual_context_index {};
-            for (auto const& source_visual_context_index : relevant_indices.in_reverse())
-                overlay_visual_context_index = visual_context_tree.append(visual_context_tree.node_at(source_visual_context_index).data, overlay_visual_context_index);
-
-            if (overlay_visual_context_index.value())
-                display_list_recorder.set_accumulated_visual_context(overlay_visual_context_index);
-        }
+        auto overlay_paint_context = paintable_box->paint_context();
+        overlay_paint_context.clip_effect_context_index = {};
+        display_list_recorder.set_paint_context(overlay_paint_context);
     }
 
     paint_inspector_overlay_internal(context);
-    display_list_recorder.set_accumulated_visual_context({});
+    display_list_recorder.set_paint_context({});
 }
 
 void Paintable::set_needs_repaint(InvalidateDisplayList should_invalidate_display_list)

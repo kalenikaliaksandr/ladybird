@@ -264,10 +264,10 @@ public:
     void set_enclosing_scroll_frame_index(ScrollFrameIndex index) { m_enclosing_scroll_frame_index = index; }
     void set_own_scroll_frame_index(ScrollFrameIndex index) { m_own_scroll_frame_index = index; }
 
-    void set_accumulated_visual_context(VisualContextIndex index) { m_accumulated_visual_context_index = index; }
-    [[nodiscard]] VisualContextIndex accumulated_visual_context_index() const { return m_accumulated_visual_context_index; }
-    void set_accumulated_visual_context_for_descendants(VisualContextIndex index) { m_accumulated_visual_context_for_descendants_index = index; }
-    [[nodiscard]] VisualContextIndex accumulated_visual_context_for_descendants_index() const { return m_accumulated_visual_context_for_descendants_index; }
+    void set_paint_context(PaintContext paint_context) { m_paint_context = paint_context; }
+    [[nodiscard]] PaintContext paint_context() const { return m_paint_context; }
+    void set_paint_context_for_descendants(PaintContext paint_context) { m_paint_context_for_descendants = paint_context; }
+    [[nodiscard]] PaintContext paint_context_for_descendants() const { return m_paint_context_for_descendants; }
 
     Optional<CSSPixelPoint> transform_point_to_local(CSSPixelPoint screen_position) const;
     Optional<CSSPixelPoint> transform_point_to_local_for_descendants(CSSPixelPoint screen_position) const;
@@ -283,12 +283,12 @@ public:
         return m_cached_phase_commands[to_underlying(phase)].has_value();
     }
 
-    Vector<DisplayListCommand> const& cached_commands(PaintPhase phase) const
+    Vector<CommandListItem> const& cached_commands(PaintPhase phase) const
     {
         return m_cached_phase_commands[to_underlying(phase)].value();
     }
 
-    void set_cached_commands(PaintPhase phase, Vector<DisplayListCommand> commands) const
+    void set_cached_commands(PaintPhase phase, Vector<CommandListItem> commands) const
     {
         m_cached_phase_commands[to_underlying(phase)] = move(commands);
     }
@@ -338,8 +338,8 @@ private:
 
     ScrollFrameIndex m_enclosing_scroll_frame_index {};
     ScrollFrameIndex m_own_scroll_frame_index {};
-    VisualContextIndex m_accumulated_visual_context_index {};
-    VisualContextIndex m_accumulated_visual_context_for_descendants_index {};
+    PaintContext m_paint_context;
+    PaintContext m_paint_context_for_descendants;
 
     Optional<BordersDataWithElementKind> m_override_borders_data;
     Optional<TableCellCoordinates> m_table_cell_coordinates;
@@ -358,7 +358,7 @@ private:
 
     BoxModelMetrics m_box_model;
 
-    mutable Array<Optional<Vector<DisplayListCommand>>, paint_phase_count> m_cached_phase_commands;
+    mutable Array<Optional<Vector<CommandListItem>>, paint_phase_count> m_cached_phase_commands;
 };
 
 }

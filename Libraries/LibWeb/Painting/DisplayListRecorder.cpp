@@ -29,7 +29,7 @@ DisplayListRecorder::CommandCapture::~CommandCapture()
         m_recorder->end_capture();
 }
 
-Vector<DisplayListCommand> DisplayListRecorder::CommandCapture::take()
+Vector<CommandListItem> DisplayListRecorder::CommandCapture::take()
 {
     VERIFY(m_recorder);
     auto commands = move(m_recorder->m_captured_commands);
@@ -60,29 +60,29 @@ consteval static int command_nesting_level_change(T const& command)
     return 0;
 }
 
-#define APPEND(...)                                                                       \
-    do {                                                                                  \
-        auto command = __VA_ARGS__;                                                       \
-        m_save_nesting_level += command_nesting_level_change(command);                    \
-        if (m_is_capturing) {                                                             \
-            auto command_copy = command;                                                  \
-            if (m_display_list.append(move(command), m_accumulated_visual_context_index)) \
-                m_captured_commands.append(move(command_copy));                           \
-        } else {                                                                          \
-            m_display_list.append(move(command), m_accumulated_visual_context_index);     \
-        }                                                                                 \
+#define APPEND(...)                                                                  \
+    do {                                                                             \
+        auto command = __VA_ARGS__;                                                  \
+        m_save_nesting_level += command_nesting_level_change(command);               \
+        if (m_is_capturing) {                                                        \
+            auto command_copy = command;                                             \
+            if (m_display_list.append(move(command), m_paint_context))               \
+                m_captured_commands.append({ m_paint_context, move(command_copy) }); \
+        } else {                                                                     \
+            m_display_list.append(move(command), m_paint_context);                   \
+        }                                                                            \
     } while (false)
 
-void DisplayListRecorder::replay_cached_commands(ReadonlySpan<DisplayListCommand> commands)
+void DisplayListRecorder::replay_cached_commands(ReadonlySpan<CommandListItem> commands)
 {
-    for (auto const& command : commands) {
-        auto command_copy = command;
+    for (auto const& command_list_item : commands) {
+        auto command_copy = command_list_item.command;
         m_save_nesting_level += command_copy.visit([](auto const& command) -> int {
             if constexpr (requires { command.nesting_level_change; })
                 return command.nesting_level_change;
             return 0;
         });
-        m_display_list.append(move(command_copy), m_accumulated_visual_context_index);
+        m_display_list.append(move(command_copy), command_list_item.context);
     }
 }
 

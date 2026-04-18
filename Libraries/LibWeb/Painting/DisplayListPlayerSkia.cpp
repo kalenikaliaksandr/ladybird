@@ -91,6 +91,21 @@ static SkM44 to_skia_matrix4x4(Gfx::FloatMatrix4x4 const& matrix)
         matrix[3, 3]);
 }
 
+static bool is_axis_aligned_2d_transform(Gfx::FloatMatrix4x4 const& matrix)
+{
+    auto affine = Gfx::extract_2d_affine_transform(matrix);
+    return affine.is_identity_or_translation_or_scale();
+}
+
+template<typename Callback>
+static void with_device_space_matrix(SkCanvas& canvas, Callback callback)
+{
+    auto current_matrix = canvas.getLocalToDevice();
+    canvas.setMatrix(SkM44());
+    callback();
+    canvas.setMatrix(current_matrix);
+}
+
 void DisplayListPlayerSkia::flush()
 {
     if (auto context = Gfx::SkiaBackendContext::the())
@@ -192,7 +207,30 @@ void DisplayListPlayerSkia::add_clip_rect(AddClipRect const& command)
 {
     auto& canvas = surface().canvas();
     auto const& rect = command.rect;
+    if (rect.width() <= 50 && rect.height() <= 50)
+        dbgln("clip rect={} aa=true", rect);
     canvas.clipRect(to_skia_rect(rect), true);
+}
+
+void DisplayListPlayerSkia::add_device_clip_rect(AddClipRect const& command, Gfx::FloatMatrix4x4 const& matrix)
+{
+    auto& canvas = surface().canvas();
+    auto const& rect = command.rect;
+    auto combined_matrix = m_nested_display_list_transform * matrix;
+    if (rect.width() <= 50 && rect.height() <= 50) {
+        dbgln("device clip rect={} matrix=[{},{},{},{};{},{},{},{};{},{},{},{};{},{},{},{}] axis_aligned={} aa={}",
+            rect,
+            combined_matrix[0, 0], combined_matrix[0, 1], combined_matrix[0, 2], combined_matrix[0, 3],
+            combined_matrix[1, 0], combined_matrix[1, 1], combined_matrix[1, 2], combined_matrix[1, 3],
+            combined_matrix[2, 0], combined_matrix[2, 1], combined_matrix[2, 2], combined_matrix[2, 3],
+            combined_matrix[3, 0], combined_matrix[3, 1], combined_matrix[3, 2], combined_matrix[3, 3],
+            is_axis_aligned_2d_transform(combined_matrix),
+            !is_axis_aligned_2d_transform(combined_matrix));
+    }
+    with_device_space_matrix(canvas, [&] {
+        canvas.concat(to_skia_matrix4x4(combined_matrix));
+        canvas.clipRect(to_skia_rect(rect), true);
+    });
 }
 
 void DisplayListPlayerSkia::save(Save const&)
@@ -725,12 +763,28 @@ void DisplayListPlayerSkia::add_rounded_rect_clip(AddRoundedRectClip const& comm
     canvas.clipRRect(rounded_rect, clip_op, true);
 }
 
+void DisplayListPlayerSkia::add_device_rounded_rect_clip(AddRoundedRectClip const& command, Gfx::FloatMatrix4x4 const& matrix)
+{
+    auto rounded_rect = to_skia_rrect(command.border_rect, command.corner_radii);
+    auto& canvas = surface().canvas();
+    auto clip_op = command.corner_clip == CornerClip::Inside ? SkClipOp::kDifference : SkClipOp::kIntersect;
+    with_device_space_matrix(canvas, [&] {
+        canvas.concat(to_skia_matrix4x4(m_nested_display_list_transform * matrix));
+        canvas.clipRRect(rounded_rect, clip_op, true);
+    });
+}
+
 void DisplayListPlayerSkia::paint_nested_display_list(PaintNestedDisplayList const& command)
 {
     auto& canvas = surface().canvas();
+    canvas.save();
     canvas.translate(command.rect.x(), command.rect.y());
+    auto previous_nested_display_list_transform = m_nested_display_list_transform;
+    m_nested_display_list_transform = m_nested_display_list_transform * Gfx::translation_matrix(Vector3<float>(command.rect.x(), command.rect.y(), 0));
     ScrollStateSnapshot scroll_state_snapshot;
     execute_impl(*command.display_list, scroll_state_snapshot);
+    m_nested_display_list_transform = previous_nested_display_list_transform;
+    canvas.restore();
 }
 
 void DisplayListPlayerSkia::paint_scrollbar(PaintScrollBar const& command)
@@ -798,6 +852,15 @@ void DisplayListPlayerSkia::add_clip_path(Gfx::Path const& path)
 {
     auto& canvas = surface().canvas();
     canvas.clipPath(to_skia_path(path), true);
+}
+
+void DisplayListPlayerSkia::add_device_clip_path(Gfx::Path const& path, Gfx::FloatMatrix4x4 const& matrix)
+{
+    auto& canvas = surface().canvas();
+    with_device_space_matrix(canvas, [&] {
+        canvas.concat(to_skia_matrix4x4(m_nested_display_list_transform * matrix));
+        canvas.clipPath(to_skia_path(path), true);
+    });
 }
 
 bool DisplayListPlayerSkia::would_be_fully_clipped_by_painter(Gfx::IntRect rect) const

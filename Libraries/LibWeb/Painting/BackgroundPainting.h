@@ -20,6 +20,7 @@ struct ResolvedBackgroundLayerData {
     CSSPixels position_y;
     CSSPixelRect background_positioning_area;
     CSSPixelRect image_rect;
+    bool is_viewport_fixed { false };
     CSS::Repetition repeat_x;
     CSS::Repetition repeat_y;
     CSS::MixBlendMode blend_mode;

@@ -28,6 +28,7 @@ private:
     void draw_repeated_immutable_bitmap(DrawRepeatedImmutableBitmap const&) override;
     void draw_external_content(DrawExternalContent const&) override;
     void add_clip_rect(AddClipRect const&) override;
+    void add_device_clip_rect(AddClipRect const&, Gfx::FloatMatrix4x4 const&) override;
     void save(Save const&) override;
     void save_layer(SaveLayer const&) override;
     void restore(Restore const&) override;
@@ -47,16 +48,20 @@ private:
     void paint_radial_gradient(PaintRadialGradient const&) override;
     void paint_conic_gradient(PaintConicGradient const&) override;
     void add_rounded_rect_clip(AddRoundedRectClip const&) override;
+    void add_device_rounded_rect_clip(AddRoundedRectClip const&, Gfx::FloatMatrix4x4 const&) override;
     void paint_scrollbar(PaintScrollBar const&) override;
     void paint_nested_display_list(PaintNestedDisplayList const&) override;
     void apply_effects(ApplyEffects const&) override;
     void apply_transform(Gfx::FloatPoint origin, Gfx::FloatMatrix4x4 const&) override;
 
     void add_clip_path(Gfx::Path const&) override;
+    void add_device_clip_path(Gfx::Path const&, Gfx::FloatMatrix4x4 const&) override;
 
     bool would_be_fully_clipped_by_painter(Gfx::IntRect) const override;
 
     SkPaint paint_style_to_skia_paint(SVGPaintServerPaintStyle const&, Gfx::FloatRect const& bounding_rect);
+
+    Gfx::FloatMatrix4x4 m_nested_display_list_transform { Gfx::FloatMatrix4x4::identity() };
 };
 
 }

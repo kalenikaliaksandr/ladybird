@@ -159,8 +159,8 @@ void PaintableBox::reset_for_relayout()
 
     m_enclosing_scroll_frame_index = {};
     m_own_scroll_frame_index = {};
-    m_accumulated_visual_context_index = {};
-    m_accumulated_visual_context_for_descendants_index = {};
+    m_paint_context = {};
+    m_paint_context_for_descendants = {};
 
     m_used_values_for_grid_template_columns = nullptr;
     m_used_values_for_grid_template_rows = nullptr;
@@ -940,12 +940,13 @@ BorderRadiiData PaintableBox::normalized_border_radii_data(ShrinkRadiiForBorders
 
 Optional<CSSPixelPoint> PaintableBox::transform_point_to_local(CSSPixelPoint screen_position) const
 {
-    if (!m_accumulated_visual_context_index.value())
+    if (!m_paint_context.spatial_context_index.value() && !m_paint_context.clip_effect_context_index.value())
         return screen_position;
     auto pixel_ratio = static_cast<float>(document().page().client().device_pixels_per_css_pixel());
     auto const& scroll_state = document().paintable()->scroll_state_snapshot();
-    auto const& visual_context_tree = document().paintable()->visual_context_tree();
-    auto result = visual_context_tree.transform_point_for_hit_test(m_accumulated_visual_context_index, screen_position.to_type<float>() * pixel_ratio, scroll_state);
+    auto const& spatial_context_tree = document().paintable()->spatial_context_tree();
+    auto const& clip_effect_context_tree = document().paintable()->clip_effect_context_tree();
+    auto result = transform_point_for_hit_test(spatial_context_tree, clip_effect_context_tree, m_paint_context, screen_position.to_type<float>() * pixel_ratio, scroll_state);
     if (!result.has_value())
         return {};
     return (*result / pixel_ratio).to_type<CSSPixels>();
@@ -953,12 +954,13 @@ Optional<CSSPixelPoint> PaintableBox::transform_point_to_local(CSSPixelPoint scr
 
 Optional<CSSPixelPoint> PaintableBox::transform_point_to_local_for_descendants(CSSPixelPoint screen_position) const
 {
-    if (!m_accumulated_visual_context_for_descendants_index.value())
+    if (!m_paint_context_for_descendants.spatial_context_index.value() && !m_paint_context_for_descendants.clip_effect_context_index.value())
         return screen_position;
     auto pixel_ratio = static_cast<float>(document().page().client().device_pixels_per_css_pixel());
     auto const& scroll_state = document().paintable()->scroll_state_snapshot();
-    auto const& visual_context_tree = document().paintable()->visual_context_tree();
-    auto result = visual_context_tree.transform_point_for_hit_test(m_accumulated_visual_context_for_descendants_index, screen_position.to_type<float>() * pixel_ratio, scroll_state);
+    auto const& spatial_context_tree = document().paintable()->spatial_context_tree();
+    auto const& clip_effect_context_tree = document().paintable()->clip_effect_context_tree();
+    auto result = transform_point_for_hit_test(spatial_context_tree, clip_effect_context_tree, m_paint_context_for_descendants, screen_position.to_type<float>() * pixel_ratio, scroll_state);
     if (!result.has_value())
         return {};
     return (*result / pixel_ratio).to_type<CSSPixels>();
@@ -966,22 +968,23 @@ Optional<CSSPixelPoint> PaintableBox::transform_point_to_local_for_descendants(C
 
 CSSPixelRect PaintableBox::transform_rect_to_viewport(CSSPixelRect const& rect) const
 {
-    if (!m_accumulated_visual_context_index.value())
+    if (!m_paint_context.spatial_context_index.value())
         return rect;
     auto pixel_ratio = static_cast<float>(document().page().client().device_pixels_per_css_pixel());
     auto const& scroll_state = document().paintable()->scroll_state_snapshot();
-    auto const& visual_context_tree = document().paintable()->visual_context_tree();
-    auto result = visual_context_tree.transform_rect_to_viewport(m_accumulated_visual_context_index, rect.to_type<float>() * pixel_ratio, scroll_state);
+    auto const& spatial_context_tree = document().paintable()->spatial_context_tree();
+    auto result = spatial_context_tree.transform_rect_to_viewport(m_paint_context.spatial_context_index, rect.to_type<float>() * pixel_ratio, scroll_state);
     return (result * (1.f / pixel_ratio)).to_type<CSSPixels>();
 }
 
 CSSPixelPoint PaintableBox::inverse_transform_point(CSSPixelPoint screen_position) const
 {
-    if (!m_accumulated_visual_context_index.value())
+    if (!m_paint_context.spatial_context_index.value())
         return screen_position;
     auto pixel_ratio = static_cast<float>(document().page().client().device_pixels_per_css_pixel());
-    auto const& visual_context_tree = document().paintable()->visual_context_tree();
-    auto result = visual_context_tree.inverse_transform_point(m_accumulated_visual_context_index, screen_position.to_type<float>() * pixel_ratio);
+    auto const& spatial_context_tree = document().paintable()->spatial_context_tree();
+    auto const& scroll_state = document().paintable()->scroll_state_snapshot();
+    auto result = spatial_context_tree.inverse_transform_point(m_paint_context.spatial_context_index, screen_position.to_type<float>() * pixel_ratio, scroll_state);
     return (result / pixel_ratio).to_type<CSSPixels>();
 }
 

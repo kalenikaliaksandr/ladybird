@@ -23,9 +23,21 @@ SVGSVGPaintable::SVGSVGPaintable(Layout::SVGSVGBox const& layout_box)
 {
 }
 
+CSSPixelRect SVGSVGPaintable::compute_absolute_rect() const
+{
+    auto const& svg_svg_box = static_cast<Layout::SVGSVGBox const&>(layout_node());
+    if (auto* ancestor_svg_box = svg_svg_box.first_ancestor_of_type<Layout::SVGSVGBox>()) {
+        CSSPixelRect rect { offset(), content_size() };
+        for (Layout::Box const* ancestor = ancestor_svg_box; ancestor; ancestor = ancestor->containing_block())
+            rect.translate_by(ancestor->paintable_box()->offset());
+        return rect;
+    }
+    return PaintableBox::compute_absolute_rect();
+}
+
 void SVGSVGPaintable::paint_svg_box(DisplayListRecordingContext& context, PaintableBox const& svg_box, PaintPhase phase)
 {
-    context.display_list_recorder().set_accumulated_visual_context(svg_box.accumulated_visual_context_index());
+    context.display_list_recorder().set_paint_context(svg_box.paint_context());
 
     // For elements with SVG filters, emit a transparent FillRect to trigger filter application.
     // This ensures content-generating filters (feFlood, feImage) work even with empty source.
@@ -60,8 +72,10 @@ void SVGSVGPaintable::paint_svg_box(DisplayListRecordingContext& context, Painta
         }
     }
 
-    context.display_list_recorder().begin_masks(masks);
+    if (masks.size() > 0)
+        dbgln("paint_svg_box {} masks={} mask_area={} clip_area={}", svg_box.debug_description(), masks.size(), mask_area, clip_area);
 
+    context.display_list_recorder().begin_masks(masks);
     if (!skip_painting) {
         svg_box.paint(context, PaintPhase::Foreground);
         paint_descendants(context, svg_box, phase);

@@ -26,6 +26,7 @@ protected:
 
 private:
     virtual bool is_svg_svg_paintable() const final { return true; }
+    virtual CSSPixelRect compute_absolute_rect() const override;
 };
 
 template<>

@@ -1,12 +1,14 @@
-AccumulatedVisualContext Tree:
+SpatialContext Tree:
   [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
 
+ClipEffectContext Tree:
+
 DisplayList:
-SaveLayer@0
-  FillRect@1 rect=[8,8 29x30] color=rgb(0, 0, 0)
-  FillRect@1 rect=[38,8 28x30] color=rgb(0, 0, 0)
-  FillRect@1 rect=[67,8 29x30] color=rgb(0, 0, 0)
-  FillRect@1 rect=[97,8 28x30] color=rgb(0, 0, 0)
-  FillRect@1 rect=[126,8 29x30] color=rgb(0, 0, 0)
-Restore@0
+SaveLayer@S0/C0
+  FillRect@S1/C0 rect=[8,8 29x30] color=rgb(0, 0, 0)
+  FillRect@S1/C0 rect=[38,8 28x30] color=rgb(0, 0, 0)
+  FillRect@S1/C0 rect=[67,8 29x30] color=rgb(0, 0, 0)
+  FillRect@S1/C0 rect=[97,8 28x30] color=rgb(0, 0, 0)
+  FillRect@S1/C0 rect=[126,8 29x30] color=rgb(0, 0, 0)
+Restore@S0/C0
 

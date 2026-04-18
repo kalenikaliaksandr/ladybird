@@ -23,6 +23,7 @@
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/BorderRadiiData.h>
 #include <LibWeb/Painting/BorderRadiusCornerClipper.h>
+#include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListCommand.h>
 #include <LibWeb/Painting/GradientData.h>
 #include <LibWeb/Painting/PaintStyle.h>
@@ -87,10 +88,14 @@ public:
 
     void translate(Gfx::IntPoint delta);
 
-    void set_accumulated_visual_context(VisualContextIndex index) { m_accumulated_visual_context_index = index; }
-    VisualContextIndex accumulated_visual_context() const { return m_accumulated_visual_context_index; }
+    void set_paint_context(PaintContext context) { m_paint_context = context; }
+    PaintContext paint_context() const { return m_paint_context; }
+    void set_spatial_context(SpatialContextIndex spatial_context_index) { m_paint_context.spatial_context_index = spatial_context_index; }
+    SpatialContextIndex spatial_context() const { return m_paint_context.spatial_context_index; }
+    void set_clip_effect_context(ClipEffectContextIndex clip_effect_context_index) { m_paint_context.clip_effect_context_index = clip_effect_context_index; }
+    ClipEffectContextIndex clip_effect_context() const { return m_paint_context.clip_effect_context_index; }
 
-    void replay_cached_commands(ReadonlySpan<DisplayListCommand> commands);
+    void replay_cached_commands(ReadonlySpan<CommandListItem> commands);
 
     class CommandCapture {
         AK_MAKE_NONCOPYABLE(CommandCapture);
@@ -101,7 +106,7 @@ public:
         {
         }
         ~CommandCapture();
-        Vector<DisplayListCommand> take();
+        Vector<CommandListItem> take();
 
     private:
         friend class DisplayListRecorder;
@@ -149,11 +154,11 @@ public:
 private:
     void end_capture();
 
-    VisualContextIndex m_accumulated_visual_context_index {};
+    PaintContext m_paint_context;
     Vector<size_t> m_push_sc_index_stack;
     DisplayList& m_display_list;
     bool m_is_capturing { false };
-    Vector<DisplayListCommand> m_captured_commands;
+    Vector<CommandListItem> m_captured_commands;
 };
 
 class DisplayListRecorderStateSaver {
