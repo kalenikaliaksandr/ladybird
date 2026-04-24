@@ -2,24 +2,31 @@
 <script src="include.js"></script>
 <script>
     test(() => {
+        const key = `localStorage-test-${crypto.randomUUID()}`;
+        const indexedProperty = crypto.getRandomValues(new Uint32Array(1))[0];
 
-        println(localStorage["test"])
-        println(localStorage.getItem("test"))
+        try {
+            println(localStorage[key])
+            println(localStorage.getItem(key))
 
-        localStorage["test"] = "value";
-        println(localStorage["test"]);
-        println(localStorage.getItem("test"));
+            localStorage[key] = "value";
+            println(localStorage[key]);
+            println(localStorage.getItem(key));
 
-        localStorage.setItem("test", "other");
-        println(localStorage["test"]);
-        println(localStorage.getItem("test"));
+            localStorage.setItem(key, "other");
+            println(localStorage[key]);
+            println(localStorage.getItem(key));
 
-        // Ensure indexed properties work
-        println(localStorage[0])
-        println(localStorage.getItem(0))
+            // Ensure indexed properties work
+            println(localStorage[indexedProperty])
+            println(localStorage.getItem(indexedProperty))
 
-        localStorage[0] = "foo";
-        println(localStorage[0]);
-        println(localStorage.getItem("0"));
+            localStorage[indexedProperty] = "foo";
+            println(localStorage[indexedProperty]);
+            println(localStorage.getItem(indexedProperty));
+        } finally {
+            localStorage.removeItem(key);
+            localStorage.removeItem(indexedProperty);
+        }
     });
 </script>

@@ -8,7 +8,11 @@
 
             println(`${functionName} should still be native: '${window.localStorage[functionName].toString()}'`);
             println(`${functionName}'s stringified function was added to storage: '${window.localStorage.getItem(functionName)}'`);
-            window.localStorage[functionName]("1", "2");
+
+            // Reading the property above verifies that the built-in was not overridden. Calling clear() would mutate
+            // same-origin localStorage shared by parallel test-web workers.
+            if (functionName !== "clear")
+                window.localStorage[functionName]("1", "2");
         }
     });
 </script>
