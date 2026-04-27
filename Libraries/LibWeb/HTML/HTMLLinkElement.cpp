@@ -23,6 +23,7 @@
 #include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/DOMURL/DOMURL.h>
 #include <LibWeb/Fetch/Fetching/Fetching.h>
+#include <LibWeb/Fetch/Infrastructure/Connections.h>
 #include <LibWeb/Fetch/Infrastructure/FetchAlgorithms.h>
 #include <LibWeb/Fetch/Infrastructure/FetchController.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/MIME.h>
@@ -34,7 +35,6 @@
 #include <LibWeb/HTML/PotentialCORSRequest.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <LibWeb/Infra/CharacterTypes.h>
-#include <LibWeb/Loader/ResourceLoader.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Platform/ImageCodecPlugin.h>
 #include <LibWeb/SVG/SVGDecodedImageData.h>
@@ -488,8 +488,7 @@ void HTMLLinkElement::fetch_and_process_linked_dns_prefetch_resource()
     //           settings object.
 
     // 4. The user agent should resolve an origin given partitionKey and url's origin.
-    // FIXME: This should go through Fetch: https://fetch.spec.whatwg.org/#resolve-an-origin
-    ResourceLoader::the().prefetch_dns(url.value());
+    Fetch::Infrastructure::resolve_an_origin(url->origin());
 }
 
 // https://html.spec.whatwg.org/multipage/links.html#link-type-preconnect:fetch-and-process-the-linked-resource-2
@@ -599,13 +598,17 @@ void HTMLLinkElement::preconnect(LinkProcessingOptions const& options)
         return;
 
     // FIXME: 5. Let partitionKey be the result of determining the network partition key given options's environment.
-    // FIXME: 6. Let useCredentials be true.
-    // FIXME: 7. If options's crossorigin is Anonymous and options's origin does not have the same origin as url's origin,
-    //           then set useCredentials to false.
+
+    // 6. Let useCredentials be true.
+    bool use_credentials = true;
+
+    // 7. If options's crossorigin is Anonymous and options's origin does not have the same origin as url's origin,
+    //    then set useCredentials to false.
+    if (options.crossorigin == CORSSettingAttribute::Anonymous && !options.origin.is_same_origin(url->origin()))
+        use_credentials = false;
 
     // 8. The user agent should obtain a connection given partitionKey, url's origin, and useCredentials.
-    // FIXME: This should go through Fetch: https://fetch.spec.whatwg.org/#concept-connection-obtain
-    ResourceLoader::the().preconnect(*url);
+    Fetch::Infrastructure::obtain_a_connection(url->origin(), use_credentials);
 }
 
 // https://html.spec.whatwg.org/multipage/links.html#match-preload-type
