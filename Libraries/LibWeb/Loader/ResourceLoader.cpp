@@ -72,36 +72,6 @@ void ResourceLoader::set_client(NonnullRefPtr<Requests::RequestClient> request_c
     };
 }
 
-void ResourceLoader::prefetch_dns(URL::URL const& url)
-{
-    if (url.scheme().is_one_of("file"sv, "data"sv))
-        return;
-
-    if (ContentFilter::the().is_filtered(url)) {
-        dbgln("ResourceLoader: Refusing to prefetch DNS for '{}': \033[31;1mURL was filtered\033[0m", url);
-        return;
-    }
-
-    // FIXME: We could put this request in a queue until the client connection is re-established.
-    if (m_request_client)
-        m_request_client->ensure_connection(url, RequestServer::CacheLevel::ResolveOnly);
-}
-
-void ResourceLoader::preconnect(URL::URL const& url)
-{
-    if (url.scheme().is_one_of("file"sv, "data"sv))
-        return;
-
-    if (ContentFilter::the().is_filtered(url)) {
-        dbgln("ResourceLoader: Refusing to pre-connect to '{}': \033[31;1mURL was filtered\033[0m", url);
-        return;
-    }
-
-    // FIXME: We could put this request in a queue until the client connection is re-established.
-    if (m_request_client)
-        m_request_client->ensure_connection(url, RequestServer::CacheLevel::CreateConnection);
-}
-
 static ByteString sanitized_url_for_logging(URL::URL const& url)
 {
     if (url.scheme() == "data"sv)
