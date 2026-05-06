@@ -10,11 +10,11 @@
 
 namespace Web::Painting {
 
-bool DisplayList::append(DisplayListCommand&& command, VisualContextIndex context_index)
+bool DisplayList::append(DisplayListCommand&& command, VisualContextIndex state)
 {
-    if (context_index.value() && m_visual_context_tree->has_empty_effective_clip(context_index))
+    if (m_visual_context_tree->has_empty_effective_clip(state))
         return false;
-    m_commands.append({ context_index, move(command) });
+    m_commands.append({ state, move(command) });
     return true;
 }
 
@@ -56,6 +56,52 @@ void DisplayListPlayer::execute_display_list_into_surface(DisplayList& display_l
     execute_impl(display_list, scroll_state_snapshot);
 }
 
+void DisplayListPlayer::apply_visual_context_node(AccumulatedVisualContextTree const& visual_context_tree, OrderedVisualContextNode const& ordered_node, ScrollStateSnapshot const& scroll_state)
+{
+    switch (ordered_node.type) {
+    case OrderedVisualContextNode::Type::Effect: {
+        auto const& effects = visual_context_tree.node_at(EffectContextIndex(ordered_node.index)).data;
+        apply_effects({ .opacity = effects.opacity, .compositing_and_blending_operator = effects.blend_mode, .filter = effects.gfx_filter });
+        break;
+    }
+    case OrderedVisualContextNode::Type::Spatial: {
+        auto const& spatial_data = visual_context_tree.node_at(SpatialContextIndex(ordered_node.index)).data;
+        auto apply_perspective = [&](PerspectiveData const& perspective) {
+            save({});
+            apply_transform({ 0, 0 }, perspective.matrix);
+        };
+        auto apply_scroll = [&](ScrollData const& scroll) {
+            save({});
+            auto offset = scroll_state.device_offset_for_index(scroll.scroll_frame_index);
+            if (!offset.is_zero())
+                translate({ .delta = offset.to_type<int>() });
+        };
+        auto apply_transform_data = [&](TransformData const& transform) {
+            save({});
+            apply_transform(transform.origin, transform.matrix);
+        };
+        spatial_data.visit(move(apply_perspective), move(apply_scroll), move(apply_transform_data));
+        break;
+    }
+    case OrderedVisualContextNode::Type::Clip: {
+        auto const& clip_data = visual_context_tree.node_at(ClipContextIndex(ordered_node.index)).data;
+        auto apply_clip = [&](ClipData const& clip) {
+            save({});
+            if (clip.corner_radii.has_any_radius())
+                add_rounded_rect_clip({ .corner_radii = clip.corner_radii, .border_rect = clip.rect.to_type<int>(), .corner_clip = CornerClip::Outside });
+            else
+                add_clip_rect({ .rect = clip.rect.to_type<int>() });
+        };
+        auto apply_clip_path = [&](ClipPathData const& clip_path) {
+            save({});
+            add_clip_path(clip_path.path);
+        };
+        clip_data.visit(move(apply_clip), move(apply_clip_path));
+        break;
+    }
+    }
+}
+
 void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnapshot const& scroll_state)
 {
     auto const& commands = display_list.commands();
@@ -63,48 +109,8 @@ void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnaps
 
     VERIFY(m_surface);
 
-    auto for_each_node_from_common_ancestor_to_target = [&](this auto const& self, VisualContextIndex common_ancestor_index, VisualContextIndex target_index, auto&& callback) -> IterationDecision {
-        if (!target_index.value() || target_index == common_ancestor_index)
-            return IterationDecision::Continue;
-        if (self(common_ancestor_index, visual_context_tree.node_at(target_index).parent_index, callback) == IterationDecision::Break)
-            return IterationDecision::Break;
-        return callback(visual_context_tree.node_at(target_index));
-    };
-
-    auto apply_accumulated_visual_context = [&](AccumulatedVisualContextNode const& node) {
-        node.data.visit(
-            [&](EffectsData const& effects) {
-                apply_effects({ .opacity = effects.opacity, .compositing_and_blending_operator = effects.blend_mode, .filter = effects.gfx_filter });
-            },
-            [&](PerspectiveData const& perspective) {
-                save({});
-                apply_transform({ 0, 0 }, perspective.matrix);
-            },
-            [&](ScrollData const& scroll) {
-                save({});
-                auto offset = scroll_state.device_offset_for_index(scroll.scroll_frame_index);
-                if (!offset.is_zero())
-                    translate({ .delta = offset.to_type<int>() });
-            },
-            [&](TransformData const& transform) {
-                save({});
-                apply_transform(transform.origin, transform.matrix);
-            },
-            [&](ClipData const& clip) {
-                save({});
-                if (clip.corner_radii.has_any_radius())
-                    add_rounded_rect_clip({ .corner_radii = clip.corner_radii, .border_rect = clip.rect.to_type<int>(), .corner_clip = CornerClip::Outside });
-                else
-                    add_clip_rect({ .rect = clip.rect.to_type<int>() });
-            },
-            [&](ClipPathData const& clip_path) {
-                save({});
-                add_clip_path(clip_path.path);
-            });
-    };
-
-    VisualContextIndex applied_context_index;
-    size_t applied_depth = 0;
+    Vector<OrderedVisualContextNode, 16> applied_nodes;
+    Optional<VisualContextIndex> fully_applied_state { VisualContextIndex {} };
 
     // OPTIMIZATION: When walking down to apply effects (opacity, filters, blend modes), check culling before applying
     //               each effect. Effects don't affect clip state, so the culling check is valid before applying them.
@@ -113,42 +119,50 @@ void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnaps
         Switched,
         CulledByEffect,
     };
-    auto switch_to_context = [&](VisualContextIndex target_index, Optional<Gfx::IntRect> bounding_rect = {}) -> SwitchResult {
-        if (applied_context_index == target_index)
+    auto switch_to_state = [&](VisualContextIndex target_state, Optional<Gfx::IntRect> bounding_rect = {}) -> SwitchResult {
+        if (fully_applied_state.has_value() && fully_applied_state.value() == target_state)
             return SwitchResult::Switched;
 
-        auto common_ancestor_index = visual_context_tree.find_common_ancestor(applied_context_index, target_index);
-        size_t const common_ancestor_depth = common_ancestor_index.value() ? visual_context_tree.node_at(common_ancestor_index).depth : 0;
+        fully_applied_state.clear();
+        auto target_nodes = visual_context_tree.build_ordered_context_chain(target_state);
 
-        while (applied_depth > common_ancestor_depth) {
+        size_t common_prefix_length = 0;
+        while (common_prefix_length < applied_nodes.size()
+            && common_prefix_length < target_nodes.size()
+            && applied_nodes[common_prefix_length] == target_nodes[common_prefix_length]) {
+            common_prefix_length++;
+        }
+
+        while (applied_nodes.size() > common_prefix_length) {
             restore({});
-            applied_depth--;
+            applied_nodes.take_last();
         }
 
         auto result = SwitchResult::Switched;
-        for_each_node_from_common_ancestor_to_target(common_ancestor_index, target_index, [&](AccumulatedVisualContextNode const& node) {
-            if (bounding_rect.has_value() && node.data.has<EffectsData>()) {
+        for (size_t i = common_prefix_length; i < target_nodes.size(); i++) {
+            auto const& node = target_nodes[i];
+            if (bounding_rect.has_value() && node.type == OrderedVisualContextNode::Type::Effect) {
                 if (bounding_rect->is_empty() || would_be_fully_clipped_by_painter(*bounding_rect)) {
                     result = SwitchResult::CulledByEffect;
-                    return IterationDecision::Break;
+                    break;
                 }
             }
-            apply_accumulated_visual_context(node);
-            applied_depth++;
-            return IterationDecision::Continue;
-        });
+            apply_visual_context_node(visual_context_tree, node, scroll_state);
+            applied_nodes.append(node);
+        }
 
         if (result == SwitchResult::Switched)
-            applied_context_index = target_index;
+            fully_applied_state = target_state;
+
         return result;
     };
 
     for (size_t command_index = 0; command_index < commands.size(); command_index++) {
-        auto const& [context_index, command] = commands[command_index];
+        auto const& [state, command] = commands[command_index];
 
         auto bounding_rect = command_bounding_rectangle(command);
 
-        if (switch_to_context(context_index, bounding_rect) == SwitchResult::CulledByEffect)
+        if (switch_to_state(state, bounding_rect) == SwitchResult::CulledByEffect)
             continue;
 
         if (command.has<PaintScrollBar>()) {
@@ -212,11 +226,13 @@ void DisplayListPlayer::execute_impl(DisplayList& display_list, ScrollStateSnaps
         else HANDLE_COMMAND(ApplyEffects, apply_effects)
         else VERIFY_NOT_REACHED();
         // clang-format on
+
+#undef HANDLE_COMMAND
     }
 
-    while (applied_depth > 0) {
+    while (!applied_nodes.is_empty()) {
         restore({});
-        applied_depth--;
+        applied_nodes.take_last();
     }
 }
 

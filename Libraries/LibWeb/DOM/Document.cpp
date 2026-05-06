@@ -7925,11 +7925,20 @@ String Document::dump_display_list()
     if (!display_list)
         return "No display list"_string;
 
-    HashMap<size_t, Painting::PaintableBox const*> context_id_to_paintable;
+    HashMap<size_t, Painting::PaintableBox const*> spatial_context_id_to_paintable;
+    HashMap<size_t, Painting::PaintableBox const*> clip_context_id_to_paintable;
+    HashMap<size_t, Painting::PaintableBox const*> effect_context_id_to_paintable;
     viewport_paintable->for_each_in_inclusive_subtree_of_type<Painting::PaintableBox>([&](auto const& paintable_box) {
-        auto visual_context_index = paintable_box.accumulated_visual_context_index();
-        if (visual_context_index.value())
-            (void)context_id_to_paintable.try_set(visual_context_index.value(), &paintable_box);
+        auto add_state = [&](Painting::VisualContextIndex state) {
+            if (state.spatial.value())
+                (void)spatial_context_id_to_paintable.try_set(state.spatial.value(), &paintable_box);
+            if (state.clip.value())
+                (void)clip_context_id_to_paintable.try_set(state.clip.value(), &paintable_box);
+            if (state.effect.value())
+                (void)effect_context_id_to_paintable.try_set(state.effect.value(), &paintable_box);
+        };
+        add_state(paintable_box.accumulated_visual_context_index());
+        add_state(paintable_box.accumulated_visual_context_for_descendants_index());
         return TraversalDecision::Continue;
     });
 
@@ -7937,36 +7946,96 @@ String Document::dump_display_list()
     builder.append("AccumulatedVisualContext Tree:\n"sv);
 
     auto const& visual_context_tree = display_list->visual_context_tree();
-    HashTable<size_t> visited;
-    HashMap<size_t, Vector<size_t>> children;
-    Vector<size_t> root_contexts;
+    HashTable<size_t> visited_spatial_contexts;
+    HashTable<size_t> visited_clip_contexts;
+    HashTable<size_t> visited_effect_contexts;
+    HashMap<size_t, Vector<size_t>> spatial_children;
+    HashMap<size_t, Vector<size_t>> clip_children;
+    HashMap<size_t, Vector<size_t>> effect_children;
+    Vector<size_t> root_spatial_contexts;
+    Vector<size_t> root_clip_contexts;
+    Vector<size_t> root_effect_contexts;
 
-    for (auto const& item : display_list->commands()) {
-        if (!item.context_index.value())
-            continue;
-        for (size_t node_index = item.context_index.value(); node_index && !visited.contains(node_index); node_index = visual_context_tree.node_at(Painting::VisualContextIndex(node_index)).parent_index.value()) {
-            visited.set(node_index);
-            auto parent = visual_context_tree.node_at(Painting::VisualContextIndex(node_index)).parent_index.value();
+    auto collect_spatial_context = [&](Painting::SpatialContextIndex index) {
+        for (size_t node_index = index.value(); node_index && !visited_spatial_contexts.contains(node_index); node_index = visual_context_tree.node_at(Painting::SpatialContextIndex(node_index)).parent_index.value()) {
+            visited_spatial_contexts.set(node_index);
+            auto parent = visual_context_tree.node_at(Painting::SpatialContextIndex(node_index)).parent_index.value();
             if (parent)
-                children.ensure(parent).append(node_index);
-            else if (!root_contexts.contains_slow(node_index))
-                root_contexts.append(node_index);
+                spatial_children.ensure(parent).append(node_index);
+            else if (!root_spatial_contexts.contains_slow(node_index))
+                root_spatial_contexts.append(node_index);
         }
-    }
-
-    Function<void(size_t, size_t)> dump_context = [&](size_t node_index, size_t indent) {
-        builder.append_repeated(' ', indent * 2);
-        builder.appendff("[{}] ", node_index);
-        visual_context_tree.dump(Painting::VisualContextIndex(node_index), builder);
-        if (auto it = context_id_to_paintable.find(node_index); it != context_id_to_paintable.end())
-            builder.appendff(" ({})", it->value->debug_description());
-        builder.append('\n');
-        for (auto child_node_index : children.get(node_index).value_or({}))
-            dump_context(child_node_index, indent + 1);
     };
 
-    for (auto root : root_contexts)
-        dump_context(root, 1);
+    auto collect_clip_context = [&](Painting::ClipContextIndex index) {
+        for (size_t node_index = index.value(); node_index && !visited_clip_contexts.contains(node_index); node_index = visual_context_tree.node_at(Painting::ClipContextIndex(node_index)).parent_index.value()) {
+            visited_clip_contexts.set(node_index);
+            auto parent = visual_context_tree.node_at(Painting::ClipContextIndex(node_index)).parent_index.value();
+            if (parent)
+                clip_children.ensure(parent).append(node_index);
+            else if (!root_clip_contexts.contains_slow(node_index))
+                root_clip_contexts.append(node_index);
+        }
+    };
+
+    auto collect_effect_context = [&](Painting::EffectContextIndex index) {
+        for (size_t node_index = index.value(); node_index && !visited_effect_contexts.contains(node_index); node_index = visual_context_tree.node_at(Painting::EffectContextIndex(node_index)).parent_index.value()) {
+            visited_effect_contexts.set(node_index);
+            auto parent = visual_context_tree.node_at(Painting::EffectContextIndex(node_index)).parent_index.value();
+            if (parent)
+                effect_children.ensure(parent).append(node_index);
+            else if (!root_effect_contexts.contains_slow(node_index))
+                root_effect_contexts.append(node_index);
+        }
+    };
+
+    for (auto const& item : display_list->commands()) {
+        collect_spatial_context(item.state.spatial);
+        collect_clip_context(item.state.clip);
+        collect_effect_context(item.state.effect);
+    }
+
+    builder.append("  Spatial:\n"sv);
+    Function<void(size_t, size_t)> dump_spatial_context = [&](size_t node_index, size_t indent) {
+        builder.append_repeated(' ', indent * 2);
+        builder.appendff("[{}] ", node_index);
+        visual_context_tree.dump(Painting::SpatialContextIndex(node_index), builder);
+        if (auto it = spatial_context_id_to_paintable.find(node_index); it != spatial_context_id_to_paintable.end())
+            builder.appendff(" ({})", it->value->debug_description());
+        builder.append('\n');
+        for (auto child_node_index : spatial_children.get(node_index).value_or({}))
+            dump_spatial_context(child_node_index, indent + 1);
+    };
+    for (auto root : root_spatial_contexts)
+        dump_spatial_context(root, 2);
+
+    builder.append("  Clip:\n"sv);
+    Function<void(size_t, size_t)> dump_clip_context = [&](size_t node_index, size_t indent) {
+        builder.append_repeated(' ', indent * 2);
+        builder.appendff("[{}] ", node_index);
+        visual_context_tree.dump(Painting::ClipContextIndex(node_index), builder);
+        if (auto it = clip_context_id_to_paintable.find(node_index); it != clip_context_id_to_paintable.end())
+            builder.appendff(" ({})", it->value->debug_description());
+        builder.append('\n');
+        for (auto child_node_index : clip_children.get(node_index).value_or({}))
+            dump_clip_context(child_node_index, indent + 1);
+    };
+    for (auto root : root_clip_contexts)
+        dump_clip_context(root, 2);
+
+    builder.append("  Effect:\n"sv);
+    Function<void(size_t, size_t)> dump_effect_context = [&](size_t node_index, size_t indent) {
+        builder.append_repeated(' ', indent * 2);
+        builder.appendff("[{}] ", node_index);
+        visual_context_tree.dump(Painting::EffectContextIndex(node_index), builder);
+        if (auto it = effect_context_id_to_paintable.find(node_index); it != effect_context_id_to_paintable.end())
+            builder.appendff(" ({})", it->value->debug_description());
+        builder.append('\n');
+        for (auto child_node_index : effect_children.get(node_index).value_or({}))
+            dump_effect_context(child_node_index, indent + 1);
+    };
+    for (auto root : root_effect_contexts)
+        dump_effect_context(root, 2);
 
     builder.append("\nDisplayList:\n"sv);
 
@@ -7985,7 +8054,7 @@ String Document::dump_display_list()
 
                 builder.append_repeated(' ', indent * 2);
                 item.command.visit([&](auto const& command) {
-                    builder.appendff("{}@{}", command.command_name, item.context_index.value());
+                    builder.appendff("{}@({},{},{})", command.command_name, item.state.spatial.value(), item.state.clip.value(), item.state.effect.value());
                     command.dump(builder);
                 });
                 builder.append('\n');

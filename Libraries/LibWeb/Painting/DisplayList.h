@@ -32,6 +32,8 @@ protected:
     void execute_display_list_into_surface(DisplayList&, Gfx::PaintingSurface&);
 
 private:
+    void apply_visual_context_node(AccumulatedVisualContextTree const&, OrderedVisualContextNode const&, ScrollStateSnapshot const&);
+
     virtual void flush() = 0;
     virtual void draw_glyph_run(DrawGlyphRun const&) = 0;
     virtual void fill_rect(FillRect const&) = 0;
@@ -77,10 +79,10 @@ public:
         return adopt_ref(*new DisplayList(move(visual_context_tree)));
     }
 
-    bool append(DisplayListCommand&& command, VisualContextIndex context_index);
+    bool append(DisplayListCommand&& command, VisualContextIndex);
 
     struct CommandListItem {
-        VisualContextIndex context_index {};
+        VisualContextIndex state {};
         DisplayListCommand command;
     };
 

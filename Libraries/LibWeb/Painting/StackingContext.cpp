@@ -35,7 +35,7 @@ static void paint_node(Paintable const& paintable, DisplayListRecordingContext& 
 
     if (paintable_box) {
         // Text fragments in a PaintableWithLines are content of the block container.
-        // They need the descendants' visual context, not the element's own visual context.
+        // They need the descendants' accumulated visual context, not the element's own state.
         if (is<PaintableWithLines>(paintable) && phase == PaintPhase::Foreground)
             context.display_list_recorder().set_accumulated_visual_context(paintable_box->accumulated_visual_context_for_descendants_index());
         else
@@ -323,8 +323,8 @@ void StackingContext::paint(DisplayListRecordingContext& context) const
         mask_image->resolve_for_size(paintable_box().layout_node_with_style_and_box_metrics(), paintable_box().absolute_padding_box_rect().size());
     }
 
-    auto effective_context_index = paintable_box().accumulated_visual_context_index();
-    context.display_list_recorder().set_accumulated_visual_context(effective_context_index);
+    auto effective_state = paintable_box().accumulated_visual_context_index();
+    context.display_list_recorder().set_accumulated_visual_context(effective_state);
 
     // For elements with SVG filters, emit a transparent FillRect to trigger filter application.
     // This ensures content-generating filters (feFlood, feImage) work even with empty source.
@@ -362,11 +362,11 @@ void StackingContext::paint(DisplayListRecordingContext& context) const
 
     context.display_list_recorder().begin_masks(masks);
 
-    auto context_before_children = context.display_list_recorder().accumulated_visual_context();
+    auto state_before_children = context.display_list_recorder().accumulated_visual_context_index();
 
     paint_internal(context);
 
-    context.display_list_recorder().set_accumulated_visual_context(context_before_children);
+    context.display_list_recorder().set_accumulated_visual_context(state_before_children);
 
     context.display_list_recorder().end_masks(masks);
 }

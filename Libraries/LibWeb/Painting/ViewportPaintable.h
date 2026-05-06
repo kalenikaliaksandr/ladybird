@@ -8,6 +8,7 @@
 #pragma once
 
 #include <LibWeb/Export.h>
+#include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/PaintableWithLines.h>
 #include <LibWeb/Painting/ScrollState.h>
 
@@ -71,7 +72,7 @@ private:
     Vector<GC::Ref<PaintableBox>> m_paintable_boxes_with_auto_content_visibility;
 
     RefPtr<AccumulatedVisualContextTree> m_visual_context_tree;
-    VisualContextIndex m_visual_viewport_context_index {};
+    SpatialContextIndex m_visual_viewport_spatial_context_index {};
 };
 
 template<>

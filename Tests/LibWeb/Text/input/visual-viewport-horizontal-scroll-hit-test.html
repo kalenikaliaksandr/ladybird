@@ -40,7 +40,7 @@
             internals.wheel(200, 150, 400, 0);
 
             // Do not call println() here — DOM mutation triggers layout which
-            // rebuilds AccumulatedVisualContext, masking bugs in scroll invalidation.
+            // rebuilds the accumulated visual contexts, masking bugs in scroll invalidation.
 
             results.push(`offsetLeft after scroll: ${vv.offsetLeft}`);
 

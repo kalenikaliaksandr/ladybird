@@ -1,9 +1,12 @@
 AccumulatedVisualContext Tree:
-  [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
-    [2] clip=[0,0 200x200] (SVGPathPaintable(SVGGeometryBox<rect>))
+  Spatial:
+    [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
+  Clip:
+    [1] clip=[0,0 200x200] (SVGPathPaintable(SVGGeometryBox<rect>))
+  Effect:
 
 DisplayList:
-SaveLayer@0
-  FillPath@2 path_bounding_rect=[10,10 100x100]
-Restore@0
+SaveLayer@(0,0,0)
+  FillPath@(1,1,0) path_bounding_rect=[10,10 100x100]
+Restore@(0,0,0)
 

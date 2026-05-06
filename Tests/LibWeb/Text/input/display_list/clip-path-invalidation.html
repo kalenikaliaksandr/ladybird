@@ -12,8 +12,8 @@
 <script>
     test(() => {
         // NOTE: Display lists are captured first and printed later because println() modifies
-        // the DOM tree, causing layout updates that invalidate the accumulated visual context
-        // tree, which would affect the captured display lists.
+        // the DOM tree, causing layout updates that invalidate the accumulated visual contexts,
+        // which would affect the captured display lists.
         const displayListBefore = internals.dumpDisplayList();
         document.getElementById("box").style.clipPath = "polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)";
         const displayListAfter = internals.dumpDisplayList();

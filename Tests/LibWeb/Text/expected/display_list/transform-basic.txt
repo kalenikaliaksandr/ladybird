@@ -1,10 +1,13 @@
 AccumulatedVisualContext Tree:
-  [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
-    [2] transform=[1,0,0,1,50,30] origin=(58,58) (PaintableWithLines(BlockContainer<DIV>.box))
+  Spatial:
+    [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
+      [2] transform=[1,0,0,1,50,30] origin=(58,58) (PaintableWithLines(BlockContainer<DIV>.box))
+  Clip:
+  Effect:
 
 DisplayList:
-SaveLayer@0
-  FillRect@2 rect=[8,8 100x100] color=rgb(0, 0, 255)
-  DrawGlyphRun@2 rect=[8,8 38x18] translation=[8,21.796875] color=rgb(0, 0, 0)
-Restore@0
+SaveLayer@(0,0,0)
+  FillRect@(2,0,0) rect=[8,8 100x100] color=rgb(0, 0, 255)
+  DrawGlyphRun@(2,0,0) rect=[8,8 38x18] translation=[8,21.796875] color=rgb(0, 0, 0)
+Restore@(0,0,0)
 

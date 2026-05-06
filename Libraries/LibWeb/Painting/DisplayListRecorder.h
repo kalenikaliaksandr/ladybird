@@ -20,10 +20,9 @@
 #include <LibGfx/ScalingMode.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
-#include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/BorderRadiiData.h>
 #include <LibWeb/Painting/BorderRadiusCornerClipper.h>
-#include <LibWeb/Painting/DisplayListCommand.h>
+#include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/GradientData.h>
 #include <LibWeb/Painting/PaintStyle.h>
 #include <LibWeb/Painting/ShouldAntiAlias.h>
@@ -88,8 +87,8 @@ public:
 
     void translate(Gfx::IntPoint delta);
 
-    void set_accumulated_visual_context(VisualContextIndex index) { m_accumulated_visual_context_index = index; }
-    VisualContextIndex accumulated_visual_context() const { return m_accumulated_visual_context_index; }
+    void set_accumulated_visual_context(VisualContextIndex state) { m_accumulated_visual_context_index = state; }
+    VisualContextIndex accumulated_visual_context_index() const { return m_accumulated_visual_context_index; }
 
     void replay_cached_commands(ReadonlySpan<DisplayListCommand> commands);
 

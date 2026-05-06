@@ -157,28 +157,19 @@ void Paintable::paint_inspector_overlay(DisplayListRecordingContext& context) co
 
     if (paintable_box) {
         auto& visual_context_tree = const_cast<ViewportPaintable*>(document().paintable())->visual_context_tree();
-        auto visual_context_index = paintable_box->accumulated_visual_context_index();
+        auto accumulated_visual_context = paintable_box->accumulated_visual_context_index();
 
-        if (visual_context_index.value()) {
-            Vector<VisualContextIndex> relevant_indices;
-            for (auto i = visual_context_index; i.value(); i = visual_context_tree.node_at(i).parent_index) {
-                auto should_keep = visual_context_tree.node_at(i).data.visit(
-                    [](ScrollData const&) { return true; },
-                    [](ClipData const&) { return false; },
-                    [](TransformData const&) { return true; },
-                    [](PerspectiveData const&) { return true; },
-                    [](ClipPathData const&) { return false; },
-                    [](EffectsData const&) { return false; });
-                if (should_keep)
-                    relevant_indices.append(i);
-            }
+        if (accumulated_visual_context.spatial.value()) {
+            Vector<SpatialContextIndex> relevant_indices;
+            for (auto i = accumulated_visual_context.spatial; i.value(); i = visual_context_tree.node_at(i).parent_index)
+                relevant_indices.append(i);
 
-            VisualContextIndex overlay_visual_context_index {};
-            for (auto const& source_visual_context_index : relevant_indices.in_reverse())
-                overlay_visual_context_index = visual_context_tree.append(visual_context_tree.node_at(source_visual_context_index).data, overlay_visual_context_index);
+            VisualContextIndex overlay_state;
+            for (auto const& source_spatial_index : relevant_indices.in_reverse())
+                overlay_state.spatial = visual_context_tree.append_spatial(visual_context_tree.node_at(source_spatial_index).data, overlay_state.spatial);
 
-            if (overlay_visual_context_index.value())
-                display_list_recorder.set_accumulated_visual_context(overlay_visual_context_index);
+            if (overlay_state.spatial.value())
+                display_list_recorder.set_accumulated_visual_context(overlay_state);
         }
     }
 

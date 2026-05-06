@@ -1,27 +1,30 @@
 AccumulatedVisualContext Tree:
-  [1] scroll_frame_id=1 (ImagePaintable(ImageBox<IMG>))
+  Spatial:
+    [1] scroll_frame_id=1 (ImagePaintable(ImageBox<IMG>))
+  Clip:
+  Effect:
 
 DisplayList:
-SaveLayer@0
-  Save@1
-    AddClipRect@1 rect=[8,13 300x200]
-    PaintNestedDisplayList@1 rect=[8,13 300x200]
-      SaveLayer@0
-        FillPath@1 path_bounding_rect=[5,0 55x56]
-        FillPath@1 path_bounding_rect=[1,50 55x55]
-        Save@1
-          AddClipRect@1 rect=[4,10 55x55]
-          SaveLayer@1
-            FillPath@1 path_bounding_rect=[5,0 55x56]
-            FillPath@1 path_bounding_rect=[1,50 55x55]
-            ApplyEffects@1 opacity=1 has_filter=false
-              PaintNestedDisplayList@1 rect=[4,10 55x55]
-                Translate@0 delta=[-4,-10]
-                FillPath@0 path_bounding_rect=[4,10 55x56]
-            Restore@1
-          Restore@1
-        Restore@1
-      Restore@0
-  Restore@1
-Restore@0
+SaveLayer@(0,0,0)
+  Save@(1,0,0)
+    AddClipRect@(1,0,0) rect=[8,13 300x200]
+    PaintNestedDisplayList@(1,0,0) rect=[8,13 300x200]
+      SaveLayer@(0,0,0)
+        FillPath@(1,0,0) path_bounding_rect=[5,0 55x56]
+        FillPath@(1,0,0) path_bounding_rect=[1,50 55x55]
+        Save@(1,0,0)
+          AddClipRect@(1,0,0) rect=[4,10 55x55]
+          SaveLayer@(1,0,0)
+            FillPath@(1,0,0) path_bounding_rect=[5,0 55x56]
+            FillPath@(1,0,0) path_bounding_rect=[1,50 55x55]
+            ApplyEffects@(1,0,0) opacity=1 has_filter=false
+              PaintNestedDisplayList@(1,0,0) rect=[4,10 55x55]
+                Translate@(0,0,0) delta=[-4,-10]
+                FillPath@(0,0,0) path_bounding_rect=[4,10 55x56]
+            Restore@(1,0,0)
+          Restore@(1,0,0)
+        Restore@(1,0,0)
+      Restore@(0,0,0)
+  Restore@(1,0,0)
+Restore@(0,0,0)
 

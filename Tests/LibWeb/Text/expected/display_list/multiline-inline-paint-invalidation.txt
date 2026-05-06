@@ -1,32 +1,38 @@
 Before:
 AccumulatedVisualContext Tree:
-  [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
+  Spatial:
+    [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
+  Clip:
+  Effect:
 
 DisplayList:
-SaveLayer@0
-  DrawGlyphRun@1 rect=[8,8 70x18] translation=[8,21.796875] color=rgb(0, 0, 255)
-  DrawLine@1 from=[8,25] to=[78,25] color=rgb(0, 0, 255) thickness=2
-  DrawGlyphRun@1 rect=[8,26 48x18] translation=[8,39.796875] color=rgb(0, 0, 255)
-  DrawLine@1 from=[8,43] to=[55,43] color=rgb(0, 0, 255) thickness=2
-  DrawGlyphRun@1 rect=[8,44 60x18] translation=[8,57.796875] color=rgb(0, 0, 255)
-  DrawLine@1 from=[8,61] to=[68,61] color=rgb(0, 0, 255) thickness=2
-  DrawGlyphRun@1 rect=[8,62 37x18] translation=[8,75.796875] color=rgb(0, 0, 255)
-  DrawLine@1 from=[8,79] to=[44,79] color=rgb(0, 0, 255) thickness=2
-Restore@0
+SaveLayer@(0,0,0)
+  DrawGlyphRun@(1,0,0) rect=[8,8 70x18] translation=[8,21.796875] color=rgb(0, 0, 255)
+  DrawLine@(1,0,0) from=[8,25] to=[78,25] color=rgb(0, 0, 255) thickness=2
+  DrawGlyphRun@(1,0,0) rect=[8,26 48x18] translation=[8,39.796875] color=rgb(0, 0, 255)
+  DrawLine@(1,0,0) from=[8,43] to=[55,43] color=rgb(0, 0, 255) thickness=2
+  DrawGlyphRun@(1,0,0) rect=[8,44 60x18] translation=[8,57.796875] color=rgb(0, 0, 255)
+  DrawLine@(1,0,0) from=[8,61] to=[68,61] color=rgb(0, 0, 255) thickness=2
+  DrawGlyphRun@(1,0,0) rect=[8,62 37x18] translation=[8,75.796875] color=rgb(0, 0, 255)
+  DrawLine@(1,0,0) from=[8,79] to=[44,79] color=rgb(0, 0, 255) thickness=2
+Restore@(0,0,0)
 
 After:
 AccumulatedVisualContext Tree:
-  [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
+  Spatial:
+    [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
+  Clip:
+  Effect:
 
 DisplayList:
-SaveLayer@0
-  DrawGlyphRun@1 rect=[8,8 70x18] translation=[8,21.796875] color=rgb(255, 0, 0)
-  DrawLine@1 from=[8,25] to=[78,25] color=rgb(255, 0, 0) thickness=2
-  DrawGlyphRun@1 rect=[8,26 48x18] translation=[8,39.796875] color=rgb(255, 0, 0)
-  DrawLine@1 from=[8,43] to=[55,43] color=rgb(255, 0, 0) thickness=2
-  DrawGlyphRun@1 rect=[8,44 60x18] translation=[8,57.796875] color=rgb(255, 0, 0)
-  DrawLine@1 from=[8,61] to=[68,61] color=rgb(255, 0, 0) thickness=2
-  DrawGlyphRun@1 rect=[8,62 37x18] translation=[8,75.796875] color=rgb(255, 0, 0)
-  DrawLine@1 from=[8,79] to=[44,79] color=rgb(255, 0, 0) thickness=2
-Restore@0
+SaveLayer@(0,0,0)
+  DrawGlyphRun@(1,0,0) rect=[8,8 70x18] translation=[8,21.796875] color=rgb(255, 0, 0)
+  DrawLine@(1,0,0) from=[8,25] to=[78,25] color=rgb(255, 0, 0) thickness=2
+  DrawGlyphRun@(1,0,0) rect=[8,26 48x18] translation=[8,39.796875] color=rgb(255, 0, 0)
+  DrawLine@(1,0,0) from=[8,43] to=[55,43] color=rgb(255, 0, 0) thickness=2
+  DrawGlyphRun@(1,0,0) rect=[8,44 60x18] translation=[8,57.796875] color=rgb(255, 0, 0)
+  DrawLine@(1,0,0) from=[8,61] to=[68,61] color=rgb(255, 0, 0) thickness=2
+  DrawGlyphRun@(1,0,0) rect=[8,62 37x18] translation=[8,75.796875] color=rgb(255, 0, 0)
+  DrawLine@(1,0,0) from=[8,79] to=[44,79] color=rgb(255, 0, 0) thickness=2
+Restore@(0,0,0)
 

@@ -1,9 +1,12 @@
 AccumulatedVisualContext Tree:
-  [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
-    [6] clip=[8,108 100x100] (PaintableWithLines(BlockContainer<DIV>.child))
+  Spatial:
+    [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
+  Clip:
+    [3] clip=[8,108 100x100] (PaintableWithLines(BlockContainer<DIV>.child))
+  Effect:
 
 DisplayList:
-SaveLayer@0
-  FillRect@6 rect=[8,108 50x50] color=rgb(255, 0, 0)
-Restore@0
+SaveLayer@(0,0,0)
+  FillRect@(1,3,0) rect=[8,108 50x50] color=rgb(255, 0, 0)
+Restore@(0,0,0)
 
