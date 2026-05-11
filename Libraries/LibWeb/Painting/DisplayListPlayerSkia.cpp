@@ -611,6 +611,14 @@ Gfx::Path DisplayListPlayerSkia::path_from_data(DisplayListDataSpan path_data) c
     return Gfx::Path::from_serialized_bytes(bytes);
 }
 
+Gfx::Filter DisplayListPlayerSkia::filter_from_data(DisplayListFilter filter) const
+{
+    VERIFY(!filter.is_empty());
+    return MUST(Gfx::Filter::from_serialized_bytes(inline_data(filter.data), [&](u64 image_frame_id) -> ErrorOr<Gfx::DecodedImageFrame> {
+        return active_display_list().resource_storage().image_frame({ image_frame_id });
+    }));
+}
+
 void DisplayListPlayerSkia::fill_path(FillPath const& command)
 {
     auto path = Gfx::to_skia_path(path_from_data(command.path_data));
@@ -726,9 +734,9 @@ void DisplayListPlayerSkia::apply_backdrop_filter(ApplyBackdropFilter const& com
     canvas.clipRect(rect, true);
     ScopeGuard guard = [&] { canvas.restore(); };
 
-    if (command.has_backdrop_filter) {
-        auto image_filter = to_skia_image_filter(
-            active_display_list().resource_storage().filter(command.backdrop_filter_id));
+    if (!command.backdrop_filter.is_empty()) {
+        auto filter = filter_from_data(command.backdrop_filter);
+        auto image_filter = to_skia_image_filter(filter);
         canvas.saveLayer(SkCanvas::SaveLayerRec(nullptr, nullptr, image_filter.get(), 0));
         canvas.restore();
     }
@@ -863,8 +871,12 @@ void DisplayListPlayerSkia::apply_effects(ApplyEffects const& command, Gfx::Filt
     if (command.compositing_and_blending_operator != Gfx::CompositingAndBlendingOperator::Normal)
         paint.setBlender(Gfx::to_skia_blender(command.compositing_and_blending_operator));
 
-    if (command.has_filter)
-        paint.setImageFilter(to_skia_image_filter(filter ? *filter : active_display_list().resource_storage().filter(command.filter_id)));
+    if (filter) {
+        paint.setImageFilter(to_skia_image_filter(*filter));
+    } else if (!command.filter.is_empty()) {
+        auto display_list_filter = filter_from_data(command.filter);
+        paint.setImageFilter(to_skia_image_filter(display_list_filter));
+    }
 
     if (command.has_mask_kind && command.mask_kind == Gfx::MaskKind::Luminance)
         paint.setColorFilter(SkLumaColorFilter::Make());

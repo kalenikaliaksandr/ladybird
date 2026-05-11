@@ -157,7 +157,7 @@ void PaintScrollBar::dump(StringBuilder&) const
 
 void ApplyEffects::dump(StringBuilder& builder) const
 {
-    builder.appendff(" opacity={} has_filter={}", opacity, has_filter);
+    builder.appendff(" opacity={} has_filter={}", opacity, !filter.is_empty());
 }
 
 }

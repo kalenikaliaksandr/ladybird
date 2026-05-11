@@ -1,0 +1,9 @@
+AccumulatedVisualContext Tree:
+  [1] scroll_frame_id=1 (PaintableWithLines(BlockContainer<PRE>#out))
+    [2] effects=[filter] (PaintableWithLines(BlockContainer<DIV>#target))
+
+DisplayList:
+SaveLayer@0
+  FillRect@2 rect=[8,8 50x50] color=rgb(255, 0, 0)
+Restore@0
+

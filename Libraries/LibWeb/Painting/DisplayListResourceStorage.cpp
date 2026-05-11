@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibGfx/Filter.h>
 #include <LibGfx/Font/Font.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
@@ -49,15 +50,6 @@ VideoFrameResourceId DisplayListResourceStorage::add_video_frame_source(NonnullR
     return { id };
 }
 
-FilterResourceId DisplayListResourceStorage::add_filter(Gfx::Filter const& filter)
-{
-    auto id = filter.id();
-    m_filters.ensure(id, [&] {
-        return filter;
-    });
-    return { id };
-}
-
 DisplayListResourceId DisplayListResourceStorage::add_display_list(NonnullRefPtr<DisplayList const> display_list)
 {
     auto id = display_list->id();
@@ -65,6 +57,26 @@ DisplayListResourceId DisplayListResourceStorage::add_display_list(NonnullRefPtr
         return move(display_list);
     });
     return { id };
+}
+
+static ReadonlyBytes display_list_inline_data(ReadonlyBytes payload, DisplayListDataSpan span)
+{
+    VERIFY(static_cast<size_t>(span.offset) + span.size <= payload.size());
+    return payload.slice(span.offset, span.size);
+}
+
+static void append_filter_referenced_resources(
+    DisplayListResourceStorage& target,
+    DisplayListResourceStorage const& source,
+    ReadonlyBytes payload,
+    DisplayListFilter filter)
+{
+    if (filter.is_empty())
+        return;
+    MUST(Gfx::Filter::for_each_serialized_image_id(display_list_inline_data(payload, filter.data), [&](u64 image_frame_id) -> ErrorOr<void> {
+        target.add_image_frame(source.image_frame({ image_frame_id }));
+        return {};
+    }));
 }
 
 void DisplayListResourceStorage::append_referenced_resources_from(
@@ -86,14 +98,10 @@ void DisplayListResourceStorage::append_referenced_resources_from(
                     && command.paint_style.type == DisplayListPaintStyleType::Pattern)
                     add_display_list(source.display_list(command.paint_style.pattern_tile_display_list_id));
             }
-            if constexpr (requires { command.backdrop_filter_id; }) {
-                if (command.has_backdrop_filter)
-                    add_filter(source.filter(command.backdrop_filter_id));
-            }
-            if constexpr (requires { command.filter_id; }) {
-                if (command.has_filter)
-                    add_filter(source.filter(command.filter_id));
-            }
+            if constexpr (requires { command.backdrop_filter; })
+                append_filter_referenced_resources(*this, source, payload, command.backdrop_filter);
+            if constexpr (requires { command.filter; })
+                append_filter_referenced_resources(*this, source, payload, command.filter);
             if constexpr (requires { command.display_list_id; })
                 add_display_list(source.display_list(command.display_list_id));
         });

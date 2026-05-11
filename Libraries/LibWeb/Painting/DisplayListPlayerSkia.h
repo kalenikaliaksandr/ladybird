@@ -61,6 +61,7 @@ private:
 
     SkPaint paint_style_to_skia_paint(DisplayListPaintStyle const&, Gfx::FloatRect const& bounding_rect);
     Gfx::Path path_from_data(DisplayListDataSpan) const;
+    Gfx::Filter filter_from_data(DisplayListFilter) const;
     ReadonlySpan<Color> gradient_colors(DisplayListGradientColorStops) const;
     ReadonlySpan<float> gradient_positions(DisplayListGradientColorStops) const;
 

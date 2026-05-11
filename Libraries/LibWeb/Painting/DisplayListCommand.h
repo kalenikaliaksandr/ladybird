@@ -14,8 +14,10 @@
 #include <LibGfx/AffineTransform.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/CompositingAndBlendingOperator.h>
+#include <LibGfx/Filter.h>
 #include <LibGfx/InterpolationColorSpace.h>
 #include <LibGfx/LineStyle.h>
+#include <LibGfx/MorphologyOperator.h>
 #include <LibGfx/Path.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
@@ -94,6 +96,12 @@ struct DisplayListGradientColorStops {
     DisplayListDataSpan colors;
     DisplayListDataSpan positions;
     bool repeating { false };
+};
+
+struct DisplayListFilter {
+    DisplayListDataSpan data;
+
+    [[nodiscard]] bool is_empty() const { return data.is_empty(); }
 };
 
 struct DisplayListCommandHeader {
@@ -435,8 +443,7 @@ struct ApplyBackdropFilter {
 
     Gfx::IntRect backdrop_region;
     CornerRadii corner_radii;
-    bool has_backdrop_filter { false };
-    FilterResourceId backdrop_filter_id;
+    DisplayListFilter backdrop_filter;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return backdrop_region; }
 
@@ -535,8 +542,7 @@ struct ApplyEffects {
 
     float opacity { 1.0f };
     Gfx::CompositingAndBlendingOperator compositing_and_blending_operator { Gfx::CompositingAndBlendingOperator::Normal };
-    bool has_filter { false };
-    FilterResourceId filter_id;
+    DisplayListFilter filter;
     bool has_mask_kind { false };
     Gfx::MaskKind mask_kind {};
 
@@ -619,6 +625,7 @@ inline int display_list_command_nesting_level_change(DisplayListCommandType comm
 }
 
 static_assert(IsTriviallyCopyable<DisplayListCommandHeader>);
+static_assert(IsTriviallyCopyable<DisplayListFilter>);
 
 #define VERIFY_DISPLAY_LIST_COMMAND(command, player_method) static_assert(IsTriviallyCopyable<command>);
 ENUMERATE_DISPLAY_LIST_COMMANDS(VERIFY_DISPLAY_LIST_COMMAND)
