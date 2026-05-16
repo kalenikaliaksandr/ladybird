@@ -61,10 +61,11 @@ public:
     };
     struct PresentToUI {
     };
-    struct PublishToExternalContent {
-        NonnullRefPtr<Painting::ExternalContentSource> source;
+    struct PublishToCompositorSurface {
+        CompositorThread* target { nullptr };
+        Painting::CompositorSurfaceId surface_id;
     };
-    using PresentationMode = Variant<PresentToUI, PublishToExternalContent>;
+    using PresentationMode = Variant<PresentToUI, PublishToCompositorSurface>;
 
     CompositorThread(u64 page_id, PagePresentationRegistration);
     ~CompositorThread();
@@ -80,6 +81,8 @@ public:
     void set_presentation_mode(PresentationMode);
 
     void update_display_list(NonnullRefPtr<Painting::DisplayList>, Painting::DisplayListResourceTransaction&&, Painting::ScrollStateSnapshot&&);
+    void update_compositor_surface(Painting::CompositorSurfaceId, Gfx::SharedImage&&);
+    void clear_compositor_surface(Painting::CompositorSurfaceId);
     void update_scroll_state(Painting::ScrollStateSnapshot&&);
     void invalidate_wheel_event_listener_state(u64 generation);
     AsyncScrollEnqueueResult async_scroll_by(UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels,
