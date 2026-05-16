@@ -11,7 +11,6 @@
 #include <LibWeb/Layout/Viewport.h>
 #include <LibWeb/Painting/BorderRadiusCornerClipper.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
-#include <LibWeb/Painting/ExternalContentSource.h>
 #include <LibWeb/Painting/NavigableContainerViewportPaintable.h>
 
 namespace Web::Painting {
@@ -51,9 +50,9 @@ void NavigableContainerViewportPaintable::paint(DisplayListRecordingContext& con
 
         context.display_list_recorder().save();
         context.display_list_recorder().add_clip_rect(clip_rect.to_type<int>());
-        context.display_list_recorder().draw_external_content(
+        context.display_list_recorder().draw_compositor_surface(
             context.enclosing_device_rect(absolute_rect).to_type<int>(),
-            content_navigable->external_content_source(),
+            content_navigable->compositor_surface_id(),
             Gfx::ScalingMode::NearestNeighbor);
         context.display_list_recorder().restore();
 
