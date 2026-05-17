@@ -79,6 +79,9 @@ public:
 
     hb_face_t* harfbuzz_typeface() const;
 
+    virtual ReadonlyBytes buffer() const = 0;
+    virtual u32 ttc_index() const = 0;
+
     template<typename T>
     bool fast_is() const = delete;
 
@@ -86,9 +89,6 @@ public:
 
 protected:
     Typeface();
-
-    virtual ReadonlyBytes buffer() const = 0;
-    virtual u32 ttc_index() const = 0;
 
 private:
     OwnPtr<FontData> m_font_data;

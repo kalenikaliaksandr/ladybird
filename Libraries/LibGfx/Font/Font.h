@@ -64,6 +64,7 @@ public:
     u64 id() const { return m_id; }
     float point_size() const;
     float pixel_size() const;
+    FontVariationSettings const& font_variation_settings() const { return m_font_variation_settings; }
     FontPixelMetrics const& pixel_metrics() const { return m_pixel_metrics; }
     u8 slope() const { return m_typeface->slope(); }
     u16 weight() const { return m_typeface->weight(); }
