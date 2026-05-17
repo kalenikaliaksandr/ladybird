@@ -8,67 +8,39 @@
 
 #include <AK/Noncopyable.h>
 #include <AK/NonnullRefPtr.h>
-#include <AK/Optional.h>
 #include <AK/Types.h>
-#include <AK/Variant.h>
-#include <AK/Vector.h>
 #include <LibCore/Forward.h>
-#include <LibGfx/Point.h>
-#include <LibGfx/Rect.h>
 #include <LibGfx/SharedImage.h>
 #include <LibGfx/Size.h>
 #include <LibSync/ConditionVariable.h>
 #include <LibThreading/Forward.h>
-#include <LibWeb/Compositor/AsyncScrollingState.h>
+#include <LibWeb/Compositor/PageCompositor.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Page/InputEvent.h>
-#include <LibWeb/Page/Page.h>
-#include <LibWeb/Painting/DisplayListResourceStorage.h>
 
 namespace Web::Compositor {
 
-enum class WindowResizingInProgress : u8 {
-    No,
-    Yes,
-};
-
-class WEB_API CompositorThread {
+class WEB_API CompositorThread final : public PageCompositor {
     AK_MAKE_NONCOPYABLE(CompositorThread);
     AK_MAKE_NONMOVABLE(CompositorThread);
 
 public:
     class ThreadData;
 
-    enum class PagePresentationRegistration {
-        No,
-        Yes,
-    };
+    using PagePresentationRegistration = PageCompositor::PagePresentationRegistration;
+    using PendingAsyncScrollUpdates = PageCompositor::PendingAsyncScrollUpdates;
+    using AsyncScrollEnqueueResult = PageCompositor::AsyncScrollEnqueueResult;
+    using AsyncScrollOperationTracking = PageCompositor::AsyncScrollOperationTracking;
+    using PresentToUI = PageCompositor::PresentToUI;
+    using PublishToCompositorSurface = PageCompositor::PublishToCompositorSurface;
+    using PresentationMode = PageCompositor::PresentationMode;
 
     using BackingStorePresentationCallback = Function<void(u64 page_id, i32 front_bitmap_id, Gfx::SharedImage, i32 back_bitmap_id, Gfx::SharedImage)>;
     using FramePresentationCallback = Function<void(u64 page_id, Gfx::IntRect const&, i32 bitmap_id)>;
-    struct PendingAsyncScrollUpdates {
-        Vector<AsyncScrollOffset> scroll_offsets;
-        Vector<AsyncScrollOperationID> completed_operation_ids;
-    };
-    struct AsyncScrollEnqueueResult {
-        bool accepted { false };
-        Optional<AsyncScrollOperationID> operation_id;
-    };
-    enum class AsyncScrollOperationTracking {
-        No,
-        Yes,
-    };
-    struct PresentToUI {
-    };
-    struct PublishToCompositorSurface {
-        CompositorThread* target { nullptr };
-        Painting::CompositorSurfaceId surface_id;
-    };
-    using PresentationMode = Variant<PresentToUI, PublishToCompositorSurface>;
 
     CompositorThread(u64 page_id, PagePresentationRegistration);
-    ~CompositorThread();
+    virtual ~CompositorThread() override;
 
     static void set_frame_presentation_callbacks(NonnullRefPtr<Core::WeakEventLoopReference>, BackingStorePresentationCallback, FramePresentationCallback);
     static void clear_frame_presentation_callbacks();
@@ -76,24 +48,24 @@ public:
     static bool async_scroll_by(u64 page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels);
     static bool handle_mouse_event(u64 page_id, MouseEvent const&);
 
-    void start(DisplayListPlayerType);
-    void stop_presenting_to_client();
-    void set_presentation_mode(PresentationMode);
+    virtual void start(DisplayListPlayerType) override;
+    virtual void stop_presenting_to_client() override;
+    virtual void set_presentation_mode(PresentationMode) override;
 
-    void update_display_list(NonnullRefPtr<Painting::DisplayList>, Painting::DisplayListResourceTransaction&&, Painting::ScrollStateSnapshot&&);
-    void update_compositor_surface(Painting::CompositorSurfaceId, Gfx::SharedImage&&);
-    void clear_compositor_surface(Painting::CompositorSurfaceId);
-    void update_scroll_state(Painting::ScrollStateSnapshot&&);
-    void invalidate_wheel_event_listener_state(u64 generation);
-    AsyncScrollEnqueueResult async_scroll_by(UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels,
-        Gfx::IntRect viewport_rect, AsyncScrollOperationTracking = AsyncScrollOperationTracking::No);
-    bool should_defer_async_scroll_offset_adoption() const;
-    bool should_defer_main_thread_present_for_async_scroll() const;
-    PendingAsyncScrollUpdates take_pending_async_scroll_updates();
-    void viewport_size_updated(Gfx::IntSize, bool is_top_level_traversable, WindowResizingInProgress);
-    u64 present_frame(Gfx::IntRect);
-    void wait_for_frame(u64 frame_id);
-    void request_screenshot(NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&& callback);
+    virtual void update_display_list(NonnullRefPtr<Painting::DisplayList>, Painting::DisplayListResourceTransaction&&, Painting::ScrollStateSnapshot&&) override;
+    virtual void update_compositor_surface(Painting::CompositorSurfaceId, Gfx::SharedImage&&) override;
+    virtual void clear_compositor_surface(Painting::CompositorSurfaceId) override;
+    virtual void update_scroll_state(Painting::ScrollStateSnapshot&&) override;
+    virtual void invalidate_wheel_event_listener_state(u64 generation) override;
+    virtual AsyncScrollEnqueueResult async_scroll_by(UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels,
+        Gfx::IntRect viewport_rect, AsyncScrollOperationTracking = AsyncScrollOperationTracking::No) override;
+    virtual bool should_defer_async_scroll_offset_adoption() const override;
+    virtual bool should_defer_main_thread_present_for_async_scroll() const override;
+    virtual PendingAsyncScrollUpdates take_pending_async_scroll_updates() override;
+    virtual void viewport_size_updated(Gfx::IntSize, bool is_top_level_traversable, WindowResizingInProgress) override;
+    virtual u64 present_frame(Gfx::IntRect) override;
+    virtual void wait_for_frame(u64 frame_id) override;
+    virtual void request_screenshot(NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&& callback) override;
 
 private:
     void enqueue_viewport_size_updated(Gfx::IntSize, bool is_top_level_traversable, WindowResizingInProgress);
