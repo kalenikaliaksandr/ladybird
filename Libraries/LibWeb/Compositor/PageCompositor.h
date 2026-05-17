@@ -56,7 +56,6 @@ public:
 
     struct PublishToCompositorSurface {
         CompositorContextId target_context_id;
-        PageCompositor* target { nullptr };
         Painting::CompositorSurfaceId surface_id;
     };
 
