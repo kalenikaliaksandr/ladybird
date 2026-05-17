@@ -31,14 +31,16 @@ namespace Gfx {
 static sk_sp<SkFontMgr> s_font_manager;
 
 struct TypefaceSkia::Impl {
-    Impl(sk_sp<SkTypeface> skia_typeface, std::unique_ptr<SkStreamAsset> stream = {})
+    Impl(sk_sp<SkTypeface> skia_typeface, std::unique_ptr<SkStreamAsset> stream = {}, sk_sp<SkData> owned_data = {})
         : skia_typeface(move(skia_typeface))
         , stream(move(stream))
+        , owned_data(move(owned_data))
     {
     }
 
     sk_sp<SkTypeface> skia_typeface;
     std::unique_ptr<SkStreamAsset> stream;
+    sk_sp<SkData> owned_data;
 };
 
 static SkFontMgr& font_manager()
@@ -165,14 +167,20 @@ RefPtr<TypefaceSkia const> TypefaceSkia::clone_with_variations(Vector<FontVariat
 
     font_args.setCollectionIndex(static_cast<int>(m_ttc_index));
 
-    auto data = SkData::MakeWithoutCopy(m_buffer.data(), m_buffer.size());
+    auto data = SkData::MakeWithCopy(m_buffer.data(), m_buffer.size());
+    if (!data)
+        return {};
+    ReadonlyBytes data_bytes { static_cast<u8 const*>(data->data()), data->size() };
     auto stream = std::make_unique<SkMemoryStream>(data);
     auto skia_typeface = font_manager().makeFromStream(move(stream), font_args);
 
     if (!skia_typeface)
         return {};
 
-    return adopt_ref(*new TypefaceSkia { make<TypefaceSkia::Impl>(skia_typeface), m_buffer, m_ttc_index });
+    return adopt_ref(*new TypefaceSkia {
+        make<TypefaceSkia::Impl>(skia_typeface, std::unique_ptr<SkStreamAsset> {}, move(data)),
+        data_bytes,
+        m_ttc_index });
 }
 
 SkTypeface const* TypefaceSkia::sk_typeface() const

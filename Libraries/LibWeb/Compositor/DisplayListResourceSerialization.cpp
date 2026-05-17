@@ -6,15 +6,44 @@
 
 #include <LibWeb/Compositor/DisplayListResourceSerialization.h>
 
+#include <LibGfx/Font/Typeface.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
 
 namespace Web::Compositor {
 
-SerializedFontResource serialize_font_resource(Painting::FontResourceAddition const& font)
+static Optional<size_t> find_font_data_buffer(Vector<ReadonlyBytes> const& font_data_sources, ReadonlyBytes font_data)
 {
-    return {
+    for (size_t i = 0; i < font_data_sources.size(); ++i) {
+        auto candidate = font_data_sources[i];
+        if (candidate.data() == font_data.data() && candidate.size() == font_data.size())
+            return i;
+    }
+    return {};
+}
+
+static ErrorOr<SerializedFontResource> serialize_font_resource(
+    Painting::FontResourceAddition const& font,
+    Vector<SerializedFontDataBuffer>& font_data_buffers,
+    Vector<ReadonlyBytes>& font_data_sources)
+{
+    auto font_data = font.resource->typeface().buffer();
+    auto font_data_buffer_index = find_font_data_buffer(font_data_sources, font_data);
+    if (!font_data_buffer_index.has_value()) {
+        TRY(font_data_buffers.try_append(SerializedFontDataBuffer {
+            .payload = TRY(SerializedPayload::copy_from(font_data)),
+        }));
+        TRY(font_data_sources.try_append(font_data));
+        font_data_buffer_index = font_data_buffers.size() - 1;
+    }
+
+    return SerializedFontResource {
         .font_id = font.id,
+        .font_data_buffer_index = font_data_buffer_index.value(),
+        .ttc_index = font.resource->typeface().ttc_index(),
+        .point_size = font.resource->point_size(),
+        .font_variation_settings = font.resource->font_variation_settings(),
+        .shape_features = font.resource->features(),
     };
 }
 
@@ -32,9 +61,77 @@ SerializedVideoFrameSourceResource serialize_video_frame_source_resource(Paintin
     };
 }
 
+ErrorOr<Painting::FontResourceAddition> deserialize_font_resource(SerializedFontResource const& font, Vector<SerializedFontDataBuffer> const& font_data_buffers)
+{
+    if (font.font_data_buffer_index >= font_data_buffers.size())
+        return Error::from_string_literal("Serialized font resource references an out-of-bounds font data buffer");
+
+    auto font_data = font_data_buffers[font.font_data_buffer_index].payload.bytes();
+    if (font_data.is_empty())
+        return Error::from_string_literal("Serialized font resource has empty font data");
+
+    auto typeface = TRY(Gfx::Typeface::try_load_from_temporary_memory(font_data, font.ttc_index));
+    auto reconstructed_font = typeface->font(font.point_size, font.font_variation_settings, font.shape_features);
+
+    return Painting::FontResourceAddition {
+        .id = font.font_id,
+        .resource = move(reconstructed_font),
+    };
+}
+
 }
 
 namespace IPC {
+
+static ErrorOr<void> encode_font_variation_settings(Encoder& encoder, Gfx::FontVariationSettings const& font_variation_settings)
+{
+    auto axes = font_variation_settings.to_sorted_list();
+    TRY(encoder.encode_size(axes.size()));
+    for (auto const& axis : axes) {
+        TRY(encoder.encode(axis.tag.to_u32()));
+        TRY(encoder.encode(axis.value));
+    }
+    return {};
+}
+
+static ErrorOr<Gfx::FontVariationSettings> decode_font_variation_settings(Decoder& decoder)
+{
+    Gfx::FontVariationSettings font_variation_settings;
+    auto axis_count = TRY(decoder.decode_size());
+    for (size_t i = 0; i < axis_count; ++i) {
+        auto tag = Gfx::FourCC::from_u32(TRY(decoder.decode<u32>()));
+        auto value = TRY(decoder.decode<float>());
+        TRY(font_variation_settings.axes.try_set(tag, value));
+    }
+    return font_variation_settings;
+}
+
+static ErrorOr<void> encode_shape_features(Encoder& encoder, Gfx::ShapeFeatures const& shape_features)
+{
+    TRY(encoder.encode_size(shape_features.size()));
+    for (auto const& feature : shape_features) {
+        TRY(encoder.encode(Gfx::FourCC { feature.tag }.to_u32()));
+        TRY(encoder.encode(feature.value));
+    }
+    return {};
+}
+
+static ErrorOr<Gfx::ShapeFeatures> decode_shape_features(Decoder& decoder)
+{
+    Gfx::ShapeFeatures shape_features;
+    auto feature_count = TRY(decoder.decode_size());
+    TRY(shape_features.try_ensure_capacity(feature_count));
+    for (size_t i = 0; i < feature_count; ++i) {
+        auto tag = Gfx::FourCC::from_u32(TRY(decoder.decode<u32>()));
+        auto value = TRY(decoder.decode<u32>());
+        Gfx::ShapeFeature feature {
+            .tag = { tag.cc[0], tag.cc[1], tag.cc[2], tag.cc[3] },
+            .value = value,
+        };
+        shape_features.unchecked_append(feature);
+    }
+    return shape_features;
+}
 
 static ErrorOr<void> encode_resource_ids(Encoder& encoder, ReadonlySpan<Web::Painting::FontResourceId> resource_ids)
 {
@@ -80,9 +177,29 @@ static ErrorOr<Vector<ResourceId>> decode_resource_ids(Decoder& decoder)
 }
 
 template<>
+ErrorOr<void> encode(Encoder& encoder, Web::Compositor::SerializedFontDataBuffer const& font_data_buffer)
+{
+    TRY(encoder.encode(font_data_buffer.payload));
+    return {};
+}
+
+template<>
+ErrorOr<Web::Compositor::SerializedFontDataBuffer> decode(Decoder& decoder)
+{
+    return Web::Compositor::SerializedFontDataBuffer {
+        .payload = TRY(decoder.decode<Web::Compositor::SerializedPayload>()),
+    };
+}
+
+template<>
 ErrorOr<void> encode(Encoder& encoder, Web::Compositor::SerializedFontResource const& font)
 {
     TRY(encoder.encode(font.font_id.value()));
+    TRY(encoder.encode(font.font_data_buffer_index));
+    TRY(encoder.encode(font.ttc_index));
+    TRY(encoder.encode(font.point_size));
+    TRY(encode_font_variation_settings(encoder, font.font_variation_settings));
+    TRY(encode_shape_features(encoder, font.shape_features));
     return {};
 }
 
@@ -91,6 +208,11 @@ ErrorOr<Web::Compositor::SerializedFontResource> decode(Decoder& decoder)
 {
     return Web::Compositor::SerializedFontResource {
         .font_id = Web::Painting::FontResourceId { TRY(decoder.decode<u64>()) },
+        .font_data_buffer_index = TRY(decoder.decode<size_t>()),
+        .ttc_index = TRY(decoder.decode<u32>()),
+        .point_size = TRY(decoder.decode<float>()),
+        .font_variation_settings = TRY(decode_font_variation_settings(decoder)),
+        .shape_features = TRY(decode_shape_features(decoder)),
     };
 }
 
@@ -127,10 +249,14 @@ ErrorOr<Web::Compositor::SerializedVideoFrameSourceResource> decode(Decoder& dec
 template<>
 ErrorOr<void> encode(Encoder& encoder, Web::Painting::DisplayListResourceTransaction const& transaction)
 {
+    Vector<Web::Compositor::SerializedFontDataBuffer> font_data_buffers;
+    Vector<ReadonlyBytes> font_data_sources;
     Vector<Web::Compositor::SerializedFontResource> fonts;
+    TRY(font_data_buffers.try_ensure_capacity(transaction.fonts.size()));
+    TRY(font_data_sources.try_ensure_capacity(transaction.fonts.size()));
     TRY(fonts.try_ensure_capacity(transaction.fonts.size()));
     for (auto const& font : transaction.fonts)
-        fonts.unchecked_append(Web::Compositor::serialize_font_resource(font));
+        fonts.unchecked_append(TRY(Web::Compositor::serialize_font_resource(font, font_data_buffers, font_data_sources)));
 
     Vector<Web::Compositor::SerializedImageFrameResource> image_frames;
     TRY(image_frames.try_ensure_capacity(transaction.image_frames.size()));
@@ -142,6 +268,7 @@ ErrorOr<void> encode(Encoder& encoder, Web::Painting::DisplayListResourceTransac
     for (auto const& video_frame_source : transaction.video_frame_sources)
         video_frame_sources.unchecked_append(Web::Compositor::serialize_video_frame_source_resource(video_frame_source));
 
+    TRY(encoder.encode(font_data_buffers));
     TRY(encoder.encode(fonts));
     TRY(encoder.encode(image_frames));
     TRY(encoder.encode(video_frame_sources));
@@ -162,6 +289,7 @@ ErrorOr<void> encode(Encoder& encoder, Web::Painting::DisplayListResourceTransac
 template<>
 ErrorOr<Web::Painting::DisplayListResourceTransaction> decode(Decoder& decoder)
 {
+    auto font_data_buffers = TRY(decoder.decode<Vector<Web::Compositor::SerializedFontDataBuffer>>());
     auto serialized_fonts = TRY(decoder.decode<Vector<Web::Compositor::SerializedFontResource>>());
     auto serialized_image_frames = TRY(decoder.decode<Vector<Web::Compositor::SerializedImageFrameResource>>());
     auto serialized_video_frame_sources = TRY(decoder.decode<Vector<Web::Compositor::SerializedVideoFrameSourceResource>>());
@@ -169,8 +297,10 @@ ErrorOr<Web::Painting::DisplayListResourceTransaction> decode(Decoder& decoder)
 
     Web::Painting::DisplayListResourceTransaction transaction;
 
-    if (!serialized_fonts.is_empty())
-        return Error::from_string_literal("Missing font resource payload");
+    TRY(transaction.fonts.try_ensure_capacity(serialized_fonts.size()));
+    for (auto const& font : serialized_fonts)
+        transaction.fonts.unchecked_append(TRY(Web::Compositor::deserialize_font_resource(font, font_data_buffers)));
+
     if (!serialized_image_frames.is_empty())
         return Error::from_string_literal("Missing image frame resource payload");
     if (!serialized_video_frame_sources.is_empty())
