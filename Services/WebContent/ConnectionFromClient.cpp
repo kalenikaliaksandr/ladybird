@@ -93,7 +93,7 @@ private:
     virtual void ping() override { }
 
     virtual Messages::CompositorServer::ConnectWebContentResponse connect_web_content(IPC::TransportHandle) override { return 0; }
-    virtual void register_presentation(u64, u64, u64) override { }
+    virtual Messages::CompositorServer::RegisterPresentationResponse register_presentation(u64, u64, u64) override { return true; }
     virtual void unregister_presentation(u64) override { }
     virtual void set_presentation_visibility(u64 presentation_id, bool is_visible) override
     {

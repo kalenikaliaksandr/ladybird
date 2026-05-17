@@ -6,7 +6,7 @@ endpoint CompositorServer
 {
     ping() => ()
     connect_web_content(IPC::TransportHandle handle) => (u64 web_content_connection_id)
-    register_presentation(u64 presentation_id, u64 web_content_connection_id, u64 presentation_capability) =|
+    register_presentation(u64 presentation_id, u64 web_content_connection_id, u64 presentation_capability) => (bool accepted)
     unregister_presentation(u64 presentation_id) =|
     set_presentation_visibility(u64 presentation_id, bool is_visible) =|
     set_active_presentation(u64 ui_view_id, Optional<u64> presentation_id) =|

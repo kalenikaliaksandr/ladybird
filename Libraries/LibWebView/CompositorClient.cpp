@@ -25,12 +25,16 @@ Optional<Web::Compositor::WebContentConnectionId> CompositorClient::connect_web_
     return Web::Compositor::WebContentConnectionId { response->web_content_connection_id() };
 }
 
-void CompositorClient::register_presentation(
+bool CompositorClient::register_presentation(
     Web::Compositor::PresentationId presentation_id,
     Web::Compositor::WebContentConnectionId web_content_connection_id,
     Web::Compositor::PresentationCapability presentation_capability)
 {
-    async_register_presentation(presentation_id.value(), web_content_connection_id.value(), presentation_capability.value());
+    auto response = send_sync_but_allow_failure<Messages::CompositorServer::RegisterPresentation>(
+        presentation_id.value(),
+        web_content_connection_id.value(),
+        presentation_capability.value());
+    return response && response->accepted();
 }
 
 void CompositorClient::unregister_presentation(Web::Compositor::PresentationId presentation_id)

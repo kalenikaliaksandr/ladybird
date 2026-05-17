@@ -26,6 +26,7 @@ class ConnectionFromWebContent final
 
 public:
     static ErrorOr<Web::Compositor::WebContentConnectionId> connect(IPC::TransportHandle);
+    static bool has_connection(Web::Compositor::WebContentConnectionId);
 
     virtual void die() override;
 
@@ -51,7 +52,8 @@ private:
 
     ConnectionFromWebContent(NonnullOwnPtr<IPC::Transport>, Web::Compositor::WebContentConnectionId);
 
-    static PresentationModeState presentation_mode_state_from_marshaled(Web::Compositor::SerializedPresentationModeKind, u64 presentation_id, u64 presentation_capability, u64 target_context_id, u64 compositor_surface_id);
+    Optional<PresentationModeState> presentation_mode_state_from_marshaled(Web::Compositor::SerializedPresentationModeKind, u64 presentation_id, u64 presentation_capability, u64 target_context_id, u64 compositor_surface_id) const;
+    bool validate_presentation_mode(Web::Compositor::CompositorContextId, PresentationModeState const&) const;
 
     virtual void create_context(u64 context_id, u64 page_id, Web::Compositor::SerializedPresentationModeKind presentation_mode_kind, u64 presentation_id, u64 presentation_capability, u64 target_context_id, u64 compositor_surface_id, Web::DisplayListPlayerType display_list_player_type) override;
     virtual void destroy_context(u64 context_id) override;

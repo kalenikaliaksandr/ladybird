@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/NonnullRefPtr.h>
+#include <AK/Optional.h>
 #include <LibWeb/Compositor/PageCompositor.h>
 #include <WebContent/ConnectionToCompositor.h>
 
@@ -14,7 +15,7 @@ namespace WebContent {
 
 class RemotePageCompositor final : public Web::Compositor::PageCompositor {
 public:
-    RemotePageCompositor(ConnectionToCompositor&, u64 page_id, PresentationMode);
+    RemotePageCompositor(ConnectionToCompositor&, u64 page_id, Optional<PresentationMode>);
     virtual ~RemotePageCompositor() override;
 
     virtual Web::Compositor::CompositorContextId context_id() const override { return m_context_id; }
@@ -51,9 +52,10 @@ private:
     NonnullRefPtr<ConnectionToCompositor> m_connection;
     u64 m_page_id { 0 };
     Web::Compositor::CompositorContextId m_context_id;
-    PresentationMode m_presentation_mode;
+    Optional<PresentationMode> m_presentation_mode;
     Web::DisplayListPlayerType m_display_list_player_type { Web::DisplayListPlayerType::SkiaCPU };
     bool m_started { false };
+    bool m_context_created { false };
     u64 m_next_frame_id { 1 };
 };
 

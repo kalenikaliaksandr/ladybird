@@ -1043,7 +1043,7 @@ NonnullOwnPtr<Web::Compositor::PageCompositor> PageClient::create_page_composito
     if (!compositor_connection)
         return Base::create_page_compositor(is_svg_page, register_page_presentation);
 
-    Web::Compositor::PageCompositor::PresentationMode presentation_mode = Web::Compositor::PageCompositor::PresentToUI {};
+    Optional<Web::Compositor::PageCompositor::PresentationMode> presentation_mode;
     if (register_page_presentation) {
         auto const& binding = m_owner.client().compositor_presentation_binding();
         if (!binding.has_value())
