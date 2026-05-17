@@ -37,7 +37,7 @@ struct DisplayListResourceAddition {
 
 using FontResourceAddition = DisplayListResourceAddition<FontResourceId, NonnullRefPtr<Gfx::Font const>>;
 using ImageFrameResourceAddition = DisplayListResourceAddition<ImageFrameResourceId, Gfx::DecodedImageFrame>;
-using VideoFrameSourceResourceAddition = DisplayListResourceAddition<VideoFrameResourceId, NonnullRefPtr<VideoFrameSource const>>;
+using VideoFrameSourceResourceAddition = DisplayListResourceAddition<VideoFrameResourceId, NonnullRefPtr<VideoFrameSource>>;
 using DisplayListResourceAdditionRecord = DisplayListResourceAddition<DisplayListResourceId, NonnullRefPtr<DisplayList const>>;
 
 struct DisplayListResourceTransaction {
@@ -62,11 +62,11 @@ public:
 
     FontResourceId add_font(Gfx::Font const&);
     ImageFrameResourceId add_image_frame(Gfx::DecodedImageFrame const&);
-    VideoFrameResourceId add_video_frame_source(NonnullRefPtr<VideoFrameSource const>);
+    VideoFrameResourceId add_video_frame_source(NonnullRefPtr<VideoFrameSource>);
     DisplayListResourceId add_display_list(NonnullRefPtr<DisplayList const>);
     void set_font(FontResourceId, Gfx::Font const&);
     void set_image_frame(ImageFrameResourceId, Gfx::DecodedImageFrame const&);
-    void set_video_frame_source(VideoFrameResourceId, NonnullRefPtr<VideoFrameSource const>);
+    void set_video_frame_source(VideoFrameResourceId, NonnullRefPtr<VideoFrameSource>);
     void set_display_list(DisplayListResourceId, NonnullRefPtr<DisplayList const>);
     void append_referenced_resources_from(DisplayListResourceStorage const& source, ReadonlyBytes command_bytes);
     void apply_transaction(DisplayListResourceTransaction&&);
@@ -79,6 +79,8 @@ public:
 
     Gfx::Font const& font(FontResourceId id) const { return *m_fonts.get(id.value()).value(); }
     Gfx::DecodedImageFrame const& image_frame(ImageFrameResourceId id) const { return m_image_frames.get(id.value()).value(); }
+    NonnullRefPtr<VideoFrameSource> video_frame_source_ref(VideoFrameResourceId id) const { return const_cast<VideoFrameSource&>(*m_video_frame_sources.get(id.value()).value()); }
+    VideoFrameSource& video_frame_source(VideoFrameResourceId id) { return *m_video_frame_sources.get(id.value()).value(); }
     VideoFrameSource const& video_frame_source(VideoFrameResourceId id) const { return *m_video_frame_sources.get(id.value()).value(); }
     DisplayList const& display_list(DisplayListResourceId id) const { return *m_display_lists.get(id.value()).value(); }
     Optional<Gfx::DecodedImageFrame const&> compositor_surface(CompositorSurfaceId id) const { return m_compositor_surfaces.get(id.value()); }
@@ -88,7 +90,7 @@ private:
 
     HashMap<u64, NonnullRefPtr<Gfx::Font const>> m_fonts;
     HashMap<u64, Gfx::DecodedImageFrame> m_image_frames;
-    HashMap<u64, NonnullRefPtr<VideoFrameSource const>> m_video_frame_sources;
+    HashMap<u64, NonnullRefPtr<VideoFrameSource>> m_video_frame_sources;
     HashMap<u64, NonnullRefPtr<DisplayList const>> m_display_lists;
     HashMap<u64, Gfx::DecodedImageFrame> m_compositor_surfaces;
 };

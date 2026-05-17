@@ -28,7 +28,7 @@ ImageFrameResourceId DisplayListResourceStorage::add_image_frame(Gfx::DecodedIma
     return { id };
 }
 
-VideoFrameResourceId DisplayListResourceStorage::add_video_frame_source(NonnullRefPtr<VideoFrameSource const> source)
+VideoFrameResourceId DisplayListResourceStorage::add_video_frame_source(NonnullRefPtr<VideoFrameSource> source)
 {
     auto id = source->id();
     set_video_frame_source(VideoFrameResourceId { id }, move(source));
@@ -52,7 +52,7 @@ void DisplayListResourceStorage::set_image_frame(ImageFrameResourceId id, Gfx::D
     m_image_frames.set(id.value(), frame);
 }
 
-void DisplayListResourceStorage::set_video_frame_source(VideoFrameResourceId id, NonnullRefPtr<VideoFrameSource const> source)
+void DisplayListResourceStorage::set_video_frame_source(VideoFrameResourceId id, NonnullRefPtr<VideoFrameSource> source)
 {
     m_video_frame_sources.set(id.value(), move(source));
 }
@@ -78,7 +78,7 @@ void DisplayListResourceStorage::append_referenced_resources_from(
     for (auto id : referenced_resources.image_frames)
         add_image_frame(source.image_frame(id));
     for (auto id : referenced_resources.video_frame_sources)
-        add_video_frame_source(source.video_frame_source(id));
+        add_video_frame_source(source.video_frame_source_ref(id));
     for (auto id : referenced_resources.display_lists)
         add_display_list(source.display_list(id));
 }
@@ -161,7 +161,7 @@ DisplayListResourceTransaction DisplayListResourceStorage::create_transaction(
     }
     for (auto id : current.video_frame_sources) {
         if (!previous.video_frame_sources.contains(id))
-            transaction.video_frame_sources.append({ id, video_frame_source(id) });
+            transaction.video_frame_sources.append({ id, video_frame_source_ref(id) });
     }
     for (auto id : current.display_lists) {
         if (!previous.display_lists.contains(id))

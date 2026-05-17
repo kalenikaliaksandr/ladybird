@@ -104,6 +104,21 @@ Bytes YUVData::v_data()
     return m_impl->v_buffer.span();
 }
 
+ReadonlyBytes YUVData::y_data() const
+{
+    return m_impl->y_buffer.span();
+}
+
+ReadonlyBytes YUVData::u_data() const
+{
+    return m_impl->u_buffer.span();
+}
+
+ReadonlyBytes YUVData::v_data() const
+{
+    return m_impl->v_buffer.span();
+}
+
 static FFI::YUVMatrix yuv_matrix_for_cicp(Media::CodingIndependentCodePoints const& cicp)
 {
     switch (cicp.matrix_coefficients()) {

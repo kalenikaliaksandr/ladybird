@@ -43,6 +43,9 @@ public:
     Bytes y_data();
     Bytes u_data();
     Bytes v_data();
+    ReadonlyBytes y_data() const;
+    ReadonlyBytes u_data() const;
+    ReadonlyBytes v_data() const;
 
     ErrorOr<NonnullRefPtr<Bitmap>> to_bitmap() const;
 
