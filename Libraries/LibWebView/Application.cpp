@@ -18,6 +18,7 @@
 #include <LibWeb/CSS/PropertyID.h>
 #include <LibWeb/Loader/UserAgent.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/CompositorClient.h>
 #include <LibWebView/CookieJar.h>
 #include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/HelperProcess.h>
@@ -779,7 +780,11 @@ void Application::process_did_exit(Process&& process, Optional<int> exit_status)
         dbgln_if(WEBVIEW_PROCESS_DEBUG, "WebWorker {} died, not sure what to do.", process.pid());
         break;
     case ProcessType::Compositor:
-        dbgln_if(WEBVIEW_PROCESS_DEBUG, "Compositor {} died, not sure what to do.", process.pid());
+        if (auto client = process.client<CompositorClient>(); client.has_value()) {
+            dbgln_if(WEBVIEW_PROCESS_DEBUG, "Compositor process died");
+            if (auto on_death = move(client->on_death))
+                on_death();
+        }
         break;
     case ProcessType::Browser:
         dbgln("Invalid process type to be dying: Browser");

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/Function.h>
 #include <AK/Optional.h>
 #include <Compositor/CompositorClientEndpoint.h>
 #include <Compositor/CompositorServerEndpoint.h>
@@ -27,6 +28,8 @@ public:
     void unregister_presentation(Web::Compositor::PresentationId);
     void set_presentation_visibility(Web::Compositor::PresentationId, bool is_visible);
     void set_active_presentation(u64 ui_view_id, Optional<Web::Compositor::PresentationId>);
+
+    Function<void()> on_death;
 
 private:
     virtual void die() override;
