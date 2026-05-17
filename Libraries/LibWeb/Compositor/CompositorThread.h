@@ -59,7 +59,7 @@ public:
     virtual void update_display_list(NonnullRefPtr<Painting::DisplayList>, Painting::DisplayListResourceTransaction&&, Painting::ScrollStateSnapshot&&) override;
     virtual void update_compositor_surface(Painting::CompositorSurfaceId, Gfx::SharedImage&&) override;
     virtual void clear_compositor_surface(Painting::CompositorSurfaceId) override;
-    virtual void update_video_frame(Painting::VideoFrameResourceId, Media::VideoFrame const&) override;
+    virtual void update_video_frame(Painting::VideoFrameResourceId, Media::VideoFrame&) override;
     virtual void clear_video_frame(Painting::VideoFrameResourceId) override;
     virtual void update_scroll_state(Painting::ScrollStateSnapshot&&) override;
     virtual void invalidate_wheel_event_listener_state(u64 generation) override;

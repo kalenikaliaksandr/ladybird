@@ -163,7 +163,7 @@ void RemotePageCompositor::send_video_frame_update(Web::Painting::VideoFrameReso
     m_connection->update_yuv_video_frame(m_context_id, serialized_video_frame_update.value());
 }
 
-void RemotePageCompositor::update_video_frame(Web::Painting::VideoFrameResourceId video_frame_source_id, Media::VideoFrame const& frame)
+void RemotePageCompositor::update_video_frame(Web::Painting::VideoFrameResourceId video_frame_source_id, Media::VideoFrame& frame)
 {
     if (m_context_created && m_connection->is_open())
         send_video_frame_update(video_frame_source_id, frame);

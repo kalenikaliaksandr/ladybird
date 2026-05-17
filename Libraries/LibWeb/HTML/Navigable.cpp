@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibMedia/VideoFrame.h>
 #include <LibWeb/CSS/ComputedProperties.h>
 #include <LibWeb/CSS/PseudoElement.h>
 #include <LibWeb/CSS/SystemColor.h>
@@ -3346,6 +3347,15 @@ static ErrorOr<InProcessDisplayListUpdate> round_trip_display_list_update_for_co
     Painting::ScrollStateSnapshot const& scroll_state_snapshot)
 {
     auto deserialized_resource_transaction = TRY(round_trip_ipc_value(resource_transaction));
+    for (auto& deserialized_source : deserialized_resource_transaction.video_frame_sources) {
+        for (auto const& source : resource_transaction.video_frame_sources) {
+            if (source.id != deserialized_source.id)
+                continue;
+            if (auto frame = source.resource->current_frame())
+                deserialized_source.resource->update(move(frame));
+            break;
+        }
+    }
     auto deserialized_scroll_state_snapshot = TRY(round_trip_ipc_value(scroll_state_snapshot));
     auto deserialized_display_list = TRY(round_trip_ipc_value_as<NonnullRefPtr<Painting::DisplayList>>(display_list));
 
