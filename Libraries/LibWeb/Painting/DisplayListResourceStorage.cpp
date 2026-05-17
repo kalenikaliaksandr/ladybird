@@ -68,6 +68,36 @@ static ReadonlyBytes inline_data(ReadonlyBytes payload, DisplayListDataSpan span
     return payload.slice(span.offset, span.size);
 }
 
+static void collect_referenced_filter_resources(
+    Gfx::Filter const& filter,
+    DisplayListResourceStorage* storage,
+    DisplayListResourceSet& referenced_resources)
+{
+    (void)Gfx::serialize_filter(filter, [&](Gfx::DecodedImageFrame const& frame) {
+        auto resource_id = ImageFrameResourceId { frame.id() };
+        if (storage && !storage->contains_image_frame(resource_id))
+            storage->set_image_frame(resource_id, frame);
+        referenced_resources.image_frames.set(resource_id, AK::HashSetExistingEntryBehavior::Keep);
+        return resource_id.value();
+    });
+}
+
+static void collect_referenced_visual_context_resources(
+    AccumulatedVisualContextTree const& visual_context_tree,
+    DisplayListResourceStorage* storage,
+    DisplayListResourceSet& referenced_resources)
+{
+    for (size_t i = 1; i < visual_context_tree.node_count(); ++i) {
+        auto const& node = visual_context_tree.node_at(VisualContextIndex { i });
+        node.data.visit(
+            [&](EffectsData const& effects) {
+                if (effects.gfx_filter.has_value())
+                    collect_referenced_filter_resources(*effects.gfx_filter, storage, referenced_resources);
+            },
+            [](auto const&) {});
+    }
+}
+
 void DisplayListResourceStorage::append_referenced_resources_from(
     DisplayListResourceStorage const& source,
     ReadonlyBytes command_bytes)
@@ -85,13 +115,15 @@ void DisplayListResourceStorage::append_referenced_resources_from(
 
 void DisplayListResourceStorage::collect_referenced_resources(
     ReadonlyBytes command_bytes,
-    DisplayListResourceSet& referenced_resources) const
+    DisplayListResourceSet& referenced_resources,
+    DisplayListResourceStorage* storage_for_visual_context_resources) const
 {
     auto add_display_list_resource = [&](DisplayListResourceId id, Optional<ReadonlyBytes> command_bytes_to_collect) {
         if (referenced_resources.display_lists.set(id, AK::HashSetExistingEntryBehavior::Keep) != HashSetResult::InsertedNewEntry)
             return;
         auto const& nested_display_list = display_list(id);
-        collect_referenced_resources(command_bytes_to_collect.value_or(nested_display_list.command_bytes()), referenced_resources);
+        collect_referenced_visual_context_resources(nested_display_list.visual_context_tree(), storage_for_visual_context_resources, referenced_resources);
+        collect_referenced_resources(command_bytes_to_collect.value_or(nested_display_list.command_bytes()), referenced_resources, storage_for_visual_context_resources);
     };
 
     DisplayList::for_each_command_header(command_bytes, [&](DisplayListCommandHeader const& header, ReadonlyBytes payload) {
@@ -136,13 +168,16 @@ void DisplayListResourceStorage::collect_referenced_resources(
 DisplayListResourceSet DisplayListResourceStorage::collect_referenced_resources(ReadonlyBytes command_bytes) const
 {
     DisplayListResourceSet referenced_resources;
-    collect_referenced_resources(command_bytes, referenced_resources);
+    collect_referenced_resources(command_bytes, referenced_resources, nullptr);
     return referenced_resources;
 }
 
-DisplayListResourceSet DisplayListResourceStorage::collect_referenced_resources(DisplayList const& display_list) const
+DisplayListResourceSet DisplayListResourceStorage::collect_referenced_resources(DisplayList const& display_list)
 {
-    return collect_referenced_resources(display_list.command_bytes());
+    DisplayListResourceSet referenced_resources;
+    collect_referenced_visual_context_resources(display_list.visual_context_tree(), this, referenced_resources);
+    collect_referenced_resources(display_list.command_bytes(), referenced_resources, this);
+    return referenced_resources;
 }
 
 DisplayListResourceTransaction DisplayListResourceStorage::create_transaction(
@@ -159,13 +194,29 @@ DisplayListResourceTransaction DisplayListResourceStorage::create_transaction(
         if (!previous.image_frames.contains(id))
             transaction.image_frames.append({ id, image_frame(id) });
     }
+    HashTable<ImageFrameResourceId> image_frames_in_transaction;
+    for (auto const& image_frame : transaction.image_frames)
+        image_frames_in_transaction.set(image_frame.id);
+
     for (auto id : current.video_frame_sources) {
         if (!previous.video_frame_sources.contains(id))
             transaction.video_frame_sources.append({ id, video_frame_source_ref(id) });
     }
     for (auto id : current.display_lists) {
-        if (!previous.display_lists.contains(id))
+        if (!previous.display_lists.contains(id)) {
             transaction.display_lists.append({ id, display_list(id) });
+
+            DisplayListResourceSet display_list_resources;
+            auto const& display_list_resource = display_list(id);
+            collect_referenced_visual_context_resources(display_list_resource.visual_context_tree(), nullptr, display_list_resources);
+            collect_referenced_resources(display_list_resource.command_bytes(), display_list_resources, nullptr);
+            for (auto image_frame_id : display_list_resources.image_frames) {
+                if (!image_frames_in_transaction.contains(image_frame_id)) {
+                    transaction.image_frames.append({ image_frame_id, image_frame(image_frame_id) });
+                    image_frames_in_transaction.set(image_frame_id);
+                }
+            }
+        }
     }
 
     for (auto id : previous.fonts) {
