@@ -35,6 +35,14 @@ DisplayList::DisplayList(NonnullRefPtr<AccumulatedVisualContextTree const> visua
 {
 }
 
+DisplayList::DisplayList(NonnullRefPtr<AccumulatedVisualContextTree const> visual_context_tree, u64 id, ByteBuffer command_bytes, Optional<AsyncScrollingMetadata> async_scrolling_metadata)
+    : m_visual_context_tree(move(visual_context_tree))
+    , m_id(id)
+    , m_command_bytes(move(command_bytes))
+    , m_async_scrolling_metadata(move(async_scrolling_metadata))
+{
+}
+
 bool DisplayList::append_bytes(
     DisplayListCommandType type,
     ReadonlyBytes payload,
