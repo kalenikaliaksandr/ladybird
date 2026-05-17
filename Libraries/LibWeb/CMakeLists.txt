@@ -34,6 +34,7 @@ set(SOURCES
     Compositor/AsyncScrollingState.cpp
     Compositor/BackingStoreManager.cpp
     Compositor/CompositorThread.cpp
+    Compositor/DisplayListResourceSerialization.cpp
     Compositor/DisplayListSerialization.cpp
     Compositor/ScrollStateSerialization.cpp
     Compositor/SerializedPayload.cpp

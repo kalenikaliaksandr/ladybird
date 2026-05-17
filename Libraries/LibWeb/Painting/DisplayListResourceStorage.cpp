@@ -17,29 +17,49 @@ DisplayListResourceStorage::~DisplayListResourceStorage() = default;
 FontResourceId DisplayListResourceStorage::add_font(Gfx::Font const& font)
 {
     auto id = font.id();
-    m_fonts.ensure(id, [&]() -> NonnullRefPtr<Gfx::Font const> { return font; });
+    set_font(FontResourceId { id }, font);
     return { id };
 }
 
 ImageFrameResourceId DisplayListResourceStorage::add_image_frame(Gfx::DecodedImageFrame const& frame)
 {
     auto id = frame.id();
-    m_image_frames.ensure(id, [&] { return frame; });
+    set_image_frame(ImageFrameResourceId { id }, frame);
     return { id };
 }
 
 VideoFrameResourceId DisplayListResourceStorage::add_video_frame_source(NonnullRefPtr<VideoFrameSource const> source)
 {
     auto id = source->id();
-    m_video_frame_sources.ensure(id, [&] { return move(source); });
+    set_video_frame_source(VideoFrameResourceId { id }, move(source));
     return { id };
 }
 
 DisplayListResourceId DisplayListResourceStorage::add_display_list(NonnullRefPtr<DisplayList const> display_list)
 {
     auto id = display_list->id();
-    m_display_lists.ensure(id, [&] { return move(display_list); });
+    set_display_list(DisplayListResourceId { id }, move(display_list));
     return { id };
+}
+
+void DisplayListResourceStorage::set_font(FontResourceId id, Gfx::Font const& font)
+{
+    m_fonts.set(id.value(), font);
+}
+
+void DisplayListResourceStorage::set_image_frame(ImageFrameResourceId id, Gfx::DecodedImageFrame const& frame)
+{
+    m_image_frames.set(id.value(), frame);
+}
+
+void DisplayListResourceStorage::set_video_frame_source(VideoFrameResourceId id, NonnullRefPtr<VideoFrameSource const> source)
+{
+    m_video_frame_sources.set(id.value(), move(source));
+}
+
+void DisplayListResourceStorage::set_display_list(DisplayListResourceId id, NonnullRefPtr<DisplayList const> display_list)
+{
+    m_display_lists.set(id.value(), move(display_list));
 }
 
 static ReadonlyBytes inline_data(ReadonlyBytes payload, DisplayListDataSpan span)
@@ -133,19 +153,19 @@ DisplayListResourceTransaction DisplayListResourceStorage::create_transaction(
 
     for (auto id : current.fonts) {
         if (!previous.fonts.contains(id))
-            transaction.fonts.append(font(id));
+            transaction.fonts.append({ id, font(id) });
     }
     for (auto id : current.image_frames) {
         if (!previous.image_frames.contains(id))
-            transaction.image_frames.append(image_frame(id));
+            transaction.image_frames.append({ id, image_frame(id) });
     }
     for (auto id : current.video_frame_sources) {
         if (!previous.video_frame_sources.contains(id))
-            transaction.video_frame_sources.append(video_frame_source(id));
+            transaction.video_frame_sources.append({ id, video_frame_source(id) });
     }
     for (auto id : current.display_lists) {
         if (!previous.display_lists.contains(id))
-            transaction.display_lists.append(display_list(id));
+            transaction.display_lists.append({ id, display_list(id) });
     }
 
     for (auto id : previous.fonts) {
@@ -170,13 +190,13 @@ DisplayListResourceTransaction DisplayListResourceStorage::create_transaction(
 void DisplayListResourceStorage::apply_transaction(DisplayListResourceTransaction&& transaction)
 {
     for (auto const& font : transaction.fonts)
-        add_font(*font);
+        set_font(font.id, *font.resource);
     for (auto const& frame : transaction.image_frames)
-        add_image_frame(frame);
+        set_image_frame(frame.id, frame.resource);
     for (auto& source : transaction.video_frame_sources)
-        add_video_frame_source(move(source));
+        set_video_frame_source(source.id, move(source.resource));
     for (auto& display_list : transaction.display_lists)
-        add_display_list(move(display_list));
+        set_display_list(display_list.id, move(display_list.resource));
 
     for (auto id : transaction.font_ids_to_remove)
         m_fonts.remove(id.value());
