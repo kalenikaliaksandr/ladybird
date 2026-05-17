@@ -72,6 +72,8 @@ public:
     bool send_async_scroll_to_compositor(u64 page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels);
     bool send_mouse_event_to_compositor(u64 page_id, Web::MouseEvent const&);
     void notify_presented_bitmap_ready_to_paint(u64 page_id, i32 bitmap_id);
+    void did_present_backing_stores_for_presentation(Web::Compositor::PresentationId, i32 front_bitmap_id, Gfx::SharedImage front_backing_store, i32 back_bitmap_id, Gfx::SharedImage back_backing_store);
+    void did_present_bitmap_for_presentation(Web::Compositor::PresentationId, Gfx::IntRect, i32 bitmap_id);
     void did_present_backing_stores(u64 page_id, i32 front_bitmap_id, Gfx::SharedImage front_backing_store, i32 back_bitmap_id, Gfx::SharedImage back_backing_store);
     void did_present_bitmap(u64 page_id, Gfx::IntRect, i32 bitmap_id);
 
@@ -172,6 +174,7 @@ private:
     virtual Messages::WebContentClient::RequestWorkerAgentResponse request_worker_agent(u64 page_id, Web::Bindings::AgentType worker_type) override;
 
     Optional<ViewImplementation&> view_for_page_id(u64, SourceLocation = SourceLocation::current());
+    Optional<ViewImplementation&> view_for_presentation_id(Web::Compositor::PresentationId, SourceLocation = SourceLocation::current());
 
     HashMap<u64, NonnullRawPtr<ViewImplementation>> m_views;
     HashMap<u64, String> m_history_recorded_urls_for_current_load;

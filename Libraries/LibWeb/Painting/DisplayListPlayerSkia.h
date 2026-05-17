@@ -7,6 +7,7 @@
 #pragma once
 
 #include <LibGfx/DecodedImageFrameSkiaImageCache.h>
+#include <LibWeb/Export.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListCommand.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
@@ -16,7 +17,7 @@ class SkPaint;
 
 namespace Web::Painting {
 
-class DisplayListPlayerSkia final : public DisplayListPlayer {
+class WEB_API DisplayListPlayerSkia final : public DisplayListPlayer {
 public:
     DisplayListPlayerSkia();
     explicit DisplayListPlayerSkia(RefPtr<Gfx::SkiaBackendContext>);

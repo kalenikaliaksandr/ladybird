@@ -132,6 +132,10 @@ WebContentClient::WebContentClient(NonnullOwnPtr<IPC::Transport> transport)
 
 WebContentClient::~WebContentClient()
 {
+    if (Application::web_content_options().enable_remote_compositor == EnableRemoteCompositor::Yes) {
+        if (auto* compositor_client = Application::compositor_client())
+            compositor_client->unregister_web_content_client(*this);
+    }
     compositor_connections().remove(this);
     s_clients.remove(this);
 }
@@ -147,6 +151,7 @@ ErrorOr<void> WebContentClient::connect_to_remote_compositor(CompositorClient& c
     m_web_content_compositor_connection_id = *connection_id;
     if (!compositor_client.register_presentation(m_presentation_id, *connection_id, m_presentation_capability))
         return Error::from_string_literal("Failed to register WebContent presentation with Compositor process");
+    compositor_client.register_web_content_client(*this);
     async_connect_to_compositor(move(paired_transport.remote_handle), m_presentation_id.value(), m_presentation_capability.value());
     return {};
 }
@@ -238,6 +243,19 @@ bool WebContentClient::send_mouse_event_to_compositor(u64 page_id, Web::MouseEve
 
 void WebContentClient::notify_presented_bitmap_ready_to_paint(u64 page_id, i32 bitmap_id)
 {
+    if (Application::web_content_options().enable_remote_compositor == EnableRemoteCompositor::Yes) {
+        auto* compositor_client = Application::compositor_client();
+        if (!compositor_client || !compositor_client->is_open()) {
+            dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI remote compositor IPC unavailable for ready_to_paint presentation {} bitmap {}",
+                m_presentation_id.value(), bitmap_id);
+            return;
+        }
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI sending remote compositor ready_to_paint for presentation {} bitmap {}",
+            m_presentation_id.value(), bitmap_id);
+        compositor_client->ready_to_paint(m_presentation_id, bitmap_id);
+        return;
+    }
+
     auto connection = compositor_connections().get(this);
     if (!connection.has_value() || !connection.value()->is_open()) {
         dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI compositor IPC unavailable for ready_to_paint page {} bitmap {} (connection={}, open={})",
@@ -259,6 +277,36 @@ void WebContentClient::did_present_bitmap(u64 page_id, Gfx::IntRect rect, i32 bi
         dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI dropping did_paint for page {} bitmap {}: no view",
             page_id, bitmap_id);
         notify_presented_bitmap_ready_to_paint(page_id, bitmap_id);
+    }
+}
+
+void WebContentClient::did_present_backing_stores_for_presentation(
+    Web::Compositor::PresentationId presentation_id,
+    i32 front_bitmap_id,
+    Gfx::SharedImage front_backing_store,
+    i32 back_bitmap_id,
+    Gfx::SharedImage back_backing_store)
+{
+    dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI received backing stores for presentation {} front={} back={}",
+        presentation_id.value(), front_bitmap_id, back_bitmap_id);
+    if (auto view = view_for_presentation_id(presentation_id); view.has_value()) {
+        view->did_allocate_backing_stores({}, front_bitmap_id, move(front_backing_store), back_bitmap_id, move(back_backing_store));
+    } else {
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI dropping backing stores for presentation {} front={} back={}: no view",
+            presentation_id.value(), front_bitmap_id, back_bitmap_id);
+    }
+}
+
+void WebContentClient::did_present_bitmap_for_presentation(Web::Compositor::PresentationId presentation_id, Gfx::IntRect rect, i32 bitmap_id)
+{
+    dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI remote compositor IPC did_paint for presentation {} bitmap {} rect={}x{} at {},{}",
+        presentation_id.value(), bitmap_id, rect.width(), rect.height(), rect.x(), rect.y());
+    if (auto view = view_for_presentation_id(presentation_id); view.has_value()) {
+        view->server_did_paint({}, bitmap_id, rect.size());
+    } else {
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI dropping did_paint for presentation {} bitmap {}: no view",
+            presentation_id.value(), bitmap_id);
+        notify_presented_bitmap_ready_to_paint(0, bitmap_id);
     }
 }
 
@@ -1040,6 +1088,26 @@ Optional<ViewImplementation&> WebContentClient::view_for_page_id(u64 page_id, So
         return *view.value();
 
     dbgln("WebContentClient::{}: Did not find a page with ID {}", location.function_name(), page_id);
+    return {};
+}
+
+Optional<ViewImplementation&> WebContentClient::view_for_presentation_id(Web::Compositor::PresentationId presentation_id, SourceLocation location)
+{
+    if (presentation_id != m_presentation_id) {
+        dbgln("WebContentClient::{}: Did not find presentation {}", location.function_name(), presentation_id.value());
+        return {};
+    }
+
+    if (m_views.is_empty())
+        return {};
+
+    if (auto view = m_views.get(0); view.has_value())
+        return *view.value();
+
+    if (m_views.size() == 1)
+        return *m_views.begin()->value;
+
+    dbgln("WebContentClient::{}: Did not find a unique view for presentation {}", location.function_name(), presentation_id.value());
     return {};
 }
 

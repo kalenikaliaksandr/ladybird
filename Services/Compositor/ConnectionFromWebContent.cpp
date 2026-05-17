@@ -12,9 +12,11 @@
 #include <AK/StdLibExtras.h>
 #include <Compositor/ConnectionFromClient.h>
 #include <Compositor/ConnectionFromWebContent.h>
+#include <LibGfx/PaintingSurface.h>
 #include <LibWeb/Compositor/DisplayListResourceSerialization.h>
 #include <LibWeb/Compositor/DisplayListSerialization.h>
 #include <LibWeb/Compositor/ScrollStateSerialization.h>
+#include <LibWeb/Painting/DisplayListPlayerSkia.h>
 
 namespace Compositor {
 
@@ -41,6 +43,17 @@ ErrorOr<Web::Compositor::WebContentConnectionId> ConnectionFromWebContent::conne
 bool ConnectionFromWebContent::has_connection(Web::Compositor::WebContentConnectionId connection_id)
 {
     return web_content_connections().contains(connection_id);
+}
+
+void ConnectionFromWebContent::presented_bitmap_ready_to_paint(Web::Compositor::PresentationId presentation_id, i32 bitmap_id)
+{
+    for (auto& entry : web_content_connections()) {
+        if (entry.value->mark_presented_bitmap_ready_to_paint(presentation_id, bitmap_id))
+            return;
+    }
+
+    dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Ignoring ready_to_paint for unknown presentation {} bitmap {}",
+        presentation_id.value(), bitmap_id);
 }
 
 ConnectionFromWebContent::ConnectionFromWebContent(NonnullOwnPtr<IPC::Transport> transport, Web::Compositor::WebContentConnectionId connection_id)
@@ -117,6 +130,108 @@ bool ConnectionFromWebContent::validate_presentation_mode(Web::Compositor::Compo
     VERIFY_NOT_REACHED();
 }
 
+ErrorOr<void> ConnectionFromWebContent::allocate_backing_stores_if_needed(ContextState& context, Gfx::IntSize viewport_size)
+{
+    auto allocation = context.backing_store_manager->resize_backing_stores_if_needed(
+        viewport_size,
+        context.is_top_level_traversable,
+        context.window_resize_in_progress);
+    if (!allocation.has_value())
+        return {};
+
+    auto should_publish = context.presents_to_client
+        && context.presentation_mode.kind == Web::Compositor::SerializedPresentationModeKind::PresentToUI;
+    auto publication = context.backing_store_manager->allocate_backing_stores(
+        *allocation,
+        {},
+        should_publish);
+    if (!publication.has_value())
+        return {};
+
+    Compositor::ConnectionFromClient::did_allocate_backing_stores(
+        context.presentation_mode.presentation_id,
+        publication->front_bitmap_id,
+        move(publication->front_shared_image),
+        publication->back_bitmap_id,
+        move(publication->back_shared_image));
+    return {};
+}
+
+void ConnectionFromWebContent::rasterize_pending_present(ContextState& context)
+{
+    if (!context.pending_present.has_value())
+        return;
+
+    if (context.presentation_mode.kind == Web::Compositor::SerializedPresentationModeKind::PresentToUI
+        && context.presents_to_client
+        && context.presented_bitmap_id_awaiting_ack.has_value()) {
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Deferring present for context {} until bitmap {} is ready to paint",
+            context.context_id.value(), context.presented_bitmap_id_awaiting_ack.value());
+        return;
+    }
+
+    auto pending_present = *context.pending_present;
+    auto viewport_size = context.viewport_size.value_or(pending_present.viewport_rect.size());
+    auto allocation = allocate_backing_stores_if_needed(context, viewport_size);
+    if (allocation.is_error()) {
+        dbgln("Skipping present for compositor context {} from WebContent connection {}: {}", context.context_id.value(), m_connection_id.value(), allocation.error());
+        context.completed_frame_id = pending_present.frame_id;
+        context.pending_present.clear();
+        return;
+    }
+
+    if (!context.display_list || !context.scroll_state_snapshot.has_value() || !context.backing_store_manager->is_valid()) {
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Skipping present for context {}: display_list={}, scroll_state={}, backing_stores={}",
+            context.context_id.value(), !!context.display_list, context.scroll_state_snapshot.has_value(), context.backing_store_manager->is_valid());
+        context.completed_frame_id = pending_present.frame_id;
+        context.pending_present.clear();
+        return;
+    }
+
+    auto& back_store = context.backing_store_manager->back_store();
+    Web::Painting::DisplayListPlayerSkia player;
+    player.execute(*context.display_list, context.display_list_resource_storage, *context.scroll_state_snapshot, back_store);
+
+    auto rendered_bitmap_id = context.backing_store_manager->back_bitmap_id();
+    context.backing_store_manager->swap();
+
+    if (context.presentation_mode.kind == Web::Compositor::SerializedPresentationModeKind::PresentToUI && context.presents_to_client) {
+        context.presented_bitmap_id_awaiting_ack = rendered_bitmap_id;
+        Compositor::ConnectionFromClient::did_paint(
+            context.presentation_mode.presentation_id,
+            pending_present.viewport_rect,
+            rendered_bitmap_id);
+    }
+
+    context.completed_frame_id = pending_present.frame_id;
+    context.pending_present.clear();
+    context.has_pending_display_list_update = false;
+    context.has_pending_scroll_state_update = false;
+}
+
+bool ConnectionFromWebContent::mark_presented_bitmap_ready_to_paint(Web::Compositor::PresentationId presentation_id, i32 bitmap_id)
+{
+    for (auto& entry : m_contexts) {
+        auto& context = entry.value;
+        if (context.presentation_mode.kind != Web::Compositor::SerializedPresentationModeKind::PresentToUI)
+            continue;
+        if (context.presentation_mode.presentation_id != presentation_id)
+            continue;
+
+        if (context.presented_bitmap_id_awaiting_ack != bitmap_id) {
+            dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Ignoring stale ready_to_paint for presentation {} bitmap {} while awaiting bitmap {}",
+                presentation_id.value(), bitmap_id, context.presented_bitmap_id_awaiting_ack.value_or(-1));
+            return true;
+        }
+
+        context.presented_bitmap_id_awaiting_ack.clear();
+        rasterize_pending_present(context);
+        return true;
+    }
+
+    return false;
+}
+
 void ConnectionFromWebContent::create_context(
     u64 raw_context_id,
     u64 page_id,
@@ -154,6 +269,8 @@ void ConnectionFromWebContent::create_context(
                                    .has_pending_display_list_update = false,
                                    .has_pending_scroll_state_update = false,
                                    .pending_present = {},
+                                   .backing_store_manager = make<Web::Compositor::BackingStoreManager>(),
+                                   .presented_bitmap_id_awaiting_ack = {},
                                    .submitted_frame_id = 0,
                                    .completed_frame_id = 0,
                                    .is_top_level_traversable = false,
@@ -220,6 +337,10 @@ void ConnectionFromWebContent::viewport_size_updated(
     context->viewport_size = viewport_size;
     context->is_top_level_traversable = is_top_level_traversable;
     context->window_resize_in_progress = window_resize_in_progress;
+
+    if (auto allocation = allocate_backing_stores_if_needed(*context, viewport_size); allocation.is_error())
+        dbgln("Failed to allocate backing stores for compositor context {} from WebContent connection {}: {}", context_id.value(), m_connection_id.value(), allocation.error());
+    rasterize_pending_present(*context);
 }
 
 void ConnectionFromWebContent::update_display_list(
@@ -241,6 +362,7 @@ void ConnectionFromWebContent::update_display_list(
     context->scroll_state_snapshot = move(scroll_state);
     context->has_pending_display_list_update = true;
     context->has_pending_scroll_state_update = true;
+    rasterize_pending_present(*context);
 }
 
 void ConnectionFromWebContent::update_scroll_state(u64 raw_context_id, Web::Painting::ScrollStateSnapshot scroll_state)
@@ -254,6 +376,7 @@ void ConnectionFromWebContent::update_scroll_state(u64 raw_context_id, Web::Pain
 
     context->scroll_state_snapshot = move(scroll_state);
     context->has_pending_scroll_state_update = true;
+    rasterize_pending_present(*context);
 }
 
 Messages::WebContentCompositorServer::PresentFrameResponse ConnectionFromWebContent::present_frame(u64 raw_context_id, Gfx::IntRect viewport_rect)
@@ -271,9 +394,7 @@ Messages::WebContentCompositorServer::PresentFrameResponse ConnectionFromWebCont
         .viewport_rect = viewport_rect,
     };
 
-    // FIXME: Complete this token from the remote raster scheduler once the
-    // Compositor process can replay display lists into backing stores.
-    context->completed_frame_id = frame_id;
+    rasterize_pending_present(*context);
     return frame_id;
 }
 
