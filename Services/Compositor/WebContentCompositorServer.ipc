@@ -1,0 +1,12 @@
+#include <LibGfx/Size.h>
+#include <LibWeb/Compositor/Types.h>
+#include <LibWeb/Page/Page.h>
+
+endpoint WebContentCompositorServer
+{
+    create_context(u64 context_id, u64 page_id, Web::Compositor::SerializedPresentationModeKind presentation_mode_kind, u64 presentation_id, u64 presentation_capability, u64 target_context_id, u64 compositor_surface_id, Web::DisplayListPlayerType display_list_player_type) =|
+    destroy_context(u64 context_id) =|
+    set_presentation_mode(u64 context_id, Web::Compositor::SerializedPresentationModeKind presentation_mode_kind, u64 presentation_id, u64 presentation_capability, u64 target_context_id, u64 compositor_surface_id) =|
+    stop_presenting_to_client(u64 context_id) =|
+    viewport_size_updated(u64 context_id, Gfx::IntSize viewport_size, bool is_top_level_traversable, Web::Compositor::WindowResizingInProgress window_resize_in_progress) =|
+}

@@ -22,6 +22,11 @@ enum class WindowResizingInProgress : u8 {
     Yes,
 };
 
+enum class SerializedPresentationModeKind : u8 {
+    PresentToUI,
+    PublishToCompositorSurface,
+};
+
 inline CompositorContextId allocate_compositor_context_id()
 {
     static Atomic<u64> s_next_id { 1 };

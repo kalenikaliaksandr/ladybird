@@ -1,0 +1,4 @@
+endpoint WebContentCompositorClient
+{
+    schedule_rendering_update(u64 page_id) =|
+}
