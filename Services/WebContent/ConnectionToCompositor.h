@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <AK/Function.h>
+#include <AK/HashMap.h>
 #include <Compositor/WebContentCompositorClientEndpoint.h>
 #include <Compositor/WebContentCompositorServerEndpoint.h>
 #include <LibGfx/SharedImage.h>
@@ -51,6 +53,7 @@ public:
     void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot const&);
     void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId);
+    void request_screenshot(Web::Compositor::CompositorContextId, Gfx::IntSize, Function<void(Optional<Gfx::SharedImage>)>&&);
     u64 present_frame(Web::Compositor::CompositorContextId, Gfx::IntRect);
     void wait_for_frame(Web::Compositor::CompositorContextId, u64 frame_id);
 
@@ -58,6 +61,11 @@ private:
     explicit ConnectionToCompositor(NonnullOwnPtr<IPC::Transport>);
 
     virtual void schedule_rendering_update(u64 page_id) override;
+    virtual void did_finish_screenshot(u64 request_id, Gfx::SharedImage shared_image) override;
+    virtual void did_fail_screenshot(u64 request_id) override;
+
+    u64 m_next_screenshot_request_id { 1 };
+    HashMap<u64, Function<void(Optional<Gfx::SharedImage>)>> m_screenshot_callbacks;
 };
 
 }

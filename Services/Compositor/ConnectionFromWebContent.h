@@ -93,6 +93,7 @@ private:
     virtual void update_scroll_state(u64 context_id, Web::Painting::ScrollStateSnapshot scroll_state) override;
     virtual void update_compositor_surface(u64 context_id, u64 surface_id, Gfx::SharedImage shared_image) override;
     virtual void clear_compositor_surface(u64 context_id, u64 surface_id) override;
+    virtual void request_screenshot(u64 context_id, u64 request_id, Gfx::IntSize size) override;
     virtual Messages::WebContentCompositorServer::PresentFrameResponse present_frame(u64 context_id, Gfx::IntRect viewport_rect) override;
     virtual void wait_for_frame(u64 context_id, u64 frame_id) override;
 

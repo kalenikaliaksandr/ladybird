@@ -7,6 +7,8 @@
 #include <WebContent/RemotePageCompositor.h>
 
 #include <AK/Debug.h>
+#include <LibGfx/PaintingSurface.h>
+#include <LibGfx/SharedImageBuffer.h>
 #include <LibWeb/Compositor/DisplayListResourceSerialization.h>
 #include <LibWeb/Compositor/DisplayListSerialization.h>
 #include <LibWeb/Compositor/ScrollStateSerialization.h>
@@ -183,9 +185,23 @@ void RemotePageCompositor::wait_for_frame(u64 frame_id)
     m_connection->wait_for_frame(m_context_id, frame_id);
 }
 
-void RemotePageCompositor::request_screenshot(NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&& callback)
+void RemotePageCompositor::request_screenshot(NonnullRefPtr<Gfx::PaintingSurface> target_surface, Function<void()>&& callback)
 {
-    callback();
+    if (!m_context_created || !m_connection->is_open()) {
+        callback();
+        return;
+    }
+
+    m_connection->request_screenshot(
+        m_context_id,
+        target_surface->size(),
+        [target_surface = move(target_surface), callback = move(callback)](Optional<Gfx::SharedImage> shared_image) mutable {
+            if (shared_image.has_value()) {
+                auto shared_image_buffer = Gfx::SharedImageBuffer::import_from_shared_image(shared_image.release_value());
+                target_surface->write_from_bitmap(*shared_image_buffer.bitmap());
+            }
+            callback();
+        });
 }
 
 }

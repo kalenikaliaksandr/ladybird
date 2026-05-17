@@ -15,6 +15,9 @@ ConnectionToCompositor::ConnectionToCompositor(NonnullOwnPtr<IPC::Transport> tra
 
 void ConnectionToCompositor::die()
 {
+    for (auto& entry : m_screenshot_callbacks)
+        entry.value({});
+    m_screenshot_callbacks.clear();
 }
 
 void ConnectionToCompositor::create_context(
@@ -105,6 +108,16 @@ void ConnectionToCompositor::clear_compositor_surface(
     async_clear_compositor_surface(context_id.value(), surface_id.value());
 }
 
+void ConnectionToCompositor::request_screenshot(
+    Web::Compositor::CompositorContextId context_id,
+    Gfx::IntSize size,
+    Function<void(Optional<Gfx::SharedImage>)>&& callback)
+{
+    auto request_id = m_next_screenshot_request_id++;
+    m_screenshot_callbacks.set(request_id, move(callback));
+    async_request_screenshot(context_id.value(), request_id, size);
+}
+
 u64 ConnectionToCompositor::present_frame(Web::Compositor::CompositorContextId context_id, Gfx::IntRect viewport_rect)
 {
     auto response = send_sync_but_allow_failure<Messages::WebContentCompositorServer::PresentFrame>(context_id.value(), viewport_rect);
@@ -120,6 +133,22 @@ void ConnectionToCompositor::wait_for_frame(Web::Compositor::CompositorContextId
 
 void ConnectionToCompositor::schedule_rendering_update(u64)
 {
+}
+
+void ConnectionToCompositor::did_finish_screenshot(u64 request_id, Gfx::SharedImage shared_image)
+{
+    auto callback = m_screenshot_callbacks.take(request_id);
+    if (!callback.has_value())
+        return;
+    callback.release_value()(move(shared_image));
+}
+
+void ConnectionToCompositor::did_fail_screenshot(u64 request_id)
+{
+    auto callback = m_screenshot_callbacks.take(request_id);
+    if (!callback.has_value())
+        return;
+    callback.release_value()({});
 }
 
 }

@@ -1,4 +1,8 @@
+#include <LibGfx/SharedImage.h>
+
 endpoint WebContentCompositorClient
 {
     schedule_rendering_update(u64 page_id) =|
+    did_finish_screenshot(u64 request_id, Gfx::SharedImage shared_image) =|
+    did_fail_screenshot(u64 request_id) =|
 }
