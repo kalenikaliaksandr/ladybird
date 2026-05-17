@@ -12,6 +12,7 @@
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/Clipboard/SystemClipboard.h>
+#include <LibWeb/Compositor/CompositorThread.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/Range.h>
@@ -37,6 +38,19 @@ GC_DEFINE_ALLOCATOR(Page);
 GC::Ref<Page> Page::create(JS::VM& vm, GC::Ref<PageClient> page_client)
 {
     return vm.heap().allocate<Page>(page_client);
+}
+
+NonnullOwnPtr<Compositor::PageCompositor> PageClient::create_page_compositor(
+    bool is_svg_page,
+    bool register_page_presentation)
+{
+    auto page_presentation_registration = register_page_presentation
+        ? Compositor::PageCompositor::PagePresentationRegistration::Yes
+        : Compositor::PageCompositor::PagePresentationRegistration::No;
+
+    return make<Compositor::CompositorThread>(
+        is_svg_page ? 0 : id(),
+        is_svg_page ? Compositor::PageCompositor::PagePresentationRegistration::No : page_presentation_registration);
 }
 
 Page::Page(GC::Ref<PageClient> client)

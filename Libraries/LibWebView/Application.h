@@ -61,6 +61,7 @@ public:
 
     static Requests::RequestClient& request_server_client() { return *the().m_request_server_client; }
     static ImageDecoderClient::Client& image_decoder_client() { return *the().m_image_decoder_client; }
+    static CompositorClient* compositor_client() { return the().m_compositor_client.ptr(); }
 
     static BookmarkStore& bookmark_store() { return the().m_bookmark_store; }
     static HistoryStore& history_store() { return *the().m_history_store; }
@@ -208,6 +209,7 @@ private:
     void launch_spare_web_content_process();
     ErrorOr<void> launch_request_server();
     ErrorOr<void> launch_image_decoder_server();
+    ErrorOr<void> launch_compositor_server();
     ErrorOr<void> launch_devtools_server();
 
     void initialize_actions();
@@ -274,6 +276,7 @@ private:
 
     RefPtr<Requests::RequestClient> m_request_server_client;
     RefPtr<ImageDecoderClient::Client> m_image_decoder_client;
+    RefPtr<CompositorClient> m_compositor_client;
 
     RefPtr<WebContentClient> m_spare_web_content_process;
     bool m_has_queued_task_to_launch_spare_web_content_process { false };

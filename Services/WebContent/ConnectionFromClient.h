@@ -10,6 +10,7 @@
 
 #include <AK/HashMap.h>
 #include <AK/Queue.h>
+#include <AK/RefPtr.h>
 #include <AK/SourceLocation.h>
 #include <LibGC/Root.h>
 #include <LibIPC/ConnectionFromClient.h>
@@ -34,6 +35,8 @@
 
 namespace WebContent {
 
+class ConnectionToCompositor;
+
 class ConnectionFromClient final
     : public IPC::ConnectionFromClient<WebContentClientEndpoint, WebContentServerEndpoint> {
     C_OBJECT(ConnectionFromClient);
@@ -53,6 +56,7 @@ public:
         Web::Compositor::PresentationCapability presentation_capability;
     };
     Optional<CompositorPresentationBinding> const& compositor_presentation_binding() const { return m_compositor_presentation_binding; }
+    ConnectionToCompositor* compositor_connection() const { return m_compositor_connection.ptr(); }
 
     Function<void(IPC::TransportHandle const&)> on_request_server_connection;
     Function<void(IPC::TransportHandle const&)> on_image_decoder_connection;
@@ -184,6 +188,7 @@ private:
 
     NonnullOwnPtr<PageHost> m_page_host;
     Optional<CompositorPresentationBinding> m_compositor_presentation_binding;
+    RefPtr<ConnectionToCompositor> m_compositor_connection;
 
     HashMap<int, Web::FileRequest> m_requested_files {};
     int last_id { 0 };

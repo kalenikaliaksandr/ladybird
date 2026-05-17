@@ -172,6 +172,7 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     bool disable_scrollbar_painting = false;
     bool disable_async_scrolling = false;
     bool enable_compositor_serialization_test_mode = false;
+    bool enable_remote_compositor = false;
     bool file_scheme_urls_have_tuple_origins = false;
     Optional<u64> style_invalidation_counter_dump_interval;
 
@@ -245,6 +246,7 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     args_parser.add_option(disable_scrollbar_painting, "Don't paint horizontal or vertical scrollbars on the main viewport", "disable-scrollbar-painting");
     args_parser.add_option(disable_async_scrolling, "Disable async scrolling", "disable-async-scrolling");
     args_parser.add_option(enable_compositor_serialization_test_mode, "Round-trip compositor display list updates through the serialized payload format", "enable-compositor-serialization-test-mode");
+    args_parser.add_option(enable_remote_compositor, "Route page compositing through the Compositor process", "enable-remote-compositor");
     args_parser.add_option(dns_server_address, "Set the DNS server address", "dns-server", 0, "host|address");
     args_parser.add_option(dns_server_port, "Set the DNS server port", "dns-port", 0, "port (default: 53 or 853 if --dot)");
     args_parser.add_option(use_dns_over_tls, "Use DNS over TLS", "dot");
@@ -374,6 +376,7 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
         .paint_viewport_scrollbars = disable_scrollbar_painting ? PaintViewportScrollbars::No : PaintViewportScrollbars::Yes,
         .enable_async_scrolling = disable_async_scrolling ? EnableAsyncScrolling::No : EnableAsyncScrolling::Yes,
         .enable_compositor_serialization_test_mode = enable_compositor_serialization_test_mode ? EnableCompositorSerializationTestMode::Yes : EnableCompositorSerializationTestMode::No,
+        .enable_remote_compositor = enable_remote_compositor ? EnableRemoteCompositor::Yes : EnableRemoteCompositor::No,
         .file_scheme_urls_have_tuple_origins = file_scheme_urls_have_tuple_origins ? FileSchemeUrlsHaveTupleOrigins::Yes : FileSchemeUrlsHaveTupleOrigins::No,
         .default_time_zone = default_time_zone,
         .style_invalidation_counter_dump_interval = style_invalidation_counter_dump_interval,
@@ -427,6 +430,12 @@ static ErrorOr<NonnullRefPtr<WebContentClient>> create_web_content_client(Option
 
     client->async_connect_to_request_server(move(request_server_handle));
     client->async_connect_to_image_decoder(move(image_decoder_handle));
+
+    if (Application::web_content_options().enable_remote_compositor == EnableRemoteCompositor::Yes) {
+        auto* compositor_client = Application::compositor_client();
+        VERIFY(compositor_client);
+        TRY(client->connect_to_remote_compositor(*compositor_client));
+    }
 
     return client;
 }
@@ -528,6 +537,8 @@ ErrorOr<void> Application::launch_services()
 
     TRY(launch_request_server());
     TRY(launch_image_decoder_server());
+    if (m_web_content_options.enable_remote_compositor == EnableRemoteCompositor::Yes)
+        TRY(launch_compositor_server());
 
     if (m_browser_options.devtools_port.has_value())
         TRY(launch_devtools_server());
@@ -608,6 +619,24 @@ ErrorOr<void> Application::launch_image_decoder_server()
             client.async_connect_to_image_decoder(handles.take_last());
             return IterationDecision::Continue;
         });
+    };
+
+    return {};
+}
+
+ErrorOr<void> Application::launch_compositor_server()
+{
+    VERIFY(!m_compositor_client);
+
+    m_compositor_client = TRY(launch_compositor_process());
+    m_compositor_client->on_death = [this]() {
+        m_compositor_client = nullptr;
+
+        if (Core::EventLoop::current().was_exit_requested())
+            return;
+
+        warnln("\033[31;1mCompositor process exited while remote compositing is enabled\033[0m");
+        VERIFY_NOT_REACHED();
     };
 
     return {};

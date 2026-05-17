@@ -43,6 +43,8 @@ public:
 
     static void set_async_scrolling_enabled(bool);
     static void set_compositor_serialization_test_mode_enabled(bool);
+    static void set_remote_compositor_enabled(bool);
+    static bool remote_compositor_enabled();
 
     virtual Web::Page& page() override { return *m_page; }
     virtual Web::Page const& page() const override { return *m_page; }
@@ -100,6 +102,7 @@ public:
     virtual double device_pixels_per_css_pixel() const override { return m_device_pixel_ratio * m_zoom_level; }
 
     virtual Web::DisplayListPlayerType display_list_player_type() const override;
+    virtual NonnullOwnPtr<Web::Compositor::PageCompositor> create_page_compositor(bool is_svg_page, bool register_page_presentation) override;
 
     void queue_screenshot_task(Optional<Web::UniqueNodeID> node_id);
 

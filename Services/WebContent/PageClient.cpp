@@ -39,6 +39,7 @@
 #include <WebContent/DevToolsConsoleClient.h>
 #include <WebContent/PageClient.h>
 #include <WebContent/PageHost.h>
+#include <WebContent/RemotePageCompositor.h>
 #include <WebContent/WebContentClientEndpoint.h>
 #include <WebContent/WebDriverConnection.h>
 #include <WebContent/WebUIConnection.h>
@@ -49,6 +50,7 @@ static PageClient::UseSkiaPainter s_use_skia_painter = PageClient::UseSkiaPainte
 static bool s_is_headless { false };
 static bool s_async_scrolling_enabled { false };
 static bool s_compositor_serialization_test_mode_enabled { false };
+static bool s_remote_compositor_enabled { false };
 
 GC_DEFINE_ALLOCATOR(PageClient);
 
@@ -75,6 +77,16 @@ void PageClient::set_async_scrolling_enabled(bool enabled)
 void PageClient::set_compositor_serialization_test_mode_enabled(bool enabled)
 {
     s_compositor_serialization_test_mode_enabled = enabled;
+}
+
+void PageClient::set_remote_compositor_enabled(bool enabled)
+{
+    s_remote_compositor_enabled = enabled;
+}
+
+bool PageClient::remote_compositor_enabled()
+{
+    return s_remote_compositor_enabled;
 }
 
 GC::Ref<PageClient> PageClient::create(JS::VM& vm, PageHost& page_host, u64 id)
@@ -1018,6 +1030,32 @@ Web::DisplayListPlayerType PageClient::display_list_player_type() const
     default:
         VERIFY_NOT_REACHED();
     }
+}
+
+NonnullOwnPtr<Web::Compositor::PageCompositor> PageClient::create_page_compositor(
+    bool is_svg_page,
+    bool register_page_presentation)
+{
+    if (!s_remote_compositor_enabled || is_svg_page)
+        return Base::create_page_compositor(is_svg_page, register_page_presentation);
+
+    auto* compositor_connection = m_owner.client().compositor_connection();
+    if (!compositor_connection)
+        return Base::create_page_compositor(is_svg_page, register_page_presentation);
+
+    Web::Compositor::PageCompositor::PresentationMode presentation_mode = Web::Compositor::PageCompositor::PresentToUI {};
+    if (register_page_presentation) {
+        auto const& binding = m_owner.client().compositor_presentation_binding();
+        if (!binding.has_value())
+            return Base::create_page_compositor(is_svg_page, register_page_presentation);
+
+        presentation_mode = Web::Compositor::PageCompositor::PresentToUI {
+            .presentation_id = binding->presentation_id,
+            .presentation_capability = binding->presentation_capability,
+        };
+    }
+
+    return make<RemotePageCompositor>(*compositor_connection, id(), move(presentation_mode));
 }
 
 void PageClient::queue_screenshot_task(Optional<Web::UniqueNodeID> node_id)

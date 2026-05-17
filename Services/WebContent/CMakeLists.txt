@@ -2,13 +2,21 @@ include(audio)
 
 set(SOURCES
     ConnectionFromClient.cpp
+    ConnectionToCompositor.cpp
     ConsoleGlobalEnvironmentExtensions.cpp
     DevToolsConsoleClient.cpp
     PageClient.cpp
     PageHost.cpp
+    RemotePageCompositor.cpp
     WebContentConsoleClient.cpp
     WebDriverConnection.cpp
     WebUIConnection.cpp
+)
+
+set(GENERATED_SOURCES
+    ${GENERATED_SOURCES}
+    ../../Services/Compositor/WebContentCompositorClientEndpoint.h
+    ../../Services/Compositor/WebContentCompositorServerEndpoint.h
 )
 
 if (ANDROID)
@@ -32,6 +40,8 @@ target_include_directories(webcontentservice PUBLIC $<BUILD_INTERFACE:${LADYBIRD
 target_link_libraries(webcontentservice PUBLIC LibCore LibCrypto LibFileSystem LibGfx LibHTTP LibIPC LibJS LibMain LibMedia LibWeb LibWebSocket LibRequests LibWebView LibImageDecoderClient LibGC)
 target_link_libraries(webcontentservice PRIVATE OpenSSL::Crypto OpenSSL::SSL)
 target_link_libraries(webcontentservice PRIVATE SDL3::SDL3)
+
+ladybird_generated_sources(webcontentservice)
 
 add_executable(WebContent main.cpp)
 

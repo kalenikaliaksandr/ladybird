@@ -116,7 +116,8 @@ WebContentClient::WebContentClient(NonnullOwnPtr<IPC::Transport> transport, View
 {
     s_clients.set(this);
     m_views.set(0, view);
-    initialize_compositor_connection(*this);
+    if (Application::web_content_options().enable_remote_compositor == EnableRemoteCompositor::No)
+        initialize_compositor_connection(*this);
 }
 
 WebContentClient::WebContentClient(NonnullOwnPtr<IPC::Transport> transport)
@@ -125,7 +126,8 @@ WebContentClient::WebContentClient(NonnullOwnPtr<IPC::Transport> transport)
     , m_presentation_capability(allocate_presentation_capability())
 {
     s_clients.set(this);
-    initialize_compositor_connection(*this);
+    if (Application::web_content_options().enable_remote_compositor == EnableRemoteCompositor::No)
+        initialize_compositor_connection(*this);
 }
 
 WebContentClient::~WebContentClient()

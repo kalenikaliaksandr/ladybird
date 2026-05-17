@@ -67,6 +67,7 @@
 #include <LibWebView/Attribute.h>
 #include <LibWebView/ViewImplementation.h>
 #include <WebContent/ConnectionFromClient.h>
+#include <WebContent/ConnectionToCompositor.h>
 #include <WebContent/PageClient.h>
 #include <WebContent/PageHost.h>
 #include <WebContent/WebContentClientEndpoint.h>
@@ -222,6 +223,16 @@ void ConnectionFromClient::connect_to_compositor(IPC::TransportHandle handle, u6
         .presentation_id = Web::Compositor::PresentationId { presentation_id },
         .presentation_capability = Web::Compositor::PresentationCapability { presentation_capability },
     };
+
+    if (PageClient::remote_compositor_enabled()) {
+        auto transport = handle.create_transport();
+        if (transport.is_error()) {
+            dbgln("Unable to create remote compositor transport: {}", transport.error());
+            return;
+        }
+        m_compositor_connection = ConnectionToCompositor::construct(transport.release_value());
+        return;
+    }
 
     auto startup_state = make<CompositorIPCStartupState>();
 
