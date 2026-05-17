@@ -42,6 +42,7 @@ public:
     static void set_is_headless(bool);
 
     static void set_async_scrolling_enabled(bool);
+    static void set_compositor_serialization_test_mode_enabled(bool);
 
     virtual Web::Page& page() override { return *m_page; }
     virtual Web::Page const& page() const override { return *m_page; }
