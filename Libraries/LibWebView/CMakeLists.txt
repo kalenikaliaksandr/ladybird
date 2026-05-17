@@ -4,6 +4,7 @@ set(SOURCES
     Autocomplete.cpp
     BookmarkStore.cpp
     BrowserProcess.cpp
+    CompositorClient.cpp
     ConsoleOutput.cpp
     CookieJar.cpp
     DOMNodeProperties.cpp
