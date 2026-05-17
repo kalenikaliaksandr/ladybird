@@ -790,6 +790,7 @@ void ConnectionFromWebContent::create_context(
                                    .wheel_event_listener_state_generation = 0,
                                    .wheel_routing_admission = Web::Compositor::WheelRoutingAdmission::NoAsyncScrollingState,
                                    .video_frame_sequence_ids = {},
+                                   .pending_video_frame_updates = {},
                                    .has_pending_display_list_update = false,
                                    .has_pending_scroll_state_update = false,
                                    .pending_present = {},
@@ -870,6 +871,52 @@ void ConnectionFromWebContent::viewport_size_updated(
     rasterize_pending_present(*context);
 }
 
+ConnectionFromWebContent::VideoFrameUpdateResult ConnectionFromWebContent::apply_video_frame_update(
+    ContextState& context,
+    Web::Compositor::SerializedVideoFrameUpdate const& serialized_video_frame_update)
+{
+    auto video_frame_source_id = serialized_video_frame_update.video_frame_source_id;
+    if (!context.display_list_resource_storage.contains_video_frame_source(video_frame_source_id))
+        return VideoFrameUpdateResult::MissingSource;
+
+    auto last_frame_sequence_id = context.video_frame_sequence_ids.get(video_frame_source_id).value_or(0);
+    if (serialized_video_frame_update.frame_sequence_id <= last_frame_sequence_id) {
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Ignoring stale video frame update {} for source {} in context {}",
+            serialized_video_frame_update.frame_sequence_id, video_frame_source_id.value(), context.context_id.value());
+        return VideoFrameUpdateResult::Consumed;
+    }
+
+    auto video_frame = Web::Compositor::deserialize_video_frame_update(serialized_video_frame_update);
+    if (video_frame.is_error()) {
+        dbgln("Rejecting video frame update for source {} in compositor context {} from WebContent connection {}: {}",
+            video_frame_source_id.value(), context.context_id.value(), m_connection_id.value(), video_frame.error());
+        return VideoFrameUpdateResult::Consumed;
+    }
+
+    context.video_frame_sequence_ids.set(video_frame_source_id, serialized_video_frame_update.frame_sequence_id);
+    context.display_list_resource_storage.video_frame_source(video_frame_source_id).update(video_frame.release_value());
+    return VideoFrameUpdateResult::Applied;
+}
+
+void ConnectionFromWebContent::apply_pending_video_frame_updates(ContextState& context)
+{
+    Vector<Web::Painting::VideoFrameResourceId> source_ids_to_apply;
+    for (auto const& pending_update : context.pending_video_frame_updates) {
+        if (context.display_list_resource_storage.contains_video_frame_source(pending_update.key))
+            source_ids_to_apply.append(pending_update.key);
+    }
+
+    for (auto video_frame_source_id : source_ids_to_apply) {
+        auto pending_video_frame_update = context.pending_video_frame_updates.take(video_frame_source_id);
+        VERIFY(pending_video_frame_update.has_value());
+        auto serialized_video_frame_update = pending_video_frame_update.release_value();
+        auto frame_sequence_id = serialized_video_frame_update.frame_sequence_id;
+        auto result = apply_video_frame_update(context, serialized_video_frame_update);
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Applied queued video frame update {} for source {} in context {} with result {}",
+            frame_sequence_id, video_frame_source_id.value(), context.context_id.value(), to_underlying(result));
+    }
+}
+
 void ConnectionFromWebContent::update_display_list(
     u64 raw_context_id,
     NonnullRefPtr<Web::Painting::DisplayList> display_list,
@@ -883,7 +930,12 @@ void ConnectionFromWebContent::update_display_list(
         return;
     }
 
+    for (auto video_frame_source_id : resource_transaction.video_frame_source_ids_to_remove) {
+        context->pending_video_frame_updates.remove(video_frame_source_id);
+        context->video_frame_sequence_ids.remove(video_frame_source_id);
+    }
     context->display_list_resource_storage.apply_transaction(move(resource_transaction));
+    apply_pending_video_frame_updates(*context);
 
     context->display_list = move(display_list);
     context->scroll_state_snapshot = move(scroll_state);
@@ -1046,29 +1098,22 @@ void ConnectionFromWebContent::update_yuv_video_frame(
         return;
     }
 
-    if (!context->display_list_resource_storage.contains_video_frame_source(video_frame_source_id)) {
-        dbgln("Ignoring video frame update for missing source {} in compositor context {} from WebContent connection {}",
-            video_frame_source_id.value(), context_id.value(), m_connection_id.value());
+    auto result = apply_video_frame_update(*context, serialized_video_frame_update);
+    if (result == VideoFrameUpdateResult::MissingSource) {
+        auto existing_update = context->pending_video_frame_updates.get(video_frame_source_id);
+        if (!existing_update.has_value() || serialized_video_frame_update.frame_sequence_id > existing_update->frame_sequence_id) {
+            dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Queuing video frame update {} for missing source {} in context {}",
+                serialized_video_frame_update.frame_sequence_id, video_frame_source_id.value(), context_id.value());
+            context->pending_video_frame_updates.set(video_frame_source_id, move(serialized_video_frame_update));
+        } else {
+            dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Ignoring stale pending video frame update {} for source {} in context {}",
+                serialized_video_frame_update.frame_sequence_id, video_frame_source_id.value(), context_id.value());
+        }
         return;
     }
 
-    auto last_frame_sequence_id = context->video_frame_sequence_ids.get(video_frame_source_id).value_or(0);
-    if (serialized_video_frame_update.frame_sequence_id <= last_frame_sequence_id) {
-        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Ignoring stale video frame update {} for source {} in context {}",
-            serialized_video_frame_update.frame_sequence_id, video_frame_source_id.value(), context_id.value());
-        return;
-    }
-
-    auto video_frame = Web::Compositor::deserialize_video_frame_update(serialized_video_frame_update);
-    if (video_frame.is_error()) {
-        dbgln("Rejecting video frame update for source {} in compositor context {} from WebContent connection {}: {}",
-            video_frame_source_id.value(), context_id.value(), m_connection_id.value(), video_frame.error());
-        return;
-    }
-
-    context->video_frame_sequence_ids.set(video_frame_source_id, serialized_video_frame_update.frame_sequence_id);
-    context->display_list_resource_storage.video_frame_source(video_frame_source_id).update(video_frame.release_value());
-    rasterize_pending_present(*context);
+    if (result == VideoFrameUpdateResult::Applied)
+        rasterize_pending_present(*context);
 }
 
 void ConnectionFromWebContent::clear_video_frame(u64 raw_context_id, u64 raw_video_frame_source_id)
@@ -1086,6 +1131,7 @@ void ConnectionFromWebContent::clear_video_frame(u64 raw_context_id, u64 raw_vid
         return;
     }
 
+    context->pending_video_frame_updates.remove(video_frame_source_id);
     if (!context->display_list_resource_storage.contains_video_frame_source(video_frame_source_id)) {
         dbgln("Ignoring video frame clear for missing source {} in compositor context {} from WebContent connection {}",
             video_frame_source_id.value(), context_id.value(), m_connection_id.value());
