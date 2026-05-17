@@ -3409,6 +3409,9 @@ void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
 
 void Navigable::paint_next_frame()
 {
+    if (has_been_destroyed())
+        return;
+
     auto viewport_rect = page().css_to_device_rect(this->viewport_rect()).to_type<int>();
     PaintConfig paint_config { .paint_overlay = true, .should_show_line_box_borders = m_should_show_line_box_borders };
     if (is_top_level_traversable()) {
@@ -3416,7 +3419,8 @@ void Navigable::paint_next_frame()
     } else {
         // Nested navigables publish transparent bitmaps to their preconfigured compositor surface instead of filling
         // the canvas for the UI process.
-        VERIFY(m_compositor_surface_id.has_value());
+        if (!m_compositor_surface_id.has_value())
+            return;
     }
 
     auto should_defer_main_thread_present_for_async_scroll = [&] {

@@ -47,6 +47,8 @@ void NavigableContainerViewportPaintable::paint(DisplayListRecordingContext& con
 
         auto content_navigable = navigable_container.content_navigable();
         VERIFY(content_navigable);
+        if (content_navigable->has_been_destroyed() || !content_navigable->has_compositor_surface_id())
+            return;
 
         context.display_list_recorder().save();
         context.display_list_recorder().add_clip_rect(clip_rect.to_type<int>());
