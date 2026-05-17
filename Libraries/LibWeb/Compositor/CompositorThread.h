@@ -48,6 +48,8 @@ public:
     static void presented_bitmap_ready_to_paint(u64 page_id, i32 bitmap_id);
     static bool async_scroll_by(u64 page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels);
     static bool handle_mouse_event(u64 page_id, MouseEvent const&);
+    static void set_presentation_visibility(PresentationId, bool is_visible);
+    static void set_active_presentation(Optional<PresentationId>);
 
     virtual CompositorContextId context_id() const override { return m_context_id; }
     virtual void start(DisplayListPlayerType) override;
