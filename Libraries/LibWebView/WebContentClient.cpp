@@ -7,6 +7,8 @@
 #include <AK/Debug.h>
 #include <AK/NeverDestroyed.h>
 #include <AK/WeakPtr.h>
+#include <Compositor/CompositorClientEndpoint.h>
+#include <Compositor/CompositorServerEndpoint.h>
 #include <LibCore/ElapsedTimer.h>
 #include <LibHTTP/Cookie/ParsedCookie.h>
 #include <LibIPC/Transport.h>
@@ -20,8 +22,6 @@
 #include <LibWebView/ViewImplementation.h>
 #include <LibWebView/WebContentClient.h>
 #include <LibWebView/WebUI.h>
-#include <WebContent/CompositorClientEndpoint.h>
-#include <WebContent/CompositorServerEndpoint.h>
 
 namespace WebView {
 
