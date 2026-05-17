@@ -11,6 +11,9 @@
 #include <LibWeb/CSS/SystemColor.h>
 #include <LibWeb/CSS/VisualViewport.h>
 #include <LibWeb/Compositor/CompositorThread.h>
+#include <LibWeb/Compositor/DisplayListResourceSerialization.h>
+#include <LibWeb/Compositor/DisplayListSerialization.h>
+#include <LibWeb/Compositor/ScrollStateSerialization.h>
 #include <LibWeb/ContentSecurityPolicy/BlockingAlgorithms.h>
 #include <LibWeb/ContentSecurityPolicy/Directives/DirectiveOperations.h>
 #include <LibWeb/ContentSecurityPolicy/PolicyList.h>
@@ -66,7 +69,12 @@
 #include <LibWeb/XHR/FormData.h>
 
 #include <AK/Debug.h>
+#include <AK/MemoryStream.h>
+#include <AK/Queue.h>
 #include <AK/StdLibExtras.h>
+#include <LibIPC/Decoder.h>
+#include <LibIPC/Encoder.h>
+#include <LibIPC/Message.h>
 
 namespace Web::HTML {
 
@@ -3304,6 +3312,53 @@ void Navigable::set_should_show_line_box_borders(bool value)
         child_navigable->set_should_show_line_box_borders(value);
 }
 
+struct InProcessDisplayListUpdate {
+    NonnullRefPtr<Painting::DisplayList> display_list;
+    Painting::DisplayListResourceTransaction resource_transaction;
+    Painting::ScrollStateSnapshot scroll_state_snapshot;
+};
+
+template<typename DecodedValue, typename EncodedValue>
+static ErrorOr<DecodedValue> round_trip_ipc_value_as(EncodedValue const& value)
+{
+    IPC::MessageBuffer buffer;
+    IPC::Encoder encoder { buffer };
+    TRY(encoder.encode(value));
+
+    Queue<IPC::Attachment> attachments;
+    for (auto& attachment : buffer.take_attachments())
+        attachments.enqueue(move(attachment));
+
+    FixedMemoryStream stream { buffer.data().span() };
+    IPC::Decoder decoder { stream, attachments };
+    auto decoded_value = TRY(decoder.decode<DecodedValue>());
+    if (!stream.is_eof())
+        return Error::from_string_literal("IPC round-trip left trailing bytes");
+    return decoded_value;
+}
+
+template<typename Value>
+static ErrorOr<Value> round_trip_ipc_value(Value const& value)
+{
+    return round_trip_ipc_value_as<Value>(value);
+}
+
+static ErrorOr<InProcessDisplayListUpdate> round_trip_display_list_update_for_compositor_serialization_test_mode(
+    Painting::DisplayList const& display_list,
+    Painting::DisplayListResourceTransaction const& resource_transaction,
+    Painting::ScrollStateSnapshot const& scroll_state_snapshot)
+{
+    auto deserialized_resource_transaction = TRY(round_trip_ipc_value(resource_transaction));
+    auto deserialized_scroll_state_snapshot = TRY(round_trip_ipc_value(scroll_state_snapshot));
+    auto deserialized_display_list = TRY(round_trip_ipc_value_as<NonnullRefPtr<Painting::DisplayList>>(display_list));
+
+    return InProcessDisplayListUpdate {
+        .display_list = move(deserialized_display_list),
+        .resource_transaction = move(deserialized_resource_transaction),
+        .scroll_state_snapshot = move(deserialized_scroll_state_snapshot),
+    };
+}
+
 void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
 {
     m_needs_repaint = false;
@@ -3337,6 +3392,16 @@ void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
 
     Painting::ScrollStateSnapshot scroll_state_snapshot { document_paintable->scroll_state_snapshot() };
     if (should_record_display_list) {
+        if (page().compositor_serialization_test_mode_enabled()) {
+            auto deserialized_update = MUST(round_trip_display_list_update_for_compositor_serialization_test_mode(
+                *display_list,
+                resource_transaction,
+                scroll_state_snapshot));
+            display_list = move(deserialized_update.display_list);
+            resource_transaction = move(deserialized_update.resource_transaction);
+            scroll_state_snapshot = move(deserialized_update.scroll_state_snapshot);
+        }
+
         m_rendering_thread->update_display_list(*display_list, move(resource_transaction), move(scroll_state_snapshot));
         m_needs_to_record_display_list = false;
         m_rendering_thread_display_list_paint_config = paint_config;
