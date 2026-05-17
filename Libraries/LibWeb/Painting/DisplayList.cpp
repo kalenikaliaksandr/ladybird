@@ -242,6 +242,7 @@ void DisplayListPlayer::execute_impl(
         }
 
         auto result = SwitchResult::Switched;
+        auto current_context_index = common_ancestor_index;
         for_each_node_from_common_ancestor_to_target(
             common_ancestor_index,
             target_index,
@@ -253,12 +254,12 @@ void DisplayListPlayer::execute_impl(
                     }
                 }
                 apply_accumulated_visual_context(node_index, node);
+                current_context_index = node_index;
                 applied_depth++;
                 return IterationDecision::Continue;
             });
 
-        if (result == SwitchResult::Switched)
-            applied_context_index = target_index;
+        applied_context_index = current_context_index;
         return result;
     };
 

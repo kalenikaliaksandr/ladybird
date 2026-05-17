@@ -180,7 +180,9 @@ void DisplayListPlayerSkia::draw_compositor_surface(DrawCompositorSurface const&
     auto& canvas = surface().canvas();
     SkPaint paint;
     paint.setAntiAlias(true);
+    canvas.save();
     canvas.drawImageRect(image.get(), src_rect, dst_rect, to_skia_sampling_options(command.scaling_mode), &paint, SkCanvas::kStrict_SrcRectConstraint);
+    canvas.restore();
 }
 
 void DisplayListPlayerSkia::draw_video_frame_source(DrawVideoFrameSource const& command)
@@ -223,7 +225,9 @@ void DisplayListPlayerSkia::draw_video_frame_source(DrawVideoFrameSource const& 
     auto& canvas = surface().canvas();
     SkPaint paint;
     paint.setAntiAlias(true);
+    canvas.save();
     canvas.drawImageRect(image.get(), src_rect, dst_rect, to_skia_sampling_options(command.scaling_mode), &paint, SkCanvas::kStrict_SrcRectConstraint);
+    canvas.restore();
 }
 
 void DisplayListPlayerSkia::draw_scaled_decoded_image_frame(DrawScaledDecodedImageFrame const& command)

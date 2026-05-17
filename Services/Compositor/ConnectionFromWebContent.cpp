@@ -15,6 +15,7 @@
 #include <LibCore/EventLoop.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/PaintingSurface.h>
+#include <LibGfx/SkiaBackendContext.h>
 #include <LibMedia/VideoFrame.h>
 #include <LibWeb/Compositor/AsyncScrollingState.h>
 #include <LibWeb/Compositor/DisplayListResourceSerialization.h>
@@ -27,6 +28,17 @@
 namespace Compositor {
 
 static IDAllocator s_connection_ids;
+
+static RefPtr<Gfx::SkiaBackendContext> skia_backend_context_for(Web::DisplayListPlayerType display_list_player_type)
+{
+    switch (display_list_player_type) {
+    case Web::DisplayListPlayerType::SkiaGPUIfAvailable:
+        return Gfx::SkiaBackendContext::the_main_thread_context();
+    case Web::DisplayListPlayerType::SkiaCPU:
+        return nullptr;
+    }
+    VERIFY_NOT_REACHED();
+}
 
 static HashMap<Web::Compositor::WebContentConnectionId, NonnullRefPtr<ConnectionFromWebContent>>& web_content_connections()
 {
@@ -171,9 +183,10 @@ ErrorOr<void> ConnectionFromWebContent::allocate_backing_stores_if_needed(Contex
 
     auto should_publish = context.presents_to_client
         && context.presentation_mode.kind == Web::Compositor::SerializedPresentationModeKind::PresentToUI;
+    auto skia_backend_context = skia_backend_context_for(context.display_list_player_type);
     auto publication = context.backing_store_manager->allocate_backing_stores(
         *allocation,
-        {},
+        skia_backend_context,
         should_publish);
     if (!publication.has_value())
         return {};
@@ -219,7 +232,7 @@ RasterizeResult ConnectionFromWebContent::rasterize_present(ContextState& contex
     }
 
     auto& back_store = context.backing_store_manager->back_store();
-    Web::Painting::DisplayListPlayerSkia player;
+    Web::Painting::DisplayListPlayerSkia player { skia_backend_context_for(context.display_list_player_type) };
     player.execute(*context.display_list, context.display_list_resource_storage, *context.scroll_state_snapshot, back_store);
     Web::Compositor::paint_viewport_scrollbars(
         back_store,
@@ -1109,7 +1122,7 @@ void ConnectionFromWebContent::request_screenshot(u64 raw_context_id, u64 reques
     }
 
     auto surface = Gfx::PaintingSurface::create_with_size(size, Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied);
-    Web::Painting::DisplayListPlayerSkia player;
+    Web::Painting::DisplayListPlayerSkia player { skia_backend_context_for(context->display_list_player_type) };
     player.execute(*context->display_list, context->display_list_resource_storage, *context->scroll_state_snapshot, surface);
     Web::Compositor::paint_viewport_scrollbars(
         surface,

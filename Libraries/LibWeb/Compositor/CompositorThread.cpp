@@ -9,6 +9,7 @@
 #include <LibGfx/PaintingSurface.h>
 #include <LibGfx/SharedImage.h>
 #include <LibGfx/SkiaBackendContext.h>
+#include <LibMedia/VideoFrame.h>
 #include <LibThreading/Thread.h>
 #include <LibWeb/Compositor/AsyncScrollTree.h>
 #include <LibWeb/Compositor/AsyncScrollingState.h>
@@ -72,6 +73,15 @@ struct ClearCompositorSurfaceCommand {
     Painting::CompositorSurfaceId surface_id;
 };
 
+struct UpdateVideoFrameCommand {
+    Painting::VideoFrameResourceId video_frame_source_id;
+    NonnullRefPtr<Media::VideoFrame> frame;
+};
+
+struct ClearVideoFrameCommand {
+    Painting::VideoFrameResourceId video_frame_source_id;
+};
+
 struct ViewportSizeUpdatedCommand {
     Gfx::IntSize viewport_size;
     bool is_top_level_traversable { false };
@@ -84,7 +94,8 @@ struct ScreenshotCommand {
 };
 
 using CompositorCommand = Variant<UpdateDisplayListCommand, AsyncScrollByCommand, ViewportScrollbarDragCommand,
-    UpdateScrollStateCommand, UpdateCompositorSurfaceCommand, ClearCompositorSurfaceCommand, ViewportSizeUpdatedCommand,
+    UpdateScrollStateCommand, UpdateCompositorSurfaceCommand, ClearCompositorSurfaceCommand,
+    UpdateVideoFrameCommand, ClearVideoFrameCommand, ViewportSizeUpdatedCommand,
     ScreenshotCommand>;
 
 static void flush_surface(Gfx::PaintingSurface& surface)
@@ -746,6 +757,14 @@ public:
                     },
                     [this](ClearCompositorSurfaceCommand& cmd) {
                         m_display_list_resource_storage.clear_compositor_surface(cmd.surface_id);
+                    },
+                    [this](UpdateVideoFrameCommand& cmd) {
+                        if (m_display_list_resource_storage.contains_video_frame_source(cmd.video_frame_source_id))
+                            m_display_list_resource_storage.video_frame_source(cmd.video_frame_source_id).update(cmd.frame);
+                    },
+                    [this](ClearVideoFrameCommand& cmd) {
+                        if (m_display_list_resource_storage.contains_video_frame_source(cmd.video_frame_source_id))
+                            m_display_list_resource_storage.video_frame_source(cmd.video_frame_source_id).clear();
                     },
                     [this](ViewportSizeUpdatedCommand& cmd) {
                         auto allocation = m_backing_store_manager.resize_backing_stores_if_needed(
@@ -1537,14 +1556,14 @@ void CompositorThread::clear_compositor_surface(Painting::CompositorSurfaceId su
     m_engine->enqueue_command(ClearCompositorSurfaceCommand { surface_id });
 }
 
-void CompositorThread::update_video_frame(Painting::VideoFrameResourceId, Media::VideoFrame const&)
+void CompositorThread::update_video_frame(Painting::VideoFrameResourceId video_frame_source_id, Media::VideoFrame& frame)
 {
-    // The in-process path shares VideoFrameSource objects with the recorder.
+    m_engine->enqueue_command(UpdateVideoFrameCommand { video_frame_source_id, frame });
 }
 
-void CompositorThread::clear_video_frame(Painting::VideoFrameResourceId)
+void CompositorThread::clear_video_frame(Painting::VideoFrameResourceId video_frame_source_id)
 {
-    // The in-process path shares VideoFrameSource objects with the recorder.
+    m_engine->enqueue_command(ClearVideoFrameCommand { video_frame_source_id });
 }
 
 void CompositorThread::invalidate_wheel_event_listener_state(u64 generation)
