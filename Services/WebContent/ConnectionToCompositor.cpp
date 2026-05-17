@@ -90,6 +90,21 @@ void ConnectionToCompositor::update_scroll_state(
     async_update_scroll_state(context_id.value(), scroll_state);
 }
 
+void ConnectionToCompositor::update_compositor_surface(
+    Web::Compositor::CompositorContextId context_id,
+    Web::Painting::CompositorSurfaceId surface_id,
+    Gfx::SharedImage&& shared_image)
+{
+    async_update_compositor_surface(context_id.value(), surface_id.value(), move(shared_image));
+}
+
+void ConnectionToCompositor::clear_compositor_surface(
+    Web::Compositor::CompositorContextId context_id,
+    Web::Painting::CompositorSurfaceId surface_id)
+{
+    async_clear_compositor_surface(context_id.value(), surface_id.value());
+}
+
 u64 ConnectionToCompositor::present_frame(Web::Compositor::CompositorContextId context_id, Gfx::IntRect viewport_rect)
 {
     auto response = send_sync_but_allow_failure<Messages::WebContentCompositorServer::PresentFrame>(context_id.value(), viewport_rect);
