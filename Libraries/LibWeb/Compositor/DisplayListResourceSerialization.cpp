@@ -7,6 +7,7 @@
 #include <LibWeb/Compositor/DisplayListResourceSerialization.h>
 
 #include <LibGfx/Font/Typeface.h>
+#include <LibGfx/ShareableBitmap.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
 
@@ -47,10 +48,14 @@ static ErrorOr<SerializedFontResource> serialize_font_resource(
     };
 }
 
-SerializedImageFrameResource serialize_image_frame_resource(Painting::ImageFrameResourceAddition const& image_frame)
+ErrorOr<SerializedImageFrameResource> serialize_image_frame_resource(Painting::ImageFrameResourceAddition const& image_frame)
 {
-    return {
+    auto bitmap = TRY(image_frame.resource.bitmap().to_bitmap_backed_by_anonymous_buffer());
+
+    return SerializedImageFrameResource {
         .image_frame_id = image_frame.id,
+        .bitmap = Gfx::ShareableBitmap { move(bitmap), Gfx::ShareableBitmap::ConstructWithKnownGoodBitmap },
+        .color_space = image_frame.resource.color_space(),
     };
 }
 
@@ -76,6 +81,17 @@ ErrorOr<Painting::FontResourceAddition> deserialize_font_resource(SerializedFont
     return Painting::FontResourceAddition {
         .id = font.font_id,
         .resource = move(reconstructed_font),
+    };
+}
+
+ErrorOr<Painting::ImageFrameResourceAddition> deserialize_image_frame_resource(SerializedImageFrameResource const& image_frame)
+{
+    if (!image_frame.bitmap.is_valid())
+        return Error::from_string_literal("Serialized image frame resource has no bitmap");
+
+    return Painting::ImageFrameResourceAddition {
+        .id = image_frame.image_frame_id,
+        .resource = Gfx::DecodedImageFrame { *image_frame.bitmap.bitmap(), image_frame.color_space },
     };
 }
 
@@ -220,6 +236,8 @@ template<>
 ErrorOr<void> encode(Encoder& encoder, Web::Compositor::SerializedImageFrameResource const& image_frame)
 {
     TRY(encoder.encode(image_frame.image_frame_id.value()));
+    TRY(encoder.encode(image_frame.bitmap));
+    TRY(encoder.encode(image_frame.color_space));
     return {};
 }
 
@@ -228,6 +246,8 @@ ErrorOr<Web::Compositor::SerializedImageFrameResource> decode(Decoder& decoder)
 {
     return Web::Compositor::SerializedImageFrameResource {
         .image_frame_id = Web::Painting::ImageFrameResourceId { TRY(decoder.decode<u64>()) },
+        .bitmap = TRY(decoder.decode<Gfx::ShareableBitmap>()),
+        .color_space = TRY(decoder.decode<Gfx::ColorSpace>()),
     };
 }
 
@@ -261,7 +281,7 @@ ErrorOr<void> encode(Encoder& encoder, Web::Painting::DisplayListResourceTransac
     Vector<Web::Compositor::SerializedImageFrameResource> image_frames;
     TRY(image_frames.try_ensure_capacity(transaction.image_frames.size()));
     for (auto const& image_frame : transaction.image_frames)
-        image_frames.unchecked_append(Web::Compositor::serialize_image_frame_resource(image_frame));
+        image_frames.unchecked_append(TRY(Web::Compositor::serialize_image_frame_resource(image_frame)));
 
     Vector<Web::Compositor::SerializedVideoFrameSourceResource> video_frame_sources;
     TRY(video_frame_sources.try_ensure_capacity(transaction.video_frame_sources.size()));
@@ -301,8 +321,10 @@ ErrorOr<Web::Painting::DisplayListResourceTransaction> decode(Decoder& decoder)
     for (auto const& font : serialized_fonts)
         transaction.fonts.unchecked_append(TRY(Web::Compositor::deserialize_font_resource(font, font_data_buffers)));
 
-    if (!serialized_image_frames.is_empty())
-        return Error::from_string_literal("Missing image frame resource payload");
+    TRY(transaction.image_frames.try_ensure_capacity(serialized_image_frames.size()));
+    for (auto const& image_frame : serialized_image_frames)
+        transaction.image_frames.unchecked_append(TRY(Web::Compositor::deserialize_image_frame_resource(image_frame)));
+
     if (!serialized_video_frame_sources.is_empty())
         return Error::from_string_literal("Missing video frame source resource payload");
 
