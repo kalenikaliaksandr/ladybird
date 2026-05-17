@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/Error.h>
 #include <AK/HashMap.h>
 #include <AK/NonnullRawPtr.h>
 #include <AK/Optional.h>
@@ -21,6 +22,7 @@
 #include <LibRequests/RequestTimingInfo.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/CSS/StyleSheetIdentifier.h>
+#include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/HTML/ActivateTab.h>
 #include <LibWeb/HTML/FileFilter.h>
@@ -60,6 +62,11 @@ public:
     void web_ui_disconnected(Badge<WebUI>);
 
     bool has_views() const { return !m_views.is_empty(); }
+
+    Web::Compositor::PresentationId presentation_id() const { return m_presentation_id; }
+    Web::Compositor::PresentationCapability presentation_capability() const { return m_presentation_capability; }
+    Optional<Web::Compositor::WebContentConnectionId> web_content_compositor_connection_id() const { return m_web_content_compositor_connection_id; }
+    ErrorOr<void> connect_to_remote_compositor(CompositorClient&);
 
     void notify_all_views_of_crash();
     bool send_async_scroll_to_compositor(u64 page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels);
@@ -168,6 +175,10 @@ private:
 
     HashMap<u64, NonnullRawPtr<ViewImplementation>> m_views;
     HashMap<u64, String> m_history_recorded_urls_for_current_load;
+
+    Web::Compositor::PresentationId m_presentation_id;
+    Web::Compositor::PresentationCapability m_presentation_capability;
+    Optional<Web::Compositor::WebContentConnectionId> m_web_content_compositor_connection_id;
 
     ProcessHandle m_process_handle;
 

@@ -91,6 +91,7 @@ private:
 
     virtual void ping() override { }
 
+    virtual Messages::CompositorServer::ConnectWebContentResponse connect_web_content(IPC::TransportHandle) override { return 0; }
     virtual void register_presentation(u64, u64, u64) override { }
     virtual void unregister_presentation(u64) override { }
     virtual void set_presentation_visibility(u64 presentation_id, bool is_visible) override
@@ -215,8 +216,13 @@ void ConnectionFromClient::connect_to_image_decoder(IPC::TransportHandle handle)
         on_image_decoder_connection(handle);
 }
 
-void ConnectionFromClient::connect_to_compositor(IPC::TransportHandle handle)
+void ConnectionFromClient::connect_to_compositor(IPC::TransportHandle handle, u64 presentation_id, u64 presentation_capability)
 {
+    m_compositor_presentation_binding = CompositorPresentationBinding {
+        .presentation_id = Web::Compositor::PresentationId { presentation_id },
+        .presentation_capability = Web::Compositor::PresentationCapability { presentation_capability },
+    };
+
     auto startup_state = make<CompositorIPCStartupState>();
 
     auto thread = Threading::Thread::construct("CompositorIPC"sv, [handle = move(handle), startup_state = startup_state.ptr()]() mutable {

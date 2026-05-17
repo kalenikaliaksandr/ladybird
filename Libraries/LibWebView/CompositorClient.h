@@ -11,6 +11,7 @@
 #include <Compositor/CompositorClientEndpoint.h>
 #include <Compositor/CompositorServerEndpoint.h>
 #include <LibIPC/ConnectionToServer.h>
+#include <LibIPC/TransportHandle.h>
 #include <LibWeb/Compositor/Types.h>
 #include <LibWebView/Export.h>
 
@@ -24,6 +25,7 @@ class WEBVIEW_API CompositorClient final
 public:
     explicit CompositorClient(NonnullOwnPtr<IPC::Transport>);
 
+    Optional<Web::Compositor::WebContentConnectionId> connect_web_content(IPC::TransportHandle);
     void register_presentation(Web::Compositor::PresentationId, Web::Compositor::WebContentConnectionId, Web::Compositor::PresentationCapability);
     void unregister_presentation(Web::Compositor::PresentationId);
     void set_presentation_visibility(Web::Compositor::PresentationId, bool is_visible);

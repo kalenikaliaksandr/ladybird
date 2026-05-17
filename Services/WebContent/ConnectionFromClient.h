@@ -17,6 +17,7 @@
 #include <LibWeb/CSS/PreferredColorScheme.h>
 #include <LibWeb/CSS/PreferredContrast.h>
 #include <LibWeb/CSS/PreferredMotion.h>
+#include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Loader/FileRequest.h>
 #include <LibWeb/Page/EventResult.h>
@@ -47,6 +48,12 @@ public:
     PageHost& page_host() { return *m_page_host; }
     PageHost const& page_host() const { return *m_page_host; }
 
+    struct CompositorPresentationBinding {
+        Web::Compositor::PresentationId presentation_id;
+        Web::Compositor::PresentationCapability presentation_capability;
+    };
+    Optional<CompositorPresentationBinding> const& compositor_presentation_binding() const { return m_compositor_presentation_binding; }
+
     Function<void(IPC::TransportHandle const&)> on_request_server_connection;
     Function<void(IPC::TransportHandle const&)> on_image_decoder_connection;
 
@@ -66,7 +73,7 @@ private:
     virtual void connect_to_web_ui(u64 page_id, IPC::TransportHandle handle) override;
     virtual void connect_to_request_server(IPC::TransportHandle handle) override;
     virtual void connect_to_image_decoder(IPC::TransportHandle handle) override;
-    virtual void connect_to_compositor(IPC::TransportHandle handle) override;
+    virtual void connect_to_compositor(IPC::TransportHandle handle, u64 presentation_id, u64 presentation_capability) override;
     virtual void update_system_theme(u64 page_id, Core::AnonymousBuffer) override;
     virtual void update_screen_rects(u64 page_id, Vector<Web::DevicePixelRect>, u32) override;
     virtual void load_url(u64 page_id, URL::URL) override;
@@ -176,6 +183,7 @@ private:
     virtual void exit_fullscreen(u64 page_id) override;
 
     NonnullOwnPtr<PageHost> m_page_host;
+    Optional<CompositorPresentationBinding> m_compositor_presentation_binding;
 
     HashMap<int, Web::FileRequest> m_requested_files {};
     int last_id { 0 };
