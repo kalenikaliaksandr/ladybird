@@ -238,9 +238,9 @@ static void flush_surface(Gfx::PaintingSurface& surface)
     surface.flush();
 }
 
-class CompositorThread::ThreadData final : public AtomicRefCounted<ThreadData> {
+class CompositorEngine final : public AtomicRefCounted<CompositorEngine> {
 public:
-    ThreadData(u64 page_id, NonnullRefPtr<Core::WeakEventLoopReference>&& main_thread_event_loop, CompositorThread::PagePresentationRegistration page_presentation_registration)
+    CompositorEngine(u64 page_id, NonnullRefPtr<Core::WeakEventLoopReference>&& main_thread_event_loop, CompositorThread::PagePresentationRegistration page_presentation_registration)
         : m_page_id(page_id)
         , m_main_thread_event_loop(move(main_thread_event_loop))
         , m_presents_to_client(page_presentation_registration == CompositorThread::PagePresentationRegistration::Yes)
@@ -251,7 +251,7 @@ public:
         };
     }
 
-    ~ThreadData() = default;
+    ~CompositorEngine() = default;
 
     u64 page_id() const { return m_page_id; }
     bool presents_to_client() const { return m_presents_to_client; }
@@ -1202,15 +1202,15 @@ static Sync::Mutex& compositor_presentation_state_mutex()
     return *mutex;
 }
 
-static HashMap<u64, NonnullRefPtr<CompositorThread::ThreadData>>& page_compositors()
+static HashMap<u64, NonnullRefPtr<CompositorEngine>>& page_compositors()
 {
-    static NeverDestroyed<HashMap<u64, NonnullRefPtr<CompositorThread::ThreadData>>> compositors;
+    static NeverDestroyed<HashMap<u64, NonnullRefPtr<CompositorEngine>>> compositors;
     return *compositors;
 }
 
-static HashMap<CompositorContextId, NonnullRefPtr<CompositorThread::ThreadData>>& context_compositors()
+static HashMap<CompositorContextId, NonnullRefPtr<CompositorEngine>>& context_compositors()
 {
-    static NeverDestroyed<HashMap<CompositorContextId, NonnullRefPtr<CompositorThread::ThreadData>>> compositors;
+    static NeverDestroyed<HashMap<CompositorContextId, NonnullRefPtr<CompositorEngine>>> compositors;
     return *compositors;
 }
 
@@ -1221,15 +1221,15 @@ static FramePresentationState& frame_presentation_state()
 }
 
 CompositorThread::CompositorThread(u64 page_id, PagePresentationRegistration page_presentation_registration)
-    : m_thread_data(adopt_ref(*new ThreadData(page_id, Core::EventLoop::current_weak(), page_presentation_registration)))
+    : m_engine(adopt_ref(*new CompositorEngine(page_id, Core::EventLoop::current_weak(), page_presentation_registration)))
 {
     m_backing_store_shrink_timer = Core::Timer::create_single_shot(3000, [this] {
         enqueue_viewport_size_updated(m_last_viewport_size, m_last_viewport_size_is_top_level_traversable, WindowResizingInProgress::No);
     });
 
-    register_context_compositor(m_context_id, m_thread_data);
+    register_context_compositor(m_context_id, m_engine);
     if (page_presentation_registration == PagePresentationRegistration::Yes)
-        register_page_compositor(page_id, m_thread_data);
+        register_page_compositor(page_id, m_engine);
 }
 
 CompositorThread::~CompositorThread()
@@ -1238,12 +1238,12 @@ CompositorThread::~CompositorThread()
     m_backing_store_shrink_timer->stop();
     m_backing_store_shrink_timer.clear();
 
-    unregister_page_compositor(m_thread_data->page_id(), *m_thread_data);
-    unregister_context_compositor(m_context_id, *m_thread_data);
-    m_thread_data->exit();
+    unregister_page_compositor(m_engine->page_id(), *m_engine);
+    unregister_context_compositor(m_context_id, *m_engine);
+    m_engine->exit();
 }
 
-void CompositorThread::register_page_compositor(u64 page_id, NonnullRefPtr<ThreadData> thread_data)
+void CompositorThread::register_page_compositor(u64 page_id, NonnullRefPtr<CompositorEngine> thread_data)
 {
     Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
     auto replaced_existing_compositor = page_compositors().contains(page_id);
@@ -1252,7 +1252,7 @@ void CompositorThread::register_page_compositor(u64 page_id, NonnullRefPtr<Threa
         page_id, replaced_existing_compositor);
 }
 
-void CompositorThread::unregister_page_compositor(u64 page_id, ThreadData& thread_data)
+void CompositorThread::unregister_page_compositor(u64 page_id, CompositorEngine& thread_data)
 {
     Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
     auto compositor = page_compositors().find(page_id);
@@ -1270,7 +1270,7 @@ void CompositorThread::unregister_page_compositor(u64 page_id, ThreadData& threa
     dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Unregistered page {} from compositor presentation", page_id);
 }
 
-void CompositorThread::register_context_compositor(CompositorContextId context_id, NonnullRefPtr<ThreadData> thread_data)
+void CompositorThread::register_context_compositor(CompositorContextId context_id, NonnullRefPtr<CompositorEngine> thread_data)
 {
     Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
     auto replaced_existing_compositor = context_compositors().contains(context_id);
@@ -1279,7 +1279,7 @@ void CompositorThread::register_context_compositor(CompositorContextId context_i
         context_id, replaced_existing_compositor);
 }
 
-void CompositorThread::unregister_context_compositor(CompositorContextId context_id, ThreadData& thread_data)
+void CompositorThread::unregister_context_compositor(CompositorContextId context_id, CompositorEngine& thread_data)
 {
     Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
     auto compositor = context_compositors().find(context_id);
@@ -1298,7 +1298,7 @@ void CompositorThread::unregister_context_compositor(CompositorContextId context
 
 bool CompositorThread::update_compositor_surface_for_context(CompositorContextId context_id, Painting::CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image)
 {
-    RefPtr<ThreadData> thread_data;
+    RefPtr<CompositorEngine> thread_data;
     {
         Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
         auto compositor = context_compositors().find(context_id);
@@ -1443,7 +1443,7 @@ void CompositorThread::presented_bitmap_ready_to_paint(u64 page_id, i32 bitmap_i
 {
     dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Received compositor ready_to_paint for page {} bitmap {}",
         page_id, bitmap_id);
-    RefPtr<ThreadData> thread_data;
+    RefPtr<CompositorEngine> thread_data;
     {
         Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
         auto compositor = page_compositors().find(page_id);
@@ -1459,7 +1459,7 @@ void CompositorThread::presented_bitmap_ready_to_paint(u64 page_id, i32 bitmap_i
 
 bool CompositorThread::async_scroll_by(u64 page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels)
 {
-    RefPtr<ThreadData> thread_data;
+    RefPtr<CompositorEngine> thread_data;
     {
         Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
         auto compositor = page_compositors().find(page_id);
@@ -1474,7 +1474,7 @@ bool CompositorThread::async_scroll_by(u64 page_id, Gfx::FloatPoint position, Gf
 
 bool CompositorThread::handle_mouse_event(u64 page_id, MouseEvent const& event)
 {
-    RefPtr<ThreadData> thread_data;
+    RefPtr<CompositorEngine> thread_data;
     {
         Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
         auto compositor = page_compositors().find(page_id);
@@ -1489,7 +1489,7 @@ bool CompositorThread::handle_mouse_event(u64 page_id, MouseEvent const& event)
 
 void CompositorThread::start(DisplayListPlayerType display_list_player_type)
 {
-    m_thread = Threading::Thread::construct("Compositor"sv, [thread_data = m_thread_data, display_list_player_type] {
+    m_thread = Threading::Thread::construct("Compositor"sv, [thread_data = m_engine, display_list_player_type] {
         thread_data->compositor_loop(display_list_player_type);
         return static_cast<intptr_t>(0);
     });
@@ -1499,13 +1499,13 @@ void CompositorThread::start(DisplayListPlayerType display_list_player_type)
 
 void CompositorThread::set_presentation_mode(PresentationMode mode)
 {
-    m_thread_data->set_presentation_mode(move(mode));
+    m_engine->set_presentation_mode(move(mode));
 }
 
 void CompositorThread::stop_presenting_to_client()
 {
-    m_thread_data->stop_presenting_to_client();
-    unregister_page_compositor(m_thread_data->page_id(), *m_thread_data);
+    m_engine->stop_presenting_to_client();
+    unregister_page_compositor(m_engine->page_id(), *m_engine);
 }
 
 void CompositorThread::update_display_list(
@@ -1513,48 +1513,48 @@ void CompositorThread::update_display_list(
     Painting::DisplayListResourceTransaction&& resource_transaction,
     Painting::ScrollStateSnapshot&& scroll_state_snapshot)
 {
-    m_thread_data->enqueue_command(UpdateDisplayListCommand { move(display_list), move(resource_transaction), move(scroll_state_snapshot) });
+    m_engine->enqueue_command(UpdateDisplayListCommand { move(display_list), move(resource_transaction), move(scroll_state_snapshot) });
 }
 
 void CompositorThread::update_compositor_surface(Painting::CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image)
 {
-    m_thread_data->enqueue_command(UpdateCompositorSurfaceCommand { surface_id, move(shared_image) });
+    m_engine->enqueue_command(UpdateCompositorSurfaceCommand { surface_id, move(shared_image) });
 }
 
 void CompositorThread::clear_compositor_surface(Painting::CompositorSurfaceId surface_id)
 {
-    m_thread_data->enqueue_command(ClearCompositorSurfaceCommand { surface_id });
+    m_engine->enqueue_command(ClearCompositorSurfaceCommand { surface_id });
 }
 
 void CompositorThread::invalidate_wheel_event_listener_state(u64 generation)
 {
-    m_thread_data->invalidate_wheel_event_listener_state(generation);
+    m_engine->invalidate_wheel_event_listener_state(generation);
 }
 
 CompositorThread::AsyncScrollEnqueueResult CompositorThread::async_scroll_by(UniqueNodeID expected_document_id, Gfx::FloatPoint position,
     Gfx::FloatPoint delta_in_device_pixels, Gfx::IntRect viewport_rect, AsyncScrollOperationTracking operation_tracking)
 {
-    return m_thread_data->enqueue_async_scroll_by(expected_document_id, position, delta_in_device_pixels, viewport_rect, operation_tracking);
+    return m_engine->enqueue_async_scroll_by(expected_document_id, position, delta_in_device_pixels, viewport_rect, operation_tracking);
 }
 
 bool CompositorThread::should_defer_async_scroll_offset_adoption() const
 {
-    return m_thread_data->should_defer_async_scroll_offset_adoption();
+    return m_engine->should_defer_async_scroll_offset_adoption();
 }
 
 bool CompositorThread::should_defer_main_thread_present_for_async_scroll() const
 {
-    return m_thread_data->should_defer_main_thread_present_for_async_scroll();
+    return m_engine->should_defer_main_thread_present_for_async_scroll();
 }
 
 CompositorThread::PendingAsyncScrollUpdates CompositorThread::take_pending_async_scroll_updates()
 {
-    return m_thread_data->take_pending_async_scroll_updates();
+    return m_engine->take_pending_async_scroll_updates();
 }
 
 void CompositorThread::update_scroll_state(Painting::ScrollStateSnapshot&& scroll_state_snapshot)
 {
-    m_thread_data->enqueue_command(UpdateScrollStateCommand { move(scroll_state_snapshot) });
+    m_engine->enqueue_command(UpdateScrollStateCommand { move(scroll_state_snapshot) });
 }
 
 void CompositorThread::viewport_size_updated(
@@ -1570,23 +1570,23 @@ void CompositorThread::viewport_size_updated(
 void CompositorThread::enqueue_viewport_size_updated(
     Gfx::IntSize viewport_size, bool is_top_level_traversable, WindowResizingInProgress window_resize_in_progress)
 {
-    m_thread_data->enqueue_command(
+    m_engine->enqueue_command(
         ViewportSizeUpdatedCommand { viewport_size, is_top_level_traversable, window_resize_in_progress });
 }
 
 u64 CompositorThread::present_frame(Gfx::IntRect viewport_rect)
 {
-    return m_thread_data->set_needs_present(viewport_rect);
+    return m_engine->set_needs_present(viewport_rect);
 }
 
 void CompositorThread::wait_for_frame(u64 frame_id)
 {
-    m_thread_data->wait_for_frame(frame_id);
+    m_engine->wait_for_frame(frame_id);
 }
 
 void CompositorThread::request_screenshot(NonnullRefPtr<Gfx::PaintingSurface> target_surface, Function<void()>&& callback)
 {
-    m_thread_data->enqueue_command(ScreenshotCommand { move(target_surface), move(callback) });
+    m_engine->enqueue_command(ScreenshotCommand { move(target_surface), move(callback) });
 }
 
 }
