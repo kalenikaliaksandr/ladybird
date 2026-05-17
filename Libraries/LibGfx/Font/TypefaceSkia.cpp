@@ -13,6 +13,7 @@
 #include <core/SkFontMgr.h>
 #include <core/SkStream.h>
 #include <core/SkTypeface.h>
+#include <ports/SkFontMgr_empty.h>
 #if defined(AK_OS_ANDROID)
 #    include <ports/SkFontMgr_android.h>
 #elif defined(AK_OS_WINDOWS)
@@ -65,6 +66,17 @@ static SkFontMgr& font_manager()
     return *s_font_manager;
 }
 
+static SkFontMgr& memory_font_manager()
+{
+    static sk_sp<SkFontMgr> s_memory_font_manager;
+    // Memory-backed typefaces should not depend on platform font discovery
+    // state such as CoreText or fontconfig.
+    if (!s_memory_font_manager)
+        s_memory_font_manager = SkFontMgr_New_Custom_Empty();
+    VERIFY(s_memory_font_manager);
+    return *s_memory_font_manager;
+}
+
 static SkFontStyle::Slant slope_to_skia_slant(u8 slope)
 {
     switch (slope) {
@@ -88,7 +100,7 @@ ErrorOr<NonnullRefPtr<TypefaceSkia>> TypefaceSkia::load_from_buffer(AK::Readonly
     font_args.setCollectionIndex(static_cast<int>(ttc_index));
 
     auto stream = std::make_unique<SkMemoryStream>(data);
-    auto skia_typeface = font_manager().makeFromStream(std::move(stream), font_args);
+    auto skia_typeface = memory_font_manager().makeFromStream(std::move(stream), font_args);
 
     if (!skia_typeface) {
         return Error::from_string_literal("Failed to load typeface from buffer");
@@ -172,7 +184,7 @@ RefPtr<TypefaceSkia const> TypefaceSkia::clone_with_variations(Vector<FontVariat
         return {};
     ReadonlyBytes data_bytes { static_cast<u8 const*>(data->data()), data->size() };
     auto stream = std::make_unique<SkMemoryStream>(data);
-    auto skia_typeface = font_manager().makeFromStream(move(stream), font_args);
+    auto skia_typeface = memory_font_manager().makeFromStream(move(stream), font_args);
 
     if (!skia_typeface)
         return {};
