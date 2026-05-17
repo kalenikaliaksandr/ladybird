@@ -8,11 +8,12 @@
 #pragma once
 
 #include <AK/HashTable.h>
+#include <AK/NonnullOwnPtr.h>
 #include <AK/String.h>
 #include <AK/Tuple.h>
 #include <LibJS/Heap/Cell.h>
 #include <LibWeb/Bindings/Navigation.h>
-#include <LibWeb/Compositor/CompositorThread.h>
+#include <LibWeb/Compositor/PageCompositor.h>
 #include <LibWeb/DOM/DocumentLoadEventDelayer.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
@@ -239,7 +240,7 @@ public:
 
     [[nodiscard]] bool has_inclusive_ancestor_with_visibility_hidden() const;
 
-    Compositor::CompositorThread& rendering_thread() { return m_rendering_thread; }
+    Compositor::PageCompositor& rendering_thread() { return *m_rendering_thread; }
 
     Painting::CompositorSurfaceId compositor_surface_id() const;
 
@@ -261,7 +262,7 @@ protected:
     explicit Navigable(
         GC::Ref<Page>,
         bool is_svg_page,
-        Compositor::CompositorThread::PagePresentationRegistration = Compositor::CompositorThread::PagePresentationRegistration::No);
+        Compositor::PageCompositor::PagePresentationRegistration = Compositor::PageCompositor::PagePresentationRegistration::No);
 
     virtual void visit_edges(Cell::Visitor&) override;
     virtual void finalize() override;
@@ -334,7 +335,7 @@ private:
     Optional<PaintConfig> m_rendering_thread_display_list_paint_config;
     Painting::DisplayListResourceStorage m_display_list_resource_storage;
     Painting::DisplayListResourceSet m_rendering_thread_display_list_resources;
-    Compositor::CompositorThread m_rendering_thread;
+    NonnullOwnPtr<Compositor::PageCompositor> m_rendering_thread;
     Optional<Painting::CompositorSurfaceId> m_compositor_surface_id;
 
     struct PendingAsyncScrollOperation {
