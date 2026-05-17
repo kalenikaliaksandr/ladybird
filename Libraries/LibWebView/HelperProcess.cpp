@@ -160,7 +160,11 @@ ErrorOr<NonnullRefPtr<WebView::WebContentClient>> launch_spare_web_content_proce
 
 ErrorOr<NonnullRefPtr<WebView::CompositorClient>> launch_compositor_process()
 {
+    auto const& web_content_options = WebView::Application::web_content_options();
+
     Vector<ByteString> arguments;
+    if (web_content_options.force_fontconfig == WebView::ForceFontconfig::Yes)
+        arguments.append("--force-fontconfig"sv);
     if (auto server = mach_server_name(); server.has_value()) {
         arguments.append("--mach-server-name"sv);
         arguments.append(server.value());
