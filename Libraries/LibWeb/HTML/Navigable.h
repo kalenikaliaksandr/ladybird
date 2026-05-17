@@ -243,6 +243,7 @@ public:
     Compositor::PageCompositor& rendering_thread() { return *m_rendering_thread; }
 
     Painting::CompositorSurfaceId compositor_surface_id() const;
+    bool has_compositor_surface_id() const { return m_compositor_surface_id.has_value(); }
 
     void set_pending_set_browser_zoom_request(bool value) { m_pending_set_browser_zoom_request = value; }
     bool pending_set_browser_zoom_request() const { return m_pending_set_browser_zoom_request; }
