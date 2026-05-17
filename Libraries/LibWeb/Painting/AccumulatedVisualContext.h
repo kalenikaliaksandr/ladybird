@@ -95,6 +95,7 @@ public:
     VisualContextIndex append(VisualContextData data, VisualContextIndex parent_index);
 
     AccumulatedVisualContextNode const& node_at(VisualContextIndex index) const { return m_nodes[index.value()]; }
+    size_t node_count() const { return m_nodes.size(); }
 
     VisualContextIndex find_common_ancestor(VisualContextIndex a, VisualContextIndex b) const;
     Optional<Gfx::FloatPoint> transform_point_for_hit_test(VisualContextIndex, Gfx::FloatPoint, ScrollStateSnapshot const&) const;
