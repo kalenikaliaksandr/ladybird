@@ -56,8 +56,8 @@ set(GENERATED_SOURCES
     ${GENERATED_SOURCES}
     ../../Services/RequestServer/RequestClientEndpoint.h
     ../../Services/RequestServer/RequestServerEndpoint.h
-    ../../Services/WebContent/CompositorClientEndpoint.h
-    ../../Services/WebContent/CompositorServerEndpoint.h
+    ../../Services/Compositor/CompositorClientEndpoint.h
+    ../../Services/Compositor/CompositorServerEndpoint.h
     ../../Services/WebContent/WebContentClientEndpoint.h
     ../../Services/WebContent/WebContentServerEndpoint.h
     ../../Services/WebContent/WebDriverClientEndpoint.h
@@ -69,8 +69,8 @@ set(GENERATED_SOURCES
     UIProcessServerEndpoint.h
 )
 
-compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/CompositorClient.ipc ${CMAKE_BINARY_DIR}/Services/WebContent/CompositorClientEndpoint.h)
-compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/CompositorServer.ipc ${CMAKE_BINARY_DIR}/Services/WebContent/CompositorServerEndpoint.h)
+compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/Compositor/CompositorClient.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/CompositorClientEndpoint.h)
+compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/Compositor/CompositorServer.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/CompositorServerEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/WebContentClient.ipc ${CMAKE_BINARY_DIR}/Services/WebContent/WebContentClientEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/WebContentServer.ipc ${CMAKE_BINARY_DIR}/Services/WebContent/WebContentServerEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/WebDriverClient.ipc ${CMAKE_BINARY_DIR}/Services/WebContent/WebDriverClientEndpoint.h)

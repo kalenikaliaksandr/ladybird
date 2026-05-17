@@ -13,6 +13,8 @@
 #include <AK/JsonObject.h>
 #include <AK/OwnPtr.h>
 #include <AK/QuickSort.h>
+#include <Compositor/CompositorClientEndpoint.h>
+#include <Compositor/CompositorServerEndpoint.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/System.h>
 #include <LibGC/Heap.h>
@@ -64,8 +66,6 @@
 #include <LibWeb/Worker/WebWorkerClient.h>
 #include <LibWebView/Attribute.h>
 #include <LibWebView/ViewImplementation.h>
-#include <WebContent/CompositorClientEndpoint.h>
-#include <WebContent/CompositorServerEndpoint.h>
 #include <WebContent/ConnectionFromClient.h>
 #include <WebContent/PageClient.h>
 #include <WebContent/PageHost.h>
