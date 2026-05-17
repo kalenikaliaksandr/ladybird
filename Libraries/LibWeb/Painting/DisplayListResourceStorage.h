@@ -29,11 +29,22 @@ struct DisplayListResourceSet {
     HashTable<DisplayListResourceId> display_lists;
 };
 
+template<typename ResourceID, typename Resource>
+struct DisplayListResourceAddition {
+    ResourceID id;
+    Resource resource;
+};
+
+using FontResourceAddition = DisplayListResourceAddition<FontResourceId, NonnullRefPtr<Gfx::Font const>>;
+using ImageFrameResourceAddition = DisplayListResourceAddition<ImageFrameResourceId, Gfx::DecodedImageFrame>;
+using VideoFrameSourceResourceAddition = DisplayListResourceAddition<VideoFrameResourceId, NonnullRefPtr<VideoFrameSource const>>;
+using DisplayListResourceAdditionRecord = DisplayListResourceAddition<DisplayListResourceId, NonnullRefPtr<DisplayList const>>;
+
 struct DisplayListResourceTransaction {
-    Vector<NonnullRefPtr<Gfx::Font const>> fonts;
-    Vector<Gfx::DecodedImageFrame> image_frames;
-    Vector<NonnullRefPtr<VideoFrameSource const>> video_frame_sources;
-    Vector<NonnullRefPtr<DisplayList const>> display_lists;
+    Vector<FontResourceAddition> fonts;
+    Vector<ImageFrameResourceAddition> image_frames;
+    Vector<VideoFrameSourceResourceAddition> video_frame_sources;
+    Vector<DisplayListResourceAdditionRecord> display_lists;
 
     Vector<FontResourceId> font_ids_to_remove;
     Vector<ImageFrameResourceId> image_frame_ids_to_remove;
@@ -53,6 +64,10 @@ public:
     ImageFrameResourceId add_image_frame(Gfx::DecodedImageFrame const&);
     VideoFrameResourceId add_video_frame_source(NonnullRefPtr<VideoFrameSource const>);
     DisplayListResourceId add_display_list(NonnullRefPtr<DisplayList const>);
+    void set_font(FontResourceId, Gfx::Font const&);
+    void set_image_frame(ImageFrameResourceId, Gfx::DecodedImageFrame const&);
+    void set_video_frame_source(VideoFrameResourceId, NonnullRefPtr<VideoFrameSource const>);
+    void set_display_list(DisplayListResourceId, NonnullRefPtr<DisplayList const>);
     void append_referenced_resources_from(DisplayListResourceStorage const& source, ReadonlyBytes command_bytes);
     void apply_transaction(DisplayListResourceTransaction&&);
     DisplayListResourceTransaction create_transaction(DisplayListResourceSet const& previous, DisplayListResourceSet const& current) const;
