@@ -8,6 +8,7 @@
 
 #include <Compositor/WebContentCompositorClientEndpoint.h>
 #include <Compositor/WebContentCompositorServerEndpoint.h>
+#include <LibGfx/SharedImage.h>
 #include <LibGfx/Size.h>
 #include <LibIPC/ConnectionToServer.h>
 #include <LibWeb/Compositor/DisplayListResourceSerialization.h>
@@ -48,6 +49,8 @@ public:
     void viewport_size_updated(Web::Compositor::CompositorContextId, Gfx::IntSize, bool is_top_level_traversable, Web::Compositor::WindowResizingInProgress);
     void update_display_list(Web::Compositor::CompositorContextId, NonnullRefPtr<Web::Painting::DisplayList> const&, Web::Painting::DisplayListResourceTransaction const&, Web::Painting::ScrollStateSnapshot const&);
     void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot const&);
+    void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&);
+    void clear_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId);
     u64 present_frame(Web::Compositor::CompositorContextId, Gfx::IntRect);
     void wait_for_frame(Web::Compositor::CompositorContextId, u64 frame_id);
 

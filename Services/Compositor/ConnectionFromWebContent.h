@@ -81,6 +81,7 @@ private:
     bool validate_presentation_mode(Web::Compositor::CompositorContextId, PresentationModeState const&) const;
     ErrorOr<void> allocate_backing_stores_if_needed(ContextState&, Gfx::IntSize viewport_size);
     void rasterize_pending_present(ContextState&);
+    void publish_context_to_compositor_surface(ContextState&);
     bool mark_presented_bitmap_ready_to_paint(Web::Compositor::PresentationId, i32 bitmap_id);
 
     virtual void create_context(u64 context_id, u64 page_id, Web::Compositor::SerializedPresentationModeKind presentation_mode_kind, u64 presentation_id, u64 presentation_capability, u64 target_context_id, u64 compositor_surface_id, Web::DisplayListPlayerType display_list_player_type) override;
@@ -90,6 +91,8 @@ private:
     virtual void viewport_size_updated(u64 context_id, Gfx::IntSize viewport_size, bool is_top_level_traversable, Web::Compositor::WindowResizingInProgress window_resize_in_progress) override;
     virtual void update_display_list(u64 context_id, NonnullRefPtr<Web::Painting::DisplayList> display_list, Web::Painting::DisplayListResourceTransaction resource_transaction, Web::Painting::ScrollStateSnapshot scroll_state) override;
     virtual void update_scroll_state(u64 context_id, Web::Painting::ScrollStateSnapshot scroll_state) override;
+    virtual void update_compositor_surface(u64 context_id, u64 surface_id, Gfx::SharedImage shared_image) override;
+    virtual void clear_compositor_surface(u64 context_id, u64 surface_id) override;
     virtual Messages::WebContentCompositorServer::PresentFrameResponse present_frame(u64 context_id, Gfx::IntRect viewport_rect) override;
     virtual void wait_for_frame(u64 context_id, u64 frame_id) override;
 

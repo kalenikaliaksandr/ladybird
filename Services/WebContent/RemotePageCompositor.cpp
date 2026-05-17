@@ -116,12 +116,16 @@ void RemotePageCompositor::update_display_list(NonnullRefPtr<Web::Painting::Disp
         scroll_state_snapshot);
 }
 
-void RemotePageCompositor::update_compositor_surface(Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&)
+void RemotePageCompositor::update_compositor_surface(Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image)
 {
+    if (m_context_created && m_connection->is_open())
+        m_connection->update_compositor_surface(m_context_id, surface_id, move(shared_image));
 }
 
-void RemotePageCompositor::clear_compositor_surface(Web::Painting::CompositorSurfaceId)
+void RemotePageCompositor::clear_compositor_surface(Web::Painting::CompositorSurfaceId surface_id)
 {
+    if (m_context_created && m_connection->is_open())
+        m_connection->clear_compositor_surface(m_context_id, surface_id);
 }
 
 void RemotePageCompositor::update_scroll_state(Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot)

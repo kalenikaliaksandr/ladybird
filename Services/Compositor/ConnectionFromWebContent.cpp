@@ -201,12 +201,33 @@ void ConnectionFromWebContent::rasterize_pending_present(ContextState& context)
             context.presentation_mode.presentation_id,
             pending_present.viewport_rect,
             rendered_bitmap_id);
+    } else if (context.presentation_mode.kind == Web::Compositor::SerializedPresentationModeKind::PublishToCompositorSurface) {
+        publish_context_to_compositor_surface(context);
     }
 
     context.completed_frame_id = pending_present.frame_id;
     context.pending_present.clear();
     context.has_pending_display_list_update = false;
     context.has_pending_scroll_state_update = false;
+}
+
+void ConnectionFromWebContent::publish_context_to_compositor_surface(ContextState& context)
+{
+    VERIFY(context.presentation_mode.kind == Web::Compositor::SerializedPresentationModeKind::PublishToCompositorSurface);
+
+    auto target_context_id = context.presentation_mode.target_context_id;
+    auto target_context = m_contexts.get(target_context_id);
+    if (!target_context.has_value()) {
+        dbgln("Cannot publish compositor context {} to missing target context {} from WebContent connection {}",
+            context.context_id.value(), target_context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    auto& front_store = context.backing_store_manager->front_store();
+    target_context->display_list_resource_storage.update_compositor_surface(
+        context.presentation_mode.compositor_surface_id,
+        front_store.snapshot_into_shared_image());
+    rasterize_pending_present(*target_context);
 }
 
 bool ConnectionFromWebContent::mark_presented_bitmap_ready_to_paint(Web::Compositor::PresentationId presentation_id, i32 bitmap_id)
@@ -376,6 +397,44 @@ void ConnectionFromWebContent::update_scroll_state(u64 raw_context_id, Web::Pain
 
     context->scroll_state_snapshot = move(scroll_state);
     context->has_pending_scroll_state_update = true;
+    rasterize_pending_present(*context);
+}
+
+void ConnectionFromWebContent::update_compositor_surface(u64 raw_context_id, u64 raw_surface_id, Gfx::SharedImage shared_image)
+{
+    auto context_id = Web::Compositor::CompositorContextId { raw_context_id };
+    auto context = m_contexts.get(context_id);
+    if (!context.has_value()) {
+        dbgln("Ignoring compositor surface update for missing compositor context {} from WebContent connection {}", context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    auto surface_id = Web::Painting::CompositorSurfaceId { raw_surface_id };
+    if (surface_id.value() == 0) {
+        dbgln("Ignoring compositor surface update with empty surface ID for context {} from WebContent connection {}", context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    context->display_list_resource_storage.update_compositor_surface(surface_id, move(shared_image));
+    rasterize_pending_present(*context);
+}
+
+void ConnectionFromWebContent::clear_compositor_surface(u64 raw_context_id, u64 raw_surface_id)
+{
+    auto context_id = Web::Compositor::CompositorContextId { raw_context_id };
+    auto context = m_contexts.get(context_id);
+    if (!context.has_value()) {
+        dbgln("Ignoring compositor surface clear for missing compositor context {} from WebContent connection {}", context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    auto surface_id = Web::Painting::CompositorSurfaceId { raw_surface_id };
+    if (surface_id.value() == 0) {
+        dbgln("Ignoring compositor surface clear with empty surface ID for context {} from WebContent connection {}", context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    context->display_list_resource_storage.clear_compositor_surface(surface_id);
     rasterize_pending_present(*context);
 }
 
