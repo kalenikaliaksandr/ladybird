@@ -9,6 +9,8 @@
 #include <AK/Optional.h>
 #include <Compositor/CompositorClientEndpoint.h>
 #include <Compositor/CompositorServerEndpoint.h>
+#include <LibGfx/Rect.h>
+#include <LibGfx/SharedImage.h>
 #include <LibIPC/ConnectionFromClient.h>
 #include <LibIPC/TransportHandle.h>
 #include <LibWeb/Compositor/Types.h>
@@ -24,6 +26,8 @@ public:
 
     static bool is_registered_presentation(Web::Compositor::WebContentConnectionId, Web::Compositor::PresentationId, Web::Compositor::PresentationCapability);
     static void unregister_presentations_for_connection(Web::Compositor::WebContentConnectionId);
+    static void did_allocate_backing_stores(Web::Compositor::PresentationId, i32 front_bitmap_id, Gfx::SharedImage front_backing_store, i32 back_bitmap_id, Gfx::SharedImage back_backing_store);
+    static void did_paint(Web::Compositor::PresentationId, Gfx::IntRect content_rect, i32 bitmap_id);
 
 private:
     explicit ConnectionFromClient(NonnullOwnPtr<IPC::Transport>);

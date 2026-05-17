@@ -31,6 +31,8 @@ static HashMap<u64, Web::Compositor::PresentationId>& active_presentations()
     return *presentations;
 }
 
+static ConnectionFromClient* s_ui_connection;
+
 static void remove_active_presentation(Web::Compositor::PresentationId presentation_id)
 {
     active_presentations().remove_all_matching([presentation_id](auto const&, auto active_presentation_id) {
@@ -41,10 +43,13 @@ static void remove_active_presentation(Web::Compositor::PresentationId presentat
 ConnectionFromClient::ConnectionFromClient(NonnullOwnPtr<IPC::Transport> transport)
     : IPC::ConnectionFromClient<CompositorClientEndpoint, CompositorServerEndpoint>(*this, move(transport), 1)
 {
+    s_ui_connection = this;
 }
 
 void ConnectionFromClient::die()
 {
+    if (s_ui_connection == this)
+        s_ui_connection = nullptr;
     Core::EventLoop::current().quit(0);
 }
 
@@ -155,6 +160,38 @@ void ConnectionFromClient::unregister_presentations_for_connection(Web::Composit
     });
 }
 
+void ConnectionFromClient::did_allocate_backing_stores(
+    Web::Compositor::PresentationId presentation_id,
+    i32 front_bitmap_id,
+    Gfx::SharedImage front_backing_store,
+    i32 back_bitmap_id,
+    Gfx::SharedImage back_backing_store)
+{
+    if (!s_ui_connection || !s_ui_connection->is_open()) {
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Dropping backing store allocation for presentation {}: no UI connection",
+            presentation_id.value());
+        return;
+    }
+
+    s_ui_connection->async_did_allocate_backing_stores(
+        presentation_id.value(),
+        front_bitmap_id,
+        move(front_backing_store),
+        back_bitmap_id,
+        move(back_backing_store));
+}
+
+void ConnectionFromClient::did_paint(Web::Compositor::PresentationId presentation_id, Gfx::IntRect content_rect, i32 bitmap_id)
+{
+    if (!s_ui_connection || !s_ui_connection->is_open()) {
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Dropping did_paint for presentation {} bitmap {}: no UI connection",
+            presentation_id.value(), bitmap_id);
+        return;
+    }
+
+    s_ui_connection->async_did_paint(presentation_id.value(), content_rect, bitmap_id);
+}
+
 Messages::CompositorServer::AsyncScrollByResponse ConnectionFromClient::async_scroll_by(u64, Gfx::FloatPoint, Gfx::FloatPoint)
 {
     return false;
@@ -165,8 +202,9 @@ Messages::CompositorServer::MouseEventResponse ConnectionFromClient::mouse_event
     return false;
 }
 
-void ConnectionFromClient::ready_to_paint(u64, i32)
+void ConnectionFromClient::ready_to_paint(u64 raw_presentation_id, i32 bitmap_id)
 {
+    ConnectionFromWebContent::presented_bitmap_ready_to_paint(Web::Compositor::PresentationId { raw_presentation_id }, bitmap_id);
 }
 
 }

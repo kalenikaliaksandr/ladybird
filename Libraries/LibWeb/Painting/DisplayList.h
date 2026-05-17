@@ -18,6 +18,7 @@
 #include <LibGfx/Forward.h>
 #include <LibGfx/PaintStyle.h>
 #include <LibGfx/TextLayout.h>
+#include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/DisplayListCommand.h>
@@ -62,7 +63,7 @@ private:
     ByteBuffer m_command_bytes;
 };
 
-class DisplayListPlayer {
+class WEB_API DisplayListPlayer {
 public:
     virtual ~DisplayListPlayer() = default;
 
