@@ -15,6 +15,7 @@
 #include <LibIPC/ConnectionToServer.h>
 #include <LibWeb/Compositor/DisplayListResourceSerialization.h>
 #include <LibWeb/Compositor/DisplayListSerialization.h>
+#include <LibWeb/Compositor/PageCompositor.h>
 #include <LibWeb/Compositor/ScrollStateSerialization.h>
 #include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Page/Page.h>
@@ -51,6 +52,17 @@ public:
     void viewport_size_updated(Web::Compositor::CompositorContextId, Gfx::IntSize, bool is_top_level_traversable, Web::Compositor::WindowResizingInProgress);
     void update_display_list(Web::Compositor::CompositorContextId, NonnullRefPtr<Web::Painting::DisplayList> const&, Web::Painting::DisplayListResourceTransaction const&, Web::Painting::ScrollStateSnapshot const&);
     void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot const&);
+    void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation);
+    Web::Compositor::PageCompositor::AsyncScrollEnqueueResult async_scroll_by(
+        Web::Compositor::CompositorContextId,
+        Web::UniqueNodeID expected_document_id,
+        Gfx::FloatPoint position,
+        Gfx::FloatPoint delta_in_device_pixels,
+        Gfx::IntRect viewport_rect,
+        Web::Compositor::PageCompositor::AsyncScrollOperationTracking);
+    bool should_defer_async_scroll_offset_adoption(Web::Compositor::CompositorContextId);
+    bool should_defer_main_thread_present_for_async_scroll(Web::Compositor::CompositorContextId);
+    Web::Compositor::PageCompositor::PendingAsyncScrollUpdates take_pending_async_scroll_updates(Web::Compositor::CompositorContextId);
     void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId);
     void update_yuv_video_frame(Web::Compositor::CompositorContextId, Web::Compositor::SerializedVideoFrameUpdate const&);

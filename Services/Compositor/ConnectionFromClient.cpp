@@ -192,14 +192,14 @@ void ConnectionFromClient::did_paint(Web::Compositor::PresentationId presentatio
     s_ui_connection->async_did_paint(presentation_id.value(), content_rect, bitmap_id);
 }
 
-Messages::CompositorServer::AsyncScrollByResponse ConnectionFromClient::async_scroll_by(u64, Gfx::FloatPoint, Gfx::FloatPoint)
+Messages::CompositorServer::AsyncScrollByResponse ConnectionFromClient::async_scroll_by(u64 raw_presentation_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels)
 {
-    return false;
+    return ConnectionFromWebContent::async_scroll_by(Web::Compositor::PresentationId { raw_presentation_id }, position, delta_in_device_pixels);
 }
 
-Messages::CompositorServer::MouseEventResponse ConnectionFromClient::mouse_event(u64, Web::MouseEvent)
+Messages::CompositorServer::MouseEventResponse ConnectionFromClient::mouse_event(u64 raw_presentation_id, Web::MouseEvent event)
 {
-    return false;
+    return ConnectionFromWebContent::handle_mouse_event(Web::Compositor::PresentationId { raw_presentation_id }, event);
 }
 
 void ConnectionFromClient::ready_to_paint(u64 raw_presentation_id, i32 bitmap_id)

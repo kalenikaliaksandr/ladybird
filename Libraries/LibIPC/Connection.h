@@ -47,6 +47,7 @@ protected:
     };
     PeerEOF drain_messages_from_peer();
 
+    bool handle_messages_for_endpoint(u32 endpoint_magic);
     void handle_messages();
 
     IPC::Stub& m_local_stub;

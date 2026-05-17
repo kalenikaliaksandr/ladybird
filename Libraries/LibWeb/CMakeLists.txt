@@ -38,6 +38,7 @@ set(SOURCES
     Compositor/DisplayListSerialization.cpp
     Compositor/ScrollStateSerialization.cpp
     Compositor/SerializedPayload.cpp
+    Compositor/ViewportScrollbars.cpp
     Compositor/VisualContextSerialization.cpp
     Compression/CompressionStream.cpp
     Compression/DecompressionStream.cpp

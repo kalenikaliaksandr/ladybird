@@ -68,6 +68,23 @@ void CompositorClient::unregister_web_content_client(WebContentClient& web_conte
     m_web_content_clients_by_presentation.remove(web_content_client.presentation_id());
 }
 
+bool CompositorClient::async_scroll_by(Web::Compositor::PresentationId presentation_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels)
+{
+    auto response = send_sync_but_allow_failure<Messages::CompositorServer::AsyncScrollBy>(
+        presentation_id.value(),
+        position,
+        delta_in_device_pixels);
+    return response && response->handled();
+}
+
+bool CompositorClient::mouse_event(Web::Compositor::PresentationId presentation_id, Web::MouseEvent const& event)
+{
+    auto response = send_sync_but_allow_failure<Messages::CompositorServer::MouseEvent>(
+        presentation_id.value(),
+        event.clone_without_browser_data());
+    return response && response->handled();
+}
+
 void CompositorClient::ready_to_paint(Web::Compositor::PresentationId presentation_id, i32 bitmap_id)
 {
     async_ready_to_paint(presentation_id.value(), bitmap_id);
