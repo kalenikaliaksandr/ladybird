@@ -165,13 +165,18 @@ void RemotePageCompositor::viewport_size_updated(
         m_connection->viewport_size_updated(m_context_id, viewport_size, is_top_level_traversable, window_resize_in_progress);
 }
 
-u64 RemotePageCompositor::present_frame(Gfx::IntRect)
+u64 RemotePageCompositor::present_frame(Gfx::IntRect viewport_rect)
 {
-    return m_next_frame_id++;
+    if (!m_context_created || !m_connection->is_open())
+        return 0;
+    return m_connection->present_frame(m_context_id, viewport_rect);
 }
 
-void RemotePageCompositor::wait_for_frame(u64)
+void RemotePageCompositor::wait_for_frame(u64 frame_id)
 {
+    if (!m_context_created || !m_connection->is_open() || frame_id == 0)
+        return;
+    m_connection->wait_for_frame(m_context_id, frame_id);
 }
 
 void RemotePageCompositor::request_screenshot(NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&& callback)

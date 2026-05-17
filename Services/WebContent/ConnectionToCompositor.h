@@ -48,6 +48,8 @@ public:
     void viewport_size_updated(Web::Compositor::CompositorContextId, Gfx::IntSize, bool is_top_level_traversable, Web::Compositor::WindowResizingInProgress);
     void update_display_list(Web::Compositor::CompositorContextId, NonnullRefPtr<Web::Painting::DisplayList> const&, Web::Painting::DisplayListResourceTransaction const&, Web::Painting::ScrollStateSnapshot const&);
     void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot const&);
+    u64 present_frame(Web::Compositor::CompositorContextId, Gfx::IntRect);
+    void wait_for_frame(Web::Compositor::CompositorContextId, u64 frame_id);
 
 private:
     explicit ConnectionToCompositor(NonnullOwnPtr<IPC::Transport>);

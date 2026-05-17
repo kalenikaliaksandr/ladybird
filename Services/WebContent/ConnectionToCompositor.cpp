@@ -90,6 +90,19 @@ void ConnectionToCompositor::update_scroll_state(
     async_update_scroll_state(context_id.value(), scroll_state);
 }
 
+u64 ConnectionToCompositor::present_frame(Web::Compositor::CompositorContextId context_id, Gfx::IntRect viewport_rect)
+{
+    auto response = send_sync_but_allow_failure<Messages::WebContentCompositorServer::PresentFrame>(context_id.value(), viewport_rect);
+    if (!response)
+        return 0;
+    return response->frame_id();
+}
+
+void ConnectionToCompositor::wait_for_frame(Web::Compositor::CompositorContextId context_id, u64 frame_id)
+{
+    (void)send_sync_but_allow_failure<Messages::WebContentCompositorServer::WaitForFrame>(context_id.value(), frame_id);
+}
+
 void ConnectionToCompositor::schedule_rendering_update(u64)
 {
 }
