@@ -55,7 +55,7 @@ static ErrorOr<NonnullRefPtr<ClientType>> launch_server_process(
             if constexpr (requires { client->set_pid(pid_t {}); })
                 client->set_pid(process.pid());
 
-            if constexpr (requires { client->transport().set_peer_pid(0); } && !IsSame<ClientType, Web::HTML::WebWorkerClient>) {
+            if constexpr (requires { typename ClientType::InitTransport; } && requires { client->transport().set_peer_pid(0); } && !IsSame<ClientType, Web::HTML::WebWorkerClient>) {
                 auto response = client->template send_sync<typename ClientType::InitTransport>(Core::System::getpid());
                 client->transport().set_peer_pid(response->peer_pid());
             }
@@ -154,6 +154,20 @@ ErrorOr<NonnullRefPtr<WebView::WebContentClient>> launch_web_content_process(Web
 ErrorOr<NonnullRefPtr<WebView::WebContentClient>> launch_spare_web_content_process()
 {
     return launch_web_content_process_impl();
+}
+
+ErrorOr<NonnullRefPtr<WebView::CompositorClient>> launch_compositor_process()
+{
+    Vector<ByteString> arguments;
+    if (auto server = mach_server_name(); server.has_value()) {
+        arguments.append("--mach-server-name"sv);
+        arguments.append(server.value());
+    }
+
+    auto client = TRY(launch_server_process<WebView::CompositorClient>("Compositor"sv, move(arguments)));
+    if (client->try_ping().is_error())
+        return Error::from_string_literal("Failed to ping Compositor process");
+    return client;
 }
 
 ErrorOr<NonnullRefPtr<ImageDecoderClient::Client>> launch_image_decoder_process()
