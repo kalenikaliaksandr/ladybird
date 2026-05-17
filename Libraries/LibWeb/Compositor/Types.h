@@ -13,6 +13,7 @@
 namespace Web::Compositor {
 
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u64, CompositorContextId);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(u64, WebContentConnectionId);
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u64, PresentationId);
 AK_TYPEDEF_DISTINCT_NUMERIC_GENERAL(u64, PresentationCapability, Comparison, CastToBool);
 

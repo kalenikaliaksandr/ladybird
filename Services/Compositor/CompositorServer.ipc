@@ -4,6 +4,10 @@
 endpoint CompositorServer
 {
     ping() => ()
+    register_presentation(u64 presentation_id, u64 web_content_connection_id, u64 presentation_capability) =|
+    unregister_presentation(u64 presentation_id) =|
+    set_presentation_visibility(u64 presentation_id, bool is_visible) =|
+    set_active_presentation(u64 ui_view_id, Optional<u64> presentation_id) =|
     async_scroll_by(u64 page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels) => (bool handled)
     mouse_event(u64 page_id, Web::MouseEvent event) => (bool handled)
     ready_to_paint(u64 page_id, i32 bitmap_id) =|
