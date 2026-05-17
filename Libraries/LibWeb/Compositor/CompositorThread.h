@@ -21,13 +21,14 @@
 
 namespace Web::Compositor {
 
+class CompositorEngine;
+
 class WEB_API CompositorThread final : public PageCompositor {
     AK_MAKE_NONCOPYABLE(CompositorThread);
     AK_MAKE_NONMOVABLE(CompositorThread);
+    friend class CompositorEngine;
 
 public:
-    class ThreadData;
-
     using PagePresentationRegistration = PageCompositor::PagePresentationRegistration;
     using PendingAsyncScrollUpdates = PageCompositor::PendingAsyncScrollUpdates;
     using AsyncScrollEnqueueResult = PageCompositor::AsyncScrollEnqueueResult;
@@ -72,16 +73,16 @@ private:
     void enqueue_viewport_size_updated(Gfx::IntSize, bool is_top_level_traversable, WindowResizingInProgress);
 
     CompositorContextId m_context_id { allocate_compositor_context_id() };
-    NonnullRefPtr<ThreadData> m_thread_data;
+    NonnullRefPtr<CompositorEngine> m_engine;
     RefPtr<Threading::Thread> m_thread;
     RefPtr<Core::Timer> m_backing_store_shrink_timer;
     Gfx::IntSize m_last_viewport_size;
     bool m_last_viewport_size_is_top_level_traversable { false };
 
-    static void register_page_compositor(u64 page_id, NonnullRefPtr<ThreadData>);
-    static void unregister_page_compositor(u64 page_id, ThreadData&);
-    static void register_context_compositor(CompositorContextId, NonnullRefPtr<ThreadData>);
-    static void unregister_context_compositor(CompositorContextId, ThreadData&);
+    static void register_page_compositor(u64 page_id, NonnullRefPtr<CompositorEngine>);
+    static void unregister_page_compositor(u64 page_id, CompositorEngine&);
+    static void register_context_compositor(CompositorContextId, NonnullRefPtr<CompositorEngine>);
+    static void unregister_context_compositor(CompositorContextId, CompositorEngine&);
     static bool update_compositor_surface_for_context(CompositorContextId, Painting::CompositorSurfaceId, Gfx::SharedImage&&);
     static bool present_backing_stores_to_client(u64 page_id, i32 front_bitmap_id, Gfx::SharedImage&&, i32 back_bitmap_id, Gfx::SharedImage&&);
     static bool present_frame_to_client(u64 page_id, Gfx::IntRect const&, i32 bitmap_id);
