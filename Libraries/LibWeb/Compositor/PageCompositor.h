@@ -17,17 +17,13 @@
 #include <LibGfx/SharedImage.h>
 #include <LibGfx/Size.h>
 #include <LibWeb/Compositor/AsyncScrollingState.h>
+#include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
 
 namespace Web::Compositor {
-
-enum class WindowResizingInProgress : u8 {
-    No,
-    Yes,
-};
 
 class WEB_API PageCompositor {
 public:
@@ -54,15 +50,19 @@ public:
     };
 
     struct PresentToUI {
+        PresentationId presentation_id;
+        PresentationCapability presentation_capability;
     };
 
     struct PublishToCompositorSurface {
+        CompositorContextId target_context_id;
         PageCompositor* target { nullptr };
         Painting::CompositorSurfaceId surface_id;
     };
 
     using PresentationMode = Variant<PresentToUI, PublishToCompositorSurface>;
 
+    virtual CompositorContextId context_id() const = 0;
     virtual void start(DisplayListPlayerType) = 0;
     virtual void stop_presenting_to_client() = 0;
     virtual void set_presentation_mode(PresentationMode) = 0;

@@ -245,6 +245,10 @@ public:
         , m_main_thread_event_loop(move(main_thread_event_loop))
         , m_presents_to_client(page_presentation_registration == CompositorThread::PagePresentationRegistration::Yes)
     {
+        m_presentation_mode = CompositorThread::PresentToUI {
+            .presentation_id = PresentationId { page_id },
+            .presentation_capability = PresentationCapability { page_id },
+        };
     }
 
     ~ThreadData() = default;
@@ -1134,7 +1138,10 @@ private:
     mutable Sync::Mutex m_async_scroll_tree_mutex;
     AsyncScrollTree m_async_scroll_tree;
     BackingStoreManager m_backing_store_manager;
-    CompositorThread::PresentationMode m_presentation_mode { CompositorThread::PresentToUI {} };
+    CompositorThread::PresentationMode m_presentation_mode { CompositorThread::PresentToUI {
+        .presentation_id = {},
+        .presentation_capability = {},
+    } };
 
     Optional<i32> m_presented_bitmap_id_awaiting_ack;
     bool m_is_rasterizing { false };
