@@ -35,6 +35,7 @@ set(SOURCES
     Compositor/BackingStoreManager.cpp
     Compositor/CompositorThread.cpp
     Compositor/SerializedPayload.cpp
+    Compositor/VisualContextSerialization.cpp
     Compression/CompressionStream.cpp
     Compression/DecompressionStream.cpp
     ContentSecurityPolicy/BlockingAlgorithms.cpp
