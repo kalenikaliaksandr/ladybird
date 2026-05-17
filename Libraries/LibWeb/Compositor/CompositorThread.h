@@ -80,6 +80,9 @@ private:
 
     static void register_page_compositor(u64 page_id, NonnullRefPtr<ThreadData>);
     static void unregister_page_compositor(u64 page_id, ThreadData&);
+    static void register_context_compositor(CompositorContextId, NonnullRefPtr<ThreadData>);
+    static void unregister_context_compositor(CompositorContextId, ThreadData&);
+    static bool update_compositor_surface_for_context(CompositorContextId, Painting::CompositorSurfaceId, Gfx::SharedImage&&);
     static bool present_backing_stores_to_client(u64 page_id, i32 front_bitmap_id, Gfx::SharedImage&&, i32 back_bitmap_id, Gfx::SharedImage&&);
     static bool present_frame_to_client(u64 page_id, Gfx::IntRect const&, i32 bitmap_id);
 };

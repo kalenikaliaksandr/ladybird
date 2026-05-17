@@ -1061,9 +1061,9 @@ private:
                     }
                     if (m_has_async_scrolling_state)
                         dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Publishing present to compositor surface");
-                    VERIFY(mode.target);
                     auto& front_store = m_backing_store_manager.front_store();
-                    mode.target->update_compositor_surface(mode.surface_id, front_store.snapshot_into_shared_image());
+                    VERIFY(CompositorThread::update_compositor_surface_for_context(
+                        mode.target_context_id, mode.surface_id, front_store.snapshot_into_shared_image()));
                 });
         } else {
             {
@@ -1208,6 +1208,12 @@ static HashMap<u64, NonnullRefPtr<CompositorThread::ThreadData>>& page_composito
     return *compositors;
 }
 
+static HashMap<CompositorContextId, NonnullRefPtr<CompositorThread::ThreadData>>& context_compositors()
+{
+    static NeverDestroyed<HashMap<CompositorContextId, NonnullRefPtr<CompositorThread::ThreadData>>> compositors;
+    return *compositors;
+}
+
 static FramePresentationState& frame_presentation_state()
 {
     static NeverDestroyed<FramePresentationState> state;
@@ -1221,6 +1227,7 @@ CompositorThread::CompositorThread(u64 page_id, PagePresentationRegistration pag
         enqueue_viewport_size_updated(m_last_viewport_size, m_last_viewport_size_is_top_level_traversable, WindowResizingInProgress::No);
     });
 
+    register_context_compositor(m_context_id, m_thread_data);
     if (page_presentation_registration == PagePresentationRegistration::Yes)
         register_page_compositor(page_id, m_thread_data);
 }
@@ -1232,6 +1239,7 @@ CompositorThread::~CompositorThread()
     m_backing_store_shrink_timer.clear();
 
     unregister_page_compositor(m_thread_data->page_id(), *m_thread_data);
+    unregister_context_compositor(m_context_id, *m_thread_data);
     m_thread_data->exit();
 }
 
@@ -1260,6 +1268,49 @@ void CompositorThread::unregister_page_compositor(u64 page_id, ThreadData& threa
     }
     page_compositors().remove(compositor);
     dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Unregistered page {} from compositor presentation", page_id);
+}
+
+void CompositorThread::register_context_compositor(CompositorContextId context_id, NonnullRefPtr<ThreadData> thread_data)
+{
+    Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
+    auto replaced_existing_compositor = context_compositors().contains(context_id);
+    context_compositors().set(context_id, move(thread_data));
+    dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Registered context {} for in-process compositor presentation (replaced_existing={})",
+        context_id, replaced_existing_compositor);
+}
+
+void CompositorThread::unregister_context_compositor(CompositorContextId context_id, ThreadData& thread_data)
+{
+    Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
+    auto compositor = context_compositors().find(context_id);
+    if (compositor == context_compositors().end()) {
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Skipping compositor context unregister for context {}: no compositor registered",
+            context_id);
+        return;
+    }
+    if (compositor->value.ptr() != &thread_data) {
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Skipping compositor context unregister for context {}: compositor changed",
+            context_id);
+        return;
+    }
+    context_compositors().remove(compositor);
+}
+
+bool CompositorThread::update_compositor_surface_for_context(CompositorContextId context_id, Painting::CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image)
+{
+    RefPtr<ThreadData> thread_data;
+    {
+        Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
+        auto compositor = context_compositors().find(context_id);
+        if (compositor == context_compositors().end()) {
+            dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Dropping compositor surface {} update for unknown context {}",
+                surface_id, context_id);
+            return false;
+        }
+        thread_data = compositor->value;
+    }
+    thread_data->enqueue_command(UpdateCompositorSurfaceCommand { surface_id, move(shared_image) });
+    return true;
 }
 
 void CompositorThread::set_frame_presentation_callbacks(NonnullRefPtr<Core::WeakEventLoopReference> event_loop, BackingStorePresentationCallback backing_store_callback, FramePresentationCallback frame_callback)
