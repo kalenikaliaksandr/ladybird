@@ -12,9 +12,11 @@
 #include <AK/WeakPtr.h>
 #include <Compositor/CompositorClientEndpoint.h>
 #include <Compositor/CompositorServerEndpoint.h>
+#include <LibGfx/Point.h>
 #include <LibIPC/ConnectionToServer.h>
 #include <LibIPC/TransportHandle.h>
 #include <LibWeb/Compositor/Types.h>
+#include <LibWeb/Page/InputEvent.h>
 #include <LibWebView/Export.h>
 
 namespace WebView {
@@ -36,6 +38,8 @@ public:
     void set_active_presentation(u64 ui_view_id, Optional<Web::Compositor::PresentationId>);
     void register_web_content_client(WebContentClient&);
     void unregister_web_content_client(WebContentClient&);
+    bool async_scroll_by(Web::Compositor::PresentationId, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels);
+    bool mouse_event(Web::Compositor::PresentationId, Web::MouseEvent const&);
     void ready_to_paint(Web::Compositor::PresentationId, i32 bitmap_id);
 
     Function<void()> on_death;

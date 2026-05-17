@@ -64,11 +64,27 @@ void ConnectionBase::shutdown_with_error(Error const& error)
 
 void ConnectionBase::handle_messages()
 {
-    auto messages = move(m_unprocessed_messages);
-    for (auto& message : messages) {
-        if (message->endpoint_magic() != m_local_endpoint_magic)
-            continue;
+    handle_messages_for_endpoint(m_local_endpoint_magic);
+}
 
+bool ConnectionBase::handle_messages_for_endpoint(u32 endpoint_magic)
+{
+    bool handled_any_messages = false;
+
+    for (;;) {
+        Optional<size_t> message_index;
+        for (size_t i = 0; i < m_unprocessed_messages.size(); ++i) {
+            if (m_unprocessed_messages[i]->endpoint_magic() == endpoint_magic) {
+                message_index = i;
+                break;
+            }
+        }
+
+        if (!message_index.has_value())
+            break;
+
+        handled_any_messages = true;
+        auto message = m_unprocessed_messages.take(*message_index);
         if (!is_open())
             dbgln("Handling message while connection closed: {}", message->message_name());
 
@@ -86,6 +102,8 @@ void ConnectionBase::handle_messages()
                 dbgln("IPC::ConnectionBase::handle_messages: {}", post_result.error());
         }
     }
+
+    return handled_any_messages;
 }
 
 void ConnectionBase::wait_for_transport_to_become_readable()
@@ -138,6 +156,11 @@ OwnPtr<IPC::Message> ConnectionBase::wait_for_specific_endpoint_message_impl(u32
             if (message->message_id() == message_id)
                 return m_unprocessed_messages.take(i);
         }
+
+        // Allow re-entrant notifications and requests from the peer to make
+        // progress while this side is synchronously waiting for a response.
+        if (handle_messages_for_endpoint(m_local_endpoint_magic))
+            continue;
 
         if (!is_open())
             break;

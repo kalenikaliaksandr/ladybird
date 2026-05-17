@@ -211,6 +211,21 @@ void WebContentClient::notify_all_views_of_crash()
 
 bool WebContentClient::send_async_scroll_to_compositor(u64 page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels)
 {
+    if (Application::web_content_options().enable_remote_compositor == EnableRemoteCompositor::Yes) {
+        auto* compositor_client = Application::compositor_client();
+        if (!compositor_client || !compositor_client->is_open()) {
+            dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI remote compositor IPC unavailable for async_scroll_by presentation {}",
+                m_presentation_id.value());
+            return false;
+        }
+
+        auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
+        auto handled = compositor_client->async_scroll_by(m_presentation_id, position, delta_in_device_pixels);
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI remote compositor IPC async_scroll_by presentation {} returned {} in {} us",
+            m_presentation_id.value(), handled, timer.elapsed_time().to_microseconds());
+        return handled;
+    }
+
     auto connection = compositor_connections().get(this);
     if (!connection.has_value() || !connection.value()->is_open()) {
         dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI compositor IPC unavailable for page {} (connection={}, open={})",
@@ -227,6 +242,21 @@ bool WebContentClient::send_async_scroll_to_compositor(u64 page_id, Gfx::FloatPo
 
 bool WebContentClient::send_mouse_event_to_compositor(u64 page_id, Web::MouseEvent const& event)
 {
+    if (Application::web_content_options().enable_remote_compositor == EnableRemoteCompositor::Yes) {
+        auto* compositor_client = Application::compositor_client();
+        if (!compositor_client || !compositor_client->is_open()) {
+            dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI remote compositor IPC unavailable for mouse_event presentation {}",
+                m_presentation_id.value());
+            return false;
+        }
+
+        auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
+        auto handled = compositor_client->mouse_event(m_presentation_id, event);
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI remote compositor IPC mouse_event presentation {} returned {} in {} us",
+            m_presentation_id.value(), handled, timer.elapsed_time().to_microseconds());
+        return handled;
+    }
+
     auto connection = compositor_connections().get(this);
     if (!connection.has_value() || !connection.value()->is_open()) {
         dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI compositor IPC unavailable for page {} (connection={}, open={})",

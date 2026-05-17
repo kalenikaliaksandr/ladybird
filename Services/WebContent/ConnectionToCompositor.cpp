@@ -6,6 +6,9 @@
 
 #include <WebContent/ConnectionToCompositor.h>
 
+#include <AK/Debug.h>
+#include <LibWeb/HTML/EventLoop/EventLoop.h>
+
 namespace WebContent {
 
 ConnectionToCompositor::ConnectionToCompositor(NonnullOwnPtr<IPC::Transport> transport)
@@ -93,6 +96,63 @@ void ConnectionToCompositor::update_scroll_state(
     async_update_scroll_state(context_id.value(), scroll_state);
 }
 
+void ConnectionToCompositor::invalidate_wheel_event_listener_state(
+    Web::Compositor::CompositorContextId context_id,
+    u64 generation)
+{
+    async_invalidate_wheel_event_listener_state(context_id.value(), generation);
+}
+
+Web::Compositor::PageCompositor::AsyncScrollEnqueueResult ConnectionToCompositor::async_scroll_by(
+    Web::Compositor::CompositorContextId context_id,
+    Web::UniqueNodeID expected_document_id,
+    Gfx::FloatPoint position,
+    Gfx::FloatPoint delta_in_device_pixels,
+    Gfx::IntRect viewport_rect,
+    Web::Compositor::PageCompositor::AsyncScrollOperationTracking operation_tracking)
+{
+    auto response = send_sync_but_allow_failure<Messages::WebContentCompositorServer::EnqueueAsyncScrollBy>(
+        context_id.value(),
+        expected_document_id,
+        position,
+        delta_in_device_pixels,
+        viewport_rect,
+        operation_tracking == Web::Compositor::PageCompositor::AsyncScrollOperationTracking::Yes);
+    if (!response)
+        return {};
+    return {
+        .accepted = response->accepted(),
+        .operation_id = response->operation_id(),
+    };
+}
+
+bool ConnectionToCompositor::should_defer_async_scroll_offset_adoption(Web::Compositor::CompositorContextId context_id)
+{
+    auto response = send_sync_but_allow_failure<Messages::WebContentCompositorServer::ShouldDeferAsyncScrollOffsetAdoption>(context_id.value());
+    if (!response)
+        return false;
+    return response->should_defer();
+}
+
+bool ConnectionToCompositor::should_defer_main_thread_present_for_async_scroll(Web::Compositor::CompositorContextId context_id)
+{
+    auto response = send_sync_but_allow_failure<Messages::WebContentCompositorServer::ShouldDeferMainThreadPresentForAsyncScroll>(context_id.value());
+    if (!response)
+        return false;
+    return response->should_defer();
+}
+
+Web::Compositor::PageCompositor::PendingAsyncScrollUpdates ConnectionToCompositor::take_pending_async_scroll_updates(Web::Compositor::CompositorContextId context_id)
+{
+    auto response = send_sync_but_allow_failure<Messages::WebContentCompositorServer::TakePendingAsyncScrollUpdates>(context_id.value());
+    if (!response)
+        return {};
+    return {
+        .scroll_offsets = response->scroll_offsets(),
+        .completed_operation_ids = response->completed_operation_ids(),
+    };
+}
+
 void ConnectionToCompositor::update_compositor_surface(
     Web::Compositor::CompositorContextId context_id,
     Web::Painting::CompositorSurfaceId surface_id,
@@ -145,8 +205,11 @@ void ConnectionToCompositor::wait_for_frame(Web::Compositor::CompositorContextId
     (void)send_sync_but_allow_failure<Messages::WebContentCompositorServer::WaitForFrame>(context_id.value(), frame_id);
 }
 
-void ConnectionToCompositor::schedule_rendering_update(u64)
+void ConnectionToCompositor::schedule_rendering_update(u64 page_id)
 {
+    dbgln_if(COMPOSITOR_DEBUG, "[Compositor] WebContent scheduling rendering update for remote compositor page {}",
+        page_id);
+    Web::HTML::main_thread_event_loop().queue_task_to_update_the_rendering();
 }
 
 void ConnectionToCompositor::did_finish_screenshot(u64 request_id, Gfx::SharedImage shared_image)
