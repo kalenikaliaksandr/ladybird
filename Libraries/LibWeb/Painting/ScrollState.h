@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <AK/Span.h>
+#include <AK/Vector.h>
 #include <LibGfx/Point.h>
 #include <LibWeb/Painting/ScrollFrame.h>
 
@@ -14,6 +16,14 @@ namespace Web::Painting {
 class ScrollStateSnapshot {
 public:
     static ScrollStateSnapshot create(Vector<ScrollFrame> const& scroll_frames, double device_pixels_per_css_pixel);
+    static ScrollStateSnapshot from_device_offsets(Vector<Gfx::FloatPoint> device_offsets)
+    {
+        ScrollStateSnapshot snapshot;
+        snapshot.m_device_offsets = move(device_offsets);
+        return snapshot;
+    }
+
+    ReadonlySpan<Gfx::FloatPoint> device_offsets() const { return m_device_offsets; }
 
     Gfx::FloatPoint device_offset_for_index(ScrollFrameIndex index) const
     {
