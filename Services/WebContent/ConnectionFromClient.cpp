@@ -91,6 +91,19 @@ private:
 
     virtual void ping() override { }
 
+    virtual void register_presentation(u64, u64, u64) override { }
+    virtual void unregister_presentation(u64) override { }
+    virtual void set_presentation_visibility(u64 presentation_id, bool is_visible) override
+    {
+        Web::Compositor::CompositorThread::set_presentation_visibility(Web::Compositor::PresentationId { presentation_id }, is_visible);
+    }
+    virtual void set_active_presentation(u64, Optional<u64> presentation_id) override
+    {
+        Web::Compositor::CompositorThread::set_active_presentation(presentation_id.map([](auto id) {
+            return Web::Compositor::PresentationId { id };
+        }));
+    }
+
     virtual Messages::CompositorServer::AsyncScrollByResponse async_scroll_by(u64 page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels) override
     {
         dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Compositor IPC received async scroll for page {} at {},{} device delta {},{}",

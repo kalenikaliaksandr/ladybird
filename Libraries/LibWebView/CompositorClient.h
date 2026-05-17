@@ -6,9 +6,11 @@
 
 #pragma once
 
+#include <AK/Optional.h>
 #include <Compositor/CompositorClientEndpoint.h>
 #include <Compositor/CompositorServerEndpoint.h>
 #include <LibIPC/ConnectionToServer.h>
+#include <LibWeb/Compositor/Types.h>
 #include <LibWebView/Export.h>
 
 namespace WebView {
@@ -20,6 +22,11 @@ class WEBVIEW_API CompositorClient final
 
 public:
     explicit CompositorClient(NonnullOwnPtr<IPC::Transport>);
+
+    void register_presentation(Web::Compositor::PresentationId, Web::Compositor::WebContentConnectionId, Web::Compositor::PresentationCapability);
+    void unregister_presentation(Web::Compositor::PresentationId);
+    void set_presentation_visibility(Web::Compositor::PresentationId, bool is_visible);
+    void set_active_presentation(u64 ui_view_id, Optional<Web::Compositor::PresentationId>);
 
 private:
     virtual void die() override;
