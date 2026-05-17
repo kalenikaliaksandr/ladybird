@@ -74,6 +74,22 @@ void ConnectionToCompositor::viewport_size_updated(
     async_viewport_size_updated(context_id.value(), viewport_size, is_top_level_traversable, window_resize_in_progress);
 }
 
+void ConnectionToCompositor::update_display_list(
+    Web::Compositor::CompositorContextId context_id,
+    NonnullRefPtr<Web::Painting::DisplayList> const& display_list,
+    Web::Painting::DisplayListResourceTransaction const& resource_transaction,
+    Web::Painting::ScrollStateSnapshot const& scroll_state)
+{
+    async_update_display_list(context_id.value(), display_list, resource_transaction, scroll_state);
+}
+
+void ConnectionToCompositor::update_scroll_state(
+    Web::Compositor::CompositorContextId context_id,
+    Web::Painting::ScrollStateSnapshot const& scroll_state)
+{
+    async_update_scroll_state(context_id.value(), scroll_state);
+}
+
 void ConnectionToCompositor::schedule_rendering_update(u64)
 {
 }

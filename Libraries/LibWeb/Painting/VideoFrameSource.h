@@ -10,10 +10,11 @@
 #include <AK/RefPtr.h>
 #include <LibMedia/Forward.h>
 #include <LibSync/Mutex.h>
+#include <LibWeb/Export.h>
 
 namespace Web::Painting {
 
-class VideoFrameSource final : public AtomicRefCounted<VideoFrameSource> {
+class WEB_API VideoFrameSource final : public AtomicRefCounted<VideoFrameSource> {
 public:
     static NonnullRefPtr<VideoFrameSource> create();
     ~VideoFrameSource();

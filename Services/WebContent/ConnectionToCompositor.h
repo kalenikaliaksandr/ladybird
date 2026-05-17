@@ -10,6 +10,9 @@
 #include <Compositor/WebContentCompositorServerEndpoint.h>
 #include <LibGfx/Size.h>
 #include <LibIPC/ConnectionToServer.h>
+#include <LibWeb/Compositor/DisplayListResourceSerialization.h>
+#include <LibWeb/Compositor/DisplayListSerialization.h>
+#include <LibWeb/Compositor/ScrollStateSerialization.h>
 #include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
@@ -43,6 +46,8 @@ public:
         Web::Painting::CompositorSurfaceId);
     void stop_presenting_to_client(Web::Compositor::CompositorContextId);
     void viewport_size_updated(Web::Compositor::CompositorContextId, Gfx::IntSize, bool is_top_level_traversable, Web::Compositor::WindowResizingInProgress);
+    void update_display_list(Web::Compositor::CompositorContextId, NonnullRefPtr<Web::Painting::DisplayList> const&, Web::Painting::DisplayListResourceTransaction const&, Web::Painting::ScrollStateSnapshot const&);
+    void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot const&);
 
 private:
     explicit ConnectionToCompositor(NonnullOwnPtr<IPC::Transport>);

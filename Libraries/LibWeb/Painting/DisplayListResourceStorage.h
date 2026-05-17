@@ -16,6 +16,7 @@
 #include <AK/Vector.h>
 #include <LibGfx/DecodedImageFrame.h>
 #include <LibGfx/Forward.h>
+#include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/Painting/VideoFrameSource.h>
@@ -52,7 +53,7 @@ struct DisplayListResourceTransaction {
     Vector<DisplayListResourceId> display_list_ids_to_remove;
 };
 
-class DisplayListResourceStorage {
+class WEB_API DisplayListResourceStorage {
     AK_MAKE_NONCOPYABLE(DisplayListResourceStorage);
     AK_MAKE_DEFAULT_MOVABLE(DisplayListResourceStorage);
 

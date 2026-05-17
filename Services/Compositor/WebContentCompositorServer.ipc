@@ -1,6 +1,11 @@
+#include <AK/NonnullRefPtr.h>
 #include <LibGfx/Size.h>
+#include <LibWeb/Compositor/DisplayListResourceSerialization.h>
+#include <LibWeb/Compositor/DisplayListSerialization.h>
+#include <LibWeb/Compositor/ScrollStateSerialization.h>
 #include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Page/Page.h>
+#include <LibWeb/Painting/DisplayList.h>
 
 endpoint WebContentCompositorServer
 {
@@ -9,4 +14,6 @@ endpoint WebContentCompositorServer
     set_presentation_mode(u64 context_id, Web::Compositor::SerializedPresentationModeKind presentation_mode_kind, u64 presentation_id, u64 presentation_capability, u64 target_context_id, u64 compositor_surface_id) =|
     stop_presenting_to_client(u64 context_id) =|
     viewport_size_updated(u64 context_id, Gfx::IntSize viewport_size, bool is_top_level_traversable, Web::Compositor::WindowResizingInProgress window_resize_in_progress) =|
+    update_display_list(u64 context_id, NonnullRefPtr<Web::Painting::DisplayList> display_list, Web::Painting::DisplayListResourceTransaction resource_transaction, Web::Painting::ScrollStateSnapshot scroll_state) =|
+    update_scroll_state(u64 context_id, Web::Painting::ScrollStateSnapshot scroll_state) =|
 }

@@ -7,6 +7,8 @@
 #pragma once
 
 #include <AK/Error.h>
+#include <AK/Span.h>
+#include <AK/Vector.h>
 #include <LibIPC/Forward.h>
 #include <LibWeb/Compositor/AsyncScrollingState.h>
 #include <LibWeb/Export.h>
