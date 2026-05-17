@@ -1556,6 +1556,28 @@ Painting::VideoFrameSource& HTMLMediaElement::ensure_video_frame_source()
     return *m_video_frame_source;
 }
 
+void HTMLMediaElement::update_video_frame_source(RefPtr<Media::VideoFrame> frame)
+{
+    VERIFY(frame);
+    auto& source = ensure_video_frame_source();
+    source.update(frame);
+
+    if (auto navigable = document().navigable())
+        navigable->rendering_thread().update_video_frame(Painting::VideoFrameResourceId { source.id() }, *frame);
+}
+
+void HTMLMediaElement::clear_video_frame_source()
+{
+    if (!m_video_frame_source)
+        return;
+
+    auto video_frame_source_id = Painting::VideoFrameResourceId { m_video_frame_source->id() };
+    m_video_frame_source->clear();
+
+    if (auto navigable = document().navigable())
+        navigable->rendering_thread().clear_video_frame(video_frame_source_id);
+}
+
 void HTMLMediaElement::set_selected_video_track(Badge<VideoTrack>, GC::Ptr<HTML::VideoTrack> video_track)
 {
     VERIFY(m_playback_manager);
@@ -1563,8 +1585,7 @@ void HTMLMediaElement::set_selected_video_track(Badge<VideoTrack>, GC::Ptr<HTML:
     if (video_track && !m_playback_manager->video_tracks().contains_slow(video_track->track_in_playback_manager()))
         return;
 
-    if (m_video_frame_source)
-        m_video_frame_source->clear();
+    clear_video_frame_source();
 
     auto previous_track = m_selected_video_track;
 
@@ -1574,9 +1595,9 @@ void HTMLMediaElement::set_selected_video_track(Badge<VideoTrack>, GC::Ptr<HTML:
         auto sink_update_result = m_selected_video_track_sink->update();
         if (sink_update_result == Media::DisplayingVideoSinkUpdateResult::NewFrameAvailable) {
             if (auto current_frame = m_selected_video_track_sink->current_frame())
-                ensure_video_frame_source().update(move(current_frame));
+                update_video_frame_source(move(current_frame));
             else if (m_video_frame_source)
-                m_video_frame_source->clear();
+                clear_video_frame_source();
             update_intrinsic_video_dimensions();
             set_needs_repaint();
         } else if (auto* video_element = as_if<HTMLVideoElement>(this)) {
@@ -1600,9 +1621,9 @@ void HTMLMediaElement::update_video_frame_and_timeline()
         auto sink_update_result = m_selected_video_track_sink->update();
         if (sink_update_result == Media::DisplayingVideoSinkUpdateResult::NewFrameAvailable) {
             if (auto current_frame = m_selected_video_track_sink->current_frame())
-                ensure_video_frame_source().update(move(current_frame));
+                update_video_frame_source(move(current_frame));
             else if (m_video_frame_source)
-                m_video_frame_source->clear();
+                clear_video_frame_source();
             update_intrinsic_video_dimensions();
             set_needs_repaint();
         }

@@ -22,7 +22,7 @@ target_include_directories(compositorservice PRIVATE ${CMAKE_CURRENT_BINARY_DIR}
 target_include_directories(compositorservice PRIVATE ${LADYBIRD_SOURCE_DIR}/Services/)
 
 target_link_libraries(Compositor PRIVATE compositorservice LibCore LibMain)
-target_link_libraries(compositorservice PUBLIC LibCore LibGfx LibIPC LibWeb)
+target_link_libraries(compositorservice PUBLIC LibCore LibGfx LibIPC LibMedia LibWeb)
 
 if (WIN32)
     ladybird_windows_bin(Compositor CONSOLE)

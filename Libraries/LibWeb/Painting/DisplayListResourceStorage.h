@@ -85,6 +85,7 @@ public:
     VideoFrameSource const& video_frame_source(VideoFrameResourceId id) const { return *m_video_frame_sources.get(id.value()).value(); }
     DisplayList const& display_list(DisplayListResourceId id) const { return *m_display_lists.get(id.value()).value(); }
     Optional<Gfx::DecodedImageFrame const&> compositor_surface(CompositorSurfaceId id) const { return m_compositor_surfaces.get(id.value()); }
+    bool contains_video_frame_source(VideoFrameResourceId id) const { return m_video_frame_sources.contains(id.value()); }
 
 private:
     void collect_referenced_resources(ReadonlyBytes command_bytes, DisplayListResourceSet&) const;

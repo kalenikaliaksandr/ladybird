@@ -1669,6 +1669,16 @@ void CompositorThread::clear_compositor_surface(Painting::CompositorSurfaceId su
     m_engine->enqueue_command(ClearCompositorSurfaceCommand { surface_id });
 }
 
+void CompositorThread::update_video_frame(Painting::VideoFrameResourceId, Media::VideoFrame const&)
+{
+    // The in-process path shares VideoFrameSource objects with the recorder.
+}
+
+void CompositorThread::clear_video_frame(Painting::VideoFrameResourceId)
+{
+    // The in-process path shares VideoFrameSource objects with the recorder.
+}
+
 void CompositorThread::invalidate_wheel_event_listener_state(u64 generation)
 {
     m_engine->invalidate_wheel_event_listener_state(generation);

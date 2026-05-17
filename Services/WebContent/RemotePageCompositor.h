@@ -6,8 +6,10 @@
 
 #pragma once
 
+#include <AK/HashMap.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/Optional.h>
+#include <LibMedia/Forward.h>
 #include <LibWeb/Compositor/PageCompositor.h>
 #include <WebContent/ConnectionToCompositor.h>
 
@@ -26,6 +28,8 @@ public:
     virtual void update_display_list(NonnullRefPtr<Web::Painting::DisplayList>, Web::Painting::DisplayListResourceTransaction&&, Web::Painting::ScrollStateSnapshot&&) override;
     virtual void update_compositor_surface(Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&) override;
     virtual void clear_compositor_surface(Web::Painting::CompositorSurfaceId) override;
+    virtual void update_video_frame(Web::Painting::VideoFrameResourceId, Media::VideoFrame const&) override;
+    virtual void clear_video_frame(Web::Painting::VideoFrameResourceId) override;
     virtual void update_scroll_state(Web::Painting::ScrollStateSnapshot&&) override;
     virtual void invalidate_wheel_event_listener_state(u64 generation) override;
     virtual AsyncScrollEnqueueResult async_scroll_by(Web::UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels, Gfx::IntRect viewport_rect, AsyncScrollOperationTracking) override;
@@ -48,6 +52,7 @@ private:
 
     SerializedPresentationMode serialized_presentation_mode() const;
     void send_create_context();
+    void send_video_frame_update(Web::Painting::VideoFrameResourceId, Media::VideoFrame const&);
 
     NonnullRefPtr<ConnectionToCompositor> m_connection;
     u64 m_page_id { 0 };
@@ -56,6 +61,7 @@ private:
     Web::DisplayListPlayerType m_display_list_player_type { Web::DisplayListPlayerType::SkiaCPU };
     bool m_started { false };
     bool m_context_created { false };
+    HashMap<Web::Painting::VideoFrameResourceId, u64> m_video_frame_sequence_ids;
 };
 
 }

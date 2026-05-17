@@ -59,6 +59,8 @@ public:
     virtual void update_display_list(NonnullRefPtr<Painting::DisplayList>, Painting::DisplayListResourceTransaction&&, Painting::ScrollStateSnapshot&&) override;
     virtual void update_compositor_surface(Painting::CompositorSurfaceId, Gfx::SharedImage&&) override;
     virtual void clear_compositor_surface(Painting::CompositorSurfaceId) override;
+    virtual void update_video_frame(Painting::VideoFrameResourceId, Media::VideoFrame const&) override;
+    virtual void clear_video_frame(Painting::VideoFrameResourceId) override;
     virtual void update_scroll_state(Painting::ScrollStateSnapshot&&) override;
     virtual void invalidate_wheel_event_listener_state(u64 generation) override;
     virtual AsyncScrollEnqueueResult async_scroll_by(UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels,

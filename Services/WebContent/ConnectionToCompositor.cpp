@@ -108,6 +108,20 @@ void ConnectionToCompositor::clear_compositor_surface(
     async_clear_compositor_surface(context_id.value(), surface_id.value());
 }
 
+void ConnectionToCompositor::update_yuv_video_frame(
+    Web::Compositor::CompositorContextId context_id,
+    Web::Compositor::SerializedVideoFrameUpdate const& video_frame_update)
+{
+    async_update_yuv_video_frame(context_id.value(), video_frame_update);
+}
+
+void ConnectionToCompositor::clear_video_frame(
+    Web::Compositor::CompositorContextId context_id,
+    Web::Painting::VideoFrameResourceId video_frame_source_id)
+{
+    async_clear_video_frame(context_id.value(), video_frame_source_id.value());
+}
+
 void ConnectionToCompositor::request_screenshot(
     Web::Compositor::CompositorContextId context_id,
     Gfx::IntSize size,

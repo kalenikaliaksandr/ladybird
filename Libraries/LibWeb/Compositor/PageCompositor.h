@@ -16,6 +16,7 @@
 #include <LibGfx/Rect.h>
 #include <LibGfx/SharedImage.h>
 #include <LibGfx/Size.h>
+#include <LibMedia/Forward.h>
 #include <LibWeb/Compositor/AsyncScrollingState.h>
 #include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Export.h>
@@ -69,6 +70,8 @@ public:
     virtual void update_display_list(NonnullRefPtr<Painting::DisplayList>, Painting::DisplayListResourceTransaction&&, Painting::ScrollStateSnapshot&&) = 0;
     virtual void update_compositor_surface(Painting::CompositorSurfaceId, Gfx::SharedImage&&) = 0;
     virtual void clear_compositor_surface(Painting::CompositorSurfaceId) = 0;
+    virtual void update_video_frame(Painting::VideoFrameResourceId, Media::VideoFrame const&) = 0;
+    virtual void clear_video_frame(Painting::VideoFrameResourceId) = 0;
     virtual void update_scroll_state(Painting::ScrollStateSnapshot&&) = 0;
     virtual void invalidate_wheel_event_listener_state(u64 generation) = 0;
     virtual AsyncScrollEnqueueResult async_scroll_by(UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels,
