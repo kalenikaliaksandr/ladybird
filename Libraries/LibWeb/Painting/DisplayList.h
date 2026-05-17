@@ -152,6 +152,11 @@ public:
         return adopt_ref(*new DisplayList(move(visual_context_tree)));
     }
 
+    static NonnullRefPtr<DisplayList> create_from_serialized(NonnullRefPtr<AccumulatedVisualContextTree const> visual_context_tree, u64 id, ByteBuffer command_bytes, Optional<AsyncScrollingMetadata> async_scrolling_metadata)
+    {
+        return adopt_ref(*new DisplayList(move(visual_context_tree), id, move(command_bytes), move(async_scrolling_metadata)));
+    }
+
     template<DisplayListCommand Command>
     bool append(Command const& command, VisualContextIndex context_index, ReadonlyBytes inline_data = {})
     {
@@ -189,6 +194,7 @@ public:
 
 private:
     explicit DisplayList(NonnullRefPtr<AccumulatedVisualContextTree const> visual_context_tree);
+    DisplayList(NonnullRefPtr<AccumulatedVisualContextTree const> visual_context_tree, u64 id, ByteBuffer command_bytes, Optional<AsyncScrollingMetadata> async_scrolling_metadata);
 
     static Optional<Gfx::IntRect> command_bounding_rectangle(auto const& command)
     {

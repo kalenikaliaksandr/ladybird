@@ -51,4 +51,7 @@ WEB_API ErrorOr<NonnullRefPtr<Painting::AccumulatedVisualContextTree>> deseriali
     SerializedAccumulatedVisualContextTree const&,
     DecodeFilterImage const&);
 
+WEB_API ErrorOr<ByteBuffer> encode_serialized_accumulated_visual_context_tree(SerializedAccumulatedVisualContextTree const&);
+WEB_API ErrorOr<SerializedAccumulatedVisualContextTree> decode_serialized_accumulated_visual_context_tree(ReadonlyBytes);
+
 }
