@@ -54,6 +54,12 @@ public:
     virtual void die() override;
 
 private:
+    enum class VideoFrameUpdateResult {
+        Applied,
+        Consumed,
+        MissingSource,
+    };
+
     struct PresentationModeState {
         Web::Compositor::SerializedPresentationModeKind kind;
         Web::Compositor::PresentationId presentation_id;
@@ -90,6 +96,7 @@ private:
         u64 wheel_event_listener_state_generation { 0 };
         Web::Compositor::WheelRoutingAdmission wheel_routing_admission { Web::Compositor::WheelRoutingAdmission::NoAsyncScrollingState };
         HashMap<Web::Painting::VideoFrameResourceId, u64> video_frame_sequence_ids;
+        HashMap<Web::Painting::VideoFrameResourceId, Web::Compositor::SerializedVideoFrameUpdate> pending_video_frame_updates;
         bool has_pending_display_list_update { false };
         bool has_pending_scroll_state_update { false };
         Optional<PendingPresent> pending_present;
@@ -128,6 +135,8 @@ private:
     void defer_async_scroll_to_target(ContextState&, Web::Compositor::AsyncScrollNodeID scroll_target, Gfx::FloatPoint delta_in_device_pixels, Gfx::IntRect viewport_rect, Optional<Web::Compositor::AsyncScrollOperationID> = {});
     Messages::WebContentCompositorServer::EnqueueAsyncScrollByResponse enqueue_async_scroll_by(ContextState&, Web::UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels, Gfx::IntRect viewport_rect, bool track_operation);
     bool async_scroll_by(ContextState&, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels);
+    VideoFrameUpdateResult apply_video_frame_update(ContextState&, Web::Compositor::SerializedVideoFrameUpdate const&);
+    void apply_pending_video_frame_updates(ContextState&);
 
     virtual void create_context(u64 context_id, u64 page_id, Web::Compositor::SerializedPresentationModeKind presentation_mode_kind, u64 presentation_id, u64 presentation_capability, u64 target_context_id, u64 compositor_surface_id, Web::DisplayListPlayerType display_list_player_type) override;
     virtual void destroy_context(u64 context_id) override;
