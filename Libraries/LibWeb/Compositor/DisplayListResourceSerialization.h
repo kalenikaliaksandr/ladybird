@@ -8,8 +8,10 @@
 
 #include <AK/Error.h>
 #include <AK/Vector.h>
+#include <LibGfx/ColorSpace.h>
 #include <LibGfx/Font/FontVariationSettings.h>
 #include <LibGfx/ShapeFeature.h>
+#include <LibGfx/ShareableBitmap.h>
 #include <LibIPC/Forward.h>
 #include <LibWeb/Compositor/DisplayListSerialization.h>
 #include <LibWeb/Compositor/SerializedPayload.h>
@@ -33,15 +35,18 @@ struct SerializedFontResource {
 
 struct SerializedImageFrameResource {
     Painting::ImageFrameResourceId image_frame_id;
+    Gfx::ShareableBitmap bitmap;
+    Gfx::ColorSpace color_space;
 };
 
 struct SerializedVideoFrameSourceResource {
     Painting::VideoFrameResourceId video_frame_source_id;
 };
 
-WEB_API SerializedImageFrameResource serialize_image_frame_resource(Painting::ImageFrameResourceAddition const&);
+WEB_API ErrorOr<SerializedImageFrameResource> serialize_image_frame_resource(Painting::ImageFrameResourceAddition const&);
 WEB_API SerializedVideoFrameSourceResource serialize_video_frame_source_resource(Painting::VideoFrameSourceResourceAddition const&);
 WEB_API ErrorOr<Painting::FontResourceAddition> deserialize_font_resource(SerializedFontResource const&, Vector<SerializedFontDataBuffer> const&);
+WEB_API ErrorOr<Painting::ImageFrameResourceAddition> deserialize_image_frame_resource(SerializedImageFrameResource const&);
 
 }
 
