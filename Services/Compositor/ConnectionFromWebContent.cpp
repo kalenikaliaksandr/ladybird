@@ -12,6 +12,7 @@
 #include <AK/StdLibExtras.h>
 #include <Compositor/ConnectionFromClient.h>
 #include <Compositor/ConnectionFromWebContent.h>
+#include <LibGfx/Bitmap.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibWeb/Compositor/DisplayListResourceSerialization.h>
 #include <LibWeb/Compositor/DisplayListSerialization.h>
@@ -436,6 +437,35 @@ void ConnectionFromWebContent::clear_compositor_surface(u64 raw_context_id, u64 
 
     context->display_list_resource_storage.clear_compositor_surface(surface_id);
     rasterize_pending_present(*context);
+}
+
+void ConnectionFromWebContent::request_screenshot(u64 raw_context_id, u64 request_id, Gfx::IntSize size)
+{
+    auto context_id = Web::Compositor::CompositorContextId { raw_context_id };
+    auto context = m_contexts.get(context_id);
+    if (!context.has_value()) {
+        dbgln("Failing screenshot {} for missing compositor context {} from WebContent connection {}", request_id, context_id.value(), m_connection_id.value());
+        async_did_fail_screenshot(request_id);
+        return;
+    }
+
+    if (size.is_empty()) {
+        dbgln("Failing screenshot {} for invalid size {}x{} from WebContent connection {}", request_id, size.width(), size.height(), m_connection_id.value());
+        async_did_fail_screenshot(request_id);
+        return;
+    }
+
+    if (!context->display_list || !context->scroll_state_snapshot.has_value()) {
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Failing screenshot {} for context {}: display_list={}, scroll_state={}",
+            request_id, context_id.value(), !!context->display_list, context->scroll_state_snapshot.has_value());
+        async_did_fail_screenshot(request_id);
+        return;
+    }
+
+    auto surface = Gfx::PaintingSurface::create_with_size(size, Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied);
+    Web::Painting::DisplayListPlayerSkia player;
+    player.execute(*context->display_list, context->display_list_resource_storage, *context->scroll_state_snapshot, surface);
+    async_did_finish_screenshot(request_id, surface->snapshot_into_shared_image());
 }
 
 Messages::WebContentCompositorServer::PresentFrameResponse ConnectionFromWebContent::present_frame(u64 raw_context_id, Gfx::IntRect viewport_rect)
