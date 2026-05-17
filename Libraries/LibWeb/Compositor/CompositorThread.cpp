@@ -264,23 +264,40 @@ public:
         m_deferred_async_scroll_present_viewport_rect = viewport_rect;
     }
 
+    void set_presentation_mode(CompositorThread::PresentationMode const& mode)
+    {
+        mode.visit(
+            [this](CompositorThread::PresentToUI const& present_to_ui) {
+                m_presentation_id = present_to_ui.presentation_id;
+            },
+            [this](CompositorThread::PublishToCompositorSurface const&) {
+                m_presentation_id.clear();
+            });
+    }
+
+    void set_presentation_visibility(bool is_visible) { m_presentation_visible = is_visible; }
+    void set_presentation_active(bool is_active) { m_presentation_active = is_active; }
+
     bool has_main_thread_present() const { return m_needs_main_thread_present; }
     bool has_deferred_async_scroll_present() const { return m_has_deferred_async_scroll_present; }
 
     bool has_presentable_work(bool presentation_blocked) const
     {
         return !presentation_blocked
+            && can_rasterize_current_presentation()
             && (m_has_deferred_async_scroll_present || m_needs_main_thread_present);
     }
 
     bool can_present_deferred_async_scroll(bool presentation_blocked) const
     {
-        return !presentation_blocked && m_has_deferred_async_scroll_present;
+        return !presentation_blocked
+            && can_rasterize_current_presentation()
+            && m_has_deferred_async_scroll_present;
     }
 
     Optional<RasterJob> take_next_raster_job(bool presentation_blocked)
     {
-        if (presentation_blocked)
+        if (presentation_blocked || !can_rasterize_current_presentation())
             return {};
 
         if (m_has_deferred_async_scroll_present) {
@@ -311,6 +328,15 @@ public:
     }
 
 private:
+    bool can_rasterize_current_presentation() const
+    {
+        return !m_presentation_id.has_value()
+            || (m_presentation_visible && m_presentation_active);
+    }
+
+    Optional<PresentationId> m_presentation_id;
+    bool m_presentation_visible { true };
+    bool m_presentation_active { true };
     bool m_needs_main_thread_present { false };
     Gfx::IntRect m_main_thread_present_viewport_rect;
     bool m_has_deferred_async_scroll_present { false };
@@ -329,6 +355,7 @@ public:
             .presentation_id = PresentationId { page_id },
             .presentation_capability = PresentationCapability { page_id },
         };
+        m_scheduler.set_presentation_mode(m_presentation_mode);
     }
 
     ~CompositorEngine() = default;
@@ -344,6 +371,7 @@ public:
     void set_presentation_mode(CompositorThread::PresentationMode mode)
     {
         Sync::MutexLocker const locker { m_mutex };
+        m_scheduler.set_presentation_mode(mode);
         m_presentation_mode = move(mode);
     }
 
