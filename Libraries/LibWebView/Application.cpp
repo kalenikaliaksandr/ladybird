@@ -778,6 +778,9 @@ void Application::process_did_exit(Process&& process, Optional<int> exit_status)
     case ProcessType::WebWorker:
         dbgln_if(WEBVIEW_PROCESS_DEBUG, "WebWorker {} died, not sure what to do.", process.pid());
         break;
+    case ProcessType::Compositor:
+        dbgln_if(WEBVIEW_PROCESS_DEBUG, "Compositor {} died, not sure what to do.", process.pid());
+        break;
     case ProcessType::Browser:
         dbgln("Invalid process type to be dying: Browser");
         VERIFY_NOT_REACHED();

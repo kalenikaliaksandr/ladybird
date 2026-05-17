@@ -89,6 +89,8 @@ private:
     {
     }
 
+    virtual void ping() override { }
+
     virtual Messages::CompositorServer::AsyncScrollByResponse async_scroll_by(u64 page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels) override
     {
         dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Compositor IPC received async scroll for page {} at {},{} device delta {},{}",
