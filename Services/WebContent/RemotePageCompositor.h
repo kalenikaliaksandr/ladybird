@@ -56,7 +56,6 @@ private:
     Web::DisplayListPlayerType m_display_list_player_type { Web::DisplayListPlayerType::SkiaCPU };
     bool m_started { false };
     bool m_context_created { false };
-    u64 m_next_frame_id { 1 };
 };
 
 }

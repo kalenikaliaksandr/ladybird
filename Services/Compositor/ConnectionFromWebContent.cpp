@@ -153,6 +153,9 @@ void ConnectionFromWebContent::create_context(
                                    .scroll_state_snapshot = {},
                                    .has_pending_display_list_update = false,
                                    .has_pending_scroll_state_update = false,
+                                   .pending_present = {},
+                                   .submitted_frame_id = 0,
+                                   .completed_frame_id = 0,
                                    .is_top_level_traversable = false,
                                    .window_resize_in_progress = Web::Compositor::WindowResizingInProgress::No,
                                    .presents_to_client = presentation_mode->kind == Web::Compositor::SerializedPresentationModeKind::PresentToUI,
@@ -251,6 +254,42 @@ void ConnectionFromWebContent::update_scroll_state(u64 raw_context_id, Web::Pain
 
     context->scroll_state_snapshot = move(scroll_state);
     context->has_pending_scroll_state_update = true;
+}
+
+Messages::WebContentCompositorServer::PresentFrameResponse ConnectionFromWebContent::present_frame(u64 raw_context_id, Gfx::IntRect viewport_rect)
+{
+    auto context_id = Web::Compositor::CompositorContextId { raw_context_id };
+    auto context = m_contexts.get(context_id);
+    if (!context.has_value()) {
+        dbgln("Ignoring present for missing compositor context {} from WebContent connection {}", context_id.value(), m_connection_id.value());
+        return 0;
+    }
+
+    auto frame_id = ++context->submitted_frame_id;
+    context->pending_present = ContextState::PendingPresent {
+        .frame_id = frame_id,
+        .viewport_rect = viewport_rect,
+    };
+
+    // FIXME: Complete this token from the remote raster scheduler once the
+    // Compositor process can replay display lists into backing stores.
+    context->completed_frame_id = frame_id;
+    return frame_id;
+}
+
+void ConnectionFromWebContent::wait_for_frame(u64 raw_context_id, u64 frame_id)
+{
+    auto context_id = Web::Compositor::CompositorContextId { raw_context_id };
+    auto context = m_contexts.get(context_id);
+    if (!context.has_value()) {
+        dbgln("Ignoring frame wait for missing compositor context {} from WebContent connection {}", context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    if (frame_id > context->submitted_frame_id) {
+        dbgln("Ignoring wait for unknown frame {} on compositor context {} from WebContent connection {}", frame_id, context_id.value(), m_connection_id.value());
+        return;
+    }
 }
 
 }

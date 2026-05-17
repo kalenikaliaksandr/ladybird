@@ -1,4 +1,5 @@
 #include <AK/NonnullRefPtr.h>
+#include <LibGfx/Rect.h>
 #include <LibGfx/Size.h>
 #include <LibWeb/Compositor/DisplayListResourceSerialization.h>
 #include <LibWeb/Compositor/DisplayListSerialization.h>
@@ -16,4 +17,6 @@ endpoint WebContentCompositorServer
     viewport_size_updated(u64 context_id, Gfx::IntSize viewport_size, bool is_top_level_traversable, Web::Compositor::WindowResizingInProgress window_resize_in_progress) =|
     update_display_list(u64 context_id, NonnullRefPtr<Web::Painting::DisplayList> display_list, Web::Painting::DisplayListResourceTransaction resource_transaction, Web::Painting::ScrollStateSnapshot scroll_state) =|
     update_scroll_state(u64 context_id, Web::Painting::ScrollStateSnapshot scroll_state) =|
+    present_frame(u64 context_id, Gfx::IntRect viewport_rect) => (u64 frame_id)
+    wait_for_frame(u64 context_id, u64 frame_id) => ()
 }

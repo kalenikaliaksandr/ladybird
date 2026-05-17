@@ -47,6 +47,11 @@ private:
     };
 
     struct ContextState {
+        struct PendingPresent {
+            u64 frame_id { 0 };
+            Gfx::IntRect viewport_rect;
+        };
+
         Web::Compositor::CompositorContextId context_id;
         u64 page_id { 0 };
         PresentationModeState presentation_mode;
@@ -57,6 +62,9 @@ private:
         Optional<Web::Painting::ScrollStateSnapshot> scroll_state_snapshot;
         bool has_pending_display_list_update { false };
         bool has_pending_scroll_state_update { false };
+        Optional<PendingPresent> pending_present;
+        u64 submitted_frame_id { 0 };
+        u64 completed_frame_id { 0 };
         bool is_top_level_traversable { false };
         Web::Compositor::WindowResizingInProgress window_resize_in_progress { Web::Compositor::WindowResizingInProgress::No };
         bool presents_to_client { true };
@@ -74,6 +82,8 @@ private:
     virtual void viewport_size_updated(u64 context_id, Gfx::IntSize viewport_size, bool is_top_level_traversable, Web::Compositor::WindowResizingInProgress window_resize_in_progress) override;
     virtual void update_display_list(u64 context_id, NonnullRefPtr<Web::Painting::DisplayList> display_list, Web::Painting::DisplayListResourceTransaction resource_transaction, Web::Painting::ScrollStateSnapshot scroll_state) override;
     virtual void update_scroll_state(u64 context_id, Web::Painting::ScrollStateSnapshot scroll_state) override;
+    virtual Messages::WebContentCompositorServer::PresentFrameResponse present_frame(u64 context_id, Gfx::IntRect viewport_rect) override;
+    virtual void wait_for_frame(u64 context_id, u64 frame_id) override;
 
     Web::Compositor::WebContentConnectionId m_connection_id;
     HashMap<Web::Compositor::CompositorContextId, ContextState> m_contexts;
