@@ -231,6 +231,7 @@ void ConnectionFromClient::connect_to_compositor(IPC::TransportHandle handle, u6
             return;
         }
         m_compositor_connection = ConnectionToCompositor::construct(transport.release_value());
+        m_page_host->ensure_first_page();
         return;
     }
 

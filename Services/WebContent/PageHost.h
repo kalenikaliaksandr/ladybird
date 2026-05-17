@@ -26,6 +26,7 @@ public:
 
     Optional<PageClient&> page(u64 index);
     PageClient& create_page();
+    void ensure_first_page();
     void remove_page(Badge<PageClient>, u64 index);
 
     ConnectionFromClient& client() const { return m_client; }

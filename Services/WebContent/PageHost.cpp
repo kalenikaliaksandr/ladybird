@@ -18,6 +18,16 @@ namespace WebContent {
 PageHost::PageHost(ConnectionFromClient& client)
     : m_client(client)
 {
+    if (PageClient::remote_compositor_enabled())
+        return;
+    ensure_first_page();
+}
+
+void PageHost::ensure_first_page()
+{
+    if (!m_pages.is_empty())
+        return;
+
     auto& first_page = create_page();
     Web::HTML::TraversableNavigable::create_a_fresh_top_level_traversable(first_page.page(), URL::about_blank());
 }
