@@ -275,8 +275,21 @@ public:
             });
     }
 
-    void set_presentation_visibility(bool is_visible) { m_presentation_visible = is_visible; }
-    void set_presentation_active(bool is_active) { m_presentation_active = is_active; }
+    bool set_presentation_visibility(PresentationId presentation_id, bool is_visible)
+    {
+        if (!m_presentation_id.has_value() || *m_presentation_id != presentation_id)
+            return false;
+        m_presentation_visible = is_visible;
+        return true;
+    }
+
+    bool set_active_presentation(Optional<PresentationId> presentation_id)
+    {
+        if (!m_presentation_id.has_value())
+            return false;
+        m_presentation_active = presentation_id.has_value() && *presentation_id == *m_presentation_id;
+        return true;
+    }
 
     bool has_main_thread_present() const { return m_needs_main_thread_present; }
     bool has_deferred_async_scroll_present() const { return m_has_deferred_async_scroll_present; }
@@ -373,6 +386,24 @@ public:
         Sync::MutexLocker const locker { m_mutex };
         m_scheduler.set_presentation_mode(mode);
         m_presentation_mode = move(mode);
+    }
+
+    bool set_presentation_visibility(PresentationId presentation_id, bool is_visible)
+    {
+        Sync::MutexLocker const locker { m_mutex };
+        auto did_update = m_scheduler.set_presentation_visibility(presentation_id, is_visible);
+        if (did_update)
+            m_command_ready.signal();
+        return did_update;
+    }
+
+    bool set_active_presentation(Optional<PresentationId> presentation_id)
+    {
+        Sync::MutexLocker const locker { m_mutex };
+        auto did_update = m_scheduler.set_active_presentation(presentation_id);
+        if (did_update)
+            m_command_ready.signal();
+        return did_update;
     }
 
     void exit()
@@ -696,6 +727,8 @@ public:
             // since this background thread has no autorelease pool.
             Core::ScopedAutoreleasePool autorelease_pool;
 
+            // Drain commands before scheduler-selected raster work. This gives explicit screenshot commands priority
+            // over coalesced presentation updates.
             while (true) {
                 auto command = [this]() -> Optional<CompositorCommand> {
                     Sync::MutexLocker const locker { m_mutex };
@@ -1567,6 +1600,34 @@ bool CompositorThread::handle_mouse_event(u64 page_id, MouseEvent const& event)
         thread_data = compositor->value;
     }
     return thread_data->handle_viewport_scrollbar_mouse_event(event);
+}
+
+void CompositorThread::set_presentation_visibility(PresentationId presentation_id, bool is_visible)
+{
+    Vector<NonnullRefPtr<CompositorEngine>> compositors;
+    {
+        Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
+        compositors.ensure_capacity(page_compositors().size());
+        for (auto& compositor : page_compositors())
+            compositors.unchecked_append(compositor.value);
+    }
+
+    for (auto& compositor : compositors)
+        compositor->set_presentation_visibility(presentation_id, is_visible);
+}
+
+void CompositorThread::set_active_presentation(Optional<PresentationId> presentation_id)
+{
+    Vector<NonnullRefPtr<CompositorEngine>> compositors;
+    {
+        Sync::MutexLocker const locker { compositor_presentation_state_mutex() };
+        compositors.ensure_capacity(page_compositors().size());
+        for (auto& compositor : page_compositors())
+            compositors.unchecked_append(compositor.value);
+    }
+
+    for (auto& compositor : compositors)
+        compositor->set_active_presentation(presentation_id);
 }
 
 void CompositorThread::start(DisplayListPlayerType display_list_player_type)
