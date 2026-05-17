@@ -14,6 +14,7 @@
 #include <Compositor/ConnectionFromWebContent.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/PaintingSurface.h>
+#include <LibMedia/VideoFrame.h>
 #include <LibWeb/Compositor/DisplayListResourceSerialization.h>
 #include <LibWeb/Compositor/DisplayListSerialization.h>
 #include <LibWeb/Compositor/ScrollStateSerialization.h>
@@ -288,6 +289,7 @@ void ConnectionFromWebContent::create_context(
                                    .display_list_resource_storage = {},
                                    .display_list = {},
                                    .scroll_state_snapshot = {},
+                                   .video_frame_sequence_ids = {},
                                    .has_pending_display_list_update = false,
                                    .has_pending_scroll_state_update = false,
                                    .pending_present = {},
@@ -436,6 +438,73 @@ void ConnectionFromWebContent::clear_compositor_surface(u64 raw_context_id, u64 
     }
 
     context->display_list_resource_storage.clear_compositor_surface(surface_id);
+    rasterize_pending_present(*context);
+}
+
+void ConnectionFromWebContent::update_yuv_video_frame(
+    u64 raw_context_id,
+    Web::Compositor::SerializedVideoFrameUpdate serialized_video_frame_update)
+{
+    auto context_id = Web::Compositor::CompositorContextId { raw_context_id };
+    auto context = m_contexts.get(context_id);
+    if (!context.has_value()) {
+        dbgln("Ignoring video frame update for missing compositor context {} from WebContent connection {}", context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    auto video_frame_source_id = serialized_video_frame_update.video_frame_source_id;
+    if (video_frame_source_id.value() == 0) {
+        dbgln("Ignoring video frame update with empty source ID for context {} from WebContent connection {}", context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    if (!context->display_list_resource_storage.contains_video_frame_source(video_frame_source_id)) {
+        dbgln("Ignoring video frame update for missing source {} in compositor context {} from WebContent connection {}",
+            video_frame_source_id.value(), context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    auto last_frame_sequence_id = context->video_frame_sequence_ids.get(video_frame_source_id).value_or(0);
+    if (serialized_video_frame_update.frame_sequence_id <= last_frame_sequence_id) {
+        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Ignoring stale video frame update {} for source {} in context {}",
+            serialized_video_frame_update.frame_sequence_id, video_frame_source_id.value(), context_id.value());
+        return;
+    }
+
+    auto video_frame = Web::Compositor::deserialize_video_frame_update(serialized_video_frame_update);
+    if (video_frame.is_error()) {
+        dbgln("Rejecting video frame update for source {} in compositor context {} from WebContent connection {}: {}",
+            video_frame_source_id.value(), context_id.value(), m_connection_id.value(), video_frame.error());
+        return;
+    }
+
+    context->video_frame_sequence_ids.set(video_frame_source_id, serialized_video_frame_update.frame_sequence_id);
+    context->display_list_resource_storage.video_frame_source(video_frame_source_id).update(video_frame.release_value());
+    rasterize_pending_present(*context);
+}
+
+void ConnectionFromWebContent::clear_video_frame(u64 raw_context_id, u64 raw_video_frame_source_id)
+{
+    auto context_id = Web::Compositor::CompositorContextId { raw_context_id };
+    auto context = m_contexts.get(context_id);
+    if (!context.has_value()) {
+        dbgln("Ignoring video frame clear for missing compositor context {} from WebContent connection {}", context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    auto video_frame_source_id = Web::Painting::VideoFrameResourceId { raw_video_frame_source_id };
+    if (video_frame_source_id.value() == 0) {
+        dbgln("Ignoring video frame clear with empty source ID for context {} from WebContent connection {}", context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    if (!context->display_list_resource_storage.contains_video_frame_source(video_frame_source_id)) {
+        dbgln("Ignoring video frame clear for missing source {} in compositor context {} from WebContent connection {}",
+            video_frame_source_id.value(), context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    context->display_list_resource_storage.video_frame_source(video_frame_source_id).clear();
     rasterize_pending_present(*context);
 }
 

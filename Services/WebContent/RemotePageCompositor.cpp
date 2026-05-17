@@ -9,6 +9,7 @@
 #include <AK/Debug.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibGfx/SharedImageBuffer.h>
+#include <LibMedia/VideoFrame.h>
 #include <LibWeb/Compositor/DisplayListResourceSerialization.h>
 #include <LibWeb/Compositor/DisplayListSerialization.h>
 #include <LibWeb/Compositor/ScrollStateSerialization.h>
@@ -111,11 +112,25 @@ void RemotePageCompositor::update_display_list(NonnullRefPtr<Web::Painting::Disp
     if (!m_context_created || !m_connection->is_open())
         return;
 
+    struct VideoFrameUpdate {
+        Web::Painting::VideoFrameResourceId source_id;
+        NonnullRefPtr<Media::VideoFrame> frame;
+    };
+
+    Vector<VideoFrameUpdate> video_frame_updates;
+    for (auto const& video_frame_source : resource_transaction.video_frame_sources) {
+        if (auto frame = video_frame_source.resource->current_frame())
+            video_frame_updates.append({ video_frame_source.id, frame.release_nonnull() });
+    }
+
     m_connection->update_display_list(
         m_context_id,
         display_list,
         resource_transaction,
         scroll_state_snapshot);
+
+    for (auto const& video_frame_update : video_frame_updates)
+        send_video_frame_update(video_frame_update.source_id, video_frame_update.frame);
 }
 
 void RemotePageCompositor::update_compositor_surface(Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image)
@@ -128,6 +143,31 @@ void RemotePageCompositor::clear_compositor_surface(Web::Painting::CompositorSur
 {
     if (m_context_created && m_connection->is_open())
         m_connection->clear_compositor_surface(m_context_id, surface_id);
+}
+
+void RemotePageCompositor::send_video_frame_update(Web::Painting::VideoFrameResourceId video_frame_source_id, Media::VideoFrame const& frame)
+{
+    auto next_frame_sequence_id = m_video_frame_sequence_ids.get(video_frame_source_id).value_or(0) + 1;
+    auto serialized_video_frame_update = Web::Compositor::serialize_video_frame_update(video_frame_source_id, next_frame_sequence_id, frame);
+    if (serialized_video_frame_update.is_error()) {
+        dbgln("Failed to serialize remote compositor video frame update: {}", serialized_video_frame_update.error());
+        return;
+    }
+
+    m_video_frame_sequence_ids.set(video_frame_source_id, next_frame_sequence_id);
+    m_connection->update_yuv_video_frame(m_context_id, serialized_video_frame_update.value());
+}
+
+void RemotePageCompositor::update_video_frame(Web::Painting::VideoFrameResourceId video_frame_source_id, Media::VideoFrame const& frame)
+{
+    if (m_context_created && m_connection->is_open())
+        send_video_frame_update(video_frame_source_id, frame);
+}
+
+void RemotePageCompositor::clear_video_frame(Web::Painting::VideoFrameResourceId video_frame_source_id)
+{
+    if (m_context_created && m_connection->is_open())
+        m_connection->clear_video_frame(m_context_id, video_frame_source_id);
 }
 
 void RemotePageCompositor::update_scroll_state(Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot)

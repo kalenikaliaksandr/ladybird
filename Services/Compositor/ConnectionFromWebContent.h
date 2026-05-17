@@ -63,6 +63,7 @@ private:
         Web::Painting::DisplayListResourceStorage display_list_resource_storage;
         RefPtr<Web::Painting::DisplayList> display_list;
         Optional<Web::Painting::ScrollStateSnapshot> scroll_state_snapshot;
+        HashMap<Web::Painting::VideoFrameResourceId, u64> video_frame_sequence_ids;
         bool has_pending_display_list_update { false };
         bool has_pending_scroll_state_update { false };
         Optional<PendingPresent> pending_present;
@@ -93,6 +94,8 @@ private:
     virtual void update_scroll_state(u64 context_id, Web::Painting::ScrollStateSnapshot scroll_state) override;
     virtual void update_compositor_surface(u64 context_id, u64 surface_id, Gfx::SharedImage shared_image) override;
     virtual void clear_compositor_surface(u64 context_id, u64 surface_id) override;
+    virtual void update_yuv_video_frame(u64 context_id, Web::Compositor::SerializedVideoFrameUpdate video_frame_update) override;
+    virtual void clear_video_frame(u64 context_id, u64 video_frame_source_id) override;
     virtual void request_screenshot(u64 context_id, u64 request_id, Gfx::IntSize size) override;
     virtual Messages::WebContentCompositorServer::PresentFrameResponse present_frame(u64 context_id, Gfx::IntRect viewport_rect) override;
     virtual void wait_for_frame(u64 context_id, u64 frame_id) override;

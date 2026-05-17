@@ -20,6 +20,8 @@ endpoint WebContentCompositorServer
     update_scroll_state(u64 context_id, Web::Painting::ScrollStateSnapshot scroll_state) =|
     update_compositor_surface(u64 context_id, u64 surface_id, Gfx::SharedImage shared_image) =|
     clear_compositor_surface(u64 context_id, u64 surface_id) =|
+    update_yuv_video_frame(u64 context_id, Web::Compositor::SerializedVideoFrameUpdate video_frame_update) =|
+    clear_video_frame(u64 context_id, u64 video_frame_source_id) =|
     request_screenshot(u64 context_id, u64 request_id, Gfx::IntSize size) =|
     present_frame(u64 context_id, Gfx::IntRect viewport_rect) => (u64 frame_id)
     wait_for_frame(u64 context_id, u64 frame_id) => ()

@@ -53,6 +53,8 @@ public:
     void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot const&);
     void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId);
+    void update_yuv_video_frame(Web::Compositor::CompositorContextId, Web::Compositor::SerializedVideoFrameUpdate const&);
+    void clear_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId);
     void request_screenshot(Web::Compositor::CompositorContextId, Gfx::IntSize, Function<void(Optional<Gfx::SharedImage>)>&&);
     u64 present_frame(Web::Compositor::CompositorContextId, Gfx::IntRect);
     void wait_for_frame(Web::Compositor::CompositorContextId, u64 frame_id);

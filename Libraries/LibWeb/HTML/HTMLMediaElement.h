@@ -171,6 +171,8 @@ public:
     RefPtr<Media::DisplayingVideoSink> const& selected_video_track_sink() const { return m_selected_video_track_sink; }
 
     Painting::VideoFrameSource& ensure_video_frame_source();
+    void update_video_frame_source(RefPtr<Media::VideoFrame>);
+    void clear_video_frame_source();
 
     virtual void update_intrinsic_video_dimensions() { }
     virtual void update_natural_dimensions() { }
