@@ -435,6 +435,7 @@ void Navigable::initialize_navigable(NonnullRefPtr<DocumentState> document_state
     if (parent && !m_is_svg_page) {
         m_compositor_surface_id = Painting::allocate_compositor_surface_id();
         m_rendering_thread->set_presentation_mode(Compositor::PageCompositor::PublishToCompositorSurface {
+            .target_context_id = parent->rendering_thread().context_id(),
             .target = &parent->rendering_thread(),
             .surface_id = *m_compositor_surface_id,
         });

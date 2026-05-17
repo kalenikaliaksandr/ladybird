@@ -48,6 +48,7 @@ public:
     static bool async_scroll_by(u64 page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels);
     static bool handle_mouse_event(u64 page_id, MouseEvent const&);
 
+    virtual CompositorContextId context_id() const override { return m_context_id; }
     virtual void start(DisplayListPlayerType) override;
     virtual void stop_presenting_to_client() override;
     virtual void set_presentation_mode(PresentationMode) override;
@@ -70,6 +71,7 @@ public:
 private:
     void enqueue_viewport_size_updated(Gfx::IntSize, bool is_top_level_traversable, WindowResizingInProgress);
 
+    CompositorContextId m_context_id { allocate_compositor_context_id() };
     NonnullRefPtr<ThreadData> m_thread_data;
     RefPtr<Threading::Thread> m_thread;
     RefPtr<Core::Timer> m_backing_store_shrink_timer;
