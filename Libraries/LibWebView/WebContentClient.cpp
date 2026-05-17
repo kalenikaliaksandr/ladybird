@@ -132,8 +132,8 @@ WebContentClient::WebContentClient(NonnullOwnPtr<IPC::Transport> transport)
 
 WebContentClient::~WebContentClient()
 {
-    if (Application::web_content_options().enable_remote_compositor == EnableRemoteCompositor::Yes) {
-        if (auto* compositor_client = Application::compositor_client())
+    if (m_web_content_compositor_connection_id.has_value()) {
+        if (auto* compositor_client = Application::compositor_client_if_initialized())
             compositor_client->unregister_web_content_client(*this);
     }
     compositor_connections().remove(this);

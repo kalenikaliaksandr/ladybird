@@ -62,6 +62,7 @@ public:
     static Requests::RequestClient& request_server_client() { return *the().m_request_server_client; }
     static ImageDecoderClient::Client& image_decoder_client() { return *the().m_image_decoder_client; }
     static CompositorClient* compositor_client() { return the().m_compositor_client.ptr(); }
+    static CompositorClient* compositor_client_if_initialized() { return s_the ? s_the->m_compositor_client.ptr() : nullptr; }
 
     static BookmarkStore& bookmark_store() { return the().m_bookmark_store; }
     static HistoryStore& history_store() { return *the().m_history_store; }
