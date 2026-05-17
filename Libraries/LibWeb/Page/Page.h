@@ -10,6 +10,7 @@
 #pragma once
 
 #include <AK/JsonValue.h>
+#include <AK/NonnullOwnPtr.h>
 #include <AK/Queue.h>
 #include <AK/Variant.h>
 #include <LibGC/Root.h>
@@ -56,6 +57,12 @@
 namespace Web {
 
 class PageClient;
+
+namespace Compositor {
+
+class PageCompositor;
+
+}
 
 class WEB_API Page final : public JS::Cell {
     GC_CELL(Page, JS::Cell);
@@ -382,7 +389,7 @@ enum class ContextMenuForInputEventsTarget : u8 {
     Yes,
 };
 
-class PageClient : public JS::Cell {
+class WEB_API PageClient : public JS::Cell {
     GC_CELL(PageClient, JS::Cell);
 
 public:
@@ -404,6 +411,7 @@ public:
     virtual Queue<QueuedInputEvent>& input_event_queue() = 0;
     virtual void report_finished_handling_input_event(u64 page_id, EventResult event_was_handled) = 0;
     virtual void request_frame() = 0;
+    virtual NonnullOwnPtr<Compositor::PageCompositor> create_page_compositor(bool is_svg_page, bool register_page_presentation);
     virtual void page_did_change_title(Utf16String const&) { }
     virtual void page_did_change_url(URL::URL const&) { }
     virtual void page_did_request_refresh() { }

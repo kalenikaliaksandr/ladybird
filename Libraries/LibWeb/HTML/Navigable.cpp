@@ -10,7 +10,6 @@
 #include <LibWeb/CSS/PseudoElement.h>
 #include <LibWeb/CSS/SystemColor.h>
 #include <LibWeb/CSS/VisualViewport.h>
-#include <LibWeb/Compositor/CompositorThread.h>
 #include <LibWeb/Compositor/DisplayListResourceSerialization.h>
 #include <LibWeb/Compositor/DisplayListSerialization.h>
 #include <LibWeb/Compositor/ScrollStateSerialization.h>
@@ -289,9 +288,7 @@ Navigable::Navigable(
     : m_page(page)
     , m_event_handler({}, *this)
     , m_is_svg_page(is_svg_page)
-    , m_rendering_thread(make<Compositor::CompositorThread>(
-          is_svg_page ? 0 : page->client().id(),
-          is_svg_page ? Compositor::PageCompositor::PagePresentationRegistration::No : page_presentation_registration))
+    , m_rendering_thread(page->client().create_page_compositor(is_svg_page, page_presentation_registration == Compositor::PageCompositor::PagePresentationRegistration::Yes))
 {
     all_navigables().set(*this);
 

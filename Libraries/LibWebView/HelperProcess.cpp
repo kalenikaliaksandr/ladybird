@@ -122,6 +122,8 @@ static ErrorOr<NonnullRefPtr<WebView::WebContentClient>> launch_web_content_proc
         arguments.append("--disable-async-scrolling"sv);
     if (web_content_options.enable_compositor_serialization_test_mode == EnableCompositorSerializationTestMode::Yes)
         arguments.append("--enable-compositor-serialization-test-mode"sv);
+    if (web_content_options.enable_remote_compositor == EnableRemoteCompositor::Yes)
+        arguments.append("--enable-remote-compositor"sv);
     if (web_content_options.file_scheme_urls_have_tuple_origins == FileSchemeUrlsHaveTupleOrigins::Yes)
         arguments.append("--tuple-file-origins"sv);
 
