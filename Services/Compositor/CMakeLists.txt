@@ -5,7 +5,12 @@ set(SOURCES
 set(GENERATED_SOURCES
     CompositorClientEndpoint.h
     CompositorServerEndpoint.h
+    WebContentCompositorClientEndpoint.h
+    WebContentCompositorServerEndpoint.h
 )
+
+compile_ipc(${CMAKE_CURRENT_SOURCE_DIR}/WebContentCompositorClient.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/WebContentCompositorClientEndpoint.h)
+compile_ipc(${CMAKE_CURRENT_SOURCE_DIR}/WebContentCompositorServer.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/WebContentCompositorServerEndpoint.h)
 
 add_library(compositorservice STATIC ${SOURCES} ${GENERATED_SOURCES})
 ladybird_generated_sources(compositorservice)
