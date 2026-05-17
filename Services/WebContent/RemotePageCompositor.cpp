@@ -8,7 +8,7 @@
 
 namespace WebContent {
 
-RemotePageCompositor::RemotePageCompositor(ConnectionToCompositor& connection, u64 page_id, PresentationMode presentation_mode)
+RemotePageCompositor::RemotePageCompositor(ConnectionToCompositor& connection, u64 page_id, Optional<PresentationMode> presentation_mode)
     : m_connection(connection)
     , m_page_id(page_id)
     , m_context_id(Web::Compositor::allocate_compositor_context_id())
@@ -18,13 +18,14 @@ RemotePageCompositor::RemotePageCompositor(ConnectionToCompositor& connection, u
 
 RemotePageCompositor::~RemotePageCompositor()
 {
-    if (m_started && m_connection->is_open())
+    if (m_context_created && m_connection->is_open())
         m_connection->destroy_context(m_context_id);
 }
 
 RemotePageCompositor::SerializedPresentationMode RemotePageCompositor::serialized_presentation_mode() const
 {
-    return m_presentation_mode.visit(
+    VERIFY(m_presentation_mode.has_value());
+    return m_presentation_mode->visit(
         [](PresentToUI const& present_to_ui) -> SerializedPresentationMode {
             return {
                 .kind = Web::Compositor::SerializedPresentationModeKind::PresentToUI,
@@ -47,6 +48,7 @@ RemotePageCompositor::SerializedPresentationMode RemotePageCompositor::serialize
 
 void RemotePageCompositor::send_create_context()
 {
+    VERIFY(!m_context_created);
     auto presentation_mode = serialized_presentation_mode();
     m_connection->create_context(
         m_context_id,
@@ -57,6 +59,7 @@ void RemotePageCompositor::send_create_context()
         presentation_mode.target_context_id,
         presentation_mode.compositor_surface_id,
         m_display_list_player_type);
+    m_context_created = true;
 }
 
 void RemotePageCompositor::start(Web::DisplayListPlayerType display_list_player_type)
@@ -65,12 +68,13 @@ void RemotePageCompositor::start(Web::DisplayListPlayerType display_list_player_
         return;
     m_display_list_player_type = display_list_player_type;
     m_started = true;
-    send_create_context();
+    if (m_presentation_mode.has_value())
+        send_create_context();
 }
 
 void RemotePageCompositor::stop_presenting_to_client()
 {
-    if (m_started && m_connection->is_open())
+    if (m_context_created && m_connection->is_open())
         m_connection->stop_presenting_to_client(m_context_id);
 }
 
@@ -79,6 +83,11 @@ void RemotePageCompositor::set_presentation_mode(PresentationMode presentation_m
     m_presentation_mode = move(presentation_mode);
     if (!m_started || !m_connection->is_open())
         return;
+
+    if (!m_context_created) {
+        send_create_context();
+        return;
+    }
 
     auto serialized_mode = serialized_presentation_mode();
     m_connection->set_presentation_mode(
@@ -135,7 +144,7 @@ void RemotePageCompositor::viewport_size_updated(
     bool is_top_level_traversable,
     Web::Compositor::WindowResizingInProgress window_resize_in_progress)
 {
-    if (m_started && m_connection->is_open())
+    if (m_context_created && m_connection->is_open())
         m_connection->viewport_size_updated(m_context_id, viewport_size, is_top_level_traversable, window_resize_in_progress);
 }
 

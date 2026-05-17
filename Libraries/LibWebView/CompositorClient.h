@@ -26,7 +26,7 @@ public:
     explicit CompositorClient(NonnullOwnPtr<IPC::Transport>);
 
     Optional<Web::Compositor::WebContentConnectionId> connect_web_content(IPC::TransportHandle);
-    void register_presentation(Web::Compositor::PresentationId, Web::Compositor::WebContentConnectionId, Web::Compositor::PresentationCapability);
+    bool register_presentation(Web::Compositor::PresentationId, Web::Compositor::WebContentConnectionId, Web::Compositor::PresentationCapability);
     void unregister_presentation(Web::Compositor::PresentationId);
     void set_presentation_visibility(Web::Compositor::PresentationId, bool is_visible);
     void set_active_presentation(u64 ui_view_id, Optional<Web::Compositor::PresentationId>);

@@ -145,7 +145,8 @@ ErrorOr<void> WebContentClient::connect_to_remote_compositor(CompositorClient& c
         return Error::from_string_literal("Failed to connect WebContent to Compositor process");
 
     m_web_content_compositor_connection_id = *connection_id;
-    compositor_client.register_presentation(m_presentation_id, *connection_id, m_presentation_capability);
+    if (!compositor_client.register_presentation(m_presentation_id, *connection_id, m_presentation_capability))
+        return Error::from_string_literal("Failed to register WebContent presentation with Compositor process");
     async_connect_to_compositor(move(paired_transport.remote_handle), m_presentation_id.value(), m_presentation_capability.value());
     return {};
 }
