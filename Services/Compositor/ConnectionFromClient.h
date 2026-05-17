@@ -10,6 +10,7 @@
 #include <Compositor/CompositorClientEndpoint.h>
 #include <Compositor/CompositorServerEndpoint.h>
 #include <LibIPC/ConnectionFromClient.h>
+#include <LibIPC/TransportHandle.h>
 
 namespace Compositor {
 
@@ -24,6 +25,7 @@ private:
     explicit ConnectionFromClient(NonnullOwnPtr<IPC::Transport>);
 
     virtual void ping() override;
+    virtual Messages::CompositorServer::ConnectWebContentResponse connect_web_content(IPC::TransportHandle) override;
     virtual void register_presentation(u64 presentation_id, u64 web_content_connection_id, u64 presentation_capability) override;
     virtual void unregister_presentation(u64 presentation_id) override;
     virtual void set_presentation_visibility(u64 presentation_id, bool is_visible) override;

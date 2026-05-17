@@ -1,9 +1,11 @@
 #include <LibGfx/Point.h>
+#include <LibIPC/TransportHandle.h>
 #include <LibWeb/Page/InputEvent.h>
 
 endpoint CompositorServer
 {
     ping() => ()
+    connect_web_content(IPC::TransportHandle handle) => (u64 web_content_connection_id)
     register_presentation(u64 presentation_id, u64 web_content_connection_id, u64 presentation_capability) =|
     unregister_presentation(u64 presentation_id) =|
     set_presentation_visibility(u64 presentation_id, bool is_visible) =|

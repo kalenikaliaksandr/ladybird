@@ -4,8 +4,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Atomic.h>
 #include <AK/Debug.h>
 #include <AK/NeverDestroyed.h>
+#include <AK/Random.h>
 #include <AK/WeakPtr.h>
 #include <Compositor/CompositorClientEndpoint.h>
 #include <Compositor/CompositorServerEndpoint.h>
@@ -15,6 +17,7 @@
 #include <LibIPC/TransportHandle.h>
 #include <LibWeb/Page/InputEvent.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/CompositorClient.h>
 #include <LibWebView/CookieJar.h>
 #include <LibWebView/HelperProcess.h>
 #include <LibWebView/HistoryStore.h>
@@ -26,6 +29,21 @@
 namespace WebView {
 
 HashTable<WebContentClient*> WebContentClient::s_clients;
+
+static Web::Compositor::PresentationId allocate_presentation_id()
+{
+    static Atomic<u64> s_next_presentation_id { 1 };
+    return Web::Compositor::PresentationId { s_next_presentation_id.fetch_add(1, AK::MemoryOrder::memory_order_relaxed) };
+}
+
+static Web::Compositor::PresentationCapability allocate_presentation_capability()
+{
+    for (;;) {
+        auto value = get_random<u64>();
+        if (value != 0)
+            return Web::Compositor::PresentationCapability { value };
+    }
+}
 
 class CompositorConnectionToServer final
     : public IPC::ConnectionToServer<CompositorClientEndpoint, CompositorServerEndpoint>
@@ -73,7 +91,10 @@ static void initialize_compositor_connection(WebContentClient& web_content_clien
 
     auto connection = CompositorConnectionToServer::construct(web_content_client, move(paired_transport.value().local));
     compositor_connections().set(&web_content_client, connection);
-    web_content_client.async_connect_to_compositor(move(paired_transport.value().remote_handle));
+    web_content_client.async_connect_to_compositor(
+        move(paired_transport.value().remote_handle),
+        web_content_client.presentation_id().value(),
+        web_content_client.presentation_capability().value());
 }
 
 static Optional<String> history_title(Utf16String const& title, URL::URL const& url)
@@ -90,6 +111,8 @@ static Optional<String> history_title(Utf16String const& title, URL::URL const& 
 
 WebContentClient::WebContentClient(NonnullOwnPtr<IPC::Transport> transport, ViewImplementation& view)
     : IPC::ConnectionToServer<WebContentClientEndpoint, WebContentServerEndpoint>(*this, move(transport))
+    , m_presentation_id(allocate_presentation_id())
+    , m_presentation_capability(allocate_presentation_capability())
 {
     s_clients.set(this);
     m_views.set(0, view);
@@ -98,6 +121,8 @@ WebContentClient::WebContentClient(NonnullOwnPtr<IPC::Transport> transport, View
 
 WebContentClient::WebContentClient(NonnullOwnPtr<IPC::Transport> transport)
     : IPC::ConnectionToServer<WebContentClientEndpoint, WebContentServerEndpoint>(*this, move(transport))
+    , m_presentation_id(allocate_presentation_id())
+    , m_presentation_capability(allocate_presentation_capability())
 {
     s_clients.set(this);
     initialize_compositor_connection(*this);
@@ -107,6 +132,20 @@ WebContentClient::~WebContentClient()
 {
     compositor_connections().remove(this);
     s_clients.remove(this);
+}
+
+ErrorOr<void> WebContentClient::connect_to_remote_compositor(CompositorClient& compositor_client)
+{
+    auto paired_transport = TRY(IPC::Transport::create_paired());
+    auto compositor_handle = TRY(paired_transport.local->release_for_transfer());
+    auto connection_id = compositor_client.connect_web_content(move(compositor_handle));
+    if (!connection_id.has_value())
+        return Error::from_string_literal("Failed to connect WebContent to Compositor process");
+
+    m_web_content_compositor_connection_id = *connection_id;
+    compositor_client.register_presentation(m_presentation_id, *connection_id, m_presentation_capability);
+    async_connect_to_compositor(move(paired_transport.remote_handle), m_presentation_id.value(), m_presentation_capability.value());
+    return {};
 }
 
 void WebContentClient::die()

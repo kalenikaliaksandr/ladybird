@@ -1,5 +1,6 @@
 set(SOURCES
     ConnectionFromClient.cpp
+    ConnectionFromWebContent.cpp
 )
 
 set(GENERATED_SOURCES

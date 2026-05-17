@@ -17,6 +17,14 @@ void CompositorClient::die()
 {
 }
 
+Optional<Web::Compositor::WebContentConnectionId> CompositorClient::connect_web_content(IPC::TransportHandle handle)
+{
+    auto response = send_sync_but_allow_failure<Messages::CompositorServer::ConnectWebContent>(move(handle));
+    if (!response || response->web_content_connection_id() == 0)
+        return {};
+    return Web::Compositor::WebContentConnectionId { response->web_content_connection_id() };
+}
+
 void CompositorClient::register_presentation(
     Web::Compositor::PresentationId presentation_id,
     Web::Compositor::WebContentConnectionId web_content_connection_id,
