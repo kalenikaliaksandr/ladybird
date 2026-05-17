@@ -72,7 +72,7 @@ public:
     void append_referenced_resources_from(DisplayListResourceStorage const& source, ReadonlyBytes command_bytes);
     void apply_transaction(DisplayListResourceTransaction&&);
     DisplayListResourceTransaction create_transaction(DisplayListResourceSet const& previous, DisplayListResourceSet const& current) const;
-    DisplayListResourceSet collect_referenced_resources(DisplayList const&) const;
+    DisplayListResourceSet collect_referenced_resources(DisplayList const&);
     DisplayListResourceSet collect_referenced_resources(ReadonlyBytes command_bytes) const;
     void retain_only(DisplayListResourceSet const&);
     void update_compositor_surface(CompositorSurfaceId, Gfx::SharedImage&&);
@@ -85,10 +85,14 @@ public:
     VideoFrameSource const& video_frame_source(VideoFrameResourceId id) const { return *m_video_frame_sources.get(id.value()).value(); }
     DisplayList const& display_list(DisplayListResourceId id) const { return *m_display_lists.get(id.value()).value(); }
     Optional<Gfx::DecodedImageFrame const&> compositor_surface(CompositorSurfaceId id) const { return m_compositor_surfaces.get(id.value()); }
+    bool contains_image_frame(ImageFrameResourceId id) const { return m_image_frames.contains(id.value()); }
     bool contains_video_frame_source(VideoFrameResourceId id) const { return m_video_frame_sources.contains(id.value()); }
 
 private:
-    void collect_referenced_resources(ReadonlyBytes command_bytes, DisplayListResourceSet&) const;
+    void collect_referenced_resources(
+        ReadonlyBytes command_bytes,
+        DisplayListResourceSet&,
+        DisplayListResourceStorage* storage_for_visual_context_resources = nullptr) const;
 
     HashMap<u64, NonnullRefPtr<Gfx::Font const>> m_fonts;
     HashMap<u64, Gfx::DecodedImageFrame> m_image_frames;
