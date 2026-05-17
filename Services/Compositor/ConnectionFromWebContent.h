@@ -9,14 +9,21 @@
 #include <AK/Error.h>
 #include <AK/HashMap.h>
 #include <AK/Optional.h>
+#include <AK/RefPtr.h>
 #include <Compositor/WebContentCompositorClientEndpoint.h>
 #include <Compositor/WebContentCompositorServerEndpoint.h>
 #include <LibGfx/Size.h>
 #include <LibIPC/ConnectionFromClient.h>
 #include <LibIPC/TransportHandle.h>
+#include <LibWeb/Compositor/DisplayListResourceSerialization.h>
+#include <LibWeb/Compositor/DisplayListSerialization.h>
+#include <LibWeb/Compositor/ScrollStateSerialization.h>
 #include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Page/Page.h>
+#include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
+#include <LibWeb/Painting/DisplayListResourceStorage.h>
+#include <LibWeb/Painting/ScrollState.h>
 
 namespace Compositor {
 
@@ -45,6 +52,11 @@ private:
         PresentationModeState presentation_mode;
         Web::DisplayListPlayerType display_list_player_type;
         Optional<Gfx::IntSize> viewport_size;
+        Web::Painting::DisplayListResourceStorage display_list_resource_storage;
+        RefPtr<Web::Painting::DisplayList> display_list;
+        Optional<Web::Painting::ScrollStateSnapshot> scroll_state_snapshot;
+        bool has_pending_display_list_update { false };
+        bool has_pending_scroll_state_update { false };
         bool is_top_level_traversable { false };
         Web::Compositor::WindowResizingInProgress window_resize_in_progress { Web::Compositor::WindowResizingInProgress::No };
         bool presents_to_client { true };
@@ -60,6 +72,8 @@ private:
     virtual void set_presentation_mode(u64 context_id, Web::Compositor::SerializedPresentationModeKind presentation_mode_kind, u64 presentation_id, u64 presentation_capability, u64 target_context_id, u64 compositor_surface_id) override;
     virtual void stop_presenting_to_client(u64 context_id) override;
     virtual void viewport_size_updated(u64 context_id, Gfx::IntSize viewport_size, bool is_top_level_traversable, Web::Compositor::WindowResizingInProgress window_resize_in_progress) override;
+    virtual void update_display_list(u64 context_id, NonnullRefPtr<Web::Painting::DisplayList> display_list, Web::Painting::DisplayListResourceTransaction resource_transaction, Web::Painting::ScrollStateSnapshot scroll_state) override;
+    virtual void update_scroll_state(u64 context_id, Web::Painting::ScrollStateSnapshot scroll_state) override;
 
     Web::Compositor::WebContentConnectionId m_connection_id;
     HashMap<Web::Compositor::CompositorContextId, ContextState> m_contexts;

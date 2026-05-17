@@ -84,6 +84,12 @@ template<>
 WEB_API ErrorOr<void> encode(Encoder&, Web::Painting::DisplayListResourceTransaction const&);
 
 template<>
+WEB_API ErrorOr<void> encode(Encoder&, Web::Compositor::SerializedVideoFrameUpdate const&);
+
+template<>
 WEB_API ErrorOr<Web::Painting::DisplayListResourceTransaction> decode(Decoder&);
+
+template<>
+WEB_API ErrorOr<Web::Compositor::SerializedVideoFrameUpdate> decode(Decoder&);
 
 }

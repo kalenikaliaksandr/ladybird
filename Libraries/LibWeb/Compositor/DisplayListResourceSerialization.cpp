@@ -17,6 +17,254 @@
 #include <LibMedia/VideoFrame.h>
 #include <LibWeb/Painting/VideoFrameSource.h>
 
+namespace IPC {
+
+static ErrorOr<void> encode_font_variation_settings(Encoder& encoder, Gfx::FontVariationSettings const& font_variation_settings)
+{
+    auto axes = font_variation_settings.to_sorted_list();
+    TRY(encoder.encode_size(axes.size()));
+    for (auto const& axis : axes) {
+        TRY(encoder.encode(axis.tag.to_u32()));
+        TRY(encoder.encode(axis.value));
+    }
+    return {};
+}
+
+static ErrorOr<Gfx::FontVariationSettings> decode_font_variation_settings(Decoder& decoder)
+{
+    Gfx::FontVariationSettings font_variation_settings;
+    auto axis_count = TRY(decoder.decode_size());
+    for (size_t i = 0; i < axis_count; ++i) {
+        auto tag = Gfx::FourCC::from_u32(TRY(decoder.decode<u32>()));
+        auto value = TRY(decoder.decode<float>());
+        TRY(font_variation_settings.axes.try_set(tag, value));
+    }
+    return font_variation_settings;
+}
+
+static ErrorOr<void> encode_shape_features(Encoder& encoder, Gfx::ShapeFeatures const& shape_features)
+{
+    TRY(encoder.encode_size(shape_features.size()));
+    for (auto const& feature : shape_features) {
+        TRY(encoder.encode(Gfx::FourCC { feature.tag }.to_u32()));
+        TRY(encoder.encode(feature.value));
+    }
+    return {};
+}
+
+static ErrorOr<Gfx::ShapeFeatures> decode_shape_features(Decoder& decoder)
+{
+    Gfx::ShapeFeatures shape_features;
+    auto feature_count = TRY(decoder.decode_size());
+    TRY(shape_features.try_ensure_capacity(feature_count));
+    for (size_t i = 0; i < feature_count; ++i) {
+        auto tag = Gfx::FourCC::from_u32(TRY(decoder.decode<u32>()));
+        auto value = TRY(decoder.decode<u32>());
+        Gfx::ShapeFeature feature {
+            .tag = { tag.cc[0], tag.cc[1], tag.cc[2], tag.cc[3] },
+            .value = value,
+        };
+        shape_features.unchecked_append(feature);
+    }
+    return shape_features;
+}
+
+static ErrorOr<void> encode_resource_ids(Encoder& encoder, ReadonlySpan<Web::Painting::FontResourceId> resource_ids)
+{
+    TRY(encoder.encode_size(resource_ids.size()));
+    for (auto resource_id : resource_ids)
+        TRY(encoder.encode(resource_id.value()));
+    return {};
+}
+
+static ErrorOr<void> encode_resource_ids(Encoder& encoder, ReadonlySpan<Web::Painting::ImageFrameResourceId> resource_ids)
+{
+    TRY(encoder.encode_size(resource_ids.size()));
+    for (auto resource_id : resource_ids)
+        TRY(encoder.encode(resource_id.value()));
+    return {};
+}
+
+static ErrorOr<void> encode_resource_ids(Encoder& encoder, ReadonlySpan<Web::Painting::VideoFrameResourceId> resource_ids)
+{
+    TRY(encoder.encode_size(resource_ids.size()));
+    for (auto resource_id : resource_ids)
+        TRY(encoder.encode(resource_id.value()));
+    return {};
+}
+
+static ErrorOr<void> encode_resource_ids(Encoder& encoder, ReadonlySpan<Web::Painting::DisplayListResourceId> resource_ids)
+{
+    TRY(encoder.encode_size(resource_ids.size()));
+    for (auto resource_id : resource_ids)
+        TRY(encoder.encode(resource_id.value()));
+    return {};
+}
+
+template<typename ResourceId>
+static ErrorOr<Vector<ResourceId>> decode_resource_ids(Decoder& decoder)
+{
+    Vector<ResourceId> resource_ids;
+    auto resource_id_count = TRY(decoder.decode_size());
+    TRY(resource_ids.try_ensure_capacity(resource_id_count));
+    for (size_t i = 0; i < resource_id_count; ++i)
+        resource_ids.unchecked_append(ResourceId { TRY(decoder.decode<u64>()) });
+    return resource_ids;
+}
+
+template<>
+ErrorOr<void> encode(Encoder& encoder, Web::Compositor::SerializedFontDataBuffer const& font_data_buffer)
+{
+    TRY(encoder.encode(font_data_buffer.payload));
+    return {};
+}
+
+template<>
+ErrorOr<Web::Compositor::SerializedFontDataBuffer> decode(Decoder& decoder)
+{
+    return Web::Compositor::SerializedFontDataBuffer {
+        .payload = TRY(decoder.decode<Web::Compositor::SerializedPayload>()),
+    };
+}
+
+template<>
+ErrorOr<void> encode(Encoder& encoder, Web::Compositor::SerializedFontResource const& font)
+{
+    TRY(encoder.encode(font.font_id.value()));
+    TRY(encoder.encode(font.font_data_buffer_index));
+    TRY(encoder.encode(font.ttc_index));
+    TRY(encoder.encode(font.point_size));
+    TRY(encode_font_variation_settings(encoder, font.font_variation_settings));
+    TRY(encode_shape_features(encoder, font.shape_features));
+    return {};
+}
+
+template<>
+ErrorOr<Web::Compositor::SerializedFontResource> decode(Decoder& decoder)
+{
+    return Web::Compositor::SerializedFontResource {
+        .font_id = Web::Painting::FontResourceId { TRY(decoder.decode<u64>()) },
+        .font_data_buffer_index = TRY(decoder.decode<size_t>()),
+        .ttc_index = TRY(decoder.decode<u32>()),
+        .point_size = TRY(decoder.decode<float>()),
+        .font_variation_settings = TRY(decode_font_variation_settings(decoder)),
+        .shape_features = TRY(decode_shape_features(decoder)),
+    };
+}
+
+template<>
+ErrorOr<void> encode(Encoder& encoder, Web::Compositor::SerializedImageFrameResource const& image_frame)
+{
+    TRY(encoder.encode(image_frame.image_frame_id.value()));
+    TRY(encoder.encode(image_frame.bitmap));
+    TRY(encoder.encode(image_frame.color_space));
+    return {};
+}
+
+template<>
+ErrorOr<Web::Compositor::SerializedImageFrameResource> decode(Decoder& decoder)
+{
+    return Web::Compositor::SerializedImageFrameResource {
+        .image_frame_id = Web::Painting::ImageFrameResourceId { TRY(decoder.decode<u64>()) },
+        .bitmap = TRY(decoder.decode<Gfx::ShareableBitmap>()),
+        .color_space = TRY(decoder.decode<Gfx::ColorSpace>()),
+    };
+}
+
+template<>
+ErrorOr<void> encode(Encoder& encoder, Web::Compositor::SerializedVideoFrameSourceResource const& video_frame_source)
+{
+    TRY(encoder.encode(video_frame_source.video_frame_source_id.value()));
+    return {};
+}
+
+template<>
+ErrorOr<Web::Compositor::SerializedVideoFrameSourceResource> decode(Decoder& decoder)
+{
+    return Web::Compositor::SerializedVideoFrameSourceResource {
+        .video_frame_source_id = Web::Painting::VideoFrameResourceId { TRY(decoder.decode<u64>()) },
+    };
+}
+
+template<>
+ErrorOr<void> encode(Encoder& encoder, Web::Compositor::SerializedVideoFrameUpdate const& video_frame_update)
+{
+    TRY(encoder.encode(video_frame_update.video_frame_source_id.value()));
+    TRY(encoder.encode(video_frame_update.frame_sequence_id));
+    TRY(encoder.encode(video_frame_update.size.width()));
+    TRY(encoder.encode(video_frame_update.size.height()));
+    TRY(encoder.encode(video_frame_update.bit_depth));
+    TRY(encoder.encode(video_frame_update.subsampling.x()));
+    TRY(encoder.encode(video_frame_update.subsampling.y()));
+    TRY(encoder.encode(to_underlying(video_frame_update.cicp.color_primaries())));
+    TRY(encoder.encode(to_underlying(video_frame_update.cicp.transfer_characteristics())));
+    TRY(encoder.encode(to_underlying(video_frame_update.cicp.matrix_coefficients())));
+    TRY(encoder.encode(to_underlying(video_frame_update.cicp.video_full_range_flag())));
+    TRY(encoder.encode(video_frame_update.color_space));
+    TRY(encoder.encode(video_frame_update.timestamp));
+    TRY(encoder.encode(video_frame_update.duration));
+    TRY(encoder.encode(video_frame_update.payload));
+    TRY(encoder.encode(video_frame_update.y_plane_offset));
+    TRY(encoder.encode(video_frame_update.y_plane_size));
+    TRY(encoder.encode(video_frame_update.u_plane_offset));
+    TRY(encoder.encode(video_frame_update.u_plane_size));
+    TRY(encoder.encode(video_frame_update.v_plane_offset));
+    TRY(encoder.encode(video_frame_update.v_plane_size));
+    return {};
+}
+
+template<>
+ErrorOr<Web::Compositor::SerializedVideoFrameUpdate> decode(Decoder& decoder)
+{
+    auto video_frame_source_id = Web::Painting::VideoFrameResourceId { TRY(decoder.decode<u64>()) };
+    auto frame_sequence_id = TRY(decoder.decode<u64>());
+    auto width = TRY(decoder.decode<u32>());
+    auto height = TRY(decoder.decode<u32>());
+    auto bit_depth = TRY(decoder.decode<u8>());
+    auto subsampling_x = TRY(decoder.decode<bool>());
+    auto subsampling_y = TRY(decoder.decode<bool>());
+    auto color_primaries = static_cast<Media::ColorPrimaries>(TRY(decoder.decode<u8>()));
+    auto transfer_characteristics = static_cast<Media::TransferCharacteristics>(TRY(decoder.decode<u8>()));
+    auto matrix_coefficients = static_cast<Media::MatrixCoefficients>(TRY(decoder.decode<u8>()));
+    auto video_full_range_flag = static_cast<Media::VideoFullRangeFlag>(TRY(decoder.decode<u8>()));
+    auto color_space = TRY(decoder.decode<Gfx::ColorSpace>());
+    auto timestamp = TRY(decoder.decode<AK::Duration>());
+    auto duration = TRY(decoder.decode<AK::Duration>());
+    auto payload = TRY(decoder.decode<Web::Compositor::SerializedPayload>());
+    auto y_plane_offset = TRY(decoder.decode<size_t>());
+    auto y_plane_size = TRY(decoder.decode<size_t>());
+    auto u_plane_offset = TRY(decoder.decode<size_t>());
+    auto u_plane_size = TRY(decoder.decode<size_t>());
+    auto v_plane_offset = TRY(decoder.decode<size_t>());
+    auto v_plane_size = TRY(decoder.decode<size_t>());
+
+    return Web::Compositor::SerializedVideoFrameUpdate {
+        .video_frame_source_id = video_frame_source_id,
+        .frame_sequence_id = frame_sequence_id,
+        .size = { width, height },
+        .bit_depth = bit_depth,
+        .subsampling = Media::Subsampling { subsampling_x, subsampling_y },
+        .cicp = Media::CodingIndependentCodePoints {
+            color_primaries,
+            transfer_characteristics,
+            matrix_coefficients,
+            video_full_range_flag,
+        },
+        .color_space = move(color_space),
+        .timestamp = timestamp,
+        .duration = duration,
+        .payload = move(payload),
+        .y_plane_offset = y_plane_offset,
+        .y_plane_size = y_plane_size,
+        .u_plane_offset = u_plane_offset,
+        .u_plane_size = u_plane_size,
+        .v_plane_offset = v_plane_offset,
+        .v_plane_size = v_plane_size,
+    };
+}
+
+}
+
 namespace Web::Compositor {
 
 static ErrorOr<ReadonlyBytes> payload_section(SerializedPayload const& payload, size_t offset, size_t size)
@@ -241,173 +489,6 @@ ErrorOr<NonnullRefPtr<Media::VideoFrame>> deserialize_video_frame_update(Seriali
 }
 
 namespace IPC {
-
-static ErrorOr<void> encode_font_variation_settings(Encoder& encoder, Gfx::FontVariationSettings const& font_variation_settings)
-{
-    auto axes = font_variation_settings.to_sorted_list();
-    TRY(encoder.encode_size(axes.size()));
-    for (auto const& axis : axes) {
-        TRY(encoder.encode(axis.tag.to_u32()));
-        TRY(encoder.encode(axis.value));
-    }
-    return {};
-}
-
-static ErrorOr<Gfx::FontVariationSettings> decode_font_variation_settings(Decoder& decoder)
-{
-    Gfx::FontVariationSettings font_variation_settings;
-    auto axis_count = TRY(decoder.decode_size());
-    for (size_t i = 0; i < axis_count; ++i) {
-        auto tag = Gfx::FourCC::from_u32(TRY(decoder.decode<u32>()));
-        auto value = TRY(decoder.decode<float>());
-        TRY(font_variation_settings.axes.try_set(tag, value));
-    }
-    return font_variation_settings;
-}
-
-static ErrorOr<void> encode_shape_features(Encoder& encoder, Gfx::ShapeFeatures const& shape_features)
-{
-    TRY(encoder.encode_size(shape_features.size()));
-    for (auto const& feature : shape_features) {
-        TRY(encoder.encode(Gfx::FourCC { feature.tag }.to_u32()));
-        TRY(encoder.encode(feature.value));
-    }
-    return {};
-}
-
-static ErrorOr<Gfx::ShapeFeatures> decode_shape_features(Decoder& decoder)
-{
-    Gfx::ShapeFeatures shape_features;
-    auto feature_count = TRY(decoder.decode_size());
-    TRY(shape_features.try_ensure_capacity(feature_count));
-    for (size_t i = 0; i < feature_count; ++i) {
-        auto tag = Gfx::FourCC::from_u32(TRY(decoder.decode<u32>()));
-        auto value = TRY(decoder.decode<u32>());
-        Gfx::ShapeFeature feature {
-            .tag = { tag.cc[0], tag.cc[1], tag.cc[2], tag.cc[3] },
-            .value = value,
-        };
-        shape_features.unchecked_append(feature);
-    }
-    return shape_features;
-}
-
-static ErrorOr<void> encode_resource_ids(Encoder& encoder, ReadonlySpan<Web::Painting::FontResourceId> resource_ids)
-{
-    TRY(encoder.encode_size(resource_ids.size()));
-    for (auto resource_id : resource_ids)
-        TRY(encoder.encode(resource_id.value()));
-    return {};
-}
-
-static ErrorOr<void> encode_resource_ids(Encoder& encoder, ReadonlySpan<Web::Painting::ImageFrameResourceId> resource_ids)
-{
-    TRY(encoder.encode_size(resource_ids.size()));
-    for (auto resource_id : resource_ids)
-        TRY(encoder.encode(resource_id.value()));
-    return {};
-}
-
-static ErrorOr<void> encode_resource_ids(Encoder& encoder, ReadonlySpan<Web::Painting::VideoFrameResourceId> resource_ids)
-{
-    TRY(encoder.encode_size(resource_ids.size()));
-    for (auto resource_id : resource_ids)
-        TRY(encoder.encode(resource_id.value()));
-    return {};
-}
-
-static ErrorOr<void> encode_resource_ids(Encoder& encoder, ReadonlySpan<Web::Painting::DisplayListResourceId> resource_ids)
-{
-    TRY(encoder.encode_size(resource_ids.size()));
-    for (auto resource_id : resource_ids)
-        TRY(encoder.encode(resource_id.value()));
-    return {};
-}
-
-template<typename ResourceId>
-static ErrorOr<Vector<ResourceId>> decode_resource_ids(Decoder& decoder)
-{
-    Vector<ResourceId> resource_ids;
-    auto resource_id_count = TRY(decoder.decode_size());
-    TRY(resource_ids.try_ensure_capacity(resource_id_count));
-    for (size_t i = 0; i < resource_id_count; ++i)
-        resource_ids.unchecked_append(ResourceId { TRY(decoder.decode<u64>()) });
-    return resource_ids;
-}
-
-template<>
-ErrorOr<void> encode(Encoder& encoder, Web::Compositor::SerializedFontDataBuffer const& font_data_buffer)
-{
-    TRY(encoder.encode(font_data_buffer.payload));
-    return {};
-}
-
-template<>
-ErrorOr<Web::Compositor::SerializedFontDataBuffer> decode(Decoder& decoder)
-{
-    return Web::Compositor::SerializedFontDataBuffer {
-        .payload = TRY(decoder.decode<Web::Compositor::SerializedPayload>()),
-    };
-}
-
-template<>
-ErrorOr<void> encode(Encoder& encoder, Web::Compositor::SerializedFontResource const& font)
-{
-    TRY(encoder.encode(font.font_id.value()));
-    TRY(encoder.encode(font.font_data_buffer_index));
-    TRY(encoder.encode(font.ttc_index));
-    TRY(encoder.encode(font.point_size));
-    TRY(encode_font_variation_settings(encoder, font.font_variation_settings));
-    TRY(encode_shape_features(encoder, font.shape_features));
-    return {};
-}
-
-template<>
-ErrorOr<Web::Compositor::SerializedFontResource> decode(Decoder& decoder)
-{
-    return Web::Compositor::SerializedFontResource {
-        .font_id = Web::Painting::FontResourceId { TRY(decoder.decode<u64>()) },
-        .font_data_buffer_index = TRY(decoder.decode<size_t>()),
-        .ttc_index = TRY(decoder.decode<u32>()),
-        .point_size = TRY(decoder.decode<float>()),
-        .font_variation_settings = TRY(decode_font_variation_settings(decoder)),
-        .shape_features = TRY(decode_shape_features(decoder)),
-    };
-}
-
-template<>
-ErrorOr<void> encode(Encoder& encoder, Web::Compositor::SerializedImageFrameResource const& image_frame)
-{
-    TRY(encoder.encode(image_frame.image_frame_id.value()));
-    TRY(encoder.encode(image_frame.bitmap));
-    TRY(encoder.encode(image_frame.color_space));
-    return {};
-}
-
-template<>
-ErrorOr<Web::Compositor::SerializedImageFrameResource> decode(Decoder& decoder)
-{
-    return Web::Compositor::SerializedImageFrameResource {
-        .image_frame_id = Web::Painting::ImageFrameResourceId { TRY(decoder.decode<u64>()) },
-        .bitmap = TRY(decoder.decode<Gfx::ShareableBitmap>()),
-        .color_space = TRY(decoder.decode<Gfx::ColorSpace>()),
-    };
-}
-
-template<>
-ErrorOr<void> encode(Encoder& encoder, Web::Compositor::SerializedVideoFrameSourceResource const& video_frame_source)
-{
-    TRY(encoder.encode(video_frame_source.video_frame_source_id.value()));
-    return {};
-}
-
-template<>
-ErrorOr<Web::Compositor::SerializedVideoFrameSourceResource> decode(Decoder& decoder)
-{
-    return Web::Compositor::SerializedVideoFrameSourceResource {
-        .video_frame_source_id = Web::Painting::VideoFrameResourceId { TRY(decoder.decode<u64>()) },
-    };
-}
 
 template<>
 ErrorOr<void> encode(Encoder& encoder, Web::Painting::DisplayListResourceTransaction const& transaction)

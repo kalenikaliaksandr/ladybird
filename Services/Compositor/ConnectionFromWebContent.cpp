@@ -12,6 +12,9 @@
 #include <AK/StdLibExtras.h>
 #include <Compositor/ConnectionFromClient.h>
 #include <Compositor/ConnectionFromWebContent.h>
+#include <LibWeb/Compositor/DisplayListResourceSerialization.h>
+#include <LibWeb/Compositor/DisplayListSerialization.h>
+#include <LibWeb/Compositor/ScrollStateSerialization.h>
 
 namespace Compositor {
 
@@ -145,6 +148,11 @@ void ConnectionFromWebContent::create_context(
                                    .presentation_mode = *presentation_mode,
                                    .display_list_player_type = display_list_player_type,
                                    .viewport_size = {},
+                                   .display_list_resource_storage = {},
+                                   .display_list = {},
+                                   .scroll_state_snapshot = {},
+                                   .has_pending_display_list_update = false,
+                                   .has_pending_scroll_state_update = false,
                                    .is_top_level_traversable = false,
                                    .window_resize_in_progress = Web::Compositor::WindowResizingInProgress::No,
                                    .presents_to_client = presentation_mode->kind == Web::Compositor::SerializedPresentationModeKind::PresentToUI,
@@ -209,6 +217,40 @@ void ConnectionFromWebContent::viewport_size_updated(
     context->viewport_size = viewport_size;
     context->is_top_level_traversable = is_top_level_traversable;
     context->window_resize_in_progress = window_resize_in_progress;
+}
+
+void ConnectionFromWebContent::update_display_list(
+    u64 raw_context_id,
+    NonnullRefPtr<Web::Painting::DisplayList> display_list,
+    Web::Painting::DisplayListResourceTransaction resource_transaction,
+    Web::Painting::ScrollStateSnapshot scroll_state)
+{
+    auto context_id = Web::Compositor::CompositorContextId { raw_context_id };
+    auto context = m_contexts.get(context_id);
+    if (!context.has_value()) {
+        dbgln("Ignoring display list update for missing compositor context {} from WebContent connection {}", context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    context->display_list_resource_storage.apply_transaction(move(resource_transaction));
+
+    context->display_list = move(display_list);
+    context->scroll_state_snapshot = move(scroll_state);
+    context->has_pending_display_list_update = true;
+    context->has_pending_scroll_state_update = true;
+}
+
+void ConnectionFromWebContent::update_scroll_state(u64 raw_context_id, Web::Painting::ScrollStateSnapshot scroll_state)
+{
+    auto context_id = Web::Compositor::CompositorContextId { raw_context_id };
+    auto context = m_contexts.get(context_id);
+    if (!context.has_value()) {
+        dbgln("Ignoring scroll state update for missing compositor context {} from WebContent connection {}", context_id.value(), m_connection_id.value());
+        return;
+    }
+
+    context->scroll_state_snapshot = move(scroll_state);
+    context->has_pending_scroll_state_update = true;
 }
 
 }

@@ -6,6 +6,11 @@
 
 #include <WebContent/RemotePageCompositor.h>
 
+#include <AK/Debug.h>
+#include <LibWeb/Compositor/DisplayListResourceSerialization.h>
+#include <LibWeb/Compositor/DisplayListSerialization.h>
+#include <LibWeb/Compositor/ScrollStateSerialization.h>
+
 namespace WebContent {
 
 RemotePageCompositor::RemotePageCompositor(ConnectionToCompositor& connection, u64 page_id, Optional<PresentationMode> presentation_mode)
@@ -99,8 +104,16 @@ void RemotePageCompositor::set_presentation_mode(PresentationMode presentation_m
         serialized_mode.compositor_surface_id);
 }
 
-void RemotePageCompositor::update_display_list(NonnullRefPtr<Web::Painting::DisplayList>, Web::Painting::DisplayListResourceTransaction&&, Web::Painting::ScrollStateSnapshot&&)
+void RemotePageCompositor::update_display_list(NonnullRefPtr<Web::Painting::DisplayList> display_list, Web::Painting::DisplayListResourceTransaction&& resource_transaction, Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot)
 {
+    if (!m_context_created || !m_connection->is_open())
+        return;
+
+    m_connection->update_display_list(
+        m_context_id,
+        display_list,
+        resource_transaction,
+        scroll_state_snapshot);
 }
 
 void RemotePageCompositor::update_compositor_surface(Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&)
@@ -111,8 +124,12 @@ void RemotePageCompositor::clear_compositor_surface(Web::Painting::CompositorSur
 {
 }
 
-void RemotePageCompositor::update_scroll_state(Web::Painting::ScrollStateSnapshot&&)
+void RemotePageCompositor::update_scroll_state(Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot)
 {
+    if (!m_context_created || !m_connection->is_open())
+        return;
+
+    m_connection->update_scroll_state(m_context_id, scroll_state_snapshot);
 }
 
 void RemotePageCompositor::invalidate_wheel_event_listener_state(u64)
