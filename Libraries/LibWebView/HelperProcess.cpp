@@ -163,6 +163,8 @@ ErrorOr<NonnullRefPtr<WebView::CompositorClient>> launch_compositor_process()
     auto const& web_content_options = WebView::Application::web_content_options();
 
     Vector<ByteString> arguments;
+    if (web_content_options.force_cpu_painting == WebView::ForceCPUPainting::Yes)
+        arguments.append("--force-cpu-painting"sv);
     if (web_content_options.force_fontconfig == WebView::ForceFontconfig::Yes)
         arguments.append("--force-fontconfig"sv);
     if (auto server = mach_server_name(); server.has_value()) {
