@@ -240,6 +240,7 @@ RasterizeResult ConnectionFromWebContent::rasterize_present(ContextState& contex
         *context.scroll_state_snapshot,
         context.hovered_viewport_scrollbar_index,
         context.captured_viewport_scrollbar_index);
+    Web::Compositor::flush_surface(back_store);
 
     auto rendered_bitmap_id = context.backing_store_manager->back_bitmap_id();
     context.backing_store_manager->swap();

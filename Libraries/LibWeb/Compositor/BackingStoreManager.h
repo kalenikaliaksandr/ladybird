@@ -19,6 +19,8 @@ namespace Web::Compositor {
 
 enum class WindowResizingInProgress : u8;
 
+WEB_API void flush_surface(Gfx::PaintingSurface&);
+
 class WEB_API BackingStoreManager {
     AK_MAKE_NONCOPYABLE(BackingStoreManager);
     AK_MAKE_NONMOVABLE(BackingStoreManager);
