@@ -8,6 +8,7 @@
 #include <LibCore/Timer.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibGfx/SharedImage.h>
+#include <LibGfx/SharedImageBuffer.h>
 #include <LibGfx/SkiaBackendContext.h>
 #include <LibMedia/VideoFrame.h>
 #include <LibThreading/Thread.h>
@@ -93,7 +94,7 @@ struct PresentFrameCommand {
 };
 
 struct ScreenshotCommand {
-    NonnullRefPtr<Gfx::PaintingSurface> target_surface;
+    Gfx::SharedImage target;
     Function<void()> callback;
 };
 
@@ -132,6 +133,29 @@ static void flush_surface(Gfx::PaintingSurface& surface)
         }
     }
     surface.flush();
+}
+
+static NonnullRefPtr<Gfx::PaintingSurface> create_screenshot_painting_surface(Gfx::SharedImageBuffer& buffer, RefPtr<Gfx::SkiaBackendContext> const& skia_backend_context)
+{
+#ifdef AK_OS_MACOS
+    if (skia_backend_context)
+        return Gfx::PaintingSurface::create_from_shared_image_buffer(buffer, *skia_backend_context);
+#else
+#    ifdef USE_VULKAN
+    if (skia_backend_context) {
+        auto bitmap = buffer.bitmap();
+        auto surface = Gfx::PaintingSurface::create_with_size(bitmap->size(), Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, skia_backend_context);
+        surface->on_flush = [bitmap = move(bitmap)](auto& surface) {
+            surface.read_into_bitmap(*bitmap);
+        };
+        return surface;
+    }
+#    else
+    (void)skia_backend_context;
+#    endif
+#endif
+
+    return Gfx::PaintingSurface::wrap_bitmap(*buffer.bitmap());
 }
 
 static constexpr u64 page_presenting_context_id_tag = 1ull << 63;
@@ -659,9 +683,11 @@ public:
                     [this, &context](ScreenshotCommand& cmd) {
                         if (!context.cached_display_list)
                             return;
-                        m_skia_player->execute(*context.cached_display_list, context.display_list_resource_storage, context.cached_scroll_state_snapshot, *cmd.target_surface);
-                        paint_viewport_scrollbar_overlay(context, *cmd.target_surface);
-                        flush_surface(*cmd.target_surface);
+                        auto target_buffer = Gfx::SharedImageBuffer::import_from_shared_image(move(cmd.target));
+                        auto target_surface = create_screenshot_painting_surface(target_buffer, m_skia_backend_context);
+                        m_skia_player->execute(*context.cached_display_list, context.display_list_resource_storage, context.cached_scroll_state_snapshot, *target_surface);
+                        paint_viewport_scrollbar_overlay(context, *target_surface);
+                        flush_surface(*target_surface);
                         if (cmd.callback) {
                             invoke_on_main_thread([callback = move(cmd.callback)]() mutable {
                                 callback();
@@ -1393,9 +1419,9 @@ void CompositorThread::Context::present_frame(Gfx::IntRect viewport_rect)
     m_thread_data->enqueue_present_frame(m_context_id, viewport_rect);
 }
 
-void CompositorThread::Context::request_screenshot(NonnullRefPtr<Gfx::PaintingSurface> target_surface, Function<void()>&& callback)
+void CompositorThread::Context::request_screenshot(Gfx::SharedImage&& target, Function<void()>&& callback)
 {
-    m_thread_data->enqueue_command(m_context_id, ScreenshotCommand { move(target_surface), move(callback) });
+    m_thread_data->enqueue_command(m_context_id, ScreenshotCommand { move(target), move(callback) });
 }
 
 }

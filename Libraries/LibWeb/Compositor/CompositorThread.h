@@ -95,7 +95,7 @@ public:
         PendingAsyncScrollUpdates take_pending_async_scroll_updates();
         void viewport_size_updated(Gfx::IntSize, bool is_top_level_traversable, WindowResizingInProgress);
         void present_frame(Gfx::IntRect);
-        void request_screenshot(NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&& callback);
+        void request_screenshot(Gfx::SharedImage&&, Function<void()>&& callback);
 
     private:
         friend class CompositorThread;

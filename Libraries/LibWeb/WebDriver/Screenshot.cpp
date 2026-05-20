@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGfx/Bitmap.h>
+#include <LibGfx/SharedImageBuffer.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/HTML/BrowsingContext.h>
@@ -57,18 +57,17 @@ ErrorOr<GC::Ref<HTML::HTMLCanvasElement>, WebDriver::Error> draw_bounding_box_fr
     //    - Height: paint height
     Gfx::IntRect paint_rect { rect.x(), rect.y(), paint_width, paint_height };
 
-    auto bitmap = MUST(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, canvas.surface()->size()));
-    auto painting_surface = Gfx::PaintingSurface::wrap_bitmap(bitmap);
+    auto buffer = Gfx::SharedImageBuffer::create(canvas.surface()->size());
     IGNORE_USE_IN_ESCAPING_LAMBDA bool did_paint = false;
     HTML::PaintConfig paint_config { .canvas_fill_rect = paint_rect };
-    browsing_context.active_document()->navigable()->render_screenshot(painting_surface, paint_config, [&did_paint] {
+    browsing_context.active_document()->navigable()->render_screenshot(buffer.export_shared_image(), paint_config, [&did_paint] {
         did_paint = true;
     });
     HTML::main_thread_event_loop().spin_until(GC::create_function(HTML::main_thread_event_loop().heap(), [&] {
         return did_paint;
     }));
 
-    canvas.surface()->write_from_bitmap(*bitmap);
+    canvas.surface()->write_from_bitmap(*buffer.bitmap());
 
     // 7. Return success with canvas.
     return canvas;

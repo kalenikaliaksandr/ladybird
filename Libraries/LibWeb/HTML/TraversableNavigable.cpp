@@ -7,7 +7,7 @@
  */
 
 #include <AK/QuickSort.h>
-#include <LibGfx/Bitmap.h>
+#include <LibGfx/SharedImageBuffer.h>
 #include <LibGfx/SkiaBackendContext.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/DOM/Document.h>
@@ -1834,31 +1834,19 @@ void TraversableNavigable::process_screenshot_requests()
                 continue;
             }
             auto rect = page().enclosing_device_rect(dom_node->paintable_box()->absolute_border_box_rect());
-            auto bitmap_or_error = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, rect.size().to_type<int>());
-            if (bitmap_or_error.is_error()) {
-                client.page_did_take_screenshot({});
-                continue;
-            }
-            auto bitmap = bitmap_or_error.release_value();
-            auto painting_surface = Gfx::PaintingSurface::wrap_bitmap(*bitmap);
+            auto buffer = Gfx::SharedImageBuffer::create(rect.size().to_type<int>());
             PaintConfig paint_config { .canvas_fill_rect = rect.to_type<int>() };
-            render_screenshot(painting_surface, paint_config, [bitmap, &client] {
-                client.page_did_take_screenshot(bitmap->to_shareable_bitmap());
+            render_screenshot(buffer.export_shared_image(), paint_config, [buffer = move(buffer), &client] {
+                client.page_did_take_screenshot(buffer.bitmap()->to_shareable_bitmap());
             });
         } else {
             active_document()->update_layout(DOM::UpdateLayoutReason::ProcessScreenshot);
             auto scrollable_overflow_rect = active_document()->layout_node()->paintable_box()->scrollable_overflow_rect();
             auto rect = page().enclosing_device_rect(scrollable_overflow_rect.value());
-            auto bitmap_or_error = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, rect.size().to_type<int>());
-            if (bitmap_or_error.is_error()) {
-                client.page_did_take_screenshot({});
-                continue;
-            }
-            auto bitmap = bitmap_or_error.release_value();
-            auto painting_surface = Gfx::PaintingSurface::wrap_bitmap(*bitmap);
+            auto buffer = Gfx::SharedImageBuffer::create(rect.size().to_type<int>());
             PaintConfig paint_config { .paint_overlay = true, .canvas_fill_rect = rect.to_type<int>() };
-            render_screenshot(painting_surface, paint_config, [bitmap, &client] {
-                client.page_did_take_screenshot(bitmap->to_shareable_bitmap());
+            render_screenshot(buffer.export_shared_image(), paint_config, [buffer = move(buffer), &client] {
+                client.page_did_take_screenshot(buffer.bitmap()->to_shareable_bitmap());
             });
         }
     }

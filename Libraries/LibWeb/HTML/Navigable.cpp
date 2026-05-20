@@ -3384,7 +3384,7 @@ void Navigable::paint_next_frame()
     compositor_context().present_frame(viewport_rect);
 }
 
-void Navigable::render_screenshot(Gfx::PaintingSurface& painting_surface, PaintConfig paint_config, Function<void()>&& callback)
+void Navigable::render_screenshot(Gfx::SharedImage&& target, PaintConfig paint_config, Function<void()>&& callback)
 {
     if (!has_compositor_context()) {
         callback();
@@ -3392,7 +3392,7 @@ void Navigable::render_screenshot(Gfx::PaintingSurface& painting_surface, PaintC
     }
 
     record_display_list_and_scroll_state(paint_config);
-    compositor_context().request_screenshot(painting_surface, move(callback));
+    compositor_context().request_screenshot(move(target), move(callback));
 }
 
 GC::Ref<WebIDL::Promise> Navigable::scroll_viewport_by_delta(CSSPixelPoint delta)

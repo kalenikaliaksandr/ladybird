@@ -233,7 +233,7 @@ public:
 
     void record_display_list_and_scroll_state(PaintConfig);
     void paint_next_frame();
-    void render_screenshot(Gfx::PaintingSurface&, PaintConfig, Function<void()>&& callback);
+    void render_screenshot(Gfx::SharedImage&&, PaintConfig, Function<void()>&& callback);
 
     bool needs_repaint() const { return m_needs_repaint; }
     void set_needs_repaint() { m_needs_repaint = true; }
