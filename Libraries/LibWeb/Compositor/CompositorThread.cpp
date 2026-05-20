@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibCore/EventLoop.h>
 #include <LibCore/Timer.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibGfx/SharedImage.h>
@@ -18,7 +17,6 @@
 #include <LibWeb/Compositor/CompositorClient.h>
 #include <LibWeb/Compositor/CompositorContextState.h>
 #include <LibWeb/Compositor/CompositorThread.h>
-#include <LibWeb/HTML/EventLoop/EventLoop.h>
 #include <LibWeb/Page/InputEvent.h>
 #include <LibWeb/Painting/DisplayListPlayerSkia.h>
 #include <LibWeb/Painting/DisplayListResourceTransport.h>
@@ -177,79 +175,6 @@ static bool is_page_presenting_context_id(CompositorContextId context_id)
 {
     return (context_id.value() & page_presenting_context_id_tag) != 0;
 }
-
-class CompositorThread::MainThreadClient final : public CompositorMainThreadClient {
-public:
-    explicit MainThreadClient(NonnullRefPtr<Core::WeakEventLoopReference> main_thread_event_loop)
-        : m_main_thread_event_loop(move(main_thread_event_loop))
-    {
-    }
-
-    ScreenshotRequestId register_screenshot_callback(Function<void()>&& callback)
-    {
-        auto request_id = ScreenshotRequestId { m_next_screenshot_request_id.fetch_add(1, AK::MemoryOrder::memory_order_relaxed) };
-        Sync::MutexLocker const locker { m_mutex };
-        m_screenshot_callbacks.set(request_id, move(callback));
-        return request_id;
-    }
-
-    virtual void request_rendering_update() override
-    {
-        invoke_on_main_thread([] {
-            HTML::main_thread_event_loop().queue_task_to_update_the_rendering();
-        });
-    }
-
-    virtual void did_complete_screenshot(ScreenshotRequestId request_id) override
-    {
-        invoke_on_main_thread([this, request_id] {
-            invoke_screenshot_callback(request_id);
-        });
-    }
-
-    virtual void did_fail_screenshot(ScreenshotRequestId request_id) override
-    {
-        invoke_on_main_thread([this, request_id] {
-            invoke_screenshot_callback(request_id);
-        });
-    }
-
-    virtual void did_lose_compositor() override
-    {
-    }
-
-private:
-    void invoke_screenshot_callback(ScreenshotRequestId request_id)
-    {
-        Function<void()> callback;
-        {
-            Sync::MutexLocker const locker { m_mutex };
-            auto iterator = m_screenshot_callbacks.find(request_id);
-            if (iterator == m_screenshot_callbacks.end())
-                return;
-            callback = move((*iterator).value);
-            m_screenshot_callbacks.remove(request_id);
-        }
-        if (callback)
-            callback();
-    }
-
-    template<typename Invokee>
-    void invoke_on_main_thread(Invokee invokee)
-    {
-        auto event_loop = m_main_thread_event_loop->take();
-        if (!event_loop)
-            return;
-        event_loop->deferred_invoke([self = NonnullRefPtr(*this), invokee = move(invokee)]() mutable {
-            invokee();
-        });
-    }
-
-    NonnullRefPtr<Core::WeakEventLoopReference> m_main_thread_event_loop;
-    Sync::Mutex m_mutex;
-    HashMap<ScreenshotRequestId, Function<void()>> m_screenshot_callbacks;
-    Atomic<u64> m_next_screenshot_request_id { 1 };
-};
 
 class CompositorThread::ThreadData final : public AtomicRefCounted<ThreadData> {
 public:
@@ -1185,16 +1110,8 @@ public:
     }
 };
 
-CompositorThread::CompositorThread()
-    : m_direct_main_thread_client(adopt_ref(*new MainThreadClient(Core::EventLoop::current_weak())))
-    , m_main_thread_client(*m_direct_main_thread_client)
-    , m_thread_data(adopt_ref(*new ThreadData(m_main_thread_client)))
-{
-}
-
 CompositorThread::CompositorThread(NonnullRefPtr<CompositorMainThreadClient> main_thread_client)
-    : m_main_thread_client(move(main_thread_client))
-    , m_thread_data(adopt_ref(*new ThreadData(m_main_thread_client)))
+    : m_thread_data(adopt_ref(*new ThreadData(move(main_thread_client))))
 {
 }
 
@@ -1350,13 +1267,6 @@ void CompositorThread::viewport_size_updated(
 void CompositorThread::present_frame(CompositorContextId context_id, Gfx::IntRect viewport_rect)
 {
     m_thread_data->enqueue_present_frame(context_id, viewport_rect);
-}
-
-void CompositorThread::request_screenshot(CompositorContextId context_id, Gfx::SharedImage&& target, Function<void()>&& callback)
-{
-    VERIFY(m_direct_main_thread_client);
-    auto request_id = m_direct_main_thread_client->register_screenshot_callback(move(callback));
-    request_screenshot(context_id, move(target), request_id);
 }
 
 void CompositorThread::request_screenshot(CompositorContextId context_id, Gfx::SharedImage&& target, ScreenshotRequestId request_id)

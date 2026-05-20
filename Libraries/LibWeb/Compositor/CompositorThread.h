@@ -46,9 +46,7 @@ class WEB_API CompositorThread {
 
 public:
     class ThreadData;
-    class MainThreadClient;
 
-    CompositorThread();
     explicit CompositorThread(NonnullRefPtr<CompositorMainThreadClient>);
     ~CompositorThread();
 
@@ -78,13 +76,10 @@ public:
     PendingAsyncScrollUpdates take_pending_async_scroll_updates(CompositorContextId);
     void viewport_size_updated(CompositorContextId, Gfx::IntSize, bool is_top_level_traversable, WindowResizingInProgress);
     void present_frame(CompositorContextId, Gfx::IntRect);
-    void request_screenshot(CompositorContextId, Gfx::SharedImage&&, Function<void()>&& callback);
     void request_screenshot(CompositorContextId, Gfx::SharedImage&&, ScreenshotRequestId);
     void start(DisplayListPlayerType);
 
 private:
-    RefPtr<MainThreadClient> m_direct_main_thread_client;
-    NonnullRefPtr<CompositorMainThreadClient> m_main_thread_client;
     NonnullRefPtr<ThreadData> m_thread_data;
     RefPtr<Threading::Thread> m_thread;
 };

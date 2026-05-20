@@ -7,7 +7,6 @@
 #pragma once
 
 #include <AK/Noncopyable.h>
-#include <AK/NonnullOwnPtr.h>
 #include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
 #include <AK/Types.h>
@@ -73,7 +72,6 @@ class WEB_API CompositorHost {
     AK_MAKE_NONMOVABLE(CompositorHost);
 
 public:
-    static NonnullOwnPtr<CompositorHost> create();
     virtual ~CompositorHost();
 
     void start(DisplayListPlayerType);

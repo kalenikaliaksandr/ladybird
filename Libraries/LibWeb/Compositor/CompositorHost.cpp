@@ -10,113 +10,6 @@
 
 namespace Web::Compositor {
 
-class DirectCompositorHost final : public CompositorHost {
-public:
-    DirectCompositorHost()
-        : m_compositor_thread(make<CompositorThread>())
-    {
-    }
-
-private:
-    virtual void start_impl(DisplayListPlayerType display_list_player_type) override
-    {
-        m_compositor_thread->start(display_list_player_type);
-    }
-
-    virtual CompositorContextId create_context_impl(Optional<u64> page_id, PagePresentationRegistration page_presentation_registration) override
-    {
-        return m_compositor_thread->create_context(page_id, page_presentation_registration);
-    }
-
-    virtual void destroy_context_impl(CompositorContextId context_id) override
-    {
-        m_compositor_thread->destroy_context(context_id);
-    }
-
-    virtual void stop_presenting_to_client_impl(CompositorContextId context_id) override
-    {
-        m_compositor_thread->stop_presenting_to_client(context_id);
-    }
-
-    virtual void set_presentation_mode_impl(CompositorContextId context_id, PresentationMode mode) override
-    {
-        m_compositor_thread->set_presentation_mode(context_id, move(mode));
-    }
-
-    virtual void update_display_list_impl(CompositorContextId context_id, NonnullRefPtr<Painting::DisplayList> display_list, Painting::DisplayListResourceTransaction&& resource_transaction, Painting::ScrollStateSnapshot&& scroll_state_snapshot) override
-    {
-        m_compositor_thread->update_display_list(context_id, move(display_list), move(resource_transaction), move(scroll_state_snapshot));
-    }
-
-    virtual void update_video_frame_impl(CompositorContextId context_id, Painting::VideoFrameResourceId frame_id, NonnullRefPtr<Media::VideoFrame const> frame) override
-    {
-        m_compositor_thread->update_video_frame(context_id, frame_id, move(frame));
-    }
-
-    virtual void clear_video_frame_impl(CompositorContextId context_id, Painting::VideoFrameResourceId frame_id) override
-    {
-        m_compositor_thread->clear_video_frame(context_id, frame_id);
-    }
-
-    virtual void update_compositor_surface_impl(CompositorContextId context_id, Painting::CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image) override
-    {
-        m_compositor_thread->update_compositor_surface(context_id, surface_id, move(shared_image));
-    }
-
-    virtual void clear_compositor_surface_impl(CompositorContextId context_id, Painting::CompositorSurfaceId surface_id) override
-    {
-        m_compositor_thread->clear_compositor_surface(context_id, surface_id);
-    }
-
-    virtual void update_scroll_state_impl(CompositorContextId context_id, Painting::ScrollStateSnapshot&& scroll_state_snapshot) override
-    {
-        m_compositor_thread->update_scroll_state(context_id, move(scroll_state_snapshot));
-    }
-
-    virtual void invalidate_wheel_event_listener_state_impl(CompositorContextId context_id, u64 generation) override
-    {
-        m_compositor_thread->invalidate_wheel_event_listener_state(context_id, generation);
-    }
-
-    virtual AsyncScrollEnqueueResult async_scroll_by_impl(CompositorContextId context_id, UniqueNodeID expected_document_id, Gfx::FloatPoint position,
-        Gfx::FloatPoint delta_in_device_pixels, Gfx::IntRect viewport_rect, AsyncScrollOperationTracking operation_tracking) override
-    {
-        return m_compositor_thread->async_scroll_by(context_id, expected_document_id, position, delta_in_device_pixels, viewport_rect, operation_tracking);
-    }
-
-    virtual bool should_defer_async_scroll_offset_adoption_impl(CompositorContextId context_id) const override
-    {
-        return m_compositor_thread->should_defer_async_scroll_offset_adoption(context_id);
-    }
-
-    virtual bool should_defer_main_thread_present_for_async_scroll_impl(CompositorContextId context_id) const override
-    {
-        return m_compositor_thread->should_defer_main_thread_present_for_async_scroll(context_id);
-    }
-
-    virtual PendingAsyncScrollUpdates take_pending_async_scroll_updates_impl(CompositorContextId context_id) override
-    {
-        return m_compositor_thread->take_pending_async_scroll_updates(context_id);
-    }
-
-    virtual void viewport_size_updated_impl(CompositorContextId context_id, Gfx::IntSize viewport_size, bool is_top_level_traversable, WindowResizingInProgress window_resize_in_progress) override
-    {
-        m_compositor_thread->viewport_size_updated(context_id, viewport_size, is_top_level_traversable, window_resize_in_progress);
-    }
-
-    virtual void present_frame_impl(CompositorContextId context_id, Gfx::IntRect viewport_rect) override
-    {
-        m_compositor_thread->present_frame(context_id, viewport_rect);
-    }
-
-    virtual void request_screenshot_impl(CompositorContextId context_id, Gfx::SharedImage&& target, Function<void()>&& callback) override
-    {
-        m_compositor_thread->request_screenshot(context_id, move(target), move(callback));
-    }
-
-    OwnPtr<CompositorThread> m_compositor_thread;
-};
-
 CompositorContextHandle::CompositorContextHandle(CompositorHost& host, CompositorContextId context_id)
     : m_host(host)
     , m_context_id(context_id)
@@ -263,11 +156,6 @@ void CompositorContextHandle::cancel_backing_store_shrink_timer()
     m_backing_store_shrink_timer->on_timeout = {};
     m_backing_store_shrink_timer->stop();
     m_backing_store_shrink_timer.clear();
-}
-
-NonnullOwnPtr<CompositorHost> CompositorHost::create()
-{
-    return make<DirectCompositorHost>();
 }
 
 CompositorHost::~CompositorHost() = default;
