@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/Error.h>
 #include <AK/Forward.h>
 #include <AK/HashMap.h>
 #include <AK/HashTable.h>
@@ -22,6 +23,8 @@
 #include <LibWeb/Painting/DisplayListResourceIds.h>
 
 namespace Web::Painting {
+
+struct DisplayListResourceTransactionTransport;
 
 struct DisplayListResourceSet {
     HashTable<FontResourceId> fonts;
@@ -59,8 +62,13 @@ public:
     ImageFrameResourceId add_image_frame(Gfx::DecodedImageFrame const&);
     VideoFrameResourceId add_video_frame(VideoFrameResourceId, RefPtr<Media::VideoFrame const> = nullptr);
     DisplayListResourceId add_display_list(NonnullRefPtr<DisplayList const>);
+    void set_font(FontResourceId, NonnullRefPtr<Gfx::Font const>);
+    void set_image_frame(ImageFrameResourceId, Gfx::DecodedImageFrame);
+    void set_video_frame(VideoFrameResourceId, RefPtr<Media::VideoFrame const> = nullptr);
+    void set_display_list(DisplayListResourceId, NonnullRefPtr<DisplayList const>);
     void append_referenced_resources_from(DisplayListResourceStorage const& source, ReadonlyBytes command_bytes);
     void apply_transaction(DisplayListResourceTransaction&&);
+    ErrorOr<void> apply_transport_transaction(DisplayListResourceTransactionTransport&&);
     DisplayListResourceTransaction create_transaction(DisplayListResourceSet const& previous, DisplayListResourceSet const& current) const;
     DisplayListResourceSet collect_referenced_resources(DisplayList const&) const;
     DisplayListResourceSet collect_referenced_resources(ReadonlyBytes command_bytes) const;
