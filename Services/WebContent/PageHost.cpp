@@ -6,8 +6,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibIPC/TransportHandle.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
-#include <LibWeb/Compositor/CompositorThread.h>
+#include <LibWeb/Compositor/CompositorHost.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
 #include <WebContent/ConnectionFromClient.h>
 #include <WebContent/PageClient.h>
@@ -44,12 +45,16 @@ Optional<PageClient&> PageHost::page(u64 index)
 
 PageHost::~PageHost() = default;
 
-void PageHost::ensure_compositor_thread(Web::DisplayListPlayerType display_list_player_type)
+void PageHost::ensure_compositor_host(Web::DisplayListPlayerType display_list_player_type)
 {
-    if (m_compositor_thread)
+    if (m_compositor_host)
         return;
-    m_compositor_thread = make<Web::Compositor::CompositorThread>();
-    m_compositor_thread->start(display_list_player_type);
+    m_compositor_host = Web::Compositor::CompositorHost::create();
+    m_compositor_host->start(display_list_player_type);
+}
+
+void PageHost::attach_compositor_ui_client(IPC::TransportHandle)
+{
 }
 
 }

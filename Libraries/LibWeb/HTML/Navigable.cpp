@@ -10,6 +10,7 @@
 #include <LibWeb/CSS/PseudoElement.h>
 #include <LibWeb/CSS/SystemColor.h>
 #include <LibWeb/CSS/VisualViewport.h>
+#include <LibWeb/Compositor/CompositorHost.h>
 #include <LibWeb/ContentSecurityPolicy/BlockingAlgorithms.h>
 #include <LibWeb/ContentSecurityPolicy/Directives/DirectiveOperations.h>
 #include <LibWeb/ContentSecurityPolicy/PolicyList.h>
@@ -276,33 +277,36 @@ bool Navigable::is_ancestor_of(GC::Ref<Navigable> other) const
 Navigable::Navigable(
     GC::Ref<Page> page,
     bool is_svg_page,
-    Compositor::CompositorThread::PagePresentationRegistration page_presentation_registration)
+    Compositor::PagePresentationRegistration page_presentation_registration)
     : m_page(page)
     , m_event_handler({}, *this)
     , m_is_svg_page(is_svg_page)
 {
     all_navigables().set(*this);
 
-    if (!m_is_svg_page && page->has_compositor_thread()) {
+    if (!m_is_svg_page && page->has_compositor_host()) {
         Optional<u64> page_id;
-        if (page_presentation_registration == Compositor::CompositorThread::PagePresentationRegistration::Yes)
+        if (page_presentation_registration == Compositor::PagePresentationRegistration::Yes)
             page_id = page->client().id();
-        m_compositor_context = page->compositor_thread().create_context(page_id, page_presentation_registration);
+        m_compositor_context = page->compositor_host().create_context(page_id, page_presentation_registration);
     }
 }
 
-Navigable::~Navigable() = default;
+Navigable::~Navigable()
+{
+    destroy_compositor_context();
+}
 
 void Navigable::set_has_been_destroyed()
 {
-    clear_compositor_surface();
+    destroy_compositor_context();
     m_has_been_destroyed = true;
     resolve_all_pending_async_scroll_operations();
 }
 
 void Navigable::remove_from_all_navigables()
 {
-    clear_compositor_surface();
+    destroy_compositor_context();
     resolve_all_pending_async_scroll_operations();
 
     if (m_active_document)
@@ -312,7 +316,7 @@ void Navigable::remove_from_all_navigables()
 
 void Navigable::finalize()
 {
-    clear_compositor_surface();
+    destroy_compositor_context();
     all_navigables().remove(*this);
     Base::finalize();
 }
@@ -432,7 +436,7 @@ void Navigable::initialize_navigable(NonnullRefPtr<DocumentState> document_state
         m_should_show_line_box_borders = parent->m_should_show_line_box_borders;
     if (parent && !m_is_svg_page && has_compositor_context() && parent->has_compositor_context()) {
         m_compositor_surface_id = Painting::allocate_compositor_surface_id();
-        compositor_context().set_presentation_mode(Compositor::CompositorThread::PublishToCompositorSurface {
+        compositor_context().set_presentation_mode(Compositor::PublishToCompositorSurface {
             .target_context_id = parent->compositor_context().id(),
             .surface_id = *m_compositor_surface_id,
         });
@@ -3293,6 +3297,15 @@ void Navigable::clear_compositor_surface()
     m_compositor_surface_id.clear();
 }
 
+void Navigable::destroy_compositor_context()
+{
+    clear_compositor_surface();
+    if (!m_compositor_context)
+        return;
+    m_compositor_context->destroy();
+    m_compositor_context.clear();
+}
+
 void Navigable::set_should_show_line_box_borders(bool value)
 {
     m_should_show_line_box_borders = value;
@@ -3302,15 +3315,15 @@ void Navigable::set_should_show_line_box_borders(bool value)
         child_navigable->set_should_show_line_box_borders(value);
 }
 
-void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
+bool Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
 {
     if (!has_compositor_context())
-        return;
+        return false;
 
     m_needs_repaint = false;
     auto document = active_document();
     if (!document)
-        return;
+        return false;
 
     adopt_pending_async_scroll_offsets();
 
@@ -3319,17 +3332,16 @@ void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
         || !(m_rendering_thread_display_list_paint_config.value() == paint_config);
 
     RefPtr<Painting::DisplayList> display_list;
+    Painting::DisplayListResourceSet display_list_resources;
     Painting::DisplayListResourceTransaction resource_transaction;
     if (should_record_display_list) {
         display_list = document->record_display_list(paint_config, m_display_list_resource_storage);
         if (!display_list)
-            return;
-        auto display_list_resources = m_display_list_resource_storage.collect_referenced_resources(*display_list);
+            return false;
+        display_list_resources = m_display_list_resource_storage.collect_referenced_resources(*display_list);
         resource_transaction = m_display_list_resource_storage.create_transaction(
             m_rendering_thread_display_list_resources,
             display_list_resources);
-        m_display_list_resource_storage.retain_only(display_list_resources);
-        m_rendering_thread_display_list_resources = move(display_list_resources);
     }
 
     auto document_paintable = document->paintable();
@@ -3339,11 +3351,14 @@ void Navigable::record_display_list_and_scroll_state(PaintConfig paint_config)
     Painting::ScrollStateSnapshot scroll_state_snapshot { document_paintable->scroll_state_snapshot() };
     if (should_record_display_list) {
         compositor_context().update_display_list(*display_list, move(resource_transaction), move(scroll_state_snapshot));
+        m_display_list_resource_storage.retain_only(display_list_resources);
+        m_rendering_thread_display_list_resources = move(display_list_resources);
         m_needs_to_record_display_list = false;
         m_rendering_thread_display_list_paint_config = paint_config;
     } else {
         compositor_context().update_scroll_state(move(scroll_state_snapshot));
     }
+    return true;
 }
 
 void Navigable::paint_next_frame()
@@ -3373,7 +3388,8 @@ void Navigable::paint_next_frame()
     if (should_defer_main_thread_present_for_async_scroll())
         return;
 
-    record_display_list_and_scroll_state(paint_config);
+    if (!record_display_list_and_scroll_state(paint_config))
+        return;
 
     viewport_rect = page().css_to_device_rect(this->viewport_rect()).to_type<int>();
     if (should_defer_main_thread_present_for_async_scroll()) {
@@ -3391,7 +3407,10 @@ void Navigable::render_screenshot(Gfx::SharedImage&& target, PaintConfig paint_c
         return;
     }
 
-    record_display_list_and_scroll_state(paint_config);
+    if (!record_display_list_and_scroll_state(paint_config)) {
+        callback();
+        return;
+    }
     compositor_context().request_screenshot(move(target), move(callback));
 }
 
