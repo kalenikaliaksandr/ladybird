@@ -13,6 +13,7 @@
 #include <WebContent/ConnectionFromClient.h>
 #include <WebContent/PageClient.h>
 #include <WebContent/PageHost.h>
+#include <WebContent/WebContentCompositorHost.h>
 #include <WebContent/WebDriverConnection.h>
 
 namespace WebContent {
@@ -49,12 +50,14 @@ void PageHost::ensure_compositor_host(Web::DisplayListPlayerType display_list_pl
 {
     if (m_compositor_host)
         return;
-    m_compositor_host = Web::Compositor::CompositorHost::create();
+    m_compositor_host = create_web_content_compositor_host();
     m_compositor_host->start(display_list_player_type);
 }
 
-void PageHost::attach_compositor_ui_client(IPC::TransportHandle)
+void PageHost::attach_compositor_ui_client(IPC::TransportHandle handle)
 {
+    if (m_compositor_host)
+        attach_ui_client_to_web_content_compositor_host(*m_compositor_host, move(handle));
 }
 
 }
