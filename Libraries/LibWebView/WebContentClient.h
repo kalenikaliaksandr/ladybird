@@ -9,6 +9,7 @@
 #include <AK/HashMap.h>
 #include <AK/NonnullRawPtr.h>
 #include <AK/Optional.h>
+#include <AK/RefPtr.h>
 #include <AK/SourceLocation.h>
 #include <AK/String.h>
 #include <AK/StringView.h>
@@ -21,6 +22,7 @@
 #include <LibRequests/RequestTimingInfo.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/CSS/StyleSheetIdentifier.h>
+#include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/HTML/ActivateTab.h>
 #include <LibWeb/HTML/FileFilter.h>
@@ -48,6 +50,8 @@ public:
     static void for_each_client(Callback callback);
 
     static size_t client_count() { return s_clients.size(); }
+    static RefPtr<WebContentClient> client_for_page_id(u64);
+    static Optional<WebContentClient&> client_for_compositor_context_id(Web::Compositor::CompositorContextId);
 
     explicit WebContentClient(NonnullOwnPtr<IPC::Transport>);
     WebContentClient(NonnullOwnPtr<IPC::Transport>, ViewImplementation&);
@@ -56,30 +60,37 @@ public:
     void assign_view(Badge<Application>, ViewImplementation&);
     void register_view(u64 page_id, ViewImplementation&);
     void unregister_view(u64 page_id);
+    bool has_view_for_page_id(u64 page_id) const { return m_views.contains(page_id); }
 
     void web_ui_disconnected(Badge<WebUI>);
 
     bool has_views() const { return !m_views.is_empty(); }
 
     void notify_all_views_of_crash();
+    Web::Compositor::CompositorContextId compositor_context_id_for_page(u64 page_id);
+    Optional<u64> page_id_for_compositor_context_id(Web::Compositor::CompositorContextId) const;
     bool send_async_scroll_to_compositor(u64 page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels);
     bool send_mouse_event_to_compositor(u64 page_id, Web::MouseEvent const&);
+    void send_mouse_event_to_page(u64 page_id, Web::MouseEvent const&);
     void notify_presented_bitmap_ready_to_paint(u64 page_id, i32 bitmap_id);
     void did_present_backing_stores(u64 page_id, i32 front_bitmap_id, Gfx::SharedImage front_backing_store, i32 back_bitmap_id, Gfx::SharedImage back_backing_store);
     void did_present_bitmap(u64 page_id, Gfx::IntRect, i32 bitmap_id);
+    virtual void did_request_cursor_change(u64 page_id, Gfx::Cursor) override;
 
     pid_t pid() const { return m_process_handle.pid; }
     void set_pid(pid_t pid) { m_process_handle.pid = pid; }
 
 private:
     void maybe_record_history_visit_for_current_load(u64 page_id, URL::URL const&, Optional<String> title, StringView reason);
+    void destroy_all_compositor_contexts();
 
     virtual void die() override;
 
+    virtual Messages::WebContentClient::AllocateCompositorContextIdResponse allocate_compositor_context_id(u64 page_id, Web::Compositor::PagePresentationRegistration) override;
+    virtual void destroy_compositor_context(Web::Compositor::CompositorContextId) override;
     virtual void did_request_new_process_for_navigation(u64 page_id, URL::URL url) override;
     virtual void did_finish_loading(u64 page_id, URL::URL) override;
     virtual void did_request_refresh(u64 page_id) override;
-    virtual void did_request_cursor_change(u64 page_id, Gfx::Cursor) override;
     virtual void did_change_title(u64 page_id, Utf16String) override;
     virtual void did_change_url(u64 page_id, URL::URL) override;
     virtual void did_request_tooltip_override(u64 page_id, Gfx::IntPoint, ByteString) override;
@@ -165,8 +176,12 @@ private:
     virtual Messages::WebContentClient::RequestWorkerAgentResponse request_worker_agent(u64 page_id, Web::Bindings::AgentType worker_type) override;
 
     Optional<ViewImplementation&> view_for_page_id(u64, SourceLocation = SourceLocation::current());
+    Web::Compositor::CompositorContextId ensure_page_compositor_context_id(u64 page_id);
 
     HashMap<u64, NonnullRawPtr<ViewImplementation>> m_views;
+    HashTable<Web::Compositor::CompositorContextId> m_compositor_context_ids;
+    HashMap<u64, Web::Compositor::CompositorContextId> m_page_compositor_context_ids;
+    HashMap<Web::Compositor::CompositorContextId, u64> m_page_ids_for_compositor_context_ids;
     HashMap<u64, String> m_history_recorded_urls_for_current_load;
 
     ProcessHandle m_process_handle;

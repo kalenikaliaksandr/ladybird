@@ -16,11 +16,12 @@
 #include <LibWeb/Compositor/AsyncScrollTree.h>
 #include <LibWeb/Compositor/BackingStoreManager.h>
 #include <LibWeb/Compositor/Types.h>
+#include <LibWeb/Export.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
 
 namespace Web::Compositor {
 
-class CompositorContextState {
+class WEB_API CompositorContextState {
     AK_MAKE_NONCOPYABLE(CompositorContextState);
     AK_MAKE_NONMOVABLE(CompositorContextState);
 

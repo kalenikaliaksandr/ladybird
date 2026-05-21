@@ -184,8 +184,21 @@ void ViewImplementation::did_update_window_rect()
 
 void ViewImplementation::set_system_visibility_state(Web::HTML::VisibilityState visibility_state)
 {
+    if (m_system_visibility_state == visibility_state)
+        return;
+
     m_system_visibility_state = visibility_state;
     client().async_set_system_visibility_state(m_client_state.page_index, m_system_visibility_state);
+    Application::the().update_compositor_system_visibility_state(client().compositor_context_id_for_page(m_client_state.page_index), m_system_visibility_state);
+}
+
+void ViewImplementation::set_window_occlusion_state(bool is_occluded)
+{
+    if (m_window_is_occluded == is_occluded)
+        return;
+
+    m_window_is_occluded = is_occluded;
+    Application::the().update_compositor_window_occlusion_state(client().compositor_context_id_for_page(m_client_state.page_index), m_window_is_occluded);
 }
 
 void ViewImplementation::load(URL::URL const& url)
@@ -309,7 +322,7 @@ void ViewImplementation::enqueue_input_event(Web::InputEvent event)
             client().async_key_event(m_client_state.page_index, event.clone_without_browser_data());
         },
         [this](Web::MouseEvent const& event) {
-            client().async_mouse_event(m_client_state.page_index, event.clone_without_browser_data());
+            client().send_mouse_event_to_page(m_client_state.page_index, event);
         },
         [this](Web::DragEvent& event) {
             auto cloned_event = event.clone_without_browser_data();
@@ -693,6 +706,7 @@ void ViewImplementation::update_zoom()
     }
 
     client().async_set_zoom_level(m_client_state.page_index, m_zoom_level);
+    Application::the().update_compositor_device_pixels_per_css_pixel(client().compositor_context_id_for_page(m_client_state.page_index), m_device_pixel_ratio * m_zoom_level);
 }
 
 String ViewImplementation::current_host() const
@@ -715,6 +729,7 @@ void ViewImplementation::apply_zoom_for_current_host()
 void ViewImplementation::handle_resize()
 {
     client().async_set_viewport(page_id(), viewport_size(), m_device_pixel_ratio, m_is_fullscreen);
+    Application::the().update_compositor_viewport(client().compositor_context_id_for_page(page_id()), viewport_size().to_type<int>(), m_device_pixel_ratio * m_zoom_level);
 }
 
 void ViewImplementation::initialize_client(CreateNewClient create_new_client)
@@ -734,6 +749,10 @@ void ViewImplementation::initialize_client(CreateNewClient create_new_client)
     client().async_set_viewport(m_client_state.page_index, viewport_size(), m_device_pixel_ratio, m_is_fullscreen);
     client().async_set_maximum_frames_per_second(m_client_state.page_index, m_maximum_frames_per_second);
     client().async_set_system_visibility_state(m_client_state.page_index, m_system_visibility_state);
+    auto compositor_context_id = client().compositor_context_id_for_page(m_client_state.page_index);
+    Application::the().update_compositor_viewport(compositor_context_id, viewport_size().to_type<int>(), m_device_pixel_ratio * m_zoom_level);
+    Application::the().update_compositor_system_visibility_state(compositor_context_id, m_system_visibility_state);
+    Application::the().update_compositor_window_occlusion_state(compositor_context_id, m_window_is_occluded);
     client().async_set_document_cookie_version_buffer(m_client_state.page_index, m_document_cookie_version_buffer);
 
     if (auto webdriver_endpoint = Application::browser_options().webdriver_endpoint; webdriver_endpoint.has_value())

@@ -65,6 +65,7 @@ void WebViewImplementationNative::initialize_client(WebView::ViewImplementation:
     client().async_set_zoom_level(0, m_zoom_level);
 
     set_system_visibility_state(Web::HTML::VisibilityState::Visible);
+    set_window_occlusion_state(false);
 
     // FIXME: update_palette, update system fonts
 }

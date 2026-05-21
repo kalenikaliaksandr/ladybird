@@ -2,18 +2,18 @@
 
 ## Overview
 
-This document describes a behavior-preserving migration from the current
+This document records the behavior-preserving migration from the original
 WebContent-owned compositor thread to a separate Compositor process.
 
-Today, each WebContent process owns compositor state through
-`Web::Compositor::CompositorThread`. Recent in-process compositor IPC work
-already makes the WebContent-to-compositor boundary explicit:
+The pre-migration architecture had each WebContent process own compositor state
+through `Web::Compositor::CompositorThread`. The in-process compositor IPC work
+made the WebContent-to-compositor boundary explicit:
 `WebContentCompositorServer.ipc` carries serialized display lists, resource
 transactions, scroll snapshots, video frames, compositor surfaces, viewport
-updates, frame presentation requests, and screenshot requests. That structure is
-the proof point for the process split. The migration should keep that explicit
-protocol boundary, move the compositor actor into a service process, and remove
-`CompositorThread` once the compositor owns its own event loop.
+updates, frame presentation requests, and screenshot requests. That structure
+was the proof point for the process split. The final architecture keeps the
+explicit protocol boundary, moves the compositor actor into a service process,
+and removes `CompositorThread` now that the compositor owns its own event loop.
 
 The target topology has one Compositor process per UI process. The UI process
 spawns the Compositor process, keeps a persistent control connection to it, and
@@ -126,11 +126,11 @@ cases.
 
 ### Rollout policy
 
-The new path should initially be hidden behind a feature flag. The feature flag
-can become the default only after the full browser path works and the whole
-`test-web` suite has zero regressions. Each commit in the migration sequence
-should build and pass `test-web` so reviewers can reason about the stack at any
-point.
+The process path was initially hidden behind a feature flag. It becomes the
+default only after the full browser path works and the whole `test-web` suite
+has zero regressions. Once the old WebContent-owned compositor implementation is
+removed, no runtime switch remains. Each commit in the migration sequence should
+build and pass `test-web` so reviewers can reason about the stack at any point.
 
 ## Commit sequence
 
@@ -239,7 +239,7 @@ publish independent surfaces that Compositor can merge into the same final
 scene. The tree should describe compositor surfaces and ordering, not DOM
 objects.
 
-Current document paint ordering remains driven by WebContent rendering order.
+Document paint ordering remains driven by WebContent rendering order.
 The Compositor surface tree records enough state to compose the submitted
 surfaces without reaching back into WebContent.
 
@@ -312,5 +312,5 @@ regressions, make the Compositor process path the default. Keep the flag only if
 it is still useful for bisecting or temporary fallback. Otherwise remove the old
 runtime switch in a follow-up cleanup.
 
-This is the first commit where the process-isolated compositor becomes the
-normal runtime architecture.
+This is the commit where the process-isolated compositor becomes the normal
+runtime architecture and the old runtime switch is removed.
