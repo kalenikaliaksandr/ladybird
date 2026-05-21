@@ -32,6 +32,7 @@ you are welcome to ask on [Discord](../README.md#get-in-touch-and-participate).
 
 ## Browser/LibWeb
 * [General Architecture](ProcessArchitecture.md)
+* [Compositor Process Migration](CompositorProcess.md)
 * [LibWeb: From Loading to Painting](LibWebFromLoadingToPainting.md)
 * [LibWeb: Browsing Contexts and Navigables](BrowsingContextsAndNavigables.md)
 * [How to Add a CSS Property](CSSProperties.md)
