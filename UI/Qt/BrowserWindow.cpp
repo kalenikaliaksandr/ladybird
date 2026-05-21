@@ -834,6 +834,14 @@ void BrowserWindow::changeEvent(QEvent* event)
         QWindowStateChangeEvent* stateChangeEvent = static_cast<QWindowStateChangeEvent*>(event);
         bool was_fullscreen = stateChangeEvent->oldState() & Qt::WindowFullScreen;
         bool is_fullscreen = windowState() & Qt::WindowFullScreen;
+        bool was_minimized = stateChangeEvent->oldState() & Qt::WindowMinimized;
+        bool is_minimized = windowState() & Qt::WindowMinimized;
+
+        if (is_minimized != was_minimized) {
+            for_each_tab([&](auto& tab) {
+                tab.view().set_window_occlusion_state(is_minimized);
+            });
+        }
 
         if (is_fullscreen && !was_fullscreen) {
             m_fullscreen_mode->entered_fullscreen();

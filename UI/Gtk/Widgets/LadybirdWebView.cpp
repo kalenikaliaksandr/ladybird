@@ -207,6 +207,7 @@ static void on_map(GtkWidget* widget, gpointer)
     if (!self->impl)
         return;
     self->impl->set_system_visibility_state(Web::HTML::VisibilityState::Visible);
+    self->impl->set_window_occlusion_state(false);
     self->impl->update_viewport_size();
     gtk_widget_queue_draw(widget);
 }
@@ -217,6 +218,7 @@ static void on_unmap(GtkWidget* widget, gpointer)
     if (!self->impl)
         return;
     self->impl->set_system_visibility_state(Web::HTML::VisibilityState::Hidden);
+    self->impl->set_window_occlusion_state(true);
 }
 
 static void ladybird_web_view_init(LadybirdWebView* self)

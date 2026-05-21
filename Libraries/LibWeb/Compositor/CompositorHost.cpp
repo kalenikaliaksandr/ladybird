@@ -78,11 +78,6 @@ AsyncScrollEnqueueResult CompositorContextHandle::async_scroll_by(UniqueNodeID e
     return m_host.async_scroll_by(m_context_id, expected_document_id, position, delta_in_device_pixels, viewport_rect, operation_tracking);
 }
 
-bool CompositorContextHandle::should_defer_async_scroll_offset_adoption() const
-{
-    return m_host.should_defer_async_scroll_offset_adoption(m_context_id);
-}
-
 bool CompositorContextHandle::should_defer_main_thread_present_for_async_scroll() const
 {
     return m_host.should_defer_main_thread_present_for_async_scroll(m_context_id);
@@ -114,9 +109,9 @@ void CompositorContextHandle::request_screenshot(NonnullRefPtr<Gfx::PaintingSurf
 
 CompositorHost::~CompositorHost() = default;
 
-OwnPtr<CompositorContextHandle> CompositorHost::create_context(Optional<u64> page_id, PagePresentationRegistration page_presentation_registration)
+OwnPtr<CompositorContextHandle> CompositorHost::create_context(CompositorContextId context_id, Optional<u64> page_id, PagePresentationRegistration page_presentation_registration)
 {
-    auto context_id = allocate_context(page_id, page_presentation_registration);
+    register_context(context_id, page_id, page_presentation_registration);
     return adopt_own(*new CompositorContextHandle(*this, context_id));
 }
 

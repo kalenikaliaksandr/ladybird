@@ -40,6 +40,7 @@
 #include <WebContent/PageClient.h>
 #include <WebContent/PageHost.h>
 #include <WebContent/WebContentClientEndpoint.h>
+#include <WebContent/WebContentCompositorHost.h>
 #include <WebContent/WebDriverConnection.h>
 #include <WebContent/WebUIConnection.h>
 
@@ -205,6 +206,11 @@ void PageClient::report_finished_handling_input_event(u64 page_id, Web::EventRes
     client().async_did_finish_handling_input_event(page_id, event_was_handled);
 }
 
+Web::Compositor::CompositorContextId PageClient::allocate_compositor_context_id(Web::Compositor::PagePresentationRegistration page_presentation_registration)
+{
+    return client().allocate_compositor_context_id(m_id, page_presentation_registration);
+}
+
 void PageClient::set_viewport(Web::DevicePixelSize const& size, double device_pixel_ratio)
 {
     auto invalidate = m_device_pixel_ratio != device_pixel_ratio
@@ -245,6 +251,9 @@ void PageClient::set_maximum_frames_per_second(double maximum_frames_per_second)
 
 void PageClient::page_did_request_cursor_change(Gfx::Cursor const& cursor)
 {
+    if (request_compositor_process_cursor_change(m_id, cursor))
+        return;
+
     client().async_did_request_cursor_change(m_id, cursor);
 }
 

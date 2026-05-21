@@ -76,6 +76,7 @@ public:
     void did_update_window_rect();
 
     void set_system_visibility_state(Web::HTML::VisibilityState);
+    void set_window_occlusion_state(bool is_occluded);
 
     void load(URL::URL const&);
     void load_html(StringView);
@@ -345,6 +346,7 @@ protected:
     double m_zoom_level { 1.0 };
     double m_device_pixel_ratio { 1.0 };
     double m_maximum_frames_per_second { 60.0 };
+    bool m_window_is_occluded { false };
 
     RefPtr<Menu> m_page_context_menu;
     RefPtr<Menu> m_link_context_menu;

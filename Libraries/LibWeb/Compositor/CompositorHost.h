@@ -17,7 +17,6 @@
 #include <LibGfx/Rect.h>
 #include <LibGfx/SharedImage.h>
 #include <LibGfx/Size.h>
-#include <LibIPC/TransportHandle.h>
 #include <LibMedia/Forward.h>
 #include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Export.h>
@@ -54,7 +53,6 @@ public:
     void invalidate_wheel_event_listener_state(u64 generation);
     AsyncScrollEnqueueResult async_scroll_by(UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels,
         Gfx::IntRect viewport_rect, AsyncScrollOperationTracking = AsyncScrollOperationTracking::No);
-    bool should_defer_async_scroll_offset_adoption() const;
     bool should_defer_main_thread_present_for_async_scroll() const;
     PendingAsyncScrollUpdates take_pending_async_scroll_updates();
     void viewport_size_updated(Gfx::IntSize, bool is_top_level_traversable, WindowResizingInProgress);
@@ -81,7 +79,7 @@ public:
     virtual ~CompositorHost();
 
     virtual void start(DisplayListPlayerType) = 0;
-    OwnPtr<CompositorContextHandle> create_context(Optional<u64> page_id, PagePresentationRegistration);
+    OwnPtr<CompositorContextHandle> create_context(CompositorContextId, Optional<u64> page_id, PagePresentationRegistration);
 
     virtual void destroy_context(CompositorContextId) = 0;
     virtual void stop_presenting_to_client(CompositorContextId) = 0;
@@ -97,20 +95,17 @@ public:
     virtual AsyncScrollEnqueueResult async_scroll_by(CompositorContextId, UniqueNodeID expected_document_id, Gfx::FloatPoint position,
         Gfx::FloatPoint delta_in_device_pixels, Gfx::IntRect viewport_rect, AsyncScrollOperationTracking)
         = 0;
-    virtual bool should_defer_async_scroll_offset_adoption(CompositorContextId) const = 0;
     virtual bool should_defer_main_thread_present_for_async_scroll(CompositorContextId) const = 0;
     virtual PendingAsyncScrollUpdates take_pending_async_scroll_updates(CompositorContextId) = 0;
     virtual void viewport_size_updated(CompositorContextId, Gfx::IntSize, bool is_top_level_traversable, WindowResizingInProgress) = 0;
     virtual void present_frame(CompositorContextId, Gfx::IntRect) = 0;
     virtual void request_screenshot(CompositorContextId, NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&& callback) = 0;
 
-    virtual void attach_ui_client(IPC::TransportHandle) { }
-
 protected:
     CompositorHost() = default;
 
 private:
-    virtual CompositorContextId allocate_context(Optional<u64> page_id, PagePresentationRegistration) = 0;
+    virtual void register_context(CompositorContextId, Optional<u64> page_id, PagePresentationRegistration) = 0;
 };
 
 }

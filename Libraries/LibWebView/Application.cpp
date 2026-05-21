@@ -17,7 +17,9 @@
 #include <LibImageDecoderClient/Client.h>
 #include <LibWeb/CSS/PropertyID.h>
 #include <LibWeb/Loader/UserAgent.h>
+#include <LibWeb/Page/InputEvent.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/CompositorClient.h>
 #include <LibWebView/CookieJar.h>
 #include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/HelperProcess.h>
@@ -94,6 +96,8 @@ Application::~Application()
     // Explicitly delete the observers first, as the observer destructors will refer to Application::the().
     m_settings_observer.clear();
     m_bookmark_store_observer.clear();
+    if (m_compositor_client)
+        m_compositor_client->on_death = nullptr;
 
     s_the = nullptr;
 }
@@ -423,8 +427,117 @@ static ErrorOr<NonnullRefPtr<WebContentClient>> create_web_content_client(Option
 
     client->async_connect_to_request_server(move(request_server_handle));
     client->async_connect_to_image_decoder(move(image_decoder_handle));
+    TRY(Application::the().connect_web_content_to_compositor(*client));
 
     return client;
+}
+
+ErrorOr<void> Application::connect_web_content_to_compositor(WebContentClient& web_content_client)
+{
+    if (!m_compositor_client)
+        return {};
+    if (web_content_client.compositor_connection_id({}).has_value())
+        return {};
+
+    auto response = m_compositor_client->send_sync_but_allow_failure<Messages::CompositorControlServer::ConnectWebContent>();
+    if (!response)
+        return Error::from_string_literal("Failed to connect WebContent to Compositor");
+
+    web_content_client.set_compositor_connection_id({}, response->web_content_connection_id());
+    web_content_client.async_connect_to_compositor_process(response->take_handle());
+    return {};
+}
+
+void Application::register_compositor_context(WebContentClient& web_content_client, Web::Compositor::CompositorContextId context_id, Optional<u64> page_id, Web::Compositor::PagePresentationRegistration page_presentation_registration)
+{
+    if (!m_compositor_client)
+        return;
+    auto web_content_connection_id = web_content_client.compositor_connection_id({});
+    if (!web_content_connection_id.has_value()) {
+        MUST(connect_web_content_to_compositor(web_content_client));
+        web_content_connection_id = web_content_client.compositor_connection_id({});
+    }
+    VERIFY(web_content_connection_id.has_value());
+
+    (void)m_compositor_client->send_sync_but_allow_failure<Messages::CompositorControlServer::CreateContext>(context_id, page_id, page_presentation_registration, *web_content_connection_id);
+}
+
+void Application::destroy_compositor_context(Web::Compositor::CompositorContextId context_id)
+{
+    if (!m_compositor_client)
+        return;
+    m_compositor_client->async_destroy_context(context_id);
+}
+
+void Application::update_compositor_viewport(Web::Compositor::CompositorContextId context_id, Gfx::IntSize viewport_size, double device_pixels_per_css_pixel, Web::Compositor::WindowResizingInProgress window_resize_in_progress)
+{
+    if (!m_compositor_client)
+        return;
+
+    m_compositor_client->async_viewport_size_updated(context_id, viewport_size, true, window_resize_in_progress);
+    m_compositor_client->async_device_pixels_per_css_pixel_updated(context_id, device_pixels_per_css_pixel);
+}
+
+void Application::update_compositor_device_pixels_per_css_pixel(Web::Compositor::CompositorContextId context_id, double device_pixels_per_css_pixel)
+{
+    if (!m_compositor_client)
+        return;
+
+    m_compositor_client->async_device_pixels_per_css_pixel_updated(context_id, device_pixels_per_css_pixel);
+}
+
+void Application::update_compositor_system_visibility_state(Web::Compositor::CompositorContextId context_id, Web::HTML::VisibilityState visibility_state)
+{
+    if (!m_compositor_client)
+        return;
+
+    m_compositor_client->async_system_visibility_state_updated(context_id, visibility_state);
+}
+
+void Application::update_compositor_window_occlusion_state(Web::Compositor::CompositorContextId context_id, bool is_occluded)
+{
+    if (!m_compositor_client)
+        return;
+
+    m_compositor_client->async_window_occlusion_state_updated(context_id, is_occluded);
+}
+
+bool Application::send_async_scroll_to_compositor(Web::Compositor::CompositorContextId context_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels)
+{
+    if (!m_compositor_client)
+        return false;
+
+    auto response = m_compositor_client->send_sync_but_allow_failure<Messages::CompositorControlServer::AsyncScrollBy>(context_id, position, delta_in_device_pixels);
+    if (!response)
+        return false;
+    return response->handled();
+}
+
+bool Application::send_mouse_event_to_compositor(Web::Compositor::CompositorContextId context_id, Web::MouseEvent const& event)
+{
+    if (!m_compositor_client)
+        return false;
+
+    auto response = m_compositor_client->send_sync_but_allow_failure<Messages::CompositorControlServer::MouseEvent>(context_id, event.clone_without_browser_data());
+    if (!response)
+        return false;
+    return response->handled();
+}
+
+void Application::forward_mouse_event_to_compositor(Web::Compositor::CompositorContextId context_id, Web::MouseEvent const& event)
+{
+    if (!m_compositor_client)
+        return;
+
+    m_compositor_client->async_forward_mouse_event(context_id, event.clone_without_browser_data());
+}
+
+void Application::notify_compositor_presented_bitmap_ready_to_paint(Web::Compositor::CompositorContextId context_id, i32 bitmap_id)
+{
+    if (!m_compositor_client)
+        return;
+
+    m_compositor_client->async_presented_bitmap_ready_to_paint(context_id, bitmap_id);
 }
 
 ErrorOr<NonnullRefPtr<WebContentClient>> Application::launch_web_content_process(ViewImplementation& view)
@@ -525,8 +638,27 @@ ErrorOr<void> Application::launch_services()
     TRY(launch_request_server());
     TRY(launch_image_decoder_server());
 
+    TRY(launch_compositor_process());
+
     if (m_browser_options.devtools_port.has_value())
         TRY(launch_devtools_server());
+
+    return {};
+}
+
+ErrorOr<void> Application::launch_compositor_process()
+{
+    VERIFY(!m_compositor_client);
+    m_compositor_client = TRY(WebView::launch_compositor_process());
+    m_compositor_client->on_death = [this]() {
+        m_compositor_client = nullptr;
+
+        if (Core::EventLoop::current().was_exit_requested())
+            return;
+
+        dbgln("Compositor process died");
+        VERIFY_NOT_REACHED();
+    };
 
     return {};
 }
@@ -754,6 +886,12 @@ void Application::process_did_exit(Process&& process, Optional<int> exit_status)
             if (auto on_death = move(client->on_death)) {
                 on_death();
             }
+        }
+        break;
+    case ProcessType::Compositor:
+        if (auto client = process.client<CompositorClient>(); client.has_value()) {
+            if (auto on_death = move(client->on_death))
+                on_death();
         }
         break;
     case ProcessType::RequestServer:
