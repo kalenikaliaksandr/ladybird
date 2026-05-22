@@ -14,6 +14,7 @@
 #include <LibGfx/CornerRadii.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
+#include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/ScrollFrame.h>
@@ -47,6 +48,7 @@ struct AsyncScrollNodeStableID {
 
 struct AsyncScrollOffset {
     AsyncScrollNodeStableID stable_node_id;
+
     Gfx::FloatPoint compositor_scroll_offset;
     Gfx::FloatPoint unadopted_scroll_delta;
 };
@@ -57,9 +59,11 @@ struct AsyncScrollNode {
     AsyncScrollNodeID node_id;
     AsyncScrollNodeStableID stable_node_id;
     Optional<AsyncScrollNodeID> parent_node_id;
+
     Painting::VisualContextIndex hit_test_visual_context_index;
     Gfx::IntRect scrollport_rect;
     Gfx::FloatPoint max_scroll_offset;
+
     bool is_viewport { false };
     bool can_be_wheel_scrolled_horizontally { false };
     bool can_be_wheel_scrolled_vertically { false };
@@ -70,12 +74,15 @@ struct AsyncScrollNode {
 struct AsyncStickyArea {
     UniqueNodeID document_id;
     Painting::ScrollFrameIndex scroll_frame_index;
+
     Painting::ScrollFrameIndex parent_scroll_frame_index;
     Painting::ScrollFrameIndex nearest_scrolling_ancestor_index;
+
     Gfx::FloatPoint position_relative_to_scroll_ancestor;
     Gfx::FloatSize border_box_size;
     Gfx::FloatSize scrollport_size;
     Gfx::FloatRect containing_block_region;
+
     bool needs_parent_offset_adjustment { false };
     Optional<float> inset_top;
     Optional<float> inset_right;
@@ -93,6 +100,7 @@ struct WheelHitTestTarget {
     Painting::VisualContextIndex visual_context_index;
     Gfx::FloatRect rect;
     Gfx::CornerRadii corner_radii;
+
     Optional<AsyncScrollNodeID> target_node_id;
 };
 
@@ -105,15 +113,19 @@ struct MainThreadWheelEventRegion {
 struct ViewportScrollbar {
     AsyncScrollNodeID scroll_node_id;
     Painting::ScrollFrameIndex scroll_frame_index;
+
     Gfx::IntRect gutter_rect;
     Gfx::IntRect thumb_rect;
     Gfx::IntRect expanded_gutter_rect;
     Gfx::IntRect expanded_thumb_rect;
+
     double scroll_size { 0 };
     double expanded_scroll_size { 0 };
     float max_scroll_offset { 0 };
+
     Color thumb_color;
     Color track_color;
+
     bool vertical { false };
 };
 
@@ -128,6 +140,7 @@ struct AsyncScrollingState {
     // Viewport-wide barriers cover listeners on the root targets; element regions let input hit-testing accept
     // async scrolling elsewhere.
     Vector<BlockingWheelEventRegion> blocking_wheel_event_regions;
+
     Gfx::IntRect viewport_rect;
 
     // Bumped whenever wheel listener state changes so queued compositor snapshots
@@ -154,13 +167,13 @@ enum class WheelScrollAdmission {
     BlockedByWheelEventRegion,
 };
 
-void initialize_async_scrolling_metadata_recording(DisplayListRecordingContext&, Painting::ViewportPaintable&);
-void record_async_scrolling_metadata_for_paintable(Painting::PaintableBox const&, DisplayListRecordingContext&);
-void finalize_async_scrolling_metadata_recording(DisplayListRecordingContext&, HTML::Navigable&, Gfx::IntRect viewport_rect);
-AsyncScrollingState async_scrolling_state_from_display_list(Painting::DisplayList const&);
-WheelRoutingAdmission wheel_routing_admission_for(AsyncScrollingState const&);
-StringView wheel_routing_admission_to_string(WheelRoutingAdmission);
-bool blocks_wheel_event_at_position(AsyncScrollingState const&, RefPtr<Painting::DisplayList> const&, Painting::ScrollStateSnapshot const&, Gfx::FloatPoint position);
-WheelScrollAdmission admit_wheel_scroll(AsyncScrollingState const&, RefPtr<Painting::DisplayList> const&, Painting::ScrollStateSnapshot const&, Gfx::FloatPoint position, Gfx::FloatPoint delta, bool blocking_wheel_event_regions_are_current);
+WEB_API void initialize_async_scrolling_metadata_recording(DisplayListRecordingContext&, Painting::ViewportPaintable&);
+WEB_API void record_async_scrolling_metadata_for_paintable(Painting::PaintableBox const&, DisplayListRecordingContext&);
+WEB_API void finalize_async_scrolling_metadata_recording(DisplayListRecordingContext&, HTML::Navigable&, Gfx::IntRect viewport_rect);
+WEB_API AsyncScrollingState async_scrolling_state_from_display_list(Painting::DisplayList const&);
+WEB_API WheelRoutingAdmission wheel_routing_admission_for(AsyncScrollingState const&);
+WEB_API StringView wheel_routing_admission_to_string(WheelRoutingAdmission);
+WEB_API bool blocks_wheel_event_at_position(AsyncScrollingState const&, RefPtr<Painting::DisplayList> const&, Painting::ScrollStateSnapshot const&, Gfx::FloatPoint position);
+WEB_API WheelScrollAdmission admit_wheel_scroll(AsyncScrollingState const&, RefPtr<Painting::DisplayList> const&, Painting::ScrollStateSnapshot const&, Gfx::FloatPoint position, Gfx::FloatPoint delta, bool blocking_wheel_event_regions_are_current);
 
 }

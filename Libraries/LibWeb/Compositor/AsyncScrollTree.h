@@ -13,6 +13,7 @@
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
 #include <LibWeb/Compositor/AsyncScrollingState.h>
+#include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/ScrollState.h>
 
@@ -20,12 +21,14 @@ namespace Web::Compositor {
 
 struct WheelHitTestResult {
     Optional<AsyncScrollNodeID> node_id;
+
     bool blocked_by_main_thread_region { false };
     bool blocked_by_wheel_event_region { false };
 };
 
 struct CachedWheelHitTestTarget {
     Optional<AsyncScrollNodeID> target_node_id;
+
     Painting::VisualContextIndex visual_context_index;
     Gfx::FloatRect rect;
     Gfx::CornerRadii corner_radii;
@@ -47,7 +50,7 @@ struct CachedBlockingWheelEventTarget {
 
 // Mutable compositor-side copy of AsyncScrollingState. Current scroll offsets live in ScrollStateSnapshot; this tree
 // owns scroll node geometry and derived hit-test targets.
-class AsyncScrollTree {
+class WEB_API AsyncScrollTree {
 public:
     void set_state(AsyncScrollingState&&);
 
