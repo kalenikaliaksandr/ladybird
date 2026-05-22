@@ -508,6 +508,27 @@ ErrorOr<void> Application::connect_web_content_to_compositor(WebContentClient& w
     return {};
 }
 
+void Application::register_compositor_context(WebContentClient& web_content_client, Web::Compositor::CompositorContextId context_id, Optional<u64> page_id, Web::Compositor::PagePresentationRegistration page_presentation_registration)
+{
+    if (!m_compositor_client)
+        return;
+    auto web_content_connection_id = web_content_client.compositor_connection_id({});
+    if (!web_content_connection_id.has_value()) {
+        MUST(connect_web_content_to_compositor(web_content_client));
+        web_content_connection_id = web_content_client.compositor_connection_id({});
+    }
+    VERIFY(web_content_connection_id.has_value());
+
+    (void)m_compositor_client->send_sync_but_allow_failure<Messages::CompositorControlServer::CreateContext>(context_id, page_id, page_presentation_registration, *web_content_connection_id);
+}
+
+void Application::destroy_compositor_context(Web::Compositor::CompositorContextId context_id)
+{
+    if (!m_compositor_client)
+        return;
+    m_compositor_client->async_destroy_context(context_id);
+}
+
 ErrorOr<NonnullRefPtr<WebContentClient>> Application::launch_web_content_process(ViewImplementation& view)
 {
     if (m_spare_web_content_process) {
