@@ -20,6 +20,7 @@
 #include <LibImageDecoderClient/Client.h>
 #include <LibWeb/CSS/PropertyID.h>
 #include <LibWeb/Loader/UserAgent.h>
+#include <LibWeb/Page/InputEvent.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/CompositorClient.h>
 #include <LibWebView/CookieJar.h>
@@ -527,6 +528,61 @@ void Application::destroy_compositor_context(Web::Compositor::CompositorContextI
     if (!m_compositor_client)
         return;
     m_compositor_client->async_destroy_context(context_id);
+}
+
+void Application::update_compositor_viewport(Web::Compositor::CompositorContextId context_id, Gfx::IntSize viewport_size, double device_pixels_per_css_pixel, Web::Compositor::WindowResizingInProgress window_resize_in_progress)
+{
+    if (!m_compositor_client)
+        return;
+
+    m_compositor_client->async_viewport_size_updated(context_id, viewport_size, true, window_resize_in_progress);
+    m_compositor_client->async_device_pixels_per_css_pixel_updated(context_id, device_pixels_per_css_pixel);
+}
+
+void Application::update_compositor_device_pixels_per_css_pixel(Web::Compositor::CompositorContextId context_id, double device_pixels_per_css_pixel)
+{
+    if (!m_compositor_client)
+        return;
+
+    m_compositor_client->async_device_pixels_per_css_pixel_updated(context_id, device_pixels_per_css_pixel);
+}
+
+bool Application::send_async_scroll_to_compositor(Web::Compositor::CompositorContextId context_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels)
+{
+    if (!m_compositor_client)
+        return false;
+
+    auto response = m_compositor_client->send_sync_but_allow_failure<Messages::CompositorControlServer::AsyncScrollBy>(context_id, position, delta_in_device_pixels);
+    if (!response)
+        return false;
+    return response->handled();
+}
+
+bool Application::handle_mouse_event_in_compositor(Web::Compositor::CompositorContextId context_id, Web::MouseEvent const& event)
+{
+    if (!m_compositor_client)
+        return false;
+
+    auto response = m_compositor_client->send_sync_but_allow_failure<Messages::CompositorControlServer::HandleMouseEvent>(context_id, event.clone_without_browser_data());
+    if (!response)
+        return false;
+    return response->handled();
+}
+
+void Application::dispatch_mouse_event_to_web_content(Web::Compositor::CompositorContextId context_id, Web::MouseEvent const& event)
+{
+    if (!m_compositor_client)
+        return;
+
+    m_compositor_client->async_dispatch_mouse_event_to_web_content(context_id, event.clone_without_browser_data());
+}
+
+void Application::notify_compositor_presented_bitmap_ready_to_paint(Web::Compositor::CompositorContextId context_id, i32 bitmap_id)
+{
+    if (!m_compositor_client)
+        return;
+
+    m_compositor_client->async_presented_bitmap_ready_to_paint(context_id, bitmap_id);
 }
 
 ErrorOr<NonnullRefPtr<WebContentClient>> Application::launch_web_content_process(ViewImplementation& view)

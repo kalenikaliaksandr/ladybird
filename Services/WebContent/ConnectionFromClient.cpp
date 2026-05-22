@@ -66,6 +66,7 @@
 #include <WebContent/PageClient.h>
 #include <WebContent/PageHost.h>
 #include <WebContent/WebContentClientEndpoint.h>
+#include <WebContent/WebContentCompositorHost.h>
 
 namespace WebContent {
 
@@ -73,9 +74,16 @@ ConnectionFromClient::ConnectionFromClient(NonnullOwnPtr<IPC::Transport> transpo
     : IPC::ConnectionFromClient<WebContentClientEndpoint, WebContentServerEndpoint>(*this, move(transport), 1)
     , m_page_host(PageHost::create(*this))
 {
+    set_compositor_context_destruction_handler([this](Web::Compositor::CompositorContextId context_id) {
+        async_destroy_compositor_context(context_id);
+    });
 }
 
-ConnectionFromClient::~ConnectionFromClient() = default;
+ConnectionFromClient::~ConnectionFromClient()
+{
+    set_compositor_context_destruction_handler({});
+    set_compositor_process_connection(nullptr);
+}
 
 void ConnectionFromClient::die()
 {
@@ -158,7 +166,12 @@ void ConnectionFromClient::connect_to_compositor(IPC::TransportHandle handle)
 
 void ConnectionFromClient::connect_to_compositor_process(IPC::TransportHandle handle)
 {
-    (void)handle;
+    auto transport = MUST(handle.create_transport());
+    m_compositor_connection = adopt_ref(*new CompositorConnection(move(transport)));
+    m_compositor_connection->on_mouse_event = [this](u64 page_id, Web::MouseEvent event) {
+        mouse_event(page_id, move(event));
+    };
+    set_compositor_process_connection(m_compositor_connection);
 }
 
 void ConnectionFromClient::connect_to_request_server(IPC::TransportHandle handle)
