@@ -58,6 +58,7 @@ public:
     void assign_view(Badge<Application>, ViewImplementation&);
     void set_compositor_connection_id(Badge<Application>, i32);
     Optional<i32> compositor_connection_id(Badge<Application>) const { return m_compositor_connection_id; }
+    bool uses_compositor_process() const { return m_uses_compositor_process; }
     void register_view(u64 page_id, ViewImplementation&);
     void unregister_view(u64 page_id);
 
@@ -66,6 +67,10 @@ public:
     bool has_views() const { return !m_views.is_empty(); }
 
     void notify_all_views_of_crash();
+    ErrorOr<void> reconnect_to_compositor_process(Badge<Application>);
+    ErrorOr<void> recreate_compositor_contexts(Badge<Application>);
+    void update_compositor_viewports_after_reconnect(Badge<Application>);
+    void notify_compositor_process_reconnected(Badge<Application>);
     Web::Compositor::CompositorContextId compositor_context_id_for_page(u64 page_id);
     Optional<u64> page_id_for_compositor_context_id(Web::Compositor::CompositorContextId) const;
     bool send_async_scroll_to_compositor(u64 page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels);
@@ -177,12 +182,20 @@ private:
 
     Optional<ViewImplementation&> view_for_page_id(u64, SourceLocation = SourceLocation::current());
 
+    struct CompositorContextRegistration {
+        Optional<u64> page_id;
+        Web::Compositor::PagePresentationRegistration page_presentation_registration { Web::Compositor::PagePresentationRegistration::No };
+    };
+
+    void remember_compositor_context(Web::Compositor::CompositorContextId, Optional<u64> page_id, Web::Compositor::PagePresentationRegistration);
+
     HashMap<u64, NonnullRawPtr<ViewImplementation>> m_views;
-    HashTable<Web::Compositor::CompositorContextId> m_compositor_context_ids;
+    HashMap<Web::Compositor::CompositorContextId, CompositorContextRegistration> m_compositor_contexts;
     HashMap<u64, Web::Compositor::CompositorContextId> m_page_compositor_context_ids;
     HashMap<Web::Compositor::CompositorContextId, u64> m_page_ids_for_compositor_context_ids;
     HashMap<u64, String> m_history_recorded_urls_for_current_load;
     Optional<i32> m_compositor_connection_id;
+    bool m_uses_compositor_process { false };
 
     ProcessHandle m_process_handle;
 

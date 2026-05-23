@@ -52,6 +52,7 @@ public:
     void viewport_size_updated(Web::Compositor::CompositorContextId, Gfx::IntSize, bool is_top_level_traversable, Web::Compositor::WindowResizingInProgress);
     void present_frame(Web::Compositor::CompositorContextId, Gfx::IntRect);
     void request_screenshot(Web::Compositor::CompositorContextId, NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&&);
+    bool has_lost_compositor() const { return m_has_lost_compositor; }
     Function<void(u64 page_id, Web::MouseEvent)> on_mouse_event;
 
 private:
@@ -70,10 +71,12 @@ private:
     virtual void did_fail_screenshot(Web::Compositor::ScreenshotRequestId) override;
     virtual void did_lose_compositor() override;
 
+    bool can_send_message_to_compositor() const;
     Optional<PendingScreenshot> take_screenshot(Web::Compositor::ScreenshotRequestId);
 
     HashMap<Web::Compositor::ScreenshotRequestId, PendingScreenshot> m_screenshots;
     u64 m_next_screenshot_request_id { 1 };
+    bool m_has_lost_compositor { false };
 };
 
 }

@@ -3409,6 +3409,34 @@ void Navigable::destroy_compositor_context()
     m_compositor_context.clear();
 }
 
+void Navigable::repaint_after_compositor_process_reconnect()
+{
+    if (has_compositor_context()) {
+        // The restarted compositor process has no per-context state. Re-send
+        // state that is normally only sent when a navigable is attached or
+        // resized before repainting into the context.
+        if (auto parent = this->parent();
+            parent && parent->has_compositor_context() && has_compositor_surface_id()) {
+            compositor_context().set_presentation_mode(Compositor::PublishToCompositorSurface {
+                .target_context_id = parent->compositor_context().id(),
+                .surface_id = *m_compositor_surface_id,
+            });
+        }
+        compositor_context().viewport_size_updated(
+            page().css_to_device_rect(viewport_rect()).size().to_type<int>(),
+            is_top_level_traversable(),
+            Compositor::WindowResizingInProgress::No);
+
+        m_needs_repaint = true;
+        m_needs_to_record_display_list = true;
+        m_rendering_thread_display_list_paint_config.clear();
+        m_rendering_thread_display_list_resources = {};
+    }
+
+    for (auto const& child_navigable : child_navigables())
+        child_navigable->repaint_after_compositor_process_reconnect();
+}
+
 void Navigable::set_should_show_line_box_borders(bool value)
 {
     m_should_show_line_box_borders = value;
