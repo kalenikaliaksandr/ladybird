@@ -923,8 +923,10 @@ private:
                     if (context.has_async_scrolling_state)
                         dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Publishing present to compositor surface");
                     auto& front_store = context.backing_store_manager.front_store();
-                    VERIFY(route_compositor_surface_to_context(
-                        mode.target_context_id, mode.surface_id, front_store.snapshot_into_shared_image()));
+                    if (!route_compositor_surface_to_context(mode.target_context_id, mode.surface_id, front_store.snapshot_into_shared_image())) {
+                        dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Dropping stale compositor surface publication for target context {} and surface {}",
+                            mode.target_context_id.value(), mode.surface_id.value());
+                    }
                 });
         } else {
             {
