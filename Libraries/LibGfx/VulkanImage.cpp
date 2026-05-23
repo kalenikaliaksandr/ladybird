@@ -110,10 +110,15 @@ ErrorOr<NonnullRefPtr<VulkanImage>> create_shared_vulkan_image(VulkanContext con
     format_mod_props_list.pDrmFormatModifierProperties = format_mod_props.data();
     vkGetPhysicalDeviceFormatProperties2(context.physical_device, format, &format_props);
 
-    // populate a list of all format modifiers that are both renderable and accepted by the caller
+    // Populate a list of all format modifiers that support the ways Skia, WebGL, and the
+    // compositor use shared images, and that are accepted by the caller.
+    static constexpr VkFormatFeatureFlags required_format_features = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT
+        | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
+        | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT
+        | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     Vector<uint64_t> format_mods;
     for (VkDrmFormatModifierPropertiesEXT const& props : format_mod_props) {
-        if ((props.drmFormatModifierTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) && (props.drmFormatModifierPlaneCount == 1)) {
+        if ((props.drmFormatModifierTilingFeatures & required_format_features) == required_format_features && props.drmFormatModifierPlaneCount == 1) {
             if (modifiers.contains_slow(props.drmFormatModifier))
                 format_mods.append(props.drmFormatModifier);
         }
@@ -152,7 +157,7 @@ ErrorOr<NonnullRefPtr<VulkanImage>> create_shared_vulkan_image(VulkanContext con
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
-        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = queue_families.size(),
         .pQueueFamilyIndices = queue_families.data(),

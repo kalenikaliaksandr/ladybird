@@ -9,6 +9,9 @@
 #include <AK/AtomicRefCounted.h>
 #include <AK/Noncopyable.h>
 
+#include <cstddef>
+#include <chrono>
+
 #ifdef USE_VULKAN
 #    include <LibGfx/VulkanContext.h>
 #endif
@@ -17,8 +20,12 @@
 #    include <LibGfx/MetalContext.h>
 #endif
 
-class GrDirectContext;
 class SkSurface;
+
+namespace skgpu::graphite {
+class Context;
+class Recorder;
+}
 
 namespace Gfx {
 
@@ -46,7 +53,11 @@ public:
     virtual ~SkiaBackendContext() { }
 
     virtual void flush_and_submit(SkSurface*) { }
-    virtual GrDirectContext* sk_context() const = 0;
+    virtual skgpu::graphite::Context* graphite_context() const = 0;
+    virtual skgpu::graphite::Recorder* recorder() const = 0;
+    virtual void perform_deferred_cleanup(std::chrono::milliseconds) { }
+    virtual size_t resource_cache_bytes() const { return 0; }
+    virtual void free_gpu_resources() { }
 
     virtual MetalContext& metal_context() = 0;
     virtual VulkanContext const& vulkan_context() = 0;

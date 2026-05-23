@@ -11,7 +11,6 @@
 #include <LibWeb/Painting/DisplayListCommand.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
 
-class GrDirectContext;
 class SkPaint;
 
 namespace Web::Painting {

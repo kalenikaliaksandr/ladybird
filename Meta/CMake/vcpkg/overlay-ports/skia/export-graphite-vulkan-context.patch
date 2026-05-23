@@ -1,0 +1,12 @@
+diff --git a/src/gpu/graphite/vk/VulkanGraphiteUtils.cpp b/src/gpu/graphite/vk/VulkanGraphiteUtils.cpp
+index 4ed21461b1..22b70e9693 100644
+--- a/src/gpu/graphite/vk/VulkanGraphiteUtils.cpp
++++ b/src/gpu/graphite/vk/VulkanGraphiteUtils.cpp
+@@ -10,6 +10,7 @@
+ #include "include/core/SkStream.h"
+ #include "include/gpu/ShaderErrorHandler.h"
+ #include "include/gpu/graphite/Context.h"
++#include "include/gpu/graphite/vk/VulkanGraphiteContext.h"
+ #include "include/gpu/vk/VulkanBackendContext.h"
+ #include "src/core/SkTraceEvent.h"
+ #include "src/gpu/graphite/ContextPriv.h"

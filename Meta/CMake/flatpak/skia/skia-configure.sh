@@ -12,6 +12,7 @@ gn gen out --args='
     skia_use_system_zlib=true
     skia_use_harfbuzz=true
     skia_use_vulkan=true
+    skia_enable_graphite=true
     skia_use_fontconfig=true
     skia_use_icu=true
     skia_use_system_icu=true

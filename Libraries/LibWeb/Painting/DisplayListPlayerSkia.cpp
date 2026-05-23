@@ -24,9 +24,11 @@
 #include <effects/SkGradientShader.h>
 #include <effects/SkImageFilters.h>
 #include <effects/SkLumaColorFilter.h>
-#include <gpu/ganesh/GrDirectContext.h>
-#include <gpu/ganesh/SkImageGanesh.h>
-#include <gpu/ganesh/SkSurfaceGanesh.h>
+
+#pragma push_macro("TODO")
+#undef TODO
+#include <gpu/graphite/Image.h>
+#pragma pop_macro("TODO")
 #include <pathops/SkPathOps.h>
 
 #include <LibGfx/Bitmap.h>
@@ -189,12 +191,12 @@ void DisplayListPlayerSkia::draw_video_frame(DrawVideoFrame const& command)
         return;
 
     sk_sp<SkImage> image;
-    auto* gr_context = m_skia_backend_context ? m_skia_backend_context->sk_context() : nullptr;
-    if (gr_context) {
+    auto* recorder = m_skia_backend_context ? m_skia_backend_context->recorder() : nullptr;
+    if (recorder) {
         image = SkImages::TextureFromYUVAPixmaps(
-            gr_context,
+            recorder,
             frame->yuv_data().make_pixmaps(),
-            skgpu::Mipmapped::kNo,
+            {},
             false,
             frame->color_space().color_space<sk_sp<SkColorSpace>>());
     }
@@ -208,8 +210,8 @@ void DisplayListPlayerSkia::draw_video_frame(DrawVideoFrame const& command)
         }
         converted_bitmap = bitmap_or_error.release_value();
         auto raster_image = Gfx::sk_image_from_bitmap(*converted_bitmap, frame->color_space());
-        if (gr_context) {
-            image = SkImages::TextureFromImage(gr_context, raster_image.get(), skgpu::Mipmapped::kNo, skgpu::Budgeted::kYes);
+        if (recorder) {
+            image = SkImages::TextureFromImage(recorder, raster_image.get());
             if (!image)
                 image = move(raster_image);
         } else {

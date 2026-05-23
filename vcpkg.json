@@ -132,6 +132,7 @@
       "default-features": false,
       "features": [
         "metal",
+        "graphite",
         "fontconfig",
         "harfbuzz",
         "icu"
@@ -143,6 +144,7 @@
       "default-features": false,
       "features": [
         "freetype",
+        "graphite",
         "harfbuzz",
         "icu",
         "vulkan"
@@ -155,6 +157,7 @@
       "features": [
         "freetype",
         "fontconfig",
+        "graphite",
         "harfbuzz",
         "icu",
         "vulkan"
@@ -165,6 +168,7 @@
       "platform": "android",
       "default-features": false,
       "features": [
+        "graphite",
         "vulkan"
       ]
     },
