@@ -109,6 +109,10 @@ void DisplayListPlayerSkia::flush()
     if (auto context = surface().skia_backend_context())
         context->flush_and_submit(&surface().sk_surface());
     surface().flush();
+}
+
+void DisplayListPlayerSkia::did_execute()
+{
     m_image_cache.prune();
 }
 

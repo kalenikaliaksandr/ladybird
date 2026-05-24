@@ -12,6 +12,8 @@
 #include <AK/OwnPtr.h>
 #include <AK/RefCounted.h>
 #include <AK/Vector.h>
+#include <AK/Weakable.h>
+#include <LibCore/Forward.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
@@ -54,9 +56,12 @@ public:
     virtual void request_rendering_update() = 0;
 };
 
-class CompositorState final : public RefCounted<CompositorState> {
+class CompositorState final
+    : public RefCounted<CompositorState>
+    , public Weakable<CompositorState> {
 public:
     static NonnullRefPtr<CompositorState> create(RefPtr<Gfx::SkiaBackendContext>, bool async_scrolling_enabled);
+    ~CompositorState();
 
     enum class ContextOwnerCheckResult {
         OwnedByClient,
@@ -107,6 +112,12 @@ private:
             Web::Painting::CompositorSurfaceId surface_id;
         };
 
+        struct PendingGpuPresent {
+            Gfx::IntRect viewport_rect;
+            i32 bitmap_id { 0 };
+            NonnullRefPtr<Gfx::PaintingSurface> presented_surface;
+        };
+
         bool is_registered { false };
         CompositorStateWebContentClient* web_content_client { nullptr };
         Optional<u64> page_id;
@@ -143,6 +154,7 @@ private:
 
         Optional<Gfx::IntRect> pending_present_frame;
         Optional<Gfx::IntRect> presented_frame;
+        Optional<PendingGpuPresent> pending_gpu_present;
         Optional<i32> presented_bitmap_id_awaiting_ack;
         bool has_deferred_async_scroll_present { false };
         Gfx::IntRect deferred_async_scroll_present_viewport_rect;
@@ -170,10 +182,16 @@ private:
     void present_frame(Web::Compositor::CompositorContextId, ContextState&, Gfx::IntRect);
     void publish_backing_stores(Web::Compositor::CompositorContextId, ContextState&, Web::Compositor::BackingStoreManager::Publication&&);
     bool present_frame_to_client(Web::Compositor::CompositorContextId, ContextState&, Gfx::IntRect const&, i32 bitmap_id);
+    void present_frame_to_client_after_gpu_completion(Web::Compositor::CompositorContextId, ContextState&, Gfx::IntRect const&, i32 bitmap_id, NonnullRefPtr<Gfx::PaintingSurface>);
+    void async_gpu_present_finished(Web::Compositor::CompositorContextId, i32 bitmap_id);
+    void start_gpu_completion_timer_if_needed();
+    void check_gpu_completions();
+    bool has_pending_gpu_present() const;
 
     HashMap<Web::Compositor::CompositorContextId, OwnPtr<ContextState>> m_contexts;
     RefPtr<Gfx::SkiaBackendContext> m_skia_backend_context;
     OwnPtr<Web::Painting::DisplayListPlayerSkia> m_display_list_player;
+    RefPtr<Core::Timer> m_gpu_completion_timer;
     CompositorStateClient* m_client { nullptr };
     bool m_async_scrolling_enabled { true };
 };

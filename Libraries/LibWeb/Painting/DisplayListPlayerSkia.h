@@ -24,6 +24,7 @@ public:
 
 private:
     void flush() override;
+    void did_execute() override;
     void draw_glyph_run(DrawGlyphRun const&) override;
     void fill_rect(FillRect const&) override;
     void draw_scaled_decoded_image_frame(DrawScaledDecodedImageFrame const&) override;

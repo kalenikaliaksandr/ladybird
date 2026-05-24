@@ -33,6 +33,18 @@ static constexpr size_t skia_resource_cache_limit = 256 * MiB;
 
 static RefPtr<SkiaBackendContext> s_main_thread_context;
 
+static void async_flush_finished(void* context)
+{
+    auto completion_handler = adopt_own(*static_cast<Function<void()>*>(context));
+    (*completion_handler)();
+}
+
+void SkiaBackendContext::flush_and_submit_async(SkSurface* surface, Function<void()>&& completion_handler)
+{
+    flush_and_submit(surface);
+    completion_handler();
+}
+
 void SkiaBackendContext::initialize_gpu_backend()
 {
     VERIFY(!s_main_thread_context);
@@ -98,6 +110,22 @@ public:
         m_context->submit(GrSyncCpu::kYes);
     }
 
+    void flush_and_submit_async(SkSurface* surface, Function<void()>&& completion_handler) override
+    {
+        auto* completion_handler_ptr = new Function<void()>(move(completion_handler));
+        GrFlushInfo const flush_info {
+            .fFinishedProc = async_flush_finished,
+            .fFinishedContext = completion_handler_ptr,
+        };
+        m_context->flush(surface, SkSurfaces::BackendSurfaceAccess::kPresent, flush_info);
+        m_context->submit(GrSyncCpu::kNo);
+    }
+
+    void check_async_work_completion() override
+    {
+        m_context->checkAsyncWorkCompletion();
+    }
+
     skgpu::VulkanExtensions const* extensions() const { return m_extensions.ptr(); }
 
     GrDirectContext* sk_context() const override { return m_context.get(); }
@@ -161,6 +189,22 @@ public:
         GrFlushInfo const flush_info {};
         m_context->flush(surface, SkSurfaces::BackendSurfaceAccess::kPresent, flush_info);
         m_context->submit(GrSyncCpu::kYes);
+    }
+
+    void flush_and_submit_async(SkSurface* surface, Function<void()>&& completion_handler) override
+    {
+        auto* completion_handler_ptr = new Function<void()>(move(completion_handler));
+        GrFlushInfo const flush_info {
+            .fFinishedProc = async_flush_finished,
+            .fFinishedContext = completion_handler_ptr,
+        };
+        m_context->flush(surface, SkSurfaces::BackendSurfaceAccess::kPresent, flush_info);
+        m_context->submit(GrSyncCpu::kNo);
+    }
+
+    void check_async_work_completion() override
+    {
+        m_context->checkAsyncWorkCompletion();
     }
 
     GrDirectContext* sk_context() const override { return m_context.get(); }

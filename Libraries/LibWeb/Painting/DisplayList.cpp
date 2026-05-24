@@ -111,14 +111,16 @@ void DisplayListPlayer::execute(
     DisplayList const& display_list,
     DisplayListResourceStorage const& resource_storage,
     ScrollStateSnapshot const& scroll_state_snapshot,
-    RefPtr<Gfx::PaintingSurface> surface)
+    RefPtr<Gfx::PaintingSurface> surface,
+    FlushMode flush_mode)
 {
     m_surface = surface;
     m_active_display_list = &display_list;
     m_resource_storage = &resource_storage;
     execute_impl(display_list, scroll_state_snapshot);
-    if (surface)
+    if (surface && flush_mode == FlushMode::Automatic)
         flush();
+    did_execute();
     m_resource_storage = nullptr;
     m_active_display_list = nullptr;
     m_surface = nullptr;

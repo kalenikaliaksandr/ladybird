@@ -6,6 +6,8 @@
 
 #include <AK/StdLibExtras.h>
 #include <Compositor/CompositorState.h>
+#include <LibCore/EventLoop.h>
+#include <LibCore/Timer.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/PainterSkia.h>
@@ -148,6 +150,12 @@ CompositorState::CompositorState(RefPtr<Gfx::SkiaBackendContext> skia_backend_co
     , m_display_list_player(make<Web::Painting::DisplayListPlayerSkia>(m_skia_backend_context))
     , m_async_scrolling_enabled(async_scrolling_enabled)
 {
+}
+
+CompositorState::~CompositorState()
+{
+    if (m_gpu_completion_timer)
+        m_gpu_completion_timer->stop();
 }
 
 void CompositorState::set_client(CompositorStateClient& client)
@@ -521,7 +529,7 @@ void CompositorState::present_frame(Web::Compositor::CompositorContextId context
 
 void CompositorState::present_frame(Web::Compositor::CompositorContextId context_id, ContextState& context, Gfx::IntRect viewport_rect)
 {
-    if (context.presented_bitmap_id_awaiting_ack.has_value()) {
+    if (context.pending_gpu_present.has_value() || context.presented_bitmap_id_awaiting_ack.has_value()) {
         context.pending_present_frame = viewport_rect;
         return;
     }
@@ -532,21 +540,31 @@ void CompositorState::present_frame(Web::Compositor::CompositorContextId context
     }
 
     auto& back_store = context.backing_store_manager.back_store();
+    bool should_present_async = context.presents_to_client && back_store.skia_backend_context();
     context.presentation_mode.visit(
         [](Empty const&) {},
         [&](Web::Compositor::PublishToCompositorSurface const&) {
             Gfx::PainterSkia painter { NonnullRefPtr<Gfx::PaintingSurface> { back_store } };
             painter.clear_rect(back_store.rect().to_type<float>(), Gfx::Color::Transparent);
         });
-    m_display_list_player->execute(*context.display_list, context.display_list_resource_storage, context.scroll_state_snapshot, back_store);
+    m_display_list_player->execute(*context.display_list, context.display_list_resource_storage, context.scroll_state_snapshot, back_store,
+        should_present_async ? Web::Painting::DisplayListPlayer::FlushMode::Manual : Web::Painting::DisplayListPlayer::FlushMode::Automatic);
     auto painted_viewport_scrollbar_overlay = paint_viewport_scrollbar_overlay(context, back_store);
-    if (painted_viewport_scrollbar_overlay) {
+    if (!should_present_async && painted_viewport_scrollbar_overlay) {
         if (auto skia_backend_context = back_store.skia_backend_context())
             skia_backend_context->flush_and_submit(&back_store.sk_surface());
     }
-    back_store.flush();
+    if (!should_present_async)
+        back_store.flush();
     auto rendered_bitmap_id = context.backing_store_manager.back_bitmap_id();
+    NonnullRefPtr<Gfx::PaintingSurface> presented_surface { back_store };
     context.backing_store_manager.swap();
+
+    if (should_present_async) {
+        context.presented_frame = viewport_rect;
+        present_frame_to_client_after_gpu_completion(context_id, context, viewport_rect, rendered_bitmap_id, move(presented_surface));
+        return;
+    }
 
     context.presentation_mode.visit(
         [&](Empty const&) {
@@ -925,6 +943,81 @@ bool CompositorState::present_frame_to_client(Web::Compositor::CompositorContext
 
     m_client->did_present_frame(context_id, viewport_rect, bitmap_id);
     return true;
+}
+
+void CompositorState::present_frame_to_client_after_gpu_completion(Web::Compositor::CompositorContextId context_id, ContextState& context, Gfx::IntRect const& viewport_rect, i32 bitmap_id, NonnullRefPtr<Gfx::PaintingSurface> presented_surface)
+{
+    auto skia_backend_context = presented_surface->skia_backend_context();
+    VERIFY(skia_backend_context);
+
+    context.pending_gpu_present.emplace(ContextState::PendingGpuPresent {
+        .viewport_rect = viewport_rect,
+        .bitmap_id = bitmap_id,
+        .presented_surface = presented_surface,
+    });
+
+    auto event_loop = Core::EventLoop::current_weak();
+    skia_backend_context->flush_and_submit_async(&presented_surface->sk_surface(), [event_loop, weak_self = make_weak_ptr<CompositorState>(), context_id, bitmap_id] {
+        auto strong_event_loop = event_loop->take();
+        if (!strong_event_loop)
+            return;
+
+        strong_event_loop->deferred_invoke([weak_self, context_id, bitmap_id] {
+            if (auto self = weak_self.strong_ref())
+                self->async_gpu_present_finished(context_id, bitmap_id);
+        });
+    });
+
+    start_gpu_completion_timer_if_needed();
+}
+
+void CompositorState::async_gpu_present_finished(Web::Compositor::CompositorContextId context_id, i32 bitmap_id)
+{
+    auto* context = context_if_present(context_id);
+    if (!context || !context->pending_gpu_present.has_value())
+        return;
+
+    if (context->pending_gpu_present->bitmap_id != bitmap_id)
+        return;
+
+    auto pending_gpu_present = context->pending_gpu_present.release_value();
+    pending_gpu_present.presented_surface->flush();
+    if (present_frame_to_client(context_id, *context, pending_gpu_present.viewport_rect, pending_gpu_present.bitmap_id))
+        context->presented_bitmap_id_awaiting_ack = pending_gpu_present.bitmap_id;
+}
+
+void CompositorState::start_gpu_completion_timer_if_needed()
+{
+    if (!m_skia_backend_context || !has_pending_gpu_present())
+        return;
+
+    if (!m_gpu_completion_timer) {
+        m_gpu_completion_timer = Core::Timer::create_repeating(1, [weak_self = make_weak_ptr<CompositorState>()] {
+            if (auto self = weak_self.strong_ref())
+                self->check_gpu_completions();
+        });
+    }
+
+    if (!m_gpu_completion_timer->is_active())
+        m_gpu_completion_timer->start();
+}
+
+void CompositorState::check_gpu_completions()
+{
+    if (m_skia_backend_context)
+        m_skia_backend_context->check_async_work_completion();
+
+    if (!has_pending_gpu_present() && m_gpu_completion_timer)
+        m_gpu_completion_timer->stop();
+}
+
+bool CompositorState::has_pending_gpu_present() const
+{
+    for (auto const& context : m_contexts) {
+        if (context.value->pending_gpu_present.has_value())
+            return true;
+    }
+    return false;
 }
 
 }
