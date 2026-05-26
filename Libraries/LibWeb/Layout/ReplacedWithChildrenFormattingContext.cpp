@@ -43,7 +43,7 @@ void ReplacedWithChildrenFormattingContext::run(AvailableSpace const& available_
     if (!wrapper)
         return;
 
-    auto& wrapper_state = m_state.get_mutable(*wrapper);
+    auto& wrapper_state = m_state.get_mutable(*wrapper, LayoutState::layout_input_from_containing_block(context_box(), root_state, child_available_space, m_layout_mode));
     wrapper_state.set_content_width(content_width);
     wrapper_state.set_content_offset({ 0, 0 });
 

@@ -23,27 +23,29 @@ TableFormattingContext::~TableFormattingContext() = default;
 
 CSSPixels TableFormattingContext::table_wrapper_containing_block_width() const
 {
-    // CSS Grid creates a grid-area containing block for each grid item. The table wrapper is the grid item for
-    // display:table, so table-root percentages use the grid area rather than the layout-tree containing block.
-    if (auto const& grid_area_size = m_state.get(table_wrapper()).grid_area_size(); grid_area_size.has_value())
-        return grid_area_size->width();
+    if (auto const* table_wrapper_state = m_state.try_get(table_wrapper())) {
+        // CSS Grid creates a grid-area containing block for each grid item. The table wrapper is the grid item for
+        // display:table, so table-root percentages use the grid area rather than the layout-tree containing block.
+        if (auto const& grid_area_size = table_wrapper_state->grid_area_size(); grid_area_size.has_value())
+            return grid_area_size->width();
 
-    auto const* containing_block_used_values = m_state.try_get(*table_wrapper().containing_block());
-    if (!containing_block_used_values)
-        return 0;
-    return containing_block_used_values->content_width();
+        return table_wrapper_state->containing_block_content_width();
+    }
+
+    return 0;
 }
 
 CSSPixels TableFormattingContext::table_wrapper_containing_block_height() const
 {
-    // Keep the block-axis percentage basis consistent with the grid-area containing block stored during grid layout.
-    if (auto const& grid_area_size = m_state.get(table_wrapper()).grid_area_size(); grid_area_size.has_value())
-        return grid_area_size->height();
+    if (auto const* table_wrapper_state = m_state.try_get(table_wrapper())) {
+        // Keep the block-axis percentage basis consistent with the grid-area containing block stored during grid layout.
+        if (auto const& grid_area_size = table_wrapper_state->grid_area_size(); grid_area_size.has_value())
+            return grid_area_size->height();
 
-    auto const* containing_block_used_values = m_state.try_get(*table_wrapper().containing_block());
-    if (!containing_block_used_values)
-        return 0;
-    return containing_block_used_values->content_height();
+        return table_wrapper_state->containing_block_content_height();
+    }
+
+    return 0;
 }
 
 static inline bool is_table_column_group(Box const& box)
@@ -64,6 +66,7 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
             continue;
         }
         auto const& child_box = as<Box>(*child);
+        m_state.get_mutable(child_box, m_state.layout_input_for(child_box, caption_available_space, m_layout_mode));
         // The caption boxes are principal block-level boxes that retain their own content, padding, margin, and border areas,
         // and are rendered as normal block boxes inside the table wrapper box, as described in https://www.w3.org/TR/CSS22/tables.html#model
         if (auto caption_context = create_independent_formatting_context_if_needed(m_state, m_layout_mode, child_box)) {
@@ -514,12 +517,12 @@ CSSPixels TableFormattingContext::compute_capmin()
     return capmin;
 }
 
-static bool width_is_auto_or_indefinite_percentage(CSS::Size const& width, LayoutState::UsedValues const* containing_block_state)
+static bool width_is_auto_or_indefinite_percentage(CSS::Size const& width, bool containing_block_has_definite_width)
 {
     if (width.is_auto())
         return true;
     if (width.contains_percentage()) {
-        if (!containing_block_state || !containing_block_state->has_definite_width())
+        if (!containing_block_has_definite_width)
             return true;
     }
     return false;
@@ -588,7 +591,11 @@ void TableFormattingContext::compute_table_width()
         used_width = grid_min;
     } else if (m_available_space->width.is_max_content()) {
         used_width = grid_max;
-    } else if (width_is_auto_or_indefinite_percentage(computed_values.width(), m_state.try_get(*table_wrapper().containing_block()))) {
+    } else if (width_is_auto_or_indefinite_percentage(computed_values.width(), [&] {
+                   if (auto const* table_wrapper_state = m_state.try_get(table_wrapper()))
+                       return table_wrapper_state->containing_block_has_definite_width();
+                   return false;
+               }())) {
         // If the table-root has 'width: auto', the used width is the greater of
         // min(GRIDMAX, the table’s containing block width), the used min-width of the table.
         if (width_of_table_containing_block.is_definite())
@@ -623,22 +630,25 @@ void TableFormattingContext::compute_table_width()
             used_width = min(used_width, resolve_width_constraint_to_content_box(computed_values.max_width()));
     }
 
-    auto& table_wrapper_box_state = m_state.get_mutable(table_wrapper());
-    if (computed_values.width().is_auto()
-        && table_wrapper_box_state.grid_area_size().has_value()
-        && table_wrapper_box_state.has_definite_width()) {
-        auto stretched_table_width = table_wrapper_box_state.content_width()
-            - table_box_state.border_box_left()
-            - table_box_state.border_box_right();
-        stretched_table_width = max(CSSPixels(0), stretched_table_width);
-        used_width = max(used_width, stretched_table_width);
+    auto* table_wrapper_box_state = m_state.try_get_mutable(table_wrapper());
+    if (table_wrapper_box_state) {
+        if (computed_values.width().is_auto()
+            && table_wrapper_box_state->grid_area_size().has_value()
+            && table_wrapper_box_state->has_definite_width()) {
+            auto stretched_table_width = table_wrapper_box_state->content_width()
+                - table_box_state.border_box_left()
+                - table_box_state.border_box_right();
+            stretched_table_width = max(CSSPixels(0), stretched_table_width);
+            used_width = max(used_width, stretched_table_width);
+        }
     }
     if (!should_treat_max_width_as_none(table_box(), m_available_space->width))
         used_width = min(used_width, resolve_width_constraint_to_content_box(computed_values.max_width()));
     used_width = max(used_width, used_min_width);
 
     table_box_state.set_content_width(used_width);
-    table_wrapper_box_state.set_content_width(table_box_state.border_box_width());
+    if (table_wrapper_box_state)
+        table_wrapper_box_state->set_content_width(table_box_state.border_box_width());
 }
 
 CSSPixels TableFormattingContext::compute_columns_total_used_width() const
@@ -952,7 +962,7 @@ void TableFormattingContext::compute_table_height()
         }
         auto row_computed_height = row.box->computed_values().height();
         if (row_computed_height.is_length()) {
-            auto height_of_containing_block = m_state.get(*row.box->containing_block()).content_height();
+            auto height_of_containing_block = m_state.get(row.box).containing_block_content_height();
             auto row_used_height = row_computed_height.to_px(row.box, height_of_containing_block);
             row.base_height = max(row.base_height, row_used_height);
         }
@@ -967,8 +977,8 @@ void TableFormattingContext::compute_table_height()
         for (size_t i = 0; i < cell.column_span; ++i)
             span_width += m_columns[cell.column_index + i].used_width;
 
-        auto width_of_containing_block = cell_state.containing_block_used_values()->content_width();
-        auto height_of_containing_block = cell_state.containing_block_used_values()->content_height();
+        auto width_of_containing_block = cell_state.containing_block_content_width();
+        auto height_of_containing_block = cell_state.containing_block_content_height();
 
         cell_state.padding_top = cell.box->computed_values().padding().top().to_px_or_zero(cell.box, width_of_containing_block);
         cell_state.padding_bottom = cell.box->computed_values().padding().bottom().to_px_or_zero(cell.box, width_of_containing_block);
@@ -1726,6 +1736,23 @@ Vector<TableFormattingContext::ConflictingEdge> TableFormattingContext::BorderCo
     return result;
 }
 
+LayoutInput TableFormattingContext::layout_input_for_table_internal_box(Box const& box) const
+{
+    VERIFY(m_available_space.has_value());
+
+    if (auto containing_block = box.containing_block()) {
+        if (auto const* containing_block_state = m_state.try_get(*containing_block))
+            return LayoutState::layout_input_from_containing_block(*containing_block, *containing_block_state, *m_available_space, m_layout_mode);
+    }
+
+    if (auto const* parent_box = as_if<Box>(*box.parent())) {
+        if (auto const* parent_state = m_state.try_get(*parent_box))
+            return LayoutState::layout_input_from_containing_block(*parent_box, *parent_state, *m_available_space, m_layout_mode);
+    }
+
+    return LayoutState::layout_input_from_containing_block(table_box(), m_state.get(table_box()), *m_available_space, m_layout_mode);
+}
+
 void TableFormattingContext::finish_grid_initialization(TableGrid const& table_grid)
 {
     m_columns.resize(table_grid.column_count());
@@ -1737,6 +1764,22 @@ void TableFormattingContext::finish_grid_initialization(TableGrid const& table_g
         m_cells_by_coordinate[cell.row_index][cell.column_index] = cell;
         m_columns[cell.column_index].has_originating_cells = true;
     }
+
+    VERIFY(m_available_space.has_value());
+    table_box().for_each_in_subtree_of_type<Box>([&](Box const& box) {
+        if (&box == &table_box())
+            return TraversalDecision::Continue;
+        if (box.display().is_table_inside())
+            return TraversalDecision::SkipChildrenAndContinue;
+        if (!TableGrid::is_table_row_group(box)
+            && !TableGrid::is_table_row(box)
+            && !box.display().is_table_cell()
+            && !box.display().is_table_caption())
+            return TraversalDecision::Continue;
+        if (!m_state.try_get(box))
+            m_state.get_mutable(box, layout_input_for_table_internal_box(box));
+        return TraversalDecision::Continue;
+    });
 }
 
 void TableFormattingContext::run_until_width_calculation(AvailableSpace const& available_space)
@@ -1775,7 +1818,7 @@ void TableFormattingContext::parent_context_did_dimension_child_root_box()
             // FIXME: calculate_static_position_rect() is not aware of how to correctly calculate static position for
             //        a box nested inside a table, but we need to set some value, so layout_absolutely_positioned_element()
             //        won't crash trying to access it.
-            m_state.get_mutable(box).set_static_position_rect(calculate_static_position_rect(box));
+            m_state.get_mutable(box, m_state.layout_input_for(box, *m_available_space, m_layout_mode)).set_static_position_rect(calculate_static_position_rect(box));
         }
 
         if (formatting_context_type_created_by_box(box).has_value()) {

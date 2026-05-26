@@ -101,7 +101,7 @@ void InlineFormattingContext::run(AvailableSpace const& available_space)
 void InlineFormattingContext::dimension_box_on_line(Box const& box, LayoutMode layout_mode)
 {
     auto width_of_containing_block = m_available_space->width.to_px_or_zero();
-    auto& box_state = m_state.get_mutable(box);
+    auto& box_state = m_state.get_mutable(box, LayoutState::layout_input_from_containing_block(containing_block(), m_containing_block_used_values, *m_available_space, layout_mode));
     auto const& computed_values = box.computed_values();
 
     box_state.margin_left = computed_values.margin().left().to_px_or_zero(box, width_of_containing_block);
@@ -348,7 +348,7 @@ void InlineFormattingContext::generate_line_boxes()
     auto direction = m_context_box->computed_values().direction();
     auto writing_mode = m_context_box->computed_values().writing_mode();
 
-    InlineLevelIterator iterator(*this, m_state, containing_block(), m_containing_block_used_values, m_layout_mode);
+    InlineLevelIterator iterator(*this, m_state, containing_block(), m_containing_block_used_values, *m_available_space, m_layout_mode);
     LineBuilder line_builder(*this, m_state, m_containing_block_used_values, direction, writing_mode);
 
     // NOTE: When we ignore collapsible whitespace chunks at the start of a line,
@@ -497,7 +497,7 @@ void InlineFormattingContext::generate_line_boxes()
         for (auto& fragment : line_box.fragments()) {
             if (fragment.layout_node().is_inline_block()) {
                 auto& box = as<Box>(fragment.layout_node());
-                auto& box_state = m_state.get_mutable(box);
+                auto& box_state = m_state.get_mutable(box, LayoutState::layout_input_from_containing_block(containing_block, m_containing_block_used_values, *m_available_space, m_layout_mode));
                 box_state.set_content_offset(fragment.offset());
             }
         }
@@ -508,7 +508,7 @@ void InlineFormattingContext::generate_line_boxes()
 
     if (m_layout_mode == LayoutMode::Normal) {
         for (auto* box : absolute_boxes) {
-            auto& box_state = m_state.get_mutable(*box);
+            auto& box_state = m_state.get_mutable(*box, LayoutState::layout_input_from_containing_block(containing_block, m_containing_block_used_values, *m_available_space, m_layout_mode));
             box_state.set_static_position_rect(calculate_static_position_rect(*box));
         }
     }
@@ -572,8 +572,7 @@ StaticPositionRect InlineFormattingContext::calculate_static_position_rect(Box c
         // ...below the last fragment of this sibling, if the display-outside value (before box type transformation) is block.
         // ...at the top right corner of the last fragment of this sibling otherwise.
         LineBoxFragment const* last_fragment = nullptr;
-        auto const& cb_state = m_state.get(*sibling->containing_block());
-        for (auto const& line_box : cb_state.line_boxes) {
+        for (auto const& line_box : m_containing_block_used_values.line_boxes) {
             for (auto const& fragment : line_box.fragments()) {
                 if (&fragment.layout_node() == sibling)
                     last_fragment = &fragment;

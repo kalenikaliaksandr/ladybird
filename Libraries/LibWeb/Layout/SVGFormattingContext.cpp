@@ -296,10 +296,11 @@ void SVGFormattingContext::run(AvailableSpace const& available_space)
 void SVGFormattingContext::layout_svg_element(Box const& child)
 {
     if (is<SVG::SVGFitToViewBox>(child.dom_node())) {
+        m_state.get_mutable(child, m_state.layout_input_for(child, *m_available_space, m_layout_mode));
         layout_nested_viewport(child);
     } else if (is<SVG::SVGForeignObjectElement>(child.dom_node()) && is<BlockContainer>(child)) {
+        auto& child_state = m_state.get_mutable(child, m_state.layout_input_for(child, *m_available_space, m_layout_mode));
         Layout::BlockFormattingContext bfc(m_state, m_layout_mode, static_cast<BlockContainer const&>(child), this);
-        auto& child_state = m_state.get_mutable(child);
         CSSPixelRect rect {
             {
                 child.computed_values().x().to_px(child, m_available_space->width.to_px_or_zero()),
@@ -491,7 +492,22 @@ Gfx::AffineTransform SVGFormattingContext::get_parent_svg_transform(SVGGraphicsB
 
 void SVGFormattingContext::layout_graphics_element(SVGGraphicsBox const& graphics_box)
 {
-    auto& graphics_box_state = m_state.get_mutable(graphics_box);
+    auto& graphics_box_state = [&]() -> LayoutState::UsedValues& {
+        if (auto* existing_state = m_state.try_get_mutable(graphics_box))
+            return *existing_state;
+
+        if (auto containing_block = graphics_box.containing_block()) {
+            if (auto const* containing_block_state = m_state.try_get(*containing_block)) {
+                auto input = LayoutState::layout_input_from_containing_block(*containing_block, *containing_block_state, *m_available_space, m_layout_mode);
+                return m_state.get_mutable(graphics_box, input);
+            }
+        }
+
+        auto const* parent_box = as_if<Box>(*graphics_box.parent());
+        VERIFY(parent_box);
+        auto input = LayoutState::layout_input_from_containing_block(*parent_box, m_state.get(*parent_box), *m_available_space, m_layout_mode);
+        return m_state.get_mutable(graphics_box, input);
+    }();
     auto parent_svg_transform = get_parent_svg_transform(graphics_box);
     auto svg_transform = parent_svg_transform.multiply(const_cast<SVGGraphicsBox&>(graphics_box).dom_node().element_transform());
     graphics_box_state.set_computed_svg_transforms(Painting::SVGGraphicsPaintable::ComputedTransforms(m_current_viewbox_transform, svg_transform));
@@ -550,7 +566,7 @@ void SVGFormattingContext::layout_mask_or_clip(SVGBox const& mask_or_clip)
     else
         VERIFY_NOT_REACHED();
     // FIXME: Somehow limit <clipPath> contents to: shape elements, <text>, and <use>.
-    auto& layout_state = m_state.get_mutable(mask_or_clip);
+    auto& layout_state = m_state.get_mutable(mask_or_clip, m_state.layout_input_for(mask_or_clip, *m_available_space, m_layout_mode));
     auto parent_viewbox_transform = m_current_viewbox_transform;
 
     auto const* pattern_box = as_if<SVGPatternBox>(mask_or_clip);

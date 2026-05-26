@@ -9,6 +9,7 @@
 #include <AK/HashTable.h>
 #include <LibGfx/Path.h>
 #include <LibGfx/Point.h>
+#include <LibWeb/Layout/AvailableSpace.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/LineBox.h>
 #include <LibWeb/Painting/PaintableBox.h>
@@ -52,6 +53,23 @@ struct StaticPositionRect {
 
         return position;
     }
+};
+
+struct LayoutInput {
+    AvailableSpace available_space { AvailableSize::make_indefinite(), AvailableSize::make_indefinite() };
+
+    CSSPixelSize containing_block_content_size;
+    bool containing_block_has_definite_width { false };
+    bool containing_block_has_definite_height { false };
+
+    CSSPixelSize percentage_resolution_size;
+
+    CSSPixelPoint containing_block_cumulative_offset;
+
+    CSS::WritingMode containing_block_writing_mode { CSS::WritingMode::HorizontalTb };
+    CSS::Direction containing_block_direction { CSS::Direction::Ltr };
+
+    LayoutMode layout_mode { LayoutMode::Normal };
 };
 
 // Sparse, index-based container using two-level page tables.
@@ -128,9 +146,17 @@ struct LayoutState {
 
         NodeWithStyle const& node() const { return *m_node; }
         NodeWithStyle& node() { return const_cast<NodeWithStyle&>(*m_node); }
-        void set_node(NodeWithStyle const&, UsedValues const* containing_block_used_values);
+        void set_node(NodeWithStyle const&, LayoutInput const&);
+        void set_containing_block_input(LayoutInput const&);
 
-        UsedValues const* containing_block_used_values() const { return m_containing_block_used_values; }
+        CSSPixelSize containing_block_content_size() const { return m_containing_block_content_size; }
+        CSSPixels containing_block_content_width() const { return m_containing_block_content_size.width(); }
+        CSSPixels containing_block_content_height() const { return m_containing_block_content_size.height(); }
+        bool containing_block_has_definite_width() const { return m_containing_block_has_definite_width; }
+        bool containing_block_has_definite_height() const { return m_containing_block_has_definite_height; }
+        CSSPixelSize percentage_resolution_size() const { return m_percentage_resolution_size; }
+        CSSPixels percentage_resolution_width() const { return m_percentage_resolution_size.width(); }
+        CSSPixels percentage_resolution_height() const { return m_percentage_resolution_size.height(); }
 
         CSSPixels content_width() const { return m_content_width; }
         CSSPixels content_height() const { return m_content_height; }
@@ -160,15 +186,13 @@ struct LayoutState {
         void set_content_y(CSSPixels y) { offset.set_y(y); }
 
         // Offset from ICB (viewport) content edge to this box's content edge.
-        // Computed lazily by walking the containing block chain.
+        // Computed from the containing block offset copied into LayoutInput.
         // For pre-populated nodes (partial relayout), returns the cached value from paintable absolute position.
         CSSPixelPoint cumulative_offset() const
         {
             if (m_cumulative_offset.has_value())
                 return *m_cumulative_offset;
-            if (m_containing_block_used_values)
-                return m_containing_block_used_values->cumulative_offset() + offset;
-            return offset;
+            return m_containing_block_cumulative_offset + offset;
         }
 
         // offset from top-left corner of content area of box's containing block to top-left corner of box's content area
@@ -326,7 +350,11 @@ struct LayoutState {
         }
 
         GC::Ptr<Layout::NodeWithStyle const> m_node { nullptr };
-        UsedValues const* m_containing_block_used_values { nullptr };
+        CSSPixelSize m_containing_block_content_size;
+        bool m_containing_block_has_definite_width { false };
+        bool m_containing_block_has_definite_height { false };
+        CSSPixelSize m_percentage_resolution_size;
+        CSSPixelPoint m_containing_block_cumulative_offset;
         Optional<CSSPixelPoint> m_cumulative_offset;
 
         CSSPixels m_content_width { 0 };
@@ -347,10 +375,17 @@ struct LayoutState {
 
     void ensure_capacity(u32 node_count);
 
+    static LayoutInput layout_input_from_containing_block(Box const&, UsedValues const&, AvailableSpace const&, LayoutMode);
+    LayoutInput layout_input_for(NodeWithStyle const&, AvailableSpace const&, LayoutMode) const;
+    static LayoutInput layout_input_from_paintable(NodeWithStyle const&, Painting::PaintableBox const&, AvailableSpace const&, LayoutMode);
+
+    UsedValues& get_mutable(NodeWithStyle const&, LayoutInput const&);
     UsedValues& get_mutable(NodeWithStyle const&);
     UsedValues const& get(NodeWithStyle const&) const;
+    UsedValues& get_existing_mutable(NodeWithStyle const&);
+    UsedValues const& get_existing(NodeWithStyle const&) const;
 
-    UsedValues& populate_from_paintable(NodeWithStyle const&, Painting::PaintableBox const&);
+    UsedValues& populate_from_paintable(NodeWithStyle const&, Painting::PaintableBox const&, LayoutInput const&);
     UsedValues& populate_node_from(LayoutState const& source, NodeWithStyle const& node);
 
     UsedValues const* try_get(NodeWithStyle const&) const;
@@ -358,7 +393,7 @@ struct LayoutState {
     UsedValues const* try_get(Node const&) const;
 
 private:
-    UsedValues& ensure_used_values_for(NodeWithStyle const&);
+    UsedValues& ensure_used_values_for(NodeWithStyle const&, LayoutInput const&);
     void resolve_relative_positions();
 
     PagedStore<UsedValues> m_used_values_store;

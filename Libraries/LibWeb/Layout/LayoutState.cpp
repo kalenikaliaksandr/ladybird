@@ -35,25 +35,104 @@ void LayoutState::ensure_capacity(u32 node_count)
     m_used_values_store.ensure_capacity(node_count);
 }
 
+LayoutInput LayoutState::layout_input_from_containing_block(Box const& containing_block, UsedValues const& containing_block_state, AvailableSpace const& available_space, LayoutMode layout_mode)
+{
+    return {
+        .available_space = available_space,
+        .containing_block_content_size = containing_block_state.content_size(),
+        .containing_block_has_definite_width = containing_block_state.has_definite_width(),
+        .containing_block_has_definite_height = containing_block_state.has_definite_height(),
+        .percentage_resolution_size = containing_block_state.content_size(),
+        .containing_block_cumulative_offset = containing_block_state.cumulative_offset(),
+        .containing_block_writing_mode = containing_block.computed_values().writing_mode(),
+        .containing_block_direction = containing_block.computed_values().direction(),
+        .layout_mode = layout_mode,
+    };
+}
+
+LayoutInput LayoutState::layout_input_for(NodeWithStyle const& node, AvailableSpace const& available_space, LayoutMode layout_mode) const
+{
+    auto containing_block = node.containing_block();
+    VERIFY(containing_block);
+    return layout_input_from_containing_block(*containing_block, get_existing(*containing_block), available_space, layout_mode);
+}
+
+LayoutInput LayoutState::layout_input_from_paintable(NodeWithStyle const& node, Painting::PaintableBox const& paintable, AvailableSpace const& available_space, LayoutMode layout_mode)
+{
+    CSSPixelSize containing_block_content_size;
+    bool containing_block_has_definite_width = false;
+    bool containing_block_has_definite_height = false;
+    CSSPixelPoint containing_block_cumulative_offset;
+    CSS::WritingMode containing_block_writing_mode = CSS::WritingMode::HorizontalTb;
+    CSS::Direction containing_block_direction = CSS::Direction::Ltr;
+
+    if (auto containing_block_paintable = paintable.containing_block()) {
+        containing_block_content_size = containing_block_paintable->content_size();
+        containing_block_has_definite_width = true;
+        containing_block_has_definite_height = true;
+        containing_block_cumulative_offset = containing_block_paintable->absolute_rect().location();
+        containing_block_writing_mode = containing_block_paintable->layout_node().computed_values().writing_mode();
+        containing_block_direction = containing_block_paintable->layout_node().computed_values().direction();
+    } else {
+        containing_block_content_size = paintable.content_size();
+        containing_block_has_definite_width = true;
+        containing_block_has_definite_height = true;
+        containing_block_cumulative_offset = paintable.absolute_rect().location() - paintable.offset();
+        containing_block_writing_mode = node.computed_values().writing_mode();
+        containing_block_direction = node.computed_values().direction();
+    }
+
+    return {
+        .available_space = available_space,
+        .containing_block_content_size = containing_block_content_size,
+        .containing_block_has_definite_width = containing_block_has_definite_width,
+        .containing_block_has_definite_height = containing_block_has_definite_height,
+        .percentage_resolution_size = containing_block_content_size,
+        .containing_block_cumulative_offset = containing_block_cumulative_offset,
+        .containing_block_writing_mode = containing_block_writing_mode,
+        .containing_block_direction = containing_block_direction,
+        .layout_mode = layout_mode,
+    };
+}
+
+LayoutState::UsedValues& LayoutState::get_mutable(NodeWithStyle const& node, LayoutInput const& input)
+{
+    auto& used_values = ensure_used_values_for(node, input);
+    used_values.set_containing_block_input(input);
+    return used_values;
+}
+
 LayoutState::UsedValues& LayoutState::get_mutable(NodeWithStyle const& node)
 {
-    return ensure_used_values_for(node);
+    return get_existing_mutable(node);
 }
 
 LayoutState::UsedValues const& LayoutState::get(NodeWithStyle const& node) const
 {
-    return const_cast<LayoutState*>(this)->ensure_used_values_for(node);
+    return get_existing(node);
 }
 
-LayoutState::UsedValues& LayoutState::populate_from_paintable(NodeWithStyle const& node, Painting::PaintableBox const& paintable)
+LayoutState::UsedValues& LayoutState::get_existing_mutable(NodeWithStyle const& node)
+{
+    auto* used_values = m_used_values_store.get(node.layout_index());
+    VERIFY(used_values);
+    return *used_values;
+}
+
+LayoutState::UsedValues const& LayoutState::get_existing(NodeWithStyle const& node) const
+{
+    auto const* used_values = m_used_values_store.get(node.layout_index());
+    VERIFY(used_values);
+    return *used_values;
+}
+
+LayoutState::UsedValues& LayoutState::populate_from_paintable(NodeWithStyle const& node, Painting::PaintableBox const& paintable, LayoutInput const& input)
 {
     VERIFY(m_subtree_root);
     auto index = node.layout_index();
 
-    // NOTE: We skip set_node() here since it performs size resolution that requires a containing block,
-    //       and materialize_from_paintable() overwrites all computed sizes immediately after.
     auto& used_values = m_used_values_store.allocate(index);
-    used_values.m_node = &node;
+    used_values.set_node(node, input);
     used_values.materialize_from_paintable(paintable);
     return used_values;
 }
@@ -66,11 +145,10 @@ LayoutState::UsedValues& LayoutState::populate_node_from(LayoutState const& sour
 
     auto& values = m_used_values_store.allocate(index);
     values = source.get(node);
-    values.m_containing_block_used_values = nullptr;
     return values;
 }
 
-LayoutState::UsedValues& LayoutState::ensure_used_values_for(NodeWithStyle const& node)
+LayoutState::UsedValues& LayoutState::ensure_used_values_for(NodeWithStyle const& node, LayoutInput const& input)
 {
     auto index = node.layout_index();
 
@@ -80,16 +158,8 @@ LayoutState::UsedValues& LayoutState::ensure_used_values_for(NodeWithStyle const
     // During subtree layout, only the subtree root and nodes inside the subtree are allowed.
     VERIFY(!m_subtree_root || m_subtree_root == &node || m_subtree_root->is_inclusive_ancestor_of(node));
 
-    UsedValues const* containing_block_used_values = nullptr;
-    if (m_subtree_root == &node) {
-        // For the subtree root, ancestor values are not available in the throwaway state.
-        containing_block_used_values = try_get(*node.containing_block());
-    } else if (!node.is_viewport()) {
-        containing_block_used_values = &get(*node.containing_block());
-    }
-
     auto& used_values = m_used_values_store.allocate(index);
-    used_values.set_node(node, containing_block_used_values);
+    used_values.set_node(node, input);
     return used_values;
 }
 
@@ -793,7 +863,11 @@ LayoutState::UsedValues& LayoutState::UsedValues::operator=(UsedValues const& ot
     containing_line_box_fragment = other.containing_line_box_fragment;
 
     m_node = other.m_node;
-    m_containing_block_used_values = other.m_containing_block_used_values;
+    m_containing_block_content_size = other.m_containing_block_content_size;
+    m_containing_block_has_definite_width = other.m_containing_block_has_definite_width;
+    m_containing_block_has_definite_height = other.m_containing_block_has_definite_height;
+    m_percentage_resolution_size = other.m_percentage_resolution_size;
+    m_containing_block_cumulative_offset = other.m_containing_block_cumulative_offset;
     m_cumulative_offset = other.m_cumulative_offset;
     m_content_width = other.m_content_width;
     m_content_height = other.m_content_height;
@@ -808,10 +882,19 @@ LayoutState::UsedValues& LayoutState::UsedValues::operator=(UsedValues const& ot
     return *this;
 }
 
-void LayoutState::UsedValues::set_node(NodeWithStyle const& node, UsedValues const* containing_block_used_values)
+void LayoutState::UsedValues::set_containing_block_input(LayoutInput const& input)
+{
+    m_containing_block_content_size = input.containing_block_content_size;
+    m_containing_block_has_definite_width = input.containing_block_has_definite_width;
+    m_containing_block_has_definite_height = input.containing_block_has_definite_height;
+    m_percentage_resolution_size = input.percentage_resolution_size;
+    m_containing_block_cumulative_offset = input.containing_block_cumulative_offset;
+}
+
+void LayoutState::UsedValues::set_node(NodeWithStyle const& node, LayoutInput const& input)
 {
     m_node = &node;
-    m_containing_block_used_values = containing_block_used_values;
+    set_containing_block_input(input);
 
     // NOTE: In the code below, we decide if `node` has definite width and/or height.
     //       This attempts to cover all the *general* cases where CSS considers sizes to be definite.
@@ -834,14 +917,14 @@ void LayoutState::UsedValues::set_node(NodeWithStyle const& node, UsedValues con
 
         if (width) {
             border_and_padding = computed_values.border_left().width
-                + computed_values.padding().left().to_px_or_zero(*m_node, containing_block_used_values->content_width())
+                + computed_values.padding().left().to_px_or_zero(*m_node, input.percentage_resolution_size.width())
                 + computed_values.border_right().width
-                + computed_values.padding().right().to_px_or_zero(*m_node, containing_block_used_values->content_width());
+                + computed_values.padding().right().to_px_or_zero(*m_node, input.percentage_resolution_size.width());
         } else {
             border_and_padding = computed_values.border_top().width
-                + computed_values.padding().top().to_px_or_zero(*m_node, containing_block_used_values->content_width())
+                + computed_values.padding().top().to_px_or_zero(*m_node, input.percentage_resolution_size.width())
                 + computed_values.border_bottom().width
-                + computed_values.padding().bottom().to_px_or_zero(*m_node, containing_block_used_values->content_width());
+                + computed_values.padding().bottom().to_px_or_zero(*m_node, input.percentage_resolution_size.width());
         }
 
         return unadjusted_pixels - border_and_padding;
@@ -854,7 +937,7 @@ void LayoutState::UsedValues::set_node(NodeWithStyle const& node, UsedValues con
         // a size of the initial containing block,
         // or a <percentage> or other formula (such as the “stretch-fit” sizing of non-replaced blocks [CSS2]) that is resolved solely against definite sizes.
 
-        auto containing_block_has_definite_size = containing_block_used_values ? (width ? containing_block_used_values->has_definite_width() : containing_block_used_values->has_definite_height()) : false;
+        auto containing_block_has_definite_size = width ? input.containing_block_has_definite_width : input.containing_block_has_definite_height;
 
         if (size.is_auto()) {
             // NOTE: The width of a non-flex-item block is considered definite if it's auto and the containing block has definite width.
@@ -867,7 +950,7 @@ void LayoutState::UsedValues::set_node(NodeWithStyle const& node, UsedValues con
                 && (node.parent()->display().is_flow_root_inside()
                     || node.parent()->display().is_flow_inside())) {
                 if (containing_block_has_definite_size) {
-                    CSSPixels available_width = containing_block_used_values->content_width();
+                    CSSPixels available_width = input.containing_block_content_size.width();
                     resolved_definite_size = clamp_to_max_dimension_value(
                         available_width
                         - margin_left
@@ -887,7 +970,7 @@ void LayoutState::UsedValues::set_node(NodeWithStyle const& node, UsedValues con
             if (size.contains_percentage()) {
                 if (!containing_block_has_definite_size)
                     return false;
-                auto containing_block_size_as_length = width ? containing_block_used_values->content_width() : containing_block_used_values->content_height();
+                auto containing_block_size_as_length = width ? input.containing_block_content_size.width() : input.containing_block_content_size.height();
                 resolved_definite_size = clamp_to_max_dimension_value(adjust_for_box_sizing(size.to_px(node, containing_block_size_as_length), size, width));
                 return true;
             }

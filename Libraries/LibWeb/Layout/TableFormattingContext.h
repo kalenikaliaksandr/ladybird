@@ -63,6 +63,7 @@ private:
     void border_conflict_resolution();
     CSSPixels border_spacing_horizontal() const;
     CSSPixels border_spacing_vertical() const;
+    LayoutInput layout_input_for_table_internal_box(Box const&) const;
     void finish_grid_initialization(TableGrid const&);
 
     CSSPixels compute_columns_total_used_width() const;

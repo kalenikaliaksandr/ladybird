@@ -216,7 +216,7 @@ void BlockFormattingContext::compute_width(Box const& box, AvailableSpace const&
     auto const padding_left = computed_values.padding().left().resolved_or_auto(box, available_width_px);
     auto const padding_right = computed_values.padding().right().resolved_or_auto(box, available_width_px);
 
-    auto& box_state = m_state.get_mutable(box);
+    auto& box_state = m_state.get_mutable(box, m_state.layout_input_for(box, available_space, m_layout_mode));
     box_state.margin_left = margin_left.to_px_or_zero(box);
     box_state.margin_right = margin_right.to_px_or_zero(box);
     box_state.border_left = computed_values.border_left().width;
@@ -554,7 +554,7 @@ void BlockFormattingContext::resolve_used_height_if_treated_as_auto(Box const& b
         auto margins = box_state.margin_top + box_state.margin_bottom;
 
         // 2. Let size be the size of the initial containing block in the block flow direction minus margins.
-        auto size = box_state.containing_block_used_values()->content_height() - margins;
+        auto size = box_state.containing_block_content_height() - margins;
 
         // 3. Return the bigger value of size and the normal border box size the element would have
         //    according to the CSS specification.
@@ -585,7 +585,7 @@ void BlockFormattingContext::resolve_used_height_if_treated_as_auto(Box const& b
             auto margins = box_state.margin_top + box_state.margin_bottom;
 
             // 2. Let size be the size of element's parent element's content box in the block flow direction minus margins.
-            auto size = box_state.containing_block_used_values()->content_height() - margins;
+            auto size = box_state.containing_block_content_height() - margins;
 
             // 3. Return the bigger value of size and the normal border box size the element would have
             //    according to the CSS specification.
@@ -611,9 +611,7 @@ void BlockFormattingContext::layout_inline_children(BlockContainer const& block_
         auto used_width_px = context.automatic_content_width();
         // https://www.w3.org/TR/css-sizing-3/#sizing-values
         // Percentages are resolved against the width/height, as appropriate, of the box’s containing block.
-        CSSPixels containing_block_width = 0;
-        if (auto const* containing_block_used_values = m_state.try_get(*block_container.containing_block()))
-            containing_block_width = containing_block_used_values->content_width();
+        CSSPixels containing_block_width = block_container_state.containing_block_content_width();
         auto available_width = AvailableSize::make_definite(containing_block_width);
         if (!should_treat_max_width_as_none(block_container, available_space.width)) {
             auto max_width_px = calculate_inner_width(block_container, available_width, block_container.computed_values().max_width());
@@ -693,7 +691,13 @@ CSSPixels BlockFormattingContext::compute_auto_height_for_block_level_element(Bo
                 continue;
             }
 
-            auto const& child_box_state = m_state.get(*child_box);
+            auto const& child_box_state = [&]() -> LayoutState::UsedValues const& {
+                if (auto const* existing_state = m_state.try_get(*child_box))
+                    return *existing_state;
+
+                auto child_input = LayoutState::layout_input_from_containing_block(box, box_state, available_space, m_layout_mode);
+                return m_state.get_mutable(*child_box, child_input);
+            }();
 
             if (margins_collapse_through(*child_box, m_state))
                 continue;
@@ -768,7 +772,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 {
     if (box.is_absolutely_positioned()) {
         if (m_layout_mode == LayoutMode::Normal) {
-            auto& box_state = m_state.get_mutable(box);
+            auto& box_state = m_state.get_mutable(box, m_state.layout_input_for(box, available_space, m_layout_mode));
             StaticPositionRect static_position;
             auto static_position_x = CSSPixels(0);
             auto static_position_y = m_y_offset_of_current_block_container.value();
@@ -788,7 +792,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         return;
     }
 
-    auto& box_state = m_state.get_mutable(box);
+    auto& box_state = m_state.get_mutable(box, m_state.layout_input_for(box, available_space, m_layout_mode));
 
     // NOTE: ListItemMarkerBoxes are placed by their corresponding ListItemBox.
     if (is<ListItemMarkerBox>(box))
@@ -907,6 +911,8 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         // min-height. If so, we run layout with min-height as the available height.
         if (should_treat_height_as_auto(box, available_space) && !box.computed_values().min_height().is_auto()) {
             LayoutState throwaway_state(box);
+            auto& measuring_box_state = throwaway_state.get_mutable(box, m_state.layout_input_for(box, inner_available_space, m_layout_mode));
+            measuring_box_state = box_state;
             // Populate the entire containing block chain: the throwaway BFC may encounter abspos
             // elements whose containing block is an ancestor above `box`. We stop when the source
             // state lacks an entry, which happens when it is itself a nested throwaway state.
@@ -1231,7 +1237,7 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
 {
     VERIFY(box.is_floating());
 
-    auto& box_state = m_state.get_mutable(box);
+    auto& box_state = m_state.get_mutable(box, m_state.layout_input_for(box, available_space, m_layout_mode));
     auto const& computed_values = box.computed_values();
 
     auto const& block_container_state = m_state.get(block_container);
@@ -1426,9 +1432,9 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
             while (true) {
                 auto box_in_root_rect = margin_box_rect_in_ancestor_coordinate_space(box_state, root());
                 auto space_used_by_floats = space_used_and_containing_margin_for_floats(box_in_root_rect.y());
-                auto const* containing_block = box_state.containing_block_used_values();
+                auto containing_block = box.containing_block();
                 VERIFY(containing_block);
-                auto current_containing_block_in_root_rect = content_box_rect_in_ancestor_coordinate_space(*containing_block, root());
+                auto current_containing_block_in_root_rect = content_box_rect_in_ancestor_coordinate_space(m_state.get(*containing_block), root());
                 auto used_by_this_side = (side == FloatSide::Left)
                     ? offset_from_edge + box_state.content_width() + box_state.margin_box_right()
                     : offset_from_edge + box_state.margin_box_left();
@@ -1495,7 +1501,12 @@ void BlockFormattingContext::ensure_sizes_correct_for_left_offset_calculation(Li
         return;
 
     auto& marker = *list_item_box.marker();
-    auto& marker_state = m_state.get_mutable(marker);
+    auto const& list_item_used_values = m_state.get(list_item_box);
+    auto available_space = AvailableSpace {
+        AvailableSize::make_definite(list_item_used_values.content_width()),
+        AvailableSize::make_definite(list_item_used_values.content_height()),
+    };
+    auto& marker_state = m_state.get_mutable(marker, m_state.layout_input_for(marker, available_space, m_layout_mode));
 
     // If an image is used, the marker's dimensions are the same as the image.
     if (auto const* list_style_image = marker.list_style_image()) {
@@ -1525,7 +1536,12 @@ void BlockFormattingContext::layout_list_item_marker(ListItemBox const& list_ite
         return;
 
     auto& marker = *list_item_box.marker();
-    auto& marker_state = m_state.get_mutable(marker);
+    auto const& list_item_used_values = m_state.get(list_item_box);
+    auto available_space = AvailableSpace {
+        AvailableSize::make_definite(list_item_used_values.content_width()),
+        AvailableSize::make_definite(list_item_used_values.content_height()),
+    };
+    auto& marker_state = m_state.get_mutable(marker, m_state.layout_input_for(marker, available_space, m_layout_mode));
     auto& list_item_state = m_state.get_mutable(list_item_box);
 
     auto marker_text = marker.text();
@@ -1569,8 +1585,8 @@ BlockFormattingContext::SpaceUsedAndContainingMarginForFloats BlockFormattingCon
         auto rect = floating_box.margin_box_rect_in_root_coordinate_space;
         if (rect.contains_vertically(y)) {
             CSSPixels offset_from_containing_block_chain_margins_between_here_and_root = 0;
-            for (auto const* containing_block = floating_box.used_values.containing_block_used_values(); containing_block && &containing_block->node() != &root(); containing_block = containing_block->containing_block_used_values()) {
-                offset_from_containing_block_chain_margins_between_here_and_root += containing_block->margin_box_left();
+            for (auto const* containing_block = floating_box.box->containing_block().ptr(); containing_block && containing_block != &root(); containing_block = containing_block->containing_block().ptr()) {
+                offset_from_containing_block_chain_margins_between_here_and_root += m_state.get(*containing_block).margin_box_left();
             }
             space_and_containing_margin.left_used_space = floating_box.offset_from_edge
                 + floating_box.used_values.content_width()
@@ -1587,8 +1603,8 @@ BlockFormattingContext::SpaceUsedAndContainingMarginForFloats BlockFormattingCon
         auto rect = floating_box.margin_box_rect_in_root_coordinate_space;
         if (rect.contains_vertically(y)) {
             CSSPixels offset_from_containing_block_chain_margins_between_here_and_root = 0;
-            for (auto const* containing_block = floating_box.used_values.containing_block_used_values(); containing_block && &containing_block->node() != &root(); containing_block = containing_block->containing_block_used_values()) {
-                offset_from_containing_block_chain_margins_between_here_and_root += containing_block->margin_box_right();
+            for (auto const* containing_block = floating_box.box->containing_block().ptr(); containing_block && containing_block != &root(); containing_block = containing_block->containing_block().ptr()) {
+                offset_from_containing_block_chain_margins_between_here_and_root += m_state.get(*containing_block).margin_box_right();
             }
             space_and_containing_margin.right_used_space = floating_box.offset_from_edge
                 + floating_box.used_values.margin_box_left();
@@ -1626,8 +1642,8 @@ FormattingContext::SpaceUsedByFloats BlockFormattingContext::intrusion_by_floats
     if (space_and_containing_margin.matching_right_float_box) {
         auto right_side_floats_limit_to_right = space_and_containing_margin.right_used_space + space_and_containing_margin.right_total_containing_margin;
         CSSPixels offset_from_containing_block_chain_margins_between_here_and_root = 0;
-        for (auto const* containing_block = &box_used_values; containing_block && &containing_block->node() != &root(); containing_block = containing_block->containing_block_used_values()) {
-            offset_from_containing_block_chain_margins_between_here_and_root += containing_block->margin_box_right();
+        for (auto const* containing_block = &box_used_values.node(); containing_block && containing_block != &root(); containing_block = containing_block->containing_block().ptr()) {
+            offset_from_containing_block_chain_margins_between_here_and_root += m_state.get(*containing_block).margin_box_right();
         }
         right_intrusion = max(CSSPixels(0), right_side_floats_limit_to_right - offset_from_containing_block_chain_margins_between_here_and_root);
     }

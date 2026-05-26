@@ -1613,21 +1613,27 @@ static void relayout_svg_root(Layout::SVGSVGBox& svg_root)
     Layout::LayoutState layout_state(svg_root);
 
     // Pre-populate the svg_root itself.
-    if (auto paintable = svg_root.paintable_box())
-        layout_state.populate_from_paintable(svg_root, *paintable);
+    if (auto paintable = svg_root.paintable_box()) {
+        auto available_space = Layout::AvailableSpace(Layout::AvailableSize::make_definite(paintable->content_width()), Layout::AvailableSize::make_definite(paintable->content_height()));
+        layout_state.populate_from_paintable(svg_root, *paintable, Layout::LayoutState::layout_input_from_paintable(svg_root, *paintable, available_space, Layout::LayoutMode::Normal));
+    }
 
     // Pre-populate SVGGraphicsBox ancestors for get_parent_svg_transform().
     for (auto* ancestor = svg_root.parent(); ancestor; ancestor = ancestor->parent()) {
         if (auto const* svg_graphics_ancestor = as_if<Layout::SVGGraphicsBox>(*ancestor)) {
-            if (auto paintable = svg_graphics_ancestor->paintable_box())
-                layout_state.populate_from_paintable(*svg_graphics_ancestor, *paintable);
+            if (auto paintable = svg_graphics_ancestor->paintable_box()) {
+                auto available_space = Layout::AvailableSpace(Layout::AvailableSize::make_definite(paintable->content_width()), Layout::AvailableSize::make_definite(paintable->content_height()));
+                layout_state.populate_from_paintable(*svg_graphics_ancestor, *paintable, Layout::LayoutState::layout_input_from_paintable(*svg_graphics_ancestor, *paintable, available_space, Layout::LayoutMode::Normal));
+            }
         }
     }
 
     // Pre-populate the viewport for position:fixed elements inside <foreignObject>.
     auto& viewport = svg_root.root();
-    if (auto paintable = viewport.paintable_box())
-        layout_state.populate_from_paintable(viewport, *paintable);
+    if (auto paintable = viewport.paintable_box()) {
+        auto available_space = Layout::AvailableSpace(Layout::AvailableSize::make_definite(paintable->content_width()), Layout::AvailableSize::make_definite(paintable->content_height()));
+        layout_state.populate_from_paintable(viewport, *paintable, Layout::LayoutState::layout_input_from_paintable(viewport, *paintable, available_space, Layout::LayoutMode::Normal));
+    }
 
     auto const& svg_state = layout_state.get(svg_root);
     auto content_width = svg_state.content_width();
@@ -1831,27 +1837,39 @@ void Document::update_layout(UpdateLayoutReason reason)
 
         {
             auto& viewport = static_cast<Layout::Viewport&>(*m_layout_root);
-            auto& viewport_state = layout_state.get_mutable(viewport);
+            auto available_space = Layout::AvailableSpace(
+                Layout::AvailableSize::make_definite(viewport_rect.width()),
+                Layout::AvailableSize::make_definite(viewport_rect.height()));
+            auto viewport_size = viewport_rect.size();
+            Layout::LayoutInput viewport_input {
+                .available_space = available_space,
+                .containing_block_content_size = viewport_size,
+                .containing_block_has_definite_width = true,
+                .containing_block_has_definite_height = true,
+                .percentage_resolution_size = viewport_size,
+                .containing_block_cumulative_offset = {},
+                .containing_block_writing_mode = viewport.computed_values().writing_mode(),
+                .containing_block_direction = viewport.computed_values().direction(),
+                .layout_mode = Layout::LayoutMode::Normal,
+            };
+            auto& viewport_state = layout_state.get_mutable(viewport, viewport_input);
             viewport_state.set_content_width(viewport_rect.width());
             viewport_state.set_content_height(viewport_rect.height());
 
             // NB: Called during layout update.
             if (document_element && document_element->unsafe_layout_node()) {
-                auto& icb_state = layout_state.get_mutable(as<Layout::NodeWithStyleAndBoxModelMetrics>(*document_element->unsafe_layout_node()));
+                auto& icb = as<Layout::NodeWithStyleAndBoxModelMetrics>(*document_element->unsafe_layout_node());
+                auto& icb_state = layout_state.get_mutable(icb, Layout::LayoutState::layout_input_from_containing_block(viewport, viewport_state, available_space, Layout::LayoutMode::Normal));
                 icb_state.set_content_width(viewport_rect.width());
             }
-
-            auto available_space = Layout::AvailableSpace(
-                Layout::AvailableSize::make_definite(viewport_rect.width()),
-                Layout::AvailableSize::make_definite(viewport_rect.height()));
 
             if (m_layout_root->first_child() && m_layout_root->first_child()->is_svg_svg_box()) {
                 // NOTE: If we are laying out a standalone SVG document, we give it some special treatment:
                 //       The root <svg> container gets the same size as the viewport,
                 //       and we call directly into the SVG layout code from here.
                 auto const& svg_root = as<Layout::SVGSVGBox>(*m_layout_root->first_child());
-                auto content_height = layout_state.get(*svg_root.containing_block()).content_height();
-                layout_state.get_mutable(svg_root).set_content_height(content_height);
+                auto content_height = viewport_state.content_height();
+                layout_state.get_mutable(svg_root, layout_state.layout_input_for(svg_root, available_space, Layout::LayoutMode::Normal)).set_content_height(content_height);
                 Layout::SVGFormattingContext svg_formatting_context(layout_state, Layout::LayoutMode::Normal, svg_root, nullptr);
                 svg_formatting_context.run(available_space);
             } else {

@@ -12,6 +12,7 @@
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/Dump.h>
+#include <LibWeb/HTML/HTMLElement.h>
 #include <LibWeb/HTML/HTMLInputElement.h>
 #include <LibWeb/Layout/BlockFormattingContext.h>
 #include <LibWeb/Layout/Box.h>
@@ -403,13 +404,16 @@ NonnullOwnPtr<FormattingContext> FormattingContext::create_independent_formattin
     return make<DummyFormattingContext>(state, layout_mode, child_box);
 }
 
+static LayoutInput layout_input_from_existing_state_or_containing_block(LayoutState const&, Box const&, AvailableSpace const&, LayoutMode);
+
 OwnPtr<FormattingContext> FormattingContext::layout_inside(Box const& child_box, LayoutMode layout_mode, AvailableSpace const& available_space)
 {
     {
+        auto& used_values = m_state.get_mutable(child_box, layout_input_from_existing_state_or_containing_block(m_state, child_box, available_space, layout_mode));
+
         // OPTIMIZATION: If we're doing intrinsic sizing and `child_box` has definite size in both axes,
         //               we don't need to layout its insides. The size is resolvable without learning
         //               the metrics of whatever's inside the box.
-        auto const& used_values = m_state.get(child_box);
         if (layout_mode == LayoutMode::IntrinsicSizing
             && used_values.width_constraint == SizeConstraint::None
             && used_values.height_constraint == SizeConstraint::None
@@ -475,6 +479,26 @@ FormattingContext::ShrinkToFitResult FormattingContext::calculate_shrink_to_fit_
         .preferred_width = calculate_max_content_width(box),
         .preferred_minimum_width = calculate_min_content_width(box),
     };
+}
+
+static LayoutInput layout_input_from_existing_state_or_containing_block(LayoutState const& state, Box const& box, AvailableSpace const& available_space, LayoutMode layout_mode)
+{
+    if (auto const* box_state = state.try_get(box)) {
+        auto containing_block = box.containing_block();
+        return {
+            .available_space = available_space,
+            .containing_block_content_size = box_state->containing_block_content_size(),
+            .containing_block_has_definite_width = box_state->containing_block_has_definite_width(),
+            .containing_block_has_definite_height = box_state->containing_block_has_definite_height(),
+            .percentage_resolution_size = box_state->percentage_resolution_size(),
+            .containing_block_cumulative_offset = box_state->cumulative_offset() - box_state->offset,
+            .containing_block_writing_mode = containing_block ? containing_block->computed_values().writing_mode() : box.computed_values().writing_mode(),
+            .containing_block_direction = containing_block ? containing_block->computed_values().direction() : box.computed_values().direction(),
+            .layout_mode = layout_mode,
+        };
+    }
+
+    return state.layout_input_for(box, available_space, layout_mode);
 }
 
 CSSPixelSize FormattingContext::solve_replaced_size_constraint(CSSPixels input_width, CSSPixels input_height, Box const& box, AvailableSpace const& available_space) const
@@ -544,11 +568,12 @@ CSSPixels FormattingContext::compute_auto_height_for_block_formatting_context_ro
     // 10.6.7 'Auto' heights for block formatting context roots
     Optional<CSSPixels> top;
     Optional<CSSPixels> bottom;
+    auto const& root_state = m_state.get(root);
 
     if (root.children_are_inline()) {
         // If it only has inline-level children, the height is the distance between
         // the top content edge and the bottom of the bottommost line box.
-        auto const& line_boxes = m_state.get(root).line_boxes;
+        auto const& line_boxes = root_state.line_boxes;
         top = 0;
         if (!line_boxes.is_empty())
             bottom = line_boxes.last().bottom();
@@ -571,7 +596,15 @@ CSSPixels FormattingContext::compute_auto_height_for_block_formatting_context_ro
             if ((root.computed_values().overflow_y() == CSS::Overflow::Visible) && child_box.is_floating())
                 return IterationDecision::Continue;
 
-            auto const& child_box_state = m_state.get(child_box);
+            auto const& child_box_state = [&]() -> LayoutState::UsedValues const& {
+                if (auto const* existing_state = m_state.try_get(child_box))
+                    return *existing_state;
+
+                auto child_available_space = root_state.available_inner_space_or_constraints_from(
+                    AvailableSpace { AvailableSize::make_indefinite(), AvailableSize::make_indefinite() });
+                auto child_input = LayoutState::layout_input_from_containing_block(root, root_state, child_available_space, m_layout_mode);
+                return m_state.get_mutable(child_box, child_input);
+            }();
 
             CSSPixels child_box_bottom = child_box_state.offset.y() + child_box_state.content_height() + child_box_state.margin_box_bottom();
 
@@ -585,7 +618,7 @@ CSSPixels FormattingContext::compute_auto_height_for_block_formatting_context_ro
     // In addition, if the element has any floating descendants
     // whose bottom margin edge is below the element's bottom content edge,
     // then the height is increased to include those edges.
-    for (auto floating_box : m_state.get(root).floating_descendants()) {
+    for (auto floating_box : root_state.floating_descendants()) {
         // NOTE: Floating box coordinates are relative to their own containing block,
         //       which may or may not be the BFC root.
         auto margin_box = margin_box_rect_in_ancestor_coordinate_space(*floating_box, root);
@@ -629,13 +662,17 @@ CSSPixels FormattingContext::compute_table_box_width_inside_table_wrapper(
     VERIFY(table_box.has_value());
 
     LayoutState throwaway_state(box);
-    auto& containing_block_state = throwaway_state.populate_node_from(m_state, *box.containing_block());
+    auto box_input = layout_input_from_existing_state_or_containing_block(m_state, box, available_space, LayoutMode::IntrinsicSizing);
     // CSS Grid lays out grid items into their grid-area containing blocks, which need not match the layout-tree
     // containing block. Use the explicit grid-area width when measuring a table wrapper for grid alignment.
-    if (table_wrapper_containing_block_width.has_value())
-        containing_block_state.set_content_width(*table_wrapper_containing_block_width);
+    if (table_wrapper_containing_block_width.has_value()) {
+        box_input.containing_block_content_size.set_width(*table_wrapper_containing_block_width);
+        box_input.percentage_resolution_size.set_width(*table_wrapper_containing_block_width);
+        box_input.containing_block_has_definite_width = true;
+    }
 
-    auto& table_box_state = throwaway_state.get_mutable(*table_box);
+    auto& wrapper_state = throwaway_state.get_mutable(box, box_input);
+    auto& table_box_state = throwaway_state.get_mutable(*table_box, LayoutState::layout_input_from_containing_block(box, wrapper_state, available_space, LayoutMode::IntrinsicSizing));
     auto const& table_box_computed_values = table_box->computed_values();
     table_box_state.border_left = table_box_computed_values.border_left().width;
     table_box_state.border_right = table_box_computed_values.border_right().width;
@@ -643,7 +680,7 @@ CSSPixels FormattingContext::compute_table_box_width_inside_table_wrapper(
     table_box_state.padding_right = table_box_computed_values.padding().right().to_px_or_zero(*table_box, width_of_containing_block);
 
     auto context = make<TableFormattingContext>(throwaway_state, LayoutMode::IntrinsicSizing, *table_box, this);
-    context->run_until_width_calculation(m_state.get(*table_box).available_inner_space_or_constraints_from(available_space));
+    context->run_until_width_calculation(table_box_state.available_inner_space_or_constraints_from(available_space));
 
     auto table_used_width = throwaway_state.get(*table_box).border_box_width();
     if (table_wrapper_width_mode == TableWrapperWidthMode::UseTableUsedWidthIfNotAuto
@@ -672,11 +709,15 @@ CSSPixels FormattingContext::compute_table_box_height_inside_table_wrapper(Box c
     auto available_height = height_of_containing_block - margin_top - margin_bottom;
 
     LayoutState throwaway_state(box);
-    throwaway_state.populate_node_from(m_state, *box.containing_block());
+    auto const& actual_wrapper_state = m_state.get(box);
+    auto& wrapper_state = throwaway_state.get_mutable(box, layout_input_from_existing_state_or_containing_block(m_state, box, available_space, LayoutMode::IntrinsicSizing));
+    wrapper_state.set_content_width(actual_wrapper_state.content_width());
+    if (!actual_wrapper_state.has_definite_width())
+        wrapper_state.set_indefinite_content_width();
 
     auto context = create_independent_formatting_context_if_needed(throwaway_state, LayoutMode::IntrinsicSizing, box);
     VERIFY(context);
-    context->run(m_state.get(box).available_inner_space_or_constraints_from(available_space));
+    context->run(wrapper_state.available_inner_space_or_constraints_from(available_space));
 
     Optional<Box const&> table_box;
     box.for_each_in_subtree_of_type<Box>([&](Box const& child_box) {
@@ -696,7 +737,7 @@ CSSPixels FormattingContext::compute_table_box_height_inside_table_wrapper(Box c
 CSSPixels FormattingContext::tentative_width_for_replaced_element(Box const& box, CSS::Size const& computed_width, AvailableSpace const& available_space) const
 {
     // Treat percentages of indefinite containing block widths as 0 (the initial width).
-    if (computed_width.is_percentage() && !m_state.get(*box.containing_block()).has_definite_width())
+    if (computed_width.is_percentage() && !m_state.get(box).containing_block_has_definite_width())
         return 0;
 
     auto computed_height = should_treat_height_as_auto(box, available_space) ? CSS::Size::make_auto() : box.computed_values().height();
@@ -1757,14 +1798,40 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box)
 
     auto const available_space = AvailableSpace(AvailableSize::make_definite(clamp_to_max_dimension_value(containing_block_info.rect.width())), AvailableSize::make_definite(clamp_to_max_dimension_value(containing_block_info.rect.height())));
 
-    auto& containing_block_state = m_state.get_mutable(*box.containing_block());
+    auto refresh_containing_block_input = [&](Box const& box_to_refresh) {
+        auto containing_block = box_to_refresh.containing_block();
+        if (!containing_block)
+            return;
+        auto* used_values = m_state.try_get_mutable(box_to_refresh);
+        auto const* containing_block_state = m_state.try_get(*containing_block);
+        if (!used_values || !containing_block_state)
+            return;
+        used_values->set_containing_block_input(LayoutState::layout_input_from_containing_block(*containing_block, *containing_block_state, available_space, LayoutMode::Normal));
+    };
+
+    refresh_containing_block_input(*box.containing_block());
+    auto& containing_block_state = m_state.get_existing_mutable(*box.containing_block());
 
     // The size of the containing block of an abspos box is always definite from the perspective of the abspos box.
     // Since abspos boxes are laid out last, we can mark the containing block as having definite sizes at this point.
     containing_block_state.set_has_definite_width(true);
     containing_block_state.set_has_definite_height(true);
 
-    auto& box_state = m_state.get_mutable(box);
+    auto const containing_block_size = containing_block_info.rect.size();
+    LayoutInput box_input {
+        .available_space = available_space,
+        .containing_block_content_size = containing_block_size,
+        .containing_block_has_definite_width = true,
+        .containing_block_has_definite_height = true,
+        .percentage_resolution_size = containing_block_size,
+        .containing_block_cumulative_offset = containing_block_state.cumulative_offset(),
+        .containing_block_writing_mode = box.containing_block()->computed_values().writing_mode(),
+        .containing_block_direction = box.containing_block()->computed_values().direction(),
+        .layout_mode = LayoutMode::Normal,
+    };
+
+    auto& box_state = m_state.get_mutable(box, box_input);
+    box_state.set_node(box, box_input);
     auto const& computed_values = box.computed_values();
 
     // The border computed values are not changed by the compute_height & width calculations below.
@@ -1869,6 +1936,7 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box)
     auto const* static_position_cb = box.static_position_containing_block();
     auto actual_containing_block = box.containing_block();
     if (static_position_cb && static_position_cb != actual_containing_block.ptr()) {
+        refresh_containing_block_input(*static_position_cb);
         auto offset = m_state.get(*static_position_cb).cumulative_offset() - m_state.get(*actual_containing_block).cumulative_offset();
         static_position += offset;
     }
@@ -2010,10 +2078,17 @@ void FormattingContext::compute_inset(NodeWithStyleAndBoxModelMetrics const& box
     auto treat_percentage_as_auto = [&](CSS::LengthPercentageOrAuto const& value) -> CSS::LengthPercentageOrAuto {
         if (value.contains_percentage()) {
             auto containing_block = box.containing_block();
-            while (containing_block && containing_block->is_anonymous() && !containing_block->display().is_table_cell())
+            bool skipped_anonymous_containing_block = false;
+            while (containing_block && containing_block->is_anonymous() && !containing_block->display().is_table_cell()) {
+                skipped_anonymous_containing_block = true;
                 containing_block = containing_block->containing_block();
-            if (containing_block && !m_state.get(*containing_block).has_definite_height())
+            }
+            if (!skipped_anonymous_containing_block) {
+                if (!box_state.containing_block_has_definite_height())
+                    return CSS::LengthPercentageOrAuto::make_auto();
+            } else if (containing_block && !m_state.get(*containing_block).has_definite_height()) {
                 return CSS::LengthPercentageOrAuto::make_auto();
+            }
         }
         return value;
     };
@@ -2088,16 +2163,15 @@ CSSPixels FormattingContext::calculate_min_content_width(Layout::Box const& box)
     if (cache.has_value())
         return cache.value();
 
+    auto available_width = AvailableSize::make_min_content();
     LayoutState throwaway_state(box);
-    throwaway_state.populate_node_from(m_state, *box.containing_block());
+    auto& box_state = throwaway_state.get_mutable(box, layout_input_from_existing_state_or_containing_block(m_state, box, AvailableSpace(available_width, AvailableSize::make_indefinite()), LayoutMode::IntrinsicSizing));
 
-    auto& box_state = throwaway_state.get_mutable(box);
     box_state.width_constraint = SizeConstraint::MinContent;
     box_state.set_indefinite_content_width();
 
     auto context = const_cast<FormattingContext*>(this)->create_independent_formatting_context(throwaway_state, LayoutMode::IntrinsicSizing, box);
 
-    auto available_width = AvailableSize::make_min_content();
     auto available_height = box_state.has_definite_height()
         ? AvailableSize::make_definite(box_state.content_height())
         : AvailableSize::make_indefinite();
@@ -2148,12 +2222,11 @@ CSSPixels FormattingContext::calculate_max_content_width(Layout::Box const& box)
     if (cache.has_value())
         return cache.value();
 
-    LayoutState throwaway_state(box);
-    throwaway_state.populate_node_from(m_state, *box.containing_block());
-
     auto const& actual_box_state = m_state.get(box);
 
-    auto& box_state = throwaway_state.get_mutable(box);
+    auto available_width = AvailableSize::make_max_content();
+    LayoutState throwaway_state(box);
+    auto& box_state = throwaway_state.get_mutable(box, layout_input_from_existing_state_or_containing_block(m_state, box, AvailableSpace(available_width, AvailableSize::make_indefinite()), LayoutMode::IntrinsicSizing));
     box_state.width_constraint = SizeConstraint::MaxContent;
     box_state.set_indefinite_content_width();
 
@@ -2165,7 +2238,6 @@ CSSPixels FormattingContext::calculate_max_content_width(Layout::Box const& box)
 
     auto context = const_cast<FormattingContext*>(this)->create_independent_formatting_context(throwaway_state, LayoutMode::IntrinsicSizing, box);
 
-    auto available_width = AvailableSize::make_max_content();
     auto available_height = box_state.has_definite_height()
         ? AvailableSize::make_definite(box_state.content_height())
         : AvailableSize::make_indefinite();
@@ -2199,9 +2271,8 @@ CSSPixels FormattingContext::calculate_min_content_height(Layout::Box const& box
         return cache.value();
 
     LayoutState throwaway_state(box);
-    throwaway_state.populate_node_from(m_state, *box.containing_block());
+    auto& box_state = throwaway_state.get_mutable(box, layout_input_from_existing_state_or_containing_block(m_state, box, AvailableSpace(AvailableSize::make_definite(width), AvailableSize::make_min_content()), LayoutMode::IntrinsicSizing));
 
-    auto& box_state = throwaway_state.get_mutable(box);
     box_state.height_constraint = SizeConstraint::MinContent;
     box_state.set_indefinite_content_height();
     box_state.set_content_width(width);
@@ -2234,9 +2305,8 @@ CSSPixels FormattingContext::calculate_max_content_height(Layout::Box const& box
         return cache_slot.value();
 
     LayoutState throwaway_state(box);
-    throwaway_state.populate_node_from(m_state, *box.containing_block());
+    auto& box_state = throwaway_state.get_mutable(box, layout_input_from_existing_state_or_containing_block(m_state, box, AvailableSpace(AvailableSize::make_definite(width), AvailableSize::make_max_content()), LayoutMode::IntrinsicSizing));
 
-    auto& box_state = throwaway_state.get_mutable(box);
     box_state.height_constraint = SizeConstraint::MaxContent;
     box_state.set_indefinite_content_height();
     box_state.set_content_width(width);
@@ -2299,6 +2369,7 @@ CSSPixels FormattingContext::calculate_inner_height(Box const& box, AvailableSpa
         return calculate_min_content_height(box, available_space.width.to_px_or_zero());
     }
 
+    auto const& box_state = m_state.get(box);
     CSSPixels height_of_containing_block = available_space.height.to_px_or_zero();
     // NOTE: Percentage heights are resolved against the containing block's used height,
     //       not the available space height. The containing block's height must be definite
@@ -2307,10 +2378,21 @@ CSSPixels FormattingContext::calculate_inner_height(Box const& box, AvailableSpa
     // NOTE: We only do this when available space height is indefinite. If it's definite,
     //       we trust that the caller has set it up correctly (e.g., grid/flex items get
     //       their cell/area size as available space).
-    if (height.contains_percentage() && available_space.height.is_indefinite()) {
+    if (height.contains_percentage()) {
         auto containing_block = box.containing_block();
-        while (containing_block && containing_block->is_anonymous() && !containing_block->display().is_table_cell())
+        bool skipped_anonymous_containing_block = false;
+        while (containing_block && containing_block->is_anonymous() && !containing_block->display().is_table_cell()) {
+            skipped_anonymous_containing_block = true;
             containing_block = containing_block->containing_block();
+        }
+
+        auto percentage_height_should_resolve_against_containing_block = available_space.height.is_indefinite();
+        if (!percentage_height_should_resolve_against_containing_block && skipped_anonymous_containing_block) {
+            if (auto const* html_element = containing_block && containing_block->dom_node() ? as_if<HTML::HTMLElement>(*containing_block->dom_node()) : nullptr)
+                percentage_height_should_resolve_against_containing_block = html_element->uses_button_layout();
+        }
+        if (!percentage_height_should_resolve_against_containing_block)
+            return height.to_px(box, height_of_containing_block);
 
         // https://quirks.spec.whatwg.org/#the-percentage-height-calculation-quirk
         // In quirks mode, walk up to find an ancestor with explicit height or the viewport.
@@ -2318,13 +2400,19 @@ CSSPixels FormattingContext::calculate_inner_height(Box const& box, AvailableSpa
         bool is_flex_or_grid_item = box.parent() && (box.parent()->display().is_flex_inside() || box.parent()->display().is_grid_inside());
         auto shadow_root = box.dom_node() ? box.dom_node()->containing_shadow_root() : nullptr;
         bool is_in_ua_shadow_tree = shadow_root && shadow_root->is_user_agent_internal();
+        bool did_quirks_containing_block_walk = false;
         if (box.document().in_quirks_mode() && !box.is_anonymous() && !is_flex_or_grid_item && !is_in_ua_shadow_tree) {
             while (containing_block && !containing_block->is_viewport()
-                && containing_block->computed_values().height().is_auto())
+                && containing_block->computed_values().height().is_auto()) {
+                did_quirks_containing_block_walk = true;
                 containing_block = containing_block->containing_block();
+            }
         }
 
-        if (auto const* containing_block_used_values = containing_block ? m_state.try_get(*containing_block) : nullptr) {
+        if (!skipped_anonymous_containing_block && !did_quirks_containing_block_walk) {
+            if (box_state.containing_block_has_definite_height())
+                height_of_containing_block = box_state.containing_block_content_height();
+        } else if (auto const* containing_block_used_values = containing_block ? m_state.try_get(*containing_block) : nullptr) {
             if (containing_block_used_values->has_definite_height())
                 height_of_containing_block = containing_block_used_values->content_height();
         }
@@ -2332,12 +2420,11 @@ CSSPixels FormattingContext::calculate_inner_height(Box const& box, AvailableSpa
     auto& computed_values = box.computed_values();
 
     if (computed_values.box_sizing() == CSS::BoxSizing::BorderBox) {
-        auto const& state = m_state.get(box);
         auto inner_height = height.to_px(box, height_of_containing_block)
             - computed_values.border_top().width
-            - state.padding_top
+            - box_state.padding_top
             - computed_values.border_bottom().width
-            - state.padding_bottom;
+            - box_state.padding_bottom;
         return max(inner_height, 0);
     }
 
@@ -2353,7 +2440,7 @@ CSSPixels FormattingContext::containing_block_width_for(NodeWithStyleAndBoxModel
     case SizeConstraint::MaxContent:
         return CSSPixels::max();
     case SizeConstraint::None:
-        return used_values.containing_block_used_values()->content_width();
+        return used_values.containing_block_content_width();
     }
     VERIFY_NOT_REACHED();
 }
@@ -2467,16 +2554,25 @@ bool FormattingContext::should_treat_height_as_auto(Box const& box, AvailableSpa
                 // NOTE: Anonymous blocks inherit height definiteness from their containing block.
                 //       However, anonymous table cells are proper containing blocks with their own
                 //       height semantics, so we must not walk past them.
+                auto const& box_state = m_state.get(box);
                 auto containing_block = box.containing_block();
-                while (containing_block && containing_block->is_anonymous() && !containing_block->display().is_table_cell())
+                bool skipped_anonymous_containing_block = false;
+                while (containing_block && containing_block->is_anonymous() && !containing_block->display().is_table_cell()) {
+                    skipped_anonymous_containing_block = true;
                     containing_block = containing_block->containing_block();
-                if (!containing_block)
-                    return true;
-                auto const* containing_block_used_values = m_state.try_get(*containing_block);
-                if (!containing_block_used_values)
-                    return true;
-                if (!containing_block_used_values->has_definite_height())
-                    return true;
+                }
+                if (!skipped_anonymous_containing_block) {
+                    if (!box_state.containing_block_has_definite_height())
+                        return true;
+                } else {
+                    if (!containing_block)
+                        return true;
+                    auto const* containing_block_used_values = m_state.try_get(*containing_block);
+                    if (!containing_block_used_values)
+                        return true;
+                    if (!containing_block_used_values->has_definite_height())
+                        return true;
+                }
             }
         }
     }
@@ -2513,10 +2609,7 @@ bool FormattingContext::can_skip_is_anonymous_text_run(Box& box)
 CSSPixelRect FormattingContext::absolute_content_rect(Box const& box) const
 {
     auto const& box_state = m_state.get(box);
-    CSSPixelRect rect { box_state.offset, box_state.content_size() };
-    for (auto* block = box_state.containing_block_used_values(); block; block = block->containing_block_used_values())
-        rect.translate_by(block->offset);
-    return rect;
+    return { box_state.cumulative_offset(), box_state.content_size() };
 }
 
 Box const* FormattingContext::box_child_to_derive_baseline_from(Box const& box) const
@@ -2530,7 +2623,16 @@ Box const* FormattingContext::box_child_to_derive_baseline_from(Box const& box) 
             continue;
         if (child_box->is_out_of_flow(*this))
             continue;
-        if (!m_state.get(*child_box).line_boxes.is_empty())
+        auto* child_box_state = m_state.try_get_mutable(*child_box);
+        if (!child_box_state) {
+            auto containing_block = child_box->containing_block();
+            auto const* containing_block_state = containing_block ? m_state.try_get(*containing_block) : nullptr;
+            if (!containing_block_state)
+                continue;
+            auto input = LayoutState::layout_input_from_containing_block(*containing_block, *containing_block_state, AvailableSpace { AvailableSize::make_indefinite(), AvailableSize::make_indefinite() }, m_layout_mode);
+            child_box_state = &m_state.get_mutable(*child_box, input);
+        }
+        if (!child_box_state->line_boxes.is_empty())
             return child_box;
         if (box_child_to_derive_baseline_from(*child_box))
             return child_box;
@@ -2593,7 +2695,7 @@ CSSPixels FormattingContext::box_baseline(Box const& box) const
     //         https://html.spec.whatwg.org/multipage/rendering.html#form-controls
     if (auto const* child_box = box_child_to_derive_baseline_from(box)) {
         if (always_derive_from_content || is<HTML::HTMLInputElement>(box.dom_node())) {
-            auto const& child_box_state = m_state.get(*child_box);
+            auto const& child_box_state = m_state.get_existing(*child_box);
             auto child_offset_from_margin_edge = child_box_state.offset.y() - child_box_state.margin_box_top();
 
             // https://drafts.csswg.org/css-flexbox-1/#flex-baselines
@@ -2646,25 +2748,48 @@ CSSPixelRect FormattingContext::content_box_rect(LayoutState::UsedValues const& 
 CSSPixelRect FormattingContext::content_box_rect_in_ancestor_coordinate_space(LayoutState::UsedValues const& used_values, Box const& ancestor_box) const
 {
     CSSPixelRect rect = { { 0, 0 }, used_values.content_size() };
-    for (auto const* current = &used_values; current; current = current->containing_block_used_values()) {
-        if (&current->node() == &ancestor_box)
+    auto const* current_node = &used_values.node();
+    while (current_node) {
+        if (current_node == &ancestor_box)
             return rect;
-        rect.translate_by(current->offset);
+
+        auto const* current_used_values = current_node == &used_values.node()
+            ? &used_values
+            : m_state.try_get(*current_node);
+        if (!current_used_values)
+            break;
+
+        rect.translate_by(current_used_values->offset);
+        current_node = current_node->containing_block().ptr();
     }
-    // If we get here, ancestor_box was not a containing block ancestor of `box`!
-    VERIFY_NOT_REACHED();
+
+    if (auto const* ancestor_used_values = m_state.try_get(ancestor_box))
+        return { used_values.cumulative_offset() - ancestor_used_values->cumulative_offset(), used_values.content_size() };
+
+    return rect;
 }
 
 CSSPixelRect FormattingContext::margin_box_rect_in_ancestor_coordinate_space(LayoutState::UsedValues const& used_values, Box const& ancestor_box) const
 {
     auto rect = margin_box_rect(used_values);
-    for (auto const* current = &used_values; current; current = current->containing_block_used_values()) {
-        if (&current->node() == &ancestor_box)
+    auto const* current_node = &used_values.node();
+    while (current_node) {
+        if (current_node == &ancestor_box)
             return rect;
-        rect.translate_by(current->offset);
+
+        auto const* current_used_values = current_node == &used_values.node()
+            ? &used_values
+            : m_state.try_get(*current_node);
+        if (!current_used_values)
+            break;
+
+        rect.translate_by(current_used_values->offset);
+        current_node = current_node->containing_block().ptr();
     }
-    // If we get here, ancestor_box was not a containing block ancestor of `box`!
-    VERIFY_NOT_REACHED();
+
+    if (auto const* ancestor_used_values = m_state.try_get(ancestor_box))
+        rect.translate_by(used_values.cumulative_offset() - ancestor_used_values->cumulative_offset());
+    return rect;
 }
 
 CSSPixelRect FormattingContext::margin_box_rect_in_ancestor_coordinate_space(Box const& box, Box const& ancestor_box) const
@@ -2721,13 +2846,21 @@ bool FormattingContext::should_treat_max_width_as_none(Box const& box, Available
             return false;
         }
         auto containing_block = box.containing_block();
-        while (containing_block && containing_block->is_anonymous() && !containing_block->display().is_table_cell())
+        bool skipped_anonymous_containing_block = false;
+        while (containing_block && containing_block->is_anonymous() && !containing_block->display().is_table_cell()) {
+            skipped_anonymous_containing_block = true;
             containing_block = containing_block->containing_block();
-        auto const* containing_block_used_values = containing_block ? m_state.try_get(*containing_block) : nullptr;
-        if (!containing_block_used_values)
-            return true;
-        if (!containing_block_used_values->has_definite_width())
-            return true;
+        }
+        if (!skipped_anonymous_containing_block) {
+            if (!m_state.get(box).containing_block_has_definite_width())
+                return true;
+        } else {
+            auto const* containing_block_used_values = containing_block ? m_state.try_get(*containing_block) : nullptr;
+            if (!containing_block_used_values)
+                return true;
+            if (!containing_block_used_values->has_definite_width())
+                return true;
+        }
     }
     if (max_width.is_fit_content() && available_width.is_intrinsic_sizing_constraint())
         return true;
@@ -2751,13 +2884,21 @@ bool FormattingContext::should_treat_max_height_as_none(Box const& box, Availabl
         if (available_height.is_min_content())
             return false;
         auto containing_block = box.containing_block();
-        while (containing_block && containing_block->is_anonymous() && !containing_block->display().is_table_cell())
+        bool skipped_anonymous_containing_block = false;
+        while (containing_block && containing_block->is_anonymous() && !containing_block->display().is_table_cell()) {
+            skipped_anonymous_containing_block = true;
             containing_block = containing_block->containing_block();
-        auto const* containing_block_used_values = containing_block ? m_state.try_get(*containing_block) : nullptr;
-        if (!containing_block_used_values)
-            return true;
-        if (!containing_block_used_values->has_definite_height())
-            return true;
+        }
+        if (!skipped_anonymous_containing_block) {
+            if (!m_state.get(box).containing_block_has_definite_height())
+                return true;
+        } else {
+            auto const* containing_block_used_values = containing_block ? m_state.try_get(*containing_block) : nullptr;
+            if (!containing_block_used_values)
+                return true;
+            if (!containing_block_used_values->has_definite_height())
+                return true;
+        }
     }
     if (max_height.is_fit_content() && available_height.is_intrinsic_sizing_constraint())
         return true;

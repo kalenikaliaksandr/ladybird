@@ -736,7 +736,7 @@ void GridFormattingContext::place_item_with_row_and_column_position(Box const& c
 
     record_grid_placement(GridItem {
         .box = child_box,
-        .used_values = m_state.get_mutable(child_box),
+        .used_values = m_state.get_mutable(child_box, m_state.layout_input_for(child_box, *m_available_space, m_layout_mode)),
         .row = row_start,
         .row_span = row_span,
         .column = column_start,
@@ -766,7 +766,7 @@ void GridFormattingContext::place_item_with_row_position(Box const& child_box)
 
     record_grid_placement(GridItem {
         .box = child_box,
-        .used_values = m_state.get_mutable(child_box),
+        .used_values = m_state.get_mutable(child_box, m_state.layout_input_for(child_box, *m_available_space, m_layout_mode)),
         .row = row_start,
         .row_span = row_span,
         .column = column_start,
@@ -802,7 +802,7 @@ void GridFormattingContext::place_item_with_column_position(Box const& child_box
 
     record_grid_placement(GridItem {
         .box = child_box,
-        .used_values = m_state.get_mutable(child_box),
+        .used_values = m_state.get_mutable(child_box, m_state.layout_input_for(child_box, *m_available_space, m_layout_mode)),
         .row = auto_placement_cursor_row,
         .row_span = row_span,
         .column = column_start,
@@ -847,7 +847,7 @@ void GridFormattingContext::place_item_with_no_declared_position(Box const& chil
 
     record_grid_placement(GridItem {
         .box = child_box,
-        .used_values = m_state.get_mutable(child_box),
+        .used_values = m_state.get_mutable(child_box, m_state.layout_input_for(child_box, *m_available_space, m_layout_mode)),
         .row = row_start,
         .row_span = row_span,
         .column = column_start,
@@ -2769,7 +2769,7 @@ void GridFormattingContext::run(AvailableSpace const& available_space)
 // https://www.w3.org/TR/css-grid-2/#abspos-items
 AbsposContainingBlockInfo GridFormattingContext::resolve_abspos_containing_block_info(Box const& box)
 {
-    auto& abspos_box_state = m_state.get_mutable(box);
+    auto& abspos_box_state = m_state.get_mutable(box, LayoutState::layout_input_from_containing_block(grid_container(), m_grid_container_used_values, *m_available_space, m_layout_mode));
     auto containing_block_info = FormattingContext::resolve_abspos_containing_block_info(box);
 
     auto grid_area_rect = [&] -> CSSPixelRect {
@@ -2886,7 +2886,7 @@ void GridFormattingContext::parent_context_did_dimension_child_root_box()
 
     grid_container().for_each_child_of_type<Box>([&](Layout::Box& box) {
         if (box.is_absolutely_positioned()) {
-            m_state.get_mutable(box).set_static_position_rect(calculate_static_position_rect(box));
+            m_state.get_mutable(box, m_state.layout_input_for(box, *m_available_space, m_layout_mode)).set_static_position_rect(calculate_static_position_rect(box));
         }
         return IterationDecision::Continue;
     });
