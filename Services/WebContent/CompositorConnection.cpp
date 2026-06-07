@@ -79,6 +79,20 @@ void CompositorConnection::clear_video_frame(Web::Compositor::CompositorContextI
     async_clear_video_frame(context_id, frame_id);
 }
 
+void CompositorConnection::update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage const& shared_image)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_update_canvas_surface(context_id, canvas_id, shared_image);
+}
+
+void CompositorConnection::clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_clear_canvas_surface(context_id, canvas_id);
+}
+
 void CompositorConnection::update_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage const& shared_image)
 {
     if (!can_send_message_to_compositor())

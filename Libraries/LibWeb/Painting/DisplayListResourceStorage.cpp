@@ -310,6 +310,17 @@ void DisplayListResourceStorage::clear_video_frame(VideoFrameResourceId frame_id
         m_video_frames.set(frame_id.value(), nullptr);
 }
 
+void DisplayListResourceStorage::update_canvas_surface(CanvasSurfaceId canvas_id, Gfx::SharedImage&& shared_image)
+{
+    auto shared_image_buffer = Gfx::SharedImageBuffer::import_from_shared_image(move(shared_image));
+    m_canvas_surfaces.set(canvas_id.value(), Gfx::DecodedImageFrame { *shared_image_buffer.bitmap() });
+}
+
+void DisplayListResourceStorage::clear_canvas_surface(CanvasSurfaceId canvas_id)
+{
+    m_canvas_surfaces.remove(canvas_id.value());
+}
+
 void DisplayListResourceStorage::update_compositor_surface(CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image)
 {
     auto shared_image_buffer = Gfx::SharedImageBuffer::import_from_shared_image(move(shared_image));

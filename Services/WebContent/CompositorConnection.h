@@ -44,6 +44,8 @@ public:
     void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot const&);
     void update_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const> const&);
     void clear_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId);
+    void update_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, Gfx::SharedImage const&);
+    void clear_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId);
     void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage const&);
     void clear_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId);
     void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation);

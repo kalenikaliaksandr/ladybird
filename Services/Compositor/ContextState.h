@@ -115,6 +115,8 @@ public:
     void update_scroll_state(Web::Painting::ScrollStateSnapshot&&);
     void update_video_frame(Web::Painting::VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const>);
     void clear_video_frame(Web::Painting::VideoFrameResourceId);
+    void update_canvas_surface(Web::Painting::CanvasSurfaceId, Gfx::SharedImage&&);
+    void clear_canvas_surface(Web::Painting::CanvasSurfaceId);
     void update_compositor_surface(Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(Web::Painting::CompositorSurfaceId);
     Gfx::SharedImage snapshot_front_store();

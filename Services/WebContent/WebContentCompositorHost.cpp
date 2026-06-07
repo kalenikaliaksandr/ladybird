@@ -59,6 +59,18 @@ private:
             connection->clear_video_frame(context_id, frame_id);
     }
 
+    virtual void update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage&& shared_image) override
+    {
+        if (auto* connection = compositor_connection())
+            connection->update_canvas_surface(context_id, canvas_id, shared_image);
+    }
+
+    virtual void clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id) override
+    {
+        if (auto* connection = compositor_connection())
+            connection->clear_canvas_surface(context_id, canvas_id);
+    }
+
     virtual void update_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image) override
     {
         if (auto* connection = compositor_connection())

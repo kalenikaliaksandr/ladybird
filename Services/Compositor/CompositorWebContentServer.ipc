@@ -23,6 +23,9 @@ endpoint CompositorWebContentServer
     update_video_frame(Web::Compositor::CompositorContextId context_id, Web::Painting::VideoFrameResourceId frame_id, NonnullRefPtr<Media::VideoFrame const> frame) =|
     clear_video_frame(Web::Compositor::CompositorContextId context_id, Web::Painting::VideoFrameResourceId frame_id) =|
 
+    update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage shared_image) =|
+    clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id) =|
+
     update_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage shared_image) =|
     clear_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id) =|
 

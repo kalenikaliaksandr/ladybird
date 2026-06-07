@@ -197,6 +197,16 @@ void ContextState::clear_video_frame(Web::Painting::VideoFrameResourceId frame_i
     m_display_list_resource_storage.clear_video_frame(frame_id);
 }
 
+void ContextState::update_canvas_surface(Web::Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage&& shared_image)
+{
+    m_display_list_resource_storage.update_canvas_surface(canvas_id, move(shared_image));
+}
+
+void ContextState::clear_canvas_surface(Web::Painting::CanvasSurfaceId canvas_id)
+{
+    m_display_list_resource_storage.clear_canvas_surface(canvas_id);
+}
+
 void ContextState::update_compositor_surface(Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image)
 {
     m_display_list_resource_storage.update_compositor_surface(surface_id, move(shared_image));

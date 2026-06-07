@@ -95,6 +95,18 @@ void ConnectionFromWebContent::clear_video_frame(Web::Compositor::CompositorCont
     m_compositor_state->clear_video_frame(context_id, frame_id);
 }
 
+void ConnectionFromWebContent::update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage shared_image)
+{
+    verify_context_is_owned_by_this_connection(context_id);
+    m_compositor_state->update_canvas_surface(context_id, canvas_id, move(shared_image));
+}
+
+void ConnectionFromWebContent::clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id)
+{
+    verify_context_is_owned_by_this_connection(context_id);
+    m_compositor_state->clear_canvas_surface(context_id, canvas_id);
+}
+
 void ConnectionFromWebContent::update_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage shared_image)
 {
     verify_context_is_owned_by_this_connection(context_id);

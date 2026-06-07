@@ -46,6 +46,16 @@ void CompositorContextHandle::clear_video_frame(Painting::VideoFrameResourceId f
     m_host.clear_video_frame(m_context_id, frame_id);
 }
 
+void CompositorContextHandle::update_canvas_surface(Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage&& shared_image)
+{
+    m_host.update_canvas_surface(m_context_id, canvas_id, move(shared_image));
+}
+
+void CompositorContextHandle::clear_canvas_surface(Painting::CanvasSurfaceId canvas_id)
+{
+    m_host.clear_canvas_surface(m_context_id, canvas_id);
+}
+
 void CompositorContextHandle::update_compositor_surface(Painting::CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image)
 {
     m_host.update_compositor_surface(m_context_id, surface_id, move(shared_image));

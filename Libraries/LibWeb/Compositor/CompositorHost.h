@@ -39,6 +39,8 @@ public:
     void update_visual_context_tree(Painting::AccumulatedVisualContextTree);
     void update_video_frame(Painting::VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const>);
     void clear_video_frame(Painting::VideoFrameResourceId);
+    void update_canvas_surface(Painting::CanvasSurfaceId, Gfx::SharedImage&&);
+    void clear_canvas_surface(Painting::CanvasSurfaceId);
     void update_compositor_surface(Painting::CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(Painting::CompositorSurfaceId);
     void update_scroll_state(Painting::ScrollStateSnapshot&&);
@@ -76,6 +78,8 @@ public:
     virtual void update_visual_context_tree(CompositorContextId, Painting::AccumulatedVisualContextTree) = 0;
     virtual void update_video_frame(CompositorContextId, Painting::VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const>) = 0;
     virtual void clear_video_frame(CompositorContextId, Painting::VideoFrameResourceId) = 0;
+    virtual void update_canvas_surface(CompositorContextId, Painting::CanvasSurfaceId, Gfx::SharedImage&&) = 0;
+    virtual void clear_canvas_surface(CompositorContextId, Painting::CanvasSurfaceId) = 0;
     virtual void update_compositor_surface(CompositorContextId, Painting::CompositorSurfaceId, Gfx::SharedImage&&) = 0;
     virtual void clear_compositor_surface(CompositorContextId, Painting::CompositorSurfaceId) = 0;
     virtual void update_scroll_state(CompositorContextId, Painting::ScrollStateSnapshot&&) = 0;

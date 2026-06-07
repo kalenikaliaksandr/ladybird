@@ -157,6 +157,22 @@ void CompositorState::clear_video_frame(Web::Compositor::CompositorContextId con
     present_current_frame(context_id, *context);
 }
 
+void CompositorState::update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage&& shared_image)
+{
+    auto* context = context_if_present(context_id);
+    VERIFY(context);
+    context->update_canvas_surface(canvas_id, move(shared_image));
+    present_current_frame(context_id, *context);
+}
+
+void CompositorState::clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id)
+{
+    auto* context = context_if_present(context_id);
+    VERIFY(context);
+    context->clear_canvas_surface(canvas_id);
+    present_current_frame(context_id, *context);
+}
+
 void CompositorState::update_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image)
 {
     auto* context = context_if_present(context_id);
