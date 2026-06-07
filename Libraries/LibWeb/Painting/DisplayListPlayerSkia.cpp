@@ -34,8 +34,12 @@
 #include <LibGfx/DecodedImageFrame.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/PainterSkia.h>
+#include <LibGfx/PaintingSurface.h>
 #include <LibGfx/SkiaBackendContext.h>
 #include <LibGfx/SkiaUtils.h>
+#ifdef USE_VULKAN_DMABUF_IMAGES
+#    include <LibGfx/VulkanImage.h>
+#endif
 #include <LibGfx/YUVData.h>
 #include <LibMedia/VideoFrame.h>
 #include <LibWeb/Painting/DisplayListPlayerSkia.h>
@@ -60,7 +64,7 @@ DisplayListPlayerSkia::~DisplayListPlayerSkia()
 Vector<DisplayListPlayerSkia::UsedCanvasSurfaceBuffer> DisplayListPlayerSkia::take_used_canvas_surface_buffers()
 {
     auto used_canvas_surface_buffers = move(m_used_canvas_surface_buffers);
-    m_used_canvas_surface_buffers = {};
+    m_used_canvas_surface_buffers = { };
     return used_canvas_surface_buffers;
 }
 
@@ -235,10 +239,26 @@ void DisplayListPlayerSkia::draw_compositor_surface(DrawCompositorSurface const&
 void DisplayListPlayerSkia::draw_canvas(DrawCanvas const& command)
 {
     auto backing = resource_storage().canvas_surface(command.canvas_id);
-    if (!backing.has_value() || !backing->bitmap)
+    if (!backing.has_value())
         return;
 
-    auto image = Gfx::sk_image_from_bitmap(*backing->bitmap, {});
+    sk_sp<SkImage> image;
+    if (backing->bitmap) {
+        image = Gfx::sk_image_from_bitmap(*backing->bitmap, { });
+    }
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    else if (backing->linux_dmabuf && backing->buffer_index.has_value()) {
+        auto imported_surface = imported_canvas_surface(command.canvas_id, backing->generation, *backing->buffer_index, *backing->linux_dmabuf);
+        if (!imported_surface)
+            return;
+        imported_surface->notify_content_will_change();
+        image = imported_surface->sk_image_snapshot<sk_sp<SkImage>>();
+    }
+#endif
+    else {
+        return;
+    }
+
     if (!image)
         return;
 
@@ -252,6 +272,39 @@ void DisplayListPlayerSkia::draw_canvas(DrawCanvas const& command)
     paint.setAntiAlias(true);
     canvas.drawImageRect(image.get(), src_rect, dst_rect, to_skia_sampling_options(command.scaling_mode), &paint, SkCanvas::kStrict_SrcRectConstraint);
 }
+
+#ifdef USE_VULKAN_DMABUF_IMAGES
+RefPtr<Gfx::PaintingSurface> DisplayListPlayerSkia::imported_canvas_surface(CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index, Gfx::LinuxDmaBufHandle const& dmabuf)
+{
+    m_imported_canvas_surfaces.remove_all_matching([&](ImportedCanvasSurface const& imported_surface) {
+        return imported_surface.canvas_id == canvas_id && imported_surface.generation != generation;
+    });
+
+    for (auto const& imported_surface : m_imported_canvas_surfaces) {
+        if (imported_surface.canvas_id == canvas_id && imported_surface.generation == generation && imported_surface.buffer_index == buffer_index)
+            return imported_surface.surface;
+    }
+
+    if (!m_skia_backend_context)
+        return { };
+
+    auto maybe_vulkan_image = Gfx::import_vulkan_image_from_dma_buf(m_skia_backend_context->vulkan_context(), dmabuf);
+    if (maybe_vulkan_image.is_error()) {
+        dbgln("Failed to import canvas dma-buf: {}", maybe_vulkan_image.error());
+        return { };
+    }
+
+    NonnullRefPtr<Gfx::SkiaBackendContext> context { *m_skia_backend_context };
+    auto surface = Gfx::PaintingSurface::create_from_vkimage(move(context), maybe_vulkan_image.release_value(), Gfx::PaintingSurface::Origin::BottomLeft);
+    m_imported_canvas_surfaces.append(ImportedCanvasSurface {
+        .canvas_id = canvas_id,
+        .generation = generation,
+        .buffer_index = buffer_index,
+        .surface = surface,
+    });
+    return surface;
+}
+#endif
 
 void DisplayListPlayerSkia::record_used_canvas_surface_buffer(CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index)
 {
@@ -642,7 +695,7 @@ SkPaint DisplayListPlayerSkia::paint_style_to_skia_paint(DisplayListPaintStyle c
 
     switch (paint_style.type) {
     case DisplayListPaintStyleType::None:
-        return {};
+        return { };
     case DisplayListPaintStyleType::LinearGradient:
         return make_gradient_paint([&](Vector<SkColor> const& colors, Vector<SkScalar> const& positions, SkTileMode tile_mode, SkMatrix const& matrix) {
             Array points {
@@ -661,7 +714,7 @@ SkPaint DisplayListPlayerSkia::paint_style_to_skia_paint(DisplayListPaintStyle c
         auto const& tile_rect = paint_style.pattern_tile_rect;
         auto tile_size = Gfx::IntSize(ceilf(tile_rect.width()), ceilf(tile_rect.height()));
         if (tile_size.is_empty())
-            return {};
+            return { };
 
         auto tile_surface = Gfx::PaintingSurface::create_with_size(tile_size, Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, m_skia_backend_context);
 

@@ -17,6 +17,8 @@
 
 namespace Gfx {
 
+struct LinuxDmaBufHandle;
+
 struct VulkanImage : public RefCounted<VulkanImage> {
     VkImage image { VK_NULL_HANDLE };
     VkDeviceMemory memory { VK_NULL_HANDLE };
@@ -54,6 +56,7 @@ static inline uint32_t vk_format_to_drm_format(VkFormat format)
 }
 
 ErrorOr<NonnullRefPtr<VulkanImage>> create_shared_vulkan_image(VulkanContext const& context, uint32_t width, uint32_t height, VkFormat format, ReadonlySpan<uint64_t> modifiers);
+ErrorOr<NonnullRefPtr<VulkanImage>> import_vulkan_image_from_dma_buf(VulkanContext const&, LinuxDmaBufHandle const&);
 
 }
 

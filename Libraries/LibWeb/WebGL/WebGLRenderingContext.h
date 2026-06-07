@@ -34,6 +34,8 @@ public:
 
     RefPtr<Gfx::PaintingSurface> surface();
     void allocate_painting_surface_if_needed();
+    Gfx::SharedImage export_canvas_presentation_shared_image();
+    void present_to_canvas_presentation_surface();
 
     void set_size(Gfx::IntSize const&);
     void reset_to_default_state();

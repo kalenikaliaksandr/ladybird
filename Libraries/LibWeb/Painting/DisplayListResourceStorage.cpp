@@ -315,8 +315,18 @@ void DisplayListResourceStorage::register_canvas_surface(CanvasSurfaceId canvas_
     CanvasSurface canvas_surface;
     canvas_surface.generation = generation;
     canvas_surface.presentation_buffers.ensure_capacity(presentation_buffers.size());
-    for (auto& shared_image : presentation_buffers)
-        canvas_surface.presentation_buffers.unchecked_append(Gfx::SharedImageBuffer::import_from_shared_image(move(shared_image)));
+    for (auto& shared_image : presentation_buffers) {
+        CanvasPresentationBuffer presentation_buffer;
+#ifdef USE_VULKAN_DMABUF_IMAGES
+        if (shared_image.is_linux_dmabuf()) {
+            presentation_buffer.linux_dmabuf = make<Gfx::LinuxDmaBufHandle>(shared_image.take_linux_dmabuf());
+        } else
+#endif
+        {
+            presentation_buffer.shared_image_buffer = make<Gfx::SharedImageBuffer>(Gfx::SharedImageBuffer::import_from_shared_image(move(shared_image)));
+        }
+        canvas_surface.presentation_buffers.unchecked_append(move(presentation_buffer));
+    }
     m_canvas_surfaces.set(canvas_id.value(), move(canvas_surface));
 }
 
@@ -367,7 +377,10 @@ Optional<CanvasSurfaceBacking> DisplayListResourceStorage::canvas_surface(Canvas
     if (buffer_index >= canvas_surface->value.presentation_buffers.size())
         return {};
     return CanvasSurfaceBacking {
-        .bitmap = canvas_surface->value.presentation_buffers[buffer_index].bitmap().ptr(),
+        .bitmap = canvas_surface->value.presentation_buffers[buffer_index].shared_image_buffer ? canvas_surface->value.presentation_buffers[buffer_index].shared_image_buffer->bitmap().ptr() : nullptr,
+#ifdef USE_VULKAN_DMABUF_IMAGES
+        .linux_dmabuf = canvas_surface->value.presentation_buffers[buffer_index].linux_dmabuf.ptr(),
+#endif
         .generation = canvas_surface->value.generation,
         .buffer_index = buffer_index,
     };

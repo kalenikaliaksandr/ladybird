@@ -9,6 +9,9 @@
 #include <AK/Function.h>
 #include <AK/Vector.h>
 #include <LibGfx/DecodedImageFrameSkiaImageCache.h>
+#ifdef USE_VULKAN_DMABUF_IMAGES
+#    include <LibGfx/SharedImage.h>
+#endif
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListCommand.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
@@ -84,10 +87,23 @@ private:
     ReadonlySpan<Color> gradient_colors(DisplayListGradientColorStops) const;
     ReadonlySpan<float> gradient_positions(DisplayListGradientColorStops) const;
     void record_used_canvas_surface_buffer(CanvasSurfaceId, u64 generation, u32 buffer_index);
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    RefPtr<Gfx::PaintingSurface> imported_canvas_surface(CanvasSurfaceId, u64 generation, u32 buffer_index, Gfx::LinuxDmaBufHandle const&);
+#endif
 
     RefPtr<Gfx::SkiaBackendContext> m_skia_backend_context;
     Gfx::DecodedImageFrameSkiaImageCache m_image_cache;
     Vector<UsedCanvasSurfaceBuffer> m_used_canvas_surface_buffers;
+
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    struct ImportedCanvasSurface {
+        CanvasSurfaceId canvas_id;
+        u64 generation { 0 };
+        u32 buffer_index { 0 };
+        NonnullRefPtr<Gfx::PaintingSurface> surface;
+    };
+    Vector<ImportedCanvasSurface> m_imported_canvas_surfaces;
+#endif
 };
 
 }

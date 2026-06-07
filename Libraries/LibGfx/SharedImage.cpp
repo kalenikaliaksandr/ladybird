@@ -39,6 +39,16 @@ SharedImage::SharedImage(LinuxDmaBufHandle&& dmabuf)
 {
 }
 
+bool SharedImage::is_linux_dmabuf() const
+{
+    return m_data.has<LinuxDmaBufHandle>();
+}
+
+LinuxDmaBufHandle SharedImage::take_linux_dmabuf()
+{
+    return move(m_data.get<LinuxDmaBufHandle>());
+}
+
 #    ifdef USE_VULKAN_DMABUF_IMAGES
 static constexpr auto shared_image_bitmap_format = BitmapFormat::BGRA8888;
 static constexpr auto shared_image_alpha_type = AlphaType::Premultiplied;

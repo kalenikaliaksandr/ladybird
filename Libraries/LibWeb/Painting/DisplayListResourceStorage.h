@@ -13,6 +13,7 @@
 #include <AK/Noncopyable.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/Optional.h>
+#include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
 #include <AK/Span.h>
 #include <AK/Vector.h>
@@ -63,6 +64,9 @@ struct DisplayListResource {
 
 struct CanvasSurfaceBacking {
     Gfx::Bitmap const* bitmap { nullptr };
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    Gfx::LinuxDmaBufHandle const* linux_dmabuf { nullptr };
+#endif
     u64 generation { 0 };
     Optional<u32> buffer_index;
 };
@@ -121,9 +125,16 @@ public:
     Optional<Gfx::DecodedImageFrame const&> compositor_surface(CompositorSurfaceId id) const { return m_compositor_surfaces.get(id.value()); }
 
 private:
+    struct CanvasPresentationBuffer {
+        OwnPtr<Gfx::SharedImageBuffer> shared_image_buffer;
+#ifdef USE_VULKAN_DMABUF_IMAGES
+        OwnPtr<Gfx::LinuxDmaBufHandle> linux_dmabuf;
+#endif
+    };
+
     struct CanvasSurface {
         u64 generation { 0 };
-        Vector<Gfx::SharedImageBuffer> presentation_buffers;
+        Vector<CanvasPresentationBuffer> presentation_buffers;
         Optional<u32> published_buffer_index;
         Optional<Gfx::DecodedImageFrame> fallback_frame;
     };

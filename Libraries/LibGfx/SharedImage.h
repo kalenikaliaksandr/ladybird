@@ -54,6 +54,9 @@ public:
 #else
     explicit SharedImage(ShareableBitmap);
     explicit SharedImage(LinuxDmaBufHandle&&);
+
+    bool is_linux_dmabuf() const;
+    LinuxDmaBufHandle take_linux_dmabuf();
 #endif
 
 private:

@@ -438,21 +438,23 @@ void HTMLCanvasElement::present()
     if (!m_canvas_content_dirty)
         return;
 
-    m_context.visit(
-        [](GC::Ref<CanvasRenderingContext2D>& context) {
+    auto did_present = m_context.visit(
+        [&](GC::Ref<CanvasRenderingContext2D>& context) {
             context->present();
+            return update_canvas_surface();
         },
-        [](GC::Ref<WebGL::WebGLRenderingContext>& context) {
-            context->present();
+        [&](GC::Ref<WebGL::WebGLRenderingContext>& context) {
+            return present_webgl_canvas(*context);
         },
-        [](GC::Ref<WebGL::WebGL2RenderingContext>& context) {
-            context->present();
+        [&](GC::Ref<WebGL::WebGL2RenderingContext>& context) {
+            return present_webgl_canvas(*context);
         },
         [](Empty) {
             // Do nothing.
+            return true;
         });
 
-    if (update_canvas_surface())
+    if (did_present)
         m_canvas_content_dirty = false;
 }
 
@@ -461,6 +463,7 @@ void HTMLCanvasElement::republish_compositor_surface()
     m_canvas_presentation_buffer = nullptr;
     ++m_canvas_presentation_buffer_generation;
     m_canvas_presentation_buffer_is_available = false;
+    m_canvas_presentation_surface_is_registered = false;
 
     if (m_canvas_content_dirty) {
         present();
@@ -470,20 +473,68 @@ void HTMLCanvasElement::republish_compositor_surface()
     update_canvas_surface();
 }
 
+template<typename ContextType>
+bool HTMLCanvasElement::present_webgl_canvas(ContextType& context)
+{
+    context.allocate_painting_surface_if_needed();
+    auto surface = context.surface();
+    if (!surface) {
+        context.present();
+        return true;
+    }
+
+    if (auto navigable = document().navigable(); navigable && navigable->has_compositor_context()) {
+        auto& compositor_context = navigable->compositor_context();
+        if (ensure_canvas_presentation_buffer(*surface, compositor_context)) {
+            if (!m_canvas_presentation_buffer_is_available)
+                return false;
+            context.present_to_canvas_presentation_surface();
+            m_canvas_presentation_buffer_is_available = false;
+            compositor_context.notify_canvas_surface_ready(ensure_canvas_surface_id(), m_canvas_presentation_buffer_generation, 0, surface->rect());
+            return true;
+        }
+    }
+
+    context.present();
+    return update_canvas_surface();
+}
+
 bool HTMLCanvasElement::ensure_canvas_presentation_buffer(Gfx::PaintingSurface& surface, Web::Compositor::CompositorContextHandle& compositor_context)
 {
-    if (!surface.is_cpu_backed())
-        return false;
-
     if (m_canvas_presentation_buffer && m_canvas_presentation_buffer->bitmap()->size() == surface.size())
         return true;
 
-    m_canvas_presentation_buffer = make<Gfx::SharedImageBuffer>(Gfx::SharedImageBuffer::create(surface.size()));
+    Vector<Gfx::SharedImage> presentation_buffers;
+
+    if (surface.is_cpu_backed()) {
+        m_canvas_presentation_buffer = make<Gfx::SharedImageBuffer>(Gfx::SharedImageBuffer::create(surface.size()));
+        presentation_buffers.append(m_canvas_presentation_buffer->export_shared_image());
+    } else {
+        if (m_canvas_presentation_surface_is_registered && !m_canvas_presentation_buffer)
+            return true;
+
+        bool did_export_presentation_surface = false;
+        m_context.visit(
+            [](GC::Ref<CanvasRenderingContext2D>&) {
+            },
+            [&](GC::Ref<WebGL::WebGLRenderingContext>& context) {
+                presentation_buffers.append(context->export_canvas_presentation_shared_image());
+                did_export_presentation_surface = true;
+            },
+            [&](GC::Ref<WebGL::WebGL2RenderingContext>& context) {
+                presentation_buffers.append(context->export_canvas_presentation_shared_image());
+                did_export_presentation_surface = true;
+            },
+            [](Empty) {
+            });
+        if (!did_export_presentation_surface)
+            return false;
+        m_canvas_presentation_buffer = nullptr;
+    }
+
     ++m_canvas_presentation_buffer_generation;
     m_canvas_presentation_buffer_is_available = true;
-
-    Vector<Gfx::SharedImage> presentation_buffers;
-    presentation_buffers.append(m_canvas_presentation_buffer->export_shared_image());
+    m_canvas_presentation_surface_is_registered = true;
     compositor_context.register_canvas_surface(ensure_canvas_surface_id(), m_canvas_presentation_buffer_generation, move(presentation_buffers));
     return true;
 }
@@ -497,7 +548,8 @@ bool HTMLCanvasElement::update_canvas_surface()
             if (ensure_canvas_presentation_buffer(*surface, compositor_context)) {
                 if (!m_canvas_presentation_buffer_is_available)
                     return false;
-                surface->read_into_bitmap(*m_canvas_presentation_buffer->bitmap());
+                if (m_canvas_presentation_buffer)
+                    surface->read_into_bitmap(*m_canvas_presentation_buffer->bitmap());
                 m_canvas_presentation_buffer_is_available = false;
                 compositor_context.notify_canvas_surface_ready(ensure_canvas_surface_id(), m_canvas_presentation_buffer_generation, 0, surface->rect());
                 return true;
@@ -513,6 +565,7 @@ void HTMLCanvasElement::clear_canvas_surface()
     m_canvas_presentation_buffer = nullptr;
     ++m_canvas_presentation_buffer_generation;
     m_canvas_presentation_buffer_is_available = false;
+    m_canvas_presentation_surface_is_registered = false;
 
     if (!m_canvas_surface_id.has_value())
         return;
@@ -526,7 +579,7 @@ void HTMLCanvasElement::release_canvas_surface_buffer(Painting::CanvasSurfaceId 
         return;
     if (m_canvas_presentation_buffer_generation != generation)
         return;
-    if (!m_canvas_presentation_buffer || buffer_index != 0)
+    if (!m_canvas_presentation_surface_is_registered || buffer_index != 0)
         return;
 
     m_canvas_presentation_buffer_is_available = true;

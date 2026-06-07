@@ -20,6 +20,10 @@
 extern "C" {
 #include <EGL/eglext_angle.h>
 }
+#include <core/SkCanvas.h>
+#include <core/SkImage.h>
+#include <core/SkPaint.h>
+#include <core/SkSamplingOptions.h>
 #define GL_GLEXT_PROTOTYPES 1
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
@@ -106,6 +110,15 @@ void OpenGLContext::free_surface_resources()
         eglDestroySurface(m_impl->display, m_impl->surface);
         m_impl->surface = EGL_NO_SURFACE;
     }
+
+    m_presentation_surface = nullptr;
+#    ifdef AK_OS_MACOS
+    m_presentation_shared_image_buffer = nullptr;
+    m_shared_image_buffer = nullptr;
+#    elif defined(USE_VULKAN_DMABUF_IMAGES)
+    m_presentation_vulkan_image = nullptr;
+    m_vulkan_image = nullptr;
+#    endif
 #endif
 }
 
@@ -152,19 +165,19 @@ OwnPtr<OpenGLContext> OpenGLContext::create(NonnullRefPtr<Gfx::SkiaBackendContex
     auto display = eglGetPlatformDisplay(EGL_PLATFORM_ANGLE_ANGLE, reinterpret_cast<void*>(EGL_DEFAULT_DISPLAY), display_attributes);
     if (display == EGL_NO_DISPLAY) {
         dbgln("Failed to get EGL display");
-        return {};
+        return { };
     }
 
     EGLint major, minor;
     if (!eglInitialize(display, &major, &minor)) {
         dbgln("Failed to initialize EGL");
-        return {};
+        return { };
     }
 
     auto* config = get_egl_config(display);
     if (config == EGL_NO_CONFIG_KHR) {
         dbgln("Failed to find EGLConfig");
-        return {};
+        return { };
     }
 
     EGLint texture_target;
@@ -195,20 +208,20 @@ OwnPtr<OpenGLContext> OpenGLContext::create(NonnullRefPtr<Gfx::SkiaBackendContex
     auto context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attributes);
     if (context == EGL_NO_CONTEXT) {
         dbgln("Failed to create EGL context");
-        return {};
+        return { };
     }
 
 #    ifdef USE_VULKAN_DMABUF_IMAGES
     auto pfn_egl_query_dma_buf_formats_ext = reinterpret_cast<PFNEGLQUERYDMABUFFORMATSEXTPROC>(eglGetProcAddress("eglQueryDmaBufFormatsEXT"));
     if (!pfn_egl_query_dma_buf_formats_ext) {
         dbgln("eglQueryDmaBufFormatsEXT unavailable");
-        return {};
+        return { };
     }
 
     auto pfn_egl_query_dma_buf_modifiers_ext = reinterpret_cast<PFNEGLQUERYDMABUFMODIFIERSEXTPROC>(eglGetProcAddress("eglQueryDmaBufModifiersEXT"));
     if (!pfn_egl_query_dma_buf_modifiers_ext) {
         dbgln("eglQueryDmaBufModifiersEXT unavailable");
-        return {};
+        return { };
     }
 #    endif
 
@@ -228,7 +241,7 @@ OwnPtr<OpenGLContext> OpenGLContext::create(NonnullRefPtr<Gfx::SkiaBackendContex
 #else
     (void)skia_backend_context;
     (void)webgl_version;
-    return {};
+    return { };
 #endif
 }
 
@@ -291,6 +304,8 @@ void OpenGLContext::allocate_iosurface_painting_surface()
 {
     m_shared_image_buffer = make<Gfx::SharedImageBuffer>(Gfx::SharedImageBuffer::create(m_size));
     m_painting_surface = Gfx::PaintingSurface::create_from_shared_image_buffer(*m_shared_image_buffer, m_skia_backend_context, Gfx::PaintingSurface::Origin::BottomLeft);
+    m_presentation_shared_image_buffer = make<Gfx::SharedImageBuffer>(Gfx::SharedImageBuffer::create(m_size));
+    m_presentation_surface = Gfx::PaintingSurface::create_from_shared_image_buffer(*m_presentation_shared_image_buffer, m_skia_backend_context, Gfx::PaintingSurface::Origin::BottomLeft);
 
     EGLint const surface_attributes[] = {
         EGL_WIDTH,
@@ -352,8 +367,10 @@ void OpenGLContext::allocate_vkimage_painting_surface()
         }
     }
 
-    auto vulkan_image = MUST(Gfx::create_shared_vulkan_image(m_skia_backend_context->vulkan_context(), m_size.width(), m_size.height(), vulkan_format, renderable_modifiers));
-    m_painting_surface = Gfx::PaintingSurface::create_from_vkimage(m_skia_backend_context, vulkan_image, Gfx::PaintingSurface::Origin::BottomLeft);
+    m_vulkan_image = MUST(Gfx::create_shared_vulkan_image(m_skia_backend_context->vulkan_context(), m_size.width(), m_size.height(), vulkan_format, renderable_modifiers));
+    m_painting_surface = Gfx::PaintingSurface::create_from_vkimage(m_skia_backend_context, *m_vulkan_image, Gfx::PaintingSurface::Origin::BottomLeft);
+    m_presentation_vulkan_image = MUST(Gfx::create_shared_vulkan_image(m_skia_backend_context->vulkan_context(), m_size.width(), m_size.height(), vulkan_format, renderable_modifiers));
+    m_presentation_surface = Gfx::PaintingSurface::create_from_vkimage(m_skia_backend_context, *m_presentation_vulkan_image, Gfx::PaintingSurface::Origin::BottomLeft);
 
     EGLAttrib attribs[] = {
         EGL_WIDTH,
@@ -363,15 +380,15 @@ void OpenGLContext::allocate_vkimage_painting_surface()
         EGL_LINUX_DRM_FOURCC_EXT,
         drm_format,
         EGL_DMA_BUF_PLANE0_FD_EXT,
-        vulkan_image->get_dma_buf_fd(), // EGL takes ownership of the fd
+        m_vulkan_image->get_dma_buf_fd(), // EGL takes ownership of the fd
         EGL_DMA_BUF_PLANE0_OFFSET_EXT,
         0,
         EGL_DMA_BUF_PLANE0_PITCH_EXT,
-        static_cast<uint32_t>(vulkan_image->info.row_pitch),
+        static_cast<uint32_t>(m_vulkan_image->info.row_pitch),
         EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT,
-        static_cast<uint32_t>(vulkan_image->info.modifier & 0xffffffff),
+        static_cast<uint32_t>(m_vulkan_image->info.modifier & 0xffffffff),
         EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT,
-        static_cast<uint32_t>(vulkan_image->info.modifier >> 32),
+        static_cast<uint32_t>(m_vulkan_image->info.modifier >> 32),
         EGL_NONE,
     };
     m_impl->egl_image = eglCreateImage(m_impl->display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attribs);
@@ -447,7 +464,36 @@ void OpenGLContext::make_current()
 #endif
 }
 
+void OpenGLContext::copy_to_canvas_presentation_surface()
+{
+#ifdef ENABLE_WEBGL
+    VERIFY(m_painting_surface);
+    VERIFY(m_presentation_surface);
+
+    m_painting_surface->notify_content_will_change();
+    auto image = m_painting_surface->sk_image_snapshot<sk_sp<SkImage>>();
+    VERIFY(image);
+
+    m_presentation_surface->notify_content_will_change();
+    auto& canvas = m_presentation_surface->canvas();
+    SkPaint paint;
+    paint.setBlendMode(SkBlendMode::kSrc);
+    canvas.drawImage(image.get(), 0, 0, SkSamplingOptions(), &paint);
+    m_skia_backend_context->flush_and_submit(&m_presentation_surface->sk_surface());
+#endif
+}
+
 void OpenGLContext::present(bool preserve_drawing_buffer)
+{
+    present_to_canvas_presentation_surface(preserve_drawing_buffer, false);
+}
+
+void OpenGLContext::present_to_canvas_presentation_surface(bool preserve_drawing_buffer)
+{
+    present_to_canvas_presentation_surface(preserve_drawing_buffer, true);
+}
+
+void OpenGLContext::present_to_canvas_presentation_surface(bool preserve_drawing_buffer, bool copy_to_presentation_surface)
 {
 #ifdef ENABLE_WEBGL
     make_current();
@@ -458,10 +504,14 @@ void OpenGLContext::present(bool preserve_drawing_buffer)
     // eglWaitUntilWorkScheduledANGLE only has an effect on CGL and Metal backends, so we only use it on macOS.
 #    if defined(AK_OS_MACOS)
     eglWaitUntilWorkScheduledANGLE(m_impl->display);
+    glFinish();
 #    elif defined(USE_VULKAN_DMABUF_IMAGES)
     // FIXME: CPU sync for now, but it would be better to export a fence and have Skia wait for it before reading from the surface
     glFinish();
 #    endif
+
+    if (copy_to_presentation_surface)
+        copy_to_canvas_presentation_surface();
 
     // "By default, after compositing the contents of the drawing buffer shall be cleared to their default values, as shown in the table above.
     // This default behavior can be changed by setting the preserveDrawingBuffer attribute of the WebGLContextAttributes object.
@@ -472,12 +522,27 @@ void OpenGLContext::present(bool preserve_drawing_buffer)
     }
 #else
     (void)preserve_drawing_buffer;
+    (void)copy_to_presentation_surface;
 #endif
 }
 
 RefPtr<Gfx::PaintingSurface> OpenGLContext::surface()
 {
     return m_painting_surface;
+}
+
+Gfx::SharedImage OpenGLContext::export_canvas_presentation_shared_image()
+{
+    allocate_painting_surface_if_needed();
+#ifdef AK_OS_MACOS
+    VERIFY(m_presentation_shared_image_buffer);
+    return m_presentation_shared_image_buffer->export_shared_image();
+#elif defined(USE_VULKAN_DMABUF_IMAGES)
+    VERIFY(m_presentation_vulkan_image);
+    return Gfx::duplicate_shared_image(*m_presentation_vulkan_image);
+#else
+    VERIFY_NOT_REACHED();
+#endif
 }
 
 u32 OpenGLContext::default_renderbuffer() const
@@ -519,7 +584,7 @@ Vector<String> OpenGLContext::get_supported_opengl_extensions()
     return extensions;
 #else
     (void)m_webgl_version;
-    return {};
+    return { };
 #endif
 }
 

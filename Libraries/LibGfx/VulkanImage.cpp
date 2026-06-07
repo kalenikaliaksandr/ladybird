@@ -9,6 +9,8 @@
 #    include <AK/Array.h>
 #    include <AK/Format.h>
 #    include <AK/Vector.h>
+#    include <LibGfx/Bitmap.h>
+#    include <LibGfx/SharedImage.h>
 #    include <LibGfx/VulkanImage.h>
 
 namespace Gfx {
@@ -22,6 +24,17 @@ static uint32_t find_memory_type_index(VkPhysicalDeviceMemoryProperties const& m
     }
 
     return memory_properties.memoryTypeCount;
+}
+
+static VkFormat drm_format_to_vk_format(uint32_t drm_format)
+{
+    switch (drm_format) {
+    case DRM_FORMAT_ARGB8888:
+        return VK_FORMAT_B8G8R8A8_UNORM;
+    default:
+        VERIFY_NOT_REACHED();
+        return VK_FORMAT_UNDEFINED;
+    }
 }
 
 VulkanImage::~VulkanImage()
@@ -110,11 +123,12 @@ ErrorOr<NonnullRefPtr<VulkanImage>> create_shared_vulkan_image(VulkanContext con
     format_mod_props_list.pDrmFormatModifierProperties = format_mod_props.data();
     vkGetPhysicalDeviceFormatProperties2(context.physical_device, format, &format_props);
 
-    // populate a list of all format modifiers that are both renderable and accepted by the caller
+    // populate a list of all format modifiers that are both renderable, sampleable, and accepted by the caller
     Vector<uint64_t> format_mods;
     for (VkDrmFormatModifierPropertiesEXT const& props : format_mod_props) {
-        if ((props.drmFormatModifierTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) && (props.drmFormatModifierPlaneCount == 1)) {
-            if (modifiers.contains_slow(props.drmFormatModifier))
+        auto const required_features = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+        if ((props.drmFormatModifierTilingFeatures & required_features) == required_features && props.drmFormatModifierPlaneCount == 1) {
+            if (modifiers.is_empty() || modifiers.contains_slow(props.drmFormatModifier))
                 format_mods.append(props.drmFormatModifier);
         }
     }
@@ -152,7 +166,7 @@ ErrorOr<NonnullRefPtr<VulkanImage>> create_shared_vulkan_image(VulkanContext con
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
-        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = queue_families.size(),
         .pQueueFamilyIndices = queue_families.data(),
@@ -242,6 +256,115 @@ ErrorOr<NonnullRefPtr<VulkanImage>> create_shared_vulkan_image(VulkanContext con
         .layout = layout,
         .row_pitch = subresource_layout.rowPitch,
         .modifier = image_format_mod_props.drmFormatModifier,
+    };
+    return image;
+}
+
+ErrorOr<NonnullRefPtr<VulkanImage>> import_vulkan_image_from_dma_buf(VulkanContext const& context, LinuxDmaBufHandle const& dmabuf)
+{
+    VERIFY(dmabuf.bitmap_format == BitmapFormat::BGRA8888);
+    VERIFY(dmabuf.alpha_type == AlphaType::Premultiplied);
+    VERIFY(dmabuf.drm_format == DRM_FORMAT_ARGB8888);
+
+    auto format = drm_format_to_vk_format(dmabuf.drm_format);
+    NonnullRefPtr<VulkanImage> image = make_ref_counted<VulkanImage>(context);
+
+    auto plane_size = Bitmap::size_in_bytes(dmabuf.pitch, dmabuf.size.height());
+    VkSubresourceLayout plane_layout = {
+        .offset = 0,
+        .size = plane_size,
+        .rowPitch = dmabuf.pitch,
+        .arrayPitch = 0,
+        .depthPitch = 0,
+    };
+    VkImageDrmFormatModifierExplicitCreateInfoEXT image_drm_format_modifier_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT,
+        .pNext = nullptr,
+        .drmFormatModifier = dmabuf.modifier,
+        .drmFormatModifierPlaneCount = 1,
+        .pPlaneLayouts = &plane_layout,
+    };
+    VkExternalMemoryImageCreateInfo external_mem_image_info = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+        .pNext = &image_drm_format_modifier_info,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
+    Array<uint32_t, 1> queue_families = { context.graphics_queue_family };
+    VkImageCreateInfo image_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext = &external_mem_image_info,
+        .flags = 0,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = format,
+        .extent = {
+            .width = static_cast<uint32_t>(dmabuf.size.width()),
+            .height = static_cast<uint32_t>(dmabuf.size.height()),
+            .depth = 1,
+        },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = queue_families.size(),
+        .pQueueFamilyIndices = queue_families.data(),
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    auto result = vkCreateImage(context.logical_device, &image_info, nullptr, &image->image);
+    if (result != VK_SUCCESS) {
+        dbgln("vkCreateImage returned {}", to_underlying(result));
+        return Error::from_string_literal("image creation failed");
+    }
+
+    VkMemoryRequirements mem_reqs;
+    vkGetImageMemoryRequirements(context.logical_device, image->image, &mem_reqs);
+    VkPhysicalDeviceMemoryProperties mem_props;
+    vkGetPhysicalDeviceMemoryProperties(context.physical_device, &mem_props);
+    uint32_t mem_type_idx = find_memory_type_index(mem_props, mem_reqs, 0);
+    if (mem_type_idx == mem_props.memoryTypeCount)
+        return Error::from_string_literal("unable to find suitable image memory type");
+
+    auto fd = TRY(IPC::File::clone_fd(dmabuf.file.fd()));
+    VkMemoryDedicatedAllocateInfo mem_dedicated_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .image = image->image,
+        .buffer = VK_NULL_HANDLE,
+    };
+    VkImportMemoryFdInfoKHR import_mem_fd_info = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+        .pNext = &mem_dedicated_alloc_info,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        .fd = fd.take_fd(),
+    };
+    VkMemoryAllocateInfo mem_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = &import_mem_fd_info,
+        .allocationSize = mem_reqs.size,
+        .memoryTypeIndex = mem_type_idx,
+    };
+    result = vkAllocateMemory(context.logical_device, &mem_alloc_info, nullptr, &image->memory);
+    if (result != VK_SUCCESS) {
+        dbgln("vkAllocateMemory returned {}", to_underlying(result));
+        return Error::from_string_literal("image memory import failed");
+    }
+
+    result = vkBindImageMemory(context.logical_device, image->image, image->memory, 0);
+    if (result != VK_SUCCESS) {
+        dbgln("vkBindImageMemory returned {}", to_underlying(result));
+        return Error::from_string_literal("bind image memory failed");
+    }
+
+    image->info = {
+        .format = image_info.format,
+        .extent = image_info.extent,
+        .tiling = image_info.tiling,
+        .usage = image_info.usage,
+        .sharing_mode = image_info.sharingMode,
+        .layout = VK_IMAGE_LAYOUT_GENERAL,
+        .row_pitch = dmabuf.pitch,
+        .modifier = dmabuf.modifier,
     };
     return image;
 }

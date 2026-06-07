@@ -79,6 +79,8 @@ private:
 
     template<typename ContextType>
     JS::ThrowCompletionOr<HasOrCreatedContext> create_webgl_context(JS::Value options);
+    template<typename ContextType>
+    bool present_webgl_canvas(ContextType&);
     void reset_context_to_default_state();
     void notify_context_about_canvas_size_change();
     bool ensure_canvas_presentation_buffer(Gfx::PaintingSurface&, Web::Compositor::CompositorContextHandle&);
@@ -90,6 +92,7 @@ private:
     OwnPtr<Gfx::SharedImageBuffer> m_canvas_presentation_buffer;
     u64 m_canvas_presentation_buffer_generation { 0 };
     bool m_canvas_presentation_buffer_is_available { false };
+    bool m_canvas_presentation_surface_is_registered { false };
     bool m_canvas_content_dirty { false };
 };
 

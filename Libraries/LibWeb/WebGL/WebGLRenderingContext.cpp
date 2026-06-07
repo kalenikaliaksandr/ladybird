@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibGfx/SharedImage.h>
 #include <LibGfx/SkiaBackendContext.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/TypedArray.h>
@@ -100,6 +101,11 @@ void WebGLRenderingContext::present()
     context().present(m_context_creation_parameters.preserve_drawing_buffer);
 }
 
+void WebGLRenderingContext::present_to_canvas_presentation_surface()
+{
+    context().present_to_canvas_presentation_surface(m_context_creation_parameters.preserve_drawing_buffer);
+}
+
 GC::Ref<HTML::HTMLCanvasElement> WebGLRenderingContext::canvas_for_binding() const
 {
     return *m_canvas_element;
@@ -139,6 +145,11 @@ RefPtr<Gfx::PaintingSurface> WebGLRenderingContext::surface()
 void WebGLRenderingContext::allocate_painting_surface_if_needed()
 {
     context().allocate_painting_surface_if_needed();
+}
+
+Gfx::SharedImage WebGLRenderingContext::export_canvas_presentation_shared_image()
+{
+    return context().export_canvas_presentation_shared_image();
 }
 
 WebIDL::Long WebGLRenderingContext::drawing_buffer_width() const
