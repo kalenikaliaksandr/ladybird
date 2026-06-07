@@ -10,12 +10,15 @@
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibWeb/HTML/EventLoop/EventLoop.h>
+#include <WebContent/ConnectionFromClient.h>
+#include <WebContent/PageHost.h>
 #include <WebContent/WebContentCompositorHost.h>
 
 namespace WebContent {
 
-CompositorConnection::CompositorConnection(NonnullOwnPtr<IPC::Transport> transport)
+CompositorConnection::CompositorConnection(NonnullOwnPtr<IPC::Transport> transport, ConnectionFromClient& client)
     : IPC::ConnectionToServer<CompositorWebContentClientEndpoint, CompositorWebContentServerEndpoint>(*this, move(transport))
+    , m_client(client)
 {
 }
 
@@ -77,6 +80,20 @@ void CompositorConnection::clear_video_frame(Web::Compositor::CompositorContextI
     if (!can_send_message_to_compositor())
         return;
     async_clear_video_frame(context_id, frame_id);
+}
+
+void CompositorConnection::register_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, Vector<Gfx::SharedImage> const& presentation_buffers)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_register_canvas_surface(context_id, canvas_id, generation, presentation_buffers);
+}
+
+void CompositorConnection::notify_canvas_surface_ready(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index, Gfx::IntRect damage)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_notify_canvas_surface_ready(context_id, canvas_id, generation, buffer_index, damage);
 }
 
 void CompositorConnection::update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage const& shared_image)
@@ -191,6 +208,11 @@ void CompositorConnection::mouse_event(u64 page_id, Web::MouseEvent event)
 void CompositorConnection::request_rendering_update()
 {
     Web::HTML::main_thread_event_loop().queue_task_to_update_the_rendering();
+}
+
+void CompositorConnection::release_canvas_surface_buffer(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index)
+{
+    m_client.page_host().release_canvas_surface_buffer(canvas_id, generation, buffer_index);
 }
 
 void CompositorConnection::did_complete_screenshot(Web::Compositor::ScreenshotRequestId request_id)

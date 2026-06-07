@@ -51,6 +51,7 @@ public:
 
     virtual void dispatch_mouse_event_to_web_content(u64 page_id, Web::MouseEvent const&) = 0;
     virtual void request_rendering_update() = 0;
+    virtual void release_canvas_surface_buffer(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, u64 generation, u32 buffer_index) = 0;
 };
 
 class CompositorState final : public RefCounted<CompositorState> {
@@ -78,6 +79,8 @@ public:
     void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot&&);
     void update_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const>);
     void clear_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId);
+    void register_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, u64 generation, Vector<Gfx::SharedImage>&&);
+    void notify_canvas_surface_ready(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, u64 generation, u32 buffer_index, Gfx::IntRect damage);
     void update_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, Gfx::SharedImage&&);
     void clear_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId);
     void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&);
@@ -99,16 +102,18 @@ private:
     CompositorState(RefPtr<Gfx::SkiaBackendContext>, bool async_scrolling_enabled);
 
     struct PendingAsyncPresent {
-        PendingAsyncPresent(Web::Compositor::CompositorContextId context_id, Gfx::IntRect viewport_rect, i32 bitmap_id)
+        PendingAsyncPresent(Web::Compositor::CompositorContextId context_id, Gfx::IntRect viewport_rect, i32 bitmap_id, Vector<Web::Painting::DisplayListPlayerSkia::UsedCanvasSurfaceBuffer>&& used_canvas_surface_buffers)
             : context_id(context_id)
             , viewport_rect(viewport_rect)
             , bitmap_id(bitmap_id)
+            , used_canvas_surface_buffers(move(used_canvas_surface_buffers))
         {
         }
 
         Web::Compositor::CompositorContextId context_id;
         Gfx::IntRect viewport_rect;
         i32 bitmap_id { 0 };
+        Vector<Web::Painting::DisplayListPlayerSkia::UsedCanvasSurfaceBuffer> used_canvas_surface_buffers;
         bool was_cancelled { false };
     };
 

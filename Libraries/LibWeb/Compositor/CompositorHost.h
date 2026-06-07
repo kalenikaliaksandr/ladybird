@@ -11,6 +11,7 @@
 #include <AK/NonnullRefPtr.h>
 #include <AK/OwnPtr.h>
 #include <AK/Types.h>
+#include <AK/Vector.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
 #include <LibGfx/SharedImage.h>
@@ -39,6 +40,8 @@ public:
     void update_visual_context_tree(Painting::AccumulatedVisualContextTree);
     void update_video_frame(Painting::VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const>);
     void clear_video_frame(Painting::VideoFrameResourceId);
+    void register_canvas_surface(Painting::CanvasSurfaceId, u64 generation, Vector<Gfx::SharedImage>&&);
+    void notify_canvas_surface_ready(Painting::CanvasSurfaceId, u64 generation, u32 buffer_index, Gfx::IntRect damage);
     void update_canvas_surface(Painting::CanvasSurfaceId, Gfx::SharedImage&&);
     void clear_canvas_surface(Painting::CanvasSurfaceId);
     void update_compositor_surface(Painting::CompositorSurfaceId, Gfx::SharedImage&&);
@@ -78,6 +81,8 @@ public:
     virtual void update_visual_context_tree(CompositorContextId, Painting::AccumulatedVisualContextTree) = 0;
     virtual void update_video_frame(CompositorContextId, Painting::VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const>) = 0;
     virtual void clear_video_frame(CompositorContextId, Painting::VideoFrameResourceId) = 0;
+    virtual void register_canvas_surface(CompositorContextId, Painting::CanvasSurfaceId, u64 generation, Vector<Gfx::SharedImage>&&) = 0;
+    virtual void notify_canvas_surface_ready(CompositorContextId, Painting::CanvasSurfaceId, u64 generation, u32 buffer_index, Gfx::IntRect damage) = 0;
     virtual void update_canvas_surface(CompositorContextId, Painting::CanvasSurfaceId, Gfx::SharedImage&&) = 0;
     virtual void clear_canvas_surface(CompositorContextId, Painting::CanvasSurfaceId) = 0;
     virtual void update_compositor_surface(CompositorContextId, Painting::CompositorSurfaceId, Gfx::SharedImage&&) = 0;

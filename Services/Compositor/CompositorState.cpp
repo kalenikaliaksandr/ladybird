@@ -70,7 +70,7 @@ void CompositorState::create_context(Web::Compositor::CompositorContextId contex
         VERIFY(context_id == Web::Compositor::compositor_context_id_for_page(*page_id));
 
     auto& context = *m_contexts.ensure(context_id, [&] {
-        return make<ContextState>(page_id, web_content_client, m_async_scrolling_enabled);
+        return make<ContextState>(context_id, page_id, web_content_client, m_async_scrolling_enabled);
     });
     resize_backing_stores_if_needed(context_id, context);
 }
@@ -154,6 +154,21 @@ void CompositorState::clear_video_frame(Web::Compositor::CompositorContextId con
     auto* context = context_if_present(context_id);
     VERIFY(context);
     context->clear_video_frame(frame_id);
+    present_current_frame(context_id, *context);
+}
+
+void CompositorState::register_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, Vector<Gfx::SharedImage>&& presentation_buffers)
+{
+    auto* context = context_if_present(context_id);
+    VERIFY(context);
+    context->register_canvas_surface(canvas_id, generation, move(presentation_buffers));
+}
+
+void CompositorState::notify_canvas_surface_ready(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index, Gfx::IntRect damage)
+{
+    auto* context = context_if_present(context_id);
+    VERIFY(context);
+    context->notify_canvas_surface_ready(canvas_id, generation, buffer_index, damage);
     present_current_frame(context_id, *context);
 }
 
@@ -297,7 +312,7 @@ void CompositorState::present_frame(Web::Compositor::CompositorContextId context
     if (!prepared_frame.has_value())
         return;
 
-    m_pending_async_presents.append(context_id, viewport_rect, prepared_frame->bitmap_id);
+    m_pending_async_presents.append(context_id, viewport_rect, prepared_frame->bitmap_id, move(prepared_frame->used_canvas_surface_buffers));
     auto* pending_present = &m_pending_async_presents.last();
 
     auto& event_loop = Core::EventLoop::current();
@@ -430,6 +445,7 @@ void CompositorState::did_finish_async_present(PendingAsyncPresent& pending_pres
     auto viewport_rect = pending_present.viewport_rect;
     auto bitmap_id = pending_present.bitmap_id;
     auto was_cancelled = pending_present.was_cancelled;
+    auto used_canvas_surface_buffers = move(pending_present.used_canvas_surface_buffers);
     (void)m_pending_async_presents.remove(pending_present_iterator);
     if (m_pending_async_presents.is_empty() && m_gpu_completion_timer)
         m_gpu_completion_timer->stop();
@@ -441,6 +457,7 @@ void CompositorState::did_finish_async_present(PendingAsyncPresent& pending_pres
     VERIFY(context);
 
     context->did_finish_gpu_present(bitmap_id);
+    context->release_canvas_surface_buffers(used_canvas_surface_buffers);
     context->presentation_mode().visit(
         [](Empty const&) {},
         [&](Web::Compositor::PresentToClient const&) {

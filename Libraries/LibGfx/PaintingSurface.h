@@ -71,6 +71,7 @@ public:
     T sk_image_snapshot() const;
 
     RefPtr<SkiaBackendContext> skia_backend_context() const;
+    bool is_cpu_backed() const;
 
     void flush();
 

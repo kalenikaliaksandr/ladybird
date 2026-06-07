@@ -1,10 +1,12 @@
 #include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Page/InputEvent.h>
+#include <LibWeb/Painting/DisplayListResourceIds.h>
 
 endpoint CompositorWebContentClient
 {
     mouse_event(u64 page_id, Web::MouseEvent event) =|
     request_rendering_update() =|
+    release_canvas_surface_buffer(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index) =|
     did_complete_screenshot(Web::Compositor::ScreenshotRequestId request_id) =|
     did_fail_screenshot(Web::Compositor::ScreenshotRequestId request_id) =|
     did_lose_compositor() =|

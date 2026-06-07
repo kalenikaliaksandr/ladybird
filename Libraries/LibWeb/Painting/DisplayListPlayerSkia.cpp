@@ -57,6 +57,13 @@ DisplayListPlayerSkia::~DisplayListPlayerSkia()
 {
 }
 
+Vector<DisplayListPlayerSkia::UsedCanvasSurfaceBuffer> DisplayListPlayerSkia::take_used_canvas_surface_buffers()
+{
+    auto used_canvas_surface_buffers = move(m_used_canvas_surface_buffers);
+    m_used_canvas_surface_buffers = {};
+    return used_canvas_surface_buffers;
+}
+
 static SkRRect to_skia_rrect(auto const& rect, Gfx::CornerRadii const& corner_radii)
 {
     SkRRect rrect;
@@ -227,13 +234,16 @@ void DisplayListPlayerSkia::draw_compositor_surface(DrawCompositorSurface const&
 
 void DisplayListPlayerSkia::draw_canvas(DrawCanvas const& command)
 {
-    auto frame = resource_storage().canvas_surface(command.canvas_id);
-    if (!frame.has_value())
+    auto backing = resource_storage().canvas_surface(command.canvas_id);
+    if (!backing.has_value() || !backing->bitmap)
         return;
 
-    auto image = m_image_cache.image_for_frame(frame.value());
+    auto image = Gfx::sk_image_from_bitmap(*backing->bitmap, {});
     if (!image)
         return;
+
+    if (backing->buffer_index.has_value())
+        record_used_canvas_surface_buffer(command.canvas_id, backing->generation, *backing->buffer_index);
 
     auto dst_rect = to_skia_rect(command.dst_rect);
     SkRect src_rect = SkRect::MakeIWH(image->width(), image->height());
@@ -241,6 +251,19 @@ void DisplayListPlayerSkia::draw_canvas(DrawCanvas const& command)
     SkPaint paint;
     paint.setAntiAlias(true);
     canvas.drawImageRect(image.get(), src_rect, dst_rect, to_skia_sampling_options(command.scaling_mode), &paint, SkCanvas::kStrict_SrcRectConstraint);
+}
+
+void DisplayListPlayerSkia::record_used_canvas_surface_buffer(CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index)
+{
+    for (auto const& used_buffer : m_used_canvas_surface_buffers) {
+        if (used_buffer.canvas_id == canvas_id && used_buffer.generation == generation && used_buffer.buffer_index == buffer_index)
+            return;
+    }
+    m_used_canvas_surface_buffers.append(UsedCanvasSurfaceBuffer {
+        .canvas_id = canvas_id,
+        .generation = generation,
+        .buffer_index = buffer_index,
+    });
 }
 
 void DisplayListPlayerSkia::draw_video_frame(DrawVideoFrame const& command)

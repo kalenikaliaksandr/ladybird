@@ -49,6 +49,12 @@ Optional<PageClient&> PageHost::page(u64 page_id)
     });
 }
 
+void PageHost::release_canvas_surface_buffer(Web::Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index)
+{
+    for (auto& [_, page] : m_pages)
+        page->page().release_canvas_surface_buffer(canvas_id, generation, buffer_index);
+}
+
 PageHost::~PageHost() = default;
 
 void PageHost::ensure_compositor_host()

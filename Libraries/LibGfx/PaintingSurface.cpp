@@ -214,6 +214,11 @@ RefPtr<SkiaBackendContext> PaintingSurface::skia_backend_context() const
     return m_impl->context;
 }
 
+bool PaintingSurface::is_cpu_backed() const
+{
+    return m_impl->bitmap;
+}
+
 void PaintingSurface::flush()
 {
     if (on_flush)

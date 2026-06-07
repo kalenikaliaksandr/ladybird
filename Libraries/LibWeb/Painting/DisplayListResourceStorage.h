@@ -18,6 +18,7 @@
 #include <AK/Vector.h>
 #include <LibGfx/DecodedImageFrame.h>
 #include <LibGfx/Forward.h>
+#include <LibGfx/SharedImageBuffer.h>
 #include <LibIPC/Forward.h>
 #include <LibMedia/VideoFrame.h>
 #include <LibWeb/Forward.h>
@@ -60,6 +61,12 @@ struct DisplayListResource {
     AccumulatedVisualContextTree visual_context_tree;
 };
 
+struct CanvasSurfaceBacking {
+    Gfx::Bitmap const* bitmap { nullptr };
+    u64 generation { 0 };
+    Optional<u32> buffer_index;
+};
+
 struct DisplayListResourceTransaction {
     Vector<DisplayListFontResource> fonts;
     Vector<DisplayListImageFrameResource> image_frames;
@@ -97,6 +104,8 @@ public:
     void retain_only(DisplayListResourceSet const&);
     void update_video_frame(VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const>);
     void clear_video_frame(VideoFrameResourceId);
+    void register_canvas_surface(CanvasSurfaceId, u64 generation, Vector<Gfx::SharedImage>&&);
+    void notify_canvas_surface_ready(CanvasSurfaceId, u64 generation, u32 buffer_index, Gfx::IntRect damage);
     void update_canvas_surface(CanvasSurfaceId, Gfx::SharedImage&&);
     void clear_canvas_surface(CanvasSurfaceId);
     void update_compositor_surface(CompositorSurfaceId, Gfx::SharedImage&&);
@@ -108,17 +117,24 @@ public:
     DisplayListResource const& display_list_resource(DisplayListResourceId id) const { return m_display_lists.get(id.value()).value(); }
     DisplayList const& display_list(DisplayListResourceId id) const { return *display_list_resource(id).display_list; }
     AccumulatedVisualContextTree const& display_list_visual_context_tree(DisplayListResourceId id) const { return display_list_resource(id).visual_context_tree; }
-    Optional<Gfx::DecodedImageFrame const&> canvas_surface(CanvasSurfaceId id) const { return m_canvas_surfaces.get(id.value()); }
+    Optional<CanvasSurfaceBacking> canvas_surface(CanvasSurfaceId) const;
     Optional<Gfx::DecodedImageFrame const&> compositor_surface(CompositorSurfaceId id) const { return m_compositor_surfaces.get(id.value()); }
 
 private:
+    struct CanvasSurface {
+        u64 generation { 0 };
+        Vector<Gfx::SharedImageBuffer> presentation_buffers;
+        Optional<u32> published_buffer_index;
+        Optional<Gfx::DecodedImageFrame> fallback_frame;
+    };
+
     void collect_referenced_resources(ReadonlyBytes command_bytes, DisplayListResourceSet&) const;
 
     HashMap<u64, NonnullRefPtr<Gfx::Font const>> m_fonts;
     HashMap<u64, Gfx::DecodedImageFrame> m_image_frames;
     HashMap<u64, RefPtr<Media::VideoFrame const>> m_video_frames;
     HashMap<u64, DisplayListResource> m_display_lists;
-    HashMap<u64, Gfx::DecodedImageFrame> m_canvas_surfaces;
+    HashMap<u64, CanvasSurface> m_canvas_surfaces;
     HashMap<u64, Gfx::DecodedImageFrame> m_compositor_surfaces;
 
     HashMap<u64, size_t> m_font_cache_reference_counts;

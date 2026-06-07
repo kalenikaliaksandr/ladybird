@@ -710,6 +710,13 @@ void Page::republish_all_canvas_element_surfaces()
     });
 }
 
+void Page::release_canvas_surface_buffer(Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index)
+{
+    for_each_canvas_element([&](auto& canvas_element) {
+        canvas_element.release_canvas_surface_buffer(canvas_id, generation, buffer_index);
+    });
+}
+
 void Page::did_request_media_context_menu(UniqueNodeID media_id, CSSPixelPoint position, ByteString const& target, unsigned modifiers, MediaContextMenu const& menu)
 {
     m_media_context_menu_element_id = media_id;

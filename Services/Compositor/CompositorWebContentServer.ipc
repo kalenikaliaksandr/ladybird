@@ -1,4 +1,5 @@
 #include <AK/NonnullRefPtr.h>
+#include <AK/Vector.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
 #include <LibGfx/SharedImage.h>
@@ -23,6 +24,8 @@ endpoint CompositorWebContentServer
     update_video_frame(Web::Compositor::CompositorContextId context_id, Web::Painting::VideoFrameResourceId frame_id, NonnullRefPtr<Media::VideoFrame const> frame) =|
     clear_video_frame(Web::Compositor::CompositorContextId context_id, Web::Painting::VideoFrameResourceId frame_id) =|
 
+    register_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, Vector<Gfx::SharedImage> presentation_buffers) =|
+    notify_canvas_surface_ready(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index, Gfx::IntRect damage) =|
     update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage shared_image) =|
     clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id) =|
 

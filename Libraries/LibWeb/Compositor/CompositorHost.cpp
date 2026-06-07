@@ -46,6 +46,16 @@ void CompositorContextHandle::clear_video_frame(Painting::VideoFrameResourceId f
     m_host.clear_video_frame(m_context_id, frame_id);
 }
 
+void CompositorContextHandle::register_canvas_surface(Painting::CanvasSurfaceId canvas_id, u64 generation, Vector<Gfx::SharedImage>&& presentation_buffers)
+{
+    m_host.register_canvas_surface(m_context_id, canvas_id, generation, move(presentation_buffers));
+}
+
+void CompositorContextHandle::notify_canvas_surface_ready(Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index, Gfx::IntRect damage)
+{
+    m_host.notify_canvas_surface_ready(m_context_id, canvas_id, generation, buffer_index, damage);
+}
+
 void CompositorContextHandle::update_canvas_surface(Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage&& shared_image)
 {
     m_host.update_canvas_surface(m_context_id, canvas_id, move(shared_image));

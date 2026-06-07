@@ -31,8 +31,9 @@ static void set_or_append_pending_scroll_offset(
     pending_scroll_offsets.append(scroll_offset);
 }
 
-ContextState::ContextState(Optional<u64> page_id, CompositorStateWebContentClient& web_content_client, bool async_scrolling_enabled)
-    : m_web_content_client(web_content_client)
+ContextState::ContextState(Web::Compositor::CompositorContextId context_id, Optional<u64> page_id, CompositorStateWebContentClient& web_content_client, bool async_scrolling_enabled)
+    : m_context_id(context_id)
+    , m_web_content_client(web_content_client)
     , m_page_id(page_id)
     , m_async_scrolling_enabled(async_scrolling_enabled)
 {
@@ -195,6 +196,16 @@ void ContextState::update_video_frame(Web::Painting::VideoFrameResourceId frame_
 void ContextState::clear_video_frame(Web::Painting::VideoFrameResourceId frame_id)
 {
     m_display_list_resource_storage.clear_video_frame(frame_id);
+}
+
+void ContextState::register_canvas_surface(Web::Painting::CanvasSurfaceId canvas_id, u64 generation, Vector<Gfx::SharedImage>&& presentation_buffers)
+{
+    m_display_list_resource_storage.register_canvas_surface(canvas_id, generation, move(presentation_buffers));
+}
+
+void ContextState::notify_canvas_surface_ready(Web::Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index, Gfx::IntRect damage)
+{
+    m_display_list_resource_storage.notify_canvas_surface_ready(canvas_id, generation, buffer_index, damage);
 }
 
 void ContextState::update_canvas_surface(Web::Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage&& shared_image)
@@ -515,6 +526,7 @@ Optional<ContextState::PreparedFrame> ContextState::prepare_frame(Web::Painting:
     return PreparedFrame {
         .rendered_surface = &back_store,
         .bitmap_id = rendered_bitmap_id,
+        .used_canvas_surface_buffers = display_list_player.take_used_canvas_surface_buffers(),
     };
 }
 
@@ -522,6 +534,12 @@ void ContextState::did_submit_prepared_frame(Gfx::IntRect viewport_rect)
 {
     m_backing_store_manager.swap();
     m_presented_frame = viewport_rect;
+}
+
+void ContextState::release_canvas_surface_buffers(Vector<Web::Painting::DisplayListPlayerSkia::UsedCanvasSurfaceBuffer> const& used_canvas_surface_buffers)
+{
+    for (auto const& used_buffer : used_canvas_surface_buffers)
+        m_web_content_client.release_canvas_surface_buffer(m_context_id, used_buffer.canvas_id, used_buffer.generation, used_buffer.buffer_index);
 }
 
 Optional<Web::Compositor::PublishToCompositorSurface> ContextState::present_synchronously(Web::Painting::DisplayListPlayerSkia& display_list_player)
@@ -547,6 +565,7 @@ Optional<Web::Compositor::PublishToCompositorSurface> ContextState::present_sync
     }
     paint_current_display_list(display_list_player, back_store);
     display_list_player.flush(back_store);
+    release_canvas_surface_buffers(display_list_player.take_used_canvas_surface_buffers());
     m_backing_store_manager.swap();
     m_presented_frame = viewport_rect;
     m_pending_present_frame.clear();
@@ -566,6 +585,7 @@ void ContextState::paint_screenshot(Web::Painting::DisplayListPlayerSkia& displa
     auto target_surface = Gfx::PaintingSurface::wrap_bitmap(*target_bitmap.bitmap());
     paint_current_display_list(display_list_player, *target_surface);
     display_list_player.flush(*target_surface);
+    display_list_player.take_used_canvas_surface_buffers();
 }
 
 bool ContextState::acknowledge_presented_bitmap(i32 bitmap_id)

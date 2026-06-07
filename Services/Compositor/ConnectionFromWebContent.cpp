@@ -38,6 +38,11 @@ void ConnectionFromWebContent::dispatch_mouse_event_to_web_content(u64 page_id, 
     async_mouse_event(page_id, event);
 }
 
+void ConnectionFromWebContent::release_canvas_surface_buffer(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index)
+{
+    async_release_canvas_surface_buffer(context_id, canvas_id, generation, buffer_index);
+}
+
 void ConnectionFromWebContent::verify_context_is_owned_by_this_connection(Web::Compositor::CompositorContextId context_id)
 {
     switch (m_compositor_state->check_context_owner(context_id, *this)) {
@@ -93,6 +98,18 @@ void ConnectionFromWebContent::clear_video_frame(Web::Compositor::CompositorCont
 {
     verify_context_is_owned_by_this_connection(context_id);
     m_compositor_state->clear_video_frame(context_id, frame_id);
+}
+
+void ConnectionFromWebContent::register_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, Vector<Gfx::SharedImage> presentation_buffers)
+{
+    verify_context_is_owned_by_this_connection(context_id);
+    m_compositor_state->register_canvas_surface(context_id, canvas_id, generation, move(presentation_buffers));
+}
+
+void ConnectionFromWebContent::notify_canvas_surface_ready(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index, Gfx::IntRect damage)
+{
+    verify_context_is_owned_by_this_connection(context_id);
+    m_compositor_state->notify_canvas_surface_ready(context_id, canvas_id, generation, buffer_index, damage);
 }
 
 void ConnectionFromWebContent::update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage shared_image)

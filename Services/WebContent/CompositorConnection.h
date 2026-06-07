@@ -10,6 +10,7 @@
 #include <AK/HashMap.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/Optional.h>
+#include <AK/Vector.h>
 #include <Compositor/CompositorWebContentClientEndpoint.h>
 #include <Compositor/CompositorWebContentServerEndpoint.h>
 #include <LibGfx/Forward.h>
@@ -29,13 +30,15 @@
 
 namespace WebContent {
 
+class ConnectionFromClient;
+
 class CompositorConnection final
     : public IPC::ConnectionToServer<CompositorWebContentClientEndpoint, CompositorWebContentServerEndpoint>
     , public CompositorWebContentClientEndpoint {
     C_OBJECT_ABSTRACT(CompositorConnection)
 
 public:
-    explicit CompositorConnection(NonnullOwnPtr<IPC::Transport>);
+    CompositorConnection(NonnullOwnPtr<IPC::Transport>, ConnectionFromClient&);
 
     void set_presentation_mode(Web::Compositor::CompositorContextId, Web::Compositor::PresentationMode const&);
     void destroy_context(Web::Compositor::CompositorContextId);
@@ -44,6 +47,8 @@ public:
     void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot const&);
     void update_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const> const&);
     void clear_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId);
+    void register_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, u64 generation, Vector<Gfx::SharedImage> const&);
+    void notify_canvas_surface_ready(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, u64 generation, u32 buffer_index, Gfx::IntRect damage);
     void update_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, Gfx::SharedImage const&);
     void clear_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId);
     void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage const&);
@@ -69,6 +74,7 @@ private:
 
     virtual void mouse_event(u64 page_id, Web::MouseEvent) override;
     virtual void request_rendering_update() override;
+    virtual void release_canvas_surface_buffer(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, u64 generation, u32 buffer_index) override;
     virtual void did_complete_screenshot(Web::Compositor::ScreenshotRequestId) override;
     virtual void did_fail_screenshot(Web::Compositor::ScreenshotRequestId) override;
     virtual void did_lose_compositor() override;
@@ -77,6 +83,7 @@ private:
     Optional<PendingScreenshot> take_screenshot(Web::Compositor::ScreenshotRequestId);
 
     HashMap<Web::Compositor::ScreenshotRequestId, PendingScreenshot> m_screenshots;
+    ConnectionFromClient& m_client;
     u64 m_next_screenshot_request_id { 1 };
     bool m_has_lost_compositor { false };
 };

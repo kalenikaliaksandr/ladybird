@@ -38,6 +38,8 @@ private:
     virtual void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot) override;
     virtual void update_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const>) override;
     virtual void clear_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId) override;
+    virtual void register_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, u64 generation, Vector<Gfx::SharedImage>) override;
+    virtual void notify_canvas_surface_ready(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, u64 generation, u32 buffer_index, Gfx::IntRect damage) override;
     virtual void update_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, Gfx::SharedImage) override;
     virtual void clear_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId) override;
     virtual void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage) override;
@@ -52,6 +54,7 @@ private:
 
     virtual void dispatch_mouse_event_to_web_content(u64 page_id, Web::MouseEvent const&) override;
     virtual void request_rendering_update() override;
+    virtual void release_canvas_surface_buffer(Web::Compositor::CompositorContextId, Web::Painting::CanvasSurfaceId, u64 generation, u32 buffer_index) override;
     void verify_context_is_owned_by_this_connection(Web::Compositor::CompositorContextId);
 
     NonnullRefPtr<CompositorState> m_compositor_state;

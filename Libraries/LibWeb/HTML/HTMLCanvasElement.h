@@ -7,11 +7,16 @@
 #pragma once
 
 #include <AK/Optional.h>
+#include <AK/OwnPtr.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibWeb/HTML/HTMLElement.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/WebIDL/Types.h>
+
+namespace Web::Compositor {
+class CompositorContextHandle;
+}
 
 namespace Web::HTML {
 
@@ -50,6 +55,7 @@ public:
     void present();
     void republish_compositor_surface();
     void set_canvas_content_dirty();
+    void release_canvas_surface_buffer(Painting::CanvasSurfaceId, u64 generation, u32 buffer_index);
 
     RefPtr<Gfx::PaintingSurface> surface() const;
     void allocate_painting_surface_if_needed();
@@ -75,11 +81,15 @@ private:
     JS::ThrowCompletionOr<HasOrCreatedContext> create_webgl_context(JS::Value options);
     void reset_context_to_default_state();
     void notify_context_about_canvas_size_change();
+    bool ensure_canvas_presentation_buffer(Gfx::PaintingSurface&, Web::Compositor::CompositorContextHandle&);
     void clear_canvas_surface();
-    void update_canvas_surface();
+    bool update_canvas_surface();
 
     Variant<GC::Ref<HTML::CanvasRenderingContext2D>, GC::Ref<WebGL::WebGLRenderingContext>, GC::Ref<WebGL::WebGL2RenderingContext>, Empty> m_context;
     Optional<Painting::CanvasSurfaceId> m_canvas_surface_id;
+    OwnPtr<Gfx::SharedImageBuffer> m_canvas_presentation_buffer;
+    u64 m_canvas_presentation_buffer_generation { 0 };
+    bool m_canvas_presentation_buffer_is_available { false };
     bool m_canvas_content_dirty { false };
 };
 

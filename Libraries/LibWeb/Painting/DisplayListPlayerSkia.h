@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/Function.h>
+#include <AK/Vector.h>
 #include <LibGfx/DecodedImageFrameSkiaImageCache.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListCommand.h>
@@ -19,6 +20,12 @@ namespace Web::Painting {
 
 class WEB_API DisplayListPlayerSkia final : public DisplayListPlayer {
 public:
+    struct UsedCanvasSurfaceBuffer {
+        CanvasSurfaceId canvas_id;
+        u64 generation { 0 };
+        u32 buffer_index { 0 };
+    };
+
     DisplayListPlayerSkia();
     explicit DisplayListPlayerSkia(RefPtr<Gfx::SkiaBackendContext>);
     ~DisplayListPlayerSkia();
@@ -26,6 +33,7 @@ public:
     void flush(Gfx::PaintingSurface&) override;
     void flush_async(Gfx::PaintingSurface&, Function<void()>&&);
     void paint_scrollbar(Gfx::PaintingSurface&, PaintScrollBar const&);
+    Vector<UsedCanvasSurfaceBuffer> take_used_canvas_surface_buffers();
 
 private:
     void draw_glyph_run(DrawGlyphRun const&) override;
@@ -75,9 +83,11 @@ private:
     Gfx::Path path_from_data(DisplayListDataSpan) const;
     ReadonlySpan<Color> gradient_colors(DisplayListGradientColorStops) const;
     ReadonlySpan<float> gradient_positions(DisplayListGradientColorStops) const;
+    void record_used_canvas_surface_buffer(CanvasSurfaceId, u64 generation, u32 buffer_index);
 
     RefPtr<Gfx::SkiaBackendContext> m_skia_backend_context;
     Gfx::DecodedImageFrameSkiaImageCache m_image_cache;
+    Vector<UsedCanvasSurfaceBuffer> m_used_canvas_surface_buffers;
 };
 
 }

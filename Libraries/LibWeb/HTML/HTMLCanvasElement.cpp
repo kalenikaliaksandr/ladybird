@@ -8,8 +8,10 @@
 #include <AK/Checked.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/SharedImage.h>
+#include <LibGfx/SharedImageBuffer.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/Bindings/HTMLCanvasElement.h>
+#include <LibWeb/Compositor/CompositorHost.h>
 #include <LibWeb/CSS/ComputedProperties.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/CSS/StyleValues/DisplayStyleValue.h>
@@ -435,7 +437,6 @@ void HTMLCanvasElement::present()
 {
     if (!m_canvas_content_dirty)
         return;
-    m_canvas_content_dirty = false;
 
     m_context.visit(
         [](GC::Ref<CanvasRenderingContext2D>& context) {
@@ -451,11 +452,16 @@ void HTMLCanvasElement::present()
             // Do nothing.
         });
 
-    update_canvas_surface();
+    if (update_canvas_surface())
+        m_canvas_content_dirty = false;
 }
 
 void HTMLCanvasElement::republish_compositor_surface()
 {
+    m_canvas_presentation_buffer = nullptr;
+    ++m_canvas_presentation_buffer_generation;
+    m_canvas_presentation_buffer_is_available = false;
+
     if (m_canvas_content_dirty) {
         present();
         return;
@@ -464,21 +470,68 @@ void HTMLCanvasElement::republish_compositor_surface()
     update_canvas_surface();
 }
 
-void HTMLCanvasElement::update_canvas_surface()
+bool HTMLCanvasElement::ensure_canvas_presentation_buffer(Gfx::PaintingSurface& surface, Web::Compositor::CompositorContextHandle& compositor_context)
+{
+    if (!surface.is_cpu_backed())
+        return false;
+
+    if (m_canvas_presentation_buffer && m_canvas_presentation_buffer->bitmap()->size() == surface.size())
+        return true;
+
+    m_canvas_presentation_buffer = make<Gfx::SharedImageBuffer>(Gfx::SharedImageBuffer::create(surface.size()));
+    ++m_canvas_presentation_buffer_generation;
+    m_canvas_presentation_buffer_is_available = true;
+
+    Vector<Gfx::SharedImage> presentation_buffers;
+    presentation_buffers.append(m_canvas_presentation_buffer->export_shared_image());
+    compositor_context.register_canvas_surface(ensure_canvas_surface_id(), m_canvas_presentation_buffer_generation, move(presentation_buffers));
+    return true;
+}
+
+bool HTMLCanvasElement::update_canvas_surface()
 {
     if (auto surface = this->surface()) {
         surface->flush();
-        if (auto navigable = document().navigable(); navigable && navigable->has_compositor_context())
-            navigable->compositor_context().update_canvas_surface(ensure_canvas_surface_id(), surface->snapshot_into_shared_image());
+        if (auto navigable = document().navigable(); navigable && navigable->has_compositor_context()) {
+            auto& compositor_context = navigable->compositor_context();
+            if (ensure_canvas_presentation_buffer(*surface, compositor_context)) {
+                if (!m_canvas_presentation_buffer_is_available)
+                    return false;
+                surface->read_into_bitmap(*m_canvas_presentation_buffer->bitmap());
+                m_canvas_presentation_buffer_is_available = false;
+                compositor_context.notify_canvas_surface_ready(ensure_canvas_surface_id(), m_canvas_presentation_buffer_generation, 0, surface->rect());
+                return true;
+            }
+            compositor_context.update_canvas_surface(ensure_canvas_surface_id(), surface->snapshot_into_shared_image());
+        }
     }
+    return true;
 }
 
 void HTMLCanvasElement::clear_canvas_surface()
 {
+    m_canvas_presentation_buffer = nullptr;
+    ++m_canvas_presentation_buffer_generation;
+    m_canvas_presentation_buffer_is_available = false;
+
     if (!m_canvas_surface_id.has_value())
         return;
     if (auto navigable = document().navigable(); navigable && navigable->has_compositor_context())
         navigable->compositor_context().clear_canvas_surface(*m_canvas_surface_id);
+}
+
+void HTMLCanvasElement::release_canvas_surface_buffer(Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index)
+{
+    if (!m_canvas_surface_id.has_value() || *m_canvas_surface_id != canvas_id)
+        return;
+    if (m_canvas_presentation_buffer_generation != generation)
+        return;
+    if (!m_canvas_presentation_buffer || buffer_index != 0)
+        return;
+
+    m_canvas_presentation_buffer_is_available = true;
+    if (m_canvas_content_dirty)
+        present();
 }
 
 RefPtr<Gfx::PaintingSurface> HTMLCanvasElement::surface() const

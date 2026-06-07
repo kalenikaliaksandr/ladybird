@@ -13,6 +13,7 @@
 #include <AK/NonnullOwnPtr.h>
 #include <AK/OwnPtr.h>
 #include <LibGC/Root.h>
+#include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <WebContent/Forward.h>
 
 namespace Web {
@@ -39,6 +40,7 @@ public:
     Optional<PageClient&> page(u64 page_id);
     PageClient& create_page(u64 page_id);
     void remove_page(Badge<PageClient>, u64 page_id);
+    void release_canvas_surface_buffer(Web::Painting::CanvasSurfaceId, u64 generation, u32 buffer_index);
 
     ConnectionFromClient& client() const { return m_client; }
     void ensure_compositor_host();

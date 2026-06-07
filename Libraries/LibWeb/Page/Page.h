@@ -51,6 +51,7 @@
 #include <LibWeb/Page/InputEvent.h>
 #include <LibWeb/Page/ViewportIsFullscreen.h>
 #include <LibWeb/Painting/ChromeMetrics.h>
+#include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/PixelUnits.h>
 #include <LibWeb/StorageAPI/StorageEndpoint.h>
 #include <LibWeb/UIEvents/KeyCode.h>
@@ -229,6 +230,7 @@ public:
 
     void present_all_canvas_element_surfaces();
     void republish_all_canvas_element_surfaces();
+    void release_canvas_surface_buffer(Painting::CanvasSurfaceId, u64 generation, u32 buffer_index);
 
     struct MediaContextMenu {
         URL::URL media_url;

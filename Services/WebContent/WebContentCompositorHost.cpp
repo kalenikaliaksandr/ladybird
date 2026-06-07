@@ -59,6 +59,18 @@ private:
             connection->clear_video_frame(context_id, frame_id);
     }
 
+    virtual void register_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, Vector<Gfx::SharedImage>&& presentation_buffers) override
+    {
+        if (auto* connection = compositor_connection())
+            connection->register_canvas_surface(context_id, canvas_id, generation, presentation_buffers);
+    }
+
+    virtual void notify_canvas_surface_ready(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index, Gfx::IntRect damage) override
+    {
+        if (auto* connection = compositor_connection())
+            connection->notify_canvas_surface_ready(context_id, canvas_id, generation, buffer_index, damage);
+    }
+
     virtual void update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasSurfaceId canvas_id, Gfx::SharedImage&& shared_image) override
     {
         if (auto* connection = compositor_connection())

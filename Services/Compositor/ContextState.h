@@ -28,6 +28,7 @@
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/DisplayList.h>
+#include <LibWeb/Painting/DisplayListPlayerSkia.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
 #include <LibWeb/Painting/ScrollState.h>
 
@@ -82,9 +83,10 @@ public:
     struct PreparedFrame {
         Gfx::PaintingSurface* rendered_surface { nullptr };
         i32 bitmap_id { 0 };
+        Vector<Web::Painting::DisplayListPlayerSkia::UsedCanvasSurfaceBuffer> used_canvas_surface_buffers;
     };
 
-    ContextState(Optional<u64> page_id, CompositorStateWebContentClient&, bool async_scrolling_enabled);
+    ContextState(Web::Compositor::CompositorContextId, Optional<u64> page_id, CompositorStateWebContentClient&, bool async_scrolling_enabled);
     ~ContextState();
 
     static bool presentation_mode_presents_to_client(Web::Compositor::PresentationMode const&);
@@ -115,6 +117,8 @@ public:
     void update_scroll_state(Web::Painting::ScrollStateSnapshot&&);
     void update_video_frame(Web::Painting::VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const>);
     void clear_video_frame(Web::Painting::VideoFrameResourceId);
+    void register_canvas_surface(Web::Painting::CanvasSurfaceId, u64 generation, Vector<Gfx::SharedImage>&&);
+    void notify_canvas_surface_ready(Web::Painting::CanvasSurfaceId, u64 generation, u32 buffer_index, Gfx::IntRect damage);
     void update_canvas_surface(Web::Painting::CanvasSurfaceId, Gfx::SharedImage&&);
     void clear_canvas_surface(Web::Painting::CanvasSurfaceId);
     void update_compositor_surface(Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&);
@@ -152,6 +156,7 @@ public:
     Optional<Gfx::IntRect> current_frame_rect_to_present() const;
     Optional<PreparedFrame> prepare_frame(Web::Painting::DisplayListPlayerSkia&, Gfx::IntRect);
     void did_submit_prepared_frame(Gfx::IntRect);
+    void release_canvas_surface_buffers(Vector<Web::Painting::DisplayListPlayerSkia::UsedCanvasSurfaceBuffer> const&);
     Optional<Web::Compositor::PublishToCompositorSurface> present_synchronously(Web::Painting::DisplayListPlayerSkia&);
     bool can_paint_screenshot(Gfx::ShareableBitmap&) const;
     void paint_screenshot(Web::Painting::DisplayListPlayerSkia&, Gfx::ShareableBitmap&);
@@ -170,6 +175,7 @@ private:
     bool can_render_frame() const;
     void paint_current_display_list(Web::Painting::DisplayListPlayerSkia&, Gfx::PaintingSurface&);
 
+    Web::Compositor::CompositorContextId m_context_id;
     CompositorStateWebContentClient& m_web_content_client;
     Optional<u64> m_page_id;
     bool const m_async_scrolling_enabled { true };

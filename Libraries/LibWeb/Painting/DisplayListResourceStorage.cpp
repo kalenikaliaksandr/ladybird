@@ -310,15 +310,67 @@ void DisplayListResourceStorage::clear_video_frame(VideoFrameResourceId frame_id
         m_video_frames.set(frame_id.value(), nullptr);
 }
 
+void DisplayListResourceStorage::register_canvas_surface(CanvasSurfaceId canvas_id, u64 generation, Vector<Gfx::SharedImage>&& presentation_buffers)
+{
+    CanvasSurface canvas_surface;
+    canvas_surface.generation = generation;
+    canvas_surface.presentation_buffers.ensure_capacity(presentation_buffers.size());
+    for (auto& shared_image : presentation_buffers)
+        canvas_surface.presentation_buffers.unchecked_append(Gfx::SharedImageBuffer::import_from_shared_image(move(shared_image)));
+    m_canvas_surfaces.set(canvas_id.value(), move(canvas_surface));
+}
+
+void DisplayListResourceStorage::notify_canvas_surface_ready(CanvasSurfaceId canvas_id, u64 generation, u32 buffer_index, Gfx::IntRect damage)
+{
+    (void)damage;
+    auto canvas_surface = m_canvas_surfaces.find(canvas_id.value());
+    if (canvas_surface == m_canvas_surfaces.end())
+        return;
+    if (canvas_surface->value.generation != generation)
+        return;
+    if (buffer_index >= canvas_surface->value.presentation_buffers.size())
+        return;
+    canvas_surface->value.published_buffer_index = buffer_index;
+}
+
 void DisplayListResourceStorage::update_canvas_surface(CanvasSurfaceId canvas_id, Gfx::SharedImage&& shared_image)
 {
     auto shared_image_buffer = Gfx::SharedImageBuffer::import_from_shared_image(move(shared_image));
-    m_canvas_surfaces.set(canvas_id.value(), Gfx::DecodedImageFrame { *shared_image_buffer.bitmap() });
+    auto& canvas_surface = m_canvas_surfaces.ensure(canvas_id.value());
+    canvas_surface.presentation_buffers.clear();
+    canvas_surface.published_buffer_index.clear();
+    canvas_surface.fallback_frame = Gfx::DecodedImageFrame { *shared_image_buffer.bitmap() };
 }
 
 void DisplayListResourceStorage::clear_canvas_surface(CanvasSurfaceId canvas_id)
 {
     m_canvas_surfaces.remove(canvas_id.value());
+}
+
+Optional<CanvasSurfaceBacking> DisplayListResourceStorage::canvas_surface(CanvasSurfaceId canvas_id) const
+{
+    auto canvas_surface = m_canvas_surfaces.find(canvas_id.value());
+    if (canvas_surface == m_canvas_surfaces.end())
+        return {};
+
+    if (canvas_surface->value.fallback_frame.has_value()) {
+        return CanvasSurfaceBacking {
+            .bitmap = &canvas_surface->value.fallback_frame->bitmap(),
+            .generation = 0,
+            .buffer_index = {},
+        };
+    }
+
+    if (!canvas_surface->value.published_buffer_index.has_value())
+        return {};
+    auto buffer_index = *canvas_surface->value.published_buffer_index;
+    if (buffer_index >= canvas_surface->value.presentation_buffers.size())
+        return {};
+    return CanvasSurfaceBacking {
+        .bitmap = canvas_surface->value.presentation_buffers[buffer_index].bitmap().ptr(),
+        .generation = canvas_surface->value.generation,
+        .buffer_index = buffer_index,
+    };
 }
 
 void DisplayListResourceStorage::update_compositor_surface(CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image)
