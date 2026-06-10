@@ -866,6 +866,7 @@ set(SOURCES
     Painting/CanvasPaintable.cpp
     Painting/CheckBoxPaintable.cpp
     Painting/CanvasCommandList.cpp
+    Painting/CanvasCommandPlayer.cpp
     Painting/DisplayList.cpp
     Painting/DisplayListCommand.cpp
     Painting/DisplayListPlayerSkia.cpp

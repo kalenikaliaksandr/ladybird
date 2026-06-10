@@ -104,6 +104,7 @@ public:
 
     Gfx::Font const& font(FontResourceId id) const { return *m_fonts.get(id.value()).value(); }
     Gfx::DecodedImageFrame const& image_frame(ImageFrameResourceId id) const { return m_image_frames.get(id.value()).value(); }
+    Optional<Gfx::DecodedImageFrame const&> image_frame_if_exists(ImageFrameResourceId id) const { return m_image_frames.get(id.value()); }
     RefPtr<Media::VideoFrame const> video_frame(VideoFrameResourceId id) const { return m_video_frames.get(id.value()).value(); }
     DisplayListResource const& display_list_resource(DisplayListResourceId id) const { return m_display_lists.get(id.value()).value(); }
     DisplayList const& display_list(DisplayListResourceId id) const { return *display_list_resource(id).display_list; }

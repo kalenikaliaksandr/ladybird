@@ -26,6 +26,7 @@
 #include <LibWeb/HTML/Scripting/ExceptionReporter.h>
 #include <LibWeb/Layout/CanvasBox.h>
 #include <LibWeb/Page/Page.h>
+#include <LibWeb/Painting/CanvasCommandList.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWeb/WebGL/WebGL2RenderingContext.h>
@@ -35,8 +36,6 @@
 namespace Web::HTML {
 
 GC_DEFINE_ALLOCATOR(HTMLCanvasElement);
-
-static constexpr auto max_canvas_area = 16384 * 16384;
 
 HTMLCanvasElement::HTMLCanvasElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
@@ -323,7 +322,7 @@ Gfx::IntSize HTMLCanvasElement::bitmap_size_for_canvas(size_t minimum_width, siz
         dbgln("Refusing to create {}x{} canvas (overflow)", width, height);
         return {};
     }
-    if (area.value() > max_canvas_area) {
+    if (area.value() > Painting::max_canvas_area) {
         dbgln("Refusing to create {}x{} canvas (exceeds maximum size)", width, height);
         return {};
     }
