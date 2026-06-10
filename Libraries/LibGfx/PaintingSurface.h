@@ -59,6 +59,9 @@ public:
     void read_into_bitmap(Bitmap&) const;
     void write_from_bitmap(Bitmap const&);
 
+    // GPU-side copy of another surface's current contents onto this surface.
+    void copy_from(PaintingSurface const&);
+
     void notify_content_will_change();
 
     IntSize size() const;

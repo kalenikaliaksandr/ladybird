@@ -22,6 +22,8 @@ def load_functions(path: str) -> list:
 
 
 def command_name(function: dict) -> str:
+    if function["category"].startswith("builtin"):
+        return function["name"]
     assert function["name"].startswith("gl")
     return function["name"][2:]
 
@@ -35,6 +37,25 @@ def method_name(function: dict) -> str:
 def method_signature(function: dict, qualifier: str = "") -> str:
     args = ", ".join(f"{arg['type']} {arg['name']}" for arg in function["args"])
     return f"{function['return']} {qualifier}{method_name(function)}({args})"
+
+
+# Entries carried by the command stream: regular commands and object creation (struct
+# shapes derived from the GL signature) plus wire-specified ops (custom-handled GL
+# functions and builtins, whose struct shapes are spelled out in the JSON).
+def is_wire_command(function: dict) -> bool:
+    return "wire_command" in function
+
+
+def is_wire_sync(function: dict) -> bool:
+    return "wire_request" in function
+
+
+def command_stream_entries(functions: list) -> list:
+    return [f for f in functions if f["category"] in ("command", "gen") or is_wire_command(f)]
+
+
+def sync_call_entries(functions: list) -> list:
+    return [f for f in functions if f["category"] == "sync" or is_wire_sync(f)]
 
 
 def is_pointer(arg: dict) -> bool:

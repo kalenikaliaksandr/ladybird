@@ -133,7 +133,21 @@ void ConnectionFromWebContent::webgl_commands(Web::WebGL::WebGLContextId webgl_c
         did_misbehave("WebContent sent commands for an unknown WebGL context");
         return;
     }
-    if (auto result = context->execute_commands(commands); result.is_error()) {
+    HostWebGLContext::OnPresent on_present = [&](Web::WebGL::Commands::Present const& present, NonnullRefPtr<Gfx::PaintingSurface> frame) -> ErrorOr<void> {
+        auto context_id = Web::Compositor::CompositorContextId { present.target_context_id };
+        switch (m_compositor_state->check_context_owner(context_id, *this)) {
+        case CompositorState::ContextOwnerCheckResult::OwnedByClient:
+            m_compositor_state->update_compositor_surface(context_id, Web::Painting::CompositorSurfaceId { present.surface_id }, move(frame));
+            return {};
+        case CompositorState::ContextOwnerCheckResult::ContextUnavailable:
+            // The canvas raced the teardown of its navigable's compositor context.
+            return {};
+        case CompositorState::ContextOwnerCheckResult::ConflictingOwner:
+            return Error::from_string_literal("WebGL Present targets a compositor context owned by another connection");
+        }
+        VERIFY_NOT_REACHED();
+    };
+    if (auto result = context->execute_commands(commands, on_present); result.is_error()) {
         dbgln("WebGL command stream rejected: {}", result.error());
         did_misbehave("WebContent sent a malformed WebGL command stream");
     }

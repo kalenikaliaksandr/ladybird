@@ -18,6 +18,8 @@ from libweb_webgl import command_name
 from libweb_webgl import deref_type
 from libweb_webgl import is_const_pointer
 from libweb_webgl import is_pointer
+from libweb_webgl import is_wire_command
+from libweb_webgl import is_wire_sync
 from libweb_webgl import load_functions
 from libweb_webgl import method_name
 from libweb_webgl import snake_case
@@ -259,6 +261,23 @@ namespace Compositor {
             f"ErrorOr<void> replay_webgl_command(Web::WebGL::OpenGLContext&, WebGLObjectMap&, "
             f"Web::WebGL::Commands::{command_name(function)} const&, ReadonlyBytes);\n"
         )
+    out.write("""
+// Wire-specified ops; defined manually in WebGLHost.cpp. Builtin commands carry
+// host-level semantics (presenting, resizing) and are dispatched by the host itself
+// rather than through replay_webgl_command.
+""")
+    for function in functions:
+        if function["category"] == "custom" and is_wire_command(function):
+            out.write(
+                f"ErrorOr<void> replay_webgl_command(Web::WebGL::OpenGLContext&, WebGLObjectMap&, "
+                f"Web::WebGL::Commands::{command_name(function)} const&, ReadonlyBytes);\n"
+            )
+    for function in functions:
+        if is_wire_sync(function):
+            out.write(
+                f"ErrorOr<ByteBuffer> handle_one(Web::WebGL::OpenGLContext&, WebGLObjectMap&, "
+                f"Web::WebGL::SyncCalls::{command_name(function)}::Request const&, ReadonlyBytes);\n"
+            )
     out.write("""
 ErrorOr<ByteBuffer> handle_webgl_sync_call(Web::WebGL::OpenGLContext&, WebGLObjectMap&, ReadonlyBytes request);
 

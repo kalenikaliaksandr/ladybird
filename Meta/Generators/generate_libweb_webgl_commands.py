@@ -13,8 +13,10 @@ from typing import TextIO
 sys.path.append(str(Path(__file__).resolve().parent))
 
 from libweb_webgl import command_name
+from libweb_webgl import command_stream_entries
 from libweb_webgl import command_struct_fields
 from libweb_webgl import load_functions
+from libweb_webgl import sync_call_entries
 from libweb_webgl import sync_reply_fields
 from libweb_webgl import sync_request_fields
 
@@ -25,7 +27,7 @@ from libweb_webgl import sync_request_fields
 
 
 def write_header_file(out: TextIO, functions: list) -> None:
-    commands = [f for f in functions if f["category"] in ("command", "gen")]
+    commands = command_stream_entries(functions)
 
     out.write("""#pragma once
 
@@ -60,8 +62,12 @@ namespace Commands {
         name = command_name(f)
         out.write(f"\nstruct {name} {{\n")
         out.write(f"    static constexpr auto command_type = WebGLCommandType::{name};\n")
-        for cpp_type, field_name, _ in command_struct_fields(f):
-            out.write(f"    {cpp_type} {field_name} {{}};\n")
+        if "wire_command" in f:
+            for field in f["wire_command"]:
+                out.write(f"    {field['type']} {field['name']} {{}};\n")
+        else:
+            for cpp_type, field_name, _ in command_struct_fields(f):
+                out.write(f"    {cpp_type} {field_name} {{}};\n")
         out.write("};\n")
     out.write("""
 }
@@ -85,7 +91,7 @@ ENUMERATE_WEBGL_COMMANDS(__ENUMERATE_WEBGL_COMMAND)
 
 """)
 
-    sync_calls = [f for f in functions if f["category"] == "sync"]
+    sync_calls = sync_call_entries(functions)
     out.write("#define ENUMERATE_WEBGL_SYNC_CALLS(V) \\\n")
     for f in sync_calls:
         out.write(f"    V({command_name(f)}) \\\n")
@@ -105,14 +111,20 @@ namespace SyncCalls {
 """)
     for f in sync_calls:
         name = command_name(f)
+        if "wire_request" in f:
+            request_fields = [(field["type"], field["name"]) for field in f["wire_request"]]
+            reply_fields = [(field["type"], field["name"]) for field in f["wire_reply"]]
+        else:
+            request_fields = [(cpp_type, field_name) for cpp_type, field_name, _ in sync_request_fields(f)]
+            reply_fields = [(cpp_type, field_name) for cpp_type, field_name, _ in sync_reply_fields(f)]
         out.write(f"\nstruct {name} {{\n")
         out.write(f"    static constexpr auto call_type = WebGLSyncCallType::{name};\n")
         out.write("    struct Request {\n")
-        for cpp_type, field_name, _ in sync_request_fields(f):
+        for cpp_type, field_name in request_fields:
             out.write(f"        {cpp_type} {field_name} {{}};\n")
         out.write("    };\n")
         out.write("    struct Reply {\n")
-        for cpp_type, field_name, _ in sync_reply_fields(f):
+        for cpp_type, field_name in reply_fields:
             out.write(f"        {cpp_type} {field_name} {{}};\n")
         out.write("    };\n")
         out.write("};\n")

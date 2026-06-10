@@ -9,6 +9,7 @@
 #include <LibGfx/SharedImageBuffer.h>
 #include <LibGfx/SkiaUtils.h>
 
+#include <core/SkCanvas.h>
 #include <core/SkColorSpace.h>
 #include <core/SkSurface.h>
 #include <gpu/ganesh/GrBackendSurface.h>
@@ -176,6 +177,11 @@ void PaintingSurface::write_from_bitmap(Bitmap const& bitmap)
     auto image_info = SkImageInfo::Make(bitmap.width(), bitmap.height(), color_type, alpha_type, SkColorSpace::MakeSRGB());
     SkPixmap const pixmap(image_info, bitmap.begin(), bitmap.pitch());
     m_impl->surface->writePixels(pixmap, 0, 0);
+}
+
+void PaintingSurface::copy_from(PaintingSurface const& source)
+{
+    m_impl->surface->getCanvas()->drawImage(source.m_impl->surface->makeImageSnapshot(), 0, 0);
 }
 
 IntSize PaintingSurface::size() const

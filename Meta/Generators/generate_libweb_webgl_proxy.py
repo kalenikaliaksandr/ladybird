@@ -191,12 +191,11 @@ public:
 
 """)
     for function in functions:
-        if function["category"] == "custom":
+        if function["category"] not in ("command", "gen", "sync"):
             continue
         out.write(f"    {method_signature(function)};\n")
     out.write("""
-    // Custom-handled entry points; defined manually in WebGLContextProxyBase.cpp once
-    // their wire ops exist.
+    // Custom-handled entry points; defined manually in WebGLContextProxyBase.cpp.
 """)
     for function in functions:
         if function["category"] != "custom":
