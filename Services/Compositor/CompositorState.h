@@ -79,6 +79,7 @@ public:
     void update_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const>);
     void clear_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId);
     void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&);
+    void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, NonnullRefPtr<Gfx::PaintingSurface>);
     void clear_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId);
     void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation);
     bool handle_mouse_event(Web::Compositor::CompositorContextId, Web::MouseEvent const&);

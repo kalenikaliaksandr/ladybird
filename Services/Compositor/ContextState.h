@@ -116,6 +116,7 @@ public:
     void update_video_frame(Web::Painting::VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const>);
     void clear_video_frame(Web::Painting::VideoFrameResourceId);
     void update_compositor_surface(Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&);
+    void update_compositor_surface(Web::Painting::CompositorSurfaceId, NonnullRefPtr<Gfx::PaintingSurface>);
     void clear_compositor_surface(Web::Painting::CompositorSurfaceId);
     Gfx::SharedImage snapshot_front_store();
 

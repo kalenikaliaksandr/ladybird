@@ -213,7 +213,9 @@ void DisplayListPlayerSkia::draw_compositor_surface(DrawCompositorSurface const&
     if (!frame.has_value())
         return;
 
-    auto image = m_image_cache.image_for_frame(frame.value());
+    auto image = frame->visit(
+        [&](Gfx::DecodedImageFrame const& frame) { return m_image_cache.image_for_frame(frame); },
+        [](NonnullRefPtr<Gfx::PaintingSurface> const& surface) { return surface->sk_image_snapshot<sk_sp<SkImage>>(); });
     if (!image)
         return;
 
