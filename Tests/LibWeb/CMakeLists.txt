@@ -18,6 +18,7 @@ set(TEST_SOURCES
     TestSecureContexts.cpp
     TestSourceHighlighter.cpp
     TestStrings.cpp
+    TestWebGLCommandList.cpp
 )
 
 foreach(source IN LISTS TEST_SOURCES)
