@@ -190,6 +190,30 @@ void CompositorState::clear_canvas_surface(Web::Compositor::CompositorContextId 
     present_current_frame(context_id, *context);
 }
 
+void CompositorState::update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList&& commands, Web::Painting::DisplayListResourceTransaction&& resource_transaction)
+{
+    auto* context = context_if_present(context_id);
+    VERIFY(context);
+
+    bool published_frame = context->apply_canvas_commands(canvas_context_id, commands, move(resource_transaction), m_skia_backend_context);
+    if (published_frame)
+        present_current_frame(context_id, *context);
+}
+
+void CompositorState::destroy_canvas_context(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id)
+{
+    auto* context = context_if_present(context_id);
+    VERIFY(context);
+    context->destroy_canvas_context(canvas_context_id);
+}
+
+Gfx::ShareableBitmap CompositorState::get_canvas_pixels(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
+{
+    auto* context = context_if_present(context_id);
+    VERIFY(context);
+    return context->get_canvas_pixels(canvas_context_id, rect);
+}
+
 void CompositorState::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)
 {
     auto* context = context_if_present(context_id);

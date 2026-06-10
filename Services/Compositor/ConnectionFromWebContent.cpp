@@ -119,6 +119,24 @@ void ConnectionFromWebContent::clear_canvas_surface(Web::Compositor::CompositorC
     m_compositor_state->clear_canvas_surface(context_id, canvas_id);
 }
 
+void ConnectionFromWebContent::update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList commands, Web::Painting::DisplayListResourceTransaction resource_transaction)
+{
+    verify_context_is_owned_by_this_connection(context_id);
+    m_compositor_state->update_canvas_commands(context_id, canvas_context_id, move(commands), move(resource_transaction));
+}
+
+void ConnectionFromWebContent::destroy_canvas_context(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id)
+{
+    verify_context_is_owned_by_this_connection(context_id);
+    m_compositor_state->destroy_canvas_context(context_id, canvas_context_id);
+}
+
+Messages::CompositorWebContentServer::GetCanvasPixelsResponse ConnectionFromWebContent::get_canvas_pixels(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
+{
+    verify_context_is_owned_by_this_connection(context_id);
+    return m_compositor_state->get_canvas_pixels(context_id, canvas_context_id, rect);
+}
+
 void ConnectionFromWebContent::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)
 {
     verify_context_is_owned_by_this_connection(context_id);

@@ -9,6 +9,7 @@
 #include <Compositor/CompositorState.h>
 #include <Compositor/ContextState.h>
 #include <LibCore/Timer.h>
+#include <LibGfx/Bitmap.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/PainterSkia.h>
 #include <LibGfx/PaintingSurface.h>
@@ -195,6 +196,36 @@ void ContextState::update_video_frame(Web::Painting::VideoFrameResourceId frame_
 void ContextState::clear_video_frame(Web::Painting::VideoFrameResourceId frame_id)
 {
     m_display_list_resource_storage.clear_video_frame(frame_id);
+}
+
+bool ContextState::apply_canvas_commands(Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList const& commands, Web::Painting::DisplayListResourceTransaction&& resource_transaction, RefPtr<Gfx::SkiaBackendContext> const& skia_backend_context)
+{
+    return m_display_list_resource_storage.apply_canvas_commands(canvas_context_id, commands, move(resource_transaction), skia_backend_context);
+}
+
+void ContextState::destroy_canvas_context(Web::Painting::CanvasContextId canvas_context_id)
+{
+    m_display_list_resource_storage.destroy_canvas_context(canvas_context_id);
+}
+
+Gfx::ShareableBitmap ContextState::get_canvas_pixels(Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
+{
+    auto surface = m_display_list_resource_storage.canvas_context_surface(canvas_context_id);
+    if (!surface)
+        return {};
+
+    auto clipped_rect = rect.intersected(surface->rect());
+    if (clipped_rect.is_empty())
+        return {};
+
+    auto bitmap_or_error = Gfx::Bitmap::create_shareable(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, clipped_rect.size());
+    if (bitmap_or_error.is_error())
+        return {};
+
+    auto bitmap = bitmap_or_error.release_value();
+    surface->flush();
+    surface->read_into_bitmap(*bitmap, clipped_rect.location());
+    return Gfx::ShareableBitmap { move(bitmap), Gfx::ShareableBitmap::ConstructWithKnownGoodBitmap };
 }
 
 void ContextState::update_compositor_surface(Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage&& shared_image)

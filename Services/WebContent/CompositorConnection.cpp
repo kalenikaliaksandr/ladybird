@@ -107,6 +107,32 @@ void CompositorConnection::clear_canvas_surface(Web::Compositor::CompositorConte
     async_clear_canvas_surface(context_id, canvas_id);
 }
 
+void CompositorConnection::update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList const& commands, Web::Painting::DisplayListResourceTransaction const& resource_transaction)
+{
+    if (!can_send_message_to_compositor())
+        return;
+
+    auto encoded_message = MUST(Messages::CompositorWebContentServer::UpdateCanvasCommands::static_encode(context_id, canvas_context_id, commands, resource_transaction));
+    if (post_message(encoded_message).is_error())
+        did_lose_compositor();
+}
+
+void CompositorConnection::destroy_canvas_context(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_destroy_canvas_context(context_id, canvas_context_id);
+}
+
+Gfx::ShareableBitmap CompositorConnection::get_canvas_pixels(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
+{
+    if (!can_send_message_to_compositor())
+        return {};
+
+    auto response = send_sync<Messages::CompositorWebContentServer::GetCanvasPixels>(context_id, canvas_context_id, rect);
+    return response->take_pixels();
+}
+
 void CompositorConnection::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)
 {
     if (!can_send_message_to_compositor())

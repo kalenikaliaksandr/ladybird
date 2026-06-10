@@ -119,6 +119,9 @@ public:
     void clear_compositor_surface(Web::Painting::CompositorSurfaceId);
     void update_canvas_surface(Web::Painting::CanvasId, Gfx::SharedImage&&);
     void clear_canvas_surface(Web::Painting::CanvasId);
+    bool apply_canvas_commands(Web::Painting::CanvasContextId, Web::Painting::CanvasCommandList const&, Web::Painting::DisplayListResourceTransaction&&, RefPtr<Gfx::SkiaBackendContext> const&);
+    void destroy_canvas_context(Web::Painting::CanvasContextId);
+    Gfx::ShareableBitmap get_canvas_pixels(Web::Painting::CanvasContextId, Gfx::IntRect);
     Gfx::SharedImage snapshot_front_store();
 
     void invalidate_wheel_event_listener_state(u64 generation);
