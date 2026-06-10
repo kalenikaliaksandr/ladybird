@@ -82,7 +82,7 @@ ErrorOr<BitmapExportResult> export_bitmap_to_byte_buffer(
     int width = target_width.value_or(bitmap.width());
     int height = target_height.value_or(bitmap.height());
 
-    if (format == ExportFormat::RGB888 && (width != bitmap.width() || height != bitmap.height())) {
+    if (format == ExportFormat::RGB888 && width > 0 && height > 0 && (width != bitmap.width() || height != bitmap.height())) {
         dbgln("FIXME: Ignoring target width and height because scaling is not implemented for this export format.");
         width = bitmap.width();
         height = bitmap.height();

@@ -8,6 +8,8 @@ interface Internals {
     DOMString setTimeZone(DOMString timeZone);
 
     undefined gc();
+    // Simulates loss of the backing storage behind all canvas contexts (e.g. a Compositor crash).
+    undefined loseCanvasBackingStorage();
     Promise<undefined> gcAsync();
     // Clears a named environment binding and forces its current cell to be treated as garbage.
     // This does not work for values stored only in optimized locals or registers.

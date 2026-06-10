@@ -12,6 +12,7 @@
 #include <AK/Types.h>
 #include <AK/Variant.h>
 #include <AK/Vector.h>
+#include <LibGfx/Size.h>
 #include <LibIPC/Forward.h>
 #include <LibWeb/Compositor/AsyncScrollingState.h>
 #include <LibWeb/Export.h>

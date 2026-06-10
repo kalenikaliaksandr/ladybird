@@ -9,6 +9,7 @@
 #include <Compositor/CompositorState.h>
 #include <Compositor/ContextState.h>
 #include <LibCore/Timer.h>
+#include <LibGfx/Bitmap.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/PainterSkia.h>
 #include <LibGfx/PaintingSurface.h>
@@ -31,8 +32,9 @@ static void set_or_append_pending_scroll_offset(
     pending_scroll_offsets.append(scroll_offset);
 }
 
-ContextState::ContextState(Optional<u64> page_id, CompositorStateWebContentClient& web_content_client, bool async_scrolling_enabled)
+ContextState::ContextState(Optional<u64> page_id, CompositorStateWebContentClient& web_content_client, Web::Painting::CanvasSurfaceRegistry const& canvas_surface_registry, bool async_scrolling_enabled)
     : m_web_content_client(web_content_client)
+    , m_canvas_surface_registry(canvas_surface_registry)
     , m_page_id(page_id)
     , m_async_scrolling_enabled(async_scrolling_enabled)
 {
@@ -671,7 +673,7 @@ bool ContextState::can_render_frame() const
 void ContextState::paint_current_display_list(Web::Painting::DisplayListPlayerSkia& display_list_player, Gfx::PaintingSurface& surface)
 {
     VERIFY(m_display_list);
-    display_list_player.execute(*m_display_list, current_visual_context_tree(), m_display_list_resource_storage, m_scroll_state_snapshot, surface);
+    display_list_player.execute(*m_display_list, current_visual_context_tree(), m_display_list_resource_storage, m_scroll_state_snapshot, surface, &m_canvas_surface_registry);
     m_viewport_scrollbar_controller.paint(surface, display_list_player, m_scroll_state_snapshot);
 }
 
