@@ -1,0 +1,4 @@
+contextlost isContextLost=true
+contextrestored isContextLost=false
+pixel after restore: 0,0,0,0
+pixel after draw: 0,0,255,255

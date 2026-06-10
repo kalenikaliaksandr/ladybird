@@ -235,6 +235,7 @@ public:
 
     void present_all_canvas_element_surfaces();
     void republish_all_canvas_element_surfaces();
+    void notify_all_canvas_elements_of_lost_backing_storage();
 
     struct MediaContextMenu {
         URL::URL media_url;

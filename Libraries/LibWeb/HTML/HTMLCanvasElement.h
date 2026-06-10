@@ -49,6 +49,7 @@ public:
 
     void present();
     void republish_compositor_surface();
+    void notify_compositor_backing_storage_lost();
     void set_canvas_content_dirty();
 
     RefPtr<Gfx::PaintingSurface> surface() const;

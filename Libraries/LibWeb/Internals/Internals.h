@@ -41,6 +41,7 @@ public:
     WebIDL::ExceptionOr<String> set_time_zone(StringView time_zone);
 
     void gc();
+    void lose_canvas_backing_storage();
     GC::Ref<WebIDL::Promise> gc_async();
     WebIDL::ExceptionOr<void> mark_as_garbage(StringView variable_name);
     JS::Object* hit_test(double x, double y);

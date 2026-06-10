@@ -150,6 +150,11 @@ void Internals::gc()
     vm().heap().collect_garbage();
 }
 
+void Internals::lose_canvas_backing_storage()
+{
+    page().notify_all_canvas_elements_of_lost_backing_storage();
+}
+
 GC::Ref<WebIDL::Promise> Internals::gc_async()
 {
     auto& realm = this->realm();
