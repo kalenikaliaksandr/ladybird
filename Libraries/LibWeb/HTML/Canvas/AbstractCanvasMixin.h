@@ -7,6 +7,7 @@
 #include <LibWeb/HTML/Canvas/DrawingState.h>
 #include <LibWeb/HTML/HTMLCanvasElement.h>
 #include <LibWeb/HTML/OffscreenCanvas.h>
+#include <LibWeb/Painting/CanvasCommandList.h>
 
 #pragma once
 
@@ -20,7 +21,7 @@ protected:
     virtual DrawingState const& drawing_state() const = 0;
     virtual JS::Realm& my_realm() = 0;
     virtual Gfx::Path& mutable_path() = 0;
-    virtual Gfx::Painter* painter() = 0;
+    virtual Painting::CanvasCommandList* recorder() = 0;
     virtual CSS::ComputationContext computation_context_for_drawing_state() const = 0;
     Optional<Color> parse_a_css_color_value(StringView const& value) const;
 };

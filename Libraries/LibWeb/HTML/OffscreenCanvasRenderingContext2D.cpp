@@ -322,9 +322,9 @@ void OffscreenCanvasRenderingContext2D::set_global_composite_operation(String)
     dbgln("(STUBBED) OffscreenCanvasRenderingContext2D::set_global_composite_operation()");
 }
 
-[[nodiscard]] Gfx::Painter* OffscreenCanvasRenderingContext2D::painter()
+[[nodiscard]] Painting::CanvasCommandList* OffscreenCanvasRenderingContext2D::recorder()
 {
-    dbgln("(STUBBED) OffscreenCanvasRenderingContext2D::painter()");
+    dbgln("(STUBBED) OffscreenCanvasRenderingContext2D::recorder()");
     return nullptr;
 }
 
