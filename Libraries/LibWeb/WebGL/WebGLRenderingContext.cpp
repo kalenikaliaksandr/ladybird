@@ -5,18 +5,22 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGfx/SkiaBackendContext.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Bindings/WebGLContextEvent.h>
 #include <LibWeb/Bindings/WebGLRenderingContext.h>
+#include <LibWeb/Compositor/CompositorHost.h>
+#include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/HTMLCanvasElement.h>
+#include <LibWeb/HTML/Navigable.h>
 #include <LibWeb/Infra/Strings.h>
+#include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/WebGL/EventNames.h>
-#include <LibWeb/WebGL/OpenGLContext.h>
+#include <LibWeb/WebGL/RemoteWebGLTransport.h>
 #include <LibWeb/WebGL/WebGLContextEvent.h>
+#include <LibWeb/WebGL/WebGLContextProxy.h>
 #include <LibWeb/WebGL/WebGLRenderingContext.h>
 #include <LibWeb/WebGL/WebGLShader.h>
 #include <LibWeb/WebIDL/Buffers.h>
@@ -46,22 +50,48 @@ void fire_webgl_context_creation_error(HTML::HTMLCanvasElement& canvas_element)
     fire_webgl_context_event(canvas_element, EventNames::webglcontextcreationerror);
 }
 
+OwnPtr<WebGLContextProxy> create_webgl_context_proxy(HTML::HTMLCanvasElement& canvas_element, WebGLVersion webgl_version, WebGLContextAttributes const& context_attributes)
+{
+    auto& page = canvas_element.document().page();
+    if (!page.has_compositor_host())
+        return {};
+    auto transport = page.compositor_host().create_webgl_transport();
+    if (!transport)
+        return {};
+
+    auto webgl_context_id = WebGLContextProxyBase::allocate_webgl_context_id();
+    auto result = transport->create_context(
+        webgl_context_id,
+        webgl_version,
+        context_attributes.depth,
+        context_attributes.stencil,
+        context_attributes.antialias);
+    if (!result.success)
+        return {};
+
+    return make<WebGLContextProxy>(transport.release_nonnull(), webgl_context_id, webgl_version, move(result.supported_extensions));
+}
+
+void present_remote_context(WebGLContextProxy& context, HTML::HTMLCanvasElement& canvas_element, bool preserve_drawing_buffer)
+{
+    // Without a compositor context (for example mid-teardown) there is no slot to
+    // publish into; flush whatever is recorded so the host stays current.
+    if (auto navigable = canvas_element.document().navigable(); navigable && navigable->has_compositor_context()) {
+        context.present_to_compositor(
+            navigable->compositor_context().id(),
+            canvas_element.ensure_compositor_surface_id(),
+            preserve_drawing_buffer);
+        return;
+    }
+    context.flush_commands();
+}
+
 JS::ThrowCompletionOr<GC::Ptr<WebGLRenderingContext>> WebGLRenderingContext::create(JS::Realm& realm, HTML::HTMLCanvasElement& canvas_element, JS::Value options)
 {
     // We should be coming here from getContext being called on a wrapped <canvas> element.
     auto context_attributes = TRY(convert_value_to_context_attributes_dictionary(canvas_element.vm(), options));
 
-    auto skia_backend_context = Gfx::SkiaBackendContext::the_main_thread_context();
-    if (!skia_backend_context) {
-        fire_webgl_context_creation_error(canvas_element);
-        return GC::Ptr<WebGLRenderingContext> { nullptr };
-    }
-    OpenGLContext::DrawingBufferOptions context_options {
-        .depth = context_attributes.depth,
-        .stencil = context_attributes.stencil,
-        .antialias = context_attributes.antialias,
-    };
-    auto context = OpenGLContext::create(*skia_backend_context, OpenGLContext::WebGLVersion::WebGL1, context_options);
+    auto context = create_webgl_context_proxy(canvas_element, WebGLVersion::WebGL1, context_attributes);
     if (!context) {
         fire_webgl_context_creation_error(canvas_element);
         return GC::Ptr<WebGLRenderingContext> { nullptr };
@@ -72,7 +102,7 @@ JS::ThrowCompletionOr<GC::Ptr<WebGLRenderingContext>> WebGLRenderingContext::cre
     return realm.create<WebGLRenderingContext>(realm, canvas_element, context.release_nonnull(), context_attributes, context_attributes);
 }
 
-WebGLRenderingContext::WebGLRenderingContext(JS::Realm& realm, HTML::HTMLCanvasElement& canvas_element, NonnullOwnPtr<OpenGLContext> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters)
+WebGLRenderingContext::WebGLRenderingContext(JS::Realm& realm, HTML::HTMLCanvasElement& canvas_element, NonnullOwnPtr<WebGLContextProxy> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters)
     : WebGLRenderingContextOverloads(realm, move(context))
     , m_canvas_element(canvas_element)
     , m_context_creation_parameters(context_creation_parameters)
@@ -97,7 +127,7 @@ void WebGLRenderingContext::visit_edges(Cell::Visitor& visitor)
 
 void WebGLRenderingContext::present()
 {
-    context().present(m_context_creation_parameters.preserve_drawing_buffer);
+    present_remote_context(context(), *m_canvas_element, m_context_creation_parameters.preserve_drawing_buffer);
 }
 
 GC::Ref<HTML::HTMLCanvasElement> WebGLRenderingContext::canvas_for_binding() const

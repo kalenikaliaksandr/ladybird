@@ -10,6 +10,7 @@
 #include <AK/RefCounted.h>
 #include <AK/String.h>
 #include <AK/Vector.h>
+#include <LibGfx/ShareableBitmap.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/WebGL/Types.h>
 
@@ -31,6 +32,10 @@ public:
     virtual void destroy_context(WebGLContextId) = 0;
     virtual void send_commands(WebGLContextId, ByteBuffer const&) = 0;
     virtual ByteBuffer sync_call(WebGLContextId, ByteBuffer request) = 0;
+
+    // Synchronously reads back the live drawing buffer; pixel data travels as shared
+    // memory because the generic sync-call framing cannot carry file descriptors.
+    virtual Gfx::ShareableBitmap read_back_drawing_buffer(WebGLContextId) = 0;
 };
 
 }

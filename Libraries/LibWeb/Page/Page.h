@@ -230,6 +230,9 @@ public:
     void present_all_canvas_element_surfaces();
     void republish_all_canvas_element_surfaces();
 
+    // The compositor process went away; remote contexts (WebGL) lost their state.
+    void notify_all_webgl_contexts_lost();
+
     struct MediaContextMenu {
         URL::URL media_url;
         bool is_video { false };

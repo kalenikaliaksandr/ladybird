@@ -59,8 +59,10 @@ public:
     void destroy_webgl_context(Web::WebGL::WebGLContextId);
     void send_webgl_commands(Web::WebGL::WebGLContextId, ByteBuffer const&);
     ByteBuffer webgl_sync_call(Web::WebGL::WebGLContextId, ByteBuffer request);
+    Gfx::ShareableBitmap get_webgl_drawing_buffer(Web::WebGL::WebGLContextId);
 
     Function<void(u64 page_id, Web::MouseEvent)> on_mouse_event;
+    Function<void()> on_compositor_lost;
 
 private:
     struct PendingScreenshot {

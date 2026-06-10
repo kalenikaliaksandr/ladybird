@@ -48,6 +48,11 @@ private:
         return m_connection->webgl_sync_call(webgl_context_id, move(request));
     }
 
+    virtual Gfx::ShareableBitmap read_back_drawing_buffer(Web::WebGL::WebGLContextId webgl_context_id) override
+    {
+        return m_connection->get_webgl_drawing_buffer(webgl_context_id);
+    }
+
     NonnullRefPtr<CompositorConnection> m_connection;
 };
 

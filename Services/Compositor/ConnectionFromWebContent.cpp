@@ -153,6 +153,16 @@ void ConnectionFromWebContent::webgl_commands(Web::WebGL::WebGLContextId webgl_c
     }
 }
 
+Messages::CompositorWebContentServer::GetWebglDrawingBufferResponse ConnectionFromWebContent::get_webgl_drawing_buffer(Web::WebGL::WebGLContextId webgl_context_id)
+{
+    auto* context = m_webgl_host.context(webgl_context_id);
+    if (!context) {
+        did_misbehave("WebContent requested the drawing buffer of an unknown WebGL context");
+        return Gfx::ShareableBitmap {};
+    }
+    return context->read_back_drawing_buffer();
+}
+
 Messages::CompositorWebContentServer::WebglSyncCallResponse ConnectionFromWebContent::webgl_sync_call(Web::WebGL::WebGLContextId webgl_context_id, ByteBuffer request)
 {
     auto* context = m_webgl_host.context(webgl_context_id);

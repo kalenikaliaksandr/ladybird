@@ -24,6 +24,7 @@ extern "C" {
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/UniversalGlobalScope.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
+#include <LibWeb/WebGL/EventNames.h>
 #include <LibWeb/WebGL/Extensions/ANGLEInstancedArrays.h>
 #include <LibWeb/WebGL/Extensions/EXTBlendMinMax.h>
 #include <LibWeb/WebGL/Extensions/EXTColorBufferFloat.h>
@@ -37,7 +38,8 @@ extern "C" {
 #include <LibWeb/WebGL/Extensions/WebGLCompressedTextureS3tcSrgb.h>
 #include <LibWeb/WebGL/Extensions/WebGLDebugRendererInfo.h>
 #include <LibWeb/WebGL/Extensions/WebGLDrawBuffers.h>
-#include <LibWeb/WebGL/OpenGLContext.h>
+#include <LibWeb/WebGL/WebGLContextProxy.h>
+#include <LibWeb/WebGL/WebGLRenderingContext.h>
 #include <LibWeb/WebGL/WebGLRenderingContextBase.h>
 
 #include <core/SkCanvas.h>
@@ -108,58 +110,58 @@ WebGLRenderingContextBase::WebGLRenderingContextBase(JS::Realm& realm)
 struct Extension {
     Vector<StringView> required_angle_extensions;
     JS::ThrowCompletionOr<GC::Ref<JS::Object>> (*factory)(JS::Realm&, GC::Ref<WebGLRenderingContextBase>);
-    Optional<OpenGLContext::WebGLVersion> only_for_webgl_version { OptionalNone {} };
+    Optional<WebGLVersion> only_for_webgl_version { OptionalNone {} };
 };
 
 static HashMap<String, Extension, AK::ASCIICaseInsensitiveStringTraits> const& available_webgl_extensions()
 {
     static auto const& extensions = *new HashMap<String, Extension, AK::ASCIICaseInsensitiveStringTraits> {
         // Khronos ratified WebGL Extensions
-        { "ANGLE_instanced_arrays"_string, { { "GL_ANGLE_instanced_arrays"sv }, ANGLEInstancedArrays::create, OpenGLContext::WebGLVersion::WebGL1 } },
-        { "EXT_blend_minmax"_string, { { "GL_EXT_blend_minmax"sv }, EXTBlendMinMax::create, OpenGLContext::WebGLVersion::WebGL1 } },
-        { "EXT_frag_depth"_string, { { "GL_EXT_frag_depth"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL1 } },
-        { "EXT_shader_texture_lod"_string, { { "GL_EXT_shader_texture_lod"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL1 } },
+        { "ANGLE_instanced_arrays"_string, { { "GL_ANGLE_instanced_arrays"sv }, ANGLEInstancedArrays::create, WebGLVersion::WebGL1 } },
+        { "EXT_blend_minmax"_string, { { "GL_EXT_blend_minmax"sv }, EXTBlendMinMax::create, WebGLVersion::WebGL1 } },
+        { "EXT_frag_depth"_string, { { "GL_EXT_frag_depth"sv }, nullptr, WebGLVersion::WebGL1 } },
+        { "EXT_shader_texture_lod"_string, { { "GL_EXT_shader_texture_lod"sv }, nullptr, WebGLVersion::WebGL1 } },
         { "EXT_texture_filter_anisotropic"_string, { { "GL_EXT_texture_filter_anisotropic"sv }, EXTTextureFilterAnisotropic::create } },
-        { "OES_element_index_uint"_string, { { "GL_OES_element_index_uint"sv }, OESElementIndexUint::create, OpenGLContext::WebGLVersion::WebGL1 } },
-        { "OES_standard_derivatives"_string, { { "GL_OES_standard_derivatives"sv }, OESStandardDerivatives::create, OpenGLContext::WebGLVersion::WebGL1 } },
-        { "OES_texture_float"_string, { { "GL_OES_texture_float"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL1 } },
+        { "OES_element_index_uint"_string, { { "GL_OES_element_index_uint"sv }, OESElementIndexUint::create, WebGLVersion::WebGL1 } },
+        { "OES_standard_derivatives"_string, { { "GL_OES_standard_derivatives"sv }, OESStandardDerivatives::create, WebGLVersion::WebGL1 } },
+        { "OES_texture_float"_string, { { "GL_OES_texture_float"sv }, nullptr, WebGLVersion::WebGL1 } },
         { "OES_texture_float_linear"_string, { { "GL_OES_texture_float_linear"sv }, nullptr } },
-        { "OES_texture_half_float"_string, { { "GL_OES_texture_half_float"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL1 } },
-        { "OES_texture_half_float_linear"_string, { { "GL_OES_texture_half_float_linear"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL1 } },
-        { "OES_vertex_array_object"_string, { { "GL_OES_vertex_array_object"sv }, OESVertexArrayObject::create, OpenGLContext::WebGLVersion::WebGL1 } },
+        { "OES_texture_half_float"_string, { { "GL_OES_texture_half_float"sv }, nullptr, WebGLVersion::WebGL1 } },
+        { "OES_texture_half_float_linear"_string, { { "GL_OES_texture_half_float_linear"sv }, nullptr, WebGLVersion::WebGL1 } },
+        { "OES_vertex_array_object"_string, { { "GL_OES_vertex_array_object"sv }, OESVertexArrayObject::create, WebGLVersion::WebGL1 } },
         { "WEBGL_compressed_texture_s3tc"_string, { { "GL_EXT_texture_compression_dxt1"sv, "GL_ANGLE_texture_compression_dxt3"sv, "GL_ANGLE_texture_compression_dxt5"sv }, WebGLCompressedTextureS3tc::create } },
         { "WEBGL_debug_renderer_info"_string, { {}, WebGLDebugRendererInfo::create } },
         { "WEBGL_debug_shaders"_string, { {}, nullptr } },
-        { "WEBGL_depth_texture"_string, { { "GL_ANGLE_depth_texture"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL1 } },
-        { "WEBGL_draw_buffers"_string, { { "GL_EXT_draw_buffers"sv }, WebGLDrawBuffers::create, OpenGLContext::WebGLVersion::WebGL1 } },
+        { "WEBGL_depth_texture"_string, { { "GL_ANGLE_depth_texture"sv }, nullptr, WebGLVersion::WebGL1 } },
+        { "WEBGL_draw_buffers"_string, { { "GL_EXT_draw_buffers"sv }, WebGLDrawBuffers::create, WebGLVersion::WebGL1 } },
         { "WEBGL_lose_context"_string, { {}, nullptr } },
 
         // Community approved WebGL Extensions
         { "EXT_clip_control"_string, { { "GL_EXT_clip_control"sv }, nullptr } },
-        { "EXT_color_buffer_float"_string, { { "GL_EXT_color_buffer_float"sv }, EXTColorBufferFloat::create, OpenGLContext::WebGLVersion::WebGL2 } },
+        { "EXT_color_buffer_float"_string, { { "GL_EXT_color_buffer_float"sv }, EXTColorBufferFloat::create, WebGLVersion::WebGL2 } },
         { "EXT_color_buffer_half_float"_string, { { "GL_EXT_color_buffer_half_float"sv }, nullptr } },
-        { "EXT_conservative_depth"_string, { { "GL_EXT_conservative_depth"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL2 } },
+        { "EXT_conservative_depth"_string, { { "GL_EXT_conservative_depth"sv }, nullptr, WebGLVersion::WebGL2 } },
         { "EXT_depth_clamp"_string, { { "GL_EXT_depth_clamp"sv }, nullptr } },
-        { "EXT_disjoint_timer_query"_string, { { "GL_EXT_disjoint_timer_query"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL1 } },
-        { "EXT_disjoint_timer_query_webgl2"_string, { { "GL_EXT_disjoint_timer_query"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL2 } },
+        { "EXT_disjoint_timer_query"_string, { { "GL_EXT_disjoint_timer_query"sv }, nullptr, WebGLVersion::WebGL1 } },
+        { "EXT_disjoint_timer_query_webgl2"_string, { { "GL_EXT_disjoint_timer_query"sv }, nullptr, WebGLVersion::WebGL2 } },
         { "EXT_float_blend"_string, { { "GL_EXT_float_blend"sv }, nullptr } },
         { "EXT_polygon_offset_clamp"_string, { { "GL_EXT_polygon_offset_clamp"sv }, nullptr } },
-        { "EXT_render_snorm"_string, { { "GL_EXT_render_snorm"sv }, EXTRenderSnorm::create, OpenGLContext::WebGLVersion::WebGL2 } },
-        { "EXT_sRGB"_string, { { "GL_EXT_sRGB"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL1 } },
+        { "EXT_render_snorm"_string, { { "GL_EXT_render_snorm"sv }, EXTRenderSnorm::create, WebGLVersion::WebGL2 } },
+        { "EXT_sRGB"_string, { { "GL_EXT_sRGB"sv }, nullptr, WebGLVersion::WebGL1 } },
         { "EXT_texture_compression_bptc"_string, { { "GL_EXT_texture_compression_bptc"sv }, nullptr } },
         { "EXT_texture_compression_rgtc"_string, { { "GL_EXT_texture_compression_rgtc"sv }, nullptr } },
         { "EXT_texture_mirror_clamp_to_edge"_string, { { "GL_EXT_texture_mirror_clamp_to_edge"sv }, nullptr } },
-        { "EXT_texture_norm16"_string, { { "GL_EXT_texture_norm16"sv }, EXTTextureNorm16::create, OpenGLContext::WebGLVersion::WebGL2 } },
+        { "EXT_texture_norm16"_string, { { "GL_EXT_texture_norm16"sv }, EXTTextureNorm16::create, WebGLVersion::WebGL2 } },
         { "KHR_parallel_shader_compile"_string, { { "GL_KHR_parallel_shader_compile"sv }, nullptr } },
-        { "NV_shader_noperspective_interpolation"_string, { { "GL_NV_shader_noperspective_interpolation"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL2 } },
+        { "NV_shader_noperspective_interpolation"_string, { { "GL_NV_shader_noperspective_interpolation"sv }, nullptr, WebGLVersion::WebGL2 } },
         { "OES_draw_buffers_indexed"_string, { { "GL_OES_draw_buffers_indexed"sv }, nullptr } },
-        { "OES_fbo_render_mipmap"_string, { { "GL_OES_fbo_render_mipmap"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL1 } },
-        { "OES_sample_variables"_string, { { "GL_OES_sample_variables"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL2 } },
-        { "OES_shader_multisample_interpolation"_string, { { "GL_OES_shader_multisample_interpolation"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL2 } },
-        { "OVR_multiview2"_string, { { "GL_OVR_multiview2"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL2 } },
+        { "OES_fbo_render_mipmap"_string, { { "GL_OES_fbo_render_mipmap"sv }, nullptr, WebGLVersion::WebGL1 } },
+        { "OES_sample_variables"_string, { { "GL_OES_sample_variables"sv }, nullptr, WebGLVersion::WebGL2 } },
+        { "OES_shader_multisample_interpolation"_string, { { "GL_OES_shader_multisample_interpolation"sv }, nullptr, WebGLVersion::WebGL2 } },
+        { "OVR_multiview2"_string, { { "GL_OVR_multiview2"sv }, nullptr, WebGLVersion::WebGL2 } },
         { "WEBGL_blend_func_extended"_string, { { "GL_EXT_blend_func_extended"sv }, nullptr } },
-        { "WEBGL_clip_cull_distance"_string, { { "GL_EXT_clip_cull_distance"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL2 } },
-        { "WEBGL_color_buffer_float"_string, { { "EXT_color_buffer_half_float"sv, "OES_texture_float"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL1 } },
+        { "WEBGL_clip_cull_distance"_string, { { "GL_EXT_clip_cull_distance"sv }, nullptr, WebGLVersion::WebGL2 } },
+        { "WEBGL_color_buffer_float"_string, { { "EXT_color_buffer_half_float"sv, "OES_texture_float"sv }, nullptr, WebGLVersion::WebGL1 } },
         { "WEBGL_compressed_texture_astc"_string, { { "KHR_texture_compression_astc_hdr"sv, "KHR_texture_compression_astc_ldr"sv }, nullptr } },
         { "WEBGL_compressed_texture_etc"_string, { { "GL_ANGLE_compressed_texture_etc"sv }, nullptr } },
         { "WEBGL_compressed_texture_etc1"_string, { { "GL_OES_compressed_ETC1_RGB8_texture"sv }, nullptr } },
@@ -167,9 +169,9 @@ static HashMap<String, Extension, AK::ASCIICaseInsensitiveStringTraits> const& a
         { "WEBGL_compressed_texture_s3tc_srgb"_string, { { "GL_EXT_texture_compression_s3tc_srgb"sv }, WebGLCompressedTextureS3tcSrgb::create } },
         { "WEBGL_multi_draw"_string, { { "GL_ANGLE_multi_draw"sv }, nullptr } },
         { "WEBGL_polygon_mode"_string, { { "GL_ANGLE_polygon_mode"sv }, nullptr } },
-        { "WEBGL_provoking_vertex"_string, { { "GL_ANGLE_provoking_vertex"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL2 } },
-        { "WEBGL_render_shared_exponent"_string, { { "GL_QCOM_render_shared_exponent"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL2 } },
-        { "WEBGL_stencil_texturing"_string, { { "GL_ANGLE_stencil_texturing"sv }, nullptr, OpenGLContext::WebGLVersion::WebGL2 } },
+        { "WEBGL_provoking_vertex"_string, { { "GL_ANGLE_provoking_vertex"sv }, nullptr, WebGLVersion::WebGL2 } },
+        { "WEBGL_render_shared_exponent"_string, { { "GL_QCOM_render_shared_exponent"sv }, nullptr, WebGLVersion::WebGL2 } },
+        { "WEBGL_stencil_texturing"_string, { { "GL_ANGLE_stencil_texturing"sv }, nullptr, WebGLVersion::WebGL2 } },
     };
     return extensions;
 }
@@ -228,7 +230,7 @@ JS::Object* WebGLRenderingContextBase::get_extension(String const& name)
         return nullptr;
 
     for (auto const& required_extension : extension_info.required_angle_extensions) {
-        context().request_extension(null_terminated_string(required_extension).data());
+        context().request_extension_angle(null_terminated_string(required_extension).data());
     }
 
     auto extension = MUST(extension_info.factory(realm(), *this));
@@ -326,8 +328,12 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
 //       this just keeps track of one error which is also fine by the spec
 GLenum WebGLRenderingContextBase::get_error_value()
 {
-    if (m_error == GL_NO_ERROR)
-        return context().get_error();
+    // The host's error takes precedence: it accumulated first in command order. The
+    // locally-detected error stays queued for the next call. (context().get_error() is
+    // a synchronous round trip that flushes pending commands first.)
+    auto context_error = context().get_error();
+    if (context_error != GL_NO_ERROR)
+        return context_error;
 
     auto error = m_error;
     m_error = GL_NO_ERROR;
@@ -336,13 +342,9 @@ GLenum WebGLRenderingContextBase::get_error_value()
 
 void WebGLRenderingContextBase::set_error(GLenum error)
 {
-    if (m_error != GL_NO_ERROR)
-        return;
-
-    auto context_error = context().get_error();
-    if (context_error != GL_NO_ERROR)
-        m_error = context_error;
-    else
+    // Locally-detected spec errors must not cost a round trip; they merge with the
+    // host's errors in get_error_value().
+    if (m_error == GL_NO_ERROR)
         m_error = error;
 }
 
@@ -350,6 +352,18 @@ bool WebGLRenderingContextBase::is_context_lost() const
 {
     dbgln_if(WEBGL_CONTEXT_DEBUG, "WebGLRenderingContext::is_context_lost()");
     return m_context_lost;
+}
+
+void WebGLRenderingContextBase::lose_context_from_compositor_loss()
+{
+    if (m_context_lost)
+        return;
+    m_context_lost = true;
+    context().set_lost();
+
+    HTML::queue_a_task(HTML::Task::Source::WebGL, nullptr, nullptr, GC::create_function(heap(), [canvas = canvas_for_binding()] {
+        fire_webgl_context_event(canvas, EventNames::webglcontextlost);
+    }));
 }
 
 // https://immersive-web.github.io/webxr/#dom-webglrenderingcontextbase-makexrcompatible

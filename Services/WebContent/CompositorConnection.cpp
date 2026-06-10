@@ -194,6 +194,19 @@ ByteBuffer CompositorConnection::webgl_sync_call(Web::WebGL::WebGLContextId webg
     return response->take_reply();
 }
 
+Gfx::ShareableBitmap CompositorConnection::get_webgl_drawing_buffer(Web::WebGL::WebGLContextId webgl_context_id)
+{
+    if (!can_send_message_to_compositor())
+        return {};
+
+    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::GetWebglDrawingBuffer>(webgl_context_id);
+    if (!response) {
+        did_lose_compositor();
+        return {};
+    }
+    return response->take_bitmap();
+}
+
 void CompositorConnection::request_screenshot(Web::Compositor::CompositorContextId context_id, NonnullRefPtr<Gfx::PaintingSurface> target_surface, Function<void()>&& callback)
 {
     if (!can_send_message_to_compositor()) {
@@ -252,6 +265,9 @@ void CompositorConnection::did_lose_compositor()
             entry.value.callback();
     }
     m_screenshots.clear();
+
+    if (on_compositor_lost)
+        on_compositor_lost();
 }
 
 bool CompositorConnection::can_send_message_to_compositor() const

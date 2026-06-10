@@ -9,6 +9,7 @@
 #include <Compositor/WebGLHost.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/PaintingSurface.h>
+#include <LibGfx/ShareableBitmap.h>
 #include <LibGfx/SkiaBackendContext.h>
 #include <LibWeb/WebGL/WebGLCommandList.h>
 
@@ -67,6 +68,21 @@ ErrorOr<ByteBuffer> HostWebGLContext::execute_sync_call(ReadonlyBytes request)
 {
     m_gl_context->make_current();
     return handle_webgl_sync_call(*m_gl_context, m_objects, request);
+}
+
+Gfx::ShareableBitmap HostWebGLContext::read_back_drawing_buffer()
+{
+    m_gl_context->make_current();
+    m_gl_context->present(/* preserve_drawing_buffer= */ true);
+    auto surface = m_gl_context->surface();
+    if (!surface)
+        return {};
+    auto bitmap_or_error = Gfx::Bitmap::create_shareable(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, surface->size());
+    if (bitmap_or_error.is_error())
+        return {};
+    auto bitmap = bitmap_or_error.release_value();
+    surface->read_into_bitmap(*bitmap);
+    return Gfx::ShareableBitmap { move(bitmap), Gfx::ShareableBitmap::ConstructWithKnownGoodBitmap };
 }
 
 ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> HostWebGLContext::snapshot_for_present(bool preserve_drawing_buffer)

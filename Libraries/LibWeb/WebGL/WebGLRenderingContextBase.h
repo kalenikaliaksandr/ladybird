@@ -45,9 +45,15 @@ public:
     using Int32List = Variant<GC::Ref<JS::Int32Array>, Vector<WebIDL::Long>>;
     using Uint32List = Variant<GC::Ref<JS::Uint32Array>, Vector<WebIDL::UnsignedLong>>;
 
-    virtual OpenGLContext& context() = 0;
+    virtual WebGLContextProxy& context() = 0;
+    virtual GC::Ref<HTML::HTMLCanvasElement> canvas_for_binding() const = 0;
 
     bool is_context_lost() const;
+
+    // https://registry.khronos.org/webgl/specs/latest/1.0/#CONTEXT_LOST
+    // The compositor process (and with it the GL state) went away: set the context lost
+    // flag, stop talking to the dead host, and fire webglcontextlost at the canvas.
+    void lose_context_from_compositor_loss();
 
     bool xr_compatible() const { return m_xr_compatible; }
     void set_xr_compatible(bool xr_compatible) { m_xr_compatible = xr_compatible; }
