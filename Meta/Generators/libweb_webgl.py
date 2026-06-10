@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: BSD-2-Clause
 
 # Shared model and CLI driver for the WebGL generators: loads GLFunctions.json and
-# derives the generated method name and signature of each GL entry point.
+# derives the command-struct shape each annotated GL function serializes to.
 
 import argparse
 import json
@@ -52,3 +52,39 @@ def method_name(function: dict) -> str:
 def method_signature(function: dict, qualifier: str = "") -> str:
     args = ", ".join(f"{arg['type']} {arg['name']}" for arg in function["args"])
     return f"{function['return']} {qualifier}{method_name(function)}({args})"
+
+
+def is_pointer(arg: dict) -> bool:
+    return arg["type"].endswith("*")
+
+
+def is_const_pointer(arg: dict) -> bool:
+    return is_pointer(arg) and "const" in arg["type"]
+
+
+# Returns the ordered (cpp_type, field_name, arg_or_none) triples of the
+# trivially-copyable struct a command/gen function serializes to.
+def command_struct_fields(function: dict) -> list:
+    fields = []
+    if function["category"] == "gen" and function["return"] != "void":
+        fields.append(("WebGLObjectId", "id", None))
+    for arg in function["args"]:
+        field_name = snake_case(arg["name"])
+        if function["category"] == "gen" and is_pointer(arg) and not is_const_pointer(arg):
+            fields.append(("WebGLDataSpan", field_name, arg))  # client-allocated ids
+        elif arg.get("object") and not is_pointer(arg):
+            fields.append(("WebGLObjectId", field_name, arg))
+        elif arg.get("object") and is_const_pointer(arg):
+            fields.append(("WebGLDataSpan", field_name, arg))  # array of client ids
+        elif arg.get("string"):
+            fields.append(("WebGLDataSpan", field_name, arg))  # NUL-terminated bytes
+        elif arg.get("offset"):
+            fields.append(("GLintptr", field_name, arg))
+        elif "payload" in arg:
+            if arg.get("nullable"):
+                fields.append(("bool", "has_" + field_name, arg))
+            fields.append(("WebGLDataSpan", field_name, arg))
+        else:
+            assert not is_pointer(arg), f"unhandled pointer arg {function['name']}.{arg['name']}"
+            fields.append((arg["type"], field_name, arg))
+    return fields
