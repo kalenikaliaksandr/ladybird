@@ -6,6 +6,18 @@ set(SOURCES
     ConnectionFromWebContent.cpp
     VSyncScheduler.cpp
     ViewportScrollbarController.cpp
+    WebGLHost.cpp
+    WebGLObjectMap.cpp
+)
+
+invoke_py_generator(
+    "WebGLCommandReplayer.cpp"
+    "generate_compositor_webgl_replayer.py"
+    "${LADYBIRD_SOURCE_DIR}/Libraries/LibWeb/WebGL/GLFunctions.json"
+    "WebGLCommandReplayer.h"
+    "WebGLCommandReplayer.cpp"
+    arguments -j "${LADYBIRD_SOURCE_DIR}/Libraries/LibWeb/WebGL/GLFunctions.json"
+    dependencies "${LADYBIRD_SOURCE_DIR}/Meta/Generators/libweb_webgl.py"
 )
 
 set(GENERATED_SOURCES
@@ -13,6 +25,7 @@ set(GENERATED_SOURCES
     CompositorControlServerEndpoint.h
     CompositorWebContentClientEndpoint.h
     CompositorWebContentServerEndpoint.h
+    WebGLCommandReplayer.cpp
 )
 
 add_library(compositorservice STATIC ${SOURCES} ${GENERATED_SOURCES})

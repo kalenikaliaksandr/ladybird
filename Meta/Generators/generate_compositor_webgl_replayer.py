@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+
+# Copyright (c) 2026, Aliaksandr Kalenik <kalenik.aliaksandr@gmail.com>
+#
+# SPDX-License-Identifier: BSD-2-Clause
+
+import argparse
+import re
+import sys
+
+from io import StringIO
+from pathlib import Path
+from typing import TextIO
+
+sys.path.append(str(Path(__file__).resolve().parent))
+
+from libweb_webgl import command_name
+from libweb_webgl import is_const_pointer
+from libweb_webgl import is_pointer
+from libweb_webgl import load_functions
+from libweb_webgl import method_name
+from libweb_webgl import snake_case
+
+# Generates the Compositor-side replayer for the WebGL command stream: one
+# replay_webgl_command() overload per command. The stream crosses a process boundary, so
+# every payload span is bounds-checked and its size is validated against the size the
+# command's own fields imply before anything reaches GL; object ids are translated
+# through WebGLObjectMap. GL-level validation stays in ANGLE (the host context runs with
+# EGL_CONTEXT_WEBGL_COMPATIBILITY_ANGLE), exactly as it did when WebGL lived in
+# WebContent.
+
+
+def element_type(pointer_type: str):
+    base = pointer_type.replace("const", "").replace("*", "").strip()
+    return None if base in ("void", "GLchar") else base
+
+
+def rewrite_size_expression(expression: str, function: dict) -> str:
+    for arg_name in sorted((a["name"] for a in function["args"]), key=len, reverse=True):
+        expression = re.sub(rf"\b{re.escape(arg_name)}\b", f"command.{snake_case(arg_name)}", expression)
+    return expression
+
+
+def emit_payload_resolution(lines: list, function: dict, arg: dict) -> str:
+    field = snake_case(arg["name"])
+    lines.append(f"    auto {field}_bytes = TRY(WebGLCommandList::resolve_data_span(payload, command.{field}));")
+    expression = rewrite_size_expression(arg["payload"], function)
+    size_check = f"static_cast<i64>({field}_bytes.size()) != static_cast<i64>({expression})"
+    if arg.get("nullable"):
+        lines.append(f"    if (command.has_{field} && ({size_check}))")
+        lines.append('        return Error::from_string_literal("WebGL command payload size mismatch");')
+        lines.append(f"    if (!command.has_{field} && !{field}_bytes.is_empty())")
+        lines.append('        return Error::from_string_literal("WebGL command has unexpected payload");')
+    else:
+        lines.append(f"    if ({size_check})")
+        lines.append('        return Error::from_string_literal("WebGL command payload size mismatch");')
+
+    typed = element_type(arg["type"])
+    if typed:
+        lines.append(f"    auto {field} = TRY(WebGLCommandList::resolve_typed_span<{typed}>(payload, command.{field}));")
+        data_expression = f"{field}.data()"
+    else:
+        data_expression = f"{field}_bytes.data()"
+    if arg.get("nullable"):
+        return f"command.has_{field} ? {data_expression} : nullptr"
+    return data_expression
+
+
+def emit_command_body(out: TextIO, function: dict) -> bool:
+    lines: list = []
+    call_args: list = []
+    payload_used = False
+    deletes = function.get("deletes_objects", False)
+
+    for arg in function["args"]:
+        field = snake_case(arg["name"])
+        if arg.get("string"):
+            payload_used = True
+            lines.append(f"    auto {field}_bytes = TRY(WebGLCommandList::resolve_data_span(payload, command.{field}));")
+            lines.append(f"    if ({field}_bytes.is_empty() || {field}_bytes[{field}_bytes.size() - 1] != 0)")
+            lines.append('        return Error::from_string_literal("WebGL string is not NUL-terminated");')
+            call_args.append(f"reinterpret_cast<GLchar const*>({field}_bytes.data())")
+        elif arg.get("offset"):
+            call_args.append(f"reinterpret_cast<void const*>(static_cast<uintptr_t>(command.{field}))")
+        elif arg.get("object") and not is_pointer(arg):
+            if arg["type"] == "GLsync":
+                lookup = "take_sync" if deletes else "lookup_sync"
+                lines.append(f"    auto {field} = TRY(objects.{lookup}(command.{field}));")
+            elif arg.get("zero_means_default"):
+                default_getter = "default_framebuffer" if arg["name"] == "framebuffer" else "default_renderbuffer"
+                lines.append(f"    GLuint {field} = command.{field} ? TRY(objects.lookup(command.{field})) : gl.{default_getter}();")
+            else:
+                lookup = "take" if deletes else "lookup"
+                lines.append(f"    auto {field} = TRY(objects.{lookup}(command.{field}));")
+            call_args.append(field)
+        elif arg.get("object") and is_const_pointer(arg):
+            payload_used = True
+            data_expression = emit_payload_resolution(lines, function, arg)
+            assert data_expression == f"{field}.data()", "object arrays are typed WebGLObjectId spans"
+            lines.append(f"    Vector<GLuint> {field}_names;")
+            lines.append(f"    for (auto id : {field})")
+            lines.append(f"        {field}_names.append(TRY(objects.{'take' if deletes else 'lookup'}(id)));")
+            call_args.append(f"{field}_names.data()")
+        elif "payload" in arg:
+            payload_used = True
+            call_args.append(emit_payload_resolution(lines, function, arg))
+        else:
+            call_args.append(f"command.{field}")
+
+    lines.append(f"    gl.{method_name(function)}({', '.join(call_args)});")
+    out.write("\n".join(lines) + "\n")
+    return payload_used
+
+
+def emit_gen_body(out: TextIO, function: dict) -> bool:
+    if function["return"] != "void":
+        scalar_args = ", ".join(f"command.{snake_case(a['name'])}" for a in function["args"])
+        add = "add_sync" if function["return"] == "GLsync" else "add"
+        out.write(f"    TRY(objects.{add}(command.id, gl.{method_name(function)}({scalar_args})));\n")
+        return False
+
+    # glGen*(GLsizei n, GLuint* out) shape: the span carries the client-allocated ids.
+    count_field = snake_case(function["args"][0]["name"])
+    span_field = snake_case(function["args"][1]["name"])
+    out.write(f"""    auto ids = TRY(WebGLCommandList::resolve_typed_span<WebGLObjectId>(payload, command.{span_field}));
+    if (static_cast<i64>(ids.size()) != static_cast<i64>(command.{count_field}))
+        return Error::from_string_literal("WebGL command payload size mismatch");
+    for (auto id : ids) {{
+        GLuint name = 0;
+        gl.{method_name(function)}(1, &name);
+        TRY(objects.add(id, name));
+    }}
+""")
+    return True
+
+
+def signature(function: dict, payload_used: bool) -> str:
+    uses_command = function["category"] == "gen" or function["args"]
+    uses_objects = function["category"] == "gen" or any(a.get("object") for a in function["args"])
+    command = "const& command" if uses_command else "const&"
+    objects = "WebGLObjectMap& objects" if uses_objects else "WebGLObjectMap&"
+    payload = "ReadonlyBytes payload" if payload_used else "ReadonlyBytes"
+    return (
+        f"ErrorOr<void> replay_webgl_command(Web::WebGL::OpenGLContext& gl, {objects}, "
+        f"Web::WebGL::Commands::{command_name(function)} {command}, {payload})"
+    )
+
+
+def write_header_file(out: TextIO, functions: list) -> None:
+    out.write("""#pragma once
+
+#include <AK/Error.h>
+#include <Compositor/WebGLObjectMap.h>
+#include <LibWeb/WebGL/OpenGLContext.h>
+#include <LibWeb/WebGL/WebGLCommandList.h>
+
+namespace Compositor {
+""")
+    for function in functions:
+        if function["category"] not in ("command", "gen"):
+            continue
+        out.write(
+            f"ErrorOr<void> replay_webgl_command(Web::WebGL::OpenGLContext&, WebGLObjectMap&, "
+            f"Web::WebGL::Commands::{command_name(function)} const&, ReadonlyBytes);\n"
+        )
+    out.write("""
+}
+""")
+
+
+def write_implementation_file(out: TextIO, functions: list) -> None:
+    out.write("""#include <AK/Vector.h>
+#include <Compositor/WebGLCommandReplayer.h>
+
+namespace Compositor {
+
+using namespace Web::WebGL;
+
+""")
+    for function in functions:
+        if function["category"] not in ("command", "gen"):
+            continue
+        body = StringIO()
+        if function["category"] == "gen":
+            payload_used = emit_gen_body(body, function)
+        else:
+            payload_used = emit_command_body(body, function)
+        out.write(f"{signature(function, payload_used)}\n{{\n")
+        out.write(body.getvalue())
+        out.write("    return {};\n}\n\n")
+    out.write("}\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate the Compositor WebGL command replayer", add_help=False)
+    parser.add_argument("--help", action="help", help="Show this help message and exit")
+    parser.add_argument("-h", "--header", required=True, help="Path to the header file to generate")
+    parser.add_argument("-c", "--implementation", required=True, help="Path to the implementation file to generate")
+    parser.add_argument("-j", "--json", required=True, help="Path to the JSON file to read from")
+    args = parser.parse_args()
+
+    functions = load_functions(args.json)
+
+    with open(args.header, "w", encoding="utf-8") as output_file:
+        write_header_file(output_file, functions)
+
+    with open(args.implementation, "w", encoding="utf-8") as output_file:
+        write_implementation_file(output_file, functions)
+
+
+if __name__ == "__main__":
+    main()
