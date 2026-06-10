@@ -453,6 +453,17 @@ void HTMLCanvasElement::present()
     update_canvas_surface();
 }
 
+void HTMLCanvasElement::notify_compositor_backing_storage_lost()
+{
+    m_context.visit(
+        [](GC::Ref<CanvasRenderingContext2D>& context) {
+            context->notify_backing_storage_lost();
+        },
+        [](auto&) {
+            // FIXME: Run the WebGL context loss handling for WebGL contexts.
+        });
+}
+
 void HTMLCanvasElement::republish_canvas_surface()
 {
     if (m_canvas_content_dirty) {

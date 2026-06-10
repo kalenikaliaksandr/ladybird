@@ -126,6 +126,8 @@ public:
     RefPtr<Gfx::PaintingSurface> surface();
     void allocate_painting_surface_if_needed();
 
+    void notify_backing_storage_lost();
+
 protected:
     [[nodiscard]] Painting::CanvasCommandList* recorder() override;
     Variant<GC::Ref<HTMLCanvasElement>, GC::Ref<OffscreenCanvas>> canvas_element() override { return m_element; }

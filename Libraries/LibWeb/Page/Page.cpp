@@ -710,6 +710,13 @@ void Page::republish_all_canvas_element_surfaces()
     });
 }
 
+void Page::notify_all_canvas_elements_of_lost_backing_storage()
+{
+    for_each_canvas_element([](auto& canvas_element) {
+        canvas_element.notify_compositor_backing_storage_lost();
+    });
+}
+
 void Page::did_request_media_context_menu(UniqueNodeID media_id, CSSPixelPoint position, ByteString const& target, unsigned modifiers, MediaContextMenu const& menu)
 {
     m_media_context_menu_element_id = media_id;

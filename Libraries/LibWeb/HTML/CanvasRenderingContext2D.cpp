@@ -29,7 +29,10 @@
 #include <LibWeb/CSS/PropertyID.h>
 #include <LibWeb/CSS/StyleValues/FilterValueListStyleValue.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/Event.h>
 #include <LibWeb/HTML/CanvasRenderingContext2D.h>
+#include <LibWeb/HTML/EventLoop/EventLoop.h>
+#include <LibWeb/HTML/EventNames.h>
 #include <LibWeb/HTML/HTMLCanvasElement.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
 #include <LibWeb/HTML/HTMLMediaElement.h>
@@ -38,6 +41,7 @@
 #include <LibWeb/HTML/ImageData.h>
 #include <LibWeb/HTML/ImageRequest.h>
 #include <LibWeb/HTML/Path2D.h>
+#include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/TextMetrics.h>
 #include <LibWeb/Infra/CharacterTypes.h>
 #include <LibWeb/Layout/TextNode.h>
@@ -263,6 +267,8 @@ void CanvasRenderingContext2D::did_draw(Gfx::FloatRect const&)
 
 Painting::CanvasCommandList* CanvasRenderingContext2D::recorder()
 {
+    if (is_context_lost())
+        return nullptr;
     allocate_painting_surface_if_needed();
     if (!m_surface_initialized)
         return nullptr;
@@ -300,6 +306,54 @@ void CanvasRenderingContext2D::present()
 {
     flush_recorded_commands();
     m_player->prune_caches();
+}
+
+// https://html.spec.whatwg.org/multipage/canvas.html#context-loss
+void CanvasRenderingContext2D::notify_backing_storage_lost()
+{
+    // Nothing was lost if the context never had backing storage.
+    if (!m_surface_initialized)
+        return;
+
+    // When the user agent detects that the backing storage associated with a canvas context has been lost, then it
+    // must queue a global task on the DOM manipulation task source given canvas's relevant global object to run
+    // these steps:
+    queue_global_task(HTML::Task::Source::DOMManipulation, relevant_global_object(*this), GC::create_function(heap(), [this] {
+        // 1. Let canvas be context's canvas element.
+        // 2. If context's context lost is true, then abort these steps.
+        if (is_context_lost())
+            return;
+
+        // 3. Set context's context lost to true.
+        set_context_lost(true);
+
+        // AD-HOC: Drop recorded-but-unflushed draw commands; they targeted the lost storage.
+        m_commands = {};
+        m_surface_initialized = false;
+
+        // 4. Reset the rendering context to its default state given context.
+        reset_to_default_state();
+
+        // 5. Let shouldRestore be the result of firing an event named contextlost at canvas, with the cancelable
+        //    attribute initialized to true.
+        Bindings::EventInit context_lost_event_init;
+        context_lost_event_init.cancelable = true;
+        bool should_restore = m_element->dispatch_event(DOM::Event::create(realm(), HTML::EventNames::contextlost, context_lost_event_init));
+
+        // 6. If shouldRestore is false, then abort these steps.
+        if (!should_restore)
+            return;
+
+        // 7. Attempt to restore context by creating a backing storage using context's attributes and associating
+        //    them with context. If this fails, then abort these steps.
+        allocate_painting_surface_if_needed();
+
+        // 8. Set context's context lost to false.
+        set_context_lost(false);
+
+        // 9. Fire an event named contextrestored at canvas.
+        m_element->dispatch_event(DOM::Event::create(realm(), HTML::EventNames::contextrestored));
+    }));
 }
 
 void CanvasRenderingContext2D::allocate_painting_surface_if_needed()

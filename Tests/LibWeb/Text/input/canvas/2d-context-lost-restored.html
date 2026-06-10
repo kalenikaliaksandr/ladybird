@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    asyncTest(async done => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 100;
+        canvas.height = 100;
+        document.body.appendChild(canvas);
+
+        const context = canvas.getContext("2d");
+        context.fillStyle = "red";
+        context.fillRect(0, 0, 100, 100);
+
+        const events = [];
+        canvas.addEventListener("contextlost", () => {
+            events.push(`contextlost isContextLost=${context.isContextLost()}`);
+        });
+        canvas.addEventListener("contextrestored", () => {
+            events.push(`contextrestored isContextLost=${context.isContextLost()}`);
+        });
+
+        internals.loseCanvasBackingStorage();
+
+        // The context loss steps run as a queued global task.
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        for (const event of events)
+            println(event);
+
+        // The restored context is blank.
+        const pixel = context.getImageData(50, 50, 1, 1).data;
+        println(`pixel after restore: ${[...pixel].join(",")}`);
+
+        // The restored context is usable again.
+        context.fillStyle = "blue";
+        context.fillRect(0, 0, 100, 100);
+        const pixel_after_draw = context.getImageData(50, 50, 1, 1).data;
+        println(`pixel after draw: ${[...pixel_after_draw].join(",")}`);
+
+        done();
+    });
+</script>
