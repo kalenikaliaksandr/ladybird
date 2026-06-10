@@ -15,6 +15,7 @@
 #include <AK/Optional.h>
 #include <AK/RefPtr.h>
 #include <AK/Span.h>
+#include <AK/Variant.h>
 #include <AK/Vector.h>
 #include <LibGfx/DecodedImageFrame.h>
 #include <LibGfx/Forward.h>
@@ -60,6 +61,11 @@ struct DisplayListResource {
     AccumulatedVisualContextTree visual_context_tree;
 };
 
+// A compositor surface slot holds either a frame shipped from WebContent (CPU pixels in
+// a SharedImage) or a surface produced inside the Compositor process itself (a GPU
+// surface, e.g. a remote WebGL context's published frame).
+using CompositorSurfaceFrame = Variant<Gfx::DecodedImageFrame, NonnullRefPtr<Gfx::PaintingSurface>>;
+
 struct DisplayListResourceTransaction {
     Vector<DisplayListFontResource> fonts;
     Vector<DisplayListImageFrameResource> image_frames;
@@ -98,6 +104,7 @@ public:
     void update_video_frame(VideoFrameResourceId, NonnullRefPtr<Media::VideoFrame const>);
     void clear_video_frame(VideoFrameResourceId);
     void update_compositor_surface(CompositorSurfaceId, Gfx::SharedImage&&);
+    void update_compositor_surface(CompositorSurfaceId, NonnullRefPtr<Gfx::PaintingSurface>);
     void clear_compositor_surface(CompositorSurfaceId);
 
     Gfx::Font const& font(FontResourceId id) const { return *m_fonts.get(id.value()).value(); }
@@ -106,7 +113,7 @@ public:
     DisplayListResource const& display_list_resource(DisplayListResourceId id) const { return m_display_lists.get(id.value()).value(); }
     DisplayList const& display_list(DisplayListResourceId id) const { return *display_list_resource(id).display_list; }
     AccumulatedVisualContextTree const& display_list_visual_context_tree(DisplayListResourceId id) const { return display_list_resource(id).visual_context_tree; }
-    Optional<Gfx::DecodedImageFrame const&> compositor_surface(CompositorSurfaceId id) const { return m_compositor_surfaces.get(id.value()); }
+    Optional<CompositorSurfaceFrame const&> compositor_surface(CompositorSurfaceId id) const { return m_compositor_surfaces.get(id.value()); }
 
 private:
     void collect_referenced_resources(ReadonlyBytes command_bytes, DisplayListResourceSet&) const;
@@ -115,7 +122,7 @@ private:
     HashMap<u64, Gfx::DecodedImageFrame> m_image_frames;
     HashMap<u64, RefPtr<Media::VideoFrame const>> m_video_frames;
     HashMap<u64, DisplayListResource> m_display_lists;
-    HashMap<u64, Gfx::DecodedImageFrame> m_compositor_surfaces;
+    HashMap<u64, CompositorSurfaceFrame> m_compositor_surfaces;
 
     HashMap<u64, size_t> m_font_cache_reference_counts;
     HashMap<u64, size_t> m_image_frame_cache_reference_counts;

@@ -165,6 +165,14 @@ void CompositorState::update_compositor_surface(Web::Compositor::CompositorConte
     present_current_frame(context_id, *context);
 }
 
+void CompositorState::update_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
+{
+    auto* context = context_if_present(context_id);
+    VERIFY(context);
+    context->update_compositor_surface(surface_id, move(surface));
+    present_current_frame(context_id, *context);
+}
+
 void CompositorState::clear_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id)
 {
     auto* context = context_if_present(context_id);

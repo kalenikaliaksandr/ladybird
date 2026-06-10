@@ -202,6 +202,11 @@ void ContextState::update_compositor_surface(Web::Painting::CompositorSurfaceId 
     m_display_list_resource_storage.update_compositor_surface(surface_id, move(shared_image));
 }
 
+void ContextState::update_compositor_surface(Web::Painting::CompositorSurfaceId surface_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
+{
+    m_display_list_resource_storage.update_compositor_surface(surface_id, move(surface));
+}
+
 void ContextState::clear_compositor_surface(Web::Painting::CompositorSurfaceId surface_id)
 {
     m_display_list_resource_storage.clear_compositor_surface(surface_id);

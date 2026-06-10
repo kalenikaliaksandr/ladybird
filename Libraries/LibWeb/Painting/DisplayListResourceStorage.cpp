@@ -6,6 +6,7 @@
 
 #include <LibGfx/Filter.h>
 #include <LibGfx/Font/Font.h>
+#include <LibGfx/PaintingSurface.h>
 #include <LibGfx/SharedImageBuffer.h>
 #include <LibMedia/VideoFrame.h>
 #include <LibWeb/Painting/DisplayList.h>
@@ -314,6 +315,11 @@ void DisplayListResourceStorage::update_compositor_surface(CompositorSurfaceId s
 {
     auto shared_image_buffer = Gfx::SharedImageBuffer::import_from_shared_image(move(shared_image));
     m_compositor_surfaces.set(surface_id.value(), Gfx::DecodedImageFrame { *shared_image_buffer.bitmap() });
+}
+
+void DisplayListResourceStorage::update_compositor_surface(CompositorSurfaceId surface_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
+{
+    m_compositor_surfaces.set(surface_id.value(), move(surface));
 }
 
 void DisplayListResourceStorage::clear_compositor_surface(CompositorSurfaceId surface_id)
