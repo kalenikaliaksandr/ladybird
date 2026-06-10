@@ -153,6 +153,47 @@ void CompositorConnection::present_frame(Web::Compositor::CompositorContextId co
     async_present_frame(context_id, viewport_rect);
 }
 
+bool CompositorConnection::create_webgl_context(Web::WebGL::WebGLContextId webgl_context_id, Web::WebGL::WebGLVersion webgl_version, bool depth, bool stencil, bool antialias, Vector<String>& out_supported_extensions)
+{
+    if (!can_send_message_to_compositor())
+        return false;
+
+    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::CreateWebglContext>(webgl_context_id, webgl_version, depth, stencil, antialias);
+    if (!response) {
+        did_lose_compositor();
+        return false;
+    }
+    out_supported_extensions = response->take_supported_extensions();
+    return response->success();
+}
+
+void CompositorConnection::destroy_webgl_context(Web::WebGL::WebGLContextId webgl_context_id)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_destroy_webgl_context(webgl_context_id);
+}
+
+void CompositorConnection::send_webgl_commands(Web::WebGL::WebGLContextId webgl_context_id, ByteBuffer const& commands)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_webgl_commands(webgl_context_id, commands);
+}
+
+ByteBuffer CompositorConnection::webgl_sync_call(Web::WebGL::WebGLContextId webgl_context_id, ByteBuffer request)
+{
+    if (!can_send_message_to_compositor())
+        return {};
+
+    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::WebglSyncCall>(webgl_context_id, request);
+    if (!response) {
+        did_lose_compositor();
+        return {};
+    }
+    return response->take_reply();
+}
+
 void CompositorConnection::request_screenshot(Web::Compositor::CompositorContextId context_id, NonnullRefPtr<Gfx::PaintingSurface> target_surface, Function<void()>&& callback)
 {
     if (!can_send_message_to_compositor()) {

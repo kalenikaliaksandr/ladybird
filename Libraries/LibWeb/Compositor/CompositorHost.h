@@ -10,6 +10,7 @@
 #include <AK/Noncopyable.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/OwnPtr.h>
+#include <AK/RefPtr.h>
 #include <AK/Types.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
@@ -68,6 +69,10 @@ public:
     virtual ~CompositorHost();
 
     OwnPtr<CompositorContextHandle> create_context(CompositorContextId);
+
+    // The channel a remote WebGL context speaks over for its whole lifetime; bound to
+    // the compositor connection that exists right now (null without one).
+    virtual RefPtr<WebGL::RemoteWebGLTransport> create_webgl_transport() = 0;
 
     virtual void destroy_context(CompositorContextId) = 0;
     virtual void set_presentation_mode(CompositorContextId, PresentationMode) = 0;

@@ -30,6 +30,8 @@ def method_name(function: dict) -> str:
     return snake_case(command_name(function))
 
 
+# The GLFunctions and WebGLContextProxy classes must stay signature-identical (the WebGL
+# implementation cannot tell them apart), so both generators emit from this one helper.
 def method_signature(function: dict, qualifier: str = "") -> str:
     args = ", ".join(f"{arg['type']} {arg['name']}" for arg in function["args"])
     return f"{function['return']} {qualifier}{method_name(function)}({args})"

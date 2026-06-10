@@ -26,6 +26,7 @@
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
 #include <LibWeb/Painting/ScrollState.h>
+#include <LibWeb/WebGL/Types.h>
 
 namespace WebContent {
 
@@ -53,6 +54,12 @@ public:
     void viewport_size_updated(Web::Compositor::CompositorContextId, Gfx::IntSize, Web::Compositor::WindowResizingInProgress);
     void present_frame(Web::Compositor::CompositorContextId, Gfx::IntRect);
     void request_screenshot(Web::Compositor::CompositorContextId, NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&&);
+
+    bool create_webgl_context(Web::WebGL::WebGLContextId, Web::WebGL::WebGLVersion, bool depth, bool stencil, bool antialias, Vector<String>& out_supported_extensions);
+    void destroy_webgl_context(Web::WebGL::WebGLContextId);
+    void send_webgl_commands(Web::WebGL::WebGLContextId, ByteBuffer const&);
+    ByteBuffer webgl_sync_call(Web::WebGL::WebGLContextId, ByteBuffer request);
+
     Function<void(u64 page_id, Web::MouseEvent)> on_mouse_event;
 
 private:
