@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    asyncTest(async done => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 100;
+        canvas.height = 100;
+        document.body.appendChild(canvas);
+
+        const context = canvas.getContext("2d");
+        context.fillStyle = "red";
+        context.fillRect(0, 0, 100, 100);
+
+        const events = [];
+        canvas.addEventListener("contextlost", event => {
+            // Canceling contextlost prevents the restore.
+            event.preventDefault();
+            events.push("contextlost");
+        });
+        canvas.addEventListener("contextrestored", () => {
+            events.push("contextrestored");
+        });
+
+        internals.loseCanvasBackingStorage();
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        for (const event of events)
+            println(event);
+        println(`isContextLost: ${context.isContextLost()}`);
+
+        // Draws on a permanently lost context are ignored.
+        context.fillStyle = "blue";
+        context.fillRect(0, 0, 100, 100);
+        const pixel = context.getImageData(50, 50, 1, 1).data;
+        println(`pixel: ${[...pixel].join(",")}`);
+
+        done();
+    });
+</script>

@@ -1,0 +1,3 @@
+contextlost
+isContextLost: true
+pixel: 0,0,0,0
