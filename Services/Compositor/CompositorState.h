@@ -68,6 +68,8 @@ public:
     ContextOwnerCheckResult check_context_owner(Web::Compositor::CompositorContextId, CompositorStateWebContentClient&);
     void destroy_contexts_for_web_content_client(CompositorStateWebContentClient&);
 
+    RefPtr<Gfx::SkiaBackendContext> skia_backend_context() const { return m_skia_backend_context; }
+
     void create_context(Web::Compositor::CompositorContextId, Optional<u64> page_id, CompositorStateWebContentClient&);
     void destroy_context(Web::Compositor::CompositorContextId);
 

@@ -12,6 +12,7 @@ namespace Compositor {
 ConnectionFromWebContent::ConnectionFromWebContent(NonnullOwnPtr<IPC::Transport> transport, NonnullRefPtr<CompositorState> compositor_state, int client_id)
     : IPC::ConnectionFromClient<CompositorWebContentClientEndpoint, CompositorWebContentServerEndpoint>(*this, move(transport), client_id)
     , m_compositor_state(move(compositor_state))
+    , m_webgl_host(m_compositor_state->skia_backend_context())
 {
 }
 
@@ -105,6 +106,37 @@ void ConnectionFromWebContent::clear_compositor_surface(Web::Compositor::Composi
 {
     verify_context_is_owned_by_this_connection(context_id);
     m_compositor_state->clear_compositor_surface(context_id, surface_id);
+}
+
+Messages::CompositorWebContentServer::CreateWebglContextResponse ConnectionFromWebContent::create_webgl_context(Web::WebGL::WebGLContextId webgl_context_id, Web::WebGL::WebGLVersion webgl_version, bool depth, bool stencil, bool antialias)
+{
+    // The version arrives as an unvalidated enum cast from the wire.
+    if (webgl_version != Web::WebGL::WebGLVersion::WebGL1 && webgl_version != Web::WebGL::WebGLVersion::WebGL2) {
+        did_misbehave("WebContent requested an invalid WebGL version");
+        return { false, {} };
+    }
+    auto* context = m_webgl_host.create_context(webgl_context_id, webgl_version, { .depth = depth, .stencil = stencil, .antialias = antialias });
+    if (!context)
+        return { false, {} };
+    return { true, context->gl_context().get_supported_opengl_extensions() };
+}
+
+void ConnectionFromWebContent::destroy_webgl_context(Web::WebGL::WebGLContextId webgl_context_id)
+{
+    m_webgl_host.destroy_context(webgl_context_id);
+}
+
+void ConnectionFromWebContent::webgl_commands(Web::WebGL::WebGLContextId webgl_context_id, ByteBuffer commands)
+{
+    auto* context = m_webgl_host.context(webgl_context_id);
+    if (!context) {
+        did_misbehave("WebContent sent commands for an unknown WebGL context");
+        return;
+    }
+    if (auto result = context->execute_commands(commands); result.is_error()) {
+        dbgln("WebGL command stream rejected: {}", result.error());
+        did_misbehave("WebContent sent a malformed WebGL command stream");
+    }
 }
 
 void ConnectionFromWebContent::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)

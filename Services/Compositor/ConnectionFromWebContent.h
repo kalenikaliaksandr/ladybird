@@ -10,6 +10,7 @@
 #include <Compositor/CompositorState.h>
 #include <Compositor/CompositorWebContentClientEndpoint.h>
 #include <Compositor/CompositorWebContentServerEndpoint.h>
+#include <Compositor/WebGLHost.h>
 #include <LibIPC/ConnectionFromClient.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
@@ -40,6 +41,9 @@ private:
     virtual void clear_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId) override;
     virtual void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage) override;
     virtual void clear_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId) override;
+    virtual Messages::CompositorWebContentServer::CreateWebglContextResponse create_webgl_context(Web::WebGL::WebGLContextId webgl_context_id, Web::WebGL::WebGLVersion webgl_version, bool depth, bool stencil, bool antialias) override;
+    virtual void destroy_webgl_context(Web::WebGL::WebGLContextId webgl_context_id) override;
+    virtual void webgl_commands(Web::WebGL::WebGLContextId webgl_context_id, ByteBuffer commands) override;
     virtual void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation) override;
     virtual Messages::CompositorWebContentServer::AsyncScrollByResponse async_scroll_by(Web::Compositor::CompositorContextId, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollOperationTracking) override;
     virtual Messages::CompositorWebContentServer::ShouldDeferMainThreadPresentForAsyncScrollResponse should_defer_main_thread_present_for_async_scroll(Web::Compositor::CompositorContextId) override;
@@ -53,6 +57,7 @@ private:
     void verify_context_is_owned_by_this_connection(Web::Compositor::CompositorContextId);
 
     NonnullRefPtr<CompositorState> m_compositor_state;
+    WebGLHost m_webgl_host;
     Function<void(ConnectionFromWebContent&)> m_on_death;
 };
 

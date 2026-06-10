@@ -24,6 +24,11 @@ using GLchar = char;
 //        Since this conflicts with the original definition of GLsync, the suffix "Internal" has been added.
 using GLsyncInternal = void*;
 
+enum class WebGLVersion {
+    WebGL1,
+    WebGL2,
+};
+
 // Client-allocated id of a remote WebGL context living in the Compositor process.
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u64, WebGLContextId);
 
