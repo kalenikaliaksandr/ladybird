@@ -44,6 +44,7 @@ private:
     virtual Messages::CompositorWebContentServer::CreateWebglContextResponse create_webgl_context(Web::WebGL::WebGLContextId webgl_context_id, Web::WebGL::WebGLVersion webgl_version, bool depth, bool stencil, bool antialias) override;
     virtual void destroy_webgl_context(Web::WebGL::WebGLContextId webgl_context_id) override;
     virtual void webgl_commands(Web::WebGL::WebGLContextId webgl_context_id, ByteBuffer commands) override;
+    virtual Messages::CompositorWebContentServer::WebglSyncCallResponse webgl_sync_call(Web::WebGL::WebGLContextId webgl_context_id, ByteBuffer request) override;
     virtual void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation) override;
     virtual Messages::CompositorWebContentServer::AsyncScrollByResponse async_scroll_by(Web::Compositor::CompositorContextId, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollOperationTracking) override;
     virtual Messages::CompositorWebContentServer::ShouldDeferMainThreadPresentForAsyncScrollResponse should_defer_main_thread_present_for_async_scroll(Web::Compositor::CompositorContextId) override;

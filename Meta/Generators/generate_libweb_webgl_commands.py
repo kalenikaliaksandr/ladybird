@@ -15,6 +15,8 @@ sys.path.append(str(Path(__file__).resolve().parent))
 from libweb_webgl import command_name
 from libweb_webgl import command_struct_fields
 from libweb_webgl import load_functions
+from libweb_webgl import sync_reply_fields
+from libweb_webgl import sync_request_fields
 
 # Generates the WebGL command stream vocabulary from GLFunctions.json: one opcode and one
 # trivially-copyable struct per "command"/"gen" entry. The recorder (WebContent) and the
@@ -81,6 +83,61 @@ decltype(auto) visit_webgl_command_type(WebGLCommandType type, Callback&& callba
 ENUMERATE_WEBGL_COMMANDS(__ENUMERATE_WEBGL_COMMAND)
 #undef __ENUMERATE_WEBGL_COMMAND
 
+""")
+
+    sync_calls = [f for f in functions if f["category"] == "sync"]
+    out.write("#define ENUMERATE_WEBGL_SYNC_CALLS(V) \\\n")
+    for f in sync_calls:
+        out.write(f"    V({command_name(f)}) \\\n")
+    out.write("""
+enum class WebGLSyncCallType : u16 {
+#define __ENUMERATE_WEBGL_SYNC_CALL(name) name,
+    ENUMERATE_WEBGL_SYNC_CALLS(__ENUMERATE_WEBGL_SYNC_CALL)
+#undef __ENUMERATE_WEBGL_SYNC_CALL
+};
+
+""")
+    out.write(f"inline constexpr u16 webgl_sync_call_type_count = {len(sync_calls)};\n")
+    out.write("""
+WEB_API StringView to_string(WebGLSyncCallType);
+
+namespace SyncCalls {
+""")
+    for f in sync_calls:
+        name = command_name(f)
+        out.write(f"\nstruct {name} {{\n")
+        out.write(f"    static constexpr auto call_type = WebGLSyncCallType::{name};\n")
+        out.write("    struct Request {\n")
+        for cpp_type, field_name, _ in sync_request_fields(f):
+            out.write(f"        {cpp_type} {field_name} {{}};\n")
+        out.write("    };\n")
+        out.write("    struct Reply {\n")
+        for cpp_type, field_name, _ in sync_reply_fields(f):
+            out.write(f"        {cpp_type} {field_name} {{}};\n")
+        out.write("    };\n")
+        out.write("};\n")
+    out.write("""
+}
+
+template<typename Callback>
+decltype(auto) visit_webgl_sync_call_type(WebGLSyncCallType type, Callback&& callback)
+{
+    switch (type) {
+#define __ENUMERATE_WEBGL_SYNC_CALL(name) \\
+    case WebGLSyncCallType::name:         \\
+        return callback.template operator()<SyncCalls::name>();
+        ENUMERATE_WEBGL_SYNC_CALLS(__ENUMERATE_WEBGL_SYNC_CALL)
+#undef __ENUMERATE_WEBGL_SYNC_CALL
+    }
+    VERIFY_NOT_REACHED();
+}
+
+#define __ENUMERATE_WEBGL_SYNC_CALL(name)                       \\
+    static_assert(IsTriviallyCopyable<SyncCalls::name::Request>); \\
+    static_assert(IsTriviallyCopyable<SyncCalls::name::Reply>);
+ENUMERATE_WEBGL_SYNC_CALLS(__ENUMERATE_WEBGL_SYNC_CALL)
+#undef __ENUMERATE_WEBGL_SYNC_CALL
+
 }
 """)
 
@@ -98,6 +155,18 @@ StringView to_string(WebGLCommandType type)
         return #name##sv;
         ENUMERATE_WEBGL_COMMANDS(__ENUMERATE_WEBGL_COMMAND)
 #undef __ENUMERATE_WEBGL_COMMAND
+    }
+    VERIFY_NOT_REACHED();
+}
+
+StringView to_string(WebGLSyncCallType type)
+{
+    switch (type) {
+#define __ENUMERATE_WEBGL_SYNC_CALL(name) \\
+    case WebGLSyncCallType::name:         \\
+        return #name##sv;
+        ENUMERATE_WEBGL_SYNC_CALLS(__ENUMERATE_WEBGL_SYNC_CALL)
+#undef __ENUMERATE_WEBGL_SYNC_CALL
     }
     VERIFY_NOT_REACHED();
 }

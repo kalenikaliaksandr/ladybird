@@ -139,6 +139,22 @@ void ConnectionFromWebContent::webgl_commands(Web::WebGL::WebGLContextId webgl_c
     }
 }
 
+Messages::CompositorWebContentServer::WebglSyncCallResponse ConnectionFromWebContent::webgl_sync_call(Web::WebGL::WebGLContextId webgl_context_id, ByteBuffer request)
+{
+    auto* context = m_webgl_host.context(webgl_context_id);
+    if (!context) {
+        did_misbehave("WebContent sent a sync call for an unknown WebGL context");
+        return ByteBuffer {};
+    }
+    auto result = context->execute_sync_call(request);
+    if (result.is_error()) {
+        dbgln("WebGL sync call rejected: {}", result.error());
+        did_misbehave("WebContent sent a malformed WebGL sync call");
+        return ByteBuffer {};
+    }
+    return result.release_value();
+}
+
 void ConnectionFromWebContent::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)
 {
     verify_context_is_owned_by_this_connection(context_id);

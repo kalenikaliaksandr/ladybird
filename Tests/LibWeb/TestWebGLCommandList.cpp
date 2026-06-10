@@ -141,4 +141,54 @@ TEST_CASE(misaligned_typed_span_is_an_error)
     EXPECT(WebGLCommandList::resolve_typed_span<float>(payload, { 0, 15 }).is_error());
 }
 
+TEST_CASE(sync_call_round_trip)
+{
+    auto name_bytes = "color\0"sv.bytes();
+    SyncCalls::GetUniformLocation::Request request {
+        .program = 7,
+        .name = { WebGLCommandList::first_inline_data_offset(sizeof(SyncCalls::GetUniformLocation::Request)), static_cast<u32>(name_bytes.size()) },
+    };
+    auto encoded = WebGLSyncCall::encode_request<SyncCalls::GetUniformLocation>(request, name_bytes);
+
+    bool seen = false;
+    auto reply_bytes = MUST(WebGLSyncCall::dispatch_request(encoded, [&]<typename Call>(typename Call::Request const& decoded, ReadonlyBytes payload) -> ErrorOr<ByteBuffer> {
+        if constexpr (IsSame<Call, SyncCalls::GetUniformLocation>) {
+            seen = true;
+            EXPECT_EQ(decoded.program, 7u);
+            auto name = TRY(WebGLCommandList::resolve_data_span(payload, decoded.name));
+            EXPECT_EQ(name.size(), 6u);
+            EXPECT_EQ(name[name.size() - 1], 0u);
+            typename Call::Reply reply { .return_value = 42 };
+            return WebGLSyncCall::encode_reply(reply);
+        }
+        return ByteBuffer {};
+    }));
+
+    EXPECT(seen);
+    auto reply = MUST(WebGLSyncCall::decode_reply<SyncCalls::GetUniformLocation::Reply>(reply_bytes));
+    EXPECT_EQ(reply.return_value, 42);
+}
+
+TEST_CASE(malformed_sync_call_request_is_an_error)
+{
+    auto fail = [](ReadonlyBytes bytes) {
+        return WebGLSyncCall::dispatch_request(bytes, []<typename Call>(typename Call::Request const&, ReadonlyBytes) -> ErrorOr<ByteBuffer> {
+            return ByteBuffer {};
+        }).is_error();
+    };
+
+    EXPECT(fail({}));
+
+    auto encoded = WebGLSyncCall::encode_request<SyncCalls::GetError>({});
+    EXPECT(!fail(encoded));
+    EXPECT(fail(encoded.bytes().slice(0, encoded.size() - 1)));
+
+    WebGLSyncCallHeader bad_type {
+        .type = static_cast<WebGLSyncCallType>(0xFFFF),
+        .payload_size = static_cast<u32>(encoded.size() - sizeof(WebGLSyncCallHeader)),
+    };
+    __builtin_memcpy(encoded.data(), &bad_type, sizeof(bad_type));
+    EXPECT(fail(encoded));
+}
+
 }

@@ -593,7 +593,8 @@
             },
             {
                 "type": "GLuint64",
-                "name": "timeout"
+                "name": "timeout",
+                "host_override": "0"
             }
         ],
         "category": "sync"

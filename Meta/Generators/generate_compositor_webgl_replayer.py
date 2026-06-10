@@ -15,11 +15,13 @@ from typing import TextIO
 sys.path.append(str(Path(__file__).resolve().parent))
 
 from libweb_webgl import command_name
+from libweb_webgl import deref_type
 from libweb_webgl import is_const_pointer
 from libweb_webgl import is_pointer
 from libweb_webgl import load_functions
 from libweb_webgl import method_name
 from libweb_webgl import snake_case
+from libweb_webgl import sync_reply_fields
 
 # Generates the Compositor-side replayer for the WebGL command stream: one
 # replay_webgl_command() overload per command. The stream crosses a process boundary, so
@@ -35,9 +37,9 @@ def element_type(pointer_type: str):
     return None if base in ("void", "GLchar") else base
 
 
-def rewrite_size_expression(expression: str, function: dict) -> str:
+def rewrite_size_expression(expression: str, function: dict, holder: str = "command") -> str:
     for arg_name in sorted((a["name"] for a in function["args"]), key=len, reverse=True):
-        expression = re.sub(rf"\b{re.escape(arg_name)}\b", f"command.{snake_case(arg_name)}", expression)
+        expression = re.sub(rf"\b{re.escape(arg_name)}\b", f"{holder}.{snake_case(arg_name)}", expression)
     return expression
 
 
@@ -146,6 +148,100 @@ def signature(function: dict, payload_used: bool) -> str:
     )
 
 
+def emit_sync_body(out: TextIO, function: dict) -> tuple:
+    lines: list = []
+    call_args: list = []
+    out_blobs: list = []  # field names of Vector-backed reply blobs, in arg order
+    payload_used = False
+    objects_used = False
+
+    for arg in function["args"]:
+        field = snake_case(arg["name"])
+        # An arg-level "host_override" in GLFunctions.json replaces the wire value with a
+        # host-chosen constant (e.g. a page must never be able to block the compositor).
+        override = arg.get("host_override")
+        if override is not None:
+            call_args.append(override)
+        elif arg.get("out"):
+            if "payload" in arg:
+                element = deref_type(arg["type"])
+                expression = rewrite_size_expression(arg["payload"], function, "request")
+                lines.append(f"    auto {field}_byte_size = static_cast<i64>({expression});")
+                lines.append(f"    if ({field}_byte_size < 0 || static_cast<u64>({field}_byte_size) > max_webgl_sync_reply_size)")
+                lines.append('        return Error::from_string_literal("WebGL sync call reply would be too large");')
+                lines.append(f"    Vector<{element}> {field};")
+                lines.append(f"    {field}.resize(static_cast<size_t>({field}_byte_size) / sizeof({element}));")
+                call_args.append(f"{field}.data()")
+                out_blobs.append((field, element))
+            else:
+                lines.append(f"    {deref_type(arg['type'])} {field} {{}};")
+                call_args.append(f"&{field}")
+        elif arg.get("object") and not is_pointer(arg):
+            objects_used = True
+            lookup = "lookup_sync" if arg["type"] == "GLsync" else "lookup"
+            lines.append(f"    auto {field} = TRY(objects.{lookup}(request.{field}));")
+            call_args.append(field)
+        elif arg.get("string"):
+            payload_used = True
+            lines.append(f"    auto {field}_bytes = TRY(WebGLCommandList::resolve_data_span(payload, request.{field}));")
+            lines.append(f"    if ({field}_bytes.is_empty() || {field}_bytes[{field}_bytes.size() - 1] != 0)")
+            lines.append('        return Error::from_string_literal("WebGL string is not NUL-terminated");')
+            call_args.append(f"reinterpret_cast<GLchar const*>({field}_bytes.data())")
+        elif "payload" in arg:
+            payload_used = True
+            element = deref_type(arg["type"].replace("const", "").strip())
+            expression = rewrite_size_expression(arg["payload"], function, "request")
+            lines.append(f"    auto {field} = TRY(WebGLCommandList::resolve_typed_span<{element}>(payload, request.{field}));")
+            lines.append(f"    if (static_cast<i64>({field}.size() * sizeof({element})) != static_cast<i64>({expression}))")
+            lines.append('        return Error::from_string_literal("WebGL sync call payload size mismatch");')
+            call_args.append(f"{field}.data()")
+        else:
+            call_args.append(f"request.{field}")
+
+    invocation = f"gl.{method_name(function)}({', '.join(call_args)});"
+    if function["return"] != "void":
+        invocation = "auto return_value = " + invocation
+    lines.append(f"    {invocation}")
+
+    # Assemble the reply: span fields point at the Vector blobs, laid out in order.
+    reply_type = f"SyncCalls::{command_name(function)}::Reply"
+    blob_spans = []
+    for index, (field, element) in enumerate(out_blobs):
+        if index == 0:
+            offset = f"WebGLCommandList::first_inline_data_offset(sizeof({reply_type}))"
+        else:
+            offset = f"WebGLCommandList::next_inline_data_offset({out_blobs[index - 1][0]}_span)"
+        lines.append(f"    WebGLDataSpan {field}_span {{ {offset}, static_cast<u32>({field}.size() * sizeof({element})) }};")
+        blob_spans.append(field)
+
+    initializers = []
+    for _, field_name, arg in sync_reply_fields(function):
+        if arg is not None and "payload" in arg:
+            initializers.append(f".{field_name} = {field_name}_span")
+        else:
+            initializers.append(f".{field_name} = {field_name}")
+    lines.append(f"    {reply_type} reply {{ {', '.join(initializers)} }};")
+
+    blob_arguments = "".join(
+        f", ReadonlyBytes {{ {field}.data(), {field}.size() * sizeof({element}) }}" for field, element in out_blobs
+    )
+    lines.append(f"    return WebGLSyncCall::encode_reply(reply{blob_arguments});")
+
+    out.write("\n".join(lines) + "\n")
+    return payload_used, objects_used
+
+
+def sync_signature(function: dict, payload_used: bool, objects_used: bool) -> str:
+    name = command_name(function)
+    request = "const& request" if function["args"] else "const&"
+    objects = "WebGLObjectMap& objects" if objects_used else "WebGLObjectMap&"
+    payload = "ReadonlyBytes payload" if payload_used else "ReadonlyBytes"
+    return (
+        f"static ErrorOr<ByteBuffer> handle_one(Web::WebGL::OpenGLContext& gl, {objects}, "
+        f"SyncCalls::{name}::Request {request}, {payload})"
+    )
+
+
 def write_header_file(out: TextIO, functions: list) -> None:
     out.write("""#pragma once
 
@@ -164,6 +260,8 @@ namespace Compositor {
             f"Web::WebGL::Commands::{command_name(function)} const&, ReadonlyBytes);\n"
         )
     out.write("""
+ErrorOr<ByteBuffer> handle_webgl_sync_call(Web::WebGL::OpenGLContext&, WebGLObjectMap&, ReadonlyBytes request);
+
 }
 """)
 
@@ -188,7 +286,25 @@ using namespace Web::WebGL;
         out.write(f"{signature(function, payload_used)}\n{{\n")
         out.write(body.getvalue())
         out.write("    return {};\n}\n\n")
-    out.write("}\n")
+
+    for function in functions:
+        if function["category"] != "sync":
+            continue
+        body = StringIO()
+        payload_used, objects_used = emit_sync_body(body, function)
+        out.write(f"{sync_signature(function, payload_used, objects_used)}\n{{\n")
+        out.write(body.getvalue())
+        out.write("}\n\n")
+
+    out.write("""ErrorOr<ByteBuffer> handle_webgl_sync_call(Web::WebGL::OpenGLContext& gl, WebGLObjectMap& objects, ReadonlyBytes request)
+{
+    return WebGLSyncCall::dispatch_request(request, [&]<typename Call>(typename Call::Request const& call_request, ReadonlyBytes payload) -> ErrorOr<ByteBuffer> {
+        return handle_one(gl, objects, call_request, payload);
+    });
+}
+
+}
+""")
 
 
 def main():

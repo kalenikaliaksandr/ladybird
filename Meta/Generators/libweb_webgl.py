@@ -43,6 +43,47 @@ def is_const_pointer(arg: dict) -> bool:
     return is_pointer(arg) and "const" in arg["type"]
 
 
+def deref_type(pointer_type: str) -> str:
+    return pointer_type.replace("*", "").strip()
+
+
+# Returns the ordered (cpp_type, field_name, arg_or_none) triples of a synchronous
+# call's request struct: every non-out argument, with object ids, strings, and input
+# payloads in their wire representations.
+def sync_request_fields(function: dict) -> list:
+    fields = []
+    for arg in function["args"]:
+        if arg.get("out"):
+            continue
+        field_name = snake_case(arg["name"])
+        if arg.get("object") and not is_pointer(arg):
+            fields.append(("WebGLObjectId", field_name, arg))
+        elif arg.get("string") or "payload" in arg:
+            fields.append(("WebGLDataSpan", field_name, arg))
+        else:
+            assert not is_pointer(arg), f"unhandled pointer arg {function['name']}.{arg['name']}"
+            fields.append((arg["type"], field_name, arg))
+    return fields
+
+
+# Returns the ordered (cpp_type, field_name, arg_or_none) triples of a synchronous
+# call's reply struct: the return value, scalar outs by value, buffer outs as spans
+# into the reply's inline data.
+def sync_reply_fields(function: dict) -> list:
+    fields = []
+    if function["return"] != "void":
+        fields.append((function["return"], "return_value", None))
+    for arg in function["args"]:
+        if not arg.get("out"):
+            continue
+        field_name = snake_case(arg["name"])
+        if "payload" in arg:
+            fields.append(("WebGLDataSpan", field_name, arg))
+        else:
+            fields.append((deref_type(arg["type"]), field_name, arg))
+    return fields
+
+
 # Returns the ordered (cpp_type, field_name, arg_or_none) triples of the
 # trivially-copyable struct a command/gen function serializes to.
 def command_struct_fields(function: dict) -> list:
