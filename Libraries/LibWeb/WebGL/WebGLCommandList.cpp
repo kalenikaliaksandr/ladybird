@@ -62,4 +62,30 @@ void WebGLCommandList::append_bytes(WebGLCommandType type, ReadonlyBytes payload
     write_payload(record.slice(sizeof(header)), payload, inline_data);
 }
 
+ByteBuffer WebGLSyncCall::encode_request_bytes(WebGLSyncCallType type, ReadonlyBytes request, ReadonlyBytes inline_data)
+{
+    auto padded_payload_size = align_up_to(payload_layout_size(request, inline_data), WebGLCommandList::command_alignment);
+    VERIFY(padded_payload_size <= NumericLimits<u32>::max());
+
+    WebGLSyncCallHeader header {
+        .type = type,
+        .payload_size = static_cast<u32>(padded_payload_size),
+    };
+
+    auto bytes = MUST(ByteBuffer::create_uninitialized(sizeof(header) + padded_payload_size));
+    __builtin_memcpy(bytes.data(), &header, sizeof(header));
+    write_payload(bytes.bytes().slice(sizeof(header)), request, inline_data);
+    return bytes;
+}
+
+ByteBuffer WebGLSyncCall::encode_reply_bytes(ReadonlyBytes reply, ReadonlyBytes inline_data, ReadonlyBytes more_inline_data)
+{
+    VERIFY(more_inline_data.is_empty() || !inline_data.is_empty());
+
+    auto reply_size = align_up_to(payload_layout_size(reply, inline_data, more_inline_data), WebGLCommandList::command_alignment);
+    auto bytes = MUST(ByteBuffer::create_uninitialized(reply_size));
+    write_payload(bytes, reply, inline_data, more_inline_data);
+    return bytes;
+}
+
 }
