@@ -49,7 +49,7 @@ private:
     virtual void prepare_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer) override;
     virtual Messages::CompositorWebContentServer::GetCanvasPixelsResponse get_canvas_pixels(Web::Painting::CanvasContextId, Gfx::IntRect) override;
 
-    virtual void webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer commands) override;
+    virtual void webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer commands, Vector<Gfx::DecodedImageFrame> bitmaps) override;
     virtual Messages::CompositorWebContentServer::WebglSyncCallResponse webgl_sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request) override;
     virtual Messages::CompositorWebContentServer::WebglReadPixelsResponse webgl_read_pixels(Web::Painting::CanvasContextId canvas_context_id, i32 x, i32 y, i32 width, i32 height, u32 format, u32 type, i32 buf_size, Core::AnonymousBuffer pixels) override;
     virtual void webgl_read_buffer_sub_data(Web::Painting::CanvasContextId canvas_context_id, u32 target, i64 offset, i64 size, Core::AnonymousBuffer data) override;

@@ -128,12 +128,12 @@ void CompositorConnection::prepare_canvas_surface(Web::Painting::CanvasContextId
     MUST(post_message(encoded_message));
 }
 
-void CompositorConnection::send_webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer const& commands)
+void CompositorConnection::send_webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer const& commands, Vector<Gfx::DecodedImageFrame> const& bitmaps)
 {
     if (!can_send_message_to_compositor())
         return;
 
-    auto encoded_message = MUST(Messages::CompositorWebContentServer::WebglCommands::static_encode(canvas_context_id, commands));
+    auto encoded_message = MUST(Messages::CompositorWebContentServer::WebglCommands::static_encode(canvas_context_id, commands, bitmaps));
     MUST(post_message(encoded_message));
 }
 

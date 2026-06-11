@@ -9,7 +9,9 @@
 #include <AK/ByteBuffer.h>
 #include <AK/Noncopyable.h>
 #include <AK/NonnullRefPtr.h>
+#include <AK/Vector.h>
 #include <LibCore/AnonymousBuffer.h>
+#include <LibGfx/DecodedImageFrame.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/WebGL/RemoteWebGLTransport.h>
 #include <LibWeb/WebGL/WebGLCommandList.h>
@@ -32,6 +34,14 @@ public:
 
     void flush_commands();
     void set_lost() { m_lost = true; }
+
+    // Records an image upload (texImage2D/texSubImage2D with a TexImageSource). The
+    // pixels travel to the Compositor as the bitmap's anonymous buffer (a file
+    // descriptor) instead of inline command bytes, and the host performs the pixel
+    // conversion next to GL. A destination_size of {0, 0} keeps the image's natural
+    // size.
+    void tex_image2d_from_bitmap(GLenum target, GLint level, GLint internalformat, GLenum format, GLenum type, Gfx::DecodedImageFrame, Gfx::IntSize destination_size, bool flip_y, bool premultiply_alpha);
+    void tex_sub_image2d_from_bitmap(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLenum format, GLenum type, Gfx::DecodedImageFrame, Gfx::IntSize destination_size, bool flip_y, bool premultiply_alpha);
 
 protected:
     // A single batch never approaches IPC's message size limit; oversized uploads are
@@ -59,6 +69,9 @@ private:
     NonnullRefPtr<RemoteWebGLTransport> m_transport;
     Painting::CanvasContextId m_canvas_context_id { 0 };
     WebGLCommandList m_commands;
+    // Image uploads recorded into m_commands reference these by index; flushed (and
+    // index numbering restarted) together with the batch.
+    Vector<Gfx::DecodedImageFrame> m_pending_bitmaps;
     u32 m_next_object_id { 1 };
     bool m_lost { false };
 };

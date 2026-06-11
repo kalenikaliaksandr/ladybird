@@ -44,9 +44,9 @@ private:
         m_connection->destroy_canvas_context(canvas_context_id);
     }
 
-    virtual void send_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer const& commands) override
+    virtual void send_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer const& commands, Vector<Gfx::DecodedImageFrame> const& bitmaps) override
     {
-        m_connection->send_webgl_commands(canvas_context_id, commands);
+        m_connection->send_webgl_commands(canvas_context_id, commands, bitmaps);
     }
 
     virtual void prepare_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer) override

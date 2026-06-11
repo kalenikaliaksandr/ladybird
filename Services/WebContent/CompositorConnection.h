@@ -61,7 +61,7 @@ public:
     void present_frame(Web::Compositor::CompositorContextId, Gfx::IntRect);
     void request_screenshot(Web::Compositor::CompositorContextId, NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&&);
 
-    void send_webgl_commands(Web::Painting::CanvasContextId, ByteBuffer const&);
+    void send_webgl_commands(Web::Painting::CanvasContextId, ByteBuffer const&, Vector<Gfx::DecodedImageFrame> const& bitmaps);
     ByteBuffer webgl_sync_call(Web::Painting::CanvasContextId, ByteBuffer request);
     Web::WebGL::ReadPixelsResult read_webgl_pixels(Web::Painting::CanvasContextId, Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer const& pixels);
     void read_webgl_buffer_sub_data(Web::Painting::CanvasContextId, Web::WebGL::GLenum target, Web::WebGL::GLintptr offset, Web::WebGL::GLintptr size, Core::AnonymousBuffer const& data);

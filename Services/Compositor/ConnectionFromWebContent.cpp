@@ -165,11 +165,11 @@ Messages::CompositorWebContentServer::GetCanvasPixelsResponse ConnectionFromWebC
     return m_canvas_host.read_back_pixels(canvas_context_id, rect);
 }
 
-void ConnectionFromWebContent::webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer commands)
+void ConnectionFromWebContent::webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer commands, Vector<Gfx::DecodedImageFrame> bitmaps)
 {
     auto* context = m_webgl_host.context(canvas_context_id);
     VERIFY(context);
-    MUST(context->execute_commands(commands));
+    MUST(context->execute_commands(commands, bitmaps));
 }
 
 Messages::CompositorWebContentServer::WebglSyncCallResponse ConnectionFromWebContent::webgl_sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request)

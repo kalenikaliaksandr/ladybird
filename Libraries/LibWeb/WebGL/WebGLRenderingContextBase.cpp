@@ -49,57 +49,6 @@ extern "C" {
 
 namespace Web::WebGL {
 
-static constexpr Optional<Gfx::ExportFormat> determine_export_format(WebIDL::UnsignedLong format, WebIDL::UnsignedLong type)
-{
-    switch (format) {
-    case GL_RGB:
-        switch (type) {
-        case GL_UNSIGNED_BYTE:
-            return Gfx::ExportFormat::RGB888;
-        case GL_UNSIGNED_SHORT_5_6_5:
-            return Gfx::ExportFormat::RGB565;
-        default:
-            break;
-        }
-        break;
-    case GL_RGBA:
-        switch (type) {
-        case GL_UNSIGNED_BYTE:
-            return Gfx::ExportFormat::RGBA8888;
-        case GL_UNSIGNED_SHORT_4_4_4_4:
-            // FIXME: This is not exactly the same as RGBA.
-            return Gfx::ExportFormat::RGBA4444;
-        case GL_UNSIGNED_SHORT_5_5_5_1:
-            return Gfx::ExportFormat::RGBA5551;
-            break;
-        default:
-            break;
-        }
-        break;
-    case GL_ALPHA:
-        switch (type) {
-        case GL_UNSIGNED_BYTE:
-            return Gfx::ExportFormat::Alpha8;
-        default:
-            break;
-        }
-        break;
-    case GL_LUMINANCE:
-        switch (type) {
-        case GL_UNSIGNED_BYTE:
-            return Gfx::ExportFormat::Gray8;
-        default:
-            break;
-        }
-        break;
-    default:
-        break;
-    }
-
-    dbgln("WebGL: Unsupported format and type combination. format: 0x{:04x}, type: 0x{:04x}", format, type);
-    return {};
-}
-
 WebGLRenderingContextBase::WebGLRenderingContextBase(JS::Realm& realm)
     : Bindings::PlatformObject(realm)
 {
@@ -293,7 +242,7 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
     if (!frame.has_value())
         return OptionalNone {};
 
-    auto export_format = determine_export_format(format, type);
+    auto export_format = texture_export_format(format, type);
     if (!export_format.has_value())
         return OptionalNone {};
 
