@@ -32,7 +32,7 @@ public:
     // Null until an Initialize op has played; replaced by each subsequent Initialize.
     RefPtr<Gfx::PaintingSurface> surface() const;
 
-    void play(CanvasCommandList const&, DisplayListResourceStorage&);
+    bool play(CanvasCommandList const&, DisplayListResourceStorage&);
 
     void prune_caches();
 
@@ -55,8 +55,8 @@ private:
 
     RefPtr<Gfx::SkiaBackendContext> m_skia_backend_context;
     RefPtr<Gfx::PaintingSurface> m_surface;
-    OwnPtr<Gfx::Painter> m_painter;
-    DisplayListResourceStorage const* m_current_resource_storage { nullptr };
+    OwnPtr<Gfx::PainterSkia> m_painter;
+    DisplayListResourceStorage* m_current_resource_storage { nullptr };
 };
 
 }

@@ -186,7 +186,7 @@ void PainterSkia::fill_rect(Gfx::FloatRect const& rect, Color color)
     canvas.drawRect(to_skia_rect(rect), paint);
 }
 
-void PainterSkia::draw_bitmap(Gfx::FloatRect const& dst_rect, Gfx::DecodedImageFrame const& source, Gfx::IntRect const& src_rect, Gfx::ScalingMode scaling_mode, Optional<Gfx::Filter> filter, float global_alpha, Gfx::CompositingAndBlendingOperator compositing_and_blending_operator)
+static void draw_sk_image(SkCanvas& canvas, sk_sp<SkImage> const& sk_image, Gfx::FloatRect const& dst_rect, Gfx::IntRect const& src_rect, Gfx::ScalingMode scaling_mode, Optional<Gfx::Filter> const& filter, float global_alpha, Gfx::CompositingAndBlendingOperator compositing_and_blending_operator)
 {
     SkPaint paint;
 
@@ -196,11 +196,6 @@ void PainterSkia::draw_bitmap(Gfx::FloatRect const& dst_rect, Gfx::DecodedImageF
     paint.setAlpha(static_cast<u8>(global_alpha * 255));
     paint.setBlender(to_skia_blender(compositing_and_blending_operator));
 
-    auto sk_image = impl().image_cache.image_for_frame(source);
-    if (!sk_image)
-        return;
-
-    auto& canvas = impl().painting_surface->canvas();
     canvas.drawImageRect(
         sk_image.get(),
         to_skia_rect(src_rect),
@@ -208,6 +203,24 @@ void PainterSkia::draw_bitmap(Gfx::FloatRect const& dst_rect, Gfx::DecodedImageF
         to_skia_sampling_options(scaling_mode),
         &paint,
         SkCanvas::kStrict_SrcRectConstraint);
+}
+
+void PainterSkia::draw_bitmap(Gfx::FloatRect const& dst_rect, Gfx::DecodedImageFrame const& source, Gfx::IntRect const& src_rect, Gfx::ScalingMode scaling_mode, Optional<Gfx::Filter> filter, float global_alpha, Gfx::CompositingAndBlendingOperator compositing_and_blending_operator)
+{
+    auto sk_image = impl().image_cache.image_for_frame(source);
+    if (!sk_image)
+        return;
+
+    draw_sk_image(impl().painting_surface->canvas(), sk_image, dst_rect, src_rect, scaling_mode, filter, global_alpha, compositing_and_blending_operator);
+}
+
+void PainterSkia::draw_painting_surface(Gfx::FloatRect const& dst_rect, Gfx::PaintingSurface const& source, Gfx::IntRect const& src_rect, Gfx::ScalingMode scaling_mode, Optional<Gfx::Filter> filter, float global_alpha, Gfx::CompositingAndBlendingOperator compositing_and_blending_operator)
+{
+    auto sk_image = source.sk_image_snapshot<sk_sp<SkImage>>();
+    if (!sk_image)
+        return;
+
+    draw_sk_image(impl().painting_surface->canvas(), sk_image, dst_rect, src_rect, scaling_mode, filter, global_alpha, compositing_and_blending_operator);
 }
 
 void PainterSkia::set_transform(Gfx::AffineTransform const& transform)

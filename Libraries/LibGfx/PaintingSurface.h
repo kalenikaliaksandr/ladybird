@@ -58,6 +58,7 @@ public:
 
     void read_into_bitmap(Bitmap&) const;
     void write_from_bitmap(Bitmap const&);
+    void copy_from(PaintingSurface const&);
 
     void notify_content_will_change();
 

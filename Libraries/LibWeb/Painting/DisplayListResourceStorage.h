@@ -15,13 +15,16 @@
 #include <AK/Optional.h>
 #include <AK/RefPtr.h>
 #include <AK/Span.h>
+#include <AK/Variant.h>
 #include <AK/Vector.h>
 #include <LibGfx/DecodedImageFrame.h>
 #include <LibGfx/Forward.h>
+#include <LibGfx/PaintingSurface.h>
 #include <LibIPC/Forward.h>
 #include <LibMedia/VideoFrame.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
+#include <LibWeb/Painting/CanvasCommandPlayer.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
 
 namespace Web::Painting {
@@ -72,6 +75,10 @@ struct DisplayListResourceTransaction {
     Vector<DisplayListResourceId> display_list_ids_to_remove;
 };
 
+// Canvas frames are either CPU pixels shipped from WebContent or a presentation
+// surface pinned by a 2D Publish op.
+using CanvasSurfaceValue = Variant<Gfx::DecodedImageFrame, NonnullRefPtr<Gfx::PaintingSurface>>;
+
 class WEB_API DisplayListResourceStorage {
     AK_MAKE_NONCOPYABLE(DisplayListResourceStorage);
     AK_MAKE_DEFAULT_MOVABLE(DisplayListResourceStorage);
@@ -102,6 +109,15 @@ public:
     void update_canvas_surface(CanvasId, Gfx::SharedImage&&);
     void clear_canvas_surface(CanvasId);
 
+    // Hosted canvas contexts: applies the delta's resource transaction and plays the
+    // commands immediately, so removals/pruning can never run between arrival and
+    // playback. A Publish op pins a presentation surface into m_canvas_surfaces; returns
+    // whether that happened so the host can recomposite.
+    bool apply_canvas_commands(CanvasContextId, CanvasCommandList const&, DisplayListResourceTransaction&&, RefPtr<Gfx::SkiaBackendContext> const&);
+    void destroy_canvas_context(CanvasContextId);
+    RefPtr<Gfx::PaintingSurface> canvas_context_surface(CanvasContextId) const;
+    void publish_canvas_surface(CanvasId, RefPtr<Gfx::PaintingSurface>);
+
     Gfx::Font const& font(FontResourceId id) const { return *m_fonts.get(id.value()).value(); }
     Gfx::DecodedImageFrame const& image_frame(ImageFrameResourceId id) const { return m_image_frames.get(id.value()).value(); }
     Optional<Gfx::DecodedImageFrame const&> image_frame_if_exists(ImageFrameResourceId id) const { return m_image_frames.get(id.value()); }
@@ -110,7 +126,7 @@ public:
     DisplayList const& display_list(DisplayListResourceId id) const { return *display_list_resource(id).display_list; }
     AccumulatedVisualContextTree const& display_list_visual_context_tree(DisplayListResourceId id) const { return display_list_resource(id).visual_context_tree; }
     Optional<Gfx::DecodedImageFrame const&> compositor_surface(CompositorSurfaceId id) const { return m_compositor_surfaces.get(id.value()); }
-    Optional<Gfx::DecodedImageFrame const&> canvas_surface(CanvasId id) const { return m_canvas_surfaces.get(id.value()); }
+    Optional<CanvasSurfaceValue const&> canvas_surface(CanvasId id) const { return m_canvas_surfaces.get(id.value()); }
 
 private:
     void collect_referenced_resources(ReadonlyBytes command_bytes, DisplayListResourceSet&) const;
@@ -120,7 +136,8 @@ private:
     HashMap<u64, RefPtr<Media::VideoFrame const>> m_video_frames;
     HashMap<u64, DisplayListResource> m_display_lists;
     HashMap<u64, Gfx::DecodedImageFrame> m_compositor_surfaces;
-    HashMap<u64, Gfx::DecodedImageFrame> m_canvas_surfaces;
+    HashMap<u64, CanvasSurfaceValue> m_canvas_surfaces;
+    HashMap<u64, NonnullOwnPtr<CanvasCommandPlayer>> m_canvas_contexts;
 
     HashMap<u64, size_t> m_font_cache_reference_counts;
     HashMap<u64, size_t> m_image_frame_cache_reference_counts;

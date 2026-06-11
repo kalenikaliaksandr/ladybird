@@ -21,6 +21,7 @@ class ImageDecoder;
 struct FontPixelMetrics;
 
 class Painter;
+class PainterSkia;
 class PaintingSurface;
 class Palette;
 class YUVData;

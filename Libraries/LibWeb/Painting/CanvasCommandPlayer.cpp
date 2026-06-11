@@ -74,7 +74,7 @@ RefPtr<Gfx::PaintingSurface> CanvasCommandPlayer::surface() const
     return m_surface;
 }
 
-void CanvasCommandPlayer::play(CanvasCommandList const& command_list, DisplayListResourceStorage& resource_storage)
+bool CanvasCommandPlayer::play(CanvasCommandList const& command_list, DisplayListResourceStorage& resource_storage)
 {
     m_current_resource_storage = &resource_storage;
     for (auto const& command : command_list.commands())
@@ -82,6 +82,7 @@ void CanvasCommandPlayer::play(CanvasCommandList const& command_list, DisplayLis
     m_current_resource_storage = nullptr;
     if (m_painter)
         m_painter->prune_caches();
+    return false;
 }
 
 void CanvasCommandPlayer::prune_caches()
@@ -189,9 +190,17 @@ void CanvasCommandPlayer::play_command(CanvasCommands::Reset const&)
     m_painter->reset();
 }
 
-void CanvasCommandPlayer::play_command(CanvasCommands::DrawCanvasContext const&)
+void CanvasCommandPlayer::play_command(CanvasCommands::DrawCanvasContext const& command)
 {
-    VERIFY_NOT_REACHED();
+    VERIFY(m_painter);
+    VERIFY(is_valid(command.scaling_mode));
+    VERIFY(is_valid(command.compositing_and_blending_operator));
+    auto source_surface = m_current_resource_storage->canvas_context_surface(command.source_context_id);
+    VERIFY(source_surface);
+
+    // The copy-on-write Skia image snapshot makes self-draw (source == destination)
+    // well-defined without reading the source surface back to the CPU.
+    m_painter->draw_painting_surface(command.dst_rect, *source_surface, command.src_rect, command.scaling_mode, command.filter, command.global_alpha, command.compositing_and_blending_operator);
 }
 
 NonnullRefPtr<Gfx::PaintStyle> CanvasCommandPlayer::resolve_paint_style(CanvasPaintStyle const& style) const
