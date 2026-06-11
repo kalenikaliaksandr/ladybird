@@ -124,12 +124,10 @@ Messages::CompositorWebContentServer::CreateCanvasContextResponse ConnectionFrom
 {
     switch (attributes.type) {
     case Web::Compositor::CanvasContextType::Context2D:
-        if (!context_id.has_value()) {
-            did_misbehave("WebContent requested a 2D canvas context without a compositor context");
-            return { false, {} };
-        }
+        VERIFY(context_id.has_value());
+        VERIFY(attributes.canvas_id.has_value());
         verify_context_is_owned_by_this_connection(*context_id);
-        return { m_compositor_state->create_canvas_context(*context_id, canvas_context_id), {} };
+        return { m_compositor_state->create_canvas_context(*context_id, canvas_context_id, *attributes.canvas_id), {} };
     case Web::Compositor::CanvasContextType::WebGL1:
     case Web::Compositor::CanvasContextType::WebGL2: {
         VERIFY(!context_id.has_value());
@@ -146,10 +144,10 @@ Messages::CompositorWebContentServer::CreateCanvasContextResponse ConnectionFrom
     VERIFY_NOT_REACHED();
 }
 
-void ConnectionFromWebContent::update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList commands, Web::Painting::DisplayListResourceTransaction resource_transaction)
+void ConnectionFromWebContent::update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList commands)
 {
     verify_context_is_owned_by_this_connection(context_id);
-    m_compositor_state->update_canvas_commands(context_id, canvas_context_id, move(commands), move(resource_transaction));
+    m_compositor_state->update_canvas_commands(context_id, canvas_context_id, move(commands));
 }
 
 void ConnectionFromWebContent::destroy_canvas_context(Optional<Web::Compositor::CompositorContextId> context_id, Web::Painting::CanvasContextId canvas_context_id)
@@ -189,7 +187,7 @@ void ConnectionFromWebContent::prepare_webgl_canvas_surface(Web::Painting::Canva
     }
 
     auto surface = MUST(context->prepare_for_compositing(preserve_drawing_buffer));
-    m_compositor_state->update_canvas_surface(target_context_id, canvas_id, surface);
+    m_compositor_state->set_external_canvas_surface(target_context_id, canvas_id, surface);
 }
 
 Messages::CompositorWebContentServer::WebglSyncCallResponse ConnectionFromWebContent::webgl_sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request)

@@ -41,12 +41,18 @@ AK_TYPEDEF_DISTINCT_NUMERIC_GENERAL(i64, UniqueNodeID, Comparison, Increment, Ca
 
 }
 
+namespace Web::Compositor {
+
+class CompositorContextHandle;
+class CompositorHost;
+
+}
+
 namespace Web::Painting {
 
 class AccumulatedVisualContextTree;
 class BackingStore;
 class CanvasCommandList;
-class CanvasCommandPlayer;
 class ChromeWidget;
 class DevicePixelConverter;
 class DisplayList;

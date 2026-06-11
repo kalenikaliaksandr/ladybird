@@ -8,11 +8,13 @@
 
 #pragma once
 
+#include <AK/Optional.h>
 #include <AK/String.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Path.h>
 #include <LibGfx/TextLayout.h>
 #include <LibWeb/Bindings/PlatformObject.h>
+#include <LibWeb/Compositor/Types.h>
 #include <LibWeb/HTML/Canvas/CanvasCompositing.h>
 #include <LibWeb/HTML/Canvas/CanvasDrawImage.h>
 #include <LibWeb/HTML/Canvas/CanvasDrawPath.h>
@@ -29,7 +31,6 @@
 #include <LibWeb/HTML/Canvas/CanvasText.h>
 #include <LibWeb/HTML/Canvas/CanvasTextDrawingStyles.h>
 #include <LibWeb/HTML/Canvas/CanvasTransform.h>
-#include <LibWeb/Painting/CanvasCommandList.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::HTML {
@@ -78,7 +79,7 @@ public:
 
     virtual WebIDL::ExceptionOr<GC::Ref<ImageData>> create_image_data(int width, int height, Optional<Bindings::ImageDataSettings> const& settings = {}) const override;
     virtual WebIDL::ExceptionOr<GC::Ref<ImageData>> create_image_data(ImageData const& image_data) const override;
-    virtual WebIDL::ExceptionOr<GC::Ptr<ImageData>> get_image_data(int x, int y, int width, int height, Optional<Bindings::ImageDataSettings> const& settings = {}) const override;
+    virtual WebIDL::ExceptionOr<GC::Ptr<ImageData>> get_image_data(int x, int y, int width, int height, Optional<Bindings::ImageDataSettings> const& settings = {}) override;
     virtual WebIDL::ExceptionOr<void> put_image_data(ImageData&, float x, float y) override;
     virtual WebIDL::ExceptionOr<void> put_image_data(ImageData&, float x, float y, float dirty_x, float dirty_y, float dirty_width, float dirty_height) override;
     WebIDL::ExceptionOr<void> put_pixels_from_an_image_data_onto_a_bitmap(ImageData&, Painting::CanvasCommandList&, float dx, float dy, float dirty_x, float dirty_y, float dirty_width, float dirty_height);
@@ -123,10 +124,20 @@ public:
     void set_size(Gfx::IntSize const&);
     void present();
 
-    RefPtr<Gfx::PaintingSurface> surface();
     void allocate_painting_surface_if_needed();
 
+    // Drops the recorded-but-unflushed commands and destroys the context's backing
+    // storage on whichever side hosts it; also the teardown path when the element dies.
+    void discard_backing_storage();
+
     void notify_backing_storage_lost();
+
+    Painting::CanvasContextId canvas_context_id() const { return m_canvas_context_id; }
+
+    // Synchronously reads the given rect (intersected with the canvas bounds) back from
+    // the Compositor as a premultiplied BGRA8888 bitmap. Returns null when the canvas
+    // has no backing storage or no Compositor connection is available.
+    RefPtr<Gfx::Bitmap> read_pixels(Gfx::IntRect const&);
 
 protected:
     [[nodiscard]] Painting::CanvasCommandList* recorder() override;
@@ -170,15 +181,28 @@ private:
     void paint_shadow_for_stroke_internal(Gfx::Path const&, Gfx::Path::CapStyle, Gfx::Path::JoinStyle, Vector<float> const&);
 
     void flush_recorded_commands();
+    // The compositor context that hosts this canvas: its navigable's context, or the page-level
+    // detached-canvas context when the document has no navigable. Always non-null in WebContent.
+    Compositor::CompositorContextHandle* compositor_context();
+
+    // Re-establishes backing storage when the canvas's host context changed: it was adopted into
+    // a different navigable, its navigable's context went away (so it now resolves to the page
+    // context), or the page context was reset on compositor reconnect. Without this the
+    // initialized-once hosting state silently desyncs from the canvas's current context.
+    void rebind_host_if_needed();
 
     GC::Ref<HTMLCanvasElement> m_element;
 
-    // Draw calls are recorded as canvas commands and replayed onto the surface at
-    // flush points (present and surface readbacks).
-    // FIXME: Replay in the Compositor instead of locally.
+    // Draw calls are recorded as canvas commands; deltas are sent to the Compositor, which
+    // replays them onto this context's persistent surface. 2D canvas is always rasterized in
+    // the Compositor (so WebContent owns no canvas GPU surface).
     Painting::CanvasCommandList m_commands;
-    OwnPtr<Painting::CanvasCommandPlayer> m_player;
+    Painting::CanvasContextId m_canvas_context_id;
     bool m_surface_initialized { false };
+    // Identity of the compositor context this canvas is currently initialized against, so a
+    // change (adoptNode into another navigable, or context teardown) can be detected and the
+    // backing storage re-initialized against the new host instead of silently no-opping.
+    Optional<Compositor::CompositorContextId> m_compositor_host_id;
 
     // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-origin-clean
     bool m_origin_clean { true };

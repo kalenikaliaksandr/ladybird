@@ -326,50 +326,42 @@ void DisplayListResourceStorage::clear_compositor_surface(CompositorSurfaceId su
 void DisplayListResourceStorage::update_canvas_surface(CanvasId canvas_id, Gfx::SharedImage&& shared_image)
 {
     auto shared_image_buffer = Gfx::SharedImageBuffer::import_from_shared_image(move(shared_image));
-    m_canvas_surfaces.set(canvas_id.value(), Gfx::DecodedImageFrame { *shared_image_buffer.bitmap() });
+    m_external_canvas_surfaces.set(canvas_id.value(), Gfx::PaintingSurface::wrap_bitmap(*shared_image_buffer.bitmap()));
 }
 
-void DisplayListResourceStorage::update_canvas_surface(CanvasId canvas_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
+void DisplayListResourceStorage::set_external_canvas_surface(CanvasId canvas_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
 {
-    m_canvas_surfaces.set(canvas_id.value(), move(surface));
+    m_external_canvas_surfaces.set(canvas_id.value(), move(surface));
 }
 
 void DisplayListResourceStorage::clear_canvas_surface(CanvasId canvas_id)
 {
-    m_canvas_surfaces.remove(canvas_id.value());
+    m_external_canvas_surfaces.remove(canvas_id.value());
 }
 
-bool DisplayListResourceStorage::create_canvas_context(CanvasContextId context_id, RefPtr<Gfx::SkiaBackendContext> const& skia_backend_context)
+bool DisplayListResourceStorage::create_canvas_context(CanvasContextId context_id, CanvasId canvas_id, RefPtr<Gfx::SkiaBackendContext> const& skia_backend_context)
 {
     VERIFY(!m_canvas_contexts.contains(context_id.value()));
     m_canvas_contexts.set(context_id.value(), make<CanvasCommandPlayer>(skia_backend_context));
+    m_canvas_contexts_by_canvas_id.set(canvas_id.value(), context_id);
+    m_canvas_ids_by_context_id.set(context_id.value(), canvas_id);
+    m_external_canvas_surfaces.remove(canvas_id.value());
     return true;
 }
 
-bool DisplayListResourceStorage::apply_canvas_commands(CanvasContextId context_id, CanvasCommandList const& commands, DisplayListResourceTransaction&& transaction, RefPtr<Gfx::SkiaBackendContext> const& skia_backend_context)
+void DisplayListResourceStorage::apply_canvas_commands(CanvasContextId context_id, CanvasCommandList const& commands, RefPtr<Gfx::SkiaBackendContext> const&)
 {
-    Vector<ImageFrameResourceId> transient_image_frame_ids;
-    transient_image_frame_ids.ensure_capacity(transaction.image_frames.size());
-    for (auto const& frame : transaction.image_frames) {
-        if (!m_image_frames.contains(frame.id.value()))
-            transient_image_frame_ids.append(frame.id);
-    }
-
-    apply_transaction(move(transaction));
-
-    auto& player = *m_canvas_contexts.ensure(context_id.value(), [&] {
-        return make<CanvasCommandPlayer>(skia_backend_context);
-    });
-    auto published_frame = player.play(commands, *this);
-
-    for (auto id : transient_image_frame_ids)
-        m_image_frames.remove(id.value());
-
-    return published_frame;
+    auto maybe_player = m_canvas_contexts.get(context_id.value());
+    VERIFY(maybe_player.has_value());
+    (*maybe_player)->play(commands, *this);
 }
 
 void DisplayListResourceStorage::destroy_canvas_context(CanvasContextId context_id)
 {
+    if (auto canvas_id = m_canvas_ids_by_context_id.get(context_id.value()); canvas_id.has_value()) {
+        m_canvas_contexts_by_canvas_id.remove(canvas_id->value());
+        m_canvas_ids_by_context_id.remove(context_id.value());
+    }
     m_canvas_contexts.remove(context_id.value());
 }
 
@@ -381,25 +373,15 @@ RefPtr<Gfx::PaintingSurface> DisplayListResourceStorage::canvas_context_surface(
     return (*player)->surface();
 }
 
-void DisplayListResourceStorage::publish_canvas_surface(CanvasId canvas_id, RefPtr<Gfx::PaintingSurface> surface)
+Gfx::PaintingSurface const* DisplayListResourceStorage::canvas_surface(CanvasId canvas_id) const
 {
-    if (!surface) {
-        clear_canvas_surface(canvas_id);
-        return;
+    if (auto context_id = m_canvas_contexts_by_canvas_id.get(canvas_id.value()); context_id.has_value()) {
+        auto player = m_canvas_contexts.get(context_id->value());
+        if (player.has_value())
+            return (*player)->surface().ptr();
     }
 
-    RefPtr<Gfx::PaintingSurface> existing_presentation_surface;
-    if (auto current_value = m_canvas_surfaces.get(canvas_id.value()); current_value.has_value()) {
-        if (auto const* surface_value = current_value->get_pointer<NonnullRefPtr<Gfx::PaintingSurface>>(); surface_value && (*surface_value)->size() == surface->size())
-            existing_presentation_surface = *surface_value;
-    }
-
-    auto presentation_surface = existing_presentation_surface
-        ? existing_presentation_surface.release_nonnull()
-        : Gfx::PaintingSurface::create_with_size(surface->size(), Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, surface->skia_backend_context());
-    presentation_surface->copy_from(*surface);
-    presentation_surface->flush();
-    m_canvas_surfaces.set(canvas_id.value(), move(presentation_surface));
+    return m_external_canvas_surfaces.get(canvas_id.value()).value_or(nullptr);
 }
 
 }

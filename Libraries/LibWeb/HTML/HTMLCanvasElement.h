@@ -51,6 +51,15 @@ public:
     void republish_canvas_surface();
     void notify_compositor_backing_storage_lost();
     void set_canvas_content_dirty();
+    GC::Ptr<HTML::CanvasRenderingContext2D> canvas_rendering_context_2d() const
+    {
+        if (auto const* context = m_context.get_pointer<GC::Ref<HTML::CanvasRenderingContext2D>>())
+            return *context;
+        return nullptr;
+    }
+
+    // Size of the content this element publishes to its canvas surface slot, if any.
+    Optional<Gfx::IntSize> canvas_surface_content_size() const;
 
     RefPtr<Gfx::PaintingSurface> surface() const;
     void allocate_painting_surface_if_needed();

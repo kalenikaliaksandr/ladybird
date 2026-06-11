@@ -81,6 +81,13 @@ public:
     Compositor::CompositorHost& compositor_host();
     Compositor::CompositorHost const& compositor_host() const;
 
+    // A non-presenting compositor context that hosts canvases whose document has no navigable
+    // (createHTMLDocument, <template> content, DOMParser, XHR responseXML), so 2D canvas is
+    // always rasterized in the Compositor and WebContent never owns a canvas GPU surface.
+    // Null only when there is no compositor host (never the case for HTMLCanvasElement in WebContent).
+    Compositor::CompositorContextHandle* detached_canvas_compositor_context();
+    void reset_detached_canvas_compositor_context();
+
     void set_top_level_traversable(GC::Ref<HTML::TraversableNavigable>);
 
     // FIXME: This is a hack.
@@ -316,6 +323,8 @@ private:
     void on_pending_dialog_closed();
 
     GC::Ref<PageClient> m_client;
+
+    OwnPtr<Compositor::CompositorContextHandle> m_detached_canvas_compositor_context;
 
     GC::Weak<HTML::Navigable> m_focused_navigable;
 

@@ -64,6 +64,22 @@ void Page::ensure_compositor_host()
     m_client->ensure_compositor_host();
 }
 
+Compositor::CompositorContextHandle* Page::detached_canvas_compositor_context()
+{
+    if (!has_compositor_host())
+        return nullptr;
+    if (!m_detached_canvas_compositor_context) {
+        auto context_id = client().allocate_compositor_context_id(Compositor::PagePresentationRegistration::No);
+        m_detached_canvas_compositor_context = compositor_host().create_context(context_id);
+    }
+    return m_detached_canvas_compositor_context.ptr();
+}
+
+void Page::reset_detached_canvas_compositor_context()
+{
+    m_detached_canvas_compositor_context = nullptr;
+}
+
 Compositor::CompositorHost& Page::compositor_host()
 {
     auto* compositor_host = m_client->compositor_host();

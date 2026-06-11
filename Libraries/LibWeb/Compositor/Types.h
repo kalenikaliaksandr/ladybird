@@ -61,6 +61,7 @@ enum class CanvasContextType : u8 {
 
 struct CanvasContextCreationAttributes {
     CanvasContextType type { CanvasContextType::Context2D };
+    Optional<Painting::CanvasId> canvas_id;
     bool depth { false };
     bool stencil { false };
     bool antialias { false };

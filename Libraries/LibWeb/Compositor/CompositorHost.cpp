@@ -66,6 +66,26 @@ void CompositorContextHandle::clear_canvas_surface(Painting::CanvasId canvas_id)
     m_host.clear_canvas_surface(m_context_id, canvas_id);
 }
 
+bool CompositorContextHandle::create_canvas_context(Painting::CanvasContextId canvas_context_id, CanvasContextCreationAttributes attributes)
+{
+    return m_host.create_canvas_context(m_context_id, canvas_context_id, attributes);
+}
+
+void CompositorContextHandle::update_canvas_commands(Painting::CanvasContextId canvas_context_id, Painting::CanvasCommandList&& commands)
+{
+    m_host.update_canvas_commands(m_context_id, canvas_context_id, move(commands));
+}
+
+void CompositorContextHandle::destroy_canvas_context(Painting::CanvasContextId canvas_context_id)
+{
+    m_host.destroy_canvas_context(m_context_id, canvas_context_id);
+}
+
+RefPtr<Gfx::Bitmap> CompositorContextHandle::get_canvas_pixels(Painting::CanvasContextId canvas_context_id, Gfx::IntRect const& rect)
+{
+    return m_host.get_canvas_pixels(m_context_id, canvas_context_id, rect);
+}
+
 void CompositorContextHandle::update_scroll_state(Painting::ScrollStateSnapshot&& scroll_state_snapshot)
 {
     m_host.update_scroll_state(m_context_id, move(scroll_state_snapshot));

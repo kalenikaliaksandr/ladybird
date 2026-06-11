@@ -182,12 +182,11 @@ void CompositorState::update_canvas_surface(Web::Compositor::CompositorContextId
     present_current_frame(context_id, *context);
 }
 
-void CompositorState::update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
+void CompositorState::set_external_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
 {
     auto* context = context_if_present(context_id);
     VERIFY(context);
-    context->update_canvas_surface(canvas_id, move(surface));
-    present_current_frame(context_id, *context);
+    context->set_external_canvas_surface(canvas_id, move(surface));
 }
 
 void CompositorState::clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id)
@@ -198,21 +197,19 @@ void CompositorState::clear_canvas_surface(Web::Compositor::CompositorContextId 
     present_current_frame(context_id, *context);
 }
 
-bool CompositorState::create_canvas_context(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id)
+bool CompositorState::create_canvas_context(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasId canvas_id)
 {
     auto* context = context_if_present(context_id);
     VERIFY(context);
-    return context->create_canvas_context(canvas_context_id, m_skia_backend_context);
+    return context->create_canvas_context(canvas_context_id, canvas_id, m_skia_backend_context);
 }
 
-void CompositorState::update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList&& commands, Web::Painting::DisplayListResourceTransaction&& resource_transaction)
+void CompositorState::update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList&& commands)
 {
     auto* context = context_if_present(context_id);
     VERIFY(context);
 
-    bool published_frame = context->apply_canvas_commands(canvas_context_id, commands, move(resource_transaction), m_skia_backend_context);
-    if (published_frame)
-        present_current_frame(context_id, *context);
+    context->apply_canvas_commands(canvas_context_id, commands, m_skia_backend_context);
 }
 
 void CompositorState::destroy_canvas_context(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id)

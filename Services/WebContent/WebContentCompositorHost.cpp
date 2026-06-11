@@ -131,6 +131,37 @@ private:
             connection->clear_canvas_surface(context_id, canvas_id);
     }
 
+    virtual void update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList&& commands) override
+    {
+        if (auto* connection = compositor_connection())
+            connection->update_canvas_commands(context_id, canvas_context_id, commands);
+    }
+
+    virtual bool create_canvas_context(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CanvasContextCreationAttributes attributes) override
+    {
+        if (auto* connection = compositor_connection()) {
+            Vector<String> ignored_supported_extensions;
+            return connection->create_canvas_context(Optional<Web::Compositor::CompositorContextId> { context_id }, canvas_context_id, attributes, ignored_supported_extensions);
+        }
+        return false;
+    }
+
+    virtual void destroy_canvas_context(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id) override
+    {
+        if (auto* connection = compositor_connection())
+            connection->destroy_canvas_context(Optional<Web::Compositor::CompositorContextId> { context_id }, canvas_context_id);
+    }
+
+    virtual RefPtr<Gfx::Bitmap> get_canvas_pixels(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect const& rect) override
+    {
+        if (auto* connection = compositor_connection()) {
+            auto shareable_bitmap = connection->get_canvas_pixels(context_id, canvas_context_id, rect);
+            if (shareable_bitmap.is_valid())
+                return shareable_bitmap.bitmap();
+        }
+        return nullptr;
+    }
+
     virtual void update_scroll_state(Web::Compositor::CompositorContextId context_id, Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot) override
     {
         if (auto* connection = compositor_connection())

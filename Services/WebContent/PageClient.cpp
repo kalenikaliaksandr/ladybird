@@ -226,6 +226,10 @@ void PageClient::set_window_size(Web::DevicePixelSize size)
 void PageClient::compositor_process_reconnected()
 {
     page().top_level_traversable()->repaint_after_compositor_process_reconnect();
+    // Drop the page-level detached-canvas context so it is recreated with a fresh id; canvases
+    // hosted there then rebind and re-Initialize on next use (their content is gone with the
+    // old compositor process, exactly like composited canvases).
+    page().reset_detached_canvas_compositor_context();
     page().notify_all_canvas_elements_of_lost_backing_storage();
     page().republish_all_canvas_element_surfaces();
     page().update_all_media_element_video_sinks();

@@ -44,6 +44,10 @@ public:
     void clear_compositor_surface(Painting::CompositorSurfaceId);
     void update_canvas_surface(Painting::CanvasId, Gfx::SharedImage&&);
     void clear_canvas_surface(Painting::CanvasId);
+    bool create_canvas_context(Painting::CanvasContextId, CanvasContextCreationAttributes);
+    void update_canvas_commands(Painting::CanvasContextId, Painting::CanvasCommandList&&);
+    void destroy_canvas_context(Painting::CanvasContextId);
+    RefPtr<Gfx::Bitmap> get_canvas_pixels(Painting::CanvasContextId, Gfx::IntRect const&);
     void update_scroll_state(Painting::ScrollStateSnapshot&&);
     void invalidate_wheel_event_listener_state(u64 generation);
     AsyncScrollEnqueueResult async_scroll_by(UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels,
@@ -87,6 +91,10 @@ public:
     virtual void clear_compositor_surface(CompositorContextId, Painting::CompositorSurfaceId) = 0;
     virtual void update_canvas_surface(CompositorContextId, Painting::CanvasId, Gfx::SharedImage&&) = 0;
     virtual void clear_canvas_surface(CompositorContextId, Painting::CanvasId) = 0;
+    virtual bool create_canvas_context(CompositorContextId, Painting::CanvasContextId, CanvasContextCreationAttributes) = 0;
+    virtual void update_canvas_commands(CompositorContextId, Painting::CanvasContextId, Painting::CanvasCommandList&&) = 0;
+    virtual void destroy_canvas_context(CompositorContextId, Painting::CanvasContextId) = 0;
+    virtual RefPtr<Gfx::Bitmap> get_canvas_pixels(CompositorContextId, Painting::CanvasContextId, Gfx::IntRect const&) = 0;
     virtual void update_scroll_state(CompositorContextId, Painting::ScrollStateSnapshot&&) = 0;
     virtual void invalidate_wheel_event_listener_state(CompositorContextId, u64 generation) = 0;
     virtual AsyncScrollEnqueueResult async_scroll_by(CompositorContextId, UniqueNodeID expected_document_id, Gfx::FloatPoint position,

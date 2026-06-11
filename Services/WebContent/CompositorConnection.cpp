@@ -117,14 +117,13 @@ bool CompositorConnection::create_canvas_context(Optional<Web::Compositor::Compo
     return response->success();
 }
 
-void CompositorConnection::update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList const& commands, Web::Painting::DisplayListResourceTransaction const& resource_transaction)
+void CompositorConnection::update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList const& commands)
 {
     if (!can_send_message_to_compositor())
         return;
 
-    auto encoded_message = MUST(Messages::CompositorWebContentServer::UpdateCanvasCommands::static_encode(context_id, canvas_context_id, commands, resource_transaction));
-    if (post_message(encoded_message).is_error())
-        did_lose_compositor();
+    auto encoded_message = MUST(Messages::CompositorWebContentServer::UpdateCanvasCommands::static_encode(context_id, canvas_context_id, commands));
+    MUST(post_message(encoded_message));
 }
 
 void CompositorConnection::destroy_canvas_context(Optional<Web::Compositor::CompositorContextId> context_id, Web::Painting::CanvasContextId canvas_context_id)
@@ -279,6 +278,9 @@ void CompositorConnection::did_lose_compositor()
             entry.value.callback();
     }
     m_screenshots.clear();
+
+    if (on_compositor_lost)
+        on_compositor_lost();
 }
 
 bool CompositorConnection::can_send_message_to_compositor() const

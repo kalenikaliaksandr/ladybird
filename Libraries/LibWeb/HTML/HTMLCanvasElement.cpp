@@ -54,6 +54,10 @@ void HTMLCanvasElement::initialize(JS::Realm& realm)
 void HTMLCanvasElement::finalize()
 {
     clear_canvas_surface();
+    // The remote canvas context belongs to the 2D context; tear it down with the
+    // element, since nothing will reach the context afterwards.
+    if (auto context = canvas_rendering_context_2d())
+        context->discard_backing_storage();
     Base::finalize();
     document().page().unregister_canvas_element({}, unique_id());
 }
@@ -332,26 +336,17 @@ Gfx::IntSize HTMLCanvasElement::bitmap_size_for_canvas(size_t minimum_width, siz
 // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-todataurl
 String HTMLCanvasElement::to_data_url(StringView type, Optional<JS::Value> js_quality)
 {
-    // It is possible the canvas doesn't have an associated bitmap so create one
-    allocate_painting_surface_if_needed();
-    auto surface = this->surface();
-    auto size = bitmap_size_for_canvas();
-    if (!surface && !size.is_empty()) {
-        // If the context is not initialized yet, we need to allocate transparent surface for serialization
-        surface = Gfx::PaintingSurface::create_with_size(size, Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied);
-    }
-
     // FIXME: 1. If this canvas element's bitmap's origin-clean flag is set to false, then throw a "SecurityError" DOMException.
 
     // 2. If this canvas element's bitmap has no pixels (i.e. either its horizontal dimension or its vertical dimension is zero),
     //    then return the string "data:,". (This is the shortest data: URL; it represents the empty string in a text/plain resource.)
-    if (!surface)
+    auto bitmap = get_bitmap_from_surface();
+    if (!bitmap)
         return "data:,"_string;
 
     // 3. Let file be a serialization of this canvas element's bitmap as a file, passing type and quality if given.
-    auto bitmap = surface->snapshot_bitmap();
     Optional<double> quality = js_quality.has_value() && js_quality->is_number() ? js_quality->as_double() : Optional<double>();
-    auto file = serialize_bitmap(bitmap, type, quality);
+    auto file = serialize_bitmap(*bitmap, type, quality);
 
     // 4. If file is null, then return "data:,".
     if (file.is_error()) {
@@ -411,16 +406,23 @@ RefPtr<Gfx::Bitmap> HTMLCanvasElement::get_bitmap_from_surface()
 {
     // It is possible the canvas doesn't have an associated bitmap so create one
     allocate_painting_surface_if_needed();
-    auto surface = this->surface();
-    if (auto const size = bitmap_size_for_canvas(); !surface && !size.is_empty()) {
-        // If the context is not initialized yet, we need to allocate transparent surface for serialization
-        surface = Gfx::PaintingSurface::create_with_size(size, Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied);
-    }
+
+    auto const size = bitmap_size_for_canvas();
+    if (size.is_empty())
+        return nullptr;
 
     RefPtr<Gfx::Bitmap> bitmap;
-    if (surface) {
+    if (auto context = canvas_rendering_context_2d()) {
+        // 2D canvas rasterizes in the Compositor; read the pixels back.
+        if (auto pixels = context->read_pixels({ {}, size }); pixels && pixels->size() == size)
+            bitmap = pixels;
+    } else if (auto surface = this->surface()) {
         bitmap = surface->snapshot_bitmap();
     }
+
+    // No backing storage yet (or no Compositor connection): serialize transparent black.
+    if (!bitmap)
+        bitmap = MUST(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, size));
 
     return bitmap;
 }
@@ -491,11 +493,28 @@ void HTMLCanvasElement::clear_canvas_surface()
         navigable->compositor_context().clear_canvas_surface(*m_canvas_id);
 }
 
+Optional<Gfx::IntSize> HTMLCanvasElement::canvas_surface_content_size() const
+{
+    // 2D canvas rasterizes in the Compositor and publishes into the element's
+    // compositor surface slot, so there is no WebContent-side surface to gate on.
+    if (canvas_rendering_context_2d()) {
+        auto size = bitmap_size_for_canvas();
+        if (size.is_empty())
+            return {};
+        return size;
+    }
+
+    if (auto surface = this->surface())
+        return surface->size();
+    return {};
+}
+
 RefPtr<Gfx::PaintingSurface> HTMLCanvasElement::surface() const
 {
     return m_context.visit(
-        [&](GC::Ref<CanvasRenderingContext2D> const& context) {
-            return context->surface();
+        [&](GC::Ref<CanvasRenderingContext2D> const&) -> RefPtr<Gfx::PaintingSurface> {
+            // 2D canvas rasterizes in the Compositor; there is no local surface.
+            return nullptr;
         },
         [&](GC::Ref<WebGL::WebGLRenderingContext> const& context) -> RefPtr<Gfx::PaintingSurface> {
             return context->surface();

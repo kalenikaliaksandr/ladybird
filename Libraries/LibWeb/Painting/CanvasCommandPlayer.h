@@ -34,8 +34,6 @@ public:
 
     bool play(CanvasCommandList const&, DisplayListResourceStorage&);
 
-    void prune_caches();
-
 private:
     void play_command(CanvasCommands::Initialize const&);
     void play_command(CanvasCommands::ClearRect const&);

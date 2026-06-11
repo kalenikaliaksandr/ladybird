@@ -49,7 +49,7 @@ public:
     void update_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasId, Gfx::SharedImage const&);
     void clear_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasId);
     bool create_canvas_context(Optional<Web::Compositor::CompositorContextId>, Web::Painting::CanvasContextId, Web::Compositor::CanvasContextCreationAttributes, Vector<String>& out_supported_extensions);
-    void update_canvas_commands(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId, Web::Painting::CanvasCommandList const&, Web::Painting::DisplayListResourceTransaction const&);
+    void update_canvas_commands(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId, Web::Painting::CanvasCommandList const&);
     void destroy_canvas_context(Optional<Web::Compositor::CompositorContextId>, Web::Painting::CanvasContextId);
     Gfx::ShareableBitmap get_canvas_pixels(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId, Gfx::IntRect);
     void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation);
@@ -64,6 +64,7 @@ public:
     ByteBuffer webgl_sync_call(Web::Painting::CanvasContextId, ByteBuffer request);
 
     Function<void(u64 page_id, Web::MouseEvent)> on_mouse_event;
+    Function<void()> on_compositor_lost;
 
 private:
     struct PendingScreenshot {

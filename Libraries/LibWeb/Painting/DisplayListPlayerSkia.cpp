@@ -232,17 +232,11 @@ void DisplayListPlayerSkia::draw_compositor_surface(DrawCompositorSurface const&
 
 void DisplayListPlayerSkia::draw_canvas(DrawCanvas const& command)
 {
-    auto value = resource_storage().canvas_surface(command.canvas_id);
-    if (!value.has_value())
+    auto* canvas_surface = resource_storage().canvas_surface(command.canvas_id);
+    if (!canvas_surface)
         return;
 
-    auto image = value->visit(
-        [&](Gfx::DecodedImageFrame const& frame) {
-            return m_image_cache.image_for_frame(frame);
-        },
-        [](NonnullRefPtr<Gfx::PaintingSurface> const& surface) {
-            return surface->sk_image_snapshot<sk_sp<SkImage>>();
-        });
+    auto image = canvas_surface->sk_image_snapshot<sk_sp<SkImage>>();
     if (!image)
         return;
 
