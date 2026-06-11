@@ -18,6 +18,7 @@ AK_TYPEDEF_DISTINCT_ORDERED_ID(u64, VideoFrameResourceId);
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u64, DisplayListResourceId);
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u64, CompositorSurfaceId);
 AK_TYPEDEF_DISTINCT_ORDERED_ID(u64, CanvasId);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(u64, CanvasContextId);
 
 // Each id type draws from its own process-wide counter; ids are never zero.
 template<typename IdType>
