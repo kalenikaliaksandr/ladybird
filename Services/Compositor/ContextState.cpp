@@ -243,6 +243,11 @@ void ContextState::update_canvas_surface(Web::Painting::CanvasId canvas_id, Gfx:
     m_display_list_resource_storage.update_canvas_surface(canvas_id, move(shared_image));
 }
 
+void ContextState::update_canvas_surface(Web::Painting::CanvasId canvas_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
+{
+    m_display_list_resource_storage.update_canvas_surface(canvas_id, move(surface));
+}
+
 void ContextState::clear_canvas_surface(Web::Painting::CanvasId canvas_id)
 {
     m_display_list_resource_storage.clear_canvas_surface(canvas_id);

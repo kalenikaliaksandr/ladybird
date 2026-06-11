@@ -107,6 +107,7 @@ public:
     void update_compositor_surface(CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(CompositorSurfaceId);
     void update_canvas_surface(CanvasId, Gfx::SharedImage&&);
+    void update_canvas_surface(CanvasId, NonnullRefPtr<Gfx::PaintingSurface>);
     void clear_canvas_surface(CanvasId);
 
     // Hosted canvas contexts: applies the delta's resource transaction and plays the

@@ -81,6 +81,7 @@ public:
     void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId);
     void update_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasId, Gfx::SharedImage&&);
+    void update_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasId, NonnullRefPtr<Gfx::PaintingSurface>);
     void clear_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasId);
     void update_canvas_commands(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId, Web::Painting::CanvasCommandList&&, Web::Painting::DisplayListResourceTransaction&&);
     void destroy_canvas_context(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId);

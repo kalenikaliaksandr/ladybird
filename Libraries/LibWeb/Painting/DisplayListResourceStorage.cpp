@@ -329,6 +329,11 @@ void DisplayListResourceStorage::update_canvas_surface(CanvasId canvas_id, Gfx::
     m_canvas_surfaces.set(canvas_id.value(), Gfx::DecodedImageFrame { *shared_image_buffer.bitmap() });
 }
 
+void DisplayListResourceStorage::update_canvas_surface(CanvasId canvas_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
+{
+    m_canvas_surfaces.set(canvas_id.value(), move(surface));
+}
+
 void DisplayListResourceStorage::clear_canvas_surface(CanvasId canvas_id)
 {
     m_canvas_surfaces.remove(canvas_id.value());
