@@ -206,6 +206,36 @@ void CompositorConnection::present_frame(Web::Compositor::CompositorContextId co
     async_present_frame(context_id, viewport_rect);
 }
 
+ByteBuffer CompositorConnection::webgl_sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request)
+{
+    if (!can_send_message_to_compositor())
+        return {};
+
+    auto response = send_sync<Messages::CompositorWebContentServer::WebglSyncCall>(canvas_context_id, move(request));
+    return response->take_reply();
+}
+
+Web::WebGL::ReadPixelsResult CompositorConnection::read_webgl_pixels(Web::Painting::CanvasContextId canvas_context_id, Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer const& pixels)
+{
+    if (!can_send_message_to_compositor())
+        return {};
+
+    auto response = send_sync<Messages::CompositorWebContentServer::WebglReadPixels>(canvas_context_id, x, y, width, height, format, type, buf_size, pixels);
+    return {
+        .length = response->length(),
+        .columns = response->columns(),
+        .rows = response->rows(),
+    };
+}
+
+void CompositorConnection::read_webgl_buffer_sub_data(Web::Painting::CanvasContextId canvas_context_id, Web::WebGL::GLenum target, Web::WebGL::GLintptr offset, Web::WebGL::GLintptr size, Core::AnonymousBuffer const& data)
+{
+    if (!can_send_message_to_compositor())
+        return;
+
+    (void)send_sync<Messages::CompositorWebContentServer::WebglReadBufferSubData>(canvas_context_id, target, offset, size, data);
+}
+
 void CompositorConnection::request_screenshot(Web::Compositor::CompositorContextId context_id, NonnullRefPtr<Gfx::PaintingSurface> target_surface, Function<void()>&& callback)
 {
     if (!can_send_message_to_compositor()) {

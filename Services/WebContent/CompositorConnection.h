@@ -26,6 +26,7 @@
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
 #include <LibWeb/Painting/ScrollState.h>
+#include <LibWeb/WebGL/Types.h>
 
 namespace WebContent {
 
@@ -52,7 +53,6 @@ public:
     void prepare_canvas_surface(Web::Painting::CanvasContextId, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId, bool preserve_drawing_buffer);
     Gfx::ShareableBitmap get_canvas_pixels(Web::Painting::CanvasContextId, Gfx::IntRect);
 
-    void send_webgl_commands(Web::Painting::CanvasContextId, ByteBuffer const&);
     void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation);
     Web::Compositor::AsyncScrollEnqueueResult async_scroll_by(Web::Compositor::CompositorContextId, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollOperationTracking);
     bool should_defer_main_thread_present_for_async_scroll(Web::Compositor::CompositorContextId);
@@ -60,6 +60,12 @@ public:
     void viewport_size_updated(Web::Compositor::CompositorContextId, Gfx::IntSize, Web::Compositor::WindowResizingInProgress);
     void present_frame(Web::Compositor::CompositorContextId, Gfx::IntRect);
     void request_screenshot(Web::Compositor::CompositorContextId, NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&&);
+
+    void send_webgl_commands(Web::Painting::CanvasContextId, ByteBuffer const&);
+    ByteBuffer webgl_sync_call(Web::Painting::CanvasContextId, ByteBuffer request);
+    Web::WebGL::ReadPixelsResult read_webgl_pixels(Web::Painting::CanvasContextId, Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer const& pixels);
+    void read_webgl_buffer_sub_data(Web::Painting::CanvasContextId, Web::WebGL::GLenum target, Web::WebGL::GLintptr offset, Web::WebGL::GLintptr size, Core::AnonymousBuffer const& data);
+
     Function<void(u64 page_id, Web::MouseEvent)> on_mouse_event;
 
 private:
