@@ -2406,7 +2406,19 @@
                 "name": "name"
             }
         ],
-        "category": "custom"
+        "category": "custom",
+        "wire_request": [
+            {
+                "type": "GLenum",
+                "name": "name"
+            }
+        ],
+        "wire_reply": [
+            {
+                "type": "WebGLDataSpan",
+                "name": "value"
+            }
+        ]
     },
     {
         "name": "glGetSynciv",
@@ -2538,7 +2550,27 @@
                 "name": "uniformIndices"
             }
         ],
-        "category": "custom"
+        "category": "custom",
+        "wire_request": [
+            {
+                "type": "WebGLObjectId",
+                "name": "program"
+            },
+            {
+                "type": "GLsizei",
+                "name": "uniform_count"
+            },
+            {
+                "type": "WebGLDataSpan",
+                "name": "uniform_names"
+            }
+        ],
+        "wire_reply": [
+            {
+                "type": "WebGLDataSpan",
+                "name": "uniform_indices"
+            }
+        ]
     },
     {
         "name": "glGetUniformLocation",
@@ -2582,7 +2614,23 @@
                 "name": "pointer"
             }
         ],
-        "category": "custom"
+        "category": "custom",
+        "wire_request": [
+            {
+                "type": "GLuint",
+                "name": "index"
+            },
+            {
+                "type": "GLenum",
+                "name": "pname"
+            }
+        ],
+        "wire_reply": [
+            {
+                "type": "GLintptr",
+                "name": "pointer"
+            }
+        ]
     },
     {
         "name": "glGetVertexAttribfvRobustANGLE",
@@ -3017,6 +3065,18 @@
         "category": "command"
     },
     {
+        "name": "glRequestExtensionANGLE",
+        "return": "void",
+        "category": "command",
+        "args": [
+            {
+                "type": "GLchar const*",
+                "name": "name",
+                "string": true
+            }
+        ]
+    },
+    {
         "name": "glResumeTransformFeedback",
         "return": "void",
         "args": [],
@@ -3122,7 +3182,17 @@
                 "name": "length"
             }
         ],
-        "category": "custom"
+        "category": "custom",
+        "wire_command": [
+            {
+                "type": "WebGLObjectId",
+                "name": "shader"
+            },
+            {
+                "type": "WebGLDataSpan",
+                "name": "source"
+            }
+        ]
     },
     {
         "name": "glStencilFunc",
@@ -3560,7 +3630,25 @@
                 "name": "bufferMode"
             }
         ],
-        "category": "custom"
+        "category": "custom",
+        "wire_command": [
+            {
+                "type": "WebGLObjectId",
+                "name": "program"
+            },
+            {
+                "type": "GLsizei",
+                "name": "count"
+            },
+            {
+                "type": "WebGLDataSpan",
+                "name": "varyings"
+            },
+            {
+                "type": "GLenum",
+                "name": "buffer_mode"
+            }
+        ]
     },
     {
         "name": "glUniform1f",
@@ -4691,5 +4779,53 @@
             }
         ],
         "category": "command"
+    },
+    {
+        "name": "SetDrawingBufferSize",
+        "category": "builtin-command",
+        "wire_command": [
+            {
+                "type": "int",
+                "name": "width"
+            },
+            {
+                "type": "int",
+                "name": "height"
+            }
+        ]
+    },
+    {
+        "name": "ReadPixelsIntoPixelPackBuffer",
+        "category": "builtin-command",
+        "wire_command": [
+            {
+                "type": "GLint",
+                "name": "x"
+            },
+            {
+                "type": "GLint",
+                "name": "y"
+            },
+            {
+                "type": "GLsizei",
+                "name": "width"
+            },
+            {
+                "type": "GLsizei",
+                "name": "height"
+            },
+            {
+                "type": "GLenum",
+                "name": "format"
+            },
+            {
+                "type": "GLenum",
+                "name": "type"
+            },
+            {
+                "type": "GLintptr",
+                "name": "offset"
+            }
+        ]
     }
 ]

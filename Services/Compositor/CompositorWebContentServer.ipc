@@ -1,4 +1,5 @@
 #include <AK/NonnullRefPtr.h>
+#include <LibCore/AnonymousBuffer.h>
 #include <LibGfx/CanvasCommandList.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
@@ -36,6 +37,8 @@ endpoint CompositorWebContentServer
 
     webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer commands) =|
     webgl_sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request) => (ByteBuffer reply)
+    webgl_read_pixels(Web::Painting::CanvasContextId canvas_context_id, i32 x, i32 y, i32 width, i32 height, u32 format, u32 type, i32 buf_size, Core::AnonymousBuffer pixels) => (i32 length, i32 columns, i32 rows)
+    webgl_read_buffer_sub_data(Web::Painting::CanvasContextId canvas_context_id, u32 target, i64 offset, i64 size, Core::AnonymousBuffer data) => ()
 
     invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation) =|
     async_scroll_by(Web::Compositor::CompositorContextId context_id, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollOperationTracking operation_tracking) => (Web::Compositor::AsyncScrollEnqueueResult result)

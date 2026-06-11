@@ -12,11 +12,13 @@
 #include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
 #include <Compositor/WebGLObjectMap.h>
+#include <LibCore/AnonymousBuffer.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/ShareableBitmap.h>
 #include <LibGfx/Size.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/WebGL/OpenGLContext.h>
+#include <LibWeb/WebGL/Types.h>
 
 namespace Compositor {
 
@@ -34,12 +36,16 @@ public:
     ErrorOr<void> execute_commands(ReadonlyBytes);
     ErrorOr<ByteBuffer> execute_sync_call(ReadonlyBytes request);
     Gfx::ShareableBitmap read_back_drawing_buffer(Gfx::IntRect);
+    Web::WebGL::ReadPixelsResult read_pixels_robust_angle(Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer pixels);
+    void read_buffer_sub_data(Web::WebGL::GLenum target, Web::WebGL::GLintptr offset, Web::WebGL::GLintptr size, Core::AnonymousBuffer data);
     ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> prepare_for_compositing(bool preserve_drawing_buffer);
 
     Web::WebGL::OpenGLContext& gl_context() { return *m_gl_context; }
 
 private:
     explicit HostWebGLContext(NonnullOwnPtr<Web::WebGL::OpenGLContext>);
+
+    ErrorOr<void> set_drawing_buffer_size(int width, int height);
 
     NonnullOwnPtr<Web::WebGL::OpenGLContext> m_gl_context;
     WebGLObjectMap m_objects;

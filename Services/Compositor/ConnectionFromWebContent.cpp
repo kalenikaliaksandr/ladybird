@@ -179,6 +179,31 @@ Messages::CompositorWebContentServer::WebglSyncCallResponse ConnectionFromWebCon
     return MUST(context->execute_sync_call(request));
 }
 
+Messages::CompositorWebContentServer::WebglReadPixelsResponse ConnectionFromWebContent::webgl_read_pixels(Web::Painting::CanvasContextId canvas_context_id, i32 x, i32 y, i32 width, i32 height, u32 format, u32 type, i32 buf_size, Core::AnonymousBuffer pixels)
+{
+    if (buf_size < 0 || (buf_size > 0 && (!pixels.is_valid() || pixels.size() < static_cast<size_t>(buf_size)))) {
+        did_misbehave("WebContent sent an invalid WebGL readPixels buffer");
+        return { 0, 0, 0 };
+    }
+
+    auto* context = m_webgl_host.context(canvas_context_id);
+    VERIFY(context);
+    auto result = context->read_pixels_robust_angle(x, y, width, height, format, type, buf_size, move(pixels));
+    return { result.length, result.columns, result.rows };
+}
+
+void ConnectionFromWebContent::webgl_read_buffer_sub_data(Web::Painting::CanvasContextId canvas_context_id, u32 target, i64 offset, i64 size, Core::AnonymousBuffer data)
+{
+    if (size < 0 || (size > 0 && (!data.is_valid() || data.size() < static_cast<size_t>(size)))) {
+        did_misbehave("WebContent sent an invalid WebGL buffer readback target");
+        return;
+    }
+
+    auto* context = m_webgl_host.context(canvas_context_id);
+    VERIFY(context);
+    context->read_buffer_sub_data(target, offset, size, move(data));
+}
+
 void ConnectionFromWebContent::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)
 {
     verify_context_is_owned_by_this_connection(context_id);

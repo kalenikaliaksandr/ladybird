@@ -45,4 +45,10 @@ struct WebGLDataSpan {
     u32 size { 0 };
 };
 
+struct ReadPixelsResult {
+    GLsizei length { 0 };
+    GLsizei columns { 0 };
+    GLsizei rows { 0 };
+};
+
 }
