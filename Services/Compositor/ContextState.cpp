@@ -207,6 +207,16 @@ void ContextState::clear_compositor_surface(Web::Painting::CompositorSurfaceId s
     m_display_list_resource_storage.clear_compositor_surface(surface_id);
 }
 
+void ContextState::update_canvas_surface(Web::Painting::CanvasId canvas_id, Gfx::SharedImage&& shared_image)
+{
+    m_display_list_resource_storage.update_canvas_surface(canvas_id, move(shared_image));
+}
+
+void ContextState::clear_canvas_surface(Web::Painting::CanvasId canvas_id)
+{
+    m_display_list_resource_storage.clear_canvas_surface(canvas_id);
+}
+
 Gfx::SharedImage ContextState::snapshot_front_store()
 {
     return m_backing_store_manager.front_store().snapshot_into_shared_image();
