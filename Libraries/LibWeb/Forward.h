@@ -1305,6 +1305,8 @@ enum class AudioContextState;
 namespace Web::WebGL {
 
 class OpenGLContext;
+class RemoteWebGLTransport;
+class WebGLContextProxy;
 class WebGL2RenderingContext;
 class WebGLActiveInfo;
 class WebGLBuffer;

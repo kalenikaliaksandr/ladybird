@@ -5,14 +5,55 @@
  */
 
 #include <AK/NonnullOwnPtr.h>
+#include <AK/Optional.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibMedia/VideoFrame.h>
 #include <LibWeb/Compositor/CompositorHost.h>
+#include <LibWeb/WebGL/RemoteWebGLTransport.h>
 #include <WebContent/CompositorConnection.h>
 #include <WebContent/ConnectionFromClient.h>
 #include <WebContent/WebContentCompositorHost.h>
 
 namespace WebContent {
+
+// Holds a strong reference to the connection it was created against, so a WebGL context
+// keeps a stable channel even if the process later reconnects to a new compositor (the
+// old context is lost in that case, exactly like a compositor crash).
+class WebContentRemoteWebGLTransport final : public Web::WebGL::RemoteWebGLTransport {
+public:
+    explicit WebContentRemoteWebGLTransport(NonnullRefPtr<CompositorConnection> connection)
+        : m_connection(move(connection))
+    {
+    }
+
+private:
+    virtual CreateResult create_context(Web::Painting::CanvasContextId canvas_context_id, Web::WebGL::WebGLVersion webgl_version, bool depth, bool stencil, bool antialias) override
+    {
+        auto type = webgl_version == Web::WebGL::WebGLVersion::WebGL1
+            ? Web::Compositor::CanvasContextType::WebGL1
+            : Web::Compositor::CanvasContextType::WebGL2;
+        CreateResult result;
+        result.success = m_connection->create_canvas_context(Optional<Web::Compositor::CompositorContextId> {}, canvas_context_id, { .type = type, .depth = depth, .stencil = stencil, .antialias = antialias }, result.supported_extensions);
+        return result;
+    }
+
+    virtual void destroy_context(Web::Painting::CanvasContextId canvas_context_id) override
+    {
+        m_connection->destroy_canvas_context(Optional<Web::Compositor::CompositorContextId> {}, canvas_context_id);
+    }
+
+    virtual void send_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer const& commands) override
+    {
+        m_connection->send_webgl_commands(canvas_context_id, commands);
+    }
+
+    virtual ByteBuffer sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request) override
+    {
+        return m_connection->webgl_sync_call(canvas_context_id, move(request));
+    }
+
+    NonnullRefPtr<CompositorConnection> m_connection;
+};
 
 class WebContentCompositorHost final : public Web::Compositor::CompositorHost {
 public:
@@ -22,6 +63,13 @@ public:
     }
 
 private:
+    virtual RefPtr<Web::WebGL::RemoteWebGLTransport> create_webgl_transport() override
+    {
+        if (auto* connection = compositor_connection())
+            return adopt_ref(*new WebContentRemoteWebGLTransport(*connection));
+        return nullptr;
+    }
+
     virtual void destroy_context(Web::Compositor::CompositorContextId context_id) override
     {
         if (auto* connection = compositor_connection())

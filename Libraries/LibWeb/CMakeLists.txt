@@ -1158,6 +1158,7 @@ set(SOURCES
     WebGL/WebGLBuffer.cpp
     WebGL/WebGLCommandList.cpp
     WebGL/WebGLContextAttributes.cpp
+    WebGL/WebGLContextProxyBase.cpp
     WebGL/WebGLContextEvent.cpp
     WebGL/WebGLFramebuffer.cpp
     WebGL/WebGLObject.cpp
@@ -1259,6 +1260,7 @@ set(GENERATED_SOURCES
     HTML/Parser/NamedCharacterReferences.cpp
     WebGL/GLFunctions.cpp
     WebGL/WebGLCommands.cpp
+    WebGL/WebGLContextProxy.cpp
 )
 
 ladybird_lib(LibWeb web EXPLICIT_SYMBOL_EXPORT)
