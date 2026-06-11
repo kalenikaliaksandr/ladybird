@@ -178,6 +178,9 @@ void PainterSkia::clear_rect(Gfx::FloatRect const& rect, Gfx::Color color)
 void PainterSkia::fill_rect(Gfx::FloatRect const& rect, Color color)
 {
     SkPaint paint;
+    // Anti-aliased to match fill_path() of the same rect, so callers can use whichever
+    // fits without changing rendering.
+    paint.setAntiAlias(true);
     paint.setColor(to_skia_color(color));
     auto& canvas = impl().painting_surface->canvas();
     canvas.drawRect(to_skia_rect(rect), paint);
