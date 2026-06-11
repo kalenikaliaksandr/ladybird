@@ -108,12 +108,6 @@ void ConnectionFromWebContent::clear_compositor_surface(Web::Compositor::Composi
     m_compositor_state->clear_compositor_surface(context_id, surface_id);
 }
 
-void ConnectionFromWebContent::update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id, Gfx::SharedImage shared_image)
-{
-    verify_context_is_owned_by_this_connection(context_id);
-    m_compositor_state->update_canvas_surface(context_id, canvas_id, move(shared_image));
-}
-
 void ConnectionFromWebContent::clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id)
 {
     verify_context_is_owned_by_this_connection(context_id);
@@ -160,10 +154,15 @@ void ConnectionFromWebContent::destroy_canvas_context(Optional<Web::Compositor::
     m_compositor_state->destroy_canvas_context(*context_id, canvas_context_id);
 }
 
-Messages::CompositorWebContentServer::GetCanvasPixelsResponse ConnectionFromWebContent::get_canvas_pixels(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
+Messages::CompositorWebContentServer::GetCanvasPixelsResponse ConnectionFromWebContent::get_canvas_pixels(Optional<Web::Compositor::CompositorContextId> context_id, Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
 {
-    verify_context_is_owned_by_this_connection(context_id);
-    return m_compositor_state->get_canvas_pixels(context_id, canvas_context_id, rect);
+    if (!context_id.has_value()) {
+        auto* context = m_webgl_host.context(canvas_context_id);
+        VERIFY(context);
+        return context->read_back_drawing_buffer(rect);
+    }
+    verify_context_is_owned_by_this_connection(*context_id);
+    return m_compositor_state->get_canvas_pixels(*context_id, canvas_context_id, rect);
 }
 
 void ConnectionFromWebContent::webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer commands)

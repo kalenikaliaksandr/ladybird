@@ -28,13 +28,12 @@ endpoint CompositorWebContentServer
     update_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage shared_image) =|
     clear_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id) =|
 
-    update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id, Gfx::SharedImage shared_image) =|
     clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id) =|
 
     create_canvas_context(Optional<Web::Compositor::CompositorContextId> context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CanvasContextCreationAttributes attributes) => (bool success, Vector<String> supported_extensions)
     update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList commands) =|
     destroy_canvas_context(Optional<Web::Compositor::CompositorContextId> context_id, Web::Painting::CanvasContextId canvas_context_id) =|
-    get_canvas_pixels(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect) => (Gfx::ShareableBitmap pixels)
+    get_canvas_pixels(Optional<Web::Compositor::CompositorContextId> context_id, Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect) => (Gfx::ShareableBitmap pixels)
 
     webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer commands) =|
     prepare_webgl_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer) =|

@@ -326,7 +326,7 @@ Compositor::CompositorContextHandle* CanvasRenderingContext2D::compositor_contex
     if (navigable && navigable->has_compositor_context())
         return &navigable->compositor_context();
     // The document has no navigable (createHTMLDocument, <template> content, DOMParser, XHR
-    // responseXML): host in the page-level non-presenting canvas context so we still never
+    // responseXML): host in the page-level detached canvas context so we still never
     // rasterize in-process.
     return m_element->document().page().detached_canvas_compositor_context();
 }
@@ -383,7 +383,7 @@ void CanvasRenderingContext2D::set_size(Gfx::IntSize const& size)
     discard_backing_storage();
 }
 
-void CanvasRenderingContext2D::present()
+void CanvasRenderingContext2D::prepare_for_compositing()
 {
     rebind_host_if_needed();
     if (!m_surface_initialized)

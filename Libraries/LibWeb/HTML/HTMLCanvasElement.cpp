@@ -30,6 +30,7 @@
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWeb/WebGL/WebGL2RenderingContext.h>
+#include <LibWeb/WebGL/WebGLContextProxy.h>
 #include <LibWeb/WebGL/WebGLRenderingContext.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
 
@@ -402,29 +403,48 @@ WebIDL::ExceptionOr<void> HTMLCanvasElement::to_blob(GC::Ref<WebIDL::CallbackTyp
     return {};
 }
 
+WebGL::WebGLRenderingContextBase* HTMLCanvasElement::webgl_context() const
+{
+    return m_context.visit(
+        [](GC::Ref<WebGL::WebGLRenderingContext> const& context) -> WebGL::WebGLRenderingContextBase* { return context.ptr(); },
+        [](GC::Ref<WebGL::WebGL2RenderingContext> const& context) -> WebGL::WebGLRenderingContextBase* { return context.ptr(); },
+        [](auto const&) -> WebGL::WebGLRenderingContextBase* { return nullptr; });
+}
+
 RefPtr<Gfx::Bitmap> HTMLCanvasElement::get_bitmap_from_surface()
 {
-    // It is possible the canvas doesn't have an associated bitmap so create one
-    allocate_painting_surface_if_needed();
-
     auto const size = bitmap_size_for_canvas();
     if (size.is_empty())
         return nullptr;
 
     RefPtr<Gfx::Bitmap> bitmap;
-    if (auto context = canvas_rendering_context_2d()) {
-        // 2D canvas rasterizes in the Compositor; read the pixels back.
-        if (auto pixels = context->read_pixels({ {}, size }); pixels && pixels->size() == size)
-            bitmap = pixels;
-    } else if (auto surface = this->surface()) {
-        bitmap = surface->snapshot_bitmap();
+    if (auto* webgl_context = this->webgl_context()) {
+        // Remote WebGL contexts have no local surface; their pixels live in the Compositor.
+        bitmap = webgl_context->context().read_back_drawing_buffer({ {}, size });
+    } else {
+        // It is possible the canvas doesn't have an associated bitmap so create one
+        allocate_painting_surface_if_needed();
+        if (auto context = canvas_rendering_context_2d()) {
+            // 2D canvas rasterizes in the Compositor; read the pixels back.
+            if (auto pixels = context->read_pixels({ {}, size }); pixels && pixels->size() == size)
+                bitmap = pixels;
+        }
     }
 
-    // No backing storage yet (or no Compositor connection): serialize transparent black.
+    // No backing storage yet, no Compositor connection, or a failed/lost-context readback:
+    // serialize transparent black at the canvas dimensions. Returning null here would crash
+    // callers that dereference the result (drawImage, texImage2D) and would make toDataURL
+    // emit "data:," for a non-empty canvas, which the spec only allows for an empty bitmap.
     if (!bitmap)
         bitmap = MUST(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, size));
 
     return bitmap;
+}
+
+void HTMLCanvasElement::notify_compositor_connection_lost()
+{
+    if (auto* webgl_context = this->webgl_context())
+        webgl_context->lose_context_from_compositor_loss();
 }
 
 void HTMLCanvasElement::set_canvas_content_dirty()
@@ -432,7 +452,7 @@ void HTMLCanvasElement::set_canvas_content_dirty()
     m_canvas_content_dirty = true;
 }
 
-void HTMLCanvasElement::present()
+void HTMLCanvasElement::prepare_for_compositing()
 {
     if (!m_canvas_content_dirty)
         return;
@@ -440,49 +460,29 @@ void HTMLCanvasElement::present()
 
     m_context.visit(
         [](GC::Ref<CanvasRenderingContext2D>& context) {
-            context->present();
+            context->prepare_for_compositing();
         },
         [](GC::Ref<WebGL::WebGLRenderingContext>& context) {
-            context->present();
+            context->prepare_for_compositing();
         },
         [](GC::Ref<WebGL::WebGL2RenderingContext>& context) {
-            context->present();
+            context->prepare_for_compositing();
         },
         [](Empty) {
             // Do nothing.
         });
-
-    update_canvas_surface();
 }
 
 void HTMLCanvasElement::notify_compositor_backing_storage_lost()
 {
-    m_context.visit(
-        [](GC::Ref<CanvasRenderingContext2D>& context) {
-            context->notify_backing_storage_lost();
-        },
-        [](auto&) {
-            // FIXME: Run the WebGL context loss handling for WebGL contexts.
-        });
-}
-
-void HTMLCanvasElement::republish_canvas_surface()
-{
-    if (m_canvas_content_dirty) {
-        present();
+    // Runs on compositor reconnect. A 2D context replays the spec context-loss flow; a WebGL
+    // context attempts restoration (firing webglcontextrestored) if the page asked for it.
+    if (auto* webgl_context = this->webgl_context()) {
+        webgl_context->restore_context_after_compositor_reconnect();
         return;
     }
-
-    update_canvas_surface();
-}
-
-void HTMLCanvasElement::update_canvas_surface()
-{
-    if (auto surface = this->surface()) {
-        surface->flush();
-        if (auto navigable = document().navigable(); navigable && navigable->has_compositor_context())
-            navigable->compositor_context().update_canvas_surface(ensure_canvas_id(), surface->snapshot_into_shared_image());
-    }
+    if (auto context_2d = canvas_rendering_context_2d())
+        context_2d->notify_backing_storage_lost();
 }
 
 void HTMLCanvasElement::clear_canvas_surface()
@@ -495,53 +495,24 @@ void HTMLCanvasElement::clear_canvas_surface()
 
 Optional<Gfx::IntSize> HTMLCanvasElement::canvas_surface_content_size() const
 {
-    // 2D canvas rasterizes in the Compositor and publishes into the element's
-    // compositor surface slot, so there is no WebContent-side surface to gate on.
-    if (canvas_rendering_context_2d()) {
-        auto size = bitmap_size_for_canvas();
-        if (size.is_empty())
-            return {};
-        return size;
-    }
+    // 2D canvas rasterizes in the Compositor and is exposed through the element's
+    // canvas surface slot, so there is no WebContent-side surface to gate on.
+    // Remote WebGL contexts use the same slot from inside the Compositor.
+    if (!canvas_rendering_context_2d() && !webgl_context())
+        return {};
 
-    if (auto surface = this->surface())
-        return surface->size();
-    return {};
-}
-
-RefPtr<Gfx::PaintingSurface> HTMLCanvasElement::surface() const
-{
-    return m_context.visit(
-        [&](GC::Ref<CanvasRenderingContext2D> const&) -> RefPtr<Gfx::PaintingSurface> {
-            // 2D canvas rasterizes in the Compositor; there is no local surface.
-            return nullptr;
-        },
-        [&](GC::Ref<WebGL::WebGLRenderingContext> const& context) -> RefPtr<Gfx::PaintingSurface> {
-            return context->surface();
-        },
-        [&](GC::Ref<WebGL::WebGL2RenderingContext> const& context) -> RefPtr<Gfx::PaintingSurface> {
-            return context->surface();
-        },
-        [](Empty) -> RefPtr<Gfx::PaintingSurface> {
-            return {};
-        });
+    auto size = bitmap_size_for_canvas();
+    if (size.is_empty())
+        return {};
+    return size;
 }
 
 void HTMLCanvasElement::allocate_painting_surface_if_needed()
 {
-    m_context.visit(
-        [&](GC::Ref<CanvasRenderingContext2D>& context) {
-            context->allocate_painting_surface_if_needed();
-        },
-        [&](GC::Ref<WebGL::WebGLRenderingContext>& context) {
-            context->allocate_painting_surface_if_needed();
-        },
-        [&](GC::Ref<WebGL::WebGL2RenderingContext>& context) {
-            context->allocate_painting_surface_if_needed();
-        },
-        [](Empty) {
-            // Do nothing.
-        });
+    // Only the 2D context has backing storage to allocate; WebGL drawing buffers live
+    // in the Compositor and are allocated by the host.
+    if (auto context = canvas_rendering_context_2d())
+        context->allocate_painting_surface_if_needed();
 }
 
 }

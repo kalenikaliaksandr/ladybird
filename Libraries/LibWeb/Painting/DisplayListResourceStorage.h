@@ -101,7 +101,6 @@ public:
     void clear_video_frame(VideoFrameResourceId);
     void update_compositor_surface(CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(CompositorSurfaceId);
-    void update_canvas_surface(CanvasId, Gfx::SharedImage&&);
     void set_external_canvas_surface(CanvasId, NonnullRefPtr<Gfx::PaintingSurface>);
     void clear_canvas_surface(CanvasId);
 

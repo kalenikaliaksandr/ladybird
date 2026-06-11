@@ -117,7 +117,6 @@ public:
     void clear_video_frame(Web::Painting::VideoFrameResourceId);
     void update_compositor_surface(Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(Web::Painting::CompositorSurfaceId);
-    void update_canvas_surface(Web::Painting::CanvasId, Gfx::SharedImage&&);
     void set_external_canvas_surface(Web::Painting::CanvasId, NonnullRefPtr<Gfx::PaintingSurface>);
     void clear_canvas_surface(Web::Painting::CanvasId);
     bool create_canvas_context(Web::Painting::CanvasContextId, Web::Painting::CanvasId, RefPtr<Gfx::SkiaBackendContext> const&);

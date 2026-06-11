@@ -10,6 +10,9 @@
 #include <AK/RefCounted.h>
 #include <AK/String.h>
 #include <AK/Vector.h>
+#include <LibGfx/Forward.h>
+#include <LibGfx/ShareableBitmap.h>
+#include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/WebGL/Types.h>
@@ -32,7 +35,12 @@ public:
     virtual CreateResult create_context(Painting::CanvasContextId, WebGLVersion, bool depth, bool stencil, bool antialias) = 0;
     virtual void destroy_context(Painting::CanvasContextId) = 0;
     virtual void send_commands(Painting::CanvasContextId, ByteBuffer const&) = 0;
+    virtual void prepare_canvas_surface(Painting::CanvasContextId, Compositor::CompositorContextId target_context_id, Painting::CanvasId, bool preserve_drawing_buffer) = 0;
     virtual ByteBuffer sync_call(Painting::CanvasContextId, ByteBuffer request) = 0;
+
+    // Synchronously reads back the live drawing buffer; pixel data travels as shared
+    // memory because the generic sync-call framing cannot carry file descriptors.
+    virtual Gfx::ShareableBitmap read_back_drawing_buffer(Painting::CanvasContextId, Gfx::IntRect const&) = 0;
 };
 
 }

@@ -122,7 +122,7 @@ public:
     virtual void set_shadow_color(String) override;
 
     void set_size(Gfx::IntSize const&);
-    void present();
+    void prepare_for_compositing();
 
     void allocate_painting_surface_if_needed();
 

@@ -47,9 +47,19 @@ private:
         m_connection->send_webgl_commands(canvas_context_id, commands);
     }
 
+    virtual void prepare_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer) override
+    {
+        m_connection->prepare_webgl_canvas_surface(canvas_context_id, target_context_id, canvas_id, preserve_drawing_buffer);
+    }
+
     virtual ByteBuffer sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request) override
     {
         return m_connection->webgl_sync_call(canvas_context_id, move(request));
+    }
+
+    virtual Gfx::ShareableBitmap read_back_drawing_buffer(Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect const& rect) override
+    {
+        return m_connection->get_canvas_pixels(Optional<Web::Compositor::CompositorContextId> {}, canvas_context_id, rect);
     }
 
     NonnullRefPtr<CompositorConnection> m_connection;
@@ -119,12 +129,6 @@ private:
             connection->clear_compositor_surface(context_id, surface_id);
     }
 
-    virtual void update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id, Gfx::SharedImage&& shared_image) override
-    {
-        if (auto* connection = compositor_connection())
-            connection->update_canvas_surface(context_id, canvas_id, shared_image);
-    }
-
     virtual void clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id) override
     {
         if (auto* connection = compositor_connection())
@@ -155,7 +159,7 @@ private:
     virtual RefPtr<Gfx::Bitmap> get_canvas_pixels(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect const& rect) override
     {
         if (auto* connection = compositor_connection()) {
-            auto shareable_bitmap = connection->get_canvas_pixels(context_id, canvas_context_id, rect);
+            auto shareable_bitmap = connection->get_canvas_pixels(Optional<Web::Compositor::CompositorContextId> { context_id }, canvas_context_id, rect);
             if (shareable_bitmap.is_valid())
                 return shareable_bitmap.bitmap();
         }

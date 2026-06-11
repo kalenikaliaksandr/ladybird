@@ -9,7 +9,7 @@
 #include <LibWeb/Bindings/OESVertexArrayObject.h>
 #include <LibWeb/WebGL/Extensions/OESVertexArrayObject.h>
 #include <LibWeb/WebGL/Extensions/WebGLVertexArrayObjectOES.h>
-#include <LibWeb/WebGL/OpenGLContext.h>
+#include <LibWeb/WebGL/WebGLContextProxy.h>
 #include <LibWeb/WebGL/WebGLRenderingContextBase.h>
 
 #include <GLES2/gl2.h>

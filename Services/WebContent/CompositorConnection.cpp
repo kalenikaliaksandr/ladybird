@@ -93,13 +93,6 @@ void CompositorConnection::clear_compositor_surface(Web::Compositor::CompositorC
     async_clear_compositor_surface(context_id, surface_id);
 }
 
-void CompositorConnection::update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id, Gfx::SharedImage const& shared_image)
-{
-    if (!can_send_message_to_compositor())
-        return;
-    async_update_canvas_surface(context_id, canvas_id, shared_image);
-}
-
 void CompositorConnection::clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id)
 {
     if (!can_send_message_to_compositor())
@@ -133,7 +126,7 @@ void CompositorConnection::destroy_canvas_context(Optional<Web::Compositor::Comp
     async_destroy_canvas_context(context_id, canvas_context_id);
 }
 
-Gfx::ShareableBitmap CompositorConnection::get_canvas_pixels(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
+Gfx::ShareableBitmap CompositorConnection::get_canvas_pixels(Optional<Web::Compositor::CompositorContextId> context_id, Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
 {
     if (!can_send_message_to_compositor())
         return {};
@@ -208,6 +201,15 @@ void CompositorConnection::send_webgl_commands(Web::Painting::CanvasContextId ca
         return;
 
     auto encoded_message = MUST(Messages::CompositorWebContentServer::WebglCommands::static_encode(canvas_context_id, commands));
+    MUST(post_message(encoded_message));
+}
+
+void CompositorConnection::prepare_webgl_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer)
+{
+    if (!can_send_message_to_compositor())
+        return;
+
+    auto encoded_message = MUST(Messages::CompositorWebContentServer::PrepareWebglCanvasSurface::static_encode(canvas_context_id, target_context_id, canvas_id, preserve_drawing_buffer));
     MUST(post_message(encoded_message));
 }
 

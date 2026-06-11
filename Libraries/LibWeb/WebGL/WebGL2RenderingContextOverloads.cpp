@@ -7,7 +7,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-
 #include <GLES3/gl3.h>
 extern "C" {
 #include <GLES2/gl2ext.h>
@@ -17,14 +16,14 @@ extern "C" {
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/TypedArray.h>
-#include <LibWeb/WebGL/OpenGLContext.h>
 #include <LibWeb/WebGL/WebGL2RenderingContextOverloads.h>
+#include <LibWeb/WebGL/WebGLContextProxy.h>
 #include <LibWeb/WebGL/WebGLUniformLocation.h>
 #include <LibWeb/WebIDL/Buffers.h>
 
 namespace Web::WebGL {
 
-WebGL2RenderingContextOverloads::WebGL2RenderingContextOverloads(JS::Realm& realm, NonnullOwnPtr<OpenGLContext> context)
+WebGL2RenderingContextOverloads::WebGL2RenderingContextOverloads(JS::Realm& realm, NonnullOwnPtr<WebGLContextProxy> context)
     : WebGL2RenderingContextImpl(realm, move(context))
 {
 }
@@ -394,7 +393,7 @@ void WebGL2RenderingContextOverloads::read_pixels(WebIDL::Long x, WebIDL::Long y
         return;
     }
 
-    m_context->read_pixels_robust_angle(x, y, width, height, format, type, 0, nullptr, nullptr, nullptr, reinterpret_cast<void*>(offset));
+    m_context->read_pixels_into_pixel_pack_buffer(x, y, width, height, format, type, offset);
 }
 
 }

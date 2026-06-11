@@ -15,13 +15,13 @@ extern "C" {
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/DataView.h>
 #include <LibJS/Runtime/TypedArray.h>
-#include <LibWeb/WebGL/OpenGLContext.h>
+#include <LibWeb/WebGL/WebGLContextProxy.h>
 #include <LibWeb/WebGL/WebGLRenderingContextOverloads.h>
 #include <LibWeb/WebGL/WebGLUniformLocation.h>
 
 namespace Web::WebGL {
 
-WebGLRenderingContextOverloads::WebGLRenderingContextOverloads(JS::Realm& realm, NonnullOwnPtr<OpenGLContext> context)
+WebGLRenderingContextOverloads::WebGLRenderingContextOverloads(JS::Realm& realm, NonnullOwnPtr<WebGLContextProxy> context)
     : WebGLRenderingContextImpl(realm, move(context))
 {
 }

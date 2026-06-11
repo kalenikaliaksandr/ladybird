@@ -9,6 +9,7 @@
 #include <Compositor/WebGLHost.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/PaintingSurface.h>
+#include <LibGfx/ShareableBitmap.h>
 #include <LibGfx/SkiaBackendContext.h>
 #include <LibWeb/WebGL/WebGLCommandList.h>
 
@@ -16,15 +17,16 @@ namespace Compositor {
 
 using namespace Web::WebGL;
 
-// A page-controlled readback (readPixels, getBufferSubData) never allocates more than
-// this on the host; the client chunks larger reads.
-static constexpr size_t max_webgl_readback_size = 16 * MiB;
+// A page-controlled readback (readPixels, getBufferSubData) reply travels inline in a sync
+// reply, so it is bounded below the IPC message payload limit (64 MiB). A readback larger
+// than this returns no data rather than tearing down the connection.
+// FIXME: Carry large readbacks over shared memory (like read_back_drawing_buffer) so this
+//        limit can be removed entirely.
+static constexpr size_t max_webgl_readback_size = 48 * MiB;
 
 // Packed-string lists (shader varyings, uniform names) are bounded well above anything
 // a real program produces.
 static constexpr GLsizei max_webgl_string_list_entries = 16384;
-
-static constexpr int max_webgl_drawing_buffer_dimension = 16384;
 
 HostWebGLContext::HostWebGLContext(NonnullOwnPtr<Web::WebGL::OpenGLContext> gl_context)
     : m_gl_context(move(gl_context))
@@ -94,10 +96,33 @@ ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> HostWebGLContext::prepare_for_compo
     return drawing_surface.release_nonnull();
 }
 
+Gfx::ShareableBitmap HostWebGLContext::read_back_drawing_buffer(Gfx::IntRect rect)
+{
+    m_gl_context->make_current();
+    m_gl_context->present(/* preserve_drawing_buffer= */ true);
+    auto surface = m_gl_context->surface();
+    if (!surface)
+        return {};
+
+    auto clipped_rect = rect.intersected(surface->rect());
+    if (clipped_rect.is_empty())
+        return {};
+
+    auto bitmap_or_error = Gfx::Bitmap::create_shareable(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, clipped_rect.size());
+    if (bitmap_or_error.is_error())
+        return {};
+    auto bitmap = bitmap_or_error.release_value();
+    surface->flush();
+    surface->read_into_bitmap(*bitmap, clipped_rect.location());
+    return Gfx::ShareableBitmap { move(bitmap), Gfx::ShareableBitmap::ConstructWithKnownGoodBitmap };
+}
+
 ErrorOr<void> HostWebGLContext::set_drawing_buffer_size(int width, int height)
 {
-    if (width < 1 || height < 1 || width > max_webgl_drawing_buffer_dimension || height > max_webgl_drawing_buffer_dimension)
-        return Error::from_string_literal("Invalid WebGL drawing buffer size");
+    VERIFY(width >= 1);
+    VERIFY(width <= max_webgl_drawing_buffer_dimension);
+    VERIFY(height >= 1);
+    VERIFY(height <= max_webgl_drawing_buffer_dimension);
     m_gl_context->set_size({ width, height });
     m_gl_context->make_current();
     return {};
@@ -158,8 +183,17 @@ ErrorOr<ByteBuffer> handle_one(Web::WebGL::OpenGLContext& gl, WebGLObjectMap&, S
 
 ErrorOr<ByteBuffer> handle_one(Web::WebGL::OpenGLContext& gl, WebGLObjectMap&, SyncCalls::ReadPixelsRobustANGLE::Request const& request, ReadonlyBytes)
 {
-    if (request.buf_size < 0 || static_cast<u64>(request.buf_size) > max_webgl_readback_size)
-        return Error::from_string_literal("WebGL readback is too large");
+    if (request.buf_size < 0 || static_cast<u64>(request.buf_size) > max_webgl_readback_size) {
+        // A spec-legal but too-large readback must not tear down the connection; reply with
+        // no pixels (the page reads back zeros) instead.
+        SyncCalls::ReadPixelsRobustANGLE::Reply reply {
+            .length = 0,
+            .columns = 0,
+            .rows = 0,
+            .pixels = { WebGLCommandList::first_inline_data_offset(sizeof(SyncCalls::ReadPixelsRobustANGLE::Reply)), 0 },
+        };
+        return WebGLSyncCall::encode_reply(reply);
+    }
     auto pixels = TRY(ByteBuffer::create_zeroed(request.buf_size));
     GLsizei length = 0;
     GLsizei columns = 0;
@@ -202,8 +236,13 @@ ErrorOr<ByteBuffer> handle_one(Web::WebGL::OpenGLContext& gl, WebGLObjectMap& ob
 
 ErrorOr<ByteBuffer> handle_one(Web::WebGL::OpenGLContext& gl, WebGLObjectMap&, SyncCalls::ReadBufferSubData::Request const& request, ReadonlyBytes)
 {
-    if (request.offset < 0 || request.size < 0 || static_cast<u64>(request.size) > max_webgl_readback_size)
-        return Error::from_string_literal("WebGL readback is too large");
+    if (request.offset < 0 || request.size < 0 || static_cast<u64>(request.size) > max_webgl_readback_size) {
+        // As with readPixels: reply with no data rather than tearing down the connection.
+        SyncCalls::ReadBufferSubData::Reply reply {
+            .data = { WebGLCommandList::first_inline_data_offset(sizeof(SyncCalls::ReadBufferSubData::Reply)), 0 },
+        };
+        return WebGLSyncCall::encode_reply(reply);
+    }
     auto data = TRY(ByteBuffer::create_zeroed(static_cast<size_t>(request.size)));
     if (auto* mapped = gl.map_buffer_range(request.target, request.offset, request.size, GL_MAP_READ_BIT)) {
         __builtin_memcpy(data.data(), mapped, data.size());

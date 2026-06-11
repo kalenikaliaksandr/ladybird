@@ -243,11 +243,6 @@ void ContextState::clear_compositor_surface(Web::Painting::CompositorSurfaceId s
     m_display_list_resource_storage.clear_compositor_surface(surface_id);
 }
 
-void ContextState::update_canvas_surface(Web::Painting::CanvasId canvas_id, Gfx::SharedImage&& shared_image)
-{
-    m_display_list_resource_storage.update_canvas_surface(canvas_id, move(shared_image));
-}
-
 void ContextState::set_external_canvas_surface(Web::Painting::CanvasId canvas_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
 {
     m_display_list_resource_storage.set_external_canvas_surface(canvas_id, move(surface));

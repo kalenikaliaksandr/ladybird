@@ -323,12 +323,6 @@ void DisplayListResourceStorage::clear_compositor_surface(CompositorSurfaceId su
     m_compositor_surfaces.remove(surface_id.value());
 }
 
-void DisplayListResourceStorage::update_canvas_surface(CanvasId canvas_id, Gfx::SharedImage&& shared_image)
-{
-    auto shared_image_buffer = Gfx::SharedImageBuffer::import_from_shared_image(move(shared_image));
-    m_external_canvas_surfaces.set(canvas_id.value(), Gfx::PaintingSurface::wrap_bitmap(*shared_image_buffer.bitmap()));
-}
-
 void DisplayListResourceStorage::set_external_canvas_surface(CanvasId canvas_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
 {
     m_external_canvas_surfaces.set(canvas_id.value(), move(surface));

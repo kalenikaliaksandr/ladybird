@@ -29,6 +29,7 @@ public:
 
     ErrorOr<void> execute_commands(ReadonlyBytes);
     ErrorOr<ByteBuffer> execute_sync_call(ReadonlyBytes request);
+    Gfx::ShareableBitmap read_back_drawing_buffer(Gfx::IntRect);
     ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> prepare_for_compositing(bool preserve_drawing_buffer);
 
     Web::WebGL::OpenGLContext& gl_context() { return *m_gl_context; }
