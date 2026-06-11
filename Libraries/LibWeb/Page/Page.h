@@ -10,6 +10,7 @@
 #pragma once
 
 #include <AK/JsonValue.h>
+#include <AK/OwnPtr.h>
 #include <AK/Queue.h>
 #include <AK/Variant.h>
 #include <LibGC/Root.h>
