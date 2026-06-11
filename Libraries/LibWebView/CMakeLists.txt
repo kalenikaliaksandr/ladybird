@@ -72,7 +72,28 @@ set(GENERATED_SOURCES
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/Compositor/CompositorControlClient.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/CompositorControlClientEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/Compositor/CompositorControlServer.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/CompositorControlServerEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/Compositor/CompositorWebContentClient.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/CompositorWebContentClientEndpoint.h)
-compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/Compositor/CompositorWebContentServer.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/CompositorWebContentServerEndpoint.h)
+
+# The CompositorWebContentServer endpoint also carries one message per WebGL call,
+# spliced from GLFunctions.json at build time (an IPC connection carries exactly one
+# endpoint pair, and remote WebGL relies on FIFO ordering with display-list updates).
+set(merged_compositor_webcontent_server_ipc ${CMAKE_BINARY_DIR}/Services/Compositor/CompositorWebContentServer.ipc)
+add_custom_command(
+    OUTPUT ${merged_compositor_webcontent_server_ipc}
+    COMMAND "${Python3_EXECUTABLE}" "${LADYBIRD_SOURCE_DIR}/Meta/Generators/generate_compositor_webgl_ipc.py"
+            --ipc "${LADYBIRD_SOURCE_DIR}/Services/Compositor/CompositorWebContentServer.ipc"
+            -j "${LADYBIRD_SOURCE_DIR}/Libraries/LibWeb/WebGL/GLFunctions.json"
+            -o "${merged_compositor_webcontent_server_ipc}.tmp"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${merged_compositor_webcontent_server_ipc}.tmp" "${merged_compositor_webcontent_server_ipc}"
+    COMMAND "${CMAKE_COMMAND}" -E remove "${merged_compositor_webcontent_server_ipc}.tmp"
+    VERBATIM
+    DEPENDS "${LADYBIRD_SOURCE_DIR}/Meta/Generators/generate_compositor_webgl_ipc.py"
+            "${LADYBIRD_SOURCE_DIR}/Meta/Generators/libweb_webgl.py"
+            "${LADYBIRD_SOURCE_DIR}/Libraries/LibWeb/WebGL/GLFunctions.json"
+    MAIN_DEPENDENCY "${LADYBIRD_SOURCE_DIR}/Services/Compositor/CompositorWebContentServer.ipc"
+)
+add_custom_target(generate_CompositorWebContentServer.ipc DEPENDS ${merged_compositor_webcontent_server_ipc})
+add_dependencies(ladybird_codegen_accumulator generate_CompositorWebContentServer.ipc)
+compile_ipc(${merged_compositor_webcontent_server_ipc} ${CMAKE_BINARY_DIR}/Services/Compositor/CompositorWebContentServerEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/WebContentClient.ipc ${CMAKE_BINARY_DIR}/Services/WebContent/WebContentClientEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/WebContentServer.ipc ${CMAKE_BINARY_DIR}/Services/WebContent/WebContentServerEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/WebContent/WebDriverClient.ipc ${CMAKE_BINARY_DIR}/Services/WebContent/WebDriverClientEndpoint.h)

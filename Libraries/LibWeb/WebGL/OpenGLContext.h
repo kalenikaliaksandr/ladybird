@@ -42,6 +42,8 @@ public:
     ~OpenGLContext();
 
     void make_current();
+    // Skips the eglMakeCurrent when this context is already current on this thread.
+    void make_current_if_needed();
 
     void present(bool preserve_drawing_buffer);
 

@@ -449,6 +449,17 @@ void OpenGLContext::make_current()
 #endif
 }
 
+void OpenGLContext::make_current_if_needed()
+{
+#ifdef ENABLE_WEBGL
+    // EGL current-context state is per-thread; checking it directly stays correct no
+    // matter how callers interleave contexts (or Skia's own GL work) on this thread.
+    if (eglGetCurrentContext() == m_impl->context && m_painting_surface)
+        return;
+    make_current();
+#endif
+}
+
 void OpenGLContext::present(bool preserve_drawing_buffer)
 {
 #ifdef ENABLE_WEBGL

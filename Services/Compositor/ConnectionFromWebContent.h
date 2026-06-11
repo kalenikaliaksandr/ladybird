@@ -10,6 +10,7 @@
 #include <Compositor/CompositorState.h>
 #include <Compositor/CompositorWebContentClientEndpoint.h>
 #include <Compositor/CompositorWebContentServerEndpoint.h>
+#include <Compositor/WebGLMessageDispatcher.h>
 #include <LibIPC/ConnectionFromClient.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
@@ -17,7 +18,7 @@
 namespace Compositor {
 
 class ConnectionFromWebContent final
-    : public IPC::ConnectionFromClient<CompositorWebContentClientEndpoint, CompositorWebContentServerEndpoint>
+    : public WebGLMessageDispatcher
     , public CompositorStateWebContentClient {
     C_OBJECT(ConnectionFromWebContent);
 
@@ -40,6 +41,11 @@ private:
     virtual void clear_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId) override;
     virtual void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage) override;
     virtual void clear_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId) override;
+    virtual Messages::CompositorWebContentServer::CreateWebglContextResponse create_webgl_context(u64 webgl_context_id, u32 webgl_version, bool depth, bool stencil, bool antialias) override;
+    virtual void destroy_webgl_context(u64 webgl_context_id) override;
+    virtual Messages::CompositorWebContentServer::GetWebglDrawingBufferResponse get_webgl_drawing_buffer(u64 webgl_context_id) override;
+    virtual void webgl_present_to_compositor(u64 webgl_context_id, u64 target_context_id, u64 surface_id, bool preserve_drawing_buffer) override;
+    virtual WebGLHost& webgl_host() override { return m_webgl_host; }
     virtual void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation) override;
     virtual Messages::CompositorWebContentServer::AsyncScrollByResponse async_scroll_by(Web::Compositor::CompositorContextId, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollOperationTracking) override;
     virtual Messages::CompositorWebContentServer::ShouldDeferMainThreadPresentForAsyncScrollResponse should_defer_main_thread_present_for_async_scroll(Web::Compositor::CompositorContextId) override;
@@ -53,6 +59,7 @@ private:
     void verify_context_is_owned_by_this_connection(Web::Compositor::CompositorContextId);
 
     NonnullRefPtr<CompositorState> m_compositor_state;
+    WebGLHost m_webgl_host;
     Function<void(ConnectionFromWebContent&)> m_on_death;
 };
 

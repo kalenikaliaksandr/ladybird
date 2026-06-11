@@ -26,6 +26,12 @@ endpoint CompositorWebContentServer
     update_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage shared_image) =|
     clear_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id) =|
 
+    // One message per WebGL call is spliced after the hand-written messages at build
+    // time by generate_compositor_webgl_ipc.py, from Libraries/LibWeb/WebGL/GLFunctions.json.
+    create_webgl_context(u64 webgl_context_id, u32 webgl_version, bool depth, bool stencil, bool antialias) => (bool success, Vector<String> supported_extensions)
+    destroy_webgl_context(u64 webgl_context_id) =|
+    get_webgl_drawing_buffer(u64 webgl_context_id) => (Gfx::ShareableBitmap bitmap)
+
     invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation) =|
     async_scroll_by(Web::Compositor::CompositorContextId context_id, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollOperationTracking operation_tracking) => (Web::Compositor::AsyncScrollEnqueueResult result)
     should_defer_main_thread_present_for_async_scroll(Web::Compositor::CompositorContextId context_id) => (bool should_defer)

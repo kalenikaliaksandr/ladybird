@@ -10,8 +10,9 @@
 namespace Compositor {
 
 ConnectionFromWebContent::ConnectionFromWebContent(NonnullOwnPtr<IPC::Transport> transport, NonnullRefPtr<CompositorState> compositor_state, int client_id)
-    : IPC::ConnectionFromClient<CompositorWebContentClientEndpoint, CompositorWebContentServerEndpoint>(*this, move(transport), client_id)
+    : WebGLMessageDispatcher(move(transport), client_id)
     , m_compositor_state(move(compositor_state))
+    , m_webgl_host(m_compositor_state->skia_backend_context())
 {
 }
 
@@ -105,6 +106,61 @@ void ConnectionFromWebContent::clear_compositor_surface(Web::Compositor::Composi
 {
     verify_context_is_owned_by_this_connection(context_id);
     m_compositor_state->clear_compositor_surface(context_id, surface_id);
+}
+
+Messages::CompositorWebContentServer::CreateWebglContextResponse ConnectionFromWebContent::create_webgl_context(u64 webgl_context_id, u32 webgl_version, bool depth, bool stencil, bool antialias)
+{
+    if (webgl_version != 1 && webgl_version != 2) {
+        did_misbehave("WebContent requested an invalid WebGL version");
+        return { false, {} };
+    }
+    auto version = webgl_version == 1 ? Web::WebGL::OpenGLContext::WebGLVersion::WebGL1 : Web::WebGL::OpenGLContext::WebGLVersion::WebGL2;
+    if (!m_webgl_host.create_context(webgl_context_id, version, { .depth = depth, .stencil = stencil, .antialias = antialias }))
+        return { false, {} };
+    auto supported_extensions = m_webgl_host.context(webgl_context_id)->gl_context().get_supported_opengl_extensions();
+    return { true, move(supported_extensions) };
+}
+
+void ConnectionFromWebContent::destroy_webgl_context(u64 webgl_context_id)
+{
+    m_webgl_host.destroy_context(webgl_context_id);
+}
+
+Messages::CompositorWebContentServer::GetWebglDrawingBufferResponse ConnectionFromWebContent::get_webgl_drawing_buffer(u64 webgl_context_id)
+{
+    auto* context = m_webgl_host.context(webgl_context_id);
+    if (!context) {
+        did_misbehave("WebContent requested the drawing buffer of an unknown WebGL context");
+        return Gfx::ShareableBitmap {};
+    }
+    return context->read_back_drawing_buffer();
+}
+
+void ConnectionFromWebContent::webgl_present_to_compositor(u64 webgl_context_id, u64 target_context_id, u64 surface_id, bool preserve_drawing_buffer)
+{
+    auto* context = m_webgl_host.context(webgl_context_id);
+    if (!context) {
+        did_misbehave("WebContent presented an unknown WebGL context");
+        return;
+    }
+    auto frame_or_error = context->snapshot_for_present(preserve_drawing_buffer);
+    if (frame_or_error.is_error()) {
+        dbgln("WebGL present failed: {}", frame_or_error.error());
+        return;
+    }
+    auto compositor_context_id = Web::Compositor::CompositorContextId { target_context_id };
+    switch (m_compositor_state->check_context_owner(compositor_context_id, *this)) {
+    case CompositorState::ContextOwnerCheckResult::OwnedByClient:
+        m_compositor_state->update_compositor_surface(compositor_context_id, Web::Painting::CompositorSurfaceId { surface_id }, frame_or_error.release_value());
+        return;
+    case CompositorState::ContextOwnerCheckResult::ContextUnavailable:
+        // The canvas raced the teardown of its navigable's compositor context.
+        return;
+    case CompositorState::ContextOwnerCheckResult::ConflictingOwner:
+        did_misbehave("WebGL present targets a compositor context owned by another connection");
+        return;
+    }
+    VERIFY_NOT_REACHED();
 }
 
 void ConnectionFromWebContent::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)
