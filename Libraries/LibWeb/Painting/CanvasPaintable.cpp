@@ -37,8 +37,8 @@ void CanvasPaintable::paint(DisplayListRecordingContext& context, PaintPhase pha
             auto scaling_mode = to_gfx_scaling_mode(computed_values().image_rendering(),
                 surface->size(), canvas_int_rect.size());
             auto& mutable_canvas_element = const_cast<HTML::HTMLCanvasElement&>(canvas_element);
-            context.display_list_recorder().draw_compositor_surface(canvas_int_rect,
-                mutable_canvas_element.ensure_compositor_surface_id(), scaling_mode);
+            context.display_list_recorder().draw_canvas(canvas_int_rect,
+                mutable_canvas_element.ensure_canvas_id(), scaling_mode);
         }
     }
 }

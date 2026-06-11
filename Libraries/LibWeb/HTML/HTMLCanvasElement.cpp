@@ -54,7 +54,7 @@ void HTMLCanvasElement::initialize(JS::Realm& realm)
 
 void HTMLCanvasElement::finalize()
 {
-    clear_compositor_surface();
+    clear_canvas_surface();
     Base::finalize();
     document().page().unregister_canvas_element({}, unique_id());
 }
@@ -132,16 +132,16 @@ WebIDL::UnsignedLong HTMLCanvasElement::height() const
     return 150;
 }
 
-Painting::CompositorSurfaceId HTMLCanvasElement::ensure_compositor_surface_id()
+Painting::CanvasId HTMLCanvasElement::ensure_canvas_id()
 {
-    if (!m_compositor_surface_id.has_value())
-        m_compositor_surface_id = Painting::allocate_compositor_surface_id();
-    return *m_compositor_surface_id;
+    if (!m_canvas_id.has_value())
+        m_canvas_id = Painting::allocate_display_list_resource_id<Painting::CanvasId>();
+    return *m_canvas_id;
 }
 
 void HTMLCanvasElement::reset_context_to_default_state()
 {
-    clear_compositor_surface();
+    clear_canvas_surface();
     m_context.visit(
         [](GC::Ref<CanvasRenderingContext2D>& context) {
             context->reset_to_default_state();
@@ -451,34 +451,34 @@ void HTMLCanvasElement::present()
             // Do nothing.
         });
 
-    update_compositor_surface();
+    update_canvas_surface();
 }
 
-void HTMLCanvasElement::republish_compositor_surface()
+void HTMLCanvasElement::republish_canvas_surface()
 {
     if (m_canvas_content_dirty) {
         present();
         return;
     }
 
-    update_compositor_surface();
+    update_canvas_surface();
 }
 
-void HTMLCanvasElement::update_compositor_surface()
+void HTMLCanvasElement::update_canvas_surface()
 {
     if (auto surface = this->surface()) {
         surface->flush();
         if (auto navigable = document().navigable(); navigable && navigable->has_compositor_context())
-            navigable->compositor_context().update_compositor_surface(ensure_compositor_surface_id(), surface->snapshot_into_shared_image());
+            navigable->compositor_context().update_canvas_surface(ensure_canvas_id(), surface->snapshot_into_shared_image());
     }
 }
 
-void HTMLCanvasElement::clear_compositor_surface()
+void HTMLCanvasElement::clear_canvas_surface()
 {
-    if (!m_compositor_surface_id.has_value())
+    if (!m_canvas_id.has_value())
         return;
     if (auto navigable = document().navigable(); navigable && navigable->has_compositor_context())
-        navigable->compositor_context().clear_compositor_surface(*m_compositor_surface_id);
+        navigable->compositor_context().clear_canvas_surface(*m_canvas_id);
 }
 
 RefPtr<Gfx::PaintingSurface> HTMLCanvasElement::surface() const

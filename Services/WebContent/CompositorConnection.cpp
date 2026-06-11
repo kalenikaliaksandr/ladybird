@@ -93,6 +93,20 @@ void CompositorConnection::clear_compositor_surface(Web::Compositor::CompositorC
     async_clear_compositor_surface(context_id, surface_id);
 }
 
+void CompositorConnection::update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id, Gfx::SharedImage const& shared_image)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_update_canvas_surface(context_id, canvas_id, shared_image);
+}
+
+void CompositorConnection::clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_clear_canvas_surface(context_id, canvas_id);
+}
+
 void CompositorConnection::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)
 {
     if (!can_send_message_to_compositor())

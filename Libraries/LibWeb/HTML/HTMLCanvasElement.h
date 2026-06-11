@@ -48,13 +48,13 @@ public:
     RefPtr<Gfx::Bitmap> get_bitmap_from_surface();
 
     void present();
-    void republish_compositor_surface();
+    void republish_canvas_surface();
     void set_canvas_content_dirty();
 
     RefPtr<Gfx::PaintingSurface> surface() const;
     void allocate_painting_surface_if_needed();
 
-    Painting::CompositorSurfaceId ensure_compositor_surface_id();
+    Painting::CanvasId ensure_canvas_id();
 
     CSS::ComputationContext canvas_font_computation_context();
 
@@ -75,11 +75,11 @@ private:
     JS::ThrowCompletionOr<HasOrCreatedContext> create_webgl_context(JS::Value options);
     void reset_context_to_default_state();
     void notify_context_about_canvas_size_change();
-    void clear_compositor_surface();
-    void update_compositor_surface();
+    void clear_canvas_surface();
+    void update_canvas_surface();
 
     Variant<GC::Ref<HTML::CanvasRenderingContext2D>, GC::Ref<WebGL::WebGLRenderingContext>, GC::Ref<WebGL::WebGL2RenderingContext>, Empty> m_context;
-    Optional<Painting::CompositorSurfaceId> m_compositor_surface_id;
+    Optional<Painting::CanvasId> m_canvas_id;
     bool m_canvas_content_dirty { false };
 };
 
