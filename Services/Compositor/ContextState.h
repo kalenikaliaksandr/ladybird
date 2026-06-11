@@ -120,6 +120,7 @@ public:
     void update_canvas_surface(Web::Painting::CanvasId, Gfx::SharedImage&&);
     void update_canvas_surface(Web::Painting::CanvasId, NonnullRefPtr<Gfx::PaintingSurface>);
     void clear_canvas_surface(Web::Painting::CanvasId);
+    bool create_canvas_context(Web::Painting::CanvasContextId, RefPtr<Gfx::SkiaBackendContext> const&);
     bool apply_canvas_commands(Web::Painting::CanvasContextId, Web::Painting::CanvasCommandList const&, Web::Painting::DisplayListResourceTransaction&&, RefPtr<Gfx::SkiaBackendContext> const&);
     void destroy_canvas_context(Web::Painting::CanvasContextId);
     Gfx::ShareableBitmap get_canvas_pixels(Web::Painting::CanvasContextId, Gfx::IntRect);

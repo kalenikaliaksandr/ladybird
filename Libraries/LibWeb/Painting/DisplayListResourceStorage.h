@@ -114,6 +114,7 @@ public:
     // commands immediately, so removals/pruning can never run between arrival and
     // playback. A Publish op pins a presentation surface into m_canvas_surfaces; returns
     // whether that happened so the host can recomposite.
+    bool create_canvas_context(CanvasContextId, RefPtr<Gfx::SkiaBackendContext> const&);
     bool apply_canvas_commands(CanvasContextId, CanvasCommandList const&, DisplayListResourceTransaction&&, RefPtr<Gfx::SkiaBackendContext> const&);
     void destroy_canvas_context(CanvasContextId);
     RefPtr<Gfx::PaintingSurface> canvas_context_surface(CanvasContextId) const;

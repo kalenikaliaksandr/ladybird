@@ -20,10 +20,7 @@ namespace Web::WebGL {
 
 class WEB_API OpenGLContext : public GLFunctions {
 public:
-    enum class WebGLVersion {
-        WebGL1,
-        WebGL2,
-    };
+    using WebGLVersion = WebGL::WebGLVersion;
 
     struct DrawingBufferOptions {
         bool depth;

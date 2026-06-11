@@ -339,6 +339,13 @@ void DisplayListResourceStorage::clear_canvas_surface(CanvasId canvas_id)
     m_canvas_surfaces.remove(canvas_id.value());
 }
 
+bool DisplayListResourceStorage::create_canvas_context(CanvasContextId context_id, RefPtr<Gfx::SkiaBackendContext> const& skia_backend_context)
+{
+    VERIFY(!m_canvas_contexts.contains(context_id.value()));
+    m_canvas_contexts.set(context_id.value(), make<CanvasCommandPlayer>(skia_backend_context));
+    return true;
+}
+
 bool DisplayListResourceStorage::apply_canvas_commands(CanvasContextId context_id, CanvasCommandList const& commands, DisplayListResourceTransaction&& transaction, RefPtr<Gfx::SkiaBackendContext> const& skia_backend_context)
 {
     Vector<ImageFrameResourceId> transient_image_frame_ids;

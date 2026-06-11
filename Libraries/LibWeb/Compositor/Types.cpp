@@ -83,6 +83,27 @@ ErrorOr<Web::Compositor::AsyncScrollEnqueueResult> decode(Decoder& decoder)
 }
 
 template<>
+ErrorOr<void> encode(Encoder& encoder, Web::Compositor::CanvasContextCreationAttributes const& attributes)
+{
+    TRY(encoder.encode(attributes.type));
+    TRY(encoder.encode(attributes.depth));
+    TRY(encoder.encode(attributes.stencil));
+    TRY(encoder.encode(attributes.antialias));
+    return {};
+}
+
+template<>
+ErrorOr<Web::Compositor::CanvasContextCreationAttributes> decode(Decoder& decoder)
+{
+    return Web::Compositor::CanvasContextCreationAttributes {
+        .type = TRY(decoder.decode<Web::Compositor::CanvasContextType>()),
+        .depth = TRY(decoder.decode<bool>()),
+        .stencil = TRY(decoder.decode<bool>()),
+        .antialias = TRY(decoder.decode<bool>()),
+    };
+}
+
+template<>
 ErrorOr<void> encode(Encoder& encoder, Web::Compositor::PublishToCompositorSurface const& mode)
 {
     TRY(encoder.encode(mode.target_context_id));

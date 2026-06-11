@@ -198,6 +198,13 @@ void CompositorState::clear_canvas_surface(Web::Compositor::CompositorContextId 
     present_current_frame(context_id, *context);
 }
 
+bool CompositorState::create_canvas_context(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id)
+{
+    auto* context = context_if_present(context_id);
+    VERIFY(context);
+    return context->create_canvas_context(canvas_context_id, m_skia_backend_context);
+}
+
 void CompositorState::update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList&& commands, Web::Painting::DisplayListResourceTransaction&& resource_transaction)
 {
     auto* context = context_if_present(context_id);

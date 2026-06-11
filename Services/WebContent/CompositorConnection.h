@@ -48,8 +48,9 @@ public:
     void clear_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId);
     void update_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasId, Gfx::SharedImage const&);
     void clear_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasId);
+    bool create_canvas_context(Optional<Web::Compositor::CompositorContextId>, Web::Painting::CanvasContextId, Web::Compositor::CanvasContextCreationAttributes, Vector<String>& out_supported_extensions);
     void update_canvas_commands(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId, Web::Painting::CanvasCommandList const&, Web::Painting::DisplayListResourceTransaction const&);
-    void destroy_canvas_context(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId);
+    void destroy_canvas_context(Optional<Web::Compositor::CompositorContextId>, Web::Painting::CanvasContextId);
     Gfx::ShareableBitmap get_canvas_pixels(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId, Gfx::IntRect);
     void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation);
     Web::Compositor::AsyncScrollEnqueueResult async_scroll_by(Web::Compositor::CompositorContextId, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollOperationTracking);

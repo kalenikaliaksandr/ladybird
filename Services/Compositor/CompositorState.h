@@ -68,6 +68,8 @@ public:
     ContextOwnerCheckResult check_context_owner(Web::Compositor::CompositorContextId, CompositorStateWebContentClient&);
     void destroy_contexts_for_web_content_client(CompositorStateWebContentClient&);
 
+    RefPtr<Gfx::SkiaBackendContext> skia_backend_context() const { return m_skia_backend_context; }
+
     void create_context(Web::Compositor::CompositorContextId, Optional<u64> page_id, CompositorStateWebContentClient&);
     void destroy_context(Web::Compositor::CompositorContextId);
 
@@ -83,6 +85,7 @@ public:
     void update_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasId, Gfx::SharedImage&&);
     void update_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasId, NonnullRefPtr<Gfx::PaintingSurface>);
     void clear_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasId);
+    bool create_canvas_context(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId);
     void update_canvas_commands(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId, Web::Painting::CanvasCommandList&&, Web::Painting::DisplayListResourceTransaction&&);
     void destroy_canvas_context(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId);
     Gfx::ShareableBitmap get_canvas_pixels(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId, Gfx::IntRect);

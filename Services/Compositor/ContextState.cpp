@@ -198,6 +198,11 @@ void ContextState::clear_video_frame(Web::Painting::VideoFrameResourceId frame_i
     m_display_list_resource_storage.clear_video_frame(frame_id);
 }
 
+bool ContextState::create_canvas_context(Web::Painting::CanvasContextId canvas_context_id, RefPtr<Gfx::SkiaBackendContext> const& skia_backend_context)
+{
+    return m_display_list_resource_storage.create_canvas_context(canvas_context_id, skia_backend_context);
+}
+
 bool ContextState::apply_canvas_commands(Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList const& commands, Web::Painting::DisplayListResourceTransaction&& resource_transaction, RefPtr<Gfx::SkiaBackendContext> const& skia_backend_context)
 {
     return m_display_list_resource_storage.apply_canvas_commands(canvas_context_id, commands, move(resource_transaction), skia_backend_context);

@@ -107,6 +107,16 @@ void CompositorConnection::clear_canvas_surface(Web::Compositor::CompositorConte
     async_clear_canvas_surface(context_id, canvas_id);
 }
 
+bool CompositorConnection::create_canvas_context(Optional<Web::Compositor::CompositorContextId> context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CanvasContextCreationAttributes attributes, Vector<String>& out_supported_extensions)
+{
+    if (!can_send_message_to_compositor())
+        return false;
+
+    auto response = send_sync<Messages::CompositorWebContentServer::CreateCanvasContext>(context_id, canvas_context_id, attributes);
+    out_supported_extensions = response->take_supported_extensions();
+    return response->success();
+}
+
 void CompositorConnection::update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList const& commands, Web::Painting::DisplayListResourceTransaction const& resource_transaction)
 {
     if (!can_send_message_to_compositor())
@@ -117,7 +127,7 @@ void CompositorConnection::update_canvas_commands(Web::Compositor::CompositorCon
         did_lose_compositor();
 }
 
-void CompositorConnection::destroy_canvas_context(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id)
+void CompositorConnection::destroy_canvas_context(Optional<Web::Compositor::CompositorContextId> context_id, Web::Painting::CanvasContextId canvas_context_id)
 {
     if (!can_send_message_to_compositor())
         return;

@@ -12,6 +12,7 @@ namespace Compositor {
 ConnectionFromWebContent::ConnectionFromWebContent(NonnullOwnPtr<IPC::Transport> transport, NonnullRefPtr<CompositorState> compositor_state, int client_id)
     : IPC::ConnectionFromClient<CompositorWebContentClientEndpoint, CompositorWebContentServerEndpoint>(*this, move(transport), client_id)
     , m_compositor_state(move(compositor_state))
+    , m_webgl_host(m_compositor_state->skia_backend_context())
 {
 }
 
@@ -119,22 +120,59 @@ void ConnectionFromWebContent::clear_canvas_surface(Web::Compositor::CompositorC
     m_compositor_state->clear_canvas_surface(context_id, canvas_id);
 }
 
+Messages::CompositorWebContentServer::CreateCanvasContextResponse ConnectionFromWebContent::create_canvas_context(Optional<Web::Compositor::CompositorContextId> context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CanvasContextCreationAttributes attributes)
+{
+    switch (attributes.type) {
+    case Web::Compositor::CanvasContextType::Context2D:
+        if (!context_id.has_value()) {
+            did_misbehave("WebContent requested a 2D canvas context without a compositor context");
+            return { false, {} };
+        }
+        verify_context_is_owned_by_this_connection(*context_id);
+        return { m_compositor_state->create_canvas_context(*context_id, canvas_context_id), {} };
+    case Web::Compositor::CanvasContextType::WebGL1:
+    case Web::Compositor::CanvasContextType::WebGL2: {
+        VERIFY(!context_id.has_value());
+        auto version = attributes.type == Web::Compositor::CanvasContextType::WebGL1
+            ? Web::WebGL::WebGLVersion::WebGL1
+            : Web::WebGL::WebGLVersion::WebGL2;
+        auto* context = m_webgl_host.create_context(canvas_context_id, version, { .depth = attributes.depth, .stencil = attributes.stencil, .antialias = attributes.antialias });
+        if (!context)
+            return { false, {} };
+        return { true, context->gl_context().get_supported_opengl_extensions() };
+    }
+    }
+
+    VERIFY_NOT_REACHED();
+}
+
 void ConnectionFromWebContent::update_canvas_commands(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Web::Painting::CanvasCommandList commands, Web::Painting::DisplayListResourceTransaction resource_transaction)
 {
     verify_context_is_owned_by_this_connection(context_id);
     m_compositor_state->update_canvas_commands(context_id, canvas_context_id, move(commands), move(resource_transaction));
 }
 
-void ConnectionFromWebContent::destroy_canvas_context(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id)
+void ConnectionFromWebContent::destroy_canvas_context(Optional<Web::Compositor::CompositorContextId> context_id, Web::Painting::CanvasContextId canvas_context_id)
 {
-    verify_context_is_owned_by_this_connection(context_id);
-    m_compositor_state->destroy_canvas_context(context_id, canvas_context_id);
+    if (!context_id.has_value()) {
+        m_webgl_host.destroy_context(canvas_context_id);
+        return;
+    }
+    verify_context_is_owned_by_this_connection(*context_id);
+    m_compositor_state->destroy_canvas_context(*context_id, canvas_context_id);
 }
 
 Messages::CompositorWebContentServer::GetCanvasPixelsResponse ConnectionFromWebContent::get_canvas_pixels(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
 {
     verify_context_is_owned_by_this_connection(context_id);
     return m_compositor_state->get_canvas_pixels(context_id, canvas_context_id, rect);
+}
+
+void ConnectionFromWebContent::webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer commands)
+{
+    auto* context = m_webgl_host.context(canvas_context_id);
+    VERIFY(context);
+    MUST(context->execute_commands(commands));
 }
 
 void ConnectionFromWebContent::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)
