@@ -8,6 +8,8 @@
 #include <Compositor/WebGLCommandReplayer.h>
 #include <Compositor/WebGLHost.h>
 #include <LibGfx/Bitmap.h>
+#include <LibGfx/BitmapExport.h>
+#include <LibGfx/DecodedImageFrame.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibGfx/ShareableBitmap.h>
 #include <LibGfx/SkiaBackendContext.h>
@@ -41,7 +43,7 @@ OwnPtr<HostWebGLContext> HostWebGLContext::create(NonnullRefPtr<Gfx::SkiaBackend
     return adopt_own(*new HostWebGLContext(gl_context.release_nonnull()));
 }
 
-ErrorOr<void> HostWebGLContext::execute_commands(ReadonlyBytes bytes)
+ErrorOr<void> HostWebGLContext::execute_commands(ReadonlyBytes bytes, Vector<Gfx::DecodedImageFrame> const& bitmaps)
 {
     m_gl_context->make_current();
 
@@ -61,10 +63,59 @@ ErrorOr<void> HostWebGLContext::execute_commands(ReadonlyBytes bytes)
             (void)payload;
             m_gl_context->read_pixels_robust_angle(command.x, command.y, command.width, command.height, command.format, command.type, 0, nullptr, nullptr, nullptr, reinterpret_cast<void*>(static_cast<uintptr_t>(command.offset)));
             return {};
+        } else if constexpr (IsSame<Command, Commands::TexImage2DFromBitmap>) {
+            (void)payload;
+            return tex_image2d_from_bitmap(command, bitmaps);
+        } else if constexpr (IsSame<Command, Commands::TexSubImage2DFromBitmap>) {
+            (void)payload;
+            return tex_sub_image2d_from_bitmap(command, bitmaps);
         } else {
             return replay_webgl_command(*m_gl_context, m_objects, command, payload);
         }
     });
+}
+
+// Converts a shared-memory image to the layout glTexImage2D expects for the command's
+// format+type. The conversion runs here, next to GL, so the image pixels never travel
+// inline over IPC.
+static ErrorOr<Gfx::BitmapExportResult> convert_bitmap_for_upload(Vector<Gfx::DecodedImageFrame> const& bitmaps, u32 bitmap_index, GLenum format, GLenum type, GLsizei destination_width, GLsizei destination_height, bool flip_y, bool premultiply_alpha)
+{
+    if (bitmap_index >= bitmaps.size())
+        return Error::from_string_literal("WebGL image upload references an out-of-range bitmap");
+
+    auto export_format = texture_export_format(format, type);
+    if (!export_format.has_value())
+        return Error::from_string_literal("WebGL image upload has an unsupported format+type combination");
+
+    int export_flags = 0;
+    if (flip_y)
+        export_flags |= Gfx::ExportFlags::FlipY;
+    if (premultiply_alpha)
+        export_flags |= Gfx::ExportFlags::PremultiplyAlpha;
+
+    Optional<int> target_width;
+    Optional<int> target_height;
+    if (destination_width > 0 && destination_height > 0) {
+        target_width = destination_width;
+        target_height = destination_height;
+    }
+
+    auto const& frame = bitmaps[bitmap_index];
+    return Gfx::export_bitmap_to_byte_buffer(frame.bitmap(), frame.color_space(), export_format.value(), export_flags, target_width, target_height);
+}
+
+ErrorOr<void> HostWebGLContext::tex_image2d_from_bitmap(Commands::TexImage2DFromBitmap const& command, Vector<Gfx::DecodedImageFrame> const& bitmaps)
+{
+    auto converted = TRY(convert_bitmap_for_upload(bitmaps, command.bitmap_index, command.format, command.type, command.destination_width, command.destination_height, command.flip_y, command.premultiply_alpha));
+    m_gl_context->tex_image2d_robust_angle(command.target, command.level, command.internalformat, converted.width, converted.height, 0, command.format, command.type, converted.buffer.size(), converted.buffer.data());
+    return {};
+}
+
+ErrorOr<void> HostWebGLContext::tex_sub_image2d_from_bitmap(Commands::TexSubImage2DFromBitmap const& command, Vector<Gfx::DecodedImageFrame> const& bitmaps)
+{
+    auto converted = TRY(convert_bitmap_for_upload(bitmaps, command.bitmap_index, command.format, command.type, command.destination_width, command.destination_height, command.flip_y, command.premultiply_alpha));
+    m_gl_context->tex_sub_image2d_robust_angle(command.target, command.level, command.xoffset, command.yoffset, converted.width, converted.height, command.format, command.type, converted.buffer.size(), converted.buffer.data());
+    return {};
 }
 
 ErrorOr<ByteBuffer> HostWebGLContext::execute_sync_call(ReadonlyBytes request)

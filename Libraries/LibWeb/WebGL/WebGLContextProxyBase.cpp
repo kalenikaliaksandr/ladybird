@@ -30,8 +30,9 @@ void WebGLContextProxyBase::flush_commands()
 {
     if (m_commands.is_empty())
         return;
-    m_transport->send_commands(m_canvas_context_id, m_commands.buffer());
+    m_transport->send_commands(m_canvas_context_id, m_commands.buffer(), m_pending_bitmaps);
     m_commands.clear_with_capacity();
+    m_pending_bitmaps.clear_with_capacity();
 }
 
 ByteBuffer WebGLContextProxyBase::send_sync_call(ByteBuffer request)
@@ -40,6 +41,47 @@ ByteBuffer WebGLContextProxyBase::send_sync_call(ByteBuffer request)
         return {};
     flush_commands();
     return m_transport->sync_call(m_canvas_context_id, move(request));
+}
+
+void WebGLContextProxyBase::tex_image2d_from_bitmap(GLenum target, GLint level, GLint internalformat, GLenum format, GLenum type, Gfx::DecodedImageFrame frame, Gfx::IntSize destination_size, bool flip_y, bool premultiply_alpha)
+{
+    if (m_lost)
+        return;
+    auto bitmap_index = static_cast<u32>(m_pending_bitmaps.size());
+    m_pending_bitmaps.append(move(frame));
+    record(Commands::TexImage2DFromBitmap {
+        .target = target,
+        .level = level,
+        .internalformat = internalformat,
+        .format = format,
+        .type = type,
+        .bitmap_index = bitmap_index,
+        .destination_width = destination_size.width(),
+        .destination_height = destination_size.height(),
+        .flip_y = flip_y,
+        .premultiply_alpha = premultiply_alpha,
+    });
+}
+
+void WebGLContextProxyBase::tex_sub_image2d_from_bitmap(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLenum format, GLenum type, Gfx::DecodedImageFrame frame, Gfx::IntSize destination_size, bool flip_y, bool premultiply_alpha)
+{
+    if (m_lost)
+        return;
+    auto bitmap_index = static_cast<u32>(m_pending_bitmaps.size());
+    m_pending_bitmaps.append(move(frame));
+    record(Commands::TexSubImage2DFromBitmap {
+        .target = target,
+        .level = level,
+        .xoffset = xoffset,
+        .yoffset = yoffset,
+        .format = format,
+        .type = type,
+        .bitmap_index = bitmap_index,
+        .destination_width = destination_size.width(),
+        .destination_height = destination_size.height(),
+        .flip_y = flip_y,
+        .premultiply_alpha = premultiply_alpha,
+    });
 }
 
 }

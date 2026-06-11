@@ -62,7 +62,7 @@ public:
     void present_frame(Web::Compositor::CompositorContextId, Gfx::IntRect);
     void request_screenshot(Web::Compositor::CompositorContextId, NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&&);
 
-    void send_webgl_commands(Web::Painting::CanvasContextId, ByteBuffer const&);
+    void send_webgl_commands(Web::Painting::CanvasContextId, ByteBuffer const&, Vector<Gfx::DecodedImageFrame> const& bitmaps);
     ByteBuffer webgl_sync_call(Web::Painting::CanvasContextId, ByteBuffer request);
 
     Function<void(u64 page_id, Web::MouseEvent)> on_mouse_event;

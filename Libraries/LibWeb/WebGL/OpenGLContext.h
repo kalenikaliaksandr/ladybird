@@ -11,12 +11,20 @@
 #include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
 #include <AK/Vector.h>
+#include <LibGfx/BitmapExport.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Size.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/WebGL/GLFunctions.h>
 
 namespace Web::WebGL {
+
+// The Gfx::ExportFormat a texture image source must be pixel-converted to before a
+// glTexImage2D/glTexSubImage2D upload with the given format+type, or nothing when WebGL
+// does not allow uploading an image source with that combination. Used both by the
+// WebGL implementation (to validate before recording) and by the host that performs
+// the conversion next to GL.
+WEB_API Optional<Gfx::ExportFormat> texture_export_format(GLenum format, GLenum type);
 
 class WEB_API OpenGLContext : public GLFunctions {
 public:

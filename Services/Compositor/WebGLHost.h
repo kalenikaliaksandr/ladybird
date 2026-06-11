@@ -17,6 +17,13 @@
 #include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/WebGL/OpenGLContext.h>
 
+namespace Web::WebGL::Commands {
+
+struct TexImage2DFromBitmap;
+struct TexSubImage2DFromBitmap;
+
+}
+
 namespace Compositor {
 
 // One remote WebGL context: the real ANGLE-backed OpenGLContext plus the table mapping
@@ -28,7 +35,9 @@ class HostWebGLContext {
 public:
     static OwnPtr<HostWebGLContext> create(NonnullRefPtr<Gfx::SkiaBackendContext>, Web::WebGL::OpenGLContext::WebGLVersion, Web::WebGL::OpenGLContext::DrawingBufferOptions);
 
-    ErrorOr<void> execute_commands(ReadonlyBytes);
+    // Image uploads in the batch reference `bitmaps` by index; their pixel data arrived
+    // as shared memory rather than inline command bytes.
+    ErrorOr<void> execute_commands(ReadonlyBytes, Vector<Gfx::DecodedImageFrame> const& bitmaps);
     ErrorOr<ByteBuffer> execute_sync_call(ReadonlyBytes request);
     Gfx::ShareableBitmap read_back_drawing_buffer(Gfx::IntRect);
     ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> prepare_for_compositing(bool preserve_drawing_buffer);
@@ -39,6 +48,8 @@ private:
     explicit HostWebGLContext(NonnullOwnPtr<Web::WebGL::OpenGLContext>);
 
     ErrorOr<void> set_drawing_buffer_size(int width, int height);
+    ErrorOr<void> tex_image2d_from_bitmap(Web::WebGL::Commands::TexImage2DFromBitmap const&, Vector<Gfx::DecodedImageFrame> const& bitmaps);
+    ErrorOr<void> tex_sub_image2d_from_bitmap(Web::WebGL::Commands::TexSubImage2DFromBitmap const&, Vector<Gfx::DecodedImageFrame> const& bitmaps);
 
     NonnullOwnPtr<Web::WebGL::OpenGLContext> m_gl_context;
     WebGLObjectMap m_objects;
