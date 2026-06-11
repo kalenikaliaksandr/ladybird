@@ -41,6 +41,8 @@ public:
 """)
 
     for function in functions:
+        if function["category"].startswith("builtin"):
+            continue
         out.write(f"    {signature(function)};\n")
 
     out.write("""};
@@ -64,6 +66,8 @@ namespace Web::WebGL {
 """)
 
     for function in functions:
+        if function["category"].startswith("builtin"):
+            continue
         forwarded_args = ", ".join(arg["name"] for arg in function["args"])
         call = f"::{function['name']}({forwarded_args})"
         if function["return"] != "void":
