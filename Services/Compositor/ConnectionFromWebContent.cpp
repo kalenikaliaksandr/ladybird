@@ -172,6 +172,13 @@ void ConnectionFromWebContent::webgl_commands(Web::Painting::CanvasContextId can
     MUST(context->execute_commands(commands));
 }
 
+Messages::CompositorWebContentServer::WebglSyncCallResponse ConnectionFromWebContent::webgl_sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request)
+{
+    auto* context = m_webgl_host.context(canvas_context_id);
+    VERIFY(context);
+    return MUST(context->execute_sync_call(request));
+}
+
 void ConnectionFromWebContent::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)
 {
     verify_context_is_owned_by_this_connection(context_id);

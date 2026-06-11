@@ -48,6 +48,12 @@ ErrorOr<void> HostWebGLContext::execute_commands(ReadonlyBytes bytes)
     });
 }
 
+ErrorOr<ByteBuffer> HostWebGLContext::execute_sync_call(ReadonlyBytes request)
+{
+    m_gl_context->make_current();
+    return handle_webgl_sync_call(*m_gl_context, m_objects, request);
+}
+
 ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> HostWebGLContext::prepare_for_compositing(bool preserve_drawing_buffer)
 {
     // Flush all pending GL work so Skia samples the finished drawing buffer. The

@@ -32,6 +32,7 @@ public:
     static OwnPtr<HostWebGLContext> create(NonnullRefPtr<Gfx::SkiaBackendContext>, Web::WebGL::OpenGLContext::WebGLVersion, Web::WebGL::OpenGLContext::DrawingBufferOptions, Gfx::IntSize initial_size);
 
     ErrorOr<void> execute_commands(ReadonlyBytes);
+    ErrorOr<ByteBuffer> execute_sync_call(ReadonlyBytes request);
     Gfx::ShareableBitmap read_back_drawing_buffer(Gfx::IntRect);
     ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> prepare_for_compositing(bool preserve_drawing_buffer);
 
