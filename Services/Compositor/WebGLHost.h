@@ -38,6 +38,8 @@ public:
 private:
     explicit HostWebGLContext(NonnullOwnPtr<Web::WebGL::OpenGLContext>);
 
+    ErrorOr<void> set_drawing_buffer_size(int width, int height);
+
     NonnullOwnPtr<Web::WebGL::OpenGLContext> m_gl_context;
     WebGLObjectMap m_objects;
     // For a non-preserving context the post-compositing clear is deferred until just before
