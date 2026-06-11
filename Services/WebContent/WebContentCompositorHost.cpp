@@ -5,14 +5,59 @@
  */
 
 #include <AK/NonnullOwnPtr.h>
+#include <LibGfx/CanvasCommandList.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibMedia/VideoFrame.h>
 #include <LibWeb/Compositor/CompositorHost.h>
+#include <LibWeb/Compositor/RemoteCanvasTransport.h>
 #include <WebContent/CompositorConnection.h>
 #include <WebContent/ConnectionFromClient.h>
 #include <WebContent/WebContentCompositorHost.h>
 
 namespace WebContent {
+
+// Holds a strong reference to the connection it was created against, so a 2D canvas
+// context keeps a stable channel even if the process later reconnects to a new
+// compositor (the context's backing storage is lost in that case, exactly like a
+// compositor crash).
+class WebContentRemoteCanvasTransport final : public Web::Compositor::RemoteCanvasTransport {
+public:
+    explicit WebContentRemoteCanvasTransport(NonnullRefPtr<CompositorConnection> connection)
+        : m_connection(move(connection))
+    {
+    }
+
+private:
+    virtual bool create_context(Web::Painting::CanvasContextId canvas_context_id) override
+    {
+        return m_connection->create_canvas_context(canvas_context_id, { .type = Web::Compositor::CanvasContextType::Context2D });
+    }
+
+    virtual void destroy_context(Web::Painting::CanvasContextId canvas_context_id) override
+    {
+        m_connection->destroy_canvas_context(canvas_context_id);
+    }
+
+    virtual void update_commands(Web::Painting::CanvasContextId canvas_context_id, Gfx::CanvasCommandList const& commands) override
+    {
+        m_connection->update_canvas_commands(canvas_context_id, commands);
+    }
+
+    virtual void prepare_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id) override
+    {
+        m_connection->prepare_canvas_surface(canvas_context_id, target_context_id, canvas_id);
+    }
+
+    virtual RefPtr<Gfx::Bitmap> read_back_pixels(Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect const& rect) override
+    {
+        auto shareable_bitmap = m_connection->get_canvas_pixels(canvas_context_id, rect);
+        if (!shareable_bitmap.is_valid())
+            return nullptr;
+        return shareable_bitmap.bitmap();
+    }
+
+    NonnullRefPtr<CompositorConnection> m_connection;
+};
 
 class WebContentCompositorHost final : public Web::Compositor::CompositorHost {
 public:
@@ -22,6 +67,13 @@ public:
     }
 
 private:
+    virtual RefPtr<Web::Compositor::RemoteCanvasTransport> create_canvas_transport() override
+    {
+        if (auto* connection = compositor_connection())
+            return adopt_ref(*new WebContentRemoteCanvasTransport(*connection));
+        return nullptr;
+    }
+
     virtual void destroy_context(Web::Compositor::CompositorContextId context_id) override
     {
         if (auto* connection = compositor_connection())

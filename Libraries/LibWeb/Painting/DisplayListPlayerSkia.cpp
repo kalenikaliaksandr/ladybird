@@ -232,6 +232,16 @@ void DisplayListPlayerSkia::draw_compositor_surface(DrawCompositorSurface const&
 
 void DisplayListPlayerSkia::draw_canvas(DrawCanvas const& command)
 {
+    // A compositor-local surface bound via prepare_canvas_surface takes precedence
+    // over a frame snapshotted in WebContent.
+    if (auto const* external_surface = resource_storage().external_canvas_surface(command.canvas_id)) {
+        auto image = external_surface->sk_image_snapshot<sk_sp<SkImage>>();
+        if (!image)
+            return;
+        draw_whole_image_scaled(surface().canvas(), image, to_skia_rect(command.dst_rect), command.scaling_mode);
+        return;
+    }
+
     auto frame = resource_storage().canvas_surface(command.canvas_id);
     if (!frame.has_value())
         return;

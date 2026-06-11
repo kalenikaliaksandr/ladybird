@@ -10,6 +10,7 @@
 #include <AK/Noncopyable.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/OwnPtr.h>
+#include <AK/RefPtr.h>
 #include <AK/Types.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
@@ -24,6 +25,7 @@
 namespace Web::Compositor {
 
 class CompositorHost;
+class RemoteCanvasTransport;
 
 class WEB_API CompositorContextHandle {
     AK_MAKE_NONCOPYABLE(CompositorContextHandle);
@@ -70,6 +72,10 @@ public:
     virtual ~CompositorHost();
 
     OwnPtr<CompositorContextHandle> create_context(CompositorContextId);
+
+    // The channel a remote 2D canvas context speaks over for its whole lifetime; bound
+    // to the compositor connection that exists right now (null without one).
+    virtual RefPtr<RemoteCanvasTransport> create_canvas_transport() = 0;
 
     virtual void destroy_context(CompositorContextId) = 0;
     virtual void set_presentation_mode(CompositorContextId, PresentationMode) = 0;

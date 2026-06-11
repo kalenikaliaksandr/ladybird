@@ -1,5 +1,6 @@
 set(SOURCES
     BackingStoreManager.cpp
+    CanvasHost.cpp
     CompositorState.cpp
     ContextState.cpp
     ConnectionFromClient.cpp

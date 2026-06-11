@@ -53,6 +53,14 @@ enum class AsyncScrollOperationTracking {
     Yes,
 };
 
+enum class CanvasContextType : u8 {
+    Context2D,
+};
+
+struct CanvasContextCreationAttributes {
+    CanvasContextType type { CanvasContextType::Context2D };
+};
+
 struct PublishToCompositorSurface {
     CompositorContextId target_context_id;
     Painting::CompositorSurfaceId surface_id;
@@ -86,6 +94,11 @@ template<>
 WEB_API ErrorOr<void> encode(Encoder&, Web::Compositor::AsyncScrollEnqueueResult const&);
 template<>
 WEB_API ErrorOr<Web::Compositor::AsyncScrollEnqueueResult> decode(Decoder&);
+
+template<>
+WEB_API ErrorOr<void> encode(Encoder&, Web::Compositor::CanvasContextCreationAttributes const&);
+template<>
+WEB_API ErrorOr<Web::Compositor::CanvasContextCreationAttributes> decode(Decoder&);
 
 template<>
 WEB_API ErrorOr<void> encode(Encoder&, Web::Compositor::PublishToCompositorSurface const&);

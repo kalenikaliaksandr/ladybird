@@ -12,6 +12,7 @@ namespace Compositor {
 ConnectionFromWebContent::ConnectionFromWebContent(NonnullOwnPtr<IPC::Transport> transport, NonnullRefPtr<CompositorState> compositor_state, int client_id)
     : IPC::ConnectionFromClient<CompositorWebContentClientEndpoint, CompositorWebContentServerEndpoint>(*this, move(transport), client_id)
     , m_compositor_state(move(compositor_state))
+    , m_canvas_host(m_compositor_state->skia_backend_context())
 {
 }
 
@@ -117,6 +118,40 @@ void ConnectionFromWebContent::clear_canvas_surface(Web::Compositor::CompositorC
 {
     verify_context_is_owned_by_this_connection(context_id);
     m_compositor_state->clear_canvas_surface(context_id, canvas_id);
+}
+
+Messages::CompositorWebContentServer::CreateCanvasContextResponse ConnectionFromWebContent::create_canvas_context(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CanvasContextCreationAttributes attributes)
+{
+    switch (attributes.type) {
+    case Web::Compositor::CanvasContextType::Context2D:
+        return m_canvas_host.create_context(canvas_context_id);
+    }
+
+    VERIFY_NOT_REACHED();
+}
+
+void ConnectionFromWebContent::update_canvas_commands(Web::Painting::CanvasContextId canvas_context_id, Gfx::CanvasCommandList commands)
+{
+    m_canvas_host.apply_commands(canvas_context_id, commands);
+}
+
+void ConnectionFromWebContent::destroy_canvas_context(Web::Painting::CanvasContextId canvas_context_id)
+{
+    m_canvas_host.destroy_context(canvas_context_id);
+}
+
+void ConnectionFromWebContent::prepare_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id)
+{
+    verify_context_is_owned_by_this_connection(target_context_id);
+
+    auto surface = m_canvas_host.context_surface(canvas_context_id);
+    VERIFY(surface);
+    m_compositor_state->set_external_canvas_surface(target_context_id, canvas_id, surface.release_nonnull());
+}
+
+Messages::CompositorWebContentServer::GetCanvasPixelsResponse ConnectionFromWebContent::get_canvas_pixels(Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
+{
+    return m_canvas_host.read_back_pixels(canvas_context_id, rect);
 }
 
 void ConnectionFromWebContent::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)

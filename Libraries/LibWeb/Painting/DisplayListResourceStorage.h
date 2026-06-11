@@ -100,6 +100,7 @@ public:
     void update_compositor_surface(CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(CompositorSurfaceId);
     void update_canvas_surface(CanvasId, Gfx::SharedImage&&);
+    void set_external_canvas_surface(CanvasId, NonnullRefPtr<Gfx::PaintingSurface>);
     void clear_canvas_surface(CanvasId);
 
     Gfx::Font const& font(FontResourceId id) const { return *m_fonts.get(id.value()).value(); }
@@ -110,6 +111,7 @@ public:
     AccumulatedVisualContextTree const& display_list_visual_context_tree(DisplayListResourceId id) const { return display_list_resource(id).visual_context_tree; }
     Optional<Gfx::DecodedImageFrame const&> compositor_surface(CompositorSurfaceId id) const { return m_compositor_surfaces.get(id.value()); }
     Optional<Gfx::DecodedImageFrame const&> canvas_surface(CanvasId id) const { return m_canvas_surfaces.get(id.value()); }
+    Gfx::PaintingSurface const* external_canvas_surface(CanvasId) const;
 
 private:
     void collect_referenced_resources(ReadonlyBytes command_bytes, DisplayListResourceSet&) const;
@@ -120,6 +122,7 @@ private:
     HashMap<u64, DisplayListResource> m_display_lists;
     HashMap<u64, Gfx::DecodedImageFrame> m_compositor_surfaces;
     HashMap<u64, Gfx::DecodedImageFrame> m_canvas_surfaces;
+    HashMap<u64, NonnullRefPtr<Gfx::PaintingSurface>> m_external_canvas_surfaces;
 
     HashMap<u64, size_t> m_font_cache_reference_counts;
     HashMap<u64, size_t> m_image_frame_cache_reference_counts;
