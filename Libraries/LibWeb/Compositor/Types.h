@@ -12,6 +12,7 @@
 #include <AK/Types.h>
 #include <AK/Variant.h>
 #include <AK/Vector.h>
+#include <LibGfx/Size.h>
 #include <LibIPC/Forward.h>
 #include <LibWeb/Compositor/AsyncScrollingState.h>
 #include <LibWeb/Export.h>
@@ -53,6 +54,20 @@ enum class AsyncScrollOperationTracking {
     Yes,
 };
 
+enum class CanvasContextType : u8 {
+    Context2D,
+};
+
+// Everything the Compositor needs to allocate a canvas context's backing storage up
+// front: the surface parameters are fixed for the lifetime of a remote context (a 2D
+// canvas resize destroys and recreates the context), so they travel with creation
+// rather than as a command.
+struct CanvasContextCreationAttributes {
+    CanvasContextType type { CanvasContextType::Context2D };
+    Gfx::IntSize size;
+    bool alpha { true };
+};
+
 struct PublishToCompositorSurface {
     CompositorContextId target_context_id;
     Painting::CompositorSurfaceId surface_id;
@@ -86,6 +101,11 @@ template<>
 WEB_API ErrorOr<void> encode(Encoder&, Web::Compositor::AsyncScrollEnqueueResult const&);
 template<>
 WEB_API ErrorOr<Web::Compositor::AsyncScrollEnqueueResult> decode(Decoder&);
+
+template<>
+WEB_API ErrorOr<void> encode(Encoder&, Web::Compositor::CanvasContextCreationAttributes const&);
+template<>
+WEB_API ErrorOr<Web::Compositor::CanvasContextCreationAttributes> decode(Decoder&);
 
 template<>
 WEB_API ErrorOr<void> encode(Encoder&, Web::Compositor::PublishToCompositorSurface const&);

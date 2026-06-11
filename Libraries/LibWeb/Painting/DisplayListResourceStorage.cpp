@@ -6,6 +6,7 @@
 
 #include <LibGfx/Filter.h>
 #include <LibGfx/Font/Font.h>
+#include <LibGfx/PaintingSurface.h>
 #include <LibGfx/SharedImageBuffer.h>
 #include <LibMedia/VideoFrame.h>
 #include <LibWeb/Painting/DisplayList.h>
@@ -319,6 +320,21 @@ void DisplayListResourceStorage::update_compositor_surface(CompositorSurfaceId s
 void DisplayListResourceStorage::clear_compositor_surface(CompositorSurfaceId surface_id)
 {
     m_compositor_surfaces.remove(surface_id.value());
+}
+
+void DisplayListResourceStorage::set_canvas_surface(CanvasId canvas_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
+{
+    m_canvas_surfaces.set(canvas_id.value(), move(surface));
+}
+
+void DisplayListResourceStorage::clear_canvas_surface(CanvasId canvas_id)
+{
+    m_canvas_surfaces.remove(canvas_id.value());
+}
+
+Gfx::PaintingSurface const* DisplayListResourceStorage::canvas_surface(CanvasId canvas_id) const
+{
+    return m_canvas_surfaces.get(canvas_id.value()).value_or(nullptr);
 }
 
 }

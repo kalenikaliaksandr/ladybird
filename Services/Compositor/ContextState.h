@@ -117,6 +117,8 @@ public:
     void clear_video_frame(Web::Painting::VideoFrameResourceId);
     void update_compositor_surface(Web::Painting::CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(Web::Painting::CompositorSurfaceId);
+    void set_canvas_surface(Web::Painting::CanvasId, NonnullRefPtr<Gfx::PaintingSurface>);
+    void clear_canvas_surface(Web::Painting::CanvasId);
     Gfx::SharedImage snapshot_front_store();
 
     void invalidate_wheel_event_listener_state(u64 generation);

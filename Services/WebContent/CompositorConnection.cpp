@@ -93,6 +93,49 @@ void CompositorConnection::clear_compositor_surface(Web::Compositor::CompositorC
     async_clear_compositor_surface(context_id, surface_id);
 }
 
+bool CompositorConnection::create_canvas_context(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CanvasContextCreationAttributes attributes)
+{
+    if (!can_send_message_to_compositor())
+        return false;
+
+    auto response = send_sync<Messages::CompositorWebContentServer::CreateCanvasContext>(canvas_context_id, attributes);
+    return response->success();
+}
+
+void CompositorConnection::update_canvas_commands(Web::Painting::CanvasContextId canvas_context_id, Gfx::CanvasCommandList const& commands)
+{
+    if (!can_send_message_to_compositor())
+        return;
+
+    auto encoded_message = MUST(Messages::CompositorWebContentServer::UpdateCanvasCommands::static_encode(canvas_context_id, commands));
+    MUST(post_message(encoded_message));
+}
+
+void CompositorConnection::destroy_canvas_context(Web::Painting::CanvasContextId canvas_context_id)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_destroy_canvas_context(canvas_context_id);
+}
+
+void CompositorConnection::prepare_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id)
+{
+    if (!can_send_message_to_compositor())
+        return;
+
+    auto encoded_message = MUST(Messages::CompositorWebContentServer::PrepareCanvasSurface::static_encode(canvas_context_id, target_context_id, canvas_id));
+    MUST(post_message(encoded_message));
+}
+
+Gfx::ShareableBitmap CompositorConnection::get_canvas_pixels(Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
+{
+    if (!can_send_message_to_compositor())
+        return {};
+
+    auto response = send_sync<Messages::CompositorWebContentServer::GetCanvasPixels>(canvas_context_id, rect);
+    return response->take_pixels();
+}
+
 void CompositorConnection::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)
 {
     if (!can_send_message_to_compositor())

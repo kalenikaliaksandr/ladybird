@@ -18,6 +18,7 @@
 #include <AK/Vector.h>
 #include <LibGfx/DecodedImageFrame.h>
 #include <LibGfx/Forward.h>
+#include <LibGfx/PaintingSurface.h>
 #include <LibIPC/Forward.h>
 #include <LibMedia/VideoFrame.h>
 #include <LibWeb/Forward.h>
@@ -99,6 +100,8 @@ public:
     void clear_video_frame(VideoFrameResourceId);
     void update_compositor_surface(CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(CompositorSurfaceId);
+    void set_canvas_surface(CanvasId, NonnullRefPtr<Gfx::PaintingSurface>);
+    void clear_canvas_surface(CanvasId);
 
     Gfx::Font const& font(FontResourceId id) const { return *m_fonts.get(id.value()).value(); }
     Gfx::DecodedImageFrame const& image_frame(ImageFrameResourceId id) const { return m_image_frames.get(id.value()).value(); }
@@ -107,6 +110,7 @@ public:
     DisplayList const& display_list(DisplayListResourceId id) const { return *display_list_resource(id).display_list; }
     AccumulatedVisualContextTree const& display_list_visual_context_tree(DisplayListResourceId id) const { return display_list_resource(id).visual_context_tree; }
     Optional<Gfx::DecodedImageFrame const&> compositor_surface(CompositorSurfaceId id) const { return m_compositor_surfaces.get(id.value()); }
+    Gfx::PaintingSurface const* canvas_surface(CanvasId) const;
 
 private:
     void collect_referenced_resources(ReadonlyBytes command_bytes, DisplayListResourceSet&) const;
@@ -116,6 +120,7 @@ private:
     HashMap<u64, RefPtr<Media::VideoFrame const>> m_video_frames;
     HashMap<u64, DisplayListResource> m_display_lists;
     HashMap<u64, Gfx::DecodedImageFrame> m_compositor_surfaces;
+    HashMap<u64, NonnullRefPtr<Gfx::PaintingSurface>> m_canvas_surfaces;
 
     HashMap<u64, size_t> m_font_cache_reference_counts;
     HashMap<u64, size_t> m_image_frame_cache_reference_counts;
