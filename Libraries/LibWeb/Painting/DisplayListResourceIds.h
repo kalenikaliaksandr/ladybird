@@ -28,14 +28,4 @@ inline IdType allocate_display_list_resource_id()
     return IdType { s_next_id.fetch_add(1, AK::MemoryOrder::memory_order_relaxed) };
 }
 
-inline VideoFrameResourceId allocate_video_frame_resource_id()
-{
-    return allocate_display_list_resource_id<VideoFrameResourceId>();
-}
-
-inline CompositorSurfaceId allocate_compositor_surface_id()
-{
-    return allocate_display_list_resource_id<CompositorSurfaceId>();
-}
-
 }

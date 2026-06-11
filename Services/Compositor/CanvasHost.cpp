@@ -5,7 +5,9 @@
  */
 
 #include <Compositor/CanvasHost.h>
+#include <Compositor/HostWebGLContext.h>
 #include <LibGfx/Bitmap.h>
+#include <LibGfx/CanvasCommandPlayer.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibGfx/SkiaBackendContext.h>
 
@@ -18,12 +20,10 @@ CanvasHost::CanvasHost(RefPtr<Gfx::SkiaBackendContext> skia_backend_context)
 
 CanvasHost::~CanvasHost() = default;
 
-bool CanvasHost::create_context(Web::Painting::CanvasContextId canvas_context_id, Gfx::IntSize size, bool alpha)
+OwnPtr<Gfx::CanvasCommandPlayer> CanvasHost::create_2d_context(Gfx::IntSize size, bool alpha)
 {
-    if (m_contexts.contains(canvas_context_id))
-        return false;
     if (size.is_empty() || static_cast<i64>(size.width()) * static_cast<i64>(size.height()) > Gfx::max_canvas_area)
-        return false;
+        return nullptr;
 
     auto format = alpha ? Gfx::BitmapFormat::BGRA8888 : Gfx::BitmapFormat::BGRx8888;
     auto player = make<Gfx::CanvasCommandPlayer>(m_skia_backend_context, size, format, Gfx::AlphaType::Premultiplied);
@@ -34,8 +34,53 @@ bool CanvasHost::create_context(Web::Painting::CanvasContextId canvas_context_id
     if (!alpha)
         player->clear(Gfx::Color::Black);
 
-    m_contexts.set(canvas_context_id, move(player));
-    return true;
+    return player;
+}
+
+Gfx::CanvasCommandPlayer& CanvasHost::as_2d(Context& context)
+{
+    auto* player = context.get_pointer<Canvas2DContext>();
+    VERIFY(player);
+    return **player;
+}
+
+HostWebGLContext& CanvasHost::as_webgl(Context& context)
+{
+    auto* webgl_context = context.get_pointer<WebGLContext>();
+    VERIFY(webgl_context);
+    return **webgl_context;
+}
+
+CanvasHost::CreateContextResult CanvasHost::create_context(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CanvasContextCreationAttributes const& attributes)
+{
+    if (m_contexts.contains(canvas_context_id))
+        return {};
+
+    switch (attributes.type) {
+    case Web::Compositor::CanvasContextType::Context2D: {
+        auto context = create_2d_context(attributes.size, attributes.alpha);
+        if (!context)
+            return {};
+        m_contexts.set(canvas_context_id, context.release_nonnull());
+        return { .success = true };
+    }
+    case Web::Compositor::CanvasContextType::WebGL1:
+    case Web::Compositor::CanvasContextType::WebGL2: {
+        if (!m_skia_backend_context)
+            return {};
+        auto version = attributes.type == Web::Compositor::CanvasContextType::WebGL1
+            ? Web::WebGL::WebGLVersion::WebGL1
+            : Web::WebGL::WebGLVersion::WebGL2;
+        auto context = HostWebGLContext::create(*m_skia_backend_context, version, { .depth = attributes.depth, .stencil = attributes.stencil, .antialias = attributes.antialias }, attributes.size);
+        if (!context)
+            return {};
+        auto supported_extensions = context->gl_context().get_supported_opengl_extensions();
+        m_contexts.set(canvas_context_id, context.release_nonnull());
+        return { .success = true, .supported_extensions = move(supported_extensions) };
+    }
+    }
+
+    VERIFY_NOT_REACHED();
 }
 
 void CanvasHost::destroy_context(Web::Painting::CanvasContextId canvas_context_id)
@@ -48,28 +93,66 @@ bool CanvasHost::has_context(Web::Painting::CanvasContextId canvas_context_id) c
     return m_contexts.contains(canvas_context_id);
 }
 
+CanvasHost::Context* CanvasHost::context(Web::Painting::CanvasContextId canvas_context_id)
+{
+    auto it = m_contexts.find(canvas_context_id);
+    if (it == m_contexts.end())
+        return nullptr;
+    return &it->value;
+}
+
 void CanvasHost::apply_commands(Web::Painting::CanvasContextId canvas_context_id, Gfx::CanvasCommandList const& commands)
 {
-    auto player = m_contexts.get(canvas_context_id);
-    VERIFY(player.has_value());
-    (*player)->play(commands);
+    auto* context = this->context(canvas_context_id);
+    VERIFY(context);
+    as_2d(*context).play(commands);
 }
 
-RefPtr<Gfx::PaintingSurface> CanvasHost::context_surface(Web::Painting::CanvasContextId canvas_context_id)
+void CanvasHost::execute_webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer const& commands, Vector<Gfx::DecodedImageFrame> const& bitmaps)
 {
-    auto player = m_contexts.get(canvas_context_id);
-    if (!player.has_value())
-        return nullptr;
-    return (*player)->surface();
+    auto* context = this->context(canvas_context_id);
+    VERIFY(context);
+    MUST(as_webgl(*context).execute_commands(commands, bitmaps));
 }
 
-Gfx::ShareableBitmap CanvasHost::read_back_pixels(Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
+ErrorOr<ByteBuffer> CanvasHost::execute_webgl_sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request)
 {
-    auto surface = context_surface(canvas_context_id);
-    if (!surface)
-        return {};
+    auto* context = this->context(canvas_context_id);
+    VERIFY(context);
+    return as_webgl(*context).execute_sync_call(request);
+}
 
-    auto clipped_rect = rect.intersected(surface->rect());
+Web::WebGL::ReadPixelsResult CanvasHost::read_pixels_robust_angle(Web::Painting::CanvasContextId canvas_context_id, Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer pixels)
+{
+    auto* context = this->context(canvas_context_id);
+    VERIFY(context);
+    return as_webgl(*context).read_pixels_robust_angle(x, y, width, height, format, type, buf_size, move(pixels));
+}
+
+void CanvasHost::read_buffer_sub_data(Web::Painting::CanvasContextId canvas_context_id, Web::WebGL::GLenum target, Web::WebGL::GLintptr offset, Web::WebGL::GLintptr size, Core::AnonymousBuffer data)
+{
+    auto* context = this->context(canvas_context_id);
+    VERIFY(context);
+    as_webgl(*context).read_buffer_sub_data(target, offset, size, move(data));
+}
+
+ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> CanvasHost::prepare_surface(Web::Painting::CanvasContextId canvas_context_id, bool preserve_drawing_buffer)
+{
+    auto* context = this->context(canvas_context_id);
+    VERIFY(context);
+
+    return context->visit(
+        [](Canvas2DContext& player) -> ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> {
+            return player->surface();
+        },
+        [preserve_drawing_buffer](WebGLContext& webgl_context) -> ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> {
+            return webgl_context->prepare_for_compositing(preserve_drawing_buffer);
+        });
+}
+
+static Gfx::ShareableBitmap read_back_surface(Gfx::PaintingSurface& surface, Gfx::IntRect rect)
+{
+    auto clipped_rect = rect.intersected(surface.rect());
     if (clipped_rect.is_empty())
         return {};
 
@@ -78,9 +161,24 @@ Gfx::ShareableBitmap CanvasHost::read_back_pixels(Web::Painting::CanvasContextId
         return {};
 
     auto bitmap = bitmap_or_error.release_value();
-    surface->flush();
-    surface->read_into_bitmap(*bitmap, clipped_rect.location());
+    surface.flush();
+    surface.read_into_bitmap(*bitmap, clipped_rect.location());
     return Gfx::ShareableBitmap { move(bitmap), Gfx::ShareableBitmap::ConstructWithKnownGoodBitmap };
+}
+
+Gfx::ShareableBitmap CanvasHost::read_back_pixels(Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
+{
+    auto* context = this->context(canvas_context_id);
+    if (!context)
+        return {};
+
+    return context->visit(
+        [rect](Canvas2DContext& player) {
+            return read_back_surface(player->surface(), rect);
+        },
+        [rect](WebGLContext& webgl_context) {
+            return webgl_context->read_back_drawing_buffer(rect);
+        });
 }
 
 }

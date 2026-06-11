@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        const source = document.createElement("canvas");
+        source.width = 50;
+        source.height = 50;
+        document.body.appendChild(source);
+        const source_context = source.getContext("2d");
+        source_context.fillStyle = "red";
+        source_context.fillRect(0, 0, 50, 50);
+
+        const destination = document.createElement("canvas");
+        destination.width = 100;
+        destination.height = 100;
+        document.body.appendChild(destination);
+        const destination_context = destination.getContext("2d");
+        destination_context.drawImage(source, 0, 0, 50, 50, 0, 0, 100, 100);
+
+        // Mutating the source after drawImage must not affect what was drawn.
+        source_context.fillStyle = "blue";
+        source_context.fillRect(0, 0, 50, 50);
+
+        const destination_pixel = destination_context.getImageData(50, 50, 1, 1).data;
+        println(`destination pixel: ${[...destination_pixel].join(",")}`);
+
+        const source_pixel = source_context.getImageData(25, 25, 1, 1).data;
+        println(`source pixel: ${[...source_pixel].join(",")}`);
+
+        // Self-draw samples the canvas as of the call.
+        const self_draw = document.createElement("canvas");
+        self_draw.width = 100;
+        self_draw.height = 100;
+        document.body.appendChild(self_draw);
+        const self_draw_context = self_draw.getContext("2d");
+        self_draw_context.fillStyle = "green";
+        self_draw_context.fillRect(0, 0, 50, 50);
+        self_draw_context.drawImage(self_draw, 0, 0, 50, 50, 50, 50, 50, 50);
+        const self_draw_pixel = self_draw_context.getImageData(75, 75, 1, 1).data;
+        println(`self-draw pixel: ${[...self_draw_pixel].join(",")}`);
+
+        // Resetting the source canvas must not leave stale compositor-hosted pixels
+        // available to later drawImage calls.
+        const reset_source = document.createElement("canvas");
+        reset_source.width = 50;
+        reset_source.height = 50;
+        document.body.appendChild(reset_source);
+        const reset_source_context = reset_source.getContext("2d");
+        reset_source_context.fillStyle = "red";
+        reset_source_context.fillRect(0, 0, 50, 50);
+        reset_source.width = 51;
+
+        const reset_destination = document.createElement("canvas");
+        reset_destination.width = 50;
+        reset_destination.height = 50;
+        document.body.appendChild(reset_destination);
+        const reset_destination_context = reset_destination.getContext("2d");
+        reset_destination_context.drawImage(reset_source, 0, 0, 50, 50, 0, 0, 50, 50);
+        const reset_destination_pixel = reset_destination_context.getImageData(25, 25, 1, 1).data;
+        println(`reset source pixel: ${[...reset_destination_pixel].join(",")}`);
+    });
+</script>

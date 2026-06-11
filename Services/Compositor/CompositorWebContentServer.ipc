@@ -30,6 +30,8 @@ endpoint CompositorWebContentServer
     update_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage shared_image) =|
     clear_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id) =|
 
+    clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id) =|
+
     create_canvas_context(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CanvasContextCreationAttributes attributes) => (bool success, Vector<String> supported_extensions)
     update_canvas_commands(Web::Painting::CanvasContextId canvas_context_id, Gfx::CanvasCommandList commands) =|
     destroy_canvas_context(Web::Painting::CanvasContextId canvas_context_id) =|

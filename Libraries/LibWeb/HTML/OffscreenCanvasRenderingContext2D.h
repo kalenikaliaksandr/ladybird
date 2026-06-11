@@ -82,7 +82,7 @@ public:
 
     virtual WebIDL::ExceptionOr<GC::Ref<ImageData>> create_image_data(int width, int height, Optional<Bindings::ImageDataSettings> const& settings = {}) const override;
     virtual WebIDL::ExceptionOr<GC::Ref<ImageData>> create_image_data(ImageData const& image_data) const override;
-    virtual WebIDL::ExceptionOr<GC::Ptr<ImageData>> get_image_data(int x, int y, int width, int height, Optional<Bindings::ImageDataSettings> const& settings = {}) const override;
+    virtual WebIDL::ExceptionOr<GC::Ptr<ImageData>> get_image_data(int x, int y, int width, int height, Optional<Bindings::ImageDataSettings> const& settings = {}) override;
     virtual WebIDL::ExceptionOr<void> put_image_data(ImageData&, float x, float y) override;
     virtual WebIDL::ExceptionOr<void> put_image_data(ImageData&, float x, float y, float dirty_x, float dirty_y, float dirty_width, float dirty_height) override;
 
@@ -124,7 +124,7 @@ public:
     void set_size(Gfx::IntSize const&);
 
 protected:
-    [[nodiscard]] Gfx::CanvasCommandList* canvas_command_list() override;
+    [[nodiscard]] Gfx::CanvasCommandList* recorder() override;
     Variant<GC::Ref<HTMLCanvasElement>, GC::Ref<OffscreenCanvas>> canvas_element() override { return m_canvas; }
     Variant<GC::Ref<HTMLCanvasElement>, GC::Ref<OffscreenCanvas>> canvas_element() const override { return m_canvas; }
     JS::Realm& my_realm() override { return realm(); }

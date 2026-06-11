@@ -1547,7 +1547,7 @@ void HTMLMediaElement::set_audio_track_enabled(Badge<AudioTrack>, GC::Ptr<HTML::
 Painting::VideoFrameResourceId HTMLMediaElement::ensure_video_frame_resource_id()
 {
     if (!m_video_frame_resource_id.has_value())
-        m_video_frame_resource_id = Painting::allocate_video_frame_resource_id();
+        m_video_frame_resource_id = Painting::allocate_display_list_resource_id<Painting::VideoFrameResourceId>();
     return *m_video_frame_resource_id;
 }
 

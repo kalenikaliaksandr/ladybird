@@ -14,7 +14,6 @@
 #include <AK/OwnPtr.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/CanvasCommandList.h>
-#include <LibGfx/CanvasCommandPlayer.h>
 #include <LibGfx/CompositingAndBlendingOperator.h>
 #include <LibGfx/DecodedImageFrame.h>
 #include <LibGfx/Painter.h>
@@ -30,6 +29,8 @@
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/CSS/PropertyID.h>
 #include <LibWeb/CSS/StyleValues/FilterValueListStyleValue.h>
+#include <LibWeb/Compositor/CompositorHost.h>
+#include <LibWeb/Compositor/RemoteCanvasTransport.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/HTML/CanvasRenderingContext2D.h>
@@ -43,11 +44,13 @@
 #include <LibWeb/HTML/ImageBitmap.h>
 #include <LibWeb/HTML/ImageData.h>
 #include <LibWeb/HTML/ImageRequest.h>
+#include <LibWeb/HTML/Navigable.h>
 #include <LibWeb/HTML/Path2D.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/TextMetrics.h>
 #include <LibWeb/Infra/CharacterTypes.h>
 #include <LibWeb/Layout/TextNode.h>
+#include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/SVG/SVGImageElement.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
@@ -66,6 +69,7 @@ CanvasRenderingContext2D::CanvasRenderingContext2D(JS::Realm& realm, HTMLCanvasE
     : PlatformObject(realm)
     , CanvasPath(static_cast<Bindings::PlatformObject&>(*this), *this)
     , m_element(element)
+    , m_canvas_context_id(Painting::allocate_display_list_resource_id<Painting::CanvasContextId>())
     , m_size(element.bitmap_size_for_canvas())
     , m_context_attributes(move(context_attributes))
 {
@@ -89,10 +93,10 @@ void CanvasRenderingContext2D::visit_edges(Cell::Visitor& visitor)
 size_t CanvasRenderingContext2D::external_memory_size() const
 {
     auto size = Base::external_memory_size();
-    if (!m_player)
+    if (!m_has_backing_storage)
         return size;
 
-    auto surface_size = m_player->surface()->size();
+    auto surface_size = m_size;
     if (surface_size.is_empty())
         return size;
 
@@ -127,6 +131,25 @@ Gfx::Path CanvasRenderingContext2D::rect_path(float x, float y, float width, flo
 
 void CanvasRenderingContext2D::fill_rect(float x, float y, float width, float height)
 {
+    // Solid-color fills in the default compositing state take the dedicated FillRect
+    // op; everything else goes through the general path pipeline. fillRect is the
+    // hottest canvas call, so skipping the path construction is worth the check.
+    auto& state = drawing_state();
+    auto solid_color = state.fill_style.as_color();
+    if (solid_color.has_value() && solid_color->alpha() > 0
+        && width >= 0 && height >= 0
+        && state.global_alpha == 1.0f
+        && !state.filter.has_value()
+        && state.current_compositing_and_blending_operator == Gfx::CompositingAndBlendingOperator::SourceOver
+        && state.shadow_blur == 0.0f && state.shadow_offset_x == 0.0f && state.shadow_offset_y == 0.0f) {
+        if (auto* recorder = this->recorder()) {
+            auto rect = Gfx::FloatRect { x, y, width, height };
+            recorder->append(Gfx::CanvasCommands::FillRect { .rect = rect, .color = *solid_color });
+            did_draw(rect);
+        }
+        return;
+    }
+
     fill_internal(rect_path(x, y, width, height), Gfx::WindingRule::EvenOdd);
 }
 
@@ -137,9 +160,9 @@ void CanvasRenderingContext2D::clear_rect(float x, float y, float width, float h
     if (!isfinite(x) || !isfinite(y) || !isfinite(width) || !isfinite(height))
         return;
 
-    if (auto* canvas_command_list = this->canvas_command_list()) {
+    if (auto* recorder = this->recorder()) {
         auto rect = Gfx::FloatRect(x, y, width, height);
-        canvas_command_list->append(Gfx::CanvasCommands::ClearRect { .rect = rect, .color = clear_color() });
+        recorder->append(Gfx::CanvasCommands::ClearRect { .rect = rect, .color = clear_color() });
         did_draw(rect);
     }
 }
@@ -166,7 +189,7 @@ WebIDL::ExceptionOr<void> CanvasRenderingContext2D::draw_image_internal(CanvasIm
     auto frame = canvas_image_source_frame(image);
     if (!frame.has_value())
         return {};
-    auto const& bitmap = frame->bitmap();
+    auto source_bitmap_rect = frame->rect();
 
     // 4. Establish the source and destination rectangles as follows:
     //    If not specified, the dw and dh arguments must default to the values of sw and sh, interpreted such that one CSS pixel in the image is treated as one unit in the output bitmap's coordinate space.
@@ -199,7 +222,7 @@ WebIDL::ExceptionOr<void> CanvasRenderingContext2D::draw_image_internal(CanvasIm
     auto destination_rect = Gfx::FloatRect { destination_x, destination_y, destination_width, destination_height };
     //    When the source rectangle is outside the source image, the source rectangle must be clipped
     //    to the source image and the destination rectangle must be clipped in the same proportion.
-    auto clipped_source = source_rect.intersected(bitmap.rect().to_type<float>());
+    auto clipped_source = source_rect.intersected(source_bitmap_rect.to_type<float>());
     auto clipped_destination = destination_rect;
     if (clipped_source != source_rect) {
         clipped_destination.set_width(clipped_destination.width() * (clipped_source.width() / source_rect.width()));
@@ -217,8 +240,8 @@ WebIDL::ExceptionOr<void> CanvasRenderingContext2D::draw_image_internal(CanvasIm
         scaling_mode = Gfx::ScalingMode::BilinearMipmap;
     }
 
-    if (auto* canvas_command_list = this->canvas_command_list()) {
-        canvas_command_list->append(Gfx::CanvasCommands::DrawBitmap {
+    if (auto* recorder = this->recorder()) {
+        recorder->append(Gfx::CanvasCommands::DrawBitmap {
             .frame = *frame,
             .dst_rect = destination_rect,
             .src_rect = source_rect.to_rounded<int>(),
@@ -244,30 +267,54 @@ void CanvasRenderingContext2D::did_draw(Gfx::FloatRect const&)
     m_element->set_needs_repaint(InvalidateDisplayList::No);
 }
 
-Gfx::CanvasCommandList* CanvasRenderingContext2D::canvas_command_list()
+Gfx::CanvasCommandList* CanvasRenderingContext2D::recorder()
 {
     if (is_context_lost())
         return nullptr;
-    allocate_painting_surface_if_needed();
-    if (!m_player)
+    ensure_backing_storage();
+    if (!m_has_backing_storage)
         return nullptr;
     return &m_commands;
 }
 
-RefPtr<Gfx::PaintingSurface> CanvasRenderingContext2D::surface()
+bool CanvasRenderingContext2D::ensure_remote_canvas_context()
 {
-    if (!m_player)
-        return nullptr;
-    flush_recorded_commands();
-    return m_player->surface();
+    if (m_transport)
+        return true;
+
+    auto& page = m_element->document().page();
+    if (!page.has_compositor_host())
+        return false;
+    auto transport = page.compositor_host().create_canvas_transport();
+    if (!transport)
+        return false;
+
+    // FIXME: implement context attribute .color_space
+    // FIXME: implement context attribute .color_type
+    // FIXME: implement context attribute .desynchronized
+    // FIXME: implement context attribute .will_read_frequently
+    if (!transport->create_context(m_canvas_context_id, m_element->bitmap_size_for_canvas(), m_context_attributes.alpha))
+        return false;
+    m_transport = move(transport);
+    return true;
 }
 
 void CanvasRenderingContext2D::flush_recorded_commands()
 {
-    if (m_commands.is_empty())
+    if (m_commands.is_empty() || !m_transport)
         return;
+
     auto commands = move(m_commands);
-    m_player->play(commands);
+    m_commands = {};
+    m_transport->update_commands(m_canvas_context_id, commands);
+}
+
+RefPtr<Gfx::Bitmap> CanvasRenderingContext2D::read_pixels(Gfx::IntRect const& rect)
+{
+    if (!m_has_backing_storage || !m_transport)
+        return nullptr;
+    flush_recorded_commands();
+    return m_transport->read_back_pixels(m_canvas_context_id, rect);
 }
 
 void CanvasRenderingContext2D::set_size(Gfx::IntSize const& size)
@@ -275,23 +322,30 @@ void CanvasRenderingContext2D::set_size(Gfx::IntSize const& size)
     if (m_size == size)
         return;
     m_size = size;
-    m_commands = {};
-    m_player = nullptr;
+    discard_backing_storage();
 }
 
-void CanvasRenderingContext2D::present()
+void CanvasRenderingContext2D::prepare_for_compositing()
 {
-    if (!m_player)
+    if (!m_has_backing_storage)
         return;
     flush_recorded_commands();
-    m_player->prune_caches();
+
+    // Bind the context's live backing surface into the navigable's display-list context so
+    // the page display list can sample it. Without a navigable context (detached canvas,
+    // mid-teardown) there is nothing to display into; the flush above keeps the remote
+    // context current for readbacks.
+    if (!m_transport)
+        return;
+    if (auto navigable = m_element->document().navigable(); navigable && navigable->has_compositor_context())
+        m_transport->prepare_canvas_surface(m_canvas_context_id, navigable->compositor_context().id(), m_element->ensure_canvas_id());
 }
 
 // https://html.spec.whatwg.org/multipage/canvas.html#context-loss
 void CanvasRenderingContext2D::notify_backing_storage_lost()
 {
     // Nothing was lost if the context never had backing storage.
-    if (!m_player)
+    if (!m_has_backing_storage)
         return;
 
     // When the user agent detects that the backing storage associated with a canvas context has been lost, then it
@@ -307,8 +361,7 @@ void CanvasRenderingContext2D::notify_backing_storage_lost()
         set_context_lost(true);
 
         // AD-HOC: Drop recorded-but-unflushed draw commands; they targeted the lost storage.
-        m_commands = {};
-        m_player = nullptr;
+        discard_backing_storage();
 
         // 4. Reset the rendering context to its default state given context.
         reset_to_default_state();
@@ -325,8 +378,8 @@ void CanvasRenderingContext2D::notify_backing_storage_lost()
 
         // 7. Attempt to restore context by creating a backing storage using context's attributes and associating
         //    them with context. If this fails, then abort these steps.
-        allocate_painting_surface_if_needed();
-        if (!m_player)
+        ensure_backing_storage();
+        if (!m_has_backing_storage)
             return;
 
         // 8. Set context's context lost to false.
@@ -337,27 +390,30 @@ void CanvasRenderingContext2D::notify_backing_storage_lost()
     }));
 }
 
-void CanvasRenderingContext2D::allocate_painting_surface_if_needed()
+void CanvasRenderingContext2D::ensure_backing_storage()
 {
-    if (m_player || m_size.is_empty())
+    if (m_has_backing_storage || m_size.is_empty())
         return;
 
-    // FIXME: implement context attribute .color_space
-    // FIXME: implement context attribute .color_type
-    // FIXME: implement context attribute .desynchronized
-    // FIXME: implement context attribute .will_read_frequently
+    // 2D canvas is always rasterized in the Compositor, which allocates the backing
+    // surface when the remote context is created; without a connection there is nowhere
+    // to record to (only happens for embedders with no compositor, which never render a
+    // canvas).
+    if (!ensure_remote_canvas_context())
+        return;
 
-    auto color_type = m_context_attributes.alpha ? Gfx::BitmapFormat::BGRA8888 : Gfx::BitmapFormat::BGRx8888;
-
-    auto surface_size = m_element->bitmap_size_for_canvas();
-    m_player = make<Gfx::CanvasCommandPlayer>(nullptr, surface_size, color_type, Gfx::AlphaType::Premultiplied);
+    m_has_backing_storage = true;
     m_element->set_needs_repaint();
+}
 
-    // https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-settings:concept-canvas-alpha
-    // Thus, the bitmap of such a context starts off as opaque black instead of transparent black;
-    // AD-HOC: Skia provides us with a full transparent surface by default; only clear the surface if alpha is disabled.
-    if (!m_context_attributes.alpha)
-        m_player->clear(clear_color());
+void CanvasRenderingContext2D::discard_backing_storage()
+{
+    m_commands = {};
+    if (m_transport) {
+        m_transport->destroy_context(m_canvas_context_id);
+        m_transport = nullptr;
+    }
+    m_has_backing_storage = false;
 }
 
 Gfx::Path CanvasRenderingContext2D::text_path(Utf16String const& text, float x, float y, Optional<double> max_width)
@@ -515,8 +571,8 @@ Gfx::Color CanvasRenderingContext2D::clear_color() const
 
 void CanvasRenderingContext2D::stroke_internal(Gfx::Path path)
 {
-    auto* canvas_command_list = this->canvas_command_list();
-    if (!canvas_command_list)
+    auto* recorder = this->recorder();
+    if (!recorder)
         return;
 
     auto& state = drawing_state();
@@ -535,7 +591,7 @@ void CanvasRenderingContext2D::stroke_internal(Gfx::Path path)
     }
     paint_shadow_for_stroke_internal(path, line_cap, line_join, dash_array);
     auto bounding_box = path.bounding_box();
-    canvas_command_list->append(Gfx::CanvasCommands::StrokePath {
+    recorder->append(Gfx::CanvasCommands::StrokePath {
         .path = move(path),
         .style = Gfx::to_canvas_paint_style(*paint_style),
         .thickness = state.line_width,
@@ -574,8 +630,8 @@ static Gfx::WindingRule parse_fill_rule(StringView fill_rule)
 
 void CanvasRenderingContext2D::fill_internal(Gfx::Path path, Gfx::WindingRule winding_rule)
 {
-    auto* canvas_command_list = this->canvas_command_list();
-    if (!canvas_command_list)
+    auto* recorder = this->recorder();
+    if (!recorder)
         return;
 
     auto& state = this->drawing_state();
@@ -586,7 +642,7 @@ void CanvasRenderingContext2D::fill_internal(Gfx::Path path, Gfx::WindingRule wi
     paint_shadow_for_fill_internal(path, winding_rule);
 
     auto bounding_box = path.bounding_box();
-    canvas_command_list->append(Gfx::CanvasCommands::FillPath {
+    recorder->append(Gfx::CanvasCommands::FillPath {
         .path = move(path),
         .style = Gfx::to_canvas_paint_style(*paint_style),
         .winding_rule = winding_rule,
@@ -642,7 +698,7 @@ WebIDL::ExceptionOr<GC::Ref<ImageData>> CanvasRenderingContext2D::create_image_d
 }
 
 // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-getimagedata
-WebIDL::ExceptionOr<GC::Ptr<ImageData>> CanvasRenderingContext2D::get_image_data(int x, int y, int width, int height, Optional<Bindings::ImageDataSettings> const& settings) const
+WebIDL::ExceptionOr<GC::Ptr<ImageData>> CanvasRenderingContext2D::get_image_data(int x, int y, int width, int height, Optional<Bindings::ImageDataSettings> const& settings)
 {
     // 1. If either the sw or sh arguments are zero, then throw an "IndexSizeError" DOMException.
     if (width == 0 || height == 0)
@@ -661,12 +717,6 @@ WebIDL::ExceptionOr<GC::Ptr<ImageData>> CanvasRenderingContext2D::get_image_data
     // 4. Initialize imageData given sw, sh, settings set to settings, and defaultColorSpace set to this's color space.
     auto image_data = TRY(ImageData::create(realm(), abs_width, abs_height, settings));
 
-    // NOTE: We don't attempt to create the underlying bitmap here; if it doesn't exist, it's like copying only transparent black pixels (which is a no-op).
-    auto surface = m_element->surface();
-    if (!surface)
-        return image_data;
-    auto const snapshot = Gfx::DecodedImageFrame { *surface->snapshot_bitmap() };
-
     // 5. Let the source rectangle be the rectangle whose corners are the four points (sx, sy), (sx+sw, sy), (sx+sw, sy+sh), (sx, sy+sh).
     auto source_rect = Gfx::Rect { x, y, abs_width, abs_height };
 
@@ -676,7 +726,16 @@ WebIDL::ExceptionOr<GC::Ptr<ImageData>> CanvasRenderingContext2D::get_image_data
     if (width < 0 || height < 0) {
         source_rect = source_rect.translated(min(width, 0), min(height, 0));
     }
-    auto source_rect_intersected = source_rect.intersected(snapshot.rect());
+    auto source_rect_intersected = source_rect.intersected(Gfx::IntRect { {}, m_size });
+    if (source_rect_intersected.is_empty())
+        return image_data;
+
+    // NOTE: If reading back from the Compositor fails (no backing storage or no connection),
+    //       it's like copying only transparent black pixels (which is a no-op).
+    auto pixels = read_pixels(source_rect_intersected);
+    if (!pixels)
+        return image_data;
+    auto const snapshot = Gfx::DecodedImageFrame { *pixels };
 
     // 6. Set the pixel values of imageData to be the pixels of this's output bitmap in the area specified by the source rectangle in the bitmap's coordinate space units, converted from this's color space to imageData's colorSpace using 'relative-colorimetric' rendering intent.
     // NOTE: Internally we must use premultiplied alpha, but ImageData should hold unpremultiplied alpha. This conversion
@@ -686,7 +745,7 @@ WebIDL::ExceptionOr<GC::Ptr<ImageData>> CanvasRenderingContext2D::get_image_data
     VERIFY(image_data->bitmap().alpha_type() == Gfx::AlphaType::Unpremultiplied);
 
     auto painter = Gfx::Painter::create(image_data->bitmap());
-    painter->draw_bitmap(image_data->bitmap().rect().to_type<float>(), snapshot, source_rect_intersected, Gfx::ScalingMode::NearestNeighbor, {}, 1, Gfx::CompositingAndBlendingOperator::SourceOver);
+    painter->draw_bitmap(image_data->bitmap().rect().to_type<float>(), snapshot, snapshot.rect(), Gfx::ScalingMode::NearestNeighbor, {}, 1, Gfx::CompositingAndBlendingOperator::SourceOver);
 
     // 7. Set the pixels values of imageData for areas of the source rectangle that are outside of the output bitmap to transparent black.
     // NOTE: No-op, already done during creation.
@@ -700,8 +759,8 @@ WebIDL::ExceptionOr<void> CanvasRenderingContext2D::put_image_data(ImageData& im
 {
     // The putImageData(imageData, dx, dy) method steps are to put pixels from an ImageData onto a bitmap,
     // given imageData, this's output bitmap, dx, dy, 0, 0, imageData's width, and imageData's height.
-    if (auto* canvas_command_list = this->canvas_command_list())
-        TRY(put_pixels_from_an_image_data_onto_a_bitmap(image_data, *canvas_command_list, dx, dy, 0, 0, image_data.width(), image_data.height()));
+    if (auto* recorder = this->recorder())
+        TRY(put_pixels_from_an_image_data_onto_a_bitmap(image_data, *recorder, dx, dy, 0, 0, image_data.width(), image_data.height()));
 
     return {};
 }
@@ -712,14 +771,14 @@ WebIDL::ExceptionOr<void> CanvasRenderingContext2D::put_image_data(ImageData& im
     // The putImageData(imageData, dx, dy, dirtyX, dirtyY, dirtyWidth, dirtyHeight) method steps are to put pixels
     // from an ImageData onto a bitmap, given imageData, this's output bitmap, dx, dy, dirtyX, dirtyY, dirtyWidth, and
     // dirtyHeight.
-    if (auto* canvas_command_list = this->canvas_command_list())
-        TRY(put_pixels_from_an_image_data_onto_a_bitmap(image_data, *canvas_command_list, x, y, dirty_x, dirty_y, dirty_width, dirty_height));
+    if (auto* recorder = this->recorder())
+        TRY(put_pixels_from_an_image_data_onto_a_bitmap(image_data, *recorder, x, y, dirty_x, dirty_y, dirty_width, dirty_height));
 
     return {};
 }
 
 // https://html.spec.whatwg.org/multipage/canvas.html#dom-context2d-putimagedata-common
-WebIDL::ExceptionOr<void> CanvasRenderingContext2D::put_pixels_from_an_image_data_onto_a_bitmap(ImageData& image_data, Gfx::CanvasCommandList& canvas_command_list, float dx, float dy, float dirty_x, float dirty_y, float dirty_width, float dirty_height)
+WebIDL::ExceptionOr<void> CanvasRenderingContext2D::put_pixels_from_an_image_data_onto_a_bitmap(ImageData& image_data, Gfx::CanvasCommandList& recorder, float dx, float dy, float dirty_x, float dirty_y, float dirty_width, float dirty_height)
 {
     // 1. Let buffer be imageData's data attribute value's [[ViewedArrayBuffer]] internal slot.
     auto* buffer = image_data.data()->viewed_array_buffer();
@@ -783,15 +842,14 @@ WebIDL::ExceptionOr<void> CanvasRenderingContext2D::put_pixels_from_an_image_dat
     auto bitmap_snapshot = MUST(Gfx::Bitmap::create_shareable(source_bitmap.format(), source_bitmap.alpha_type(), source_rect.size()));
     for (int y = 0; y < source_rect.height(); ++y)
         __builtin_memcpy(bitmap_snapshot->scanline(y), source_bitmap.scanline(source_rect.y() + y) + source_rect.x(), static_cast<size_t>(source_rect.width()) * sizeof(Gfx::RawPixel));
-    canvas_command_list.append(Gfx::CanvasCommands::Save {});
-    canvas_command_list.append(Gfx::CanvasCommands::SetTransform { .transform = {} });
-    canvas_command_list.append(Gfx::CanvasCommands::DrawBitmap {
+    recorder.append(Gfx::CanvasCommands::Save {});
+    recorder.append(Gfx::CanvasCommands::SetTransform { .transform = {} });
+    recorder.append(Gfx::CanvasCommands::DrawBitmap {
         .frame = Gfx::DecodedImageFrame { *bitmap_snapshot, Gfx::AlphaType::Unpremultiplied },
         .dst_rect = dst_rect,
         .src_rect = bitmap_snapshot->rect(),
-        .filter = {},
     });
-    canvas_command_list.append(Gfx::CanvasCommands::Restore {});
+    recorder.append(Gfx::CanvasCommands::Restore {});
 
     did_draw(dst_rect);
 
@@ -801,12 +859,11 @@ WebIDL::ExceptionOr<void> CanvasRenderingContext2D::put_pixels_from_an_image_dat
 // https://html.spec.whatwg.org/multipage/canvas.html#reset-the-rendering-context-to-its-default-state
 void CanvasRenderingContext2D::reset_to_default_state()
 {
-    auto surface = m_element->surface();
+    auto* recorder = m_has_backing_storage ? this->recorder() : nullptr;
 
     // 1. Clear canvas's bitmap to transparent black.
-    if (surface) {
-        canvas_command_list()->append(Gfx::CanvasCommands::ClearRect { .rect = surface->rect().to_type<float>(), .color = clear_color() });
-    }
+    if (recorder)
+        recorder->append(Gfx::CanvasCommands::ClearRect { .rect = Gfx::FloatRect { {}, m_size.to_type<float>() }, .color = clear_color() });
 
     // 2. Empty the list of subpaths in context's current default path.
     path().clear();
@@ -817,9 +874,9 @@ void CanvasRenderingContext2D::reset_to_default_state()
     // 4. Reset everything that drawing state consists of to their initial values.
     reset_drawing_state();
 
-    if (surface) {
-        canvas_command_list()->append(Gfx::CanvasCommands::Reset {});
-        did_draw(surface->rect().to_type<float>());
+    if (recorder) {
+        recorder->append(Gfx::CanvasCommands::Reset {});
+        did_draw(Gfx::FloatRect { {}, m_size.to_type<float>() });
     }
 }
 
@@ -964,11 +1021,11 @@ CanvasRenderingContext2D::PreparedText CanvasRenderingContext2D::prepare_text(Ut
 
 void CanvasRenderingContext2D::clip_internal(Gfx::Path& path, Gfx::WindingRule winding_rule)
 {
-    auto* canvas_command_list = this->canvas_command_list();
-    if (!canvas_command_list)
+    auto* recorder = this->recorder();
+    if (!recorder)
         return;
 
-    canvas_command_list->append(Gfx::CanvasCommands::ClipPath { .path = path.clone(), .winding_rule = winding_rule });
+    recorder->append(Gfx::CanvasCommands::ClipPath { .path = path.clone(), .winding_rule = winding_rule });
 }
 
 void CanvasRenderingContext2D::clip(StringView fill_rule)
@@ -1261,8 +1318,8 @@ void CanvasRenderingContext2D::set_shadow_color(String color)
 }
 void CanvasRenderingContext2D::paint_shadow_for_fill_internal(Gfx::Path const& path, Gfx::WindingRule winding_rule)
 {
-    auto* canvas_command_list = this->canvas_command_list();
-    if (!canvas_command_list)
+    auto* recorder = this->recorder();
+    if (!recorder)
         return;
 
     auto& state = this->drawing_state();
@@ -1279,30 +1336,29 @@ void CanvasRenderingContext2D::paint_shadow_for_fill_internal(Gfx::Path const& p
     if (alpha == 0.0f)
         return;
 
-    canvas_command_list->append(Gfx::CanvasCommands::Save {});
+    recorder->append(Gfx::CanvasCommands::Save {});
 
     Gfx::AffineTransform transform;
     transform.translate(state.shadow_offset_x, state.shadow_offset_y);
     transform.multiply(state.transform);
-    canvas_command_list->append(Gfx::CanvasCommands::SetTransform { .transform = transform });
-    canvas_command_list->append(Gfx::CanvasCommands::FillPath {
+    recorder->append(Gfx::CanvasCommands::SetTransform { .transform = transform });
+    recorder->append(Gfx::CanvasCommands::FillPath {
         .path = path.clone(),
         .style = state.shadow_color.with_opacity(alpha),
         .winding_rule = winding_rule,
         .blur_radius = state.shadow_blur,
-        .filter = state.filter,
         .compositing_and_blending_operator = state.current_compositing_and_blending_operator,
     });
 
-    canvas_command_list->append(Gfx::CanvasCommands::Restore {});
+    recorder->append(Gfx::CanvasCommands::Restore {});
 
     did_draw(path.bounding_box());
 }
 
 void CanvasRenderingContext2D::paint_shadow_for_stroke_internal(Gfx::Path const& path, Gfx::Path::CapStyle line_cap, Gfx::Path::JoinStyle line_join, Vector<float> const& dash_array)
 {
-    auto* canvas_command_list = this->canvas_command_list();
-    if (!canvas_command_list)
+    auto* recorder = this->recorder();
+    if (!recorder)
         return;
 
     auto& state = drawing_state();
@@ -1320,13 +1376,13 @@ void CanvasRenderingContext2D::paint_shadow_for_stroke_internal(Gfx::Path const&
     if (alpha == 0.0f)
         return;
 
-    canvas_command_list->append(Gfx::CanvasCommands::Save {});
+    recorder->append(Gfx::CanvasCommands::Save {});
 
     Gfx::AffineTransform transform;
     transform.translate(state.shadow_offset_x, state.shadow_offset_y);
     transform.multiply(state.transform);
-    canvas_command_list->append(Gfx::CanvasCommands::SetTransform { .transform = transform });
-    canvas_command_list->append(Gfx::CanvasCommands::StrokePath {
+    recorder->append(Gfx::CanvasCommands::SetTransform { .transform = transform });
+    recorder->append(Gfx::CanvasCommands::StrokePath {
         .path = path.clone(),
         .style = state.shadow_color.with_opacity(alpha),
         .thickness = state.line_width,
@@ -1336,11 +1392,10 @@ void CanvasRenderingContext2D::paint_shadow_for_stroke_internal(Gfx::Path const&
         .dash_array = dash_array,
         .dash_offset = state.line_dash_offset,
         .blur_radius = state.shadow_blur,
-        .filter = state.filter,
         .compositing_and_blending_operator = state.current_compositing_and_blending_operator,
     });
 
-    canvas_command_list->append(Gfx::CanvasCommands::Restore {});
+    recorder->append(Gfx::CanvasCommands::Restore {});
 
     did_draw(path.bounding_box());
 }

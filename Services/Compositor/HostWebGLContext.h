@@ -14,7 +14,6 @@
 #include <Compositor/WebGLObjectMap.h>
 #include <LibCore/AnonymousBuffer.h>
 #include <LibGfx/Forward.h>
-#include <LibGfx/ShareableBitmap.h>
 #include <LibGfx/Size.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/WebGL/OpenGLContext.h>
@@ -65,21 +64,6 @@ private:
     // frame (drawImage, toDataURL, getImageData of the WebGL canvas) still observes the
     // rendered frame.
     bool m_needs_clear_before_next_frame { false };
-};
-
-// All remote WebGL contexts created by one WebContent connection; reaped with it.
-class WebGLHost {
-public:
-    explicit WebGLHost(RefPtr<Gfx::SkiaBackendContext>);
-
-    // Returns the new context, or null if the id is taken or context creation failed.
-    HostWebGLContext* create_context(Web::Painting::CanvasContextId, Web::WebGL::OpenGLContext::WebGLVersion, Web::WebGL::OpenGLContext::DrawingBufferOptions, Gfx::IntSize initial_size);
-    void destroy_context(Web::Painting::CanvasContextId);
-    HostWebGLContext* context(Web::Painting::CanvasContextId);
-
-private:
-    RefPtr<Gfx::SkiaBackendContext> m_skia_backend_context;
-    HashMap<Web::Painting::CanvasContextId, NonnullOwnPtr<HostWebGLContext>> m_contexts;
 };
 
 }

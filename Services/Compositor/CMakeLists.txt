@@ -5,9 +5,9 @@ set(SOURCES
     ContextState.cpp
     ConnectionFromClient.cpp
     ConnectionFromWebContent.cpp
+    HostWebGLContext.cpp
     VSyncScheduler.cpp
     ViewportScrollbarController.cpp
-    WebGLHost.cpp
     WebGLObjectMap.cpp
 )
 

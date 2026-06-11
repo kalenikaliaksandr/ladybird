@@ -439,7 +439,7 @@ void Navigable::initialize_navigable(NonnullRefPtr<DocumentState> document_state
         m_should_show_caret_hit_test_debug_overlay = parent->m_should_show_caret_hit_test_debug_overlay;
     }
     if (parent && !m_is_svg_page && has_compositor_context() && parent->has_compositor_context()) {
-        m_compositor_surface_id = Painting::allocate_compositor_surface_id();
+        m_compositor_surface_id = Painting::allocate_display_list_resource_id<Painting::CompositorSurfaceId>();
         compositor_context().set_presentation_mode(Compositor::PublishToCompositorSurface {
             .target_context_id = parent->compositor_context().id(),
             .surface_id = *m_compositor_surface_id,

@@ -87,7 +87,6 @@ Optional<Gfx::ExportFormat> texture_export_format(GLenum format, GLenum type)
     return {};
 }
 
-
 struct OpenGLContext::Impl {
     EGLDisplay display { EGL_NO_DISPLAY };
     EGLConfig config { EGL_NO_CONFIG_KHR };
@@ -573,16 +572,6 @@ Vector<String> OpenGLContext::get_supported_opengl_extensions()
 #else
     (void)m_webgl_version;
     return {};
-#endif
-}
-
-void OpenGLContext::request_extension(char const* extension_name)
-{
-#ifdef ENABLE_WEBGL
-    make_current();
-    glRequestExtensionANGLE(extension_name);
-#else
-    (void)extension_name;
 #endif
 }
 

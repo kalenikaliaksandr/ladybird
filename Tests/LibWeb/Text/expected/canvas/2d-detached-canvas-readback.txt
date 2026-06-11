@@ -1,0 +1,2 @@
+detached source pixel: 255,0,0,255
+detached destination pixel: 255,0,0,255

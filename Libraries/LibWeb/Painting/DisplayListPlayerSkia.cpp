@@ -207,6 +207,16 @@ void DisplayListPlayerSkia::play_command(FillRect const& command)
     canvas.drawRect(to_skia_rect(rect), paint);
 }
 
+// Shared tail of the compositor-surface/canvas/video-frame commands: draw the whole
+// image scaled into the destination rect.
+static void draw_whole_image_scaled(SkCanvas& canvas, sk_sp<SkImage> const& image, SkRect const& dst_rect, Gfx::ScalingMode scaling_mode)
+{
+    SkRect src_rect = SkRect::MakeIWH(image->width(), image->height());
+    SkPaint paint;
+    paint.setAntiAlias(true);
+    canvas.drawImageRect(image.get(), src_rect, dst_rect, to_skia_sampling_options(scaling_mode), &paint, SkCanvas::kStrict_SrcRectConstraint);
+}
+
 void DisplayListPlayerSkia::play_command(DrawCompositorSurface const& command)
 {
     auto frame = resource_storage().compositor_surface(command.surface_id);
@@ -217,12 +227,20 @@ void DisplayListPlayerSkia::play_command(DrawCompositorSurface const& command)
     if (!image)
         return;
 
-    auto dst_rect = to_skia_rect(command.dst_rect);
-    SkRect src_rect = SkRect::MakeIWH(image->width(), image->height());
-    auto& canvas = surface().canvas();
-    SkPaint paint;
-    paint.setAntiAlias(true);
-    canvas.drawImageRect(image.get(), src_rect, dst_rect, to_skia_sampling_options(command.scaling_mode), &paint, SkCanvas::kStrict_SrcRectConstraint);
+    draw_whole_image_scaled(surface().canvas(), image, to_skia_rect(command.dst_rect), command.scaling_mode);
+}
+
+void DisplayListPlayerSkia::play_command(DrawCanvas const& command)
+{
+    auto* canvas_surface = resource_storage().canvas_surface(command.canvas_id);
+    if (!canvas_surface)
+        return;
+
+    auto image = canvas_surface->sk_image_snapshot<sk_sp<SkImage>>();
+    if (!image)
+        return;
+
+    draw_whole_image_scaled(surface().canvas(), image, to_skia_rect(command.dst_rect), command.scaling_mode);
 }
 
 void DisplayListPlayerSkia::play_command(DrawVideoFrame const& command)
@@ -260,12 +278,7 @@ void DisplayListPlayerSkia::play_command(DrawVideoFrame const& command)
         }
     }
 
-    auto dst_rect = to_skia_rect(command.dst_rect);
-    SkRect src_rect = SkRect::MakeIWH(image->width(), image->height());
-    auto& canvas = surface().canvas();
-    SkPaint paint;
-    paint.setAntiAlias(true);
-    canvas.drawImageRect(image.get(), src_rect, dst_rect, to_skia_sampling_options(command.scaling_mode), &paint, SkCanvas::kStrict_SrcRectConstraint);
+    draw_whole_image_scaled(surface().canvas(), image, to_skia_rect(command.dst_rect), command.scaling_mode);
 }
 
 void DisplayListPlayerSkia::play_command(DrawScaledDecodedImageFrame const& command)

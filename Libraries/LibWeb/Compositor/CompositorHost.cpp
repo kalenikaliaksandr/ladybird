@@ -56,6 +56,11 @@ void CompositorContextHandle::clear_compositor_surface(Painting::CompositorSurfa
     m_host.clear_compositor_surface(m_context_id, surface_id);
 }
 
+void CompositorContextHandle::clear_canvas_surface(Painting::CanvasId canvas_id)
+{
+    m_host.clear_canvas_surface(m_context_id, canvas_id);
+}
+
 void CompositorContextHandle::update_scroll_state(Painting::ScrollStateSnapshot&& scroll_state_snapshot)
 {
     m_host.update_scroll_state(m_context_id, move(scroll_state_snapshot));

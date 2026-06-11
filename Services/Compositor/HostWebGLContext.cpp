@@ -5,8 +5,8 @@
  */
 
 #include <AK/Vector.h>
+#include <Compositor/HostWebGLContext.h>
 #include <Compositor/WebGLCommandReplayer.h>
-#include <Compositor/WebGLHost.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/BitmapExport.h>
 #include <LibGfx/DecodedImageFrame.h>
@@ -195,8 +195,10 @@ void HostWebGLContext::read_buffer_sub_data(GLenum target, Web::WebGL::GLintptr 
 
 ErrorOr<void> HostWebGLContext::set_drawing_buffer_size(int width, int height)
 {
-    if (width < 1 || height < 1 || width > max_webgl_drawing_buffer_dimension || height > max_webgl_drawing_buffer_dimension)
-        return Error::from_string_literal("Invalid WebGL drawing buffer size");
+    VERIFY(width >= 1);
+    VERIFY(width <= max_webgl_drawing_buffer_dimension);
+    VERIFY(height >= 1);
+    VERIFY(height <= max_webgl_drawing_buffer_dimension);
     m_gl_context->set_size({ width, height });
     m_gl_context->make_current();
     return {};
@@ -282,37 +284,6 @@ ErrorOr<ByteBuffer> handle_one(Web::WebGL::OpenGLContext& gl, WebGLObjectMap& ob
         .uniform_indices = { WebGLCommandList::first_inline_data_offset(sizeof(SyncCalls::GetUniformIndices::Reply)), static_cast<u32>(indices_bytes.size()) },
     };
     return WebGLSyncCall::encode_reply(reply, indices_bytes);
-}
-
-// --------------------------------------------------------------------------------------
-
-WebGLHost::WebGLHost(RefPtr<Gfx::SkiaBackendContext> skia_backend_context)
-    : m_skia_backend_context(move(skia_backend_context))
-{
-}
-
-HostWebGLContext* WebGLHost::create_context(Web::Painting::CanvasContextId canvas_context_id, Web::WebGL::OpenGLContext::WebGLVersion version, Web::WebGL::OpenGLContext::DrawingBufferOptions options, Gfx::IntSize initial_size)
-{
-    if (!m_skia_backend_context)
-        return nullptr;
-    if (m_contexts.contains(canvas_context_id))
-        return nullptr;
-    auto context = HostWebGLContext::create(*m_skia_backend_context, version, options, initial_size);
-    if (!context)
-        return nullptr;
-    auto* context_ptr = context.ptr();
-    m_contexts.set(canvas_context_id, context.release_nonnull());
-    return context_ptr;
-}
-
-void WebGLHost::destroy_context(Web::Painting::CanvasContextId canvas_context_id)
-{
-    m_contexts.remove(canvas_context_id);
-}
-
-HostWebGLContext* WebGLHost::context(Web::Painting::CanvasContextId canvas_context_id)
-{
-    return m_contexts.get(canvas_context_id).value_or(nullptr);
 }
 
 }

@@ -47,12 +47,12 @@ public:
     void clear_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId);
     void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage const&);
     void clear_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId);
+    void clear_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasId);
     bool create_canvas_context(Web::Painting::CanvasContextId, Web::Compositor::CanvasContextCreationAttributes, Vector<String>& out_supported_extensions);
     void update_canvas_commands(Web::Painting::CanvasContextId, Gfx::CanvasCommandList const&);
     void destroy_canvas_context(Web::Painting::CanvasContextId);
     void prepare_canvas_surface(Web::Painting::CanvasContextId, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId, bool preserve_drawing_buffer);
     Gfx::ShareableBitmap get_canvas_pixels(Web::Painting::CanvasContextId, Gfx::IntRect);
-
     void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation);
     Web::Compositor::AsyncScrollEnqueueResult async_scroll_by(Web::Compositor::CompositorContextId, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollOperationTracking);
     bool should_defer_main_thread_present_for_async_scroll(Web::Compositor::CompositorContextId);
@@ -67,6 +67,7 @@ public:
     void read_webgl_buffer_sub_data(Web::Painting::CanvasContextId, Web::WebGL::GLenum target, Web::WebGL::GLintptr offset, Web::WebGL::GLintptr size, Core::AnonymousBuffer const& data);
 
     Function<void(u64 page_id, Web::MouseEvent)> on_mouse_event;
+    Function<void()> on_compositor_lost;
 
 private:
     struct PendingScreenshot {

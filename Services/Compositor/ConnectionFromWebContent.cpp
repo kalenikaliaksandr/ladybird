@@ -13,7 +13,6 @@ ConnectionFromWebContent::ConnectionFromWebContent(NonnullOwnPtr<IPC::Transport>
     : IPC::ConnectionFromClient<CompositorWebContentClientEndpoint, CompositorWebContentServerEndpoint>(*this, move(transport), client_id)
     , m_compositor_state(move(compositor_state))
     , m_canvas_host(m_compositor_state->skia_backend_context())
-    , m_webgl_host(m_compositor_state->skia_backend_context())
 {
 }
 
@@ -109,24 +108,16 @@ void ConnectionFromWebContent::clear_compositor_surface(Web::Compositor::Composi
     m_compositor_state->clear_compositor_surface(context_id, surface_id);
 }
 
+void ConnectionFromWebContent::clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id)
+{
+    verify_context_is_owned_by_this_connection(context_id);
+    m_compositor_state->clear_canvas_surface(context_id, canvas_id);
+}
+
 Messages::CompositorWebContentServer::CreateCanvasContextResponse ConnectionFromWebContent::create_canvas_context(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CanvasContextCreationAttributes attributes)
 {
-    switch (attributes.type) {
-    case Web::Compositor::CanvasContextType::Context2D:
-        return { m_canvas_host.create_context(canvas_context_id, attributes.size, attributes.alpha), {} };
-    case Web::Compositor::CanvasContextType::WebGL1:
-    case Web::Compositor::CanvasContextType::WebGL2: {
-        auto version = attributes.type == Web::Compositor::CanvasContextType::WebGL1
-            ? Web::WebGL::WebGLVersion::WebGL1
-            : Web::WebGL::WebGLVersion::WebGL2;
-        auto* context = m_webgl_host.create_context(canvas_context_id, version, { .depth = attributes.depth, .stencil = attributes.stencil, .antialias = attributes.antialias }, attributes.size);
-        if (!context)
-            return { false, {} };
-        return { true, context->gl_context().get_supported_opengl_extensions() };
-    }
-    }
-
-    VERIFY_NOT_REACHED();
+    auto result = m_canvas_host.create_context(canvas_context_id, attributes);
+    return { result.success, move(result.supported_extensions) };
 }
 
 void ConnectionFromWebContent::update_canvas_commands(Web::Painting::CanvasContextId canvas_context_id, Gfx::CanvasCommandList commands)
@@ -136,10 +127,6 @@ void ConnectionFromWebContent::update_canvas_commands(Web::Painting::CanvasConte
 
 void ConnectionFromWebContent::destroy_canvas_context(Web::Painting::CanvasContextId canvas_context_id)
 {
-    if (m_webgl_host.context(canvas_context_id)) {
-        m_webgl_host.destroy_context(canvas_context_id);
-        return;
-    }
     m_canvas_host.destroy_context(canvas_context_id);
 }
 
@@ -147,36 +134,23 @@ void ConnectionFromWebContent::prepare_canvas_surface(Web::Painting::CanvasConte
 {
     verify_context_is_owned_by_this_connection(target_context_id);
 
-    if (auto* context = m_webgl_host.context(canvas_context_id)) {
-        auto surface = MUST(context->prepare_for_compositing(preserve_drawing_buffer));
-        m_compositor_state->set_canvas_surface(target_context_id, canvas_id, surface);
-        return;
-    }
-
-    auto surface = m_canvas_host.context_surface(canvas_context_id);
-    VERIFY(surface);
-    m_compositor_state->set_canvas_surface(target_context_id, canvas_id, surface.release_nonnull());
+    auto surface = MUST(m_canvas_host.prepare_surface(canvas_context_id, preserve_drawing_buffer));
+    m_compositor_state->set_canvas_surface(target_context_id, canvas_id, move(surface));
 }
 
 Messages::CompositorWebContentServer::GetCanvasPixelsResponse ConnectionFromWebContent::get_canvas_pixels(Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect rect)
 {
-    if (auto* context = m_webgl_host.context(canvas_context_id))
-        return context->read_back_drawing_buffer(rect);
     return m_canvas_host.read_back_pixels(canvas_context_id, rect);
 }
 
 void ConnectionFromWebContent::webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer commands, Vector<Gfx::DecodedImageFrame> bitmaps)
 {
-    auto* context = m_webgl_host.context(canvas_context_id);
-    VERIFY(context);
-    MUST(context->execute_commands(commands, bitmaps));
+    m_canvas_host.execute_webgl_commands(canvas_context_id, commands, bitmaps);
 }
 
 Messages::CompositorWebContentServer::WebglSyncCallResponse ConnectionFromWebContent::webgl_sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request)
 {
-    auto* context = m_webgl_host.context(canvas_context_id);
-    VERIFY(context);
-    return MUST(context->execute_sync_call(request));
+    return MUST(m_canvas_host.execute_webgl_sync_call(canvas_context_id, move(request)));
 }
 
 Messages::CompositorWebContentServer::WebglReadPixelsResponse ConnectionFromWebContent::webgl_read_pixels(Web::Painting::CanvasContextId canvas_context_id, i32 x, i32 y, i32 width, i32 height, u32 format, u32 type, i32 buf_size, Core::AnonymousBuffer pixels)
@@ -186,9 +160,7 @@ Messages::CompositorWebContentServer::WebglReadPixelsResponse ConnectionFromWebC
         return { 0, 0, 0 };
     }
 
-    auto* context = m_webgl_host.context(canvas_context_id);
-    VERIFY(context);
-    auto result = context->read_pixels_robust_angle(x, y, width, height, format, type, buf_size, move(pixels));
+    auto result = m_canvas_host.read_pixels_robust_angle(canvas_context_id, x, y, width, height, format, type, buf_size, move(pixels));
     return { result.length, result.columns, result.rows };
 }
 
@@ -199,9 +171,7 @@ void ConnectionFromWebContent::webgl_read_buffer_sub_data(Web::Painting::CanvasC
         return;
     }
 
-    auto* context = m_webgl_host.context(canvas_context_id);
-    VERIFY(context);
-    context->read_buffer_sub_data(target, offset, size, move(data));
+    m_canvas_host.read_buffer_sub_data(canvas_context_id, target, offset, size, move(data));
 }
 
 void ConnectionFromWebContent::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)

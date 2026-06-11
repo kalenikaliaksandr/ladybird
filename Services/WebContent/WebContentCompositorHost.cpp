@@ -192,6 +192,12 @@ private:
             connection->clear_compositor_surface(context_id, surface_id);
     }
 
+    virtual void clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id) override
+    {
+        if (auto* connection = compositor_connection())
+            connection->clear_canvas_surface(context_id, canvas_id);
+    }
+
     virtual void update_scroll_state(Web::Compositor::CompositorContextId context_id, Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot) override
     {
         if (auto* connection = compositor_connection())

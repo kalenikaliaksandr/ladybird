@@ -8,12 +8,13 @@
 
 #pragma once
 
+#include <AK/Optional.h>
 #include <AK/String.h>
-#include <LibGfx/CanvasCommandList.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Path.h>
 #include <LibGfx/TextLayout.h>
 #include <LibWeb/Bindings/PlatformObject.h>
+#include <LibWeb/Compositor/Types.h>
 #include <LibWeb/HTML/Canvas/CanvasCompositing.h>
 #include <LibWeb/HTML/Canvas/CanvasDrawImage.h>
 #include <LibWeb/HTML/Canvas/CanvasDrawPath.h>
@@ -78,7 +79,7 @@ public:
 
     virtual WebIDL::ExceptionOr<GC::Ref<ImageData>> create_image_data(int width, int height, Optional<Bindings::ImageDataSettings> const& settings = {}) const override;
     virtual WebIDL::ExceptionOr<GC::Ref<ImageData>> create_image_data(ImageData const& image_data) const override;
-    virtual WebIDL::ExceptionOr<GC::Ptr<ImageData>> get_image_data(int x, int y, int width, int height, Optional<Bindings::ImageDataSettings> const& settings = {}) const override;
+    virtual WebIDL::ExceptionOr<GC::Ptr<ImageData>> get_image_data(int x, int y, int width, int height, Optional<Bindings::ImageDataSettings> const& settings = {}) override;
     virtual WebIDL::ExceptionOr<void> put_image_data(ImageData&, float x, float y) override;
     virtual WebIDL::ExceptionOr<void> put_image_data(ImageData&, float x, float y, float dirty_x, float dirty_y, float dirty_width, float dirty_height) override;
     WebIDL::ExceptionOr<void> put_pixels_from_an_image_data_onto_a_bitmap(ImageData&, Gfx::CanvasCommandList&, float dx, float dy, float dirty_x, float dirty_y, float dirty_width, float dirty_height);
@@ -121,15 +122,20 @@ public:
     virtual void set_shadow_color(String) override;
 
     void set_size(Gfx::IntSize const&);
-    void present();
+    void prepare_for_compositing();
 
-    RefPtr<Gfx::PaintingSurface> surface();
-    void allocate_painting_surface_if_needed();
+    void ensure_backing_storage();
+
+    void discard_backing_storage();
 
     void notify_backing_storage_lost();
 
+    Painting::CanvasContextId canvas_context_id() const { return m_canvas_context_id; }
+
+    RefPtr<Gfx::Bitmap> read_pixels(Gfx::IntRect const&);
+
 protected:
-    [[nodiscard]] Gfx::CanvasCommandList* canvas_command_list() override;
+    [[nodiscard]] Gfx::CanvasCommandList* recorder() override;
     Variant<GC::Ref<HTMLCanvasElement>, GC::Ref<OffscreenCanvas>> canvas_element() override { return m_element; }
     Variant<GC::Ref<HTMLCanvasElement>, GC::Ref<OffscreenCanvas>> canvas_element() const override { return m_element; }
     JS::Realm& my_realm() override { return realm(); }
@@ -169,10 +175,14 @@ private:
 
     void flush_recorded_commands();
 
+    bool ensure_remote_canvas_context();
+
     GC::Ref<HTMLCanvasElement> m_element;
 
     Gfx::CanvasCommandList m_commands;
-    OwnPtr<Gfx::CanvasCommandPlayer> m_player;
+    Painting::CanvasContextId m_canvas_context_id;
+    RefPtr<Compositor::RemoteCanvasTransport> m_transport;
+    bool m_has_backing_storage { false };
 
     // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-origin-clean
     bool m_origin_clean { true };

@@ -9,6 +9,7 @@
 #include <Compositor/CompositorState.h>
 #include <Compositor/ContextState.h>
 #include <LibCore/Timer.h>
+#include <LibGfx/Bitmap.h>
 #include <LibGfx/Color.h>
 #include <LibGfx/PainterSkia.h>
 #include <LibGfx/PaintingSurface.h>

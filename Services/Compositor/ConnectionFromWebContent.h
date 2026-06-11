@@ -7,11 +7,11 @@
 #pragma once
 
 #include <AK/Function.h>
+#include <AK/Optional.h>
 #include <Compositor/CanvasHost.h>
 #include <Compositor/CompositorState.h>
 #include <Compositor/CompositorWebContentClientEndpoint.h>
 #include <Compositor/CompositorWebContentServerEndpoint.h>
-#include <Compositor/WebGLHost.h>
 #include <LibCore/AnonymousBuffer.h>
 #include <LibIPC/ConnectionFromClient.h>
 #include <LibWeb/Painting/DisplayList.h>
@@ -43,6 +43,7 @@ private:
     virtual void clear_video_frame(Web::Compositor::CompositorContextId, Web::Painting::VideoFrameResourceId) override;
     virtual void update_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId, Gfx::SharedImage) override;
     virtual void clear_compositor_surface(Web::Compositor::CompositorContextId, Web::Painting::CompositorSurfaceId) override;
+    virtual void clear_canvas_surface(Web::Compositor::CompositorContextId, Web::Painting::CanvasId) override;
     virtual Messages::CompositorWebContentServer::CreateCanvasContextResponse create_canvas_context(Web::Painting::CanvasContextId, Web::Compositor::CanvasContextCreationAttributes) override;
     virtual void update_canvas_commands(Web::Painting::CanvasContextId, Gfx::CanvasCommandList) override;
     virtual void destroy_canvas_context(Web::Painting::CanvasContextId) override;
@@ -67,7 +68,6 @@ private:
 
     NonnullRefPtr<CompositorState> m_compositor_state;
     CanvasHost m_canvas_host;
-    WebGLHost m_webgl_host;
     Function<void(ConnectionFromWebContent&)> m_on_death;
 };
 
