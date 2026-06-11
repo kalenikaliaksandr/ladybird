@@ -56,16 +56,22 @@ enum class AsyncScrollOperationTracking {
 
 enum class CanvasContextType : u8 {
     Context2D,
+    WebGL1,
+    WebGL2,
 };
 
 // Everything the Compositor needs to allocate a canvas context's backing storage up
 // front: the surface parameters are fixed for the lifetime of a remote context (a 2D
 // canvas resize destroys and recreates the context), so they travel with creation
-// rather than as a command.
+// rather than as a command. `size` is the 2D surface size or the initial WebGL drawing
+// buffer size; `alpha` applies to 2D contexts only.
 struct CanvasContextCreationAttributes {
     CanvasContextType type { CanvasContextType::Context2D };
     Gfx::IntSize size;
     bool alpha { true };
+    bool depth { false };
+    bool stencil { false };
+    bool antialias { false };
 };
 
 struct PublishToCompositorSurface {

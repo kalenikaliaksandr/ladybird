@@ -30,7 +30,8 @@ public:
 private:
     virtual bool create_context(Web::Painting::CanvasContextId canvas_context_id, Gfx::IntSize size, bool alpha) override
     {
-        return m_connection->create_canvas_context(canvas_context_id, { .type = Web::Compositor::CanvasContextType::Context2D, .size = size, .alpha = alpha });
+        Vector<String> ignored_supported_extensions;
+        return m_connection->create_canvas_context(canvas_context_id, { .type = Web::Compositor::CanvasContextType::Context2D, .size = size, .alpha = alpha }, ignored_supported_extensions);
     }
 
     virtual void destroy_context(Web::Painting::CanvasContextId canvas_context_id) override
@@ -45,7 +46,7 @@ private:
 
     virtual void prepare_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id) override
     {
-        m_connection->prepare_canvas_surface(canvas_context_id, target_context_id, canvas_id);
+        m_connection->prepare_canvas_surface(canvas_context_id, target_context_id, canvas_id, /* preserve_drawing_buffer= */ true);
     }
 
     virtual RefPtr<Gfx::Bitmap> read_back_pixels(Web::Painting::CanvasContextId canvas_context_id, Gfx::IntRect const& rect) override

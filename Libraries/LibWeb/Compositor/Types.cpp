@@ -88,6 +88,9 @@ ErrorOr<void> encode(Encoder& encoder, Web::Compositor::CanvasContextCreationAtt
     TRY(encoder.encode(attributes.type));
     TRY(encoder.encode(attributes.size));
     TRY(encoder.encode(attributes.alpha));
+    TRY(encoder.encode(attributes.depth));
+    TRY(encoder.encode(attributes.stencil));
+    TRY(encoder.encode(attributes.antialias));
     return {};
 }
 
@@ -98,6 +101,9 @@ ErrorOr<Web::Compositor::CanvasContextCreationAttributes> decode(Decoder& decode
         .type = TRY(decoder.decode<Web::Compositor::CanvasContextType>()),
         .size = TRY(decoder.decode<Gfx::IntSize>()),
         .alpha = TRY(decoder.decode<bool>()),
+        .depth = TRY(decoder.decode<bool>()),
+        .stencil = TRY(decoder.decode<bool>()),
+        .antialias = TRY(decoder.decode<bool>()),
     };
 }
 

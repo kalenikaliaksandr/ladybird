@@ -93,12 +93,13 @@ void CompositorConnection::clear_compositor_surface(Web::Compositor::CompositorC
     async_clear_compositor_surface(context_id, surface_id);
 }
 
-bool CompositorConnection::create_canvas_context(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CanvasContextCreationAttributes attributes)
+bool CompositorConnection::create_canvas_context(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CanvasContextCreationAttributes attributes, Vector<String>& out_supported_extensions)
 {
     if (!can_send_message_to_compositor())
         return false;
 
     auto response = send_sync<Messages::CompositorWebContentServer::CreateCanvasContext>(canvas_context_id, attributes);
+    out_supported_extensions = response->take_supported_extensions();
     return response->success();
 }
 
@@ -118,12 +119,21 @@ void CompositorConnection::destroy_canvas_context(Web::Painting::CanvasContextId
     async_destroy_canvas_context(canvas_context_id);
 }
 
-void CompositorConnection::prepare_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id)
+void CompositorConnection::prepare_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer)
 {
     if (!can_send_message_to_compositor())
         return;
 
-    auto encoded_message = MUST(Messages::CompositorWebContentServer::PrepareCanvasSurface::static_encode(canvas_context_id, target_context_id, canvas_id));
+    auto encoded_message = MUST(Messages::CompositorWebContentServer::PrepareCanvasSurface::static_encode(canvas_context_id, target_context_id, canvas_id, preserve_drawing_buffer));
+    MUST(post_message(encoded_message));
+}
+
+void CompositorConnection::send_webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer const& commands)
+{
+    if (!can_send_message_to_compositor())
+        return;
+
+    auto encoded_message = MUST(Messages::CompositorWebContentServer::WebglCommands::static_encode(canvas_context_id, commands));
     MUST(post_message(encoded_message));
 }
 

@@ -23,6 +23,16 @@ using GLchar = char;
 //        Since this conflicts with the original definition of GLsync, the suffix "Internal" has been added.
 using GLsyncInternal = void*;
 
+enum class WebGLVersion {
+    WebGL1,
+    WebGL2,
+};
+
+// Maximum drawing-buffer dimension. The client clamps each side to this before requesting
+// a size (so drawingBufferWidth/Height report the real buffer), and the host clamps again
+// defensively so an out-of-range request can never tear down the connection.
+static constexpr int max_webgl_drawing_buffer_dimension = 16384;
+
 // Client-allocated id of a GL object living in a remote WebGL context. The remote side
 // maps ids to real GL names; 0 is reserved (unbind, or the default framebuffer and
 // renderbuffer where those have bind-0 semantics).
