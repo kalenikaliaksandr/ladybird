@@ -73,8 +73,10 @@ public:
 
     OwnPtr<CompositorContextHandle> create_context(CompositorContextId);
 
-    // The channel a remote 2D canvas context speaks over for its whole lifetime; bound
-    // to the compositor connection that exists right now (null without one).
+    // The channel a remote WebGL or 2D canvas context speaks over for its whole
+    // lifetime; bound to the compositor connection that exists right now (null without
+    // one).
+    virtual RefPtr<WebGL::RemoteWebGLTransport> create_webgl_transport() = 0;
     virtual RefPtr<RemoteCanvasTransport> create_canvas_transport() = 0;
 
     virtual void destroy_context(CompositorContextId) = 0;

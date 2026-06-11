@@ -220,6 +220,15 @@ void CompositorConnection::present_frame(Web::Compositor::CompositorContextId co
     async_present_frame(context_id, viewport_rect);
 }
 
+ByteBuffer CompositorConnection::webgl_sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request)
+{
+    if (!can_send_message_to_compositor())
+        return {};
+
+    auto response = send_sync<Messages::CompositorWebContentServer::WebglSyncCall>(canvas_context_id, move(request));
+    return response->take_reply();
+}
+
 void CompositorConnection::request_screenshot(Web::Compositor::CompositorContextId context_id, NonnullRefPtr<Gfx::PaintingSurface> target_surface, Function<void()>&& callback)
 {
     if (!can_send_message_to_compositor()) {
