@@ -35,6 +35,12 @@ ErrorOr<void> HostWebGLContext::execute_commands(ReadonlyBytes bytes)
     });
 }
 
+ErrorOr<ByteBuffer> HostWebGLContext::execute_sync_call(ReadonlyBytes request)
+{
+    m_gl_context->make_current();
+    return handle_webgl_sync_call(*m_gl_context, m_objects, request);
+}
+
 WebGLHost::WebGLHost(RefPtr<Gfx::SkiaBackendContext> skia_backend_context)
     : m_skia_backend_context(move(skia_backend_context))
 {

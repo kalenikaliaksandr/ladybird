@@ -28,6 +28,7 @@ public:
     static OwnPtr<HostWebGLContext> create(NonnullRefPtr<Gfx::SkiaBackendContext>, Web::WebGL::OpenGLContext::WebGLVersion, Web::WebGL::OpenGLContext::DrawingBufferOptions);
 
     ErrorOr<void> execute_commands(ReadonlyBytes);
+    ErrorOr<ByteBuffer> execute_sync_call(ReadonlyBytes request);
 
     Web::WebGL::OpenGLContext& gl_context() { return *m_gl_context; }
 

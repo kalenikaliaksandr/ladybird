@@ -124,4 +124,66 @@ private:
     ByteBuffer m_bytes;
 };
 
+struct WebGLSyncCallHeader {
+    WebGLSyncCallType type;
+    u32 payload_size { 0 };
+};
+static_assert(IsTriviallyCopyable<WebGLSyncCallHeader>);
+
+// Out-buffer sizes in sync requests come from the client; the host never allocates
+// more than this per reply.
+inline constexpr size_t max_webgl_sync_reply_size = 1 * MiB;
+
+// Synchronous WebGL calls share the command list's framing conventions: a request is a
+// header + request struct + inline data, a reply is a reply struct + inline data, and
+// reply span offsets are relative to the start of the reply.
+class WEB_API WebGLSyncCall {
+public:
+    template<typename Call>
+    static ByteBuffer encode_request(typename Call::Request const& request, ReadonlyBytes inline_data = {})
+    {
+        return encode_request_bytes(Call::call_type, { &request, sizeof(request) }, inline_data);
+    }
+
+    template<typename Callback>
+    static ErrorOr<ByteBuffer> dispatch_request(ReadonlyBytes bytes, Callback&& callback)
+    {
+        if (bytes.size() < sizeof(WebGLSyncCallHeader))
+            return Error::from_string_literal("Truncated WebGL sync call header");
+        WebGLSyncCallHeader header;
+        __builtin_memcpy(&header, bytes.data(), sizeof(header));
+        if (to_underlying(header.type) >= webgl_sync_call_type_count)
+            return Error::from_string_literal("Invalid WebGL sync call type");
+        if (header.payload_size != bytes.size() - sizeof(header))
+            return Error::from_string_literal("Truncated WebGL sync call payload");
+        auto payload = bytes.slice(sizeof(header), header.payload_size);
+        return visit_webgl_sync_call_type(header.type, [&]<typename Call>() -> ErrorOr<ByteBuffer> {
+            if (payload.size() < sizeof(typename Call::Request))
+                return Error::from_string_literal("WebGL sync call payload too small");
+            typename Call::Request request;
+            __builtin_memcpy(&request, payload.data(), sizeof(request));
+            return callback.template operator()<Call>(request, payload);
+        });
+    }
+
+    template<typename Reply>
+    static ByteBuffer encode_reply(Reply const& reply, ReadonlyBytes inline_data = {}, ReadonlyBytes more_inline_data = {})
+    {
+        return encode_reply_bytes({ &reply, sizeof(reply) }, inline_data, more_inline_data);
+    }
+
+    template<typename Reply>
+    static Reply decode_reply(ReadonlyBytes bytes)
+    {
+        VERIFY(bytes.size() >= sizeof(Reply));
+        Reply reply;
+        __builtin_memcpy(&reply, bytes.data(), sizeof(reply));
+        return reply;
+    }
+
+private:
+    static ByteBuffer encode_request_bytes(WebGLSyncCallType, ReadonlyBytes request, ReadonlyBytes inline_data);
+    static ByteBuffer encode_reply_bytes(ReadonlyBytes reply, ReadonlyBytes inline_data, ReadonlyBytes more_inline_data);
+};
+
 }
