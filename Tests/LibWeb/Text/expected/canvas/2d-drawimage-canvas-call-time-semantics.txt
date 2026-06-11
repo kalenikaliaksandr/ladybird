@@ -1,0 +1,4 @@
+destination pixel: 255,0,0,255
+source pixel: 0,0,255,255
+self-draw pixel: 0,128,0,255
+reset source pixel: 0,0,0,0

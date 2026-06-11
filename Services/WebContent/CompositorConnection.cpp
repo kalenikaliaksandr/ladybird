@@ -93,13 +93,6 @@ void CompositorConnection::clear_compositor_surface(Web::Compositor::CompositorC
     async_clear_compositor_surface(context_id, surface_id);
 }
 
-void CompositorConnection::update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id, Gfx::SharedImage const& shared_image)
-{
-    if (!can_send_message_to_compositor())
-        return;
-    async_update_canvas_surface(context_id, canvas_id, shared_image);
-}
-
 void CompositorConnection::clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id)
 {
     if (!can_send_message_to_compositor())
@@ -139,15 +132,6 @@ void CompositorConnection::prepare_canvas_surface(Web::Painting::CanvasContextId
         return;
 
     auto encoded_message = MUST(Messages::CompositorWebContentServer::PrepareCanvasSurface::static_encode(canvas_context_id, target_context_id, canvas_id, preserve_drawing_buffer));
-    MUST(post_message(encoded_message));
-}
-
-void CompositorConnection::send_webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer const& commands, Vector<Gfx::DecodedImageFrame> const& bitmaps)
-{
-    if (!can_send_message_to_compositor())
-        return;
-
-    auto encoded_message = MUST(Messages::CompositorWebContentServer::WebglCommands::static_encode(canvas_context_id, commands, bitmaps));
     MUST(post_message(encoded_message));
 }
 
@@ -220,6 +204,15 @@ void CompositorConnection::present_frame(Web::Compositor::CompositorContextId co
     async_present_frame(context_id, viewport_rect);
 }
 
+void CompositorConnection::send_webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer const& commands, Vector<Gfx::DecodedImageFrame> const& bitmaps)
+{
+    if (!can_send_message_to_compositor())
+        return;
+
+    auto encoded_message = MUST(Messages::CompositorWebContentServer::WebglCommands::static_encode(canvas_context_id, commands, bitmaps));
+    MUST(post_message(encoded_message));
+}
+
 ByteBuffer CompositorConnection::webgl_sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request)
 {
     if (!can_send_message_to_compositor())
@@ -287,6 +280,9 @@ void CompositorConnection::did_lose_compositor()
             entry.value.callback();
     }
     m_screenshots.clear();
+
+    if (on_compositor_lost)
+        on_compositor_lost();
 }
 
 bool CompositorConnection::can_send_message_to_compositor() const

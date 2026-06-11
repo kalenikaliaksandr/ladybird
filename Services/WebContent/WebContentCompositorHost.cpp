@@ -182,12 +182,6 @@ private:
             connection->clear_compositor_surface(context_id, surface_id);
     }
 
-    virtual void update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id, Gfx::SharedImage&& shared_image) override
-    {
-        if (auto* connection = compositor_connection())
-            connection->update_canvas_surface(context_id, canvas_id, shared_image);
-    }
-
     virtual void clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id) override
     {
         if (auto* connection = compositor_connection())

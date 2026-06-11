@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        const detached_document = document.implementation.createHTMLDocument("detached");
+
+        const source = detached_document.createElement("canvas");
+        source.width = 10;
+        source.height = 10;
+        const source_context = source.getContext("2d");
+        source_context.fillStyle = "red";
+        source_context.fillRect(0, 0, 10, 10);
+
+        const source_pixel = source_context.getImageData(5, 5, 1, 1).data;
+        println(`detached source pixel: ${[...source_pixel].join(",")}`);
+
+        const destination = detached_document.createElement("canvas");
+        destination.width = 10;
+        destination.height = 10;
+        const destination_context = destination.getContext("2d");
+        destination_context.drawImage(source, 0, 0);
+
+        const destination_pixel = destination_context.getImageData(5, 5, 1, 1).data;
+        println(`detached destination pixel: ${[...destination_pixel].join(",")}`);
+    });
+</script>

@@ -41,6 +41,14 @@ AK_TYPEDEF_DISTINCT_NUMERIC_GENERAL(i64, UniqueNodeID, Comparison, Increment, Ca
 
 }
 
+namespace Web::Compositor {
+
+class CompositorContextHandle;
+class CompositorHost;
+class RemoteCanvasTransport;
+
+}
+
 namespace Web::Painting {
 
 class AccumulatedVisualContextTree;

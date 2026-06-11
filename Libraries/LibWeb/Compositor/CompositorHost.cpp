@@ -56,11 +56,6 @@ void CompositorContextHandle::clear_compositor_surface(Painting::CompositorSurfa
     m_host.clear_compositor_surface(m_context_id, surface_id);
 }
 
-void CompositorContextHandle::update_canvas_surface(Painting::CanvasId canvas_id, Gfx::SharedImage&& shared_image)
-{
-    m_host.update_canvas_surface(m_context_id, canvas_id, move(shared_image));
-}
-
 void CompositorContextHandle::clear_canvas_surface(Painting::CanvasId canvas_id)
 {
     m_host.clear_canvas_surface(m_context_id, canvas_id);

@@ -13,7 +13,6 @@
 #include <AK/RefPtr.h>
 #include <Compositor/WebGLObjectMap.h>
 #include <LibGfx/Forward.h>
-#include <LibGfx/ShareableBitmap.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/WebGL/OpenGLContext.h>
 

@@ -8,7 +8,6 @@
 
 #include <AK/Optional.h>
 #include <LibGfx/Forward.h>
-#include <LibGfx/PaintingSurface.h>
 #include <LibWeb/HTML/HTMLElement.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/WebIDL/Types.h>
@@ -47,13 +46,22 @@ public:
     WebIDL::ExceptionOr<void> to_blob(GC::Ref<WebIDL::CallbackType> callback, StringView type, Optional<JS::Value> quality);
     RefPtr<Gfx::Bitmap> get_bitmap_from_surface();
 
-    void present();
-    void republish_canvas_surface();
+    void prepare_for_compositing();
     void notify_compositor_backing_storage_lost();
     void set_canvas_content_dirty();
+    GC::Ptr<HTML::CanvasRenderingContext2D> canvas_rendering_context_2d() const
+    {
+        if (auto const* context = m_context.get_pointer<GC::Ref<HTML::CanvasRenderingContext2D>>())
+            return *context;
+        return nullptr;
+    }
 
-    RefPtr<Gfx::PaintingSurface> surface() const;
+    // Size of the content this element exposes through its canvas surface slot, if any.
+    Optional<Gfx::IntSize> canvas_surface_content_size() const;
+
     void allocate_painting_surface_if_needed();
+
+    void notify_compositor_connection_lost();
 
     Painting::CanvasId ensure_canvas_id();
 
@@ -74,10 +82,10 @@ private:
 
     template<typename ContextType>
     JS::ThrowCompletionOr<HasOrCreatedContext> create_webgl_context(JS::Value options);
+    WebGL::WebGLRenderingContextBase* webgl_context() const;
     void reset_context_to_default_state();
     void notify_context_about_canvas_size_change();
     void clear_canvas_surface();
-    void update_canvas_surface();
 
     Variant<GC::Ref<HTML::CanvasRenderingContext2D>, GC::Ref<WebGL::WebGLRenderingContext>, GC::Ref<WebGL::WebGL2RenderingContext>, Empty> m_context;
     Optional<Painting::CanvasId> m_canvas_id;

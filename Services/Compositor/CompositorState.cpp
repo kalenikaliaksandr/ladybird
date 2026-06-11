@@ -174,14 +174,6 @@ void CompositorState::clear_compositor_surface(Web::Compositor::CompositorContex
     present_current_frame(context_id, *context);
 }
 
-void CompositorState::update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id, Gfx::SharedImage&& shared_image)
-{
-    auto* context = context_if_present(context_id);
-    VERIFY(context);
-    context->update_canvas_surface(canvas_id, move(shared_image));
-    present_current_frame(context_id, *context);
-}
-
 void CompositorState::set_external_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id, NonnullRefPtr<Gfx::PaintingSurface> surface)
 {
     auto* context = context_if_present(context_id);

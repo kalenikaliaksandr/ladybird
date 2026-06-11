@@ -43,7 +43,6 @@ public:
     void clear_video_frame(Painting::VideoFrameResourceId);
     void update_compositor_surface(Painting::CompositorSurfaceId, Gfx::SharedImage&&);
     void clear_compositor_surface(Painting::CompositorSurfaceId);
-    void update_canvas_surface(Painting::CanvasId, Gfx::SharedImage&&);
     void clear_canvas_surface(Painting::CanvasId);
     void update_scroll_state(Painting::ScrollStateSnapshot&&);
     void invalidate_wheel_event_listener_state(u64 generation);
@@ -88,7 +87,6 @@ public:
     virtual void clear_video_frame(CompositorContextId, Painting::VideoFrameResourceId) = 0;
     virtual void update_compositor_surface(CompositorContextId, Painting::CompositorSurfaceId, Gfx::SharedImage&&) = 0;
     virtual void clear_compositor_surface(CompositorContextId, Painting::CompositorSurfaceId) = 0;
-    virtual void update_canvas_surface(CompositorContextId, Painting::CanvasId, Gfx::SharedImage&&) = 0;
     virtual void clear_canvas_surface(CompositorContextId, Painting::CanvasId) = 0;
     virtual void update_scroll_state(CompositorContextId, Painting::ScrollStateSnapshot&&) = 0;
     virtual void invalidate_wheel_event_listener_state(CompositorContextId, u64 generation) = 0;

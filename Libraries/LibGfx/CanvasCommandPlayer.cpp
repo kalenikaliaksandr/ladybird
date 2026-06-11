@@ -82,12 +82,6 @@ bool CanvasCommandPlayer::play(CanvasCommandList const& command_list)
     return false;
 }
 
-void CanvasCommandPlayer::prune_caches()
-{
-    if (m_painter)
-        m_painter->prune_caches();
-}
-
 void CanvasCommandPlayer::play_command(CanvasCommands::Initialize const& command)
 {
     m_painter = nullptr;

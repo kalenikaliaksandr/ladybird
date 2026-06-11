@@ -1,6 +1,4 @@
 #include <AK/NonnullRefPtr.h>
-#include <LibGfx/CanvasCommandList.h>
-#include <LibGfx/DecodedImageFrame.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
 #include <LibGfx/ShareableBitmap.h>
@@ -10,6 +8,8 @@
 #include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
+#include <LibGfx/CanvasCommandList.h>
+#include <LibGfx/DecodedImageFrame.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
 #include <LibWeb/Painting/ScrollState.h>
@@ -29,7 +29,6 @@ endpoint CompositorWebContentServer
     update_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id, Gfx::SharedImage shared_image) =|
     clear_compositor_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CompositorSurfaceId surface_id) =|
 
-    update_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id, Gfx::SharedImage shared_image) =|
     clear_canvas_surface(Web::Compositor::CompositorContextId context_id, Web::Painting::CanvasId canvas_id) =|
 
     create_canvas_context(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CanvasContextCreationAttributes attributes) => (bool success, Vector<String> supported_extensions)
