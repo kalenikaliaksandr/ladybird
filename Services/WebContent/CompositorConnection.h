@@ -60,6 +60,7 @@ public:
     void notify_compositor_lost() { did_lose_compositor(); }
 
     Function<void(u64 page_id, Web::MouseEvent)> on_mouse_event;
+    Function<void()> on_compositor_lost;
 
 private:
     struct PendingScreenshot {

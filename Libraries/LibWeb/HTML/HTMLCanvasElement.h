@@ -54,6 +54,11 @@ public:
     RefPtr<Gfx::PaintingSurface> surface() const;
     void allocate_painting_surface_if_needed();
 
+    // True when this canvas paints by sampling a compositor surface published by a
+    // remote context (WebGL), so there is no WebContent-side surface to look at.
+    bool paints_remote_context() const;
+    void notify_compositor_connection_lost();
+
     Painting::CompositorSurfaceId ensure_compositor_surface_id();
 
     CSS::ComputationContext canvas_font_computation_context();

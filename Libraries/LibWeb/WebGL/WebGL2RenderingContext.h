@@ -29,7 +29,7 @@ public:
     void present() override;
     void needs_to_present() override;
 
-    GC::Ref<HTML::HTMLCanvasElement> canvas_for_binding() const;
+    virtual GC::Ref<HTML::HTMLCanvasElement> canvas_for_binding() const override;
 
     Optional<WebGLContextAttributes> get_context_attributes();
 
@@ -45,7 +45,7 @@ public:
 private:
     virtual void initialize(JS::Realm&) override;
 
-    WebGL2RenderingContext(JS::Realm&, HTML::HTMLCanvasElement&, NonnullOwnPtr<OpenGLContext> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters);
+    WebGL2RenderingContext(JS::Realm&, HTML::HTMLCanvasElement&, NonnullOwnPtr<WebGLContextProxy> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters);
 
     virtual void visit_edges(Cell::Visitor&) override;
 

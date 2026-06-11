@@ -17,7 +17,7 @@ extern "C" {
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/TypedArray.h>
-#include <LibWeb/WebGL/OpenGLContext.h>
+#include <LibWeb/WebGL/WebGLContextProxy.h>
 #include <LibWeb/WebGL/WebGL2RenderingContextImpl.h>
 #include <LibWeb/WebGL/WebGLActiveInfo.h>
 #include <LibWeb/WebGL/WebGLBuffer.h>
@@ -37,7 +37,7 @@ extern "C" {
 
 namespace Web::WebGL {
 
-WebGL2RenderingContextImpl::WebGL2RenderingContextImpl(JS::Realm& realm, NonnullOwnPtr<OpenGLContext> context)
+WebGL2RenderingContextImpl::WebGL2RenderingContextImpl(JS::Realm& realm, NonnullOwnPtr<WebGLContextProxy> context)
     : WebGLRenderingContextImpl(realm, move(context))
 {
 }
@@ -91,13 +91,10 @@ void WebGL2RenderingContextImpl::get_buffer_sub_data(WebIDL::UnsignedLong target
     // If copyLength is greater than zero, copy copyLength typed elements (each of size elementSize) from buf into
     // dstBuffer, reading buf starting at byte index srcByteOffset and writing into dstBuffer starting at element
     // index dstOffset.
-    auto* buffer_data = m_context->map_buffer_range(target, src_byte_offset, copy_bytes, GL_MAP_READ_BIT);
-    if (!buffer_data)
-        return;
+    auto buffer_data = MUST(ByteBuffer::create_zeroed(copy_bytes));
+    m_context->read_buffer_sub_data(target, src_byte_offset, buffer_data.bytes());
 
-    dst_buffer.write({ buffer_data, copy_bytes }, dst_offset_in_bytes);
-
-    m_context->unmap_buffer(target);
+    dst_buffer.write(buffer_data, dst_offset_in_bytes);
 }
 
 void WebGL2RenderingContextImpl::blit_framebuffer(WebIDL::Long src_x0, WebIDL::Long src_y0, WebIDL::Long src_x1, WebIDL::Long src_y1, WebIDL::Long dst_x0, WebIDL::Long dst_y0, WebIDL::Long dst_x1, WebIDL::Long dst_y1, WebIDL::UnsignedLong mask, WebIDL::UnsignedLong filter)

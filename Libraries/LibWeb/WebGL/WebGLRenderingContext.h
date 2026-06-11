@@ -28,7 +28,7 @@ public:
     void present() override;
     void needs_to_present() override;
 
-    GC::Ref<HTML::HTMLCanvasElement> canvas_for_binding() const;
+    virtual GC::Ref<HTML::HTMLCanvasElement> canvas_for_binding() const override;
 
     Optional<WebGLContextAttributes> get_context_attributes();
 
@@ -44,7 +44,7 @@ public:
 private:
     virtual void initialize(JS::Realm&) override;
 
-    WebGLRenderingContext(JS::Realm&, HTML::HTMLCanvasElement&, NonnullOwnPtr<OpenGLContext> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters);
+    WebGLRenderingContext(JS::Realm&, HTML::HTMLCanvasElement&, NonnullOwnPtr<WebGLContextProxy> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters);
 
     virtual void visit_edges(Cell::Visitor&) override;
 
@@ -61,5 +61,12 @@ private:
 
 void fire_webgl_context_event(HTML::HTMLCanvasElement& canvas_element, FlyString const& type);
 void fire_webgl_context_creation_error(HTML::HTMLCanvasElement& canvas_element);
+
+// Creates a remote WebGL context in the Compositor process and returns its proxy, or
+// null if there is no compositor connection or the host could not create a context.
+OwnPtr<WebGLContextProxy> create_webgl_context_proxy(HTML::HTMLCanvasElement&, WebGLVersion, WebGLContextAttributes const&);
+
+// Publishes the drawing buffer into the canvas element's compositor surface slot.
+void present_remote_context(WebGLContextProxy&, HTML::HTMLCanvasElement&, bool preserve_drawing_buffer);
 
 }

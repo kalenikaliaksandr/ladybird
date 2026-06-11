@@ -32,14 +32,22 @@ void CanvasPaintable::paint(DisplayListRecordingContext& context, PaintPhase pha
         ScopedCornerRadiusClip corner_clip { context, canvas_rect, normalized_border_radii_data(ShrinkRadiiForBorders::Yes) };
 
         auto& canvas_element = as<HTML::HTMLCanvasElement>(*dom_node());
-        if (auto surface = canvas_element.surface()) {
-            auto canvas_int_rect = canvas_rect.to_type<int>();
-            auto scaling_mode = to_gfx_scaling_mode(computed_values().image_rendering(),
-                surface->size(), canvas_int_rect.size());
-            auto& mutable_canvas_element = const_cast<HTML::HTMLCanvasElement&>(canvas_element);
-            context.display_list_recorder().draw_compositor_surface(canvas_int_rect,
-                mutable_canvas_element.ensure_compositor_surface_id(), scaling_mode);
-        }
+        // Remote contexts (WebGL) have no WebContent-side surface; their frames are
+        // published into the compositor surface slot directly by the Compositor.
+        Gfx::IntSize source_size;
+        if (auto surface = canvas_element.surface())
+            source_size = surface->size();
+        else if (canvas_element.paints_remote_context())
+            source_size = canvas_element.bitmap_size_for_canvas();
+        else
+            return;
+
+        auto canvas_int_rect = canvas_rect.to_type<int>();
+        auto scaling_mode = to_gfx_scaling_mode(computed_values().image_rendering(),
+            source_size, canvas_int_rect.size());
+        auto& mutable_canvas_element = const_cast<HTML::HTMLCanvasElement&>(canvas_element);
+        context.display_list_recorder().draw_compositor_surface(canvas_int_rect,
+            mutable_canvas_element.ensure_compositor_surface_id(), scaling_mode);
     }
 }
 

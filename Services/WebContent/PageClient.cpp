@@ -223,6 +223,11 @@ void PageClient::set_window_size(Web::DevicePixelSize size)
     page().set_window_size(size);
 }
 
+void PageClient::compositor_process_lost()
+{
+    page().notify_all_webgl_contexts_lost();
+}
+
 void PageClient::compositor_process_reconnected()
 {
     page().top_level_traversable()->repaint_after_compositor_process_reconnect();

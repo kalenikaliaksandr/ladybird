@@ -6,7 +6,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGfx/SkiaBackendContext.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibWeb/Bindings/Intrinsics.h>
@@ -15,7 +14,7 @@
 #include <LibWeb/Infra/Strings.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/WebGL/EventNames.h>
-#include <LibWeb/WebGL/OpenGLContext.h>
+#include <LibWeb/WebGL/WebGLContextProxy.h>
 #include <LibWeb/WebGL/WebGL2RenderingContext.h>
 #include <LibWeb/WebGL/WebGLContextEvent.h>
 #include <LibWeb/WebGL/WebGLRenderingContext.h>
@@ -34,17 +33,7 @@ JS::ThrowCompletionOr<GC::Ptr<WebGL2RenderingContext>> WebGL2RenderingContext::c
     // We should be coming here from getContext being called on a wrapped <canvas> element.
     auto context_attributes = TRY(convert_value_to_context_attributes_dictionary(canvas_element.vm(), options));
 
-    auto skia_backend_context = Gfx::SkiaBackendContext::the_main_thread_context();
-    if (!skia_backend_context) {
-        fire_webgl_context_creation_error(canvas_element);
-        return GC::Ptr<WebGL2RenderingContext> { nullptr };
-    }
-    OpenGLContext::DrawingBufferOptions context_options {
-        .depth = context_attributes.depth,
-        .stencil = context_attributes.stencil,
-        .antialias = context_attributes.antialias,
-    };
-    auto context = OpenGLContext::create(*skia_backend_context, OpenGLContext::WebGLVersion::WebGL2, context_options);
+    auto context = create_webgl_context_proxy(canvas_element, WebGLVersion::WebGL2, context_attributes);
     if (!context) {
         fire_webgl_context_creation_error(canvas_element);
         return GC::Ptr<WebGL2RenderingContext> { nullptr };
@@ -55,7 +44,7 @@ JS::ThrowCompletionOr<GC::Ptr<WebGL2RenderingContext>> WebGL2RenderingContext::c
     return realm.create<WebGL2RenderingContext>(realm, canvas_element, context.release_nonnull(), context_attributes, context_attributes);
 }
 
-WebGL2RenderingContext::WebGL2RenderingContext(JS::Realm& realm, HTML::HTMLCanvasElement& canvas_element, NonnullOwnPtr<OpenGLContext> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters)
+WebGL2RenderingContext::WebGL2RenderingContext(JS::Realm& realm, HTML::HTMLCanvasElement& canvas_element, NonnullOwnPtr<WebGLContextProxy> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters)
     : WebGL2RenderingContextOverloads(realm, move(context))
     , m_canvas_element(canvas_element)
     , m_context_creation_parameters(context_creation_parameters)
@@ -80,7 +69,7 @@ void WebGL2RenderingContext::visit_edges(Cell::Visitor& visitor)
 
 void WebGL2RenderingContext::present()
 {
-    context().present(m_context_creation_parameters.preserve_drawing_buffer);
+    present_remote_context(context(), *m_canvas_element, m_context_creation_parameters.preserve_drawing_buffer);
 }
 
 GC::Ref<HTML::HTMLCanvasElement> WebGL2RenderingContext::canvas_for_binding() const
