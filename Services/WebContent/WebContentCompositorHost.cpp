@@ -11,6 +11,7 @@
 #include <WebContent/CompositorConnection.h>
 #include <WebContent/ConnectionFromClient.h>
 #include <WebContent/WebContentCompositorHost.h>
+#include <WebContent/WebContentRemoteWebGLTransport.h>
 
 namespace WebContent {
 
@@ -22,6 +23,13 @@ public:
     }
 
 private:
+    virtual RefPtr<Web::WebGL::RemoteWebGLTransport> create_webgl_transport() override
+    {
+        if (auto* connection = compositor_connection())
+            return adopt_ref(*new WebContentRemoteWebGLTransport(*connection));
+        return nullptr;
+    }
+
     virtual void destroy_context(Web::Compositor::CompositorContextId context_id) override
     {
         if (auto* connection = compositor_connection())

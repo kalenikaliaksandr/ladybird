@@ -1,5 +1,20 @@
 include(audio)
 
+invoke_py_generator(
+    "WebContentRemoteWebGLTransport.cpp"
+    "generate_webcontent_webgl_transport.py"
+    "${LADYBIRD_SOURCE_DIR}/Libraries/LibWeb/WebGL/GLFunctions.json"
+    "WebContentRemoteWebGLTransport.h"
+    "WebContentRemoteWebGLTransport.cpp"
+    arguments -j "${LADYBIRD_SOURCE_DIR}/Libraries/LibWeb/WebGL/GLFunctions.json"
+    dependencies "${LADYBIRD_SOURCE_DIR}/Meta/Generators/libweb_webgl.py"
+)
+
+set(GENERATED_SOURCES
+    ${GENERATED_SOURCES}
+    WebContentRemoteWebGLTransport.cpp
+)
+
 set(SOURCES
     CompositorConnection.cpp
     ConnectionFromClient.cpp
@@ -23,7 +38,8 @@ if (ANDROID)
     )
     target_link_libraries(webcontentservice PRIVATE android)
 else()
-    add_library(webcontentservice STATIC ${SOURCES})
+    add_library(webcontentservice STATIC ${SOURCES} ${GENERATED_SOURCES})
+    ladybird_generated_sources(webcontentservice)
     set_target_properties(webcontentservice PROPERTIES AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
 endif()
 

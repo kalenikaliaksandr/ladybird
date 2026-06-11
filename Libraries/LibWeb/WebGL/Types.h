@@ -23,6 +23,11 @@ using GLchar = char;
 //        Since this conflicts with the original definition of GLsync, the suffix "Internal" has been added.
 using GLsyncInternal = void*;
 
+enum class WebGLVersion {
+    WebGL1,
+    WebGL2,
+};
+
 // Client-allocated id of a GL object living in a remote WebGL context. The remote side
 // maps ids to real GL names; 0 is reserved (unbind, or the default framebuffer and
 // renderbuffer where those have bind-0 semantics).

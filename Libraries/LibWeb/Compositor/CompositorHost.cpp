@@ -7,6 +7,7 @@
 #include <LibGfx/PaintingSurface.h>
 #include <LibWeb/Compositor/CompositorHost.h>
 #include <LibWeb/Painting/DisplayList.h>
+#include <LibWeb/WebGL/RemoteWebGLTransport.h>
 
 namespace Web::Compositor {
 
@@ -98,6 +99,11 @@ void CompositorContextHandle::request_screenshot(NonnullRefPtr<Gfx::PaintingSurf
 }
 
 CompositorHost::~CompositorHost() = default;
+
+RefPtr<WebGL::RemoteWebGLTransport> CompositorHost::create_webgl_transport()
+{
+    return nullptr;
+}
 
 OwnPtr<CompositorContextHandle> CompositorHost::create_context(CompositorContextId context_id)
 {

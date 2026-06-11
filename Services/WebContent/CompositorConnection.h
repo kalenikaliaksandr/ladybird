@@ -53,6 +53,12 @@ public:
     void viewport_size_updated(Web::Compositor::CompositorContextId, Gfx::IntSize, Web::Compositor::WindowResizingInProgress);
     void present_frame(Web::Compositor::CompositorContextId, Gfx::IntRect);
     void request_screenshot(Web::Compositor::CompositorContextId, NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&&);
+
+    // For the generated WebGL transport: every send is gated on the compositor still
+    // being there, and a failed synchronous send marks it lost.
+    bool can_send_to_compositor() const { return can_send_message_to_compositor(); }
+    void notify_compositor_lost() { did_lose_compositor(); }
+
     Function<void(u64 page_id, Web::MouseEvent)> on_mouse_event;
 
 private:
