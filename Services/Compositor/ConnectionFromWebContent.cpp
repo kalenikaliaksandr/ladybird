@@ -175,6 +175,23 @@ void ConnectionFromWebContent::webgl_commands(Web::Painting::CanvasContextId can
     MUST(context->execute_commands(commands));
 }
 
+void ConnectionFromWebContent::prepare_webgl_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer)
+{
+    auto* context = m_webgl_host.context(canvas_context_id);
+    VERIFY(context);
+    switch (m_compositor_state->check_context_owner(target_context_id, *this)) {
+    case CompositorState::ContextOwnerCheckResult::OwnedByClient:
+        break;
+    case CompositorState::ContextOwnerCheckResult::ContextUnavailable:
+        VERIFY_NOT_REACHED();
+    case CompositorState::ContextOwnerCheckResult::ConflictingOwner:
+        VERIFY_NOT_REACHED();
+    }
+
+    auto surface = MUST(context->prepare_for_compositing(preserve_drawing_buffer));
+    m_compositor_state->update_canvas_surface(target_context_id, canvas_id, surface);
+}
+
 Messages::CompositorWebContentServer::WebglSyncCallResponse ConnectionFromWebContent::webgl_sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request)
 {
     auto* context = m_webgl_host.context(canvas_context_id);

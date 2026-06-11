@@ -50,6 +50,7 @@ private:
     virtual Messages::CompositorWebContentServer::GetCanvasPixelsResponse get_canvas_pixels(Web::Compositor::CompositorContextId, Web::Painting::CanvasContextId, Gfx::IntRect) override;
 
     virtual void webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer commands) override;
+    virtual void prepare_webgl_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer) override;
     virtual Messages::CompositorWebContentServer::WebglSyncCallResponse webgl_sync_call(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer request) override;
     virtual void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation) override;
     virtual Messages::CompositorWebContentServer::AsyncScrollByResponse async_scroll_by(Web::Compositor::CompositorContextId, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollOperationTracking) override;
