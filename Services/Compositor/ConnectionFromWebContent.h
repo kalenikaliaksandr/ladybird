@@ -11,6 +11,7 @@
 #include <Compositor/CompositorState.h>
 #include <Compositor/CompositorWebContentClientEndpoint.h>
 #include <Compositor/CompositorWebContentServerEndpoint.h>
+#include <Compositor/WebGLHost.h>
 #include <LibIPC/ConnectionFromClient.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
@@ -46,8 +47,10 @@ private:
     virtual Messages::CompositorWebContentServer::CreateCanvasContextResponse create_canvas_context(Web::Painting::CanvasContextId, Web::Compositor::CanvasContextCreationAttributes) override;
     virtual void update_canvas_commands(Web::Painting::CanvasContextId, Gfx::CanvasCommandList) override;
     virtual void destroy_canvas_context(Web::Painting::CanvasContextId) override;
-    virtual void prepare_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id) override;
+    virtual void prepare_canvas_surface(Web::Painting::CanvasContextId canvas_context_id, Web::Compositor::CompositorContextId target_context_id, Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer) override;
     virtual Messages::CompositorWebContentServer::GetCanvasPixelsResponse get_canvas_pixels(Web::Painting::CanvasContextId, Gfx::IntRect) override;
+
+    virtual void webgl_commands(Web::Painting::CanvasContextId canvas_context_id, ByteBuffer commands) override;
     virtual void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation) override;
     virtual Messages::CompositorWebContentServer::AsyncScrollByResponse async_scroll_by(Web::Compositor::CompositorContextId, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollOperationTracking) override;
     virtual Messages::CompositorWebContentServer::ShouldDeferMainThreadPresentForAsyncScrollResponse should_defer_main_thread_present_for_async_scroll(Web::Compositor::CompositorContextId) override;
@@ -62,6 +65,7 @@ private:
 
     NonnullRefPtr<CompositorState> m_compositor_state;
     CanvasHost m_canvas_host;
+    WebGLHost m_webgl_host;
     Function<void(ConnectionFromWebContent&)> m_on_death;
 };
 

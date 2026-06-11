@@ -55,10 +55,15 @@ enum class AsyncScrollOperationTracking {
 
 enum class CanvasContextType : u8 {
     Context2D,
+    WebGL1,
+    WebGL2,
 };
 
 struct CanvasContextCreationAttributes {
     CanvasContextType type { CanvasContextType::Context2D };
+    bool depth { false };
+    bool stencil { false };
+    bool antialias { false };
 };
 
 struct PublishToCompositorSurface {

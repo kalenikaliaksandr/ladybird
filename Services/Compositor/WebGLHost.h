@@ -13,6 +13,7 @@
 #include <AK/RefPtr.h>
 #include <Compositor/WebGLObjectMap.h>
 #include <LibGfx/Forward.h>
+#include <LibGfx/ShareableBitmap.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/WebGL/OpenGLContext.h>
 
@@ -28,6 +29,8 @@ public:
     static OwnPtr<HostWebGLContext> create(NonnullRefPtr<Gfx::SkiaBackendContext>, Web::WebGL::OpenGLContext::WebGLVersion, Web::WebGL::OpenGLContext::DrawingBufferOptions);
 
     ErrorOr<void> execute_commands(ReadonlyBytes);
+    Gfx::ShareableBitmap read_back_drawing_buffer(Gfx::IntRect);
+    ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> prepare_for_compositing(bool preserve_drawing_buffer);
 
     Web::WebGL::OpenGLContext& gl_context() { return *m_gl_context; }
 
@@ -36,6 +39,11 @@ private:
 
     NonnullOwnPtr<Web::WebGL::OpenGLContext> m_gl_context;
     WebGLObjectMap m_objects;
+    // For a non-preserving context the post-compositing clear is deferred until just before
+    // the next frame's commands, so a readback between compositing preparation and the next
+    // frame (drawImage, toDataURL, getImageData of the WebGL canvas) still observes the
+    // rendered frame.
+    bool m_needs_clear_before_next_frame { false };
 };
 
 // All remote WebGL contexts created by one WebContent connection; reaped with it.
