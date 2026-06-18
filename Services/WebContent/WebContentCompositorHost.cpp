@@ -72,6 +72,20 @@ private:
         return m_connection->webgl_sync_call(*m_canvas_id, move(request));
     }
 
+    virtual void tex_image2d_robust_angle(Web::WebGL::GLenum target, Web::WebGL::GLint level, Web::WebGL::GLint internalformat, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLint border, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer pixels) override
+    {
+        if (!m_canvas_id.has_value())
+            return;
+        m_connection->webgl_tex_image2d(*m_canvas_id, target, level, internalformat, width, height, border, format, type, buf_size, pixels);
+    }
+
+    virtual void tex_sub_image2d_robust_angle(Web::WebGL::GLenum target, Web::WebGL::GLint level, Web::WebGL::GLint xoffset, Web::WebGL::GLint yoffset, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer pixels) override
+    {
+        if (!m_canvas_id.has_value())
+            return;
+        m_connection->webgl_tex_sub_image2d(*m_canvas_id, target, level, xoffset, yoffset, width, height, format, type, buf_size, pixels);
+    }
+
     virtual Web::WebGL::ReadPixelsResult read_pixels_robust_angle(Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer pixels) override
     {
         if (!m_canvas_id.has_value())

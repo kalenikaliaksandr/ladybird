@@ -61,6 +61,8 @@ public:
     void send_webgl_commands(Web::Painting::CanvasId, ByteBuffer const&, Vector<Gfx::DecodedImageFrame> const& bitmaps);
     void present_webgl_canvas(Web::Painting::CanvasId, bool preserve_drawing_buffer);
     ByteBuffer webgl_sync_call(Web::Painting::CanvasId, ByteBuffer request);
+    void webgl_tex_image2d(Web::Painting::CanvasId, Web::WebGL::GLenum target, Web::WebGL::GLint level, Web::WebGL::GLint internalformat, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLint border, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer const& pixels);
+    void webgl_tex_sub_image2d(Web::Painting::CanvasId, Web::WebGL::GLenum target, Web::WebGL::GLint level, Web::WebGL::GLint xoffset, Web::WebGL::GLint yoffset, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer const& pixels);
     Web::WebGL::ReadPixelsResult read_webgl_pixels(Web::Painting::CanvasId, Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer const& pixels);
     void read_webgl_buffer_sub_data(Web::Painting::CanvasId, Web::WebGL::GLenum target, Web::WebGL::GLintptr offset, Web::WebGL::GLintptr size, Core::AnonymousBuffer const& data);
 

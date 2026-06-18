@@ -35,6 +35,8 @@ public:
     ErrorOr<void> execute_commands(ReadonlyBytes, Vector<Gfx::DecodedImageFrame> const& bitmaps);
     ErrorOr<ByteBuffer> execute_sync_call(ReadonlyBytes request);
     Gfx::ShareableBitmap read_back_drawing_buffer(Gfx::IntRect);
+    void tex_image2d_robust_angle(Web::WebGL::GLenum target, Web::WebGL::GLint level, Web::WebGL::GLint internalformat, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLint border, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer pixels);
+    void tex_sub_image2d_robust_angle(Web::WebGL::GLenum target, Web::WebGL::GLint level, Web::WebGL::GLint xoffset, Web::WebGL::GLint yoffset, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer pixels);
     Web::WebGL::ReadPixelsResult read_pixels_robust_angle(Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer pixels);
     void read_buffer_sub_data(Web::WebGL::GLenum target, Web::WebGL::GLintptr offset, Web::WebGL::GLintptr size, Core::AnonymousBuffer data);
     ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> prepare_for_compositing(bool preserve_drawing_buffer);

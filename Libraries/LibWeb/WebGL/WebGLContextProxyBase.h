@@ -75,6 +75,8 @@ protected:
         if (m_pending_local_error == 0)
             m_pending_local_error = error;
     }
+    bool try_tex_image2d_robust_angle_with_shared_pixels(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, GLsizei buf_size, void const* pixels);
+    bool try_tex_sub_image2d_robust_angle_with_shared_pixels(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei buf_size, void const* pixels);
     ReadPixelsResult read_pixels_robust_angle_into_shared_buffer(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei buf_size, Core::AnonymousBuffer const& pixels);
 
     template<typename Command>

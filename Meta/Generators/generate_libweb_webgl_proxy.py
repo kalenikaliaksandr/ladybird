@@ -80,6 +80,14 @@ def emit_record(out: TextIO, blobs: list) -> None:
 def emit_command_method(out: TextIO, function: dict) -> None:
     command_type = f"Commands::{command_name(function)}"
     out.write(f"{method_signature(function, 'WebGLContextProxy::')}\n{{\n")
+    if function["name"] == "glTexImage2DRobustANGLE":
+        out.write("""    if (try_tex_image2d_robust_angle_with_shared_pixels(target, level, internalformat, width, height, border, format, type, bufSize, pixels))
+        return;
+""")
+    elif function["name"] == "glTexSubImage2DRobustANGLE":
+        out.write("""    if (try_tex_sub_image2d_robust_angle_with_shared_pixels(target, level, xoffset, yoffset, width, height, format, type, bufSize, pixels))
+        return;
+""")
     blobs = emit_command_construction(out, function, command_type)
     assert len(blobs) <= 1, f"{function['name']} needs more inline blobs than record() supports"
     emit_record(out, blobs)

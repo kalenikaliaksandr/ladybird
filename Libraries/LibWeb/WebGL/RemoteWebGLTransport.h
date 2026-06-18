@@ -37,6 +37,8 @@ public:
     virtual void send_commands(ByteBuffer const&, Vector<Gfx::DecodedImageFrame> const& bitmaps) = 0;
     virtual void present_canvas(bool preserve_drawing_buffer) = 0;
     virtual ByteBuffer sync_call(ByteBuffer request) = 0;
+    virtual void tex_image2d_robust_angle(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, GLsizei buf_size, Core::AnonymousBuffer pixels) = 0;
+    virtual void tex_sub_image2d_robust_angle(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei buf_size, Core::AnonymousBuffer pixels) = 0;
     virtual ReadPixelsResult read_pixels_robust_angle(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei buf_size, Core::AnonymousBuffer pixels) = 0;
     virtual void read_buffer_sub_data(GLenum target, GLintptr offset, GLintptr size, Core::AnonymousBuffer data) = 0;
 

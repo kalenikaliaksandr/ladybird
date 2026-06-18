@@ -93,6 +93,34 @@ void WebGLContextProxyBase::read_pixels_into_pixel_pack_buffer(GLint x, GLint y,
     });
 }
 
+bool WebGLContextProxyBase::try_tex_image2d_robust_angle_with_shared_pixels(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, GLsizei buf_size, void const* pixels)
+{
+    if (m_lost || !pixels || buf_size <= static_cast<GLsizei>(max_pending_command_bytes))
+        return false;
+
+    auto shared_pixels = Core::AnonymousBuffer::create_with_size(static_cast<size_t>(buf_size)).release_value_but_fixme_should_propagate_errors();
+    __builtin_memcpy(shared_pixels.data<void>(), pixels, static_cast<size_t>(buf_size));
+    flush_commands();
+    if (m_lost)
+        return true;
+    m_transport->tex_image2d_robust_angle(target, level, internalformat, width, height, border, format, type, buf_size, move(shared_pixels));
+    return true;
+}
+
+bool WebGLContextProxyBase::try_tex_sub_image2d_robust_angle_with_shared_pixels(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei buf_size, void const* pixels)
+{
+    if (m_lost || !pixels || buf_size <= static_cast<GLsizei>(max_pending_command_bytes))
+        return false;
+
+    auto shared_pixels = Core::AnonymousBuffer::create_with_size(static_cast<size_t>(buf_size)).release_value_but_fixme_should_propagate_errors();
+    __builtin_memcpy(shared_pixels.data<void>(), pixels, static_cast<size_t>(buf_size));
+    flush_commands();
+    if (m_lost)
+        return true;
+    m_transport->tex_sub_image2d_robust_angle(target, level, xoffset, yoffset, width, height, format, type, buf_size, move(shared_pixels));
+    return true;
+}
+
 void WebGLContextProxyBase::tex_image2d_from_bitmap(GLenum target, GLint level, GLint internalformat, GLenum format, GLenum type, Gfx::DecodedImageFrame frame, Optional<Gfx::IntSize> destination_size, bool flip_y, bool premultiply_alpha)
 {
     if (m_lost)

@@ -222,6 +222,22 @@ ByteBuffer CompositorConnection::webgl_sync_call(Web::Painting::CanvasId canvas_
     return response->take_reply();
 }
 
+void CompositorConnection::webgl_tex_image2d(Web::Painting::CanvasId canvas_id, Web::WebGL::GLenum target, Web::WebGL::GLint level, Web::WebGL::GLint internalformat, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLint border, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer const& pixels)
+{
+    if (!can_send_message_to_compositor())
+        return;
+
+    async_webgl_tex_image_2d(canvas_id, target, level, internalformat, width, height, border, format, type, buf_size, pixels);
+}
+
+void CompositorConnection::webgl_tex_sub_image2d(Web::Painting::CanvasId canvas_id, Web::WebGL::GLenum target, Web::WebGL::GLint level, Web::WebGL::GLint xoffset, Web::WebGL::GLint yoffset, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer const& pixels)
+{
+    if (!can_send_message_to_compositor())
+        return;
+
+    async_webgl_tex_sub_image_2d(canvas_id, target, level, xoffset, yoffset, width, height, format, type, buf_size, pixels);
+}
+
 Web::WebGL::ReadPixelsResult CompositorConnection::read_webgl_pixels(Web::Painting::CanvasId canvas_id, Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer const& pixels)
 {
     if (!can_send_message_to_compositor())

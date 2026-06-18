@@ -161,6 +161,26 @@ Messages::CompositorWebContentServer::WebglSyncCallResponse ConnectionFromWebCon
     return MUST(m_canvas_host.execute_webgl_sync_call(canvas_id, move(request)));
 }
 
+void ConnectionFromWebContent::webgl_tex_image_2d(Web::Painting::CanvasId canvas_id, u32 target, i32 level, i32 internalformat, i32 width, i32 height, i32 border, u32 format, u32 type, i32 buf_size, Core::AnonymousBuffer pixels)
+{
+    if (buf_size < 0 || (buf_size > 0 && (!pixels.is_valid() || pixels.size() < static_cast<size_t>(buf_size)))) {
+        did_misbehave("WebContent sent an invalid WebGL texture upload buffer");
+        return;
+    }
+
+    m_canvas_host.webgl_tex_image2d_robust_angle(canvas_id, target, level, internalformat, width, height, border, format, type, buf_size, move(pixels));
+}
+
+void ConnectionFromWebContent::webgl_tex_sub_image_2d(Web::Painting::CanvasId canvas_id, u32 target, i32 level, i32 xoffset, i32 yoffset, i32 width, i32 height, u32 format, u32 type, i32 buf_size, Core::AnonymousBuffer pixels)
+{
+    if (buf_size < 0 || (buf_size > 0 && (!pixels.is_valid() || pixels.size() < static_cast<size_t>(buf_size)))) {
+        did_misbehave("WebContent sent an invalid WebGL texture upload buffer");
+        return;
+    }
+
+    m_canvas_host.webgl_tex_sub_image2d_robust_angle(canvas_id, target, level, xoffset, yoffset, width, height, format, type, buf_size, move(pixels));
+}
+
 Messages::CompositorWebContentServer::WebglReadPixelsResponse ConnectionFromWebContent::webgl_read_pixels(Web::Painting::CanvasId canvas_id, i32 x, i32 y, i32 width, i32 height, u32 format, u32 type, i32 buf_size, Core::AnonymousBuffer pixels)
 {
     if (buf_size < 0 || (buf_size > 0 && (!pixels.is_valid() || pixels.size() < static_cast<size_t>(buf_size)))) {

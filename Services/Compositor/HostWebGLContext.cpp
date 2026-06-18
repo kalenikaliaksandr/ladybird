@@ -214,6 +214,24 @@ Gfx::ShareableBitmap HostWebGLContext::read_back_drawing_buffer(Gfx::IntRect rec
     return Gfx::ShareableBitmap { move(bitmap), Gfx::ShareableBitmap::ConstructWithKnownGoodBitmap };
 }
 
+void HostWebGLContext::tex_image2d_robust_angle(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, GLsizei buf_size, Core::AnonymousBuffer pixels)
+{
+    VERIFY(buf_size >= 0);
+    VERIFY(static_cast<size_t>(buf_size) <= pixels.size());
+
+    m_gl_context->make_current();
+    m_gl_context->tex_image2d_robust_angle(target, level, internalformat, width, height, border, format, type, buf_size, pixels.data<void>());
+}
+
+void HostWebGLContext::tex_sub_image2d_robust_angle(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei buf_size, Core::AnonymousBuffer pixels)
+{
+    VERIFY(buf_size >= 0);
+    VERIFY(static_cast<size_t>(buf_size) <= pixels.size());
+
+    m_gl_context->make_current();
+    m_gl_context->tex_sub_image2d_robust_angle(target, level, xoffset, yoffset, width, height, format, type, buf_size, pixels.data<void>());
+}
+
 ReadPixelsResult HostWebGLContext::read_pixels_robust_angle(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei buf_size, Core::AnonymousBuffer pixels)
 {
     VERIFY(buf_size >= 0);
