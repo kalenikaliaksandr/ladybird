@@ -57,8 +57,9 @@ static SkColorType export_format_to_skia_color_type(ExportFormat format)
     case ExportFormat::RGB565:
         return SkColorType::kRGB_565_SkColorType;
     case ExportFormat::RGBA5551:
-        dbgln("FIXME: Support conversion to RGBA5551.");
-        return SkColorType::kUnknown_SkColorType;
+        // This one needs to be converted manually because Skia has no valid
+        // RGBA5551 color type.
+        VERIFY_NOT_REACHED();
     case ExportFormat::RGBA4444:
         return SkColorType::kARGB_4444_SkColorType;
     case ExportFormat::RGB888:
@@ -69,6 +70,60 @@ static SkColorType export_format_to_skia_color_type(ExportFormat format)
     default:
         VERIFY_NOT_REACHED();
     }
+}
+
+static u8 quantize_to_n_bits(u8 value, u8 bits)
+{
+    VERIFY(bits > 0);
+    VERIFY(bits <= 8);
+    auto maximum_value = (1u << bits) - 1u;
+    return static_cast<u8>((static_cast<u16>(value) * maximum_value + 127u) / 255u);
+}
+
+static u8 premultiply_channel(u8 channel, u8 alpha)
+{
+    return static_cast<u8>((static_cast<u16>(channel) * alpha + 127u) / 255u);
+}
+
+static u8 unpremultiply_channel(u8 channel, u8 alpha)
+{
+    if (alpha == 0)
+        return 0;
+    return min(255u, (static_cast<u16>(channel) * 255u + alpha / 2u) / alpha);
+}
+
+static Color color_for_export(Bitmap const& bitmap, int x, int y, bool premultiply_alpha)
+{
+    auto color = bitmap.get_pixel(x, y);
+    auto source_is_premultiplied = bitmap.alpha_type() == AlphaType::Premultiplied;
+    if (source_is_premultiplied == premultiply_alpha)
+        return color;
+
+    if (premultiply_alpha) {
+        auto alpha = color.alpha();
+        return Color {
+            premultiply_channel(color.red(), alpha),
+            premultiply_channel(color.green(), alpha),
+            premultiply_channel(color.blue(), alpha),
+            alpha,
+        };
+    }
+
+    auto alpha = color.alpha();
+    return Color {
+        unpremultiply_channel(color.red(), alpha),
+        unpremultiply_channel(color.green(), alpha),
+        unpremultiply_channel(color.blue(), alpha),
+        alpha,
+    };
+}
+
+static u16 pack_color_as_rgba5551(Color color)
+{
+    return (quantize_to_n_bits(color.red(), 5) << 11)
+        | (quantize_to_n_bits(color.green(), 5) << 6)
+        | (quantize_to_n_bits(color.blue(), 5) << 1)
+        | quantize_to_n_bits(color.alpha(), 1);
 }
 
 ErrorOr<BitmapExportResult> export_bitmap_to_byte_buffer(
@@ -111,6 +166,22 @@ ErrorOr<BitmapExportResult> export_bitmap_to_byte_buffer(
                     raw_buffer[buffer_offset + 0] = pixel.red();
                     raw_buffer[buffer_offset + 1] = pixel.green();
                     raw_buffer[buffer_offset + 2] = pixel.blue();
+                }
+            }
+        } else if (format == ExportFormat::RGBA5551) {
+            VERIFY(bitmap.width() > 0);
+            VERIFY(bitmap.height() > 0);
+
+            auto* raw_buffer = buffer.data();
+            for (auto y = 0; y < height; y++) {
+                auto source_y = y * bitmap.height() / height;
+                auto target_y = flags & ExportFlags::FlipY ? height - y - 1 : y;
+                for (auto x = 0; x < width; x++) {
+                    auto source_x = x * bitmap.width() / width;
+                    auto color = color_for_export(bitmap, source_x, source_y, flags & ExportFlags::PremultiplyAlpha);
+                    auto packed_pixel = pack_color_as_rgba5551(color);
+                    auto buffer_offset = (target_y * buffer_pitch.value()) + (x * 2ull);
+                    __builtin_memcpy(raw_buffer + buffer_offset, &packed_pixel, sizeof(packed_pixel));
                 }
             }
         } else {
