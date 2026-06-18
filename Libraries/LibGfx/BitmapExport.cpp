@@ -126,6 +126,21 @@ static u16 pack_color_as_rgba5551(Color color)
         | quantize_to_n_bits(color.alpha(), 1);
 }
 
+static u16 pack_color_as_rgb565(Color color)
+{
+    return (quantize_to_n_bits(color.red(), 5) << 11)
+        | (quantize_to_n_bits(color.green(), 6) << 5)
+        | quantize_to_n_bits(color.blue(), 5);
+}
+
+static u16 pack_color_as_rgba4444(Color color)
+{
+    return (quantize_to_n_bits(color.red(), 4) << 12)
+        | (quantize_to_n_bits(color.green(), 4) << 8)
+        | (quantize_to_n_bits(color.blue(), 4) << 4)
+        | quantize_to_n_bits(color.alpha(), 4);
+}
+
 static void write_color_as_rgba8888(u8* raw_buffer, size_t offset, Color color)
 {
     raw_buffer[offset + 0] = color.red();
@@ -157,11 +172,15 @@ ErrorOr<BitmapExportResult> export_bitmap_to_byte_buffer(
     auto buffer = MUST(ByteBuffer::create_zeroed(buffer_pitch.value() * height));
 
     if (width > 0 && height > 0) {
-        if (format == ExportFormat::RGB888 || format == ExportFormat::RGBA8888 || format == ExportFormat::RGBA5551) {
+        if (format == ExportFormat::RGB565
+            || format == ExportFormat::RGBA5551
+            || format == ExportFormat::RGBA4444
+            || format == ExportFormat::RGB888
+            || format == ExportFormat::RGBA8888) {
             // These formats need explicit byte packing. Skia has no RGB888 or
-            // RGBA5551 surface format, and its RGBA8888 draw path may discard
-            // RGB values for transparent pixels that WebGL texture uploads
-            // must preserve when premultiplication is disabled.
+            // RGBA5551 surface format, and its other draw paths may not match
+            // the component order required by WebGL texture uploads or may
+            // discard RGB values for transparent pixels.
             VERIFY(bitmap.width() > 0);
             VERIFY(bitmap.height() > 0);
 
@@ -180,6 +199,12 @@ ErrorOr<BitmapExportResult> export_bitmap_to_byte_buffer(
                         raw_buffer[buffer_offset + 2] = color.blue();
                     } else if (format == ExportFormat::RGBA8888) {
                         write_color_as_rgba8888(raw_buffer, buffer_offset, color);
+                    } else if (format == ExportFormat::RGB565) {
+                        auto packed_pixel = pack_color_as_rgb565(color);
+                        __builtin_memcpy(raw_buffer + buffer_offset, &packed_pixel, sizeof(packed_pixel));
+                    } else if (format == ExportFormat::RGBA4444) {
+                        auto packed_pixel = pack_color_as_rgba4444(color);
+                        __builtin_memcpy(raw_buffer + buffer_offset, &packed_pixel, sizeof(packed_pixel));
                     } else {
                         auto packed_pixel = pack_color_as_rgba5551(color);
                         __builtin_memcpy(raw_buffer + buffer_offset, &packed_pixel, sizeof(packed_pixel));
