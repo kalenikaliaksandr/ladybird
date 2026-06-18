@@ -126,6 +126,14 @@ static u16 pack_color_as_rgba5551(Color color)
         | quantize_to_n_bits(color.alpha(), 1);
 }
 
+static void write_color_as_rgba8888(u8* raw_buffer, size_t offset, Color color)
+{
+    raw_buffer[offset + 0] = color.red();
+    raw_buffer[offset + 1] = color.green();
+    raw_buffer[offset + 2] = color.blue();
+    raw_buffer[offset + 3] = color.alpha();
+}
+
 ErrorOr<BitmapExportResult> export_bitmap_to_byte_buffer(
     Bitmap const& bitmap,
     ColorSpace const& color_space,
@@ -136,12 +144,6 @@ ErrorOr<BitmapExportResult> export_bitmap_to_byte_buffer(
 {
     int width = target_width.value_or(bitmap.width());
     int height = target_height.value_or(bitmap.height());
-
-    if (format == ExportFormat::RGB888 && (width != bitmap.width() || height != bitmap.height())) {
-        dbgln("FIXME: Ignoring target width and height because scaling is not implemented for this export format.");
-        width = bitmap.width();
-        height = bitmap.height();
-    }
 
     Checked<size_t> buffer_pitch = width;
     int number_of_bytes = bytes_per_pixel_for_export_format(format);
@@ -155,20 +157,11 @@ ErrorOr<BitmapExportResult> export_bitmap_to_byte_buffer(
     auto buffer = MUST(ByteBuffer::create_zeroed(buffer_pitch.value() * height));
 
     if (width > 0 && height > 0) {
-        if (format == ExportFormat::RGB888) {
-            // 24 bit RGB is not supported by Skia, so we need to handle this format ourselves.
-            auto* raw_buffer = buffer.data();
-            for (auto y = 0; y < height; y++) {
-                auto target_y = flags & ExportFlags::FlipY ? height - y - 1 : y;
-                for (auto x = 0; x < width; x++) {
-                    auto pixel = bitmap.get_pixel(x, y);
-                    auto buffer_offset = (target_y * buffer_pitch.value()) + (x * 3ull);
-                    raw_buffer[buffer_offset + 0] = pixel.red();
-                    raw_buffer[buffer_offset + 1] = pixel.green();
-                    raw_buffer[buffer_offset + 2] = pixel.blue();
-                }
-            }
-        } else if (format == ExportFormat::RGBA5551) {
+        if (format == ExportFormat::RGB888 || format == ExportFormat::RGBA8888 || format == ExportFormat::RGBA5551) {
+            // These formats need explicit byte packing. Skia has no RGB888 or
+            // RGBA5551 surface format, and its RGBA8888 draw path may discard
+            // RGB values for transparent pixels that WebGL texture uploads
+            // must preserve when premultiplication is disabled.
             VERIFY(bitmap.width() > 0);
             VERIFY(bitmap.height() > 0);
 
@@ -179,9 +172,18 @@ ErrorOr<BitmapExportResult> export_bitmap_to_byte_buffer(
                 for (auto x = 0; x < width; x++) {
                     auto source_x = x * bitmap.width() / width;
                     auto color = color_for_export(bitmap, source_x, source_y, flags & ExportFlags::PremultiplyAlpha);
-                    auto packed_pixel = pack_color_as_rgba5551(color);
-                    auto buffer_offset = (target_y * buffer_pitch.value()) + (x * 2ull);
-                    __builtin_memcpy(raw_buffer + buffer_offset, &packed_pixel, sizeof(packed_pixel));
+                    auto buffer_offset = (target_y * buffer_pitch.value()) + (x * number_of_bytes);
+
+                    if (format == ExportFormat::RGB888) {
+                        raw_buffer[buffer_offset + 0] = color.red();
+                        raw_buffer[buffer_offset + 1] = color.green();
+                        raw_buffer[buffer_offset + 2] = color.blue();
+                    } else if (format == ExportFormat::RGBA8888) {
+                        write_color_as_rgba8888(raw_buffer, buffer_offset, color);
+                    } else {
+                        auto packed_pixel = pack_color_as_rgba5551(color);
+                        __builtin_memcpy(raw_buffer + buffer_offset, &packed_pixel, sizeof(packed_pixel));
+                    }
                 }
             }
         } else {
