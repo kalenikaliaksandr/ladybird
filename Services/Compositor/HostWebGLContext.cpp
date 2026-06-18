@@ -99,9 +99,31 @@ static ErrorOr<Gfx::BitmapExportResult> convert_bitmap_for_upload(Vector<Gfx::De
     return Gfx::export_bitmap_to_byte_buffer(frame.bitmap(), frame.color_space(), export_format.value(), export_flags, target_width, target_height);
 }
 
+class ScopedTightlyPackedUnpackAlignment {
+public:
+    explicit ScopedTightlyPackedUnpackAlignment(OpenGLContext& context)
+        : m_context(context)
+    {
+        m_context.get_integerv_robust_angle(GL_UNPACK_ALIGNMENT, 1, nullptr, &m_previous_alignment);
+        if (m_previous_alignment != 1)
+            m_context.pixel_storei(GL_UNPACK_ALIGNMENT, 1);
+    }
+
+    ~ScopedTightlyPackedUnpackAlignment()
+    {
+        if (m_previous_alignment != 1)
+            m_context.pixel_storei(GL_UNPACK_ALIGNMENT, m_previous_alignment);
+    }
+
+private:
+    OpenGLContext& m_context;
+    GLint m_previous_alignment { 4 };
+};
+
 ErrorOr<void> HostWebGLContext::tex_image2d_from_bitmap(Commands::TexImage2DFromBitmap const& command, Vector<Gfx::DecodedImageFrame> const& bitmaps)
 {
     auto converted = TRY(convert_bitmap_for_upload(bitmaps, command.bitmap_index, command.format, command.type, command.has_explicit_destination_size, command.destination_width, command.destination_height, command.flip_y, command.premultiply_alpha));
+    ScopedTightlyPackedUnpackAlignment unpack_alignment { *m_gl_context };
     m_gl_context->tex_image2d_robust_angle(command.target, command.level, command.internalformat, converted.width, converted.height, 0, command.format, command.type, converted.buffer.size(), converted.buffer.data());
     return {};
 }
@@ -109,6 +131,7 @@ ErrorOr<void> HostWebGLContext::tex_image2d_from_bitmap(Commands::TexImage2DFrom
 ErrorOr<void> HostWebGLContext::tex_sub_image2d_from_bitmap(Commands::TexSubImage2DFromBitmap const& command, Vector<Gfx::DecodedImageFrame> const& bitmaps)
 {
     auto converted = TRY(convert_bitmap_for_upload(bitmaps, command.bitmap_index, command.format, command.type, command.has_explicit_destination_size, command.destination_width, command.destination_height, command.flip_y, command.premultiply_alpha));
+    ScopedTightlyPackedUnpackAlignment unpack_alignment { *m_gl_context };
     m_gl_context->tex_sub_image2d_robust_angle(command.target, command.level, command.xoffset, command.yoffset, converted.width, converted.height, command.format, command.type, converted.buffer.size(), converted.buffer.data());
     return {};
 }
