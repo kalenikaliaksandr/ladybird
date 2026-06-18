@@ -12,14 +12,14 @@ typedef (CanvasImageSource or
          Blob or
          ImageData) ImageBitmapSource;
 
-enum ImageOrientation { "from-image", "flipY" };
+enum ImageOrientation { "from-image", "none", "flipY" };
 enum PremultiplyAlpha { "none", "premultiply", "default" };
 enum ColorSpaceConversion { "none", "default" };
 enum ResizeQuality { "pixelated", "low", "medium", "high" };
 
 dictionary ImageBitmapOptions {
-    // FIXME: ImageOrientation imageOrientation = "from-image";
-    // FIXME: PremultiplyAlpha premultiplyAlpha = "default";
+    ImageOrientation imageOrientation = "from-image";
+    PremultiplyAlpha premultiplyAlpha = "default";
     // FIXME: ColorSpaceConversion colorSpaceConversion = "default";
     [EnforceRange] unsigned long resizeWidth;
     [EnforceRange] unsigned long resizeHeight;

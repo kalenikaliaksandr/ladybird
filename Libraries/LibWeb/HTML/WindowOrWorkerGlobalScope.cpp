@@ -137,6 +137,14 @@ GC::Ref<WebIDL::Promise> WindowOrWorkerGlobalScopeMixin::create_image_bitmap(Ima
     return create_image_bitmap_impl(image, sx, sy, sw, sh, options);
 }
 
+static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> flip_bitmap_vertically(Gfx::Bitmap const& input)
+{
+    auto output = TRY(Gfx::Bitmap::create(input.format(), input.alpha_type(), input.size()));
+    for (auto y = 0; y < input.height(); ++y)
+        __builtin_memcpy(output->scanline_u8(y), input.scanline_u8(input.height() - y - 1), input.pitch());
+    return output;
+}
+
 // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#cropped-to-the-source-rectangle-with-formatting
 static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> crop_to_the_source_rectangle_with_formatting(RefPtr<Gfx::Bitmap const> input, Optional<WebIDL::Long> sx, Optional<WebIDL::Long> sy, Optional<WebIDL::Long> sw, Optional<WebIDL::Long> sh, Optional<Bindings::ImageBitmapOptions> const& options)
 {
@@ -253,11 +261,26 @@ static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> crop_to_the_source_rectangle_with_for
         output = TRY(output->scaled(scaling_pass.width, scaling_pass.height, scaling_pass.mode));
     }
 
-    // FIXME: 8. If the value of the imageOrientation member of options is "flipY", output must be flipped vertically,
-    //  disregarding any image orientation metadata of the source (such as EXIF metadata), if any. [EXIF]
+    // 8. If the value of the imageOrientation member of options is "flipY", output must be flipped vertically,
+    //    disregarding any image orientation metadata of the source (such as EXIF metadata), if any. [EXIF]
+    if (options.has_value() && options->image_orientation == Bindings::ImageOrientation::Flipy)
+        output = TRY(flip_bitmap_vertically(*output));
+
     // FIXME: 9. If image is an img element or a Blob object, let val be the value of the colorSpaceConversion member
     //  of options, and then run these substeps:
-    // FIXME: 10. Let val be the value of premultiplyAlpha member of options, and then run these substeps:
+    // 10. Let val be the value of premultiplyAlpha member of options, and then run these substeps:
+    if (options.has_value()) {
+        switch (options->premultiply_alpha) {
+        case Bindings::PremultiplyAlpha::Premultiply:
+            output->set_alpha_type_destructive(Gfx::AlphaType::Premultiplied);
+            break;
+        case Bindings::PremultiplyAlpha::None:
+            output->set_alpha_type_destructive(Gfx::AlphaType::Unpremultiplied);
+            break;
+        case Bindings::PremultiplyAlpha::Default:
+            break;
+        }
+    }
 
     // 11. Return output.
     return output;

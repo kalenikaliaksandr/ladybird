@@ -253,6 +253,11 @@ Optional<WebGLRenderingContextBase::TexImageSourceFrame> WebGLRenderingContextBa
     if (!frame.has_value())
         return OptionalNone {};
 
+    auto source_is_image_bitmap = source.has<GC::Ref<HTML::ImageBitmap>>();
+    auto premultiply_alpha = source_is_image_bitmap
+        ? frame->bitmap().alpha_type() == Gfx::AlphaType::Premultiplied
+        : m_unpack_premultiply_alpha;
+
     // Validate the combination before recording; the pixels travel to the host as shared
     // memory and the host performs the conversion next to GL.
     if (!texture_export_format(format, type).has_value())
@@ -264,8 +269,8 @@ Optional<WebGLRenderingContextBase::TexImageSourceFrame> WebGLRenderingContextBa
         // The first pixel transferred from the source to the WebGL implementation corresponds to the upper left corner of
         // the source. This behavior is modified by the UNPACK_FLIP_Y_WEBGL pixel storage parameter, except for ImageBitmap
         // arguments, as described in the abovementioned section.
-        .flip_y = m_unpack_flip_y && !source.has<GC::Ref<HTML::ImageBitmap>>(),
-        .premultiply_alpha = m_unpack_premultiply_alpha,
+        .flip_y = m_unpack_flip_y && !source_is_image_bitmap,
+        .premultiply_alpha = premultiply_alpha,
     };
 }
 
