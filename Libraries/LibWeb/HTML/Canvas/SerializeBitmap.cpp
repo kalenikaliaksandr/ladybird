@@ -5,12 +5,20 @@
  */
 
 #include <AK/MemoryStream.h>
+#include <AK/RefPtr.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/ImageFormats/JPEGWriter.h>
 #include <LibGfx/ImageFormats/PNGWriter.h>
 #include <LibWeb/HTML/Canvas/SerializeBitmap.h>
 
 namespace Web::HTML {
+
+static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> bitmap_with_alpha_type(Gfx::Bitmap const& bitmap, Gfx::AlphaType alpha_type)
+{
+    auto converted_bitmap = TRY(bitmap.clone());
+    converted_bitmap->set_alpha_type_destructive(alpha_type);
+    return converted_bitmap;
+}
 
 // https://html.spec.whatwg.org/multipage/canvas.html#a-serialisation-of-the-bitmap-as-a-file
 ErrorOr<SerializeBitmapResult> serialize_bitmap(Gfx::Bitmap const& bitmap, StringView type, Optional<double> quality)
@@ -25,13 +33,19 @@ ErrorOr<SerializeBitmapResult> serialize_bitmap(Gfx::Bitmap const& bitmap, Strin
         Gfx::JPEGWriter::Options jpeg_options;
         if (valid_quality)
             jpeg_options.quality = static_cast<int>(quality.value() * 100);
-        TRY(Gfx::JPEGWriter::encode(file, bitmap, jpeg_options));
+        RefPtr<Gfx::Bitmap> converted_bitmap;
+        if (bitmap.alpha_type() == Gfx::AlphaType::Unpremultiplied)
+            converted_bitmap = TRY(bitmap_with_alpha_type(bitmap, Gfx::AlphaType::Premultiplied));
+        TRY(Gfx::JPEGWriter::encode(file, converted_bitmap ? *converted_bitmap : bitmap, jpeg_options));
         return SerializeBitmapResult { TRY(file.read_until_eof()), "image/jpeg"sv };
     }
 
     // User agents must support PNG ("image/png"). User agents may support other types.
     // If the user agent does not support the requested type, then it must create the file using the PNG format. [PNG]
-    return SerializeBitmapResult { TRY(Gfx::PNGWriter::encode(bitmap)), "image/png"sv };
+    RefPtr<Gfx::Bitmap> converted_bitmap;
+    if (bitmap.alpha_type() == Gfx::AlphaType::Premultiplied)
+        converted_bitmap = TRY(bitmap_with_alpha_type(bitmap, Gfx::AlphaType::Unpremultiplied));
+    return SerializeBitmapResult { TRY(Gfx::PNGWriter::encode(converted_bitmap ? *converted_bitmap : bitmap)), "image/png"sv };
 }
 
 }

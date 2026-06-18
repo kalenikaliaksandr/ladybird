@@ -30,7 +30,7 @@ public:
         bool success { false };
         Vector<String> supported_extensions;
     };
-    virtual CreateResult create_context(WebGLVersion, Gfx::IntSize initial_size, bool alpha, bool depth, bool stencil, bool antialias) = 0;
+    virtual CreateResult create_context(WebGLVersion, Gfx::IntSize initial_size, bool alpha, bool depth, bool stencil, bool antialias, bool premultiplied_alpha) = 0;
     virtual Optional<Painting::CanvasId> canvas_id() const = 0;
     virtual void destroy_context() = 0;
 

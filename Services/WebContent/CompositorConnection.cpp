@@ -183,12 +183,12 @@ void CompositorConnection::present_frame(Web::Compositor::CompositorContextId co
     async_present_frame(context_id, viewport_rect);
 }
 
-Optional<Web::Painting::CanvasId> CompositorConnection::create_webgl_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool alpha, bool depth, bool stencil, bool antialias, Vector<String>& out_supported_extensions)
+Optional<Web::Painting::CanvasId> CompositorConnection::create_webgl_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool alpha, bool depth, bool stencil, bool antialias, bool premultiplied_alpha, Vector<String>& out_supported_extensions)
 {
     if (!can_send_message_to_compositor())
         return {};
 
-    auto response = send_sync<Messages::CompositorWebContentServer::CreateWebglContext>(webgl_version, size, alpha, depth, stencil, antialias);
+    auto response = send_sync<Messages::CompositorWebContentServer::CreateWebglContext>(webgl_version, size, alpha, depth, stencil, antialias, premultiplied_alpha);
     out_supported_extensions = response->take_supported_extensions();
     if (!response->success())
         return {};

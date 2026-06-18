@@ -177,6 +177,17 @@ Gfx::ShareableBitmap HostWebGLContext::read_back_drawing_buffer(Gfx::IntRect rec
     auto bitmap = bitmap_or_error.release_value();
     surface->flush();
     surface->read_into_bitmap(*bitmap, clipped_rect.location());
+    if (!m_gl_context->drawing_buffer_options().premultiplied_alpha) {
+        // Skia sees the wrapped drawing buffer as premultiplied, so copy the
+        // bytes into a straight-alpha bitmap without color conversion.
+        auto unpremultiplied_bitmap_or_error = Gfx::Bitmap::create_shareable(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Unpremultiplied, clipped_rect.size());
+        if (unpremultiplied_bitmap_or_error.is_error())
+            return {};
+        auto unpremultiplied_bitmap = unpremultiplied_bitmap_or_error.release_value();
+        VERIFY(bitmap->size_in_bytes() == unpremultiplied_bitmap->size_in_bytes());
+        __builtin_memcpy(unpremultiplied_bitmap->scanline(0), bitmap->scanline(0), bitmap->size_in_bytes());
+        bitmap = move(unpremultiplied_bitmap);
+    }
     return Gfx::ShareableBitmap { move(bitmap), Gfx::ShareableBitmap::ConstructWithKnownGoodBitmap };
 }
 

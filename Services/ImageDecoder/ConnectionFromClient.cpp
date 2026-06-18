@@ -96,7 +96,6 @@ static void decode_image_to_bitmaps_and_durations_with_decoder(Gfx::ImageDecoder
             durations.unchecked_append(0);
         } else {
             auto frame = frame_or_error.release_value();
-            frame.image->set_alpha_type_destructive(Gfx::AlphaType::Premultiplied);
             bitmaps.unchecked_append(frame.image);
             durations.unchecked_append(frame.duration);
         }
@@ -155,7 +154,6 @@ static ErrorOr<ConnectionFromClient::DecodeResult> decode_image_to_details(Core:
             if (frame_or_error.is_error())
                 break;
             auto frame = frame_or_error.release_value();
-            frame.image->set_alpha_type_destructive(Gfx::AlphaType::Premultiplied);
             bitmaps.unchecked_append(frame.image);
             // If frame_duration() returned 0, use the actual decoded duration.
             if (result.durations[i] == 0)
@@ -294,7 +292,6 @@ NonnullRefPtr<ConnectionFromClient::PendingJob> ConnectionFromClient::start_fram
                         break;
                     }
                     auto frame = frame_or_error.release_value();
-                    frame.image->set_alpha_type_destructive(Gfx::AlphaType::Premultiplied);
                     frames.unchecked_append(move(frame));
                 }
                 return frames;

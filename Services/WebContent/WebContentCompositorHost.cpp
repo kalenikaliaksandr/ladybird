@@ -26,11 +26,11 @@ public:
     }
 
 private:
-    virtual CreateResult create_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize initial_size, bool alpha, bool depth, bool stencil, bool antialias) override
+    virtual CreateResult create_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize initial_size, bool alpha, bool depth, bool stencil, bool antialias, bool premultiplied_alpha) override
     {
         VERIFY(!m_canvas_id.has_value());
         CreateResult result;
-        auto canvas_id = m_connection->create_webgl_context(webgl_version, initial_size, alpha, depth, stencil, antialias, result.supported_extensions);
+        auto canvas_id = m_connection->create_webgl_context(webgl_version, initial_size, alpha, depth, stencil, antialias, premultiplied_alpha, result.supported_extensions);
         if (canvas_id.has_value()) {
             result.success = true;
             m_canvas_id = *canvas_id;

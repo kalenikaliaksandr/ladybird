@@ -85,7 +85,8 @@ Optional<RemoteWebGLContext> create_remote_webgl_context(HTML::HTMLCanvasElement
         context_attributes.alpha,
         context_attributes.depth,
         context_attributes.stencil,
-        context_attributes.antialias);
+        context_attributes.antialias,
+        context_attributes.premultiplied_alpha);
     if (!result.success)
         return {};
 

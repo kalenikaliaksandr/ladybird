@@ -26,6 +26,7 @@ public:
         bool depth;
         bool stencil;
         bool antialias;
+        bool premultiplied_alpha;
     };
 
     static OwnPtr<OpenGLContext> create(NonnullRefPtr<Gfx::SkiaBackendContext>, WebGLVersion, DrawingBufferOptions);
@@ -42,6 +43,7 @@ public:
     void make_current();
 
     void present(bool preserve_drawing_buffer);
+    DrawingBufferOptions const& drawing_buffer_options() const { return m_drawing_buffer_options; }
 
     void set_size(Gfx::IntSize const&);
 

@@ -70,12 +70,12 @@ Optional<Web::Painting::CanvasId> CanvasHost::create_2d_context(Gfx::IntSize siz
     return canvas_id;
 }
 
-CanvasHost::CreateWebGLContextResult CanvasHost::create_webgl_context(Web::WebGL::WebGLVersion version, Gfx::IntSize size, bool alpha, bool depth, bool stencil, bool antialias)
+CanvasHost::CreateWebGLContextResult CanvasHost::create_webgl_context(Web::WebGL::WebGLVersion version, Gfx::IntSize size, bool alpha, bool depth, bool stencil, bool antialias, bool premultiplied_alpha)
 {
     if (!m_skia_backend_context)
         return {};
 
-    auto context = HostWebGLContext::create(*m_skia_backend_context, version, { .alpha = alpha, .depth = depth, .stencil = stencil, .antialias = antialias }, size);
+    auto context = HostWebGLContext::create(*m_skia_backend_context, version, { .alpha = alpha, .depth = depth, .stencil = stencil, .antialias = antialias, .premultiplied_alpha = premultiplied_alpha }, size);
     if (!context)
         return {};
 

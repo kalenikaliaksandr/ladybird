@@ -46,7 +46,7 @@ public:
     ~CanvasHost();
 
     Optional<Web::Painting::CanvasId> create_2d_context(Gfx::IntSize, bool alpha);
-    CreateWebGLContextResult create_webgl_context(Web::WebGL::WebGLVersion, Gfx::IntSize, bool alpha, bool depth, bool stencil, bool antialias);
+    CreateWebGLContextResult create_webgl_context(Web::WebGL::WebGLVersion, Gfx::IntSize, bool alpha, bool depth, bool stencil, bool antialias, bool premultiplied_alpha);
     void destroy_context(Web::Painting::CanvasId);
     bool has_context(Web::Painting::CanvasId) const;
 
