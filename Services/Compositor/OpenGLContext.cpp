@@ -507,6 +507,11 @@ void OpenGLContext::allocate_painting_surface_if_needed()
     }
 
     VERIFY(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+
+    if (!m_initialized_default_scissor_box) {
+        glScissor(0, 0, m_size.width(), m_size.height());
+        m_initialized_default_scissor_box = true;
+    }
 #endif
 }
 

@@ -80,6 +80,7 @@ private:
     Optional<Vector<String>> m_requestable_extensions;
     WebGLVersion m_webgl_version;
     [[maybe_unused]] DrawingBufferOptions m_drawing_buffer_options;
+    bool m_initialized_default_scissor_box { false };
 
     void free_surface_resources();
     bool is_default_draw_framebuffer_bound() const;
