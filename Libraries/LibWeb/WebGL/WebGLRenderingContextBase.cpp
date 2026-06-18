@@ -202,6 +202,19 @@ bool WebGLRenderingContextBase::extension_enabled(StringView extension) const
     return m_enabled_extensions.contains(MUST(String::from_utf8(extension)));
 }
 
+bool WebGLRenderingContextBase::is_draw_elements_index_type_enabled(GLenum type)
+{
+    switch (type) {
+    case GL_UNSIGNED_BYTE:
+    case GL_UNSIGNED_SHORT:
+        return true;
+    case GL_UNSIGNED_INT:
+        return context().webgl_version() == WebGLVersion::WebGL2 || extension_enabled("OES_element_index_uint"sv);
+    default:
+        return false;
+    }
+}
+
 ReadonlySpan<WebIDL::UnsignedLong> WebGLRenderingContextBase::enabled_compressed_texture_formats() const
 {
     return m_enabled_compressed_texture_formats;

@@ -675,6 +675,16 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
 void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL::Long count, WebIDL::UnsignedLong type, WebIDL::LongLong offset)
 {
     m_context->make_current();
+
+    if (offset < 0) {
+        set_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (!is_draw_elements_index_type_enabled(type)) {
+        set_error(GL_INVALID_ENUM);
+        return;
+    }
+
     m_context->notify_content_will_change();
 
     m_context->draw_elements(mode, count, type, reinterpret_cast<void*>(offset));

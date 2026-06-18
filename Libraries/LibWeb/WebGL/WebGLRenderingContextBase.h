@@ -75,6 +75,8 @@ public:
     JS::Object* get_extension(String const& name);
 
     void enable_compressed_texture_format(WebIDL::UnsignedLong format);
+    void set_error(GLenum error);
+    bool is_draw_elements_index_type_enabled(GLenum type);
 
 protected:
     WebGLRenderingContextBase(JS::Realm&);
@@ -173,7 +175,6 @@ protected:
     }
 
     GLenum get_error_value();
-    void set_error(GLenum error);
     void reset_context_state_after_loss();
 
     // UNPACK_FLIP_Y_WEBGL of type boolean

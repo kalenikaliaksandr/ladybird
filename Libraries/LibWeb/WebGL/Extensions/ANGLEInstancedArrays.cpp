@@ -44,6 +44,16 @@ void ANGLEInstancedArrays::draw_arrays_instanced_angle(GLenum mode, GLint first,
 void ANGLEInstancedArrays::draw_elements_instanced_angle(GLenum mode, GLsizei count, GLenum type, GLintptr offset, GLsizei primcount)
 {
     m_context->context().make_current();
+
+    if (offset < 0) {
+        m_context->set_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (!m_context->is_draw_elements_index_type_enabled(type)) {
+        m_context->set_error(GL_INVALID_ENUM);
+        return;
+    }
+
     m_context->context().draw_elements_instanced_angle(mode, count, type, reinterpret_cast<void*>(offset), primcount);
 }
 

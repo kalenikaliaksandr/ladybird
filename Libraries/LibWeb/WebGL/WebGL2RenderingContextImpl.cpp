@@ -490,6 +490,16 @@ void WebGL2RenderingContextImpl::draw_arrays_instanced(WebIDL::UnsignedLong mode
 void WebGL2RenderingContextImpl::draw_elements_instanced(WebIDL::UnsignedLong mode, WebIDL::Long count, WebIDL::UnsignedLong type, WebIDL::LongLong offset, WebIDL::Long instance_count)
 {
     m_context->make_current();
+
+    if (offset < 0) {
+        set_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (!is_draw_elements_index_type_enabled(type)) {
+        set_error(GL_INVALID_ENUM);
+        return;
+    }
+
     m_context->notify_content_will_change();
 
     m_context->draw_elements_instanced(mode, count, type, reinterpret_cast<void*>(offset), instance_count);
@@ -499,7 +509,18 @@ void WebGL2RenderingContextImpl::draw_elements_instanced(WebIDL::UnsignedLong mo
 void WebGL2RenderingContextImpl::draw_range_elements(WebIDL::UnsignedLong mode, WebIDL::UnsignedLong start, WebIDL::UnsignedLong end, WebIDL::Long count, WebIDL::UnsignedLong type, WebIDL::LongLong offset)
 {
     m_context->make_current();
+
+    if (offset < 0) {
+        set_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (!is_draw_elements_index_type_enabled(type)) {
+        set_error(GL_INVALID_ENUM);
+        return;
+    }
+
     m_context->notify_content_will_change();
+
     did_update_canvas_content();
     m_context->draw_range_elements(mode, start, end, count, type, reinterpret_cast<void*>(offset));
 }

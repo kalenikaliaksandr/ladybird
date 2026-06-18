@@ -550,6 +550,19 @@ JS::ThrowCompletionOr<T> convert_to_int(JS::VM& vm, JS::Value value, EnforceRang
     // 9. Set x to IntegerPart(x).
     x = integer_part(x);
 
+    if constexpr (sizeof(T) == 8) {
+        // Values in ECMAScript's safe integer range do not need the floating
+        // modulo path below. That path loses small negative 64-bit values by
+        // rounding 2^64 - 1 back up to 2^64, turning -1 into 0.
+        if (x >= -JS::MAX_ARRAY_LIKE_INDEX && x <= JS::MAX_ARRAY_LIKE_INDEX) {
+            if constexpr (IsUnsigned<T>) {
+                if (x < 0)
+                    return static_cast<T>(static_cast<i64>(x));
+            }
+            return static_cast<T>(x);
+        }
+    }
+
     // 10. Set x to x modulo 2^bitLength.
     auto constexpr two_pow_bitlength = NumericLimits<MakeUnsigned<T>>::max() + 1.0;
     x = JS::modulo(x, two_pow_bitlength);
