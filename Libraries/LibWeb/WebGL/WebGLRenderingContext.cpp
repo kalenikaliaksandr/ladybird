@@ -118,14 +118,17 @@ JS::ThrowCompletionOr<GC::Ptr<WebGLRenderingContext>> WebGLRenderingContext::cre
 {
     // We should be coming here from getContext being called on a wrapped <canvas> element.
     auto context_attributes = TRY(convert_value_to_context_attributes_dictionary(canvas_element.vm(), options));
+    auto actual_context_attributes = context_attributes;
+    // FIXME: Implement multisampled WebGL drawing buffers.
+    actual_context_attributes.antialias = false;
 
-    auto context = create_webgl_context_proxy(canvas_element, WebGLVersion::WebGL1, context_attributes);
+    auto context = create_webgl_context_proxy(canvas_element, WebGLVersion::WebGL1, actual_context_attributes);
     if (!context) {
         fire_webgl_context_creation_error(canvas_element);
         return GC::Ptr<WebGLRenderingContext> { nullptr };
     }
 
-    return realm.create<WebGLRenderingContext>(realm, canvas_element, context.release_nonnull(), context_attributes, context_attributes);
+    return realm.create<WebGLRenderingContext>(realm, canvas_element, context.release_nonnull(), context_attributes, actual_context_attributes);
 }
 
 WebGLRenderingContext::WebGLRenderingContext(JS::Realm& realm, HTML::HTMLCanvasElement& canvas_element, NonnullOwnPtr<WebGLContextProxy> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters)
