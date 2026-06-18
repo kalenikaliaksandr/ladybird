@@ -45,6 +45,11 @@ enum class NetworkAccess {
     Denied,
     Allowed,
 };
+
+enum class IOSurfaceAccess {
+    Denied,
+    Allowed,
+};
 #endif
 
 [[nodiscard]] ErrorOr<void> install_no_new_privileges();
@@ -58,7 +63,10 @@ enum class NetworkAccess {
 
 #if defined(AK_OS_MACOS)
 [[nodiscard]] ErrorOr<void> add_seatbelt_path_if_exists(Vector<SeatbeltPath>& paths, StringView path, SeatbeltPath::Access);
-[[nodiscard]] ErrorOr<void> apply_macos_sandbox(ReadonlySpan<SeatbeltPath>, NetworkAccess, ReadonlySpan<ByteString> executable_paths = {});
+[[nodiscard]] ErrorOr<void> apply_macos_sandbox(
+    ReadonlySpan<SeatbeltPath>, NetworkAccess,
+    ReadonlySpan<ByteString> executable_paths = {},
+    IOSurfaceAccess = IOSurfaceAccess::Denied);
 #endif
 
 }

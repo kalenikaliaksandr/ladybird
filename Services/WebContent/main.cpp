@@ -15,7 +15,6 @@
 #include <LibCrypto/OpenSSLForward.h>
 #include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Font/PathFontProvider.h>
-#include <LibGfx/SkiaBackendContext.h>
 #include <LibIPC/ConnectionFromClient.h>
 #include <LibIPC/TransportHandle.h>
 #include <LibMain/Main.h>
@@ -210,13 +209,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     }
     font_provider.load_all_fonts_from_uri("resource://fonts"sv);
 
-    // Always use the CPU backend for tests, as the GPU backend is not deterministic
-    if (force_cpu_painting) {
-        WebContent::PageClient::set_use_skia_painter(WebContent::PageClient::UseSkiaPainter::CPUBackend);
-    } else {
-        Gfx::SkiaBackendContext::initialize_gpu_backend();
-        WebContent::PageClient::set_use_skia_painter(WebContent::PageClient::UseSkiaPainter::GPUBackendIfAvailable);
-    }
+    // GPU painting is owned by the compositor; WebContent only does CPU rasterization.
+    (void)force_cpu_painting;
 
     WebContent::PageClient::set_is_headless(is_headless);
 

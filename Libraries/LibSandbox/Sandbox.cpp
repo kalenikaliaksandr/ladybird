@@ -219,7 +219,9 @@ static ErrorOr<void> install_sandbox_violation_signal_handler()
     return {};
 }
 
-ErrorOr<void> apply_macos_sandbox(ReadonlySpan<SeatbeltPath> paths, NetworkAccess network_access, ReadonlySpan<ByteString> executable_paths)
+ErrorOr<void> apply_macos_sandbox(
+    ReadonlySpan<SeatbeltPath> paths, NetworkAccess network_access,
+    ReadonlySpan<ByteString> executable_paths, IOSurfaceAccess iosurface_access)
 {
     TRY(install_sandbox_violation_signal_handler());
 
@@ -236,8 +238,6 @@ ErrorOr<void> apply_macos_sandbox(ReadonlySpan<SeatbeltPath> paths, NetworkAcces
 (allow system*)
 (allow ipc*)
 (allow mach*)
-(allow iokit-open-user-client
-    (iokit-user-client-class "IOSurfaceRootUserClient"))
 (allow user-preference-read
     (preference-domain "kCFPreferencesAnyApplication")
     (preference-domain "org.ladybird.ladybird"))
@@ -384,6 +384,13 @@ ErrorOr<void> apply_macos_sandbox(ReadonlySpan<SeatbeltPath> paths, NetworkAcces
 
     if (network_access == NetworkAccess::Allowed)
         TRY(profile.try_append("(allow network*)\n"sv));
+
+    if (iosurface_access == IOSurfaceAccess::Allowed) {
+        TRY(profile.try_append(R"~~~(
+(allow iokit-open-user-client
+    (iokit-user-client-class "IOSurfaceRootUserClient"))
+)~~~"sv));
+    }
 
     TRY(append_allowed_paths(profile, "file-read*"sv, paths, SeatbeltPath::Access::ReadOnly));
     TRY(append_allowed_paths(profile, "file-map-executable"sv, paths, SeatbeltPath::Access::ReadAndExecute));

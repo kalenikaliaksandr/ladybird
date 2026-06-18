@@ -37,12 +37,6 @@ public:
 
     virtual u64 id() const override { return m_id; }
 
-    enum class UseSkiaPainter {
-        CPUBackend,
-        GPUBackendIfAvailable,
-    };
-    static void set_use_skia_painter(UseSkiaPainter);
-
     virtual bool is_headless() const override;
     static void set_is_headless(bool);
 

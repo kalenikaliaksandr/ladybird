@@ -50,7 +50,8 @@ ErrorOr<void> apply_sandbox()
         }
     }
 
-    return Sandbox::apply_macos_sandbox(paths.span(), Sandbox::NetworkAccess::Denied);
+    return Sandbox::apply_macos_sandbox(
+        paths.span(), Sandbox::NetworkAccess::Denied, {}, Sandbox::IOSurfaceAccess::Allowed);
 }
 
 }
