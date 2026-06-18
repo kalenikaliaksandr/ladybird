@@ -31,7 +31,10 @@ protected:
 private:
     OESVertexArrayObject(JS::Realm&, GC::Ref<WebGLRenderingContextBase>);
 
+    bool is_context_lost() const;
+
     GC::Ref<WebGLRenderingContextBase> m_context;
+    u64 m_context_generation { 0 };
 };
 
 }

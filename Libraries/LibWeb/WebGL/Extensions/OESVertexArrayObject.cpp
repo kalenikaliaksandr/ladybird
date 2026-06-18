@@ -27,12 +27,13 @@ JS::ThrowCompletionOr<GC::Ref<JS::Object>> OESVertexArrayObject::create(JS::Real
 OESVertexArrayObject::OESVertexArrayObject(JS::Realm& realm, GC::Ref<WebGLRenderingContextBase> context)
     : PlatformObject(realm)
     , m_context(context)
+    , m_context_generation(context->context_generation())
 {
 }
 
 GC::Ptr<WebGLVertexArrayObjectOES> OESVertexArrayObject::create_vertex_array_oes()
 {
-    if (m_context->is_context_lost())
+    if (is_context_lost())
         return nullptr;
 
     m_context->context().make_current();
@@ -44,6 +45,9 @@ GC::Ptr<WebGLVertexArrayObjectOES> OESVertexArrayObject::create_vertex_array_oes
 
 void OESVertexArrayObject::delete_vertex_array_oes(GC::Ptr<WebGLVertexArrayObjectOES> array_object)
 {
+    if (is_context_lost())
+        return;
+
     m_context->context().make_current();
 
     if (!array_object)
@@ -64,6 +68,9 @@ void OESVertexArrayObject::delete_vertex_array_oes(GC::Ptr<WebGLVertexArrayObjec
 
 bool OESVertexArrayObject::is_vertex_array_oes(GC::Ptr<WebGLVertexArrayObjectOES> array_object)
 {
+    if (is_context_lost())
+        return false;
+
     m_context->context().make_current();
 
     if (!array_object)
@@ -82,6 +89,9 @@ bool OESVertexArrayObject::is_vertex_array_oes(GC::Ptr<WebGLVertexArrayObjectOES
 
 void OESVertexArrayObject::bind_vertex_array_oes(GC::Ptr<WebGLVertexArrayObjectOES> array_object)
 {
+    if (is_context_lost())
+        return;
+
     m_context->context().make_current();
 
     GLuint vertex_array_handle = 0;
@@ -107,6 +117,11 @@ void OESVertexArrayObject::visit_edges(Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_context);
+}
+
+bool OESVertexArrayObject::is_context_lost() const
+{
+    return m_context->is_context_lost() || m_context_generation != m_context->context_generation();
 }
 
 }

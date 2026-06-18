@@ -392,6 +392,13 @@ void WebGLRenderingContextBase::reset_context_state_after_loss()
     m_unpack_flip_y = false;
     m_unpack_premultiply_alpha = false;
     m_unpack_colorspace_conversion = BROWSER_DEFAULT_WEBGL;
+    m_enabled_compressed_texture_formats.clear();
+
+    auto lose_context_extension = m_enabled_extensions.get("WEBGL_lose_context"_string);
+    m_enabled_extensions.clear();
+    if (lose_context_extension.has_value())
+        m_enabled_extensions.set("WEBGL_lose_context"_string, lose_context_extension.release_value());
+
     reset_client_side_webgl_state();
 }
 
