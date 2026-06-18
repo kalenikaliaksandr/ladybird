@@ -200,6 +200,9 @@ void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target
 
 void WebGLRenderingContextOverloads::uniform1fv(GC::Ptr<WebGLUniformLocation> location, Float32List v)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     if (!location)
@@ -213,6 +216,9 @@ void WebGLRenderingContextOverloads::uniform1fv(GC::Ptr<WebGLUniformLocation> lo
 
 void WebGLRenderingContextOverloads::uniform2fv(GC::Ptr<WebGLUniformLocation> location, Float32List v)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     if (!location)
@@ -230,6 +236,9 @@ void WebGLRenderingContextOverloads::uniform2fv(GC::Ptr<WebGLUniformLocation> lo
 
 void WebGLRenderingContextOverloads::uniform3fv(GC::Ptr<WebGLUniformLocation> location, Float32List v)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     if (!location)
@@ -247,6 +256,9 @@ void WebGLRenderingContextOverloads::uniform3fv(GC::Ptr<WebGLUniformLocation> lo
 
 void WebGLRenderingContextOverloads::uniform4fv(GC::Ptr<WebGLUniformLocation> location, Float32List v)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     if (!location)
@@ -264,6 +276,9 @@ void WebGLRenderingContextOverloads::uniform4fv(GC::Ptr<WebGLUniformLocation> lo
 
 void WebGLRenderingContextOverloads::uniform1iv(GC::Ptr<WebGLUniformLocation> location, Int32List v)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     if (!location)
@@ -277,6 +292,9 @@ void WebGLRenderingContextOverloads::uniform1iv(GC::Ptr<WebGLUniformLocation> lo
 
 void WebGLRenderingContextOverloads::uniform2iv(GC::Ptr<WebGLUniformLocation> location, Int32List v)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     if (!location)
@@ -294,6 +312,9 @@ void WebGLRenderingContextOverloads::uniform2iv(GC::Ptr<WebGLUniformLocation> lo
 
 void WebGLRenderingContextOverloads::uniform3iv(GC::Ptr<WebGLUniformLocation> location, Int32List v)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     if (!location)
@@ -311,6 +332,9 @@ void WebGLRenderingContextOverloads::uniform3iv(GC::Ptr<WebGLUniformLocation> lo
 
 void WebGLRenderingContextOverloads::uniform4iv(GC::Ptr<WebGLUniformLocation> location, Int32List v)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     if (!location)
@@ -328,6 +352,9 @@ void WebGLRenderingContextOverloads::uniform4iv(GC::Ptr<WebGLUniformLocation> lo
 
 void WebGLRenderingContextOverloads::uniform_matrix2fv(GC::Ptr<WebGLUniformLocation> location, bool transpose, Float32List value)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     if (!location)
@@ -346,6 +373,9 @@ void WebGLRenderingContextOverloads::uniform_matrix2fv(GC::Ptr<WebGLUniformLocat
 
 void WebGLRenderingContextOverloads::uniform_matrix3fv(GC::Ptr<WebGLUniformLocation> location, bool transpose, Float32List value)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     if (!location)
@@ -364,6 +394,9 @@ void WebGLRenderingContextOverloads::uniform_matrix3fv(GC::Ptr<WebGLUniformLocat
 
 void WebGLRenderingContextOverloads::uniform_matrix4fv(GC::Ptr<WebGLUniformLocation> location, bool transpose, Float32List value)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     if (!location)

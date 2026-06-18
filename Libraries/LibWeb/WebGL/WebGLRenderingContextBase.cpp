@@ -36,6 +36,7 @@ extern "C" {
 #include <LibWeb/WebGL/Extensions/WebGLCompressedTextureS3tcSrgb.h>
 #include <LibWeb/WebGL/Extensions/WebGLDebugRendererInfo.h>
 #include <LibWeb/WebGL/Extensions/WebGLDrawBuffers.h>
+#include <LibWeb/WebGL/Extensions/WebGLLoseContext.h>
 #include <LibWeb/WebGL/TextureUpload.h>
 #include <LibWeb/WebGL/WebGLContextProxy.h>
 #include <LibWeb/WebGL/WebGLRenderingContext.h>
@@ -75,7 +76,7 @@ static HashMap<String, Extension, AK::ASCIICaseInsensitiveStringTraits> const& a
         { "WEBGL_debug_shaders"_string, { {}, nullptr } },
         { "WEBGL_depth_texture"_string, { { "GL_ANGLE_depth_texture"sv }, nullptr, WebGLVersion::WebGL1 } },
         { "WEBGL_draw_buffers"_string, { { "GL_EXT_draw_buffers"sv }, WebGLDrawBuffers::create, WebGLVersion::WebGL1 } },
-        { "WEBGL_lose_context"_string, { {}, nullptr } },
+        { "WEBGL_lose_context"_string, { {}, WebGLLoseContext::create } },
 
         // Community approved WebGL Extensions
         { "EXT_clip_control"_string, { { "GL_EXT_clip_control"sv }, nullptr } },
@@ -119,6 +120,9 @@ static HashMap<String, Extension, AK::ASCIICaseInsensitiveStringTraits> const& a
 
 Optional<Vector<String>> WebGLRenderingContextBase::get_supported_extensions()
 {
+    if (m_context_lost)
+        return {};
+
     auto const& opengl_extensions = context().get_supported_opengl_extensions();
     Vector<String> webgl_extensions;
 
@@ -148,6 +152,9 @@ Optional<Vector<String>> WebGLRenderingContextBase::get_supported_extensions()
 
 JS::Object* WebGLRenderingContextBase::get_extension(String const& name)
 {
+    if (m_context_lost)
+        return nullptr;
+
     // Returns an object if, and only if, name is an ASCII case-insensitive match [HTML] for one of the names returned
     // from getSupportedExtensions; otherwise, returns null. The object returned from getExtension contains any constants
     // or functions provided by the extension. A returned object may have no constants or functions if the extension does
@@ -291,6 +298,8 @@ void WebGLRenderingContextBase::lose_context_from_compositor_loss()
     if (m_context_lost)
         return;
     m_context_lost = true;
+    m_context_lost_by_extension = false;
+    m_context_restore_queued = false;
     context().set_lost();
 
     // The next getError() must report CONTEXT_LOST_WEBGL (one-shot) per the spec.
@@ -316,9 +325,63 @@ void WebGLRenderingContextBase::restore_context_after_compositor_reconnect()
     reset_context_state_after_loss();
     m_context_lost = false;
     m_context_restore_requested = false;
+    m_context_lost_by_extension = false;
+    m_context_restore_queued = false;
     m_error = GL_NO_ERROR;
 
     HTML::queue_a_task(HTML::Task::Source::WebGL, nullptr, nullptr, GC::create_function(heap(), [canvas = canvas_for_binding()] {
+        fire_webgl_context_event(canvas, EventNames::webglcontextrestored);
+    }));
+}
+
+void WebGLRenderingContextBase::lose_context_from_extension()
+{
+    if (m_context_lost) {
+        set_error(GL_INVALID_OPERATION);
+        return;
+    }
+
+    m_context_lost = true;
+    m_context_restore_requested = false;
+    m_context_lost_by_extension = true;
+    m_context_restore_queued = false;
+    context().set_lost();
+
+    // The next getError() must report CONTEXT_LOST_WEBGL (one-shot) per the spec.
+    m_error = CONTEXT_LOST_WEBGL;
+
+    HTML::queue_a_task(HTML::Task::Source::WebGL, nullptr, nullptr, GC::create_function(heap(), [this, canvas = canvas_for_binding()] {
+        m_context_restore_requested = !fire_webgl_context_event(canvas, EventNames::webglcontextlost);
+    }));
+}
+
+void WebGLRenderingContextBase::restore_context_from_extension()
+{
+    if (!m_context_lost || !m_context_lost_by_extension || !m_context_restore_requested) {
+        set_error(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (m_context_restore_queued)
+        return;
+    m_context_restore_queued = true;
+
+    HTML::queue_a_task(HTML::Task::Source::WebGL, nullptr, nullptr, GC::create_function(heap(), [this, canvas = canvas_for_binding()] {
+        if (!m_context_lost || !m_context_lost_by_extension || !m_context_restore_requested)
+            return;
+
+        if (!reestablish_remote_context()) {
+            m_context_restore_queued = false;
+            return;
+        }
+
+        reset_context_state_after_loss();
+        m_context_lost = false;
+        m_context_restore_requested = false;
+        m_context_lost_by_extension = false;
+        m_context_restore_queued = false;
+        m_error = GL_NO_ERROR;
+
         fire_webgl_context_event(canvas, EventNames::webglcontextrestored);
     }));
 }

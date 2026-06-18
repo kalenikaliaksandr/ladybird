@@ -11,7 +11,7 @@ interface OESVertexArrayObject {
 
     const GLenum VERTEX_ARRAY_BINDING_OES = 0x85B5;
 
-    WebGLVertexArrayObjectOES createVertexArrayOES();
+    WebGLVertexArrayObjectOES? createVertexArrayOES();
     undefined deleteVertexArrayOES(WebGLVertexArrayObjectOES? arrayObject);
     GLboolean isVertexArrayOES(WebGLVertexArrayObjectOES? arrayObject);
     undefined bindVertexArrayOES(WebGLVertexArrayObjectOES? arrayObject);

@@ -78,6 +78,9 @@ void WebGLRenderingContextImpl::active_texture(WebIDL::UnsignedLong texture)
 
 void WebGLRenderingContextImpl::attach_shader(GC::Ref<WebGLProgram> program, GC::Ref<WebGLShader> shader)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     GLuint program_handle = 0;
@@ -325,6 +328,9 @@ void WebGLRenderingContextImpl::blend_func_separate(WebIDL::UnsignedLong src_rgb
 
 WebIDL::UnsignedLong WebGLRenderingContextImpl::check_framebuffer_status(WebIDL::UnsignedLong target)
 {
+    if (is_context_lost())
+        return GL_FRAMEBUFFER_UNSUPPORTED;
+
     m_context->make_current();
     return m_context->check_framebuffer_status(target);
 }
@@ -388,6 +394,9 @@ void WebGLRenderingContextImpl::copy_tex_sub_image2d(WebIDL::UnsignedLong target
 
 GC::Ptr<WebGLBuffer> WebGLRenderingContextImpl::create_buffer()
 {
+    if (is_context_lost())
+        return nullptr;
+
     m_context->make_current();
 
     GLuint handle = 0;
@@ -397,6 +406,9 @@ GC::Ptr<WebGLBuffer> WebGLRenderingContextImpl::create_buffer()
 
 GC::Ptr<WebGLFramebuffer> WebGLRenderingContextImpl::create_framebuffer()
 {
+    if (is_context_lost())
+        return nullptr;
+
     m_context->make_current();
 
     GLuint handle = 0;
@@ -406,12 +418,18 @@ GC::Ptr<WebGLFramebuffer> WebGLRenderingContextImpl::create_framebuffer()
 
 GC::Ptr<WebGLProgram> WebGLRenderingContextImpl::create_program()
 {
+    if (is_context_lost())
+        return nullptr;
+
     m_context->make_current();
     return WebGLProgram::create(realm(), *this, m_context->create_program());
 }
 
 GC::Ptr<WebGLRenderbuffer> WebGLRenderingContextImpl::create_renderbuffer()
 {
+    if (is_context_lost())
+        return nullptr;
+
     m_context->make_current();
 
     GLuint handle = 0;
@@ -421,6 +439,9 @@ GC::Ptr<WebGLRenderbuffer> WebGLRenderingContextImpl::create_renderbuffer()
 
 GC::Ptr<WebGLShader> WebGLRenderingContextImpl::create_shader(WebIDL::UnsignedLong type)
 {
+    if (is_context_lost())
+        return nullptr;
+
     m_context->make_current();
 
     if (type != GL_VERTEX_SHADER && type != GL_FRAGMENT_SHADER) {
@@ -435,6 +456,9 @@ GC::Ptr<WebGLShader> WebGLRenderingContextImpl::create_shader(WebIDL::UnsignedLo
 
 GC::Ptr<WebGLTexture> WebGLRenderingContextImpl::create_texture()
 {
+    if (is_context_lost())
+        return nullptr;
+
     m_context->make_current();
 
     GLuint handle = 0;
@@ -597,6 +621,9 @@ void WebGLRenderingContextImpl::depth_range(float z_near, float z_far)
 
 void WebGLRenderingContextImpl::detach_shader(GC::Ref<WebGLProgram> program, GC::Ref<WebGLShader> shader)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     auto handle_or_error = program->handle(this);
@@ -680,6 +707,9 @@ void WebGLRenderingContextImpl::flush()
 
 void WebGLRenderingContextImpl::framebuffer_renderbuffer(WebIDL::UnsignedLong target, WebIDL::UnsignedLong attachment, WebIDL::UnsignedLong renderbuffertarget, GC::Ptr<WebGLRenderbuffer> renderbuffer)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     auto renderbuffer_handle = 0;
@@ -696,6 +726,9 @@ void WebGLRenderingContextImpl::framebuffer_renderbuffer(WebIDL::UnsignedLong ta
 
 void WebGLRenderingContextImpl::framebuffer_texture2d(WebIDL::UnsignedLong target, WebIDL::UnsignedLong attachment, WebIDL::UnsignedLong textarget, GC::Ptr<WebGLTexture> texture, WebIDL::Long level)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     auto texture_handle = 0;
@@ -724,6 +757,9 @@ void WebGLRenderingContextImpl::generate_mipmap(WebIDL::UnsignedLong target)
 
 GC::Ptr<WebGLActiveInfo> WebGLRenderingContextImpl::get_active_attrib(GC::Ref<WebGLProgram> program, WebIDL::UnsignedLong index)
 {
+    if (is_context_lost())
+        return nullptr;
+
     m_context->make_current();
 
     auto handle_or_error = program->handle(this);
@@ -745,6 +781,9 @@ GC::Ptr<WebGLActiveInfo> WebGLRenderingContextImpl::get_active_attrib(GC::Ref<We
 
 GC::Ptr<WebGLActiveInfo> WebGLRenderingContextImpl::get_active_uniform(GC::Ref<WebGLProgram> program, WebIDL::UnsignedLong index)
 {
+    if (is_context_lost())
+        return nullptr;
+
     m_context->make_current();
 
     auto handle_or_error = program->handle(this);
@@ -766,6 +805,9 @@ GC::Ptr<WebGLActiveInfo> WebGLRenderingContextImpl::get_active_uniform(GC::Ref<W
 
 Optional<Vector<GC::Root<WebGLShader>>> WebGLRenderingContextImpl::get_attached_shaders(GC::Ref<WebGLProgram> program)
 {
+    if (is_context_lost())
+        return OptionalNone {};
+
     m_context->make_current();
 
     auto handle_or_error = program->handle(this);
@@ -790,6 +832,9 @@ Optional<Vector<GC::Root<WebGLShader>>> WebGLRenderingContextImpl::get_attached_
 
 WebIDL::Long WebGLRenderingContextImpl::get_attrib_location(GC::Ref<WebGLProgram> program, String name)
 {
+    if (is_context_lost())
+        return -1;
+
     m_context->make_current();
 
     auto handle_or_error = program->handle(this);
@@ -805,6 +850,9 @@ WebIDL::Long WebGLRenderingContextImpl::get_attrib_location(GC::Ref<WebGLProgram
 
 JS::Value WebGLRenderingContextImpl::get_buffer_parameter(WebIDL::UnsignedLong target, WebIDL::UnsignedLong pname)
 {
+    if (is_context_lost())
+        return JS::js_null();
+
     m_context->make_current();
     switch (pname) {
     case GL_BUFFER_SIZE: {
@@ -1618,8 +1666,21 @@ WebIDL::UnsignedLong WebGLRenderingContextImpl::get_error()
     return get_error_value();
 }
 
+JS::Value WebGLRenderingContextImpl::get_framebuffer_attachment_parameter(WebIDL::UnsignedLong, WebIDL::UnsignedLong, WebIDL::UnsignedLong)
+{
+    if (is_context_lost())
+        return JS::js_null();
+
+    dbgln("FIXME: Implement get_framebuffer_attachment_parameter");
+    set_error(GL_INVALID_ENUM);
+    return JS::js_null();
+}
+
 JS::Value WebGLRenderingContextImpl::get_program_parameter(GC::Ref<WebGLProgram> program, WebIDL::UnsignedLong pname)
 {
+    if (is_context_lost())
+        return JS::js_null();
+
     m_context->make_current();
 
     auto handle_or_error = program->handle(this);
@@ -1659,6 +1720,9 @@ JS::Value WebGLRenderingContextImpl::get_program_parameter(GC::Ref<WebGLProgram>
 
 Optional<String> WebGLRenderingContextImpl::get_program_info_log(GC::Ref<WebGLProgram> program)
 {
+    if (is_context_lost())
+        return {};
+
     m_context->make_current();
 
     auto handle_or_error = program->handle(this);
@@ -1680,6 +1744,9 @@ Optional<String> WebGLRenderingContextImpl::get_program_info_log(GC::Ref<WebGLPr
 
 JS::Value WebGLRenderingContextImpl::get_renderbuffer_parameter(WebIDL::UnsignedLong target, WebIDL::UnsignedLong pname)
 {
+    if (is_context_lost())
+        return JS::js_null();
+
     m_context->make_current();
 
     switch (pname) {
@@ -1706,6 +1773,9 @@ JS::Value WebGLRenderingContextImpl::get_renderbuffer_parameter(WebIDL::Unsigned
 
 JS::Value WebGLRenderingContextImpl::get_shader_parameter(GC::Ref<WebGLShader> shader, WebIDL::UnsignedLong pname)
 {
+    if (is_context_lost())
+        return JS::js_null();
+
     m_context->make_current();
 
     auto handle_or_error = shader->handle(this);
@@ -1742,6 +1812,9 @@ GC::Ptr<WebGLShaderPrecisionFormat> WebGLRenderingContextImpl::get_shader_precis
 
 Optional<String> WebGLRenderingContextImpl::get_shader_info_log(GC::Ref<WebGLShader> shader)
 {
+    if (is_context_lost())
+        return {};
+
     m_context->make_current();
 
     auto handle_or_error = shader->handle(this);
@@ -1763,6 +1836,9 @@ Optional<String> WebGLRenderingContextImpl::get_shader_info_log(GC::Ref<WebGLSha
 
 Optional<String> WebGLRenderingContextImpl::get_shader_source(GC::Ref<WebGLShader> shader)
 {
+    if (is_context_lost())
+        return {};
+
     m_context->make_current();
 
     auto handle_or_error = shader->handle(this);
@@ -1784,6 +1860,9 @@ Optional<String> WebGLRenderingContextImpl::get_shader_source(GC::Ref<WebGLShade
 
 JS::Value WebGLRenderingContextImpl::get_tex_parameter(WebIDL::UnsignedLong target, WebIDL::UnsignedLong pname)
 {
+    if (is_context_lost())
+        return JS::js_null();
+
     m_context->make_current();
 
     switch (pname) {
@@ -1839,12 +1918,18 @@ JS::Value WebGLRenderingContextImpl::get_tex_parameter(WebIDL::UnsignedLong targ
 
 JS::Value WebGLRenderingContextImpl::get_uniform(GC::Ref<WebGLProgram>, GC::Ref<WebGLUniformLocation>)
 {
+    if (is_context_lost())
+        return JS::js_null();
+
     dbgln("FIXME: Implement get_uniform");
     return JS::Value(0);
 }
 
 GC::Ptr<WebGLUniformLocation> WebGLRenderingContextImpl::get_uniform_location(GC::Ref<WebGLProgram> program, String name)
 {
+    if (is_context_lost())
+        return nullptr;
+
     m_context->make_current();
 
     auto handle_or_error = program->handle(this);
@@ -1868,6 +1953,9 @@ GC::Ptr<WebGLUniformLocation> WebGLRenderingContextImpl::get_uniform_location(GC
 
 JS::Value WebGLRenderingContextImpl::get_vertex_attrib(WebIDL::UnsignedLong index, WebIDL::UnsignedLong pname)
 {
+    if (is_context_lost())
+        return JS::js_null();
+
     switch (pname) {
     case GL_CURRENT_VERTEX_ATTRIB: {
         Array<GLfloat, 4> result;
@@ -1937,6 +2025,9 @@ JS::Value WebGLRenderingContextImpl::get_vertex_attrib(WebIDL::UnsignedLong inde
 
 WebIDL::LongLong WebGLRenderingContextImpl::get_vertex_attrib_offset(WebIDL::UnsignedLong index, WebIDL::UnsignedLong pname)
 {
+    if (is_context_lost())
+        return 0;
+
     if (pname != GL_VERTEX_ATTRIB_ARRAY_POINTER) {
         set_error(GL_INVALID_ENUM);
         return 0;
@@ -2075,6 +2166,9 @@ void WebGLRenderingContextImpl::line_width(float width)
 
 void WebGLRenderingContextImpl::link_program(GC::Ref<WebGLProgram> program)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     auto handle_or_error = program->handle(this);
@@ -2135,6 +2229,9 @@ void WebGLRenderingContextImpl::scissor(WebIDL::Long x, WebIDL::Long y, WebIDL::
 
 void WebGLRenderingContextImpl::shader_source(GC::Ref<WebGLShader> shader, String source)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     auto handle_or_error = shader->handle(this);
@@ -2202,6 +2299,9 @@ void WebGLRenderingContextImpl::tex_parameteri(WebIDL::UnsignedLong target, WebI
 
 void WebGLRenderingContextImpl::uniform1f(GC::Ptr<WebGLUniformLocation> location, float x)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     GLuint location_handle = 0;
@@ -2213,6 +2313,9 @@ void WebGLRenderingContextImpl::uniform1f(GC::Ptr<WebGLUniformLocation> location
 
 void WebGLRenderingContextImpl::uniform2f(GC::Ptr<WebGLUniformLocation> location, float x, float y)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     GLuint location_handle = 0;
@@ -2224,6 +2327,9 @@ void WebGLRenderingContextImpl::uniform2f(GC::Ptr<WebGLUniformLocation> location
 
 void WebGLRenderingContextImpl::uniform3f(GC::Ptr<WebGLUniformLocation> location, float x, float y, float z)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     GLuint location_handle = 0;
@@ -2235,6 +2341,9 @@ void WebGLRenderingContextImpl::uniform3f(GC::Ptr<WebGLUniformLocation> location
 
 void WebGLRenderingContextImpl::uniform4f(GC::Ptr<WebGLUniformLocation> location, float x, float y, float z, float w)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     GLuint location_handle = 0;
@@ -2246,6 +2355,9 @@ void WebGLRenderingContextImpl::uniform4f(GC::Ptr<WebGLUniformLocation> location
 
 void WebGLRenderingContextImpl::uniform1i(GC::Ptr<WebGLUniformLocation> location, WebIDL::Long x)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     GLuint location_handle = 0;
@@ -2257,6 +2369,9 @@ void WebGLRenderingContextImpl::uniform1i(GC::Ptr<WebGLUniformLocation> location
 
 void WebGLRenderingContextImpl::uniform2i(GC::Ptr<WebGLUniformLocation> location, WebIDL::Long x, WebIDL::Long y)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     GLuint location_handle = 0;
@@ -2268,6 +2383,9 @@ void WebGLRenderingContextImpl::uniform2i(GC::Ptr<WebGLUniformLocation> location
 
 void WebGLRenderingContextImpl::uniform3i(GC::Ptr<WebGLUniformLocation> location, WebIDL::Long x, WebIDL::Long y, WebIDL::Long z)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     GLuint location_handle = 0;
@@ -2279,6 +2397,9 @@ void WebGLRenderingContextImpl::uniform3i(GC::Ptr<WebGLUniformLocation> location
 
 void WebGLRenderingContextImpl::uniform4i(GC::Ptr<WebGLUniformLocation> location, WebIDL::Long x, WebIDL::Long y, WebIDL::Long z, WebIDL::Long w)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     GLuint location_handle = 0;
@@ -2290,6 +2411,9 @@ void WebGLRenderingContextImpl::uniform4i(GC::Ptr<WebGLUniformLocation> location
 
 void WebGLRenderingContextImpl::use_program(GC::Ptr<WebGLProgram> program)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     GLuint program_handle = 0;
@@ -2308,6 +2432,9 @@ void WebGLRenderingContextImpl::use_program(GC::Ptr<WebGLProgram> program)
 
 void WebGLRenderingContextImpl::validate_program(GC::Ref<WebGLProgram> program)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     auto handle_or_error = program->handle(this);
@@ -2345,6 +2472,9 @@ void WebGLRenderingContextImpl::vertex_attrib4f(WebIDL::UnsignedLong index, floa
 
 void WebGLRenderingContextImpl::vertex_attrib1fv(WebIDL::UnsignedLong index, Float32List values)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     auto span = MUST(span_from_float32_list(values, /* src_offset= */ 0));
@@ -2357,6 +2487,9 @@ void WebGLRenderingContextImpl::vertex_attrib1fv(WebIDL::UnsignedLong index, Flo
 
 void WebGLRenderingContextImpl::vertex_attrib2fv(WebIDL::UnsignedLong index, Float32List values)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     auto span = MUST(span_from_float32_list(values, /* src_offset= */ 0));
@@ -2369,6 +2502,9 @@ void WebGLRenderingContextImpl::vertex_attrib2fv(WebIDL::UnsignedLong index, Flo
 
 void WebGLRenderingContextImpl::vertex_attrib3fv(WebIDL::UnsignedLong index, Float32List values)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     auto span = MUST(span_from_float32_list(values, /* src_offset= */ 0));
@@ -2381,6 +2517,9 @@ void WebGLRenderingContextImpl::vertex_attrib3fv(WebIDL::UnsignedLong index, Flo
 
 void WebGLRenderingContextImpl::vertex_attrib4fv(WebIDL::UnsignedLong index, Float32List values)
 {
+    if (is_context_lost())
+        return;
+
     m_context->make_current();
 
     auto span = MUST(span_from_float32_list(values, /* src_offset= */ 0));

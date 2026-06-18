@@ -30,8 +30,11 @@ OESVertexArrayObject::OESVertexArrayObject(JS::Realm& realm, GC::Ref<WebGLRender
 {
 }
 
-GC::Ref<WebGLVertexArrayObjectOES> OESVertexArrayObject::create_vertex_array_oes()
+GC::Ptr<WebGLVertexArrayObjectOES> OESVertexArrayObject::create_vertex_array_oes()
 {
+    if (m_context->is_context_lost())
+        return nullptr;
+
     m_context->context().make_current();
 
     GLuint handle = 0;

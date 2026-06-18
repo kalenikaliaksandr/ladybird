@@ -62,6 +62,9 @@ public:
     // page can re-create its now-lost GL resources.
     void restore_context_after_compositor_reconnect();
 
+    void lose_context_from_extension();
+    void restore_context_from_extension();
+
     bool xr_compatible() const { return m_xr_compatible; }
     void set_xr_compatible(bool xr_compatible) { m_xr_compatible = xr_compatible; }
 
@@ -201,6 +204,8 @@ private:
     // Each WebGLRenderingContext and WebGL2RenderingContext has a webgl context lost flag, which is initially unset.
     bool m_context_lost { false };
     bool m_context_restore_requested { false };
+    bool m_context_lost_by_extension { false };
+    bool m_context_restore_queued { false };
 
     // https://immersive-web.github.io/webxr/#xr-compatible
     bool m_xr_compatible { false };
