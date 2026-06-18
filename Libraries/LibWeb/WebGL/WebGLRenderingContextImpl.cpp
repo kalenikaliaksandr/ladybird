@@ -1916,10 +1916,22 @@ JS::Value WebGLRenderingContextImpl::get_tex_parameter(WebIDL::UnsignedLong targ
     return JS::js_null();
 }
 
-JS::Value WebGLRenderingContextImpl::get_uniform(GC::Ref<WebGLProgram>, GC::Ref<WebGLUniformLocation>)
+JS::Value WebGLRenderingContextImpl::get_uniform(GC::Ref<WebGLProgram> program, GC::Ref<WebGLUniformLocation> location)
 {
     if (is_context_lost())
         return JS::js_null();
+
+    auto handle_or_error = program->handle(this);
+    if (handle_or_error.is_error()) {
+        set_error(GL_INVALID_OPERATION);
+        return JS::js_null();
+    }
+
+    auto location_handle_or_error = location->handle(program.ptr());
+    if (location_handle_or_error.is_error()) {
+        set_error(GL_INVALID_OPERATION);
+        return JS::js_null();
+    }
 
     dbgln("FIXME: Implement get_uniform");
     return JS::Value(0);
