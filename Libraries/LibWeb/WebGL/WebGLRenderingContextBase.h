@@ -189,6 +189,10 @@ protected:
     //      Any non-zero value is interpreted as true.
     bool m_unpack_premultiply_alpha { false };
 
+    // GL_UNPACK_ALIGNMENT
+    //      Controls byte alignment for rows read from ArrayBufferView texture upload data.
+    u8 m_unpack_alignment { 4 };
+
     // UNPACK_COLORSPACE_CONVERSION_WEBGL of type unsigned long
     //      If set to BROWSER_DEFAULT_WEBGL, then the browser's default colorspace conversion (e.g. converting a display-p3
     //      image to srgb) is applied during subsequent texture data upload calls (e.g. texImage2D and texSubImage2D) that

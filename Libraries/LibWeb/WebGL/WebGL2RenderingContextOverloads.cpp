@@ -18,6 +18,7 @@ extern "C" {
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibWeb/WebGL/WebGL2RenderingContextOverloads.h>
 #include <LibWeb/WebGL/WebGLContextProxy.h>
+#include <LibWeb/WebGL/TextureUpload.h>
 #include <LibWeb/WebGL/WebGLUniformLocation.h>
 #include <LibWeb/WebIDL/Buffers.h>
 
@@ -83,7 +84,13 @@ void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, W
         pixels_span = SET_ERROR_VALUE_IF_ERROR(get_offset_span<u8 const>(pixels.downcast<WebIDL::ArrayBufferViewVariant>(), /* src_offset= */ 0), GL_INVALID_OPERATION);
     }
 
-    m_context->tex_image2d_robust_angle(target, level, internalformat, width, height, border, format, type, pixels_span.size(), pixels_span.data());
+    ReadonlyBytes upload = pixels_span;
+    auto converted_upload = texture_upload_data_for_unpack_parameters(
+        pixels_span, format, type, width, height, m_unpack_alignment, m_unpack_flip_y,
+        m_unpack_premultiply_alpha);
+    if (converted_upload.has_value())
+        upload = converted_upload->bytes();
+    m_context->tex_image2d_robust_angle(target, level, internalformat, width, height, border, format, type, upload.size(), upload.data());
 }
 
 void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, TexImageSource source)
@@ -106,7 +113,13 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
         pixels_span = SET_ERROR_VALUE_IF_ERROR(get_offset_span<u8 const>(pixels.downcast<WebIDL::ArrayBufferViewVariant>(), /* src_offset= */ 0), GL_INVALID_OPERATION);
     }
 
-    m_context->tex_sub_image2d_robust_angle(target, level, xoffset, yoffset, width, height, format, type, pixels_span.size(), pixels_span.data());
+    ReadonlyBytes upload = pixels_span;
+    auto converted_upload = texture_upload_data_for_unpack_parameters(
+        pixels_span, format, type, width, height, m_unpack_alignment, m_unpack_flip_y,
+        m_unpack_premultiply_alpha);
+    if (converted_upload.has_value())
+        upload = converted_upload->bytes();
+    m_context->tex_sub_image2d_robust_angle(target, level, xoffset, yoffset, width, height, format, type, upload.size(), upload.data());
 }
 
 void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, TexImageSource source)
@@ -144,7 +157,13 @@ void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, W
 
     auto pixels_span = SET_ERROR_VALUE_IF_ERROR(get_offset_span<u8 const>(src_data, src_offset), GL_INVALID_OPERATION);
 
-    m_context->tex_image2d_robust_angle(target, level, internalformat, width, height, border, format, type, pixels_span.size(), pixels_span.data());
+    ReadonlyBytes upload = pixels_span;
+    auto converted_upload = texture_upload_data_for_unpack_parameters(
+        pixels_span, format, type, width, height, m_unpack_alignment, m_unpack_flip_y,
+        m_unpack_premultiply_alpha);
+    if (converted_upload.has_value())
+        upload = converted_upload->bytes();
+    m_context->tex_image2d_robust_angle(target, level, internalformat, width, height, border, format, type, upload.size(), upload.data());
 }
 
 void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, TexImageSource source)
@@ -164,7 +183,13 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
 
     auto pixels_span = SET_ERROR_VALUE_IF_ERROR(get_offset_span<u8 const>(src_data, src_offset), GL_INVALID_OPERATION);
 
-    m_context->tex_sub_image2d_robust_angle(target, level, xoffset, yoffset, width, height, format, type, pixels_span.size(), pixels_span.data());
+    ReadonlyBytes upload = pixels_span;
+    auto converted_upload = texture_upload_data_for_unpack_parameters(
+        pixels_span, format, type, width, height, m_unpack_alignment, m_unpack_flip_y,
+        m_unpack_premultiply_alpha);
+    if (converted_upload.has_value())
+        upload = converted_upload->bytes();
+    m_context->tex_sub_image2d_robust_angle(target, level, xoffset, yoffset, width, height, format, type, upload.size(), upload.data());
 }
 
 void WebGL2RenderingContextOverloads::compressed_tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::UnsignedLong internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border, WebIDL::ArrayBufferView src_data, WebIDL::UnsignedLongLong src_offset, WebIDL::UnsignedLong src_length_override)

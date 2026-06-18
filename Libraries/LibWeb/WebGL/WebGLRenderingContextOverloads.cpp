@@ -17,6 +17,7 @@ extern "C" {
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibWeb/WebGL/WebGLContextProxy.h>
 #include <LibWeb/WebGL/WebGLRenderingContextOverloads.h>
+#include <LibWeb/WebGL/TextureUpload.h>
 #include <LibWeb/WebGL/WebGLUniformLocation.h>
 
 namespace Web::WebGL {
@@ -100,8 +101,14 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
     m_context->make_current();
 
     if (!pixels.has<Empty>()) {
-        auto span = MUST(get_offset_span<u8>(pixels.downcast<WebIDL::ArrayBufferViewVariant>(), /* src_offset= */ 0));
-        m_context->tex_image2d_robust_angle(target, level, internalformat, width, height, border, format, type, span.size(), span.data());
+        auto span = MUST(get_offset_span<u8 const>(pixels.downcast<WebIDL::ArrayBufferViewVariant>(), /* src_offset= */ 0));
+        ReadonlyBytes upload = span;
+        auto converted_upload = texture_upload_data_for_unpack_parameters(
+            span, format, type, width, height, m_unpack_alignment, m_unpack_flip_y,
+            m_unpack_premultiply_alpha);
+        if (converted_upload.has_value())
+            upload = converted_upload->bytes();
+        m_context->tex_image2d_robust_angle(target, level, internalformat, width, height, border, format, type, upload.size(), upload.data());
         return;
     }
 
@@ -152,14 +159,20 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
     }
 
     bytes *= width;
-    bytes *= height;
-
     if (bytes.has_overflow()) {
         set_error(GL_INVALID_OPERATION);
         return;
     }
 
-    auto byte_buffer = MUST(ByteBuffer::create_zeroed(bytes.value_unchecked()));
+    auto row_stride = align_up_to(bytes.value_unchecked(), static_cast<size_t>(m_unpack_alignment));
+    Checked<size_t> buffer_size = row_stride;
+    buffer_size *= height;
+    if (buffer_size.has_overflow()) {
+        set_error(GL_INVALID_OPERATION);
+        return;
+    }
+
+    auto byte_buffer = MUST(ByteBuffer::create_zeroed(buffer_size.value_unchecked()));
     m_context->tex_image2d_robust_angle(target, level, internalformat, width, height, border, format, type, byte_buffer.size(), byte_buffer.data());
 }
 
@@ -183,8 +196,14 @@ void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target
         return;
     }
 
-    auto span = MUST(get_offset_span<u8>(pixels.downcast<WebIDL::ArrayBufferViewVariant>(), /* src_offset= */ 0));
-    m_context->tex_sub_image2d_robust_angle(target, level, xoffset, yoffset, width, height, format, type, span.size(), span.data());
+    auto span = MUST(get_offset_span<u8 const>(pixels.downcast<WebIDL::ArrayBufferViewVariant>(), /* src_offset= */ 0));
+    ReadonlyBytes upload = span;
+    auto converted_upload = texture_upload_data_for_unpack_parameters(
+        span, format, type, width, height, m_unpack_alignment, m_unpack_flip_y,
+        m_unpack_premultiply_alpha);
+    if (converted_upload.has_value())
+        upload = converted_upload->bytes();
+    m_context->tex_sub_image2d_robust_angle(target, level, xoffset, yoffset, width, height, format, type, upload.size(), upload.data());
 }
 
 void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, TexImageSource source)

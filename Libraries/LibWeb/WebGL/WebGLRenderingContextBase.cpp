@@ -404,6 +404,7 @@ void WebGLRenderingContextBase::reset_context_state_after_loss()
     ++m_context_generation;
     m_unpack_flip_y = false;
     m_unpack_premultiply_alpha = false;
+    m_unpack_alignment = 4;
     m_unpack_colorspace_conversion = BROWSER_DEFAULT_WEBGL;
     m_enabled_compressed_texture_formats.clear();
 

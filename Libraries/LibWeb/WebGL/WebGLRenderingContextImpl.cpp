@@ -1326,11 +1326,8 @@ WebIDL::ExceptionOr<JS::Value> WebGLRenderingContextImpl::get_parameter(WebIDL::
             return JS::js_null();
         return JS::Value(m_texture_binding_cube_map);
     }
-    case GL_UNPACK_ALIGNMENT: {
-        GLint result { 0 };
-        m_context->get_integerv_robust_angle(GL_UNPACK_ALIGNMENT, 1, nullptr, &result);
-        return JS::Value(result);
-    }
+    case GL_UNPACK_ALIGNMENT:
+        return JS::Value(m_unpack_alignment);
     case GL_VENDOR: {
         auto result = reinterpret_cast<char const*>(m_context->get_string(GL_VENDOR));
         return JS::PrimitiveString::create(realm().vm(), ByteString { result });
@@ -2215,6 +2212,14 @@ void WebGLRenderingContextImpl::pixel_storei(WebIDL::UnsignedLong pname, WebIDL:
         return;
     case UNPACK_COLORSPACE_CONVERSION_WEBGL:
         m_unpack_colorspace_conversion = param;
+        return;
+    case GL_UNPACK_ALIGNMENT:
+        if (param != 1 && param != 2 && param != 4 && param != 8) {
+            set_error(GL_INVALID_VALUE);
+            return;
+        }
+        m_unpack_alignment = static_cast<u8>(param);
+        m_context->pixel_storei(pname, param);
         return;
     }
 
