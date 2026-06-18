@@ -66,6 +66,7 @@ private:
 
     virtual void dispatch_mouse_event_to_web_content(u64 page_id, Web::MouseEvent const&) override;
     virtual void request_rendering_update() override;
+    virtual void did_composite_canvas_surfaces(Vector<Web::Painting::CanvasId> const&) override;
     void verify_context_is_owned_by_this_connection(Web::Compositor::CompositorContextId);
 
     NonnullRefPtr<CompositorState> m_compositor_state;

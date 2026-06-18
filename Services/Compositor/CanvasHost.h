@@ -57,6 +57,7 @@ public:
     void webgl_read_buffer_sub_data(Web::Painting::CanvasId, Web::WebGL::GLenum target, Web::WebGL::GLintptr offset, Web::WebGL::GLintptr size, Core::AnonymousBuffer data);
 
     void present_webgl_canvas(Web::Painting::CanvasId, bool preserve_drawing_buffer);
+    void clear_webgl_drawing_buffers_after_compositing(Vector<Web::Painting::CanvasId> const&);
     Gfx::ShareableBitmap read_back_pixels(Web::Painting::CanvasId, Gfx::IntRect);
 
 private:

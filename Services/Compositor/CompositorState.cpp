@@ -285,7 +285,7 @@ void CompositorState::present_frame(Web::Compositor::CompositorContextId context
     if (!prepared_frame.has_value())
         return;
 
-    m_pending_async_presents.append(context_id, viewport_rect, prepared_frame->bitmap_id);
+    m_pending_async_presents.append(context_id, viewport_rect, prepared_frame->bitmap_id, m_display_list_player->take_drawn_canvas_ids());
     auto* pending_present = &m_pending_async_presents.last();
 
     auto& event_loop = Core::EventLoop::current();
@@ -422,6 +422,7 @@ void CompositorState::did_finish_async_present(PendingAsyncPresent& pending_pres
     auto context_id = pending_present.context_id;
     auto viewport_rect = pending_present.viewport_rect;
     auto bitmap_id = pending_present.bitmap_id;
+    auto composited_canvas_ids = move(pending_present.composited_canvas_ids);
     auto was_cancelled = pending_present.was_cancelled;
     (void)m_pending_async_presents.remove(pending_present_iterator);
     if (m_pending_async_presents.is_empty() && m_gpu_completion_timer)
@@ -434,6 +435,8 @@ void CompositorState::did_finish_async_present(PendingAsyncPresent& pending_pres
     VERIFY(context);
 
     context->did_finish_gpu_present(bitmap_id);
+    if (!composited_canvas_ids.is_empty())
+        context->did_composite_canvas_surfaces(composited_canvas_ids);
     if (context->presents_to_client()) {
         VERIFY(m_client);
         m_client->did_present_frame(context_id, viewport_rect, bitmap_id);

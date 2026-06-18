@@ -26,6 +26,7 @@
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/DisplayList.h>
+#include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
 #include <LibWeb/Painting/ScrollState.h>
 
@@ -132,6 +133,7 @@ public:
     Optional<PreparedFrame> prepare_frame(Web::Painting::DisplayListPlayerSkia&, Gfx::IntRect, CompositedContextResolver const*);
     void did_submit_prepared_frame(Gfx::IntRect);
     bool present_synchronously(Web::Painting::DisplayListPlayerSkia&, CompositedContextResolver const*);
+    void did_composite_canvas_surfaces(Vector<Web::Painting::CanvasId> const&);
     bool can_paint_screenshot(Gfx::ShareableBitmap&) const;
     void paint_screenshot(Web::Painting::DisplayListPlayerSkia&, Gfx::ShareableBitmap&, CompositedContextResolver const*);
     bool acknowledge_presented_bitmap(i32 bitmap_id);

@@ -44,6 +44,11 @@ void ConnectionFromWebContent::request_rendering_update()
     async_request_rendering_update();
 }
 
+void ConnectionFromWebContent::did_composite_canvas_surfaces(Vector<Web::Painting::CanvasId> const& canvas_ids)
+{
+    m_canvas_host.clear_webgl_drawing_buffers_after_compositing(canvas_ids);
+}
+
 void ConnectionFromWebContent::dispatch_mouse_event_to_web_content(u64 page_id, Web::MouseEvent const& event)
 {
     async_mouse_event(page_id, event);

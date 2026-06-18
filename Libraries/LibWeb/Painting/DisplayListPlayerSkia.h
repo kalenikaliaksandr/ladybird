@@ -9,10 +9,12 @@
 #include <AK/Function.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/RefPtr.h>
+#include <AK/Vector.h>
 #include <LibGfx/Forward.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListCommand.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
+#include <LibWeb/Painting/DisplayListResourceIds.h>
 
 class GrDirectContext;
 class SkPaint;
@@ -40,6 +42,7 @@ public:
     void flush(Gfx::PaintingSurface&) override;
     void flush_async(Gfx::PaintingSurface&, Function<void()>&&);
     void paint_scrollbar(Gfx::PaintingSurface&, PaintScrollBar const&);
+    Vector<CanvasId> take_drawn_canvas_ids() { return move(m_drawn_canvas_ids); }
 
 private:
 #define DECLARE_PLAY_COMMAND(command_type, player_method) \
@@ -60,6 +63,7 @@ private:
 
     RefPtr<Gfx::SkiaBackendContext> m_skia_backend_context;
     CompositedContextResolver const* m_composited_context_resolver { nullptr };
+    Vector<CanvasId> m_drawn_canvas_ids;
 };
 
 }

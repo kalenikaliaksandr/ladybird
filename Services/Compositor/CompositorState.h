@@ -12,6 +12,7 @@
 #include <AK/Optional.h>
 #include <AK/OwnPtr.h>
 #include <AK/RefCounted.h>
+#include <AK/Vector.h>
 #include <Compositor/ContextState.h>
 #include <Compositor/VSyncScheduler.h>
 #include <LibCore/Forward.h>
@@ -53,6 +54,7 @@ public:
 
     virtual void dispatch_mouse_event_to_web_content(u64 page_id, Web::MouseEvent const&) = 0;
     virtual void request_rendering_update() = 0;
+    virtual void did_composite_canvas_surfaces(Vector<Web::Painting::CanvasId> const&) = 0;
 };
 
 class CompositorState final : public RefCounted<CompositorState> {
@@ -102,16 +104,18 @@ private:
     CompositorState(RefPtr<Gfx::SkiaBackendContext>, bool async_scrolling_enabled);
 
     struct PendingAsyncPresent {
-        PendingAsyncPresent(Web::Compositor::CompositorContextId context_id, Gfx::IntRect viewport_rect, i32 bitmap_id)
+        PendingAsyncPresent(Web::Compositor::CompositorContextId context_id, Gfx::IntRect viewport_rect, i32 bitmap_id, Vector<Web::Painting::CanvasId> composited_canvas_ids)
             : context_id(context_id)
             , viewport_rect(viewport_rect)
             , bitmap_id(bitmap_id)
+            , composited_canvas_ids(move(composited_canvas_ids))
         {
         }
 
         Web::Compositor::CompositorContextId context_id;
         Gfx::IntRect viewport_rect;
         i32 bitmap_id { 0 };
+        Vector<Web::Painting::CanvasId> composited_canvas_ids;
         bool was_cancelled { false };
     };
 

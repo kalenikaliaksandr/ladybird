@@ -43,9 +43,8 @@ ErrorOr<void> HostWebGLContext::execute_commands(ReadonlyBytes bytes, Vector<Gfx
 {
     m_gl_context->make_current();
 
-    // A non-preserving context's drawing buffer is cleared after being prepared for
-    // compositing, but the clear is deferred to here (the start of the next frame's
-    // commands) so a readback taken before then still sees the rendered frame.
+    // A non-preserving context's drawing buffer is cleared after compositing.
+    // If no composited frame consumed it, clear before the next WebGL command.
     if (m_needs_clear_before_next_frame) {
         m_gl_context->clear_buffer_to_default_values();
         m_needs_clear_before_next_frame = false;
@@ -132,12 +131,27 @@ ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> HostWebGLContext::prepare_for_compo
         return Error::from_string_literal("WebGL context has no drawing buffer");
     m_gl_context->notify_content_will_change();
 
-    // Defer the clear (see execute_commands) so a readback before the next frame still sees
-    // this frame.
-    if (!preserve_drawing_buffer)
+    if (!preserve_drawing_buffer) {
+        auto snapshot = drawing_surface->snapshot_bitmap();
+        auto surface_for_compositing = Gfx::PaintingSurface::create_with_size(snapshot->size(), snapshot->format(), snapshot->alpha_type(), drawing_surface->skia_backend_context());
+        surface_for_compositing->write_from_bitmap(*snapshot);
         m_needs_clear_before_next_frame = true;
+        return surface_for_compositing;
+    }
 
     return drawing_surface.release_nonnull();
+}
+
+RefPtr<Gfx::PaintingSurface> HostWebGLContext::clear_buffer_after_compositing()
+{
+    if (!m_needs_clear_before_next_frame)
+        return m_gl_context->surface();
+
+    m_gl_context->make_current();
+    m_gl_context->clear_buffer_to_default_values();
+    m_needs_clear_before_next_frame = false;
+    m_gl_context->present(/* preserve_drawing_buffer= */ true);
+    return m_gl_context->surface();
 }
 
 RefPtr<Gfx::PaintingSurface> HostWebGLContext::surface()

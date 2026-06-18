@@ -625,6 +625,11 @@ bool ContextState::present_synchronously(Web::Painting::DisplayListPlayerSkia& d
     return true;
 }
 
+void ContextState::did_composite_canvas_surfaces(Vector<Web::Painting::CanvasId> const& canvas_ids)
+{
+    m_web_content_client.did_composite_canvas_surfaces(canvas_ids);
+}
+
 bool ContextState::can_paint_screenshot(Gfx::ShareableBitmap& target_bitmap) const
 {
     return m_display_list && target_bitmap.is_valid() && target_bitmap.bitmap();

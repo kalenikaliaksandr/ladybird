@@ -151,6 +151,19 @@ void CanvasHost::present_webgl_canvas(Web::Painting::CanvasId canvas_id, bool pr
     m_canvas_surface_registry.set_canvas_surface(canvas_id, move(surface));
 }
 
+void CanvasHost::clear_webgl_drawing_buffers_after_compositing(Vector<Web::Painting::CanvasId> const& canvas_ids)
+{
+    for (auto canvas_id : canvas_ids) {
+        auto* context = this->context(canvas_id);
+        if (!context || !context->has<WebGLContext>())
+            continue;
+
+        auto& webgl_context = as_webgl(*context);
+        if (auto surface = webgl_context.clear_buffer_after_compositing())
+            m_canvas_surface_registry.set_canvas_surface(canvas_id, surface.release_nonnull());
+    }
+}
+
 static Gfx::ShareableBitmap read_back_surface(Gfx::PaintingSurface& surface, Gfx::IntRect rect)
 {
     auto clipped_rect = rect.intersected(surface.rect());

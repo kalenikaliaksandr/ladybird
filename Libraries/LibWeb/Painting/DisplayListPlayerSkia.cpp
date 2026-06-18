@@ -67,6 +67,7 @@ void DisplayListPlayerSkia::execute(
     CanvasSurfaceRegistry const* canvas_surface_registry,
     CompositedContextResolver const* composited_context_resolver)
 {
+    m_drawn_canvas_ids.clear_with_capacity();
     TemporaryChange composited_context_resolver_change { m_composited_context_resolver, composited_context_resolver };
     DisplayListPlayer::execute(
         display_list,
@@ -259,6 +260,9 @@ void DisplayListPlayerSkia::play_command(DrawCanvas const& command)
     auto image = canvas_surface->sk_image_snapshot<sk_sp<SkImage>>();
     if (!image)
         return;
+
+    if (!m_drawn_canvas_ids.contains_slow(command.canvas_id))
+        m_drawn_canvas_ids.append(command.canvas_id);
 
     auto dst_rect = to_skia_rect(command.dst_rect);
     SkRect src_rect = SkRect::MakeIWH(image->width(), image->height());
