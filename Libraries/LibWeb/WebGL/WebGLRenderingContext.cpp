@@ -82,6 +82,7 @@ Optional<RemoteWebGLContext> create_remote_webgl_context(HTML::HTMLCanvasElement
     auto result = transport->create_context(
         webgl_version,
         initial_drawing_buffer_size(canvas_element),
+        context_attributes.alpha,
         context_attributes.depth,
         context_attributes.stencil,
         context_attributes.antialias);

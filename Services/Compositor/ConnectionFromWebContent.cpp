@@ -135,9 +135,9 @@ Messages::CompositorWebContentServer::GetCanvasPixelsResponse ConnectionFromWebC
     return m_canvas_host.read_back_pixels(canvas_id, rect);
 }
 
-Messages::CompositorWebContentServer::CreateWebglContextResponse ConnectionFromWebContent::create_webgl_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias)
+Messages::CompositorWebContentServer::CreateWebglContextResponse ConnectionFromWebContent::create_webgl_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool alpha, bool depth, bool stencil, bool antialias)
 {
-    auto result = m_canvas_host.create_webgl_context(webgl_version, size, depth, stencil, antialias);
+    auto result = m_canvas_host.create_webgl_context(webgl_version, size, alpha, depth, stencil, antialias);
     return { result.success, result.canvas_id, move(result.supported_extensions) };
 }
 

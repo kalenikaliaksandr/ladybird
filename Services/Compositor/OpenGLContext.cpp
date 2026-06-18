@@ -263,14 +263,23 @@ void OpenGLContext::clear_buffer_to_default_values()
     Array<GLfloat, 4> current_clear_color;
     glGetFloatv(GL_COLOR_CLEAR_VALUE, current_clear_color.data());
 
+    Array<GLboolean, 4> current_color_mask;
+    glGetBooleanv(GL_COLOR_WRITEMASK, current_color_mask.data());
+
     GLfloat current_clear_depth;
     glGetFloatv(GL_DEPTH_CLEAR_VALUE, &current_clear_depth);
 
     GLint current_clear_stencil;
     glGetIntegerv(GL_STENCIL_CLEAR_VALUE, &current_clear_stencil);
 
-    // The implicit clear value for the color buffer is (0, 0, 0, 0)
-    glClearColor(0, 0, 0, 0);
+    GLboolean was_scissor_enabled = glIsEnabled(GL_SCISSOR_TEST);
+    if (was_scissor_enabled)
+        glDisable(GL_SCISSOR_TEST);
+
+    // The implicit clear value for the color buffer is transparent black
+    // unless the context was created without alpha.
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glClearColor(0, 0, 0, m_drawing_buffer_options.alpha ? 0 : 1);
 
     // The implicit clear value for the depth buffer is 1.0.
     glClearDepthf(1.0f);
@@ -282,11 +291,77 @@ void OpenGLContext::clear_buffer_to_default_values()
 
     // Restore the clear values.
     glClearColor(current_clear_color[0], current_clear_color[1], current_clear_color[2], current_clear_color[3]);
+    glColorMask(current_color_mask[0], current_color_mask[1], current_color_mask[2], current_color_mask[3]);
     glClearDepthf(current_clear_depth);
     glClearStencil(current_clear_stencil);
+    if (was_scissor_enabled)
+        glEnable(GL_SCISSOR_TEST);
 
     glBindFramebuffer(framebuffer_target, original_framebuffer);
     glBindRenderbuffer(GL_RENDERBUFFER, original_renderbuffer);
+#endif
+}
+
+bool OpenGLContext::is_default_draw_framebuffer_bound() const
+{
+#ifdef ENABLE_WEBGL
+    if (!m_impl->framebuffer)
+        return false;
+
+    GLenum binding = GL_FRAMEBUFFER_BINDING;
+    if (m_webgl_version == WebGLVersion::WebGL2)
+        binding = GL_DRAW_FRAMEBUFFER_BINDING;
+
+    GLint framebuffer = 0;
+    glGetIntegerv(binding, &framebuffer);
+    return static_cast<GLuint>(framebuffer) == m_impl->framebuffer;
+#else
+    return false;
+#endif
+}
+
+bool OpenGLContext::is_default_read_framebuffer_bound() const
+{
+#ifdef ENABLE_WEBGL
+    if (!m_impl->framebuffer)
+        return false;
+
+    GLenum binding = GL_FRAMEBUFFER_BINDING;
+    if (m_webgl_version == WebGLVersion::WebGL2)
+        binding = GL_READ_FRAMEBUFFER_BINDING;
+
+    GLint framebuffer = 0;
+    glGetIntegerv(binding, &framebuffer);
+    return static_cast<GLuint>(framebuffer) == m_impl->framebuffer;
+#else
+    return false;
+#endif
+}
+
+void OpenGLContext::force_default_framebuffer_alpha_to_one()
+{
+#ifdef ENABLE_WEBGL
+    if (m_drawing_buffer_options.alpha || !is_default_draw_framebuffer_bound())
+        return;
+
+    Array<GLfloat, 4> current_clear_color;
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, current_clear_color.data());
+
+    Array<GLboolean, 4> current_color_mask;
+    glGetBooleanv(GL_COLOR_WRITEMASK, current_color_mask.data());
+
+    GLboolean was_scissor_enabled = glIsEnabled(GL_SCISSOR_TEST);
+    if (was_scissor_enabled)
+        glDisable(GL_SCISSOR_TEST);
+
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glClearColor(current_clear_color[0], current_clear_color[1], current_clear_color[2], current_clear_color[3]);
+    glColorMask(current_color_mask[0], current_color_mask[1], current_color_mask[2], current_color_mask[3]);
+    if (was_scissor_enabled)
+        glEnable(GL_SCISSOR_TEST);
 #endif
 }
 
@@ -451,10 +526,224 @@ void OpenGLContext::make_current()
 #endif
 }
 
+void OpenGLContext::clear(GLbitfield mask)
+{
+#ifdef ENABLE_WEBGL
+    GLFunctions::clear(mask);
+    if (mask & GL_COLOR_BUFFER_BIT)
+        force_default_framebuffer_alpha_to_one();
+#else
+    (void)mask;
+#endif
+}
+
+void OpenGLContext::clear_bufferfv(GLenum buffer, GLint drawbuffer, GLfloat const* value)
+{
+#ifdef ENABLE_WEBGL
+    GLFunctions::clear_bufferfv(buffer, drawbuffer, value);
+    if (buffer == GL_COLOR)
+        force_default_framebuffer_alpha_to_one();
+#else
+    (void)buffer;
+    (void)drawbuffer;
+    (void)value;
+#endif
+}
+
+void OpenGLContext::clear_bufferiv(GLenum buffer, GLint drawbuffer, GLint const* value)
+{
+#ifdef ENABLE_WEBGL
+    GLFunctions::clear_bufferiv(buffer, drawbuffer, value);
+    if (buffer == GL_COLOR)
+        force_default_framebuffer_alpha_to_one();
+#else
+    (void)buffer;
+    (void)drawbuffer;
+    (void)value;
+#endif
+}
+
+void OpenGLContext::clear_bufferuiv(GLenum buffer, GLint drawbuffer, GLuint const* value)
+{
+#ifdef ENABLE_WEBGL
+    GLFunctions::clear_bufferuiv(buffer, drawbuffer, value);
+    if (buffer == GL_COLOR)
+        force_default_framebuffer_alpha_to_one();
+#else
+    (void)buffer;
+    (void)drawbuffer;
+    (void)value;
+#endif
+}
+
+void OpenGLContext::draw_arrays(GLenum mode, GLint first, GLsizei count)
+{
+#ifdef ENABLE_WEBGL
+    GLFunctions::draw_arrays(mode, first, count);
+    force_default_framebuffer_alpha_to_one();
+#else
+    (void)mode;
+    (void)first;
+    (void)count;
+#endif
+}
+
+void OpenGLContext::draw_arrays_instanced(GLenum mode, GLint first, GLsizei count, GLsizei instancecount)
+{
+#ifdef ENABLE_WEBGL
+    GLFunctions::draw_arrays_instanced(mode, first, count, instancecount);
+    force_default_framebuffer_alpha_to_one();
+#else
+    (void)mode;
+    (void)first;
+    (void)count;
+    (void)instancecount;
+#endif
+}
+
+void OpenGLContext::draw_arrays_instanced_angle(GLenum mode, GLint first, GLsizei count, GLsizei primcount)
+{
+#ifdef ENABLE_WEBGL
+    GLFunctions::draw_arrays_instanced_angle(mode, first, count, primcount);
+    force_default_framebuffer_alpha_to_one();
+#else
+    (void)mode;
+    (void)first;
+    (void)count;
+    (void)primcount;
+#endif
+}
+
+void OpenGLContext::draw_elements(GLenum mode, GLsizei count, GLenum type, void const* indices)
+{
+#ifdef ENABLE_WEBGL
+    GLFunctions::draw_elements(mode, count, type, indices);
+    force_default_framebuffer_alpha_to_one();
+#else
+    (void)mode;
+    (void)count;
+    (void)type;
+    (void)indices;
+#endif
+}
+
+void OpenGLContext::draw_elements_instanced(GLenum mode, GLsizei count, GLenum type, void const* indices, GLsizei instancecount)
+{
+#ifdef ENABLE_WEBGL
+    GLFunctions::draw_elements_instanced(mode, count, type, indices, instancecount);
+    force_default_framebuffer_alpha_to_one();
+#else
+    (void)mode;
+    (void)count;
+    (void)type;
+    (void)indices;
+    (void)instancecount;
+#endif
+}
+
+void OpenGLContext::draw_elements_instanced_angle(GLenum mode, GLsizei count, GLenum type, void const* indices, GLsizei primcount)
+{
+#ifdef ENABLE_WEBGL
+    GLFunctions::draw_elements_instanced_angle(mode, count, type, indices, primcount);
+    force_default_framebuffer_alpha_to_one();
+#else
+    (void)mode;
+    (void)count;
+    (void)type;
+    (void)indices;
+    (void)primcount;
+#endif
+}
+
+void OpenGLContext::draw_range_elements(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, void const* indices)
+{
+#ifdef ENABLE_WEBGL
+    GLFunctions::draw_range_elements(mode, start, end, count, type, indices);
+    force_default_framebuffer_alpha_to_one();
+#else
+    (void)mode;
+    (void)start;
+    (void)end;
+    (void)count;
+    (void)type;
+    (void)indices;
+#endif
+}
+
+void OpenGLContext::blit_framebuffer(GLint src_x0, GLint src_y0, GLint src_x1, GLint src_y1, GLint dst_x0, GLint dst_y0, GLint dst_x1, GLint dst_y1, GLbitfield mask, GLenum filter)
+{
+#ifdef ENABLE_WEBGL
+    GLFunctions::blit_framebuffer(src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter);
+    if (mask & GL_COLOR_BUFFER_BIT)
+        force_default_framebuffer_alpha_to_one();
+#else
+    (void)src_x0;
+    (void)src_y0;
+    (void)src_x1;
+    (void)src_y1;
+    (void)dst_x0;
+    (void)dst_y0;
+    (void)dst_x1;
+    (void)dst_y1;
+    (void)mask;
+    (void)filter;
+#endif
+}
+
+void OpenGLContext::get_integerv_robust_angle(GLenum pname, GLsizei buf_size, GLsizei* length, GLint* data)
+{
+#ifdef ENABLE_WEBGL
+    if (pname == GL_ALPHA_BITS && !m_drawing_buffer_options.alpha && is_default_read_framebuffer_bound()) {
+        if (length)
+            *length = 1;
+        if (data && buf_size > 0)
+            data[0] = 0;
+        return;
+    }
+
+    GLFunctions::get_integerv_robust_angle(pname, buf_size, length, data);
+#else
+    (void)pname;
+    (void)buf_size;
+    (void)length;
+    (void)data;
+#endif
+}
+
+void OpenGLContext::read_pixels_robust_angle(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei buf_size, GLsizei* length, GLsizei* columns, GLsizei* rows, void* pixels)
+{
+#ifdef ENABLE_WEBGL
+    auto should_force_alpha = !m_drawing_buffer_options.alpha && is_default_read_framebuffer_bound();
+    if (should_force_alpha)
+        force_default_framebuffer_alpha_to_one();
+
+    GLFunctions::read_pixels_robust_angle(x, y, width, height, format, type, buf_size, length, columns, rows, pixels);
+
+    if (should_force_alpha && format == GL_RGBA && type == GL_UNSIGNED_BYTE && pixels && length) {
+        auto* pixel_bytes = static_cast<u8*>(pixels);
+        for (GLsizei i = 3; i < *length; i += 4)
+            pixel_bytes[i] = 255;
+    }
+#else
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+    (void)format;
+    (void)type;
+    (void)buf_size;
+    (void)length;
+    (void)columns;
+    (void)rows;
+    (void)pixels;
+#endif
+}
+
 void OpenGLContext::present(bool preserve_drawing_buffer)
 {
 #ifdef ENABLE_WEBGL
     make_current();
+    force_default_framebuffer_alpha_to_one();
 
     // "Before the drawing buffer is presented for compositing the implementation shall ensure that all rendering operations have been flushed to the drawing buffer."
     // With Metal, glFlush flushes the command buffer, but without waiting for it to be scheduled or completed.
