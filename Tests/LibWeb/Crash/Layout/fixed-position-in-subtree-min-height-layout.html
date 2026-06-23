@@ -1,0 +1,49 @@
+<!doctype html>
+<style>
+html,
+body {
+    height: 100%;
+    margin: 0;
+}
+
+.app-wrapper {
+    display: flex;
+    min-height: 0;
+}
+
+.subtree-root {
+    flex: 1;
+    min-width: 0;
+}
+
+.measured-bfc {
+    min-height: 1px;
+    overflow: hidden;
+}
+
+.outer-flex,
+.inner-flex {
+    display: flex;
+}
+
+.fixed {
+    position: fixed;
+}
+</style>
+<div class="app-wrapper">
+    <div class="subtree-root">
+        <div class="measured-bfc">
+            <div class="outer-flex">
+                <div class="inner-flex">
+                    <div>
+                        text
+                        <span class="fixed">fixed</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+    document.body.offsetHeight;
+</script>

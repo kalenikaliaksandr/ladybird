@@ -13,17 +13,12 @@
 #include <LibGfx/Path.h>
 #include <LibGfx/Point.h>
 #include <LibWeb/Layout/Box.h>
+#include <LibWeb/Layout/LayoutInput.h>
 #include <LibWeb/Layout/LineBox.h>
 #include <LibWeb/Painting/PaintableBox.h>
 #include <LibWeb/Painting/SVGGraphicsPaintable.h>
 
 namespace Web::Layout {
-
-enum class SizeConstraint {
-    None,
-    MinContent,
-    MaxContent,
-};
 
 class AvailableSize;
 class AvailableSpace;
@@ -171,6 +166,7 @@ struct LayoutState {
         // If the space in an axis is indefinite, and the outer space is an intrinsic sizing constraint,
         // the constraint is used in that axis instead.
         AvailableSpace available_inner_space_or_constraints_from(AvailableSpace const& outer_space) const;
+        LayoutInput layout_input_from(LayoutInput const& outer_input) const;
 
         void materialize_from_paintable(Painting::PaintableBox const&);
 

@@ -14,9 +14,10 @@ ReplacedWithChildrenFormattingContext::ReplacedWithChildrenFormattingContext(Lay
 {
 }
 
-void ReplacedWithChildrenFormattingContext::run(AvailableSpace const& available_space)
+void ReplacedWithChildrenFormattingContext::run(LayoutInput const& layout_input)
 {
-    auto& root_state = m_state.get_mutable(context_box());
+    auto const& available_space = layout_input.available_space;
+    auto& root_state = mutable_used_values_for(context_box());
     auto content_width = root_state.content_width();
 
     // Mark the replaced element as having definite dimensions when the parent FC has
@@ -43,12 +44,12 @@ void ReplacedWithChildrenFormattingContext::run(AvailableSpace const& available_
     if (!wrapper)
         return;
 
-    auto& wrapper_state = m_state.get_mutable(*wrapper);
+    auto& wrapper_state = mutable_used_values_for(*wrapper);
     wrapper_state.set_content_width(content_width);
     wrapper_state.set_content_offset({ 0, 0 });
 
-    auto bfc = make<BlockFormattingContext>(m_state, m_layout_mode, *wrapper, this);
-    bfc->run(child_available_space);
+    auto bfc = make<BlockFormattingContext>(state_for_formatting_context_creation(), m_layout_mode, *wrapper, this);
+    bfc->run(LayoutInput::from_available_space(child_available_space));
 
     m_automatic_content_width = content_width;
     m_automatic_content_height = bfc->automatic_content_height();

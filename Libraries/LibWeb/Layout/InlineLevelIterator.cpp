@@ -15,9 +15,8 @@
 
 namespace Web::Layout {
 
-InlineLevelIterator::InlineLevelIterator(Layout::InlineFormattingContext& inline_formatting_context, Layout::LayoutState& layout_state, Layout::BlockContainer const& containing_block, LayoutState::UsedValues const& containing_block_used_values, LayoutMode layout_mode)
+InlineLevelIterator::InlineLevelIterator(Layout::InlineFormattingContext& inline_formatting_context, Layout::BlockContainer const& containing_block, LayoutState::UsedValues const& containing_block_used_values, LayoutMode layout_mode)
     : m_inline_formatting_context(inline_formatting_context)
-    , m_layout_state(layout_state)
     , m_containing_block(containing_block)
     , m_containing_block_used_values(containing_block_used_values)
     , m_next_node(containing_block.first_child())
@@ -53,7 +52,7 @@ void InlineLevelIterator::enter_node_with_box_model_metrics(Layout::NodeWithStyl
 
     // FIXME: It's really weird that *this* is where we assign box model metrics for these layout nodes..
 
-    auto& used_values = m_layout_state.get_mutable(node);
+    auto& used_values = m_inline_formatting_context.mutable_used_values_for(node);
     auto const& computed_values = node.computed_values();
 
     used_values.margin_top = computed_values.margin().top().to_px_or_zero(m_containing_block_used_values.content_width());
@@ -88,7 +87,7 @@ void InlineLevelIterator::exit_node_with_box_model_metrics()
         m_extra_trailing_metrics = ExtraBoxMetrics {};
 
     auto& node = *m_box_model_node_stack.last();
-    auto& used_values = m_layout_state.get_mutable(node);
+    auto& used_values = m_inline_formatting_context.mutable_used_values_for(node);
 
     m_extra_trailing_metrics->margin += used_values.margin_right;
     m_extra_trailing_metrics->border += used_values.border_right;
@@ -397,7 +396,7 @@ Optional<InlineLevelIterator::Item> InlineLevelIterator::generate_next_item()
     }
 
     auto const& box = as<Layout::Box>(*m_current_node);
-    auto const& box_state = m_layout_state.get(box);
+    auto const& box_state = m_inline_formatting_context.used_values_for(box);
     m_inline_formatting_context.dimension_box_on_line(box, m_layout_mode);
 
     auto item = Item {

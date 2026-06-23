@@ -28,9 +28,9 @@ public:
     explicit TableFormattingContext(LayoutState&, LayoutMode, Box const&, FormattingContext* parent);
     ~TableFormattingContext();
 
-    void run_until_width_calculation(AvailableSpace const& available_space, RowMeasurement = RowMeasurement::Include);
+    void run_until_width_calculation(LayoutInput const&, RowMeasurement = RowMeasurement::Include);
 
-    virtual void run(AvailableSpace const&) override;
+    virtual void run(LayoutInput const&) override;
     virtual CSSPixels automatic_content_width() const override;
     virtual CSSPixels automatic_content_height() const override;
     StaticPositionRect calculate_static_position_rect(Box const&) const;
@@ -86,11 +86,13 @@ private:
 
     CSSPixels table_wrapper_containing_block_width() const;
     CSSPixels table_wrapper_containing_block_height() const;
+    bool table_wrapper_containing_block_has_definite_width() const;
 
     CSSPixels m_table_height { 0 };
     CSSPixels m_automatic_content_height { 0 };
 
     Optional<AvailableSpace> m_available_space;
+    Optional<LayoutInput> m_layout_input;
 
     struct Column {
         CSSPixels left_offset { 0 };

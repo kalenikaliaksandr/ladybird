@@ -170,7 +170,7 @@ public:
 
     virtual bool inhibits_floating() const override { return true; }
 
-    virtual void run(AvailableSpace const& available_space) override;
+    virtual void run(LayoutInput const& layout_input) override;
     virtual CSSPixels automatic_content_width() const override;
     virtual CSSPixels automatic_content_height() const override;
     StaticPositionRect calculate_static_position_rect(Box const&) const;
@@ -308,6 +308,7 @@ private:
     Vector<GridItem> m_grid_items;
 
     Optional<AvailableSpace> m_available_space;
+    Optional<LayoutInput> m_layout_input;
 
     LayoutState::UsedValues& m_grid_container_used_values;
 
@@ -384,6 +385,7 @@ private:
 
     bool should_treat_grid_container_maximum_size_as_none(GridDimension) const;
     CSSPixels calculate_grid_container_maximum_size(GridDimension) const;
+    LayoutInput layout_input_for_grid_item(GridItem const&, AvailableSpace const&) const;
     bool should_treat_preferred_size_as_auto_for_intrinsic_contribution(GridItem const&, GridDimension) const;
 
     CSSPixels calculate_min_content_size(GridItem const&, GridDimension) const;

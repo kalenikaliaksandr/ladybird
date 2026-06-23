@@ -10,9 +10,8 @@
 
 namespace Web::Layout {
 
-LineBuilder::LineBuilder(InlineFormattingContext& context, LayoutState& layout_state, LayoutState::UsedValues& containing_block_used_values, CSS::Direction direction, CSS::WritingMode writing_mode)
+LineBuilder::LineBuilder(InlineFormattingContext& context, LayoutState::UsedValues& containing_block_used_values, CSS::Direction direction, CSS::WritingMode writing_mode)
     : m_context(context)
-    , m_layout_state(layout_state)
     , m_containing_block_used_values(containing_block_used_values)
     , m_direction(direction)
     , m_writing_mode(writing_mode)
@@ -97,7 +96,7 @@ LineBox& LineBuilder::ensure_last_line_box()
 
 void LineBuilder::append_box(Box const& box, CSSPixels leading_size, CSSPixels trailing_size, CSSPixels leading_margin, CSSPixels trailing_margin)
 {
-    auto& box_state = m_layout_state.get_mutable(box);
+    auto& box_state = m_context.mutable_used_values_for(box);
     auto& line_box = ensure_last_line_box();
     line_box.add_fragment(box, 0, 0, leading_size, trailing_size, leading_margin, trailing_margin,
         box_state.content_width(), box_state.content_height(), box_state.border_box_top(), box_state.border_box_bottom());
@@ -132,7 +131,7 @@ void LineBuilder::append_static_position_marker(Box const& box)
 
 CSSPixels LineBuilder::y_for_float_to_be_inserted_here(Box const& box)
 {
-    auto const& box_state = m_layout_state.get(box);
+    auto const& box_state = m_context.used_values_for(box);
     CSSPixels const width = box_state.margin_box_width();
     CSSPixels const height = box_state.margin_box_height();
 
@@ -346,7 +345,7 @@ void LineBuilder::update_last_line()
             CSSPixels effective_box_top_offset = fragment.border_box_top();
             CSSPixels effective_box_bottom_offset = fragment.border_box_top();
             if (fragment.is_atomic_inline()) {
-                auto const& fragment_box_state = m_layout_state.get(static_cast<Box const&>(fragment.layout_node()));
+                auto const& fragment_box_state = m_context.used_values_for(static_cast<Box const&>(fragment.layout_node()));
                 effective_box_top_offset = fragment_box_state.margin_box_top();
                 effective_box_bottom_offset = fragment_box_state.margin_box_bottom();
             }
@@ -403,7 +402,7 @@ void LineBuilder::update_last_line()
         {
             // FIXME: Support inline-table elements.
             if (fragment.is_atomic_inline()) {
-                auto const& fragment_box_state = m_layout_state.get(static_cast<Box const&>(fragment.layout_node()));
+                auto const& fragment_box_state = m_context.used_values_for(static_cast<Box const&>(fragment.layout_node()));
                 top_of_inline_box = (fragment.block_offset() - fragment_box_state.margin_box_top());
                 bottom_of_inline_box = (fragment.block_offset() + fragment_box_state.content_height() + fragment_box_state.margin_box_bottom());
             } else {

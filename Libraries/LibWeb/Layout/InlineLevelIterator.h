@@ -50,7 +50,7 @@ public:
         }
     };
 
-    InlineLevelIterator(Layout::InlineFormattingContext&, LayoutState&, Layout::BlockContainer const& containing_block, LayoutState::UsedValues const& containing_block_used_values, LayoutMode);
+    InlineLevelIterator(Layout::InlineFormattingContext&, Layout::BlockContainer const& containing_block, LayoutState::UsedValues const& containing_block_used_values, LayoutMode);
 
     Optional<Item&> next();
     CSSPixels next_non_whitespace_sequence_width();
@@ -72,7 +72,6 @@ private:
     Layout::Node const* next_inline_node_in_pre_order(Layout::Node const& current, Layout::Node const* stay_within);
 
     Layout::InlineFormattingContext& m_inline_formatting_context;
-    Layout::LayoutState& m_layout_state;
     BlockContainer const& m_containing_block;
     LayoutState::UsedValues const& m_containing_block_used_values;
     Layout::Node const* m_current_node { nullptr };

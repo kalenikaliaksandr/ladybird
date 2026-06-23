@@ -23,7 +23,7 @@ public:
 
     BlockContainer const& containing_block() const { return static_cast<BlockContainer const&>(context_box()); }
 
-    virtual void run(AvailableSpace const&) override;
+    virtual void run(LayoutInput const&) override;
     virtual CSSPixels automatic_content_height() const override;
     virtual CSSPixels automatic_content_width() const override;
 
@@ -45,7 +45,7 @@ private:
 
     LayoutState::UsedValues& m_containing_block_used_values;
 
-    Optional<AvailableSpace> m_available_space;
+    Optional<LayoutInput> m_layout_input;
 
     CSSPixels m_automatic_content_width { 0 };
     CSSPixels m_automatic_content_height { 0 };

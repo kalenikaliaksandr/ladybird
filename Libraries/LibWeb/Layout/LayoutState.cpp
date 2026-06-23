@@ -95,6 +95,10 @@ LayoutState::UsedValues& LayoutState::populate_node_from(LayoutState const& sour
     auto& values = m_used_values_store.allocate(index);
     values = source.get(node);
     values.m_containing_block_used_values = nullptr;
+    if (!node.is_viewport()) {
+        if (auto const* containing_block = node.containing_block())
+            values.m_containing_block_used_values = try_get(*containing_block);
+    }
     return values;
 }
 
@@ -112,8 +116,14 @@ LayoutState::UsedValues& LayoutState::ensure_used_values_for(NodeWithStyle const
     if (m_subtree_root == &node) {
         // For the subtree root, ancestor values are not available in the throwaway state.
         containing_block_used_values = try_get(*node.containing_block());
-    } else if (!node.is_viewport()) {
-        containing_block_used_values = &get(*node.containing_block());
+    } else if (auto const* containing_block = node.containing_block()) {
+        if (!m_subtree_root
+            || m_subtree_root == containing_block
+            || m_subtree_root->is_inclusive_ancestor_of(*containing_block)) {
+            containing_block_used_values = &get(*containing_block);
+        } else {
+            containing_block_used_values = try_get(*containing_block);
+        }
     }
 
     auto& used_values = m_used_values_store.allocate(index);
@@ -1065,6 +1075,43 @@ AvailableSpace LayoutState::UsedValues::available_inner_space_or_constraints_fro
     if (inner_height.is_indefinite() && outer_space.height.is_intrinsic_sizing_constraint())
         inner_height = outer_space.height;
     return AvailableSpace(inner_width, inner_height);
+}
+
+LayoutInput LayoutState::UsedValues::layout_input_from(LayoutInput const& outer_input) const
+{
+    auto input = LayoutInput::from_available_space(
+        available_inner_space_or_constraints_from(outer_input.available_space));
+    auto const* containing_block = containing_block_used_values();
+    auto should_skip_anonymous_containing_block = [](UsedValues const& used_values) {
+        // Anonymous flow wrappers inherit percentage bases, but anonymous table cells and
+        // flex/grid items establish their own sizing context.
+        auto const& node = used_values.node();
+        if (!node.is_anonymous())
+            return false;
+        if (!node.display().is_flow_inside())
+            return false;
+        if (node.display().is_table_cell())
+            return false;
+        if (auto const* parent = node.parent();
+            parent && (parent->display().is_flex_inside() || parent->display().is_grid_inside()))
+            return false;
+        return true;
+    };
+    while (containing_block && should_skip_anonymous_containing_block(*containing_block))
+        containing_block = containing_block->containing_block_used_values();
+    if (containing_block) {
+        input.definite_percentage_resolution_width = containing_block->has_definite_width()
+            ? Optional<CSSPixels> { containing_block->content_width() }
+            : Optional<CSSPixels> {};
+        input.definite_percentage_resolution_height = containing_block->has_definite_height()
+            ? Optional<CSSPixels> { containing_block->content_height() }
+            : Optional<CSSPixels> {};
+    } else {
+        input.definite_percentage_resolution_width = outer_input.definite_percentage_resolution_width;
+        input.definite_percentage_resolution_height = outer_input.definite_percentage_resolution_height;
+    }
+    input.containing_block_content_width = content_width();
+    return input;
 }
 
 void LayoutState::UsedValues::set_indefinite_content_width()

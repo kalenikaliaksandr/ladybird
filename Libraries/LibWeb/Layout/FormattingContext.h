@@ -9,9 +9,14 @@
 #include <AK/OwnPtr.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Layout/AvailableSpace.h>
+#include <LibWeb/Layout/LayoutInput.h>
 #include <LibWeb/Layout/LayoutState.h>
 
 namespace Web::Layout {
+
+class InlineLevelIterator;
+class InlineNode;
+class LineBuilder;
 
 // NOTE: We use a custom clamping function here instead of AK::clamp(), since the AK version
 //       will VERIFY(max >= min) and CSS explicitly allows that (see css-values-4.)
@@ -64,6 +69,8 @@ class FormattingContext {
 #if FORMATTING_CONTEXT_TRACE_DEBUG
     friend class FormattingContextTracer;
 #endif
+    friend class InlineLevelIterator;
+    friend class LineBuilder;
 
 public:
     virtual ~FormattingContext();
@@ -111,7 +118,7 @@ public:
         Last,
     };
 
-    virtual void run(AvailableSpace const&) = 0;
+    virtual void run(LayoutInput const&) = 0;
 
     // These functions return the automatic content dimensions of the context's root box.
     virtual CSSPixels automatic_content_width() const = 0;
@@ -132,11 +139,12 @@ public:
 
     CSSPixels compute_table_box_width_inside_table_wrapper(Box const&, AvailableSpace const&,
         Optional<CSSPixels> table_wrapper_containing_block_width = {},
-        TableWrapperWidthMode = TableWrapperWidthMode::ClampToAvailableWidth);
+        TableWrapperWidthMode = TableWrapperWidthMode::ClampToAvailableWidth,
+        Optional<CSSPixels> table_wrapper_available_width = {});
     CSSPixels compute_table_box_height_inside_table_wrapper(Box const&, AvailableSpace const&);
 
-    CSSPixels compute_width_for_replaced_element(Box const&, AvailableSpace const&) const;
-    CSSPixels compute_height_for_replaced_element(Box const&, AvailableSpace const&) const;
+    CSSPixels compute_width_for_replaced_element(Box const&, LayoutInput const&) const;
+    CSSPixels compute_height_for_replaced_element(Box const&, LayoutInput const&) const;
 
     OwnPtr<FormattingContext> create_independent_formatting_context_if_needed(LayoutState&, LayoutMode, Box const& child_box);
     NonnullOwnPtr<FormattingContext> create_independent_formatting_context(LayoutState&, LayoutMode, Box const& child_box);
@@ -151,8 +159,8 @@ public:
     CSSPixels calculate_fit_content_height(Layout::Box const&, AvailableSpace const&) const;
     CSSPixels calculate_fit_content_width(Layout::Box const&, AvailableSpace const&) const;
 
-    CSSPixels calculate_inner_width(Layout::Box const&, AvailableSize const&, CSS::Size const& width) const;
-    [[nodiscard]] CSSPixels calculate_inner_height(Box const&, AvailableSpace const&, CSS::Size const& height) const;
+    CSSPixels calculate_inner_width(Layout::Box const&, LayoutInput const&, CSS::Size const& width) const;
+    [[nodiscard]] CSSPixels calculate_inner_height(Box const&, LayoutInput const&, CSS::Size const& height) const;
 
     virtual CSSPixels greatest_child_width(Box const&) const;
 
@@ -165,8 +173,8 @@ public:
     [[nodiscard]] CSSPixels box_baseline(Box const&, BaselineSet) const;
     [[nodiscard]] CSSPixels containing_block_width_for(NodeWithStyleAndBoxModelMetrics const&) const;
 
-    [[nodiscard]] CSSPixels calculate_stretch_fit_width(Box const&, AvailableSize const&) const;
-    [[nodiscard]] CSSPixels calculate_stretch_fit_height(Box const&, AvailableSize const&) const;
+    [[nodiscard]] CSSPixels calculate_stretch_fit_width(Box const&, LayoutInput const&) const;
+    [[nodiscard]] CSSPixels calculate_stretch_fit_height(Box const&, LayoutInput const&) const;
 
     bool can_skip_is_anonymous_text_run(Box&);
 
@@ -175,17 +183,36 @@ public:
 protected:
     FormattingContext(Type, LayoutMode, LayoutState&, Box const&, FormattingContext* parent = nullptr);
 
+    LayoutState::UsedValues& mutable_used_values_for(NodeWithStyle const&);
+    LayoutState::UsedValues const& used_values_for(NodeWithStyle const&) const;
+    LayoutState::UsedValues* try_mutable_used_values_for(NodeWithStyle const&);
+    LayoutState::UsedValues const* try_used_values_for(NodeWithStyle const&) const;
+    LayoutState::UsedValues const* try_used_values_for(Node const&) const;
+
+    LayoutState::UsedValues& populate_node_from_current_state(LayoutState&, NodeWithStyle const&) const;
+    LayoutState::UsedValues& populate_intrinsic_sizing_root_from_current_state(LayoutState&, Box const&) const;
+    CSSPixels containing_block_content_width_for_intrinsic_sizing_root(Box const&) const;
+    AvailableSpace percentage_resolution_size_for_intrinsic_sizing_root(Box const&) const;
+    LayoutState& state_for_formatting_context_creation();
+    bool should_collect_devtools_layout_data() const;
+
+    OwnPtr<FormattingContext> create_independent_formatting_context_if_needed(LayoutMode, Box const& child_box);
+    NonnullOwnPtr<FormattingContext> create_independent_formatting_context(LayoutMode, Box const& child_box);
+
     [[nodiscard]] static bool computed_height_establishes_definite_containing_block_height(CSS::Size const&);
+    [[nodiscard]] static bool percentage_height_quirk_applies(Box const&);
 
-    [[nodiscard]] bool should_treat_width_as_auto(Box const&, AvailableSpace const&) const;
-    [[nodiscard]] bool should_treat_height_as_auto(Box const&, AvailableSpace const&) const;
+    [[nodiscard]] bool should_treat_width_as_auto(Box const&, LayoutInput const&) const;
+    [[nodiscard]] bool should_treat_height_as_auto(Box const&, LayoutInput const&) const;
 
-    [[nodiscard]] bool should_treat_max_width_as_none(Box const&, AvailableSize const&) const;
-    [[nodiscard]] bool should_treat_max_height_as_none(Box const&, AvailableSize const&) const;
+    [[nodiscard]] bool should_treat_max_width_as_none(Box const&, LayoutInput const&) const;
+    [[nodiscard]] bool should_treat_max_height_as_none(Box const&, LayoutInput const&) const;
 
-    [[nodiscard]] bool box_is_sized_as_replaced_element(Box const&, AvailableSpace const&) const;
+    [[nodiscard]] bool box_is_sized_as_replaced_element(Box const&, LayoutInput const&) const;
+    CSSPixels compute_replaced_element_width(Box const&, LayoutInput const&) const;
+    CSSPixels compute_replaced_element_height(Box const&, LayoutInput const&) const;
 
-    OwnPtr<FormattingContext> layout_inside(Box const&, LayoutMode, AvailableSpace const&);
+    OwnPtr<FormattingContext> layout_inside(Box const&, LayoutMode, LayoutInput const&);
 
     struct SpaceUsedByFloats {
         CSSPixels left { 0 };
@@ -209,12 +236,12 @@ protected:
         CSSPixels preferred_minimum_width { 0 };
     };
 
-    CSSPixels tentative_width_for_replaced_element(Box const&, CSS::Size const& computed_width, AvailableSpace const&) const;
-    CSSPixels tentative_height_for_replaced_element(Box const&, CSS::Size const& computed_height, AvailableSpace const&) const;
+    CSSPixels tentative_width_for_replaced_element(Box const&, CSS::Size const& computed_width, LayoutInput const&) const;
+    CSSPixels tentative_height_for_replaced_element(Box const&, CSS::Size const& computed_height, LayoutInput const&) const;
     CSSPixels compute_auto_height_for_block_formatting_context_root(Box const&) const;
     static CSSPixels line_box_physical_width(Box const&, LineBox const&);
 
-    [[nodiscard]] CSSPixelSize solve_replaced_size_constraint(CSSPixels input_width, CSSPixels input_height, Box const&, AvailableSpace const&) const;
+    [[nodiscard]] CSSPixelSize solve_replaced_size_constraint(CSSPixels input_width, CSSPixels input_height, Box const&, LayoutInput const&) const;
 
     ShrinkToFitResult calculate_shrink_to_fit_widths(Box const&);
 
@@ -225,17 +252,17 @@ protected:
     void layout_absolutely_positioned_children();
     virtual AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&);
     void resolve_anchor_insets(Box&) const;
-    void compute_width_for_absolutely_positioned_element(Box const&, AvailableSpace const&);
-    void compute_width_for_absolutely_positioned_non_replaced_element(Box const&, AvailableSpace const&);
-    void compute_width_for_absolutely_positioned_replaced_element(Box const&, AvailableSpace const&);
+    void compute_width_for_absolutely_positioned_element(Box const&, LayoutInput const&);
+    void compute_width_for_absolutely_positioned_non_replaced_element(Box const&, LayoutInput const&);
+    void compute_width_for_absolutely_positioned_replaced_element(Box const&, LayoutInput const&);
 
     enum class BeforeOrAfterInsideLayout {
         Before,
         After,
     };
-    void compute_height_for_absolutely_positioned_element(Box const&, AvailableSpace const&, BeforeOrAfterInsideLayout);
-    void compute_height_for_absolutely_positioned_non_replaced_element(Box const&, AvailableSpace const&, BeforeOrAfterInsideLayout);
-    void compute_height_for_absolutely_positioned_replaced_element(Box const&, AvailableSpace const&, BeforeOrAfterInsideLayout);
+    void compute_height_for_absolutely_positioned_element(Box const&, LayoutInput const&, BeforeOrAfterInsideLayout);
+    void compute_height_for_absolutely_positioned_non_replaced_element(Box const&, LayoutInput const&, BeforeOrAfterInsideLayout);
+    void compute_height_for_absolutely_positioned_replaced_element(Box const&, LayoutInput const&, BeforeOrAfterInsideLayout);
 
     [[nodiscard]] Optional<CSSPixels> compute_auto_height_for_absolutely_positioned_element(Box const&, AvailableSpace const&, BeforeOrAfterInsideLayout) const;
 
@@ -247,6 +274,9 @@ protected:
     FormattingContext* m_parent { nullptr };
     Box const& m_context_box;
 
+private:
+    void verify_used_values_access(Node const&) const;
+    Optional<CSSPixelRect> compute_inline_containing_block_rect(InlineNode const&, Box const& abspos_containing_block) const;
     LayoutState& m_state;
 };
 

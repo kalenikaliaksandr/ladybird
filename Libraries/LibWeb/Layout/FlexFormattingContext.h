@@ -19,7 +19,7 @@ public:
 
     virtual bool inhibits_floating() const override { return true; }
 
-    virtual void run(AvailableSpace const&) override;
+    virtual void run(LayoutInput const&) override;
     virtual CSSPixels automatic_content_width() const override;
     virtual CSSPixels automatic_content_height() const override;
 
@@ -33,6 +33,7 @@ private:
 
     [[nodiscard]] bool should_treat_main_max_size_as_none(Box const&) const;
     [[nodiscard]] bool should_treat_cross_max_size_as_none(Box const&) const;
+    [[nodiscard]] LayoutInput const& layout_input_for_size_resolution(Box const&) const;
 
     [[nodiscard]] CSSPixels adjust_main_size_through_aspect_ratio_for_cross_size_min_max_constraints(Box const&, CSSPixels main_size, CSS::Size const& min_cross_size, CSS::Size const& max_cross_size) const;
     [[nodiscard]] CSSPixels adjust_cross_size_through_aspect_ratio_for_main_size_min_max_constraints(Box const&, CSSPixels cross_size, CSS::Size const& min_main_size, CSS::Size const& max_main_size) const;
@@ -253,6 +254,8 @@ private:
     };
     Optional<AxisAgnosticAvailableSpace> m_available_space_for_items;
     Optional<AvailableSpace> m_available_space;
+    Optional<LayoutInput> m_layout_input;
+    Optional<LayoutInput> m_layout_input_for_items;
 };
 
 }
