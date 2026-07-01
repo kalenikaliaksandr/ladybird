@@ -242,7 +242,7 @@ private:
 
     CSS::FlexBasis used_flex_basis_for_item(FlexItem const&) const;
 
-    LayoutState::UsedValues& m_flex_container_state;
+    LayoutState::UsedValues* m_flex_container_state { nullptr };
 
     Vector<FlexLine> m_flex_lines;
     Vector<FlexItem> m_flex_items;
@@ -255,6 +255,7 @@ private:
     };
     Optional<AxisAgnosticAvailableSpace> m_available_space_for_items;
     Optional<AvailableSpace> m_available_space;
+    Optional<LayoutInput> m_layout_input;
 };
 
 }

@@ -183,11 +183,11 @@ static bool is_container_element(Node const& node)
 void SVGFormattingContext::run(LayoutInput const& layout_input)
 {
     auto const& available_space = layout_input.available_space;
+    auto formatting_context_scope = m_state.enter_formatting_context(context_box());
+    auto& svg_box_state = context_box_state(layout_input);
     FORMATTING_CONTEXT_TRACE();
     // NOTE: SVG doesn't have a "formatting context" in the spec, but this is the most
     //       obvious way to drive SVG layout in our engine at the moment.
-
-    auto& svg_box_state = m_state.get_mutable(context_box());
 
     auto const& document = context_box().document();
     if (document.document_element() == context_box().dom_node() && !document.is_decoded_svg()) {
@@ -283,6 +283,7 @@ void SVGFormattingContext::run(LayoutInput const& layout_input)
     }();
 
     m_available_space = available_space;
+    m_layout_input.emplace(layout_input);
     m_svg_offset = svg_box_state.offset;
     m_viewport_size = { viewport_width, viewport_height };
 
@@ -337,7 +338,7 @@ void SVGFormattingContext::layout_svg_element(Box const& child, LayoutInput cons
         child_state.set_content_height(transformed_rect.height());
 
         auto child_available_space = AvailableSpace(AvailableSize::make_definite(child_state.content_width()), AvailableSize::make_definite(child_state.content_height()));
-        bfc.run(LayoutInput { child_available_space });
+        bfc.run(layout_input_for_child_context(child, child_available_space, layout_input.percentage_resolution_block_size));
 
         if (auto* mask_box = child.first_child_of_type<SVGMaskBox>())
             layout_mask_or_clip(*mask_box);
@@ -392,7 +393,7 @@ void SVGFormattingContext::layout_nested_viewport(Box const& viewport, Gfx::Affi
     nested_viewport_state.set_has_definite_width(true);
     nested_viewport_state.set_has_definite_height(true);
     SVGFormattingContext nested_context(m_state, m_layout_mode, viewport, this, parent_viewbox_transform, parent_svg_transform);
-    nested_context.run(LayoutInput { *m_available_space });
+    nested_context.run(layout_input_for_child_context(viewport, *m_available_space, m_layout_input->percentage_resolution_block_size));
 }
 
 Gfx::Path SVGFormattingContext::compute_path_for_text(SVGTextBox const& text_box) const
@@ -529,7 +530,7 @@ void SVGFormattingContext::layout_path_like_element(SVGGraphicsBox const& graphi
 
 void SVGFormattingContext::layout_graphics_element(SVGGraphicsBox const& graphics_box, LayoutInput const& layout_input, Gfx::AffineTransform const& parent_svg_transform)
 {
-    auto& graphics_box_state = m_state.get_mutable(graphics_box);
+    auto& graphics_box_state = m_state.get_mutable(graphics_box, layout_input.percentage_basis_width, layout_input.percentage_basis_height);
     auto svg_transform = parent_svg_transform;
     svg_transform.multiply(const_cast<SVGGraphicsBox&>(graphics_box).dom_node().element_transform());
     graphics_box_state.set_computed_svg_transforms(Painting::SVGGraphicsPaintable::ComputedTransforms(m_current_viewbox_transform, svg_transform));
@@ -619,7 +620,13 @@ void SVGFormattingContext::layout_mask_or_clip(SVGBox const& mask_or_clip)
     SVGFormattingContext nested_context(m_state, m_layout_mode, mask_or_clip, this, parent_viewbox_transform, Gfx::AffineTransform {});
     layout_state.set_has_definite_width(true);
     layout_state.set_has_definite_height(true);
-    nested_context.run(LayoutInput { *m_available_space });
+    nested_context.run(LayoutInput {
+        *m_available_space,
+        m_layout_input->percentage_basis_width,
+        m_layout_input->percentage_basis_height,
+        m_layout_input->containing_block_writing_mode,
+        {},
+        m_layout_input->percentage_resolution_block_size });
 }
 
 void SVGFormattingContext::layout_container_element(SVGBox const& container, LayoutInput const& layout_input, Gfx::AffineTransform const& container_svg_transform)

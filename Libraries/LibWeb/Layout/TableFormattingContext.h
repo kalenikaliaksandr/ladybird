@@ -9,7 +9,6 @@
 #include <AK/Forward.h>
 #include <LibWeb/Layout/FormattingContext.h>
 #include <LibWeb/Layout/TableGrid.h>
-#include <LibWeb/Layout/TableWrapper.h>
 
 namespace Web::Layout {
 
@@ -36,33 +35,29 @@ public:
     StaticPositionRect calculate_static_position_rect(Box const&) const;
 
     Box const& table_box() const { return context_box(); }
-    TableWrapper const& table_wrapper() const
-    {
-        return as<TableWrapper>(*table_box().containing_block());
-    }
 
     static bool border_is_less_specific(CSS::BorderData const& a, CSS::BorderData const& b);
 
     virtual void parent_context_did_dimension_child_root_box() override;
 
 private:
-    CSSPixels run_caption_layout(CSS::CaptionSide, AvailableSpace const&);
-    CSSPixels compute_capmin();
+    CSSPixels run_caption_layout(CSS::CaptionSide, AvailableSpace const&, LayoutInput const&);
+    CSSPixels compute_capmin(LayoutInput const&);
     void compute_constrainedness();
-    void compute_cell_measures(RowMeasurement);
-    void compute_outer_content_sizes();
+    void compute_cell_measures(RowMeasurement, LayoutInput const&);
+    void compute_outer_content_sizes(LayoutInput const&);
     template<class RowOrColumn>
-    void initialize_table_measures();
+    void initialize_table_measures(LayoutInput const&);
     template<class RowOrColumn>
-    void compute_table_measures();
+    void compute_table_measures(LayoutInput const&);
     template<class RowOrColumn>
     void compute_intrinsic_percentage(size_t max_cell_span);
-    void compute_table_width();
+    void compute_table_width(LayoutInput const&);
     void distribute_width_to_columns();
     void distribute_excess_width_to_columns(CSSPixels available_width);
     void distribute_excess_width_to_columns_fixed_mode(CSSPixels excess_width);
     bool can_skip_row_intrinsic_measurement() const;
-    void compute_table_height();
+    void compute_table_height(LayoutInput const&);
     void distribute_height_to_rows();
     void position_row_boxes();
     void position_cell_boxes();
@@ -70,6 +65,9 @@ private:
     CSSPixels border_spacing_horizontal() const;
     CSSPixels border_spacing_vertical() const;
     void finish_grid_initialization(TableGrid const&);
+    LayoutInput layout_input_for_table_child_context(Box const&, AvailableSpace, LayoutInput const&) const;
+    LayoutState::UsedValues& ensure_table_child_used_values(Box const&, LayoutInput const&);
+    void seed_table_participant_used_values(LayoutInput const&);
 
     CSSPixels compute_columns_total_used_width() const;
     void commit_candidate_column_widths(Vector<CSSPixels> const& candidate_widths);
@@ -84,13 +82,12 @@ private:
 
     bool use_fixed_mode_layout() const;
 
-    CSSPixels table_wrapper_containing_block_width() const;
-    CSSPixels table_wrapper_containing_block_height() const;
+    static CSSPixels table_wrapper_containing_block_width(LayoutInput const&);
+    static CSSPixels table_wrapper_containing_block_height(LayoutInput const&);
+    static bool table_wrapper_containing_block_has_definite_width(LayoutInput const&);
 
     CSSPixels m_table_height { 0 };
     CSSPixels m_automatic_content_height { 0 };
-
-    Optional<AvailableSpace> m_available_space;
 
     struct Column {
         CSSPixels left_offset { 0 };

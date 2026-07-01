@@ -9,11 +9,14 @@
 #include <AK/BumpAllocator.h>
 #include <AK/HashTable.h>
 #include <AK/OwnPtr.h>
+#include <AK/StringView.h>
+#include <AK/Vector.h>
 #include <AK/kmalloc.h>
 #include <LibGfx/Path.h>
 #include <LibGfx/Point.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/LineBox.h>
+#include <LibWeb/Layout/StaticPositionRect.h>
 #include <LibWeb/Painting/PaintableBox.h>
 #include <LibWeb/Painting/SVGGraphicsPaintable.h>
 
@@ -27,35 +30,6 @@ enum class SizeConstraint {
 
 class AvailableSize;
 class AvailableSpace;
-
-// https://www.w3.org/TR/css-position-3/#static-position-rectangle
-struct StaticPositionRect {
-    enum class Alignment {
-        Start,
-        Center,
-        End,
-    };
-
-    CSSPixelRect rect;
-    Alignment horizontal_alignment { Alignment::Start };
-    Alignment vertical_alignment { Alignment::Start };
-
-    CSSPixelPoint aligned_position_for_box_with_size(CSSPixelSize const& size) const
-    {
-        CSSPixelPoint position = rect.location();
-        if (horizontal_alignment == Alignment::Center)
-            position.set_x(position.x() + (rect.width() - size.width()) / 2);
-        else if (horizontal_alignment == Alignment::End)
-            position.set_x(position.x() + rect.width() - size.width());
-
-        if (vertical_alignment == Alignment::Center)
-            position.set_y(position.y() + (rect.height() - size.height()) / 2);
-        else if (vertical_alignment == Alignment::End)
-            position.set_y(position.y() + rect.height() - size.height());
-
-        return position;
-    }
-};
 
 // Sparse, index-based container using two-level page tables.
 // Layout state is throwaway — rebuilt on every layout pass — so a
@@ -139,6 +113,20 @@ private:
 struct LayoutState {
     AK_ALLOC_WITH_KMALLOC_PARTITION(HeapPartition::Layout);
 
+    class FormattingContextScope {
+    public:
+        FormattingContextScope(LayoutState&, NodeWithStyle const& root);
+        FormattingContextScope(FormattingContextScope&&);
+        FormattingContextScope& operator=(FormattingContextScope&&) = delete;
+        FormattingContextScope(FormattingContextScope const&) = delete;
+        FormattingContextScope& operator=(FormattingContextScope const&) = delete;
+        ~FormattingContextScope();
+
+    private:
+        LayoutState* m_state { nullptr };
+        NodeWithStyle const* m_root { nullptr };
+    };
+
     struct UsedValues {
         UsedValues() = default;
         UsedValues(UsedValues&&) = default;
@@ -147,9 +135,17 @@ struct LayoutState {
 
         NodeWithStyle const& node() const { return *m_node; }
         NodeWithStyle& node() { return const_cast<NodeWithStyle&>(*m_node); }
-        void set_node(NodeWithStyle const&, UsedValues const* containing_block_used_values);
+        void set_node(NodeWithStyle const&, UsedValues const* containing_block_used_values, Optional<CSSPixels> percentage_basis_width = {}, Optional<CSSPixels> percentage_basis_height = {});
 
         UsedValues const* containing_block_used_values() const { return m_containing_block_used_values; }
+        Optional<CSSPixels> const& percentage_basis_width() const { return m_percentage_basis_width; }
+        Optional<CSSPixels> const& percentage_basis_height() const { return m_percentage_basis_height; }
+        // Re-pins the basis only; deliberately leaves definiteness and content sizes alone,
+        // since those were resolved against the basis the values were created with.
+        void set_percentage_basis_width(Optional<CSSPixels> width) { m_percentage_basis_width = width; }
+        void set_percentage_basis_height(Optional<CSSPixels> height) { m_percentage_basis_height = height; }
+        CSSPixels percentage_basis_width_or_zero() const { return m_percentage_basis_width.value_or(0); }
+        CSSPixels percentage_basis_height_or_zero() const { return m_percentage_basis_height.value_or(0); }
 
         CSSPixels content_width() const { return m_content_width; }
         CSSPixels content_height() const { return m_content_height; }
@@ -178,17 +174,15 @@ struct LayoutState {
         void set_content_x(CSSPixels x) { offset.set_x(x); }
         void set_content_y(CSSPixels y) { offset.set_y(y); }
 
-        // Offset from ICB (viewport) content edge to this box's content edge.
-        // Computed lazily by walking the containing block chain.
-        // For pre-populated nodes (partial relayout), returns the cached value from paintable absolute position.
+        // Offset from the current formatting context root's content edge to this box's content edge.
+        // Computed lazily by walking the in-context containing block chain.
         CSSPixelPoint cumulative_offset() const
         {
-            if (m_cumulative_offset.has_value())
-                return *m_cumulative_offset;
             if (m_containing_block_used_values)
                 return m_containing_block_used_values->cumulative_offset() + offset;
-            return offset;
+            return {};
         }
+        void set_offset_parent(UsedValues const& containing_block_used_values) { m_containing_block_used_values = &containing_block_used_values; }
 
         // offset from top-left corner of content area of box's containing block to top-left corner of box's content area
         CSSPixelPoint offset;
@@ -328,6 +322,11 @@ struct LayoutState {
         }
 
         void set_static_position_rect(StaticPositionRect const& static_position_rect) { ensure_rare_data().static_position_rect = static_position_rect; }
+        Optional<StaticPositionRect> const& static_position_rect() const
+        {
+            static Optional<StaticPositionRect> const empty;
+            return m_rare ? m_rare->static_position_rect : empty;
+        }
         CSSPixelPoint static_position() const
         {
             if (!m_rare || !m_rare->static_position_rect.has_value())
@@ -392,7 +391,8 @@ struct LayoutState {
 
         Layout::NodeWithStyle const* m_node { nullptr };
         UsedValues const* m_containing_block_used_values { nullptr };
-        Optional<CSSPixelPoint> m_cumulative_offset;
+        Optional<CSSPixels> m_percentage_basis_width;
+        Optional<CSSPixels> m_percentage_basis_height;
 
         CSSPixels m_content_width { 0 };
         CSSPixels m_content_height { 0 };
@@ -415,7 +415,17 @@ struct LayoutState {
     void set_should_collect_devtools_layout_data(bool should_collect) { m_should_collect_devtools_layout_data = should_collect; }
     bool should_collect_devtools_layout_data() const { return m_should_collect_devtools_layout_data; }
 
+    [[nodiscard]] FormattingContextScope enter_formatting_context(NodeWithStyle const& root);
+
+    struct PercentageBasis {
+        Optional<CSSPixels> width;
+        Optional<CSSPixels> height;
+    };
+
+    static PercentageBasis percentage_basis_for_containing_block(UsedValues const&);
+
     UsedValues& get_mutable(NodeWithStyle const&);
+    UsedValues& get_mutable(NodeWithStyle const&, Optional<CSSPixels> percentage_basis_width, Optional<CSSPixels> percentage_basis_height);
     UsedValues const& get(NodeWithStyle const&) const;
 
     UsedValues& populate_from_paintable(NodeWithStyle const&, Painting::PaintableBox const&);
@@ -425,12 +435,20 @@ struct LayoutState {
     UsedValues* try_get_mutable(NodeWithStyle const&);
     UsedValues const* try_get(Node const&) const;
 
+    // Some cross-context geometry conversions need existing used values without creating
+    // state or following containing-block pointers across the active formatting context.
+    UsedValues const* try_get_existing(NodeWithStyle const&) const;
+
 private:
     UsedValues& ensure_used_values_for(NodeWithStyle const&);
+    void push_formatting_context_root(NodeWithStyle const&);
+    void pop_formatting_context_root(NodeWithStyle const&);
+    void verify_formatting_context_boundary_read(NodeWithStyle const&, StringView operation) const;
     void resolve_relative_positions();
 
     PagedStore<UsedValues> m_used_values_store;
     Layout::NodeWithStyle const* m_subtree_root { nullptr };
+    Vector<Layout::NodeWithStyle const*, 8> m_formatting_context_root_stack;
     bool m_should_collect_devtools_layout_data { false };
 };
 

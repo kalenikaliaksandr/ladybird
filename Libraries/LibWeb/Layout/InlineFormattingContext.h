@@ -16,7 +16,7 @@ namespace Web::Layout {
 
 class InlineFormattingContext final : public FormattingContext {
 public:
-    InlineFormattingContext(LayoutState&, LayoutMode, BlockContainer const& containing_block, LayoutState::UsedValues& containing_block_used_values, BlockFormattingContext& parent);
+    InlineFormattingContext(LayoutState&, LayoutMode, BlockContainer const& containing_block, LayoutState::UsedValues& context_box_used_values, BlockFormattingContext& parent);
     ~InlineFormattingContext();
 
     BlockFormattingContext& parent();
@@ -45,9 +45,10 @@ private:
     void apply_justification_to_fragments(CSS::TextJustify, LineBox&, bool is_last_line);
     StaticPositionRect calculate_inline_end_static_position_rect() const;
 
-    LayoutState::UsedValues& m_containing_block_used_values;
+    LayoutState::UsedValues& m_context_box_used_values;
 
     Optional<AvailableSpace> m_available_space;
+    Optional<LayoutInput> m_layout_input;
 
     CSSPixels m_automatic_content_width { 0 };
     CSSPixels m_automatic_content_height { 0 };

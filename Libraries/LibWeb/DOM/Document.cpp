@@ -1683,7 +1683,12 @@ static void relayout_svg_root(Layout::SVGSVGBox& svg_root)
 
     Layout::SVGFormattingContext svg_context(layout_state, Layout::LayoutMode::Normal, svg_root, nullptr);
     auto available_space = Layout::AvailableSpace(Layout::AvailableSize::make_definite(content_width), Layout::AvailableSize::make_definite(content_height));
-    svg_context.run(Layout::LayoutInput { available_space });
+    auto const* viewport_state = layout_state.try_get(viewport);
+    svg_context.run(Layout::LayoutInput {
+        available_space,
+        viewport_state && viewport_state->has_definite_width() ? Optional<CSSPixels> { viewport_state->content_width() } : Optional<CSSPixels> {},
+        viewport_state && viewport_state->has_definite_height() ? Optional<CSSPixels> { viewport_state->content_height() } : Optional<CSSPixels> {},
+        viewport.computed_values().writing_mode() });
     layout_state.commit(svg_root);
 
     svg_root.for_each_in_inclusive_subtree([](auto& node) {
@@ -1890,13 +1895,20 @@ void Document::update_layout(UpdateLayoutReason reason)
 
         {
             auto& viewport = static_cast<Layout::Viewport&>(*m_layout_root);
-            auto& viewport_state = layout_state.get_mutable(viewport);
+            auto& viewport_state = layout_state.get_mutable(
+                viewport,
+                Optional<CSSPixels> { viewport_rect.width() },
+                Optional<CSSPixels> { viewport_rect.height() });
             viewport_state.set_content_width(viewport_rect.width());
             viewport_state.set_content_height(viewport_rect.height());
 
             // NB: Called during layout update.
             if (document_element && document_element->unsafe_layout_node()) {
-                auto& icb_state = layout_state.get_mutable(as<Layout::NodeWithStyleAndBoxModelMetrics>(*document_element->unsafe_layout_node()));
+                auto percentage_basis = Layout::LayoutState::percentage_basis_for_containing_block(viewport_state);
+                auto& icb_state = layout_state.get_mutable(
+                    as<Layout::NodeWithStyleAndBoxModelMetrics>(*document_element->unsafe_layout_node()),
+                    percentage_basis.width,
+                    percentage_basis.height);
                 icb_state.set_content_width(viewport_rect.width());
             }
 
@@ -1912,10 +1924,18 @@ void Document::update_layout(UpdateLayoutReason reason)
                 auto content_height = layout_state.get(*svg_root.containing_block()).content_height();
                 layout_state.get_mutable(svg_root).set_content_height(content_height);
                 Layout::SVGFormattingContext svg_formatting_context(layout_state, Layout::LayoutMode::Normal, svg_root, nullptr);
-                svg_formatting_context.run(Layout::LayoutInput { available_space });
+                svg_formatting_context.run(Layout::LayoutInput {
+                    available_space,
+                    Optional<CSSPixels> { viewport_rect.width() },
+                    Optional<CSSPixels> { viewport_rect.height() },
+                    viewport.computed_values().writing_mode() });
             } else {
                 Layout::BlockFormattingContext root_formatting_context(layout_state, Layout::LayoutMode::Normal, *m_layout_root, nullptr);
-                root_formatting_context.run(Layout::LayoutInput { available_space });
+                root_formatting_context.run(Layout::LayoutInput {
+                    available_space,
+                    Optional<CSSPixels> { viewport_rect.width() },
+                    Optional<CSSPixels> { viewport_rect.height() },
+                    viewport.computed_values().writing_mode() });
             }
         }
 

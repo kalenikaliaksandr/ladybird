@@ -308,8 +308,9 @@ private:
     Vector<GridItem> m_grid_items;
 
     Optional<AvailableSpace> m_available_space;
+    Optional<LayoutInput> m_layout_input;
 
-    LayoutState::UsedValues& m_grid_container_used_values;
+    LayoutState::UsedValues* m_grid_container_used_values { nullptr };
 
     void determine_grid_container_height();
     CSSPixels resolve_used_grid_container_height_for_second_row_layout() const;

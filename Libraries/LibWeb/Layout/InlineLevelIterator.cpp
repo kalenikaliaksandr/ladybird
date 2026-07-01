@@ -15,11 +15,11 @@
 
 namespace Web::Layout {
 
-InlineLevelIterator::InlineLevelIterator(Layout::InlineFormattingContext& inline_formatting_context, Layout::LayoutState& layout_state, Layout::BlockContainer const& containing_block, LayoutState::UsedValues const& containing_block_used_values, LayoutMode layout_mode)
+InlineLevelIterator::InlineLevelIterator(Layout::InlineFormattingContext& inline_formatting_context, Layout::LayoutState& layout_state, Layout::BlockContainer const& containing_block, LayoutState::UsedValues const& context_box_used_values, LayoutMode layout_mode)
     : m_inline_formatting_context(inline_formatting_context)
     , m_layout_state(layout_state)
     , m_containing_block(containing_block)
-    , m_containing_block_used_values(containing_block_used_values)
+    , m_context_box_used_values(context_box_used_values)
     , m_next_node(containing_block.first_child())
     , m_layout_mode(layout_mode)
 {
@@ -56,28 +56,28 @@ void InlineLevelIterator::enter_node_with_box_model_metrics(Layout::NodeWithStyl
     auto& used_values = m_layout_state.get_mutable(node);
     auto const& computed_values = node.computed_values();
 
-    used_values.margin_top = computed_values.margin().top().to_px_or_zero(m_containing_block_used_values.content_width());
-    used_values.margin_bottom = computed_values.margin().bottom().to_px_or_zero(m_containing_block_used_values.content_width());
+    used_values.margin_top = computed_values.margin().top().to_px_or_zero(m_context_box_used_values.content_width());
+    used_values.margin_bottom = computed_values.margin().bottom().to_px_or_zero(m_context_box_used_values.content_width());
 
-    used_values.margin_left = computed_values.margin().left().to_px_or_zero(m_containing_block_used_values.content_width());
+    used_values.margin_left = computed_values.margin().left().to_px_or_zero(m_context_box_used_values.content_width());
     used_values.border_left = computed_values.border_left().width;
-    used_values.padding_left = computed_values.padding().left().to_px_or_zero(m_containing_block_used_values.content_width());
+    used_values.padding_left = computed_values.padding().left().to_px_or_zero(m_context_box_used_values.content_width());
 
-    used_values.margin_right = computed_values.margin().right().to_px_or_zero(m_containing_block_used_values.content_width());
+    used_values.margin_right = computed_values.margin().right().to_px_or_zero(m_context_box_used_values.content_width());
     used_values.border_right = computed_values.border_right().width;
-    used_values.padding_right = computed_values.padding().right().to_px_or_zero(m_containing_block_used_values.content_width());
+    used_values.padding_right = computed_values.padding().right().to_px_or_zero(m_context_box_used_values.content_width());
 
     used_values.border_top = computed_values.border_top().width;
     used_values.border_bottom = computed_values.border_bottom().width;
-    used_values.padding_bottom = computed_values.padding().bottom().to_px_or_zero(m_containing_block_used_values.content_width());
-    used_values.padding_top = computed_values.padding().top().to_px_or_zero(m_containing_block_used_values.content_width());
+    used_values.padding_bottom = computed_values.padding().bottom().to_px_or_zero(m_context_box_used_values.content_width());
+    used_values.padding_top = computed_values.padding().top().to_px_or_zero(m_context_box_used_values.content_width());
 
     m_extra_leading_metrics->margin += used_values.margin_left;
     m_extra_leading_metrics->border += used_values.border_left;
     m_extra_leading_metrics->padding += used_values.padding_left;
 
     // Now's our chance to resolve the inset properties for this node.
-    m_inline_formatting_context.compute_inset(node, m_inline_formatting_context.content_box_rect(m_containing_block_used_values).size());
+    m_inline_formatting_context.compute_inset(node, m_inline_formatting_context.content_box_rect(m_context_box_used_values).size());
 
     m_box_model_node_stack.append(&node);
 }

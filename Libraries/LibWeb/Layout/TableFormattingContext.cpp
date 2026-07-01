@@ -22,29 +22,56 @@ TableFormattingContext::TableFormattingContext(LayoutState& state, LayoutMode la
 
 TableFormattingContext::~TableFormattingContext() = default;
 
-CSSPixels TableFormattingContext::table_wrapper_containing_block_width() const
+CSSPixels TableFormattingContext::table_wrapper_containing_block_width(LayoutInput const& layout_input)
 {
-    // CSS Grid creates a grid-area containing block for each grid item. The table wrapper is the grid item for
-    // display:table, so table-root percentages use the grid area rather than the layout-tree containing block.
-    if (auto const& grid_area_size = m_state.get(table_wrapper()).grid_area_size(); grid_area_size.has_value())
-        return grid_area_size->width();
-
-    auto const* containing_block_used_values = m_state.try_get(*table_wrapper().containing_block());
-    if (!containing_block_used_values)
-        return 0;
-    return containing_block_used_values->content_width();
+    return layout_input.percentage_basis_width.value_or(0);
 }
 
-CSSPixels TableFormattingContext::table_wrapper_containing_block_height() const
+CSSPixels TableFormattingContext::table_wrapper_containing_block_height(LayoutInput const& layout_input)
 {
-    // Keep the block-axis percentage basis consistent with the grid-area containing block stored during grid layout.
-    if (auto const& grid_area_size = m_state.get(table_wrapper()).grid_area_size(); grid_area_size.has_value())
-        return grid_area_size->height();
+    return layout_input.percentage_basis_height.value_or(0);
+}
 
-    auto const* containing_block_used_values = m_state.try_get(*table_wrapper().containing_block());
-    if (!containing_block_used_values)
-        return 0;
-    return containing_block_used_values->content_height();
+bool TableFormattingContext::table_wrapper_containing_block_has_definite_width(LayoutInput const& layout_input)
+{
+    return layout_input.percentage_basis_width.has_value();
+}
+
+LayoutInput TableFormattingContext::layout_input_for_table_child_context(Box const& child_box, AvailableSpace available_space, LayoutInput const& table_layout_input) const
+{
+    auto containing_block_writing_mode = child_box.containing_block()
+        ? child_box.containing_block()->computed_values().writing_mode()
+        : CSS::WritingMode::HorizontalTb;
+    Optional<CSSPixels> percentage_basis_height;
+    if (available_space.height.is_definite())
+        percentage_basis_height = available_space.height.to_px_or_zero();
+    else if (!table_box().computed_values().height().is_auto())
+        percentage_basis_height = table_layout_input.percentage_basis_height;
+
+    return LayoutInput {
+        move(available_space),
+        table_layout_input.percentage_basis_width,
+        percentage_basis_height,
+        containing_block_writing_mode,
+        {},
+        table_layout_input.percentage_resolution_block_size
+    };
+}
+
+LayoutState::UsedValues& TableFormattingContext::ensure_table_child_used_values(Box const& box, LayoutInput const& table_layout_input)
+{
+    auto percentage_basis_height = table_box().computed_values().height().is_auto()
+        ? Optional<CSSPixels> {}
+        : table_layout_input.percentage_basis_height;
+    auto& used_values = m_state.get_mutable(box, table_layout_input.percentage_basis_width, percentage_basis_height);
+    if (box.display().is_table_row_group()
+        || box.display().is_table_header_group()
+        || box.display().is_table_footer_group()
+        || box.display().is_table_row()
+        || box.display().is_table_cell()) {
+        used_values.set_offset_parent(m_state.get(table_box()));
+    }
+    return used_values;
 }
 
 static inline bool is_table_column_group(Box const& box)
@@ -57,7 +84,7 @@ static inline bool is_table_column(Box const& box)
     return box.display().is_table_column();
 }
 
-CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, AvailableSpace const& caption_available_space)
+CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, AvailableSpace const& caption_available_space, LayoutInput const& table_layout_input)
 {
     CSSPixels caption_height = 0;
     for (auto child = table_box().first_child(); child; child = child->next_sibling()) {
@@ -67,17 +94,22 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
         auto const& child_box = as<Box>(*child);
         // The caption boxes are principal block-level boxes that retain their own content, padding, margin, and border areas,
         // and are rendered as normal block boxes inside the table wrapper box, as described in https://www.w3.org/TR/CSS22/tables.html#model
+        auto caption_layout_input = layout_input_for_table_child_context(child_box, caption_available_space, table_layout_input);
+        ensure_table_child_used_values(child_box, table_layout_input);
         if (auto caption_context = create_independent_formatting_context_if_needed(m_state, m_layout_mode, child_box)) {
             auto inner_available_space = caption_available_space;
             auto* block_context = as_if<BlockFormattingContext>(caption_context.ptr());
             if (block_context) {
                 auto available_width = caption_available_space.width.to_px_or_zero();
                 block_context->resolve_vertical_box_model_metrics(child_box, available_width);
-                block_context->compute_width(child_box, caption_available_space);
+                block_context->compute_width(child_box, caption_available_space, caption_layout_input.percentage_resolution_block_size);
                 inner_available_space = m_state.get(child_box).available_inner_space_or_constraints_from(caption_available_space);
             }
 
-            caption_context->run(LayoutInput { inner_available_space });
+            if (block_context)
+                caption_context->run(layout_input_for_table_child_context(child_box, inner_available_space, table_layout_input));
+            else
+                caption_context->run(caption_layout_input);
 
             if (block_context) {
                 auto& caption_state = m_state.get_mutable(child_box);
@@ -141,11 +173,11 @@ void TableFormattingContext::compute_constrainedness()
     }
 }
 
-void TableFormattingContext::compute_cell_measures(RowMeasurement row_measurement)
+void TableFormattingContext::compute_cell_measures(RowMeasurement row_measurement, LayoutInput const& layout_input)
 {
     // Implements https://www.w3.org/TR/css-tables-3/#computing-cell-measures.
-    auto containing_block_width = table_wrapper_containing_block_width();
-    auto containing_block_height = table_wrapper_containing_block_height();
+    auto containing_block_width = table_wrapper_containing_block_width(layout_input);
+    auto containing_block_height = table_wrapper_containing_block_height(layout_input);
 
     compute_constrainedness();
 
@@ -189,16 +221,26 @@ void TableFormattingContext::compute_cell_measures(RowMeasurement row_measuremen
                 max_content_width = width;
             }
         } else {
-            min_content_width = calculate_min_content_width(cell.box);
-            max_content_width = calculate_max_content_width(cell.box);
+            min_content_width = calculate_min_content_width(
+                cell.box,
+                layout_input_for_table_child_context(cell.box, AvailableSpace { AvailableSize::make_min_content(), AvailableSize::make_indefinite() }, layout_input));
+            max_content_width = calculate_max_content_width(
+                cell.box,
+                layout_input_for_table_child_context(cell.box, AvailableSpace { AvailableSize::make_max_content(), AvailableSize::make_indefinite() }, layout_input));
         }
 
         // The outer min-content width of a table-cell is max(min-width, min-content width) adjusted by the cell intrinsic offsets.
         cell.outer_min_width = max(min_width, min_content_width) + cell_intrinsic_width_offsets;
 
         if (row_measurement == RowMeasurement::Include) {
-            auto min_content_height = calculate_min_content_height(cell.box, max_content_width);
-            auto max_content_height = calculate_max_content_height(cell.box, min_content_width);
+            auto min_content_height = calculate_min_content_height(
+                cell.box,
+                max_content_width,
+                layout_input_for_table_child_context(cell.box, AvailableSpace { AvailableSize::make_definite(max_content_width), AvailableSize::make_min_content() }, layout_input));
+            auto max_content_height = calculate_max_content_height(
+                cell.box,
+                min_content_width,
+                layout_input_for_table_child_context(cell.box, AvailableSpace { AvailableSize::make_definite(min_content_width), AvailableSize::make_max_content() }, layout_input));
 
             // The outer min-content height of a table-cell is max(min-height, min-content height) adjusted by the cell intrinsic offsets.
             auto min_height = computed_values.min_height().to_px(containing_block_height);
@@ -239,10 +281,10 @@ void TableFormattingContext::compute_cell_measures(RowMeasurement row_measuremen
     }
 }
 
-void TableFormattingContext::compute_outer_content_sizes()
+void TableFormattingContext::compute_outer_content_sizes(LayoutInput const& layout_input)
 {
-    auto containing_block_width = table_wrapper_containing_block_width();
-    auto containing_block_height = table_wrapper_containing_block_height();
+    auto containing_block_width = table_wrapper_containing_block_width(layout_input);
+    auto containing_block_height = table_wrapper_containing_block_height(layout_input);
 
     size_t column_index = 0;
     TableGrid::for_each_child_box_matching(table_box(), is_table_column_group, [&](auto& column_group_box) {
@@ -274,9 +316,9 @@ void TableFormattingContext::compute_outer_content_sizes()
 }
 
 template<>
-void TableFormattingContext::initialize_table_measures<TableFormattingContext::Row>()
+void TableFormattingContext::initialize_table_measures<TableFormattingContext::Row>(LayoutInput const& layout_input)
 {
-    auto containing_block_height = table_wrapper_containing_block_height();
+    auto containing_block_height = table_wrapper_containing_block_height(layout_input);
 
     for (auto& cell : m_cells) {
         auto const& computed_values = cell.box.computed_values();
@@ -293,7 +335,7 @@ void TableFormattingContext::initialize_table_measures<TableFormattingContext::R
 }
 
 template<>
-void TableFormattingContext::initialize_table_measures<TableFormattingContext::Column>()
+void TableFormattingContext::initialize_table_measures<TableFormattingContext::Column>(LayoutInput const&)
 {
     // Implement the following parts of the specification, accounting for fixed layout mode:
     // https://www.w3.org/TR/css-tables-3/#min-content-width-of-a-column-based-on-cells-of-span-up-to-1
@@ -387,9 +429,9 @@ void TableFormattingContext::compute_intrinsic_percentage(size_t max_cell_span)
 }
 
 template<class RowOrColumn>
-void TableFormattingContext::compute_table_measures()
+void TableFormattingContext::compute_table_measures(LayoutInput const& layout_input)
 {
-    initialize_table_measures<RowOrColumn>();
+    initialize_table_measures<RowOrColumn>(layout_input);
 
     auto& rows_or_columns = table_rows_or_columns<RowOrColumn>();
 
@@ -496,12 +538,12 @@ void TableFormattingContext::compute_table_measures()
     }
 }
 
-CSSPixels TableFormattingContext::compute_capmin()
+CSSPixels TableFormattingContext::compute_capmin(LayoutInput const& layout_input)
 {
     // The caption width minimum (CAPMIN) is the largest of the table captions min-content contribution:
     // https://drafts.csswg.org/css-tables-3/#computing-the-table-width
     CSSPixels capmin = 0;
-    auto width_of_table_wrapper_containing_block = table_wrapper_containing_block_width();
+    auto width_of_table_wrapper_containing_block = table_wrapper_containing_block_width(layout_input);
     for (auto child = table_box().first_child(); child; child = child->next_sibling()) {
         if (!child->display().is_table_caption()) {
             continue;
@@ -524,9 +566,16 @@ CSSPixels TableFormattingContext::compute_capmin()
                 + margin_right;
         };
 
-        auto caption_min_content_contribution = outer_size_for_inner_size(calculate_min_content_width(child_box));
+        ensure_table_child_used_values(child_box, layout_input);
+        auto caption_min_content_contribution = outer_size_for_inner_size(calculate_min_content_width(
+            child_box,
+            layout_input_for_table_child_context(child_box, AvailableSpace { AvailableSize::make_min_content(), AvailableSize::make_indefinite() }, layout_input)));
         if (!computed_values.width().is_auto() && !computed_values.width().contains_percentage()) {
-            auto preferred_inner_width = calculate_inner_width(child_box, AvailableSize::make_definite(width_of_table_wrapper_containing_block), computed_values.width());
+            auto preferred_inner_width = calculate_inner_width(
+                child_box,
+                AvailableSize::make_definite(width_of_table_wrapper_containing_block),
+                computed_values.width(),
+                layout_input.percentage_resolution_block_size);
             caption_min_content_contribution = max(caption_min_content_contribution, outer_size_for_inner_size(preferred_inner_width));
         }
 
@@ -535,18 +584,18 @@ CSSPixels TableFormattingContext::compute_capmin()
     return capmin;
 }
 
-static bool width_is_auto_or_indefinite_percentage(CSS::Size const& width, LayoutState::UsedValues const* containing_block_state)
+static bool width_is_auto_or_indefinite_percentage(CSS::Size const& width, bool containing_block_has_definite_width)
 {
     if (width.is_auto())
         return true;
     if (width.contains_percentage()) {
-        if (!containing_block_state || !containing_block_state->has_definite_width())
+        if (!containing_block_has_definite_width)
             return true;
     }
     return false;
 }
 
-void TableFormattingContext::compute_table_width()
+void TableFormattingContext::compute_table_width(LayoutInput const& layout_input)
 {
     // https://drafts.csswg.org/css-tables-3/#computing-the-table-width
 
@@ -554,11 +603,11 @@ void TableFormattingContext::compute_table_width()
 
     auto& computed_values = table_box().computed_values();
 
-    auto width_of_table_containing_block = m_available_space->width;
+    auto width_of_table_containing_block = layout_input.available_space.width;
 
     // Percentages on 'width' and 'height' on the table are relative to the table wrapper box's containing block,
     // not the table wrapper box itself.
-    CSSPixels width_of_table_wrapper_containing_block = table_wrapper_containing_block_width();
+    CSSPixels width_of_table_wrapper_containing_block = table_wrapper_containing_block_width(layout_input);
 
     // Compute undistributable space due to border spacing: https://www.w3.org/TR/css-tables-3/#computing-undistributable-space.
     auto undistributable_space = (m_columns.size() + 1) * border_spacing_horizontal();
@@ -599,20 +648,22 @@ void TableFormattingContext::compute_table_width()
     };
 
     // The used min-width of a table is the greater of the resolved min-width, CAPMIN, and GRIDMIN.
-    auto used_min_width = max(grid_min, compute_capmin());
+    auto used_min_width = max(grid_min, compute_capmin(layout_input));
     if (!computed_values.min_width().is_auto()) {
         used_min_width = max(used_min_width, resolve_width_constraint_to_content_box(computed_values.min_width()));
     }
 
     CSSPixels used_width;
-    if (m_available_space->width.is_min_content()) {
+    if (layout_input.available_space.width.is_min_content()) {
         used_width = grid_min;
-    } else if (m_available_space->width.is_max_content()) {
+    } else if (layout_input.available_space.width.is_max_content()) {
         used_width = grid_max;
-    } else if (width_is_auto_or_indefinite_percentage(computed_values.width(), m_state.try_get(*table_wrapper().containing_block()))) {
+    } else if (width_is_auto_or_indefinite_percentage(computed_values.width(), table_wrapper_containing_block_has_definite_width(layout_input))) {
         // If the table-root has 'width: auto', the used width is the greater of
         // min(GRIDMAX, the table’s containing block width), the used min-width of the table.
-        if (width_of_table_containing_block.is_definite())
+        if (width_of_table_containing_block.is_definite() && m_layout_mode == LayoutMode::Normal)
+            used_width = max(width_of_table_containing_block.to_px_or_zero(), used_min_width);
+        else if (width_of_table_containing_block.is_definite())
             used_width = max(min(grid_max, width_of_table_containing_block.to_px_or_zero()), used_min_width);
         else
             used_width = max(grid_max, used_min_width);
@@ -640,26 +691,15 @@ void TableFormattingContext::compute_table_width()
         // of resolved-table-width, and the used min-width of the table.
         CSSPixels resolved_table_width = resolve_width_constraint_to_content_box(computed_values.width());
         used_width = max(resolved_table_width, used_min_width);
-        if (!should_treat_max_width_as_none(table_box(), m_available_space->width))
+        if (!should_treat_max_width_as_none(table_box(), layout_input.available_space.width))
             used_width = min(used_width, resolve_width_constraint_to_content_box(computed_values.max_width()));
     }
 
-    auto& table_wrapper_box_state = m_state.get_mutable(table_wrapper());
-    if (computed_values.width().is_auto()
-        && table_wrapper_box_state.grid_area_size().has_value()
-        && table_wrapper_box_state.has_definite_width()) {
-        auto stretched_table_width = table_wrapper_box_state.content_width()
-            - table_box_state.border_box_left()
-            - table_box_state.border_box_right();
-        stretched_table_width = max(CSSPixels(0), stretched_table_width);
-        used_width = max(used_width, stretched_table_width);
-    }
-    if (!should_treat_max_width_as_none(table_box(), m_available_space->width))
+    if (!should_treat_max_width_as_none(table_box(), layout_input.available_space.width))
         used_width = min(used_width, resolve_width_constraint_to_content_box(computed_values.max_width()));
     used_width = max(used_width, used_min_width);
 
     table_box_state.set_content_width(used_width);
-    table_wrapper_box_state.set_content_width(table_box_state.border_box_width());
 }
 
 CSSPixels TableFormattingContext::compute_columns_total_used_width() const
@@ -992,7 +1032,7 @@ bool TableFormattingContext::can_skip_row_intrinsic_measurement() const
     return true;
 }
 
-void TableFormattingContext::compute_table_height()
+void TableFormattingContext::compute_table_height(LayoutInput const& layout_input)
 {
     // First pass of row height calculation:
     for (auto& row : m_rows) {
@@ -1002,8 +1042,7 @@ void TableFormattingContext::compute_table_height()
         }
         auto row_computed_height = row.box.computed_values().height();
         if (row_computed_height.is_length()) {
-            auto height_of_containing_block = m_state.get(*row.box.containing_block()).content_height();
-            auto row_used_height = row_computed_height.to_px(height_of_containing_block);
+            auto row_used_height = row_computed_height.to_px(0);
             row.base_height = max(row.base_height, row_used_height);
         }
     }
@@ -1011,14 +1050,14 @@ void TableFormattingContext::compute_table_height()
     // First pass of cells layout:
     for (auto& cell : m_cells) {
         auto& row = m_rows[cell.row_index];
-        auto& cell_state = m_state.get_mutable(cell.box);
+        auto& cell_state = ensure_table_child_used_values(cell.box, layout_input);
 
         CSSPixels span_width = 0;
         for (size_t i = 0; i < cell.column_span; ++i)
             span_width += m_columns[cell.column_index + i].used_width;
 
-        auto width_of_containing_block = cell_state.containing_block_used_values()->content_width();
-        auto height_of_containing_block = cell_state.containing_block_used_values()->content_height();
+        auto width_of_containing_block = cell_state.percentage_basis_width_or_zero();
+        auto height_of_containing_block = cell_state.percentage_basis_height_or_zero();
 
         cell_state.padding_top = cell.box.computed_values().padding().top().to_px_or_zero(width_of_containing_block);
         cell_state.padding_bottom = cell.box.computed_values().padding().bottom().to_px_or_zero(width_of_containing_block);
@@ -1048,7 +1087,10 @@ void TableFormattingContext::compute_table_height()
         // - the horizontal/vertical border-spacing times the amount of spanned visible columns/rows minus one
         // FIXME: Account for visibility.
         cell_state.set_content_width(span_width - cell_state.border_box_left() - cell_state.border_box_right() + (cell.column_span - 1) * border_spacing_horizontal());
-        if (auto independent_formatting_context = layout_inside(cell.box, m_layout_mode, LayoutInput { cell_state.available_inner_space_or_constraints_from(*m_available_space) })) {
+        if (auto independent_formatting_context = layout_inside(
+                cell.box,
+                m_layout_mode,
+                layout_input_for_table_child_context(cell.box, cell_state.available_inner_space_or_constraints_from(layout_input.available_space), layout_input))) {
             cell_state.set_content_height(independent_formatting_context->automatic_content_height());
             independent_formatting_context->parent_context_did_dimension_child_root_box();
         }
@@ -1085,7 +1127,7 @@ void TableFormattingContext::compute_table_height()
         // If the table has a height property with a value other than auto, it is treated as a minimum height for the
         // table grid, and will eventually be distributed to the height of the rows if their collective minimum height
         // ends up smaller than this number.
-        CSSPixels height_of_table_containing_block = table_wrapper_containing_block_height();
+        CSSPixels height_of_table_containing_block = table_wrapper_containing_block_height(layout_input);
         auto specified_table_height = table_box().computed_values().height().to_px(height_of_table_containing_block);
         if (table_box().computed_values().box_sizing() == CSS::BoxSizing::BorderBox) {
             auto const& table_state = m_state.get(table_box());
@@ -1126,7 +1168,7 @@ void TableFormattingContext::compute_table_height()
     // At this point, percentage cell height can be resolved because the final table height is calculated.
     for (auto& cell : m_cells) {
         auto& row = m_rows[cell.row_index];
-        auto& cell_state = m_state.get_mutable(cell.box);
+        auto& cell_state = ensure_table_child_used_values(cell.box, layout_input);
 
         CSSPixels span_width = 0;
         for (size_t i = 0; i < cell.column_span; ++i)
@@ -1144,7 +1186,10 @@ void TableFormattingContext::compute_table_height()
         }
 
         cell_state.set_content_width(span_width - cell_state.border_box_left() - cell_state.border_box_right() + (cell.column_span - 1) * border_spacing_horizontal());
-        if (auto independent_formatting_context = layout_inside(cell.box, m_layout_mode, LayoutInput { cell_state.available_inner_space_or_constraints_from(*m_available_space) })) {
+        if (auto independent_formatting_context = layout_inside(
+                cell.box,
+                m_layout_mode,
+                layout_input_for_table_child_context(cell.box, cell_state.available_inner_space_or_constraints_from(layout_input.available_space), layout_input))) {
             independent_formatting_context->parent_context_did_dimension_child_root_box();
         }
 
@@ -1546,6 +1591,18 @@ void TableFormattingContext::border_conflict_resolution()
     }
 }
 
+void TableFormattingContext::seed_table_participant_used_values(LayoutInput const& layout_input)
+{
+    for (auto& row : m_rows)
+        ensure_table_child_used_values(row.box, layout_input);
+    for (auto& cell : m_cells)
+        ensure_table_child_used_values(cell.box, layout_input);
+
+    TableGrid::for_each_child_box_matching(table_box(), TableGrid::is_table_row_group, [&](auto& row_group_box) {
+        ensure_table_child_used_values(row_group_box, layout_input);
+    });
+}
+
 CSSPixels TableFormattingContext::compute_row_content_height(Cell const& cell) const
 {
     auto& row_state = m_state.get(m_rows[cell.row_index].box);
@@ -1794,11 +1851,12 @@ void TableFormattingContext::finish_grid_initialization(TableGrid const& table_g
 
 void TableFormattingContext::run_until_width_calculation(LayoutInput const& layout_input, RowMeasurement row_measurement)
 {
-    auto const& available_space = layout_input.available_space;
-    m_available_space = available_space;
+    auto formatting_context_scope = m_state.enter_formatting_context(context_box());
+    context_box_state(layout_input);
 
     // Determine the number of rows/columns the table requires.
     finish_grid_initialization(TableGrid::calculate_row_column_grid(context_box(), m_cells, m_rows));
+    seed_table_participant_used_values(layout_input);
 
     border_conflict_resolution();
 
@@ -1809,9 +1867,9 @@ void TableFormattingContext::run_until_width_calculation(LayoutInput const& layo
         effective_row_measurement = RowMeasurement::Skip;
 
     // Compute the minimum width of each column.
-    compute_cell_measures(effective_row_measurement);
-    compute_outer_content_sizes();
-    compute_table_measures<Column>();
+    compute_cell_measures(effective_row_measurement, layout_input);
+    compute_outer_content_sizes(layout_input);
+    compute_table_measures<Column>(layout_input);
 
     if (effective_row_measurement == RowMeasurement::Include) {
         // https://www.w3.org/TR/css-tables-3/#row-layout
@@ -1820,15 +1878,16 @@ void TableFormattingContext::run_until_width_calculation(LayoutInput const& layo
         // by running the same algorithm as the column measurement, with the span=1 value being initialized (for min-content) with the largest
         // of the resulting height of the previous row layout, the height specified on the corresponding table-row (if any), and the largest
         // height specified on cells that span this row only (the algorithm starts by considering cells of span 2 on top of that assignment).
-        compute_table_measures<Row>();
+        compute_table_measures<Row>(layout_input);
     }
 
     // Compute the width of the table.
-    compute_table_width();
+    compute_table_width(layout_input);
 }
 
 void TableFormattingContext::parent_context_did_dimension_child_root_box()
 {
+    auto formatting_context_scope = m_state.enter_formatting_context(context_box());
     if (m_layout_mode != LayoutMode::Normal)
         return;
 
@@ -1837,7 +1896,7 @@ void TableFormattingContext::parent_context_did_dimension_child_root_box()
             // FIXME: calculate_static_position_rect() is not aware of how to correctly calculate static position for
             //        a box nested inside a table, but we need to set some value, so layout_absolutely_positioned_element()
             //        won't crash trying to access it.
-            m_state.get_mutable(box).set_static_position_rect(calculate_static_position_rect(box));
+            set_static_position_rect_for_absolutely_positioned_child(box, calculate_static_position_rect(box));
         }
 
         if (formatting_context_type_created_by_box(box).has_value()) {
@@ -1853,8 +1912,9 @@ void TableFormattingContext::parent_context_did_dimension_child_root_box()
 void TableFormattingContext::run(LayoutInput const& layout_input)
 {
     auto const& available_space = layout_input.available_space;
+    auto formatting_context_scope = m_state.enter_formatting_context(context_box());
+    context_box_state(layout_input);
     FORMATTING_CONTEXT_TRACE();
-    m_available_space = available_space;
 
     run_until_width_calculation(layout_input);
 
@@ -1867,12 +1927,12 @@ void TableFormattingContext::run(LayoutInput const& layout_input)
         AvailableSize::make_definite(clamp_to_max_dimension_value(table_state.border_box_width())),
         available_space.height);
 
-    auto total_captions_height = run_caption_layout(CSS::CaptionSide::Top, caption_available_space);
+    auto total_captions_height = run_caption_layout(CSS::CaptionSide::Top, caption_available_space, layout_input);
 
     // Distribute the width of the table among columns.
     distribute_width_to_columns();
 
-    compute_table_height();
+    compute_table_height(layout_input);
 
     distribute_height_to_rows();
 
@@ -1884,7 +1944,7 @@ void TableFormattingContext::run(LayoutInput const& layout_input)
 
     m_state.get_mutable(table_box()).set_content_height(m_table_height);
 
-    total_captions_height += run_caption_layout(CSS::CaptionSide::Bottom, caption_available_space);
+    total_captions_height += run_caption_layout(CSS::CaptionSide::Bottom, caption_available_space, layout_input);
 
     // Table captions are positioned between the table margins and its borders (outside the grid box borders) as described in
     // https://www.w3.org/TR/css-tables-3/#bounding-box-assignment

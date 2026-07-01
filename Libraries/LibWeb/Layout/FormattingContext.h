@@ -137,6 +137,7 @@ public:
     CSSPixels compute_table_box_height_inside_table_wrapper(Box const&, AvailableSpace const&);
 
     CSSPixels compute_width_for_replaced_element(Box const&, AvailableSpace const&) const;
+    CSSPixels compute_width_for_replaced_element(Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size) const;
     CSSPixels compute_height_for_replaced_element(Box const&, AvailableSpace const&) const;
 
     OwnPtr<FormattingContext> create_independent_formatting_context_if_needed(LayoutState&, LayoutMode, Box const& child_box);
@@ -187,6 +188,25 @@ protected:
     [[nodiscard]] bool box_is_sized_as_replaced_element(Box const&, AvailableSpace const&) const;
 
     OwnPtr<FormattingContext> layout_inside(Box const&, LayoutMode, LayoutInput const&);
+    [[nodiscard]] LayoutInput layout_input_for_child_context(Box const&, AvailableSpace, Optional<CSSPixels> inherited_percentage_resolution_block_size = {}) const;
+    [[nodiscard]] LayoutInput layout_input_for_containing_block_children(Box const&, AvailableSpace, Optional<CSSPixels> inherited_percentage_resolution_block_size = {}) const;
+    LayoutState::UsedValues& context_box_state(LayoutInput const&);
+    void set_static_position_rect_for_absolutely_positioned_child(Box const&, StaticPositionRect const&);
+
+    CSSPixels calculate_min_content_width(Layout::Box const&, LayoutInput const&) const;
+    CSSPixels calculate_max_content_width(Layout::Box const&, LayoutInput const&) const;
+    CSSPixels calculate_min_content_height(Layout::Box const&, CSSPixels width, LayoutInput const&) const;
+    CSSPixels calculate_max_content_height(Layout::Box const&, CSSPixels width, LayoutInput const&) const;
+    CSSPixels calculate_fit_content_height(Layout::Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size) const;
+    CSSPixels calculate_fit_content_width(Layout::Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size) const;
+    CSSPixels calculate_inner_width(Layout::Box const&, AvailableSize const&, CSS::Size const& width, Optional<CSSPixels> percentage_resolution_block_size) const;
+    CSSPixels calculate_inner_height(Box const&, AvailableSpace const&, CSS::Size const& height, Optional<CSSPixels> percentage_resolution_block_size) const;
+
+    // The quirks-mode percentage height resolution basis for a box, derived from its in-context
+    // containing block. Boxes whose quirks basis crosses the formatting context boundary get it
+    // through LayoutInput instead.
+    [[nodiscard]] Optional<CSSPixels> percentage_resolution_block_size_for_box(Box const&) const;
+    [[nodiscard]] LayoutInput layout_input_for_intrinsic_sizing(Box const&, AvailableSpace, Optional<CSSPixels> percentage_resolution_block_size) const;
 
     struct SpaceUsedByFloats {
         CSSPixels left { 0 };
@@ -198,7 +218,7 @@ protected:
         CSSPixels preferred_minimum_width { 0 };
     };
 
-    CSSPixels tentative_width_for_replaced_element(Box const&, CSS::Size const& computed_width, AvailableSpace const&) const;
+    CSSPixels tentative_width_for_replaced_element(Box const&, CSS::Size const& computed_width, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size) const;
     CSSPixels tentative_height_for_replaced_element(Box const&, CSS::Size const& computed_height, AvailableSpace const&) const;
     CSSPixels compute_auto_height_for_block_formatting_context_root(Box const&) const;
     static CSSPixels line_box_physical_width(Box const&, LineBox const&);
@@ -207,7 +227,7 @@ protected:
 
     ShrinkToFitResult calculate_shrink_to_fit_widths(Box const&);
 
-    void layout_absolutely_positioned_element(Box&);
+    void layout_absolutely_positioned_element(Box&, Optional<StaticPositionRect> const&);
 
     CSSPixels gap_to_px(Variant<CSS::LengthPercentage, CSS::NormalGap> const& gap, CSSPixels reference_value) const;
 
@@ -215,9 +235,9 @@ protected:
     void layout_absolutely_positioned_children(Box const&);
     virtual AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&);
     void resolve_anchor_insets(Box&) const;
-    void compute_width_for_absolutely_positioned_element(Box const&, AvailableSpace const&);
-    void compute_width_for_absolutely_positioned_non_replaced_element(Box const&, AvailableSpace const&);
-    void compute_width_for_absolutely_positioned_replaced_element(Box const&, AvailableSpace const&);
+    void compute_width_for_absolutely_positioned_element(Box const&, AvailableSpace const&, LayoutInput const&);
+    void compute_width_for_absolutely_positioned_non_replaced_element(Box const&, AvailableSpace const&, LayoutInput const&);
+    void compute_width_for_absolutely_positioned_replaced_element(Box const&, AvailableSpace const&, LayoutInput const&);
 
     enum class BeforeOrAfterInsideLayout {
         Before,
@@ -238,6 +258,17 @@ protected:
     Box const& m_context_box;
 
     LayoutState& m_state;
+
+private:
+    enum class PopulateIntrinsicSizingContainingBlock {
+        No,
+        Yes,
+    };
+
+    CSSPixels calculate_min_content_width(Layout::Box const&, LayoutInput const&, PopulateIntrinsicSizingContainingBlock) const;
+    CSSPixels calculate_max_content_width(Layout::Box const&, LayoutInput const&, PopulateIntrinsicSizingContainingBlock) const;
+    CSSPixels calculate_min_content_height(Layout::Box const&, CSSPixels width, LayoutInput const&, PopulateIntrinsicSizingContainingBlock) const;
+    CSSPixels calculate_max_content_height(Layout::Box const&, CSSPixels width, LayoutInput const&, PopulateIntrinsicSizingContainingBlock) const;
 };
 
 #if FORMATTING_CONTEXT_TRACE_DEBUG

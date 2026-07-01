@@ -15,7 +15,7 @@ class LineBuilder {
     AK_MAKE_NONMOVABLE(LineBuilder);
 
 public:
-    LineBuilder(InlineFormattingContext&, LayoutState&, LayoutState::UsedValues& containing_block_used_values, CSS::Direction, CSS::WritingMode);
+    LineBuilder(InlineFormattingContext&, LayoutState&, LayoutState::UsedValues& context_box_used_values, CSS::Direction, CSS::WritingMode);
 
     enum class ForcedBreak {
         No,
@@ -59,7 +59,7 @@ private:
 
     InlineFormattingContext& m_context;
     LayoutState& m_layout_state;
-    LayoutState::UsedValues& m_containing_block_used_values;
+    LayoutState::UsedValues& m_context_box_used_values;
     AvailableSize m_available_width_for_current_line { AvailableSize::make_indefinite() };
     CSSPixels m_current_block_offset { 0 };
     CSSPixels m_max_height_on_current_line { 0 };

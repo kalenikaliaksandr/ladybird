@@ -11,6 +11,7 @@
 #include <LibWeb/CSS/Sizing.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Layout/Node.h>
+#include <LibWeb/Layout/StaticPositionRect.h>
 
 namespace Web::Layout {
 
@@ -31,6 +32,11 @@ class WEB_API Box : public NodeWithStyleAndBoxModelMetrics {
     GC_DECLARE_ALLOCATOR(Box);
 
 public:
+    struct ContainedAbsolutelyPositionedChild {
+        WeakPtr<Node> child;
+        Optional<StaticPositionRect> static_position_rect;
+    };
+
     RefPtr<Painting::PaintableBox const> paintable_box() const;
     RefPtr<Painting::PaintableBox> paintable_box();
 
@@ -55,9 +61,10 @@ public:
 
     virtual RefPtr<Painting::Paintable> create_paintable() const override;
 
-    void add_contained_abspos_child(Node& child) { m_contained_abspos_children.append(child.make_weak_ptr()); }
+    void add_contained_abspos_child(Node& child) { m_contained_abspos_children.append({ child.make_weak_ptr(), {} }); }
     void clear_contained_abspos_children() { m_contained_abspos_children.clear(); }
-    Vector<WeakPtr<Node>> const& contained_abspos_children() const { return m_contained_abspos_children; }
+    Vector<ContainedAbsolutelyPositionedChild> const& contained_abspos_children() const { return m_contained_abspos_children; }
+    bool set_static_position_rect_for_contained_abspos_child(Node const&, StaticPositionRect const&);
 
     IntrinsicSizes& cached_intrinsic_sizes() const
     {
@@ -76,7 +83,7 @@ protected:
 private:
     virtual bool is_box() const final { return true; }
 
-    Vector<WeakPtr<Node>> m_contained_abspos_children;
+    Vector<ContainedAbsolutelyPositionedChild> m_contained_abspos_children;
 
     OwnPtr<IntrinsicSizes> mutable m_cached_intrinsic_sizes;
 };

@@ -59,6 +59,17 @@ RefPtr<Painting::PaintableBox const> Box::paintable_box() const
     return nullptr;
 }
 
+bool Box::set_static_position_rect_for_contained_abspos_child(Node const& child, StaticPositionRect const& static_position_rect)
+{
+    for (auto& contained_child : m_contained_abspos_children) {
+        if (contained_child.child.ptr() != &child)
+            continue;
+        contained_child.static_position_rect = static_position_rect;
+        return true;
+    }
+    return false;
+}
+
 Optional<CSSPixelFraction> Box::preferred_aspect_ratio() const
 {
     auto const& computed_aspect_ratio = computed_values().aspect_ratio();

@@ -17,7 +17,8 @@ ReplacedWithChildrenFormattingContext::ReplacedWithChildrenFormattingContext(Lay
 void ReplacedWithChildrenFormattingContext::run(LayoutInput const& layout_input)
 {
     auto const& available_space = layout_input.available_space;
-    auto& root_state = m_state.get_mutable(context_box());
+    auto formatting_context_scope = m_state.enter_formatting_context(context_box());
+    auto& root_state = context_box_state(layout_input);
     auto content_width = root_state.content_width();
 
     // Mark the replaced element as having definite dimensions when the parent FC has
@@ -49,7 +50,7 @@ void ReplacedWithChildrenFormattingContext::run(LayoutInput const& layout_input)
     wrapper_state.set_content_offset({ 0, 0 });
 
     auto bfc = make<BlockFormattingContext>(m_state, m_layout_mode, *wrapper, this);
-    bfc->run(LayoutInput { child_available_space });
+    bfc->run(layout_input_for_child_context(*wrapper, child_available_space, layout_input.percentage_resolution_block_size));
 
     m_automatic_content_width = content_width;
     m_automatic_content_height = bfc->automatic_content_height();
@@ -71,6 +72,7 @@ CSSPixels ReplacedWithChildrenFormattingContext::automatic_content_height() cons
 
 void ReplacedWithChildrenFormattingContext::parent_context_did_dimension_child_root_box()
 {
+    auto formatting_context_scope = m_state.enter_formatting_context(context_box());
     layout_absolutely_positioned_children();
 }
 

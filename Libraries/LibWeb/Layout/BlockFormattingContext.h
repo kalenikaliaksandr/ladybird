@@ -27,7 +27,7 @@ public:
     virtual CSSPixels automatic_content_height() const override;
 
     bool box_should_avoid_floats_because_it_establishes_fc(Box const&);
-    void compute_width(Box const&, AvailableSpace const&);
+    void compute_width(Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size);
     void avoid_float_intrusions(Box const&, AvailableSpace const&);
 
     // https://www.w3.org/TR/css-display/#block-formatting-context-root
@@ -52,10 +52,11 @@ public:
     [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_box(LayoutState::UsedValues const&, CSSPixels y_in_box) const;
     [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_box(LayoutState::UsedValues const&, CSSPixels block_start_in_box, CSSPixels block_end_in_box) const;
     [[nodiscard]] Optional<CSSPixels> next_float_band_block_start_after(CSSPixels y_in_root) const;
+    [[nodiscard]] Optional<CSSPixels> next_float_band_block_start_after(LayoutState::UsedValues const&, CSSPixels block_offset_in_box) const;
 
     virtual CSSPixels greatest_child_width(Box const&) const override;
 
-    void layout_floating_box(Box const& child, BlockContainer const& containing_block, AvailableSpace const&, CSSPixels y, LineBuilder* = nullptr);
+    void layout_floating_box(Box const& child, BlockContainer const& containing_block, LayoutInput const&, AvailableSpace const&, CSSPixels y, LineBuilder* = nullptr);
 
     void layout_block_level_box(Box const&, BlockContainer const&, CSSPixels& bottom_of_lowest_margin_box, LayoutInput const&);
 
@@ -93,17 +94,18 @@ public:
         CSSPixels bottom_margin_edge { 0 };
 
         CSSPixelRect margin_box_rect_in_root_coordinate_space;
+        CSSPixelRect containing_block_rect_in_root_coordinate_space;
     };
 
 private:
     CSSPixels compute_auto_height_for_block_level_element(Box const&, AvailableSpace const&);
 
-    void compute_width_for_floating_box(Box const&, AvailableSpace const&);
+    void compute_width_for_floating_box(Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size);
 
-    void compute_width_for_block_level_replaced_element_in_normal_flow(Box const&, AvailableSpace const&);
+    void compute_width_for_block_level_replaced_element_in_normal_flow(Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size);
 
     void layout_block_level_children(BlockContainer const&, LayoutInput const&);
-    void layout_inline_children(BlockContainer const&, AvailableSpace const&);
+    void layout_inline_children(BlockContainer const&, LayoutInput const&);
     void layout_fieldset_with_rendered_legend(FieldSetBox const&, LayoutInput const&);
 
     void place_block_level_element_in_normal_flow_horizontally(Box const& child_box, AvailableSpace const&);
@@ -136,6 +138,10 @@ private:
 
     [[nodiscard]] size_t band_index_at(CSSPixels y) const;
     [[nodiscard]] FloatBand const& band_at(CSSPixels y) const;
+    [[nodiscard]] LayoutState::UsedValues const& root_state() const;
+    [[nodiscard]] LayoutState::UsedValues& root_state_mutable();
+    [[nodiscard]] CSSPixelRect content_box_rect_in_root_coordinate_space(LayoutState::UsedValues const&) const;
+    [[nodiscard]] CSSPixelRect margin_box_rect_in_root_coordinate_space(LayoutState::UsedValues const&) const;
     [[nodiscard]] SpaceUsedByFloats intrusions_for_band_into_rect(FloatBand const&, CSSPixelRect const& rect_in_root) const;
     [[nodiscard]] SpaceUsedByFloats available_inline_space_in_box(LayoutState::UsedValues const&, CSSPixels block_start_in_box, CSSPixels block_end_in_box) const;
     [[nodiscard]] FloatPlacement place_float(FloatSide, LayoutState::UsedValues const&, AvailableSpace const&, CSSPixelRect const& containing_block_rect_in_root, CSSPixels ceiling_in_root) const;
@@ -207,6 +213,8 @@ private:
     Vector<FloatBand> m_bands;
     CSSPixels m_lowest_left_margin_edge { 0 };
     CSSPixels m_lowest_right_margin_edge { 0 };
+
+    LayoutState::UsedValues* m_root_state { nullptr };
 
     bool m_was_notified_after_parent_dimensioned_my_root_box { false };
 };
