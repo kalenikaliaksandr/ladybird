@@ -743,6 +743,15 @@ size_t GridFormattingContext::resolve_grid_span(Box const& child_box, GridDimens
     return 1;
 }
 
+LayoutState::UsedValues& GridFormattingContext::used_values_for_grid_item(Box const& child_box)
+{
+    // Grid items are placed multiple times per layout: a subgrid's items are placed by the parent
+    // grid's track sizing before the subgrid's own run places them again.
+    if (auto* existing_used_values = m_state.try_get_mutable(child_box))
+        return *existing_used_values;
+    return m_state.create(child_box);
+}
+
 void GridFormattingContext::place_item_with_row_and_column_position(Box const& child_box)
 {
     auto row_placement_position = resolve_grid_position(child_box, GridDimension::Row);
@@ -755,7 +764,7 @@ void GridFormattingContext::place_item_with_row_and_column_position(Box const& c
 
     record_grid_placement(GridItem {
         .box = child_box,
-        .used_values = m_state.get_mutable(child_box),
+        .used_values = used_values_for_grid_item(child_box),
         .row = row_start,
         .row_span = row_span,
         .column = column_start,
@@ -785,7 +794,7 @@ void GridFormattingContext::place_item_with_row_position(Box const& child_box)
 
     record_grid_placement(GridItem {
         .box = child_box,
-        .used_values = m_state.get_mutable(child_box),
+        .used_values = used_values_for_grid_item(child_box),
         .row = row_start,
         .row_span = row_span,
         .column = column_start,
@@ -821,7 +830,7 @@ void GridFormattingContext::place_item_with_column_position(Box const& child_box
 
     record_grid_placement(GridItem {
         .box = child_box,
-        .used_values = m_state.get_mutable(child_box),
+        .used_values = used_values_for_grid_item(child_box),
         .row = auto_placement_cursor_row,
         .row_span = row_span,
         .column = column_start,
@@ -866,7 +875,7 @@ void GridFormattingContext::place_item_with_no_declared_position(Box const& chil
 
     record_grid_placement(GridItem {
         .box = child_box,
-        .used_values = m_state.get_mutable(child_box),
+        .used_values = used_values_for_grid_item(child_box),
         .row = row_start,
         .row_span = row_span,
         .column = column_start,

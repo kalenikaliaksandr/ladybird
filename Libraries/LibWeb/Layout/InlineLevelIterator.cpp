@@ -10,6 +10,7 @@
 #include <LibWeb/Layout/InlineFormattingContext.h>
 #include <LibWeb/Layout/InlineLevelIterator.h>
 #include <LibWeb/Layout/InlineNode.h>
+#include <LibWeb/Layout/ListItemBox.h>
 #include <LibWeb/Layout/ListItemMarkerBox.h>
 #include <LibWeb/Layout/ReplacedBox.h>
 
@@ -53,7 +54,20 @@ void InlineLevelIterator::enter_node_with_box_model_metrics(Layout::NodeWithStyl
 
     // FIXME: It's really weird that *this* is where we assign box model metrics for these layout nodes..
 
-    auto& used_values = m_layout_state.get_mutable(node);
+    // Inline-level boxes enter layout here. List item markers are usually created earlier, by
+    // the ListItemBox that places them, but markers rendered within the list item's inline
+    // content have no such link and enter layout here like any other inline-level box.
+    auto& used_values = [&]() -> LayoutState::UsedValues& {
+        if (is<ListItemMarkerBox>(node)) {
+            if (auto* existing_used_values = m_layout_state.try_get_mutable(node))
+                return *existing_used_values;
+        }
+        return m_layout_state.create(node);
+    }();
+
+    if (auto const* list_item_box = as_if<ListItemBox>(node); list_item_box && list_item_box->marker())
+        m_layout_state.create(*list_item_box->marker());
+
     auto const& computed_values = node.computed_values();
 
     used_values.margin_top = computed_values.margin().top().to_px_or_zero(m_context_box_used_values.content_width());
@@ -397,7 +411,19 @@ Optional<InlineLevelIterator::Item> InlineLevelIterator::generate_next_item()
     }
 
     auto const& box = as<Layout::Box>(*m_current_node);
-    auto const& box_state = m_layout_state.get(box);
+    auto const& box_state = [&]() -> LayoutState::UsedValues const& {
+        // Boxes with flow inside (e.g. inline list-items) were entered via
+        // enter_node_with_box_model_metrics(), which already created their used values.
+        if (!m_box_model_node_stack.is_empty() && m_box_model_node_stack.last() == &box)
+            return m_layout_state.get_mutable(box);
+        // List item markers are usually created by the ListItemBox that places them, even when
+        // they participate in inline layout as atomic inline-level boxes.
+        if (is<ListItemMarkerBox>(box)) {
+            if (auto* existing_used_values = m_layout_state.try_get_mutable(box))
+                return *existing_used_values;
+        }
+        return m_layout_state.create(box);
+    }();
     m_inline_formatting_context.dimension_box_on_line(box, m_layout_mode);
 
     auto item = Item {

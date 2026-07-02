@@ -996,10 +996,13 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
                 auto sibling_ref = box.previous_sibling();
                 auto const* sibling = as_if<Box>(sibling_ref.ptr());
                 if (sibling && sibling->is_anonymous() && sibling->children_are_inline()) {
-                    auto const& sibling_state = m_state.get(*sibling);
-                    if (auto const& inline_end_static_position_rect = sibling_state.inline_end_static_position_rect(); inline_end_static_position_rect.has_value()) {
-                        static_position_x = sibling_state.offset.x() + inline_end_static_position_rect->rect.x();
-                        static_position_y = sibling_state.offset.y() + inline_end_static_position_rect->rect.y();
+                    // The sibling may have been skipped by layout entirely (e.g. a whitespace-only
+                    // anonymous container), in which case it has no state to derive a position from.
+                    if (auto const* sibling_state = m_state.try_get(*sibling)) {
+                        if (auto const& inline_end_static_position_rect = sibling_state->inline_end_static_position_rect(); inline_end_static_position_rect.has_value()) {
+                            static_position_x = sibling_state->offset.x() + inline_end_static_position_rect->rect.x();
+                            static_position_y = sibling_state->offset.y() + inline_end_static_position_rect->rect.y();
+                        }
                     }
                 }
             }
@@ -1017,13 +1020,27 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
             && containing_block != &root()
             && !root().is_inclusive_ancestor_of(*containing_block);
     }();
-    auto& box_state = table_box_inside_table_wrapper || containing_block_is_outside_formatting_context
-        ? m_state.get_mutable(box, layout_input.percentage_basis_width, layout_input.percentage_basis_height)
-        : m_state.get_mutable(box);
-
-    // NOTE: ListItemMarkerBoxes are placed by their corresponding ListItemBox.
+    // NOTE: ListItemMarkerBoxes are placed by their corresponding ListItemBox, which also
+    //       creates their used values below.
     if (is<ListItemMarkerBox>(box))
         return;
+
+    auto& box_state = [&]() -> LayoutState::UsedValues& {
+        // The document element's used values are created by the layout entry point, which makes
+        // its width definite before any formatting context runs. It is laid out here regardless,
+        // possibly wrapped in an anonymous box (e.g. a document element with table display).
+        if (box.dom_node() && box.dom_node() == box.document().document_element()) {
+            if (auto* existing_used_values = m_state.try_get_mutable(box))
+                return *existing_used_values;
+            return m_state.create(box);
+        }
+        if (table_box_inside_table_wrapper || containing_block_is_outside_formatting_context)
+            return m_state.create(box, layout_input.percentage_basis_width, layout_input.percentage_basis_height);
+        return m_state.create(box);
+    }();
+
+    if (auto const* list_item_box = as_if<ListItemBox>(box); list_item_box && list_item_box->marker())
+        m_state.create(*list_item_box->marker());
 
     resolve_vertical_box_model_metrics(box, m_state.get(block_container).content_width());
 
@@ -1160,7 +1177,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
             }
 
             auto measuring_layout_input = child_layout_input(inner_available_space);
-            throwaway_state.get_mutable(box, measuring_layout_input.percentage_basis_width, measuring_layout_input.percentage_basis_height);
+            throwaway_state.create(box, measuring_layout_input.percentage_basis_width, measuring_layout_input.percentage_basis_height);
             auto measuring_context = create_independent_formatting_context_if_needed(throwaway_state, m_layout_mode, box);
             measuring_context->run(measuring_layout_input);
             auto content_height = measuring_context->automatic_content_height();
@@ -1682,8 +1699,12 @@ CSSPixels BlockFormattingContext::greatest_child_width(Box const& box) const
         }
     } else {
         box.for_each_child_of_type<Box>([&](Box const& child) {
-            if (!child.is_absolutely_positioned())
-                max_width = max(max_width, m_state.get(child).margin_box_width());
+            if (child.is_absolutely_positioned())
+                return IterationDecision::Continue;
+            // Children that have not been laid out (e.g. a list item marker measured as part of
+            // its list item's intrinsic size) contribute nothing.
+            if (auto const* child_state = m_state.try_get(child))
+                max_width = max(max_width, child_state->margin_box_width());
             return IterationDecision::Continue;
         });
     }

@@ -66,7 +66,7 @@ private:
     CSSPixels border_spacing_vertical() const;
     void finish_grid_initialization(TableGrid const&);
     LayoutInput layout_input_for_table_child_context(Box const&, AvailableSpace, LayoutInput const&) const;
-    LayoutState::UsedValues& ensure_table_child_used_values(Box const&, LayoutInput const&);
+    LayoutState::UsedValues& create_table_participant_used_values(Box const&, LayoutInput const&);
     void seed_table_participant_used_values(LayoutInput const&);
 
     CSSPixels compute_columns_total_used_width() const;

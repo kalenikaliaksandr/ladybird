@@ -343,6 +343,7 @@ private:
     size_t resolve_grid_span(Box const& child_box, GridDimension dimension) const;
 
     void place_grid_items();
+    LayoutState::UsedValues& used_values_for_grid_item(Box const& child_box);
     void place_item_with_row_and_column_position(Box const& child_box);
     void place_item_with_row_position(Box const& child_box);
     void place_item_with_column_position(Box const& child_box, int& auto_placement_cursor_row);

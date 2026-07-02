@@ -1895,7 +1895,7 @@ void Document::update_layout(UpdateLayoutReason reason)
 
         {
             auto& viewport = static_cast<Layout::Viewport&>(*m_layout_root);
-            auto& viewport_state = layout_state.get_mutable(
+            auto& viewport_state = layout_state.create(
                 viewport,
                 Optional<CSSPixels> { viewport_rect.width() },
                 Optional<CSSPixels> { viewport_rect.height() });
@@ -1905,7 +1905,7 @@ void Document::update_layout(UpdateLayoutReason reason)
             // NB: Called during layout update.
             if (document_element && document_element->unsafe_layout_node()) {
                 auto percentage_basis = Layout::LayoutState::percentage_basis_for_containing_block(viewport_state);
-                auto& icb_state = layout_state.get_mutable(
+                auto& icb_state = layout_state.create(
                     as<Layout::NodeWithStyleAndBoxModelMetrics>(*document_element->unsafe_layout_node()),
                     percentage_basis.width,
                     percentage_basis.height);

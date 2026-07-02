@@ -13,6 +13,7 @@
 #include <LibWeb/Layout/InlineFormattingContext.h>
 #include <LibWeb/Layout/InlineLevelIterator.h>
 #include <LibWeb/Layout/LineBuilder.h>
+#include <LibWeb/Layout/ListItemMarkerBox.h>
 
 namespace Web::Layout {
 
@@ -421,6 +422,10 @@ void InlineFormattingContext::generate_line_boxes()
 
         case InlineLevelIterator::Item::Type::FloatingElement:
             if (auto* box = as_if<Box>(*item.node)) {
+                // List item markers are usually created by the ListItemBox that places them,
+                // even when they end up floating here.
+                if (!is<ListItemMarkerBox>(*box) || !m_state.try_get_existing(*box))
+                    m_state.create(*box);
                 (void)parent().clear_floating_boxes(*item.node, *this);
                 // Even if this introduces clearance, we do NOT reset the margin state, because that is clearance
                 // between floats and does not contribute to the height of the Inline Formatting Context.

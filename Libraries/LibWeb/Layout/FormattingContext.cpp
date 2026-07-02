@@ -21,6 +21,7 @@
 #include <LibWeb/Layout/FormattingContext.h>
 #include <LibWeb/Layout/GridFormattingContext.h>
 #include <LibWeb/Layout/InlineNode.h>
+#include <LibWeb/Layout/ListItemMarkerBox.h>
 #include <LibWeb/Layout/ReplacedBox.h>
 #include <LibWeb/Layout/ReplacedWithChildrenFormattingContext.h>
 #include <LibWeb/Layout/SVGFormattingContext.h>
@@ -538,13 +539,13 @@ static LayoutInput with_available_space(LayoutInput const& layout_input, Availab
     };
 }
 
-// The input basis is consumed only if the context box is first touched here; the parent context
-// usually creates the used values while sizing the box, with the same basis the input carries.
-// Inline formatting contexts and table captions receive inputs whose basis describes their
-// children rather than the box itself, so overwriting an existing basis here would be wrong.
+// Whoever runs a formatting context creates the root's used values first: parent contexts do so
+// while sizing the box, and entry points (Document, intrinsic sizing, subtree relayout) create
+// them explicitly. The input's percentage basis is consumed at that creation; here the input only
+// contributes the static position of an absolutely positioned root.
 LayoutState::UsedValues& FormattingContext::context_box_state(LayoutInput const& layout_input)
 {
-    auto& used_values = m_state.get_mutable(context_box(), layout_input.percentage_basis_width, layout_input.percentage_basis_height);
+    auto& used_values = m_state.get_mutable(context_box());
     if (layout_input.static_position_rect.has_value())
         used_values.set_static_position_rect(*layout_input.static_position_rect);
     return used_values;
@@ -744,9 +745,12 @@ CSSPixels FormattingContext::compute_auto_height_for_block_formatting_context_ro
             if ((root.computed_values().overflow_y() == CSS::Overflow::Visible) && child_box.is_floating())
                 return IterationDecision::Continue;
 
-            auto const& child_box_state = m_state.get(child_box);
+            // Children that have not been laid out yet contribute nothing to the auto height.
+            auto const* child_box_state = m_state.try_get(child_box);
+            if (!child_box_state)
+                return IterationDecision::Continue;
 
-            CSSPixels child_box_bottom = child_box_state.offset.y() + child_box_state.content_height() + child_box_state.margin_box_bottom();
+            CSSPixels child_box_bottom = child_box_state->offset.y() + child_box_state->content_height() + child_box_state->margin_box_bottom();
 
             if (!bottom.has_value() || child_box_bottom > bottom.value())
                 bottom = child_box_bottom;
@@ -808,8 +812,8 @@ CSSPixels FormattingContext::compute_table_box_width_inside_table_wrapper(
     if (table_wrapper_containing_block_width.has_value())
         containing_block_state.set_content_width(*table_wrapper_containing_block_width);
     auto wrapper_percentage_basis = LayoutState::percentage_basis_for_containing_block(containing_block_state);
-    auto const& table_wrapper_state = throwaway_state.get_mutable(box, wrapper_percentage_basis.width, wrapper_percentage_basis.height);
-    auto& table_box_state = throwaway_state.get_mutable(*table_box, wrapper_percentage_basis.width, wrapper_percentage_basis.height);
+    auto const& table_wrapper_state = throwaway_state.create(box, wrapper_percentage_basis.width, wrapper_percentage_basis.height);
+    auto& table_box_state = throwaway_state.create(*table_box, wrapper_percentage_basis.width, wrapper_percentage_basis.height);
     auto table_layout_input = LayoutInput {
         table_box_state.available_inner_space_or_constraints_from(available_space),
         wrapper_percentage_basis.width,
@@ -862,7 +866,7 @@ CSSPixels FormattingContext::compute_table_box_height_inside_table_wrapper(Box c
     if (table_wrapper_available_space.width.is_indefinite())
         table_wrapper_available_space.width = available_space.width;
     auto table_wrapper_layout_input = layout_input_for_child_context(box, table_wrapper_available_space);
-    throwaway_state.get_mutable(box, table_wrapper_layout_input.percentage_basis_width, table_wrapper_layout_input.percentage_basis_height);
+    throwaway_state.create(box, table_wrapper_layout_input.percentage_basis_width, table_wrapper_layout_input.percentage_basis_height);
 
     auto context = create_independent_formatting_context_if_needed(throwaway_state, LayoutMode::IntrinsicSizing, box);
     VERIFY(context);
@@ -2065,6 +2069,19 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box, Optional<
     // SVG elements cannot be absolutely positioned.
     VERIFY(!box.is_svg_box());
 
+    // Absolutely positioned boxes enter layout here, in the context that contains them.
+    // Two kinds of boxes may already have used values: list item markers, which are created by
+    // the ListItemBox that places them, and the document element, which is created by the layout
+    // entry point (and can end up absolutely positioned, e.g. as a popover).
+    auto& box_state = [&]() -> LayoutState::UsedValues& {
+        auto box_is_document_element = box.dom_node() && box.dom_node() == box.document().document_element();
+        if (is<ListItemMarkerBox>(box) || box_is_document_element) {
+            if (auto* existing_used_values = m_state.try_get_mutable(box))
+                return *existing_used_values;
+        }
+        return m_state.create(box);
+    }();
+
     resolve_anchor_insets(box);
 
     auto containing_block_info = resolve_abspos_containing_block_info(box);
@@ -2077,7 +2094,6 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box, Optional<
 
     auto containing_block_width = available_space.width.to_px_or_zero();
     auto containing_block_height = available_space.height.to_px_or_zero();
-    auto& box_state = m_state.get_mutable(box);
     // The percentage basis of an absolutely positioned box is the padding box of its absolute
     // positioning containing block, which need not match the derived basis the box's used values
     // were created with (grid places absolutely positioned children into their grid area).
@@ -2517,7 +2533,7 @@ CSSPixels FormattingContext::calculate_min_content_width(Layout::Box const& box,
     if (populate_containing_block == PopulateIntrinsicSizingContainingBlock::Yes)
         throwaway_state.populate_node_from(m_state, *box.containing_block());
 
-    auto& box_state = throwaway_state.get_mutable(box, root_layout_input.percentage_basis_width, root_layout_input.percentage_basis_height);
+    auto& box_state = throwaway_state.create(box, root_layout_input.percentage_basis_width, root_layout_input.percentage_basis_height);
     box_state.width_constraint = SizeConstraint::MinContent;
     box_state.set_indefinite_content_width();
 
@@ -2623,7 +2639,7 @@ CSSPixels FormattingContext::calculate_max_content_width(Layout::Box const& box,
 
     auto const& actual_box_state = m_state.get_mutable(box);
 
-    auto& box_state = throwaway_state.get_mutable(box, root_layout_input.percentage_basis_width, root_layout_input.percentage_basis_height);
+    auto& box_state = throwaway_state.create(box, root_layout_input.percentage_basis_width, root_layout_input.percentage_basis_height);
     box_state.width_constraint = SizeConstraint::MaxContent;
     box_state.set_indefinite_content_width();
 
@@ -2691,7 +2707,7 @@ CSSPixels FormattingContext::calculate_min_content_height(Layout::Box const& box
     if (populate_containing_block == PopulateIntrinsicSizingContainingBlock::Yes)
         throwaway_state.populate_node_from(m_state, *box.containing_block());
 
-    auto& box_state = throwaway_state.get_mutable(box, root_layout_input.percentage_basis_width, root_layout_input.percentage_basis_height);
+    auto& box_state = throwaway_state.create(box, root_layout_input.percentage_basis_width, root_layout_input.percentage_basis_height);
     box_state.height_constraint = SizeConstraint::MinContent;
     box_state.set_indefinite_content_height();
     box_state.set_content_width(width);
@@ -2740,7 +2756,7 @@ CSSPixels FormattingContext::calculate_max_content_height(Layout::Box const& box
     if (populate_containing_block == PopulateIntrinsicSizingContainingBlock::Yes)
         throwaway_state.populate_node_from(m_state, *box.containing_block());
 
-    auto& box_state = throwaway_state.get_mutable(box, root_layout_input.percentage_basis_width, root_layout_input.percentage_basis_height);
+    auto& box_state = throwaway_state.create(box, root_layout_input.percentage_basis_width, root_layout_input.percentage_basis_height);
     box_state.height_constraint = SizeConstraint::MaxContent;
     box_state.set_indefinite_content_height();
     box_state.set_content_width(width);
@@ -3031,7 +3047,7 @@ Box const* FormattingContext::box_child_to_derive_baseline_from(Box const& box, 
             continue;
         if (child_box->is_out_of_flow(*this))
             continue;
-        if (!m_state.get(*child_box).line_boxes.is_empty())
+        if (auto const* child_state = m_state.try_get(*child_box); child_state && !child_state->line_boxes.is_empty())
             return child_box;
         if (box_child_to_derive_baseline_from(*child_box, baseline_set))
             return child_box;

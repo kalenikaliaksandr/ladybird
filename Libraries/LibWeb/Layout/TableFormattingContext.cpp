@@ -58,12 +58,25 @@ LayoutInput TableFormattingContext::layout_input_for_table_child_context(Box con
     };
 }
 
-LayoutState::UsedValues& TableFormattingContext::ensure_table_child_used_values(Box const& box, LayoutInput const& table_layout_input)
+LayoutState::UsedValues& TableFormattingContext::create_table_participant_used_values(Box const& box, LayoutInput const& table_layout_input)
 {
     auto percentage_basis_height = table_box().computed_values().height().is_auto()
         ? Optional<CSSPixels> {}
         : table_layout_input.percentage_basis_height;
-    auto& used_values = m_state.get_mutable(box, table_layout_input.percentage_basis_width, percentage_basis_height);
+    // Table fixup can register the same box as more than one kind of participant, in which
+    // case an earlier seeding pass has already created its used values.
+    // FIXME: Table grid construction should not register a box as two participants.
+    if (auto* existing_used_values = m_state.try_get_mutable(box)) {
+        if (box.display().is_table_row_group()
+            || box.display().is_table_header_group()
+            || box.display().is_table_footer_group()
+            || box.display().is_table_row()
+            || box.display().is_table_cell()) {
+            existing_used_values->set_offset_parent(m_state.get(table_box()));
+        }
+        return *existing_used_values;
+    }
+    auto& used_values = m_state.create(box, table_layout_input.percentage_basis_width, percentage_basis_height);
     if (box.display().is_table_row_group()
         || box.display().is_table_header_group()
         || box.display().is_table_footer_group()
@@ -95,7 +108,6 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
         // The caption boxes are principal block-level boxes that retain their own content, padding, margin, and border areas,
         // and are rendered as normal block boxes inside the table wrapper box, as described in https://www.w3.org/TR/CSS22/tables.html#model
         auto caption_layout_input = layout_input_for_table_child_context(child_box, caption_available_space, table_layout_input);
-        ensure_table_child_used_values(child_box, table_layout_input);
         if (auto caption_context = create_independent_formatting_context_if_needed(m_state, m_layout_mode, child_box)) {
             auto inner_available_space = caption_available_space;
             auto* block_context = as_if<BlockFormattingContext>(caption_context.ptr());
@@ -566,7 +578,6 @@ CSSPixels TableFormattingContext::compute_capmin(LayoutInput const& layout_input
                 + margin_right;
         };
 
-        ensure_table_child_used_values(child_box, layout_input);
         auto caption_min_content_contribution = outer_size_for_inner_size(calculate_min_content_width(
             child_box,
             layout_input_for_table_child_context(child_box, AvailableSpace { AvailableSize::make_min_content(), AvailableSize::make_indefinite() }, layout_input)));
@@ -1050,7 +1061,7 @@ void TableFormattingContext::compute_table_height(LayoutInput const& layout_inpu
     // First pass of cells layout:
     for (auto& cell : m_cells) {
         auto& row = m_rows[cell.row_index];
-        auto& cell_state = ensure_table_child_used_values(cell.box, layout_input);
+        auto& cell_state = m_state.get_mutable(cell.box);
 
         CSSPixels span_width = 0;
         for (size_t i = 0; i < cell.column_span; ++i)
@@ -1168,7 +1179,7 @@ void TableFormattingContext::compute_table_height(LayoutInput const& layout_inpu
     // At this point, percentage cell height can be resolved because the final table height is calculated.
     for (auto& cell : m_cells) {
         auto& row = m_rows[cell.row_index];
-        auto& cell_state = ensure_table_child_used_values(cell.box, layout_input);
+        auto& cell_state = m_state.get_mutable(cell.box);
 
         CSSPixels span_width = 0;
         for (size_t i = 0; i < cell.column_span; ++i)
@@ -1594,13 +1605,18 @@ void TableFormattingContext::border_conflict_resolution()
 void TableFormattingContext::seed_table_participant_used_values(LayoutInput const& layout_input)
 {
     for (auto& row : m_rows)
-        ensure_table_child_used_values(row.box, layout_input);
+        create_table_participant_used_values(row.box, layout_input);
     for (auto& cell : m_cells)
-        ensure_table_child_used_values(cell.box, layout_input);
+        create_table_participant_used_values(cell.box, layout_input);
 
     TableGrid::for_each_child_box_matching(table_box(), TableGrid::is_table_row_group, [&](auto& row_group_box) {
-        ensure_table_child_used_values(row_group_box, layout_input);
+        create_table_participant_used_values(row_group_box, layout_input);
     });
+
+    for (auto child = table_box().first_child(); child; child = child->next_sibling()) {
+        if (child->display().is_table_caption())
+            create_table_participant_used_values(as<Box>(*child), layout_input);
+    }
 }
 
 CSSPixels TableFormattingContext::compute_row_content_height(Cell const& cell) const

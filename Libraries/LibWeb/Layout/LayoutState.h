@@ -425,8 +425,12 @@ struct LayoutState {
     static PercentageBasis percentage_basis_for_containing_block(UsedValues const&);
 
     UsedValues& get_mutable(NodeWithStyle const&);
-    UsedValues& get_mutable(NodeWithStyle const&, Optional<CSSPixels> percentage_basis_width, Optional<CSSPixels> percentage_basis_height);
     UsedValues const& get(NodeWithStyle const&) const;
+
+    // Explicit creation: the box is entering layout here. Creation derives the containing block
+    // pointer and percentage basis (or pins the explicitly provided basis) at this moment.
+    UsedValues& create(NodeWithStyle const&);
+    UsedValues& create(NodeWithStyle const&, Optional<CSSPixels> percentage_basis_width, Optional<CSSPixels> percentage_basis_height);
 
     UsedValues& populate_from_paintable(NodeWithStyle const&, Painting::PaintableBox const&);
     UsedValues& populate_node_from(LayoutState const& source, NodeWithStyle const& node);

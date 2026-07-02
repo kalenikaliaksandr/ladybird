@@ -126,18 +126,32 @@ void LayoutState::ensure_capacity(u32 node_count)
 LayoutState::UsedValues& LayoutState::get_mutable(NodeWithStyle const& node)
 {
     verify_formatting_context_boundary_read(node, "get_mutable"sv);
+    auto* used_values = m_used_values_store.get(node.layout_index());
+    if (!used_values) {
+        dbgln("LayoutState::get_mutable: no used values for {}; boxes must be created before their state is read", node.debug_description());
+        VERIFY_NOT_REACHED();
+    }
+    return *used_values;
+}
+
+LayoutState::UsedValues& LayoutState::create(NodeWithStyle const& node)
+{
+    verify_formatting_context_boundary_read(node, "create"sv);
+    if (m_used_values_store.get(node.layout_index())) {
+        dbgln("LayoutState::create: used values for {} already exist", node.debug_description());
+        VERIFY_NOT_REACHED();
+    }
     return ensure_used_values_for(node);
 }
 
-// The percentage basis arguments only take effect when this call creates the used values;
-// existing values keep the basis they were created with. Use UsedValues::set_percentage_basis_width()
-// to make a basis authoritative on values that may already exist.
-LayoutState::UsedValues& LayoutState::get_mutable(NodeWithStyle const& node, Optional<CSSPixels> percentage_basis_width, Optional<CSSPixels> percentage_basis_height)
+LayoutState::UsedValues& LayoutState::create(NodeWithStyle const& node, Optional<CSSPixels> percentage_basis_width, Optional<CSSPixels> percentage_basis_height)
 {
-    verify_formatting_context_boundary_read(node, "get_mutable"sv);
+    verify_formatting_context_boundary_read(node, "create"sv);
     auto index = node.layout_index();
-    if (auto* used_values = m_used_values_store.get(index))
-        return *used_values;
+    if (m_used_values_store.get(index)) {
+        dbgln("LayoutState::create: used values for {} already exist", node.debug_description());
+        VERIFY_NOT_REACHED();
+    }
 
     VERIFY(!m_subtree_root || m_subtree_root == &node || m_subtree_root->is_inclusive_ancestor_of(node));
 
@@ -146,7 +160,7 @@ LayoutState::UsedValues& LayoutState::get_mutable(NodeWithStyle const& node, Opt
         auto const& formatting_context_root = *m_formatting_context_root_stack.last();
         if (&formatting_context_root != &node && formatting_context_root.is_inclusive_ancestor_of(node)) {
             if (auto const* containing_block = node.containing_block(); containing_block && (&formatting_context_root == containing_block || formatting_context_root.is_inclusive_ancestor_of(*containing_block)))
-                containing_block_used_values = &get(*containing_block);
+                containing_block_used_values = &ensure_used_values_for(*containing_block);
         }
     }
 
@@ -158,7 +172,12 @@ LayoutState::UsedValues& LayoutState::get_mutable(NodeWithStyle const& node, Opt
 LayoutState::UsedValues const& LayoutState::get(NodeWithStyle const& node) const
 {
     verify_formatting_context_boundary_read(node, "get"sv);
-    return const_cast<LayoutState*>(this)->ensure_used_values_for(node);
+    auto const* used_values = m_used_values_store.get(node.layout_index());
+    if (!used_values) {
+        dbgln("LayoutState::get: no used values for {}; boxes must be created before their state is read", node.debug_description());
+        VERIFY_NOT_REACHED();
+    }
+    return *used_values;
 }
 
 LayoutState::UsedValues& LayoutState::populate_from_paintable(NodeWithStyle const& node, Painting::PaintableBox const& paintable)
@@ -205,9 +224,9 @@ LayoutState::UsedValues& LayoutState::ensure_used_values_for(NodeWithStyle const
         if (!m_formatting_context_root_stack.is_empty()) {
             auto const& formatting_context_root = *m_formatting_context_root_stack.last();
             if (containing_block && (&formatting_context_root == containing_block || formatting_context_root.is_inclusive_ancestor_of(*containing_block)))
-                containing_block_used_values = &get(*containing_block);
+                containing_block_used_values = &ensure_used_values_for(*containing_block);
         } else {
-            containing_block_used_values = &get(*containing_block);
+            containing_block_used_values = &ensure_used_values_for(*containing_block);
         }
     }
 
