@@ -136,11 +136,45 @@ public:
         TableWrapperWidthMode = TableWrapperWidthMode::ClampToAvailableWidth);
     CSSPixels compute_table_box_height_inside_table_wrapper(Box const&, AvailableSpace const&);
 
-    CSSPixels compute_width_for_replaced_element(Box const&, AvailableSpace const&) const;
-    CSSPixels compute_height_for_replaced_element(Box const&, AvailableSpace const&) const;
+    CSSPixels compute_width_for_replaced_element(Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size) const;
+    CSSPixels compute_height_for_replaced_element(Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size) const;
 
     OwnPtr<FormattingContext> create_independent_formatting_context_if_needed(LayoutState&, LayoutMode, Box const& child_box);
     NonnullOwnPtr<FormattingContext> create_independent_formatting_context(LayoutState&, LayoutMode, Box const& child_box);
+
+    struct PercentageBasis {
+        Optional<CSSPixels> width;
+        Optional<CSSPixels> height;
+    };
+
+    // The percentage basis a containing block establishes for its children. Anonymous boxes
+    // without a definite size of their own are invisible to percentage resolution and pass
+    // the inherited basis through; anonymous table cells are proper containing blocks and do
+    // not. The inherited basis is the containing block's own, normally taken from the
+    // LayoutInput it was laid out with.
+    [[nodiscard]] static PercentageBasis percentage_basis_for_child_context(
+        LayoutState::UsedValues const& containing_block_used_values,
+        Optional<CSSPixels> inherited_percentage_basis_width,
+        Optional<CSSPixels> inherited_percentage_basis_height);
+
+    // For context boundaries with no LayoutInput at hand: the containing block's own pinned
+    // basis serves as the inherited basis (its input carried the same values).
+    [[nodiscard]] static PercentageBasis percentage_basis_for_child_context(LayoutState::UsedValues const& containing_block_used_values);
+
+    // One hop of https://quirks.spec.whatwg.org/#the-percentage-height-calculation-quirk,
+    // evaluated at each containing-block descent instead of walking ancestors at
+    // resolution time: given the basis a containing block itself resolves quirky
+    // percentage heights against, returns the basis it establishes for its children.
+    [[nodiscard]] static Optional<CSSPixels> percentage_resolution_block_size_for_child_context(
+        LayoutState::UsedValues const& containing_block_used_values,
+        Optional<CSSPixels> inherited_percentage_resolution_block_size);
+
+    // The layout input for boxes whose containing block is laid out with the given input:
+    // derives all containing-block constraints one hop down in one step.
+    [[nodiscard]] static LayoutInput layout_input_for_child_context(
+        LayoutState::UsedValues const& containing_block_used_values,
+        LayoutInput const& containing_block_layout_input,
+        AvailableSpace available_space);
 
     virtual void parent_context_did_dimension_child_root_box() { }
 
@@ -153,7 +187,7 @@ public:
     CSSPixels calculate_fit_content_width(Layout::Box const&, AvailableSpace const&) const;
 
     CSSPixels calculate_inner_width(Layout::Box const&, AvailableSize const&, CSS::Size const& width) const;
-    [[nodiscard]] CSSPixels calculate_inner_height(Box const&, AvailableSpace const&, CSS::Size const& height) const;
+    [[nodiscard]] CSSPixels calculate_inner_height(Box const&, AvailableSpace const&, CSS::Size const& height, Optional<CSSPixels> percentage_resolution_block_size) const;
 
     virtual CSSPixels greatest_child_width(Box const&) const;
 
@@ -198,12 +232,12 @@ protected:
         CSSPixels preferred_minimum_width { 0 };
     };
 
-    CSSPixels tentative_width_for_replaced_element(Box const&, CSS::Size const& computed_width, AvailableSpace const&) const;
-    CSSPixels tentative_height_for_replaced_element(Box const&, CSS::Size const& computed_height, AvailableSpace const&) const;
+    CSSPixels tentative_width_for_replaced_element(Box const&, CSS::Size const& computed_width, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size) const;
+    CSSPixels tentative_height_for_replaced_element(Box const&, CSS::Size const& computed_height, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size) const;
     CSSPixels compute_auto_height_for_block_formatting_context_root(Box const&) const;
     static CSSPixels line_box_physical_width(Box const&, LineBox const&);
 
-    [[nodiscard]] CSSPixelSize solve_replaced_size_constraint(CSSPixels input_width, CSSPixels input_height, Box const&, AvailableSpace const&) const;
+    [[nodiscard]] CSSPixelSize solve_replaced_size_constraint(CSSPixels input_width, CSSPixels input_height, Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size) const;
 
     ShrinkToFitResult calculate_shrink_to_fit_widths(Box const&);
 

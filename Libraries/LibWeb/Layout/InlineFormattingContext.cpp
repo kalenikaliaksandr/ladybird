@@ -71,6 +71,7 @@ void InlineFormattingContext::run(LayoutInput const& layout_input)
     FORMATTING_CONTEXT_TRACE();
     VERIFY(containing_block().children_are_inline());
     m_available_space = available_space;
+    m_layout_input.emplace(layout_input);
     generate_line_boxes();
 
     CSSPixels content_height = 0;
@@ -107,9 +108,9 @@ void InlineFormattingContext::dimension_box_on_line(Box const& box, LayoutMode l
     box_state.margin_bottom = computed_values.margin().bottom().to_px_or_zero(width_of_containing_block);
 
     if (box_is_sized_as_replaced_element(box, *m_available_space)) {
-        box_state.set_content_width(compute_width_for_replaced_element(box, *m_available_space));
-        box_state.set_content_height(compute_height_for_replaced_element(box, *m_available_space));
-        auto child_layout_input = LayoutInput { box_state.available_inner_space_or_constraints_from(*m_available_space) };
+        box_state.set_content_width(compute_width_for_replaced_element(box, *m_available_space, m_layout_input->percentage_resolution_block_size));
+        box_state.set_content_height(compute_height_for_replaced_element(box, *m_available_space, m_layout_input->percentage_resolution_block_size));
+        auto child_layout_input = m_layout_input->with_available_space(box_state.available_inner_space_or_constraints_from(*m_available_space));
         auto independent_formatting_context = layout_inside(box, layout_mode, child_layout_input);
         if (independent_formatting_context)
             independent_formatting_context->parent_context_did_dimension_child_root_box();
@@ -170,20 +171,20 @@ void InlineFormattingContext::dimension_box_on_line(Box const& box, LayoutMode l
 
     box_state.set_content_width(width);
 
-    parent().resolve_used_height_if_not_treated_as_auto(box, AvailableSpace(AvailableSize::make_definite(width), AvailableSize::make_indefinite()));
+    parent().resolve_used_height_if_not_treated_as_auto(box, AvailableSpace(AvailableSize::make_definite(width), AvailableSize::make_indefinite()), m_layout_input->percentage_resolution_block_size);
 
     // NOTE: Flex containers with `auto` height are treated as `max-content`, so we can compute their height early.
     if (box.display().is_flex_inside())
-        parent().resolve_used_height_if_treated_as_auto(box, AvailableSpace(AvailableSize::make_definite(width), AvailableSize::make_indefinite()));
+        parent().resolve_used_height_if_treated_as_auto(box, AvailableSpace(AvailableSize::make_definite(width), AvailableSize::make_indefinite()), m_layout_input->percentage_resolution_block_size);
 
-    auto child_layout_input = LayoutInput { box_state.available_inner_space_or_constraints_from(*m_available_space) };
+    auto child_layout_input = m_layout_input->with_available_space(box_state.available_inner_space_or_constraints_from(*m_available_space));
     auto independent_formatting_context = layout_inside(box, layout_mode, child_layout_input);
 
     if (should_treat_height_as_auto(box, *m_available_space)) {
         // FIXME: (10.6.6) If 'height' is 'auto', the height depends on the element's descendants per 10.6.7.
-        parent().resolve_used_height_if_treated_as_auto(box, *m_available_space);
+        parent().resolve_used_height_if_treated_as_auto(box, *m_available_space, m_layout_input->percentage_resolution_block_size);
     } else {
-        parent().resolve_used_height_if_not_treated_as_auto(box, *m_available_space);
+        parent().resolve_used_height_if_not_treated_as_auto(box, *m_available_space, m_layout_input->percentage_resolution_block_size);
     }
 
     if (independent_formatting_context)
@@ -346,7 +347,7 @@ void InlineFormattingContext::generate_line_boxes()
     auto direction = m_context_box.computed_values().direction();
     auto writing_mode = m_context_box.computed_values().writing_mode();
 
-    InlineLevelIterator iterator(*this, m_state, containing_block(), m_containing_block_used_values, m_layout_mode);
+    InlineLevelIterator iterator(*this, m_state, containing_block(), m_containing_block_used_values, *m_layout_input, m_layout_mode);
     LineBuilder line_builder(*this, m_state, m_containing_block_used_values, direction, writing_mode);
 
     // NOTE: When we ignore collapsible whitespace chunks at the start of a line,
@@ -420,11 +421,11 @@ void InlineFormattingContext::generate_line_boxes()
         case InlineLevelIterator::Item::Type::FloatingElement:
             if (auto* box = as_if<Box>(*item.node)) {
                 if (!is<ListItemMarkerBox>(*box))
-                    m_state.create(*box);
+                    m_state.create(*box, m_layout_input->percentage_basis_width, m_layout_input->percentage_basis_height);
                 (void)parent().clear_floating_boxes(*item.node, *this);
                 // Even if this introduces clearance, we do NOT reset the margin state, because that is clearance
                 // between floats and does not contribute to the height of the Inline Formatting Context.
-                parent().layout_floating_box(*box, containing_block(), *m_available_space, 0, &line_builder);
+                parent().layout_floating_box(*box, containing_block(), *m_layout_input, 0, &line_builder);
             }
             break;
 
@@ -524,9 +525,11 @@ void InlineFormattingContext::generate_line_boxes()
                 if (found_static_position_marker)
                     break;
             }
+            // The percentage basis of an absolutely positioned box is pinned by
+            // layout_absolutely_positioned_element() once its containing block rect is known.
             auto& box_state = is<ListItemMarkerBox>(*box)
                 ? m_state.get_mutable(*box)
-                : m_state.create(*box);
+                : m_state.create(*box, {}, {});
             box_state.set_static_position_rect(static_position_rect);
         }
     }

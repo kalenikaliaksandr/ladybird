@@ -85,13 +85,42 @@ LayoutState::UsedValues const& LayoutState::get(NodeWithStyle const& node) const
     return *used_values;
 }
 
-LayoutState::UsedValues& LayoutState::create(NodeWithStyle const& node)
+LayoutState::UsedValues& LayoutState::create(NodeWithStyle const& node, Optional<CSSPixels> percentage_basis_width, Optional<CSSPixels> percentage_basis_height)
 {
-    if (m_used_values_store.get(node.layout_index())) {
+    auto index = node.layout_index();
+    if (m_used_values_store.get(index)) {
         dbgln("LayoutState::create: used values for {} already exist", node.debug_description());
         VERIFY_NOT_REACHED();
     }
-    return ensure_used_values_for(node);
+
+    VERIFY(!m_subtree_root || m_subtree_root == &node || m_subtree_root->is_inclusive_ancestor_of(node));
+
+    UsedValues const* containing_block_used_values = nullptr;
+    if (m_subtree_root == &node) {
+        // For the subtree root, ancestor values are not available in the throwaway state.
+        containing_block_used_values = try_get(*node.containing_block());
+    } else if (!node.is_viewport()) {
+        containing_block_used_values = &ensure_used_values_for(*node.containing_block());
+    }
+
+    auto& used_values = m_used_values_store.allocate(index);
+    used_values.set_node(node, containing_block_used_values, percentage_basis_width, percentage_basis_height);
+
+    // A list item's marker is placed by the list item itself, which is also its containing
+    // block, so the marker's used values are created together with the list item's, with the
+    // list item's basis passed down. List items are never anonymous, so no basis forwarding
+    // is needed here: the marker's basis is the list item's definite sizes.
+    if (auto const* list_item_box = as_if<ListItemBox>(node); list_item_box && list_item_box->marker()) {
+        auto const& marker = *list_item_box->marker();
+        if (!m_used_values_store.get(marker.layout_index())) {
+            auto& marker_used_values = m_used_values_store.allocate(marker.layout_index());
+            marker_used_values.set_node(marker, &used_values,
+                used_values.has_definite_width() ? Optional<CSSPixels> { used_values.content_width() } : Optional<CSSPixels> {},
+                used_values.has_definite_height() ? Optional<CSSPixels> { used_values.content_height() } : Optional<CSSPixels> {});
+        }
+    }
+
+    return used_values;
 }
 
 LayoutState::UsedValues& LayoutState::populate_from_paintable(NodeWithStyle const& node, Painting::PaintableBox const& paintable)
@@ -138,11 +167,9 @@ LayoutState::UsedValues& LayoutState::ensure_used_values_for(NodeWithStyle const
     }
 
     auto& used_values = m_used_values_store.allocate(index);
-    used_values.set_node(node, containing_block_used_values);
-
-    if (auto const* list_item_box = as_if<ListItemBox>(node); list_item_box && list_item_box->marker())
-        ensure_used_values_for(*list_item_box->marker());
-
+    // Boxes reached lazily here, as containing blocks of an explicitly created box, have not
+    // entered layout themselves; nobody has passed a percentage basis down for them.
+    used_values.set_node(node, containing_block_used_values, {}, {});
     return used_values;
 }
 
@@ -874,6 +901,8 @@ LayoutState::UsedValues& LayoutState::UsedValues::operator=(UsedValues const& ot
     m_node = other.m_node;
     m_containing_block_used_values = other.m_containing_block_used_values;
     m_cumulative_offset = other.m_cumulative_offset;
+    m_percentage_basis_width = other.m_percentage_basis_width;
+    m_percentage_basis_height = other.m_percentage_basis_height;
     m_content_width = other.m_content_width;
     m_content_height = other.m_content_height;
     m_has_definite_width = other.m_has_definite_width;
@@ -887,10 +916,12 @@ LayoutState::UsedValues& LayoutState::UsedValues::operator=(UsedValues const& ot
     return *this;
 }
 
-void LayoutState::UsedValues::set_node(NodeWithStyle const& node, UsedValues const* containing_block_used_values)
+void LayoutState::UsedValues::set_node(NodeWithStyle const& node, UsedValues const* containing_block_used_values, Optional<CSSPixels> percentage_basis_width, Optional<CSSPixels> percentage_basis_height)
 {
     m_node = &node;
     m_containing_block_used_values = containing_block_used_values;
+    m_percentage_basis_width = percentage_basis_width;
+    m_percentage_basis_height = percentage_basis_height;
 
     // NOTE: In the code below, we decide if `node` has definite width and/or height.
     //       This attempts to cover all the *general* cases where CSS considers sizes to be definite.
@@ -903,6 +934,10 @@ void LayoutState::UsedValues::set_node(NodeWithStyle const& node, UsedValues con
 
     auto const& computed_values = node.computed_values();
 
+    auto containing_block_size_for_axis = [&](bool width) {
+        return width ? percentage_basis_width_or_zero() : percentage_basis_height_or_zero();
+    };
+
     auto adjust_for_box_sizing = [&](CSSPixels unadjusted_pixels, CSS::Size const& computed_size, bool width) -> CSSPixels {
         // box-sizing: content-box and/or automatic size don't require any adjustment.
         if (computed_values.box_sizing() == CSS::BoxSizing::ContentBox || computed_size.is_auto())
@@ -913,14 +948,14 @@ void LayoutState::UsedValues::set_node(NodeWithStyle const& node, UsedValues con
 
         if (width) {
             border_and_padding = computed_values.border_left().width
-                + computed_values.padding().left().to_px_or_zero(containing_block_used_values->content_width())
+                + computed_values.padding().left().to_px_or_zero(percentage_basis_width_or_zero())
                 + computed_values.border_right().width
-                + computed_values.padding().right().to_px_or_zero(containing_block_used_values->content_width());
+                + computed_values.padding().right().to_px_or_zero(percentage_basis_width_or_zero());
         } else {
             border_and_padding = computed_values.border_top().width
-                + computed_values.padding().top().to_px_or_zero(containing_block_used_values->content_width())
+                + computed_values.padding().top().to_px_or_zero(percentage_basis_width_or_zero())
                 + computed_values.border_bottom().width
-                + computed_values.padding().bottom().to_px_or_zero(containing_block_used_values->content_width());
+                + computed_values.padding().bottom().to_px_or_zero(percentage_basis_width_or_zero());
         }
 
         return unadjusted_pixels - border_and_padding;
@@ -933,7 +968,7 @@ void LayoutState::UsedValues::set_node(NodeWithStyle const& node, UsedValues con
         // a size of the initial containing block,
         // or a <percentage> or other formula (such as the “stretch-fit” sizing of non-replaced blocks [CSS2]) that is resolved solely against definite sizes.
 
-        auto containing_block_has_definite_size = containing_block_used_values ? (width ? containing_block_used_values->has_definite_width() : containing_block_used_values->has_definite_height()) : false;
+        auto containing_block_has_definite_size = width ? m_percentage_basis_width.has_value() : m_percentage_basis_height.has_value();
 
         if (size.is_auto()) {
             // NOTE: The width of a non-flex-item block is considered definite if it's auto and the containing block has definite width.
@@ -946,7 +981,7 @@ void LayoutState::UsedValues::set_node(NodeWithStyle const& node, UsedValues con
                 && (node.parent()->display().is_flow_root_inside()
                     || node.parent()->display().is_flow_inside())) {
                 if (containing_block_has_definite_size) {
-                    CSSPixels available_width = containing_block_used_values->content_width();
+                    CSSPixels available_width = containing_block_size_for_axis(true);
                     resolved_definite_size = clamp_to_max_dimension_value(
                         available_width
                         - margin_left
@@ -966,7 +1001,7 @@ void LayoutState::UsedValues::set_node(NodeWithStyle const& node, UsedValues con
             if (size.contains_percentage()) {
                 if (!containing_block_has_definite_size)
                     return false;
-                auto containing_block_size_as_length = width ? containing_block_used_values->content_width() : containing_block_used_values->content_height();
+                auto containing_block_size_as_length = containing_block_size_for_axis(width);
                 resolved_definite_size = clamp_to_max_dimension_value(adjust_for_box_sizing(size.to_px(containing_block_size_as_length), size, width));
                 return true;
             }

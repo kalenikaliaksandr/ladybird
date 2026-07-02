@@ -44,12 +44,13 @@ void ReplacedWithChildrenFormattingContext::run(LayoutInput const& layout_input)
     if (!wrapper)
         return;
 
-    auto& wrapper_state = m_state.create(*wrapper);
+    auto wrapper_percentage_basis = percentage_basis_for_child_context(root_state, layout_input.percentage_basis_width, layout_input.percentage_basis_height);
+    auto& wrapper_state = m_state.create(*wrapper, wrapper_percentage_basis.width, wrapper_percentage_basis.height);
     wrapper_state.set_content_width(content_width);
     wrapper_state.set_content_offset({ 0, 0 });
 
     auto bfc = make<BlockFormattingContext>(m_state, m_layout_mode, *wrapper, this);
-    bfc->run(LayoutInput { child_available_space });
+    bfc->run(LayoutInput { child_available_space, wrapper_percentage_basis.width, wrapper_percentage_basis.height, percentage_resolution_block_size_for_child_context(root_state, layout_input.percentage_resolution_block_size) });
 
     m_automatic_content_width = content_width;
     m_automatic_content_height = bfc->automatic_content_height();

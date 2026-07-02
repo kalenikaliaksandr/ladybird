@@ -65,6 +65,11 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
             continue;
         }
         auto const& child_box = as<Box>(*child);
+        // Captions live inside the table wrapper, so their quirks percentage height basis derives
+        // from the wrapper, not from anything the table box inherited.
+        auto const& table_wrapper_state = m_state.get(table_wrapper());
+        auto caption_percentage_basis = percentage_basis_for_child_context(table_wrapper_state);
+        auto caption_percentage_resolution_block_size = percentage_resolution_block_size_for_child_context(table_wrapper_state, {});
         // The caption boxes are principal block-level boxes that retain their own content, padding, margin, and border areas,
         // and are rendered as normal block boxes inside the table wrapper box, as described in https://www.w3.org/TR/CSS22/tables.html#model
         if (auto caption_context = create_independent_formatting_context_if_needed(m_state, m_layout_mode, child_box)) {
@@ -73,11 +78,11 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
             if (block_context) {
                 auto available_width = caption_available_space.width.to_px_or_zero();
                 block_context->resolve_vertical_box_model_metrics(child_box, available_width);
-                block_context->compute_width(child_box, caption_available_space);
+                block_context->compute_width(child_box, caption_available_space, caption_percentage_resolution_block_size);
                 inner_available_space = m_state.get(child_box).available_inner_space_or_constraints_from(caption_available_space);
             }
 
-            caption_context->run(LayoutInput { inner_available_space });
+            caption_context->run(LayoutInput { inner_available_space, caption_percentage_basis.width, caption_percentage_basis.height, caption_percentage_resolution_block_size });
 
             if (block_context) {
                 auto& caption_state = m_state.get_mutable(child_box);
@@ -1794,17 +1799,20 @@ void TableFormattingContext::finish_grid_initialization(TableGrid const& table_g
 
 void TableFormattingContext::seed_table_participant_used_values()
 {
+    // The containing block of every internal table box and caption is the table wrapper.
+    auto participant_percentage_basis = percentage_basis_for_child_context(m_state.get(table_wrapper()));
+
     TableGrid::for_each_child_box_matching(table_box(), TableGrid::is_table_row_group, [&](auto& row_group_box) {
-        m_state.create(row_group_box);
+        m_state.create(row_group_box, participant_percentage_basis.width, participant_percentage_basis.height);
     });
     for (auto& row : m_rows)
-        m_state.create(row.box);
+        m_state.create(row.box, participant_percentage_basis.width, participant_percentage_basis.height);
     for (auto& cell : m_cells)
-        m_state.create(cell.box);
+        m_state.create(cell.box, participant_percentage_basis.width, participant_percentage_basis.height);
 
     for (auto child = table_box().first_child(); child; child = child->next_sibling()) {
         if (child->display().is_table_caption())
-            m_state.create(as<Box>(*child));
+            m_state.create(as<Box>(*child), participant_percentage_basis.width, participant_percentage_basis.height);
     }
 }
 
@@ -1855,7 +1863,7 @@ void TableFormattingContext::parent_context_did_dimension_child_root_box()
             // FIXME: calculate_static_position_rect() is not aware of how to correctly calculate static position for
             //        a box nested inside a table, but we need to set some value, so layout_absolutely_positioned_element()
             //        won't crash trying to access it.
-            m_state.create(box).set_static_position_rect(calculate_static_position_rect(box));
+            m_state.create(box, {}, {}).set_static_position_rect(calculate_static_position_rect(box));
         }
 
         if (formatting_context_type_created_by_box(box).has_value()) {

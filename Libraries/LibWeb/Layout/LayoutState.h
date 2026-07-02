@@ -147,9 +147,17 @@ struct LayoutState {
 
         NodeWithStyle const& node() const { return *m_node; }
         NodeWithStyle& node() { return const_cast<NodeWithStyle&>(*m_node); }
-        void set_node(NodeWithStyle const&, UsedValues const* containing_block_used_values);
+        void set_node(NodeWithStyle const&, UsedValues const* containing_block_used_values, Optional<CSSPixels> percentage_basis_width = {}, Optional<CSSPixels> percentage_basis_height = {});
 
         UsedValues const* containing_block_used_values() const { return m_containing_block_used_values; }
+        Optional<CSSPixels> const& percentage_basis_width() const { return m_percentage_basis_width; }
+        Optional<CSSPixels> const& percentage_basis_height() const { return m_percentage_basis_height; }
+        // Re-pins the basis only; deliberately leaves definiteness and content sizes alone,
+        // since those were resolved against the basis the values were created with.
+        void set_percentage_basis_width(Optional<CSSPixels> width) { m_percentage_basis_width = width; }
+        void set_percentage_basis_height(Optional<CSSPixels> height) { m_percentage_basis_height = height; }
+        CSSPixels percentage_basis_width_or_zero() const { return m_percentage_basis_width.value_or(0); }
+        CSSPixels percentage_basis_height_or_zero() const { return m_percentage_basis_height.value_or(0); }
 
         CSSPixels content_width() const { return m_content_width; }
         CSSPixels content_height() const { return m_content_height; }
@@ -393,6 +401,8 @@ struct LayoutState {
         Layout::NodeWithStyle const* m_node { nullptr };
         UsedValues const* m_containing_block_used_values { nullptr };
         Optional<CSSPixelPoint> m_cumulative_offset;
+        Optional<CSSPixels> m_percentage_basis_width;
+        Optional<CSSPixels> m_percentage_basis_height;
 
         CSSPixels m_content_width { 0 };
         CSSPixels m_content_height { 0 };
@@ -418,7 +428,10 @@ struct LayoutState {
     UsedValues& get_mutable(NodeWithStyle const&);
     UsedValues const& get(NodeWithStyle const&) const;
 
-    UsedValues& create(NodeWithStyle const&);
+    // Explicit creation: the box is entering layout here. Whoever lays the box out passes the
+    // percentage basis down from used values it already holds; LayoutState never derives it by
+    // looking up ancestor state.
+    UsedValues& create(NodeWithStyle const&, Optional<CSSPixels> percentage_basis_width, Optional<CSSPixels> percentage_basis_height);
 
     UsedValues& populate_from_paintable(NodeWithStyle const&, Painting::PaintableBox const&);
     UsedValues& populate_node_from(LayoutState const& source, NodeWithStyle const& node);

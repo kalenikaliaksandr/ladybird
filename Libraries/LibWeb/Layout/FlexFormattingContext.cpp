@@ -37,9 +37,9 @@ CSSPixels FlexFormattingContext::get_pixel_height(FlexItem const& item, CSS::Siz
         auto available_width = item.main_size.has_value() ? AvailableSize::make_definite(clamp_to_max_dimension_value(item.main_size.value())) : AvailableSize::make_indefinite();
         auto available_height = AvailableSize::make_indefinite();
         auto available_space = AvailableSpace { available_width, available_height };
-        return calculate_inner_height(item.box, available_space, size);
+        return calculate_inner_height(item.box, available_space, size, item_percentage_resolution_block_size());
     }
-    return calculate_inner_height(item.box, m_available_space.value(), size);
+    return calculate_inner_height(item.box, m_available_space.value(), size, item_percentage_resolution_block_size());
 }
 
 FlexFormattingContext::FlexFormattingContext(LayoutState& state, LayoutMode layout_mode, Box const& flex_container, FormattingContext* parent)
@@ -50,6 +50,14 @@ FlexFormattingContext::FlexFormattingContext(LayoutState& state, LayoutMode layo
 }
 
 FlexFormattingContext::~FlexFormattingContext() = default;
+
+// Derived at each use rather than once per run: the container's block size may not be
+// resolved yet when layout begins, and quirky percentages read it as it stands at
+// resolution time.
+Optional<CSSPixels> FlexFormattingContext::item_percentage_resolution_block_size() const
+{
+    return percentage_resolution_block_size_for_child_context(m_flex_container_state, m_layout_input->percentage_resolution_block_size);
+}
 
 CSSPixels FlexFormattingContext::automatic_content_width() const
 {
@@ -77,6 +85,7 @@ void FlexFormattingContext::run(LayoutInput const& layout_input)
 
     FORMATTING_CONTEXT_TRACE();
     m_available_space = available_space;
+    m_layout_input.emplace(layout_input);
 
     // 1. Generate anonymous flex items
     generate_anonymous_flex_items();
@@ -239,7 +248,7 @@ void FlexFormattingContext::run(LayoutInput const& layout_input)
         // AD-HOC: Finally, layout the inside of all flex items.
         copy_dimensions_from_flex_items_to_boxes();
         for (auto& item : m_flex_items) {
-            auto item_layout_input = LayoutInput { item.used_values.available_inner_space_or_constraints_from(m_available_space_for_items->space) };
+            auto item_layout_input = LayoutInput { item.used_values.available_inner_space_or_constraints_from(m_available_space_for_items->space), item.used_values.percentage_basis_width(), item.used_values.percentage_basis_height(), item_percentage_resolution_block_size() };
             if (auto independent_formatting_context = layout_inside(item.box, LayoutMode::Normal, item_layout_input))
                 independent_formatting_context->parent_context_did_dimension_child_root_box();
 
@@ -260,7 +269,9 @@ void FlexFormattingContext::parent_context_did_dimension_child_root_box()
 
     flex_container().for_each_child_of_type<Box>([&](Layout::Box& box) {
         if (box.is_absolutely_positioned()) {
-            m_state.create(box).set_static_position_rect(calculate_static_position_rect(box));
+            // The percentage basis of an absolutely positioned box is pinned by
+            // layout_absolutely_positioned_element() once its containing block rect is known.
+            m_state.create(box, {}, {}).set_static_position_rect(calculate_static_position_rect(box));
         }
         return IterationDecision::Continue;
     });
@@ -378,7 +389,8 @@ void FlexFormattingContext::generate_anonymous_flex_items()
             return IterationDecision::Continue;
 
         child_box.set_flex_item(true);
-        FlexItem item = { child_box, m_state.create(child_box) };
+        auto item_percentage_basis = percentage_basis_for_child_context(m_flex_container_state, m_layout_input->percentage_basis_width, m_layout_input->percentage_basis_height);
+        FlexItem item = { child_box, m_state.create(child_box, item_percentage_basis.width, item_percentage_basis.height) };
         populate_specified_margins(item, m_flex_direction);
 
         auto& order_bucket = order_item_bucket.ensure(child_box.computed_values().order());
@@ -456,14 +468,14 @@ CSSPixels FlexFormattingContext::calculate_inner_flex_container_cross_min_size()
 {
     return cross_axis_is_horizontal()
         ? calculate_inner_width(flex_container(), m_available_space.value().width, computed_cross_min_size(flex_container()))
-        : calculate_inner_height(flex_container(), m_available_space.value(), computed_cross_min_size(flex_container()));
+        : calculate_inner_height(flex_container(), m_available_space.value(), computed_cross_min_size(flex_container()), m_layout_input->percentage_resolution_block_size);
 }
 
 CSSPixels FlexFormattingContext::calculate_inner_flex_container_cross_max_size() const
 {
     return cross_axis_is_horizontal()
         ? calculate_inner_width(flex_container(), m_available_space.value().width, computed_cross_max_size(flex_container()))
-        : calculate_inner_height(flex_container(), m_available_space.value(), computed_cross_max_size(flex_container()));
+        : calculate_inner_height(flex_container(), m_available_space.value(), computed_cross_max_size(flex_container()), m_layout_input->percentage_resolution_block_size);
 }
 
 bool FlexFormattingContext::has_main_max_size(Box const& box) const

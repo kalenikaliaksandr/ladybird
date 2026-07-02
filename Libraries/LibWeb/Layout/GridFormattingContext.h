@@ -308,6 +308,8 @@ private:
     Vector<GridItem> m_grid_items;
 
     Optional<AvailableSpace> m_available_space;
+    Optional<LayoutInput> m_layout_input;
+    Optional<CSSPixels> item_percentage_resolution_block_size() const;
 
     LayoutState::UsedValues& m_grid_container_used_values;
 

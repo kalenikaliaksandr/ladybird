@@ -27,7 +27,7 @@ public:
     virtual CSSPixels automatic_content_height() const override;
 
     bool box_should_avoid_floats_because_it_establishes_fc(Box const&);
-    void compute_width(Box const&, AvailableSpace const&);
+    void compute_width(Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size);
     void avoid_float_intrusions(Box const&, AvailableSpace const&);
 
     // https://www.w3.org/TR/css-display/#block-formatting-context-root
@@ -35,8 +35,8 @@ public:
 
     virtual void parent_context_did_dimension_child_root_box() override;
 
-    void resolve_used_height_if_not_treated_as_auto(Box const&, AvailableSpace const&);
-    void resolve_used_height_if_treated_as_auto(Box const&, AvailableSpace const&, FormattingContext const* box_formatting_context = nullptr);
+    void resolve_used_height_if_not_treated_as_auto(Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size);
+    void resolve_used_height_if_treated_as_auto(Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size, FormattingContext const* box_formatting_context = nullptr);
 
     template<typename Callback>
     void for_each_floating_box(Callback callback)
@@ -55,7 +55,7 @@ public:
 
     virtual CSSPixels greatest_child_width(Box const&) const override;
 
-    void layout_floating_box(Box const& child, BlockContainer const& containing_block, AvailableSpace const&, CSSPixels y, LineBuilder* = nullptr);
+    void layout_floating_box(Box const& child, BlockContainer const& containing_block, LayoutInput const&, CSSPixels y, LineBuilder* = nullptr);
 
     void layout_block_level_box(Box const&, BlockContainer const&, CSSPixels& bottom_of_lowest_margin_box, LayoutInput const&);
 
@@ -100,10 +100,10 @@ private:
 
     void compute_width_for_floating_box(Box const&, AvailableSpace const&);
 
-    void compute_width_for_block_level_replaced_element_in_normal_flow(Box const&, AvailableSpace const&);
+    void compute_width_for_block_level_replaced_element_in_normal_flow(Box const&, AvailableSpace const&, Optional<CSSPixels> percentage_resolution_block_size);
 
     void layout_block_level_children(BlockContainer const&, LayoutInput const&);
-    void layout_inline_children(BlockContainer const&, AvailableSpace const&);
+    void layout_inline_children(BlockContainer const&, LayoutInput const&);
     void layout_fieldset_with_rendered_legend(FieldSetBox const&, LayoutInput const&);
 
     void place_block_level_element_in_normal_flow_horizontally(Box const& child_box, AvailableSpace const&);
