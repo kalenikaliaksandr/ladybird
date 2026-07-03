@@ -714,7 +714,7 @@ public:
     [[nodiscard]] u32 allocate_layout_node_index() { return m_next_layout_node_index++; }
     void reset_layout_node_index_counter(u32 next_index) { m_next_layout_node_index = next_index; }
 
-    void mark_svg_root_as_needing_relayout(Layout::SVGSVGBox&);
+    void register_partial_relayout_root(Layout::Box&);
 
     void set_needs_to_refresh_scroll_state(bool b);
 
@@ -1468,7 +1468,7 @@ private:
 
     u32 m_next_layout_node_index { 0 };
 
-    HashTable<WeakPtr<Layout::SVGSVGBox>> m_svg_roots_needing_relayout;
+    HashTable<WeakPtr<Layout::Box>> m_partial_relayout_roots;
 
     bool m_needs_animated_style_update { false };
 

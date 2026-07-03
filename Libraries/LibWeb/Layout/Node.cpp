@@ -38,7 +38,6 @@
 #include <LibWeb/Layout/ImageBox.h>
 #include <LibWeb/Layout/InlineNode.h>
 #include <LibWeb/Layout/Node.h>
-#include <LibWeb/Layout/SVGSVGBox.h>
 #include <LibWeb/Layout/TableWrapper.h>
 #include <LibWeb/Layout/TextNode.h>
 #include <LibWeb/Layout/Viewport.h>
@@ -1725,8 +1724,8 @@ void Node::set_needs_layout_update(DOM::SetNeedsLayoutReason reason)
         if (ancestor->m_needs_layout_update)
             break;
         ancestor->m_needs_layout_update = true;
-        if (auto* svg_box = as_if<SVGSVGBox>(ancestor)) {
-            document().mark_svg_root_as_needing_relayout(*svg_box);
+        if (auto* box = as_if<Box>(ancestor); box && box->is_partial_relayout_boundary()) {
+            document().register_partial_relayout_root(*box);
             break;
         }
     }

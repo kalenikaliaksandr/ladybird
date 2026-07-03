@@ -43,6 +43,14 @@ void Box::clear_saved_abspos_layout_inputs()
     m_saved_abspos_layout_inputs = nullptr;
 }
 
+bool Box::is_partial_relayout_boundary() const
+{
+    // SVG roots have used sizes determined solely by their own attributes and
+    // outer context, never by their children, so a subtree relayout can reuse
+    // the size and position from the previous layout.
+    return is_svg_svg_box();
+}
+
 CSS::SizeWithAspectRatio Box::auto_content_box_size() const
 {
     // https://drafts.csswg.org/css-contain-2/#containment-size
