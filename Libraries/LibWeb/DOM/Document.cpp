@@ -1740,6 +1740,42 @@ static void relayout_subtree(Layout::Box& subtree_root)
     });
 }
 
+bool Document::prepare_subtree_for_partial_relayout(Layout::Box& subtree_root)
+{
+    bool can_relayout_subtree = true;
+    subtree_root.for_each_in_inclusive_subtree([&](Layout::Node& node) {
+        node.recompute_containing_block({});
+
+        auto* box = as_if<Layout::Box>(node);
+        if (!box)
+            return TraversalDecision::Continue;
+        if (!box->is_absolutely_positioned())
+            return TraversalDecision::Continue;
+
+        // A box whose containing block is outside the subtree is laid out by a formatting
+        // context outside it, so the subtree cannot be laid out in isolation. The escape
+        // flags of everything the subtree relayout lays out are refreshed when it commits;
+        // on this bail path no commit runs, so record the escape directly, so the boxes it
+        // invalidates as boundaries reject registration at the next invalidation instead of
+        // retrying and failing.
+        auto containing_block = box->containing_block();
+        if (!containing_block || !subtree_root.is_inclusive_ancestor_of(*containing_block)) {
+            can_relayout_subtree = false;
+            for (auto* ancestor = box->parent(); ancestor; ancestor = ancestor->parent()) {
+                if (auto* ancestor_box = as_if<Layout::Box>(*ancestor))
+                    ancestor_box->set_abspos_descendant_escapes(true);
+                if (ancestor == &subtree_root)
+                    break;
+            }
+            return TraversalDecision::Break;
+        }
+
+        return TraversalDecision::Continue;
+    });
+
+    return can_relayout_subtree;
+}
+
 static void propagate_scrollbar_width_to_viewport(Element& root_element, Layout::Viewport& viewport)
 {
     // https://drafts.csswg.org/css-scrollbars/#scrollbar-width
@@ -1862,7 +1898,7 @@ void Document::update_layout(UpdateLayoutReason reason)
             return;
         }
 
-        auto partial_relayout_roots = move(m_partial_relayout_roots);
+        auto registered_partial_relayout_roots = move(m_partial_relayout_roots);
 
         // NOTE: If this is a document hosting <template> contents, layout is unnecessary.
         if (m_created_for_appropriate_template_contents)
@@ -1871,25 +1907,62 @@ void Document::update_layout(UpdateLayoutReason reason)
         auto const needs_layout_tree_rebuild = !m_layout_root || needs_layout_tree_update() || child_needs_layout_tree_update() || needs_full_layout_tree_update();
 
         // Partial relayout
-        if (!needs_layout_tree_rebuild && !partial_relayout_roots.is_empty() && !m_layout_root->needs_layout_update()) {
-            for (auto const& root : partial_relayout_roots) {
-                if (root) {
+        if (!needs_layout_tree_rebuild
+            && !registered_partial_relayout_roots.is_empty()
+            && !m_layout_root->needs_layout_update()
+            && m_query_containers_needing_container_query_evaluation_after_layout.is_empty()
+            && !should_collect_devtools_layout_data) {
+            Vector<Layout::Box*> live_partial_relayout_roots;
+            for (auto const& root : registered_partial_relayout_roots) {
+                if (root)
+                    live_partial_relayout_roots.append(root.ptr());
+            }
+
+            Vector<Layout::Box*> partial_relayout_roots;
+            for (auto* root : live_partial_relayout_roots) {
+                bool is_descendant_of_another_root = false;
+                for (auto* potential_ancestor : live_partial_relayout_roots) {
+                    if (root == potential_ancestor)
+                        continue;
+                    if (potential_ancestor->is_inclusive_ancestor_of(*root)) {
+                        is_descendant_of_another_root = true;
+                        break;
+                    }
+                }
+                if (!is_descendant_of_another_root)
+                    partial_relayout_roots.append(root);
+            }
+
+            bool can_run_partial_relayout = !partial_relayout_roots.is_empty();
+            for (auto* root : partial_relayout_roots) {
+                if (!root->paintable_box()) {
+                    can_run_partial_relayout = false;
+                    continue;
+                }
+                if (!prepare_subtree_for_partial_relayout(*root))
+                    can_run_partial_relayout = false;
+            }
+
+            if (can_run_partial_relayout) {
+                for (auto* root : partial_relayout_roots) {
                     relayout_subtree(*root);
                     // NB: The subtree commit reset the root's descendant paintables, and the subtree's
                     //     new size may change ancestor scrollable overflow; scheduling the root covers both.
                     schedule_scrollable_overflow_recalculation(*root);
                 }
+
+                update_scrollable_overflow(UpdateScrollableOverflowMode::Scheduled);
+
+                invalidate_stacking_context_tree();
+                set_needs_to_record_display_list();
+
+                set_needs_accumulated_visual_contexts_update(true);
+                update_paint_and_hit_testing_properties_if_needed();
+                m_document->set_needs_repaint();
+                if (needs_style_update_after_layout())
+                    continue;
+                return;
             }
-
-            update_scrollable_overflow(UpdateScrollableOverflowMode::Scheduled);
-
-            invalidate_stacking_context_tree();
-            set_needs_to_record_display_list();
-
-            set_needs_accumulated_visual_contexts_update(true);
-            update_paint_and_hit_testing_properties_if_needed();
-            m_document->set_needs_repaint();
-            return;
         }
 
         // Clear text blocks cache so we rebuild them on the next find action.
