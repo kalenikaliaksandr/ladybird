@@ -81,6 +81,7 @@ void LineBuilder::begin_new_line(bool increment_y, bool is_first_break_in_sequen
 
     if (should_indent)
         line_box.m_inline_length += m_text_indent;
+    m_current_line_committed_pending_margin = false;
 }
 
 LineBox& LineBuilder::ensure_last_line_box()
@@ -93,6 +94,8 @@ LineBox& LineBuilder::ensure_last_line_box()
 
 void LineBuilder::append_box(Box const& box, CSSPixels leading_size, CSSPixels trailing_size, CSSPixels leading_margin, CSSPixels trailing_margin)
 {
+    prepare_to_append_inline_content();
+
     auto& box_state = m_layout_state.get_mutable(box);
     auto& line_box = ensure_last_line_box();
     line_box.add_fragment(box, 0, 0, leading_size, trailing_size, leading_margin, trailing_margin,
@@ -114,6 +117,8 @@ void LineBuilder::append_box(Box const& box, CSSPixels leading_size, CSSPixels t
 
 void LineBuilder::append_text_chunk(TextNode const& text_node, size_t offset_in_node, size_t length_in_node, CSSPixels leading_size, CSSPixels trailing_size, CSSPixels leading_margin, CSSPixels trailing_margin, CSSPixels content_width, CSSPixels content_height, RefPtr<Gfx::GlyphRun> glyph_run)
 {
+    prepare_to_append_inline_content();
+
     auto& line_box = ensure_last_line_box();
     line_box.add_fragment(text_node, offset_in_node, length_in_node, leading_size, trailing_size, leading_margin,
         trailing_margin, content_width, content_height, 0, 0, move(glyph_run));
@@ -124,6 +129,71 @@ void LineBuilder::append_text_chunk(TextNode const& text_node, size_t offset_in_
 void LineBuilder::append_static_position_marker(Box const& box)
 {
     ensure_last_line_box().add_static_position_marker(box);
+}
+
+void LineBuilder::prepare_to_append_inline_content()
+{
+    if (m_current_line_committed_pending_margin)
+        return;
+
+    auto& line_box = ensure_last_line_box();
+    if (line_box.has_block_level_box())
+        return;
+
+    auto margin_before_line = m_context.parent().commit_pending_margin_before_inline_content();
+    if (margin_before_line != 0) {
+        m_current_block_offset += margin_before_line;
+        recalculate_available_space();
+    }
+    m_current_line_committed_pending_margin = true;
+}
+
+void LineBuilder::finish_current_line_before_block_level_box()
+{
+    auto& line_boxes = m_containing_block_used_values.line_boxes;
+    if (line_boxes.is_empty() || line_boxes.last().is_empty())
+        return;
+
+    auto& last_line_box = ensure_last_line_box();
+    last_line_box.m_has_break = true;
+    last_line_box.m_has_forced_break = false;
+
+    m_last_line_needs_update = true;
+    update_last_line();
+
+    line_boxes.append(LineBox(m_direction, m_writing_mode));
+    begin_new_line(true);
+}
+
+void LineBuilder::append_block_level_box(Box const& box, CSSPixels block_bottom)
+{
+    auto& box_state = m_layout_state.get_mutable(box);
+    auto& line_box = ensure_last_line_box();
+    VERIFY(line_box.fragments().is_empty());
+
+    auto fragment_index = line_box.fragments().size();
+    line_box.m_fragments.append(LineBoxFragment { box, 0, 0, box_state.offset.x(), box_state.offset.y(),
+        box_state.content_width(), box_state.content_height(), box_state.border_box_top(), m_direction, m_writing_mode, {} });
+    line_box.m_inline_length = box_state.margin_box_width();
+    line_box.m_block_length = 0;
+    line_box.m_bottom = block_bottom;
+    line_box.m_baseline = 0;
+    line_box.m_has_block_level_box = true;
+    line_box.m_has_break = true;
+    line_box.m_has_forced_break = false;
+
+    box_state.containing_line_box_fragment = LineBoxFragmentCoordinate {
+        .line_box_index = m_containing_block_used_values.line_boxes.size() - 1,
+        .fragment_index = fragment_index,
+    };
+
+    m_current_block_offset = block_bottom;
+    m_max_height_on_current_line = 0;
+    m_last_line_needs_update = false;
+    m_should_advance_to_last_line_box_bottom = false;
+
+    m_containing_block_used_values.line_boxes.append(LineBox(m_direction, m_writing_mode));
+    begin_new_line(false);
 }
 
 CSSPixels LineBuilder::ceiling_for_float_to_be_inserted_here(Box const& box)
@@ -174,6 +244,14 @@ void LineBuilder::update_last_line()
         return;
 
     auto& line_box = line_boxes.last();
+
+    if (line_box.has_block_level_box()) {
+        m_should_advance_to_last_line_box_bottom = false;
+        return;
+    }
+
+    if (!line_box.fragments().is_empty())
+        prepare_to_append_inline_content();
 
     auto text_align = m_context.containing_block().computed_values().text_align();
     auto direction = m_context.containing_block().computed_values().direction();

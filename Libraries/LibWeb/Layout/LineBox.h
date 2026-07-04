@@ -59,6 +59,7 @@ public:
     bool is_empty_or_ends_in_whitespace() const;
     bool is_empty() const { return m_fragments.is_empty() && !m_has_break; }
     bool has_forced_break() const { return m_has_forced_break; }
+    bool has_block_level_box() const { return m_has_block_level_box; }
 
     AvailableSize original_available_width() const { return m_original_available_width; }
 
@@ -88,6 +89,7 @@ private:
 
     bool m_has_break { false };
     bool m_has_forced_break { false };
+    bool m_has_block_level_box { false };
 };
 
 }
