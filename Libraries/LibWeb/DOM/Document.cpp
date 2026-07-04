@@ -1690,6 +1690,18 @@ void Document::register_partial_relayout_root(Layout::Box& box)
     m_partial_relayout_roots.set(box.make_weak_ptr<Layout::Box>());
 }
 
+void Document::set_layout_tree_dirt_escapes_partial_relayout_boundaries(bool value, char const* reason)
+{
+    if (m_layout_tree_dirt_escapes_partial_relayout_boundaries == value) {
+        if (value)
+            dbgln_if(UPDATE_LAYOUT_DEBUG, "Set layout tree dirt escapes partial relayout boundaries ({})", reason);
+        return;
+    }
+
+    m_layout_tree_dirt_escapes_partial_relayout_boundaries = value;
+    dbgln_if(UPDATE_LAYOUT_DEBUG, "{} layout tree dirt escapes partial relayout boundaries ({})", value ? "Set" : "Cleared", reason);
+}
+
 void Document::set_needs_container_query_evaluation_after_layout(Element const& query_container)
 {
     m_query_containers_needing_container_query_evaluation_after_layout.set(const_cast<Element&>(query_container));
@@ -2003,6 +2015,7 @@ void Document::update_layout(UpdateLayoutReason reason)
                 propagate_scrollbar_width_to_viewport(*document_element, *m_layout_root);
 
             set_needs_full_layout_tree_update(false);
+            set_layout_tree_dirt_escapes_partial_relayout_boundaries(false, "full layout tree build");
 
             if constexpr (UPDATE_LAYOUT_DEBUG) {
                 dbgln("TREEBUILD {} µs", timer.elapsed_time().to_microseconds());
