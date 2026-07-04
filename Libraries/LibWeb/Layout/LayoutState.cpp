@@ -495,6 +495,47 @@ static void build_paint_tree(Node& node, RefPtr<Painting::Paintable> parent_pain
     }
 }
 
+static bool fragments_are_all_block_level_boxes(Painting::PaintableWithLines const& paintable)
+{
+    auto const& fragments = paintable.fragments();
+    if (fragments.is_empty())
+        return false;
+
+    for (auto const& fragment : fragments) {
+        if (!fragment.layout_node().display().is_block_outside())
+            return false;
+    }
+    return true;
+}
+
+static Optional<CSSPixelPoint> relative_position_offset_for_block_level_box_in_inline_ancestor_chain(Box const& box)
+{
+    if (!box.is_in_flow() || !box.display().is_block_outside())
+        return {};
+
+    auto const* containing_block = box.containing_block();
+    bool found_inline_ancestor = false;
+    CSSPixelPoint offset;
+    for (auto const* ancestor = box.parent(); ancestor && ancestor != containing_block; ancestor = ancestor->parent()) {
+        if (!is<Layout::NodeWithStyleAndBoxModelMetrics>(*ancestor))
+            break;
+        if (!ancestor->display().is_inline_outside() || !ancestor->display().is_flow_inside())
+            break;
+        found_inline_ancestor |= is<Layout::InlineNode>(*ancestor);
+        if (ancestor->computed_values().position() == CSS::Positioning::Relative) {
+            VERIFY(ancestor->first_paintable());
+            auto ancestor_paintable = ancestor->first_paintable();
+            auto const& ancestor_node = as<Painting::PaintableBox>(*ancestor_paintable);
+            auto const& inset = ancestor_node.box_model().inset;
+            offset.translate_by(inset.left, inset.top);
+        }
+    }
+
+    if (!found_inline_ancestor)
+        return {};
+    return offset;
+}
+
 void LayoutState::commit(Box& root)
 {
     RefPtr<Painting::Paintable> parent_paintable;
@@ -556,7 +597,7 @@ void LayoutState::commit(Box& root)
 
     auto try_to_relocate_fragment_in_inline_node = [&](auto& fragment, Painting::LineBoxData line_box_data, Painting::PaintableBox::FragmentationState fragmentation_state) -> bool {
         for (auto const* parent = fragment.layout_node().parent(); parent; parent = parent->parent()) {
-            if (parent->is_atomic_inline())
+            if (!parent->display().is_inline_outside() || !parent->display().is_flow_inside())
                 break;
             if (is<InlineNode>(*parent)) {
                 auto& inline_node = const_cast<InlineNode&>(static_cast<InlineNode const&>(*parent));
@@ -744,6 +785,10 @@ void LayoutState::commit(Box& root)
             auto const& inset = paintable.box_model().inset;
             offset.translate_by(inset.left, inset.top);
         }
+        if (auto const* box = as_if<Box>(node)) {
+            if (auto ancestor_relative_offset = relative_position_offset_for_block_level_box_in_inline_ancestor_chain(*box); ancestor_relative_offset.has_value())
+                offset.translate_by(ancestor_relative_offset->x(), ancestor_relative_offset->y());
+        }
         paintable.set_offset(offset);
     });
 
@@ -758,6 +803,12 @@ void LayoutState::commit(Box& root)
             continue;
         if (!is<InlineNode>(paintable_with_lines->layout_node()))
             continue;
+
+        if (fragments_are_all_block_level_boxes(*paintable_with_lines)) {
+            paintable_with_lines->set_offset(paintable_with_lines->fragments().first().offset());
+            paintable_with_lines->set_content_size({});
+            continue;
+        }
 
         Optional<CSSPixelPoint> offset;
         CSSPixelSize size;

@@ -36,6 +36,11 @@ static bool layout_node_is_visible(Layout::Node const& layout_node)
     return computed_values.visibility() == CSS::Visibility::Visible && computed_values.opacity() != 0;
 }
 
+static bool fragment_is_block_level_box(PaintableFragment const& fragment)
+{
+    return fragment.layout_node().display().is_block_outside();
+}
+
 NonnullRefPtr<PaintableWithLines> PaintableWithLines::create(Layout::BlockContainer const& block_container)
 {
     return adopt_ref(*new PaintableWithLines(block_container));
@@ -99,8 +104,11 @@ void PaintableWithLines::record_hit_test_items(DisplayListRecordingContext& cont
         return;
     }
 
-    for (auto const& fragment : m_fragments)
+    for (auto const& fragment : m_fragments) {
+        if (fragment_is_block_level_box(fragment))
+            continue;
         hit_test_display_list->append_text_fragment(fragment, accumulated_visual_context_for_descendants_index());
+    }
 
     if (stacking_context()
         && is_inline()
@@ -187,6 +195,9 @@ void PaintableWithLines::paint(DisplayListRecordingContext& context, PaintPhase 
 
 void compute_render_spans(PaintableFragment const& fragment, Vector<PaintableFragment::FragmentSpan, 4>& spans)
 {
+    if (fragment_is_block_level_box(fragment))
+        return;
+
     auto const* text_node = as_if<Layout::TextNode>(fragment.layout_node());
     if (!text_node) {
         // Non-text fragments still need shadow painting.
