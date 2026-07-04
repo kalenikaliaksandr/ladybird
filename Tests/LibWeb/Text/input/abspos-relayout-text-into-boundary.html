@@ -40,7 +40,7 @@
         println(`boundary-after=${rectToString(boundaryAfter)}`);
         println(`partial-layouts=${partialDelta} full-layouts=${fullDelta}`);
         println(rectToString(boundaryBefore) === rectToString(boundaryAfter)
-            && partialDelta === 0 && fullDelta === 1 ? "PASS" : "FAIL");
+            && partialDelta === 1 && fullDelta === 0 ? "PASS" : "FAIL");
         done();
     });
 </script>

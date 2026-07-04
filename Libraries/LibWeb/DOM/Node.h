@@ -110,6 +110,12 @@ enum class SetNeedsLayoutTreeUpdateReason {
 
 [[nodiscard]] Utf16View to_string(SetNeedsLayoutTreeUpdateReason);
 
+// Whether the reason describes a mutation that only affects the node's children and can never
+// change the node's own box kind. Such a rebuild on a partial relayout boundary stays confined
+// to the boundary's subtree. When adding a reason with that property, classify it here, or its
+// mutations forfeit partial relayout.
+[[nodiscard]] bool is_structural_boundary_self_rebuild_reason(SetNeedsLayoutTreeUpdateReason);
+
 class WEB_API Node : public EventTarget
     , public TreeNode<Node> {
     WEB_PLATFORM_OBJECT(Node, EventTarget);

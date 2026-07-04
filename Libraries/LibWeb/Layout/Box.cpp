@@ -43,7 +43,7 @@ void Box::clear_saved_abspos_layout_inputs()
     m_saved_abspos_layout_inputs = nullptr;
 }
 
-bool Box::is_partial_relayout_boundary() const
+bool Box::is_partial_relayout_boundary(RequireExistingPaintable require_existing_paintable) const
 {
     // SVG roots have used sizes determined solely by their own attributes and
     // outer context, never by their children, so a subtree relayout can reuse
@@ -59,7 +59,7 @@ bool Box::is_partial_relayout_boundary() const
         return false;
     if (is_anonymous())
         return false;
-    if (!paintable_box())
+    if (require_existing_paintable == RequireExistingPaintable::Yes && !paintable_box())
         return false;
     if (dom_node() == document().document_element())
         return false;

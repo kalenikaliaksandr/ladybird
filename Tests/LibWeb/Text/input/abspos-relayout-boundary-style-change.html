@@ -2,7 +2,7 @@
 <script src="include.js"></script>
 <style>
     body { margin: 0; }
-    #root { position: relative; width: 320px; height: 170px; }
+    #root { position: relative; width: 320px; height: 180px; }
     #boundary {
         position: absolute;
         left: 40px;
@@ -11,19 +11,16 @@
         height: 90px;
         overflow: hidden;
     }
-    #outside { width: 120px; height: 20px; }
-    .abs-child {
+    #child {
         position: absolute;
-        left: 10px;
+        right: 10px;
         top: 15px;
         width: 30px;
         height: 20px;
     }
 </style>
 <div id="root">
-    <div id="boundary"><div id="inner"></div></div>
-    <div style="height: 130px"></div>
-    <div id="outside"></div>
+    <div id="boundary"><div id="child"></div></div>
 </div>
 <script>
     function rectToString(rect) {
@@ -33,23 +30,24 @@
     asyncTest((done) => {
         document.body.offsetHeight;
 
+        const boundary = document.getElementById("boundary");
         const partialBefore = internals.partialLayoutCount();
         const fullBefore = internals.fullLayoutCount();
 
-        const child = document.createElement("div");
-        child.id = "inserted";
-        child.className = "abs-child";
-        document.getElementById("boundary").appendChild(child);
+        boundary.style.width = "180px";
         document.body.offsetHeight;
 
-        const inserted = child.getBoundingClientRect();
+        const boundaryRect = boundary.getBoundingClientRect();
+        const childRect = document.getElementById("child").getBoundingClientRect();
         const partialDelta = internals.partialLayoutCount() - partialBefore;
         const fullDelta = internals.fullLayoutCount() - fullBefore;
 
-        println(`inserted=${rectToString(inserted)}`);
+        println(`boundary=${rectToString(boundaryRect)}`);
+        println(`child=${rectToString(childRect)}`);
         println(`partial-layouts=${partialDelta} full-layouts=${fullDelta}`);
-        println(rectToString(inserted) === "50,45,30,20"
-            && partialDelta === 1 && fullDelta === 0 ? "PASS" : "FAIL");
+        println(rectToString(boundaryRect) === "40,30,180,90"
+            && rectToString(childRect) === "180,45,30,20"
+            && partialDelta === 0 && fullDelta === 1 ? "PASS" : "FAIL");
         done();
     });
 </script>

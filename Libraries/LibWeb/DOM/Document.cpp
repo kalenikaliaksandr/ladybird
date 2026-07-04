@@ -1744,13 +1744,12 @@ static void compute_subtree_layout_by_replay(Layout::Box& subtree_root, Layout::
     context->layout_absolutely_positioned_element(subtree_root, *subtree_root.saved_abspos_layout_inputs());
 }
 
-static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutState& layout_state)
+static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutState& layout_state, Painting::Paintable const& root_geometry_source)
 {
     // Pre-populate the subtree root itself: its size and position are frozen at the values from
     // the previous layout, since a partial relayout boundary guarantees they cannot change when
     // layout is only invalidated somewhere inside its subtree.
-    if (auto paintable = subtree_root.paintable_box())
-        layout_state.populate_from_paintable(subtree_root, *paintable);
+    layout_state.populate_from_paintable(subtree_root, root_geometry_source);
 
     // Pre-populate the viewport for position:fixed elements inside the subtree.
     auto& viewport = subtree_root.root();
@@ -1777,17 +1776,17 @@ static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutStat
     context->parent_context_did_dimension_child_root_box();
 }
 
-static void relayout_subtree(Layout::Box& subtree_root)
+static void relayout_subtree(Layout::Box& subtree_root, Painting::Paintable const& root_geometry_source, RefPtr<Painting::Paintable> parent_paintable)
 {
     Layout::LayoutState layout_state(subtree_root, Layout::LayoutState::Purpose::Commit);
     // Absolutely positioned boundaries replay their own layout from saved inputs; SVG roots
     // keep the frozen geometry from the previous layout (their used size never depends on
-    // subtree content).
+    // subtree content), taken from the given paintable since a replaced box no longer has one.
     if (subtree_root.is_absolutely_positioned())
         compute_subtree_layout_by_replay(subtree_root, layout_state);
     else
-        compute_subtree_layout(subtree_root, layout_state);
-    layout_state.commit(subtree_root);
+        compute_subtree_layout(subtree_root, layout_state, root_geometry_source);
+    layout_state.commit(subtree_root, move(parent_paintable));
 
     subtree_root.for_each_in_inclusive_subtree([](auto& node) {
         node.reset_needs_layout_update();
@@ -2012,6 +2011,14 @@ void Document::update_layout(UpdateLayoutReason reason)
             struct BoundaryAnchor {
                 Layout::Box* old_box { nullptr };
                 RefPtr<Painting::Paintable> old_paintable;
+                RefPtr<Painting::Paintable> old_paintable_parent;
+            };
+
+            struct PartialRelayoutRoot {
+                Layout::Box* box { nullptr };
+                RefPtr<Painting::Paintable> root_geometry_source;
+                RefPtr<Painting::Paintable> parent_paintable;
+                RefPtr<Painting::Paintable> old_paintable;
             };
 
             GC::RootVector<GC::Ref<DOM::Node>> anchor_dom_nodes;
@@ -2019,7 +2026,13 @@ void Document::update_layout(UpdateLayoutReason reason)
             bool can_run_partial_relayout = true;
             for (auto const& root : registered_partial_relayout_roots) {
                 auto* box = root.ptr();
-                if (!box || !box->dom_node() || !box->paintable_box()) {
+                if (!box || !box->dom_node()) {
+                    can_run_partial_relayout = false;
+                    break;
+                }
+
+                auto old_paintable = box->paintable_box();
+                if (!old_paintable) {
                     can_run_partial_relayout = false;
                     break;
                 }
@@ -2027,7 +2040,8 @@ void Document::update_layout(UpdateLayoutReason reason)
                 anchor_dom_nodes.append(*box->dom_node());
                 anchors.append({
                     .old_box = box,
-                    .old_paintable = box->paintable_box(),
+                    .old_paintable = old_paintable,
+                    .old_paintable_parent = old_paintable->parent(),
                 });
             }
 
@@ -2051,34 +2065,52 @@ void Document::update_layout(UpdateLayoutReason reason)
             if (m_layout_root->needs_layout_update() || layout_tree_dirt_escaped_during_partial_build)
                 can_run_partial_relayout = false;
 
-            Vector<Layout::Box*> live_partial_relayout_roots;
+            Vector<PartialRelayoutRoot> live_partial_relayout_roots;
             if (can_run_partial_relayout) {
                 for (size_t i = 0; i < anchor_dom_nodes.size(); ++i) {
                     auto* box = as_if<Layout::Box>(anchor_dom_nodes[i]->unsafe_layout_node());
-                    if (!box || box != anchors[i].old_box) {
+                    if (!box) {
                         can_run_partial_relayout = false;
                         break;
                     }
-                    if (!box->paintable_box()) {
-                        can_run_partial_relayout = false;
-                        break;
+
+                    if (box == anchors[i].old_box) {
+                        if (!box->paintable_box()) {
+                            can_run_partial_relayout = false;
+                            break;
+                        }
+                        if (!box->is_partial_relayout_boundary()) {
+                            can_run_partial_relayout = false;
+                            break;
+                        }
+                    } else {
+                        // NOTE: A boundary that participated in inline layout (an inline-level SVG
+                        //       root) is referenced by line box fragments held by paintables of its
+                        //       layout parent. The in-place replacement repointed those fragments at
+                        //       the new box, and the freshly built paint subtree is spliced where the
+                        //       old one was removed, so the paint tree stays consistent.
+                        if (!box->is_partial_relayout_boundary(Layout::RequireExistingPaintable::No)) {
+                            can_run_partial_relayout = false;
+                            break;
+                        }
                     }
-                    if (!box->is_partial_relayout_boundary()) {
-                        can_run_partial_relayout = false;
-                        break;
-                    }
-                    live_partial_relayout_roots.append(box);
+                    live_partial_relayout_roots.append({
+                        .box = box,
+                        .root_geometry_source = anchors[i].old_paintable,
+                        .parent_paintable = anchors[i].old_paintable_parent,
+                        .old_paintable = anchors[i].old_paintable,
+                    });
                 }
             }
 
-            Vector<Layout::Box*> partial_relayout_roots;
+            Vector<PartialRelayoutRoot> partial_relayout_roots;
             if (can_run_partial_relayout) {
-                for (auto* root : live_partial_relayout_roots) {
+                for (auto const& root : live_partial_relayout_roots) {
                     bool is_descendant_of_another_root = false;
-                    for (auto* potential_ancestor : live_partial_relayout_roots) {
-                        if (root == potential_ancestor)
+                    for (auto const& potential_ancestor : live_partial_relayout_roots) {
+                        if (root.box == potential_ancestor.box)
                             continue;
-                        if (potential_ancestor->is_inclusive_ancestor_of(*root)) {
+                        if (potential_ancestor.box->is_inclusive_ancestor_of(*root.box)) {
                             is_descendant_of_another_root = true;
                             break;
                         }
@@ -2092,8 +2124,8 @@ void Document::update_layout(UpdateLayoutReason reason)
                 can_run_partial_relayout = false;
 
             if (can_run_partial_relayout) {
-                for (auto* root : partial_relayout_roots) {
-                    if (!prepare_subtree_for_partial_relayout(*root)) {
+                for (auto const& root : partial_relayout_roots) {
+                    if (!prepare_subtree_for_partial_relayout(*root.box)) {
                         can_run_partial_relayout = false;
                         break;
                     }
@@ -2107,11 +2139,13 @@ void Document::update_layout(UpdateLayoutReason reason)
                 can_run_partial_relayout = false;
 
             if (can_run_partial_relayout) {
-                for (auto* root : partial_relayout_roots) {
-                    relayout_subtree(*root);
+                for (auto const& root : partial_relayout_roots) {
+                    if (auto old_paintable_parent = root.old_paintable->parent())
+                        old_paintable_parent->remove_child(*root.old_paintable);
+                    relayout_subtree(*root.box, *root.root_geometry_source, root.parent_paintable);
                     // NB: The subtree commit reset the root's descendant paintables, and the subtree's
                     //     new size may change ancestor scrollable overflow; scheduling the root covers both.
-                    schedule_scrollable_overflow_recalculation(*root);
+                    schedule_scrollable_overflow_recalculation(*root.box);
                 }
 
                 // Structural updates can replace boxes referenced by the contained-boxes map cached

@@ -36,6 +36,11 @@ public:                                            \
 
 class InlineNode;
 
+enum class LayoutUpdatePropagation {
+    ThroughAncestors,
+    BoundarySelfOnly,
+};
+
 enum class LayoutMode {
     // Normal layout. No min-content or max-content constraints applied.
     Normal,
@@ -68,7 +73,7 @@ public:
     DOM::Element* pseudo_element_generator();
 
     bool needs_layout_update() const { return m_needs_layout_update; }
-    void set_needs_layout_update(DOM::SetNeedsLayoutReason);
+    void set_needs_layout_update(DOM::SetNeedsLayoutReason, LayoutUpdatePropagation = LayoutUpdatePropagation::ThroughAncestors);
     void reset_needs_layout_update() { m_needs_layout_update = false; }
 
     bool is_generated_for_pseudo_element() const { return m_generated_for.has_value(); }
