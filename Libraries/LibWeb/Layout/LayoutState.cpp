@@ -479,9 +479,41 @@ void LayoutState::resolve_relative_positions()
     });
 }
 
-static void build_paint_tree(Node& node, RefPtr<Painting::Paintable> parent_paintable = nullptr)
+static Optional<size_t> line_index_for_paint_parent_matching(Painting::Paintable const& paintable)
+{
+    if (auto const* paintable_with_lines = as_if<Painting::PaintableWithLines>(paintable); paintable_with_lines && is<InlineNode>(paintable.layout_node()))
+        return paintable_with_lines->line_index();
+
+    if (auto const* paintable_box = as_if<Painting::PaintableBox>(paintable)) {
+        if (paintable_box->containing_line_box_data().has_value())
+            return paintable_box->containing_line_box_data()->index;
+    }
+
+    return {};
+}
+
+static RefPtr<Painting::Paintable> paint_parent_for_child_paintable(Node const& parent_node, Painting::Paintable const& child_paintable, RefPtr<Painting::Paintable> fallback_parent_paintable)
+{
+    if (!is<InlineNode>(parent_node))
+        return fallback_parent_paintable;
+
+    auto line_index = line_index_for_paint_parent_matching(child_paintable);
+    if (!line_index.has_value())
+        return fallback_parent_paintable;
+
+    for (auto const& parent_paintable : parent_node.paintables()) {
+        auto const* parent_paintable_with_lines = as_if<Painting::PaintableWithLines>(parent_paintable.ptr());
+        if (parent_paintable_with_lines && parent_paintable_with_lines->line_index() == line_index.value())
+            return parent_paintable;
+    }
+
+    return fallback_parent_paintable;
+}
+
+static void build_paint_tree(Node& node, Node const* parent_node = nullptr, RefPtr<Painting::Paintable> fallback_parent_paintable = nullptr)
 {
     for (auto& paintable : node.paintables()) {
+        auto parent_paintable = parent_node ? paint_parent_for_child_paintable(*parent_node, *paintable, fallback_parent_paintable) : fallback_parent_paintable;
         if (parent_paintable && !paintable->forms_unconnected_subtree()) {
             VERIFY(!paintable->parent());
             parent_paintable->append_child(paintable);
@@ -491,7 +523,7 @@ static void build_paint_tree(Node& node, RefPtr<Painting::Paintable> parent_pain
             node.dom_node()->set_paintable(paintable);
     }
     for (auto child = node.first_child(); child; child = child->next_sibling()) {
-        build_paint_tree(*child, node.first_paintable());
+        build_paint_tree(*child, &node, node.first_paintable());
     }
 }
 
@@ -792,7 +824,7 @@ void LayoutState::commit(Box& root)
         paintable.set_offset(offset);
     });
 
-    build_paint_tree(root, parent_paintable);
+    build_paint_tree(root, nullptr, parent_paintable);
 
     resolve_relative_positions();
 
