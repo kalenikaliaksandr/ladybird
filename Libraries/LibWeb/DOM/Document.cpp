@@ -1953,8 +1953,15 @@ void Document::update_layout(UpdateLayoutReason reason)
 
                 update_scrollable_overflow(UpdateScrollableOverflowMode::Scheduled);
 
+                // Clear text blocks cache so we rebuild them on the next find action.
+                m_layout_root->invalidate_text_blocks_cache();
+
                 invalidate_stacking_context_tree();
                 set_needs_to_record_display_list();
+
+                // Paintables in the relaid subtrees were reset during commit and lost
+                // their scroll frame references, so reassign frames viewport-wide.
+                unsafe_paintable()->reassign_scroll_frames();
 
                 set_needs_accumulated_visual_contexts_update(true);
                 update_paint_and_hit_testing_properties_if_needed();
