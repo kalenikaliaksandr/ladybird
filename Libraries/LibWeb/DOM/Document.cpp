@@ -1956,6 +1956,17 @@ void Document::update_layout_if_needed_for_node(Node const& node, UpdateLayoutRe
         update_layout(reason);
 }
 
+bool Document::needs_style_update_after_layout()
+{
+    return !m_query_containers_needing_container_query_evaluation_after_layout.is_empty()
+        || m_needs_animated_style_update
+        || m_needs_invalidation_of_elements_affected_by_has
+        || m_style_invalidator->has_pending_invalidations()
+        || needs_full_style_update()
+        || needs_style_update()
+        || child_needs_style_update();
+}
+
 void Document::update_layout(UpdateLayoutReason reason)
 {
     auto navigable = this->navigable();
@@ -1967,16 +1978,6 @@ void Document::update_layout(UpdateLayoutReason reason)
     ScopeGuard guard = [&] {
         m_is_running_update_layout = false;
         page().client().flush_pending_dom_mutations();
-    };
-
-    auto needs_style_update_after_layout = [&] {
-        return !m_query_containers_needing_container_query_evaluation_after_layout.is_empty()
-            || m_needs_animated_style_update
-            || m_needs_invalidation_of_elements_affected_by_has
-            || m_style_invalidator->has_pending_invalidations()
-            || needs_full_style_update()
-            || needs_style_update()
-            || child_needs_style_update();
     };
 
     constexpr size_t max_container_query_layout_passes = 8;
@@ -1998,43 +1999,105 @@ void Document::update_layout(UpdateLayoutReason reason)
         if (m_created_for_appropriate_template_contents)
             return;
 
-        auto const needs_layout_tree_rebuild = !m_layout_root || needs_layout_tree_update() || child_needs_layout_tree_update() || needs_full_layout_tree_update();
+        auto needs_layout_tree_rebuild = !m_layout_root || needs_layout_tree_update() || child_needs_layout_tree_update() || needs_full_layout_tree_update();
 
         // Partial relayout
-        if (!needs_layout_tree_rebuild
+        if (m_layout_root
+            && !needs_full_layout_tree_update()
+            && !layout_tree_dirt_escapes_partial_relayout_boundaries()
             && !registered_partial_relayout_roots.is_empty()
             && !m_layout_root->needs_layout_update()
             && m_query_containers_needing_container_query_evaluation_after_layout.is_empty()
             && !should_collect_devtools_layout_data) {
-            Vector<Layout::Box*> live_partial_relayout_roots;
+            struct BoundaryAnchor {
+                Layout::Box* old_box { nullptr };
+                RefPtr<Painting::Paintable> old_paintable;
+            };
+
+            GC::RootVector<GC::Ref<DOM::Node>> anchor_dom_nodes;
+            Vector<BoundaryAnchor> anchors;
+            bool can_run_partial_relayout = true;
             for (auto const& root : registered_partial_relayout_roots) {
-                if (root)
-                    live_partial_relayout_roots.append(root.ptr());
+                auto* box = root.ptr();
+                if (!box || !box->dom_node() || !box->paintable_box()) {
+                    can_run_partial_relayout = false;
+                    break;
+                }
+
+                anchor_dom_nodes.append(*box->dom_node());
+                anchors.append({
+                    .old_box = box,
+                    .old_paintable = box->paintable_box(),
+                });
+            }
+
+            bool layout_tree_was_built_in_partial_branch = false;
+            bool layout_tree_dirt_escaped_during_partial_build = false;
+            if (can_run_partial_relayout && needs_layout_tree_rebuild) {
+                auto tree_build_timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
+                Layout::TreeBuilder tree_builder;
+                m_layout_root = as<Layout::Viewport>(*tree_builder.build(*this));
+                needs_layout_tree_rebuild = false;
+                layout_tree_was_built_in_partial_branch = true;
+                layout_tree_dirt_escaped_during_partial_build = layout_tree_dirt_escapes_partial_relayout_boundaries()
+                    || tree_builder.layout_tree_update_escaped_rebuild_roots();
+                set_layout_tree_dirt_escapes_partial_relayout_boundaries(false, "partial layout tree build");
+
+                if constexpr (UPDATE_LAYOUT_DEBUG) {
+                    dbgln("TREEBUILD {} µs", tree_build_timer.elapsed_time().to_microseconds());
+                }
+            }
+
+            if (m_layout_root->needs_layout_update() || layout_tree_dirt_escaped_during_partial_build)
+                can_run_partial_relayout = false;
+
+            Vector<Layout::Box*> live_partial_relayout_roots;
+            if (can_run_partial_relayout) {
+                for (size_t i = 0; i < anchor_dom_nodes.size(); ++i) {
+                    auto* box = as_if<Layout::Box>(anchor_dom_nodes[i]->unsafe_layout_node());
+                    if (!box || box != anchors[i].old_box) {
+                        can_run_partial_relayout = false;
+                        break;
+                    }
+                    if (!box->paintable_box()) {
+                        can_run_partial_relayout = false;
+                        break;
+                    }
+                    if (!box->is_partial_relayout_boundary()) {
+                        can_run_partial_relayout = false;
+                        break;
+                    }
+                    live_partial_relayout_roots.append(box);
+                }
             }
 
             Vector<Layout::Box*> partial_relayout_roots;
-            for (auto* root : live_partial_relayout_roots) {
-                bool is_descendant_of_another_root = false;
-                for (auto* potential_ancestor : live_partial_relayout_roots) {
-                    if (root == potential_ancestor)
-                        continue;
-                    if (potential_ancestor->is_inclusive_ancestor_of(*root)) {
-                        is_descendant_of_another_root = true;
+            if (can_run_partial_relayout) {
+                for (auto* root : live_partial_relayout_roots) {
+                    bool is_descendant_of_another_root = false;
+                    for (auto* potential_ancestor : live_partial_relayout_roots) {
+                        if (root == potential_ancestor)
+                            continue;
+                        if (potential_ancestor->is_inclusive_ancestor_of(*root)) {
+                            is_descendant_of_another_root = true;
+                            break;
+                        }
+                    }
+                    if (!is_descendant_of_another_root)
+                        partial_relayout_roots.append(root);
+                }
+            }
+
+            if (partial_relayout_roots.is_empty())
+                can_run_partial_relayout = false;
+
+            if (can_run_partial_relayout) {
+                for (auto* root : partial_relayout_roots) {
+                    if (!prepare_subtree_for_partial_relayout(*root)) {
+                        can_run_partial_relayout = false;
                         break;
                     }
                 }
-                if (!is_descendant_of_another_root)
-                    partial_relayout_roots.append(root);
-            }
-
-            bool can_run_partial_relayout = !partial_relayout_roots.is_empty();
-            for (auto* root : partial_relayout_roots) {
-                if (!root->paintable_box()) {
-                    can_run_partial_relayout = false;
-                    continue;
-                }
-                if (!prepare_subtree_for_partial_relayout(*root))
-                    can_run_partial_relayout = false;
             }
 
             // CSS anchor positioning can couple boxes inside a partial relayout subtree
@@ -2051,11 +2114,19 @@ void Document::update_layout(UpdateLayoutReason reason)
                     schedule_scrollable_overflow_recalculation(*root);
                 }
 
+                // Structural updates can replace boxes referenced by the contained-boxes map cached
+                // at the last full layout. Refresh it after the subtree commits have created paintables
+                // for any new boxes, before scheduled overflow measurement follows those references.
+                if (layout_tree_was_built_in_partial_branch) {
+                    auto work = Layout::collect_scrollable_overflow_measurement_work(*m_layout_root);
+                    m_scrollable_overflow_contained_boxes_from_last_layout = move(work.contained_boxes_map);
+                }
+
                 update_scrollable_overflow(UpdateScrollableOverflowMode::Scheduled);
                 ++m_partial_layout_count;
 
-                after_layout_commit(LayoutTreeChanged::No);
-                if (needs_style_update_after_layout())
+                after_layout_commit(layout_tree_was_built_in_partial_branch ? LayoutTreeChanged::Yes : LayoutTreeChanged::No);
+                if (needs_style_update_after_layout() || !layout_is_up_to_date())
                     continue;
                 return;
             }

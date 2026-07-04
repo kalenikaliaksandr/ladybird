@@ -390,6 +390,11 @@ struct LayoutState {
     // For pre-populated nodes (partial relayout), returns the cached value from paintable absolute position.
     [[nodiscard]] CSSPixelPoint cumulative_offset(UsedValues const&) const;
 
+    // The offset commit() transfers to a box's paintable: atomic inlines take their offset from
+    // the containing line box fragment, and relatively positioned boxes get their inset applied
+    // on top of the in-flow offset.
+    [[nodiscard]] CSSPixelPoint resolved_paintable_offset(UsedValues const&) const;
+
     bool has_subtree_root() const { return m_subtree_root != nullptr; }
 
     struct ContainedAbsposChild {

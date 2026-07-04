@@ -214,6 +214,11 @@ void TreeBuilder::insert_node_into_inline_or_block_ancestor(Layout::Node& node, 
     auto& insertion_point = display.is_inline_outside() ? insertion_parent_for_inline_node(nearest_insertion_ancestor)
                                                         : insertion_parent_for_block_node(nearest_insertion_ancestor, node, mode, *this);
 
+    // Insertion parents can be above the subtree being rebuilt in place (inline ancestors are
+    // skipped, out-of-flow boxes can join a trailing anonymous sibling), which mutates the tree
+    // outside the rebuild root.
+    note_tree_restructuring_at(insertion_point);
+
     if (mode == AppendOrPrepend::Prepend)
         insertion_point.prepend_child(node);
     else
@@ -846,8 +851,12 @@ void TreeBuilder::update_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
             auto& element = static_cast<DOM::Element&>(dom_node);
             // ::backdrop is a sibling of the element, not a child, so unlike other pseudo-elements, it's not
             // automatically discarded when element's layout is recomputed. We must remove it manually.
-            if (auto old_backdrop_node = element.pseudo_element_unsafe_layout_node(CSS::PseudoElement::Backdrop))
+            if (auto old_backdrop_node = element.pseudo_element_unsafe_layout_node(CSS::PseudoElement::Backdrop)) {
+                // A sibling-level mutation that runs before this element's own rebuild root is
+                // established, so it always escapes the rebuilt subtrees.
+                m_layout_tree_update_escaped_rebuild_roots = true;
                 old_backdrop_node->remove();
+            }
             element.clear_synthetic_pseudo_element_layout_nodes(Badge<TreeBuilder> {});
             // Elements inside a `display:none` subtree are skipped by
             // `Document::update_style_recursively`, so a bypass path (top-layer iteration, slot
@@ -933,6 +942,9 @@ void TreeBuilder::update_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
             // Otherwise, we need to insert the ::backdrop before old_layout_node so it's behind the layout_node.
             if (may_replace_existing_layout_node) {
                 if (auto backdrop_node = create_pseudo_element_if_needed(element, CSS::PseudoElement::Backdrop, {})) {
+                    // The ::backdrop box is a fresh sibling of the rebuild root, i.e. a mutation
+                    // outside it.
+                    note_tree_restructuring_at(*old_layout_node->parent());
                     old_layout_node->parent()->insert_before(*backdrop_node, old_layout_node);
                 }
             } else {

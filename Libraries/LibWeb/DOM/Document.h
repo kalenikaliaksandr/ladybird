@@ -1271,6 +1271,7 @@ private:
 
     void update_active_element();
     void collect_paintable_boxes_with_auto_content_visibility();
+    bool needs_style_update_after_layout();
     bool has_registered_anchor_names() const;
     static bool prepare_subtree_for_partial_relayout(Layout::Box&);
     enum class LayoutTreeChanged : u8 {

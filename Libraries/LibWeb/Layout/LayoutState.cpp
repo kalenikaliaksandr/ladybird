@@ -154,6 +154,34 @@ CSSPixelPoint LayoutState::cumulative_offset(UsedValues const& used_values) cons
     return used_values.content_offset();
 }
 
+CSSPixelPoint LayoutState::resolved_paintable_offset(UsedValues const& used_values) const
+{
+    auto const& node = used_values.node();
+    CSSPixelPoint offset = used_values.content_offset();
+
+    if (used_values.containing_line_box_fragment.has_value()) {
+        // Atomic inline case:
+        // We know that `node` is an atomic inline because `containing_line_box_fragment` refers to the
+        // line box fragment in the parent block container that contains it.
+        // The fragment has the final offset for the atomic inline, so we just need to copy it from there.
+        // However, line box post-processing may remove fragments after we record this coordinate.
+        auto const& containing_line_box_fragment = used_values.containing_line_box_fragment.value();
+        if (auto const* containing_block_used_values = try_get(*node.containing_block())) {
+            if (containing_line_box_fragment.line_box_index < containing_block_used_values->line_boxes.size()) {
+                auto const& line_box = containing_block_used_values->line_boxes[containing_line_box_fragment.line_box_index];
+                if (containing_line_box_fragment.fragment_index < line_box.fragments().size())
+                    offset = line_box.fragments()[containing_line_box_fragment.fragment_index].offset();
+            }
+        }
+    }
+
+    // Apply relative position inset if appropriate.
+    if (node.computed_values().position() == CSS::Positioning::Relative && is<NodeWithStyleAndBoxModelMetrics>(node))
+        offset.translate_by(used_values.inset_left, used_values.inset_top);
+
+    return offset;
+}
+
 struct InlineAncestorChainRelativeOffset {
     CSSPixelPoint offset;
     bool found_fragmented_inline_node { false };
@@ -421,39 +449,19 @@ void LayoutState::commit(Box& root)
 
         auto paintable_ref = node.paintable();
         auto& paintable = *paintable_ref;
-        CSSPixelPoint offset;
 
         if (used_values.containing_line_box_fragment.has_value()) {
             // Atomic inline case:
-            // We know that `node` is an atomic inline because `containing_line_box_fragments` refers to the
+            // We know that `node` is an atomic inline because `containing_line_box_fragment` refers to the
             // line box fragment in the parent block container that contains it.
             auto const& containing_line_box_fragment = used_values.containing_line_box_fragment.value();
-            auto const& containing_block = *node.containing_block();
-            auto const& containing_block_used_values = get(containing_block);
-
-            // The fragment has the final offset for the atomic inline, so we just need to copy it from there.
-            // However, line box post-processing may remove fragments after we record this coordinate.
+            auto const& containing_block_used_values = get(*node.containing_block());
             if (containing_line_box_fragment.line_box_index < containing_block_used_values.line_boxes.size()) {
-                auto const& line_box = containing_block_used_values.line_boxes[containing_line_box_fragment.line_box_index];
                 paintable.set_containing_line_box_index(containing_line_box_fragment.line_box_index);
-                if (containing_line_box_fragment.fragment_index < line_box.fragments().size())
-                    offset = line_box.fragments()[containing_line_box_fragment.fragment_index].offset();
-                else
-                    offset = used_values.content_offset();
-            } else {
-                offset = used_values.content_offset();
             }
-        } else {
-            // Not an atomic inline, much simpler case.
-            offset = used_values.content_offset();
         }
 
-        // Apply relative position inset if appropriate.
-        if (node.computed_values().position() == CSS::Positioning::Relative && is<NodeWithStyleAndBoxModelMetrics>(node)) {
-            auto const& inset = paintable.box_model().inset;
-            offset.translate_by(inset.left, inset.top);
-        }
-        paintable.set_offset(offset);
+        paintable.set_offset(resolved_paintable_offset(used_values));
     });
 
     build_paint_tree(root, parent_paintable.ptr());
