@@ -2081,17 +2081,7 @@ void Document::update_layout(UpdateLayoutReason reason)
             unsafe_paintable()->recompute_selection_states(*range);
         }
 
-        // Collect elements with content-visibility: auto. This is used in the HTML event loop to avoid traversing the whole tree every time.
-        Vector<WeakPtr<Painting::Paintable>> paintable_boxes_with_auto_content_visibility;
-        unsafe_paintable()->for_each_in_subtree_of_type<Painting::Paintable>([&](auto& paintable_box) {
-            if (paintable_box.dom_node()
-                && paintable_box.dom_node()->is_element()
-                && paintable_box.computed_values().content_visibility() == CSS::ContentVisibility::Auto) {
-                paintable_boxes_with_auto_content_visibility.append(paintable_box);
-            }
-            return TraversalDecision::Continue;
-        });
-        unsafe_paintable()->set_paintable_boxes_with_auto_content_visibility(move(paintable_boxes_with_auto_content_visibility));
+        collect_paintable_boxes_with_auto_content_visibility();
 
         m_layout_root->for_each_in_inclusive_subtree([](auto& node) {
             node.reset_needs_layout_update();
@@ -2127,6 +2117,21 @@ void Document::update_layout(UpdateLayoutReason reason)
     }
 
     VERIFY(layout_is_up_to_date());
+}
+
+// Collect elements with content-visibility: auto. This is used in the HTML event loop to avoid traversing the whole tree every time.
+void Document::collect_paintable_boxes_with_auto_content_visibility()
+{
+    Vector<WeakPtr<Painting::Paintable>> paintables_with_auto_content_visibility;
+    unsafe_paintable()->for_each_in_subtree_of_type<Painting::Paintable>([&](auto& paintable) {
+        if (paintable.dom_node()
+            && paintable.dom_node()->is_element()
+            && paintable.computed_values().content_visibility() == CSS::ContentVisibility::Auto) {
+            paintables_with_auto_content_visibility.append(paintable);
+        }
+        return TraversalDecision::Continue;
+    });
+    unsafe_paintable()->set_paintable_boxes_with_auto_content_visibility(move(paintables_with_auto_content_visibility));
 }
 
 void Document::clear_devtools_layout_inspection_data()

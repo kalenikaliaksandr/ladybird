@@ -1266,6 +1266,7 @@ private:
     void tear_down_layout_tree();
 
     void update_active_element();
+    void collect_paintable_boxes_with_auto_content_visibility();
     static bool prepare_subtree_for_partial_relayout(Layout::Box&);
 
     void run_unloading_cleanup_steps();
