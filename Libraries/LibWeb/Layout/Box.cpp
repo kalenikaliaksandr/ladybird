@@ -47,8 +47,15 @@ bool Box::is_partial_relayout_boundary() const
 {
     // SVG roots have used sizes determined solely by their own attributes and
     // outer context, never by their children, so a subtree relayout can reuse
-    // the size and position from the previous layout.
-    return is_svg_svg_box();
+    // the size and position from the previous layout. This only holds for
+    // outermost SVG roots: descendants of a nested <svg> are laid out in the
+    // outer SVG's viewBox-transformed coordinate system, which a subtree
+    // relayout starting at the inner root cannot reproduce (it would create
+    // its formatting context with an identity parent viewBox transform).
+    if (is_svg_svg_box())
+        return !(parent() && (parent()->is_svg_box() || parent()->is_svg_svg_box()));
+
+    return false;
 }
 
 CSS::SizeWithAspectRatio Box::auto_content_box_size() const
