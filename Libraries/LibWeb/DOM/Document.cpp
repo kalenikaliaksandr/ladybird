@@ -1776,6 +1776,21 @@ bool Document::prepare_subtree_for_partial_relayout(Layout::Box& subtree_root)
     return can_relayout_subtree;
 }
 
+// Post-commit finalization shared by the partial and full layout paths: paintables in the
+// (re)laid-out subtrees were rebuilt during commit and lost their derived paint state.
+void Document::refresh_paint_state_after_layout()
+{
+    // NB: Called during layout update.
+    unsafe_paintable()->reassign_scroll_frames();
+
+    set_needs_accumulated_visual_contexts_update(true);
+    update_paint_and_hit_testing_properties_if_needed();
+
+    // Selection state lives on paintable fragments, which the commit rebuilt.
+    if (auto range = get_selection()->range())
+        unsafe_paintable()->recompute_selection_states(*range);
+}
+
 static void propagate_scrollbar_width_to_viewport(Element& root_element, Layout::Viewport& viewport)
 {
     // https://drafts.csswg.org/css-scrollbars/#scrollbar-width
@@ -1959,12 +1974,8 @@ void Document::update_layout(UpdateLayoutReason reason)
                 invalidate_stacking_context_tree();
                 set_needs_to_record_display_list();
 
-                // Paintables in the relaid subtrees were reset during commit and lost
-                // their scroll frame references, so reassign frames viewport-wide.
-                unsafe_paintable()->reassign_scroll_frames();
+                refresh_paint_state_after_layout();
 
-                set_needs_accumulated_visual_contexts_update(true);
-                update_paint_and_hit_testing_properties_if_needed();
                 m_document->set_needs_repaint();
                 if (needs_style_update_after_layout())
                     continue;
@@ -2071,15 +2082,7 @@ void Document::update_layout(UpdateLayoutReason reason)
 
         m_document->set_needs_repaint();
 
-        // NB: Called during layout update.
-        unsafe_paintable()->assign_scroll_frames();
-
-        set_needs_accumulated_visual_contexts_update(true);
-        update_paint_and_hit_testing_properties_if_needed();
-
-        if (auto range = get_selection()->range()) {
-            unsafe_paintable()->recompute_selection_states(*range);
-        }
+        refresh_paint_state_after_layout();
 
         collect_paintable_boxes_with_auto_content_visibility();
 
