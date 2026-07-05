@@ -249,16 +249,31 @@ void FlexFormattingContext::run(LayoutInput const& layout_input)
         determine_intrinsic_size_of_flex_container();
     } else {
         // AD-HOC: Finally, layout the inside of all flex items.
+        // Each item's offset is written exactly once, after inner layout and baseline
+        // resolution, so that everything running after the offset write (in particular
+        // the formatting context notifications that lay out absolutely positioned
+        // children) observes final item positions.
         copy_dimensions_from_flex_items_to_boxes();
+
+        Vector<OwnPtr<FormattingContext>> independent_formatting_contexts;
+        independent_formatting_contexts.ensure_capacity(m_flex_items.size());
         for (auto& item : m_flex_items) {
             auto item_layout_input = LayoutInput { item.used_values.available_inner_space_or_constraints_from(m_available_space_for_items->space), item_containing_block_constraints() };
-            if (auto independent_formatting_context = layout_inside(item.box, LayoutMode::Normal, item_layout_input))
+            independent_formatting_contexts.unchecked_append(layout_inside(item.box, LayoutMode::Normal, item_layout_input));
+        }
+
+        // Baseline alignment needs the items' inner layout (line boxes) to resolve, and
+        // adjusts their cross offsets.
+        resolve_baseline_aligned_items();
+
+        for (size_t i = 0; i < m_flex_items.size(); ++i) {
+            auto& item = m_flex_items[i];
+            set_offset(item, item.main_offset, item.cross_offset);
+            if (auto& independent_formatting_context = independent_formatting_contexts[i])
                 independent_formatting_context->parent_context_did_dimension_child_root_box();
 
             compute_inset(item.box, content_box_rect(m_flex_container_state).size());
         }
-
-        resolve_baseline_aligned_items();
     }
 
     if (m_state.should_collect_devtools_layout_data())
@@ -1745,11 +1760,10 @@ void FlexFormattingContext::resolve_baseline_aligned_items()
             if (!participates_in_baseline_alignment(item))
                 continue;
 
+            // NB: The adjustment lands on the item's cross offset, which the caller writes
+            //     to the used values in one go after baseline resolution.
             auto adjustment = max_baseline - box_baseline(item.box, BaselineSet::First);
-            if (main_axis_is_horizontal())
-                item.used_values.set_content_y(item.used_values.offset.y() + adjustment);
-            else
-                item.used_values.set_content_x(item.used_values.offset.x() + adjustment);
+            item.cross_offset += adjustment;
         }
     }
 }
@@ -1925,7 +1939,6 @@ void FlexFormattingContext::copy_dimensions_from_flex_items_to_boxes()
 
         set_main_size(item, item.main_size.value());
         set_cross_size(item, item.cross_size.value());
-        set_offset(item, item.main_offset, item.cross_offset);
     }
 }
 
