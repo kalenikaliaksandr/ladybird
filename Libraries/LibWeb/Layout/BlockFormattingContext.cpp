@@ -157,27 +157,6 @@ void BlockFormattingContext::parent_context_did_dimension_child_root_box()
 {
     m_was_notified_after_parent_dimensioned_my_root_box = true;
 
-    for (auto& floating_box : m_floats) {
-        if (floating_box->side == FloatSide::Left) {
-            // Left-side floats: offset_from_edge is from left edge (0) to left content edge of floating_box.
-            floating_box->used_values.set_content_x(floating_box->offset_from_edge);
-        } else {
-            // Right-side floats: offset_from_edge is from right edge (float_containing_block_width) to the left content edge of floating_box.
-            auto float_containing_block_width = [&] {
-                switch (floating_box->used_values.width_constraint) {
-                case SizeConstraint::MinContent:
-                    return CSSPixels(0);
-                case SizeConstraint::MaxContent:
-                    return CSSPixels::max();
-                case SizeConstraint::None:
-                    return floating_box->percentage_basis_width.value_or(0);
-                }
-                VERIFY_NOT_REACHED();
-            }();
-            floating_box->used_values.set_content_x(float_containing_block_width - floating_box->offset_from_edge);
-        }
-    }
-
     layout_absolutely_positioned_children();
 }
 
@@ -1481,7 +1460,26 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
 
     auto placement = place_float(side.value(), box_state, available_space, containing_block_rect_in_root, ceiling_in_root);
     auto content_y = placement.block_start - containing_block_rect_in_root.y() + box_state.margin_box_top();
-    box_state.set_content_y(content_y);
+    auto content_x = [&] {
+        if (side.value() == FloatSide::Left) {
+            // Left-side floats: offset_from_edge is from left edge (0) to left content edge of the box.
+            return placement.offset_from_edge;
+        }
+        // Right-side floats: offset_from_edge is from right edge (float_containing_block_width) to the left content edge of the box.
+        auto float_containing_block_width = [&] {
+            switch (box_state.width_constraint) {
+            case SizeConstraint::MinContent:
+                return CSSPixels(0);
+            case SizeConstraint::MaxContent:
+                return CSSPixels::max();
+            case SizeConstraint::None:
+                return layout_input.containing_block_constraints.percentage_basis_width.value_or(0);
+            }
+            VERIFY_NOT_REACHED();
+        }();
+        return float_containing_block_width - placement.offset_from_edge;
+    }();
+    box_state.set_content_offset({ content_x, content_y });
 
     auto margin_box_rect_in_root = margin_box_rect_in_ancestor_coordinate_space(box_state, root());
     m_floats.append(adopt_own(*new FloatingBox {
@@ -1492,7 +1490,6 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
         .top_margin_edge = content_y - box_state.margin_box_top(),
         .bottom_margin_edge = content_y + box_state.content_height() + box_state.margin_box_bottom(),
         .margin_box_rect_in_root_coordinate_space = margin_box_rect_in_root,
-        .percentage_basis_width = layout_input.containing_block_constraints.percentage_basis_width,
     }));
     add_float_to_bands(*m_floats.last(), containing_block_rect_in_root);
 
