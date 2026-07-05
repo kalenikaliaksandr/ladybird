@@ -45,6 +45,10 @@ public:
         CSSPixels margin_end { 0.0f };
         bool is_collapsible_whitespace { false };
         bool can_break_before { false };
+        // For AbsolutelyPositionedElement items: an enclosing inline box was entered with non-zero
+        // start-edge margin/border/padding that has not attached to any fragment yet, so the line
+        // this item lands on is not a zero-height line box even if it has no fragments before it.
+        bool preceded_by_unattached_inline_start_edges { false };
 
         CSSPixels border_box_width() const
         {
