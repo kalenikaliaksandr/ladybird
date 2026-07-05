@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/BumpAllocator.h>
+#include <AK/Debug.h>
 #include <AK/HashTable.h>
 #include <AK/OwnPtr.h>
 #include <AK/kmalloc.h>
@@ -172,9 +173,32 @@ struct LayoutState {
 
         void materialize_from_paintable(Painting::PaintableBox const&);
 
-        void set_content_offset(CSSPixelPoint new_offset) { offset = new_offset; }
-        void set_content_x(CSSPixels x) { offset.set_x(x); }
-        void set_content_y(CSSPixels y) { offset.set_y(y); }
+        void set_content_offset(CSSPixelPoint new_offset)
+        {
+            if constexpr (ASSIGN_ONCE_DEBUG) {
+                warn_if_offset_already_assigned(m_offset_x_assigned, offset.x(), new_offset.x(), "x"sv);
+                warn_if_offset_already_assigned(m_offset_y_assigned, offset.y(), new_offset.y(), "y"sv);
+                m_offset_x_assigned = true;
+                m_offset_y_assigned = true;
+            }
+            offset = new_offset;
+        }
+        void set_content_x(CSSPixels x)
+        {
+            if constexpr (ASSIGN_ONCE_DEBUG) {
+                warn_if_offset_already_assigned(m_offset_x_assigned, offset.x(), x, "x"sv);
+                m_offset_x_assigned = true;
+            }
+            offset.set_x(x);
+        }
+        void set_content_y(CSSPixels y)
+        {
+            if constexpr (ASSIGN_ONCE_DEBUG) {
+                warn_if_offset_already_assigned(m_offset_y_assigned, offset.y(), y, "y"sv);
+                m_offset_y_assigned = true;
+            }
+            offset.set_y(y);
+        }
 
         // offset from top-left corner of content area of box's containing block to top-left corner of box's content area
         CSSPixelPoint offset;
@@ -380,6 +404,12 @@ struct LayoutState {
 
         bool m_has_definite_width { false };
         bool m_has_definite_height { false };
+
+        // Telemetry for diagnosing double-placement bugs: warns (with ASSIGN_ONCE_DEBUG)
+        // whenever a content offset component is assigned more than once during a layout pass.
+        void warn_if_offset_already_assigned(bool already_assigned, CSSPixels current_value, CSSPixels new_value, StringView axis) const;
+        bool m_offset_x_assigned { false };
+        bool m_offset_y_assigned { false };
 
         OwnPtr<RareData> m_rare;
     };

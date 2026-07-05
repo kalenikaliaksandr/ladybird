@@ -1046,6 +1046,14 @@ void LayoutState::UsedValues::materialize_from_paintable(Painting::PaintableBox 
         set_computed_svg_transforms(svg_svg_paintable->computed_transforms());
 }
 
+void LayoutState::UsedValues::warn_if_offset_already_assigned(bool already_assigned, CSSPixels current_value, CSSPixels new_value, StringView axis) const
+{
+    if (!already_assigned)
+        return;
+    dbgln("UsedValues: content {} offset of {} assigned more than once ({} -> {})",
+        axis, m_node ? m_node->debug_description() : "(anonymous)"_string, current_value, new_value);
+}
+
 void LayoutState::UsedValues::set_content_width(CSSPixels width)
 {
     if (width < 0) {
