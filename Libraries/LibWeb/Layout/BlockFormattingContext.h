@@ -107,7 +107,7 @@ private:
     void layout_inline_children(BlockContainer const&, LayoutInput const&, AvailableSpace const& available_space_for_children);
     void layout_fieldset_with_rendered_legend(FieldSetBox const&, LayoutInput const&);
 
-    void place_block_level_element_in_normal_flow_horizontally(Box const& child_box, AvailableSpace const&);
+    void place_block_level_element_in_normal_flow_horizontally(Box const& child_box, AvailableSpace const&, CSSPixels additional_inline_shift = 0);
     void place_block_level_element_in_normal_flow_vertically(Box const&, CSSPixels y);
 
     void ensure_sizes_correct_for_left_offset_calculation(ListItemBox const&);
