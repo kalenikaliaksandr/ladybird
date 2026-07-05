@@ -321,7 +321,7 @@ private:
     void rerun_row_track_sizing_using_grid_container_height(CSSPixels);
     void determine_intrinsic_size_of_grid_container(AvailableSpace const& available_space);
 
-    virtual AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&) override;
+    virtual AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&, Box const& containing_block_box, LayoutState::UsedValues const& containing_block_state) override;
     virtual void parent_context_did_dimension_child_root_box() override;
 
     void resolve_grid_item_sizes(GridDimension dimension);

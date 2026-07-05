@@ -233,13 +233,13 @@ protected:
 
     ShrinkToFitResult calculate_shrink_to_fit_widths(Box const&, ContainingBlockConstraints const&);
 
-    void layout_absolutely_positioned_element(Box&);
+    void layout_absolutely_positioned_element(Box&, Box const& containing_block_box, LayoutState::UsedValues& containing_block_state);
 
     CSSPixels gap_to_px(Variant<CSS::LengthPercentage, CSS::NormalGap> const& gap, CSSPixels reference_value) const;
 
     void layout_absolutely_positioned_children();
     void layout_absolutely_positioned_children(Box const&);
-    virtual AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&);
+    virtual AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&, Box const& containing_block_box, LayoutState::UsedValues const& containing_block_state);
     void resolve_anchor_insets(Box&) const;
     void compute_width_for_absolutely_positioned_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&);
     void compute_width_for_absolutely_positioned_non_replaced_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&);

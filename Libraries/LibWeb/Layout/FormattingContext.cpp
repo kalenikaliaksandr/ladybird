@@ -1707,7 +1707,7 @@ static Optional<CSSPixelRect> compute_inline_containing_block_rect(InlineNode co
     return bounding_rect;
 }
 
-AbsposContainingBlockInfo FormattingContext::resolve_abspos_containing_block_info(Box const& box)
+AbsposContainingBlockInfo FormattingContext::resolve_abspos_containing_block_info(Box const& box, Box const& containing_block_box, LayoutState::UsedValues const& containing_block_state)
 {
     auto const& computed_values = box.computed_values();
 
@@ -1721,15 +1721,13 @@ AbsposContainingBlockInfo FormattingContext::resolve_abspos_containing_block_inf
 
     // Check if there's an inline element that should be the real containing block.
     auto inline_containing_block = box.inline_containing_block_if_applicable();
-    if (inline_containing_block && box.containing_block()) {
-        auto rect = compute_inline_containing_block_rect(*inline_containing_block, *box.containing_block(), m_state);
+    if (inline_containing_block) {
+        auto rect = compute_inline_containing_block_rect(*inline_containing_block, containing_block_box, m_state);
         if (rect.has_value())
             return { *rect, horizontal_axis_mode, vertical_axis_mode, {}, {} };
     }
 
     // Normal case: padding box of the actual containing block.
-    VERIFY(box.containing_block());
-    auto& containing_block_state = m_state.get(*box.containing_block());
     CSSPixelRect rect {
         -containing_block_state.padding_left,
         -containing_block_state.padding_top,
@@ -2101,11 +2099,14 @@ void FormattingContext::layout_absolutely_positioned_children(Box const& box)
     for (auto& child : box.contained_abspos_children()) {
         if (!child)
             continue;
-        layout_absolutely_positioned_element(as<Box>(*child));
+        auto& child_box = as<Box>(*child);
+        auto const* containing_block_box = child_box.containing_block();
+        VERIFY(containing_block_box);
+        layout_absolutely_positioned_element(child_box, *containing_block_box, m_state.get_mutable(*containing_block_box));
     }
 }
 
-void FormattingContext::layout_absolutely_positioned_element(Box& box)
+void FormattingContext::layout_absolutely_positioned_element(Box& box, Box const& containing_block_box, LayoutState::UsedValues& containing_block_state)
 {
     // SVG elements cannot be absolutely positioned.
     VERIFY(!box.is_svg_box());
@@ -2119,19 +2120,17 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box)
     // below and the final offset computation all work in the coordinate space of the box's actual
     // containing block, so translate the rect once up front.
     auto const* static_position_cb = box.static_position_containing_block();
-    if (static_position_cb && static_position_cb != box.containing_block()) {
+    if (static_position_cb && static_position_cb != &containing_block_box) {
         auto offset = m_state.cumulative_offset(m_state.get(*static_position_cb))
-            - m_state.cumulative_offset(m_state.get(*box.containing_block()));
+            - m_state.cumulative_offset(containing_block_state);
         auto static_position_rect = box_state.static_position_rect().value_or({});
         static_position_rect.rect.translate_by(offset);
         box_state.set_static_position_rect(static_position_rect);
     }
 
-    auto containing_block_info = resolve_abspos_containing_block_info(box);
+    auto containing_block_info = resolve_abspos_containing_block_info(box, containing_block_box, containing_block_state);
 
     auto const available_space = AvailableSpace(AvailableSize::make_definite(clamp_to_max_dimension_value(containing_block_info.rect.width())), AvailableSize::make_definite(clamp_to_max_dimension_value(containing_block_info.rect.height())));
-
-    auto& containing_block_state = m_state.get_mutable(*box.containing_block());
 
     // The size of the containing block of an abspos box is always definite from the perspective of the abspos box.
     // Since abspos boxes are laid out last, we can mark the containing block as having definite sizes at this point.

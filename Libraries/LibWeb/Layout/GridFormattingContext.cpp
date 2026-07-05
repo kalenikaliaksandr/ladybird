@@ -2965,10 +2965,10 @@ void GridFormattingContext::run(LayoutInput const& layout_input)
 }
 
 // https://www.w3.org/TR/css-grid-2/#abspos-items
-AbsposContainingBlockInfo GridFormattingContext::resolve_abspos_containing_block_info(Box const& box)
+AbsposContainingBlockInfo GridFormattingContext::resolve_abspos_containing_block_info(Box const& box, Box const& containing_block_box, LayoutState::UsedValues const& containing_block_state)
 {
     auto& abspos_box_state = m_state.get_mutable(box);
-    auto containing_block_info = FormattingContext::resolve_abspos_containing_block_info(box);
+    auto containing_block_info = FormattingContext::resolve_abspos_containing_block_info(box, containing_block_box, containing_block_state);
 
     auto grid_area_rect = [&] -> CSSPixelRect {
         auto const& computed_values = box.computed_values();
