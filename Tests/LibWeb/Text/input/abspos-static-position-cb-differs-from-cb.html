@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    #cb {
+        position: relative;
+        display: flow-root;
+        width: 400px;
+        height: 300px;
+        font-size: 0;
+    }
+    #wrapper {
+        margin-left: 40px;
+        margin-top: 30px;
+    }
+    #spacer {
+        height: 10px;
+    }
+    #t1 {
+        position: absolute;
+        width: 50px;
+        height: 20px;
+    }
+    #t2 {
+        position: absolute;
+        height: 20px;
+    }
+    #t2-child {
+        width: 80px;
+        height: 20px;
+    }
+    #t3 {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        height: 60px;
+        margin-block: auto;
+        width: 50px;
+    }
+    #t4 {
+        position: absolute;
+    }
+</style>
+<div id="cb">
+    <div id="wrapper">
+        <div id="spacer"></div>
+        <div id="t1"></div>
+        <div id="t2"><div id="t2-child"></div></div>
+        <div id="t3"></div>
+        <canvas id="t4" width="60" height="40"></canvas>
+    </div>
+</div>
+<script>
+    // The targets are absolutely positioned inside #wrapper, a non-positioned
+    // block, so their static-position containing block (#wrapper) differs from
+    // their actual containing block (#cb). #wrapper sits at (40, 30) within
+    // #cb and contains a 10px spacer, so every target's static position in
+    // #cb's coordinate space is (40, 40). Inset values resolved from the
+    // static position must be expressed in #cb's space: resolved left/top must
+    // match the box's actual offset within #cb printed for each target.
+    //
+    // t1: fixed size, all insets auto (static position on both axes).
+    // t2: shrink-to-fit width (left/width/right all auto).
+    // t3: top:0; bottom:0; margin-block:auto centering, horizontal static.
+    // t4: replaced element (canvas), all insets auto.
+    test(() => {
+        const cbRect = document.getElementById("cb").getBoundingClientRect();
+        for (const id of ["t1", "t2", "t3", "t4"]) {
+            const target = document.getElementById(id);
+            const style = getComputedStyle(target);
+            const rect = target.getBoundingClientRect();
+            println(`${id}: top: ${style.top}, right: ${style.right}, bottom: ${style.bottom}, left: ${style.left}`);
+            println(`${id}: margin-top: ${style.marginTop}, margin-bottom: ${style.marginBottom}`);
+            println(`${id}: offset within containing block: ${rect.x - cbRect.x},${rect.y - cbRect.y}`);
+        }
+    });
+</script>

@@ -1,0 +1,12 @@
+t1: top: 0px, right: 350px, bottom: 280px, left: 0px
+t1: margin-top: 0px, margin-bottom: 0px
+t1: offset within containing block: 40,40
+t2: top: 0px, right: 320px, bottom: 280px, left: 0px
+t2: margin-top: 0px, margin-bottom: 0px
+t2: offset within containing block: 40,40
+t3: top: 0px, right: 350px, bottom: 0px, left: 0px
+t3: margin-top: 120px, margin-bottom: 120px
+t3: offset within containing block: 40,120
+t4: top: 0px, right: 340px, bottom: 260px, left: 0px
+t4: margin-top: 0px, margin-bottom: 0px
+t4: offset within containing block: 40,40
