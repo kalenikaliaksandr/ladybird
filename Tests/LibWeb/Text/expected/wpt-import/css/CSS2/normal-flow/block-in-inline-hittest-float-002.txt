@@ -1,0 +1,10 @@
+Harness status: OK
+
+Found 5 tests
+
+5 Pass
+Pass	block-in-inline-hittest-float-002
+Pass	with background
+Pass	with padding
+Pass	floats before block-in-inline
+Pass	floats before block-in-inline with background

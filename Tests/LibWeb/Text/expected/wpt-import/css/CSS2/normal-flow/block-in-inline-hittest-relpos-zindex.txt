@@ -1,0 +1,12 @@
+Harness status: OK
+
+Found 6 tests
+
+5 Pass
+1 Fail
+Pass	block-in-inline-hittest-relpos-zindex
+Pass	z-index: 1;
+Pass	z-index: -1;
+Pass	position: relative;
+Pass	position: relative; z-index: 1;
+Fail	position: relative; z-index: -1;
