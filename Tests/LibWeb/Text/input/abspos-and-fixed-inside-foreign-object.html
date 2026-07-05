@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body {
+        margin: 0;
+        font-size: 0;
+    }
+    #relpos {
+        position: relative;
+        width: 180px;
+        height: 90px;
+    }
+    #sibling {
+        height: 20px;
+    }
+    #abs {
+        position: absolute;
+        width: 10px;
+        height: 10px;
+    }
+    #fixed {
+        position: fixed;
+        top: 4px;
+        left: 6px;
+        width: 10px;
+        height: 10px;
+    }
+</style>
+<svg width="300" height="200">
+    <foreignObject x="20" y="30" width="200" height="100">
+        <div id="relpos" xmlns="http://www.w3.org/1999/xhtml">
+            <div id="sibling"></div>
+            <div id="abs"></div>
+            <div id="fixed"></div>
+        </div>
+    </foreignObject>
+</svg>
+<script>
+    // Absolutely positioned and fixed boxes inside <foreignObject>. #abs has
+    // no insets and must sit at its static position below #sibling, relative
+    // to the relative-positioned wrapper. After a mutation inside the
+    // foreignObject triggers a relayout (SMIL/RAF-style), both must keep
+    // consistent positions.
+    asyncTest(async (done) => {
+        const report = (label) => {
+            const relposRect = document.getElementById("relpos").getBoundingClientRect();
+            const absRect = document.getElementById("abs").getBoundingClientRect();
+            const fixedRect = document.getElementById("fixed").getBoundingClientRect();
+            println(`${label} relpos: ${relposRect.x},${relposRect.y}`);
+            println(`${label} abs within relpos: ${absRect.x - relposRect.x},${absRect.y - relposRect.y}`);
+            println(`${label} fixed: ${fixedRect.x},${fixedRect.y}`);
+        };
+        report("before:");
+        document.getElementById("sibling").style.height = "40px";
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        report("after:");
+        done();
+    });
+</script>

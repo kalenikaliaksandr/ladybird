@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body {
+        margin: 0;
+        font-size: 0;
+    }
+    #outer-cb {
+        position: relative;
+        width: 300px;
+        height: 300px;
+    }
+    #mid {
+        margin-left: 20px;
+        margin-top: 10px;
+        width: 200px;
+        height: 200px;
+    }
+    #abs1 {
+        position: absolute;
+        top: 30px;
+        left: 40px;
+        width: 100px;
+        height: 100px;
+    }
+    #abs2 {
+        position: absolute;
+        top: 12px;
+        left: 8px;
+        width: 50px;
+        height: 50px;
+    }
+    #fixed1 {
+        position: fixed;
+        top: 3px;
+        left: 4px;
+        width: 10px;
+        height: 10px;
+    }
+    #transformed {
+        transform: translate(30px, 40px);
+        width: 200px;
+        height: 100px;
+    }
+    #fixed2 {
+        position: fixed;
+        top: 6px;
+        left: 9px;
+        width: 10px;
+        height: 10px;
+    }
+</style>
+<div id="outer-cb">
+    <div id="mid">
+        <div id="abs1">
+            <div>
+                <div id="abs2">
+                    <div id="fixed1"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<div id="transformed">
+    <div id="fixed2"></div>
+</div>
+<script>
+    // Cascaded positioning schemes:
+    // - #abs1 is an abspos box sitting mid-tree under #outer-cb (its CB).
+    // - #abs2 is an abspos box whose CB is #abs1.
+    // - #fixed1 is fixed inside abspos-in-abspos; its CB is the viewport.
+    // - #fixed2 is fixed under a transformed ancestor, which becomes its CB.
+    test(() => {
+        const outerRect = document.getElementById("outer-cb").getBoundingClientRect();
+        const abs1Rect = document.getElementById("abs1").getBoundingClientRect();
+        println(`abs1 offset within outer-cb: ${abs1Rect.x - outerRect.x},${abs1Rect.y - outerRect.y}`);
+
+        const abs2Rect = document.getElementById("abs2").getBoundingClientRect();
+        println(`abs2 offset within abs1: ${abs2Rect.x - abs1Rect.x},${abs2Rect.y - abs1Rect.y}`);
+
+        const fixed1Rect = document.getElementById("fixed1").getBoundingClientRect();
+        println(`fixed1 viewport position: ${fixed1Rect.x},${fixed1Rect.y}`);
+
+        const transformedRect = document.getElementById("transformed").getBoundingClientRect();
+        const fixed2Rect = document.getElementById("fixed2").getBoundingClientRect();
+        println(`transformed offset: ${transformedRect.x},${transformedRect.y}`);
+        println(`fixed2 offset within transformed ancestor: ${fixed2Rect.x - transformedRect.x},${fixed2Rect.y - transformedRect.y}`);
+    });
+</script>

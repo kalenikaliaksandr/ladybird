@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    #outer {
+        position: relative;
+        width: 300px;
+        height: 300px;
+        font-size: 0;
+    }
+    #spacer {
+        height: 20px;
+    }
+    table {
+        border-collapse: separate;
+        border-spacing: 0;
+    }
+    td {
+        padding: 0;
+        vertical-align: middle;
+    }
+    #tall-content {
+        width: 30px;
+        height: 80px;
+    }
+    #cell-content {
+        width: 40px;
+        height: 20px;
+    }
+    #abs {
+        position: absolute;
+        width: 10px;
+        height: 10px;
+    }
+</style>
+<div id="outer">
+    <div id="spacer"></div>
+    <table>
+        <tr>
+            <td><div id="tall-content"></div></td>
+            <td id="target-cell">
+                <div id="cell-content"></div>
+                <div id="abs"></div>
+            </td>
+        </tr>
+    </table>
+</div>
+<script>
+    // #abs has no insets and sits at its static position inside a
+    // vertical-align: middle table cell (whose content is pushed down within
+    // the 80px row). Its containing block is the relative-positioned #outer
+    // above the table, so its position is composed through the table
+    // internals: it must land directly below #cell-content.
+    test(() => {
+        const outerRect = document.getElementById("outer").getBoundingClientRect();
+        const contentRect = document.getElementById("cell-content").getBoundingClientRect();
+        const absRect = document.getElementById("abs").getBoundingClientRect();
+        println(`cell-content offset: ${contentRect.x - outerRect.x},${contentRect.y - outerRect.y}`);
+        println(`abs offset: ${absRect.x - outerRect.x},${absRect.y - outerRect.y}`);
+        println(`abs sits directly below cell content: ${absRect.x === contentRect.x && absRect.y === contentRect.bottom}`);
+    });
+</script>

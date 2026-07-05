@@ -1,0 +1,2 @@
+abs offset within positioned row: 7,5
+abs offset within positioned cell: 7,5

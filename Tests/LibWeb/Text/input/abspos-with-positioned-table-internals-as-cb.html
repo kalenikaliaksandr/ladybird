@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    #outer {
+        width: 300px;
+        font-size: 0;
+    }
+    table {
+        border-collapse: separate;
+        border-spacing: 0;
+    }
+    td {
+        padding: 0;
+    }
+    .content {
+        width: 40px;
+        height: 30px;
+    }
+    #positioned-row {
+        position: relative;
+    }
+    #positioned-cell {
+        position: relative;
+    }
+    .abs {
+        position: absolute;
+        top: 5px;
+        left: 7px;
+        width: 10px;
+        height: 10px;
+    }
+</style>
+<div id="outer">
+    <table>
+        <tr id="positioned-row">
+            <td><div class="content"></div><div id="abs-in-row" class="abs"></div></td>
+        </tr>
+        <tr>
+            <td id="positioned-cell"><div class="content"></div><div id="abs-in-cell" class="abs"></div></td>
+        </tr>
+    </table>
+</div>
+<script>
+    // Positioned table rows and cells act as containing blocks for absolutely
+    // positioned descendants. Each .abs box has top: 5px / left: 7px insets,
+    // so it must be placed at that inset from the padding box of its
+    // containing block (the positioned <tr> and <td> respectively).
+    test(() => {
+        const rowRect = document.getElementById("positioned-row").getBoundingClientRect();
+        const absInRowRect = document.getElementById("abs-in-row").getBoundingClientRect();
+        println(`abs offset within positioned row: ${absInRowRect.x - rowRect.x},${absInRowRect.y - rowRect.y}`);
+
+        const cellRect = document.getElementById("positioned-cell").getBoundingClientRect();
+        const absInCellRect = document.getElementById("abs-in-cell").getBoundingClientRect();
+        println(`abs offset within positioned cell: ${absInCellRect.x - cellRect.x},${absInCellRect.y - cellRect.y}`);
+    });
+</script>

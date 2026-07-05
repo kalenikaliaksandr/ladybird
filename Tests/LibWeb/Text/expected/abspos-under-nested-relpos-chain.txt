@@ -1,0 +1,3 @@
+r3 offset: 19,18
+abs offset: 19,33
+abs offset within r3: 0,15

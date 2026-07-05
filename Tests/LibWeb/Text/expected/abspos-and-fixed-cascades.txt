@@ -1,0 +1,5 @@
+abs1 offset within outer-cb: 40,30
+abs2 offset within abs1: 8,12
+fixed1 viewport position: 4,3
+transformed offset: 30,350
+fixed2 offset within transformed ancestor: 9,6

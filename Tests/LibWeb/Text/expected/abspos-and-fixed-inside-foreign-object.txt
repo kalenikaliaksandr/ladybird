@@ -1,0 +1,6 @@
+before: relpos: 20,30
+before: abs within relpos: 0,20
+before: fixed: 6,4
+after: relpos: 20,30
+after: abs within relpos: 0,40
+after: fixed: 6,4

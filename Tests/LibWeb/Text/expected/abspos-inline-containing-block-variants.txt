@@ -1,0 +1,16 @@
+leading: inline cb: 40,0 40x10
+leading: abs: 0,10
+middle: inline cb: 0,0 70x10
+middle: abs: 0,10
+trailing: inline cb: 0,0 70x10
+trailing: abs: 0,10
+block-in-inline: inline cb: 0,10 0x0
+block-in-inline: abs: 0,10
+inline-block-inside: inline cb: 0,0 70x10
+inline-block-inside: abs: 40,0
+rtl: inline cb: 260,0 40x10
+rtl: abs: 290,10
+fragmented: inline cb: 0,10 80x10
+fragmented: abs: 0,20
+only-child: inline cb: 0,0 0x0
+only-child: abs: 0,10

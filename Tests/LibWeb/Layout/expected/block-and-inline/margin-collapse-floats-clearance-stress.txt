@@ -1,0 +1,55 @@
+Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children: not-inline
+  BlockContainer <html> at [0,0] [0+0+0 800 0+0+0] [0+0+0 175 0+0+0] [BFC] children: not-inline
+    BlockContainer <body> at [0,0] [0+0+0 800 0+0+0] [0+0+0 175 0+0+0] children: not-inline
+      BlockContainer <div#first> at [0,0] [0+0+0 800 0+0+0] [0+0+0 20 0+0+30] children: not-inline
+        BlockContainer <(anonymous)> at [0,0] [0+0+0 800 0+0+0] [0+0+0 0 0+0+0] children: inline
+          TextNode <#text> (not painted)
+        BlockContainer <div#first-inner> at [0,0] [0+0+0 60 0+0+740] [0+0+0 20 0+0+20] children: not-inline
+        BlockContainer <(anonymous)> at [0,40] [0+0+0 800 0+0+0] [0+0+0 0 0+0+0] children: inline
+          TextNode <#text> (not painted)
+      BlockContainer <(anonymous)> at [0,50] [0+0+0 800 0+0+0] [0+0+0 0 0+0+0] children: inline
+        TextNode <#text> (not painted)
+      BlockContainer <div#second> at [0,60] [0+0+0 800 0+0+0] [25+0+0 115 0+0+0] children: not-inline
+        BlockContainer <(anonymous)> at [0,60] [0+0+0 800 0+0+0] [0+0+0 0 0+0+0] children: inline
+          TextNode <#text> (not painted)
+          BlockContainer <div#left-float> at [0,60] floating [0+0+0 50 0+0+0] [0+0+0 60 0+0+0] [BFC] children: not-inline
+          TextNode <#text> (not painted)
+        BlockContainer <div#collapse-through> at [0,60] [0+0+0 800 0+0+0] [40+0+0 80 0+0+0] children: not-inline
+          BlockContainer <(anonymous)> at [0,60] [0+0+0 800 0+0+0] [0+0+0 0 0+0+0] children: inline
+            TextNode <#text> (not painted)
+          BlockContainer <div#cleared> at [0,120] [0+0+0 70 0+0+730] [10+0+0 20 0+0+0] children: not-inline
+          BlockContainer <(anonymous)> at [0,140] [0+0+0 800 0+0+0] [0+0+0 0 0+0+0] children: inline
+            TextNode <#text> (not painted)
+        BlockContainer <(anonymous)> at [0,140] [0+0+0 800 0+0+0] [0+0+0 0 0+0+0] children: inline
+          TextNode <#text> (not painted)
+          BlockContainer <div#right-float> at [760,140] floating [0+0+0 40 0+0+0] [0+0+0 30 0+0+0] [BFC] children: not-inline
+          TextNode <#text> (not painted)
+        BlockContainer <div#after> at [0,155] [0+0+0 80 0+0+720] [15+0+0 20 0+0+0] children: not-inline
+        BlockContainer <(anonymous)> at [0,175] [0+0+0 800 0+0+0] [0+0+0 0 0+0+0] children: inline
+          TextNode <#text> (not painted)
+      BlockContainer <(anonymous)> at [0,175] [0+0+0 800 0+0+0] [0+0+0 0 0+0+0] children: inline
+        TextNode <#text> (not painted)
+
+ViewportPaintable (Viewport<#document>) [0,0 800x600]
+  PaintableWithLines (BlockContainer<HTML>) [0,0 800x175]
+    PaintableWithLines (BlockContainer<BODY>) [0,0 800x175]
+      PaintableWithLines (BlockContainer<DIV>#first) [0,0 800x20]
+        PaintableWithLines (BlockContainer(anonymous)) [0,0 800x0]
+        PaintableWithLines (BlockContainer<DIV>#first-inner) [0,0 60x20]
+        PaintableWithLines (BlockContainer(anonymous)) [0,40 800x0]
+      PaintableWithLines (BlockContainer(anonymous)) [0,50 800x0]
+      PaintableWithLines (BlockContainer<DIV>#second) [0,60 800x115]
+        PaintableWithLines (BlockContainer(anonymous)) [0,60 800x0]
+          PaintableWithLines (BlockContainer<DIV>#left-float) [0,60 50x60]
+        PaintableWithLines (BlockContainer<DIV>#collapse-through) [0,60 800x80]
+          PaintableWithLines (BlockContainer(anonymous)) [0,60 800x0]
+          PaintableWithLines (BlockContainer<DIV>#cleared) [0,120 70x20]
+          PaintableWithLines (BlockContainer(anonymous)) [0,140 800x0]
+        PaintableWithLines (BlockContainer(anonymous)) [0,140 800x0]
+          PaintableWithLines (BlockContainer<DIV>#right-float) [760,140 40x30]
+        PaintableWithLines (BlockContainer<DIV>#after) [0,155 80x20]
+        PaintableWithLines (BlockContainer(anonymous)) [0,175 800x0]
+      PaintableWithLines (BlockContainer(anonymous)) [0,175 800x0]
+
+SC for Viewport<#document> [0,0 800x600] (z-index: auto)
+ SC for BlockContainer<HTML> [0,0 800x175] (z-index: auto)

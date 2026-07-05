@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body {
+        font-size: 0;
+    }
+    .case {
+        width: 300px;
+        margin-bottom: 10px;
+    }
+    .cb {
+        position: relative;
+    }
+    .ib {
+        display: inline-block;
+        width: 40px;
+        height: 10px;
+    }
+    .ib-small {
+        display: inline-block;
+        width: 30px;
+        height: 10px;
+    }
+    .abs {
+        position: absolute;
+        width: 10px;
+        height: 10px;
+    }
+    #fragmented {
+        width: 100px;
+    }
+</style>
+
+<!-- abspos as leading child of a positioned inline -->
+<div class="case" id="leading">
+    <span class="ib"></span><span class="cb"><div class="abs"></div><span class="ib"></span></span>
+</div>
+
+<!-- abspos as middle child of a positioned inline -->
+<div class="case" id="middle">
+    <span class="cb"><span class="ib"></span><div class="abs"></div><span class="ib-small"></span></span>
+</div>
+
+<!-- abspos as trailing child of a positioned inline -->
+<div class="case" id="trailing">
+    <span class="cb"><span class="ib"></span><span class="ib-small"></span><div class="abs"></div></span>
+</div>
+
+<!-- abspos inside a block inside a positioned inline (block-in-inline split) -->
+<div class="case" id="block-in-inline">
+    <span class="cb"><span class="ib"></span><div><div class="abs"></div></div></span>
+</div>
+
+<!-- abspos inside a non-positioned inline-block inside a positioned inline -->
+<div class="case" id="inline-block-inside">
+    <span class="cb"><span class="ib"></span><span class="ib-small"><div class="abs"></div></span></span>
+</div>
+
+<!-- RTL positioned inline -->
+<div class="case" id="rtl" dir="rtl">
+    <span class="cb"><span class="ib"></span><div class="abs"></div></span>
+</div>
+
+<!-- positioned inline fragmented across multiple lines -->
+<div class="case" id="fragmented">
+    <span class="cb"><span class="ib"></span><span class="ib"></span><span class="ib"></span><span class="ib"></span><div class="abs"></div></span>
+</div>
+
+<!-- positioned inline containing only the abspos -->
+<div class="case" id="only-child">
+    <span class="ib"></span><span class="cb"><div class="abs"></div></span>
+</div>
+
+<script>
+    // Absolutely positioned boxes whose containing block is established by a
+    // positioned inline, in various structural positions. Each result prints
+    // the abspos box's offset relative to its case container, together with
+    // the bounding rect of the positioned inline.
+    test(() => {
+        for (const id of ["leading", "middle", "trailing", "block-in-inline",
+                          "inline-block-inside", "rtl", "fragmented", "only-child"]) {
+            const caseElement = document.getElementById(id);
+            const caseRect = caseElement.getBoundingClientRect();
+            const cbRect = caseElement.querySelector(".cb").getBoundingClientRect();
+            const absRect = caseElement.querySelector(".abs").getBoundingClientRect();
+            println(`${id}: inline cb: ${cbRect.x - caseRect.x},${cbRect.y - caseRect.y} ${cbRect.width}x${cbRect.height}`);
+            println(`${id}: abs: ${absRect.x - caseRect.x},${absRect.y - caseRect.y}`);
+        }
+    });
+</script>
