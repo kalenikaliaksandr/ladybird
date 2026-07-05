@@ -42,6 +42,7 @@ public:
 
 private:
     CSSPixels run_caption_layout(CSS::CaptionSide, AvailableSpace const&);
+    void position_caption_boxes(CSS::CaptionSide);
     CSSPixels compute_capmin();
     void compute_constrainedness();
     void compute_cell_measures(RowMeasurement);

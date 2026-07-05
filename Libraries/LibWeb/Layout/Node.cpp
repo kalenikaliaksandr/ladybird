@@ -277,7 +277,14 @@ static Box* nearest_ancestor_capable_of_forming_a_containing_block(Node& node)
         if (ancestor->is_block_container()
             || ancestor->display().is_flex_inside()
             || ancestor->display().is_grid_inside()
-            || ancestor->is_replaced_box_with_children()) {
+            || ancestor->is_replaced_box_with_children()
+            // Table internals compose against their layout-tree parent chain: row groups,
+            // rows and captions against the table box, and cells against their row.
+            || ancestor->display().is_table_inside()
+            || ancestor->display().is_table_row_group()
+            || ancestor->display().is_table_header_group()
+            || ancestor->display().is_table_footer_group()
+            || ancestor->display().is_table_row()) {
             return static_cast<Box*>(ancestor);
         }
     }

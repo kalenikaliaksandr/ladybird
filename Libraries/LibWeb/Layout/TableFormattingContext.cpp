@@ -67,21 +67,35 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
             }
         }
 
-        // Each caption is placed with a single offset write: the x offset aligns the caption's
-        // border box with the table wrapper, top captions stack from the wrapper's top, and
-        // bottom captions stack below the table box's margin box.
-        auto& caption_state = m_state.get_mutable(child_box);
-        auto caption_x = caption_state.border_left + caption_state.padding_left;
-        auto caption_y = caption_height + caption_state.margin_box_top();
-        if (phase == CSS::CaptionSide::Bottom) {
-            auto const& table_state = m_state.get(table_box());
-            caption_y += table_state.offset.y() + table_state.content_height()
-                + table_state.padding_bottom + table_state.border_bottom + table_state.margin_bottom;
-        }
-        caption_state.set_content_offset({ caption_x, caption_y });
-        caption_height += caption_state.margin_box_height();
+        caption_height += m_state.get(child_box).margin_box_height();
     }
     return caption_height;
+}
+
+void TableFormattingContext::position_caption_boxes(CSS::CaptionSide phase)
+{
+    // Captions compose against the table box's content box. Each caption is placed with a
+    // single offset write: the x offset aligns the caption's border box with the table
+    // wrapper, top captions stack downwards from the wrapper's top edge (above the table
+    // box), and bottom captions stack below the table box's margin box.
+    auto const& table_state = m_state.get(table_box());
+    CSSPixels stack_offset = 0;
+    for (auto child = table_box().first_child(); child; child = child->next_sibling()) {
+        if (!child->display().is_table_caption() || child->computed_values().caption_side() != phase) {
+            continue;
+        }
+        auto& caption_state = m_state.get_mutable(as<Box>(*child));
+        auto caption_x = caption_state.border_left + caption_state.padding_left - table_state.offset.x();
+        auto caption_y = stack_offset + caption_state.margin_box_top();
+        if (phase == CSS::CaptionSide::Top) {
+            caption_y -= table_state.offset.y();
+        } else {
+            caption_y += table_state.content_height() + table_state.padding_bottom
+                + table_state.border_bottom + table_state.margin_bottom;
+        }
+        caption_state.set_content_offset({ caption_x, caption_y });
+        stack_offset += caption_state.margin_box_height();
+    }
 }
 
 void TableFormattingContext::compute_constrainedness()
@@ -1202,8 +1216,12 @@ void TableFormattingContext::position_row_boxes()
 {
     auto const& table_state = m_state.get(table_box());
 
-    CSSPixels row_top_offset = table_state.offset.y() + border_spacing_vertical();
-    CSSPixels row_left_offset = table_state.border_left + table_state.padding_left + border_spacing_horizontal();
+    // Rows and row groups compose against the layout-tree parent chain: row groups against
+    // the table box's content box, and rows against their row group's content box (or the
+    // table box's content box when they have no row group).
+
+    // First pass: assign row sizes so that row group sizes can be derived from them.
+    CSSPixels row_top_offset = border_spacing_vertical();
     for (size_t y = 0; y < m_rows.size(); y++) {
         auto& row = m_rows[y];
         auto& row_state = m_state.get_mutable(row.box);
@@ -1216,14 +1234,12 @@ void TableFormattingContext::position_row_boxes()
 
         row_state.set_content_height(row.final_height);
         row_state.set_content_width(row_width);
-        row_state.set_content_x(row_left_offset);
-        row_state.set_content_y(row_top_offset);
         if (!row.is_collapsed)
             row_top_offset += row_state.content_height() + border_spacing_vertical();
     }
 
-    CSSPixels row_group_top_offset = table_state.offset.y() + border_spacing_vertical();
-    CSSPixels row_group_left_offset = table_state.border_left + table_state.padding_left + border_spacing_horizontal();
+    CSSPixels row_group_top_offset = border_spacing_vertical();
+    CSSPixels row_group_left_offset = border_spacing_horizontal();
     TableGrid::for_each_child_box_matching(table_box(), TableGrid::is_table_row_group, [&](auto& row_group_box) {
         CSSPixels row_group_height = 0;
         CSSPixels row_group_width = 0;
@@ -1248,7 +1264,22 @@ void TableFormattingContext::position_row_boxes()
         row_group_top_offset += row_group_height + (num_rows > 0 ? border_spacing_vertical() : 0);
     });
 
-    auto total_content_height = max(row_top_offset, row_group_top_offset) - table_state.offset.y() - table_state.padding_top;
+    // Second pass: place rows now that their row groups have offsets to compose against.
+    CSSPixels row_top_offset_in_table = border_spacing_vertical();
+    for (size_t y = 0; y < m_rows.size(); y++) {
+        auto& row = m_rows[y];
+        auto& row_state = m_state.get_mutable(row.box);
+
+        CSSPixelPoint row_offset { border_spacing_horizontal(), row_top_offset_in_table };
+        if (auto const* row_containing_block = row.box.containing_block(); row_containing_block && row_containing_block != &table_box())
+            row_offset -= m_state.get(*row_containing_block).offset;
+        row_state.set_content_offset(row_offset);
+
+        if (!row.is_collapsed)
+            row_top_offset_in_table += row_state.content_height() + border_spacing_vertical();
+    }
+
+    auto total_content_height = max(row_top_offset, row_group_top_offset) - table_state.padding_top;
     m_table_height = max(total_content_height, m_table_height);
 }
 
@@ -1275,7 +1306,6 @@ void TableFormattingContext::position_cell_boxes()
 
     for (auto& cell : m_cells) {
         auto& cell_state = m_state.get_mutable(cell.box);
-        auto& row_state = m_state.get(m_rows[cell.row_index].box);
         auto const row_content_height = compute_row_content_height(cell);
         auto const& vertical_align = cell.box.computed_values().vertical_align();
         // The following image shows various alignment lines of a row:
@@ -1319,14 +1349,11 @@ void TableFormattingContext::position_cell_boxes()
             }
         }
 
-        // Compute cell position as specified by https://www.w3.org/TR/css-tables-3/#bounding-box-assignment:
-        // left/top location is the sum of:
-        // - for top: the height reserved for top captions (including margins), if any
-        // - the padding-left/padding-top and border-left-width/border-top-width of the table
+        // Compute the cell position relative to its row's content box, as specified by
+        // https://www.w3.org/TR/css-tables-3/#bounding-box-assignment.
         // FIXME: Account for visibility.
-        cell_state.set_content_offset(row_state.offset.translated(
-            cell_state.border_box_left() + m_columns[cell.column_index].left_offset + cell.column_index * border_spacing_horizontal(),
-            cell_state.border_box_top()));
+        cell_state.set_content_offset({ cell_state.border_box_left() + m_columns[cell.column_index].left_offset + cell.column_index * border_spacing_horizontal(),
+            cell_state.border_box_top() });
     }
 }
 
@@ -1881,6 +1908,7 @@ void TableFormattingContext::run(LayoutInput const& layout_input)
         auto& table_state = m_state.get_mutable(table_box());
         table_state.set_content_y(table_state.offset.y() + top_captions_height);
     }
+    position_caption_boxes(CSS::CaptionSide::Top);
 
     // Distribute the width of the table among columns.
     distribute_width_to_columns();
@@ -1898,6 +1926,7 @@ void TableFormattingContext::run(LayoutInput const& layout_input)
     m_state.get_mutable(table_box()).set_content_height(m_table_height);
 
     auto bottom_captions_height = run_caption_layout(CSS::CaptionSide::Bottom, caption_available_space);
+    position_caption_boxes(CSS::CaptionSide::Bottom);
 
     // Table captions are positioned between the table margins and its borders (outside the grid box borders) as described in
     // https://www.w3.org/TR/css-tables-3/#bounding-box-assignment
