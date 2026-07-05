@@ -27,8 +27,8 @@ public:
     virtual CSSPixels automatic_content_height() const override;
 
     bool box_should_avoid_floats_because_it_establishes_fc(Box const&);
-    void compute_width(Box const&, AvailableSpace const&, ContainingBlockConstraints const& containing_block_constraints);
-    void avoid_float_intrusions(Box const&, AvailableSpace const&);
+    void compute_width(Box const&, AvailableSpace const&, ContainingBlockConstraints const& containing_block_constraints, Optional<CSSPixels> candidate_y_in_containing_block = {});
+    [[nodiscard]] CSSPixels avoid_float_intrusions(Box const&, AvailableSpace const&, CSSPixels candidate_y_in_containing_block);
 
     // https://www.w3.org/TR/css-display/#block-formatting-context-root
     BlockContainer const& root() const { return static_cast<BlockContainer const&>(context_box()); }

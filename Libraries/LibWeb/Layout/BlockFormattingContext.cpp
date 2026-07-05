@@ -209,13 +209,20 @@ bool BlockFormattingContext::box_should_avoid_floats_because_it_establishes_fc(B
         && first_is_one_of(formatting_context_type.value(), Type::Block, Type::Flex, Type::Grid);
 }
 
-void BlockFormattingContext::compute_width(Box const& box, AvailableSpace const& available_space, ContainingBlockConstraints const& containing_block_constraints)
+void BlockFormattingContext::compute_width(Box const& box, AvailableSpace const& available_space, ContainingBlockConstraints const& containing_block_constraints, Optional<CSSPixels> candidate_y_in_containing_block)
 {
     auto remaining_available_space = available_space;
 
     // Certain formatting contexts do not allow float intrusions, so reduce the available space for them.
     if (available_space.width.is_definite() && box_should_avoid_floats_because_it_establishes_fc(box)) {
         auto box_in_root_rect = content_box_rect_in_ancestor_coordinate_space(m_state.get(box), root());
+        // When the box has not been placed yet, the caller provides its candidate position instead.
+        if (candidate_y_in_containing_block.has_value()) {
+            auto const* containing_block = box.containing_block();
+            VERIFY(containing_block);
+            auto containing_block_rect_in_root = content_box_rect_in_ancestor_coordinate_space(m_state.get(*containing_block), root());
+            box_in_root_rect.set_y(containing_block_rect_in_root.y() + candidate_y_in_containing_block.value() + m_state.get(box).border_box_top());
+        }
         box_in_root_rect.set_width(available_space.width.to_px_or_zero());
         auto intrusion = intrusions_for_band_into_rect(band_at(box_in_root_rect.y()), box_in_root_rect);
         auto remaining_width = available_space.width.to_px_or_zero() - intrusion.left - intrusion.right;
@@ -549,39 +556,43 @@ void BlockFormattingContext::rebuild_float_bands()
     }
 }
 
-void BlockFormattingContext::avoid_float_intrusions(Box const& box, AvailableSpace const& available_space)
+CSSPixels BlockFormattingContext::avoid_float_intrusions(Box const& box, AvailableSpace const& available_space, CSSPixels candidate_y_in_containing_block)
 {
     if (box.computed_values().width().is_auto())
-        return;
+        return candidate_y_in_containing_block;
     if (!available_space.width.is_definite())
-        return;
+        return candidate_y_in_containing_block;
     if (!box_should_avoid_floats_because_it_establishes_fc(box))
-        return;
+        return candidate_y_in_containing_block;
 
     // https://drafts.csswg.org/css2/#floats
     // If necessary, implementations should clear the said element by placing it below any preceding floats, but may
     // place it adjacent to such floats if there is sufficient space.
-    auto& box_state = m_state.get_mutable(box);
+    // NB: This is a pure computation over a candidate border-box y (in containing block space);
+    //     the caller places the box at the returned position afterwards.
+    auto const& box_state = m_state.get(box);
+    auto const* containing_block = box.containing_block();
+    VERIFY(containing_block);
+    auto containing_block_rect_in_root = content_box_rect_in_ancestor_coordinate_space(m_state.get(*containing_block), root());
+
+    auto candidate_border_box_y_in_root = containing_block_rect_in_root.y() + candidate_y_in_containing_block;
     while (true) {
-        auto border_box_in_root_rect = content_box_rect_in_ancestor_coordinate_space(box_state, root());
-        border_box_in_root_rect.translate_by(-box_state.border_box_left(), -box_state.border_box_top());
-        auto const* containing_block = box.containing_block();
-        VERIFY(containing_block);
-        auto containing_block_rect_in_root = content_box_rect_in_ancestor_coordinate_space(m_state.get(*containing_block), root());
-        containing_block_rect_in_root.set_y(border_box_in_root_rect.y());
-        containing_block_rect_in_root.set_height(box_state.border_box_height());
-        auto const& band = band_at(border_box_in_root_rect.y());
-        auto space_used_by_floats = intrusions_for_band_into_rect(band, containing_block_rect_in_root);
+        auto band_test_rect = containing_block_rect_in_root;
+        band_test_rect.set_y(candidate_border_box_y_in_root);
+        band_test_rect.set_height(box_state.border_box_height());
+        auto const& band = band_at(candidate_border_box_y_in_root);
+        auto space_used_by_floats = intrusions_for_band_into_rect(band, band_test_rect);
         auto remaining_space = available_space.width.to_px_or_zero() - space_used_by_floats.left - space_used_by_floats.right;
         if (box_state.border_box_width() <= remaining_space)
             break;
 
-        auto next_band_start = next_float_band_block_start_after(border_box_in_root_rect.y());
+        auto next_band_start = next_float_band_block_start_after(candidate_border_box_y_in_root);
         if (!next_band_start.has_value())
             break;
 
-        box_state.set_content_y(box_state.offset.y() + next_band_start.value() - border_box_in_root_rect.y());
+        candidate_border_box_y_in_root = next_band_start.value();
     }
+    return candidate_border_box_y_in_root - containing_block_rect_in_root.y();
 }
 
 void BlockFormattingContext::compute_width_for_floating_box(Box const& box, AvailableSpace const& available_space, ContainingBlockConstraints const& containing_block_constraints)
@@ -1034,11 +1045,16 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         margin_top = 0;
     }
 
-    place_block_level_element_in_normal_flow_vertically(box, y + margin_top);
+    // Work out the vertical position as a candidate first, so that the box is placed exactly
+    // once: width is computed against the candidate position (float intrusions shrink the
+    // available space for formatting context roots), and float avoidance may push the
+    // candidate further down before anything is written to the box's used values.
+    auto candidate_y = y + margin_top;
 
-    compute_width(box, available_space, layout_input.containing_block_constraints);
-    avoid_float_intrusions(box, available_space);
+    compute_width(box, available_space, layout_input.containing_block_constraints, candidate_y);
+    candidate_y = avoid_float_intrusions(box, available_space, candidate_y);
 
+    place_block_level_element_in_normal_flow_vertically(box, candidate_y);
     place_block_level_element_in_normal_flow_horizontally(box, available_space);
 
     AvailableSpace available_space_for_height_resolution = available_space;
