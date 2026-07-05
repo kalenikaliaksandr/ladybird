@@ -60,10 +60,6 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
 
             if (block_context) {
                 auto& caption_state = m_state.get_mutable(child_box);
-
-                // Adjust x offset so border-box aligns with the table wrapper.
-                caption_state.set_content_x(caption_state.offset.x() + caption_state.border_left + caption_state.padding_left);
-
                 if (should_treat_height_as_auto(child_box, caption_available_space, m_participant_constraints)) {
                     auto height = child_box.has_size_containment() ? 0 : caption_context->automatic_content_height();
                     caption_state.set_content_height(height);
@@ -71,13 +67,18 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
             }
         }
 
-        auto const& caption_state = m_state.get(child_box);
-        if (phase == CSS::CaptionSide::Top) {
-            m_state.get_mutable(table_box()).set_content_y(caption_state.content_height() + caption_state.margin_box_bottom());
-        } else {
-            m_state.get_mutable(child_box).set_content_y(
-                m_state.get(table_box()).margin_box_height() + caption_state.margin_box_top());
+        // Each caption is placed with a single offset write: the x offset aligns the caption's
+        // border box with the table wrapper, top captions stack from the wrapper's top, and
+        // bottom captions stack below the table box's margin box.
+        auto& caption_state = m_state.get_mutable(child_box);
+        auto caption_x = caption_state.border_left + caption_state.padding_left;
+        auto caption_y = caption_height + caption_state.margin_box_top();
+        if (phase == CSS::CaptionSide::Bottom) {
+            auto const& table_state = m_state.get(table_box());
+            caption_y += table_state.offset.y() + table_state.content_height()
+                + table_state.padding_bottom + table_state.border_bottom + table_state.margin_bottom;
         }
+        caption_state.set_content_offset({ caption_x, caption_y });
         caption_height += caption_state.margin_box_height();
     }
     return caption_height;
@@ -1872,7 +1873,14 @@ void TableFormattingContext::run(LayoutInput const& layout_input)
         AvailableSize::make_definite(clamp_to_max_dimension_value(table_state.border_box_width())),
         available_space.height);
 
-    auto total_captions_height = run_caption_layout(CSS::CaptionSide::Top, caption_available_space);
+    auto top_captions_height = run_caption_layout(CSS::CaptionSide::Top, caption_available_space);
+
+    // Top captions occupy the space above the table grid box inside the wrapper: fold their
+    // total height into the vertical position the wrapper's BFC assigned to the table box.
+    if (top_captions_height > 0) {
+        auto& table_state = m_state.get_mutable(table_box());
+        table_state.set_content_y(table_state.offset.y() + top_captions_height);
+    }
 
     // Distribute the width of the table among columns.
     distribute_width_to_columns();
@@ -1889,12 +1897,14 @@ void TableFormattingContext::run(LayoutInput const& layout_input)
 
     m_state.get_mutable(table_box()).set_content_height(m_table_height);
 
-    total_captions_height += run_caption_layout(CSS::CaptionSide::Bottom, caption_available_space);
+    auto bottom_captions_height = run_caption_layout(CSS::CaptionSide::Bottom, caption_available_space);
 
     // Table captions are positioned between the table margins and its borders (outside the grid box borders) as described in
     // https://www.w3.org/TR/css-tables-3/#bounding-box-assignment
     // A visual representation of this model can be found at https://www.w3.org/TR/css-tables-3/images/table_container.png
-    m_state.get_mutable(table_box()).margin_bottom += total_captions_height;
+    // NB: Top captions are already accounted for in the table box's y offset, so only bottom
+    //     captions need to extend the margin box for the wrapper's height computation.
+    m_state.get_mutable(table_box()).margin_bottom += bottom_captions_height;
 
     m_automatic_content_height = m_table_height;
 }
