@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    #outer {
+        position: relative;
+        width: 300px;
+        height: 200px;
+        font-size: 0;
+    }
+    #flex {
+        display: flex;
+        align-items: baseline;
+        width: 300px;
+    }
+    #tall-item {
+        width: 20px;
+        height: 100px;
+    }
+    #short-item {
+        width: 50px;
+        height: 20px;
+    }
+    #abs {
+        position: absolute;
+        width: 10px;
+        height: 10px;
+    }
+</style>
+<div id="outer">
+    <div id="flex">
+        <div id="tall-item"></div>
+        <div id="short-item"><div id="abs"></div></div>
+    </div>
+</div>
+<script>
+    // #abs has no insets, so it sits at its static position: the top-left
+    // corner of the content box of #short-item, a baseline-aligned flex item
+    // that is shifted down next to a taller sibling. #abs escapes up to the
+    // relative-positioned #outer as its containing block, so its resolved
+    // position must be composed through #short-item's final, baseline-shifted
+    // offset.
+    test(() => {
+        const outerRect = document.getElementById("outer").getBoundingClientRect();
+        const shortRect = document.getElementById("short-item").getBoundingClientRect();
+        const absRect = document.getElementById("abs").getBoundingClientRect();
+        println(`short-item offset: ${shortRect.x - outerRect.x},${shortRect.y - outerRect.y}`);
+        println(`abs offset: ${absRect.x - outerRect.x},${absRect.y - outerRect.y}`);
+        println(`abs position matches short-item position: ${absRect.x === shortRect.x && absRect.y === shortRect.y}`);
+    });
+</script>
