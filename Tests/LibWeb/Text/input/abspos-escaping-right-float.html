@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    #outer {
+        position: relative;
+        width: 300px;
+        height: 200px;
+        font-size: 0;
+    }
+    #bfc {
+        display: flow-root;
+        width: 300px;
+        height: 100px;
+    }
+    #float {
+        float: right;
+        width: 50px;
+        height: 20px;
+        margin-top: 30px;
+    }
+    #abs {
+        position: absolute;
+        width: 10px;
+        height: 10px;
+    }
+</style>
+<div id="outer">
+    <div id="bfc">
+        <div id="float"><div id="abs"></div></div>
+    </div>
+</div>
+<script>
+    // #abs has no insets, so it sits at its static position: the top-left
+    // corner of the content box of #float, a right float whose x offset is
+    // resolved late (after its block formatting context root is dimensioned).
+    // #abs escapes up to the relative-positioned #outer as its containing
+    // block, so its resolved position must be composed through the float's
+    // final offset.
+    test(() => {
+        const outerRect = document.getElementById("outer").getBoundingClientRect();
+        const floatRect = document.getElementById("float").getBoundingClientRect();
+        const absRect = document.getElementById("abs").getBoundingClientRect();
+        println(`float offset: ${floatRect.x - outerRect.x},${floatRect.y - outerRect.y}`);
+        println(`abs offset: ${absRect.x - outerRect.x},${absRect.y - outerRect.y}`);
+        println(`abs position matches float position: ${absRect.x === floatRect.x && absRect.y === floatRect.y}`);
+    });
+</script>

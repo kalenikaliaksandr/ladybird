@@ -1,0 +1,3 @@
+float offset: 250,30
+abs offset: 250,30
+abs position matches float position: true
