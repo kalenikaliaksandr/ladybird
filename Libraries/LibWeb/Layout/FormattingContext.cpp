@@ -2114,6 +2114,19 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box)
 
     resolve_anchor_insets(box);
 
+    // The static position rect is produced by the formatting context of the box's static-position
+    // containing block and is stored in that block's coordinate space. The width/height solvers
+    // below and the final offset computation all work in the coordinate space of the box's actual
+    // containing block, so translate the rect once up front.
+    auto const* static_position_cb = box.static_position_containing_block();
+    if (static_position_cb && static_position_cb != box.containing_block()) {
+        auto offset = m_state.cumulative_offset(m_state.get(*static_position_cb))
+            - m_state.cumulative_offset(m_state.get(*box.containing_block()));
+        auto static_position_rect = box_state.static_position_rect().value_or({});
+        static_position_rect.rect.translate_by(offset);
+        box_state.set_static_position_rect(static_position_rect);
+    }
+
     auto containing_block_info = resolve_abspos_containing_block_info(box);
 
     auto const available_space = AvailableSpace(AvailableSize::make_definite(clamp_to_max_dimension_value(containing_block_info.rect.width())), AvailableSize::make_definite(clamp_to_max_dimension_value(containing_block_info.rect.height())));
@@ -2234,13 +2247,6 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box)
     CSSPixelPoint used_offset;
 
     auto static_position = m_state.get(box).static_position();
-    auto const* static_position_cb = box.static_position_containing_block();
-    auto actual_containing_block = box.containing_block();
-    if (static_position_cb && static_position_cb != actual_containing_block) {
-        auto offset = m_state.cumulative_offset(m_state.get(*static_position_cb))
-            - m_state.cumulative_offset(m_state.get(*actual_containing_block));
-        static_position += offset;
-    }
 
     // Horizontal axis
     if (containing_block_info.horizontal_axis_mode == AbsposAxisMode::StaticPosition)

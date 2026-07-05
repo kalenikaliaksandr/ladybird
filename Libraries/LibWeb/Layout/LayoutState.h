@@ -307,6 +307,11 @@ struct LayoutState {
         }
 
         void set_static_position_rect(StaticPositionRect const& static_position_rect) { ensure_rare_data().static_position_rect = static_position_rect; }
+        Optional<StaticPositionRect> const& static_position_rect() const
+        {
+            static Optional<StaticPositionRect> const empty;
+            return m_rare ? m_rare->static_position_rect : empty;
+        }
         CSSPixelPoint static_position() const
         {
             if (!m_rare || !m_rare->static_position_rect.has_value())
