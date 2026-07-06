@@ -21,6 +21,7 @@
 #if defined(AK_OS_ANDROID)
 #    include <ports/SkFontMgr_android.h>
 #elif defined(AK_OS_WINDOWS)
+#    include <ports/SkFontMgr_empty.h>
 #    include <ports/SkTypeface_win.h>
 #else
 #    include <ports/SkFontMgr_fontconfig.h>
@@ -89,7 +90,14 @@ static SkFontMgr& font_manager()
 #if defined(AK_OS_ANDROID)
         font_manager = SkFontMgr_New_Android(nullptr);
 #elif defined(AK_OS_WINDOWS)
-        font_manager = SkFontMgr_New_DirectWrite();
+        // The "FontConfig" provider name signals that consistent cross-platform font rendering was requested
+        // (--force-fontconfig, used by the test harnesses). DirectWrite rasterizes glyphs differently than
+        // FreeType, so use a FreeType-backed font manager without system fonts instead; the fonts bundled with
+        // Ladybird are provided through FontDatabase.
+        if (Gfx::FontDatabase::the().system_font_provider_name() == "FontConfig"sv)
+            font_manager = SkFontMgr_New_Custom_Empty();
+        else
+            font_manager = SkFontMgr_New_DirectWrite();
 #else
         if (!font_manager) {
             font_manager = SkFontMgr_New_FontConfig(nullptr, SkFontScanner_Make_FreeType());
