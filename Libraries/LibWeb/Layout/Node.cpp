@@ -604,6 +604,7 @@ bool Node::is_sticky_position() const
 NodeWithStyle::NodeWithStyle(DOM::Document& document, DOM::Node* node, CSS::ComputedProperties const& computed_style)
     : Node(document, node)
     , m_computed_values(make<CSS::ComputedValues>())
+    , m_layout_index(document.allocate_layout_node_index())
 {
     m_has_style = true;
     m_is_body = node && node == document.body();
@@ -613,6 +614,7 @@ NodeWithStyle::NodeWithStyle(DOM::Document& document, DOM::Node* node, CSS::Comp
 NodeWithStyle::NodeWithStyle(DOM::Document& document, DOM::Node* node, NonnullOwnPtr<CSS::ComputedValues> computed_values)
     : Node(document, node)
     , m_computed_values(move(computed_values))
+    , m_layout_index(document.allocate_layout_node_index())
 {
     m_has_style = true;
     m_is_body = node && node == document.body();
