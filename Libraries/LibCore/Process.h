@@ -19,10 +19,18 @@ namespace Core {
 
 namespace FileAction {
 
+// Identifies which of the child's standard streams an action applies to. Redirection targets are limited to the
+// standard streams (rather than arbitrary fd numbers) because that is all Windows supports.
+enum class StandardStream {
+    Input,
+    Output,
+    Error,
+};
+
 struct OpenFile {
     ByteString path;
     File::OpenMode mode = File::OpenMode::NotOpen;
-    int fd = -1;
+    StandardStream stream { StandardStream::Output };
     mode_t permissions = 0600;
 };
 
@@ -31,8 +39,8 @@ struct CloseFile {
 };
 
 struct DupFd {
-    int write_fd { -1 };
-    int fd { -1 };
+    SystemHandleRef source;
+    StandardStream stream { StandardStream::Output };
 };
 
 }
@@ -71,6 +79,10 @@ public:
     static ErrorOr<bool> is_being_debugged();
 
     pid_t pid() const;
+
+    // Terminates the process. On POSIX this sends SIGINT, giving the process a chance to shut down cleanly; on
+    // Windows the process is terminated immediately.
+    ErrorOr<void> terminate();
 
     ErrorOr<int> wait_for_termination() const;
 

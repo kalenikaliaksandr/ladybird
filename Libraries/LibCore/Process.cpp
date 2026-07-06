@@ -88,6 +88,19 @@ Process Process::current()
     return p;
 }
 
+static int posix_fd_for_standard_stream(FileAction::StandardStream stream)
+{
+    switch (stream) {
+    case FileAction::StandardStream::Input:
+        return STDIN_FILENO;
+    case FileAction::StandardStream::Output:
+        return STDOUT_FILENO;
+    case FileAction::StandardStream::Error:
+        return STDERR_FILENO;
+    }
+    VERIFY_NOT_REACHED();
+}
+
 #if defined(AK_OS_LINUX)
 static Optional<int> run_file_actions_in_child(Vector<ProcessSpawnOptions::FileActionType> const& file_actions)
 {
@@ -101,8 +114,9 @@ static Optional<int> run_file_actions_in_child(Vector<ProcessSpawnOptions::FileA
                 if (fd < 0)
                     return Optional<int> { errno };
 
-                if (fd != action.fd) {
-                    if (dup2(fd, action.fd) < 0) {
+                auto target_fd = posix_fd_for_standard_stream(action.stream);
+                if (fd != target_fd) {
+                    if (dup2(fd, target_fd) < 0) {
                         auto saved_errno = errno;
                         close(fd);
                         return Optional<int> { saved_errno };
@@ -116,7 +130,7 @@ static Optional<int> run_file_actions_in_child(Vector<ProcessSpawnOptions::FileA
                 return Optional<int> {};
             },
             [&](FileAction::DupFd const& action) {
-                if (dup2(action.write_fd, action.fd) < 0)
+                if (dup2(action.source.fd(), posix_fd_for_standard_stream(action.stream)) < 0)
                     return Optional<int> { errno };
                 return Optional<int> {};
             });
@@ -206,7 +220,7 @@ ErrorOr<Process> Process::spawn(ProcessSpawnOptions const& options)
             [&](FileAction::OpenFile const& action) -> ErrorOr<void> {
                 CHECK(posix_spawn_file_actions_addopen(
                     &spawn_actions,
-                    action.fd,
+                    posix_fd_for_standard_stream(action.stream),
                     action.path.characters(),
                     File::open_mode_to_options(action.mode | Core::File::OpenMode::KeepOnExec),
                     action.permissions));
@@ -217,7 +231,7 @@ ErrorOr<Process> Process::spawn(ProcessSpawnOptions const& options)
                 return {};
             },
             [&](FileAction::DupFd const& action) -> ErrorOr<void> {
-                CHECK(posix_spawn_file_actions_adddup2(&spawn_actions, action.write_fd, action.fd));
+                CHECK(posix_spawn_file_actions_adddup2(&spawn_actions, action.source.fd(), posix_fd_for_standard_stream(action.stream)));
                 return {};
             }));
     }
@@ -231,6 +245,11 @@ ErrorOr<Process> Process::spawn(ProcessSpawnOptions const& options)
         pid = TRY(System::posix_spawn(options.executable.view(), &spawn_actions, nullptr, const_cast<char**>(argv_list.get().data()), Core::Environment::raw_environ()));
     }
     return Process { pid };
+}
+
+ErrorOr<void> Process::terminate()
+{
+    return System::kill(m_pid, SIGINT);
 }
 
 ErrorOr<Process> Process::spawn(StringView path, ReadonlySpan<ByteString> arguments)

@@ -76,8 +76,8 @@ ErrorOr<void> HttpEchoServerFixture::setup(WebView::WebContentOptions& web_conte
         .search_for_executable_in_path = true,
         .arguments = arguments,
         .file_actions = {
-            Core::FileAction::OpenFile { ByteString::formatted("{}.stderr", log_path), Core::File::OpenMode::Write, STDERR_FILENO },
-            Core::FileAction::DupFd { stdout_fds[1], STDOUT_FILENO } }
+            Core::FileAction::OpenFile { ByteString::formatted("{}.stderr", log_path), Core::File::OpenMode::Write, Core::FileAction::StandardStream::Error },
+            Core::FileAction::DupFd { Core::SystemHandleRef::from_raw(stdout_fds[1], Core::HandleKind::File), Core::FileAction::StandardStream::Output } }
     };
 
     m_process = TRY(Core::Process::spawn(process_options));

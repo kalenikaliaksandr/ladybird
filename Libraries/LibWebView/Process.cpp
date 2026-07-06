@@ -58,8 +58,8 @@ ErrorOr<Process::ProcessAndIPCTransport> Process::spawn_and_connect_to_process(C
         TRY(Core::System::set_close_on_exec(stderr_pipe[1], false));
 
         // Add file actions to redirect stdout/stderr in the child
-        spawn_options.file_actions.append(Core::FileAction::DupFd { .write_fd = stdout_pipe[1], .fd = STDOUT_FILENO });
-        spawn_options.file_actions.append(Core::FileAction::DupFd { .write_fd = stderr_pipe[1], .fd = STDERR_FILENO });
+        spawn_options.file_actions.append(Core::FileAction::DupFd { .source = Core::SystemHandleRef::from_raw(stdout_pipe[1], Core::HandleKind::File), .stream = Core::FileAction::StandardStream::Output });
+        spawn_options.file_actions.append(Core::FileAction::DupFd { .source = Core::SystemHandleRef::from_raw(stderr_pipe[1], Core::HandleKind::File), .stream = Core::FileAction::StandardStream::Error });
         spawn_options.file_actions.append(Core::FileAction::CloseFile { .fd = stdout_pipe[1] });
         spawn_options.file_actions.append(Core::FileAction::CloseFile { .fd = stderr_pipe[1] });
     }
