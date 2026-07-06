@@ -256,17 +256,17 @@ bool WebSocketImplCurl::did_connect()
     if (res != CURLE_OK || socket_fd == CURL_SOCKET_BAD)
         return false;
 
-    m_read_notifier = Core::Notifier::construct(socket_fd, Core::Notifier::Type::Read);
+    m_read_notifier = Core::Notifier::construct(Core::SystemHandleRef::from_socket(socket_fd), Core::Notifier::Type::Read);
     m_read_notifier->on_activation = [this] {
         read_from_socket();
     };
-    m_write_notifier = Core::Notifier::construct(socket_fd, Core::Notifier::Type::Write);
+    m_write_notifier = Core::Notifier::construct(Core::SystemHandleRef::from_socket(socket_fd), Core::Notifier::Type::Write);
     m_write_notifier->on_activation = [this] {
         if (!flush_pending_write_buffer())
             on_connection_error();
     };
     m_write_notifier->set_enabled(false);
-    m_error_notifier = Core::Notifier::construct(socket_fd, Core::Notifier::Type::Error | Core::Notifier::Type::HangUp);
+    m_error_notifier = Core::Notifier::construct(Core::SystemHandleRef::from_socket(socket_fd), Core::Notifier::Type::Error | Core::Notifier::Type::HangUp);
     m_error_notifier->on_activation = [this] {
         on_connection_error();
     };

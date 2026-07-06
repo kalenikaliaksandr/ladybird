@@ -44,7 +44,7 @@ ErrorOr<NonnullOwnPtr<ReadStream>> ReadStream::create(int reader_fd)
     return adopt_own(*new ReadStream(move(local_socket), notifier.release_nonnull()));
 #else
     auto file = TRY(Core::File::adopt_fd(reader_fd, Core::File::OpenMode::Read));
-    auto notifier = Core::Notifier::construct(reader_fd, Core::Notifier::Type::Read);
+    auto notifier = Core::Notifier::construct(Core::SystemHandleRef::from_socket(reader_fd), Core::Notifier::Type::Read);
     return adopt_own(*new ReadStream(move(file), move(notifier)));
 #endif
 }
@@ -296,7 +296,7 @@ void Request::set_up_internal_stream_data(DataReceived on_data_available)
 
     m_internal_stream_data = make<InternalStreamData>();
     m_internal_stream_data->on_data_available = move(on_data_available);
-    m_internal_stream_data->read_notifier = Core::Notifier::construct(fd(), Core::Notifier::Type::Read);
+    m_internal_stream_data->read_notifier = Core::Notifier::construct(Core::SystemHandleRef::from_socket(fd()), Core::Notifier::Type::Read);
     m_internal_stream_data->read_notifier->set_enabled(!m_body_delivery_paused);
     attach_read_stream();
 

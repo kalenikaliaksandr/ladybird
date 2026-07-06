@@ -23,33 +23,41 @@ ErrorOr<NonnullOwnPtr<File>> File::open(StringView filename, OpenMode mode, mode
     return file;
 }
 
+ErrorOr<NonnullOwnPtr<File>> File::adopt_handle(SystemHandle handle, OpenMode mode, ShouldCloseFileDescriptor should_close_file_descriptor)
+{
+    if (!handle.is_valid())
+        return Error::from_errno(EBADF);
+
+    if (!has_any_flag(mode, OpenMode::ReadWrite)) {
+        dbgln("Core::File::adopt_handle: Attempting to adopt a file with neither Read nor Write specified in mode");
+        return Error::from_errno(EINVAL);
+    }
+
+    auto file = TRY(adopt_nonnull_own_or_enomem(new (nothrow) File(mode, should_close_file_descriptor)));
+    file->m_handle = move(handle);
+    return file;
+}
+
 ErrorOr<NonnullOwnPtr<File>> File::adopt_fd(int fd, OpenMode mode, ShouldCloseFileDescriptor should_close_file_descriptor)
 {
     if (fd < 0) {
         return Error::from_errno(EBADF);
     }
 
-    if (!has_any_flag(mode, OpenMode::ReadWrite)) {
-        dbgln("Core::File::adopt_fd: Attempting to adopt a file with neither Read nor Write specified in mode");
-        return Error::from_errno(EINVAL);
-    }
-
-    auto file = TRY(adopt_nonnull_own_or_enomem(new (nothrow) File(mode, should_close_file_descriptor)));
-    file->m_fd = fd;
-    return file;
+    return adopt_handle(SystemHandle::adopt(SystemHandleRef::from_raw(fd, HandleKind::File)), mode, should_close_file_descriptor);
 }
 
 ErrorOr<NonnullOwnPtr<File>> File::standard_input()
 {
-    return File::adopt_fd(STDIN_FILENO, OpenMode::Read, ShouldCloseFileDescriptor::No);
+    return File::adopt_handle(SystemHandle::adopt(System::standard_input_handle()), OpenMode::Read, ShouldCloseFileDescriptor::No);
 }
 ErrorOr<NonnullOwnPtr<File>> File::standard_output()
 {
-    return File::adopt_fd(STDOUT_FILENO, OpenMode::Write, ShouldCloseFileDescriptor::No);
+    return File::adopt_handle(SystemHandle::adopt(System::standard_output_handle()), OpenMode::Write, ShouldCloseFileDescriptor::No);
 }
 ErrorOr<NonnullOwnPtr<File>> File::standard_error()
 {
-    return File::adopt_fd(STDERR_FILENO, OpenMode::Write, ShouldCloseFileDescriptor::No);
+    return File::adopt_handle(SystemHandle::adopt(System::standard_error_handle()), OpenMode::Write, ShouldCloseFileDescriptor::No);
 }
 
 ErrorOr<NonnullOwnPtr<File>> File::open_file_or_standard_stream(StringView filename, OpenMode mode)
@@ -109,10 +117,10 @@ int File::open_mode_to_options(OpenMode mode)
 
 ErrorOr<void> File::open_path(StringView filename, mode_t permissions)
 {
-    VERIFY(m_fd == -1);
+    VERIFY(!m_handle.is_valid());
     auto flags = open_mode_to_options(m_mode);
 
-    m_fd = TRY(System::open(filename, flags, permissions));
+    m_handle = SystemHandle::adopt(SystemHandleRef::from_raw(TRY(System::open(filename, flags, permissions)), HandleKind::File));
     return {};
 }
 
@@ -125,7 +133,7 @@ ErrorOr<Bytes> File::read_some(Bytes buffer)
         return Error::from_errno(EBADF);
     }
 
-    auto nread = TRY(System::read(m_fd, buffer));
+    auto nread = TRY(System::read(m_handle, buffer));
     m_last_read_was_eof = nread == 0;
     m_file_offset += nread;
     return buffer.trim(nread);
@@ -134,7 +142,7 @@ ErrorOr<Bytes> File::read_some(Bytes buffer)
 ErrorOr<ByteBuffer> File::read_until_eof(size_t block_size)
 {
     // Note: This is used as a heuristic, it's not valid for devices or virtual files.
-    auto const potential_file_size = TRY(System::fstat(m_fd)).st_size;
+    auto const potential_file_size = TRY(System::fstat(m_handle)).st_size;
 
     return read_until_eof_impl(block_size, potential_file_size);
 }
@@ -146,13 +154,13 @@ ErrorOr<size_t> File::write_some(ReadonlyBytes buffer)
         return Error::from_errno(EBADF);
     }
 
-    auto nwritten = TRY(System::write(m_fd, buffer));
+    auto nwritten = TRY(System::write(m_handle, buffer));
     m_file_offset += nwritten;
     return nwritten;
 }
 
 bool File::is_eof() const { return m_last_read_was_eof; }
-bool File::is_open() const { return m_fd >= 0; }
+bool File::is_open() const { return m_handle.is_valid(); }
 
 void File::close()
 {
@@ -165,11 +173,11 @@ void File::close()
     // the file until we aren't interrupted by rude signals. :^)
     ErrorOr<void> result;
     do {
-        result = System::close(m_fd);
+        result = System::close(m_handle);
     } while (result.is_error() && result.error().code() == EINTR);
 
     VERIFY(!result.is_error());
-    m_fd = -1;
+    (void)m_handle.leak();
 }
 
 ErrorOr<size_t> File::seek(i64 offset, SeekMode mode)
@@ -189,7 +197,7 @@ ErrorOr<size_t> File::seek(i64 offset, SeekMode mode)
         VERIFY_NOT_REACHED();
     }
 
-    size_t seek_result = TRY(System::lseek(m_fd, offset, syscall_mode));
+    size_t seek_result = TRY(System::lseek(m_handle, offset, syscall_mode));
     m_file_offset = seek_result;
     m_last_read_was_eof = false;
     return seek_result;
@@ -206,7 +214,7 @@ ErrorOr<void> File::truncate(size_t length)
         return Error::from_string_literal("Length is larger than the maximum supported length");
 
     m_file_offset = min(length, m_file_offset);
-    return System::ftruncate(m_fd, length);
+    return System::ftruncate(m_handle, length);
 }
 
 ErrorOr<void> File::set_blocking(bool enabled)

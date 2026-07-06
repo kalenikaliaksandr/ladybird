@@ -11,8 +11,8 @@
 
 namespace Core {
 
-Notifier::Notifier(int fd, Type type)
-    : m_fd(fd)
+Notifier::Notifier(SystemHandleRef handle, Type type)
+    : m_handle(handle)
     , m_type(type)
 {
     set_enabled(true);
@@ -25,7 +25,7 @@ Notifier::~Notifier()
 
 void Notifier::set_enabled(bool enabled)
 {
-    if (m_fd < 0)
+    if (!m_handle.is_valid())
         return;
     if (enabled == m_is_enabled)
         return;
@@ -38,10 +38,10 @@ void Notifier::set_enabled(bool enabled)
 
 void Notifier::close()
 {
-    if (m_fd < 0)
+    if (!m_handle.is_valid())
         return;
     set_enabled(false);
-    m_fd = -1;
+    m_handle = {};
 }
 
 void Notifier::set_type(Type type)

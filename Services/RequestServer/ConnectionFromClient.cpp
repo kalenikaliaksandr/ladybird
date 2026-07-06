@@ -370,7 +370,7 @@ int ConnectionFromClient::on_socket_callback(CURL*, int sockfd, int what, void* 
         }
 
         auto& notifier = notifiers.ensure(sockfd, [client, sockfd, multi = client->m_curl_multi, type, select_flag] {
-            auto notifier = Core::Notifier::construct(sockfd, type);
+            auto notifier = Core::Notifier::construct(Core::SystemHandleRef::from_socket(sockfd), type);
             notifier->on_activation = [client, sockfd, multi, select_flag] {
                 note_event_tick("curl-socket-ready"sv);
                 auto result = time_curl_call("multi_socket_action(socket)"sv, [&] {

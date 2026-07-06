@@ -10,6 +10,7 @@
 #include <LibCore/Event.h>
 #include <LibCore/EventReceiver.h>
 #include <LibCore/Export.h>
+#include <LibCore/SystemHandle.h>
 #include <pthread.h>
 
 namespace Core {
@@ -38,7 +39,10 @@ public:
 
     void close();
 
-    int fd() const { return m_fd; }
+    SystemHandleRef handle() const { return m_handle; }
+#if !defined(AK_OS_WINDOWS)
+    int fd() const { return m_handle.is_valid() ? m_handle.fd() : -1; }
+#endif
     Type type() const { return m_type; }
     void set_type(Type type);
 
@@ -48,10 +52,10 @@ public:
     pthread_t owner_thread() const { return m_owner_thread; }
 
 private:
-    Notifier(int fd, Type type);
+    Notifier(SystemHandleRef, Type type);
 
     pthread_t m_owner_thread {};
-    int m_fd { -1 };
+    SystemHandleRef m_handle;
     Type m_type { Type::None };
     bool m_is_enabled { false };
 };

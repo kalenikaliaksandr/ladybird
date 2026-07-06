@@ -370,7 +370,7 @@ void CacheEntryReader::send_to(int socket_fd, Function<void(u64)> on_complete, F
         return;
     }
 
-    m_socket_write_notifier = Core::Notifier::construct(m_socket_fd, Core::NotificationType::Write);
+    m_socket_write_notifier = Core::Notifier::construct(Core::SystemHandleRef::from_socket(m_socket_fd), Core::NotificationType::Write);
     m_socket_write_notifier->set_enabled(false);
 
     m_socket_write_notifier->on_activation = [this]() {

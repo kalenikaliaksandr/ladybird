@@ -12,6 +12,7 @@
 #include <AK/NonnullOwnPtr.h>
 #include <AK/Stream.h>
 #include <LibCore/Export.h>
+#include <LibCore/SystemHandle.h>
 
 namespace Core {
 
@@ -38,6 +39,8 @@ public:
     };
 
     static ErrorOr<NonnullOwnPtr<File>> open(StringView filename, OpenMode, mode_t = 0644);
+    static ErrorOr<NonnullOwnPtr<File>> adopt_handle(SystemHandle, OpenMode, ShouldCloseFileDescriptor = ShouldCloseFileDescriptor::Yes);
+    // NOTE: This tags the fd HandleKind::File; use adopt_handle() for anything that is not a plain file.
     static ErrorOr<NonnullOwnPtr<File>> adopt_fd(int fd, OpenMode, ShouldCloseFileDescriptor = ShouldCloseFileDescriptor::Yes);
 
     static ErrorOr<NonnullOwnPtr<File>> standard_input();
@@ -53,8 +56,11 @@ public:
             return *this;
 
         m_mode = exchange(other.m_mode, OpenMode::NotOpen);
-        m_fd = exchange(other.m_fd, -1);
+        if (m_should_close_file_descriptor == ShouldCloseFileDescriptor::No)
+            (void)m_handle.leak();
+        m_handle = move(other.m_handle);
         m_last_read_was_eof = exchange(other.m_last_read_was_eof, false);
+        m_should_close_file_descriptor = exchange(other.m_should_close_file_descriptor, ShouldCloseFileDescriptor::Yes);
         return *this;
     }
 
@@ -78,18 +84,25 @@ public:
     int leak_fd()
     {
         m_should_close_file_descriptor = ShouldCloseFileDescriptor::No;
-        return m_fd;
+        return fd();
     }
 
     int fd() const
     {
-        return m_fd;
+        return static_cast<int>(m_handle.raw_value());
+    }
+
+    SystemHandleRef handle() const
+    {
+        return m_handle.ref();
     }
 
     virtual ~File() override
     {
         if (m_should_close_file_descriptor == ShouldCloseFileDescriptor::Yes)
             close();
+        else
+            (void)m_handle.leak();
     }
 
     static int open_mode_to_options(OpenMode mode);
@@ -104,7 +117,7 @@ private:
     ErrorOr<void> open_path(StringView filename, mode_t);
 
     OpenMode m_mode { OpenMode::NotOpen };
-    int m_fd { -1 };
+    SystemHandle m_handle;
     bool m_last_read_was_eof { false };
     ShouldCloseFileDescriptor m_should_close_file_descriptor { ShouldCloseFileDescriptor::Yes };
 

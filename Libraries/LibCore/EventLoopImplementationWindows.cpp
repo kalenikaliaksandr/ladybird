@@ -289,7 +289,7 @@ void EventLoopManagerWindows::register_notifier(Notifier& notifier)
 
     HANDLE event = CreateEvent(NULL, FALSE, FALSE, NULL);
     VERIFY(event);
-    int rc = WSAEventSelect(notifier.fd(), event, notifier_type_to_network_event(notifier.type()));
+    int rc = WSAEventSelect(static_cast<SOCKET>(notifier.handle().socket()), event, notifier_type_to_network_event(notifier.type()));
     VERIFY(!rc);
 
     auto notifier_data = make<EventLoopNotifier>();

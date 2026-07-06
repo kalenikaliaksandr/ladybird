@@ -1343,7 +1343,7 @@ ErrorOr<void> Request::write_queued_bytes_without_blocking()
     }
 
     if (!m_client_writer_notifier) {
-        m_client_writer_notifier = Core::Notifier::construct(m_client_request_pipe->writer_fd(), Core::NotificationType::Write);
+        m_client_writer_notifier = Core::Notifier::construct(Core::SystemHandleRef::from_socket(m_client_request_pipe->writer_fd()), Core::NotificationType::Write);
         m_client_writer_notifier->set_enabled(false);
 
         m_client_writer_notifier->on_activation = weak_callback(*this, [](auto& self) {

@@ -125,7 +125,7 @@ ErrorOr<size_t> PosixSocketHelper::pending_bytes() const
 void PosixSocketHelper::setup_notifier()
 {
     if (!m_notifier)
-        m_notifier = Notifier::construct(m_fd, Notifier::Type::Read);
+        m_notifier = Notifier::construct(SystemHandleRef::from_socket(m_fd), Notifier::Type::Read);
 }
 
 void PosixSocketHelper::close()

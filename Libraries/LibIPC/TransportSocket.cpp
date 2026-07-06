@@ -289,7 +289,7 @@ void TransportSocket::notify_read_available()
 void TransportSocket::set_up_read_hook(Function<void()> hook)
 {
     m_on_read_hook = move(hook);
-    m_read_hook_notifier = Core::Notifier::construct(m_notify_hook_read_fd->value(), Core::NotificationType::Read);
+    m_read_hook_notifier = Core::Notifier::construct(Core::SystemHandleRef::from_fd(m_notify_hook_read_fd->value(), Core::HandleKind::Pipe), Core::NotificationType::Read);
     m_read_hook_notifier->on_activation = [this] {
         VERIFY(m_notify_hook_read_fd);
         char buf[64];

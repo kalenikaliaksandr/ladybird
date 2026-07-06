@@ -218,7 +218,7 @@ ErrorOr<void> PosixSocketHelper::set_receive_timeout(AK::Duration timeout)
 void PosixSocketHelper::setup_notifier()
 {
     if (!m_notifier)
-        m_notifier = Core::Notifier::construct(m_fd, Core::Notifier::Type::Read);
+        m_notifier = Core::Notifier::construct(Core::SystemHandleRef::from_socket(m_fd), Core::Notifier::Type::Read);
 }
 
 ErrorOr<NonnullOwnPtr<TCPSocket>> TCPSocket::connect(ByteString const& host, u16 port)
