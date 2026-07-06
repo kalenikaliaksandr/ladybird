@@ -130,7 +130,19 @@ CORE_API ErrorOr<void> fchmod(int fd, mode_t mode);
 CORE_API ErrorOr<void> rename(StringView old_path, StringView new_path);
 CORE_API ErrorOr<void> unlink(StringView path);
 CORE_API ErrorOr<void> utimensat(int fd, StringView path, struct timespec const times[2], int flag);
+#if !defined(AK_OS_WINDOWS)
 CORE_API ErrorOr<Array<int, 2>> pipe2(int flags);
+#endif
+
+struct PipeEnds {
+    SystemHandle read_end;
+    SystemHandle write_end;
+};
+
+// Creates an anonymous unidirectional data channel: bytes written to write_end become readable from read_end.
+// Both ends are created close-on-exec / non-inheritable; use set_close_on_exec(end, false) on an end that a child
+// process should inherit. The read end can be watched for readability with Core::Notifier on all platforms.
+CORE_API ErrorOr<PipeEnds> create_pipe();
 
 CORE_API ErrorOr<int> socket(int domain, int type, int protocol);
 CORE_API ErrorOr<void> bind(int sockfd, struct sockaddr const*, socklen_t);

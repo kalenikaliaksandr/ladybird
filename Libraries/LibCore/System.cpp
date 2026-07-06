@@ -719,6 +719,15 @@ ErrorOr<void> socketpair(int domain, int type, int protocol, int sv[2])
     return {};
 }
 
+ErrorOr<PipeEnds> create_pipe()
+{
+    auto fds = TRY(pipe2(O_CLOEXEC));
+    return PipeEnds {
+        SystemHandle::adopt_fd(fds[0], HandleKind::Pipe),
+        SystemHandle::adopt_fd(fds[1], HandleKind::Pipe),
+    };
+}
+
 ErrorOr<Array<int, 2>> pipe2(int flags)
 {
     Array<int, 2> fds;

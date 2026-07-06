@@ -14,6 +14,7 @@
 #include <AK/Windows.h>
 #include <LibCore/EventLoopImplementationWindows.h>
 #include <LibCore/Notifier.h>
+#include <LibCore/System.h>
 #include <LibCore/ThreadEventQueue.h>
 #include <LibCore/Timer.h>
 #include <LibSync/Mutex.h>
@@ -101,6 +102,12 @@ struct EventLoopNotifier final : CompletionPacket {
     Notifier* notifier;
     OwnHandle wait_packet;
     OwnHandle wait_event;
+
+    // Pipe notifiers keep a zero-byte overlapped read pending on the pipe; its completion signals wait_event once
+    // the pipe has data to read (or is broken). Socket notifiers signal wait_event through WSAEventSelect instead.
+    bool is_pipe = false;
+    bool zero_read_pending = false;
+    OVERLAPPED overlapped = {};
 };
 
 struct EventLoopProcess final : CompletionPacket {
@@ -153,6 +160,8 @@ struct ThreadData {
 };
 
 static Sync::MutexProtected<HashMap<pid_t, NonnullOwnPtr<EventLoopProcess>>> s_processes;
+
+static void arm_pipe_notifier(EventLoopNotifier& notifier_data);
 
 EventLoopImplementationWindows::EventLoopImplementationWindows()
     : m_wake_event(ThreadData::the()->wake_data->wait_event.handle)
@@ -219,7 +228,31 @@ size_t EventLoopImplementationWindows::pump(PumpMode pump_mode)
             }
             if (packet->type == CompletionType::Notifer) {
                 auto* notifier_data = static_cast<EventLoopNotifier*>(packet);
-                event_queue.post_event(notifier_data->notifier, Core::Event::Type::NotifierActivation);
+
+                bool should_post_activation = true;
+                bool should_arm_probe = notifier_data->is_pipe;
+
+                if (notifier_data->is_pipe) {
+                    // The probe that signaled us has completed.
+                    notifier_data->zero_read_pending = false;
+
+                    // Only deliver an activation if the pipe actually has data or reached EOF: the probe may have
+                    // completed for data the notifier's owner has since read, and a spurious activation would make
+                    // the owner's blocking read stall the event loop.
+                    DWORD bytes_available = 0;
+                    if (PeekNamedPipe(notifier_data->notifier->handle().windows_handle(), NULL, 0, NULL, &bytes_available, NULL)) {
+                        should_post_activation = bytes_available > 0;
+                    } else {
+                        // The pipe is broken and drained; deliver so the owner observes EOF, and stop probing.
+                        should_arm_probe = false;
+                    }
+                }
+
+                if (should_post_activation)
+                    event_queue.post_event(notifier_data->notifier, Core::Event::Type::NotifierActivation);
+                if (should_arm_probe)
+                    arm_pipe_notifier(*notifier_data);
+
                 NTSTATUS status = g_system.NtAssociateWaitCompletionPacket(notifier_data->wait_packet.handle, thread_data->iocp.handle, notifier_data->wait_event.handle, notifier_data, NULL, 0, 0, NULL);
                 VERIFY(NT_SUCCESS(status));
                 continue;
@@ -279,6 +312,26 @@ static int notifier_type_to_network_event(NotificationType type)
     }
 }
 
+// Starts the readability probe of a pipe notifier: a zero-byte overlapped read that completes, signalling the
+// notifier's event, once the pipe has data to read or the write end is closed.
+static void arm_pipe_notifier(EventLoopNotifier& notifier_data)
+{
+    HANDLE pipe = notifier_data.notifier->handle().windows_handle();
+    notifier_data.zero_read_pending = false;
+
+    DWORD bytes_read = 0;
+    if (ReadFile(pipe, nullptr, 0, &bytes_read, &notifier_data.overlapped))
+        return; // Data is already available; the completion has signaled the event.
+
+    if (GetLastError() == ERROR_IO_PENDING) {
+        notifier_data.zero_read_pending = true;
+        return;
+    }
+
+    // The pipe is broken or otherwise unusable; signal the event so the notifier's owner gets to observe EOF.
+    SetEvent(notifier_data.overlapped.hEvent);
+}
+
 void EventLoopManagerWindows::register_notifier(Notifier& notifier)
 {
     auto* thread_data = ThreadData::the();
@@ -289,13 +342,30 @@ void EventLoopManagerWindows::register_notifier(Notifier& notifier)
 
     HANDLE event = CreateEvent(NULL, FALSE, FALSE, NULL);
     VERIFY(event);
-    int rc = WSAEventSelect(static_cast<SOCKET>(notifier.handle().socket()), event, notifier_type_to_network_event(notifier.type()));
-    VERIFY(!rc);
 
     auto notifier_data = make<EventLoopNotifier>();
     notifier_data->type = CompletionType::Notifer;
     notifier_data->notifier = &notifier;
     notifier_data->wait_event.handle = event;
+
+    switch (notifier.handle().kind()) {
+    case HandleKind::Socket: {
+        int rc = WSAEventSelect(static_cast<SOCKET>(notifier.handle().socket()), event, notifier_type_to_network_event(notifier.type()));
+        VERIFY(!rc);
+        break;
+    }
+    case HandleKind::Pipe:
+        // Pipes only support read notifications.
+        VERIFY(notifier.type() == NotificationType::Read);
+        notifier_data->is_pipe = true;
+        notifier_data->overlapped.hEvent = event;
+        arm_pipe_notifier(*notifier_data);
+        break;
+    case HandleKind::File:
+    case HandleKind::Invalid:
+        VERIFY_NOT_REACHED();
+    }
+
     NTSTATUS status = g_system.NtCreateWaitCompletionPacket(&notifier_data->wait_packet.handle, GENERIC_READ | GENERIC_WRITE, NULL);
     VERIFY(NT_SUCCESS(status));
     status = g_system.NtAssociateWaitCompletionPacket(notifier_data->wait_packet.handle, thread_data->iocp.handle, event, notifier_data.ptr(), NULL, 0, 0, NULL);
@@ -313,6 +383,17 @@ void EventLoopManagerWindows::unregister_notifier(Notifier& notifier)
     if (!maybe_notifier_data.has_value())
         return;
     auto notifier_data = move(maybe_notifier_data.value());
+
+    if (notifier_data->zero_read_pending) {
+        // The pending probe writes into notifier_data->overlapped when it completes, so it must be fully cancelled
+        // before notifier_data is destroyed. Notifier guarantees the fd is still open at this point.
+        HANDLE pipe = notifier.handle().windows_handle();
+        if (CancelIoEx(pipe, &notifier_data->overlapped) || GetLastError() != ERROR_NOT_FOUND) {
+            DWORD bytes_read = 0;
+            GetOverlappedResult(pipe, &notifier_data->overlapped, &bytes_read, TRUE);
+        }
+    }
+
     // We are removing the signalled packets since the caller no longer expects them
     NTSTATUS status = g_system.NtCancelWaitCompletionPacket(notifier_data->wait_packet.handle, TRUE);
     VERIFY(NT_SUCCESS(status));

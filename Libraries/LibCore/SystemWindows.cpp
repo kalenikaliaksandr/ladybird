@@ -12,6 +12,7 @@
  */
 
 #include <AK/Array.h>
+#include <AK/Atomic.h>
 #include <AK/ByteString.h>
 #include <AK/ScopeGuard.h>
 #include <LibCore/Process.h>
@@ -34,8 +35,31 @@ ErrorOr<size_t> read(SystemHandleRef handle, Bytes buffer)
     case HandleKind::Socket:
         // ReadFile() performs a synchronous read on both plain handles and (non-overlapped) sockets.
         return read(static_cast<int>(handle.raw_value()), buffer);
-    case HandleKind::Pipe:
-        // Pipe handles do not exist yet; they arrive together with System::create_pipe().
+    case HandleKind::Pipe: {
+        // Pipe read ends from create_pipe() are opened with FILE_FLAG_OVERLAPPED and therefore require an
+        // OVERLAPPED structure. A dedicated event is used so this read does not interfere with the readability
+        // probe the event loop may have pending on the same pipe.
+        OVERLAPPED overlapped {};
+        overlapped.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+        if (!overlapped.hEvent)
+            return Error::from_windows_error();
+        ScopeGuard close_event = [&] { CloseHandle(overlapped.hEvent); };
+
+        DWORD n_read = 0;
+        if (!ReadFile(handle.windows_handle(), buffer.data(), buffer.size(), &n_read, &overlapped)) {
+            auto error = GetLastError();
+            if (error == ERROR_IO_PENDING) {
+                if (GetOverlappedResult(handle.windows_handle(), &overlapped, &n_read, TRUE))
+                    return n_read;
+                error = GetLastError();
+            }
+            // A broken pipe means the write end was closed; this is EOF, like a zero-sized read on POSIX.
+            if (error == ERROR_BROKEN_PIPE)
+                return 0;
+            return Error::from_windows_error(error);
+        }
+        return n_read;
+    }
     case HandleKind::Invalid:
         break;
     }
@@ -158,8 +182,12 @@ ErrorOr<void> close(int handle)
 ErrorOr<size_t> read(int handle, Bytes buffer)
 {
     DWORD n_read = 0;
-    if (!ReadFile(to_handle(handle), buffer.data(), buffer.size(), &n_read, NULL))
+    if (!ReadFile(to_handle(handle), buffer.data(), buffer.size(), &n_read, NULL)) {
+        // A broken pipe means the write end was closed; this is EOF, like a zero-sized read on POSIX.
+        if (GetLastError() == ERROR_BROKEN_PIPE)
+            return 0;
         return Error::from_windows_error();
+    }
     return n_read;
 }
 
@@ -485,18 +513,33 @@ ErrorOr<void> set_close_on_exec(int handle, bool enabled)
     return {};
 }
 
-ErrorOr<Array<int, 2>> pipe2(int flags)
+ErrorOr<PipeEnds> create_pipe()
 {
-    SECURITY_ATTRIBUTES sa = {};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = (flags & O_CLOEXEC) ? FALSE : TRUE;
+    // The read end must be opened with FILE_FLAG_OVERLAPPED so the event loop can asynchronously wait for the pipe
+    // to become readable (see EventLoopManagerWindows::register_notifier). CreatePipe() cannot create overlapped
+    // handles, so create a uniquely named pipe instead.
+    static Atomic<u32> s_pipe_serial { 0 };
+    auto pipe_name = ByteString::formatted(R"(\\.\pipe\ladybird-{}-{})", GetCurrentProcessId(), s_pipe_serial.fetch_add(1));
 
-    HANDLE read_handle = nullptr;
-    HANDLE write_handle = nullptr;
-    if (!CreatePipe(&read_handle, &write_handle, &sa, 0))
+    HANDLE read_handle = CreateNamedPipeA(pipe_name.characters(),
+        PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+        1, 65536, 65536, 0, nullptr);
+    if (read_handle == INVALID_HANDLE_VALUE)
         return Error::from_windows_error();
 
-    return Array<int, 2> { to_fd(read_handle), to_fd(write_handle) };
+    // The write end is a plain synchronous handle, so it can serve as a standard I/O handle for child processes.
+    HANDLE write_handle = CreateFileA(pipe_name.characters(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (write_handle == INVALID_HANDLE_VALUE) {
+        auto error = Error::from_windows_error();
+        CloseHandle(read_handle);
+        return error;
+    }
+
+    return PipeEnds {
+        SystemHandle::adopt_handle(read_handle, HandleKind::Pipe),
+        SystemHandle::adopt_handle(write_handle, HandleKind::Pipe),
+    };
 }
 
 ErrorOr<bool> isatty(int handle)

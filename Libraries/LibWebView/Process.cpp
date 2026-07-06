@@ -43,25 +43,25 @@ ErrorOr<Process::ProcessAndIPCTransport> Process::spawn_and_connect_to_process(C
 {
     // Set up pipes for stdout/stderr capture if requested
     ProcessOutputCapture output_capture;
-    Array<int, 2> stdout_pipe {};
-    Array<int, 2> stderr_pipe {};
+    Core::System::PipeEnds stdout_pipe {};
+    Core::System::PipeEnds stderr_pipe {};
 
     Core::ProcessSpawnOptions spawn_options = options;
     spawn_options.die_with_parent = true;
 
     if (capture_output) {
-        stdout_pipe = TRY(Core::System::pipe2(O_CLOEXEC));
-        stderr_pipe = TRY(Core::System::pipe2(O_CLOEXEC));
+        stdout_pipe = TRY(Core::System::create_pipe());
+        stderr_pipe = TRY(Core::System::create_pipe());
 
         // Clear close-on-exec for the write ends so they're inherited by the child
-        TRY(Core::System::set_close_on_exec(stdout_pipe[1], false));
-        TRY(Core::System::set_close_on_exec(stderr_pipe[1], false));
+        TRY(Core::System::set_close_on_exec(stdout_pipe.write_end, false));
+        TRY(Core::System::set_close_on_exec(stderr_pipe.write_end, false));
 
         // Add file actions to redirect stdout/stderr in the child
-        spawn_options.file_actions.append(Core::FileAction::DupFd { .source = Core::SystemHandleRef::from_raw(stdout_pipe[1], Core::HandleKind::File), .stream = Core::FileAction::StandardStream::Output });
-        spawn_options.file_actions.append(Core::FileAction::DupFd { .source = Core::SystemHandleRef::from_raw(stderr_pipe[1], Core::HandleKind::File), .stream = Core::FileAction::StandardStream::Error });
-        spawn_options.file_actions.append(Core::FileAction::CloseFile { .fd = stdout_pipe[1] });
-        spawn_options.file_actions.append(Core::FileAction::CloseFile { .fd = stderr_pipe[1] });
+        spawn_options.file_actions.append(Core::FileAction::DupFd { .source = stdout_pipe.write_end, .stream = Core::FileAction::StandardStream::Output });
+        spawn_options.file_actions.append(Core::FileAction::DupFd { .source = stderr_pipe.write_end, .stream = Core::FileAction::StandardStream::Error });
+        spawn_options.file_actions.append(Core::FileAction::CloseFile { .fd = static_cast<int>(stdout_pipe.write_end.raw_value()) });
+        spawn_options.file_actions.append(Core::FileAction::CloseFile { .fd = static_cast<int>(stderr_pipe.write_end.raw_value()) });
     }
 
 #if defined(AK_OS_MACOS)
@@ -100,12 +100,12 @@ ErrorOr<Process::ProcessAndIPCTransport> Process::spawn_and_connect_to_process(C
 
     if (capture_output) {
         // Close write ends in parent
-        MUST(Core::System::close(stdout_pipe[1]));
-        MUST(Core::System::close(stderr_pipe[1]));
+        stdout_pipe.write_end.close();
+        stderr_pipe.write_end.close();
 
         // Wrap read ends in File objects
-        output_capture.stdout_file = TRY(Core::File::adopt_fd(stdout_pipe[0], Core::File::OpenMode::Read));
-        output_capture.stderr_file = TRY(Core::File::adopt_fd(stderr_pipe[0], Core::File::OpenMode::Read));
+        output_capture.stdout_file = TRY(Core::File::adopt_handle(move(stdout_pipe.read_end), Core::File::OpenMode::Read));
+        output_capture.stderr_file = TRY(Core::File::adopt_handle(move(stderr_pipe.read_end), Core::File::OpenMode::Read));
     }
 
     return ProcessAndIPCTransport { move(process), move(transport), move(output_capture) };
