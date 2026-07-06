@@ -187,7 +187,14 @@ void TransportSocketWindows::post_message(MessageDataType bytes, Vector<Attachme
     VERIFY(attachments.size() <= MAX_MESSAGE_FD_COUNT);
 
     auto attachment_count = attachments.size();
-    auto serialized_attachments = MUST(serialize_attachments(attachments));
+    auto serialized_attachments_or_error = serialize_attachments(attachments);
+    if (serialized_attachments_or_error.is_error()) {
+        // The peer has most likely died; close the socket so the connection shuts down instead of crashing.
+        dbgln("TransportSocketWindows::post_message: Failed to serialize attachments: {}", serialized_attachments_or_error.error());
+        close();
+        return;
+    }
+    auto serialized_attachments = serialized_attachments_or_error.release_value();
     VERIFY(serialized_attachments.size() <= MAX_ATTACHMENT_DATA_SIZE);
 
     Vector<u8> message_buffer;
@@ -208,7 +215,11 @@ void TransportSocketWindows::post_message(MessageDataType bytes, Vector<Attachme
     if (!bytes.is_empty())
         memcpy(payload_storage, bytes.data(), bytes.size());
 
-    MUST(transfer(message_buffer.span()));
+    if (auto result = transfer(message_buffer.span()); result.is_error()) {
+        // The peer has most likely died; close the socket so the connection shuts down instead of crashing.
+        dbgln("TransportSocketWindows::post_message: Failed to transfer message: {}", result.error());
+        close();
+    }
 }
 
 ErrorOr<void> TransportSocketWindows::transfer(ReadonlyBytes bytes_to_write)
