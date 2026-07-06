@@ -12,6 +12,7 @@
 #include <AK/StringView.h>
 #include <LibCore/AddressInfoVector.h>
 #include <LibCore/Export.h>
+#include <LibCore/SystemHandle.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -60,6 +61,24 @@ struct sockaddr;
 #endif
 
 namespace Core::System {
+
+// Kind-tagged native handle API. On POSIX these forward to the int-fd functions below; on Windows they dispatch on
+// the handle's kind, so they are the only correct way to operate on a handle whose kind is not statically known.
+CORE_API ErrorOr<size_t> read(SystemHandleRef, Bytes buffer);
+CORE_API ErrorOr<size_t> write(SystemHandleRef, ReadonlyBytes buffer);
+CORE_API ErrorOr<void> close(SystemHandleRef);
+CORE_API ErrorOr<SystemHandle> dup(SystemHandleRef);
+CORE_API ErrorOr<void> set_close_on_exec(SystemHandleRef, bool enabled);
+CORE_API ErrorOr<bool> isatty(SystemHandleRef);
+CORE_API ErrorOr<off_t> lseek(SystemHandleRef, off_t, int whence);
+CORE_API ErrorOr<void> ftruncate(SystemHandleRef, off_t length);
+CORE_API ErrorOr<struct stat> fstat(SystemHandleRef);
+
+// The standard streams of this process, tagged HandleKind::File. (Even when a standard stream is redirected to a
+// pipe or socket, the File kind is correct here: these handles are only used for synchronous I/O.)
+CORE_API SystemHandleRef standard_input_handle();
+CORE_API SystemHandleRef standard_output_handle();
+CORE_API SystemHandleRef standard_error_handle();
 
 #if !defined(AK_OS_MACOS) && !defined(AK_OS_HAIKU)
 ErrorOr<int> accept4(int sockfd, struct sockaddr*, socklen_t*, int flags);

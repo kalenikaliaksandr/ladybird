@@ -27,6 +27,115 @@ namespace Core::System {
 
 int windows_socketpair(SOCKET socks[2], int make_overlapped);
 
+ErrorOr<size_t> read(SystemHandleRef handle, Bytes buffer)
+{
+    switch (handle.kind()) {
+    case HandleKind::File:
+    case HandleKind::Socket:
+        // ReadFile() performs a synchronous read on both plain handles and (non-overlapped) sockets.
+        return read(static_cast<int>(handle.raw_value()), buffer);
+    case HandleKind::Pipe:
+        // Pipe handles do not exist yet; they arrive together with System::create_pipe().
+    case HandleKind::Invalid:
+        break;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+ErrorOr<size_t> write(SystemHandleRef handle, ReadonlyBytes buffer)
+{
+    VERIFY(handle.is_valid());
+    return write(static_cast<int>(handle.raw_value()), buffer);
+}
+
+ErrorOr<void> close(SystemHandleRef handle)
+{
+    switch (handle.kind()) {
+    case HandleKind::File:
+    case HandleKind::Pipe:
+        if (!CloseHandle(handle.windows_handle()))
+            return Error::from_windows_error();
+        return {};
+    case HandleKind::Socket:
+        if (closesocket(static_cast<SOCKET>(handle.socket())))
+            return Error::from_windows_error();
+        return {};
+    case HandleKind::Invalid:
+        break;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+ErrorOr<SystemHandle> dup(SystemHandleRef handle)
+{
+    switch (handle.kind()) {
+    case HandleKind::Socket: {
+        WSAPROTOCOL_INFOW pi = {};
+        if (WSADuplicateSocketW(static_cast<SOCKET>(handle.socket()), GetCurrentProcessId(), &pi))
+            return Error::from_windows_error();
+        SOCKET socket = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, &pi, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+        if (socket == INVALID_SOCKET)
+            return Error::from_windows_error();
+        return SystemHandle::adopt_socket(static_cast<SystemHandle::NativeType>(socket));
+    }
+    case HandleKind::File:
+    case HandleKind::Pipe: {
+        HANDLE new_handle = 0;
+        if (!DuplicateHandle(GetCurrentProcess(), handle.windows_handle(), GetCurrentProcess(), &new_handle, 0, FALSE, DUPLICATE_SAME_ACCESS))
+            return Error::from_windows_error();
+        return SystemHandle::adopt_handle(new_handle, handle.kind());
+    }
+    case HandleKind::Invalid:
+        break;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+ErrorOr<void> set_close_on_exec(SystemHandleRef handle, bool enabled)
+{
+    VERIFY(handle.is_valid());
+    return set_close_on_exec(static_cast<int>(handle.raw_value()), enabled);
+}
+
+ErrorOr<bool> isatty(SystemHandleRef handle)
+{
+    VERIFY(handle.is_valid());
+    return isatty(static_cast<int>(handle.raw_value()));
+}
+
+ErrorOr<off_t> lseek(SystemHandleRef handle, off_t offset, int whence)
+{
+    VERIFY(handle.kind() == HandleKind::File);
+    return lseek(static_cast<int>(handle.raw_value()), offset, whence);
+}
+
+ErrorOr<void> ftruncate(SystemHandleRef handle, off_t length)
+{
+    VERIFY(handle.kind() == HandleKind::File);
+    return ftruncate(static_cast<int>(handle.raw_value()), length);
+}
+
+ErrorOr<struct stat> fstat(SystemHandleRef handle)
+{
+    VERIFY(handle.kind() == HandleKind::File);
+    return fstat(static_cast<int>(handle.raw_value()));
+}
+
+SystemHandleRef standard_input_handle()
+{
+    return SystemHandleRef::from_handle(reinterpret_cast<void*>(_get_osfhandle(_fileno(stdin))), HandleKind::File);
+}
+
+SystemHandleRef standard_output_handle()
+{
+    return SystemHandleRef::from_handle(reinterpret_cast<void*>(_get_osfhandle(_fileno(stdout))), HandleKind::File);
+}
+
+SystemHandleRef standard_error_handle()
+{
+    return SystemHandleRef::from_handle(reinterpret_cast<void*>(_get_osfhandle(_fileno(stderr))), HandleKind::File);
+}
+
 ErrorOr<int> open(StringView path, int options, mode_t mode)
 {
     ByteString str = path;

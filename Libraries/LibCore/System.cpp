@@ -61,6 +61,66 @@ extern "C" {
 
 namespace Core::System {
 
+ErrorOr<size_t> read(SystemHandleRef handle, Bytes buffer)
+{
+    return read(handle.fd(), buffer);
+}
+
+ErrorOr<size_t> write(SystemHandleRef handle, ReadonlyBytes buffer)
+{
+    return write(handle.fd(), buffer);
+}
+
+ErrorOr<void> close(SystemHandleRef handle)
+{
+    return close(handle.fd());
+}
+
+ErrorOr<SystemHandle> dup(SystemHandleRef handle)
+{
+    return SystemHandle::adopt_fd(TRY(dup(handle.fd())), handle.kind());
+}
+
+ErrorOr<void> set_close_on_exec(SystemHandleRef handle, bool enabled)
+{
+    return set_close_on_exec(handle.fd(), enabled);
+}
+
+ErrorOr<bool> isatty(SystemHandleRef handle)
+{
+    return isatty(handle.fd());
+}
+
+ErrorOr<off_t> lseek(SystemHandleRef handle, off_t offset, int whence)
+{
+    return lseek(handle.fd(), offset, whence);
+}
+
+ErrorOr<void> ftruncate(SystemHandleRef handle, off_t length)
+{
+    return ftruncate(handle.fd(), length);
+}
+
+ErrorOr<struct stat> fstat(SystemHandleRef handle)
+{
+    return fstat(handle.fd());
+}
+
+SystemHandleRef standard_input_handle()
+{
+    return SystemHandleRef::from_fd(STDIN_FILENO);
+}
+
+SystemHandleRef standard_output_handle()
+{
+    return SystemHandleRef::from_fd(STDOUT_FILENO);
+}
+
+SystemHandleRef standard_error_handle()
+{
+    return SystemHandleRef::from_fd(STDERR_FILENO);
+}
+
 #if !defined(AK_OS_MACOS) && !defined(AK_OS_IOS) && !defined(AK_OS_HAIKU)
 ErrorOr<int> accept4(int sockfd, sockaddr* address, socklen_t* address_length, int flags)
 {

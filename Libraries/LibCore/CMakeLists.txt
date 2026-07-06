@@ -22,6 +22,7 @@ set(SOURCES
     SharedVersion.cpp
     SocketAddress.cpp
     StandardPaths.cpp
+    SystemHandle.cpp
     SystemServerTakeover.cpp
     ThreadEventQueue.cpp
     Timer.cpp
