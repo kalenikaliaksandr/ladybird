@@ -1913,6 +1913,10 @@ void Document::update_layout(UpdateLayoutReason reason)
             return TraversalDecision::Continue;
         });
 
+        // Layout nodes created between full passes take their indices from this counter, so
+        // they never collide with the dense range just assigned.
+        reset_layout_node_index_counter(layout_index_counter);
+
         Layout::LayoutState layout_state;
         layout_state.ensure_capacity(layout_index_counter);
         layout_state.set_should_collect_devtools_layout_data(should_collect_devtools_layout_data);
