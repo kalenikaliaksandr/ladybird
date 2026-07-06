@@ -19,6 +19,7 @@
 #include <LibCore/Timer.h>
 #include <LibSync/Mutex.h>
 #include <LibSync/MutexProtected.h>
+#include <signal.h>
 
 struct OwnHandle {
     HANDLE handle = NULL;
@@ -69,6 +70,7 @@ enum class CompletionType : u8 {
     Timer,
     Notifer,
     Process,
+    Signal,
 };
 
 struct CompletionPacket {
@@ -119,6 +121,33 @@ struct EventLoopProcess final : CompletionPacket {
     OwnHandle jobobject;
 };
 
+// Signals are emulated with console control events: the console control handler (which runs on a dedicated thread)
+// records the signal number and signals wait_event, and the event loop thread then runs the registered handlers.
+struct EventLoopSignal final : CompletionPacket {
+    OwnHandle wait_packet;
+    OwnHandle wait_event;
+};
+
+struct SignalHandler {
+    int signal_number = 0;
+    Function<void(int)> handler;
+};
+
+struct ThreadData;
+
+// Which threads want to be woken for which signals. Written by event loop threads, read by the console control
+// handler thread.
+struct SignalWakeTarget {
+    int signal_number = 0;
+    ThreadData* thread_data = nullptr;
+};
+
+static Sync::MutexProtected<Vector<SignalWakeTarget>>& signal_wake_targets()
+{
+    static Sync::MutexProtected<Vector<SignalWakeTarget>> targets;
+    return targets;
+}
+
 struct ThreadData {
     static ThreadData* the()
     {
@@ -145,6 +174,10 @@ struct ThreadData {
     }
     ~ThreadData()
     {
+        signal_wake_targets().with_locked([this](auto& targets) {
+            targets.remove_all_matching([this](auto const& target) { return target.thread_data == this; });
+        });
+
         NTSTATUS status = g_system.NtCancelWaitCompletionPacket(wake_data->wait_packet.handle, TRUE);
         VERIFY(NT_SUCCESS(status));
     }
@@ -154,6 +187,14 @@ struct ThreadData {
     // These are only used to register and unregister. The event loop doesn't access these.
     HashMap<intptr_t, NonnullOwnPtr<EventLoopTimer>> timers;
     HashMap<Notifier*, NonnullOwnPtr<EventLoopNotifier>> notifiers;
+
+    // Signal handlers registered on this thread; only accessed from this thread.
+    HashMap<int, SignalHandler> signal_handlers_by_id;
+    int next_signal_handler_id = 1;
+    OwnPtr<EventLoopSignal> signal_data;
+
+    // Signal numbers delivered by the console control handler thread, pending dispatch on this thread.
+    Sync::MutexProtected<Vector<int>> pending_signals;
 
     // The wake completion packet is posted to the thread's event loop to wake it.
     NonnullOwnPtr<EventLoopWake> wake_data;
@@ -254,6 +295,27 @@ size_t EventLoopImplementationWindows::pump(PumpMode pump_mode)
                     arm_pipe_notifier(*notifier_data);
 
                 NTSTATUS status = g_system.NtAssociateWaitCompletionPacket(notifier_data->wait_packet.handle, thread_data->iocp.handle, notifier_data->wait_event.handle, notifier_data, NULL, 0, 0, NULL);
+                VERIFY(NT_SUCCESS(status));
+                continue;
+            }
+            if (packet->type == CompletionType::Signal) {
+                auto* signal_data = static_cast<EventLoopSignal*>(packet);
+
+                auto pending_signals = thread_data->pending_signals.with_locked([](auto& signals) { return move(signals); });
+                for (auto signal_number : pending_signals) {
+                    // Collect ids first: a handler may register or unregister handlers while it runs.
+                    Vector<int> matching_handler_ids;
+                    for (auto& [id, handler] : thread_data->signal_handlers_by_id) {
+                        if (handler.signal_number == signal_number)
+                            matching_handler_ids.append(id);
+                    }
+                    for (auto id : matching_handler_ids) {
+                        if (auto it = thread_data->signal_handlers_by_id.find(id); it != thread_data->signal_handlers_by_id.end())
+                            it->value.handler(signal_number);
+                    }
+                }
+
+                NTSTATUS status = g_system.NtAssociateWaitCompletionPacket(signal_data->wait_packet.handle, thread_data->iocp.handle, signal_data->wait_event.handle, signal_data, NULL, 0, 0, NULL);
                 VERIFY(NT_SUCCESS(status));
                 continue;
             }
@@ -449,16 +511,93 @@ void EventLoopManagerWindows::unregister_timer(intptr_t timer_id)
     }
 }
 
-int EventLoopManagerWindows::register_signal([[maybe_unused]] int signal_number, [[maybe_unused]] Function<void(int)> handler)
+static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type)
 {
-    dbgln("Core::EventLoopManagerWindows::register_signal() is not implemented");
-    VERIFY_NOT_REACHED();
+    int signal_number = 0;
+    switch (ctrl_type) {
+    case CTRL_C_EVENT:
+        signal_number = SIGINT;
+        break;
+    case CTRL_BREAK_EVENT:
+        signal_number = SIGBREAK;
+        break;
+    case CTRL_CLOSE_EVENT:
+    case CTRL_LOGOFF_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+        signal_number = SIGTERM;
+        break;
+    default:
+        return FALSE;
+    }
+
+    bool handled = false;
+    signal_wake_targets().with_locked([&](auto& targets) {
+        for (auto& target : targets) {
+            if (target.signal_number != signal_number)
+                continue;
+
+            target.thread_data->pending_signals.with_locked([&](auto& signals) { signals.append(signal_number); });
+            SetEvent(target.thread_data->signal_data->wait_event.handle);
+            handled = true;
+        }
+    });
+
+    return handled ? TRUE : FALSE;
 }
 
-void EventLoopManagerWindows::unregister_signal([[maybe_unused]] int handler_id)
+int EventLoopManagerWindows::register_signal(int signal_number, Function<void(int)> handler)
 {
-    dbgln("Core::EventLoopManagerWindows::unregister_signal() is not implemented");
-    VERIFY_NOT_REACHED();
+    auto* thread_data = ThreadData::the();
+    VERIFY(thread_data);
+
+    if (!thread_data->signal_data) {
+        auto signal_data = make<EventLoopSignal>();
+        signal_data->type = CompletionType::Signal;
+        signal_data->wait_event.handle = CreateEvent(NULL, FALSE, FALSE, NULL);
+        VERIFY(signal_data->wait_event.handle);
+
+        NTSTATUS status = g_system.NtCreateWaitCompletionPacket(&signal_data->wait_packet.handle, GENERIC_READ | GENERIC_WRITE, NULL);
+        VERIFY(NT_SUCCESS(status));
+        status = g_system.NtAssociateWaitCompletionPacket(signal_data->wait_packet.handle, thread_data->iocp.handle, signal_data->wait_event.handle, signal_data.ptr(), NULL, 0, 0, NULL);
+        VERIFY(NT_SUCCESS(status));
+
+        thread_data->signal_data = move(signal_data);
+    }
+
+    int handler_id = thread_data->next_signal_handler_id++;
+    thread_data->signal_handlers_by_id.set(handler_id, { signal_number, move(handler) });
+
+    signal_wake_targets().with_locked([&](auto& targets) {
+        static bool s_console_ctrl_handler_installed = false;
+        if (!s_console_ctrl_handler_installed) {
+            SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+            s_console_ctrl_handler_installed = true;
+        }
+
+        targets.append({ signal_number, thread_data });
+    });
+
+    return handler_id;
+}
+
+void EventLoopManagerWindows::unregister_signal(int handler_id)
+{
+    auto* thread_data = ThreadData::the();
+    if (!thread_data)
+        return;
+
+    auto maybe_handler = thread_data->signal_handlers_by_id.take(handler_id);
+    if (!maybe_handler.has_value())
+        return;
+
+    signal_wake_targets().with_locked([&](auto& targets) {
+        for (size_t i = 0; i < targets.size(); ++i) {
+            if (targets[i].signal_number == maybe_handler->signal_number && targets[i].thread_data == thread_data) {
+                targets.remove(i);
+                break;
+            }
+        }
+    });
 }
 
 void EventLoopManagerWindows::register_process(pid_t pid, ESCAPING Function<void(pid_t)> exit_handler)
