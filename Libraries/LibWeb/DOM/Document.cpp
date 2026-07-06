@@ -1720,6 +1720,37 @@ void Document::set_needs_container_query_evaluation_after_layout(Element const& 
     m_query_containers_needing_container_query_evaluation_after_layout.set(const_cast<Element&>(query_container));
 }
 
+// Whether the saved layout inputs are still valid for replaying the boundary's layout after a
+// style change on the boundary itself. Inputs captured under identical style are always valid;
+// a boundary-self style change invalidates the parts of the inputs that were derived from the
+// box's own computed values.
+static bool can_replay_partial_relayout_root_after_style_change(Layout::Box& box)
+{
+    // Grid containers derive the containing block rect and the alignments from the box's own
+    // grid-row/column and align/justify-self properties, which may have changed.
+    if (!box.containing_block())
+        return false;
+    auto const& formatting_context_root = Layout::FormattingContext::box_establishing_containing_formatting_context(box);
+    if (Layout::FormattingContext::formatting_context_type_created_by_box(formatting_context_root) == Layout::FormattingContext::Type::Grid)
+        return false;
+
+    // An axis with both insets auto takes its position from the saved static position rect. A
+    // flex container derives that rect's alignment from the box's own align-self, so it may be
+    // stale after a self style change; block and inline static positions depend only on the
+    // in-flow layout of the ancestor formatting context, which a boundary-self change cannot
+    // affect.
+    auto const& inset = box.computed_values().inset();
+    auto uses_static_position = (inset.left().is_auto() && inset.right().is_auto())
+        || (inset.top().is_auto() && inset.bottom().is_auto());
+    if (uses_static_position) {
+        auto const* static_position_cb = box.static_position_containing_block();
+        if (static_position_cb && Layout::FormattingContext::formatting_context_type_created_by_box(*static_position_cb) == Layout::FormattingContext::Type::Flex)
+            return false;
+    }
+
+    return true;
+}
+
 // Replays the absolutely positioned element layout algorithm for `subtree_root` from the inputs
 // saved by the last committing layout pass. The inputs pin everything the algorithm consumes
 // from outside the subtree (containing block info and static position), so the box's own size
@@ -1730,6 +1761,23 @@ static void compute_subtree_layout_by_replay(Layout::Box& subtree_root, Layout::
 {
     auto* containing_block = subtree_root.containing_block();
     VERIFY(containing_block);
+    auto inputs = *subtree_root.saved_abspos_layout_inputs();
+
+    // The axis modes are the only saved input derived from the box's own computed values, which
+    // a boundary-self style change may have altered since capture; recompute them from the live
+    // insets. Grid containing blocks pin the axis modes structurally (and never replay after a
+    // boundary-self style change), so their saved modes stay.
+    if (Layout::FormattingContext::formatting_context_type_created_by_box(
+            Layout::FormattingContext::box_establishing_containing_formatting_context(subtree_root))
+        != Layout::FormattingContext::Type::Grid) {
+        auto const& inset = subtree_root.computed_values().inset();
+        inputs.containing_block_info.horizontal_axis_mode = inset.left().is_auto() && inset.right().is_auto()
+            ? Layout::AbsposAxisMode::StaticPosition
+            : Layout::AbsposAxisMode::InsetFromRect;
+        inputs.containing_block_info.vertical_axis_mode = inset.top().is_auto() && inset.bottom().is_auto()
+            ? Layout::AbsposAxisMode::StaticPosition
+            : Layout::AbsposAxisMode::InsetFromRect;
+    }
 
     // Mirror how the ancestor formatting context prepares an absolutely positioned child during
     // a full pass: create its used values (the percentage basis is pinned by the algorithm once
@@ -1741,7 +1789,7 @@ static void compute_subtree_layout_by_replay(Layout::Box& subtree_root, Layout::
     // consumes nothing from the containing block's used values (which don't exist in this
     // state); everything from outside the subtree comes as plain values in the saved inputs.
     auto context = Layout::FormattingContext::create_dummy_formatting_context(layout_state, Layout::LayoutMode::Normal, *containing_block);
-    context->layout_absolutely_positioned_element(subtree_root, *subtree_root.saved_abspos_layout_inputs());
+    context->layout_absolutely_positioned_element(subtree_root, inputs);
 }
 
 static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutState& layout_state, Painting::Paintable const& root_geometry_source)
@@ -2008,21 +2056,20 @@ void Document::update_layout(UpdateLayoutReason reason)
             && !m_layout_root->needs_layout_update()
             && m_query_containers_needing_container_query_evaluation_after_layout.is_empty()
             && !should_collect_devtools_layout_data) {
-            struct BoundaryAnchor {
+            struct PartialRelayoutRoot {
+                // The DOM node anchors the boundary across an in-place layout tree rebuild, which may
+                // replace the layout box. Kept alive by partial_relayout_root_dom_nodes.
+                DOM::Node* dom_node { nullptr };
                 Layout::Box* old_box { nullptr };
                 RefPtr<Painting::Paintable> old_paintable;
                 RefPtr<Painting::Paintable> old_paintable_parent;
-            };
-
-            struct PartialRelayoutRoot {
+                bool resolve_root_geometry { false };
+                // The live box, re-resolved through the DOM node after any tree rebuild.
                 Layout::Box* box { nullptr };
-                RefPtr<Painting::Paintable> root_geometry_source;
-                RefPtr<Painting::Paintable> parent_paintable;
-                RefPtr<Painting::Paintable> old_paintable;
             };
 
-            GC::RootVector<GC::Ref<DOM::Node>> anchor_dom_nodes;
-            Vector<BoundaryAnchor> anchors;
+            GC::RootVector<GC::Ref<DOM::Node>> partial_relayout_root_dom_nodes;
+            Vector<PartialRelayoutRoot> partial_relayout_roots;
             bool can_run_partial_relayout = true;
             for (auto const& root : registered_partial_relayout_roots) {
                 auto* box = root.ptr();
@@ -2037,11 +2084,14 @@ void Document::update_layout(UpdateLayoutReason reason)
                     break;
                 }
 
-                anchor_dom_nodes.append(*box->dom_node());
-                anchors.append({
+                partial_relayout_root_dom_nodes.append(*box->dom_node());
+                partial_relayout_roots.append({
+                    .dom_node = box->dom_node(),
                     .old_box = box,
                     .old_paintable = old_paintable,
                     .old_paintable_parent = old_paintable->parent(),
+                    // Captured before any in-place layout tree rebuild replaces the box.
+                    .resolve_root_geometry = box->needs_own_geometry_update(),
                 });
             }
 
@@ -2065,16 +2115,15 @@ void Document::update_layout(UpdateLayoutReason reason)
             if (m_layout_root->needs_layout_update() || layout_tree_dirt_escaped_during_partial_build)
                 can_run_partial_relayout = false;
 
-            Vector<PartialRelayoutRoot> live_partial_relayout_roots;
             if (can_run_partial_relayout) {
-                for (size_t i = 0; i < anchor_dom_nodes.size(); ++i) {
-                    auto* box = as_if<Layout::Box>(anchor_dom_nodes[i]->unsafe_layout_node());
+                for (auto& root : partial_relayout_roots) {
+                    auto* box = as_if<Layout::Box>(root.dom_node->unsafe_layout_node());
                     if (!box) {
                         can_run_partial_relayout = false;
                         break;
                     }
 
-                    if (box == anchors[i].old_box) {
+                    if (box == root.old_box) {
                         if (!box->paintable_box()) {
                             can_run_partial_relayout = false;
                             break;
@@ -2094,30 +2143,30 @@ void Document::update_layout(UpdateLayoutReason reason)
                             break;
                         }
                     }
-                    live_partial_relayout_roots.append({
-                        .box = box,
-                        .root_geometry_source = anchors[i].old_paintable,
-                        .parent_paintable = anchors[i].old_paintable_parent,
-                        .old_paintable = anchors[i].old_paintable,
-                    });
+                    // Replay re-resolves the boundary's size and position from the saved inputs;
+                    // fall back to full layout when a style change on the boundary itself may have
+                    // invalidated the parts of those inputs derived from its own computed values.
+                    if (root.resolve_root_geometry && !can_replay_partial_relayout_root_after_style_change(*box)) {
+                        can_run_partial_relayout = false;
+                        break;
+                    }
+
+                    root.box = box;
                 }
             }
 
-            Vector<PartialRelayoutRoot> partial_relayout_roots;
+            // A root nested inside another root is relaid out as part of the ancestor's subtree.
             if (can_run_partial_relayout) {
-                for (auto const& root : live_partial_relayout_roots) {
-                    bool is_descendant_of_another_root = false;
-                    for (auto const& potential_ancestor : live_partial_relayout_roots) {
-                        if (root.box == potential_ancestor.box)
-                            continue;
-                        if (potential_ancestor.box->is_inclusive_ancestor_of(*root.box)) {
-                            is_descendant_of_another_root = true;
-                            break;
-                        }
+                HashTable<Layout::Node const*> live_root_boxes;
+                for (auto const& root : partial_relayout_roots)
+                    live_root_boxes.set(root.box);
+                partial_relayout_roots.remove_all_matching([&](auto const& root) {
+                    for (auto const* ancestor = root.box->parent(); ancestor; ancestor = ancestor->parent()) {
+                        if (live_root_boxes.contains(ancestor))
+                            return true;
                     }
-                    if (!is_descendant_of_another_root)
-                        partial_relayout_roots.append(root);
-                }
+                    return false;
+                });
             }
 
             if (partial_relayout_roots.is_empty())
@@ -2142,7 +2191,7 @@ void Document::update_layout(UpdateLayoutReason reason)
                 for (auto const& root : partial_relayout_roots) {
                     if (auto old_paintable_parent = root.old_paintable->parent())
                         old_paintable_parent->remove_child(*root.old_paintable);
-                    relayout_subtree(*root.box, *root.root_geometry_source, root.parent_paintable);
+                    relayout_subtree(*root.box, *root.old_paintable, root.old_paintable_parent);
                     // NB: The subtree commit reset the root's descendant paintables, and the subtree's
                     //     new size may change ancestor scrollable overflow; scheduling the root covers both.
                     schedule_scrollable_overflow_recalculation(*root.box);

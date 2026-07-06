@@ -23,6 +23,7 @@
 #include <LibWeb/HTML/HTMLSlotElement.h>
 #include <LibWeb/HTML/LocalNavigable.h>
 #include <LibWeb/HTML/NavigableContainer.h>
+#include <LibWeb/Layout/Box.h>
 
 namespace Web::CSS {
 
@@ -39,8 +40,22 @@ static void apply_element_style_invalidation_after_style_change(DOM::Element& el
     if (invalidation.needs_scrollable_overflow_recalculation())
         element.document().schedule_scrollable_overflow_recalculation(element);
 
-    if (invalidation.needs_relayout())
-        element.set_needs_layout_update(DOM::SetNeedsLayoutReason::StyleChange);
+    if (invalidation.needs_relayout()) {
+        // A style change on an absolutely positioned partial relayout boundary that doesn't rebuild the
+        // layout tree doesn't need to dirty anything outside the boundary: the box contributes nothing to
+        // ancestor layout, so partial relayout can re-resolve the boundary's own size and position against
+        // its containing block and re-lay out its subtree, reproducing what a full layout would compute.
+        auto* box = as_if<Layout::Box>(element.unsafe_layout_node());
+        if (!invalidation.needs_layout_tree_rebuild()
+            && box
+            && box->is_absolutely_positioned()
+            && box->is_partial_relayout_boundary()) {
+            box->set_needs_own_geometry_update();
+            element.set_needs_layout_update(DOM::SetNeedsLayoutReason::StyleChange, Layout::LayoutUpdatePropagation::BoundarySelfOnly);
+        } else {
+            element.set_needs_layout_update(DOM::SetNeedsLayoutReason::StyleChange);
+        }
+    }
     if (invalidation.needs_layout_tree_rebuild())
         element.set_needs_layout_tree_rebuild(DOM::SetNeedsLayoutTreeUpdateReason::StyleChange);
 

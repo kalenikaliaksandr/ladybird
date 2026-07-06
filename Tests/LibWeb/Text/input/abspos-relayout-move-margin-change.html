@@ -2,25 +2,18 @@
 <script src="include.js"></script>
 <style>
     body { margin: 0; }
-    #root { position: relative; width: 320px; height: 180px; }
+    #root { position: relative; width: 400px; height: 300px; }
     #boundary {
         position: absolute;
-        left: 40px;
-        top: 30px;
-        width: 150px;
-        height: 90px;
+        left: 10px;
+        top: 20px;
+        width: 100px;
+        height: 50px;
         overflow: hidden;
-    }
-    #child {
-        position: absolute;
-        right: 10px;
-        top: 15px;
-        width: 30px;
-        height: 20px;
     }
 </style>
 <div id="root">
-    <div id="boundary"><div id="child"></div></div>
+    <div id="boundary"></div>
 </div>
 <script>
     function rectToString(rect) {
@@ -34,19 +27,17 @@
         const partialBefore = internals.partialLayoutCount();
         const fullBefore = internals.fullLayoutCount();
 
-        boundary.style.width = "180px";
+        boundary.style.marginLeft = "25px";
+        boundary.style.marginTop = "5px";
         document.body.offsetHeight;
 
-        const boundaryRect = boundary.getBoundingClientRect();
-        const childRect = document.getElementById("child").getBoundingClientRect();
+        const rect = boundary.getBoundingClientRect();
         const partialDelta = internals.partialLayoutCount() - partialBefore;
         const fullDelta = internals.fullLayoutCount() - fullBefore;
 
-        println(`boundary=${rectToString(boundaryRect)}`);
-        println(`child=${rectToString(childRect)}`);
+        println(`boundary=${rectToString(rect)}`);
         println(`partial-layouts=${partialDelta} full-layouts=${fullDelta}`);
-        println(rectToString(boundaryRect) === "40,30,180,90"
-            && rectToString(childRect) === "180,45,30,20"
+        println(rectToString(rect) === "35,25,100,50"
             && partialDelta === 1 && fullDelta === 0 ? "PASS" : "FAIL");
         done();
     });

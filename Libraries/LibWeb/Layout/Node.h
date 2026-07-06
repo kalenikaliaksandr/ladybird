@@ -36,7 +36,7 @@ public:                                            \
 
 class InlineNode;
 
-enum class LayoutUpdatePropagation {
+enum class LayoutUpdatePropagation : u8 {
     ThroughAncestors,
     BoundarySelfOnly,
 };
@@ -73,8 +73,18 @@ public:
     DOM::Element* pseudo_element_generator();
 
     bool needs_layout_update() const { return m_needs_layout_update; }
+
+    // Set when a style change altered geometry-determining properties (insets, size, margins, padding) of this
+    // node itself, so a partial relayout must re-resolve the node's own size and position instead of reusing
+    // them from the previous layout.
+    bool needs_own_geometry_update() const { return m_needs_own_geometry_update; }
+    void set_needs_own_geometry_update() { m_needs_own_geometry_update = true; }
     void set_needs_layout_update(DOM::SetNeedsLayoutReason, LayoutUpdatePropagation = LayoutUpdatePropagation::ThroughAncestors);
-    void reset_needs_layout_update() { m_needs_layout_update = false; }
+    void reset_needs_layout_update()
+    {
+        m_needs_layout_update = false;
+        m_needs_own_geometry_update = false;
+    }
 
     bool is_generated_for_pseudo_element() const { return m_generated_for.has_value(); }
     Optional<CSS::PseudoElement> generated_for_pseudo_element() const { return m_generated_for; }
@@ -299,6 +309,7 @@ private:
     bool m_is_body { false };
 
     bool m_needs_layout_update { false };
+    bool m_needs_own_geometry_update { false };
 
     Optional<CSS::PseudoElement> m_generated_for;
 
