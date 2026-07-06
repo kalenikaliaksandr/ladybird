@@ -12,6 +12,7 @@
 #include <AK/HashMap.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/Windows.h>
+#include <LibCore/EventLoop.h>
 #include <LibCore/EventLoopImplementationWindows.h>
 #include <LibCore/Notifier.h>
 #include <LibCore/System.h>
@@ -329,8 +330,14 @@ size_t EventLoopImplementationWindows::pump(PumpMode pump_mode)
                     Optional<NonnullOwnPtr<EventLoopProcess>> owned_process = s_processes.with_locked([&](auto& processes) {
                         return processes.take(process_id);
                     });
-                    if (owned_process.has_value())
-                        owned_process.release_value()->exit_handler(process_id);
+                    if (owned_process.has_value()) {
+                        // Run the handler from the event queue rather than inline: it may unregister notifiers whose
+                        // completion packets were dequeued into this very batch and are not yet re-associated, which
+                        // would fail the packet cancellation (and leave dangling pointers in the batch).
+                        deferred_invoke([process = owned_process.release_value(), process_id] {
+                            process->exit_handler(process_id);
+                        });
+                    }
                 }
                 continue;
             }
