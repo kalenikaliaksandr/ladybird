@@ -547,6 +547,27 @@ ErrorOr<bool> isatty(int handle)
     return GetFileType(to_handle(handle)) == FILE_TYPE_CHAR;
 }
 
+ErrorOr<TerminalSize> terminal_size(SystemHandleRef handle)
+{
+    CONSOLE_SCREEN_BUFFER_INFO info {};
+    if (!GetConsoleScreenBufferInfo(handle.windows_handle(), &info))
+        return Error::from_windows_error();
+    return TerminalSize {
+        static_cast<size_t>(info.srWindow.Right - info.srWindow.Left + 1),
+        static_cast<size_t>(info.srWindow.Bottom - info.srWindow.Top + 1),
+    };
+}
+
+ErrorOr<void> enable_ansi_escape_sequence_processing(SystemHandleRef handle)
+{
+    DWORD mode = 0;
+    if (!GetConsoleMode(handle.windows_handle(), &mode))
+        return Error::from_windows_error();
+    if (!SetConsoleMode(handle.windows_handle(), mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING))
+        return Error::from_windows_error();
+    return {};
+}
+
 ErrorOr<int> socket(int domain, int type, int protocol)
 {
     auto socket = ::socket(domain, type, protocol);
