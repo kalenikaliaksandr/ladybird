@@ -47,20 +47,6 @@ private:
     Optional<Core::Process> m_process;
 };
 
-#if defined(AK_OS_WINDOWS)
-
-ErrorOr<void> HttpEchoServerFixture::setup(WebView::WebContentOptions&)
-{
-    VERIFY(0 && "HttpEchoServerFixture::setup is not implemented");
-}
-
-void HttpEchoServerFixture::teardown_impl()
-{
-    VERIFY(0 && "HttpEchoServerFixture::teardown_impl is not implemented");
-}
-
-#else
-
 ErrorOr<void> HttpEchoServerFixture::setup(WebView::WebContentOptions& web_content_options)
 {
     auto const script_path = LexicalPath::join(s_fixtures_path, m_script_path);
@@ -69,22 +55,23 @@ ErrorOr<void> HttpEchoServerFixture::setup(WebView::WebContentOptions& web_conte
     // FIXME: Pick a more reasonable log path that is more observable
     auto const log_path = LexicalPath::join(Core::StandardPaths::tempfile_directory(), "http-test-server.log"sv).string();
 
-    auto stdout_fds = TRY(Core::System::pipe2(0));
+    auto stdout_pipe = TRY(Core::System::create_pipe());
 
     auto const process_options = Core::ProcessSpawnOptions {
         .executable = Application::the().python_executable_path,
         .search_for_executable_in_path = true,
+        .die_with_parent = true,
         .arguments = arguments,
         .file_actions = {
             Core::FileAction::OpenFile { ByteString::formatted("{}.stderr", log_path), Core::File::OpenMode::Write, Core::FileAction::StandardStream::Error },
-            Core::FileAction::DupFd { Core::SystemHandleRef::from_raw(stdout_fds[1], Core::HandleKind::File), Core::FileAction::StandardStream::Output } }
+            Core::FileAction::DupFd { stdout_pipe.write_end, Core::FileAction::StandardStream::Output } }
     };
 
     m_process = TRY(Core::Process::spawn(process_options));
 
-    TRY(Core::System::close(stdout_fds[1]));
+    stdout_pipe.write_end.close();
 
-    auto const stdout_file = MUST(Core::File::adopt_fd(stdout_fds[0], Core::File::OpenMode::Read));
+    auto const stdout_file = MUST(Core::File::adopt_handle(move(stdout_pipe.read_end), Core::File::OpenMode::Read));
 
     auto buffer = MUST(ByteBuffer::create_uninitialized(5));
     TRY(stdout_file->read_some(buffer));
@@ -103,20 +90,13 @@ void HttpEchoServerFixture::teardown_impl()
 {
     VERIFY(m_process.has_value());
 
-    auto script_path = LexicalPath::join(s_fixtures_path, m_script_path);
-
-    if (auto kill_or_error = Core::System::kill(m_process->pid(), SIGINT); kill_or_error.is_error()) {
-        if (kill_or_error.error().code() != ESRCH) {
-            warnln("Failed to kill HTTP echo server, error: {}", kill_or_error.error());
-        } else if (auto termination_or_error = m_process->wait_for_termination(); termination_or_error.is_error()) {
-            warnln("Failed to terminate HTTP echo server, error: {}", termination_or_error.error());
-        }
-    }
+    if (auto termination_or_error = m_process->terminate(); termination_or_error.is_error())
+        warnln("Failed to terminate HTTP echo server, error: {}", termination_or_error.error());
+    else if (auto wait_or_error = m_process->wait_for_termination(); wait_or_error.is_error())
+        warnln("Failed to wait for HTTP echo server termination, error: {}", wait_or_error.error());
 
     m_process = {};
 }
-
-#endif
 
 void Fixture::initialize_fixtures()
 {
