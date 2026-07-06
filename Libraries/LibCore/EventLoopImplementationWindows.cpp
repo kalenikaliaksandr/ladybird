@@ -11,6 +11,8 @@
 #include <AK/Diagnostics.h>
 #include <AK/HashMap.h>
 #include <AK/NonnullOwnPtr.h>
+#include <AK/QuickSort.h>
+#include <AK/Time.h>
 #include <AK/Windows.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/EventLoopImplementationWindows.h>
@@ -84,17 +86,27 @@ struct EventLoopWake final : CompletionPacket {
     OwnHandle wait_event;
 };
 
-struct EventLoopTimer final : CompletionPacket {
+// All timers of a thread share one waitable timer, armed for the earliest deadline. Own bookkeeping (rather than a
+// kernel timer object per Core timer) is used because the kernel delivers simultaneously signaled wait completion
+// packets in LIFO order, while timers that are due together must fire in registration order.
+struct EventLoopMasterTimer final : CompletionPacket {
 
-    ~EventLoopTimer()
+    ~EventLoopMasterTimer()
     {
         CancelWaitableTimer(timer.handle);
     }
 
     OwnHandle timer;
     OwnHandle wait_packet;
-    bool is_periodic;
+    bool wait_packet_associated { false };
+};
+
+struct EventLoopTimer {
     WeakPtr<EventReceiver> owner;
+    MonotonicTime deadline { MonotonicTime::now() };
+    int interval_milliseconds { 0 };
+    bool is_periodic { false };
+    u64 sequence { 0 };
 };
 
 // A pipe notifier keeps a zero-byte overlapped read pending on the pipe; its completion signals wait_event once
@@ -169,7 +181,8 @@ struct ThreadData {
     }
 
     ThreadData()
-        : wake_data(make<EventLoopWake>())
+        : master_timer(make<EventLoopMasterTimer>())
+        , wake_data(make<EventLoopWake>())
     {
         wake_data->type = CompletionType::Wake;
         wake_data->wait_event.handle = CreateEvent(NULL, FALSE, FALSE, NULL);
@@ -181,6 +194,15 @@ struct ThreadData {
         NTSTATUS status = g_system.NtCreateWaitCompletionPacket(&wake_data->wait_packet.handle, GENERIC_READ | GENERIC_WRITE, NULL);
         VERIFY(NT_SUCCESS(status));
         status = g_system.NtAssociateWaitCompletionPacket(wake_data->wait_packet.handle, iocp.handle, wake_data->wait_event.handle, wake_data.ptr(), NULL, 0, 0, NULL);
+        VERIFY(NT_SUCCESS(status));
+
+        master_timer->type = CompletionType::Timer;
+        // A high-resolution timer avoids rounding short deadlines up to the default ~16ms timer tick.
+        master_timer->timer.handle = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        if (!master_timer->timer.handle)
+            master_timer->timer.handle = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
+        VERIFY(master_timer->timer.handle);
+        status = g_system.NtCreateWaitCompletionPacket(&master_timer->wait_packet.handle, GENERIC_READ | GENERIC_WRITE, NULL);
         VERIFY(NT_SUCCESS(status));
     }
     ~ThreadData()
@@ -196,9 +218,12 @@ struct ThreadData {
     OwnHandle iocp;
 
     // These are only used to register and unregister. The event loop doesn't access these.
-    HashMap<intptr_t, NonnullOwnPtr<EventLoopTimer>> timers;
     HashMap<Notifier*, NonnullOwnPtr<EventLoopNotifier>> notifiers;
     HashMap<SOCKET, NonnullOwnPtr<EventLoopSocketNotifiers>> socket_notifiers;
+
+    HashMap<intptr_t, NonnullOwnPtr<EventLoopTimer>> timers;
+    u64 next_timer_sequence { 1 };
+    NonnullOwnPtr<EventLoopMasterTimer> master_timer;
 
     // Signal handlers registered on this thread; only accessed from this thread.
     HashMap<int, SignalHandler> signal_handlers_by_id;
@@ -216,6 +241,36 @@ static Sync::MutexProtected<HashMap<pid_t, NonnullOwnPtr<EventLoopProcess>>> s_p
 
 static void arm_pipe_notifier(EventLoopNotifier& notifier_data);
 static int notifier_type_to_network_event(NotificationType type);
+
+// Arms (or disarms) the thread's shared waitable timer for the earliest pending deadline.
+static void arm_master_timer(ThreadData& thread_data)
+{
+    auto& master_timer = *thread_data.master_timer;
+
+    Optional<MonotonicTime> earliest;
+    for (auto& it : thread_data.timers) {
+        if (!earliest.has_value() || it.value->deadline < *earliest)
+            earliest = it.value->deadline;
+    }
+
+    if (!earliest.has_value()) {
+        CancelWaitableTimer(master_timer.timer.handle);
+        return;
+    }
+
+    LARGE_INTEGER due_time = {};
+    // Measured in 0.1μs intervals; negative means relative to now. Clamp to at least one interval so an
+    // already-passed deadline stays a relative time.
+    due_time.QuadPart = -AK::max<i64>((*earliest - MonotonicTime::now()).to_nanoseconds() / 100, 1);
+    BOOL succeeded = SetWaitableTimer(master_timer.timer.handle, &due_time, 0, NULL, NULL, FALSE);
+    VERIFY(succeeded);
+
+    if (!master_timer.wait_packet_associated) {
+        NTSTATUS status = g_system.NtAssociateWaitCompletionPacket(master_timer.wait_packet.handle, thread_data.iocp.handle, master_timer.timer.handle, &master_timer, NULL, 0, 0, NULL);
+        VERIFY(NT_SUCCESS(status));
+        master_timer.wait_packet_associated = true;
+    }
+}
 
 EventLoopImplementationWindows::EventLoopImplementationWindows()
     : m_wake_event(ThreadData::the()->wake_data->wait_event.handle)
@@ -271,13 +326,33 @@ size_t EventLoopImplementationWindows::pump(PumpMode pump_mode)
                 continue;
             }
             if (packet->type == CompletionType::Timer) {
-                auto* timer = static_cast<EventLoopTimer*>(packet);
-                if (auto owner = timer->owner.strong_ref())
-                    event_queue.post_event(owner, Event::Type::Timer);
-                if (timer->is_periodic) {
-                    NTSTATUS status = g_system.NtAssociateWaitCompletionPacket(timer->wait_packet.handle, thread_data->iocp.handle, timer->timer.handle, timer, NULL, 0, 0, NULL);
-                    VERIFY(NT_SUCCESS(status));
+                auto* master_timer = static_cast<EventLoopMasterTimer*>(packet);
+                master_timer->wait_packet_associated = false;
+
+                // Fire every due timer, in registration order for equal deadlines. (This cannot rely on kernel
+                // wakeup order: simultaneously signaled wait completion packets are delivered in LIFO order.)
+                auto now = MonotonicTime::now();
+                Vector<EventLoopTimer*> due_timers;
+                for (auto& it : thread_data->timers) {
+                    if (it.value->deadline <= now)
+                        due_timers.append(it.value.ptr());
                 }
+                quick_sort(due_timers, [](auto* a, auto* b) {
+                    if (a->deadline != b->deadline)
+                        return a->deadline < b->deadline;
+                    return a->sequence < b->sequence;
+                });
+
+                for (auto* timer : due_timers) {
+                    if (auto owner = timer->owner.strong_ref())
+                        event_queue.post_event(owner, Event::Type::Timer);
+                    if (timer->is_periodic)
+                        timer->deadline = now + AK::Duration::from_milliseconds(timer->interval_milliseconds);
+                    else
+                        thread_data->timers.remove(reinterpret_cast<intptr_t>(timer));
+                }
+
+                arm_master_timer(*thread_data);
                 continue;
             }
             if (packet->type == CompletionType::Notifer) {
@@ -554,47 +629,25 @@ intptr_t EventLoopManagerWindows::register_timer(EventReceiver& object, int mill
     VERIFY(milliseconds >= 0);
     auto* thread_data = ThreadData::the();
     VERIFY(thread_data);
-    auto& timers = thread_data->timers;
 
-    // FIXME: This is a temporary fix for issue #3641
-    bool manual_reset = static_cast<Timer&>(object).is_single_shot();
-    HANDLE timer = CreateWaitableTimer(NULL, manual_reset, NULL);
-    VERIFY(timer);
+    auto timer = make<EventLoopTimer>();
+    timer->owner = object.make_weak_ptr();
+    timer->deadline = MonotonicTime::now() + AK::Duration::from_milliseconds(milliseconds);
+    timer->interval_milliseconds = milliseconds;
+    timer->is_periodic = should_reload;
+    timer->sequence = thread_data->next_timer_sequence++;
 
-    auto timer_data = make<EventLoopTimer>();
-    timer_data->type = CompletionType::Timer;
-    timer_data->timer.handle = timer;
-    timer_data->owner = object.make_weak_ptr();
-    timer_data->is_periodic = should_reload;
-    VERIFY(timer_data->timer.handle);
-
-    NTSTATUS status = g_system.NtCreateWaitCompletionPacket(&timer_data->wait_packet.handle, GENERIC_READ | GENERIC_WRITE, NULL);
-    VERIFY(NT_SUCCESS(status));
-
-    LARGE_INTEGER first_time = {};
-    // Measured in 0.1μs intervals, negative means starting from now
-    first_time.QuadPart = -10'000LL * milliseconds;
-    BOOL succeeded = SetWaitableTimer(timer_data->timer.handle, &first_time, should_reload ? milliseconds : 0, NULL, NULL, FALSE);
-    VERIFY(succeeded);
-
-    status = g_system.NtAssociateWaitCompletionPacket(timer_data->wait_packet.handle, thread_data->iocp.handle, timer_data->timer.handle, timer_data.ptr(), NULL, 0, 0, NULL);
-    VERIFY(NT_SUCCESS(status));
-
-    auto timer_id = reinterpret_cast<intptr_t>(timer_data.ptr());
-    VERIFY(!timers.get(timer_id).has_value());
-    timers.set(timer_id, move(timer_data));
+    auto timer_id = reinterpret_cast<intptr_t>(timer.ptr());
+    thread_data->timers.set(timer_id, move(timer));
+    arm_master_timer(*thread_data);
     return timer_id;
 }
 
 void EventLoopManagerWindows::unregister_timer(intptr_t timer_id)
 {
     if (auto* thread_data = ThreadData::the()) {
-        auto maybe_timer = thread_data->timers.take(timer_id);
-        if (!maybe_timer.has_value())
-            return;
-        auto timer = move(maybe_timer.value());
-        NTSTATUS status = g_system.NtCancelWaitCompletionPacket(timer->wait_packet.handle, TRUE);
-        VERIFY(NT_SUCCESS(status));
+        if (thread_data->timers.remove(timer_id))
+            arm_master_timer(*thread_data);
     }
 }
 
