@@ -55,6 +55,12 @@ namespace Web::Layout {
 
 TreeBuilder::TreeBuilder() = default;
 
+void TreeBuilder::note_tree_restructuring_at(Layout::Node const& node)
+{
+    if (m_current_rebuild_root && !m_current_rebuild_root->is_inclusive_ancestor_of(node))
+        m_layout_tree_update_escaped_rebuild_roots = true;
+}
+
 static bool has_inline_or_in_flow_block_children(Layout::Node const& layout_node)
 {
     for (auto child = layout_node.first_child(); child; child = child->next_sibling()) {
@@ -135,7 +141,7 @@ static Layout::Node& insertion_parent_for_inline_node(Layout::NodeWithStyle& lay
     return last_child_creating_anonymous_wrapper_if_needed(layout_parent);
 }
 
-static Layout::Node& insertion_parent_for_block_node(Layout::NodeWithStyle& layout_parent, Layout::Node& layout_node, TreeBuilder::AppendOrPrepend mode)
+static Layout::Node& insertion_parent_for_block_node(Layout::NodeWithStyle& layout_parent, Layout::Node& layout_node, TreeBuilder::AppendOrPrepend mode, TreeBuilder& tree_builder)
 {
     // Inline is fine for in-flow block children (interrupting blocks) and for out-of-flow children;
     // the inline formatting context emits items for both.
@@ -179,6 +185,7 @@ static Layout::Node& insertion_parent_for_block_node(Layout::NodeWithStyle& layo
         return *new_parent;
 
     // Parent block has inline-level children (our siblings); wrap these siblings into an anonymous wrapper block.
+    tree_builder.note_tree_restructuring_at(*new_parent);
     auto wrapper = new_parent->create_anonymous_wrapper();
     wrapper->set_children_are_inline(true);
 
@@ -205,7 +212,7 @@ void TreeBuilder::insert_node_into_inline_or_block_ancestor(Layout::Node& node, 
     auto& nearest_insertion_ancestor = *m_ancestor_stack.last();
 
     auto& insertion_point = display.is_inline_outside() ? insertion_parent_for_inline_node(nearest_insertion_ancestor)
-                                                        : insertion_parent_for_block_node(nearest_insertion_ancestor, node, mode);
+                                                        : insertion_parent_for_block_node(nearest_insertion_ancestor, node, mode, *this);
 
     if (mode == AppendOrPrepend::Prepend)
         insertion_point.prepend_child(node);
@@ -912,6 +919,11 @@ void TreeBuilder::update_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
         && old_layout_node
         && old_layout_node->parent()
         && old_layout_node != layout_node;
+    Optional<TemporaryChange<Layout::Node*>> current_rebuild_root_change;
+    if (may_replace_existing_layout_node && !m_current_rebuild_root) {
+        current_rebuild_root_change.emplace(m_current_rebuild_root, layout_node.ptr());
+        m_rebuilt_subtree_roots.append(layout_node.ptr());
+    }
 
     if (dom_node.is_element() && should_create_layout_node) {
         auto& element = static_cast<DOM::Element&>(dom_node);
