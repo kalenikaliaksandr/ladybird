@@ -4,18 +4,18 @@
     body { margin: 0; }
     #root { position: relative; width: 400px; height: 300px; }
     #boundary {
-        /* left and right are both auto: the horizontal position comes from the static
-           position, which the saved layout inputs carry, so a boundary-self geometry
-           change replays without a full layout. */
         position: absolute;
+        left: 20px;
         top: 10px;
-        width: 150px;
-        height: 60px;
+        /* Intrinsic sizing: replay re-runs it against subtree content on every partial relayout. */
+        width: min-content;
+        height: 80px;
         overflow: hidden;
     }
+    .item { width: 60px; height: 20px; background: green; }
 </style>
 <div id="root">
-    <div id="boundary"></div>
+    <div id="boundary"><div class="item" id="item"></div></div>
 </div>
 <script>
     function rectToString(rect) {
@@ -26,19 +26,21 @@
         document.body.offsetHeight;
 
         const boundary = document.getElementById("boundary");
+        const before = rectToString(boundary.getBoundingClientRect());
         const partialBefore = internals.partialLayoutCount();
         const fullBefore = internals.fullLayoutCount();
 
-        boundary.style.top = "60px";
+        document.getElementById("item").style.width = "110px";
         document.body.offsetHeight;
 
-        const rect = boundary.getBoundingClientRect();
+        const after = rectToString(boundary.getBoundingClientRect());
         const partialDelta = internals.partialLayoutCount() - partialBefore;
         const fullDelta = internals.fullLayoutCount() - fullBefore;
 
-        println(`boundary=${rectToString(rect)}`);
+        println(`boundary-before=${before}`);
+        println(`boundary-after=${after}`);
         println(`partial-layouts=${partialDelta} full-layouts=${fullDelta}`);
-        println(rectToString(rect) === "0,60,150,60"
+        println(before === "20,10,60,80" && after === "20,10,110,80"
             && partialDelta === 1 && fullDelta === 0 ? "PASS" : "FAIL");
         done();
     });
