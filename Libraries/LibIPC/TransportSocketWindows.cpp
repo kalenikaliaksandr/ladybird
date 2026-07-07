@@ -11,7 +11,6 @@
 #include <AK/Types.h>
 #include <LibCore/System.h>
 #include <LibIPC/File.h>
-#include <LibIPC/HandleType.h>
 #include <LibIPC/Limits.h>
 #include <LibIPC/TransportHandle.h>
 #include <LibIPC/TransportSocketWindows.h>
@@ -20,7 +19,7 @@
 
 namespace IPC {
 
-static constexpr size_t MAX_SERIALIZED_ATTACHMENT_SIZE = sizeof(HandleType) + sizeof(WSAPROTOCOL_INFOW);
+static constexpr size_t MAX_SERIALIZED_ATTACHMENT_SIZE = sizeof(Core::HandleKind) + sizeof(WSAPROTOCOL_INFOW);
 static constexpr size_t MAX_ATTACHMENT_DATA_SIZE = MAX_MESSAGE_FD_COUNT * MAX_SERIALIZED_ATTACHMENT_SIZE;
 
 ErrorOr<NonnullOwnPtr<TransportSocketWindows>> TransportSocketWindows::from_socket(NonnullOwnPtr<Core::LocalSocket> socket)
@@ -33,20 +32,19 @@ ErrorOr<TransportSocketWindows::Paired> TransportSocketWindows::create_paired()
     int fds[2] {};
     TRY(Core::System::socketpair(AF_LOCAL, SOCK_STREAM, 0, fds));
 
-    ArmedScopeGuard guard_fd_0 { [&] { MUST(Core::System::close(fds[0])); } };
-    ArmedScopeGuard guard_fd_1 { [&] { MUST(Core::System::close(fds[1])); } };
+    auto local_end = Core::SystemHandle::adopt(Core::SystemHandleRef::from_socket(fds[0]));
+    auto remote_end = Core::SystemHandle::adopt(Core::SystemHandleRef::from_socket(fds[1]));
 
     auto socket0 = TRY(Core::LocalSocket::adopt_fd(fds[0]));
-    guard_fd_0.disarm();
+    (void)local_end.leak(); // Now owned by socket0.
     TRY(socket0->set_close_on_exec(true));
     TRY(socket0->set_blocking(false));
 
-    TRY(Core::System::set_close_on_exec(fds[1], true));
-    guard_fd_1.disarm();
+    TRY(Core::System::set_close_on_exec(remote_end, true));
 
     return Paired {
         make<TransportSocketWindows>(move(socket0)),
-        TransportHandle { File::adopt_fd(fds[1]) },
+        TransportHandle { File::adopt_handle(move(remote_end)) },
     };
 }
 
@@ -112,28 +110,33 @@ ErrorOr<Vector<u8>> TransportSocketWindows::serialize_attachments(Vector<Attachm
     TRY(serialized_attachments.try_ensure_capacity(attachments.size() * MAX_SERIALIZED_ATTACHMENT_SIZE));
 
     for (auto& attachment : attachments) {
-        int handle = attachment.to_fd();
-        ScopeGuard close_original_handle = [&] {
-            if (handle != -1)
-                (void)Core::System::close(handle);
-        };
+        auto handle = attachment.take_handle();
 
-        if (Core::System::is_socket(handle)) {
-            TRY(serialized_attachments.try_append(to_underlying(HandleType::Socket)));
+        // The attachment's kind decides how it is duplicated into the peer process; it also travels on the wire so
+        // the peer can adopt the handle with the correct kind.
+        TRY(serialized_attachments.try_append(to_underlying(handle.kind())));
 
+        switch (handle.kind()) {
+        case Core::HandleKind::Socket: {
             WSAPROTOCOL_INFOW pi {};
-            if (WSADuplicateSocketW(handle, m_peer_pid, &pi))
+            if (WSADuplicateSocketW(static_cast<SOCKET>(handle.socket()), m_peer_pid, &pi))
                 return Error::from_windows_error();
             TRY(serialized_attachments.try_append(reinterpret_cast<u8*>(&pi), sizeof(pi)));
-        } else {
-            TRY(serialized_attachments.try_append(to_underlying(HandleType::Generic)));
-
+            break;
+        }
+        case Core::HandleKind::File:
+        case Core::HandleKind::Pipe: {
             HANDLE duplicated_handle = INVALID_HANDLE_VALUE;
-            if (!DuplicateHandle(GetCurrentProcess(), to_handle(handle), peer_process_handle, &duplicated_handle, 0, FALSE, DUPLICATE_SAME_ACCESS))
+            if (!DuplicateHandle(GetCurrentProcess(), handle.windows_handle(), peer_process_handle, &duplicated_handle, 0, FALSE, DUPLICATE_SAME_ACCESS))
                 return Error::from_windows_error();
 
-            auto duplicated_fd = to_fd(duplicated_handle);
-            TRY(serialized_attachments.try_append(reinterpret_cast<u8*>(&duplicated_fd), sizeof(duplicated_fd)));
+            // NT handle values are 32-bit significant, so they fit in an int on the wire.
+            auto duplicated_value = static_cast<int>(reinterpret_cast<intptr_t>(duplicated_handle));
+            TRY(serialized_attachments.try_append(reinterpret_cast<u8*>(&duplicated_value), sizeof(duplicated_value)));
+            break;
+        }
+        case Core::HandleKind::Invalid:
+            VERIFY_NOT_REACHED();
         }
     }
 
@@ -143,33 +146,36 @@ ErrorOr<Vector<u8>> TransportSocketWindows::serialize_attachments(Vector<Attachm
 
 Attachment TransportSocketWindows::deserialize_attachment(ReadonlyBytes& serialized_bytes)
 {
-    VERIFY(serialized_bytes.size() >= sizeof(HandleType));
+    VERIFY(serialized_bytes.size() >= sizeof(Core::HandleKind));
 
-    UnderlyingType<HandleType> raw_type {};
-    ByteReader::load(serialized_bytes.data(), raw_type);
-    auto type = static_cast<HandleType>(raw_type);
-    serialized_bytes = serialized_bytes.slice(sizeof(HandleType));
+    UnderlyingType<Core::HandleKind> raw_kind {};
+    ByteReader::load(serialized_bytes.data(), raw_kind);
+    auto kind = static_cast<Core::HandleKind>(raw_kind);
+    serialized_bytes = serialized_bytes.slice(sizeof(Core::HandleKind));
 
-    switch (type) {
-    case HandleType::Generic: {
+    switch (kind) {
+    case Core::HandleKind::File:
+    case Core::HandleKind::Pipe: {
         VERIFY(serialized_bytes.size() >= sizeof(int));
 
         int handle = -1;
         ByteReader::load(serialized_bytes.data(), handle);
         serialized_bytes = serialized_bytes.slice(sizeof(handle));
-        return Attachment::from_fd(handle);
+        return Attachment::from_handle(Core::SystemHandle::adopt(Core::SystemHandleRef::from_raw(handle, kind)));
     }
-    case HandleType::Socket: {
+    case Core::HandleKind::Socket: {
         VERIFY(serialized_bytes.size() >= sizeof(WSAPROTOCOL_INFOW));
 
         WSAPROTOCOL_INFOW pi {};
         memcpy(&pi, serialized_bytes.data(), sizeof(pi));
         serialized_bytes = serialized_bytes.slice(sizeof(pi));
 
-        auto handle = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, &pi, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
-        VERIFY(handle != INVALID_SOCKET);
-        return Attachment::from_fd(handle);
+        auto socket = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, &pi, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+        VERIFY(socket != INVALID_SOCKET);
+        return Attachment::from_handle(Core::SystemHandle::adopt_socket(static_cast<Core::SystemHandle::NativeType>(socket)));
     }
+    case Core::HandleKind::Invalid:
+        break;
     }
 
     VERIFY_NOT_REACHED();
@@ -334,7 +340,7 @@ TransportSocketWindows::ShouldShutdown TransportSocketWindows::read_as_many_mess
 ErrorOr<TransportHandle> TransportSocketWindows::release_for_transfer()
 {
     auto fd = TRY(m_socket->release_fd());
-    return TransportHandle { File::adopt_fd(fd) };
+    return TransportHandle { File::adopt_handle(Core::SystemHandle::adopt(Core::SystemHandleRef::from_socket(fd))) };
 }
 
 }

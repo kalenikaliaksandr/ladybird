@@ -85,7 +85,7 @@ ErrorOr<void> encode(Encoder& encoder, Gfx::LinuxDmaBufHandle const& dmabuf)
     TRY(encoder.encode(dmabuf.drm_format));
     TRY(encoder.encode(dmabuf.pitch));
     TRY(encoder.encode(dmabuf.modifier));
-    TRY(encoder.encode(TRY(IPC::File::clone_fd(dmabuf.file.fd()))));
+    TRY(encoder.encode(TRY(IPC::File::clone(dmabuf.file.handle()))));
     return {};
 }
 

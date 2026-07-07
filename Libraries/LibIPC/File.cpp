@@ -16,62 +16,42 @@ namespace IPC {
 
 File File::adopt_file(NonnullOwnPtr<Core::File> file)
 {
-    return File(file->leak_fd());
+    return File(file->leak_handle());
+}
+
+File File::adopt_handle(Core::SystemHandle handle)
+{
+    return File(move(handle));
 }
 
 File File::adopt_fd(int fd)
 {
-    return File(fd);
+    return File(Core::SystemHandle::adopt(Core::SystemHandleRef::from_raw(fd, Core::HandleKind::File)));
 }
 
-ErrorOr<File> File::clone_fd(int fd)
+ErrorOr<File> File::clone(Core::SystemHandleRef handle)
 {
-    int new_fd = TRY(Core::System::dup(fd));
-    return File(new_fd);
-}
-
-File::File(int fd)
-    : m_fd(fd)
-{
-}
-
-File::File(File&& other)
-    : m_fd(exchange(other.m_fd, -1))
-{
-}
-
-File& File::operator=(File&& other)
-{
-    if (this != &other) {
-        m_fd = exchange(other.m_fd, -1);
-    }
-    return *this;
-}
-
-File::~File()
-{
-    if (m_fd != -1)
-        (void)Core::System::close(m_fd);
+    return File(TRY(Core::System::dup(handle)));
 }
 
 // FIXME: IPC::Files transferred over the wire always set O_CLOEXEC during decoding. Perhaps we should add an option to
 //        allow the receiver to decide whether to make it O_CLOEXEC or not. Or an attribute in the .ipc file?
 ErrorOr<void> File::clear_close_on_exec()
 {
-    return Core::System::set_close_on_exec(m_fd, false);
+    return Core::System::set_close_on_exec(m_handle, false);
 }
 
 template<>
 ErrorOr<File> decode(Decoder& decoder)
 {
     auto attachment = TRY(decoder.attachments().try_dequeue());
-    int fd = attachment.to_fd();
-    if (fd < 0)
-        return Error::from_string_literal("Failed to obtain fd from attachment");
+    auto handle = attachment.take_handle();
+    if (!handle.is_valid())
+        return Error::from_string_literal("Failed to obtain handle from attachment");
 #ifndef AK_OS_WINDOWS
-    TRY(Core::System::set_close_on_exec(fd, true));
+    TRY(Core::System::set_close_on_exec(handle, true));
 #endif
-    return File::adopt_fd(fd);
+    return File::adopt_handle(move(handle));
 }
 
 }

@@ -1254,8 +1254,8 @@ ErrorOr<void> Request::inform_client_request_started()
 ErrorOr<void> Request::send_request_pipe_to_client()
 {
     VERIFY(m_client_request_pipe.has_value());
-    auto reader_fd = TRY(Core::System::dup(m_client_request_pipe->reader_fd()));
-    m_client->async_request_started(m_request_id, IPC::File::adopt_fd(reader_fd));
+    auto reader = TRY(Core::System::dup(Core::SystemHandleRef::from_socket(m_client_request_pipe->reader_fd())));
+    m_client->async_request_started(m_request_id, IPC::File::adopt_handle(move(reader)));
     return {};
 }
 

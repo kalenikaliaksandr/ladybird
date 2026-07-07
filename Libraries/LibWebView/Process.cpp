@@ -80,8 +80,8 @@ ErrorOr<Process::ProcessAndIPCTransport> Process::spawn_and_connect_to_process(C
     int socket_fds[2] {};
     TRY(Core::System::socketpair(AF_LOCAL, SOCK_STREAM, 0, socket_fds));
 
-    ArmedScopeGuard guard_fd_0 { [&] { MUST(Core::System::close(socket_fds[0])); } };
-    ArmedScopeGuard guard_fd_1 { [&] { MUST(Core::System::close(socket_fds[1])); } };
+    ArmedScopeGuard guard_fd_0 { [&] { MUST(Core::System::close(Core::SystemHandleRef::from_socket(socket_fds[0]))); } };
+    ArmedScopeGuard guard_fd_1 { [&] { MUST(Core::System::close(Core::SystemHandleRef::from_socket(socket_fds[1]))); } };
 
     // Note: Core::System::socketpair creates inheritable sockets both on Linux and Windows unless SOCK_CLOEXEC is specified.
     TRY(Core::System::set_close_on_exec(socket_fds[0], true));

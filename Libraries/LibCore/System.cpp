@@ -888,12 +888,6 @@ int getpid()
     return ::getpid();
 }
 
-bool is_socket(int fd)
-{
-    auto result = fstat(fd);
-    return !result.is_error() && S_ISSOCK(result.value().st_mode);
-}
-
 ErrorOr<void> sleep_ms(u32 milliseconds)
 {
     if (usleep(1000 * milliseconds) != 0)

@@ -180,7 +180,6 @@ CORE_API ErrorOr<void> set_resource_limits(int resource, rlim_t limit);
 #endif
 
 CORE_API int getpid();
-CORE_API bool is_socket(int fd);
 CORE_API ErrorOr<void> sleep_ms(u32 milliseconds);
 CORE_API ErrorOr<void> set_close_on_exec(int fd, bool enabled);
 

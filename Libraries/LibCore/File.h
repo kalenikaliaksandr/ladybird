@@ -87,6 +87,13 @@ public:
         return fd();
     }
 
+    // Transfers ownership of the handle to the caller; the File remains usable (like leak_fd()) but will not close it.
+    [[nodiscard]] SystemHandle leak_handle()
+    {
+        m_should_close_file_descriptor = ShouldCloseFileDescriptor::No;
+        return SystemHandle::adopt(m_handle.ref());
+    }
+
     int fd() const
     {
         return static_cast<int>(m_handle.raw_value());

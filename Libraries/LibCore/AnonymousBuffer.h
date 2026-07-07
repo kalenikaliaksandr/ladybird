@@ -12,6 +12,7 @@
 #include <AK/RefPtr.h>
 #include <AK/Types.h>
 #include <LibCore/Export.h>
+#include <LibCore/SystemHandle.h>
 
 namespace Core {
 
@@ -23,6 +24,9 @@ public:
     ~AnonymousBufferImpl();
 
     int fd() const { return m_fd; }
+    // On Windows the "fd" is a file-mapping HANDLE, which HandleKind::File covers (only generic handle operations
+    // ever apply to it).
+    SystemHandleRef handle() const { return SystemHandleRef::from_raw(m_fd, HandleKind::File); }
     size_t size() const { return m_size; }
     void* data() { return m_data; }
     void const* data() const { return m_data; }
@@ -45,6 +49,7 @@ public:
     bool is_valid() const { return m_impl; }
 
     int fd() const { return m_impl ? m_impl->fd() : -1; }
+    SystemHandleRef handle() const { return m_impl ? m_impl->handle() : SystemHandleRef {}; }
     size_t size() const { return m_impl ? m_impl->size() : 0; }
 
     ReadonlyBytes bytes() const

@@ -10,6 +10,7 @@
 #include <AK/Noncopyable.h>
 #include <AK/StdLibExtras.h>
 #include <LibCore/Forward.h>
+#include <LibCore/SystemHandle.h>
 
 namespace IPC {
 
@@ -20,25 +21,32 @@ public:
     File() = default;
 
     static File adopt_file(NonnullOwnPtr<Core::File> file);
+    static File adopt_handle(Core::SystemHandle);
+    // NOTE: This tags the fd HandleKind::File; use adopt_handle() for anything that is not a plain file.
     static File adopt_fd(int fd);
-    static ErrorOr<File> clone_fd(int fd);
+    static ErrorOr<File> clone(Core::SystemHandleRef);
 
-    File(File&& other);
-    File& operator=(File&& other);
+    File(File&& other) = default;
+    File& operator=(File&& other) = default;
 
-    ~File();
+    ~File() = default;
 
-    int fd() const { return m_fd; }
+    Core::SystemHandleRef handle() const { return m_handle.ref(); }
+    int fd() const { return static_cast<int>(m_handle.raw_value()); }
 
-    // This is 'const' since generated IPC messages expose all parameters by const reference.
-    [[nodiscard]] int take_fd() const { return exchange(m_fd, -1); }
+    // These are 'const' since generated IPC messages expose all parameters by const reference.
+    [[nodiscard]] Core::SystemHandle take_handle() const { return move(m_handle); }
+    [[nodiscard]] int take_fd() const { return static_cast<int>(m_handle.leak().raw_value()); }
 
     ErrorOr<void> clear_close_on_exec();
 
 private:
-    explicit File(int fd);
+    explicit File(Core::SystemHandle handle)
+        : m_handle(move(handle))
+    {
+    }
 
-    mutable int m_fd { -1 };
+    mutable Core::SystemHandle m_handle;
 };
 
 }

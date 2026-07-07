@@ -26,7 +26,7 @@ UDPServer::UDPServer()
 
 UDPServer::~UDPServer()
 {
-    MUST(Core::System::close(m_fd));
+    MUST(Core::System::close(SystemHandleRef::from_socket(m_fd)));
 }
 
 bool UDPServer::bind(IPv4Address const& address, u16 port)

@@ -24,7 +24,7 @@ static ErrorOr<Gfx::ShareableBitmap> decode_shareable_bitmap(Gfx::BitmapFormat f
     IPC::MessageBuffer message_buffer;
     IPC::Encoder encoder { message_buffer };
     MUST(encoder.encode(true));
-    MUST(encoder.encode(MUST(IPC::File::clone_fd(buffer.fd()))));
+    MUST(encoder.encode(MUST(IPC::File::clone(buffer.handle()))));
     MUST(encoder.encode(size));
     MUST(encoder.encode(static_cast<u32>(format)));
     MUST(encoder.encode(static_cast<u32>(Gfx::AlphaType::Premultiplied)));

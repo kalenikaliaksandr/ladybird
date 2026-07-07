@@ -171,10 +171,10 @@ ErrorOr<void> encode(Encoder& encoder, URL::Host const& host)
 template<>
 ErrorOr<void> encode(Encoder& encoder, File const& file)
 {
-    int fd = file.take_fd();
-    VERIFY(fd >= 0);
+    auto handle = file.take_handle();
+    VERIFY(handle.is_valid());
 
-    TRY(encoder.append_attachment(Attachment::from_fd(fd)));
+    TRY(encoder.append_attachment(Attachment::from_handle(move(handle))));
     return {};
 }
 
@@ -191,7 +191,7 @@ ErrorOr<void> encode(Encoder& encoder, Core::AnonymousBuffer const& buffer)
 
     if (buffer.is_valid()) {
         TRY(encoder.encode_size(buffer.size()));
-        TRY(encoder.encode(TRY(IPC::File::clone_fd(buffer.fd()))));
+        TRY(encoder.encode(TRY(IPC::File::clone(buffer.handle()))));
     }
 
     return {};

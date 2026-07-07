@@ -4,42 +4,21 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibCore/System.h>
 #include <LibIPC/Attachment.h>
 
 namespace IPC {
 
-Attachment::Attachment(Attachment&& other)
-    : m_fd(exchange(other.m_fd, -1))
+Attachment Attachment::from_handle(Core::SystemHandle handle)
 {
-}
-
-Attachment& Attachment::operator=(Attachment&& other)
-{
-    if (this != &other) {
-        if (m_fd != -1)
-            (void)Core::System::close(m_fd);
-        m_fd = exchange(other.m_fd, -1);
-    }
-    return *this;
-}
-
-Attachment::~Attachment()
-{
-    if (m_fd != -1)
-        (void)Core::System::close(m_fd);
+    Attachment attachment;
+    attachment.m_handle = move(handle);
+    return attachment;
 }
 
 Attachment Attachment::from_fd(int fd)
 {
-    Attachment attachment;
-    attachment.m_fd = fd;
-    return attachment;
-}
-
-int Attachment::to_fd()
-{
-    return exchange(m_fd, -1);
+    // NOTE: This tags the fd HandleKind::File; use from_handle() for anything that is not a plain file.
+    return from_handle(Core::SystemHandle::adopt(Core::SystemHandleRef::from_raw(fd, Core::HandleKind::File)));
 }
 
 }

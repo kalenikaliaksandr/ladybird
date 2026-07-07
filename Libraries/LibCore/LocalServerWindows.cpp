@@ -20,7 +20,7 @@ LocalServer::LocalServer() = default;
 LocalServer::~LocalServer()
 {
     if (static_cast<SOCKET>(m_fd) != INVALID_SOCKET)
-        MUST(Core::System::close(m_fd));
+        MUST(Core::System::close(SystemHandleRef::from_socket(m_fd)));
 }
 
 ErrorOr<void> LocalServer::take_over_fd(int socket_fd)

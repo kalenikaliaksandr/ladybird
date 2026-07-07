@@ -19,7 +19,7 @@ ErrorOr<NonnullRefPtr<TCPServer>> TCPServer::try_create()
 {
     int fd = TRY(Core::System::socket(AF_INET, SOCK_STREAM, 0));
     ArmedScopeGuard close_fd { [fd]() {
-        MUST(Core::System::close(fd));
+        MUST(Core::System::close(SystemHandleRef::from_socket(fd)));
     } };
 
     int option = 1;
@@ -39,7 +39,7 @@ TCPServer::TCPServer(int fd)
 
 TCPServer::~TCPServer()
 {
-    MUST(Core::System::close(m_fd));
+    MUST(Core::System::close(SystemHandleRef::from_socket(m_fd)));
 }
 
 ErrorOr<void> TCPServer::listen(IPv4Address const& address, u16 port, AllowAddressReuse allow_address_reuse)

@@ -61,10 +61,6 @@ ErrorOr<NonnullOwnPtr<Core::LocalSocket>> take_over_socket_from_system_server(By
         fd = it->value;
     }
 
-    // Sanity check: it has to be a socket.
-    if (!System::is_socket(fd))
-        return Error::from_string_literal("The fd or handle we got from SystemServer is not a socket");
-
     auto socket = TRY(Core::LocalSocket::adopt_fd(fd));
     // It had to be !CLOEXEC for obvious reasons, but we
     // don't need it to be !CLOEXEC anymore, so set the

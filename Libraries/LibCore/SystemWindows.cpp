@@ -146,15 +146,12 @@ ErrorOr<int> open(StringView path, int options, mode_t mode)
     return dup(_get_osfhandle(fd));
 }
 
+// NOTE: The int-fd overloads treat the value as HandleKind::File. Handles of other kinds must go through the
+//       SystemHandleRef overloads, which dispatch to the right API family.
 ErrorOr<void> close(int handle)
 {
-    if (is_socket(handle)) {
-        if (closesocket(handle))
-            return Error::from_windows_error();
-    } else {
-        if (!CloseHandle(to_handle(handle)))
-            return Error::from_windows_error();
-    }
+    if (!CloseHandle(to_handle(handle)))
+        return Error::from_windows_error();
     return {};
 }
 
@@ -360,26 +357,10 @@ ErrorOr<int> dup(int handle)
     if (handle < 0) {
         return Error::from_windows_error(ERROR_INVALID_HANDLE);
     }
-    if (is_socket(handle)) {
-        WSAPROTOCOL_INFOW pi = {};
-        if (WSADuplicateSocketW(handle, GetCurrentProcessId(), &pi))
-            return Error::from_windows_error();
-        SOCKET socket = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, &pi, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
-        if (socket == INVALID_SOCKET)
-            return Error::from_windows_error();
-        return socket;
-    } else {
-        HANDLE new_handle = 0;
-        if (!DuplicateHandle(GetCurrentProcess(), to_handle(handle), GetCurrentProcess(), &new_handle, 0, FALSE, DUPLICATE_SAME_ACCESS))
-            return Error::from_windows_error();
-        return to_fd(new_handle);
-    }
-}
-
-bool is_socket(int handle)
-{
-    // FILE_TYPE_PIPE is returned for sockets and pipes. We don't use Windows pipes.
-    return GetFileType(to_handle(handle)) == FILE_TYPE_PIPE;
+    HANDLE new_handle = 0;
+    if (!DuplicateHandle(GetCurrentProcess(), to_handle(handle), GetCurrentProcess(), &new_handle, 0, FALSE, DUPLICATE_SAME_ACCESS))
+        return Error::from_windows_error();
+    return to_fd(new_handle);
 }
 
 ErrorOr<void> bind(int sockfd, struct sockaddr const* name, socklen_t name_size)
