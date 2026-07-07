@@ -17,6 +17,7 @@
 #include <AK/Types.h>
 #include <LibCore/File.h>
 #include <LibCore/Notifier.h>
+#include <LibCore/SystemHandle.h>
 #include <LibWebView/Process.h>
 
 namespace TestWeb {
@@ -65,7 +66,7 @@ private:
     };
 
     ViewOutputCapture* output_capture_for_view(TestWebView const&);
-    void log_helper_message(HelperOutputSource, int tee_fd, StringView);
+    void log_helper_message(HelperOutputSource, Core::SystemHandleRef tee, StringView);
     void restore_stderr();
     void setup_output_capture_for_helper_process(WebView::Process&);
     void setup_output_capture_for_view(TestWebView&, ViewOutputCapture&);

@@ -19,6 +19,12 @@
 namespace TestWeb {
 
 static ByteString format_elapsed_time(UnixDateTime run_start_time);
+static Core::SystemHandleRef stderr_tee_for(Optional<int> const& original_fd)
+{
+    if (original_fd.has_value())
+        return Core::SystemHandleRef::from_raw(*original_fd, Core::HandleKind::File);
+    return Core::System::standard_error_handle();
+}
 static ByteString format_exit_status(Optional<int> exit_status);
 static void setup_capture_notifier(RefPtr<Core::Notifier>& notifier, Core::SystemHandleRef handle, bool drain_available, Function<void(StringView)> on_output);
 static bool drain_capture_output(Core::SystemHandleRef handle, bool drain_available, Function<void(StringView)> const& on_output);
@@ -38,7 +44,7 @@ TestRunCapture::TestRunCapture()
         consume_helper_capture(process.pid());
         log_helper_message(
             { process.type(), process.pid() },
-            m_stderr_capture.original_fd.value_or(STDERR_FILENO),
+            stderr_tee_for(m_stderr_capture.original_fd),
             ByteString::formatted("test-web: process exited: {}\n", format_exit_status(exit_status)));
         m_previous_on_process_exited(move(process), exit_status);
     };
@@ -69,7 +75,7 @@ TestRunCapture::TestRunCapture()
     m_stderr_capture.reader = MUST(Core::File::adopt_fd(read_fd, Core::File::OpenMode::Read));
     int browser_pid = Core::System::getpid();
     setup_capture_notifier(m_stderr_capture.notifier, m_stderr_capture.reader->handle(), true, [this, browser_pid](StringView message) {
-        log_helper_message({ WebView::ProcessType::Browser, browser_pid }, m_stderr_capture.original_fd.value_or(STDERR_FILENO), message);
+        log_helper_message({ WebView::ProcessType::Browser, browser_pid }, stderr_tee_for(m_stderr_capture.original_fd), message);
     });
 #endif
 }
@@ -89,10 +95,10 @@ TestRunCapture::ViewOutputCapture* TestRunCapture::output_capture_for_view(TestW
     return capture.value();
 }
 
-void TestRunCapture::log_helper_message(HelperOutputSource source, int tee_fd, StringView message)
+void TestRunCapture::log_helper_message(HelperOutputSource source, Core::SystemHandleRef tee, StringView message)
 {
     if (Application::the().verbosity >= Application::VERBOSITY_LEVEL_LOG_TEST_OUTPUT)
-        (void)Core::System::write(tee_fd, message.bytes());
+        (void)Core::System::write(tee, message.bytes());
 
     bool const should_append_header = !m_last_helper_source.has_value()
         || m_last_helper_source->type != source.type
@@ -142,7 +148,7 @@ void TestRunCapture::setup_output_capture_for_view(TestWebView& view, ViewOutput
     if (output_capture.stdout_file) {
         setup_capture_notifier(view_capture.stdout_notifier, output_capture.stdout_file->handle(), false, [&view_capture](StringView message) {
             if (Application::the().verbosity >= Application::VERBOSITY_LEVEL_LOG_TEST_OUTPUT)
-                (void)Core::System::write(STDOUT_FILENO, message.bytes());
+                (void)Core::System::write(Core::System::standard_output_handle(), message.bytes());
             view_capture.output.write(message);
         });
     }
@@ -150,7 +156,7 @@ void TestRunCapture::setup_output_capture_for_view(TestWebView& view, ViewOutput
     if (output_capture.stderr_file) {
         setup_capture_notifier(view_capture.stderr_notifier, output_capture.stderr_file->handle(), false, [this, &view_capture](StringView message) {
             if (Application::the().verbosity >= Application::VERBOSITY_LEVEL_LOG_TEST_OUTPUT)
-                (void)Core::System::write(m_stderr_capture.original_fd.value_or(STDERR_FILENO), message.bytes());
+                (void)Core::System::write(stderr_tee_for(m_stderr_capture.original_fd), message.bytes());
             view_capture.output.write(message);
         });
     }
@@ -207,7 +213,7 @@ void TestRunCapture::restore_stderr()
     (void)fflush(stderr);
     int browser_pid = Core::System::getpid();
     (void)drain_capture_output(m_stderr_capture.reader->handle(), true, [this, browser_pid](StringView message) {
-        log_helper_message({ WebView::ProcessType::Browser, browser_pid }, m_stderr_capture.original_fd.value_or(STDERR_FILENO), message);
+        log_helper_message({ WebView::ProcessType::Browser, browser_pid }, stderr_tee_for(m_stderr_capture.original_fd), message);
     });
     auto original_stderr_fd = m_stderr_capture.original_fd.release_value();
 
@@ -243,7 +249,7 @@ void TestRunCapture::setup_output_capture_for_helper_process(WebView::Process& p
     if (output_capture.stdout_file) {
         helper_capture->stdout_reader = move(output_capture.stdout_file);
         setup_capture_notifier(helper_capture->stdout_notifier, helper_capture->stdout_reader->handle(), false, [this, capture = helper_capture_ptr](StringView message) {
-            log_helper_message({ capture->type, capture->pid }, STDOUT_FILENO, message);
+            log_helper_message({ capture->type, capture->pid }, Core::System::standard_output_handle(), message);
         });
     }
     if (output_capture.stderr_file) {
@@ -251,7 +257,7 @@ void TestRunCapture::setup_output_capture_for_helper_process(WebView::Process& p
         setup_capture_notifier(helper_capture->stderr_notifier, helper_capture->stderr_reader->handle(), false, [this, capture = helper_capture_ptr](StringView message) {
             log_helper_message(
                 { capture->type, capture->pid },
-                m_stderr_capture.original_fd.value_or(STDERR_FILENO),
+                stderr_tee_for(m_stderr_capture.original_fd),
                 message);
         });
     }
@@ -314,12 +320,12 @@ void TestRunCapture::consume_helper_capture(pid_t pid)
 
     if (helper_capture->stdout_reader) {
         (void)drain_capture_output(helper_capture->stdout_reader->handle(), true, [this, type = helper_capture->type, pid = helper_capture->pid](StringView message) {
-            log_helper_message({ type, pid }, STDOUT_FILENO, message);
+            log_helper_message({ type, pid }, Core::System::standard_output_handle(), message);
         });
     }
     if (helper_capture->stderr_reader) {
         (void)drain_capture_output(helper_capture->stderr_reader->handle(), true, [this, type = helper_capture->type, pid = helper_capture->pid](StringView message) {
-            log_helper_message({ type, pid }, m_stderr_capture.original_fd.value_or(STDERR_FILENO), message);
+            log_helper_message({ type, pid }, stderr_tee_for(m_stderr_capture.original_fd), message);
         });
     }
     helper_capture->stdout_notifier->close();

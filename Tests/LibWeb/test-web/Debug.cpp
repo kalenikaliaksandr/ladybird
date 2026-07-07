@@ -70,8 +70,8 @@ static void maybe_attach_gdb_to_process(pid_t pid)
 void maybe_attach_on_fail_fast_timeout(pid_t pid)
 {
     if (pid <= 0
-        || !Core::System::isatty(STDIN_FILENO).value_or(false)
-        || !Core::System::isatty(STDOUT_FILENO).value_or(false))
+        || !Core::System::isatty(Core::System::standard_input_handle()).value_or(false)
+        || !Core::System::isatty(Core::System::standard_output_handle()).value_or(false))
         return;
 
     outln("Fail-fast timeout in WebContent pid {}.", pid);
