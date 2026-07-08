@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/svg-filter-element-transform-ref.html" />
+<style>body { margin: 0; } svg { display: block; }</style>
+<!-- Filter primitive lengths are in the filtered element's user coordinate
+     system, which its own transform attribute establishes: the feOffset
+     displacement must scale with it. -->
+<svg width="200" height="200">
+    <filter id="f" x="-1" y="-1" width="3" height="3"><feOffset dx="5" dy="5"/></filter>
+    <rect x="10" y="10" width="20" height="20" fill="green" transform="scale(2)" filter="url(#f)"/>
+</svg>

@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>body { margin: 0; } svg { display: block; }</style>
+<svg width="40000" height="40000" viewBox="0 0 1 1">
+    <image width="1" height="1" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='green'/%3E%3C/svg%3E"/>
+</svg>
+<script>
+    asyncTest(async (done) => {
+        // A huge viewport scale must not make image rasterization request an
+        // unallocatable bitmap.
+        document.body.offsetHeight;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        println("PASS");
+        done();
+    });
+</script>

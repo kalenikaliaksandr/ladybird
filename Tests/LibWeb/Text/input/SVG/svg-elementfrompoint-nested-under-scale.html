@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>body { margin: 0; } svg { display: block; }</style>
+<svg width="200" height="100" viewBox="0 0 20 10">
+    <svg x="3" y="2" width="10" height="5"><rect id="r1" x="1" y="1" width="4" height="3" fill="green"/></svg>
+    <g transform="translate(12 2)"><rect id="r2" x="0" y="0" width="4" height="3" fill="blue"/></g>
+</svg>
+<script>
+    test(() => {
+        // r1 spans CSS px (40,30)-(80,60); r2 spans (120,20)-(160,50).
+        const probes = [
+            [60, 45], // inside r1
+            [140, 35], // inside r2
+            [90, 45], // between the rects
+        ];
+        for (const [x, y] of probes) {
+            const el = document.elementFromPoint(x, y);
+            println(`${x},${y}: ${el.id || el.tagName.toLowerCase()}`);
+        }
+    });
+</script>

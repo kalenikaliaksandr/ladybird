@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/svg-pattern-content-under-scale-ref.html" />
+<style>body { margin: 0; } svg { display: block; }</style>
+<!-- Three pattern constructs under a 10x viewBox scale that must all tile a
+     green 2x2 user-unit cell on a 4x4 grid over an 8x8 target: userSpaceOnUse
+     tiles, objectBoundingBox content, and a pattern viewBox. -->
+<svg width="100" height="100" viewBox="0 0 10 10">
+    <pattern id="p1" patternUnits="userSpaceOnUse" width="4" height="4"><rect width="2" height="2" fill="green"/></pattern>
+    <rect width="8" height="8" fill="url(#p1)"/>
+</svg>
+<svg width="100" height="100" viewBox="0 0 10 10">
+    <pattern id="p2" width="0.5" height="0.5" patternContentUnits="objectBoundingBox"><rect width="0.25" height="0.25" fill="green"/></pattern>
+    <rect width="8" height="8" fill="url(#p2)"/>
+</svg>
+<svg width="100" height="100" viewBox="0 0 10 10">
+    <pattern id="p3" patternUnits="userSpaceOnUse" width="4" height="4" viewBox="0 0 2 2"><rect width="1" height="1" fill="green"/></pattern>
+    <rect width="8" height="8" fill="url(#p3)"/>
+</svg>
+<!-- A viewBox on the pattern makes patternContentUnits have no effect. -->
+<svg width="100" height="100" viewBox="0 0 10 10">
+    <pattern id="p5" patternUnits="userSpaceOnUse" width="4" height="4" viewBox="0 0 2 2" patternContentUnits="objectBoundingBox"><rect width="1" height="1" fill="green"/></pattern>
+    <rect width="8" height="8" fill="url(#p5)"/>
+</svg>

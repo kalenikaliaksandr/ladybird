@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/svg-text-under-scale-ref.html" />
+<meta name="fuzzy" content="maxDifference=0-255;totalPixels=0-64">
+<style>body { margin: 0; } svg { display: block; }</style>
+<!-- Text under a 10x viewBox scale must render like the same text scaled
+     10x by a CSS transform: both sides rasterize the same small-font
+     outlines under a 10x scale. -->
+<svg width="200" height="100" viewBox="0 0 20 10">
+    <text x="2" y="6" font-size="3" font-family="sans-serif">Wm</text>
+</svg>
+<svg width="200" height="100" viewBox="0 0 20 10">
+    <text x="10" y="6" font-size="3" font-family="sans-serif" text-anchor="middle">Wm</text>
+</svg>

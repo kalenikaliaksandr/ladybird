@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/svg-foreignobject-under-scale-ref.html" />
+<style>body { margin: 0; } svg { display: block; }</style>
+<!-- foreignObject content under a 10x viewBox scale. This pins the current
+     behavior: the foreignObject box is mapped to CSS pixels by layout and
+     its content lays out unscaled inside the mapped box. -->
+<svg width="200" height="100" viewBox="0 0 20 10">
+    <foreignObject x="1" y="1" width="10" height="6">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="width: 20px; height: 10px; background: green"></div>
+    </foreignObject>
+</svg>

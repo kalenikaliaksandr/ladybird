@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/svg-mask-content-under-scale-ref.html" />
+<style>body { margin: 0; } svg { display: block; }</style>
+<!-- Four mask constructs under a 10x viewBox scale that must all reveal the
+     same green square: userSpaceOnUse content, objectBoundingBox content,
+     transformed group content, and nested-viewport content. -->
+<svg width="100" height="100" viewBox="0 0 10 10">
+    <mask id="m1" maskContentUnits="userSpaceOnUse"><rect x="2" y="2" width="4" height="4" fill="white"/></mask>
+    <rect width="10" height="10" fill="green" mask="url(#m1)"/>
+</svg>
+<svg width="100" height="100" viewBox="0 0 10 10">
+    <mask id="m2" maskContentUnits="objectBoundingBox"><rect x="0.25" y="0.25" width="0.5" height="0.5" fill="white"/></mask>
+    <rect width="8" height="8" fill="green" mask="url(#m2)"/>
+</svg>
+<svg width="100" height="100" viewBox="0 0 10 10">
+    <mask id="m3" maskContentUnits="userSpaceOnUse"><g transform="translate(2 2)"><rect width="4" height="4" fill="white"/></g></mask>
+    <rect width="10" height="10" fill="green" mask="url(#m3)"/>
+</svg>
+<svg width="100" height="100" viewBox="0 0 10 10">
+    <mask id="m4" maskContentUnits="userSpaceOnUse"><svg x="2" y="2" width="4" height="4"><rect width="4" height="4" fill="white"/></svg></mask>
+    <rect width="10" height="10" fill="green" mask="url(#m4)"/>
+</svg>
