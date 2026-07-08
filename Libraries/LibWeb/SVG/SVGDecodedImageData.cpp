@@ -331,13 +331,26 @@ void SVGDecodedImageData::invalidate_cached_rendering()
     prune_cached_display_list_resources();
 }
 
-void SVGDecodedImageData::paint(DisplayListRecordingContext& context, Gfx::IntRect dst_rect, CSS::ImageRendering) const
+void SVGDecodedImageData::paint(DisplayListRecordingContext& context, Gfx::FloatRect dst_rect, CSS::ImageRendering image_rendering, Gfx::IntSize bitmap_size) const
 {
-    auto display_list = record_display_list(dst_rect.size(), context.display_list_recorder().resource_storage());
+    // With a bitmap size the caller wants a raster at that resolution sampled into
+    // an unsnapped destination: the replay transform scales the destination, so
+    // both the geometry and the pixel density come out right.
+    if (!bitmap_size.is_empty()) {
+        auto frame = current_frame(bitmap_size);
+        if (!frame.has_value())
+            return;
+        auto scaling_mode = CSS::to_gfx_scaling_mode(image_rendering, bitmap_size, dst_rect.size().to_rounded<int>());
+        context.display_list_recorder().draw_scaled_decoded_image_frame(dst_rect, *frame, scaling_mode);
+        return;
+    }
+
+    auto int_dst_rect = dst_rect.to_rounded<int>();
+    auto display_list = record_display_list(int_dst_rect.size(), context.display_list_recorder().resource_storage());
     if (!display_list.has_value())
         return;
 
-    context.display_list_recorder().paint_nested_display_list(*display_list, dst_rect);
+    context.display_list_recorder().paint_nested_display_list(*display_list, int_dst_rect);
 }
 
 }

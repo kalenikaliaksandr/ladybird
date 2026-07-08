@@ -39,7 +39,10 @@ public:
     [[nodiscard]] bool is_cors_cross_origin() const { return m_is_cors_cross_origin; }
     void set_is_cors_cross_origin(bool value) { m_is_cors_cross_origin = value; }
 
-    virtual void paint([[maybe_unused]] DisplayListRecordingContext&, [[maybe_unused]] Gfx::IntRect dst_rect, CSS::ImageRendering) const = 0;
+    // Paints into dst_rect (device pixels, unsnapped). A non-empty bitmap_size asks
+    // resolution-independent sources to render at that many pixels, for consumers
+    // whose replay transform scales the destination beyond its recorded size.
+    virtual void paint([[maybe_unused]] DisplayListRecordingContext&, [[maybe_unused]] Gfx::FloatRect dst_rect, CSS::ImageRendering, [[maybe_unused]] Gfx::IntSize bitmap_size = {}) const = 0;
     virtual Optional<Painting::DisplayListResource> record_display_list(Gfx::IntSize, Painting::DisplayListResourceStorage&) const;
 
     virtual Optional<Gfx::DecodedImageFrame> default_frame(Gfx::IntSize = {}) const = 0;

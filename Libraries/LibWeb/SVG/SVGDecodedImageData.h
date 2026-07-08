@@ -40,7 +40,7 @@ public:
     virtual void visit_edges(Cell::Visitor& visitor) override;
     virtual size_t external_memory_size() const override;
 
-    virtual void paint(DisplayListRecordingContext&, Gfx::IntRect dst_rect, CSS::ImageRendering) const override;
+    virtual void paint(DisplayListRecordingContext&, Gfx::FloatRect dst_rect, CSS::ImageRendering, Gfx::IntSize bitmap_size) const override;
 
 private:
     SVGDecodedImageData(GC::Ref<Page>, GC::Ref<SVGPageClient>, GC::Ref<DOM::Document>, GC::Ref<SVG::SVGSVGElement>);

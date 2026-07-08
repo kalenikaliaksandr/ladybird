@@ -352,7 +352,7 @@ void paint_background(DisplayListRecordingContext& context, Paintable const& pai
                 if (tile_count == 1) {
                     auto source_rect = source_rect_for_visible_image_part(visible_rect, tile_device_rect, frame->size());
                     auto scaling_mode = to_gfx_scaling_mode(image_rendering, source_rect.size().to_rounded<int>(), visible_rect.size());
-                    context.display_list_recorder().draw_scaled_decoded_image_frame(visible_rect, source_rect, *frame, scaling_mode);
+                    context.display_list_recorder().draw_scaled_decoded_image_frame(visible_rect.to_type<float>(), source_rect, *frame, scaling_mode);
                 } else if (tile_count > 1) {
                     auto scaling_mode = to_gfx_scaling_mode(image_rendering, frame->size(), tile_device_rect.size());
                     context.display_list_recorder().draw_repeated_decoded_image_frame(tile_device_rect, clip_device_rect, *frame, scaling_mode, repeat_x, repeat_y);
