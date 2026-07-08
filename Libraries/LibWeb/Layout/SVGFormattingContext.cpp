@@ -36,6 +36,7 @@
 #include <LibWeb/SVG/SVGSwitchElement.h>
 #include <LibWeb/SVG/SVGSymbolElement.h>
 #include <LibWeb/SVG/SVGUseElement.h>
+#include <LibWeb/SVG/ViewBoxTransform.h>
 
 namespace Web::Layout {
 
@@ -56,110 +57,6 @@ CSSPixels SVGFormattingContext::automatic_content_width() const
 CSSPixels SVGFormattingContext::automatic_content_height() const
 {
     return 0;
-}
-
-struct ViewBoxTransform {
-    CSSPixelPoint offset;
-    double scale_factor_x;
-    double scale_factor_y;
-};
-
-// https://svgwg.org/svg2-draft/coords.html#PreserveAspectRatioAttribute
-static ViewBoxTransform scale_and_align_viewbox_content(SVG::PreserveAspectRatio const& preserve_aspect_ratio,
-    SVG::ViewBox const& view_box, Gfx::FloatSize viewbox_scale, auto const& svg_box_state)
-{
-    ViewBoxTransform viewbox_transform {};
-
-    if (preserve_aspect_ratio.align == SVG::PreserveAspectRatio::Align::None) {
-        viewbox_transform.scale_factor_x = viewbox_scale.width();
-        viewbox_transform.scale_factor_y = viewbox_scale.height();
-        viewbox_transform.offset = {};
-        return viewbox_transform;
-    }
-
-    switch (preserve_aspect_ratio.meet_or_slice) {
-    case SVG::PreserveAspectRatio::MeetOrSlice::Meet:
-        // meet (the default) - Scale the graphic such that:
-        // - aspect ratio is preserved
-        // - the entire ‘viewBox’ is visible within the SVG viewport
-        // - the ‘viewBox’ is scaled up as much as possible, while still meeting the other criteria
-        viewbox_transform.scale_factor_x = viewbox_transform.scale_factor_y = min(viewbox_scale.width(), viewbox_scale.height());
-        break;
-    case SVG::PreserveAspectRatio::MeetOrSlice::Slice:
-        // slice - Scale the graphic such that:
-        // aspect ratio is preserved
-        // the entire SVG viewport is covered by the ‘viewBox’
-        // the ‘viewBox’ is scaled down as much as possible, while still meeting the other criteria
-        viewbox_transform.scale_factor_x = viewbox_transform.scale_factor_y = max(viewbox_scale.width(), viewbox_scale.height());
-        break;
-    default:
-        VERIFY_NOT_REACHED();
-    }
-
-    // Handle X alignment:
-    if (svg_box_state.has_definite_width()) {
-        switch (preserve_aspect_ratio.align) {
-        case SVG::PreserveAspectRatio::Align::xMinYMin:
-        case SVG::PreserveAspectRatio::Align::xMinYMid:
-        case SVG::PreserveAspectRatio::Align::xMinYMax:
-            // Align the <min-x> of the element's ‘viewBox’ with the smallest X value of the SVG viewport.
-            viewbox_transform.offset.translate_by(0, 0);
-            break;
-        case SVG::PreserveAspectRatio::Align::None: {
-            // Do not force uniform scaling. Scale the graphic content of the given element non-uniformly
-            // if necessary such that the element's bounding box exactly matches the SVG viewport rectangle.
-            // FIXME: None is unimplemented (treat as xMidYMid)
-            [[fallthrough]];
-        }
-        case SVG::PreserveAspectRatio::Align::xMidYMin:
-        case SVG::PreserveAspectRatio::Align::xMidYMid:
-        case SVG::PreserveAspectRatio::Align::xMidYMax:
-            // Align the midpoint X value of the element's ‘viewBox’ with the midpoint X value of the SVG viewport.
-            viewbox_transform.offset.translate_by((svg_box_state.content_width() - CSSPixels::nearest_value_for(view_box.width * viewbox_transform.scale_factor_x)) / 2, 0);
-            break;
-        case SVG::PreserveAspectRatio::Align::xMaxYMin:
-        case SVG::PreserveAspectRatio::Align::xMaxYMid:
-        case SVG::PreserveAspectRatio::Align::xMaxYMax:
-            // Align the <min-x>+<width> of the element's ‘viewBox’ with the maximum X value of the SVG viewport.
-            viewbox_transform.offset.translate_by((svg_box_state.content_width() - CSSPixels::nearest_value_for(view_box.width * viewbox_transform.scale_factor_x)), 0);
-            break;
-        default:
-            VERIFY_NOT_REACHED();
-        }
-    }
-
-    if (svg_box_state.has_definite_width()) {
-        switch (preserve_aspect_ratio.align) {
-        case SVG::PreserveAspectRatio::Align::xMinYMin:
-        case SVG::PreserveAspectRatio::Align::xMidYMin:
-        case SVG::PreserveAspectRatio::Align::xMaxYMin:
-            // Align the <min-y> of the element's ‘viewBox’ with the smallest Y value of the SVG viewport.
-            viewbox_transform.offset.translate_by(0, 0);
-            break;
-        case SVG::PreserveAspectRatio::Align::None: {
-            // Do not force uniform scaling. Scale the graphic content of the given element non-uniformly
-            // if necessary such that the element's bounding box exactly matches the SVG viewport rectangle.
-            // FIXME: None is unimplemented (treat as xMidYMid)
-            [[fallthrough]];
-        }
-        case SVG::PreserveAspectRatio::Align::xMinYMid:
-        case SVG::PreserveAspectRatio::Align::xMidYMid:
-        case SVG::PreserveAspectRatio::Align::xMaxYMid:
-            // Align the midpoint Y value of the element's ‘viewBox’ with the midpoint Y value of the SVG viewport.
-            viewbox_transform.offset.translate_by(0, (svg_box_state.content_height() - CSSPixels::nearest_value_for(view_box.height * viewbox_transform.scale_factor_y)) / 2);
-            break;
-        case SVG::PreserveAspectRatio::Align::xMinYMax:
-        case SVG::PreserveAspectRatio::Align::xMidYMax:
-        case SVG::PreserveAspectRatio::Align::xMaxYMax:
-            // Align the <min-y>+<height> of the element's ‘viewBox’ with the maximum Y value of the SVG viewport.
-            viewbox_transform.offset.translate_by(0, (svg_box_state.content_height() - CSSPixels::nearest_value_for(view_box.height * viewbox_transform.scale_factor_y)));
-            break;
-        default:
-            VERIFY_NOT_REACHED();
-        }
-    }
-
-    return viewbox_transform;
 }
 
 // https://svgwg.org/svg2-draft/struct.html#GroupsOverview
@@ -253,9 +150,6 @@ void SVGFormattingContext::run(LayoutInput const& layout_input)
             dbgln_if(LIBWEB_CSS_DEBUG, "FIXME: Attempting to layout indefinitely sized SVG with a viewbox -- this likely won't work!");
         }
 
-        auto scale_width = svg_box_state.has_definite_width() ? svg_box_state.content_width() / active_view_box->width : 1;
-        auto scale_height = svg_box_state.has_definite_height() ? svg_box_state.content_height() / active_view_box->height : 1;
-
         // The initial value for preserveAspectRatio is xMidYMid meet.
         SVG::PreserveAspectRatio preserve_aspect_ratio {};
         if (auto* view_box = as_if<SVG::SVGFitToViewBox>(*dom_node)) {
@@ -265,13 +159,8 @@ void SVGFormattingContext::run(LayoutInput const& layout_input)
             preserve_aspect_ratio = SVG::PreserveAspectRatio { SVG::PreserveAspectRatio::Align::None, {} };
         }
 
-        auto viewbox_offset_and_scale = scale_and_align_viewbox_content(preserve_aspect_ratio, *active_view_box, { scale_width, scale_height }, svg_box_state);
-
-        CSSPixelPoint offset = viewbox_offset_and_scale.offset;
-        m_current_viewbox_transform
-            .translate(offset.to_type<float>())
-            .scale(viewbox_offset_and_scale.scale_factor_x, viewbox_offset_and_scale.scale_factor_y)
-            .translate({ -active_view_box->min_x, -active_view_box->min_y });
+        m_current_viewbox_transform = SVG::viewbox_transform_applied_to(m_current_viewbox_transform, *active_view_box, preserve_aspect_ratio,
+            { svg_box_state.content_width(), svg_box_state.content_height() });
     }
 
     // NOTE: Calculate viewport dimensions BEFORE scaling the content by m_parent_viewbox_transform.
