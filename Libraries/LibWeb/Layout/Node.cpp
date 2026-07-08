@@ -196,6 +196,12 @@ bool Node::establishes_an_absolute_positioning_containing_block() const
     if (is_svg_foreign_object_box())
         return true;
 
+    // SVG viewports shift their descendants' coordinate system at paint time via
+    // visual context transform nodes (viewBox and viewport offset), so out-of-flow
+    // descendants (e.g. inside <foreignObject>) must not escape past them.
+    if (is_svg_svg_box())
+        return true;
+
     return computed_values_establish_absolute_positioning_containing_block();
 }
 
@@ -204,6 +210,12 @@ bool Node::establishes_a_fixed_positioning_containing_block() const
 {
     if (!is<Box>(*this))
         return false;
+
+    // foreignObject content and SVG viewports live in a coordinate system that is
+    // shifted at paint time via visual context transform nodes, so they contain
+    // fixed positioned descendants like CSS-transformed boxes do.
+    if (is_svg_foreign_object_box() || is_svg_svg_box())
+        return true;
 
     auto const& computed_values = this->computed_values();
 

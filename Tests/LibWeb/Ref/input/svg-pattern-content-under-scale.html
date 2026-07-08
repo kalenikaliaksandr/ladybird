@@ -16,6 +16,11 @@
     <pattern id="p3" patternUnits="userSpaceOnUse" width="4" height="4" viewBox="0 0 2 2"><rect width="1" height="1" fill="green"/></pattern>
     <rect width="8" height="8" fill="url(#p3)"/>
 </svg>
+<!-- Bounding-box content units on a target away from the origin. -->
+<svg width="100" height="100" viewBox="0 0 10 10">
+    <pattern id="p4" width="0.5" height="0.5" patternContentUnits="objectBoundingBox"><rect width="0.25" height="0.25" fill="green"/></pattern>
+    <rect x="1" y="1" width="8" height="8" fill="url(#p4)"/>
+</svg>
 <!-- A viewBox on the pattern makes patternContentUnits have no effect. -->
 <svg width="100" height="100" viewBox="0 0 10 10">
     <pattern id="p5" patternUnits="userSpaceOnUse" width="4" height="4" viewBox="0 0 2 2" patternContentUnits="objectBoundingBox"><rect width="1" height="1" fill="green"/></pattern>

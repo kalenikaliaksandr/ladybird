@@ -12,6 +12,7 @@
 #include <LibWeb/Layout/Node.h>
 #include <LibWeb/Layout/SVGPatternBox.h>
 #include <LibWeb/Layout/SVGSVGBox.h>
+#include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
 #include <LibWeb/Painting/DisplayListRecordingContext.h>
@@ -22,6 +23,12 @@
 #include <LibWeb/SVG/AttributeParser.h>
 #include <LibWeb/SVG/SVGGraphicsElement.h>
 #include <LibWeb/SVG/SVGPatternElement.h>
+
+namespace Web::Painting {
+
+AccumulatedVisualContextTree build_nested_svg_visual_context_tree(Paintable&, Optional<TransformData> root_transform, Gfx::FloatSize inherited_svg_scale);
+
+}
 
 namespace Web::SVG {
 
@@ -292,18 +299,37 @@ Optional<Painting::PaintStyle> SVGPatternElement::to_gfx_paint_style(SVGPaintCon
     auto svg_offset = svg_element_rect.location().to_type<float>().scaled(recording_context.device_pixels_per_css_pixel());
     tile_rect.translate_by(svg_offset);
 
-    auto visual_context_tree = Painting::AccumulatedVisualContextTree::create();
+    // The content is recorded in the pattern's local units. Bounding-box content
+    // units and the cancellation of the recorded coordinates' viewport offset go
+    // into the root transform node rather than a recorder translation: record-time
+    // culling bounds don't see visual context nodes, so recorded coordinates must
+    // not carry a baked translation the nodes would rescale.
+    // https://svgwg.org/svg2-draft/pservers.html#PatternElementPatternContentUnitsAttribute
+    // patternContentUnits has no effect when a viewBox is specified.
+    auto content_scale = Gfx::FloatSize { 1, 1 };
+    if (pattern_content_units() == SVGUnits::ObjectBoundingBox && !view_box().has_value()) {
+        auto const& bbox = paint_context.path_bounding_box;
+        content_scale = { bbox.width(), bbox.height() };
+    }
+    auto root_affine = Gfx::AffineTransform {}
+                           .scale(content_scale.width(), content_scale.height())
+                           .translate(-svg_element_rect.location().to_type<float>());
+    Optional<Painting::TransformData> root_transform;
+    if (!root_affine.is_identity())
+        root_transform = Painting::TransformData { Painting::matrix_for_svg_transform(root_affine, recording_context.device_pixels_per_css_pixel()), { 0.f, 0.f } };
+
+    // The content of bounding-box-unit patterns is scaled by the bounding box on
+    // top of the target's accumulated scale; record-time raster consumers (like
+    // SVG images) need the combined factor.
+    auto first_paintable = target_layout_node.first_paintable();
+    auto inherited_svg_scale = first_paintable ? first_paintable->svg_user_units_to_css_pixels_scale() : Gfx::FloatSize { 1, 1 };
+    inherited_svg_scale.scale_by(content_scale.width(), content_scale.height());
+
+    Painting::SVGSubtreeVisualContextIndicesSaver indices_saver(const_cast<Painting::Paintable&>(*pattern_paintable));
+    auto visual_context_tree = Painting::build_nested_svg_visual_context_tree(const_cast<Painting::Paintable&>(*pattern_paintable), move(root_transform), inherited_svg_scale);
     auto display_list = Painting::DisplayList::create(visual_context_tree);
     Painting::DisplayListRecorder display_list_recorder(*display_list, visual_context_tree, recording_context.display_list_recorder().resource_storage());
-    auto content_origin = paint_context.paint_transform.map(Gfx::FloatPoint { 0, 0 }) + svg_offset;
-    display_list_recorder.translate(-Gfx::IntPoint(content_origin.to_type<int>()));
     auto paint_context_copy = recording_context.clone(display_list_recorder);
-
-    Gfx::AffineTransform target_svg_transform;
-    auto first_paintable = target_layout_node.first_paintable();
-    if (auto const* svg_graphics_paintable = as_if<Painting::SVGGraphicsPaintable>(first_paintable.ptr()))
-        target_svg_transform = svg_graphics_paintable->computed_transforms().svg_transform();
-    paint_context_copy.set_svg_transform(target_svg_transform);
 
     Painting::StackingContext::paint_svg(paint_context_copy, *pattern_paintable, Painting::PaintPhase::Foreground);
 

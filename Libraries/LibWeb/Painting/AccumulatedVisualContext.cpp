@@ -16,6 +16,10 @@
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/HTMLHtmlElement.h>
 #include <LibWeb/Layout/Box.h>
+#include <LibWeb/Layout/SVGClipBox.h>
+#include <LibWeb/Layout/SVGMaskBox.h>
+#include <LibWeb/Layout/SVGPatternBox.h>
+#include <LibWeb/Layout/SVGSVGBox.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/Blending.h>
@@ -25,11 +29,13 @@
 #include <LibWeb/Painting/ScrollState.h>
 #include <LibWeb/Painting/ViewportPaintable.h>
 #include <LibWeb/SVG/SVGElement.h>
+#include <LibWeb/SVG/SVGGraphicsElement.h>
+#include <LibWeb/SVG/ViewBoxTransform.h>
 
 namespace Web::Painting {
 
 AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable&);
-AccumulatedVisualContextTree build_nested_svg_visual_context_tree(Paintable&, Optional<TransformData> root_transform);
+AccumulatedVisualContextTree build_nested_svg_visual_context_tree(Paintable&, Optional<TransformData> root_transform, Gfx::FloatSize inherited_svg_scale);
 
 bool update_accumulated_visual_context_values(ViewportPaintable&, Paintable&);
 void update_visual_viewport_accumulated_visual_context(ViewportPaintable&);
@@ -286,6 +292,92 @@ static Optional<PerspectiveData> compute_perspective_data(Paintable const& paint
     return PerspectiveData { scale_matrix_for_device_pixels(*perspective_matrix, scale) };
 }
 
+FloatMatrix4x4 matrix_for_svg_transform(Gfx::AffineTransform const& transform, float scale)
+{
+    auto matrix = FloatMatrix4x4::identity();
+    matrix[0, 0] = transform.a();
+    matrix[0, 1] = transform.c();
+    matrix[0, 3] = transform.e();
+    matrix[1, 0] = transform.b();
+    matrix[1, 1] = transform.d();
+    matrix[1, 3] = transform.f();
+    return scale_matrix_for_device_pixels(matrix, scale);
+}
+
+struct SVGVisualContextNodes {
+    Optional<TransformData> element_transform;
+    Optional<TransformData> viewport_transform;
+    Gfx::FloatSize scale_for_element { 1, 1 };
+    Gfx::FloatSize scale_for_descendants { 1, 1 };
+};
+
+// SVG layout keeps geometry in the local user units of its viewport; the viewBox
+// mapping and the transform attribute are applied at paint time as visual context
+// transform nodes, like CSS transforms. Element transform nodes act about the
+// origin of the nearest viewport box, which is also the base that SVG paintables
+// flatten their layout offsets against.
+static SVGVisualContextNodes compute_svg_visual_context_nodes(Paintable const& paintable, Paintable const* base_viewport_paintable, Gfx::FloatSize inherited_scale, float pixel_ratio, bool is_nested_subtree_root = false)
+{
+    SVGVisualContextNodes result { {}, {}, inherited_scale, inherited_scale };
+
+    auto dom_node = paintable.dom_node();
+    if (!dom_node || !is<SVG::SVGElement>(*dom_node))
+        return result;
+
+    auto const& layout_node = paintable.layout_node();
+
+    // Mask, clipPath, and pattern subtrees are recorded into their own display
+    // lists with a private visual context tree; they contribute no nodes here.
+    if (!is_nested_subtree_root && (is<Layout::SVGMaskBox>(layout_node) || is<Layout::SVGClipBox>(layout_node) || is<Layout::SVGPatternBox>(layout_node)))
+        return result;
+
+    bool const is_svg_svg_box = is<Layout::SVGSVGBox>(layout_node);
+    bool const is_top_level_svg_root = is_svg_svg_box && !(layout_node.parent() && (layout_node.parent()->is_svg_box() || layout_node.parent()->is_svg_svg_box()));
+
+    // The transform attribute acts in the coordinate system of the nearest viewport.
+    // A top-level svg root has no SVG coordinate system around it.
+    if (auto const* graphics_element = as_if<SVG::SVGGraphicsElement>(*dom_node); graphics_element && !is_top_level_svg_root && base_viewport_paintable) {
+        auto element_transform = graphics_element->element_transform();
+        if (!element_transform.is_identity()) {
+            auto origin = base_viewport_paintable->absolute_rect().location().to_type<float>().scaled(pixel_ratio);
+            result.element_transform = TransformData { matrix_for_svg_transform(element_transform, pixel_ratio), origin };
+            result.scale_for_element.scale_by(element_transform.x_scale(), element_transform.y_scale());
+        }
+    }
+    result.scale_for_descendants = result.scale_for_element;
+
+    // Viewport-establishing elements contribute a descendants-only node carrying the
+    // viewBox mapping. Boxes whose own offset is not part of their descendants'
+    // flattened offsets (any viewport that is not an svg-svg box, e.g. symbol) carry
+    // the viewport offset in the node as well.
+    bool const is_other_viewport_box = !is_svg_svg_box && is<SVG::SVGFitToViewBox>(*dom_node);
+    if (is_svg_svg_box || is_other_viewport_box) {
+        auto local_transform = Gfx::AffineTransform {};
+        Gfx::FloatPoint origin;
+        if (is_svg_svg_box) {
+            origin = paintable.absolute_rect().location().to_type<float>().scaled(pixel_ratio);
+        } else {
+            if (!base_viewport_paintable)
+                return result;
+            origin = base_viewport_paintable->absolute_rect().location().to_type<float>().scaled(pixel_ratio);
+            auto offset_within_base = paintable.absolute_rect().location() - base_viewport_paintable->absolute_rect().location();
+            local_transform.translate(offset_within_base.to_type<float>());
+        }
+        if (auto view_box = SVG::active_view_box_for_rendering(*dom_node); view_box.has_value()) {
+            // The initial value for preserveAspectRatio is xMidYMid meet.
+            SVG::PreserveAspectRatio preserve_aspect_ratio {};
+            if (auto const* fit_to_view_box = as_if<SVG::SVGFitToViewBox>(*dom_node))
+                preserve_aspect_ratio = fit_to_view_box->preserve_aspect_ratio().value_or(SVG::PreserveAspectRatio {});
+            local_transform = SVG::viewbox_transform_applied_to(local_transform, *view_box, preserve_aspect_ratio, { paintable.content_width(), paintable.content_height() });
+        }
+        if (!local_transform.is_identity()) {
+            result.viewport_transform = TransformData { matrix_for_svg_transform(local_transform, pixel_ratio), origin };
+            result.scale_for_descendants.scale_by(local_transform.x_scale(), local_transform.y_scale());
+        }
+    }
+    return result;
+}
+
 // NB: Resolves the box's filter as a side effect, since the effects data embeds the resolved gfx filter.
 static Optional<EffectsData> compute_effects_data(Paintable& box, double pixel_ratio)
 {
@@ -330,6 +422,8 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         VisualContextIndex normal;
         VisualContextIndex absolute_position;
         VisualContextIndex fixed_position;
+        Gfx::FloatSize svg_scale { 1, 1 };
+        Paintable const* nearest_svg_viewport { nullptr };
     };
 
     auto build_paintable_box = [&](auto& self, Paintable& paintable_box, DescendantVisualContexts inherited_contexts) -> void {
@@ -405,6 +499,10 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
 
         auto const& computed_values = paintable_box.computed_values();
 
+        auto svg_nodes = compute_svg_visual_context_nodes(paintable_box, inherited_contexts.nearest_svg_viewport, inherited_contexts.svg_scale, scale);
+        paintable_box.set_svg_user_units_to_css_pixels_scale(svg_nodes.scale_for_element);
+        paintable_box.set_contributes_svg_visual_context_nodes(svg_nodes.element_transform.has_value() || svg_nodes.viewport_transform.has_value());
+
         if (auto effects = compute_effects_data(paintable_box, pixel_ratio); effects.has_value())
             append_to_own_and_positioned_descendant_contexts(effects.value());
 
@@ -414,6 +512,9 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         } else {
             paintable_box.set_has_non_invertible_css_transform(false);
         }
+
+        if (svg_nodes.element_transform.has_value())
+            own_state = append_node(own_state, *svg_nodes.element_transform);
 
         if (auto css_clip = compute_css_clip_data(paintable_box, converter); css_clip.has_value())
             append_to_own_and_positioned_descendant_contexts(css_clip.value());
@@ -476,14 +577,36 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         if (auto perspective_data = compute_perspective_data(paintable_box, computed_values, scale); perspective_data.has_value())
             state_for_descendants = append_node(state_for_descendants, *perspective_data);
 
-        if (auto clip_data = compute_clip_data(paintable_box, computed_values, converter); clip_data.has_value())
-            state_for_descendants = append_node(state_for_descendants, clip_data.value());
+        if (auto clip_data = compute_clip_data(paintable_box, computed_values, converter); clip_data.has_value()) {
+            // Overflow clips on nested SVG viewports are in local user units; snapping
+            // them to whole device pixels would be amplified by the viewBox transform
+            // deeper in the chain (and can cull a sub-unit-sized viewport entirely),
+            // so express them as exact float clip paths instead.
+            auto const& layout_node = paintable_box.layout_node();
+            bool const is_nested_svg_viewport = is<Layout::SVGSVGBox>(layout_node) && layout_node.parent()
+                && (layout_node.parent()->is_svg_box() || layout_node.parent()->is_svg_svg_box());
+            if (is_nested_svg_viewport) {
+                auto clip_rect = paintable_box.overflow_clip_edge_rect().to_type<float>().scaled(scale, scale);
+                Gfx::Path clip_path;
+                clip_path.move_to(clip_rect.top_left());
+                clip_path.line_to(clip_rect.top_right());
+                clip_path.line_to(clip_rect.bottom_right());
+                clip_path.line_to(clip_rect.bottom_left());
+                clip_path.close();
+                state_for_descendants = append_node(state_for_descendants, ClipPathData { move(clip_path), converter.enclosing_device_rect(paintable_box.overflow_clip_edge_rect()), Gfx::WindingRule::Nonzero });
+            } else {
+                state_for_descendants = append_node(state_for_descendants, clip_data.value());
+            }
+        }
 
         if (paintable_box.own_scroll_frame_index().value()) {
             auto is_sticky_without_scrollable_overflow = paintable_box.is_sticky_position() && paintable_box.enclosing_scroll_frame_index() == paintable_box.own_scroll_frame_index();
             if (!is_sticky_without_scrollable_overflow)
                 state_for_descendants = append_node(state_for_descendants, ScrollData { paintable_box.own_scroll_frame_index(), false });
         }
+
+        if (svg_nodes.viewport_transform.has_value())
+            state_for_descendants = append_node(state_for_descendants, *svg_nodes.viewport_transform);
 
         paintable_box.set_accumulated_visual_context_for_descendants(state_for_descendants);
         paintable_box.set_visual_context_node_range(first_visual_context_node_index, visual_context_tree.nodes().size());
@@ -496,9 +619,24 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
             state_for_descendants,
             state_for_absolute_position_descendants,
             state_for_fixed_position_descendants,
+            svg_nodes.scale_for_descendants,
+            is<Layout::SVGSVGBox>(paintable_box.layout_node()) ? &paintable_box : inherited_contexts.nearest_svg_viewport,
         };
         paintable_box.for_each_child_of_type<Paintable>([&](Paintable& child) {
             self(self, child, child_contexts);
+            return IterationDecision::Continue;
+        });
+
+        // Mask, clipPath, and pattern subtrees form unconnected paintable
+        // subtrees (they are recorded into their own display lists), so the
+        // child walk above does not reach them. Geometry queries still resolve
+        // their context indices against the main tree, so hand them their
+        // referencing element's descendant contexts.
+        paintable_box.layout_node().for_each_child_of_type<Layout::Box>([&](Layout::Box& layout_child) {
+            if (!is<Layout::SVGMaskBox>(layout_child) && !is<Layout::SVGClipBox>(layout_child) && !is<Layout::SVGPatternBox>(layout_child))
+                return IterationDecision::Continue;
+            if (auto child_paintable = layout_child.first_paintable())
+                self(self, *child_paintable, child_contexts);
             return IterationDecision::Continue;
         });
     };
@@ -518,40 +656,68 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
 
 // Patches the transform/effects/perspective values of the box's existing visual context nodes in place.
 // Returns false if the box's node structure no longer matches; the caller must then do a full rebuild.
-static void build_nested_svg_visual_context_tree_for_subtree(AccumulatedVisualContextTree& visual_context_tree, Paintable& paintable_box, VisualContextIndex inherited_state, double pixel_ratio)
+static void build_nested_svg_visual_context_tree_for_subtree(AccumulatedVisualContextTree& visual_context_tree, Paintable& paintable_box, Paintable const* base_viewport_paintable, VisualContextIndex inherited_state, Gfx::FloatSize inherited_svg_scale, double pixel_ratio, bool is_root)
 {
+    auto svg_nodes = compute_svg_visual_context_nodes(paintable_box, base_viewport_paintable, inherited_svg_scale, static_cast<float>(pixel_ratio), is_root);
+    paintable_box.set_svg_user_units_to_css_pixels_scale(svg_nodes.scale_for_element);
+
     auto own_state = inherited_state;
     if (auto effects = compute_effects_data(paintable_box, pixel_ratio); effects.has_value())
         own_state = visual_context_tree.append(move(effects.value()), inherited_state);
+    if (svg_nodes.element_transform.has_value())
+        own_state = visual_context_tree.append(*svg_nodes.element_transform, own_state);
 
     paintable_box.set_accumulated_visual_context(own_state);
-    paintable_box.set_accumulated_visual_context_for_descendants(own_state);
+    auto state_for_descendants = own_state;
+    if (svg_nodes.viewport_transform.has_value())
+        state_for_descendants = visual_context_tree.append(*svg_nodes.viewport_transform, own_state);
+    paintable_box.set_accumulated_visual_context_for_descendants(state_for_descendants);
 
+    auto const* base_viewport_for_children = is<Layout::SVGSVGBox>(paintable_box.layout_node()) ? &paintable_box : base_viewport_paintable;
     paintable_box.for_each_child_of_type<Paintable>([&](Paintable& child) {
-        build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, child, own_state, pixel_ratio);
+        build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, child, base_viewport_for_children, state_for_descendants, svg_nodes.scale_for_descendants, pixel_ratio, false);
         return IterationDecision::Continue;
     });
 }
 
-// Builds the private visual context tree used when recording a detached SVG
-// subtree (mask, clipPath, or pattern content) into its own display list.
-AccumulatedVisualContextTree build_nested_svg_visual_context_tree(Paintable& root_paintable, Optional<TransformData> root_transform)
+AccumulatedVisualContextTree build_nested_svg_visual_context_tree(Paintable& root_paintable, Optional<TransformData> root_transform, Gfx::FloatSize inherited_svg_scale)
 {
     auto visual_context_tree = root_transform.has_value() ? AccumulatedVisualContextTree::create(move(root_transform.value())) : AccumulatedVisualContextTree::create();
     auto pixel_ratio = root_paintable.document().page().client().device_pixels_per_css_pixel();
-    build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, root_paintable, {}, pixel_ratio);
+    auto const* base_viewport_box = root_paintable.layout_node().first_ancestor_of_type<Layout::SVGSVGBox>();
+    auto const* base_viewport_paintable = base_viewport_box ? base_viewport_box->paintable_box().ptr() : nullptr;
+    build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, root_paintable, base_viewport_paintable, {}, inherited_svg_scale, pixel_ratio, true);
 
     return visual_context_tree;
+}
+
+SVGSubtreeVisualContextIndicesSaver::SVGSubtreeVisualContextIndicesSaver(Paintable& root)
+{
+    auto save = [&](this auto const& self, Paintable& paintable) -> void {
+        m_saved.append({ &paintable, paintable.accumulated_visual_context_index(), paintable.accumulated_visual_context_for_descendants_index() });
+        paintable.for_each_child_of_type<Paintable>([&](Paintable& child) {
+            self(child);
+            return IterationDecision::Continue;
+        });
+    };
+    save(root);
+}
+
+SVGSubtreeVisualContextIndicesSaver::~SVGSubtreeVisualContextIndicesSaver()
+{
+    for (auto const& saved : m_saved) {
+        saved.paintable->set_accumulated_visual_context(saved.own);
+        saved.paintable->set_accumulated_visual_context_for_descendants(saved.for_descendants);
+    }
 }
 
 bool update_accumulated_visual_context_values(ViewportPaintable& viewport_paintable, Paintable& paintable_box)
 {
     // The in-place patcher below rewrites every TransformData in the box's
-    // node range with the recomputed CSS transform. SVG content contributes
-    // transform nodes that do not come from the CSS transform properties
-    // (viewport and transform-attribute nodes), which this rewrite would
-    // clobber, so SVG boxes always take the full-rebuild path.
-    if (paintable_box.dom_node() && is<SVG::SVGElement>(*paintable_box.dom_node()))
+    // node range with the recomputed CSS transform. Boxes with SVG transform
+    // nodes (viewport and transform-attribute nodes) would have those
+    // clobbered by the rewrite, so they take the full-rebuild path.
+    if (paintable_box.contributes_svg_visual_context_nodes())
         return false;
 
     auto& visual_context_tree = viewport_paintable.visual_context_tree();

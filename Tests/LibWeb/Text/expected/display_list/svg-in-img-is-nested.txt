@@ -13,19 +13,19 @@ SaveLayer@0
     SaveLayer@0
       CompositorWheelHitTestTarget@0 target_scroll_frame_index=0 rect=[0,0 300x200]
       CompositorWheelHitTestTarget@1 target_scroll_frame_index=0 rect=[0,0 300x200]
-      FillPath@1 path_bounding_rect=[5,0 55x56]
-      FillPath@1 path_bounding_rect=[1,50 55x55]
-      Save@1
-        AddClipRect@1 rect=[4,10 55x55]
-        SaveLayer@1
-          FillPath@1 path_bounding_rect=[5,0 55x56]
-          FillPath@1 path_bounding_rect=[1,50 55x55]
-          ApplyEffects@1 opacity=1 has_filter=false
-            PaintNestedDisplayList@1 rect=[4,10 55x55]
-              Translate@0 delta=[-4,-10]
-              FillPath@0 path_bounding_rect=[4,10 55x56]
-          Restore@1
-        Restore@1
-      Restore@1
+      FillPath@5 path_bounding_rect=[0,0 100x100]
+      FillPath@5 path_bounding_rect=[0,100 100x100]
+      Save@6
+        AddClipRect@6 rect=[0,20 100x100]
+        SaveLayer@6
+          FillPath@6 path_bounding_rect=[0,0 100x100]
+          FillPath@6 path_bounding_rect=[0,100 100x100]
+          ApplyEffects@6 opacity=1 has_filter=false
+            PaintNestedDisplayList@6 rect=[0,20 100x100]
+              FillPath@1 path_bounding_rect=[0,0 100x100]
+          Restore@6
+        Restore@6
+      Restore@6
     Restore@0
 Restore@0
+

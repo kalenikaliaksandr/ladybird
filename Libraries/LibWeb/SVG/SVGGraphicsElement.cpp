@@ -382,22 +382,11 @@ WebIDL::ExceptionOr<GC::Ref<Geometry::DOMRect>> SVGGraphicsElement::get_b_box(Op
     if (!owner_paintable || !self_paintable)
         return Geometry::DOMRect::create(realm());
 
+    // Layout keeps SVG geometry in the user units of its viewport and flattens
+    // offsets against the nearest viewport box, so the offset from the owner
+    // viewport is already the bounding box in the element's user space.
     auto svg_rect = owner_paintable->absolute_rect();
     auto rect = self_paintable->absolute_rect().to_type<float>().translated(-svg_rect.location().to_type<float>());
-    auto svg_to_css_pixels_transform = [&]() -> Optional<Gfx::AffineTransform> {
-        if (auto const* svg_graphics_paintable = as_if<Painting::SVGGraphicsPaintable>(*self_paintable))
-            return svg_graphics_paintable->computed_transforms().svg_to_css_pixels_transform();
-        if (auto const* svg_foreign_object_paintable = as_if<Painting::SVGForeignObjectPaintable>(*self_paintable))
-            return svg_foreign_object_paintable->computed_transforms().svg_to_css_pixels_transform();
-        if (auto const* svg_svg_paintable = as_if<Painting::SVGSVGPaintable>(*self_paintable))
-            return svg_svg_paintable->computed_transforms().svg_to_css_pixels_transform();
-        return {};
-    }();
-    if (svg_to_css_pixels_transform.has_value()) {
-        auto inv = svg_to_css_pixels_transform->inverse();
-        if (inv.has_value())
-            rect = inv->map(rect);
-    }
 
     if (rect.is_empty())
         return Geometry::DOMRect::create(realm());

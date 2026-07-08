@@ -164,6 +164,34 @@ private:
     friend ErrorOr<T> IPC::decode(IPC::Decoder&);
 };
 
+// Builds the private visual context tree used when recording a detached SVG
+// subtree (mask, clipPath, or pattern content) into its own display list.
+WEB_API AccumulatedVisualContextTree build_nested_svg_visual_context_tree(Paintable& root_paintable, Optional<TransformData> root_transform, Gfx::FloatSize inherited_svg_scale);
+
+// Converts a CSS-pixel-space 2D affine transform into a device-pixel 4x4 matrix.
+WEB_API Gfx::FloatMatrix4x4 matrix_for_svg_transform(Gfx::AffineTransform const&, float scale);
+
+// Building a private visual context tree for a detached SVG subtree recording
+// overwrites the subtree paintables' main-tree context indices; this restores
+// them once the recording is done, so later main-tree consumers (hit testing,
+// client rect queries) don't resolve private-tree indices against the main tree.
+class SVGSubtreeVisualContextIndicesSaver {
+    AK_MAKE_NONCOPYABLE(SVGSubtreeVisualContextIndicesSaver);
+    AK_MAKE_NONMOVABLE(SVGSubtreeVisualContextIndicesSaver);
+
+public:
+    explicit SVGSubtreeVisualContextIndicesSaver(Paintable& root);
+    ~SVGSubtreeVisualContextIndicesSaver();
+
+private:
+    struct SavedIndices {
+        Paintable* paintable;
+        VisualContextIndex own;
+        VisualContextIndex for_descendants;
+    };
+    Vector<SavedIndices> m_saved;
+};
+
 }
 
 namespace IPC {

@@ -38,7 +38,7 @@ Optional<CSSPixelRect> SVGPathPaintable::clip_path_geometry_bounds(Gfx::AffineTr
     if (!svg_node || !svg_node->paintable_box())
         return {};
 
-    auto path = computed_path()->copy_transformed(computed_transforms().svg_to_css_pixels_transform(additional_transform));
+    auto path = computed_path()->copy_transformed(additional_transform);
     path.offset(svg_node->paintable_box()->absolute_rect().location().to_type<float>());
 
     return path.bounding_box().to_type<CSSPixels>();
@@ -83,7 +83,11 @@ void SVGPathPaintable::paint(DisplayListRecordingContext& context, PaintPhase ph
     auto offset = svg_element_rect.location().to_type<float>().scaled(context.device_pixels_per_css_pixel());
     auto maybe_view_box = svg_node->dom_node().view_box();
 
-    auto paint_transform = computed_transforms().svg_to_device_pixels_transform(context);
+    // Layout geometry is in the viewport's user units; the viewBox and transform
+    // attribute mappings are applied at replay time by the accumulated visual
+    // context, so painting only converts to device pixels.
+    auto css_scale = static_cast<float>(context.device_pixels_per_css_pixel());
+    auto paint_transform = Gfx::AffineTransform {}.scale({ css_scale, css_scale });
     auto path = computed_path()->copy_transformed(paint_transform);
     path.offset(offset);
 
@@ -164,7 +168,8 @@ void SVGPathPaintable::paint(DisplayListRecordingContext& context, PaintPhase ph
         auto miter_limit = graphics_element.stroke_miterlimit().value_or(0);
         auto stroke_opacity = graphics_element.stroke_opacity().value_or(1);
 
-        // Note: This is assuming .x_scale() == .y_scale() (which it does currently).
+        // Stroke geometry is in user units; the replay transform scales the
+        // stroked rendering, so only the device pixel ratio applies here.
         auto viewbox_scale = paint_transform.x_scale();
         float stroke_thickness = graphics_element.stroke_width().value_or(1) * viewbox_scale;
         auto stroke_dasharray = graphics_element.stroke_dasharray();
@@ -240,7 +245,7 @@ void SVGPathPaintable::record_hit_test_items(DisplayListRecordingContext& contex
     if (!svg_node || !svg_node->paintable_box())
         return;
 
-    auto transformed_path = computed_path()->copy_transformed(computed_transforms().svg_to_css_pixels_transform());
+    auto transformed_path = *computed_path();
     transformed_path.offset(svg_node->paintable_box()->absolute_rect().location().to_type<float>());
     auto bounding_box = transformed_path.bounding_box().to_type<CSSPixels>();
     if (bounding_box.is_empty())

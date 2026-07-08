@@ -10,6 +10,7 @@
 #include <LibWeb/CSS/StyleValues/PositionStyleValue.h>
 #include <LibWeb/HTML/DecodedImageData.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
+#include <LibWeb/Layout/SVGImageBox.h>
 #include <LibWeb/Painting/BorderRadiusCornerClipper.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
 #include <LibWeb/Painting/ImagePaintable.h>
@@ -95,6 +96,44 @@ void ImagePaintable::reset_for_relayout()
     }
 }
 
+// SVG image geometry stays in the local user units of its viewport and must not
+// be snapped to whole device pixels: the replay transform scales any snapping
+// error along with the content. Paint at the unsnapped destination and use the
+// accumulated SVG scale only to size the raster requested from the image data.
+void ImagePaintable::paint_svg_image(DisplayListRecordingContext& context, HTML::DecodedImageData const& decoded_image_data, CSSPixelRect image_rect) const
+{
+    // https://svgwg.org/svg2-draft/embedded.html#ImageElement
+    // The default preserveAspectRatio (xMidYMid meet) behaves like object-fit: contain.
+    auto dst_rect = image_rect.to_type<float>();
+    auto natural_size = m_image_provider.intrinsic_size();
+    if (natural_size.has_value() && !natural_size->is_empty()) {
+        auto scale = min(dst_rect.width() / natural_size->width().to_float(), dst_rect.height() / natural_size->height().to_float());
+        Gfx::FloatSize contained_size { natural_size->width().to_float() * scale, natural_size->height().to_float() * scale };
+        dst_rect = { dst_rect.location() + Gfx::FloatPoint { (dst_rect.width() - contained_size.width()) / 2, (dst_rect.height() - contained_size.height()) / 2 }, contained_size };
+    }
+    if (dst_rect.is_empty())
+        return;
+
+    auto device_pixels_per_css_pixel = static_cast<float>(context.device_pixels_per_css_pixel());
+    auto device_dst_rect = dst_rect.scaled(device_pixels_per_css_pixel, device_pixels_per_css_pixel);
+    auto svg_scale = svg_user_units_to_css_pixels_scale();
+    if (svg_scale == Gfx::FloatSize { 1, 1 }) {
+        // With no scale to amplify snapping errors or blur a raster, snap the
+        // destination for crisp edges and let the image data use its regular
+        // path (a cached display list for SVG image documents).
+        decoded_image_data.paint(context, device_dst_rect.to_rounded<int>().to_type<float>(), computed_values().image_rendering());
+        return;
+    }
+    // The raster is sampled into the destination under the replay transform, so
+    // request it at the final on-screen pixel density, within sane bounds.
+    constexpr int max_bitmap_dimension = 16384;
+    auto bitmap_size = Gfx::IntSize {
+        clamp(static_cast<int>(ceilf(device_dst_rect.width() * svg_scale.width())), 1, max_bitmap_dimension),
+        clamp(static_cast<int>(ceilf(device_dst_rect.height() * svg_scale.height())), 1, max_bitmap_dimension),
+    };
+    decoded_image_data.paint(context, device_dst_rect, computed_values().image_rendering(), bitmap_size);
+}
+
 void ImagePaintable::paint(DisplayListRecordingContext& context, PaintPhase phase) const
 {
     if (!is_visible())
@@ -115,26 +154,30 @@ void ImagePaintable::paint(DisplayListRecordingContext& context, PaintPhase phas
                 context.display_list_recorder().restore();
             }
         } else if (auto decoded_image_data = m_image_provider.decoded_image_data()) {
-            ScopedCornerRadiusClip corner_clip { context, image_rect_device_pixels, normalized_border_radii_data(ShrinkRadiiForBorders::Yes) };
-            auto image_int_rect_device_pixels = image_rect_device_pixels.to_type<int>();
+            if (m_is_svg_image) {
+                paint_svg_image(context, *decoded_image_data, image_rect);
+            } else {
+                ScopedCornerRadiusClip corner_clip { context, image_rect_device_pixels, normalized_border_radii_data(ShrinkRadiiForBorders::Yes) };
+                auto image_int_rect_device_pixels = image_rect_device_pixels.to_type<int>();
 
-            // https://drafts.csswg.org/css-images/#the-object-fit
-            auto object_fit = m_is_svg_image ? CSS::ObjectFit::Contain : computed_values().object_fit();
+                // https://drafts.csswg.org/css-images/#the-object-fit
+                auto object_fit = computed_values().object_fit();
 
-            auto intrinsic_size = m_image_provider.intrinsic_size()
-                                      .map([](auto size) { return size.template to_type<int>(); })
-                                      .value_or(image_int_rect_device_pixels.size());
+                auto intrinsic_size = m_image_provider.intrinsic_size()
+                                          .map([](auto size) { return size.template to_type<int>(); })
+                                          .value_or(image_int_rect_device_pixels.size());
 
-            auto draw_rect = get_replaced_box_painting_area(*this, context, object_fit, intrinsic_size);
-            if (!draw_rect.is_empty()) {
-                auto draw_rect_needs_clip = !image_int_rect_device_pixels.contains(draw_rect);
-                if (draw_rect_needs_clip) {
-                    context.display_list_recorder().save();
-                    context.display_list_recorder().add_clip_rect(image_int_rect_device_pixels);
+                auto draw_rect = get_replaced_box_painting_area(*this, context, object_fit, intrinsic_size);
+                if (!draw_rect.is_empty()) {
+                    auto draw_rect_needs_clip = !image_int_rect_device_pixels.contains(draw_rect);
+                    if (draw_rect_needs_clip) {
+                        context.display_list_recorder().save();
+                        context.display_list_recorder().add_clip_rect(image_int_rect_device_pixels);
+                    }
+                    decoded_image_data->paint(context, draw_rect.to_type<float>(), computed_values().image_rendering());
+                    if (draw_rect_needs_clip)
+                        context.display_list_recorder().restore();
                 }
-                decoded_image_data->paint(context, draw_rect.to_type<float>(), computed_values().image_rendering());
-                if (draw_rect_needs_clip)
-                    context.display_list_recorder().restore();
             }
         }
 

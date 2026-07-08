@@ -2,8 +2,9 @@
 <link rel="match" href="../expected/svg-stroke-preserveaspectratio-none-ref.html" />
 <style>body { margin: 0; } svg { display: block; }</style>
 <!-- Non-uniform viewBox scale (10x horizontally, 5x vertically) with
-     preserveAspectRatio=none. The stroke pen is currently uniform, sized by
-     the horizontal scale only; the reference pins that behavior. -->
+     preserveAspectRatio=none. The stroke is rendered under the non-uniform
+     scale, so the pen is elliptical, exactly like stroking under an
+     equivalent non-uniform CSS transform. -->
 <svg width="200" height="50" viewBox="0 0 20 10" preserveAspectRatio="none">
     <rect x="4" y="4" width="12" height="2" fill="none" stroke="green" stroke-width="1"/>
 </svg>

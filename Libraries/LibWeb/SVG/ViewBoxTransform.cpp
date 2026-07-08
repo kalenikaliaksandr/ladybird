@@ -6,9 +6,22 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/SVG/SVGGraphicsElement.h>
 #include <LibWeb/SVG/ViewBoxTransform.h>
 
 namespace Web::SVG {
+
+Optional<ViewBox> active_view_box_for_rendering(DOM::Node const& dom_node)
+{
+    Optional<ViewBox> view_box;
+    if (auto const* svg_graphics_element = as_if<SVGGraphicsElement>(dom_node))
+        view_box = svg_graphics_element->active_view_box();
+    else if (auto const* fit_to_view_box = as_if<SVGFitToViewBox>(dom_node))
+        view_box = fit_to_view_box->view_box();
+    if (view_box.has_value() && (view_box->width <= 0 || view_box->height <= 0))
+        return {};
+    return view_box;
+}
 
 struct ViewBoxOffsetAndScale {
     CSSPixelPoint offset;

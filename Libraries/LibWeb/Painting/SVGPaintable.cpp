@@ -9,6 +9,7 @@
 #include <LibWeb/Layout/SVGSVGBox.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
 #include <LibWeb/Painting/SVGPaintable.h>
+#include <LibWeb/SVG/SVGGraphicsElement.h>
 #include <LibWeb/SVG/SVGMaskElement.h>
 
 namespace Web::Painting {
@@ -46,7 +47,12 @@ Optional<CSSPixelRect> SVGPaintable::clip_path_geometry_bounds(Gfx::AffineTransf
         if (!svg_paintable)
             return IterationDecision::Continue;
 
-        auto child_bounds = svg_paintable->clip_path_geometry_bounds(additional_transform);
+        // Transform attributes are not baked into layout geometry, so accumulate
+        // them while descending into the clip's children.
+        auto child_transform = additional_transform;
+        if (auto const* graphics_element = as_if<SVG::SVGGraphicsElement>(child.dom_node().ptr()))
+            child_transform.multiply(graphics_element->element_transform());
+        auto child_bounds = svg_paintable->clip_path_geometry_bounds(child_transform);
         if (!child_bounds.has_value())
             return IterationDecision::Continue;
 

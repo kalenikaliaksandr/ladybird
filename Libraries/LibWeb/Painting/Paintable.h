@@ -393,6 +393,20 @@ public:
     void set_enclosing_scroll_frame_index(ScrollFrameIndex index) { m_enclosing_scroll_frame_index = index; }
     void set_own_scroll_frame_index(ScrollFrameIndex index) { m_own_scroll_frame_index = index; }
 
+    // Accumulated scale from this box's SVG user units to CSS pixels (the viewBox
+    // and transform-attribute scales of this box and its ancestors). Refreshed by
+    // the accumulated visual context build; identity outside SVG content. Used to
+    // size rasters (SVG images, nested subtree recordings) whose destinations are
+    // in user units that the replay transform scales.
+    Gfx::FloatSize svg_user_units_to_css_pixels_scale() const { return m_svg_user_units_to_css_pixels_scale; }
+    void set_svg_user_units_to_css_pixels_scale(Gfx::FloatSize scale) { m_svg_user_units_to_css_pixels_scale = scale; }
+
+    // Whether the accumulated visual context build appended SVG transform nodes
+    // (viewport or transform-attribute) for this box; such boxes cannot take the
+    // value-only visual context update fast path.
+    bool contributes_svg_visual_context_nodes() const { return m_contributes_svg_visual_context_nodes; }
+    void set_contributes_svg_visual_context_nodes(bool value) { m_contributes_svg_visual_context_nodes = value; }
+
     void set_accumulated_visual_context(VisualContextIndex index) { m_accumulated_visual_context_index = index; }
     [[nodiscard]] VisualContextIndex accumulated_visual_context_index() const { return m_accumulated_visual_context_index; }
     void set_accumulated_visual_context_for_descendants(VisualContextIndex index) { m_accumulated_visual_context_for_descendants_index = index; }
@@ -493,6 +507,8 @@ private:
 
     ScrollFrameIndex m_enclosing_scroll_frame_index {};
     ScrollFrameIndex m_own_scroll_frame_index {};
+    Gfx::FloatSize m_svg_user_units_to_css_pixels_scale { 1, 1 };
+    bool m_contributes_svg_visual_context_nodes { false };
     VisualContextIndex m_accumulated_visual_context_index { VISUAL_VIEWPORT_NODE_INDEX };
     VisualContextIndex m_accumulated_visual_context_for_descendants_index { VISUAL_VIEWPORT_NODE_INDEX };
     Optional<VisualContextIndex> m_fixed_background_visual_context;

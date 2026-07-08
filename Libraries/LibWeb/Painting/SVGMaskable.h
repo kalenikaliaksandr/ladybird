@@ -27,9 +27,6 @@ public:
     // For <clipPath> element
     Optional<CSSPixelRect> get_svg_clip_area() const;
     Optional<DisplayListResource> calculate_svg_clip_display_list(DisplayListRecordingContext&, CSSPixelRect const& clip_area) const;
-
-private:
-    Gfx::AffineTransform target_svg_transform() const;
 };
 
 }

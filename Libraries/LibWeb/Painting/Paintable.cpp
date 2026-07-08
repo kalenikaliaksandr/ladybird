@@ -62,6 +62,9 @@
 #include <LibWeb/Painting/ViewportPaintable.h>
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWeb/SVG/SVGFilterElement.h>
+#include <LibWeb/SVG/SVGGraphicsElement.h>
+#include <LibWeb/SVG/SVGSVGElement.h>
+#include <LibWeb/SVG/ViewBoxTransform.h>
 
 namespace Web::Painting {
 
@@ -787,13 +790,14 @@ ResolvedCSSFilter resolve_css_filter(CSS::Filter const& computed_filter, Paintab
                     return;
                 if (auto* filter_element = as_if<SVG::SVGFilterElement>(*maybe_filter)) {
                     // Filter primitive lengths are specified in the filtered element's user coordinate system, but the
-                    // resulting filter operates in device pixels. Compute the user-unit-to-device-pixel scale so the
-                    // filter can convert its lengths accordingly.
+                    // resulting filter operates in device pixels. Filter parameters are mapped through the transform
+                    // in effect when the filter layer is drawn, which includes ancestor SVG scales but not the
+                    // element's own transform attribute: that one is applied inside the layer, so scale by it here.
                     auto device_pixels_per_css_pixel = paintable_box.document().page().client().device_pixels_per_css_pixel();
                     auto filter_scale = Gfx::FloatPoint { device_pixels_per_css_pixel, device_pixels_per_css_pixel };
-                    if (auto const* svg_graphics_paintable = as_if<SVGGraphicsPaintable>(paintable_box)) {
-                        auto svg_to_css_pixels = svg_graphics_paintable->computed_transforms().svg_to_css_pixels_transform();
-                        filter_scale.scale_by(svg_to_css_pixels.x_scale(), svg_to_css_pixels.y_scale());
+                    if (auto const* graphics_element = as_if<SVG::SVGGraphicsElement>(layout_node.dom_node())) {
+                        auto element_transform = graphics_element->element_transform();
+                        filter_scale.scale_by(element_transform.x_scale(), element_transform.y_scale());
                     }
                     result.svg_filter = filter_element->gfx_filter(layout_node, filter_scale);
                     auto bounds = paintable_box.absolute_border_box_rect();
@@ -2664,15 +2668,27 @@ CSSPixelRect Paintable::transform_reference_box() const
         // Uses the stroke bounding box as reference box.
         // FIXME: For now we're using the border rect as an approximation.
         return absolute_border_box_rect();
-    case CSS::TransformBox::ViewBox:
+    case CSS::TransformBox::ViewBox: {
         // Uses the nearest SVG viewport as reference box.
-        // FIXME: If a viewBox attribute is specified for the SVG viewport creating element:
+        // If a viewBox attribute is specified for the SVG viewport creating element:
         //  - The reference box is positioned at the origin of the coordinate system established by the viewBox attribute.
         //  - The dimension of the reference box is set to the width and height values of the viewBox attribute.
+        // NOTE: SVG layout geometry is in the viewport's user units, so the reference
+        //       box for SVG content must be too.
         auto svg_paintable = first_ancestor_of_type<Painting::SVGSVGPaintable>();
         if (!svg_paintable)
             return absolute_border_box_rect();
-        return svg_paintable->absolute_rect();
+        auto viewport_rect = svg_paintable->absolute_rect();
+        if (svg_paintable->dom_node()) {
+            if (auto view_box = SVG::active_view_box_for_rendering(*svg_paintable->dom_node()); view_box.has_value()) {
+                return CSSPixelRect {
+                    viewport_rect.location().translated(CSSPixels::nearest_value_for(view_box->min_x), CSSPixels::nearest_value_for(view_box->min_y)),
+                    { CSSPixels::nearest_value_for(view_box->width), CSSPixels::nearest_value_for(view_box->height) }
+                };
+            }
+        }
+        return viewport_rect;
+    }
     }
     VERIFY_NOT_REACHED();
 }

@@ -21,6 +21,8 @@ public:
     virtual void paint(DisplayListRecordingContext&, PaintPhase) const override;
     virtual void reset_for_relayout() override;
 
+    void paint_svg_image(DisplayListRecordingContext&, HTML::DecodedImageData const&, CSSPixelRect image_rect) const;
+
 private:
     ImagePaintable(Layout::Box const& layout_box, Layout::ImageProvider const& image_provider, bool renders_as_alt_text, String alt_text, bool is_svg_image);
 
