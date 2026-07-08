@@ -287,7 +287,9 @@ Optional<Painting::PaintStyle> SVGPatternElement::to_gfx_paint_style(SVGPaintCon
     if (!svg_node || !svg_node->paintable_box())
         return {};
     auto svg_element_rect = svg_node->paintable_box()->absolute_rect();
-    auto svg_offset = recording_context.rounded_device_point(svg_element_rect.location()).to_type<int>().to_type<float>();
+    // NOTE: The offset must stay exact: rounding it to whole device pixels
+    //       displaces the pattern relative to coordinates that were not rounded.
+    auto svg_offset = svg_element_rect.location().to_type<float>().scaled(recording_context.device_pixels_per_css_pixel());
     tile_rect.translate_by(svg_offset);
 
     auto visual_context_tree = Painting::AccumulatedVisualContextTree::create();

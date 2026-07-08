@@ -78,7 +78,9 @@ void SVGPathPaintable::paint(DisplayListRecordingContext& context, PaintPhase ph
     auto const* svg_node = layout_box().first_ancestor_of_type<Layout::SVGSVGBox>();
     auto svg_element_rect = svg_node->paintable_box()->absolute_rect();
 
-    auto offset = context.rounded_device_point(svg_element_rect.location()).to_type<int>().to_type<float>();
+    // NOTE: The offset must stay exact: rounding it to whole device pixels
+    //       displaces the path relative to coordinates that were not rounded.
+    auto offset = svg_element_rect.location().to_type<float>().scaled(context.device_pixels_per_css_pixel());
     auto maybe_view_box = svg_node->dom_node().view_box();
 
     auto paint_transform = computed_transforms().svg_to_device_pixels_transform(context);
