@@ -786,16 +786,32 @@ SkPaint DisplayListPlayerSkia::paint_style_to_skia_paint(DisplayListPaintStyle c
         });
     case DisplayListPaintStyleType::Pattern: {
         auto const& tile_rect = paint_style.pattern_tile_rect;
-        auto tile_size = Gfx::IntSize(ceilf(tile_rect.width()), ceilf(tile_rect.height()));
+
+        // Rasterize the tile at the resolution implied by the canvas transform, so
+        // patterns stay sharp when the fill they belong to is scaled at replay
+        // time; the image-to-geometry mapping below scales the raster back down.
+        auto total_matrix = surface().canvas().getTotalMatrix();
+        auto raster_scale_x = clamp(SkVector { total_matrix.getScaleX(), total_matrix.getSkewY() }.length(), 1.f, 16.f);
+        auto raster_scale_y = clamp(SkVector { total_matrix.getSkewX(), total_matrix.getScaleY() }.length(), 1.f, 16.f);
+        auto tile_size = Gfx::IntSize(ceilf(tile_rect.width() * raster_scale_x), ceilf(tile_rect.height() * raster_scale_y));
         if (tile_size.is_empty())
             return {};
 
-        auto tile_surface = Gfx::PaintingSurface::create_with_size(tile_size, Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, m_skia_backend_context);
+        auto image = resource_storage().cached_skia_image_for_display_list(paint_style.pattern_tile_display_list_id, tile_size, m_skia_backend_context);
+        if (!image) {
+            auto tile_surface = Gfx::PaintingSurface::create_with_size(tile_size, Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, m_skia_backend_context);
 
-        auto const& tile_display_list = resource_storage().display_list_resource(paint_style.pattern_tile_display_list_id);
-        execute_display_list_into_surface(*tile_display_list.display_list, tile_display_list.visual_context_tree, *tile_surface);
+            tile_surface->canvas().scale(tile_size.width() / tile_rect.width(), tile_size.height() / tile_rect.height());
+            auto const& tile_display_list = resource_storage().display_list_resource(paint_style.pattern_tile_display_list_id);
+            execute_display_list_into_surface(*tile_display_list.display_list, tile_display_list.visual_context_tree, *tile_surface);
+            tile_surface->canvas().resetMatrix();
 
-        auto image = tile_surface->sk_surface().makeImageSnapshot();
+            image = tile_surface->sk_surface().makeImageSnapshot();
+            if (image)
+                resource_storage().set_cached_skia_image_for_display_list(paint_style.pattern_tile_display_list_id, tile_size, m_skia_backend_context, image);
+        }
+        if (!image)
+            return {};
 
         SkMatrix matrix;
         matrix.setTranslate(tile_rect.x(), tile_rect.y());
