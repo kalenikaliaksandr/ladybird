@@ -24,6 +24,7 @@
 #include <LibWeb/Painting/ResolvedCSSFilter.h>
 #include <LibWeb/Painting/ScrollState.h>
 #include <LibWeb/Painting/ViewportPaintable.h>
+#include <LibWeb/SVG/SVGElement.h>
 
 namespace Web::Painting {
 
@@ -545,6 +546,14 @@ AccumulatedVisualContextTree build_nested_svg_visual_context_tree(Paintable& roo
 
 bool update_accumulated_visual_context_values(ViewportPaintable& viewport_paintable, Paintable& paintable_box)
 {
+    // The in-place patcher below rewrites every TransformData in the box's
+    // node range with the recomputed CSS transform. SVG content contributes
+    // transform nodes that do not come from the CSS transform properties
+    // (viewport and transform-attribute nodes), which this rewrite would
+    // clobber, so SVG boxes always take the full-rebuild path.
+    if (paintable_box.dom_node() && is<SVG::SVGElement>(*paintable_box.dom_node()))
+        return false;
+
     auto& visual_context_tree = viewport_paintable.visual_context_tree();
     auto begin = paintable_box.visual_context_nodes_begin();
     auto end = paintable_box.visual_context_nodes_end();
