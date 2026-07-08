@@ -11,10 +11,10 @@
         document.body.offsetHeight;
 
         // Mutate geometry inside the nested <svg>. The invalidation walk stops at
-        // the closest partial relayout boundary; a nested SVG root must not
-        // qualify, because its descendants are laid out in the outer SVG's
-        // viewBox-transformed coordinate system, which a subtree relayout
-        // starting at the inner root cannot reproduce.
+        // the closest SVG root, so this exercises a partial relayout rooted at
+        // the nested viewport, which must produce the same result as a full
+        // layout: the outer viewBox scale reaches the rect through the visual
+        // context tree, not through layout geometry.
         document.getElementById("r").setAttribute("width", "6");
         document.body.offsetHeight;
 
