@@ -28,6 +28,8 @@
 namespace Web::Painting {
 
 AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable&);
+AccumulatedVisualContextTree build_nested_svg_visual_context_tree(Paintable&, Optional<TransformData> root_transform);
+
 bool update_accumulated_visual_context_values(ViewportPaintable&, Paintable&);
 void update_visual_viewport_accumulated_visual_context(ViewportPaintable&);
 
@@ -515,6 +517,32 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
 
 // Patches the transform/effects/perspective values of the box's existing visual context nodes in place.
 // Returns false if the box's node structure no longer matches; the caller must then do a full rebuild.
+static void build_nested_svg_visual_context_tree_for_subtree(AccumulatedVisualContextTree& visual_context_tree, Paintable& paintable_box, VisualContextIndex inherited_state, double pixel_ratio)
+{
+    auto own_state = inherited_state;
+    if (auto effects = compute_effects_data(paintable_box, pixel_ratio); effects.has_value())
+        own_state = visual_context_tree.append(move(effects.value()), inherited_state);
+
+    paintable_box.set_accumulated_visual_context(own_state);
+    paintable_box.set_accumulated_visual_context_for_descendants(own_state);
+
+    paintable_box.for_each_child_of_type<Paintable>([&](Paintable& child) {
+        build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, child, own_state, pixel_ratio);
+        return IterationDecision::Continue;
+    });
+}
+
+// Builds the private visual context tree used when recording a detached SVG
+// subtree (mask, clipPath, or pattern content) into its own display list.
+AccumulatedVisualContextTree build_nested_svg_visual_context_tree(Paintable& root_paintable, Optional<TransformData> root_transform)
+{
+    auto visual_context_tree = root_transform.has_value() ? AccumulatedVisualContextTree::create(move(root_transform.value())) : AccumulatedVisualContextTree::create();
+    auto pixel_ratio = root_paintable.document().page().client().device_pixels_per_css_pixel();
+    build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, root_paintable, {}, pixel_ratio);
+
+    return visual_context_tree;
+}
+
 bool update_accumulated_visual_context_values(ViewportPaintable& viewport_paintable, Paintable& paintable_box)
 {
     auto& visual_context_tree = viewport_paintable.visual_context_tree();
