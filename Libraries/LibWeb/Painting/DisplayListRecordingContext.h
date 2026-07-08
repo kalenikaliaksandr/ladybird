@@ -43,16 +43,6 @@ public:
     DevicePixelRect device_viewport_rect() const { return m_device_viewport_rect; }
     void set_device_viewport_rect(DevicePixelRect const& rect) { m_device_viewport_rect = rect; }
 
-    void set_svg_transform(Gfx::AffineTransform transform)
-    {
-        m_svg_transform = transform;
-    }
-
-    Gfx::AffineTransform const& svg_transform() const
-    {
-        return m_svg_transform;
-    }
-
     bool draw_svg_geometry_for_clip_path() const
     {
         return m_draw_svg_geometry_for_clip_path;
@@ -116,7 +106,6 @@ private:
     bool m_should_show_line_box_borders { false };
     bool m_should_paint_overlay { true };
     bool m_draw_svg_geometry_for_clip_path { false };
-    Gfx::AffineTransform m_svg_transform;
     u64 m_paint_generation_id { 0 };
     UniqueNodeID m_async_scrolling_document_id {};
     Painting::ScrollState const* m_async_scrolling_scroll_state { nullptr };

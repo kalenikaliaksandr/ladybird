@@ -273,13 +273,6 @@ struct LayoutState {
             return &*m_rare->computed_svg_path;
         }
 
-        void set_computed_svg_transforms(Painting::SVGGraphicsPaintable::ComputedTransforms const& computed_transforms) { ensure_rare_data().computed_svg_transforms = computed_transforms; }
-        Optional<Painting::SVGGraphicsPaintable::ComputedTransforms> const& computed_svg_transforms() const
-        {
-            static Optional<Painting::SVGGraphicsPaintable::ComputedTransforms> const empty;
-            return m_rare ? m_rare->computed_svg_transforms : empty;
-        }
-
         void set_grid_layout_data(OwnPtr<GridLayoutData> grid_layout_data) { ensure_rare_data().grid_layout_data = move(grid_layout_data); }
         GridLayoutData const* grid_layout_data() const
         {
@@ -350,7 +343,6 @@ struct LayoutState {
                 , grid_template_columns(other.grid_template_columns)
                 , grid_template_rows(other.grid_template_rows)
                 , override_borders_data(other.override_borders_data)
-                , computed_svg_transforms(other.computed_svg_transforms)
                 , static_position_rect(other.static_position_rect)
             {
                 if (other.grid_layout_data)
@@ -367,7 +359,6 @@ struct LayoutState {
             RefPtr<CSS::GridTrackSizeListStyleValue const> grid_template_columns;
             RefPtr<CSS::GridTrackSizeListStyleValue const> grid_template_rows;
             Optional<Painting::Paintable::BordersDataWithElementKind> override_borders_data;
-            Optional<Painting::SVGGraphicsPaintable::ComputedTransforms> computed_svg_transforms;
             Optional<StaticPositionRect> static_position_rect;
         };
 

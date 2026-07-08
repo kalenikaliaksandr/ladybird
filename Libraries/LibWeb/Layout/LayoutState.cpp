@@ -691,19 +691,6 @@ void LayoutState::commit(Box& root)
                 }
             }
 
-            if (auto* svg_graphics_paintable = as_if<Painting::SVGGraphicsPaintable>(paintable.ptr());
-                svg_graphics_paintable && used_values.computed_svg_transforms().has_value()) {
-                svg_graphics_paintable->set_computed_transforms(*used_values.computed_svg_transforms());
-            }
-            if (auto* svg_foreign_object_paintable = as_if<Painting::SVGForeignObjectPaintable>(paintable.ptr());
-                svg_foreign_object_paintable && used_values.computed_svg_transforms().has_value()) {
-                svg_foreign_object_paintable->set_computed_transforms(*used_values.computed_svg_transforms());
-            }
-            if (auto* svg_svg_paintable = as_if<Painting::SVGSVGPaintable>(paintable.ptr());
-                svg_svg_paintable && used_values.computed_svg_transforms().has_value()) {
-                svg_svg_paintable->set_computed_transforms(*used_values.computed_svg_transforms());
-            }
-
             if (auto* svg_path_paintable = as_if<Painting::SVGPathPaintable>(paintable.ptr())) {
                 if (auto* path = used_values.computed_svg_path())
                     svg_path_paintable->set_computed_path(move(*path));
@@ -1118,13 +1105,6 @@ void LayoutState::UsedValues::materialize_from_paintable(Painting::Paintable con
     inset_right = box_model.inset.right;
     inset_top = box_model.inset.top;
     inset_bottom = box_model.inset.bottom;
-
-    if (auto const* svg_graphics_paintable = as_if<Painting::SVGGraphicsPaintable>(paintable))
-        set_computed_svg_transforms(svg_graphics_paintable->computed_transforms());
-    if (auto const* svg_foreign_object_paintable = as_if<Painting::SVGForeignObjectPaintable>(paintable))
-        set_computed_svg_transforms(svg_foreign_object_paintable->computed_transforms());
-    if (auto const* svg_svg_paintable = as_if<Painting::SVGSVGPaintable>(paintable))
-        set_computed_svg_transforms(svg_svg_paintable->computed_transforms());
 }
 
 void LayoutState::UsedValues::set_content_width(CSSPixels width)
