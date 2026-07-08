@@ -297,7 +297,6 @@ void SVGFormattingContext::run(LayoutInput const& layout_input)
 
     m_available_space = available_space;
     m_quirks_mode_percentage_basis_height = layout_input.containing_block_constraints.quirks_mode_percentage_basis_height;
-    m_svg_offset = svg_box_state.offset;
     m_viewport_size = { viewport_width, viewport_height };
 
     if (svg_box_state.has_definite_width() && svg_box_state.has_definite_height()) {
