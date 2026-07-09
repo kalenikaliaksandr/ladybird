@@ -649,9 +649,9 @@ CSSPixels FormattingContext::compute_auto_height_for_block_formatting_context_ro
     // In addition, if the element has any floating descendants
     // whose bottom margin edge is below the element's bottom content edge,
     // then the height is increased to include those edges.
-    for (auto const& [floating_box, bottom_margin_edge] : m_state.get(root).floating_descendants()) {
-        if (!bottom.has_value() || bottom_margin_edge > bottom.value())
-            bottom = bottom_margin_edge;
+    if (auto lowest_float_bottom_margin_edge = m_state.get(root).lowest_floating_descendant_bottom_margin_edge(); lowest_float_bottom_margin_edge.has_value()) {
+        if (!bottom.has_value() || *lowest_float_bottom_margin_edge > bottom.value())
+            bottom = lowest_float_bottom_margin_edge;
     }
 
     return max(CSSPixels(0.0f), bottom.value_or(0) - top.value_or(0));

@@ -244,16 +244,16 @@ struct LayoutState {
 
         Optional<LineBoxFragmentCoordinate> containing_line_box_fragment;
 
-        // Floating descendants participating in the block formatting context this box roots,
-        // each with its bottom margin edge in this box's content-box space. The value is
-        // recorded when the float's block position is determined and kept in sync when an
-        // ancestor's final placement moves the float, so automatic height can be computed
-        // without reading the floats' (possibly not yet assigned) offsets.
-        void add_floating_descendant(Box const& box, CSSPixels bottom_margin_edge) { ensure_rare_data().floating_descendants.set(&box, bottom_margin_edge); }
-        HashMap<Box const*, CSSPixels> const& floating_descendants() const
+        // The lowest bottom margin edge, in this box's content-box space, over the floating
+        // descendants participating in the block formatting context this box roots. Derived
+        // from the context's float records whenever they change, so automatic height can be
+        // computed without reading the floats' (possibly not yet assigned) offsets.
+        void set_lowest_floating_descendant_bottom_margin_edge(Optional<CSSPixels> bottom_margin_edge) { ensure_rare_data().lowest_floating_descendant_bottom_margin_edge = bottom_margin_edge; }
+        Optional<CSSPixels> lowest_floating_descendant_bottom_margin_edge() const
         {
-            static auto const& empty = *new HashMap<Box const*, CSSPixels>;
-            return m_rare ? m_rare->floating_descendants : empty;
+            if (!m_rare)
+                return {};
+            return m_rare->lowest_floating_descendant_bottom_margin_edge;
         }
 
         void set_override_borders_data(Painting::Paintable::BordersDataWithElementKind const& override_borders_data) { ensure_rare_data().override_borders_data = override_borders_data; }
@@ -349,7 +349,7 @@ struct LayoutState {
 
             RareData() = default;
             RareData(RareData const& other)
-                : floating_descendants(other.floating_descendants)
+                : lowest_floating_descendant_bottom_margin_edge(other.lowest_floating_descendant_bottom_margin_edge)
                 , table_cell_coordinates(other.table_cell_coordinates)
                 , computed_svg_path(other.computed_svg_path)
                 , grid_template_columns(other.grid_template_columns)
@@ -364,7 +364,7 @@ struct LayoutState {
                     flex_layout_data = make<FlexLayoutData>(*other.flex_layout_data);
             }
 
-            HashMap<Box const*, CSSPixels> floating_descendants;
+            Optional<CSSPixels> lowest_floating_descendant_bottom_margin_edge;
             Optional<Painting::Paintable::TableCellCoordinates> table_cell_coordinates;
             Optional<Gfx::Path> computed_svg_path;
             OwnPtr<GridLayoutData> grid_layout_data;

@@ -135,6 +135,7 @@ private:
 
     [[nodiscard]] CSSPixels compute_normal_flow_x(Box const& child_box, AvailableSpace const&, CSSPixelPoint content_position_in_root) const;
     void translate_floats_in_subtree(Box const& ancestor, CSSPixelPoint delta);
+    void update_lowest_floating_descendant_bottom_margin_edge();
 
     void ensure_sizes_correct_for_left_offset_calculation(ListItemBox const&);
     void layout_list_item_marker(ListItemBox const&, SpaceUsedByFloats const& inline_space_used_before_list_item_elements_formatted);

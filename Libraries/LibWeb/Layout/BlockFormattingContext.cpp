@@ -568,6 +568,17 @@ void BlockFormattingContext::rebuild_float_bands()
         add_float_to_bands(*floating_box, floating_box->containing_block_rect_in_root_coordinate_space);
 }
 
+void BlockFormattingContext::update_lowest_floating_descendant_bottom_margin_edge()
+{
+    Optional<CSSPixels> lowest;
+    for (auto const& floating_box : m_floats) {
+        auto bottom_margin_edge = floating_box->margin_box_rect_in_root_coordinate_space.bottom();
+        if (!lowest.has_value() || bottom_margin_edge > *lowest)
+            lowest = bottom_margin_edge;
+    }
+    m_state.get_mutable(root()).set_lowest_floating_descendant_bottom_margin_edge(lowest);
+}
+
 void BlockFormattingContext::translate_floats_in_subtree(Box const& ancestor, CSSPixelPoint delta)
 {
     // Floats recorded while `ancestor`'s subtree was laid out against its provisional position
@@ -575,14 +586,17 @@ void BlockFormattingContext::translate_floats_in_subtree(Box const& ancestor, CS
     // from) is translated accordingly.
     if (delta.is_zero() || m_floats.is_empty())
         return;
-    auto& root_state = m_state.get_mutable(root());
+    bool any_float_moved = false;
     for (auto& floating_box : m_floats) {
         if (!ancestor.is_ancestor_of(floating_box->box))
             continue;
         floating_box->margin_box_rect_in_root_coordinate_space.translate_by(delta);
         floating_box->containing_block_rect_in_root_coordinate_space.translate_by(delta);
-        root_state.add_floating_descendant(floating_box->box, floating_box->margin_box_rect_in_root_coordinate_space.bottom());
+        any_float_moved = true;
     }
+    if (!any_float_moved)
+        return;
+    update_lowest_floating_descendant_bottom_margin_edge();
     rebuild_float_bands();
 }
 
@@ -1620,7 +1634,14 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
     }));
     add_float_to_bands(*m_floats.last(), containing_block_rect_in_root);
 
-    m_state.get_mutable(root()).add_floating_descendant(box, margin_box_rect_in_root.bottom());
+    // Appending a float can only move the lowest bottom margin edge down, so update it
+    // incrementally; the full recompute is reserved for translate_floats_in_subtree(),
+    // where floats can move up.
+    auto& root_state = m_state.get_mutable(root());
+    auto bottom_margin_edge = m_floats.last()->margin_box_rect_in_root_coordinate_space.bottom();
+    auto lowest = root_state.lowest_floating_descendant_bottom_margin_edge();
+    if (!lowest.has_value() || bottom_margin_edge > *lowest)
+        root_state.set_lowest_floating_descendant_bottom_margin_edge(bottom_margin_edge);
 
     if (line_builder)
         line_builder->recalculate_available_space();
