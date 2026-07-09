@@ -304,6 +304,10 @@ void SVGFormattingContext::run(LayoutInput const& layout_input)
         // Scale the box of the viewport based on the parent's viewBox transform.
         // The viewBox transform is always just a simple scale + offset.
         // FIXME: Avoid converting SVG box to floats.
+        // NB: This rewrites our own root box's offset, whose placement belongs to whichever
+        //     context placed it, so it stays on the legacy setter: the placement API tracks
+        //     it as an ownership conflict. Removing it means no longer baking the viewBox
+        //     transform into offsets, which is a separate refactor.
         Gfx::FloatRect svg_rect = { svg_box_state.offset.to_type<float>(),
             { float(svg_box_state.content_width()), float(svg_box_state.content_height()) } };
         svg_rect = m_parent_viewbox_transform.map(svg_rect);
@@ -348,7 +352,7 @@ void SVGFormattingContext::layout_svg_element(Box const& child, LayoutInput cons
         child_state.set_computed_svg_transforms(Painting::SVGGraphicsPaintable::ComputedTransforms(m_current_viewbox_transform, svg_transform));
         auto to_css_pixels_transform = Gfx::AffineTransform {}.multiply(m_current_viewbox_transform).multiply(svg_transform);
         auto transformed_rect = to_css_pixels_transform.map(rect.to_type<float>()).to_type<CSSPixels>();
-        child_state.set_content_offset(transformed_rect.location());
+        place_child(child, transformed_rect.location());
         child_state.set_content_width(transformed_rect.width());
         child_state.set_content_height(transformed_rect.height());
 
@@ -413,7 +417,10 @@ void SVGFormattingContext::layout_nested_viewport(Box const& viewport, Gfx::Affi
         parent_viewbox_transform = {};
     }
 
-    nested_viewport_state.set_content_offset(content_offset);
+    // NB: For a nested viewport without a viewBox, this offset is still in the outer
+    //     viewport's user units; the nested context's own run() applies our viewbox
+    //     transform to it via the (tracked) legacy own-root rewrite.
+    place_child(viewport, content_offset);
     nested_viewport_state.set_content_width(content_width);
     nested_viewport_state.set_content_height(content_height);
     nested_viewport_state.set_has_definite_width(true);
@@ -546,7 +553,7 @@ void SVGFormattingContext::layout_path_like_element(SVGGraphicsBox const& graphi
     // Stroke increases the path's size by stroke_width/2 per side.
     CSSPixels stroke_width = CSSPixels::nearest_value_for(graphics_box.dom_node().visible_stroke_width() * m_current_viewbox_transform.x_scale());
     transformed_bounding_box.inflate(stroke_width, stroke_width);
-    graphics_box_state.set_content_offset(transformed_bounding_box.top_left());
+    place_child(graphics_box, transformed_bounding_box.top_left());
     graphics_box_state.set_content_width(transformed_bounding_box.width());
     graphics_box_state.set_content_height(transformed_bounding_box.height());
     graphics_box_state.set_has_definite_width(true);
@@ -595,8 +602,7 @@ void SVGFormattingContext::layout_image_element(SVGImageBox const& image_box)
                                        .multiply(box_state.computed_svg_transforms()->svg_transform());
     auto bounding_box = to_css_pixels_transform.map(image_box.dom_node().bounding_box(m_viewport_size)).to_type<CSSPixels>();
 
-    box_state.set_content_x(bounding_box.x());
-    box_state.set_content_y(bounding_box.y());
+    place_child(image_box, bounding_box.top_left());
     box_state.set_content_width(bounding_box.width());
     box_state.set_content_height(bounding_box.height());
     box_state.set_has_definite_width(true);
@@ -659,12 +665,11 @@ void SVGFormattingContext::layout_container_element(SVGBox const& container, Lay
             return IterationDecision::Continue;
         layout_svg_element(child, layout_input, container_svg_transform);
         auto& child_state = m_state.get(child);
-        bounding_box.add_point(child_state.offset);
-        bounding_box.add_point(child_state.offset.translated(child_state.content_width(), child_state.content_height()));
+        bounding_box.add_point(child_state.content_offset());
+        bounding_box.add_point(child_state.content_offset().translated(child_state.content_width(), child_state.content_height()));
         return IterationDecision::Continue;
     });
-    box_state.set_content_x(bounding_box.x());
-    box_state.set_content_y(bounding_box.y());
+    place_child(container, { bounding_box.x(), bounding_box.y() });
     box_state.set_content_width(bounding_box.width());
     box_state.set_content_height(bounding_box.height());
     box_state.set_has_definite_width(true);
