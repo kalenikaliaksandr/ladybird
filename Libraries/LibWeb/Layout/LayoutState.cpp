@@ -955,6 +955,7 @@ LayoutState::UsedValues& LayoutState::UsedValues::operator=(UsedValues const& ot
     m_content_height = other.m_content_height;
     m_has_definite_width = other.m_has_definite_width;
     m_has_definite_height = other.m_has_definite_height;
+    m_placement_state = other.m_placement_state;
 
     if (other.m_rare)
         m_rare = make<RareData>(*other.m_rare);
@@ -962,6 +963,23 @@ LayoutState::UsedValues& LayoutState::UsedValues::operator=(UsedValues const& ot
         m_rare = nullptr;
 
     return *this;
+}
+
+void LayoutState::UsedValues::report_legacy_offset_write(SourceLocation const& caller) const
+{
+    if (m_placement_state == PlacementState::Placed) {
+        dbgln("LayoutPlacement: CONFLICT: legacy offset write over already-placed {} at {}",
+            m_node ? m_node->debug_description() : "(node not set)"_string, caller);
+    } else {
+        dbgln("LayoutPlacement: legacy offset write for {} at {}",
+            m_node ? m_node->debug_description() : "(node not set)"_string, caller);
+    }
+}
+
+void LayoutState::UsedValues::report_offset_read_before_placement() const
+{
+    dbgln("LayoutPlacement: read of never-written offset of {}",
+        m_node ? m_node->debug_description() : "(node not set)"_string);
 }
 
 void LayoutState::UsedValues::set_node(NodeWithStyle const& node, Optional<CSSPixels> percentage_basis_width, Optional<CSSPixels> percentage_basis_height)

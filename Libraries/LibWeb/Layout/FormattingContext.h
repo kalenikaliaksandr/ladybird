@@ -154,6 +154,11 @@ public:
 
     virtual void parent_context_did_dimension_child_root_box() { }
 
+    // Placement event: all placement writes in converted formatting contexts funnel here.
+    // The context that owns the child's coordinate space calls this exactly once per child,
+    // at the moment the child's position is final.
+    void place_child(Box const& child, CSSPixelPoint content_offset);
+
     CSSPixels calculate_min_content_width(Layout::Box const&, ContainingBlockConstraints const&) const;
     CSSPixels calculate_max_content_width(Layout::Box const&, ContainingBlockConstraints const&) const;
     CSSPixels calculate_min_content_height(Layout::Box const&, CSSPixels width, ContainingBlockConstraints const&) const;
@@ -184,6 +189,10 @@ public:
 
 protected:
     FormattingContext(Type, LayoutMode, LayoutState&, Box const&, FormattingContext* parent = nullptr);
+
+    // Hook for future consumers of the placement event (hoisted-abspos adjustment, move-only
+    // damage classification, placement tracing); deliberately empty for now.
+    virtual void did_place_child(Box const&, CSSPixelPoint) { }
 
     [[nodiscard]] static bool computed_height_establishes_definite_containing_block_height(CSS::Size const&);
     [[nodiscard]] Optional<CSSPixels> calculate_transferred_width_for_replaced_element(Layout::Box const&, ContainingBlockConstraints const&) const;

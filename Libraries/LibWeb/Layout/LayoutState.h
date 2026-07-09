@@ -7,8 +7,10 @@
 #pragma once
 
 #include <AK/BumpAllocator.h>
+#include <AK/Debug.h>
 #include <AK/HashTable.h>
 #include <AK/OwnPtr.h>
+#include <AK/SourceLocation.h>
 #include <AK/kmalloc.h>
 #include <LibGfx/Path.h>
 #include <LibGfx/Point.h>
@@ -23,6 +25,15 @@ enum class SizeConstraint {
     None,
     MinContent,
     MaxContent,
+};
+
+// Tracks how a box's content offset has been written during this layout pass. Converted
+// formatting contexts assign positions exactly once, through UsedValues::place(); contexts
+// not yet converted keep using the legacy setters, which tolerate rewrites.
+enum class PlacementState : u8 {
+    NotPlaced,      // no write yet
+    Placed,         // written once, via place() — immutable from now on
+    LegacyWritten,  // written via legacy setters — rewrites still tolerated
 };
 
 class AvailableSize;
@@ -184,11 +195,53 @@ struct LayoutState {
 
         void materialize_from_paintable(Painting::Paintable const&);
 
-        void set_content_offset(CSSPixelPoint new_offset) { offset = new_offset; }
-        void set_content_x(CSSPixels x) { offset.set_x(x); }
-        void set_content_y(CSSPixels y) { offset.set_y(y); }
+        // Single-assignment placement: the one way a converted formatting context assigns a
+        // position. "Once" means once per UsedValues lifetime — throwaway measurement states
+        // create fresh UsedValues, so intrinsic sizing is unaffected.
+        void place(CSSPixelPoint content_offset)
+        {
+            VERIFY(m_placement_state == PlacementState::NotPlaced);
+            offset = content_offset;
+            m_placement_state = PlacementState::Placed;
+        }
+        bool is_placed() const { return m_placement_state == PlacementState::Placed; }
+
+        // Legacy setters, for formatting contexts not yet converted to place(). Under
+        // LAYOUT_PLACEMENT_DEBUG every call is reported, making the remaining call sites an
+        // enumerable burn-down list; a legacy write over a Placed box is reported loudly as
+        // an ownership conflict.
+        void set_content_offset(CSSPixelPoint new_offset, SourceLocation caller = SourceLocation::current())
+        {
+            note_legacy_offset_write(caller);
+            offset = new_offset;
+        }
+        void set_content_x(CSSPixels x, SourceLocation caller = SourceLocation::current())
+        {
+            note_legacy_offset_write(caller);
+            offset.set_x(x);
+        }
+        void set_content_y(CSSPixels y, SourceLocation caller = SourceLocation::current())
+        {
+            note_legacy_offset_write(caller);
+            offset.set_y(y);
+        }
+
+        // Checked read of `offset` for code converted to the placement protocol; reading a
+        // position that was never written is reported under LAYOUT_PLACEMENT_DEBUG.
+        CSSPixelPoint content_offset() const
+        {
+            if constexpr (LAYOUT_PLACEMENT_DEBUG) {
+                if (m_placement_state == PlacementState::NotPlaced)
+                    report_offset_read_before_placement();
+            }
+            return offset;
+        }
 
         // offset from top-left corner of content area of box's containing block to top-left corner of box's content area
+        // NOTE: Reads in code converted to the placement protocol should go through
+        //       content_offset() above; the tree-wide migration of the remaining direct reads
+        //       (and making this member private) happens once every formatting context has
+        //       been converted to place().
         CSSPixelPoint offset;
 
         SizeConstraint width_constraint { SizeConstraint::None };
@@ -329,6 +382,16 @@ struct LayoutState {
     private:
         friend struct LayoutState;
 
+        void note_legacy_offset_write(SourceLocation const& caller)
+        {
+            if constexpr (LAYOUT_PLACEMENT_DEBUG)
+                report_legacy_offset_write(caller);
+            if (m_placement_state == PlacementState::NotPlaced)
+                m_placement_state = PlacementState::LegacyWritten;
+        }
+        void report_legacy_offset_write(SourceLocation const&) const;
+        void report_offset_read_before_placement() const;
+
         AvailableSize available_width_inside() const;
         AvailableSize available_height_inside() const;
 
@@ -386,6 +449,8 @@ struct LayoutState {
 
         bool m_has_definite_width { false };
         bool m_has_definite_height { false };
+
+        PlacementState m_placement_state { PlacementState::NotPlaced };
 
         OwnPtr<RareData> m_rare;
     };

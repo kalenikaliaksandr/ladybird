@@ -214,6 +214,12 @@ FormattingContext::FormattingContext(Type type, LayoutMode layout_mode, LayoutSt
 
 FormattingContext::~FormattingContext() = default;
 
+void FormattingContext::place_child(Box const& child, CSSPixelPoint content_offset)
+{
+    m_state.get_mutable(child).place(content_offset);
+    did_place_child(child, content_offset);
+}
+
 bool FormattingContext::computed_height_establishes_definite_containing_block_height(CSS::Size const& computed_height)
 {
     // A resolved used height is not always a definite containing block height.
