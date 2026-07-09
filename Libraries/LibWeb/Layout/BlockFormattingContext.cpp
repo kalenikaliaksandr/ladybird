@@ -515,11 +515,28 @@ void BlockFormattingContext::ensure_band_boundary(CSSPixels block_start)
     m_bands.append(new_band);
 }
 
-void BlockFormattingContext::add_float_to_bands(FloatingBox const& floating_box, CSSPixelRect const& containing_block_rect_in_root)
+CSSPixels BlockFormattingContext::pending_y_adjustment_for(Node const& box) const
 {
+    CSSPixels adjustment = 0;
+    for (auto const& pending : m_margin_state.pending_top_margins()) {
+        if (pending.pinned_by_clearance)
+            continue;
+        if (pending.box->is_inclusive_ancestor_of(box))
+            adjustment += pending.collapsed_margin - pending.collapsed_margin_at_open;
+    }
+    return adjustment;
+}
+
+void BlockFormattingContext::add_float_to_bands(FloatingBox const& floating_box, CSSPixelRect containing_block_rect_in_root)
+{
+    // The cached rectangles are in provisional space; shift them by the pending margin of any
+    // ancestor whose top margin group has not been applied to its position yet.
+    auto const pending_y_adjustment = pending_y_adjustment_for(floating_box.box);
+    containing_block_rect_in_root.translate_by(0, pending_y_adjustment);
+
     auto const& box_state = floating_box.used_values;
     auto const root_content_width = m_state.get(root()).content_width();
-    auto const margin_box_rect_in_root = floating_box.margin_box_rect_in_root_coordinate_space;
+    auto const margin_box_rect_in_root = floating_box.margin_box_rect_in_root_coordinate_space.translated(0, pending_y_adjustment);
     auto const block_start = margin_box_rect_in_root.top();
     auto const block_end = margin_box_rect_in_root.bottom();
 
@@ -557,13 +574,24 @@ void BlockFormattingContext::rebuild_float_bands()
     m_lowest_left_margin_edge = 0;
     m_lowest_right_margin_edge = 0;
 
+    for (auto& floating_box : m_floats)
+        add_float_to_bands(*floating_box, floating_box->containing_block_rect_in_root_coordinate_space);
+}
+
+void BlockFormattingContext::translate_floats_in_subtree(Box const& ancestor, CSSPixelPoint delta)
+{
+    // Floats recorded while `ancestor`'s subtree was laid out against its provisional position
+    // move together with it; their cached root-space geometry (which the bands are derived
+    // from) is translated accordingly.
+    if (delta.is_zero())
+        return;
     for (auto& floating_box : m_floats) {
-        floating_box->margin_box_rect_in_root_coordinate_space = margin_box_rect_in_ancestor_coordinate_space(floating_box->used_values, root());
-        auto const* containing_block = floating_box->used_values.node().containing_block();
-        VERIFY(containing_block);
-        auto containing_block_rect_in_root = content_box_rect_in_ancestor_coordinate_space(m_state.get(*containing_block), root());
-        add_float_to_bands(*floating_box, containing_block_rect_in_root);
+        if (!ancestor.is_ancestor_of(floating_box->box))
+            continue;
+        floating_box->margin_box_rect_in_root_coordinate_space.translate_by(delta);
+        floating_box->containing_block_rect_in_root_coordinate_space.translate_by(delta);
     }
+    rebuild_float_bands();
 }
 
 CSSPixels BlockFormattingContext::avoid_float_intrusions(Box const& box, AvailableSpace const& available_space, CSSPixels content_y, CSSPixelRect const& containing_block_rect_in_root) const
@@ -968,10 +996,12 @@ void BlockFormattingContext::layout_interrupting_block_inside_inline_context(Box
 
 CSSPixels BlockFormattingContext::commit_pending_margin_before_inline_content()
 {
-    auto margin_collapses_with_block_container = m_margin_state.has_block_container_waiting_for_final_y_position();
+    // Inline content seals an open top margin group: the pending margin resolves into the
+    // position of the box that opened it, so the line does not receive it again.
+    auto margin_collapses_with_block_container = m_margin_state.has_open_top_margin_group();
     auto collapsed_margin = m_margin_state.current_collapsed_margin();
 
-    m_margin_state.update_block_waiting_for_final_y_position();
+    m_margin_state.update_open_top_margin_group();
     m_margin_state.reset();
 
     return margin_collapses_with_block_container ? CSSPixels(0) : collapsed_margin;
@@ -1042,7 +1072,9 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
     if (box.is_floating()) {
         auto const y = m_y_offset_of_current_block_container.value();
-        auto margin_top = !m_margin_state.has_block_container_waiting_for_final_y_position() ? m_margin_state.current_collapsed_margin() : 0;
+        // While a top margin group is open, the pending margin resolves into the position of
+        // the box that opened it, and the float rides along with that box.
+        auto margin_top = m_margin_state.has_open_top_margin_group() ? 0 : m_margin_state.current_collapsed_margin();
         layout_floating_box(box, block_container, layout_input, margin_top + y);
         bottom_of_lowest_margin_box = max(bottom_of_lowest_margin_box, box_state.offset.y() + box_state.content_height() + box_state.margin_box_bottom());
         return;
@@ -1052,7 +1084,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     auto introduce_clearance = clear_floating_boxes(box, {}, containing_block_position_in_root);
     if (introduce_clearance == DidIntroduceClearance::Yes)
         m_margin_state.reset();
-    m_margin_state.update_block_waiting_for_final_y_position();
+    m_margin_state.update_open_top_margin_group();
 
     auto const y = m_y_offset_of_current_block_container.value();
 
@@ -1074,18 +1106,18 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
     CSSPixels margin_top = m_margin_state.current_collapsed_margin();
 
-    if (m_margin_state.has_block_container_waiting_for_final_y_position()) {
+    if (m_margin_state.has_open_top_margin_group()) {
         // If first child margin top will collapse with margin-top of containing block then margin-top of child is 0
         margin_top = 0;
     }
 
-    // A block container whose margin-top may still collapse with the margins of its first in-flow
-    // descendants is placed at a provisional y and moved by the margin-collapse callback while its
-    // children are laid out; it stays on the legacy write path until margin collapsing is inverted
-    // and the callback machinery can be deleted.
-    auto box_may_be_moved_by_margin_collapse = !independent_formatting_context
+    // A block container whose margin-top may still collapse with the margins of its leading
+    // in-flow descendants opens a top margin group: its children are laid out against its
+    // provisional position, and its final y — including the margin collapsed with those
+    // descendants — is resolved and written when the group is collected below.
+    auto box_opens_top_margin_group = !independent_formatting_context
         && box_state.border_top == 0 && box_state.padding_top == 0
-        && !m_margin_state.has_block_container_waiting_for_final_y_position();
+        && !m_margin_state.has_open_top_margin_group();
 
     // The rendered legend's final y depends on its own laid-out height (its border box is centered
     // over the fieldset's block-start border), so layout_fieldset_with_rendered_legend() positions
@@ -1106,14 +1138,18 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     auto const containing_block_rect_in_root = containing_block_position_in_root.has_value()
         ? CSSPixelRect { *containing_block_position_in_root, m_state.get(*containing_block).content_size() }
         : content_box_rect_in_ancestor_coordinate_space(m_state.get(*containing_block), root());
-    auto content_position_in_root = [&](CSSPixels content_y) {
-        return containing_block_rect_in_root.location().translated(0, content_y);
+
+    // Positions handed down as inputs are provisional while ancestors' top margin groups are
+    // pending; float queries need the position as it currently stands.
+    auto const containing_block_rect_in_root_now = containing_block_rect_in_root.translated(0, pending_y_adjustment_for(box));
+    auto content_position_in_root_now = [&](CSSPixels content_y) {
+        return containing_block_rect_in_root_now.location().translated(0, content_y);
     };
 
-    compute_width(box, available_space, layout_input.containing_block_constraints, content_position_in_root(content_y));
-    content_y = avoid_float_intrusions(box, available_space, content_y, containing_block_rect_in_root);
+    compute_width(box, available_space, layout_input.containing_block_constraints, content_position_in_root_now(content_y));
+    content_y = avoid_float_intrusions(box, available_space, content_y, containing_block_rect_in_root_now);
 
-    auto content_x = compute_normal_flow_x(box, available_space, content_position_in_root(content_y));
+    auto content_x = compute_normal_flow_x(box, available_space, content_position_in_root_now(content_y));
 
     // This monster basically means: "a ListItemBox that does not have specified content in the ::marker pseudo-element".
     // This happens for ::marker with content 'normal'.
@@ -1137,10 +1173,13 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         }
     }
 
-    if (box_may_be_moved_by_margin_collapse || box_is_positioned_by_fieldset_layout)
+    if (box_is_positioned_by_fieldset_layout)
         box_state.set_content_offset({ content_x, content_y });
-    else
+    else if (!box_opens_top_margin_group)
         place_child(box, { content_x, content_y });
+    // A box that opens a top margin group is not written yet: its inside layout receives the
+    // provisional position as an input, and the box is placed once, with its resolved y, after
+    // its children have been laid out.
 
     AvailableSpace available_space_for_height_resolution = available_space;
     auto is_table_box = box.display().is_table_row() || box.display().is_table_row_group() || box.display().is_table_header_group() || box.display().is_table_footer_group() || box.display().is_table_cell() || box.display().is_table_caption();
@@ -1169,10 +1208,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         auto const& marker_state = m_state.get(*li_box->marker());
 
         auto offset_y = max(CSSPixels(0), (li_box->marker()->computed_values().line_height() - marker_state.content_height()) / 2);
-        if (containing_block_position_in_root.has_value())
-            inline_space_used_before_children_formatted = intrusion_by_floats_into_rect({ containing_block_position_in_root->translated(content_x, content_y), list_item_state.content_size() }, offset_y, offset_y);
-        else
-            inline_space_used_before_children_formatted = intrusion_by_floats_into_box(list_item_state, offset_y);
+        inline_space_used_before_children_formatted = intrusion_by_floats_into_rect({ content_position_in_root_now(content_y).translated(content_x, 0), list_item_state.content_size() }, offset_y, offset_y);
     }
 
     if (independent_formatting_context) {
@@ -1209,30 +1245,36 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         if (box_state.border_top > 0 || box_state.padding_top > 0) {
             // margin-top of block container can't collapse with its children if it has non-zero border or padding.
             m_margin_state.reset();
-        } else if (box_may_be_moved_by_margin_collapse) {
-            // margin-top of block container can be updated during children layout hence its final y position is yet to be determined.
-            m_margin_state.register_block_container_y_position_update_callback([this, &box, y, introduce_clearance](CSSPixels margin_top) {
-                if (introduce_clearance == DidIntroduceClearance::No) {
-                    place_block_level_element_in_normal_flow_vertically(box, margin_top + y);
-                }
-            });
+        } else if (box_opens_top_margin_group) {
+            // margin-top of block container can be extended by its leading in-flow descendants
+            // during children layout, hence its final y position is yet to be determined.
+            m_margin_state.open_top_margin_group(box, introduce_clearance == DidIntroduceClearance::Yes);
         }
 
-        // The box's inside layout receives the box's own position as an explicit input; it is
-        // withheld while margin collapsing may still move the box, in which case the subtree
-        // keeps reading the live layout state.
+        // The box's inside layout receives the box's own (possibly still provisional) position
+        // as an explicit input instead of reading it back from the layout state.
         auto inside_layout_input = layout_input.with_content_box_position_in_bfc_root(
-            box_may_be_moved_by_margin_collapse
-                ? Optional<CSSPixelPoint> {}
-                : containing_block_position_in_root.map([&](auto& position) { return position.translated(content_x, content_y); }));
+            containing_block_position_in_root.map([&](auto& position) { return position.translated(content_x, content_y); }));
 
         if (box.children_are_inline())
             layout_inline_children(as<BlockContainer>(box), inside_layout_input, space_available_for_children);
         else
             layout_block_level_children(as<BlockContainer>(box), inside_layout_input, space_available_for_children);
 
-        if (box_may_be_moved_by_margin_collapse) {
-            m_margin_state.unregister_block_container_y_position_update_callback();
+        if (box_opens_top_margin_group) {
+            // Collect the group: the collapsed value at its sealing time is this box's resolved
+            // margin-top. When clearance pinned the box's flow position up front, the margin
+            // does not move the box.
+            auto resolved_margin_top = m_margin_state.take_pending_top_margin();
+            auto final_content_y = introduce_clearance == DidIntroduceClearance::No
+                ? y + resolved_margin_top + box_state.border_box_top()
+                : content_y;
+            if (box_is_positioned_by_fieldset_layout)
+                box_state.set_content_y(final_content_y);
+            else
+                place_child(box, { content_x, final_content_y });
+            // Floats inside this box were recorded against the provisional position.
+            translate_floats_in_subtree(box, { 0, final_content_y - content_y });
         }
     }
 
@@ -1257,7 +1299,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     m_margin_state.set_box_last_in_flow_child_margin_bottom_collapsed(false);
 
     m_margin_state.add_margin(box_state.margin_bottom);
-    m_margin_state.update_block_waiting_for_final_y_position();
+    m_margin_state.update_open_top_margin_group();
 
     compute_inset(box, content_box_rect(block_container_state).size());
 
@@ -1295,7 +1337,7 @@ void BlockFormattingContext::layout_block_level_children(BlockContainer const& b
         auto& block_container_state = m_state.get_mutable(block_container);
         if (!block_container_state.has_definite_width()) {
             auto width = layout_input.content_box_position_in_bfc_root.has_value()
-                ? greatest_child_width_in_rect(block_container, { *layout_input.content_box_position_in_bfc_root, block_container_state.content_size() })
+                ? greatest_child_width_in_rect(block_container, { layout_input.content_box_position_in_bfc_root->translated(0, pending_y_adjustment_for(block_container)), block_container_state.content_size() })
                 : greatest_child_width(block_container);
             auto const& computed_values = block_container.computed_values();
             // NOTE: Min and max constraints are not applied to a box that is being sized as intrinsic because
@@ -1392,7 +1434,10 @@ void BlockFormattingContext::layout_fieldset_with_rendered_legend(FieldSetBox co
     auto legend_border_box_centering_offset = (effective_border - legend_state.border_box_height()) / 2;
     auto fieldset_border_box_top_in_content = -(fieldset_state.border_top + fieldset_state.padding_top);
     auto legend_content_y = fieldset_border_box_top_in_content + legend_border_box_centering_offset + legend_state.border_box_top();
+    auto legend_y_delta = legend_content_y - legend_state.offset.y();
     legend_state.set_content_y(legend_content_y);
+    // Floats inside the legend were recorded against its provisional flow position.
+    translate_floats_in_subtree(*legend, { 0, legend_y_delta });
 
     compute_and_store_baselines(fieldset_state);
 }
@@ -1439,7 +1484,7 @@ BlockFormattingContext::DidIntroduceClearance BlockFormattingContext::clear_floa
         //       the `child_box` layout state.
         CSSPixels clearance_y_in_containing_block = clearance_y_in_root;
         if (containing_block_position_in_root.has_value()) {
-            clearance_y_in_containing_block -= containing_block_position_in_root->y();
+            clearance_y_in_containing_block -= containing_block_position_in_root->y() + pending_y_adjustment_for(child_box);
         } else {
             for (auto containing_block = child_box.containing_block(); containing_block && containing_block != &root(); containing_block = containing_block->containing_block())
                 clearance_y_in_containing_block -= m_state.get(*containing_block).offset.y();
@@ -1463,14 +1508,6 @@ BlockFormattingContext::DidIntroduceClearance BlockFormattingContext::clear_floa
         clear_floating_boxes(m_lowest_right_margin_edge);
 
     return result;
-}
-
-void BlockFormattingContext::place_block_level_element_in_normal_flow_vertically(Box const& child_box, CSSPixels y)
-{
-    auto& box_state = m_state.get_mutable(child_box);
-    y += box_state.border_box_top();
-    box_state.set_content_y(y);
-    rebuild_float_bands();
 }
 
 CSSPixels BlockFormattingContext::compute_normal_flow_x(Box const& child_box, AvailableSpace const& available_space, CSSPixelPoint content_position_in_root) const
@@ -1543,24 +1580,27 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
     if (!side.has_value())
         return;
 
-    // The layout input describes block_container, so its position arrives with it; fall back
-    // to reading the layout state while its position may still be moved by margin collapsing.
+    // The layout input describes block_container, so its position arrives with it. The recorded
+    // geometry stays in this (possibly provisional) space; the placement math below needs the
+    // position as it currently stands, so it shifts by the pending margin of any ancestor whose
+    // top margin group has not been applied to its position yet.
     auto const containing_block_rect_in_root = layout_input.content_box_position_in_bfc_root.has_value()
         ? CSSPixelRect { *layout_input.content_box_position_in_bfc_root, block_container_state.content_size() }
         : content_box_rect_in_ancestor_coordinate_space(block_container_state, root());
+    auto const containing_block_rect_in_root_now = containing_block_rect_in_root.translated(0, pending_y_adjustment_for(block_container));
     auto margin_box_ceiling = line_builder ? line_builder->ceiling_for_float_to_be_inserted_here(box) : y;
     auto clearance = computed_values.clear();
     if (side.value() == FloatSide::Left && first_is_one_of(clearance, CSS::Clear::Left, CSS::Clear::Both, CSS::Clear::InlineStart))
-        margin_box_ceiling = max(margin_box_ceiling, m_lowest_left_margin_edge - containing_block_rect_in_root.y());
+        margin_box_ceiling = max(margin_box_ceiling, m_lowest_left_margin_edge - containing_block_rect_in_root_now.y());
     if (side.value() == FloatSide::Right && first_is_one_of(clearance, CSS::Clear::Right, CSS::Clear::Both, CSS::Clear::InlineEnd))
-        margin_box_ceiling = max(margin_box_ceiling, m_lowest_right_margin_edge - containing_block_rect_in_root.y());
+        margin_box_ceiling = max(margin_box_ceiling, m_lowest_right_margin_edge - containing_block_rect_in_root_now.y());
 
-    auto ceiling_in_root = containing_block_rect_in_root.y() + margin_box_ceiling;
+    auto ceiling_in_root = containing_block_rect_in_root_now.y() + margin_box_ceiling;
     if (!m_floats.is_empty())
-        ceiling_in_root = max(ceiling_in_root, m_floats.last()->margin_box_rect_in_root_coordinate_space.top());
+        ceiling_in_root = max(ceiling_in_root, m_floats.last()->margin_box_rect_in_root_coordinate_space.top() + pending_y_adjustment_for(m_floats.last()->box));
 
-    auto placement = place_float(side.value(), box_state, available_space, containing_block_rect_in_root, ceiling_in_root);
-    auto content_y = placement.block_start - containing_block_rect_in_root.y() + box_state.margin_box_top();
+    auto placement = place_float(side.value(), box_state, available_space, containing_block_rect_in_root_now, ceiling_in_root);
+    auto content_y = placement.block_start - containing_block_rect_in_root_now.y() + box_state.margin_box_top();
     box_state.set_content_y(content_y);
 
     auto margin_box_rect_in_root = layout_input.content_box_position_in_bfc_root.has_value()
@@ -1574,6 +1614,7 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
         .top_margin_edge = content_y - box_state.margin_box_top(),
         .bottom_margin_edge = content_y + box_state.content_height() + box_state.margin_box_bottom(),
         .margin_box_rect_in_root_coordinate_space = margin_box_rect_in_root,
+        .containing_block_rect_in_root_coordinate_space = containing_block_rect_in_root,
         .percentage_basis_width = layout_input.containing_block_constraints.percentage_basis_width,
     }));
     add_float_to_bands(*m_floats.last(), containing_block_rect_in_root);

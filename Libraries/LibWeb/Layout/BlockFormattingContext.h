@@ -56,6 +56,12 @@ public:
     [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_rect(CSSPixelRect const& box_in_root_rect, CSSPixels block_start_in_box, CSSPixels block_end_in_box) const;
     [[nodiscard]] Optional<CSSPixels> next_float_band_block_start_after(CSSPixels y_in_root) const;
 
+    // Flow positions handed down as layout inputs are provisional for boxes whose top margin
+    // group is still pending: the margin collected so far has not been applied to their y yet.
+    // This returns the pending downward shift of `box`'s position in root space, for the float
+    // machinery, which needs positions as they currently stand.
+    [[nodiscard]] CSSPixels pending_y_adjustment_for(Node const& box) const;
+
     virtual CSSPixels greatest_child_width(Box const&) const override;
 
     void layout_floating_box(Box const& child, BlockContainer const& containing_block, LayoutInput const&, CSSPixels y, LineBuilder* = nullptr);
@@ -98,7 +104,11 @@ public:
         // Bottom margin edge of `box`.
         CSSPixels bottom_margin_edge { 0 };
 
+        // Root-space geometry cached at float placement time and kept in sync when an
+        // ancestor's final placement moves the float; the float bands are derived from
+        // these records rather than from the layout state.
         CSSPixelRect margin_box_rect_in_root_coordinate_space;
+        CSSPixelRect containing_block_rect_in_root_coordinate_space;
         Optional<CSSPixels> percentage_basis_width;
     };
 
@@ -114,7 +124,7 @@ private:
     void layout_fieldset_with_rendered_legend(FieldSetBox const&, LayoutInput const&);
 
     [[nodiscard]] CSSPixels compute_normal_flow_x(Box const& child_box, AvailableSpace const&, CSSPixelPoint content_position_in_root) const;
-    void place_block_level_element_in_normal_flow_vertically(Box const&, CSSPixels y);
+    void translate_floats_in_subtree(Box const& ancestor, CSSPixelPoint delta);
 
     void ensure_sizes_correct_for_left_offset_calculation(ListItemBox const&);
     void layout_list_item_marker(ListItemBox const&, SpaceUsedByFloats const& inline_space_used_before_list_item_elements_formatted);
@@ -148,7 +158,7 @@ private:
     [[nodiscard]] CSSPixels greatest_child_width_in_rect(Box const&, CSSPixelRect const& box_in_root_rect) const;
     [[nodiscard]] FloatPlacement place_float(FloatSide, LayoutState::UsedValues const&, AvailableSpace const&, CSSPixelRect const& containing_block_rect_in_root, CSSPixels ceiling_in_root) const;
     void ensure_band_boundary(CSSPixels);
-    void add_float_to_bands(FloatingBox const&, CSSPixelRect const& containing_block_rect_in_root);
+    void add_float_to_bands(FloatingBox const&, CSSPixelRect containing_block_rect_in_root);
     void rebuild_float_bands();
 
     class BlockMarginState {
@@ -162,37 +172,63 @@ private:
             }
         }
 
-        void register_block_container_y_position_update_callback(ESCAPING Function<void(CSSPixels)> callback)
-        {
-            m_block_container_y_position_update_callback = move(callback);
-        }
-
-        void unregister_block_container_y_position_update_callback()
-        {
-            m_block_container_y_position_update_callback = {};
-        }
-
         CSSPixels current_collapsed_margin() const
         {
             return m_current_positive_collapsible_margin + m_current_negative_collapsible_margin;
         }
 
-        bool has_block_container_waiting_for_final_y_position() const
+        // A block container whose margin-top may collapse with the margins of its leading
+        // in-flow descendants "opens a top margin group": the group keeps collecting margins
+        // while the leading descendants collapse through, and is sealed by the first piece of
+        // in-flow content. The collapsed value at sealing time is the container's resolved
+        // margin-top; the container's frame collects it with take_pending_top_margin() and
+        // resolves its final y at placement time. At most one group is open at a time, but
+        // sealed groups of ancestor frames still awaiting placement stack up, and the
+        // difference between a group's current value and its value at open time is the
+        // container's pending downward shift (see pending_y_adjustment_for()).
+        struct PendingTopMargin {
+            Box const* box { nullptr };
+            CSSPixels collapsed_margin_at_open;
+            CSSPixels collapsed_margin;
+            bool open { false };
+            // Clearance determined the box's flow position up front; the collected margin
+            // does not move the box.
+            bool pinned_by_clearance { false };
+        };
+
+        void open_top_margin_group(Box const& box, bool pinned_by_clearance)
         {
-            return static_cast<bool>(m_block_container_y_position_update_callback);
+            m_pending_top_margins.append({
+                .box = &box,
+                .collapsed_margin_at_open = current_collapsed_margin(),
+                .collapsed_margin = current_collapsed_margin(),
+                .open = true,
+                .pinned_by_clearance = pinned_by_clearance,
+            });
         }
 
-        void update_block_waiting_for_final_y_position() const
+        CSSPixels take_pending_top_margin()
         {
-            if (m_block_container_y_position_update_callback) {
-                CSSPixels collapsed_margin = current_collapsed_margin();
-                m_block_container_y_position_update_callback(collapsed_margin);
-            }
+            return m_pending_top_margins.take_last().collapsed_margin;
         }
+
+        bool has_open_top_margin_group() const
+        {
+            return !m_pending_top_margins.is_empty() && m_pending_top_margins.last().open;
+        }
+
+        void update_open_top_margin_group()
+        {
+            if (has_open_top_margin_group())
+                m_pending_top_margins.last().collapsed_margin = current_collapsed_margin();
+        }
+
+        Vector<PendingTopMargin, 4> const& pending_top_margins() const { return m_pending_top_margins; }
 
         void reset()
         {
-            m_block_container_y_position_update_callback = {};
+            if (has_open_top_margin_group())
+                m_pending_top_margins.last().open = false;
             m_current_negative_collapsible_margin = 0;
             m_current_positive_collapsible_margin = 0;
         }
@@ -203,7 +239,7 @@ private:
     private:
         CSSPixels m_current_positive_collapsible_margin;
         CSSPixels m_current_negative_collapsible_margin;
-        Function<void(CSSPixels)> m_block_container_y_position_update_callback;
+        Vector<PendingTopMargin, 4> m_pending_top_margins;
         bool m_box_last_in_flow_child_margin_bottom_collapsed { false };
     };
 
