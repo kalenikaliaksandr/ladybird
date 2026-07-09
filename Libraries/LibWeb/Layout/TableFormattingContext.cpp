@@ -81,15 +81,14 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
 
         auto const& caption_state = m_state.get(child_box);
         if (phase == CSS::CaptionSide::Top) {
-            // The table box is placed by the wrapper's formatting context; pushing it down
-            // below the caption is a legacy rewrite of that position for now.
-            m_state.get_mutable(table_box()).set_content_y(caption_state.content_height() + caption_state.margin_box_bottom());
+            // The table box sits below the top captions: adjust the pending offset that its
+            // single placement (after this run) uses.
+            m_table_box_content_offset_in_wrapper.set_y(caption_state.content_height() + caption_state.margin_box_bottom());
         } else if (!placed_via_placement_api) {
-            // A caption whose principal box is not a block container (e.g. an SVG root) keeps
-            // the legacy write: its inside layout owns and rewrites its own offset, so a
-            // single up-front placement is not possible here without changing behavior.
-            m_state.get_mutable(child_box).set_content_y(
-                m_state.get(table_box()).margin_box_height() + caption_state.margin_box_top());
+            // A caption whose principal box is not a block container (e.g. an SVG root) could
+            // not be placed before its inside layout, which writes its own offset; this is its
+            // placement event, adopting the inline position its inside layout produced.
+            place_child(child_box, { caption_state.offset.x(), m_state.get(table_box()).margin_box_height() + caption_state.margin_box_top() });
         }
         caption_height += caption_state.margin_box_height();
     }
@@ -1217,7 +1216,10 @@ void TableFormattingContext::position_row_boxes()
 {
     auto const& table_state = m_state.get(table_box());
 
-    CSSPixels row_top_offset = table_state.content_offset().y() + border_spacing_vertical();
+    // NOTE: Rows and row groups have the table wrapper as their containing block, and the
+    //       table box itself is not placed until this run() returns, so its pending offset in
+    //       the wrapper is used instead of reading its own offset back from the layout state.
+    CSSPixels row_top_offset = m_table_box_content_offset_in_wrapper.y() + border_spacing_vertical();
     CSSPixels row_left_offset = table_state.border_left + table_state.padding_left + border_spacing_horizontal();
     for (size_t y = 0; y < m_rows.size(); y++) {
         auto& row = m_rows[y];
@@ -1236,7 +1238,7 @@ void TableFormattingContext::position_row_boxes()
             row_top_offset += row_state.content_height() + border_spacing_vertical();
     }
 
-    CSSPixels row_group_top_offset = table_state.content_offset().y() + border_spacing_vertical();
+    CSSPixels row_group_top_offset = m_table_box_content_offset_in_wrapper.y() + border_spacing_vertical();
     CSSPixels row_group_left_offset = table_state.border_left + table_state.padding_left + border_spacing_horizontal();
     TableGrid::for_each_child_box_matching(table_box(), TableGrid::is_table_row_group, [&](auto& row_group_box) {
         CSSPixels row_group_height = 0;
@@ -1261,7 +1263,7 @@ void TableFormattingContext::position_row_boxes()
         row_group_top_offset += row_group_height + (num_rows > 0 ? border_spacing_vertical() : 0);
     });
 
-    auto total_content_height = max(row_top_offset, row_group_top_offset) - table_state.content_offset().y() - table_state.padding_top;
+    auto total_content_height = max(row_top_offset, row_group_top_offset) - m_table_box_content_offset_in_wrapper.y() - table_state.padding_top;
     m_table_height = max(total_content_height, m_table_height);
 }
 
@@ -1340,14 +1342,10 @@ void TableFormattingContext::position_cell_boxes()
         auto cell_offset = row_state.content_offset().translated(
             cell_state.border_box_left() + m_columns[cell.column_index].left_offset + cell.column_index * border_spacing_horizontal(),
             cell_state.border_box_top());
-        if (formatting_context_type_created_by_box(cell.box) == FormattingContext::Type::SVG) {
-            // A cell whose principal box is an SVG root had its offset rewritten from within
-            // its own inside layout, so it keeps the legacy setter (which overwrites that
-            // value, as before); see run_caption_layout() for the same situation.
-            cell_state.set_content_offset(cell_offset);
-        } else {
-            place_child(cell.box, cell_offset);
-        }
+        // A cell whose principal box is an SVG root had its offset written from within its
+        // own inside layout, outside the placement protocol; this placement overwrites that
+        // value, as before.
+        place_child(cell.box, cell_offset);
     }
 }
 
