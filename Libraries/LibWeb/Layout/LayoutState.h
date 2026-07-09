@@ -8,7 +8,7 @@
 
 #include <AK/BumpAllocator.h>
 #include <AK/Debug.h>
-#include <AK/HashTable.h>
+#include <AK/HashMap.h>
 #include <AK/OwnPtr.h>
 #include <AK/SourceLocation.h>
 #include <AK/kmalloc.h>
@@ -297,10 +297,15 @@ struct LayoutState {
 
         Optional<LineBoxFragmentCoordinate> containing_line_box_fragment;
 
-        void add_floating_descendant(Box const& box) { ensure_rare_data().floating_descendants.set(&box); }
-        HashTable<Box const*> const& floating_descendants() const
+        // Floating descendants participating in the block formatting context this box roots,
+        // each with its bottom margin edge in this box's content-box space. The value is
+        // recorded when the float's block position is determined and kept in sync when an
+        // ancestor's final placement moves the float, so automatic height can be computed
+        // without reading the floats' (possibly not yet assigned) offsets.
+        void add_floating_descendant(Box const& box, CSSPixels bottom_margin_edge) { ensure_rare_data().floating_descendants.set(&box, bottom_margin_edge); }
+        HashMap<Box const*, CSSPixels> const& floating_descendants() const
         {
-            static auto const& empty = *new HashTable<Box const*>;
+            static auto const& empty = *new HashMap<Box const*, CSSPixels>;
             return m_rare ? m_rare->floating_descendants : empty;
         }
 
@@ -422,7 +427,7 @@ struct LayoutState {
                     flex_layout_data = make<FlexLayoutData>(*other.flex_layout_data);
             }
 
-            HashTable<Box const*> floating_descendants;
+            HashMap<Box const*, CSSPixels> floating_descendants;
             Optional<Painting::Paintable::TableCellCoordinates> table_cell_coordinates;
             Optional<Gfx::Path> computed_svg_path;
             OwnPtr<GridLayoutData> grid_layout_data;

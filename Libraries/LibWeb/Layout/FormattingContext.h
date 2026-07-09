@@ -172,6 +172,8 @@ public:
 
     virtual CSSPixels greatest_child_width(Box const&) const;
 
+    // Margin box rectangle relative to the box's own content-box origin (offset-independent).
+    [[nodiscard]] static CSSPixelRect margin_box_rect(LayoutState::UsedValues const&);
     [[nodiscard]] CSSPixelRect margin_box_rect_in_ancestor_coordinate_space(Box const&, Box const& ancestor_box) const;
     [[nodiscard]] CSSPixelRect margin_box_rect_in_ancestor_coordinate_space(LayoutState::UsedValues const&, Box const& ancestor_box) const;
     [[nodiscard]] CSSPixelRect content_box_rect(Box const&) const;

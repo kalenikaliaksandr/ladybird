@@ -167,9 +167,12 @@ void BlockFormattingContext::parent_context_did_dimension_child_root_box()
     m_was_notified_after_parent_dimensioned_my_root_box = true;
 
     for (auto& floating_box : m_floats) {
+        // A float's inline position is only known once the containing block's width is final,
+        // so this is the placement event; the block position was carried on the record since
+        // the float was laid out.
         if (floating_box->side == FloatSide::Left) {
             // Left-side floats: offset_from_edge is from left edge (0) to left content edge of floating_box.
-            floating_box->used_values.set_content_x(floating_box->offset_from_edge);
+            place_child(floating_box->box, { floating_box->offset_from_edge, floating_box->content_y });
         } else {
             // Right-side floats: offset_from_edge is from right edge (float_containing_block_width) to the left content edge of floating_box.
             auto float_containing_block_width = [&] {
@@ -183,7 +186,7 @@ void BlockFormattingContext::parent_context_did_dimension_child_root_box()
                 }
                 VERIFY_NOT_REACHED();
             }();
-            floating_box->used_values.set_content_x(float_containing_block_width - floating_box->offset_from_edge);
+            place_child(floating_box->box, { float_containing_block_width - floating_box->offset_from_edge, floating_box->content_y });
         }
     }
 
@@ -585,11 +588,13 @@ void BlockFormattingContext::translate_floats_in_subtree(Box const& ancestor, CS
     // from) is translated accordingly.
     if (delta.is_zero())
         return;
+    auto& root_state = m_state.get_mutable(root());
     for (auto& floating_box : m_floats) {
         if (!ancestor.is_ancestor_of(floating_box->box))
             continue;
         floating_box->margin_box_rect_in_root_coordinate_space.translate_by(delta);
         floating_box->containing_block_rect_in_root_coordinate_space.translate_by(delta);
+        root_state.add_floating_descendant(floating_box->box, floating_box->margin_box_rect_in_root_coordinate_space.bottom());
     }
     rebuild_float_bands();
 }
@@ -1076,7 +1081,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         // the box that opened it, and the float rides along with that box.
         auto margin_top = m_margin_state.has_open_top_margin_group() ? 0 : m_margin_state.current_collapsed_margin();
         layout_floating_box(box, block_container, layout_input, margin_top + y);
-        bottom_of_lowest_margin_box = max(bottom_of_lowest_margin_box, box_state.offset.y() + box_state.content_height() + box_state.margin_box_bottom());
+        bottom_of_lowest_margin_box = max(bottom_of_lowest_margin_box, m_floats.last()->bottom_margin_edge);
         return;
     }
 
@@ -1601,16 +1606,21 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
 
     auto placement = place_float(side.value(), box_state, available_space, containing_block_rect_in_root_now, ceiling_in_root);
     auto content_y = placement.block_start - containing_block_rect_in_root_now.y() + box_state.margin_box_top();
-    box_state.set_content_y(content_y);
 
-    auto margin_box_rect_in_root = layout_input.content_box_position_in_bfc_root.has_value()
-        ? margin_box_rect_in_ancestor_coordinate_space(box_state, block_container).translated(*layout_input.content_box_position_in_bfc_root)
-        : margin_box_rect_in_ancestor_coordinate_space(box_state, root());
+    // The float's block position is final here, but its inline position depends on the
+    // containing block's final width, so the box is placed in one go by
+    // parent_context_did_dimension_child_root_box() once that width is known. Until then its
+    // geometry lives on the FloatingBox record, in the containing block's (pre-pending-margin)
+    // space.
+    auto margin_box_rect_in_root = margin_box_rect(box_state)
+                                       .translated(0, content_y)
+                                       .translated(containing_block_rect_in_root.location());
     m_floats.append(adopt_own(*new FloatingBox {
         .box = box,
         .used_values = box_state,
         .side = side.value(),
         .offset_from_edge = placement.offset_from_edge,
+        .content_y = content_y,
         .top_margin_edge = content_y - box_state.margin_box_top(),
         .bottom_margin_edge = content_y + box_state.content_height() + box_state.margin_box_bottom(),
         .margin_box_rect_in_root_coordinate_space = margin_box_rect_in_root,
@@ -1619,7 +1629,7 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
     }));
     add_float_to_bands(*m_floats.last(), containing_block_rect_in_root);
 
-    m_state.get_mutable(root()).add_floating_descendant(box);
+    m_state.get_mutable(root()).add_floating_descendant(box, margin_box_rect_in_root.bottom());
 
     if (line_builder)
         line_builder->recalculate_available_space();
@@ -1695,15 +1705,11 @@ void BlockFormattingContext::layout_list_item_marker(ListItemBox const& list_ite
         list_item_state.set_content_width(list_item_state.content_width() - marker_width - marker_distance);
     }
 
-    CSSPixelPoint marker_offset { round(marker_offset_x), round(marker_offset_y) };
-    if (marker.is_floating() || marker.is_absolutely_positioned()) {
-        // The float or abspos machinery writes this marker's offset as well ('float' and
-        // 'position' do not apply to ::marker, but animations can still produce them);
-        // keep the legacy last-write-wins ordering for those cases.
-        marker_state.set_content_offset(marker_offset);
-    } else {
-        place_child(marker, marker_offset);
-    }
+    // A floating or absolutely positioned marker is placed by that machinery instead
+    // ('float' and 'position' do not apply to ::marker, but animations can still produce
+    // them).
+    if (!marker.is_floating() && !marker.is_absolutely_positioned())
+        place_child(marker, { round(marker_offset_x), round(marker_offset_y) });
 
     if (marker.computed_values().line_height() > list_item_state.content_height())
         list_item_state.set_content_height(marker.computed_values().line_height());
