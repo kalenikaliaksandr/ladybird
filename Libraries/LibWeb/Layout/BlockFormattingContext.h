@@ -53,6 +53,7 @@ public:
     [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_box(Box const&, CSSPixels y_in_box) const;
     [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_box(LayoutState::UsedValues const&, CSSPixels y_in_box) const;
     [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_box(LayoutState::UsedValues const&, CSSPixels block_start_in_box, CSSPixels block_end_in_box) const;
+    [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_rect(CSSPixelRect const& box_in_root_rect, CSSPixels block_start_in_box, CSSPixels block_end_in_box) const;
     [[nodiscard]] Optional<CSSPixels> next_float_band_block_start_after(CSSPixels y_in_root) const;
 
     virtual CSSPixels greatest_child_width(Box const&) const override;
@@ -72,7 +73,7 @@ public:
         No,
     };
 
-    [[nodiscard]] DidIntroduceClearance clear_floating_boxes(Node const& child_box, Optional<InlineFormattingContext&> inline_formatting_context);
+    [[nodiscard]] DidIntroduceClearance clear_floating_boxes(Node const& child_box, Optional<InlineFormattingContext&> inline_formatting_context, Optional<CSSPixelPoint> containing_block_position_in_root);
 
     void reset_margin_state() { m_margin_state.reset(); }
 
@@ -144,7 +145,7 @@ private:
     [[nodiscard]] FloatBand const& band_at(CSSPixels y) const;
     [[nodiscard]] SpaceUsedByFloats intrusions_for_band_into_rect(FloatBand const&, CSSPixelRect const& rect_in_root) const;
     [[nodiscard]] SpaceUsedByFloats available_inline_space_in_box(LayoutState::UsedValues const&, CSSPixels block_start_in_box, CSSPixels block_end_in_box) const;
-    [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_rect(CSSPixelRect const& box_in_root_rect, CSSPixels block_start_in_box, CSSPixels block_end_in_box) const;
+    [[nodiscard]] CSSPixels greatest_child_width_in_rect(Box const&, CSSPixelRect const& box_in_root_rect) const;
     [[nodiscard]] FloatPlacement place_float(FloatSide, LayoutState::UsedValues const&, AvailableSpace const&, CSSPixelRect const& containing_block_rect_in_root, CSSPixels ceiling_in_root) const;
     void ensure_band_boundary(CSSPixels);
     void add_float_to_bands(FloatingBox const&, CSSPixelRect const& containing_block_rect_in_root);

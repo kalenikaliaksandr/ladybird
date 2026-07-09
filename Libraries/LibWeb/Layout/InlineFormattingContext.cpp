@@ -41,9 +41,18 @@ BlockFormattingContext const& InlineFormattingContext::parent() const
     return static_cast<BlockFormattingContext const&>(*FormattingContext::parent());
 }
 
+FormattingContext::SpaceUsedByFloats InlineFormattingContext::intrusion_by_floats_into_containing_block(CSSPixels block_start, CSSPixels block_end) const
+{
+    // The containing block's position arrives via the layout input; fall back to reading the
+    // layout state while its position may still be moved by margin collapsing.
+    if (auto const& position = m_layout_input->content_box_position_in_bfc_root; position.has_value())
+        return parent().intrusion_by_floats_into_rect({ *position, m_containing_block_used_values.content_size() }, block_start, block_end);
+    return parent().intrusion_by_floats_into_box(m_containing_block_used_values, block_start, block_end);
+}
+
 CSSPixels InlineFormattingContext::leftmost_inline_offset_at(CSSPixels block_offset, CSSPixels line_height) const
 {
-    auto intrusions = parent().intrusion_by_floats_into_box(m_containing_block_used_values, block_offset, block_offset + line_height);
+    auto intrusions = intrusion_by_floats_into_containing_block(block_offset, block_offset + line_height);
     return intrusions.left;
 }
 
@@ -52,7 +61,7 @@ AvailableSize InlineFormattingContext::available_space_for_line(CSSPixels block_
     if (!m_available_space->width.is_definite())
         return m_available_space->width;
 
-    auto intrusions = parent().intrusion_by_floats_into_box(m_containing_block_used_values, block_offset, block_offset + line_height);
+    auto intrusions = intrusion_by_floats_into_containing_block(block_offset, block_offset + line_height);
     return AvailableSize::make_definite(m_available_space->width.to_px_or_zero() - intrusions.left - intrusions.right);
 }
 
@@ -402,7 +411,7 @@ void InlineFormattingContext::generate_line_boxes()
         case InlineLevelIterator::Item::Type::ForcedBreak: {
             line_builder.break_line(LineBuilder::ForcedBreak::Yes);
             if (item.node) {
-                auto introduce_clearance = parent().clear_floating_boxes(*item.node, *this);
+                auto introduce_clearance = parent().clear_floating_boxes(*item.node, *this, m_layout_input->content_box_position_in_bfc_root);
                 if (introduce_clearance == BlockFormattingContext::DidIntroduceClearance::Yes) {
                     line_builder.did_introduce_clearance(vertical_float_clearance());
                     parent().reset_margin_state();
@@ -454,7 +463,7 @@ void InlineFormattingContext::generate_line_boxes()
                 line_builder.commit_pending_margin_before_float();
                 if (!is<ListItemMarkerBox>(*box))
                     m_state.create(*box, m_layout_input->containing_block_constraints.percentage_basis_width, m_layout_input->containing_block_constraints.percentage_basis_height);
-                (void)parent().clear_floating_boxes(*item.node, *this);
+                (void)parent().clear_floating_boxes(*item.node, *this, m_layout_input->content_box_position_in_bfc_root);
                 // Even if this introduces clearance, we do NOT reset the margin state, because that is clearance
                 // between floats and does not contribute to the height of the Inline Formatting Context.
                 line_builder.set_unbreakable_run_width_interrupted_by_float(iterator.next_non_whitespace_sequence_width());
@@ -577,7 +586,7 @@ void InlineFormattingContext::generate_line_boxes()
 bool InlineFormattingContext::any_floats_intrude_in_block_range(CSSPixels block_start, CSSPixels block_end) const
 {
     // FIXME: Respect inline direction.
-    auto intrusions = parent().intrusion_by_floats_into_box(m_containing_block_used_values, block_start, block_end);
+    auto intrusions = intrusion_by_floats_into_containing_block(block_start, block_end);
     return intrusions.left > 0 || intrusions.right > 0;
 }
 
@@ -592,11 +601,15 @@ bool InlineFormattingContext::can_fit_new_line_at_block_offset(CSSPixels block_o
 
 Optional<CSSPixels> InlineFormattingContext::next_float_band_block_start_after(CSSPixels block_offset) const
 {
-    auto box_in_root_rect = content_box_rect_in_ancestor_coordinate_space(m_containing_block_used_values, parent().root());
-    auto next_band_start = parent().next_float_band_block_start_after(box_in_root_rect.y() + block_offset);
+    // The containing block's position arrives via the layout input; fall back to reading the
+    // layout state while its position may still be moved by margin collapsing.
+    auto containing_block_y_in_root = m_layout_input->content_box_position_in_bfc_root.has_value()
+        ? m_layout_input->content_box_position_in_bfc_root->y()
+        : content_box_rect_in_ancestor_coordinate_space(m_containing_block_used_values, parent().root()).y();
+    auto next_band_start = parent().next_float_band_block_start_after(containing_block_y_in_root + block_offset);
     if (!next_band_start.has_value())
         return {};
-    return next_band_start.value() - box_in_root_rect.y();
+    return next_band_start.value() - containing_block_y_in_root;
 }
 
 CSSPixels InlineFormattingContext::vertical_float_clearance() const

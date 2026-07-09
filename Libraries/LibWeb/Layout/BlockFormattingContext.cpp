@@ -129,14 +129,17 @@ void BlockFormattingContext::run(LayoutInput const& layout_input)
         (void)column_width;
     }
 
+    // The root box is the origin of this formatting context's coordinate space.
+    auto root_layout_input = layout_input.with_content_box_position_in_bfc_root(CSSPixelPoint {});
+
     if (auto const* fieldset_box = as_if<FieldSetBox>(root()); fieldset_box && fieldset_box->rendered_legend()) {
-        layout_fieldset_with_rendered_legend(*fieldset_box, layout_input);
+        layout_fieldset_with_rendered_legend(*fieldset_box, root_layout_input);
         return;
     }
     if (root().children_are_inline())
-        layout_inline_children(root(), layout_input, available_space);
+        layout_inline_children(root(), root_layout_input, available_space);
     else
-        layout_block_level_children(root(), layout_input, available_space);
+        layout_block_level_children(root(), root_layout_input, available_space);
 
     // Fieldsets without a rendered legend skip collapsed margin assignment.
     if (is<FieldSetBox>(root()))
@@ -1028,6 +1031,15 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
     resolve_vertical_box_model_metrics(box, block_container_state.content_width());
 
+    // The layout input describes the container whose children we are laying out; its position
+    // is the position of the box's containing block, except in exotic circumstances where the
+    // two disagree (then we fall back to reading the layout state).
+    auto const* containing_block = box.containing_block();
+    VERIFY(containing_block);
+    auto containing_block_position_in_root = containing_block == &block_container
+        ? layout_input.content_box_position_in_bfc_root
+        : Optional<CSSPixelPoint> {};
+
     if (box.is_floating()) {
         auto const y = m_y_offset_of_current_block_container.value();
         auto margin_top = !m_margin_state.has_block_container_waiting_for_final_y_position() ? m_margin_state.current_collapsed_margin() : 0;
@@ -1037,7 +1049,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     }
 
     m_margin_state.add_margin(box_state.margin_top);
-    auto introduce_clearance = clear_floating_boxes(box, {});
+    auto introduce_clearance = clear_floating_boxes(box, {}, containing_block_position_in_root);
     if (introduce_clearance == DidIntroduceClearance::Yes)
         m_margin_state.reset();
     m_margin_state.update_block_waiting_for_final_y_position();
@@ -1091,9 +1103,9 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     // x follows from the resolved width, float intrusions and text-align.
     auto content_y = y + margin_top + box_state.border_box_top();
 
-    auto const* containing_block = box.containing_block();
-    VERIFY(containing_block);
-    auto const containing_block_rect_in_root = content_box_rect_in_ancestor_coordinate_space(m_state.get(*containing_block), root());
+    auto const containing_block_rect_in_root = containing_block_position_in_root.has_value()
+        ? CSSPixelRect { *containing_block_position_in_root, m_state.get(*containing_block).content_size() }
+        : content_box_rect_in_ancestor_coordinate_space(m_state.get(*containing_block), root());
     auto content_position_in_root = [&](CSSPixels content_y) {
         return containing_block_rect_in_root.location().translated(0, content_y);
     };
@@ -1157,7 +1169,10 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         auto const& marker_state = m_state.get(*li_box->marker());
 
         auto offset_y = max(CSSPixels(0), (li_box->marker()->computed_values().line_height() - marker_state.content_height()) / 2);
-        inline_space_used_before_children_formatted = intrusion_by_floats_into_box(list_item_state, offset_y);
+        if (containing_block_position_in_root.has_value())
+            inline_space_used_before_children_formatted = intrusion_by_floats_into_rect({ containing_block_position_in_root->translated(content_x, content_y), list_item_state.content_size() }, offset_y, offset_y);
+        else
+            inline_space_used_before_children_formatted = intrusion_by_floats_into_box(list_item_state, offset_y);
     }
 
     if (independent_formatting_context) {
@@ -1203,10 +1218,18 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
             });
         }
 
+        // The box's inside layout receives the box's own position as an explicit input; it is
+        // withheld while margin collapsing may still move the box, in which case the subtree
+        // keeps reading the live layout state.
+        auto inside_layout_input = layout_input.with_content_box_position_in_bfc_root(
+            box_may_be_moved_by_margin_collapse
+                ? Optional<CSSPixelPoint> {}
+                : containing_block_position_in_root.map([&](auto& position) { return position.translated(content_x, content_y); }));
+
         if (box.children_are_inline())
-            layout_inline_children(as<BlockContainer>(box), layout_input, space_available_for_children);
+            layout_inline_children(as<BlockContainer>(box), inside_layout_input, space_available_for_children);
         else
-            layout_block_level_children(as<BlockContainer>(box), layout_input, space_available_for_children);
+            layout_block_level_children(as<BlockContainer>(box), inside_layout_input, space_available_for_children);
 
         if (box_may_be_moved_by_margin_collapse) {
             m_margin_state.unregister_block_container_y_position_update_callback();
@@ -1271,7 +1294,9 @@ void BlockFormattingContext::layout_block_level_children(BlockContainer const& b
     if (m_layout_mode == LayoutMode::IntrinsicSizing) {
         auto& block_container_state = m_state.get_mutable(block_container);
         if (!block_container_state.has_definite_width()) {
-            auto width = greatest_child_width(block_container);
+            auto width = layout_input.content_box_position_in_bfc_root.has_value()
+                ? greatest_child_width_in_rect(block_container, { *layout_input.content_box_position_in_bfc_root, block_container_state.content_size() })
+                : greatest_child_width(block_container);
             auto const& computed_values = block_container.computed_values();
             // NOTE: Min and max constraints are not applied to a box that is being sized as intrinsic because
             //       according to css-sizing-3 spec:
@@ -1398,7 +1423,7 @@ void BlockFormattingContext::resolve_horizontal_box_model_metrics(Box const& box
     box_state.padding_right = computed_values.padding().right().to_px_or_zero(width_of_containing_block);
 }
 
-BlockFormattingContext::DidIntroduceClearance BlockFormattingContext::clear_floating_boxes(Node const& child_box, Optional<InlineFormattingContext&> inline_formatting_context)
+BlockFormattingContext::DidIntroduceClearance BlockFormattingContext::clear_floating_boxes(Node const& child_box, Optional<InlineFormattingContext&> inline_formatting_context, Optional<CSSPixelPoint> containing_block_position_in_root)
 {
     auto const& computed_values = child_box.computed_values();
     auto result = DidIntroduceClearance::No;
@@ -1413,8 +1438,12 @@ BlockFormattingContext::DidIntroduceClearance BlockFormattingContext::clear_floa
         //       and then convert back to a local Y coordinate when assigning the cleared offset to
         //       the `child_box` layout state.
         CSSPixels clearance_y_in_containing_block = clearance_y_in_root;
-        for (auto containing_block = child_box.containing_block(); containing_block && containing_block != &root(); containing_block = containing_block->containing_block())
-            clearance_y_in_containing_block -= m_state.get(*containing_block).offset.y();
+        if (containing_block_position_in_root.has_value()) {
+            clearance_y_in_containing_block -= containing_block_position_in_root->y();
+        } else {
+            for (auto containing_block = child_box.containing_block(); containing_block && containing_block != &root(); containing_block = containing_block->containing_block())
+                clearance_y_in_containing_block -= m_state.get(*containing_block).offset.y();
+        }
 
         if (inline_formatting_context.has_value()) {
             if (clearance_y_in_containing_block > inline_formatting_context->vertical_float_clearance()) {
@@ -1514,7 +1543,11 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
     if (!side.has_value())
         return;
 
-    auto const containing_block_rect_in_root = content_box_rect_in_ancestor_coordinate_space(block_container_state, root());
+    // The layout input describes block_container, so its position arrives with it; fall back
+    // to reading the layout state while its position may still be moved by margin collapsing.
+    auto const containing_block_rect_in_root = layout_input.content_box_position_in_bfc_root.has_value()
+        ? CSSPixelRect { *layout_input.content_box_position_in_bfc_root, block_container_state.content_size() }
+        : content_box_rect_in_ancestor_coordinate_space(block_container_state, root());
     auto margin_box_ceiling = line_builder ? line_builder->ceiling_for_float_to_be_inserted_here(box) : y;
     auto clearance = computed_values.clear();
     if (side.value() == FloatSide::Left && first_is_one_of(clearance, CSS::Clear::Left, CSS::Clear::Both, CSS::Clear::InlineStart))
@@ -1530,7 +1563,9 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
     auto content_y = placement.block_start - containing_block_rect_in_root.y() + box_state.margin_box_top();
     box_state.set_content_y(content_y);
 
-    auto margin_box_rect_in_root = margin_box_rect_in_ancestor_coordinate_space(box_state, root());
+    auto margin_box_rect_in_root = layout_input.content_box_position_in_bfc_root.has_value()
+        ? margin_box_rect_in_ancestor_coordinate_space(box_state, block_container).translated(*layout_input.content_box_position_in_bfc_root)
+        : margin_box_rect_in_ancestor_coordinate_space(box_state, root());
     m_floats.append(adopt_own(*new FloatingBox {
         .box = box,
         .used_values = box_state,
@@ -1650,10 +1685,15 @@ FormattingContext::SpaceUsedByFloats BlockFormattingContext::intrusion_by_floats
 
 CSSPixels BlockFormattingContext::greatest_child_width(Box const& box) const
 {
+    auto box_in_root_rect = content_box_rect_in_ancestor_coordinate_space(m_state.get(box), root());
+    return greatest_child_width_in_rect(box, box_in_root_rect);
+}
+
+CSSPixels BlockFormattingContext::greatest_child_width_in_rect(Box const& box, CSSPixelRect const& box_in_root_rect) const
+{
     // Similar to FormattingContext::greatest_child_width()
     // but this one takes floats into account!
     CSSPixels max_width = 0;
-    auto box_in_root_rect = content_box_rect_in_ancestor_coordinate_space(m_state.get(box), root());
     for (auto const& band : m_bands) {
         auto intrusions = intrusions_for_band_into_rect(band, box_in_root_rect);
         max_width = max(max_width, intrusions.left + intrusions.right);
