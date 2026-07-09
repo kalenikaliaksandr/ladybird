@@ -44,6 +44,7 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
         // Captions live inside the table wrapper, so their quirks percentage height basis derives
         // from the wrapper, not from anything the table box inherited.
         auto const& caption_constraints = m_participant_constraints;
+        bool caption_offset_is_final = false;
         // The caption boxes are principal block-level boxes that retain their own content, padding, margin, and border areas,
         // and are rendered as normal block boxes inside the table wrapper box, as described in https://www.w3.org/TR/CSS22/tables.html#model
         if (auto caption_context = create_independent_formatting_context_if_needed(m_state, m_layout_mode, child_box)) {
@@ -56,16 +57,23 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
                 // own root space is the origin.
                 block_context->compute_width(child_box, caption_available_space, caption_constraints, { 0, 0 });
                 inner_available_space = m_state.get(child_box).available_inner_space_or_constraints_from(caption_available_space);
+
+                // The caption's final offset (in table wrapper coordinates) is already known:
+                // its border box aligns with the table wrapper, so its content edge sits at
+                // border+padding, and a bottom caption sits below the table's margin box.
+                // Place it before laying out its contents.
+                auto const& caption_state = m_state.get(child_box);
+                CSSPixelPoint caption_offset { caption_state.border_box_left(), 0 };
+                if (phase == CSS::CaptionSide::Bottom)
+                    caption_offset.set_y(m_state.get(table_box()).margin_box_height() + caption_state.margin_box_top());
+                m_state.get_mutable(child_box).set_content_offset(caption_offset);
+                caption_offset_is_final = true;
             }
 
             caption_context->run(LayoutInput { inner_available_space, caption_constraints });
 
             if (block_context) {
                 auto& caption_state = m_state.get_mutable(child_box);
-
-                // Adjust x offset so border-box aligns with the table wrapper.
-                caption_state.set_content_x(caption_state.offset.x() + caption_state.border_left + caption_state.padding_left);
-
                 if (should_treat_height_as_auto(child_box, caption_available_space, m_participant_constraints)) {
                     auto height = child_box.has_size_containment() ? 0 : caption_context->automatic_content_height();
                     caption_state.set_content_height(height);
@@ -75,10 +83,14 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
 
         auto const& caption_state = m_state.get(child_box);
         if (phase == CSS::CaptionSide::Top) {
-            m_state.get_mutable(table_box()).set_content_y(caption_state.content_height() + caption_state.margin_box_bottom());
-        } else {
-            m_state.get_mutable(child_box).set_content_y(
-                m_state.get(table_box()).margin_box_height() + caption_state.margin_box_top());
+            // The table box sits below the top captions: adjust the pending offset that its
+            // single placement (after this run) uses.
+            m_table_box_content_offset_in_wrapper.set_y(caption_state.content_height() + caption_state.margin_box_bottom());
+        } else if (!caption_offset_is_final) {
+            // A caption whose principal box is not a block container (e.g. an SVG root) could
+            // not be placed before its inside layout, which writes its own offset; this is its
+            // placement event, adopting the inline position its inside layout produced.
+            m_state.get_mutable(child_box).set_content_offset({ caption_state.offset.x(), m_state.get(table_box()).margin_box_height() + caption_state.margin_box_top() });
         }
         caption_height += caption_state.margin_box_height();
     }
@@ -1206,7 +1218,10 @@ void TableFormattingContext::position_row_boxes()
 {
     auto const& table_state = m_state.get(table_box());
 
-    CSSPixels row_top_offset = table_state.offset.y() + border_spacing_vertical();
+    // NOTE: Rows and row groups have the table wrapper as their containing block, and the
+    //       table box itself is not placed until this run() returns, so its pending offset in
+    //       the wrapper is used instead of reading its own offset back from the layout state.
+    CSSPixels row_top_offset = m_table_box_content_offset_in_wrapper.y() + border_spacing_vertical();
     CSSPixels row_left_offset = table_state.border_left + table_state.padding_left + border_spacing_horizontal();
     for (size_t y = 0; y < m_rows.size(); y++) {
         auto& row = m_rows[y];
@@ -1220,21 +1235,19 @@ void TableFormattingContext::position_row_boxes()
 
         row_state.set_content_height(row.final_height);
         row_state.set_content_width(row_width);
-        row_state.set_content_x(row_left_offset);
-        row_state.set_content_y(row_top_offset);
+        row_state.set_content_offset({ row_left_offset, row_top_offset });
         if (!row.is_collapsed)
             row_top_offset += row_state.content_height() + border_spacing_vertical();
     }
 
-    CSSPixels row_group_top_offset = table_state.offset.y() + border_spacing_vertical();
+    CSSPixels row_group_top_offset = m_table_box_content_offset_in_wrapper.y() + border_spacing_vertical();
     CSSPixels row_group_left_offset = table_state.border_left + table_state.padding_left + border_spacing_horizontal();
     TableGrid::for_each_child_box_matching(table_box(), TableGrid::is_table_row_group, [&](auto& row_group_box) {
         CSSPixels row_group_height = 0;
         CSSPixels row_group_width = 0;
 
         auto& row_group_box_state = m_state.get_mutable(row_group_box);
-        row_group_box_state.set_content_x(row_group_left_offset);
-        row_group_box_state.set_content_y(row_group_top_offset);
+        row_group_box_state.set_content_offset({ row_group_left_offset, row_group_top_offset });
 
         int num_rows = 0;
         TableGrid::for_each_child_box_matching(row_group_box, TableGrid::is_table_row, [&](auto& row) {
@@ -1252,7 +1265,7 @@ void TableFormattingContext::position_row_boxes()
         row_group_top_offset += row_group_height + (num_rows > 0 ? border_spacing_vertical() : 0);
     });
 
-    auto total_content_height = max(row_top_offset, row_group_top_offset) - table_state.offset.y() - table_state.padding_top;
+    auto total_content_height = max(row_top_offset, row_group_top_offset) - m_table_box_content_offset_in_wrapper.y() - table_state.padding_top;
     m_table_height = max(total_content_height, m_table_height);
 }
 
@@ -1328,9 +1341,12 @@ void TableFormattingContext::position_cell_boxes()
         // - for top: the height reserved for top captions (including margins), if any
         // - the padding-left/padding-top and border-left-width/border-top-width of the table
         // FIXME: Account for visibility.
-        cell_state.set_content_offset(row_state.offset.translated(
+        auto cell_offset = row_state.offset.translated(
             cell_state.border_box_left() + m_columns[cell.column_index].left_offset + cell.column_index * border_spacing_horizontal(),
-            cell_state.border_box_top()));
+            cell_state.border_box_top());
+        // A cell whose principal box is an SVG root had its offset written from within its
+        // own inside layout; this write overwrites that value, as before.
+        cell_state.set_content_offset(cell_offset);
     }
 }
 

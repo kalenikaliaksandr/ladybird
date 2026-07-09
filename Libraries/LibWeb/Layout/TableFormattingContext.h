@@ -36,6 +36,14 @@ public:
 
     Box const& table_box() const { return context_box(); }
 
+    // The table box's pending content offset in the table wrapper's content-box space. The
+    // context that lays out the wrapper's children seeds it before run() and performs the
+    // table box's single placement with it afterwards; run_caption_layout() adjusts its y to
+    // sit the table below any top captions. Rows and row groups (whose containing block is
+    // the wrapper) are positioned against it, so the table box's own offset is never read.
+    void set_table_box_content_offset_in_wrapper(CSSPixelPoint offset) { m_table_box_content_offset_in_wrapper = offset; }
+    CSSPixelPoint table_box_content_offset_in_wrapper() const { return m_table_box_content_offset_in_wrapper; }
+
     static bool border_is_less_specific(CSS::BorderData const& a, CSS::BorderData const& b);
 
     virtual void parent_context_did_dimension_child_root_box() override;
@@ -85,6 +93,7 @@ private:
 
     CSSPixels m_table_height { 0 };
     CSSPixels m_automatic_content_height { 0 };
+    CSSPixelPoint m_table_box_content_offset_in_wrapper {};
 
     Optional<AvailableSpace> m_available_space;
 

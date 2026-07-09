@@ -26,6 +26,7 @@
 #include <LibWeb/Layout/ListItemMarkerBox.h>
 #include <LibWeb/Layout/ReplacedBox.h>
 #include <LibWeb/Layout/SVGSVGBox.h>
+#include <LibWeb/Layout/TableFormattingContext.h>
 #include <LibWeb/Layout/TableWrapper.h>
 #include <LibWeb/Layout/Viewport.h>
 
@@ -1158,8 +1159,20 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         }
     }
 
-    if (box_is_positioned_by_fieldset_layout || !box_opens_top_margin_group)
+    // A table box's final block position also depends on its top captions, which its own
+    // formatting context lays out; its offset is written right after that context runs, against
+    // the pending offset seeded here.
+    auto* table_formatting_context = independent_formatting_context && independent_formatting_context->type() == Type::Table
+        ? static_cast<TableFormattingContext*>(independent_formatting_context.ptr())
+        : nullptr;
+
+    if (box_is_positioned_by_fieldset_layout) {
         box_state.set_content_offset({ content_x, content_y });
+    } else if (table_formatting_context) {
+        table_formatting_context->set_table_box_content_offset_in_wrapper({ content_x, content_y });
+    } else if (!box_opens_top_margin_group) {
+        box_state.set_content_offset({ content_x, content_y });
+    }
     // A box that opens a top margin group is not written yet: its inside layout receives the
     // provisional position as an input, and the box is written once, with its resolved y, after
     // its children have been laid out.
@@ -1216,6 +1229,8 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         make_button_content_box_definite(box, available_space, layout_input.containing_block_constraints, measured_content_height);
 
         independent_formatting_context->run(layout_input.with_available_space(inner_available_space));
+        if (table_formatting_context)
+            box_state.set_content_offset(table_formatting_context->table_box_content_offset_in_wrapper());
         if (is<TableWrapper>(block_container) && box.display().is_table_inside()) {
             box_state.margin_left = max(box_state.margin_left, 0);
             box_state.margin_right = max(box_state.margin_right, 0);
