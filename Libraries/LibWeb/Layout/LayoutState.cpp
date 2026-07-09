@@ -955,6 +955,7 @@ LayoutState::UsedValues& LayoutState::UsedValues::operator=(UsedValues const& ot
     m_content_height = other.m_content_height;
     m_has_definite_width = other.m_has_definite_width;
     m_has_definite_height = other.m_has_definite_height;
+    m_placement_state = other.m_placement_state;
 
     if (other.m_rare)
         m_rare = make<RareData>(*other.m_rare);

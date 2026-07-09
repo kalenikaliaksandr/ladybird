@@ -154,6 +154,10 @@ public:
 
     virtual void parent_context_did_dimension_child_root_box() { }
 
+    // The placement event: all placement writes in converted formatting contexts funnel here.
+    void place_child(Box const& child, CSSPixelPoint content_offset);
+    virtual void did_place_child(Box const&, CSSPixelPoint) { }
+
     CSSPixels calculate_min_content_width(Layout::Box const&, ContainingBlockConstraints const&) const;
     CSSPixels calculate_max_content_width(Layout::Box const&, ContainingBlockConstraints const&) const;
     CSSPixels calculate_min_content_height(Layout::Box const&, CSSPixels width, ContainingBlockConstraints const&) const;

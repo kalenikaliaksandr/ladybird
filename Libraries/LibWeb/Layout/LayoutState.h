@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/BumpAllocator.h>
+#include <AK/Debug.h>
 #include <AK/HashTable.h>
 #include <AK/OwnPtr.h>
 #include <AK/kmalloc.h>
@@ -148,6 +149,15 @@ private:
     UniformBumpAllocator<T, false, BumpAllocatorChunkSize> m_allocator;
 };
 
+// Tracks how a box's content offset has been written during this layout pass.
+// Formatting contexts converted to the placement API write positions exactly
+// once, through place(); unconverted contexts keep using the legacy setters.
+enum class PlacementState : u8 {
+    NotPlaced,     // no write yet
+    Placed,        // written once, via the new API — immutable from now on
+    LegacyWritten, // written via legacy setters — rewrites still tolerated
+};
+
 struct LayoutState {
     AK_ALLOC_WITH_KMALLOC_PARTITION(HeapPartition::Layout);
 
@@ -184,11 +194,53 @@ struct LayoutState {
 
         void materialize_from_paintable(Painting::Paintable const&);
 
-        void set_content_offset(CSSPixelPoint new_offset) { offset = new_offset; }
-        void set_content_x(CSSPixels x) { offset.set_x(x); }
-        void set_content_y(CSSPixels y) { offset.set_y(y); }
+        // The new placement API. The ONE way a converted formatting context assigns a position.
+        // "Once per pass" means once per UsedValues lifetime — throwaway measurement states
+        // create fresh UsedValues, so intrinsic sizing is unaffected.
+        void place(CSSPixelPoint content_offset)
+        {
+            VERIFY(m_placement_state == PlacementState::NotPlaced);
+            offset = content_offset;
+            m_placement_state = PlacementState::Placed;
+        }
+        bool is_placed() const { return m_placement_state == PlacementState::Placed; }
+
+        // Legacy setters, for unconverted formatting contexts only. They transition the
+        // placement state to LegacyWritten and, under LAYOUT_PLACEMENT_DEBUG, report
+        // themselves so the remaining call sites are an enumerable burn-down list.
+        void set_content_offset(CSSPixelPoint new_offset)
+        {
+            note_legacy_placement_write();
+            offset = new_offset;
+        }
+        void set_content_x(CSSPixels x)
+        {
+            note_legacy_placement_write();
+            offset.set_x(x);
+        }
+        void set_content_y(CSSPixels y)
+        {
+            note_legacy_placement_write();
+            offset.set_y(y);
+        }
+
+        // Checked accessor for `offset`. Under LAYOUT_PLACEMENT_DEBUG it reports reads of
+        // an offset that nothing has written yet. Transitional: code touched by the
+        // placement migration reads through this accessor; the tree-wide migration of the
+        // remaining direct reads happens once all formatting contexts are converted.
+        CSSPixelPoint content_offset() const
+        {
+            if constexpr (LAYOUT_PLACEMENT_DEBUG) {
+                if (m_placement_state == PlacementState::NotPlaced)
+                    dbgln("PLACEMENT: read of not-yet-placed offset of {}", m_node ? m_node->debug_description() : String {});
+            }
+            return offset;
+        }
 
         // offset from top-left corner of content area of box's containing block to top-left corner of box's content area
+        // NOTE: Transitional: this member stays public while unconverted formatting contexts
+        //       still read it directly; it becomes private (behind content_offset()) once the
+        //       placement migration is complete.
         CSSPixelPoint offset;
 
         SizeConstraint width_constraint { SizeConstraint::None };
@@ -329,6 +381,17 @@ struct LayoutState {
     private:
         friend struct LayoutState;
 
+        void note_legacy_placement_write()
+        {
+            if constexpr (LAYOUT_PLACEMENT_DEBUG) {
+                if (m_placement_state == PlacementState::Placed)
+                    dbgln("PLACEMENT: legacy write over already-placed box {}", m_node ? m_node->debug_description() : String {});
+                else
+                    dbgln("PLACEMENT: legacy placement write for {}", m_node ? m_node->debug_description() : String {});
+            }
+            m_placement_state = PlacementState::LegacyWritten;
+        }
+
         AvailableSize available_width_inside() const;
         AvailableSize available_height_inside() const;
 
@@ -386,6 +449,8 @@ struct LayoutState {
 
         bool m_has_definite_width { false };
         bool m_has_definite_height { false };
+
+        PlacementState m_placement_state { PlacementState::NotPlaced };
 
         OwnPtr<RareData> m_rare;
     };

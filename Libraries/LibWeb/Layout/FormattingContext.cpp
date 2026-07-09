@@ -483,6 +483,17 @@ OwnPtr<FormattingContext> FormattingContext::layout_inside(Box const& child_box,
     return independent_formatting_context;
 }
 
+// All placement writes in converted contexts funnel here. The hook is
+// deliberately empty in this series — it exists so the event has a name.
+// Future consumers (hoisted-abspos adjustment, move-only damage
+// classification, placement tracing) attach here without touching any
+// formatting context again.
+void FormattingContext::place_child(Box const& child, CSSPixelPoint content_offset)
+{
+    m_state.get_mutable(child).place(content_offset);
+    did_place_child(child, content_offset);
+}
+
 CSSPixels FormattingContext::greatest_child_width(Box const& box) const
 {
     CSSPixels max_width = 0;
