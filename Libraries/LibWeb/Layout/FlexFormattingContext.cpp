@@ -573,9 +573,9 @@ void FlexFormattingContext::set_cross_size(FlexItem& item, CSSPixels size)
 void FlexFormattingContext::set_offset(FlexItem& item, CSSPixels main_offset, CSSPixels cross_offset)
 {
     if (main_axis_is_horizontal())
-        item.used_values.set_content_offset({ main_offset, cross_offset });
+        place_child(item.box, { main_offset, cross_offset });
     else
-        item.used_values.set_content_offset({ cross_offset, main_offset });
+        place_child(item.box, { cross_offset, main_offset });
 }
 
 void FlexFormattingContext::set_main_axis_first_margin(FlexItem& item, CSSPixels margin)
@@ -1764,6 +1764,11 @@ void FlexFormattingContext::resolve_baseline_aligned_items()
             if (!participates_in_baseline_alignment(item))
                 continue;
 
+            // NB: This is a deliberate post-placement shift on the legacy setters: the final
+            //     cross offset of a baseline-aligned item depends on the baselines of every
+            //     item on its line, which only inside layout can produce — and placement
+            //     cannot move after inside layout, because a flex item that is an SVG root
+            //     rewrites its own offset from within its inside layout.
             auto adjustment = max_baseline - box_baseline(item.box, BaselineSet::First);
             if (main_axis_is_horizontal())
                 item.used_values.set_content_y(item.used_values.offset.y() + adjustment);
