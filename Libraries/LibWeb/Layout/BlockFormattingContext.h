@@ -106,7 +106,9 @@ public:
         // Offset from left/right edge to the left content edge of `box`.
         CSSPixels offset_from_edge { 0 };
 
-        // Top margin edge of `box`.
+        // Top margin edge of `box` in its containing block. The box itself is placed once its
+        // inline position is known (parent_context_did_dimension_child_root_box()); until
+        // then this is where its block position lives.
         CSSPixels top_margin_edge { 0 };
 
         // Bottom margin edge of `box`.
