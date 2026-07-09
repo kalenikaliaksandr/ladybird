@@ -297,26 +297,15 @@ void SVGFormattingContext::run(LayoutInput const& layout_input)
 
     m_available_space = available_space;
     m_quirks_mode_percentage_basis_height = layout_input.containing_block_constraints.quirks_mode_percentage_basis_height;
-    m_svg_offset = svg_box_state.offset;
     m_viewport_size = { viewport_width, viewport_height };
 
-    if (svg_box_state.has_definite_width() && svg_box_state.has_definite_height()) {
-        // Scale the box of the viewport based on the parent's viewBox transform.
-        // The viewBox transform is always just a simple scale + offset.
-        // FIXME: Avoid converting SVG box to floats.
-        // NB: This rewrites our own root box's offset, whose placement belongs to whichever
-        //     context placed it, so it stays on the legacy setter: the placement API tracks
-        //     it as an ownership conflict. Removing it means no longer baking the viewBox
-        //     transform into offsets, which is a separate refactor.
-        Gfx::FloatRect svg_rect = { svg_box_state.offset.to_type<float>(),
-            { float(svg_box_state.content_width()), float(svg_box_state.content_height()) } };
-        svg_rect = m_parent_viewbox_transform.map(svg_rect);
-        svg_box_state.set_content_offset(svg_rect.location().to_type<CSSPixels>());
-        svg_box_state.set_content_width(CSSPixels(svg_rect.width()));
-        svg_box_state.set_content_height(CSSPixels(svg_rect.height()));
-        svg_box_state.set_has_definite_width(true);
-        svg_box_state.set_has_definite_height(true);
-    }
+    // NOTE: A root whose geometry must be mapped through a non-identity parent viewBox
+    //       transform (a nested viewport without its own viewBox, or a mask/clip/pattern box)
+    //       is placed by the SVG-internal caller that created us, after this run() returns;
+    //       every other caller passes an identity transform and places the root itself.
+    //       Nothing in this run() reads the root box's own offset — children are positioned
+    //       through m_current_viewbox_transform, and the viewport size above is derived from
+    //       the raw, unmapped content size.
 
     auto svg_transform_for_children = m_parent_svg_transform.value_or(Gfx::AffineTransform {});
     if (svg_box_state.computed_svg_transforms().has_value())
@@ -404,7 +393,8 @@ void SVGFormattingContext::layout_nested_viewport(Box const& viewport, Gfx::Affi
     auto parent_viewbox_transform = m_current_viewbox_transform;
 
     auto* svg_element = as_if<SVG::SVGSVGElement>(*viewport.dom_node());
-    if (svg_element && svg_element->view_box().has_value()) {
+    bool has_own_view_box = svg_element && svg_element->view_box().has_value();
+    if (has_own_view_box) {
         // FIXME: Avoid converting SVG box to floats.
         Gfx::FloatRect nested_rect {
             { nested_viewport_x.to_float(), nested_viewport_y.to_float() },
@@ -417,16 +407,28 @@ void SVGFormattingContext::layout_nested_viewport(Box const& viewport, Gfx::Affi
         parent_viewbox_transform = {};
     }
 
-    // NB: For a nested viewport without a viewBox, this offset is still in the outer
-    //     viewport's user units; the nested context's own run() applies our viewbox
-    //     transform to it via the (tracked) legacy own-root rewrite.
-    place_child(viewport, content_offset);
     nested_viewport_state.set_content_width(content_width);
     nested_viewport_state.set_content_height(content_height);
     nested_viewport_state.set_has_definite_width(true);
     nested_viewport_state.set_has_definite_height(true);
+    if (has_own_view_box)
+        place_child(viewport, content_offset);
     SVGFormattingContext nested_context(m_state, m_layout_mode, viewport, this, parent_viewbox_transform, parent_svg_transform);
     nested_context.run(LayoutInput { *m_available_space, { {}, {}, m_quirks_mode_percentage_basis_height } });
+    if (!has_own_view_box) {
+        // For a nested viewport without a viewBox, the geometry above is still in the outer
+        // viewport's user units; its run() derives the viewport size and transforms from
+        // those raw values, and the mapped geometry becomes final only afterwards.
+        // FIXME: Avoid converting SVG box to floats.
+        Gfx::FloatRect nested_rect {
+            { nested_viewport_x.to_float(), nested_viewport_y.to_float() },
+            { nested_viewport_width.to_float(), nested_viewport_height.to_float() }
+        };
+        auto mapped_rect = m_current_viewbox_transform.map(nested_rect);
+        place_child(viewport, mapped_rect.location().to_type<CSSPixels>());
+        nested_viewport_state.set_content_width(CSSPixels(mapped_rect.width()));
+        nested_viewport_state.set_content_height(CSSPixels(mapped_rect.height()));
+    }
 }
 
 Gfx::Path SVGFormattingContext::compute_path_for_text(SVGTextBox const& text_box) const
@@ -653,6 +655,15 @@ void SVGFormattingContext::layout_mask_or_clip(SVGBox const& mask_or_clip)
     layout_state.set_has_definite_width(true);
     layout_state.set_has_definite_height(true);
     nested_context.run(LayoutInput { *m_available_space, { {}, {}, m_quirks_mode_percentage_basis_height } });
+
+    // The geometry above is in the pre-transform space the nested run() derives its viewport
+    // size and transforms from; the box's final, mapped geometry is assigned afterwards.
+    // FIXME: Avoid converting SVG box to floats.
+    Gfx::FloatRect box_rect { {}, { float(layout_state.content_width()), float(layout_state.content_height()) } };
+    auto mapped_rect = parent_viewbox_transform.map(box_rect);
+    place_child(mask_or_clip, mapped_rect.location().to_type<CSSPixels>());
+    layout_state.set_content_width(CSSPixels(mapped_rect.width()));
+    layout_state.set_content_height(CSSPixels(mapped_rect.height()));
 }
 
 void SVGFormattingContext::layout_container_element(SVGBox const& container, LayoutInput const& layout_input, Gfx::AffineTransform const& container_svg_transform)
