@@ -27,9 +27,9 @@ public:
     virtual CSSPixels automatic_content_height() const override;
 
     bool box_should_avoid_floats_because_it_establishes_fc(Box const&) const;
-    // The caller passes content_position_in_root when the box has not been placed yet and its
-    // pending position is not readable from the layout state.
-    void compute_width(Box const&, AvailableSpace const&, ContainingBlockConstraints const& containing_block_constraints, Optional<CSSPixelPoint> content_position_in_root = {});
+    // content_position_in_root is the box's (pending) content-box position in this context's
+    // root space; the box is not placed yet when its width is computed.
+    void compute_width(Box const&, AvailableSpace const&, ContainingBlockConstraints const& containing_block_constraints, CSSPixelPoint content_position_in_root);
     [[nodiscard]] CSSPixels avoid_float_intrusions(Box const&, AvailableSpace const&, CSSPixels content_y, CSSPixelRect const& containing_block_rect_in_root) const;
 
     // https://www.w3.org/TR/css-display/#block-formatting-context-root
@@ -50,9 +50,6 @@ public:
     }
 
     [[nodiscard]] SpaceUsedByFloats available_inline_space(CSSPixels block_start_in_root, CSSPixels block_end_in_root) const;
-    [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_box(Box const&, CSSPixels y_in_box) const;
-    [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_box(LayoutState::UsedValues const&, CSSPixels y_in_box) const;
-    [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_box(LayoutState::UsedValues const&, CSSPixels block_start_in_box, CSSPixels block_end_in_box) const;
     [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_rect(CSSPixelRect const& box_in_root_rect, CSSPixels block_start_in_box, CSSPixels block_end_in_box) const;
     [[nodiscard]] Optional<CSSPixels> next_float_band_block_start_after(CSSPixels y_in_root) const;
 
@@ -90,7 +87,7 @@ public:
         No,
     };
 
-    [[nodiscard]] DidIntroduceClearance clear_floating_boxes(Node const& child_box, Optional<InlineFormattingContext&> inline_formatting_context, Optional<CSSPixelPoint> containing_block_position_in_root);
+    [[nodiscard]] DidIntroduceClearance clear_floating_boxes(Node const& child_box, Optional<InlineFormattingContext&> inline_formatting_context, CSSPixelPoint containing_block_position_in_root);
 
     void reset_margin_state() { m_margin_state.reset(); }
 
@@ -165,7 +162,6 @@ private:
     [[nodiscard]] size_t band_index_at(CSSPixels y) const;
     [[nodiscard]] FloatBand const& band_at(CSSPixels y) const;
     [[nodiscard]] SpaceUsedByFloats intrusions_for_band_into_rect(FloatBand const&, CSSPixelRect const& rect_in_root) const;
-    [[nodiscard]] SpaceUsedByFloats available_inline_space_in_box(LayoutState::UsedValues const&, CSSPixels block_start_in_box, CSSPixels block_end_in_box) const;
     [[nodiscard]] CSSPixels greatest_child_width_in_rect(Box const&, CSSPixelRect const& box_in_root_rect) const;
     [[nodiscard]] FloatPlacement place_float(FloatSide, LayoutState::UsedValues const&, AvailableSpace const&, CSSPixelRect const& containing_block_rect_in_root, CSSPixels ceiling_in_root) const;
     void ensure_band_boundary(CSSPixels);

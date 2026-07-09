@@ -45,11 +45,8 @@ FormattingContext::SpaceUsedByFloats InlineFormattingContext::intrusion_by_float
 {
     // The containing block's position arrives via the layout input; it is provisional while an
     // ancestor's top margin group is pending, so shift it to where it currently stands.
-    if (auto const& position = m_layout_input->content_box_position_in_bfc_root; position.has_value()) {
-        auto position_now = position->translated(0, parent().pending_y_adjustment_for(containing_block()));
-        return parent().intrusion_by_floats_into_rect({ position_now, m_containing_block_used_values.content_size() }, block_start, block_end);
-    }
-    return parent().intrusion_by_floats_into_box(m_containing_block_used_values, block_start, block_end);
+    auto position_now = m_layout_input->content_box_position_in_bfc_root->translated(0, parent().pending_y_adjustment_for(containing_block()));
+    return parent().intrusion_by_floats_into_rect({ position_now, m_containing_block_used_values.content_size() }, block_start, block_end);
 }
 
 CSSPixels InlineFormattingContext::leftmost_inline_offset_at(CSSPixels block_offset, CSSPixels line_height) const
@@ -413,7 +410,7 @@ void InlineFormattingContext::generate_line_boxes()
         case InlineLevelIterator::Item::Type::ForcedBreak: {
             line_builder.break_line(LineBuilder::ForcedBreak::Yes);
             if (item.node) {
-                auto introduce_clearance = parent().clear_floating_boxes(*item.node, *this, m_layout_input->content_box_position_in_bfc_root);
+                auto introduce_clearance = parent().clear_floating_boxes(*item.node, *this, m_layout_input->content_box_position_in_bfc_root.value());
                 if (introduce_clearance == BlockFormattingContext::DidIntroduceClearance::Yes) {
                     line_builder.did_introduce_clearance(vertical_float_clearance());
                     parent().reset_margin_state();
@@ -465,7 +462,7 @@ void InlineFormattingContext::generate_line_boxes()
                 line_builder.commit_pending_margin_before_float();
                 if (!is<ListItemMarkerBox>(*box))
                     m_state.create(*box, m_layout_input->containing_block_constraints.percentage_basis_width, m_layout_input->containing_block_constraints.percentage_basis_height);
-                (void)parent().clear_floating_boxes(*item.node, *this, m_layout_input->content_box_position_in_bfc_root);
+                (void)parent().clear_floating_boxes(*item.node, *this, m_layout_input->content_box_position_in_bfc_root.value());
                 // Even if this introduces clearance, we do NOT reset the margin state, because that is clearance
                 // between floats and does not contribute to the height of the Inline Formatting Context.
                 line_builder.set_unbreakable_run_width_interrupted_by_float(iterator.next_non_whitespace_sequence_width());
@@ -605,9 +602,7 @@ Optional<CSSPixels> InlineFormattingContext::next_float_band_block_start_after(C
 {
     // The containing block's position arrives via the layout input; it is provisional while an
     // ancestor's top margin group is pending, so shift it to where it currently stands.
-    auto containing_block_y_in_root = m_layout_input->content_box_position_in_bfc_root.has_value()
-        ? m_layout_input->content_box_position_in_bfc_root->y() + parent().pending_y_adjustment_for(containing_block())
-        : content_box_rect_in_ancestor_coordinate_space(m_containing_block_used_values, parent().root()).y();
+    auto containing_block_y_in_root = m_layout_input->content_box_position_in_bfc_root->y() + parent().pending_y_adjustment_for(containing_block());
     auto next_band_start = parent().next_float_band_block_start_after(containing_block_y_in_root + block_offset);
     if (!next_band_start.has_value())
         return {};
