@@ -214,6 +214,12 @@ FormattingContext::FormattingContext(Type type, LayoutMode layout_mode, LayoutSt
 
 FormattingContext::~FormattingContext() = default;
 
+void FormattingContext::place_child(Box const& child, CSSPixelPoint content_offset)
+{
+    m_state.get_mutable(child).place(content_offset);
+    did_place_child(child, content_offset);
+}
+
 bool FormattingContext::computed_height_establishes_definite_containing_block_height(CSS::Size const& computed_height)
 {
     // A resolved used height is not always a definite containing block height.
@@ -2356,7 +2362,10 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box)
 
     used_offset.translate_by(box_state.margin_box_left(), box_state.margin_box_top());
 
-    box_state.set_content_offset(used_offset);
+    // This is the box's placement event. Its inside layout already ran, and may have written
+    // a position outside the placement protocol (an SVG root baking in its viewBox transform,
+    // a list item placing its marker); those writes are overwritten here, as before.
+    place_child(box, used_offset);
 
     if (independent_formatting_context)
         independent_formatting_context->parent_context_did_dimension_child_root_box();

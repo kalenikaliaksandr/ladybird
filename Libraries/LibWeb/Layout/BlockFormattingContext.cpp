@@ -180,7 +180,7 @@ void BlockFormattingContext::parent_context_did_dimension_child_root_box()
         auto content_y = floating_box->top_margin_edge + floating_box->used_values.margin_box_top();
         if (floating_box->side == FloatSide::Left) {
             // Left-side floats: offset_from_edge is from left edge (0) to left content edge of floating_box.
-            floating_box->used_values.set_content_offset({ floating_box->offset_from_edge, content_y });
+            place_child(floating_box->box, { floating_box->offset_from_edge, content_y });
         } else {
             // Right-side floats: offset_from_edge is from right edge (float_containing_block_width) to the left content edge of floating_box.
             auto float_containing_block_width = [&] {
@@ -194,7 +194,7 @@ void BlockFormattingContext::parent_context_did_dimension_child_root_box()
                 }
                 VERIFY_NOT_REACHED();
             }();
-            floating_box->used_values.set_content_offset({ float_containing_block_width - floating_box->offset_from_edge, content_y });
+            place_child(floating_box->box, { float_containing_block_width - floating_box->offset_from_edge, content_y });
         }
     }
 
@@ -1123,7 +1123,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
     // The rendered legend's final y depends on its own laid-out height (its border box is centered
     // over the fieldset's block-start border), so layout_fieldset_with_rendered_legend() positions
-    // it after this function returns.
+    // it after this function returns; it stays on the legacy write path as well.
     auto const* fieldset_box = as_if<FieldSetBox>(block_container);
     auto box_is_positioned_by_fieldset_layout = fieldset_box && fieldset_box->rendered_legend() == &box;
 
@@ -1174,8 +1174,8 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     }
 
     // A table box's final block position also depends on its top captions, which its own
-    // formatting context lays out; its offset is written right after that context runs, against
-    // the pending offset seeded here.
+    // formatting context lays out; it is placed right after that context runs, against the
+    // pending offset seeded here.
     auto* table_formatting_context = independent_formatting_context && independent_formatting_context->type() == Type::Table
         ? static_cast<TableFormattingContext*>(independent_formatting_context.ptr())
         : nullptr;
@@ -1187,10 +1187,10 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     } else if (table_formatting_context) {
         table_formatting_context->set_table_box_content_offset_in_wrapper({ content_x, content_y });
     } else if (!box_opens_top_margin_group) {
-        box_state.set_content_offset({ content_x, content_y });
+        place_child(box, { content_x, content_y });
     }
     // A box that opens a top margin group is not written yet: its inside layout receives the
-    // provisional position as an input, and the box is written once, with its resolved y, after
+    // provisional position as an input, and the box is placed once, with its resolved y, after
     // its children have been laid out.
 
     AvailableSpace available_space_for_height_resolution = available_space;
@@ -1246,7 +1246,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
         independent_formatting_context->run(layout_input.with_available_space(inner_available_space));
         if (table_formatting_context)
-            box_state.set_content_offset(table_formatting_context->table_box_content_offset_in_wrapper());
+            place_child(box, table_formatting_context->table_box_content_offset_in_wrapper());
         if (is<TableWrapper>(block_container) && box.display().is_table_inside()) {
             box_state.margin_left = max(box_state.margin_left, 0);
             box_state.margin_right = max(box_state.margin_right, 0);
@@ -1288,7 +1288,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
                 // its block-start border; only its floats need the resolved flow y.
                 m_pending_legend_flow_position = CSSPixelPoint { content_x, final_content_y };
             } else {
-                box_state.set_content_offset({ content_x, final_content_y });
+                place_child(box, { content_x, final_content_y });
             }
             // Floats inside this box were recorded against the provisional position.
             translate_floats_in_subtree(box, { 0, final_content_y - content_y });
@@ -1451,7 +1451,7 @@ void BlockFormattingContext::layout_fieldset_with_rendered_legend(FieldSetBox co
     auto legend_content_y = fieldset_border_box_top_in_content + legend_border_box_centering_offset + legend_state.border_box_top();
     if (auto legend_flow_position = m_pending_legend_flow_position; legend_flow_position.has_value()) {
         m_pending_legend_flow_position = {};
-        legend_state.set_content_offset({ legend_flow_position->x(), legend_content_y });
+        place_child(*legend, { legend_flow_position->x(), legend_content_y });
         // Floats inside the legend were recorded against its flow position.
         translate_floats_in_subtree(*legend, { 0, legend_content_y - legend_flow_position->y() });
     }
@@ -1713,7 +1713,7 @@ void BlockFormattingContext::layout_list_item_marker(ListItemBox const& list_ite
     // ('float' and 'position' do not apply to ::marker, but animations can still produce
     // them).
     if (!marker.is_floating() && !marker.is_absolutely_positioned())
-        marker_state.set_content_offset({ round(marker_offset_x), round(marker_offset_y) });
+        place_child(marker, { round(marker_offset_x), round(marker_offset_y) });
 
     if (marker.computed_values().line_height() > list_item_state.content_height())
         list_item_state.set_content_height(marker.computed_values().line_height());

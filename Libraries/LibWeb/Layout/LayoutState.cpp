@@ -955,6 +955,7 @@ LayoutState::UsedValues& LayoutState::UsedValues::operator=(UsedValues const& ot
     m_content_height = other.m_content_height;
     m_has_definite_width = other.m_has_definite_width;
     m_has_definite_height = other.m_has_definite_height;
+    m_placement_state = other.m_placement_state;
 
     if (other.m_rare)
         m_rare = make<RareData>(*other.m_rare);
@@ -962,6 +963,12 @@ LayoutState::UsedValues& LayoutState::UsedValues::operator=(UsedValues const& ot
         m_rare = nullptr;
 
     return *this;
+}
+
+void LayoutState::UsedValues::report_offset_read_before_placement() const
+{
+    dbgln("LayoutPlacement: read of never-written offset of {}",
+        m_node ? m_node->debug_description() : "(node not set)"_string);
 }
 
 void LayoutState::UsedValues::set_node(NodeWithStyle const& node, Optional<CSSPixels> percentage_basis_width, Optional<CSSPixels> percentage_basis_height)
@@ -1095,7 +1102,9 @@ void LayoutState::UsedValues::materialize_from_paintable(Painting::Paintable con
     m_has_definite_width = true;
     m_has_definite_height = true;
 
-    set_content_offset(paintable.offset());
+    // This state is populated from a previous pass's final position; nothing places it again.
+    offset = paintable.offset();
+    m_placement_state = PlacementState::Placed;
     m_cumulative_offset = paintable.absolute_rect().location();
 
     margin_left = box_model.margin.left;

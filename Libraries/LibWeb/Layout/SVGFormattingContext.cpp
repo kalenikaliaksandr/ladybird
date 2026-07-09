@@ -341,7 +341,7 @@ void SVGFormattingContext::layout_svg_element(Box const& child, LayoutInput cons
         child_state.set_computed_svg_transforms(Painting::SVGGraphicsPaintable::ComputedTransforms(m_current_viewbox_transform, svg_transform));
         auto to_css_pixels_transform = Gfx::AffineTransform {}.multiply(m_current_viewbox_transform).multiply(svg_transform);
         auto transformed_rect = to_css_pixels_transform.map(rect.to_type<float>()).to_type<CSSPixels>();
-        child_state.set_content_offset(transformed_rect.location());
+        place_child(child, transformed_rect.location());
         child_state.set_content_width(transformed_rect.width());
         child_state.set_content_height(transformed_rect.height());
 
@@ -412,7 +412,7 @@ void SVGFormattingContext::layout_nested_viewport(Box const& viewport, Gfx::Affi
     nested_viewport_state.set_has_definite_width(true);
     nested_viewport_state.set_has_definite_height(true);
     if (has_own_view_box)
-        nested_viewport_state.set_content_offset(content_offset);
+        place_child(viewport, content_offset);
     SVGFormattingContext nested_context(m_state, m_layout_mode, viewport, this, parent_viewbox_transform, parent_svg_transform);
     nested_context.run(LayoutInput { *m_available_space, { {}, {}, m_quirks_mode_percentage_basis_height } });
     if (!has_own_view_box) {
@@ -425,7 +425,7 @@ void SVGFormattingContext::layout_nested_viewport(Box const& viewport, Gfx::Affi
             { nested_viewport_width.to_float(), nested_viewport_height.to_float() }
         };
         auto mapped_rect = m_current_viewbox_transform.map(nested_rect);
-        nested_viewport_state.set_content_offset(mapped_rect.location().to_type<CSSPixels>());
+        place_child(viewport, mapped_rect.location().to_type<CSSPixels>());
         nested_viewport_state.set_content_width(CSSPixels(mapped_rect.width()));
         nested_viewport_state.set_content_height(CSSPixels(mapped_rect.height()));
     }
@@ -555,7 +555,7 @@ void SVGFormattingContext::layout_path_like_element(SVGGraphicsBox const& graphi
     // Stroke increases the path's size by stroke_width/2 per side.
     CSSPixels stroke_width = CSSPixels::nearest_value_for(graphics_box.dom_node().visible_stroke_width() * m_current_viewbox_transform.x_scale());
     transformed_bounding_box.inflate(stroke_width, stroke_width);
-    graphics_box_state.set_content_offset(transformed_bounding_box.top_left());
+    place_child(graphics_box, transformed_bounding_box.top_left());
     graphics_box_state.set_content_width(transformed_bounding_box.width());
     graphics_box_state.set_content_height(transformed_bounding_box.height());
     graphics_box_state.set_has_definite_width(true);
@@ -604,7 +604,7 @@ void SVGFormattingContext::layout_image_element(SVGImageBox const& image_box)
                                        .multiply(box_state.computed_svg_transforms()->svg_transform());
     auto bounding_box = to_css_pixels_transform.map(image_box.dom_node().bounding_box(m_viewport_size)).to_type<CSSPixels>();
 
-    box_state.set_content_offset(bounding_box.top_left());
+    place_child(image_box, bounding_box.top_left());
     box_state.set_content_width(bounding_box.width());
     box_state.set_content_height(bounding_box.height());
     box_state.set_has_definite_width(true);
@@ -661,7 +661,7 @@ void SVGFormattingContext::layout_mask_or_clip(SVGBox const& mask_or_clip)
     // FIXME: Avoid converting SVG box to floats.
     Gfx::FloatRect box_rect { {}, { float(layout_state.content_width()), float(layout_state.content_height()) } };
     auto mapped_rect = parent_viewbox_transform.map(box_rect);
-    layout_state.set_content_offset(mapped_rect.location().to_type<CSSPixels>());
+    place_child(mask_or_clip, mapped_rect.location().to_type<CSSPixels>());
     layout_state.set_content_width(CSSPixels(mapped_rect.width()));
     layout_state.set_content_height(CSSPixels(mapped_rect.height()));
 }
@@ -676,11 +676,11 @@ void SVGFormattingContext::layout_container_element(SVGBox const& container, Lay
             return IterationDecision::Continue;
         layout_svg_element(child, layout_input, container_svg_transform);
         auto& child_state = m_state.get(child);
-        bounding_box.add_point(child_state.offset);
-        bounding_box.add_point(child_state.offset.translated(child_state.content_width(), child_state.content_height()));
+        bounding_box.add_point(child_state.content_offset());
+        bounding_box.add_point(child_state.content_offset().translated(child_state.content_width(), child_state.content_height()));
         return IterationDecision::Continue;
     });
-    box_state.set_content_offset({ bounding_box.x(), bounding_box.y() });
+    place_child(container, { bounding_box.x(), bounding_box.y() });
     box_state.set_content_width(bounding_box.width());
     box_state.set_content_height(bounding_box.height());
     box_state.set_has_definite_width(true);

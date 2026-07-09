@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/BumpAllocator.h>
+#include <AK/Debug.h>
 #include <AK/HashMap.h>
 #include <AK/OwnPtr.h>
 #include <AK/kmalloc.h>
@@ -23,6 +24,13 @@ enum class SizeConstraint {
     None,
     MinContent,
     MaxContent,
+};
+
+// Tracks whether a box has received its position for this layout pass. Positions are
+// assigned exactly once, through FormattingContext::place_child().
+enum class PlacementState : u8 {
+    NotPlaced, // no placement yet
+    Placed,    // placed once — immutable from now on
 };
 
 class AvailableSize;
@@ -184,11 +192,22 @@ struct LayoutState {
 
         void materialize_from_paintable(Painting::Paintable const&);
 
-        void set_content_offset(CSSPixelPoint new_offset) { offset = new_offset; }
-        void set_content_x(CSSPixels x) { offset.set_x(x); }
-        void set_content_y(CSSPixels y) { offset.set_y(y); }
+        // Checked read of `offset` for code converted to the placement protocol; reading a
+        // position that was never written is reported under LAYOUT_PLACEMENT_DEBUG.
+        CSSPixelPoint content_offset() const
+        {
+            if constexpr (LAYOUT_PLACEMENT_DEBUG) {
+                if (m_placement_state == PlacementState::NotPlaced)
+                    report_offset_read_before_placement();
+            }
+            return offset;
+        }
 
         // offset from top-left corner of content area of box's containing block to top-left corner of box's content area
+        // NOTE: Reads in code converted to the placement protocol should go through
+        //       content_offset() above; the tree-wide migration of the remaining direct reads
+        //       (and making this member private) happens once every formatting context has
+        //       been converted to place().
         CSSPixelPoint offset;
 
         SizeConstraint width_constraint { SizeConstraint::None };
@@ -333,6 +352,19 @@ struct LayoutState {
 
     private:
         friend struct LayoutState;
+        // FormattingContext::place_child() is the only path that assigns a position.
+        friend class FormattingContext;
+
+        // Single-assignment placement. "Once" means once per UsedValues lifetime — throwaway
+        // measurement states create fresh UsedValues, so intrinsic sizing is unaffected.
+        void place(CSSPixelPoint content_offset)
+        {
+            VERIFY(m_placement_state == PlacementState::NotPlaced);
+            offset = content_offset;
+            m_placement_state = PlacementState::Placed;
+        }
+
+        void report_offset_read_before_placement() const;
 
         AvailableSize available_width_inside() const;
         AvailableSize available_height_inside() const;
@@ -391,6 +423,8 @@ struct LayoutState {
 
         bool m_has_definite_width { false };
         bool m_has_definite_height { false };
+
+        PlacementState m_placement_state { PlacementState::NotPlaced };
 
         OwnPtr<RareData> m_rare;
     };
