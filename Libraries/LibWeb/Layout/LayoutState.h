@@ -246,7 +246,7 @@ struct LayoutState {
         // The lowest bottom margin edge, in this box's content-box space, over the floating
         // descendants participating in the block formatting context this box roots. Derived
         // from the context's float records whenever they change, so automatic height can be
-        // computed without reading the floats' offsets back from the layout state.
+        // computed without reading the floats' (possibly not yet assigned) offsets.
         void set_lowest_floating_descendant_bottom_margin_edge(Optional<CSSPixels> bottom_margin_edge) { ensure_rare_data().lowest_floating_descendant_bottom_margin_edge = bottom_margin_edge; }
         Optional<CSSPixels> lowest_floating_descendant_bottom_margin_edge() const
         {

@@ -626,8 +626,9 @@ CSSPixels FormattingContext::compute_auto_height_for_block_formatting_context_ro
             if (child_box.is_absolutely_positioned())
                 return IterationDecision::Continue;
 
-            // Floating children contribute through the tracked lowest float bottom margin
-            // edge below.
+            // Floating children contribute through the floating-descendants loop below (their
+            // bottom margin edges are tracked there, since a float's offset is only assigned
+            // once its containing block's width is final).
             if (child_box.is_floating())
                 return IterationDecision::Continue;
 
@@ -3138,7 +3139,7 @@ CSSPixels FormattingContext::box_baseline(Box const& box, BaselineSet baseline_s
     return box_state.margin_box_height();
 }
 
-[[nodiscard]] static CSSPixelRect margin_box_rect(LayoutState::UsedValues const& used_values)
+CSSPixelRect FormattingContext::margin_box_rect(LayoutState::UsedValues const& used_values)
 {
     return {
         {
