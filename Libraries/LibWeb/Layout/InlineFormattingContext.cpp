@@ -43,10 +43,12 @@ BlockFormattingContext const& InlineFormattingContext::parent() const
 
 FormattingContext::SpaceUsedByFloats InlineFormattingContext::intrusion_by_floats_into_containing_block(CSSPixels block_start, CSSPixels block_end) const
 {
-    // The containing block's position arrives via the layout input; fall back to reading the
-    // layout state while its position may still be moved by margin collapsing.
-    if (auto const& position = m_layout_input->content_box_position_in_bfc_root; position.has_value())
-        return parent().intrusion_by_floats_into_rect({ *position, m_containing_block_used_values.content_size() }, block_start, block_end);
+    // The containing block's position arrives via the layout input; it is provisional while an
+    // ancestor's top margin group is pending, so shift it to where it currently stands.
+    if (auto const& position = m_layout_input->content_box_position_in_bfc_root; position.has_value()) {
+        auto position_now = position->translated(0, parent().pending_y_adjustment_for(containing_block()));
+        return parent().intrusion_by_floats_into_rect({ position_now, m_containing_block_used_values.content_size() }, block_start, block_end);
+    }
     return parent().intrusion_by_floats_into_box(m_containing_block_used_values, block_start, block_end);
 }
 
@@ -601,10 +603,10 @@ bool InlineFormattingContext::can_fit_new_line_at_block_offset(CSSPixels block_o
 
 Optional<CSSPixels> InlineFormattingContext::next_float_band_block_start_after(CSSPixels block_offset) const
 {
-    // The containing block's position arrives via the layout input; fall back to reading the
-    // layout state while its position may still be moved by margin collapsing.
+    // The containing block's position arrives via the layout input; it is provisional while an
+    // ancestor's top margin group is pending, so shift it to where it currently stands.
     auto containing_block_y_in_root = m_layout_input->content_box_position_in_bfc_root.has_value()
-        ? m_layout_input->content_box_position_in_bfc_root->y()
+        ? m_layout_input->content_box_position_in_bfc_root->y() + parent().pending_y_adjustment_for(containing_block())
         : content_box_rect_in_ancestor_coordinate_space(m_containing_block_used_values, parent().root()).y();
     auto next_band_start = parent().next_float_band_block_start_after(containing_block_y_in_root + block_offset);
     if (!next_band_start.has_value())
