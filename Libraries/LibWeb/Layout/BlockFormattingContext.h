@@ -248,6 +248,11 @@ private:
 
     Optional<CSSPixels> m_y_offset_of_current_block_container;
 
+    // The rendered legend's normal-flow position, computed by layout_block_level_box() but
+    // superseded by layout_fieldset_with_rendered_legend(), which centers the legend over the
+    // fieldset's block-start border and performs its single placement.
+    Optional<CSSPixelPoint> m_pending_legend_flow_position;
+
     BlockMarginState m_margin_state;
 
     Vector<NonnullOwnPtr<FloatingBox>> m_floats;
