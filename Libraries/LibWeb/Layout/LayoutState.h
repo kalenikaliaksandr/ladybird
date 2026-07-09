@@ -10,7 +10,6 @@
 #include <AK/Debug.h>
 #include <AK/HashMap.h>
 #include <AK/OwnPtr.h>
-#include <AK/SourceLocation.h>
 #include <AK/kmalloc.h>
 #include <LibGfx/Path.h>
 #include <LibGfx/Point.h>
@@ -27,13 +26,11 @@ enum class SizeConstraint {
     MaxContent,
 };
 
-// Tracks how a box's content offset has been written during this layout pass. Converted
-// formatting contexts assign positions exactly once, through UsedValues::place(); contexts
-// not yet converted keep using the legacy setters, which tolerate rewrites.
+// Tracks whether a box has received its position for this layout pass. Positions are
+// assigned exactly once, through FormattingContext::place_child().
 enum class PlacementState : u8 {
-    NotPlaced,      // no write yet
-    Placed,         // written once, via place() — immutable from now on
-    LegacyWritten,  // written via legacy setters — rewrites still tolerated
+    NotPlaced, // no placement yet
+    Placed,    // placed once — immutable from now on
 };
 
 class AvailableSize;
@@ -195,36 +192,7 @@ struct LayoutState {
 
         void materialize_from_paintable(Painting::Paintable const&);
 
-        // Single-assignment placement: the one way a converted formatting context assigns a
-        // position. "Once" means once per UsedValues lifetime — throwaway measurement states
-        // create fresh UsedValues, so intrinsic sizing is unaffected.
-        void place(CSSPixelPoint content_offset)
-        {
-            VERIFY(m_placement_state == PlacementState::NotPlaced);
-            offset = content_offset;
-            m_placement_state = PlacementState::Placed;
-        }
         bool is_placed() const { return m_placement_state == PlacementState::Placed; }
-
-        // Legacy setters, for formatting contexts not yet converted to place(). Under
-        // LAYOUT_PLACEMENT_DEBUG every call is reported, making the remaining call sites an
-        // enumerable burn-down list; a legacy write over a Placed box is reported loudly as
-        // an ownership conflict.
-        void set_content_offset(CSSPixelPoint new_offset, SourceLocation caller = SourceLocation::current())
-        {
-            note_legacy_offset_write(caller);
-            offset = new_offset;
-        }
-        void set_content_x(CSSPixels x, SourceLocation caller = SourceLocation::current())
-        {
-            note_legacy_offset_write(caller);
-            offset.set_x(x);
-        }
-        void set_content_y(CSSPixels y, SourceLocation caller = SourceLocation::current())
-        {
-            note_legacy_offset_write(caller);
-            offset.set_y(y);
-        }
 
         // Checked read of `offset` for code converted to the placement protocol; reading a
         // position that was never written is reported under LAYOUT_PLACEMENT_DEBUG.
@@ -386,15 +354,18 @@ struct LayoutState {
 
     private:
         friend struct LayoutState;
+        // FormattingContext::place_child() is the only path that assigns a position.
+        friend class FormattingContext;
 
-        void note_legacy_offset_write(SourceLocation const& caller)
+        // Single-assignment placement. "Once" means once per UsedValues lifetime — throwaway
+        // measurement states create fresh UsedValues, so intrinsic sizing is unaffected.
+        void place(CSSPixelPoint content_offset)
         {
-            if constexpr (LAYOUT_PLACEMENT_DEBUG)
-                report_legacy_offset_write(caller);
-            if (m_placement_state == PlacementState::NotPlaced)
-                m_placement_state = PlacementState::LegacyWritten;
+            VERIFY(m_placement_state == PlacementState::NotPlaced);
+            offset = content_offset;
+            m_placement_state = PlacementState::Placed;
         }
-        void report_legacy_offset_write(SourceLocation const&) const;
+
         void report_offset_read_before_placement() const;
 
         AvailableSize available_width_inside() const;

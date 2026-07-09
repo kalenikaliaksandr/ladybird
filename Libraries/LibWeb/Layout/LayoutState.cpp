@@ -965,17 +965,6 @@ LayoutState::UsedValues& LayoutState::UsedValues::operator=(UsedValues const& ot
     return *this;
 }
 
-void LayoutState::UsedValues::report_legacy_offset_write(SourceLocation const& caller) const
-{
-    if (m_placement_state == PlacementState::Placed) {
-        dbgln("LayoutPlacement: CONFLICT: legacy offset write over already-placed {} at {}",
-            m_node ? m_node->debug_description() : "(node not set)"_string, caller);
-    } else {
-        dbgln("LayoutPlacement: legacy offset write for {} at {}",
-            m_node ? m_node->debug_description() : "(node not set)"_string, caller);
-    }
-}
-
 void LayoutState::UsedValues::report_offset_read_before_placement() const
 {
     dbgln("LayoutPlacement: read of never-written offset of {}",
@@ -1113,7 +1102,9 @@ void LayoutState::UsedValues::materialize_from_paintable(Painting::Paintable con
     m_has_definite_width = true;
     m_has_definite_height = true;
 
-    set_content_offset(paintable.offset());
+    // This state is populated from a previous pass's final position; nothing places it again.
+    offset = paintable.offset();
+    m_placement_state = PlacementState::Placed;
     m_cumulative_offset = paintable.absolute_rect().location();
 
     margin_left = box_model.margin.left;

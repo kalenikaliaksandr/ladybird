@@ -2362,7 +2362,10 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box)
 
     used_offset.translate_by(box_state.margin_box_left(), box_state.margin_box_top());
 
-    box_state.set_content_offset(used_offset);
+    // This is the box's placement event. Its inside layout already ran, and may have written
+    // a position outside the placement protocol (an SVG root baking in its viewBox transform,
+    // a list item placing its marker); those writes are overwritten here, as before.
+    place_child(box, used_offset);
 
     if (independent_formatting_context)
         independent_formatting_context->parent_context_did_dimension_child_root_box();
