@@ -183,12 +183,9 @@ struct LayoutState {
 
         void materialize_from_paintable(Painting::Paintable const&);
 
-        void set_content_offset(CSSPixelPoint new_offset) { offset = new_offset; }
-        void set_content_x(CSSPixels x) { offset.set_x(x); }
-        void set_content_y(CSSPixels y) { offset.set_y(y); }
-
-        // offset from top-left corner of content area of box's containing block to top-left corner of box's content area
-        CSSPixelPoint offset;
+        // Offset from the top-left corner of the containing block's content area to the
+        // top-left corner of this box's content area.
+        CSSPixelPoint content_offset() const { return m_content_offset.value_or({}); }
 
         SizeConstraint width_constraint { SizeConstraint::None };
         SizeConstraint height_constraint { SizeConstraint::None };
@@ -332,6 +329,16 @@ struct LayoutState {
 
     private:
         friend struct LayoutState;
+        // FormattingContext::place_child() is the only path that assigns a position.
+        friend class FormattingContext;
+
+        // Single-assignment placement. "Once" means once per UsedValues lifetime — throwaway
+        // measurement states create fresh UsedValues, so intrinsic sizing is unaffected.
+        void place(CSSPixelPoint content_offset)
+        {
+            VERIFY(!m_content_offset.has_value());
+            m_content_offset = content_offset;
+        }
 
         AvailableSize available_width_inside() const;
         AvailableSize available_height_inside() const;
@@ -390,6 +397,8 @@ struct LayoutState {
 
         bool m_has_definite_width { false };
         bool m_has_definite_height { false };
+
+        Optional<CSSPixelPoint> m_content_offset;
 
         OwnPtr<RareData> m_rare;
     };
