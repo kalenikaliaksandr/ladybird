@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/floating-list-item-places-marker-ref.html">
+<style>
+    body {
+        margin: 0;
+    }
+    .item {
+        display: list-item;
+        float: left;
+        margin-left: 40px;
+        width: 80px;
+        font: 20px/24px sans-serif;
+        list-style-position: outside;
+        list-style-type: square;
+        background: green;
+        color: white;
+    }
+    .item::marker {
+        color: red;
+    }
+</style>
+<div class="item">item</div>

@@ -695,9 +695,16 @@ CSSPixels FormattingContext::compute_auto_height_for_block_formatting_context_ro
             if (child_box.is_floating())
                 return IterationDecision::Continue;
 
+            if (child_box.is_list_item_marker_box()) {
+                auto marker_bottom = child_box.computed_values().line_height();
+                if (!bottom.has_value() || marker_bottom > *bottom)
+                    bottom = marker_bottom;
+                return IterationDecision::Continue;
+            }
+
             // Children that have not been laid out yet contribute nothing to the auto height.
             auto const* child_box_state = m_state.try_get(child_box);
-            if (!child_box_state)
+            if (!child_box_state || !child_box_state->is_placed())
                 return IterationDecision::Continue;
 
             CSSPixels child_box_bottom = child_box_state->content_offset().y() + child_box_state->content_height() + child_box_state->margin_box_bottom();
