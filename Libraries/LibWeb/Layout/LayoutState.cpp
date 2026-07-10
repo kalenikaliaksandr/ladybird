@@ -41,6 +41,11 @@ LayoutState::~LayoutState()
 {
 }
 
+bool LayoutState::node_is_within_layout_scope(Node const& node) const
+{
+    return !m_subtree_root || m_subtree_root->is_inclusive_ancestor_of(node);
+}
+
 static Painting::LineBoxData line_box_data_for(LineBox const& line_box, size_t line_index)
 {
     CSSPixelRect rect;

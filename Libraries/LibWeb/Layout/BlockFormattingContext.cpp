@@ -1064,6 +1064,8 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
     if (box.is_absolutely_positioned()) {
         if (m_layout_mode == LayoutMode::Normal) {
+            if (materialize_positioned_box_owned_outside_layout_scope(box).has_value())
+                return;
             // NB: An originally-inline absolutely positioned box never reaches this path; the tree
             //     builder keeps out-of-flow boxes in inline context, where static position markers
             //     pin them at their exact flow position.

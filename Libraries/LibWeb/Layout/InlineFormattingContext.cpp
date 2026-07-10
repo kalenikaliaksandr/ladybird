@@ -584,6 +584,8 @@ void InlineFormattingContext::generate_line_boxes()
                 if (found_static_position_marker)
                     break;
             }
+            if (materialize_positioned_box_owned_outside_layout_scope(*box).has_value())
+                continue;
             register_contained_abspos_child(*box, static_position_rect);
         }
     }

@@ -1962,6 +1962,19 @@ private:
 }
 
 // https://drafts.csswg.org/css-anchor-position-1/#anchor-pos
+Optional<LayoutState::UsedValues&> FormattingContext::materialize_positioned_box_owned_outside_layout_scope(Box const& box)
+{
+    if (!m_state.has_subtree_root()
+        || !box.containing_block()
+        || m_state.node_is_within_layout_scope(*box.containing_block())) {
+        return {};
+    }
+
+    auto paintable = box.paintable_box();
+    VERIFY(paintable);
+    return m_state.populate_from_paintable(box, *paintable);
+}
+
 void FormattingContext::resolve_anchor_insets(Box& box) const
 {
     // https://drafts.csswg.org/css-anchor-position-1/#resolving-anchor

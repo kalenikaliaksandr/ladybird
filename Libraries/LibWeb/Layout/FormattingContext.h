@@ -253,6 +253,7 @@ protected:
     [[nodiscard]] static CSSPixelPoint aligned_static_position(StaticPositionRect const&, LayoutState::UsedValues const&);
     void layout_absolutely_positioned_children();
     void layout_absolutely_positioned_children(Box const&);
+    Optional<LayoutState::UsedValues&> materialize_positioned_box_owned_outside_layout_scope(Box const&);
     virtual AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&);
     void resolve_anchor_insets(Box&) const;
     void compute_width_for_absolutely_positioned_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, StaticPositionRect const&);

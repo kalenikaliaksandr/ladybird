@@ -420,6 +420,7 @@ struct LayoutState {
     [[nodiscard]] CSSPixelPoint cumulative_offset(UsedValues const&) const;
 
     bool has_subtree_root() const { return m_subtree_root != nullptr; }
+    bool node_is_within_layout_scope(Node const&) const;
 
     struct ContainedAbsposChild {
         Box const* box { nullptr };
