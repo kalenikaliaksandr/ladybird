@@ -1301,11 +1301,15 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     if (pending_position.has_value())
         place_child(box, *pending_position);
 
+    auto flow_content_y = box_is_positioned_by_fieldset_layout
+        ? m_pending_legend_flow_position.value().y()
+        : box_state.content_offset().y();
+
     if (independent_formatting_context || !margins_collapse_through(box, m_state)) {
         if (!m_margin_state.box_last_in_flow_child_margin_bottom_collapsed()) {
             m_margin_state.reset();
         }
-        m_y_offset_of_current_block_container = box_state.content_offset().y() + box_state.content_height() + box_state.border_box_bottom();
+        m_y_offset_of_current_block_container = flow_content_y + box_state.content_height() + box_state.border_box_bottom();
     }
     m_margin_state.set_box_last_in_flow_child_margin_bottom_collapsed(false);
 
@@ -1314,7 +1318,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
     compute_inset(box, content_box_rect(block_container_state).size());
 
-    bottom_of_lowest_margin_box = max(bottom_of_lowest_margin_box, box_state.content_offset().y() + box_state.content_height() + box_state.margin_box_bottom());
+    bottom_of_lowest_margin_box = max(bottom_of_lowest_margin_box, flow_content_y + box_state.content_height() + box_state.margin_box_bottom());
 
     if (independent_formatting_context)
         independent_formatting_context->parent_context_did_dimension_child_root_box();
