@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/grid-intrinsic-measurement-with-ancestor-abspos-containing-block-ref.html">
+<style>
+    body {
+        margin: 0;
+        background: red;
+    }
+    #wrapper {
+        position: relative;
+        width: 200px;
+    }
+    #container {
+        display: grid;
+        grid-template-rows: minmax(0, 1fr);
+        min-height: 50px;
+    }
+    #absolute {
+        position: absolute;
+        width: 10px;
+        height: 10px;
+    }
+    #tall {
+        height: 200px;
+    }
+</style>
+<div id="wrapper">
+    <div id="container">
+        <div>
+            <div id="absolute"></div>
+            <div id="tall"></div>
+        </div>
+    </div>
+</div>
+<script>
+    const container = document.getElementById("container");
+    document.body.style.background = container.getBoundingClientRect().height === 200 ? "green" : "red";
+    document.getElementById("wrapper").style.display = "none";
+</script>

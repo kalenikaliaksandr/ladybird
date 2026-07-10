@@ -1971,7 +1971,8 @@ Optional<LayoutState::UsedValues&> FormattingContext::materialize_positioned_box
     }
 
     auto paintable = box.paintable_box();
-    VERIFY(paintable);
+    if (!paintable)
+        return {};
     return m_state.populate_from_paintable(box, *paintable);
 }
 
