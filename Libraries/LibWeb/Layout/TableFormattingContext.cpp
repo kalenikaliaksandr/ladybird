@@ -50,6 +50,7 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
         if (auto caption_context = create_independent_formatting_context_if_needed(m_state, m_layout_mode, child_box)) {
             auto inner_available_space = caption_available_space;
             auto* block_context = as_if<BlockFormattingContext>(caption_context.ptr());
+            CSSPixelPoint caption_offset;
             if (block_context) {
                 auto available_width = caption_available_space.width.to_px_or_zero();
                 block_context->resolve_vertical_box_model_metrics(child_box, available_width);
@@ -61,11 +62,9 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
                 // before its contents are laid out: its border box aligns with the table
                 // wrapper, and a bottom caption sits below the table's margin box.
                 auto const& caption_state = m_state.get(child_box);
-                CSSPixelPoint caption_offset { caption_state.border_box_left(), 0 };
+                caption_offset = { caption_state.border_box_left(), 0 };
                 if (phase == CSS::CaptionSide::Bottom)
                     caption_offset.set_y(m_state.get(table_box()).margin_box_height() + caption_state.margin_box_top());
-                place_child(child_box, caption_offset);
-                placed_via_placement_api = true;
             }
 
             caption_context->run(LayoutInput { inner_available_space, caption_constraints });
@@ -76,6 +75,11 @@ CSSPixels TableFormattingContext::run_caption_layout(CSS::CaptionSide phase, Ava
                     auto height = child_box.has_size_containment() ? 0 : caption_context->automatic_content_height();
                     caption_state.set_content_height(height);
                 }
+                // The height write above was the caption's last geometry input, so it is
+                // placed only now; placement also finalizes the caption's floats and
+                // absolutely positioned children.
+                place_child(child_box, caption_offset);
+                placed_via_placement_api = true;
             }
         }
 
@@ -1035,10 +1039,11 @@ void TableFormattingContext::compute_table_height()
         // - the horizontal/vertical border-spacing times the amount of spanned visible columns/rows minus one
         // FIXME: Account for visibility.
         cell_state.set_content_width(span_width - cell_state.border_box_left() - cell_state.border_box_right() + (cell.column_span - 1) * border_spacing_horizontal());
-        if (auto independent_formatting_context = layout_inside(cell.box, m_layout_mode, LayoutInput { cell_state.available_inner_space_or_constraints_from(*m_available_space) })) {
+        // The cell's floats and absolutely positioned children are finalized when
+        // position_cell_boxes() places the cell, after row height distribution and
+        // vertical alignment.
+        if (auto independent_formatting_context = layout_inside(cell.box, m_layout_mode, LayoutInput { cell_state.available_inner_space_or_constraints_from(*m_available_space) }))
             cell_state.set_content_height(independent_formatting_context->automatic_content_height());
-            independent_formatting_context->parent_context_did_dimension_child_root_box();
-        }
 
         // https://drafts.csswg.org/css2/#height-layout
         // The baseline of a cell is the baseline of the first in-flow line box in the cell, or the first in-flow
@@ -1133,10 +1138,10 @@ void TableFormattingContext::compute_table_height()
         cell_state.set_content_width(span_width - cell_state.border_box_left() - cell_state.border_box_right() + (cell.column_span - 1) * border_spacing_horizontal());
         // This is the second inside layout of this cell in the same layout state: its descendants
         // already have used values from the first pass, so discard them before creating them anew.
+        // Adopting the new context also replaces the first pass's never-notified one, whose
+        // results were discarded along with them.
         m_state.discard_used_values_for_descendants(cell.box);
-        if (auto independent_formatting_context = layout_inside(cell.box, m_layout_mode, LayoutInput { cell_state.available_inner_space_or_constraints_from(*m_available_space) })) {
-            independent_formatting_context->parent_context_did_dimension_child_root_box();
-        }
+        (void)layout_inside(cell.box, m_layout_mode, LayoutInput { cell_state.available_inner_space_or_constraints_from(*m_available_space) });
 
         cell.baseline = box_baseline(cell.box, BaselineSet::First);
 
@@ -1245,7 +1250,6 @@ void TableFormattingContext::position_row_boxes()
         CSSPixels row_group_width = 0;
 
         auto& row_group_box_state = m_state.get_mutable(row_group_box);
-        place_child(row_group_box, { row_group_left_offset, row_group_top_offset });
 
         int num_rows = 0;
         TableGrid::for_each_child_box_matching(row_group_box, TableGrid::is_table_row, [&](auto& row) {
@@ -1259,6 +1263,7 @@ void TableFormattingContext::position_row_boxes()
 
         row_group_box_state.set_content_height(row_group_height);
         row_group_box_state.set_content_width(row_group_width);
+        place_child(row_group_box, { row_group_left_offset, row_group_top_offset });
 
         row_group_top_offset += row_group_height + (num_rows > 0 ? border_spacing_vertical() : 0);
     });
@@ -1849,29 +1854,6 @@ void TableFormattingContext::run_until_width_calculation(LayoutInput const& layo
     compute_table_width();
 }
 
-void TableFormattingContext::parent_context_did_dimension_child_root_box()
-{
-    if (m_layout_mode != LayoutMode::Normal)
-        return;
-
-    context_box().for_each_in_subtree_of_type<Box const>([&](Layout::Box const& box) {
-        if (box.is_absolutely_positioned()) {
-            // FIXME: calculate_static_position_rect() is not aware of how to correctly calculate static position for
-            //        a box nested inside a table, but we need to set some value, so layout_absolutely_positioned_element()
-            //        won't crash trying to access it.
-            m_state.create(box, {}, {}).set_static_position_rect(calculate_static_position_rect(box));
-        }
-
-        if (formatting_context_type_created_by_box(box).has_value()) {
-            return TraversalDecision::SkipChildrenAndContinue;
-        }
-
-        return TraversalDecision::Continue;
-    });
-
-    layout_absolutely_positioned_children();
-}
-
 void TableFormattingContext::run(LayoutInput const& layout_input)
 {
     auto const& available_space = layout_input.available_space;
@@ -1901,9 +1883,6 @@ void TableFormattingContext::run(LayoutInput const& layout_input)
     position_row_boxes();
     position_cell_boxes();
 
-    for (auto& cell : m_cells)
-        layout_absolutely_positioned_children(cell.box);
-
     m_state.get_mutable(table_box()).set_content_height(m_table_height);
 
     total_captions_height += run_caption_layout(CSS::CaptionSide::Bottom, caption_available_space);
@@ -1925,6 +1904,25 @@ void TableFormattingContext::run(LayoutInput const& layout_input)
         return IterationDecision::Continue;
     });
     compute_and_store_baselines(m_state.get_mutable(table_box()));
+
+    // Absolutely positioned boxes in the table subtree enter layout once the table is
+    // placed; their used values and static-position rects are recorded here.
+    if (m_layout_mode == LayoutMode::Normal) {
+        context_box().for_each_in_subtree_of_type<Box const>([&](Layout::Box const& box) {
+            if (box.is_absolutely_positioned()) {
+                // FIXME: calculate_static_position_rect() is not aware of how to correctly calculate static position for
+                //        a box nested inside a table, but we need to set some value, so layout_absolutely_positioned_element()
+                //        won't crash trying to access it.
+                m_state.create(box, {}, {}).set_static_position_rect(calculate_static_position_rect(box));
+            }
+
+            if (formatting_context_type_created_by_box(box).has_value()) {
+                return TraversalDecision::SkipChildrenAndContinue;
+            }
+
+            return TraversalDecision::Continue;
+        });
+    }
 
     m_automatic_content_height = m_table_height;
 }

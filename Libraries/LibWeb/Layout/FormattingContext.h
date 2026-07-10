@@ -22,22 +22,6 @@ template<typename T>
     return ::max(min, ::min(value, max));
 }
 
-enum class Alignment {
-    Baseline,
-    Center,
-    End,
-    Normal,
-    Safe,
-    SelfEnd,
-    SelfStart,
-    SpaceAround,
-    SpaceBetween,
-    SpaceEvenly,
-    Start,
-    Stretch,
-    Unsafe,
-};
-
 enum class AbsposAxisMode {
     // Both insets auto: offset = static_position + margin
     StaticPosition,
@@ -152,12 +136,21 @@ public:
         LayoutInput const& containing_block_layout_input,
         AvailableSpace available_space);
 
-    virtual void parent_context_did_dimension_child_root_box() { }
-
     // The single funnel through which formatting contexts assign positions: the context that
     // owns the child's coordinate space calls this exactly once per child, at the moment the
-    // child's position is final.
+    // child's position is final. Placement is also the child's dimensioning event: it
+    // finalizes everything that waited for the child's geometry to settle.
     void place_child(Box const& child, CSSPixelPoint content_offset);
+
+    // The dimensioning event for a box whose geometry is final: floats recorded during its
+    // inside layout get their inline positions, and its contained absolutely positioned
+    // boxes are laid out. place_child() triggers this; the layout entry point calls it for
+    // the never-placed viewport.
+    void finalize_dimensioned_box(Box const&);
+
+    // Places floats recorded during the box's inside layout, whose inline positions were
+    // waiting for the box's final width.
+    void finalize_pending_float_placements(Box const&);
 
     CSSPixels calculate_min_content_width(Layout::Box const&, ContainingBlockConstraints const&) const;
     CSSPixels calculate_max_content_width(Layout::Box const&, ContainingBlockConstraints const&) const;
@@ -245,9 +238,8 @@ protected:
 
     CSSPixels gap_to_px(Variant<CSS::LengthPercentage, CSS::NormalGap> const& gap, CSSPixels reference_value) const;
 
-    void layout_absolutely_positioned_children();
     void layout_absolutely_positioned_children(Box const&);
-    virtual AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&);
+    AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&);
     void resolve_anchor_insets(Box&) const;
     void compute_width_for_absolutely_positioned_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&);
     void compute_width_for_absolutely_positioned_non_replaced_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&);

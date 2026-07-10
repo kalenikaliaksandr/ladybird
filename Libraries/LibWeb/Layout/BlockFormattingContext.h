@@ -33,19 +33,8 @@ public:
     // https://www.w3.org/TR/css-display/#block-formatting-context-root
     BlockContainer const& root() const { return static_cast<BlockContainer const&>(context_box()); }
 
-    virtual void parent_context_did_dimension_child_root_box() override;
-
     void resolve_used_height_if_not_treated_as_auto(Box const&, AvailableSpace const&, ContainingBlockConstraints const& containing_block_constraints);
     void resolve_used_height_if_treated_as_auto(Box const&, AvailableSpace const&, ContainingBlockConstraints const& containing_block_constraints, FormattingContext const* box_formatting_context = nullptr);
-
-    template<typename Callback>
-    void for_each_floating_box(Callback callback)
-    {
-        for (auto const& floating_box : m_floats) {
-            if (callback(*floating_box) == IterationDecision::Break)
-                return;
-        }
-    }
 
     [[nodiscard]] SpaceUsedByFloats available_inline_space(CSSPixels block_start_in_root, CSSPixels block_end_in_root) const;
     [[nodiscard]] SpaceUsedByFloats intrusion_by_floats_into_rect(CSSPixelRect const& box_in_root_rect, CSSPixels block_start_in_box, CSSPixels block_end_in_box) const;
@@ -69,6 +58,7 @@ public:
     }
 
     virtual CSSPixels greatest_child_width(Box const&) const override;
+    [[nodiscard]] CSSPixels greatest_child_width_in_rect(Box const&, CSSPixelRect const& box_in_root_rect) const;
 
     void layout_floating_box(Box const& child, BlockContainer const& containing_block, LayoutInput const&, CSSPixels y, LineBuilder* = nullptr);
 
@@ -104,9 +94,9 @@ public:
         // Offset from left/right edge to the left content edge of `box`.
         CSSPixels offset_from_edge { 0 };
 
-        // Top margin edge of `box` in its containing block. The box itself is placed once its
-        // inline position is known (parent_context_did_dimension_child_root_box()); until
-        // then this is where its block position lives.
+        // Top margin edge of `box` in its containing block. The box itself is placed once
+        // its inline position is known (finalize_pending_float_placements()); until then
+        // this is where its block position lives.
         CSSPixels top_margin_edge { 0 };
 
         // Bottom margin edge of `box`.
@@ -121,6 +111,10 @@ public:
     };
 
 private:
+    // run() proper: run() wraps it so the pending float placements are handed to the
+    // root's used values at every exit.
+    void run_internal(LayoutInput const&);
+
     CSSPixels compute_auto_height_for_block_level_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&);
 
     void compute_width_for_floating_box(Box const&, AvailableSpace const&, ContainingBlockConstraints const&);
@@ -163,7 +157,6 @@ private:
     [[nodiscard]] size_t band_index_at(CSSPixels y) const;
     [[nodiscard]] FloatBand const& band_at(CSSPixels y) const;
     [[nodiscard]] SpaceUsedByFloats intrusions_for_band_into_rect(FloatBand const&, CSSPixelRect const& rect_in_root) const;
-    [[nodiscard]] CSSPixels greatest_child_width_in_rect(Box const&, CSSPixelRect const& box_in_root_rect) const;
     [[nodiscard]] FloatPlacement place_float(FloatSide, LayoutState::UsedValues const&, AvailableSpace const&, CSSPixelRect const& containing_block_rect_in_root, CSSPixels ceiling_in_root) const;
     void ensure_band_boundary(CSSPixels);
     void add_float_to_bands(FloatingBox const&, CSSPixelRect containing_block_rect_in_root);
@@ -262,8 +255,6 @@ private:
     Vector<FloatBand> m_bands;
     CSSPixels m_lowest_left_margin_edge { 0 };
     CSSPixels m_lowest_right_margin_edge { 0 };
-
-    bool m_was_notified_after_parent_dimensioned_my_root_box { false };
 };
 
 }

@@ -1935,6 +1935,10 @@ void Document::update_layout(UpdateLayoutReason reason)
             } else {
                 Layout::BlockFormattingContext root_formatting_context(layout_state, Layout::LayoutMode::Normal, *m_layout_root, nullptr);
                 root_formatting_context.run(Layout::LayoutInput { available_space });
+                // The viewport is never placed by a parent context; its dimensions were
+                // final before the run, so its floats and absolutely positioned children
+                // are finalized here.
+                root_formatting_context.finalize_dimensioned_box(viewport);
             }
         }
 

@@ -46,15 +46,7 @@ BlockFormattingContext::BlockFormattingContext(LayoutState& state, LayoutMode la
     m_bands.append({});
 }
 
-BlockFormattingContext::~BlockFormattingContext()
-{
-    if (!m_was_notified_after_parent_dimensioned_my_root_box) {
-        // HACK: The parent formatting context never notified us after assigning dimensions to our root box.
-        //       Pretend that it did anyway, to make sure absolutely positioned children get laid out.
-        // FIXME: Get rid of this hack once parent contexts behave properly.
-        parent_context_did_dimension_child_root_box();
-    }
-}
+BlockFormattingContext::~BlockFormattingContext() = default;
 
 CSSPixels BlockFormattingContext::automatic_content_width() const
 {
@@ -125,6 +117,28 @@ static bool margins_collapse_through(Box const& box, LayoutState& state)
 
 void BlockFormattingContext::run(LayoutInput const& layout_input)
 {
+    run_internal(layout_input);
+
+    // Floats' block positions settled during the run, but their inline positions need the
+    // containing block's final width; hand the pending placements to the root's used
+    // values, where placement picks them up. Assignment, not append: a second run of the
+    // same root (the table cell percentage-height pass) replaces the first run's records.
+    Vector<PendingFloatPlacement> pending_placements;
+    pending_placements.ensure_capacity(m_floats.size());
+    for (auto const& floating_box : m_floats) {
+        pending_placements.unchecked_append({
+            .box = &floating_box->box,
+            .side = floating_box->side == FloatSide::Left ? PendingFloatPlacement::Side::Left : PendingFloatPlacement::Side::Right,
+            .offset_from_edge = floating_box->offset_from_edge,
+            .top_margin_edge = floating_box->top_margin_edge,
+            .percentage_basis_width = floating_box->percentage_basis_width,
+        });
+    }
+    m_state.get_mutable(root()).set_pending_float_placements(move(pending_placements));
+}
+
+void BlockFormattingContext::run_internal(LayoutInput const& layout_input)
+{
     auto const& available_space = layout_input.available_space;
     FORMATTING_CONTEXT_TRACE();
     // https://drafts.csswg.org/css-multicol-2/#the-multi-column-model
@@ -166,38 +180,6 @@ void BlockFormattingContext::run(LayoutInput const& layout_input)
         // have been derived from (a scroll container child exports its bottom margin edge), so re-derive them.
         compute_and_store_baselines(m_state.get_mutable(root()));
     }
-}
-
-void BlockFormattingContext::parent_context_did_dimension_child_root_box()
-{
-    m_was_notified_after_parent_dimensioned_my_root_box = true;
-
-    for (auto& floating_box : m_floats) {
-        // A float's inline position is only known once the containing block's width is final,
-        // so this is the placement event; the block position was carried on the record since
-        // the float was laid out.
-        auto content_y = floating_box->top_margin_edge + floating_box->used_values.margin_box_top();
-        if (floating_box->side == FloatSide::Left) {
-            // Left-side floats: offset_from_edge is from left edge (0) to left content edge of floating_box.
-            place_child(floating_box->box, { floating_box->offset_from_edge, content_y });
-        } else {
-            // Right-side floats: offset_from_edge is from right edge (float_containing_block_width) to the left content edge of floating_box.
-            auto float_containing_block_width = [&] {
-                switch (floating_box->used_values.width_constraint) {
-                case SizeConstraint::MinContent:
-                    return CSSPixels(0);
-                case SizeConstraint::MaxContent:
-                    return CSSPixels::max();
-                case SizeConstraint::None:
-                    return floating_box->percentage_basis_width.value_or(0);
-                }
-                VERIFY_NOT_REACHED();
-            }();
-            place_child(floating_box->box, { float_containing_block_width - floating_box->offset_from_edge, content_y });
-        }
-    }
-
-    layout_absolutely_positioned_children();
 }
 
 bool BlockFormattingContext::box_should_avoid_floats_because_it_establishes_fc(Box const& box) const
@@ -1159,18 +1141,23 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     }
 
     // A table box's final block position also depends on its top captions, which its own
-    // formatting context lays out; it is placed right after that context runs, against the
-    // pending offset seeded here.
+    // formatting context lays out; its pending position is collected right after that
+    // context runs, against the offset seeded here.
     auto* table_formatting_context = independent_formatting_context && independent_formatting_context->type() == Type::Table
         ? static_cast<TableFormattingContext*>(independent_formatting_context.ptr())
         : nullptr;
+
+    // The box's final position is collected here and in the branches below, but the
+    // place_child() call is deferred until its content sizes are final too, so that
+    // placement is the box's last geometry write.
+    Optional<CSSPixelPoint> pending_position;
 
     if (box_is_positioned_by_fieldset_layout) {
         m_pending_legend_flow_position = CSSPixelPoint { content_x, content_y };
     } else if (table_formatting_context) {
         table_formatting_context->set_table_box_content_offset_in_wrapper({ content_x, content_y });
     } else if (!box_opens_top_margin_group) {
-        place_child(box, { content_x, content_y });
+        pending_position = CSSPixelPoint { content_x, content_y };
     }
 
     AvailableSpace available_space_for_height_resolution = available_space;
@@ -1226,7 +1213,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
         independent_formatting_context->run(layout_input.with_available_space(inner_available_space));
         if (table_formatting_context)
-            place_child(box, table_formatting_context->table_box_content_offset_in_wrapper());
+            pending_position = table_formatting_context->table_box_content_offset_in_wrapper();
         if (is<TableWrapper>(block_container) && box.display().is_table_inside()) {
             box_state.margin_left = max(box_state.margin_left, 0);
             box_state.margin_right = max(box_state.margin_right, 0);
@@ -1263,7 +1250,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
                 // its block-start border; only its floats need the resolved flow y.
                 m_pending_legend_flow_position = CSSPixelPoint { content_x, final_content_y };
             } else {
-                place_child(box, { content_x, final_content_y });
+                pending_position = CSSPixelPoint { content_x, final_content_y };
             }
             // Floats inside this box were recorded against the provisional position.
             translate_floats_in_subtree(box, { 0, final_content_y - content_y });
@@ -1282,6 +1269,14 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         layout_list_item_marker(*li_box, inline_space_used_before_children_formatted);
     // Otherwise, it will be a dealt with as a generic pseudo-element with the content of the ::marker pseudo-element.
 
+    // The heights resolved above and the marker-driven list item adjustments were the last
+    // size inputs; nothing before this point reads the box's own offset (inside layout
+    // receives its flow position through LayoutInput). Placement also finalizes the box's
+    // floats and absolutely positioned children; a rendered legend has no pending position
+    // here and is finalized when fieldset layout places it.
+    if (pending_position.has_value())
+        place_child(box, *pending_position);
+
     if (independent_formatting_context || !margins_collapse_through(box, m_state)) {
         if (!m_margin_state.box_last_in_flow_child_margin_bottom_collapsed()) {
             m_margin_state.reset();
@@ -1296,9 +1291,6 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     compute_inset(box, content_box_rect(block_container_state).size());
 
     bottom_of_lowest_margin_box = max(bottom_of_lowest_margin_box, box_state.content_offset().y() + box_state.content_height() + box_state.margin_box_bottom());
-
-    if (independent_formatting_context)
-        independent_formatting_context->parent_context_did_dimension_child_root_box();
 }
 
 void BlockFormattingContext::layout_block_level_children(BlockContainer const& block_container, LayoutInput const& layout_input, AvailableSpace const& available_space_for_children)
@@ -1584,8 +1576,8 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
 
     // The float's block position is final here, but its inline position depends on the
     // containing block's final width, so the box is placed in one go by
-    // parent_context_did_dimension_child_root_box() once that width is known. Until then its
-    // geometry lives on the FloatingBox record, in the containing block's (pre-pending-margin)
+    // finalize_pending_float_placements() once that width is known. Until then its geometry
+    // lives on the FloatingBox record, in the containing block's (pre-pending-margin)
     // space.
     auto margin_box_rect_in_root = margin_box_rect(box_state)
                                        .translated(0, content_y)
@@ -1617,8 +1609,9 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
 
     compute_inset(box, content_box_rect(block_container_state).size());
 
-    if (independent_formatting_context)
-        independent_formatting_context->parent_context_did_dimension_child_root_box();
+    // The float's own floats and absolutely positioned children are finalized when the
+    // float is placed; until then everything that consumes the float works from its
+    // FloatingBox record.
 }
 
 void BlockFormattingContext::ensure_sizes_correct_for_left_offset_calculation(ListItemBox const& list_item_box)

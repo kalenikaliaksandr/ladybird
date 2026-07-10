@@ -2903,10 +2903,6 @@ void GridFormattingContext::run(LayoutInput const& layout_input)
             grid_area_size.set_width(non_cyclic_containing_block_width_for_table_wrapper(grid_item, grid_area_size.width()));
             table_wrapper_grid_area_size = grid_area_size;
         }
-        CSSPixelPoint margin_offset = { grid_item.used_values.margin_box_left(), grid_item.used_values.margin_box_top() };
-        place_child(grid_item.box, grid_area_rect.top_left() + margin_offset);
-        compute_inset(grid_item.box, grid_area_rect.size());
-
         auto available_space_for_children = AvailableSpace(AvailableSize::make_definite(grid_item.used_values.content_width()), AvailableSize::make_definite(grid_item.used_values.content_height()));
         grid_item.used_values.set_has_definite_width(true);
         grid_item.used_values.set_has_definite_height(true);
@@ -2920,11 +2916,35 @@ void GridFormattingContext::run(LayoutInput const& layout_input)
             }
             return constraints;
         }();
-        if (auto independent_formatting_context = layout_inside(grid_item.box, LayoutMode::Normal, LayoutInput { available_space_for_children, child_constraints }))
-            independent_formatting_context->parent_context_did_dimension_child_root_box();
+        (void)layout_inside(grid_item.box, LayoutMode::Normal, LayoutInput { available_space_for_children, child_constraints });
+
+        // Placed after the inside layout so placement is the item's last geometry write;
+        // it also notifies the item's formatting context.
+        CSSPixelPoint margin_offset = { grid_item.used_values.margin_box_left(), grid_item.used_values.margin_box_top() };
+        place_child(grid_item.box, grid_area_rect.top_left() + margin_offset);
+        compute_inset(grid_item.box, grid_area_rect.size());
     }
 
     compute_and_store_baselines(m_state.get_mutable(grid_container()));
+
+    // Absolutely positioned children enter layout once this container is placed; their
+    // used values and static-position rects are recorded here, and every absolutely
+    // positioned box this grid contains gets its containing block resolved from grid
+    // placement while the tracks are at hand. Used values must exist before the
+    // containing block data is stored: create() resets them.
+    if (m_layout_mode == LayoutMode::Normal) {
+        grid_container().for_each_child_of_type<Box>([&](Layout::Box& box) {
+            if (box.is_absolutely_positioned())
+                m_state.create(box, {}, {}).set_static_position_rect(calculate_static_position_rect(box));
+            return IterationDecision::Continue;
+        });
+        for (auto& child : grid_container().contained_abspos_children()) {
+            if (!child)
+                continue;
+            auto& box = as<Box>(*child);
+            m_state.get_mutable(box).set_grid_area_containing_block(resolve_grid_area_containing_block(box));
+        }
+    }
 
     auto serialize_standalone_axis = [](auto const& tracks, auto const& lines) {
         CSS::GridTrackSizeList result;
@@ -2981,10 +3001,10 @@ void GridFormattingContext::run(LayoutInput const& layout_input)
 }
 
 // https://www.w3.org/TR/css-grid-2/#abspos-items
-AbsposContainingBlockInfo GridFormattingContext::resolve_abspos_containing_block_info(Box const& box)
+// https://www.w3.org/TR/css-grid-2/#abspos-items
+GridAreaContainingBlock GridFormattingContext::resolve_grid_area_containing_block(Box const& box)
 {
     auto& abspos_box_state = m_state.get_mutable(box);
-    auto containing_block_info = FormattingContext::resolve_abspos_containing_block_info(box);
 
     auto grid_area_rect = [&] -> CSSPixelRect {
         auto const& computed_values = box.computed_values();
@@ -3077,35 +3097,18 @@ AbsposContainingBlockInfo GridFormattingContext::resolve_abspos_containing_block
         return rect;
     }();
 
-    containing_block_info.rect = grid_area_rect;
-    containing_block_info.horizontal_alignment = alignment_for_item(box, GridDimension::Column);
-    containing_block_info.vertical_alignment = alignment_for_item(box, GridDimension::Row);
+    GridAreaContainingBlock grid_area_containing_block;
+    grid_area_containing_block.rect = grid_area_rect;
+    grid_area_containing_block.horizontal_alignment = alignment_for_item(box, GridDimension::Column);
+    grid_area_containing_block.vertical_alignment = alignment_for_item(box, GridDimension::Row);
 
     // An absolutely positioned child of a grid container gets its static
     // position from grid placement and alignment, but deeper descendants
     // inside grid items still use the generic static-position behavior from
     // their in-flow ancestor.
-    if (box.static_position_containing_block() == &grid_container()) {
-        containing_block_info.horizontal_axis_mode = AbsposAxisMode::InsetFromRect;
-        containing_block_info.vertical_axis_mode = AbsposAxisMode::InsetFromRect;
-    }
+    grid_area_containing_block.position_from_rect_in_both_axes = box.static_position_containing_block() == &grid_container();
 
-    return containing_block_info;
-}
-
-void GridFormattingContext::parent_context_did_dimension_child_root_box()
-{
-    if (m_layout_mode != LayoutMode::Normal)
-        return;
-
-    grid_container().for_each_child_of_type<Box>([&](Layout::Box& box) {
-        if (box.is_absolutely_positioned()) {
-            m_state.create(box, {}, {}).set_static_position_rect(calculate_static_position_rect(box));
-        }
-        return IterationDecision::Continue;
-    });
-
-    layout_absolutely_positioned_children();
+    return grid_area_containing_block;
 }
 
 void GridFormattingContext::determine_intrinsic_size_of_grid_container(AvailableSpace const& available_space)

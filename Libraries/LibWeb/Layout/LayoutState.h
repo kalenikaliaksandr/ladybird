@@ -27,6 +27,22 @@ enum class SizeConstraint {
 class AvailableSize;
 class AvailableSpace;
 
+enum class Alignment {
+    Baseline,
+    Center,
+    End,
+    Normal,
+    Safe,
+    SelfEnd,
+    SelfStart,
+    SpaceAround,
+    SpaceBetween,
+    SpaceEvenly,
+    Start,
+    Stretch,
+    Unsafe,
+};
+
 // https://www.w3.org/TR/css-position-3/#static-position-rectangle
 struct StaticPositionRect {
     enum class Alignment {
@@ -38,6 +54,10 @@ struct StaticPositionRect {
     CSSPixelRect rect;
     Alignment horizontal_alignment { Alignment::Start };
     Alignment vertical_alignment { Alignment::Start };
+
+    // The rect is the containing block's content box; its size is only known once that
+    // box's geometry is final, so it is stamped in right before the box is laid out.
+    bool rect_spans_containing_block_content_box { false };
 
     CSSPixelPoint aligned_position_for_box_with_size(CSSPixelSize const& size) const
     {
@@ -54,6 +74,37 @@ struct StaticPositionRect {
 
         return position;
     }
+};
+
+// The containing block a grid container resolved for an absolutely positioned child from
+// its grid placement, captured while the grid's tracks are available. Axis modes are not
+// part of this: they depend on inset values that anchor resolution can still rewrite.
+struct GridAreaContainingBlock {
+    CSSPixelRect rect;
+    Alignment horizontal_alignment { Alignment::Normal };
+    Alignment vertical_alignment { Alignment::Normal };
+    // An absolutely positioned child of the grid container itself is positioned purely by
+    // grid placement and alignment, never by its static position.
+    bool position_from_rect_in_both_axes { false };
+};
+
+// A float whose block position was settled during layout, waiting for its containing
+// block's final width to fix its inline position. Everything else placement needs is read
+// live from the float's used values.
+struct PendingFloatPlacement {
+    enum class Side {
+        Left,
+        Right,
+    };
+
+    Box const* box { nullptr };
+    Side side { Side::Left };
+    // Offset from the left/right content edge of the containing block to the float's left
+    // content edge.
+    CSSPixels offset_from_edge;
+    // Top margin edge of the float in its containing block.
+    CSSPixels top_margin_edge;
+    Optional<CSSPixels> percentage_basis_width;
 };
 
 // Sparse, index-based container using two-level page tables.
@@ -187,6 +238,10 @@ struct LayoutState {
         // top-left corner of this box's content area.
         CSSPixelPoint content_offset() const { return m_content_offset.value_or({}); }
 
+        // Whether this box carries its final position: assigned through
+        // FormattingContext::place_child(), or materialized from a prior layout's paintable.
+        bool is_placed() const { return m_content_offset.has_value(); }
+
         SizeConstraint width_constraint { SizeConstraint::None };
         SizeConstraint height_constraint { SizeConstraint::None };
 
@@ -319,12 +374,42 @@ struct LayoutState {
             return move(m_rare->flex_layout_data);
         }
 
+        void set_pending_float_placements(Vector<PendingFloatPlacement> placements)
+        {
+            if (placements.is_empty() && !m_rare)
+                return;
+            ensure_rare_data().pending_float_placements = move(placements);
+        }
+        Vector<PendingFloatPlacement> take_pending_float_placements()
+        {
+            if (!m_rare)
+                return {};
+            return move(m_rare->pending_float_placements);
+        }
+
+        void set_grid_area_containing_block(GridAreaContainingBlock const& grid_area_containing_block) { ensure_rare_data().grid_area_containing_block = grid_area_containing_block; }
+        Optional<GridAreaContainingBlock> const& grid_area_containing_block() const
+        {
+            static Optional<GridAreaContainingBlock> const empty;
+            return m_rare ? m_rare->grid_area_containing_block : empty;
+        }
+
         void set_static_position_rect(StaticPositionRect const& static_position_rect) { ensure_rare_data().static_position_rect = static_position_rect; }
         CSSPixelPoint static_position() const
         {
             if (!m_rare || !m_rare->static_position_rect.has_value())
                 return {};
             return m_rare->static_position_rect->aligned_position_for_box_with_size({ margin_box_width(), margin_box_height() });
+        }
+
+        // Stamps the containing block's settled content box size into a static-position
+        // rect that was recorded before that size was final.
+        void materialize_static_position_rect_size(CSSPixelSize size)
+        {
+            if (!m_rare || !m_rare->static_position_rect.has_value() || !m_rare->static_position_rect->rect_spans_containing_block_content_box)
+                return;
+            m_rare->static_position_rect->rect.set_size(size);
+            m_rare->static_position_rect->rect_spans_containing_block_content_box = false;
         }
 
     private:
@@ -380,6 +465,11 @@ struct LayoutState {
             Optional<Painting::Paintable::BordersDataWithElementKind> override_borders_data;
             Optional<Painting::SVGGraphicsPaintable::ComputedTransforms> computed_svg_transforms;
             Optional<StaticPositionRect> static_position_rect;
+            // The two fields below are deliberately absent from the copy constructor:
+            // placement-finalize data is only meaningful within the state whose layout
+            // produced it.
+            Optional<GridAreaContainingBlock> grid_area_containing_block;
+            Vector<PendingFloatPlacement> pending_float_placements;
         };
 
         RareData& ensure_rare_data()

@@ -47,7 +47,6 @@ void ReplacedWithChildrenFormattingContext::run(LayoutInput const& layout_input)
     auto wrapper_constraints = constraints_for_child_context(root_state, layout_input.containing_block_constraints);
     auto& wrapper_state = m_state.create(*wrapper, wrapper_constraints.percentage_basis_width, wrapper_constraints.percentage_basis_height);
     wrapper_state.set_content_width(content_width);
-    place_child(*wrapper, { 0, 0 });
 
     auto bfc = make<BlockFormattingContext>(m_state, m_layout_mode, *wrapper, this);
     bfc->run(LayoutInput { child_available_space, wrapper_constraints });
@@ -57,7 +56,8 @@ void ReplacedWithChildrenFormattingContext::run(LayoutInput const& layout_input)
 
     wrapper_state.set_content_height(m_automatic_content_height);
 
-    bfc->parent_context_did_dimension_child_root_box();
+    // The height write above was the wrapper's last geometry input; place it only now.
+    place_child(*wrapper, { 0, 0 });
 }
 
 CSSPixels ReplacedWithChildrenFormattingContext::automatic_content_width() const
@@ -68,11 +68,6 @@ CSSPixels ReplacedWithChildrenFormattingContext::automatic_content_width() const
 CSSPixels ReplacedWithChildrenFormattingContext::automatic_content_height() const
 {
     return m_automatic_content_height;
-}
-
-void ReplacedWithChildrenFormattingContext::parent_context_did_dimension_child_root_box()
-{
-    layout_absolutely_positioned_children();
 }
 
 }

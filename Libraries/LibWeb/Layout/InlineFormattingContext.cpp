@@ -92,7 +92,12 @@ void InlineFormattingContext::run(LayoutInput const& layout_input)
 
     // NOTE: We ask the parent BFC to calculate the automatic content width of this IFC.
     //       This ensures that any floated boxes are taken into account.
-    m_automatic_content_width = parent().greatest_child_width(containing_block());
+    // The containing block's root-space rect comes from the threaded flow position, not from
+    // walking placed offsets: the ancestor chain is not placed yet while this runs.
+    auto containing_block_position_in_root_now = m_layout_input->content_box_position_in_bfc_root->translated(
+        0, parent().y_adjustment_from_pending_ancestor_top_margins(containing_block()));
+    m_automatic_content_width = parent().greatest_child_width_in_rect(
+        containing_block(), { containing_block_position_in_root_now, m_containing_block_used_values.content_size() });
     m_automatic_content_height = content_height;
 
     compute_and_store_baselines(m_containing_block_used_values);
@@ -125,9 +130,7 @@ void InlineFormattingContext::dimension_box_on_line(Box const& box, LayoutMode l
         box_state.set_content_width(compute_width_for_replaced_element(box, *m_available_space, box_constraints));
         box_state.set_content_height(compute_height_for_replaced_element(box, *m_available_space, box_constraints));
         auto child_layout_input = m_layout_input->with_available_space(box_state.available_inner_space_or_constraints_from(*m_available_space));
-        auto independent_formatting_context = layout_inside(box, layout_mode, child_layout_input);
-        if (independent_formatting_context)
-            independent_formatting_context->parent_context_did_dimension_child_root_box();
+        (void)layout_inside(box, layout_mode, child_layout_input);
         return;
     }
 
@@ -194,7 +197,7 @@ void InlineFormattingContext::dimension_box_on_line(Box const& box, LayoutMode l
     make_button_content_box_definite(box, *m_available_space, box_constraints);
 
     auto child_layout_input = m_layout_input->with_available_space(box_state.available_inner_space_or_constraints_from(*m_available_space));
-    auto independent_formatting_context = layout_inside(box, layout_mode, child_layout_input);
+    (void)layout_inside(box, layout_mode, child_layout_input);
 
     if (should_treat_height_as_auto(box, *m_available_space, box_constraints)) {
         // FIXME: (10.6.6) If 'height' is 'auto', the height depends on the element's descendants per 10.6.7.
@@ -203,8 +206,8 @@ void InlineFormattingContext::dimension_box_on_line(Box const& box, LayoutMode l
         parent().resolve_used_height_if_not_treated_as_auto(box, *m_available_space, box_constraints);
     }
 
-    if (independent_formatting_context)
-        independent_formatting_context->parent_context_did_dimension_child_root_box();
+    // The box's context is notified when the box is placed from its line fragment, once the
+    // line has settled.
 }
 
 void InlineFormattingContext::apply_justification_to_fragments(CSS::TextJustify text_justify, LineBox& line_box, bool is_last_line)
@@ -537,8 +540,12 @@ void InlineFormattingContext::generate_line_boxes()
     // NB: This must happen after update_last_line() so that last-line alignment
     //     adjustments are reflected in the used values of atomic inlines.
     for (auto& line_box : line_boxes) {
+        // A line holding an interrupting block-level box has that box as its only
+        // fragment, and block layout already placed it.
+        if (line_box.has_block_level_box())
+            continue;
         for (auto& fragment : line_box.fragments()) {
-            if (fragment.layout_node().is_inline_block()) {
+            if (fragment.layout_node().is_atomic_inline()) {
                 auto& box = as<Box>(fragment.layout_node());
                 place_child(box, fragment.offset());
             }

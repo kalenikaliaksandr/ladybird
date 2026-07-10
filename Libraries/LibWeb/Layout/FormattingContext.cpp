@@ -217,6 +217,44 @@ FormattingContext::~FormattingContext() = default;
 void FormattingContext::place_child(Box const& child, CSSPixelPoint content_offset)
 {
     m_state.get_mutable(child).place(content_offset);
+    // Placement is the child's dimensioning event: its sizes were final before (enforced by
+    // the size setters) and its position is final now.
+    finalize_dimensioned_box(child);
+}
+
+void FormattingContext::finalize_dimensioned_box(Box const& box)
+{
+    finalize_pending_float_placements(box);
+    layout_absolutely_positioned_children(box);
+}
+
+void FormattingContext::finalize_pending_float_placements(Box const& box)
+{
+    // A float's inline position is only known once its containing block's width is final;
+    // the block position was carried on the record since the float was laid out.
+    auto pending_placements = m_state.get_mutable(box).take_pending_float_placements();
+    for (auto const& pending : pending_placements) {
+        auto const& float_used_values = m_state.get(*pending.box);
+        auto content_y = pending.top_margin_edge + float_used_values.margin_box_top();
+        if (pending.side == PendingFloatPlacement::Side::Left) {
+            // Left-side floats: offset_from_edge is from the left edge (0) to the float's left content edge.
+            place_child(*pending.box, { pending.offset_from_edge, content_y });
+        } else {
+            // Right-side floats: offset_from_edge is from the right edge (the containing block width) to the float's left content edge.
+            auto float_containing_block_width = [&] {
+                switch (float_used_values.width_constraint) {
+                case SizeConstraint::MinContent:
+                    return CSSPixels(0);
+                case SizeConstraint::MaxContent:
+                    return CSSPixels::max();
+                case SizeConstraint::None:
+                    return pending.percentage_basis_width.value_or(0);
+                }
+                VERIFY_NOT_REACHED();
+            }();
+            place_child(*pending.box, { float_containing_block_width - pending.offset_from_edge, content_y });
+        }
+    }
 }
 
 bool FormattingContext::computed_height_establishes_definite_containing_block_height(CSS::Size const& computed_height)
@@ -1803,7 +1841,9 @@ AbsposContainingBlockInfo FormattingContext::resolve_abspos_containing_block_inf
 {
     auto const& computed_values = box.computed_values();
 
-    // Per-axis mode: auto+auto insets -> static position, otherwise -> inset from rect
+    // Per-axis mode: auto+auto insets -> static position, otherwise -> inset from rect.
+    // Modes must be derived here, from live insets: anchor resolution may have rewritten
+    // them since any earlier data was recorded.
     auto horizontal_axis_mode = (computed_values.inset().left().is_auto() && computed_values.inset().right().is_auto())
         ? AbsposAxisMode::StaticPosition
         : AbsposAxisMode::InsetFromRect;
@@ -1811,24 +1851,41 @@ AbsposContainingBlockInfo FormattingContext::resolve_abspos_containing_block_inf
         ? AbsposAxisMode::StaticPosition
         : AbsposAxisMode::InsetFromRect;
 
-    // Check if there's an inline element that should be the real containing block.
-    auto inline_containing_block = box.inline_containing_block_if_applicable();
-    if (inline_containing_block && box.containing_block()) {
-        auto rect = compute_inline_containing_block_rect(*inline_containing_block, *box.containing_block(), m_state);
-        if (rect.has_value())
-            return { *rect, horizontal_axis_mode, vertical_axis_mode, {}, {} };
+    auto info = [&] -> AbsposContainingBlockInfo {
+        // Check if there's an inline element that should be the real containing block.
+        auto inline_containing_block = box.inline_containing_block_if_applicable();
+        if (inline_containing_block && box.containing_block()) {
+            auto rect = compute_inline_containing_block_rect(*inline_containing_block, *box.containing_block(), m_state);
+            if (rect.has_value())
+                return { *rect, horizontal_axis_mode, vertical_axis_mode, {}, {} };
+        }
+
+        // Normal case: padding box of the actual containing block.
+        VERIFY(box.containing_block());
+        auto& containing_block_state = m_state.get(*box.containing_block());
+        CSSPixelRect rect {
+            -containing_block_state.padding_left,
+            -containing_block_state.padding_top,
+            containing_block_state.content_width() + containing_block_state.padding_left + containing_block_state.padding_right,
+            containing_block_state.content_height() + containing_block_state.padding_top + containing_block_state.padding_bottom
+        };
+        return { rect, horizontal_axis_mode, vertical_axis_mode, {}, {} };
+    }();
+
+    // https://www.w3.org/TR/css-grid-2/#abspos-items
+    // A grid container resolved this box's containing block from its grid placement while
+    // its tracks were at hand; that data supersedes the rect and supplies alignment.
+    if (auto const& grid_area = m_state.get(box).grid_area_containing_block(); grid_area.has_value()) {
+        info.rect = grid_area->rect;
+        info.horizontal_alignment = grid_area->horizontal_alignment;
+        info.vertical_alignment = grid_area->vertical_alignment;
+        if (grid_area->position_from_rect_in_both_axes) {
+            info.horizontal_axis_mode = AbsposAxisMode::InsetFromRect;
+            info.vertical_axis_mode = AbsposAxisMode::InsetFromRect;
+        }
     }
 
-    // Normal case: padding box of the actual containing block.
-    VERIFY(box.containing_block());
-    auto& containing_block_state = m_state.get(*box.containing_block());
-    CSSPixelRect rect {
-        -containing_block_state.padding_left,
-        -containing_block_state.padding_top,
-        containing_block_state.content_width() + containing_block_state.padding_left + containing_block_state.padding_right,
-        containing_block_state.content_height() + containing_block_state.padding_top + containing_block_state.padding_bottom
-    };
-    return { rect, horizontal_axis_mode, vertical_axis_mode, {}, {} };
+    return info;
 }
 
 static bool calculation_tree_contains_anchor(CSS::CalculationNode const& root)
@@ -2180,14 +2237,6 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
         box.set_default_scroll_shift(default_anchor_box->make_weak_ptr(), compensates_for_scroll_in_x, compensates_for_scroll_in_y);
 }
 
-void FormattingContext::layout_absolutely_positioned_children()
-{
-    // TableFormattingContext handles cell abspos layout after vertical alignment.
-    if (context_box().display().is_table_cell())
-        return;
-    layout_absolutely_positioned_children(context_box());
-}
-
 void FormattingContext::layout_absolutely_positioned_children(Box const& box)
 {
     if (m_layout_mode != LayoutMode::Normal)
@@ -2205,6 +2254,11 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box)
     VERIFY(!box.is_svg_box());
 
     auto& box_state = m_state.get_mutable(box);
+
+    // Flex containers record their children's static-position rects before the container's
+    // own size is final; stamp the settled content box size in before anything reads them.
+    if (auto const* static_position_containing_block = box.static_position_containing_block())
+        box_state.materialize_static_position_rect_size(m_state.get(*static_position_containing_block).content_size());
 
     resolve_anchor_insets(box);
 
@@ -2275,7 +2329,7 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box)
 
     make_button_content_box_definite(box, available_space, absolutely_positioned_constraints);
 
-    auto independent_formatting_context = layout_inside(box, LayoutMode::Normal, LayoutInput { box_state.available_inner_space_or_constraints_from(available_space), absolutely_positioned_constraints });
+    (void)layout_inside(box, LayoutMode::Normal, LayoutInput { box_state.available_inner_space_or_constraints_from(available_space), absolutely_positioned_constraints });
 
     if (computed_values.height().is_auto()) {
         compute_height_for_absolutely_positioned_element(box, available_space, absolutely_positioned_constraints, BeforeOrAfterInsideLayout::After);
@@ -2361,10 +2415,8 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box)
 
     used_offset.translate_by(box_state.margin_box_left(), box_state.margin_box_top());
 
+    // Placement also notifies the box's own formatting context.
     place_child(box, used_offset);
-
-    if (independent_formatting_context)
-        independent_formatting_context->parent_context_did_dimension_child_root_box();
 }
 
 void FormattingContext::compute_height_for_absolutely_positioned_replaced_element(Box const& box, AvailableSpace const& available_space, ContainingBlockConstraints const& containing_block_constraints, BeforeOrAfterInsideLayout before_or_after_inside_layout)

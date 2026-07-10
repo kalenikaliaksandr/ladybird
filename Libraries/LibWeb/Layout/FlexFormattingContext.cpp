@@ -252,8 +252,9 @@ void FlexFormattingContext::run(LayoutInput const& layout_input)
         copy_dimensions_from_flex_items_to_boxes();
         for (auto& item : m_flex_items) {
             auto item_layout_input = LayoutInput { item.used_values.available_inner_space_or_constraints_from(m_available_space_for_items->space), item_containing_block_constraints() };
-            if (auto independent_formatting_context = layout_inside(item.box, LayoutMode::Normal, item_layout_input))
-                independent_formatting_context->parent_context_did_dimension_child_root_box();
+            // The item's context is notified when the item is placed, after baseline
+            // alignment below.
+            (void)layout_inside(item.box, LayoutMode::Normal, item_layout_input);
 
             compute_inset(item.box, content_box_rect(m_flex_container_state).size());
         }
@@ -270,25 +271,21 @@ void FlexFormattingContext::run(LayoutInput const& layout_input)
         }
 
         compute_and_store_baselines(m_flex_container_state);
+
+        // Absolutely positioned children enter layout once this container is placed; their
+        // used values and static-position alignments are recorded here, while the axis
+        // configuration is at hand.
+        if (m_layout_mode == LayoutMode::Normal) {
+            flex_container().for_each_child_of_type<Box>([&](Layout::Box& box) {
+                if (box.is_absolutely_positioned())
+                    m_state.create(box, {}, {}).set_static_position_rect(calculate_static_position_rect(box));
+                return IterationDecision::Continue;
+            });
+        }
     }
 
     if (m_state.should_collect_devtools_layout_data())
         save_flex_layout_data();
-}
-
-void FlexFormattingContext::parent_context_did_dimension_child_root_box()
-{
-    if (m_layout_mode != LayoutMode::Normal)
-        return;
-
-    flex_container().for_each_child_of_type<Box>([&](Layout::Box& box) {
-        if (box.is_absolutely_positioned()) {
-            m_state.create(box, {}, {}).set_static_position_rect(calculate_static_position_rect(box));
-        }
-        return IterationDecision::Continue;
-    });
-
-    layout_absolutely_positioned_children();
 }
 
 // https://www.w3.org/TR/css-flexbox-1/#flex-direction-property
@@ -2536,11 +2533,11 @@ StaticPositionRect FlexFormattingContext::calculate_static_position_rect(Box con
         break;
     }
 
-    auto flex_container_width = main_axis_is_horizontal() ? inner_main_size(m_flex_container_state) : inner_cross_size(m_flex_container_state);
-    auto flex_container_height = main_axis_is_horizontal() ? inner_cross_size(m_flex_container_state) : inner_main_size(m_flex_container_state);
-
     StaticPositionRect static_position_rect;
-    static_position_rect.rect = { { 0, 0 }, { flex_container_width, flex_container_height } };
+    // The container's used size can still change after this run (a parent re-resolves its
+    // automatic block size), so only the alignments are recorded here; the rect's size is
+    // stamped in when the absolutely positioned child is laid out.
+    static_position_rect.rect_spans_containing_block_content_box = true;
     static_position_rect.horizontal_alignment = main_axis_is_horizontal() ? main_axis_alignment : cross_axis_alignment;
     static_position_rect.vertical_alignment = main_axis_is_horizontal() ? cross_axis_alignment : main_axis_alignment;
     return static_position_rect;
