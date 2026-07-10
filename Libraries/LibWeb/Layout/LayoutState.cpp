@@ -122,6 +122,11 @@ LayoutState::UsedValues& LayoutState::create(NodeWithStyle const& node, Optional
     return used_values;
 }
 
+void LayoutState::place_viewport(Viewport const& viewport)
+{
+    get_mutable(viewport).place({});
+}
+
 void LayoutState::discard_used_values_for_descendants(Box const& root)
 {
     root.for_each_in_subtree([&](auto const& descendant) {

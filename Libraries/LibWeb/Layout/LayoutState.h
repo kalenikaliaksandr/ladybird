@@ -27,6 +27,7 @@ enum class SizeConstraint {
 
 class AvailableSize;
 class AvailableSpace;
+class Viewport;
 
 // https://www.w3.org/TR/css-position-3/#static-position-rectangle
 struct StaticPositionRect {
@@ -184,7 +185,11 @@ struct LayoutState {
 
         void materialize_from_paintable(Painting::Paintable const&);
 
-        CSSPixelPoint content_offset() const { return m_content_offset.value_or({}); }
+        CSSPixelPoint content_offset() const
+        {
+            VERIFY(m_content_offset.has_value());
+            return *m_content_offset;
+        }
 
         bool is_placed() const { return m_content_offset.has_value(); }
 
@@ -403,6 +408,8 @@ struct LayoutState {
     UsedValues const& get(NodeWithStyle const&) const;
 
     UsedValues& create(NodeWithStyle const&, Optional<CSSPixels> percentage_basis_width, Optional<CSSPixels> percentage_basis_height);
+
+    void place_viewport(Viewport const&);
 
     // Discards used values created for the descendants of `root` by an earlier layout pass, so an
     // intentional second layout of the subtree can create them anew.

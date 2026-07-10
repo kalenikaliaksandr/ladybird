@@ -255,7 +255,7 @@ void FlexFormattingContext::run(LayoutInput const& layout_input)
             if (auto independent_formatting_context = layout_inside(item.box, LayoutMode::Normal, item_layout_input))
                 independent_formatting_context->parent_context_did_dimension_child_root_box();
 
-            compute_inset(item.box, content_box_rect(m_flex_container_state).size());
+            compute_inset(item.box, m_flex_container_state.content_size());
         }
 
         resolve_baseline_aligned_items();

@@ -1888,6 +1888,7 @@ void Document::update_layout(UpdateLayoutReason reason)
                 Optional<CSSPixels> { viewport_rect.height() });
             viewport_state.set_content_width(viewport_rect.width());
             viewport_state.set_content_height(viewport_rect.height());
+            layout_state.place_viewport(viewport);
 
             // NB: Called during layout update.
             if (document_element && document_element->unsafe_layout_node()) {
@@ -1912,6 +1913,7 @@ void Document::update_layout(UpdateLayoutReason reason)
                 layout_state.get_mutable(svg_root).set_content_height(content_height);
                 Layout::SVGFormattingContext svg_formatting_context(layout_state, Layout::LayoutMode::Normal, svg_root, nullptr);
                 svg_formatting_context.run(Layout::LayoutInput { available_space });
+                svg_formatting_context.place_child(svg_root, {});
             } else {
                 Layout::BlockFormattingContext root_formatting_context(layout_state, Layout::LayoutMode::Normal, *m_layout_root, nullptr);
                 root_formatting_context.run(Layout::LayoutInput { available_space });

@@ -1815,8 +1815,8 @@ static Optional<CSSPixelRect> compute_inline_containing_block_rect(InlineNode co
             if (child->is_absolutely_positioned() || child->is_floating())
                 continue;
             auto const* child_used_values = state.try_get(*child);
-            auto child_offset = child_used_values ? offset + child_used_values->content_offset() : offset;
             auto const* box_child = as_if<Box>(child.ptr());
+            auto child_offset = child_used_values && box_child ? offset + child_used_values->content_offset() : offset;
             if (box_child && !box_child->is_anonymous()) {
                 auto const* dom = box_child->dom_node();
                 if (!dom || !inline_dom_node->is_inclusive_ancestor_of(*dom))

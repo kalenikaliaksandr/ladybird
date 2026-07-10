@@ -1316,7 +1316,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     m_margin_state.add_margin(box_state.margin_bottom);
     m_margin_state.update_open_top_margin_group();
 
-    compute_inset(box, content_box_rect(block_container_state).size());
+    compute_inset(box, block_container_state.content_size());
 
     bottom_of_lowest_margin_box = max(bottom_of_lowest_margin_box, flow_content_y + box_state.content_height() + box_state.margin_box_bottom());
 
@@ -1627,7 +1627,7 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
     if (line_builder)
         line_builder->recalculate_available_space();
 
-    compute_inset(box, content_box_rect(block_container_state).size());
+    compute_inset(box, block_container_state.content_size());
 
     if (independent_formatting_context)
         independent_formatting_context->parent_context_did_dimension_child_root_box();
