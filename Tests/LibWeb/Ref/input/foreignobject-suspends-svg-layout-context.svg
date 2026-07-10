@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:h="http://www.w3.org/1999/xhtml"
+     width="800" height="600">
+  <link rel="match" href="../expected/foreignobject-suspends-svg-layout-context-ref.svg"/>
+  <rect width="800" height="600" fill="white"/>
+  <foreignObject>
+    <h:body>
+      <g/>
+    </h:body>
+  </foreignObject>
+</svg>

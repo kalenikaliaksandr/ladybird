@@ -47,6 +47,7 @@
 #include <LibWeb/Layout/TextNode.h>
 #include <LibWeb/Layout/TreeBuilder.h>
 #include <LibWeb/Layout/Viewport.h>
+#include <LibWeb/SVG/SVGForeignObjectElement.h>
 #include <LibWeb/SVG/SVGSwitchElement.h>
 
 namespace Web::Layout {
@@ -976,6 +977,10 @@ void TreeBuilder::update_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
         return dom_node.has_children();
     }();
 
+    Optional<TemporaryChange<bool>> suspend_svg_layout_context;
+    if (is<SVG::SVGForeignObjectElement>(dom_node))
+        suspend_svg_layout_context.emplace(context.has_svg_root, false);
+
     if (should_create_layout_node || dom_node.child_needs_layout_tree_update()) {
         if ((should_layout_dom_children || shadow_root) && layout_node->can_have_children() && !element_has_content_visibility_hidden) {
             push_parent(as<NodeWithStyle>(*layout_node));
@@ -1018,6 +1023,7 @@ void TreeBuilder::update_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
             pop_parent();
         }
     }
+    suspend_svg_layout_context.clear();
 
     if (is<HTML::HTMLSlotElement>(dom_node)) {
         auto& slot_element = static_cast<HTML::HTMLSlotElement&>(dom_node);
