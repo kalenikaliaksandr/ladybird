@@ -2051,7 +2051,8 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
 
         // The anchor element may not have been laid out (it must be laid out strictly before
         // the positioned element to be an acceptable anchor).
-        if (!m_state.try_get(*anchor_box))
+        auto const* anchor_state = m_state.try_get(*anchor_box);
+        if (!anchor_state || !anchor_state->is_placed())
             return nullptr;
         return anchor_box;
     };
@@ -2072,9 +2073,40 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
             return {};
 
         auto const& anchor_state = m_state.get(*anchor_box);
-        auto anchor_border_box_origin = m_state.cumulative_offset(anchor_state)
+
+        // Both boxes can share an ancestor whose inside layout is complete but whose parent has not placed it yet.
+        // Its offset cancels out of this coordinate-space conversion, so only accumulate each path to their merge point.
+        Box const* merge_point = nullptr;
+        for (auto const* anchor_ancestor = anchor_box; anchor_ancestor && !merge_point; anchor_ancestor = anchor_ancestor->containing_block()) {
+            for (auto const* containing_block_ancestor = containing_block; containing_block_ancestor; containing_block_ancestor = containing_block_ancestor->containing_block()) {
+                if (anchor_ancestor == containing_block_ancestor) {
+                    merge_point = anchor_ancestor;
+                    break;
+                }
+            }
+        }
+        if (!merge_point)
+            return {};
+
+        auto content_offset_to_merge_point = [&](Box const& descendant) -> Optional<CSSPixelPoint> {
+            CSSPixelPoint offset;
+            for (auto const* current = &descendant; current != merge_point; current = current->containing_block()) {
+                auto const* current_state = m_state.try_get(*current);
+                if (!current_state || !current_state->is_placed())
+                    return {};
+                offset += current_state->content_offset();
+            }
+            return offset;
+        };
+
+        auto anchor_offset = content_offset_to_merge_point(*anchor_box);
+        auto containing_block_offset = content_offset_to_merge_point(*containing_block);
+        if (!anchor_offset.has_value() || !containing_block_offset.has_value())
+            return {};
+
+        auto anchor_border_box_origin = *anchor_offset
             - CSSPixelPoint { anchor_state.border_box_left(), anchor_state.border_box_top() };
-        auto containing_block_padding_box_origin = m_state.cumulative_offset(containing_block_state)
+        auto containing_block_padding_box_origin = *containing_block_offset
             - CSSPixelPoint { containing_block_state.padding_left, containing_block_state.padding_top };
         return CSSPixelRect {
             anchor_border_box_origin - containing_block_padding_box_origin,
