@@ -126,10 +126,7 @@ static bool establishes_inline_level_painting_context(Paintable const& paintable
 
 static bool is_pure_inline_box(Paintable const& paintable)
 {
-    // NOTE: An InlineNode is never a replaced box and never establishes an inline-level painting
-    //       context (inline-block/inline-table produce a BlockContainer), so only the float and
-    //       positioned checks can vary here.
-    return is<Layout::InlineNode>(paintable.layout_node())
+    return paintable.layout_node().is_fragmented_inline()
         && !paintable.is_floating()
         && !paintable.is_positioned();
 }
@@ -139,11 +136,11 @@ static void paint_inline_level_non_positioned_descendant(DisplayListRecordingCon
     paint_node(paintable, context, PaintPhase::Background);
     paint_node(paintable, context, PaintPhase::Border);
     paint_node(paintable, context, PaintPhase::TableCollapsedBorder);
-    // A pure InlineNode paintable paints its own background/border in the inline-level phase. Its block descendants, if
+    // A pure inline paintable paints its own background/border in the inline-level phase. Its block descendants, if
     // any, are painted by the earlier BackgroundAndBorders descent through pure inline boxes. In today's layout trees,
     // this subtree sweep is a no-op for InlineNodes: it can only find inline children, floats, or positioned boxes,
     // all of which are skipped by the BackgroundAndBorders phase.
-    if (!is<Layout::InlineNode>(paintable.layout_node()))
+    if (!is_pure_inline_box(paintable))
         StackingContext::paint_descendants(context, paintable, StackingContext::StackingContextPaintPhase::BackgroundAndBorders);
 
     // https://drafts.csswg.org/css2/#elaborate-stacking-contexts
