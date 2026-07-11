@@ -47,6 +47,9 @@ public:
     virtual void record_hit_test_items(DisplayListRecordingContext&, PaintPhase) const override;
     static void paint_text_fragment_debug_highlight(DisplayListRecordingContext&, PaintableFragment const&);
 
+    // Paints selection backgrounds, text shadows and glyph runs for the fragments accepted by the filter.
+    void paint_fragments_foreground(DisplayListRecordingContext&, Function<bool(PaintableFragment const&)> const& should_paint_fragment) const;
+
     size_t line_index() const { return m_line_index; }
 
 protected:

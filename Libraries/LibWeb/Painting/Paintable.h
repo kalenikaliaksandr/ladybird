@@ -441,6 +441,13 @@ protected:
     virtual void paint_background(DisplayListRecordingContext&) const;
     virtual void paint_box_shadow(DisplayListRecordingContext&) const;
 
+    // Rect-parameterized variants for paintables whose decorations span multiple box pieces
+    // (e.g. an inline box fragmented across lines).
+    void paint_border(DisplayListRecordingContext&, CSSPixelRect const& border_box_rect, BordersData const&, BorderRadiiData const&) const;
+    void paint_background_within(DisplayListRecordingContext&, CSSPixelRect const& background_rect, BorderRadiiData const&) const;
+    void paint_box_shadow(DisplayListRecordingContext&, CSSPixelRect const& border_box_rect, CSSPixelRect const& padding_box_rect, BorderRadiiData const&) const;
+    void paint_outline(DisplayListRecordingContext&, CSSPixelRect const& border_box_rect, BorderRadiiData const&) const;
+
     virtual void paint_inspector_overlay_internal(DisplayListRecordingContext&) const;
 
     virtual CSSPixelRect compute_absolute_rect() const;
