@@ -483,6 +483,11 @@ struct DummyFormattingContext : public FormattingContext {
     virtual void run(LayoutInput const&) override { }
 };
 
+NonnullOwnPtr<FormattingContext> FormattingContext::create_dummy_formatting_context(LayoutState& state, LayoutMode layout_mode, Box const& context_box)
+{
+    return make<DummyFormattingContext>(state, layout_mode, context_box);
+}
+
 OwnPtr<FormattingContext> FormattingContext::create_independent_formatting_context_if_needed(LayoutState& state, LayoutMode layout_mode, Box const& child_box, FormattingContext* parent)
 {
     auto type = formatting_context_type_created_by_box(child_box);

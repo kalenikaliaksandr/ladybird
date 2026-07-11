@@ -114,6 +114,13 @@ public:
     static OwnPtr<FormattingContext> create_independent_formatting_context_if_needed(LayoutState&, LayoutMode, Box const& child_box, FormattingContext* parent);
     static NonnullOwnPtr<FormattingContext> create_independent_formatting_context(LayoutState&, LayoutMode, Box const& child_box, FormattingContext* parent);
 
+    // Creates a formatting context that never runs layout itself. Used by partial relayout to
+    // drive layout_absolutely_positioned_element() for a relayout boundary from outside a full
+    // layout pass.
+    static NonnullOwnPtr<FormattingContext> create_dummy_formatting_context(LayoutState&, LayoutMode, Box const& context_box);
+
+    void layout_absolutely_positioned_element(Box&, AbsposLayoutInputs const&);
+
     [[nodiscard]] static ContainingBlockConstraints constraints_for_child_context(
         LayoutState::UsedValues const& containing_block_used_values,
         ContainingBlockConstraints const& containing_block_constraints);
@@ -210,8 +217,6 @@ protected:
     [[nodiscard]] CSSPixelSize solve_replaced_size_constraint(CSSPixels input_width, CSSPixels input_height, Box const&, AvailableSpace const&, ContainingBlockConstraints const&) const;
 
     ShrinkToFitResult calculate_shrink_to_fit_widths(Box const&, ContainingBlockConstraints const&);
-
-    void layout_absolutely_positioned_element(Box&, AbsposLayoutInputs const&);
 
     CSSPixels gap_to_px(Variant<CSS::LengthPercentage, CSS::NormalGap> const& gap, CSSPixels reference_value) const;
 

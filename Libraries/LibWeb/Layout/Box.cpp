@@ -55,7 +55,39 @@ bool Box::is_partial_relayout_boundary() const
     if (is_svg_svg_box())
         return !(parent() && (parent()->is_svg_box() || parent()->is_svg_svg_box()));
 
-    return false;
+    if (!is_absolutely_positioned())
+        return false;
+    if (is_anonymous())
+        return false;
+    if (!paintable_box())
+        return false;
+    if (dom_node() == document().document_element())
+        return false;
+
+    // Facts observed by the last layout pass: an absolutely or fixed positioned descendant
+    // whose layout escapes this box makes subtree isolation impossible, and the saved inputs
+    // are what a partial relayout replays to re-resolve this box's own size and position.
+    if (abspos_descendant_escapes())
+        return false;
+    if (!saved_abspos_layout_inputs())
+        return false;
+
+    // NOTE: Content-dependent sizing (shrink-to-fit, intrinsic min/max constraints, aspect
+    //       ratio) does not disqualify a boundary: replay re-solves the boundary's own size on
+    //       every partial relayout, intrinsic sizing stays contained in the subtree, and a
+    //       resized boundary triggers ancestor scrollable overflow recomputation after commit.
+
+    auto formatting_context_type = FormattingContext::formatting_context_type_created_by_box(*this);
+    if (!formatting_context_type.has_value())
+        return false;
+    switch (*formatting_context_type) {
+    case FormattingContext::Type::Block:
+    case FormattingContext::Type::Flex:
+    case FormattingContext::Type::Grid:
+        return true;
+    default:
+        return false;
+    }
 }
 
 CSS::SizeWithAspectRatio Box::auto_content_box_size() const

@@ -1702,9 +1702,46 @@ void Document::set_layout_tree_dirt_escapes_partial_relayout_boundaries(bool val
     dbgln_if(UPDATE_LAYOUT_DEBUG, "{} layout tree dirt escapes partial relayout boundaries ({})", value ? "Set" : "Cleared", reason);
 }
 
+bool Document::has_registered_anchor_names() const
+{
+    if (!m_anchor_name_map.is_empty())
+        return true;
+
+    bool has_anchor_names_in_shadow_tree = false;
+    for_each_shadow_root([&](auto& shadow_root) {
+        if (!shadow_root.anchor_name_map().is_empty())
+            has_anchor_names_in_shadow_tree = true;
+    });
+    return has_anchor_names_in_shadow_tree;
+}
+
 void Document::set_needs_container_query_evaluation_after_layout(Element const& query_container)
 {
     m_query_containers_needing_container_query_evaluation_after_layout.set(const_cast<Element&>(query_container));
+}
+
+// Replays the absolutely positioned element layout algorithm for `subtree_root` from the inputs
+// saved by the last committing layout pass. The inputs pin everything the algorithm consumes
+// from outside the subtree (containing block info and static position), so the box's own size
+// and position are re-resolved exactly the way its ancestor formatting context resolved them,
+// without running any layout outside the subtree. Everything outside is clean by the partial
+// relayout precondition, so the saved inputs are current.
+static void compute_subtree_layout_by_replay(Layout::Box& subtree_root, Layout::LayoutState& layout_state)
+{
+    auto* containing_block = subtree_root.containing_block();
+    VERIFY(containing_block);
+
+    // Mirror how the ancestor formatting context prepares an absolutely positioned child during
+    // a full pass: create its used values (the percentage basis is pinned by the algorithm once
+    // the containing block rect is known).
+    layout_state.create(subtree_root, {}, {});
+
+    // Runs the full pipeline: sizing, inside layout, and the boundary's own absolutely
+    // positioned children via parent_context_did_dimension_child_root_box(). The algorithm
+    // consumes nothing from the containing block's used values (which don't exist in this
+    // state); everything from outside the subtree comes as plain values in the saved inputs.
+    auto context = Layout::FormattingContext::create_dummy_formatting_context(layout_state, Layout::LayoutMode::Normal, *containing_block);
+    context->layout_absolutely_positioned_element(subtree_root, *subtree_root.saved_abspos_layout_inputs());
 }
 
 static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutState& layout_state)
@@ -1743,7 +1780,13 @@ static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutStat
 static void relayout_subtree(Layout::Box& subtree_root)
 {
     Layout::LayoutState layout_state(subtree_root, Layout::LayoutState::Purpose::Commit);
-    compute_subtree_layout(subtree_root, layout_state);
+    // Absolutely positioned boundaries replay their own layout from saved inputs; SVG roots
+    // keep the frozen geometry from the previous layout (their used size never depends on
+    // subtree content).
+    if (subtree_root.is_absolutely_positioned())
+        compute_subtree_layout_by_replay(subtree_root, layout_state);
+    else
+        compute_subtree_layout(subtree_root, layout_state);
     layout_state.commit(subtree_root);
 
     subtree_root.for_each_in_inclusive_subtree([](auto& node) {
@@ -1760,6 +1803,12 @@ bool Document::prepare_subtree_for_partial_relayout(Layout::Box& subtree_root)
 
         auto* box = as_if<Layout::Box>(node);
         if (!box)
+            return TraversalDecision::Continue;
+
+        // The subtree root's own containing block is outside the subtree by design: its
+        // placement is re-resolved from saved inputs (abspos boundaries) or frozen at the
+        // previous layout's values (SVG roots).
+        if (box == &subtree_root)
             return TraversalDecision::Continue;
         if (!box->is_absolutely_positioned())
             return TraversalDecision::Continue;
@@ -1987,6 +2036,12 @@ void Document::update_layout(UpdateLayoutReason reason)
                 if (!prepare_subtree_for_partial_relayout(*root))
                     can_run_partial_relayout = false;
             }
+
+            // CSS anchor positioning can couple boxes inside a partial relayout subtree
+            // to boxes outside it in either direction. Keep v1 deliberately blunt: any
+            // registered anchor name forces a full layout instead.
+            if (can_run_partial_relayout && has_registered_anchor_names())
+                can_run_partial_relayout = false;
 
             if (can_run_partial_relayout) {
                 for (auto* root : partial_relayout_roots) {
