@@ -935,8 +935,14 @@ void TreeBuilder::update_layout_tree(DOM::Node& dom_node, TreeBuilder::Context& 
             // The replacement box represents the same element in the same tree position, so state
             // recorded by the previous layout pass carries over to it.
             if (auto const* old_box = as_if<Box>(*old_layout_node)) {
-                if (auto* new_box = as_if<Box>(*layout_node); new_box && old_box->saved_abspos_layout_inputs())
-                    new_box->set_saved_abspos_layout_inputs(*old_box->saved_abspos_layout_inputs());
+                if (auto* new_box = as_if<Box>(*layout_node)) {
+                    if (old_box->saved_abspos_layout_inputs())
+                        new_box->set_saved_abspos_layout_inputs(*old_box->saved_abspos_layout_inputs());
+                    // Conservative: the rebuilt subtree may no longer contain the escaping
+                    // descendant, but the next committing pass recomputes the flag either way.
+                    if (old_box->abspos_descendant_escapes())
+                        new_box->set_abspos_descendant_escapes(true);
+                }
             }
             old_layout_node->prepare_subtree_for_detach_from_layout_tree();
             old_layout_node->parent()->replace_child(*layout_node, *old_layout_node);

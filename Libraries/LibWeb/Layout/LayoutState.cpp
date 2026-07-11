@@ -311,6 +311,11 @@ void LayoutState::commit(Box& root)
                 layout_box->set_saved_abspos_layout_inputs(*abspos_layout_inputs);
             else
                 layout_box->clear_saved_abspos_layout_inputs();
+
+            // Apply the escape observations recorded while this pass registered contained
+            // abspos children, clearing stale flags on boxes whose escaping descendant is
+            // gone, so the flags always describe the last committed layout.
+            layout_box->set_abspos_descendant_escapes(m_boxes_with_escaping_abspos_descendants.contains(layout_box));
         }
 
         RefPtr<Painting::Paintable> paintable;
@@ -741,6 +746,16 @@ void LayoutState::UsedValues::set_indefinite_content_height()
 
 void LayoutState::register_contained_abspos_child(Box const& target, Box const& child, StaticPositionRect const& static_position_rect)
 {
+    // The boxes strictly between the child and the formatting context root that lays it out
+    // contain the child in the tree, but its layout happens outside their subtree. The classic
+    // case is a position:fixed descendant, whose containing block is the viewport, escaping
+    // every box below it. The observations are recorded per pass and applied to the boxes by
+    // commit(), so throwaway states discard them with the rest of their layout results.
+    for (auto const* ancestor = child.parent(); ancestor && ancestor != &target; ancestor = ancestor->parent()) {
+        if (auto const* ancestor_box = as_if<Box>(*ancestor))
+            m_boxes_with_escaping_abspos_descendants.set(ancestor_box);
+    }
+
     auto& children = m_contained_abspos_children.ensure(&target);
     // Entries are inserted in layout index order so consumption follows document order.
     size_t insertion_index = children.size();

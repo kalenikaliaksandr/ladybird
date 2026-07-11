@@ -75,6 +75,14 @@ public:
     void set_saved_abspos_layout_inputs(AbsposLayoutInputs const&);
     void clear_saved_abspos_layout_inputs();
 
+    // Whether an absolutely (or fixed) positioned descendant of this box is laid out by a
+    // formatting context at or above this box, i.e. its layout escapes this box's subtree.
+    // Observed while layout registers contained abspos children, applied by the pass's
+    // LayoutState::commit(); a box with an escaping descendant cannot have its subtree laid
+    // out in isolation.
+    bool abspos_descendant_escapes() const { return m_abspos_descendant_escapes; }
+    void set_abspos_descendant_escapes(bool value) { m_abspos_descendant_escapes = value; }
+
     void set_default_scroll_shift(WeakPtr<Node> anchor, bool compensates_for_scroll_in_x, bool compensates_for_scroll_in_y)
     {
         m_default_scroll_shift_anchor = move(anchor);
@@ -107,6 +115,7 @@ private:
     WeakPtr<Node> m_default_scroll_shift_anchor;
     bool m_compensates_for_scroll_in_x { false };
     bool m_compensates_for_scroll_in_y { false };
+    bool m_abspos_descendant_escapes { false };
 
     OwnPtr<IntrinsicSizes> mutable m_cached_intrinsic_sizes;
 };

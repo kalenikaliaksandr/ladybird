@@ -407,6 +407,7 @@ private:
     Purpose m_purpose { Purpose::Commit };
     bool m_should_collect_devtools_layout_data { false };
     HashMap<Box const*, Vector<ContainedAbsposChild>> m_contained_abspos_children;
+    HashTable<Box const*> m_boxes_with_escaping_abspos_descendants;
 };
 
 inline CSSPixels clamp_to_max_dimension_value(CSSPixels value)
