@@ -198,6 +198,10 @@ struct LayoutState {
 
         Vector<LineBox> line_boxes;
 
+        // For block containers with inline children: one entry per (fragmented inline box x line)
+        // computed by InlineFormattingContext, moved into the block's paintable at commit.
+        Vector<Painting::InlineBoxPiece> inline_box_pieces;
+
         // Baselines of this box's in-flow content, relative to the box's content-box top edge.
         // Populated eagerly by the formatting context that lays out this box's children.
         // An empty Optional means the box has no baseline set (https://drafts.csswg.org/css-align-3/#baseline-export);
