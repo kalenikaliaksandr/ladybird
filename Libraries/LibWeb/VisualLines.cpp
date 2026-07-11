@@ -48,7 +48,6 @@ Vector<VisualLine> collect_visual_lines(DOM::Text const& dom_node)
     mapping.for_each_paintable_fragment([&](Painting::PaintableFragment const& fragment) {
         if (!lines.is_empty()
             && !lines.last().fragments.is_empty()
-            && &lines.last().fragments.last()->paintable_with_lines() == &fragment.paintable_with_lines()
             && lines.last().fragments.last()->line_index() == fragment.line_index()) {
             auto& line = lines.last();
             line.start_offset = min(line.start_offset, fragment.dom_start_offset_in_node());
