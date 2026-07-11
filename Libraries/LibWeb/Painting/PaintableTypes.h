@@ -31,9 +31,15 @@ enum class SelectionState : u8 {
     Full,
 };
 
-struct LineBoxData {
-    size_t index { 0 };
+// One record per line box of a block container with inline children. Lines without
+// fragments (e.g. blank lines between consecutive forced breaks in a textarea) are
+// represented too, with an empty fragment range.
+struct LineRecord {
+    // Relative to the containing block's content-box origin (same space as fragment offsets).
     CSSPixelRect rect;
+    // Range into PaintableWithLines::fragments(); fully truncated fragments are not committed.
+    u32 first_fragment_index { 0 };
+    u32 fragment_count { 0 };
 };
 
 // The part of an inline box (InlineNode or inline-flow ListItemBox) fragmented across

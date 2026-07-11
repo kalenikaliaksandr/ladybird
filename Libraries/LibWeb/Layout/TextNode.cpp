@@ -15,6 +15,7 @@
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/Layout/InlineFormattingContext.h>
 #include <LibWeb/Layout/TextNode.h>
+#include <LibWeb/Painting/InlinePaintable.h>
 #include <LibWeb/Painting/Paintable.h>
 
 namespace Web::Layout {
@@ -946,6 +947,13 @@ void TextNode::set_needs_repaint(InvalidateDisplayList should_invalidate_display
     if (auto* containing_block = this->containing_block()) {
         if (auto paintable_box = const_cast<Box&>(*containing_block).paintable_box())
             paintable_box->set_needs_repaint(should_invalidate_display_list);
+    }
+
+    // This text's glyphs (and the caret inside them) may be recorded in a self-painting
+    // inline ancestor's foreground commands rather than in the containing block's.
+    if (should_invalidate_display_list == InvalidateDisplayList::Yes) {
+        if (auto const* self_painting_ancestor = Painting::nearest_self_painting_inline_box(*this))
+            self_painting_ancestor->invalidate_paint_cache();
     }
 }
 

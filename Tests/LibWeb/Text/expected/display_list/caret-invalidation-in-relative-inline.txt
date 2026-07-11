@@ -1,2 +1,2 @@
 caret painted: true
-caret moved: false
+caret moved: true

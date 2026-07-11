@@ -58,7 +58,6 @@ public:
     AK_ALLOC_WITH_KMALLOC_PARTITION(HeapPartition::Painting);
 
     static NonnullRefPtr<Paintable> create(Layout::Box const&);
-    static NonnullRefPtr<Paintable> create(Layout::InlineNode const&);
     virtual ~Paintable();
     virtual StringView class_name() const { return "Paintable"sv; }
 
@@ -107,7 +106,14 @@ public:
     [[nodiscard]] virtual bool is_navigable_container_viewport_paintable() const { return false; }
     [[nodiscard]] virtual bool is_viewport_paintable() const { return false; }
     [[nodiscard]] virtual bool is_paintable_with_lines() const { return false; }
+    [[nodiscard]] virtual bool is_inline_paintable() const { return false; }
     [[nodiscard]] virtual bool is_svg_paintable() const { return false; }
+
+    // Whether this paintable's Foreground phase records content belonging to descendant
+    // layout nodes (text fragments), which must use the descendants' visual context.
+    [[nodiscard]] virtual bool foreground_paints_descendant_content() const { return false; }
+
+    [[nodiscard]] bool has_css_borders() const;
     [[nodiscard]] virtual bool is_svg_svg_paintable() const { return false; }
     [[nodiscard]] virtual bool is_svg_path_paintable() const { return false; }
     [[nodiscard]] virtual bool is_svg_graphics_paintable() const { return false; }
@@ -115,7 +121,7 @@ public:
     DOM::Document const& document() const;
     DOM::Document& document();
 
-    CSSPixelPoint box_type_agnostic_position() const;
+    virtual CSSPixelPoint box_type_agnostic_position() const;
 
     static void scroll_text_offset_into_view(DOM::Text const&, size_t offset, TextAffinity = TextAffinity::Downstream);
     void scroll_ancestor_to_offset_into_view(size_t offset);
@@ -203,17 +209,6 @@ public:
     CSSPixels content_width() const { return m_content_size.width(); }
     CSSPixels content_height() const { return m_content_size.height(); }
 
-    enum class FragmentationState {
-        Unfragmented,
-        HorizontalStart,
-        HorizontalMiddle,
-        HorizontalEnd,
-        VerticalStart,
-        VerticalMiddle,
-        VerticalEnd
-    };
-    void set_fragmentation_state(FragmentationState);
-
     CSSPixelRect absolute_rect() const;
     CSSPixelRect absolute_padding_box_rect() const;
     CSSPixelRect absolute_border_box_rect() const;
@@ -240,8 +235,10 @@ public:
     CSSPixels absolute_y() const { return absolute_rect().y(); }
     CSSPixelPoint absolute_position() const { return absolute_rect().location(); }
 
-    void set_containing_line_box_data(LineBoxData line_box_data) { m_containing_line_box_data = line_box_data; }
-    Optional<LineBoxData> const& containing_line_box_data() const { return m_containing_line_box_data; }
+    // Index of the line box containing this (atomic inline) box, resolving to a rect in the
+    // containing block's line records.
+    void set_containing_line_box_index(size_t line_box_index) { m_containing_line_box_index = line_box_index; }
+    Optional<size_t> containing_line_box_index() const { return m_containing_line_box_index; }
     Optional<CSSPixelRect> absolute_containing_line_box_rect() const;
 
     CSSPixelPoint transform_to_local_coordinates(CSSPixelPoint position) const;
@@ -431,7 +428,6 @@ public:
 protected:
     explicit Paintable(Layout::Node const&);
     explicit Paintable(Layout::Box const&);
-    explicit Paintable(Layout::InlineNode const&);
 
     void paint_with_inspector_overlay_context(DisplayListRecordingContext&, Function<void()> const&) const;
     bool has_layout_node() const { return m_layout_node; }
@@ -451,6 +447,8 @@ protected:
     virtual void paint_inspector_overlay_internal(DisplayListRecordingContext&) const;
 
     virtual CSSPixelRect compute_absolute_rect() const;
+    virtual CSSPixelRect compute_absolute_padding_box_rect() const;
+    virtual CSSPixelRect compute_absolute_border_box_rect() const;
 
     CSSPixels available_scrollbar_length(ScrollDirection direction, ChromeMetrics const& chrome_metrics) const;
     Optional<CSSPixelRect> absolute_resizer_rect(ChromeMetrics const& chrome_metrics) const;
@@ -509,7 +507,7 @@ private:
 
     Optional<BordersDataWithElementKind> m_override_borders_data;
     Optional<TableCellCoordinates> m_table_cell_coordinates;
-    Optional<LineBoxData> m_containing_line_box_data;
+    Optional<size_t> m_containing_line_box_index;
 
     ResolvedCSSFilter m_filter;
 
@@ -526,14 +524,6 @@ private:
     OwnPtr<Layout::FlexLayoutData> m_flex_layout_data;
 
     BoxModelMetrics m_box_model;
-
-    // FIXME: This is not how this is meant to work in the spec. The box needs to be drawn in full and then sliced
-    //        visually, in case something like border-radius is in effect.
-    //        ( see https://drafts.csswg.org/css-break/#valdef-box-decoration-break-slice )
-    bool m_fragment_top_edge_away { false };
-    bool m_fragment_left_edge_away { false };
-    bool m_fragment_right_edge_away { false };
-    bool m_fragment_bottom_edge_away { false };
 
     mutable OwnPtr<CachedPaintData> m_cached_paint_data;
 };
