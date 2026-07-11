@@ -41,6 +41,7 @@ public:
 
 private:
     void generate_line_boxes();
+    void compute_inline_box_pieces();
     void apply_text_overflow_ellipsis(Vector<LineBox>&);
     void apply_justification_to_fragments(CSS::TextJustify, LineBox&, bool is_last_line);
 

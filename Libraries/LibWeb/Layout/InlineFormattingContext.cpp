@@ -5,6 +5,7 @@
  */
 
 #include <AK/AnyOf.h>
+#include <AK/QuickSort.h>
 #include <LibWeb/CSS/Length.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/Dump.h>
@@ -80,6 +81,7 @@ void InlineFormattingContext::run(LayoutInput const& layout_input)
     m_available_space = available_space;
     m_layout_input.emplace(layout_input);
     generate_line_boxes();
+    compute_inline_box_pieces();
 
     auto const& line_boxes = m_containing_block_used_values.line_boxes;
     CSSPixels content_height = 0;
@@ -99,6 +101,331 @@ void InlineFormattingContext::run(LayoutInput const& layout_input)
     m_automatic_content_height = content_height;
 
     compute_and_store_baselines(m_containing_block_used_values);
+}
+
+// Computes one InlineBoxPiece per (fragmented inline box x line), deciding which pieces carry
+// the box's inline-start/end border+padding (box-decoration-break: slice) from the node's
+// globally first/last content. Must run after all fragment-mutating post-passes (alignment,
+// whitespace trimming, ellipsis, justification), since piece rects are derived from final
+// fragment geometry.
+void InlineFormattingContext::compute_inline_box_pieces()
+{
+    // Pieces feed the paint tree; they are only meaningful for the committing layout pass.
+    if (m_layout_mode != LayoutMode::Normal || m_state.is_for_measurement())
+        return;
+
+    auto const& line_boxes = m_containing_block_used_values.line_boxes;
+    auto& pieces = m_containing_block_used_values.inline_box_pieces;
+    pieces.clear_with_capacity();
+
+    auto const& containing_block_computed_values = containing_block().computed_values();
+    bool inline_axis_is_horizontal = containing_block_computed_values.writing_mode() == CSS::WritingMode::HorizontalTb;
+    bool inline_axis_is_reversed = containing_block_computed_values.inline_axis_is_reverse();
+
+    struct PerLine {
+        size_t line_index { 0 };
+        bool has_content { false };
+        // Inline-axis extent of contributions (direct fragments and nested pieces).
+        CSSPixels inline_start { 0 };
+        CSSPixels inline_end { 0 };
+        // Block-axis geometry comes from the node's own fragments; contributions from
+        // nested boxes only provide the fallback origin.
+        Optional<CSSPixels> first_direct_block_start;
+        CSSPixels max_direct_block_length { 0 };
+        Optional<CSSPixels> fallback_block_start;
+        Optional<CSSPixelPoint> phantom_position;
+        // Range of this node's committed fragments on this line (indexes into the flat
+        // fragment list the containing block's paintable will hold).
+        Optional<u32> first_fragment_index;
+        u32 fragment_count { 0 };
+    };
+    struct PerNode {
+        NodeWithStyleAndBoxModelMetrics const* node { nullptr };
+        Optional<size_t> parent_index;
+        u32 depth { 0 };
+        Vector<PerLine, 2> lines;
+        Optional<size_t> first_content_line;
+        Optional<size_t> last_content_line;
+    };
+
+    Vector<PerNode> per_node_data;
+    HashMap<NodeWithStyleAndBoxModelMetrics const*, size_t> node_to_index;
+
+    auto count_fragmented_inline_ancestors = [](Node const& node) -> u32 {
+        u32 depth = 1;
+        for (auto const* ancestor = node.nearest_fragmented_inline_ancestor(); ancestor; ancestor = ancestor->nearest_fragmented_inline_ancestor())
+            ++depth;
+        return depth;
+    };
+
+    auto ensure_node = [&](NodeWithStyleAndBoxModelMetrics const& node) -> size_t {
+        return node_to_index.ensure(&node, [&] {
+            per_node_data.append({ .node = &node, .depth = count_fragmented_inline_ancestors(node) });
+            return per_node_data.size() - 1;
+        });
+    };
+
+    auto ensure_line = [&](PerNode& per_node, size_t line_index) -> PerLine& {
+        // Lines are visited mostly in ascending order; search from the back.
+        size_t insertion_index = per_node.lines.size();
+        while (insertion_index > 0 && per_node.lines[insertion_index - 1].line_index > line_index)
+            --insertion_index;
+        if (insertion_index > 0 && per_node.lines[insertion_index - 1].line_index == line_index)
+            return per_node.lines[insertion_index - 1];
+        per_node.lines.insert(insertion_index, PerLine { .line_index = line_index });
+        return per_node.lines[insertion_index];
+    };
+
+    auto note_contribution = [](PerLine& line, CSSPixels inline_start, CSSPixels inline_end, CSSPixels block_start) {
+        if (!line.has_content || inline_start < line.inline_start)
+            line.fallback_block_start = block_start;
+        if (!line.has_content) {
+            line.has_content = true;
+            line.inline_start = inline_start;
+            line.inline_end = inline_end;
+        } else {
+            line.inline_start = min(line.inline_start, inline_start);
+            line.inline_end = max(line.inline_end, inline_end);
+        }
+    };
+
+    // Walk every fragment's fragmented-inline ancestor chain, accumulating per-(node, line)
+    // extents on the nearest one, content-line ranges on all of them, and each node's range
+    // of committed fragments. Fragment indexes count the fragments the containing block's
+    // paintable will hold, so this must skip exactly the fragments LayoutState::commit()
+    // skips (the fully truncated ones).
+    u32 flat_fragment_index = 0;
+    for (size_t line_index = 0; line_index < line_boxes.size(); ++line_index) {
+        auto const& line_box = line_boxes[line_index];
+        for (auto const& fragment : line_box.fragments()) {
+            if (fragment.is_fully_truncated())
+                continue;
+            auto fragment_index = flat_fragment_index++;
+            auto const& fragment_node = fragment.layout_node();
+            bool is_phantom = fragment_node.display().is_block_outside();
+
+            auto fragment_position = fragment.offset();
+            auto fragment_size = fragment.size();
+            CSSPixels inline_start = inline_axis_is_horizontal ? fragment_position.x() : fragment_position.y();
+            CSSPixels inline_end = inline_start + (inline_axis_is_horizontal ? fragment_size.width() : fragment_size.height());
+            CSSPixels block_start = inline_axis_is_horizontal ? fragment_position.y() : fragment_position.x();
+            CSSPixels block_length = inline_axis_is_horizontal ? fragment_size.height() : fragment_size.width();
+
+            // Atomic inlines participate as a single opaque box; their fragment covers the
+            // content box, so grow the contribution to the margin box on the inline axis.
+            if (!is_phantom && fragment.is_atomic_inline()) {
+                if (auto const* atomic_used_values = m_state.try_get(fragment_node)) {
+                    inline_start -= inline_axis_is_horizontal ? atomic_used_values->margin_box_left() : atomic_used_values->margin_box_top();
+                    inline_end += inline_axis_is_horizontal ? atomic_used_values->margin_box_right() : atomic_used_values->margin_box_bottom();
+                }
+            }
+
+            bool is_direct_ancestor = true;
+            Optional<size_t> previous_node_index;
+            for (auto const* ancestor = fragment_node.nearest_fragmented_inline_ancestor(); ancestor; ancestor = ancestor->nearest_fragmented_inline_ancestor()) {
+                auto node_index = ensure_node(*ancestor);
+                if (previous_node_index.has_value())
+                    per_node_data[*previous_node_index].parent_index = node_index;
+                previous_node_index = node_index;
+
+                auto& per_node = per_node_data[node_index];
+                auto& line = ensure_line(per_node, line_index);
+
+                // Fragments of one box are contiguous within a line, so a range suffices.
+                if (!line.first_fragment_index.has_value())
+                    line.first_fragment_index = fragment_index;
+                line.fragment_count = fragment_index + 1 - *line.first_fragment_index;
+
+                if (is_phantom) {
+                    if (!line.phantom_position.has_value())
+                        line.phantom_position = fragment_position;
+                    continue;
+                }
+
+                if (is_direct_ancestor) {
+                    note_contribution(line, inline_start, inline_end, block_start);
+                    if (!line.first_direct_block_start.has_value())
+                        line.first_direct_block_start = block_start;
+                    line.max_direct_block_length = max(line.max_direct_block_length, block_length);
+                } else if (!line.fallback_block_start.has_value()) {
+                    line.fallback_block_start = block_start;
+                }
+                if (!per_node.first_content_line.has_value())
+                    per_node.first_content_line = line_index;
+                per_node.last_content_line = line_index;
+                is_direct_ancestor = false;
+            }
+        }
+    }
+
+    // Fragmented inlines that produced no fragments at all (e.g. spans with no in-flow
+    // content) still need geometry for DOM queries; give them a placeholder piece. Only
+    // non-anonymous nodes get one, matching which inline nodes used to get a paintable.
+    Vector<NodeWithStyleAndBoxModelMetrics const*> content_less_nodes;
+    containing_block().for_each_in_subtree([&](auto const& descendant) {
+        if (!descendant.display().is_inline_outside() || !descendant.display().is_flow_inside())
+            return TraversalDecision::SkipChildrenAndContinue;
+        if (descendant.is_fragmented_inline() && descendant.dom_node() && !node_to_index.contains(&static_cast<NodeWithStyleAndBoxModelMetrics const&>(descendant)))
+            content_less_nodes.append(&static_cast<NodeWithStyleAndBoxModelMetrics const&>(descendant));
+        if (descendant.is_atomic_inline())
+            return TraversalDecision::SkipChildrenAndContinue;
+        return TraversalDecision::Continue;
+    });
+
+    struct StagedPiece {
+        Painting::InlineBoxPiece piece;
+        size_t discovery_index { 0 };
+    };
+    Vector<StagedPiece> staged_pieces;
+
+    // Everything below is physical: `low` is the lesser-coordinate side of the inline axis
+    // (left, or top when the inline axis is vertical), `high` the greater. The block-axis
+    // edges are present on every piece, since fragmentation only cuts along the inline axis.
+    using Edge = Painting::InlineBoxPiece::Edge;
+    u8 const block_axis_edges = inline_axis_is_horizontal
+        ? to_underlying(Edge::Top) | to_underlying(Edge::Bottom)
+        : to_underlying(Edge::Left) | to_underlying(Edge::Right);
+
+    auto edge_bits = [&](bool has_low_edge, bool has_high_edge) -> u8 {
+        u8 edges = block_axis_edges;
+        if (has_low_edge)
+            edges |= to_underlying(inline_axis_is_horizontal ? Edge::Left : Edge::Top);
+        if (has_high_edge)
+            edges |= to_underlying(inline_axis_is_horizontal ? Edge::Right : Edge::Bottom);
+        return edges;
+    };
+
+    // Emit pieces deepest-first so each nested box's piece can expand its ancestor's extent.
+    Vector<size_t> emission_order;
+    emission_order.ensure_capacity(per_node_data.size());
+    for (size_t i = 0; i < per_node_data.size(); ++i)
+        emission_order.append(i);
+    quick_sort(emission_order, [&](size_t a, size_t b) {
+        if (per_node_data[a].depth != per_node_data[b].depth)
+            return per_node_data[a].depth > per_node_data[b].depth;
+        return a < b;
+    });
+
+    for (auto node_index : emission_order) {
+        auto& per_node = per_node_data[node_index];
+        auto const& node = *per_node.node;
+        auto const* used_values = m_state.try_get(node);
+
+        CSSPixels border_padding_low = 0;
+        CSSPixels border_padding_high = 0;
+        CSSPixels border_padding_block_low = 0;
+        CSSPixels border_padding_block_high = 0;
+        CSSPixels margin_low = 0;
+        CSSPixels margin_high = 0;
+        if (used_values) {
+            if (inline_axis_is_horizontal) {
+                border_padding_low = used_values->border_box_left();
+                border_padding_high = used_values->border_box_right();
+                border_padding_block_low = used_values->border_box_top();
+                border_padding_block_high = used_values->border_box_bottom();
+                margin_low = used_values->margin_left;
+                margin_high = used_values->margin_right;
+            } else {
+                border_padding_low = used_values->border_box_top();
+                border_padding_high = used_values->border_box_bottom();
+                border_padding_block_low = used_values->border_box_left();
+                border_padding_block_high = used_values->border_box_right();
+                margin_low = used_values->margin_top;
+                margin_high = used_values->margin_bottom;
+            }
+        }
+
+        for (auto& line : per_node.lines) {
+            if (!line.has_content) {
+                if (line.phantom_position.has_value()) {
+                    staged_pieces.append({ .piece = {
+                                               .node = node,
+                                               .line_index = static_cast<u32>(line.line_index),
+                                               .depth = per_node.depth,
+                                               .first_fragment_index = line.first_fragment_index.value_or(0),
+                                               .fragment_count = line.fragment_count,
+                                               .border_box_rect = { *line.phantom_position, {} },
+                                               .edges = edge_bits(true, true),
+                                               .is_placeholder = true,
+                                           },
+                        .discovery_index = node_index });
+                }
+                continue;
+            }
+
+            bool is_first = per_node.first_content_line == line.line_index;
+            bool is_last = per_node.last_content_line == line.line_index;
+
+            // A reversed inline axis puts the box's logical start (carried by the line with
+            // its first content) on the physically-high side.
+            bool has_low_edge = inline_axis_is_reversed ? is_last : is_first;
+            bool has_high_edge = inline_axis_is_reversed ? is_first : is_last;
+
+            CSSPixels content_block_start = line.first_direct_block_start.value_or(line.fallback_block_start.value_or(0));
+            CSSPixels content_block_length = line.first_direct_block_start.has_value() ? line.max_direct_block_length : node.computed_values().line_height();
+
+            CSSPixels border_box_inline_start = line.inline_start - (has_low_edge ? border_padding_low : 0);
+            CSSPixels border_box_inline_end = line.inline_end + (has_high_edge ? border_padding_high : 0);
+            CSSPixels border_box_block_start = content_block_start - border_padding_block_low;
+            CSSPixels border_box_block_length = content_block_length + border_padding_block_low + border_padding_block_high;
+
+            auto border_box_rect = inline_axis_is_horizontal
+                ? CSSPixelRect { border_box_inline_start, border_box_block_start, border_box_inline_end - border_box_inline_start, border_box_block_length }
+                : CSSPixelRect { border_box_block_start, border_box_inline_start, border_box_block_length, border_box_inline_end - border_box_inline_start };
+
+            staged_pieces.append({ .piece = {
+                                       .node = node,
+                                       .line_index = static_cast<u32>(line.line_index),
+                                       .depth = per_node.depth,
+                                       .first_fragment_index = line.first_fragment_index.value_or(0),
+                                       .fragment_count = line.fragment_count,
+                                       .border_box_rect = border_box_rect,
+                                       .edges = edge_bits(has_low_edge, has_high_edge),
+                                   },
+                .discovery_index = node_index });
+
+            // Grow the parent's extent on this line; margins slice like borders, applying
+            // only on the lines carrying this box's first/last content.
+            if (per_node.parent_index.has_value()) {
+                auto& parent = per_node_data[*per_node.parent_index];
+                auto& parent_line = ensure_line(parent, line.line_index);
+                auto contribution_start = border_box_inline_start - (has_low_edge ? margin_low : 0);
+                auto contribution_end = border_box_inline_end + (has_high_edge ? margin_high : 0);
+                note_contribution(parent_line, contribution_start, contribution_end, content_block_start);
+            }
+        }
+    }
+
+    for (size_t i = 0; i < content_less_nodes.size(); ++i) {
+        auto const& node = *content_less_nodes[i];
+        if (!m_state.try_get(node))
+            continue;
+        // The box is empty on the inline axis and one line tall on the block axis.
+        auto placeholder_size = inline_axis_is_horizontal
+            ? CSSPixelSize { 0, node.computed_values().line_height() }
+            : CSSPixelSize { node.computed_values().line_height(), 0 };
+        staged_pieces.append({ .piece = {
+                                   .node = node,
+                                   .line_index = 0,
+                                   .depth = count_fragmented_inline_ancestors(node),
+                                   .border_box_rect = { {}, placeholder_size },
+                                   .edges = edge_bits(true, true),
+                                   .is_placeholder = true,
+                               },
+            .discovery_index = per_node_data.size() + i });
+    }
+
+    quick_sort(staged_pieces, [](auto const& a, auto const& b) {
+        if (a.piece.line_index != b.piece.line_index)
+            return a.piece.line_index < b.piece.line_index;
+        if (a.piece.depth != b.piece.depth)
+            return a.piece.depth < b.piece.depth;
+        return a.discovery_index < b.discovery_index;
+    });
+
+    pieces.ensure_capacity(staged_pieces.size());
+    for (auto& staged_piece : staged_pieces)
+        pieces.append(move(staged_piece.piece));
 }
 
 void InlineFormattingContext::dimension_box_on_line(Box const& box, LayoutMode layout_mode)
