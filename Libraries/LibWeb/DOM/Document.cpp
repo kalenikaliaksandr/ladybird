@@ -8211,13 +8211,10 @@ void Document::schedule_accumulated_visual_context_value_update(Layout::Node con
         return;
     }
 
-    bool scheduled_any = false;
-    for (auto const& layout_node_paintable : layout_node.paintables()) {
+    if (auto layout_node_paintable = layout_node.paintable()) {
         m_paintable_boxes_needing_visual_context_value_update.append(*layout_node_paintable);
-        scheduled_any = true;
-    }
-    if (scheduled_any)
         set_needs_repaint(InvalidateDisplayList::No);
+    }
 }
 
 void Document::schedule_accumulated_visual_context_value_update(Element& element)

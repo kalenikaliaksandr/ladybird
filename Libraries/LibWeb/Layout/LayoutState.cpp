@@ -470,10 +470,8 @@ void LayoutState::resolve_relative_positions()
         if (auto const* box = as_if<Box>(node); box && box->is_in_flow() && box->display().is_block_outside()) {
             auto accumulated = accumulated_relative_insets_from_inline_ancestor_chain(box->parent(), box->containing_block());
             if (accumulated.found_fragmented_inline_node) {
-                for (auto& paintable : node.paintables()) {
-                    auto& paintable_box = *paintable;
-                    paintable_box.set_offset(paintable_box.offset().translated(accumulated.offset));
-                }
+                if (auto paintable = node.paintable())
+                    paintable->set_offset(paintable->offset().translated(accumulated.offset));
             }
         }
 
@@ -545,7 +543,7 @@ void LayoutState::commit(Box& root)
     // Go through the layout tree and detach all paintables. The layout tree should only point to the new paintable tree
     // which we're about to build.
     root.for_each_in_inclusive_subtree([](Node& node) {
-        node.clear_paintables();
+        node.clear_paintable();
         return TraversalDecision::Continue;
     });
 
@@ -588,7 +586,7 @@ void LayoutState::commit(Box& root)
         if (!paintable)
             paintable = node.create_paintable();
 
-        node.add_paintable(paintable);
+        node.set_paintable(paintable);
 
         // For boxes, transfer all the state needed for painting.
         if (auto* paintable_box = paintable.ptr()) {
@@ -663,7 +661,7 @@ void LayoutState::commit(Box& root)
     // need a paintable so DOM geometry queries have something to answer from.
     for (auto* fragmented_inline_node : fragmented_inline_nodes) {
         if (!fragmented_inline_node->paintable())
-            fragmented_inline_node->add_paintable(fragmented_inline_node->create_paintable());
+            fragmented_inline_node->set_paintable(fragmented_inline_node->create_paintable());
     }
 
     // Resolve relative positions for regular boxes (not line box fragments):
@@ -745,10 +743,8 @@ void LayoutState::commit(Box& root)
 
     m_used_values_store.for_each([&](UsedValues& used_values) {
         auto& node = used_values.node();
-        for (auto& paintable : node.paintables()) {
+        if (auto paintable = node.paintable()) {
             auto* paintable_box = paintable.ptr();
-            if (!paintable_box)
-                continue;
 
             if (node.is_sticky_position()) {
                 // https://drafts.csswg.org/css-position/#insets
