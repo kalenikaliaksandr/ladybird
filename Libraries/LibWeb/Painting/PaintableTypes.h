@@ -36,6 +36,17 @@ struct LineBoxData {
     CSSPixelRect rect;
 };
 
+// One record per line box of a block container with inline children. Lines without
+// fragments (e.g. blank lines between consecutive forced breaks in a textarea) are
+// represented too, with an empty fragment range.
+struct LineRecord {
+    // Relative to the containing block's content-box origin (same space as fragment offsets).
+    CSSPixelRect rect;
+    // Range into PaintableWithLines::fragments(); fully truncated fragments are not committed.
+    u32 first_fragment_index { 0 };
+    u32 fragment_count { 0 };
+};
+
 // The part of an inline box (InlineNode or inline-flow ListItemBox) fragmented across
 // lines that lies on one line: its border-box rect there and which box edges are present
 // on this piece (box-decoration-break: slice).
