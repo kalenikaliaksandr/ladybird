@@ -2008,8 +2008,35 @@ private:
 
 }
 
+// The offset between two boxes only depends on boxes at or below the point where their containing
+// block chains merge. Accumulating offsets up to that merge point instead of comparing ICB-relative
+// offsets matters mid-layout: containing blocks above the merge point may be outside the scope of
+// the current layout (e.g. during intrinsic sizing) or not placed yet, and must not be read.
+static Box const* containing_block_chain_merge_point(Box const& box, Box const& other)
+{
+    auto const* merge_point = &box;
+    while (merge_point != &other && !merge_point->is_ancestor_of(other))
+        merge_point = merge_point->containing_block();
+    return merge_point;
+}
+
+// If encountered_unplaced_box is null, every box on the walk must already be placed.
+static CSSPixelPoint accumulated_offset_to_merge_point(LayoutState const& state, Box const& descendant, Box const* merge_point, bool* encountered_unplaced_box = nullptr)
+{
+    CSSPixelPoint offset;
+    for (auto const* node = &descendant; node != merge_point; node = node->containing_block()) {
+        auto const& used_values = state.get(*node);
+        if (encountered_unplaced_box && !used_values.is_placed()) {
+            *encountered_unplaced_box = true;
+            return offset;
+        }
+        offset += used_values.content_offset();
+    }
+    return offset;
+}
+
 // https://drafts.csswg.org/css-anchor-position-1/#anchor-pos
-void FormattingContext::resolve_anchor_insets(Box& box) const
+bool FormattingContext::resolve_anchor_insets(Box& box) const
 {
     // https://drafts.csswg.org/css-anchor-position-1/#resolving-anchor
     // An anchor() function is a resolvable anchor function only if all the following conditions are true:
@@ -2037,11 +2064,11 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
         element = as_if<DOM::Element>(box.dom_node());
     }
     if (!element)
-        return;
+        return true;
 
     auto computed = element->computed_properties(pseudo_element);
     if (!computed)
-        return;
+        return true;
     auto const& top = computed->property(CSS::PropertyID::Top);
     auto const& right = computed->property(CSS::PropertyID::Right);
     auto const& bottom = computed->property(CSS::PropertyID::Bottom);
@@ -2060,11 +2087,11 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
     bool bottom_contains_anchor = style_value_contains_anchor(bottom);
     bool left_contains_anchor = style_value_contains_anchor(left);
     if (!top_contains_anchor && !right_contains_anchor && !bottom_contains_anchor && !left_contains_anchor)
-        return;
+        return true;
 
     auto containing_block = box.containing_block();
     if (!containing_block)
-        return;
+        return true;
 
     auto const& default_anchor_name = box.computed_values().position_anchor();
     auto const& containing_block_state = m_state.get(*containing_block);
@@ -2095,6 +2122,7 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
     // specified, this refers to the border box edge of the principal box of relevant anchor element.
     // FIXME: Implement remembered scroll offsets. Anchor references are currently always resolved as if all scroll
     //        containers were at their initial scroll position.
+    bool anchor_rect_depends_on_unplaced_box = false;
     auto resolve_anchor_rect = [&](CSS::AnchorStyleValue const& anchor) -> Optional<CSSPixelRect> {
         auto const* name = anchor.anchor_name().has_value() ? &anchor.anchor_name().value() : default_anchor_name.has_value() ? &default_anchor_name.value()
                                                                                                                               : nullptr;
@@ -2106,9 +2134,16 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
             return {};
 
         auto const& anchor_state = m_state.get(*anchor_box);
-        auto anchor_border_box_origin = m_state.cumulative_offset(anchor_state)
+        // The anchor rect is only needed relative to the containing block's padding box, so
+        // accumulate content offsets up to the merge point of both containing block chains.
+        // If a box below the merge point is unplaced (this context's root is a float or
+        // atomic inline the parent has not placed yet, or the anchor is inside one), the
+        // rect cannot be determined yet; flag it so the caller defers this box to an
+        // ancestor formatting context.
+        auto const* merge_point = containing_block_chain_merge_point(*containing_block, *anchor_box);
+        auto anchor_border_box_origin = accumulated_offset_to_merge_point(m_state, *anchor_box, merge_point, &anchor_rect_depends_on_unplaced_box)
             - CSSPixelPoint { anchor_state.border_box_left(), anchor_state.border_box_top() };
-        auto containing_block_padding_box_origin = m_state.cumulative_offset(containing_block_state)
+        auto containing_block_padding_box_origin = accumulated_offset_to_merge_point(m_state, *containing_block, merge_point, &anchor_rect_depends_on_unplaced_box)
             - CSSPixelPoint { containing_block_state.padding_left, containing_block_state.padding_top };
         return CSSPixelRect {
             anchor_border_box_origin - containing_block_padding_box_origin,
@@ -2290,6 +2325,8 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
 
     if (compensates_for_scroll_in_x || compensates_for_scroll_in_y)
         box.set_default_scroll_shift(default_anchor_box->make_weak_ptr(), compensates_for_scroll_in_x, compensates_for_scroll_in_y);
+
+    return !anchor_rect_depends_on_unplaced_box;
 }
 
 void FormattingContext::layout_absolutely_positioned_children()
@@ -2316,7 +2353,14 @@ void FormattingContext::layout_absolutely_positioned_children(Box const& box)
         auto& child_box = const_cast<Box&>(*child->box);
         if (!m_state.try_get(child_box))
             m_state.create(child_box, {}, {});
-        resolve_anchor_insets(child_box);
+        if (!resolve_anchor_insets(child_box) && box.containing_block()) {
+            // A box below the anchor/containing-block merge point is not placed yet (e.g. this
+            // context's root is a float or atomic inline its parent has not placed). Defer the
+            // child to the next ancestor formatting context, whose abspos pass runs only after
+            // it has placed its floats and in-flow children.
+            m_state.register_contained_abspos_child(box_establishing_containing_formatting_context(box), child_box, child->static_position_rect);
+            continue;
+        }
         auto static_position_rect = resolve_static_position_relative_to_containing_block(child_box, child->static_position_rect);
         layout_absolutely_positioned_element(child_box, static_position_rect, resolve_abspos_containing_block_info(child_box));
     }
@@ -2329,20 +2373,10 @@ StaticPositionRect FormattingContext::resolve_static_position_relative_to_contai
     if (!static_position_cb || static_position_cb == actual_containing_block)
         return static_position_rect;
 
-    // The offset between the static position containing block and the actual containing block only depends on
-    // boxes at or below the point where their containing block chains merge. Accumulate offsets up to that
-    // point instead of comparing ICB-relative offsets: containing blocks above the merge point may be outside
-    // the scope of the current layout (e.g. during intrinsic sizing) and have no used values at all.
-    auto const* merge_point = static_position_cb;
-    while (merge_point != actual_containing_block && !merge_point->is_ancestor_of(*actual_containing_block))
-        merge_point = merge_point->containing_block();
-    auto offset_relative_to_merge_point = [&](Box const& descendant) {
-        CSSPixelPoint offset;
-        for (auto const* node = &descendant; node != merge_point; node = node->containing_block())
-            offset += m_state.get(*node).content_offset();
-        return offset;
-    };
-    static_position_rect.rect.translate_by(offset_relative_to_merge_point(*static_position_cb) - offset_relative_to_merge_point(*actual_containing_block));
+    auto const* merge_point = containing_block_chain_merge_point(*static_position_cb, *actual_containing_block);
+    static_position_rect.rect.translate_by(
+        accumulated_offset_to_merge_point(m_state, *static_position_cb, merge_point)
+        - accumulated_offset_to_merge_point(m_state, *actual_containing_block, merge_point));
     return static_position_rect;
 }
 

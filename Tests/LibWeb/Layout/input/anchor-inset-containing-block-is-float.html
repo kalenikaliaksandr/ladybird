@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<style>
+  body { margin: 0; }
+  #anchor { width: 80px; height: 30px; anchor-name: --a; background: orange; }
+  #floatcb { float: left; position: relative; width: 100px; height: 100px; margin-left: 50px; background: #eee; }
+  #target { position: absolute; top: anchor(--a bottom); left: anchor(--a left); width: 10px; height: 10px; background: red; }
+</style>
+<div id="anchor"></div>
+<div id="floatcb">
+  <div id="target"></div>
+</div>

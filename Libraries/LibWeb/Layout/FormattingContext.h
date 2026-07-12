@@ -257,7 +257,9 @@ protected:
     void layout_absolutely_positioned_children();
     void layout_absolutely_positioned_children(Box const&);
     virtual AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&);
-    void resolve_anchor_insets(Box&) const;
+    // Returns false if a box in the anchor's or the containing block's offset chain has not been
+    // placed yet; the caller should defer the box to an ancestor formatting context.
+    bool resolve_anchor_insets(Box&) const;
     void compute_width_for_absolutely_positioned_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, StaticPositionRect const&);
     void compute_width_for_absolutely_positioned_non_replaced_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, StaticPositionRect const&);
     void compute_width_for_absolutely_positioned_replaced_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, StaticPositionRect const&);
