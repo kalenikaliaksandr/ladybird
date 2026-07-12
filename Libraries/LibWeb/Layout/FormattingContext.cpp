@@ -1854,9 +1854,13 @@ static Optional<CSSPixelRect> compute_inline_containing_block_rect(InlineNode co
         for (auto child = node.first_child(); child; child = child->next_sibling()) {
             if (child->is_absolutely_positioned() || child->is_floating())
                 continue;
-            auto const* child_used_values = state.try_get(*child);
-            auto child_offset = child_used_values ? offset + child_used_values->content_offset() : offset;
             auto const* box_child = as_if<Box>(child.ptr());
+            auto const* child_used_values = state.try_get(*child);
+            // Only boxes are ever place()d. Non-box children (InlineNode, BreakNode) have no
+            // box offset of their own: their geometry lives in the nearest block container's
+            // line box fragments, and block-level boxes inside them are placed relative to
+            // that same block container, so they are transparent to offset accumulation.
+            auto child_offset = (box_child && child_used_values) ? offset + child_used_values->content_offset() : offset;
             if (box_child && !box_child->is_anonymous()) {
                 auto const* dom = box_child->dom_node();
                 if (!dom || !inline_dom_node->is_inclusive_ancestor_of(*dom))
@@ -1881,6 +1885,10 @@ static Optional<CSSPixelRect> compute_inline_containing_block_rect(InlineNode co
 
     CSSPixelPoint outer_offset;
     for (Node const* ancestor = outer_block; ancestor && ancestor != &abspos_containing_block; ancestor = ancestor->parent()) {
+        // When outer_block is a block-in-inline, the parent chain can pass through an
+        // InlineNode; only boxes are ever place()d, and inlines contribute no offset.
+        if (!is<Box>(*ancestor))
+            continue;
         if (auto const* used_values = state.try_get(*ancestor))
             outer_offset.translate_by(used_values->content_offset());
     }
