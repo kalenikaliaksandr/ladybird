@@ -1112,6 +1112,10 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
     if (!independent_formatting_context && !is<BlockContainer>(box)) {
         dbgln("FIXME: Block-level box is not BlockContainer but does not create formatting context: {}", box.debug_description());
+        // We are not going to lay this box out (e.g. an SVG graphics element orphaned outside any
+        // SVG viewport, which must not render). Its UsedValues already exist, so explicitly place
+        // it (zero-sized, unpainted) rather than let commit() observe an unplaced box.
+        place_child(box, { 0, 0 });
         return;
     }
 

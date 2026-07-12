@@ -148,6 +148,9 @@ void InlineFormattingContext::dimension_box_on_line(Box const& box, LayoutMode l
     if (box.display().is_flow_inside()) {
         dbgln("FIXME: InlineFormattingContext::dimension_box_on_line got unexpected box in inline context:");
         dump_tree(box);
+        // See the matching bail-out in BlockFormattingContext::layout_block_level_box().
+        if (!box_state.is_placed())
+            place_child(box, { 0, 0 });
         return;
     }
 
