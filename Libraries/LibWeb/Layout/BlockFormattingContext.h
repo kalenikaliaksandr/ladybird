@@ -128,8 +128,6 @@ private:
 
     [[nodiscard]] CSSPixels border_box_left_of_box_avoiding_floats(Box const&, LayoutState::UsedValues const&, SpaceUsedByFloats const&) const;
 
-    void layout_list_item_marker(ListItemBox const&, SpaceUsedByFloats const& inline_space_used_before_list_item_elements_formatted);
-
     void measure_scrollable_overflow(Box const&, CSSPixels& bottom_edge, CSSPixels& right_edge) const;
 
     // https://drafts.csswg.org/css-multicol/#pseudo-algorithm

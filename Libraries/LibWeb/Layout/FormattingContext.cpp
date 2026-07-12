@@ -22,6 +22,7 @@
 #include <LibWeb/Layout/FormattingContext.h>
 #include <LibWeb/Layout/GridFormattingContext.h>
 #include <LibWeb/Layout/InlineNode.h>
+#include <LibWeb/Layout/ListItemBox.h>
 #include <LibWeb/Layout/ListItemMarkerBox.h>
 #include <LibWeb/Layout/ReplacedBox.h>
 #include <LibWeb/Layout/ReplacedWithChildrenFormattingContext.h>
@@ -248,6 +249,53 @@ CSSPixels FormattingContext::distance_between_marker_and_list_item(ListItemMarke
     if (marker.text().has_value())
         return 0;
     return CSSPixels::nearest_value_for(.5f * marker.first_available_font().pixel_size());
+}
+
+bool FormattingContext::list_item_marker_has_css_content(ListItemBox const& list_item_box)
+{
+    // NB: Go through Box::dom_node(): pseudo-element-generated list items have no DOM element.
+    auto const* dom_node = as_if<DOM::Element>(static_cast<Box const&>(list_item_box).dom_node());
+    if (!dom_node)
+        return false;
+    auto const computed_properties = dom_node->computed_properties(CSS::PseudoElement::Marker);
+    if (!computed_properties)
+        return false;
+    return computed_properties->property(CSS::PropertyID::Content).is_content();
+}
+
+void FormattingContext::layout_list_item_marker(ListItemBox const& list_item_box, SpaceUsedByFloats const& inline_space_used_before_list_item_elements_formatted)
+{
+    if (!list_item_box.marker())
+        return;
+
+    auto& marker = *list_item_box.marker();
+    auto& marker_state = m_state.get_mutable(marker);
+    auto& list_item_state = m_state.get_mutable(list_item_box);
+
+    auto marker_distance = distance_between_marker_and_list_item(marker);
+
+    auto marker_height = marker_state.content_height();
+    auto marker_width = marker_state.content_width();
+
+    auto list_item_direction = list_item_box.computed_values().direction();
+    auto marker_offset_x = list_item_direction == CSS::Direction::Ltr
+        ? inline_space_used_before_list_item_elements_formatted.left - marker_distance - marker_width
+        : list_item_state.content_width() - (inline_space_used_before_list_item_elements_formatted.right - marker_distance);
+    auto marker_offset_y = max(CSSPixels(0), (marker.computed_values().line_height() - marker_height) / 2);
+
+    if (marker.list_style_position() == CSS::ListStylePosition::Inside) {
+        // FIXME: Just adjusting the content width for an inside marker is wrong, as it will still position
+        //        the marker outside of the box, instead of treating it more like an inline child on the first line.
+        list_item_state.set_content_width(list_item_state.content_width() - marker_width - marker_distance);
+    }
+
+    // Animations can make `float` or `position` apply to ::marker; those markers are laid out
+    // (and placed) by the float/abspos machinery instead.
+    if (marker.is_in_flow() && !marker_state.is_placed())
+        place_child(marker, { round(marker_offset_x), round(marker_offset_y) });
+
+    if (marker.computed_values().line_height() > list_item_state.content_height())
+        list_item_state.set_content_height(marker.computed_values().line_height());
 }
 
 bool FormattingContext::computed_height_establishes_definite_containing_block_height(CSS::Size const& computed_height)
@@ -546,6 +594,19 @@ OwnPtr<FormattingContext> FormattingContext::layout_inside(Box const& child_box,
     else
         run(layout_input);
 
+    // List items laid out outside normal block flow (floats, abspos boxes, atomic inlines,
+    // flex/grid items, table cells) never pass through the marker placement in
+    // BlockFormattingContext::layout_block_level_box(), so place their built-in marker here.
+    // NB: is_placed() also guards against the double layout_inside() of table cells.
+    if (layout_mode == LayoutMode::Normal) {
+        if (auto const* list_item_box = as_if<ListItemBox>(child_box);
+            list_item_box && list_item_box->marker() && !m_state.get(*list_item_box->marker()).is_placed()
+            && !list_item_marker_has_css_content(*list_item_box)) {
+            dimension_list_item_marker(*list_item_box->marker());
+            layout_list_item_marker(*list_item_box, {});
+        }
+    }
+
     return independent_formatting_context;
 }
 
@@ -693,6 +754,12 @@ CSSPixels FormattingContext::compute_auto_height_for_block_formatting_context_ro
                 return IterationDecision::Continue;
 
             if (child_box.is_floating())
+                return IterationDecision::Continue;
+
+            // A ::marker box is not a block-level child: it is positioned out of flow by
+            // layout_list_item_marker(), which runs only *after* this auto height resolution,
+            // and per CSS 2.1 §10.6.7 / css-lists-3 it must not contribute to the auto height.
+            if (is<ListItemMarkerBox>(child_box))
                 return IterationDecision::Continue;
 
             // Children that have not been laid out yet contribute nothing to the auto height.

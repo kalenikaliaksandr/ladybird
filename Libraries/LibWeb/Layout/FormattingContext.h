@@ -227,6 +227,9 @@ protected:
         CSSPixels right { 0 };
     };
 
+    void layout_list_item_marker(ListItemBox const&, SpaceUsedByFloats const& inline_space_used_before_list_item_elements_formatted);
+    static bool list_item_marker_has_css_content(ListItemBox const&);
+
     struct ShrinkToFitResult {
         CSSPixels preferred_width { 0 };
         CSSPixels preferred_minimum_width { 0 };

@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<style>
+* { margin: 0; padding: 0; }
+ol { list-style-position: inside; }
+#float-item { float: left; }
+#abspos-item { position: absolute; top: 100px; left: 100px; }
+#flex-item { display: list-item; }
+#bfc-item { display: list-item; overflow: hidden; line-height: 0; margin-left: 40px; }
+</style>
+<ol><li id="float-item">float</li></ol>
+<ol><li id="abspos-item">abspos</li></ol>
+<div style="display: flex"><div id="flex-item">flex</div></div>
+<div id="bfc-item"><div style="height: 2px"></div></div>
