@@ -396,6 +396,11 @@ struct LayoutState {
 
     UsedValues& create(NodeWithStyle const&, Optional<CSSPixels> percentage_basis_width, Optional<CSSPixels> percentage_basis_height);
 
+    // Roots laid out directly by Document::update_layout (the ICB, and the root <svg> of a
+    // standalone SVG document) are not placed by any formatting context; their content offset
+    // is the origin.
+    void place_root_box_at_origin(UsedValues& root_state) { root_state.place({ 0, 0 }); }
+
     UsedValues& populate_from_paintable(NodeWithStyle const&, Painting::Paintable const&);
 
     UsedValues const* try_get(NodeWithStyle const&) const;

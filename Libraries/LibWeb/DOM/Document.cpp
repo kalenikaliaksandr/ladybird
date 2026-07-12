@@ -1883,6 +1883,7 @@ void Document::update_layout(UpdateLayoutReason reason)
                 Optional<CSSPixels> { viewport_rect.height() });
             viewport_state.set_content_width(viewport_rect.width());
             viewport_state.set_content_height(viewport_rect.height());
+            layout_state.place_root_box_at_origin(viewport_state);
 
             // NB: Called during layout update.
             if (document_element && document_element->unsafe_layout_node()) {
@@ -1907,6 +1908,12 @@ void Document::update_layout(UpdateLayoutReason reason)
                 layout_state.get_mutable(svg_root).set_content_height(content_height);
                 Layout::SVGFormattingContext svg_formatting_context(layout_state, Layout::LayoutMode::Normal, svg_root, nullptr);
                 svg_formatting_context.run(Layout::LayoutInput { available_space });
+                // NOTE: SVGFormattingContext never places its own context box, and in this
+                //       standalone-SVG path there is no parent formatting context to do it either.
+                //       This must happen after run(): SVGFormattingContext uses is_placed() on the
+                //       context box to detect an already-laid-out SVG root, and placing earlier
+                //       would skip the <svg> width/height override.
+                layout_state.place_root_box_at_origin(layout_state.get_mutable(svg_root));
             } else {
                 Layout::BlockFormattingContext root_formatting_context(layout_state, Layout::LayoutMode::Normal, *m_layout_root, nullptr);
                 root_formatting_context.run(Layout::LayoutInput { available_space });
