@@ -169,7 +169,11 @@ struct LayoutState {
 
         void materialize_from_paintable(Painting::Paintable const&);
 
-        CSSPixelPoint content_offset() const { return m_content_offset.value_or({}); }
+        CSSPixelPoint content_offset() const
+        {
+            VERIFY(m_content_offset.has_value());
+            return *m_content_offset;
+        }
 
         bool is_placed() const { return m_content_offset.has_value(); }
 
