@@ -1283,11 +1283,16 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     if (pending_position.has_value())
         place_child(box, *pending_position);
 
+    // NOTE: The rendered legend has no content offset yet: layout_fieldset_with_rendered_legend()
+    //       places it after the other children. Both values computed from the offset below are
+    //       discarded on that path anyway (m_y_offset_of_current_block_container is restored by a
+    //       TemporaryChange, and bottom_of_lowest_margin_box refers to a dummy), so skip them.
     if (independent_formatting_context || !margins_collapse_through(box, m_state)) {
         if (!m_margin_state.box_last_in_flow_child_margin_bottom_collapsed()) {
             m_margin_state.reset();
         }
-        m_y_offset_of_current_block_container = box_state.content_offset().y() + box_state.content_height() + box_state.border_box_bottom();
+        if (!box_is_positioned_by_fieldset_layout)
+            m_y_offset_of_current_block_container = box_state.content_offset().y() + box_state.content_height() + box_state.border_box_bottom();
     }
     m_margin_state.set_box_last_in_flow_child_margin_bottom_collapsed(false);
 
@@ -1296,7 +1301,8 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
     compute_inset(box, block_container_state.content_size());
 
-    bottom_of_lowest_margin_box = max(bottom_of_lowest_margin_box, box_state.content_offset().y() + box_state.content_height() + box_state.margin_box_bottom());
+    if (!box_is_positioned_by_fieldset_layout)
+        bottom_of_lowest_margin_box = max(bottom_of_lowest_margin_box, box_state.content_offset().y() + box_state.content_height() + box_state.margin_box_bottom());
 
     if (independent_formatting_context)
         independent_formatting_context->parent_context_did_dimension_child_root_box();
