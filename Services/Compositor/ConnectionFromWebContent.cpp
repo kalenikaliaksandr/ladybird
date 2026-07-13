@@ -144,7 +144,12 @@ Messages::CompositorWebContentServer::GetCanvasPixelsResponse ConnectionFromWebC
 Messages::CompositorWebContentServer::CreateWebglContextResponse ConnectionFromWebContent::create_webgl_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias)
 {
     auto result = m_canvas_host.create_webgl_context(webgl_version, size, depth, stencil, antialias);
-    return { result.success, result.canvas_id, move(result.supported_extensions) };
+    return {
+        result.success,
+        result.canvas_id,
+        move(result.supported_extensions),
+        move(result.immutable_integer_parameters),
+    };
 }
 
 void ConnectionFromWebContent::webgl_commands(Web::Painting::CanvasId canvas_id, Core::AnonymousBuffer commands, Vector<Gfx::DecodedImageFrame> bitmaps)

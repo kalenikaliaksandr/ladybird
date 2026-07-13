@@ -190,7 +190,7 @@ void CompositorConnection::present_frame(Web::Compositor::CompositorContextId co
     async_present_frame(context_id, viewport_rect, damage_rect);
 }
 
-Optional<Web::Painting::CanvasId> CompositorConnection::create_webgl_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias, Vector<String>& out_supported_extensions)
+Optional<Web::Painting::CanvasId> CompositorConnection::create_webgl_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias, Vector<String>& out_supported_extensions, HashMap<Web::WebGL::GLenum, i64>& out_immutable_integer_parameters)
 {
     if (!can_send_message_to_compositor())
         return {};
@@ -199,6 +199,8 @@ Optional<Web::Painting::CanvasId> CompositorConnection::create_webgl_context(Web
     out_supported_extensions = response->take_supported_extensions();
     if (!response->success())
         return {};
+
+    out_immutable_integer_parameters = response->take_immutable_integer_parameters();
     return response->canvas_id();
 }
 

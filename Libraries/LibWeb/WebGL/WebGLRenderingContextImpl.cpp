@@ -1127,54 +1127,34 @@ WebIDL::ExceptionOr<JS::Value> WebGLRenderingContextImpl::get_parameter(WebIDL::
         return JS::Value(result);
     }
     case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS: {
-        GLint result { 0 };
-        m_context->get_integerv_robust_angle(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, 1, nullptr, &result);
-        return JS::Value(result);
+        return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS)));
     }
     case GL_MAX_CUBE_MAP_TEXTURE_SIZE: {
-        GLint result { 0 };
-        m_context->get_integerv_robust_angle(GL_MAX_CUBE_MAP_TEXTURE_SIZE, 1, nullptr, &result);
-        return JS::Value(result);
+        return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_CUBE_MAP_TEXTURE_SIZE)));
     }
     case GL_MAX_FRAGMENT_UNIFORM_VECTORS: {
-        GLint result { 0 };
-        m_context->get_integerv_robust_angle(GL_MAX_FRAGMENT_UNIFORM_VECTORS, 1, nullptr, &result);
-        return JS::Value(result);
+        return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_FRAGMENT_UNIFORM_VECTORS)));
     }
     case GL_MAX_RENDERBUFFER_SIZE: {
-        GLint result { 0 };
-        m_context->get_integerv_robust_angle(GL_MAX_RENDERBUFFER_SIZE, 1, nullptr, &result);
-        return JS::Value(result);
+        return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_RENDERBUFFER_SIZE)));
     }
     case GL_MAX_TEXTURE_IMAGE_UNITS: {
-        GLint result { 0 };
-        m_context->get_integerv_robust_angle(GL_MAX_TEXTURE_IMAGE_UNITS, 1, nullptr, &result);
-        return JS::Value(result);
+        return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_TEXTURE_IMAGE_UNITS)));
     }
     case GL_MAX_TEXTURE_SIZE: {
-        GLint result { 0 };
-        m_context->get_integerv_robust_angle(GL_MAX_TEXTURE_SIZE, 1, nullptr, &result);
-        return JS::Value(result);
+        return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_TEXTURE_SIZE)));
     }
     case GL_MAX_VARYING_VECTORS: {
-        GLint result { 0 };
-        m_context->get_integerv_robust_angle(GL_MAX_VARYING_VECTORS, 1, nullptr, &result);
-        return JS::Value(result);
+        return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_VARYING_VECTORS)));
     }
     case GL_MAX_VERTEX_ATTRIBS: {
-        GLint result { 0 };
-        m_context->get_integerv_robust_angle(GL_MAX_VERTEX_ATTRIBS, 1, nullptr, &result);
-        return JS::Value(result);
+        return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_VERTEX_ATTRIBS)));
     }
     case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS: {
-        GLint result { 0 };
-        m_context->get_integerv_robust_angle(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, 1, nullptr, &result);
-        return JS::Value(result);
+        return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS)));
     }
     case GL_MAX_VERTEX_UNIFORM_VECTORS: {
-        GLint result { 0 };
-        m_context->get_integerv_robust_angle(GL_MAX_VERTEX_UNIFORM_VECTORS, 1, nullptr, &result);
-        return JS::Value(result);
+        return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_VERTEX_UNIFORM_VECTORS)));
     }
     case GL_MAX_VIEWPORT_DIMS: {
         Array<GLint, 2> result;
@@ -1353,9 +1333,7 @@ WebIDL::ExceptionOr<JS::Value> WebGLRenderingContextImpl::get_parameter(WebIDL::
         return JS::Value(result);
     }
     case GL_SUBPIXEL_BITS: {
-        GLint result { 0 };
-        m_context->get_integerv_robust_angle(GL_SUBPIXEL_BITS, 1, nullptr, &result);
-        return JS::Value(result);
+        return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_SUBPIXEL_BITS)));
     }
     case GL_TEXTURE_BINDING_2D: {
         if (!m_texture_binding_2d)
@@ -1419,6 +1397,9 @@ WebIDL::ExceptionOr<JS::Value> WebGLRenderingContextImpl::get_parameter(WebIDL::
     }
     case GL_MAX_COLOR_ATTACHMENTS: { // NOTE: This has the same value as MAX_COLOR_ATTACHMENTS_WEBGL
         if (extension_enabled("WEBGL_draw_buffers"sv) || m_context->webgl_version() == WebGLVersion::WebGL2) {
+            if (m_context->webgl_version() == WebGLVersion::WebGL2)
+                return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_COLOR_ATTACHMENTS)));
+
             GLint result { 0 };
             m_context->get_integerv_robust_angle(GL_MAX_COLOR_ATTACHMENTS, 1, nullptr, &result);
             return JS::Value(result);
@@ -1429,9 +1410,7 @@ WebIDL::ExceptionOr<JS::Value> WebGLRenderingContextImpl::get_parameter(WebIDL::
     }
     case GL_MAX_DRAW_BUFFERS: {
         if (m_context->webgl_version() == WebGLVersion::WebGL2) { // FIXME: Allow this code path for MAX_DRAW_BUFFERS_WEBGL
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_DRAW_BUFFERS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_DRAW_BUFFERS)));
         }
 
         set_error(GL_INVALID_ENUM);
@@ -1475,94 +1454,58 @@ WebIDL::ExceptionOr<JS::Value> WebGLRenderingContextImpl::get_parameter(WebIDL::
             return JS::Value(m_copy_write_buffer_binding);
         }
         case GL_MAX_SAMPLES: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_SAMPLES, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_SAMPLES)));
         }
         case GL_MAX_3D_TEXTURE_SIZE: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_3D_TEXTURE_SIZE, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_3D_TEXTURE_SIZE)));
         }
         case GL_MAX_ARRAY_TEXTURE_LAYERS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_ARRAY_TEXTURE_LAYERS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_ARRAY_TEXTURE_LAYERS)));
         }
         case GL_MAX_VERTEX_UNIFORM_COMPONENTS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_VERTEX_UNIFORM_COMPONENTS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_VERTEX_UNIFORM_COMPONENTS)));
         }
         case GL_MAX_UNIFORM_BLOCK_SIZE: {
-            GLint64 result { 0 };
-            m_context->get_integer64v_robust_angle(GL_MAX_UNIFORM_BLOCK_SIZE, 1, nullptr, &result);
-            return JS::Value(static_cast<double>(result));
+            return JS::Value(static_cast<double>(m_context->immutable_integer_parameter(GL_MAX_UNIFORM_BLOCK_SIZE)));
         }
         case GL_MAX_UNIFORM_BUFFER_BINDINGS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_UNIFORM_BUFFER_BINDINGS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_UNIFORM_BUFFER_BINDINGS)));
         }
         case GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT)));
         }
         case GL_MAX_VERTEX_UNIFORM_BLOCKS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_VERTEX_UNIFORM_BLOCKS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_VERTEX_UNIFORM_BLOCKS)));
         }
         case GL_MAX_FRAGMENT_INPUT_COMPONENTS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_FRAGMENT_INPUT_COMPONENTS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_FRAGMENT_INPUT_COMPONENTS)));
         }
         case GL_MAX_FRAGMENT_UNIFORM_COMPONENTS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_FRAGMENT_UNIFORM_COMPONENTS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_FRAGMENT_UNIFORM_COMPONENTS)));
         }
         case GL_MAX_COMBINED_UNIFORM_BLOCKS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_COMBINED_UNIFORM_BLOCKS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_COMBINED_UNIFORM_BLOCKS)));
         }
         case GL_MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS: {
-            GLint64 result { 0 };
-            m_context->get_integer64v_robust_angle(GL_MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS, 1, nullptr, &result);
-            return JS::Value(static_cast<double>(result));
+            return JS::Value(static_cast<double>(m_context->immutable_integer_parameter(GL_MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS)));
         }
         case GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS: {
-            GLint64 result { 0 };
-            m_context->get_integer64v_robust_angle(GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS, 1, nullptr, &result);
-            return JS::Value(static_cast<double>(result));
+            return JS::Value(static_cast<double>(m_context->immutable_integer_parameter(GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS)));
         }
         case GL_MAX_ELEMENT_INDEX: {
-            GLint64 result { 0 };
-            m_context->get_integer64v_robust_angle(GL_MAX_ELEMENT_INDEX, 1, nullptr, &result);
-            return JS::Value(static_cast<double>(result));
+            return JS::Value(static_cast<double>(m_context->immutable_integer_parameter(GL_MAX_ELEMENT_INDEX)));
         }
         case GL_MAX_FRAGMENT_UNIFORM_BLOCKS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_FRAGMENT_UNIFORM_BLOCKS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_FRAGMENT_UNIFORM_BLOCKS)));
         }
         case GL_MAX_VARYING_COMPONENTS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_VARYING_COMPONENTS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_VARYING_COMPONENTS)));
         }
         case GL_MAX_ELEMENTS_INDICES: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_ELEMENTS_INDICES, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_ELEMENTS_INDICES)));
         }
         case GL_MAX_ELEMENTS_VERTICES: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_ELEMENTS_VERTICES, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_ELEMENTS_VERTICES)));
         }
         case GL_MAX_TEXTURE_LOD_BIAS: {
             GLfloat result { 0.0f };
@@ -1570,39 +1513,25 @@ WebIDL::ExceptionOr<JS::Value> WebGLRenderingContextImpl::get_parameter(WebIDL::
             return JS::Value(result);
         }
         case GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS)));
         }
         case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS)));
         }
         case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS)));
         }
         case GL_MIN_PROGRAM_TEXEL_OFFSET: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MIN_PROGRAM_TEXEL_OFFSET, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MIN_PROGRAM_TEXEL_OFFSET)));
         }
         case GL_MAX_PROGRAM_TEXEL_OFFSET: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_PROGRAM_TEXEL_OFFSET, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_PROGRAM_TEXEL_OFFSET)));
         }
         case GL_MAX_VERTEX_OUTPUT_COMPONENTS: {
-            GLint result { 0 };
-            m_context->get_integerv_robust_angle(GL_MAX_VERTEX_OUTPUT_COMPONENTS, 1, nullptr, &result);
-            return JS::Value(result);
+            return JS::Value(static_cast<GLint>(m_context->immutable_integer_parameter(GL_MAX_VERTEX_OUTPUT_COMPONENTS)));
         }
         case GL_MAX_SERVER_WAIT_TIMEOUT: {
-            GLint64 result { 0 };
-            m_context->get_integer64v_robust_angle(GL_MAX_SERVER_WAIT_TIMEOUT, 1, nullptr, &result);
-            return JS::Value(static_cast<double>(result));
+            return JS::Value(static_cast<double>(m_context->immutable_integer_parameter(GL_MAX_SERVER_WAIT_TIMEOUT)));
         }
         case GL_PACK_ROW_LENGTH: {
             GLint result { 0 };

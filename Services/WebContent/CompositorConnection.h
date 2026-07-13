@@ -57,7 +57,7 @@ public:
     void present_frame(Web::Compositor::CompositorContextId, Gfx::IntRect viewport_rect, Gfx::IntRect damage_rect);
     void request_screenshot(Web::Compositor::CompositorContextId, NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&&);
 
-    Optional<Web::Painting::CanvasId> create_webgl_context(Web::WebGL::WebGLVersion, Gfx::IntSize, bool depth, bool stencil, bool antialias, Vector<String>& out_supported_extensions);
+    Optional<Web::Painting::CanvasId> create_webgl_context(Web::WebGL::WebGLVersion, Gfx::IntSize, bool depth, bool stencil, bool antialias, Vector<String>& out_supported_extensions, HashMap<Web::WebGL::GLenum, i64>& out_immutable_integer_parameters);
     void send_webgl_commands(Web::Painting::CanvasId, ByteBuffer const&, Vector<Gfx::DecodedImageFrame> const& bitmaps);
     void present_webgl_canvas(Web::Painting::CanvasId, bool preserve_drawing_buffer);
     ByteBuffer webgl_sync_call(Web::Painting::CanvasId, ByteBuffer request);

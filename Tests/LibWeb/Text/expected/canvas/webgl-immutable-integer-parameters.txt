@@ -1,0 +1,6 @@
+WebGL 1 numeric: true
+WebGL 1 stable: true
+WebGL 1 no error: true
+WebGL 2 numeric: true
+WebGL 2 stable: true
+WebGL 2 no error: true

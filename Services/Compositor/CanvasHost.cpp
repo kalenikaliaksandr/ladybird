@@ -4,8 +4,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Array.h>
 #include <Compositor/CanvasHost.h>
 #include <Compositor/HostWebGLContext.h>
+#include <GLES3/gl3.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/CanvasCommandPlayer.h>
 #include <LibGfx/PaintingSurface.h>
@@ -14,6 +16,73 @@
 #include <LibWeb/Painting/CanvasSurfaceRegistry.h>
 
 namespace Compositor {
+
+static constexpr Array immutable_webgl1_integer_parameters {
+    GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,
+    GL_MAX_CUBE_MAP_TEXTURE_SIZE,
+    GL_MAX_FRAGMENT_UNIFORM_VECTORS,
+    GL_MAX_RENDERBUFFER_SIZE,
+    GL_MAX_TEXTURE_IMAGE_UNITS,
+    GL_MAX_TEXTURE_SIZE,
+    GL_MAX_VARYING_VECTORS,
+    GL_MAX_VERTEX_ATTRIBS,
+    GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS,
+    GL_MAX_VERTEX_UNIFORM_VECTORS,
+    GL_SUBPIXEL_BITS,
+};
+
+static constexpr Array immutable_webgl2_integer_parameters {
+    GL_MAX_COLOR_ATTACHMENTS,
+    GL_MAX_DRAW_BUFFERS,
+    GL_MAX_SAMPLES,
+    GL_MAX_3D_TEXTURE_SIZE,
+    GL_MAX_ARRAY_TEXTURE_LAYERS,
+    GL_MAX_VERTEX_UNIFORM_COMPONENTS,
+    GL_MAX_UNIFORM_BUFFER_BINDINGS,
+    GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT,
+    GL_MAX_VERTEX_UNIFORM_BLOCKS,
+    GL_MAX_FRAGMENT_INPUT_COMPONENTS,
+    GL_MAX_FRAGMENT_UNIFORM_COMPONENTS,
+    GL_MAX_COMBINED_UNIFORM_BLOCKS,
+    GL_MAX_FRAGMENT_UNIFORM_BLOCKS,
+    GL_MAX_VARYING_COMPONENTS,
+    GL_MAX_ELEMENTS_INDICES,
+    GL_MAX_ELEMENTS_VERTICES,
+    GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS,
+    GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS,
+    GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS,
+    GL_MIN_PROGRAM_TEXEL_OFFSET,
+    GL_MAX_PROGRAM_TEXEL_OFFSET,
+    GL_MAX_VERTEX_OUTPUT_COMPONENTS,
+};
+
+static constexpr Array immutable_webgl2_integer64_parameters {
+    GL_MAX_UNIFORM_BLOCK_SIZE,
+    GL_MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS,
+    GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS,
+    GL_MAX_ELEMENT_INDEX,
+    GL_MAX_SERVER_WAIT_TIMEOUT,
+};
+
+template<typename Integer, size_t Size>
+static void snapshot_integer_parameters(OpenGLContext& context, Array<Integer, Size> const& parameters, HashMap<u32, i64>& snapshot)
+{
+    for (auto name : parameters) {
+        GLint value { 0 };
+        context.get_integerv_robust_angle(name, 1, nullptr, &value);
+        snapshot.set(name, value);
+    }
+}
+
+template<typename Integer, size_t Size>
+static void snapshot_integer64_parameters(OpenGLContext& context, Array<Integer, Size> const& parameters, HashMap<u32, i64>& snapshot)
+{
+    for (auto name : parameters) {
+        GLint64 value { 0 };
+        context.get_integer64v_robust_angle(name, 1, nullptr, &value);
+        snapshot.set(name, value);
+    }
+}
 
 CanvasHost::CanvasHost(RefPtr<Gfx::SkiaBackendContext> skia_backend_context, Web::Painting::CanvasSurfaceRegistry& canvas_surface_registry)
     : m_skia_backend_context(move(skia_backend_context))
@@ -100,9 +169,23 @@ CanvasHost::CreateWebGLContextResult CanvasHost::create_webgl_context(Web::WebGL
         return {};
 
     auto canvas_id = m_canvas_surface_registry.allocate_canvas_id();
-    auto supported_extensions = context->gl_context().get_supported_opengl_extensions();
+    auto& gl_context = context->gl_context();
+    gl_context.make_current();
+    auto supported_extensions = gl_context.get_supported_opengl_extensions();
+    HashMap<u32, i64> immutable_integer_parameters;
+    immutable_integer_parameters.ensure_capacity(immutable_webgl1_integer_parameters.size() + immutable_webgl2_integer_parameters.size() + immutable_webgl2_integer64_parameters.size());
+    snapshot_integer_parameters(gl_context, immutable_webgl1_integer_parameters, immutable_integer_parameters);
+    if (version == Web::WebGL::WebGLVersion::WebGL2) {
+        snapshot_integer_parameters(gl_context, immutable_webgl2_integer_parameters, immutable_integer_parameters);
+        snapshot_integer64_parameters(gl_context, immutable_webgl2_integer64_parameters, immutable_integer_parameters);
+    }
     m_contexts.set(canvas_id, context.release_nonnull());
-    return { .success = true, .canvas_id = canvas_id, .supported_extensions = move(supported_extensions) };
+    return {
+        .success = true,
+        .canvas_id = canvas_id,
+        .supported_extensions = move(supported_extensions),
+        .immutable_integer_parameters = move(immutable_integer_parameters),
+    };
 }
 
 void CanvasHost::destroy_context(Web::Painting::CanvasId canvas_id)

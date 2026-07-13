@@ -15,10 +15,11 @@
 
 namespace Web::WebGL {
 
-WebGLContextProxyBase::WebGLContextProxyBase(NonnullRefPtr<RemoteWebGLTransport> transport, WebGLVersion webgl_version, Vector<String> supported_extensions)
+WebGLContextProxyBase::WebGLContextProxyBase(NonnullRefPtr<RemoteWebGLTransport> transport, WebGLVersion webgl_version, Vector<String> supported_extensions, HashMap<GLenum, i64> immutable_integer_parameters)
     : m_transport(move(transport))
     , m_webgl_version(webgl_version)
     , m_supported_extensions(move(supported_extensions))
+    , m_immutable_integer_parameters(move(immutable_integer_parameters))
 {
 }
 
@@ -27,10 +28,11 @@ WebGLContextProxyBase::~WebGLContextProxyBase()
     m_transport->destroy_context();
 }
 
-void WebGLContextProxyBase::restore(NonnullRefPtr<RemoteWebGLTransport> transport, Vector<String> supported_extensions)
+void WebGLContextProxyBase::restore(NonnullRefPtr<RemoteWebGLTransport> transport, Vector<String> supported_extensions, HashMap<GLenum, i64> immutable_integer_parameters)
 {
     m_transport = move(transport);
     m_supported_extensions = move(supported_extensions);
+    m_immutable_integer_parameters = move(immutable_integer_parameters);
     m_lost = false;
     m_commands.clear_with_capacity();
     m_pending_bitmaps.clear_with_capacity();

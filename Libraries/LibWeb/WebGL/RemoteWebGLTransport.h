@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/ByteBuffer.h>
+#include <AK/HashMap.h>
 #include <AK/Optional.h>
 #include <AK/RefCounted.h>
 #include <AK/String.h>
@@ -29,6 +30,7 @@ public:
     struct CreateResult {
         bool success { false };
         Vector<String> supported_extensions;
+        HashMap<GLenum, i64> immutable_integer_parameters;
     };
     virtual CreateResult create_context(WebGLVersion, Gfx::IntSize initial_size, bool depth, bool stencil, bool antialias) = 0;
     virtual Optional<Painting::CanvasId> canvas_id() const = 0;

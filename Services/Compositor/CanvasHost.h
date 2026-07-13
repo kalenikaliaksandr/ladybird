@@ -41,6 +41,7 @@ public:
         bool success { false };
         Web::Painting::CanvasId canvas_id { 0 };
         Vector<String> supported_extensions;
+        HashMap<u32, i64> immutable_integer_parameters;
     };
 
     CanvasHost(RefPtr<Gfx::SkiaBackendContext>, Web::Painting::CanvasSurfaceRegistry&);

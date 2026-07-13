@@ -31,14 +31,14 @@ class WEB_API WebGLContextProxyBase {
     AK_MAKE_NONMOVABLE(WebGLContextProxyBase);
 
 public:
-    WebGLContextProxyBase(NonnullRefPtr<RemoteWebGLTransport>, WebGLVersion, Vector<String> supported_extensions);
+    WebGLContextProxyBase(NonnullRefPtr<RemoteWebGLTransport>, WebGLVersion, Vector<String> supported_extensions, HashMap<GLenum, i64> immutable_integer_parameters);
     ~WebGLContextProxyBase();
 
     void flush_commands();
     void set_lost() { m_lost = true; }
     Optional<Painting::CanvasId> canvas_id() const { return m_transport->canvas_id(); }
 
-    void restore(NonnullRefPtr<RemoteWebGLTransport>, Vector<String> supported_extensions);
+    void restore(NonnullRefPtr<RemoteWebGLTransport>, Vector<String> supported_extensions, HashMap<GLenum, i64> immutable_integer_parameters);
 
     void make_current() { }
     void notify_content_will_change() { }
@@ -46,6 +46,14 @@ public:
     u32 default_renderbuffer() const { return 0; }
     WebGLVersion webgl_version() const { return m_webgl_version; }
     Vector<String> const& get_supported_opengl_extensions() const { return m_supported_extensions; }
+    i64 immutable_integer_parameter(GLenum name) const
+    {
+        if (m_lost)
+            return 0;
+        auto parameter = m_immutable_integer_parameters.get(name);
+        VERIFY(parameter.has_value());
+        return *parameter;
+    }
     void set_size(Gfx::IntSize const&);
 
     void present_canvas_for_compositing(bool preserve_drawing_buffer);
@@ -126,6 +134,7 @@ private:
     NonnullRefPtr<RemoteWebGLTransport> m_transport;
     WebGLVersion m_webgl_version { WebGLVersion::WebGL1 };
     Vector<String> m_supported_extensions;
+    HashMap<GLenum, i64> m_immutable_integer_parameters;
     WebGLCommandList m_commands;
     Vector<Gfx::DecodedImageFrame> m_pending_bitmaps;
     u32 m_next_object_id { 1 };

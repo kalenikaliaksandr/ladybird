@@ -1,0 +1,71 @@
+<!doctype html>
+<script src="../include.js"></script>
+<script>
+    function checkParameters(name, gl, parameters) {
+        const firstValues = parameters.map(parameter => gl.getParameter(parameter));
+        const secondValues = parameters.map(parameter => gl.getParameter(parameter));
+
+        println(`${name} numeric: ${firstValues.every(value => typeof value === "number")}`);
+        println(`${name} stable: ${firstValues.every((value, index) => value === secondValues[index])}`);
+        println(`${name} no error: ${gl.getError() === gl.NO_ERROR}`);
+    }
+
+    test(() => {
+        const webgl1 = document.createElement("canvas").getContext("webgl");
+        checkParameters("WebGL 1", webgl1, [
+            webgl1.MAX_COMBINED_TEXTURE_IMAGE_UNITS,
+            webgl1.MAX_CUBE_MAP_TEXTURE_SIZE,
+            webgl1.MAX_FRAGMENT_UNIFORM_VECTORS,
+            webgl1.MAX_RENDERBUFFER_SIZE,
+            webgl1.MAX_TEXTURE_IMAGE_UNITS,
+            webgl1.MAX_TEXTURE_SIZE,
+            webgl1.MAX_VARYING_VECTORS,
+            webgl1.MAX_VERTEX_ATTRIBS,
+            webgl1.MAX_VERTEX_TEXTURE_IMAGE_UNITS,
+            webgl1.MAX_VERTEX_UNIFORM_VECTORS,
+            webgl1.SUBPIXEL_BITS,
+        ]);
+
+        const webgl2 = document.createElement("canvas").getContext("webgl2");
+        checkParameters("WebGL 2", webgl2, [
+            webgl2.MAX_COMBINED_TEXTURE_IMAGE_UNITS,
+            webgl2.MAX_CUBE_MAP_TEXTURE_SIZE,
+            webgl2.MAX_FRAGMENT_UNIFORM_VECTORS,
+            webgl2.MAX_RENDERBUFFER_SIZE,
+            webgl2.MAX_TEXTURE_IMAGE_UNITS,
+            webgl2.MAX_TEXTURE_SIZE,
+            webgl2.MAX_VARYING_VECTORS,
+            webgl2.MAX_VERTEX_ATTRIBS,
+            webgl2.MAX_VERTEX_TEXTURE_IMAGE_UNITS,
+            webgl2.MAX_VERTEX_UNIFORM_VECTORS,
+            webgl2.SUBPIXEL_BITS,
+            webgl2.MAX_COLOR_ATTACHMENTS,
+            webgl2.MAX_DRAW_BUFFERS,
+            webgl2.MAX_SAMPLES,
+            webgl2.MAX_3D_TEXTURE_SIZE,
+            webgl2.MAX_ARRAY_TEXTURE_LAYERS,
+            webgl2.MAX_VERTEX_UNIFORM_COMPONENTS,
+            webgl2.MAX_UNIFORM_BLOCK_SIZE,
+            webgl2.MAX_UNIFORM_BUFFER_BINDINGS,
+            webgl2.UNIFORM_BUFFER_OFFSET_ALIGNMENT,
+            webgl2.MAX_VERTEX_UNIFORM_BLOCKS,
+            webgl2.MAX_FRAGMENT_INPUT_COMPONENTS,
+            webgl2.MAX_FRAGMENT_UNIFORM_COMPONENTS,
+            webgl2.MAX_COMBINED_UNIFORM_BLOCKS,
+            webgl2.MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS,
+            webgl2.MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS,
+            webgl2.MAX_ELEMENT_INDEX,
+            webgl2.MAX_FRAGMENT_UNIFORM_BLOCKS,
+            webgl2.MAX_VARYING_COMPONENTS,
+            webgl2.MAX_ELEMENTS_INDICES,
+            webgl2.MAX_ELEMENTS_VERTICES,
+            webgl2.MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS,
+            webgl2.MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS,
+            webgl2.MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS,
+            webgl2.MIN_PROGRAM_TEXEL_OFFSET,
+            webgl2.MAX_PROGRAM_TEXEL_OFFSET,
+            webgl2.MAX_VERTEX_OUTPUT_COMPONENTS,
+            webgl2.MAX_SERVER_WAIT_TIMEOUT,
+        ]);
+    });
+</script>

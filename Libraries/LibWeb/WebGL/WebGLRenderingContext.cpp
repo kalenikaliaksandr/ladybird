@@ -103,7 +103,7 @@ OwnPtr<WebGLContextProxy> create_webgl_context_proxy(HTML::HTMLCanvasElement& ca
     if (!remote.has_value())
         return {};
 
-    return make<WebGLContextProxy>(move(remote->transport), webgl_version, move(remote->result.supported_extensions));
+    return make<WebGLContextProxy>(move(remote->transport), webgl_version, move(remote->result.supported_extensions), move(remote->result.immutable_integer_parameters));
 }
 
 bool restore_webgl_context_proxy(WebGLContextProxy& context, HTML::HTMLCanvasElement& canvas_element, WebGLVersion webgl_version, WebGLContextAttributes const& context_attributes)
@@ -112,7 +112,7 @@ bool restore_webgl_context_proxy(WebGLContextProxy& context, HTML::HTMLCanvasEle
     if (!remote.has_value())
         return false;
 
-    context.restore(move(remote->transport), move(remote->result.supported_extensions));
+    context.restore(move(remote->transport), move(remote->result.supported_extensions), move(remote->result.immutable_integer_parameters));
     return true;
 }
 
