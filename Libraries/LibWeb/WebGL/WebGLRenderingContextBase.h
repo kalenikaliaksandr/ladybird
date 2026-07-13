@@ -104,7 +104,13 @@ protected:
         return src_span.slice(src_offset, src_length_override);
     }
 
-    static ErrorOr<ByteBuffer> copy_buffer_source_to_byte_buffer(WebIDL::BufferSource src_data, WebIDL::UnsignedLongLong src_offset, WebIDL::UnsignedLong src_length_override = 0)
+    struct BufferSourceBytes {
+        GC::Ref<JS::ArrayBuffer> buffer;
+        size_t byte_offset { 0 };
+        size_t byte_length { 0 };
+    };
+
+    static ErrorOr<BufferSourceBytes> validate_buffer_source_bytes(WebIDL::BufferSource src_data, WebIDL::UnsignedLongLong src_offset, WebIDL::UnsignedLong src_length_override = 0)
     {
         auto array_buffer = src_data.viewed_array_buffer();
         if (!array_buffer || array_buffer->is_detached()) [[unlikely]]
@@ -113,7 +119,7 @@ protected:
         if (src_data.is_out_of_bounds()) {
             if (src_offset != 0 || src_length_override != 0) [[unlikely]]
                 return Error::from_errno(EINVAL);
-            return ByteBuffer::create_uninitialized(0);
+            return BufferSourceBytes { .buffer = *array_buffer };
         }
 
         auto element_size = src_data.element_size();
@@ -141,7 +147,17 @@ protected:
         if (byte_length > array_buffer->byte_length() - byte_offset_in_buffer.value()) [[unlikely]]
             return Error::from_errno(EINVAL);
 
-        return array_buffer->copy_to_byte_buffer(byte_offset_in_buffer.value(), byte_length);
+        return BufferSourceBytes {
+            .buffer = *array_buffer,
+            .byte_offset = byte_offset_in_buffer.value(),
+            .byte_length = byte_length,
+        };
+    }
+
+    static ErrorOr<ByteBuffer> copy_buffer_source_to_byte_buffer(WebIDL::BufferSource src_data, WebIDL::UnsignedLongLong src_offset, WebIDL::UnsignedLong src_length_override = 0)
+    {
+        auto bytes = TRY(validate_buffer_source_bytes(move(src_data), src_offset, src_length_override));
+        return bytes.buffer->copy_to_byte_buffer(bytes.byte_offset, bytes.byte_length);
     }
 
     template<typename T>

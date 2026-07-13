@@ -42,6 +42,13 @@ public:
         append_bytes(Command::command_type, { &command, sizeof(command) }, inline_data);
     }
 
+    template<typename Command, typename Writer>
+    void append(Command const& command, size_t inline_data_size, Writer&& writer)
+    {
+        auto destination = append_with_uninitialized_inline_data_bytes(Command::command_type, { &command, sizeof(command) }, inline_data_size);
+        writer(destination);
+    }
+
     void append_bytes(WebGLCommandType, ReadonlyBytes payload, ReadonlyBytes inline_data);
 
     template<typename Callback>
@@ -108,6 +115,8 @@ public:
     size_t size_in_bytes() const { return m_bytes.size(); }
 
 private:
+    Bytes append_with_uninitialized_inline_data_bytes(WebGLCommandType, ReadonlyBytes payload, size_t inline_data_size);
+
     ByteBuffer m_bytes;
 };
 

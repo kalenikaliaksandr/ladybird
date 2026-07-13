@@ -44,16 +44,20 @@ void WebGLRenderingContextOverloads::buffer_data(WebIDL::UnsignedLong target, We
         return;
     }
 
-    auto bytes = SET_ERROR_VALUE_IF_ERROR(copy_buffer_source_to_byte_buffer(WebIDL::BufferSource { data.downcast<WebIDL::BufferSourceVariant>() }, /* src_offset= */ 0), GL_INVALID_VALUE);
-    m_context->buffer_data(target, static_cast<GLsizeiptr>(bytes.size()), bytes.data(), usage);
+    auto source = SET_ERROR_VALUE_IF_ERROR(validate_buffer_source_bytes(WebIDL::BufferSource { data.downcast<WebIDL::BufferSourceVariant>() }, /* src_offset= */ 0), GL_INVALID_VALUE);
+    m_context->buffer_data_from_client(target, source.byte_length, usage, [&](Bytes destination) {
+        source.buffer->copy_to(source.byte_offset, destination);
+    });
 }
 
 void WebGLRenderingContextOverloads::buffer_sub_data(WebIDL::UnsignedLong target, WebIDL::LongLong offset, WebIDL::BufferSource data)
 {
     m_context->make_current();
 
-    auto bytes = SET_ERROR_VALUE_IF_ERROR(copy_buffer_source_to_byte_buffer(data, /* src_offset= */ 0), GL_INVALID_VALUE);
-    m_context->buffer_sub_data(target, offset, bytes.size(), bytes.data());
+    auto source = SET_ERROR_VALUE_IF_ERROR(validate_buffer_source_bytes(move(data), /* src_offset= */ 0), GL_INVALID_VALUE);
+    m_context->buffer_sub_data_from_client(target, offset, source.byte_length, [&](Bytes destination) {
+        source.buffer->copy_to(source.byte_offset, destination);
+    });
 }
 
 void WebGLRenderingContextOverloads::compressed_tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::UnsignedLong internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border, WebIDL::ArrayBufferView data)

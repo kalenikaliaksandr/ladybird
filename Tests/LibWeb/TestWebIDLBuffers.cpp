@@ -10,6 +10,7 @@
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibJS/Runtime/VM.h>
 #include <LibTest/TestCase.h>
+#include <LibWeb/WebGL/WebGLCommandList.h>
 #include <LibWeb/WebGL/WebGLRenderingContextBase.h>
 #include <LibWeb/WebIDL/Buffers.h>
 
@@ -35,6 +36,7 @@ struct ExposedWebGLRenderingContextBase : Web::WebGL::WebGLRenderingContextBase 
     WEB_NON_IDL_PLATFORM_OBJECT(ExposedWebGLRenderingContextBase, Web::WebGL::WebGLRenderingContextBase);
 
     using Web::WebGL::WebGLRenderingContextBase::copy_buffer_source_to_byte_buffer;
+    using Web::WebGL::WebGLRenderingContextBase::validate_buffer_source_bytes;
 };
 
 GC::Ref<JS::ArrayBuffer> create_shrunken_resizable_array_buffer(JS::VM& vm)
@@ -135,6 +137,16 @@ TEST_CASE(buffer_source_copy_and_checked_write_handle_in_bounds_views)
     EXPECT_EQ(typed_array_bytes[1], 0x17);
     EXPECT(ExposedWebGLRenderingContextBase::copy_buffer_source_to_byte_buffer(typed_array_source, 3).is_error());
 
+    auto validated_source = MUST(ExposedWebGLRenderingContextBase::validate_buffer_source_bytes(typed_array_source, 1));
+    EXPECT_EQ(validated_source.byte_offset, 6uz);
+    EXPECT_EQ(validated_source.byte_length, 2uz);
+    Array<u8, 4> copied_bytes { 0xaa, 0xaa, 0xaa, 0xaa };
+    validated_source.buffer->copy_to(validated_source.byte_offset, copied_bytes.span().slice(1, validated_source.byte_length));
+    EXPECT_EQ(copied_bytes[0], 0xaa);
+    EXPECT_EQ(copied_bytes[1], 0x16);
+    EXPECT_EQ(copied_bytes[2], 0x17);
+    EXPECT_EQ(copied_bytes[3], 0xaa);
+
     u8 one_byte = 0xaa;
     EXPECT(typed_array_view.write_checked({ &one_byte, 1 }).is_error());
 
@@ -179,6 +191,37 @@ TEST_CASE(webgl_buffer_source_copy_treats_out_of_bounds_views_as_empty)
     EXPECT_EQ(data_view_bytes.size(), 0uz);
     EXPECT(ExposedWebGLRenderingContextBase::copy_buffer_source_to_byte_buffer(data_view_source, 1).is_error());
     EXPECT(ExposedWebGLRenderingContextBase::copy_buffer_source_to_byte_buffer(data_view_source, 0, 1).is_error());
+}
+
+TEST_CASE(webgl_command_list_writes_inline_data_into_reserved_payload)
+{
+    using namespace Web::WebGL;
+
+    Commands::BufferSubData buffer_sub_data {
+        .target = 1,
+        .offset = 2,
+        .size = 4,
+        .data = { WebGLCommandList::first_inline_data_offset(sizeof(Commands::BufferSubData)), 4 },
+    };
+    WebGLCommandList commands;
+    Array<u8, 4> expected_data { 0x11, 0x22, 0x33, 0x44 };
+    commands.append(buffer_sub_data, expected_data.size(), [&](Bytes destination) {
+        expected_data.span().copy_to(destination);
+    });
+    commands.append(Commands::Clear { .mask = 1 });
+
+    size_t command_count = 0;
+    auto result = WebGLCommandList::for_each_command(commands.bytes(), [&]<typename Command>(Command const&, ReadonlyBytes payload) -> ErrorOr<void> {
+        ++command_count;
+        if constexpr (IsSame<Command, Commands::BufferSubData>) {
+            auto data = WebGLCommandList::resolve_data_span(payload, buffer_sub_data.data);
+            EXPECT_EQ(data.size(), expected_data.size());
+            EXPECT(data == expected_data.span());
+        }
+        return {};
+    });
+    EXPECT(!result.is_error());
+    EXPECT_EQ(command_count, 2uz);
 }
 
 TEST_CASE(array_buffer_view_checked_write_handles_out_of_bounds_views)

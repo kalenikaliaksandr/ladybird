@@ -52,6 +52,22 @@ public:
 
     RefPtr<Gfx::Bitmap> read_back_drawing_buffer(Gfx::IntRect const&);
 
+    template<typename Writer>
+    void buffer_data_from_client(GLenum target, size_t size, GLenum usage, Writer&& writer)
+    {
+        Commands::BufferData command { .target = target, .size = static_cast<GLsizeiptr>(size), .has_data = true, .usage = usage };
+        command.data = { WebGLCommandList::first_inline_data_offset(sizeof(command)), static_cast<u32>(size) };
+        record(command, size, forward<Writer>(writer));
+    }
+
+    template<typename Writer>
+    void buffer_sub_data_from_client(GLenum target, GLintptr offset, size_t size, Writer&& writer)
+    {
+        Commands::BufferSubData command { .target = target, .offset = offset, .size = static_cast<GLsizeiptr>(size) };
+        command.data = { WebGLCommandList::first_inline_data_offset(sizeof(command)), static_cast<u32>(size) };
+        record(command, size, forward<Writer>(writer));
+    }
+
     void read_pixels_into_pixel_pack_buffer(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, long long offset);
     bool read_buffer_sub_data(GLenum target, long long offset, Bytes destination);
 
@@ -85,6 +101,16 @@ protected:
         if (m_lost)
             return;
         m_commands.append(command, inline_data);
+        if (m_commands.size_in_bytes() >= max_pending_command_bytes)
+            flush_commands();
+    }
+
+    template<typename Command, typename Writer>
+    void record(Command const& command, size_t inline_data_size, Writer&& writer)
+    {
+        if (m_lost)
+            return;
+        m_commands.append(command, inline_data_size, forward<Writer>(writer));
         if (m_commands.size_in_bytes() >= max_pending_command_bytes)
             flush_commands();
     }

@@ -36,9 +36,18 @@ static void write_payload(Bytes destination, ReadonlyBytes payload, ReadonlyByte
 
 void WebGLCommandList::append_bytes(WebGLCommandType type, ReadonlyBytes payload, ReadonlyBytes inline_data)
 {
+    auto destination = append_with_uninitialized_inline_data_bytes(type, payload, inline_data.size());
+    inline_data.copy_to(destination);
+}
+
+Bytes WebGLCommandList::append_with_uninitialized_inline_data_bytes(WebGLCommandType type, ReadonlyBytes payload, size_t inline_data_size)
+{
     VERIFY(m_bytes.size() % command_alignment == 0);
 
-    auto record_size = sizeof(WebGLCommandHeader) + payload_layout_size(payload, inline_data);
+    auto payload_size = payload.size();
+    if (inline_data_size > 0)
+        payload_size = align_up_to(payload_size, command_alignment) + inline_data_size;
+    auto record_size = sizeof(WebGLCommandHeader) + payload_size;
     auto padded_record_size = align_up_to(record_size, command_alignment);
     auto padded_payload_size = padded_record_size - sizeof(WebGLCommandHeader);
     VERIFY(padded_payload_size <= NumericLimits<u32>::max());
@@ -52,7 +61,18 @@ void WebGLCommandList::append_bytes(WebGLCommandType type, ReadonlyBytes payload
     m_bytes.resize(record_offset + padded_record_size);
     auto record = m_bytes.bytes().slice(record_offset);
     __builtin_memcpy(record.data(), &header, sizeof(header));
-    write_payload(record.slice(sizeof(header)), payload, inline_data);
+    auto destination = record.slice(sizeof(header));
+    __builtin_memcpy(destination.data(), payload.data(), payload.size());
+
+    if (inline_data_size == 0) {
+        __builtin_memset(destination.offset_pointer(payload.size()), 0, destination.size() - payload.size());
+        return {};
+    }
+
+    auto inline_data_offset = align_up_to(payload.size(), command_alignment);
+    __builtin_memset(destination.offset_pointer(payload.size()), 0, inline_data_offset - payload.size());
+    __builtin_memset(destination.offset_pointer(inline_data_offset + inline_data_size), 0, destination.size() - inline_data_offset - inline_data_size);
+    return destination.slice(inline_data_offset, inline_data_size);
 }
 
 ByteBuffer WebGLSyncCall::encode_request_bytes(WebGLSyncCallType type, ReadonlyBytes request, ReadonlyBytes inline_data)
