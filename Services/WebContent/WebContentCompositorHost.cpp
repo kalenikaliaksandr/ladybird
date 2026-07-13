@@ -52,11 +52,18 @@ private:
         m_canvas_id.clear();
     }
 
-    virtual void send_commands(ByteBuffer const& commands, Vector<Gfx::DecodedImageFrame> const& bitmaps) override
+    virtual bool send_commands(Web::WebGL::WebGLCommandBufferSubmission submission, Vector<Gfx::DecodedImageFrame> const& bitmaps) override
     {
         if (!m_canvas_id.has_value())
-            return;
-        m_connection->send_webgl_commands(*m_canvas_id, commands, bitmaps);
+            return false;
+        return m_connection->send_webgl_commands(*m_canvas_id, move(submission), bitmaps);
+    }
+
+    virtual bool wait_for_command_buffers() override
+    {
+        if (!m_canvas_id.has_value())
+            return false;
+        return m_connection->wait_for_webgl_command_buffers(*m_canvas_id);
     }
 
     virtual void present_canvas(bool preserve_drawing_buffer) override

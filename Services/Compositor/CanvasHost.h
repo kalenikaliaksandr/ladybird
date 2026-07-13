@@ -53,7 +53,7 @@ public:
     bool has_context(Web::Painting::CanvasId) const;
 
     void execute_canvas_2d_stream(Vector<Web::Painting::Canvas2DCommandStreamSegment> const&);
-    void execute_webgl_commands(Web::Painting::CanvasId, ReadonlyBytes, Vector<Gfx::DecodedImageFrame> const&);
+    ErrorOr<void> execute_webgl_command_buffer(Web::Painting::CanvasId, u32 command_buffer_id, u32 command_size, Core::AnonymousBuffer command_buffer, Vector<Gfx::DecodedImageFrame> const& bitmaps);
     ErrorOr<ByteBuffer> execute_webgl_sync_call(Web::Painting::CanvasId, ByteBuffer request);
     Web::WebGL::ReadPixelsResult webgl_read_pixels_robust_angle(Web::Painting::CanvasId, Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer pixels);
     bool webgl_read_buffer_sub_data(Web::Painting::CanvasId, Web::WebGL::GLenum target, Web::WebGL::GLintptr offset, Web::WebGL::GLintptr size, Core::AnonymousBuffer data);

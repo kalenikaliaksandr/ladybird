@@ -1,0 +1,5 @@
+initial registration: true
+grown registration: true
+reused submissions stay ordered: true
+commands precede sync query: true
+no error: true

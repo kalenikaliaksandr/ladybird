@@ -234,14 +234,16 @@ void CanvasHost::execute_canvas_2d_stream(Vector<Web::Painting::Canvas2DCommandS
     }
 }
 
-void CanvasHost::execute_webgl_commands(Web::Painting::CanvasId canvas_id, ReadonlyBytes commands, Vector<Gfx::DecodedImageFrame> const& bitmaps)
+ErrorOr<void> CanvasHost::execute_webgl_command_buffer(Web::Painting::CanvasId canvas_id, u32 command_buffer_id, u32 command_size, Core::AnonymousBuffer command_buffer, Vector<Gfx::DecodedImageFrame> const& bitmaps)
 {
     auto* context = this->context(canvas_id);
-    VERIFY(context);
+    if (!context)
+        return Error::from_string_literal("WebGL command submission references a missing context");
     auto& webgl_context = as_webgl(*context);
-    MUST(webgl_context.execute_commands(commands, bitmaps));
+    TRY(webgl_context.execute_command_buffer(command_buffer_id, command_size, move(command_buffer), bitmaps));
     if (auto surface = webgl_context.surface())
         m_canvas_surface_registry.set_canvas_surface(canvas_id, surface.release_nonnull());
+    return {};
 }
 
 ErrorOr<ByteBuffer> CanvasHost::execute_webgl_sync_call(Web::Painting::CanvasId canvas_id, ByteBuffer request)

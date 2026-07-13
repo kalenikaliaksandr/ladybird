@@ -1,0 +1,31 @@
+<!doctype html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        const gl = document.createElement("canvas").getContext("webgl2");
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+
+        gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array(4), gl.STATIC_DRAW);
+        gl.finish();
+        println(`initial registration: ${gl.getBufferParameter(gl.ARRAY_BUFFER, gl.BUFFER_SIZE) === 4}`);
+
+        const largeBuffer = new Uint8Array(9 * 1024 * 1024);
+        largeBuffer[0] = 0x11;
+        largeBuffer[largeBuffer.length - 1] = 0x44;
+        gl.bufferData(gl.ARRAY_BUFFER, largeBuffer, gl.STATIC_DRAW);
+        println(`grown registration: ${gl.getBufferParameter(gl.ARRAY_BUFFER, gl.BUFFER_SIZE) === largeBuffer.length}`);
+
+        for (let i = 0; i < 6; ++i) {
+            largeBuffer[0] = i;
+            gl.bufferSubData(gl.ARRAY_BUFFER, 0, largeBuffer);
+        }
+        const firstByte = new Uint8Array(1);
+        gl.getBufferSubData(gl.ARRAY_BUFFER, 0, firstByte);
+        println(`reused submissions stay ordered: ${firstByte[0] === 5}`);
+
+        gl.activeTexture(gl.TEXTURE3);
+        println(`commands precede sync query: ${gl.getParameter(gl.ACTIVE_TEXTURE) === gl.TEXTURE3}`);
+        println(`no error: ${gl.getError() === gl.NO_ERROR}`);
+    });
+</script>

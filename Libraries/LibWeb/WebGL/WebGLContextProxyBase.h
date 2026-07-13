@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/Array.h>
 #include <AK/ByteBuffer.h>
 #include <AK/HashMap.h>
 #include <AK/Noncopyable.h>
@@ -108,8 +109,11 @@ protected:
     {
         if (m_lost)
             return;
-        m_commands.append(command, inline_data);
-        if (m_commands.size_in_bytes() >= max_pending_command_bytes)
+        auto* commands = active_command_list();
+        if (!commands)
+            return;
+        commands->append(command, inline_data);
+        if (commands->size_in_bytes() >= max_pending_command_bytes)
             flush_commands();
     }
 
@@ -118,8 +122,11 @@ protected:
     {
         if (m_lost)
             return;
-        m_commands.append(command, inline_data_size, forward<Writer>(writer));
-        if (m_commands.size_in_bytes() >= max_pending_command_bytes)
+        auto* commands = active_command_list();
+        if (!commands)
+            return;
+        commands->append(command, inline_data_size, forward<Writer>(writer));
+        if (commands->size_in_bytes() >= max_pending_command_bytes)
             flush_commands();
     }
 
@@ -130,12 +137,15 @@ protected:
 
 private:
     u32 append_pending_bitmap(Gfx::DecodedImageFrame);
+    WebGLCommandList* active_command_list();
+    Optional<WebGLCommandBufferSubmission> take_pending_submission();
 
     NonnullRefPtr<RemoteWebGLTransport> m_transport;
     WebGLVersion m_webgl_version { WebGLVersion::WebGL1 };
     Vector<String> m_supported_extensions;
     HashMap<GLenum, i64> m_immutable_integer_parameters;
-    WebGLCommandList m_commands;
+    Array<WebGLCommandList, WebGLCommandList::buffer_count> m_command_buffers;
+    Optional<size_t> m_active_command_buffer;
     Vector<Gfx::DecodedImageFrame> m_pending_bitmaps;
     u32 m_next_object_id { 1 };
     bool m_lost { false };

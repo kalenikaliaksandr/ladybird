@@ -35,6 +35,7 @@ public:
     static OwnPtr<HostWebGLContext> create(RefPtr<Gfx::SkiaBackendContext>, OpenGLContext::WebGLVersion, OpenGLContext::DrawingBufferOptions, Gfx::IntSize initial_size);
 
     ErrorOr<void> execute_commands(ReadonlyBytes, Vector<Gfx::DecodedImageFrame> const& bitmaps);
+    ErrorOr<void> execute_command_buffer(u32 command_buffer_id, u32 command_size, Core::AnonymousBuffer command_buffer, Vector<Gfx::DecodedImageFrame> const& bitmaps);
     ErrorOr<ByteBuffer> execute_sync_call(ReadonlyBytes request);
     Gfx::ShareableBitmap read_back_drawing_buffer(Gfx::IntRect);
     Web::WebGL::ReadPixelsResult read_pixels_robust_angle(Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer pixels);
@@ -55,6 +56,7 @@ private:
 
     NonnullOwnPtr<OpenGLContext> m_gl_context;
     WebGLObjectMap m_objects;
+    HashMap<u32, Core::AnonymousBuffer> m_command_buffers;
     bool m_needs_clear_before_next_frame { false };
 };
 

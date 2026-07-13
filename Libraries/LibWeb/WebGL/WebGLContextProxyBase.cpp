@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/NumericLimits.h>
 #include <AK/StringBuilder.h>
 #include <GLES2/gl2.h>
 #include <LibCore/AnonymousBuffer.h>
@@ -34,24 +35,82 @@ void WebGLContextProxyBase::restore(NonnullRefPtr<RemoteWebGLTransport> transpor
     m_supported_extensions = move(supported_extensions);
     m_immutable_integer_parameters = move(immutable_integer_parameters);
     m_lost = false;
-    m_commands.clear_with_capacity();
+    m_active_command_buffer.clear();
+    for (auto& command_buffer : m_command_buffers)
+        command_buffer.reset_after_context_loss();
     m_pending_bitmaps.clear_with_capacity();
     m_string_cache.clear();
 }
 
+WebGLCommandList* WebGLContextProxyBase::active_command_list()
+{
+    if (m_active_command_buffer.has_value())
+        return &m_command_buffers[*m_active_command_buffer];
+
+    auto find_available_buffer = [&]() -> Optional<size_t> {
+        for (size_t i = 0; i < m_command_buffers.size(); ++i) {
+            if (m_command_buffers[i].is_available())
+                return i;
+        }
+        return {};
+    };
+
+    auto buffer_id = find_available_buffer();
+    if (!buffer_id.has_value()) {
+        if (!m_transport->wait_for_command_buffers()) {
+            set_lost();
+            return nullptr;
+        }
+        buffer_id = find_available_buffer();
+        if (!buffer_id.has_value()) {
+            set_lost();
+            return nullptr;
+        }
+    }
+
+    m_active_command_buffer = *buffer_id;
+    auto& command_buffer = m_command_buffers[*buffer_id];
+    command_buffer.clear_with_capacity();
+    return &command_buffer;
+}
+
+Optional<WebGLCommandBufferSubmission> WebGLContextProxyBase::take_pending_submission()
+{
+    if (!m_active_command_buffer.has_value())
+        return {};
+
+    auto buffer_id = *m_active_command_buffer;
+    auto& commands = m_command_buffers[buffer_id];
+    if (commands.is_empty()) {
+        m_active_command_buffer.clear();
+        return {};
+    }
+
+    VERIFY(commands.size_in_bytes() <= NumericLimits<u32>::max());
+    WebGLCommandBufferSubmission submission {
+        .buffer_id = static_cast<u32>(buffer_id),
+        .size = static_cast<u32>(commands.size_in_bytes()),
+        .registration = commands.take_registration_buffer(),
+    };
+    commands.mark_submitted();
+    m_active_command_buffer.clear();
+    return submission;
+}
+
 void WebGLContextProxyBase::flush_commands()
 {
-    if (m_commands.is_empty())
+    auto submission = take_pending_submission();
+    if (!submission.has_value())
         return;
-    m_transport->send_commands(m_commands.buffer(), m_pending_bitmaps);
-    m_commands.clear_with_capacity();
+    if (!m_transport->send_commands(submission.release_value(), m_pending_bitmaps))
+        set_lost();
     m_pending_bitmaps.clear_with_capacity();
 }
 
 u32 WebGLContextProxyBase::append_pending_bitmap(Gfx::DecodedImageFrame frame)
 {
     static_assert(IPC::MAX_MESSAGE_FD_COUNT > 1);
-    // WebGL command bytes are transferred in one anonymous buffer attachment.
+    // A newly allocated or grown command buffer uses one anonymous buffer attachment.
     static constexpr size_t max_bitmap_attachments_per_message = IPC::MAX_MESSAGE_FD_COUNT - 1;
 
     if (m_pending_bitmaps.size() >= max_bitmap_attachments_per_message)

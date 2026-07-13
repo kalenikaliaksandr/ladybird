@@ -26,6 +26,7 @@
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
 #include <LibWeb/Painting/ScrollState.h>
+#include <LibWeb/WebGL/RemoteWebGLTransport.h>
 #include <LibWeb/WebGL/Types.h>
 
 namespace WebContent {
@@ -58,7 +59,8 @@ public:
     void request_screenshot(Web::Compositor::CompositorContextId, NonnullRefPtr<Gfx::PaintingSurface>, Function<void()>&&);
 
     Optional<Web::Painting::CanvasId> create_webgl_context(Web::WebGL::WebGLVersion, Gfx::IntSize, bool depth, bool stencil, bool antialias, Vector<String>& out_supported_extensions, HashMap<Web::WebGL::GLenum, i64>& out_immutable_integer_parameters);
-    void send_webgl_commands(Web::Painting::CanvasId, ByteBuffer const&, Vector<Gfx::DecodedImageFrame> const& bitmaps);
+    bool send_webgl_commands(Web::Painting::CanvasId, Web::WebGL::WebGLCommandBufferSubmission, Vector<Gfx::DecodedImageFrame> const& bitmaps);
+    bool wait_for_webgl_command_buffers(Web::Painting::CanvasId);
     void present_webgl_canvas(Web::Painting::CanvasId, bool preserve_drawing_buffer);
     ByteBuffer webgl_sync_call(Web::Painting::CanvasId, ByteBuffer request);
     Web::WebGL::ReadPixelsResult read_webgl_pixels(Web::Painting::CanvasId, Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer const& pixels);

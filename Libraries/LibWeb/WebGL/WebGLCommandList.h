@@ -11,6 +11,7 @@
 #include <AK/Error.h>
 #include <AK/Span.h>
 #include <AK/StdLibExtras.h>
+#include <LibCore/AnonymousBuffer.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/WebGL/WebGLCommands.h>
 
@@ -21,6 +22,18 @@ struct WebGLCommandHeader {
     u32 payload_size { 0 }; // command struct + inline data + trailing padding
 };
 static_assert(IsTriviallyCopyable<WebGLCommandHeader>);
+
+enum class WebGLCommandBufferState : u32 {
+    Free,
+    Submitted,
+};
+
+struct alignas(64) WebGLCommandBufferHeader {
+    u32 state;
+    u8 padding[60];
+};
+static_assert(IsTriviallyCopyable<WebGLCommandBufferHeader>);
+static_assert(sizeof(WebGLCommandBufferHeader) == 64);
 
 class WEB_API WebGLCommandList {
 public:
@@ -50,6 +63,12 @@ public:
     }
 
     void append_bytes(WebGLCommandType, ReadonlyBytes payload, ReadonlyBytes inline_data);
+
+    bool is_available() const;
+    void mark_submitted();
+    void reset_after_context_loss();
+    Core::AnonymousBuffer take_registration_buffer();
+    Core::AnonymousBuffer const& command_buffer() const { return m_buffer; }
 
     template<typename Callback>
     static ErrorOr<void> for_each_command(ReadonlyBytes bytes, Callback&& callback)
@@ -108,16 +127,27 @@ public:
         __builtin_memcpy(destination.data(), resolved.data(), resolved.size());
     }
 
-    ReadonlyBytes bytes() const { return m_bytes; }
-    ByteBuffer const& buffer() const { return m_bytes; }
-    void clear_with_capacity() { m_bytes.set_size(0); }
-    bool is_empty() const { return m_bytes.is_empty(); }
-    size_t size_in_bytes() const { return m_bytes.size(); }
+    ReadonlyBytes bytes() const;
+    void clear_with_capacity() { m_size = 0; }
+    bool is_empty() const { return m_size == 0; }
+    size_t size_in_bytes() const { return m_size; }
+
+    static constexpr size_t buffer_header_size = sizeof(WebGLCommandBufferHeader);
+    static constexpr size_t initial_buffer_capacity = 8 * MiB;
+    static constexpr u32 buffer_count = 2;
+
+    static ReadonlyBytes command_bytes(Core::AnonymousBuffer const&, size_t size);
+    static WebGLCommandBufferState command_buffer_state(Core::AnonymousBuffer const&);
+    static void set_command_buffer_state(Core::AnonymousBuffer&, WebGLCommandBufferState);
 
 private:
     Bytes append_with_uninitialized_inline_data_bytes(WebGLCommandType, ReadonlyBytes payload, size_t inline_data_size);
+    void ensure_capacity(size_t);
+    Bytes writable_bytes();
 
-    ByteBuffer m_bytes;
+    Core::AnonymousBuffer m_buffer;
+    size_t m_size { 0 };
+    bool m_needs_registration { false };
 };
 
 struct WebGLSyncCallHeader {

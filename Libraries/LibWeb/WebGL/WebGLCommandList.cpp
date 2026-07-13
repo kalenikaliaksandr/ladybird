@@ -4,10 +4,112 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Atomic.h>
+#include <AK/Checked.h>
 #include <AK/NumericLimits.h>
 #include <LibWeb/WebGL/WebGLCommandList.h>
 
 namespace Web::WebGL {
+
+ReadonlyBytes WebGLCommandList::command_bytes(Core::AnonymousBuffer const& buffer, size_t size)
+{
+    VERIFY(buffer.is_valid());
+    VERIFY(buffer.size() >= buffer_header_size);
+    VERIFY(size <= buffer.size() - buffer_header_size);
+    return { buffer.data<u8>() + buffer_header_size, size };
+}
+
+ReadonlyBytes WebGLCommandList::bytes() const
+{
+    if (!m_buffer.is_valid())
+        return {};
+    return command_bytes(m_buffer, m_size);
+}
+
+Bytes WebGLCommandList::writable_bytes()
+{
+    VERIFY(m_buffer.is_valid());
+    VERIFY(m_buffer.size() >= buffer_header_size);
+    return { m_buffer.data<u8>() + buffer_header_size, m_buffer.size() - buffer_header_size };
+}
+
+WebGLCommandBufferState WebGLCommandList::command_buffer_state(Core::AnonymousBuffer const& buffer)
+{
+    VERIFY(buffer.is_valid());
+    VERIFY(buffer.size() >= buffer_header_size);
+    auto* header = const_cast<WebGLCommandBufferHeader*>(buffer.data<WebGLCommandBufferHeader>());
+    VERIFY(AK::atomic_is_lock_free(&header->state));
+    return static_cast<WebGLCommandBufferState>(AK::atomic_load(&header->state, AK::MemoryOrder::memory_order_acquire));
+}
+
+void WebGLCommandList::set_command_buffer_state(Core::AnonymousBuffer& buffer, WebGLCommandBufferState state)
+{
+    VERIFY(buffer.is_valid());
+    VERIFY(buffer.size() >= buffer_header_size);
+    auto* header = buffer.data<WebGLCommandBufferHeader>();
+    VERIFY(AK::atomic_is_lock_free(&header->state));
+    AK::atomic_store(&header->state, to_underlying(state), AK::MemoryOrder::memory_order_release);
+}
+
+bool WebGLCommandList::is_available() const
+{
+    return !m_buffer.is_valid() || command_buffer_state(m_buffer) == WebGLCommandBufferState::Free;
+}
+
+void WebGLCommandList::mark_submitted()
+{
+    VERIFY(!is_empty());
+    VERIFY(is_available());
+    set_command_buffer_state(m_buffer, WebGLCommandBufferState::Submitted);
+}
+
+void WebGLCommandList::reset_after_context_loss()
+{
+    m_size = 0;
+    if (!m_buffer.is_valid())
+        return;
+    set_command_buffer_state(m_buffer, WebGLCommandBufferState::Free);
+    m_needs_registration = true;
+}
+
+Core::AnonymousBuffer WebGLCommandList::take_registration_buffer()
+{
+    if (!m_needs_registration)
+        return {};
+    m_needs_registration = false;
+    return m_buffer;
+}
+
+void WebGLCommandList::ensure_capacity(size_t required_capacity)
+{
+    auto current_capacity = m_buffer.is_valid() ? m_buffer.size() - buffer_header_size : 0;
+    if (current_capacity >= required_capacity)
+        return;
+
+    Checked<size_t> new_capacity = current_capacity;
+    if (current_capacity == 0)
+        new_capacity = initial_buffer_capacity;
+    else
+        new_capacity *= 2;
+    if (new_capacity.has_overflow() || new_capacity.value() < required_capacity)
+        new_capacity = required_capacity;
+    new_capacity += 4 * KiB - 1;
+    VERIFY(!new_capacity.has_overflow());
+    new_capacity = (new_capacity.value() / (4 * KiB)) * (4 * KiB);
+
+    Checked<size_t> allocation_size = new_capacity;
+    allocation_size += buffer_header_size;
+    VERIFY(!allocation_size.has_overflow());
+    VERIFY(allocation_size.value() <= NumericLimits<u32>::max());
+
+    auto new_buffer = MUST(Core::AnonymousBuffer::create_with_size(allocation_size.value()));
+    __builtin_memset(new_buffer.data<u8>(), 0, buffer_header_size);
+    set_command_buffer_state(new_buffer, WebGLCommandBufferState::Free);
+    if (m_size > 0)
+        bytes().copy_to({ new_buffer.data<u8>() + buffer_header_size, m_size });
+    m_buffer = move(new_buffer);
+    m_needs_registration = true;
+}
 
 static size_t payload_layout_size(ReadonlyBytes payload, ReadonlyBytes inline_data, ReadonlyBytes more_inline_data = {})
 {
@@ -42,7 +144,7 @@ void WebGLCommandList::append_bytes(WebGLCommandType type, ReadonlyBytes payload
 
 Bytes WebGLCommandList::append_with_uninitialized_inline_data_bytes(WebGLCommandType type, ReadonlyBytes payload, size_t inline_data_size)
 {
-    VERIFY(m_bytes.size() % command_alignment == 0);
+    VERIFY(m_size % command_alignment == 0);
 
     auto payload_size = payload.size();
     if (inline_data_size > 0)
@@ -57,9 +159,14 @@ Bytes WebGLCommandList::append_with_uninitialized_inline_data_bytes(WebGLCommand
         .payload_size = static_cast<u32>(padded_payload_size),
     };
 
-    auto record_offset = m_bytes.size();
-    m_bytes.resize(record_offset + padded_record_size);
-    auto record = m_bytes.bytes().slice(record_offset);
+    Checked<size_t> required_capacity = m_size;
+    required_capacity += padded_record_size;
+    VERIFY(!required_capacity.has_overflow());
+    ensure_capacity(required_capacity.value());
+
+    auto record_offset = m_size;
+    m_size = required_capacity.value();
+    auto record = writable_bytes().slice(record_offset, padded_record_size);
     __builtin_memcpy(record.data(), &header, sizeof(header));
     auto destination = record.slice(sizeof(header));
     __builtin_memcpy(destination.data(), payload.data(), payload.size());

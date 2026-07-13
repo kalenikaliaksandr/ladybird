@@ -23,6 +23,12 @@
 
 namespace Web::WebGL {
 
+struct WebGLCommandBufferSubmission {
+    u32 buffer_id { 0 };
+    u32 size { 0 };
+    Core::AnonymousBuffer registration;
+};
+
 class WEB_API RemoteWebGLTransport : public RefCounted<RemoteWebGLTransport> {
 public:
     virtual ~RemoteWebGLTransport() = default;
@@ -36,7 +42,8 @@ public:
     virtual Optional<Painting::CanvasId> canvas_id() const = 0;
     virtual void destroy_context() = 0;
 
-    virtual void send_commands(ByteBuffer const&, Vector<Gfx::DecodedImageFrame> const& bitmaps) = 0;
+    virtual bool send_commands(WebGLCommandBufferSubmission, Vector<Gfx::DecodedImageFrame> const& bitmaps) = 0;
+    virtual bool wait_for_command_buffers() = 0;
     virtual void present_canvas(bool preserve_drawing_buffer) = 0;
     virtual ByteBuffer sync_call(ByteBuffer request) = 0;
     virtual ReadPixelsResult read_pixels_robust_angle(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei buf_size, Core::AnonymousBuffer pixels) = 0;

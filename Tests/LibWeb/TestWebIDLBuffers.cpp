@@ -224,6 +224,62 @@ TEST_CASE(webgl_command_list_writes_inline_data_into_reserved_payload)
     EXPECT_EQ(command_count, 2uz);
 }
 
+TEST_CASE(webgl_command_buffer_tracks_registration_and_submission_state)
+{
+    using namespace Web::WebGL;
+
+    WebGLCommandList commands;
+    commands.append(Commands::Clear { .mask = 1 });
+    auto registration = commands.take_registration_buffer();
+    EXPECT(registration.is_valid());
+    EXPECT(!commands.take_registration_buffer().is_valid());
+    EXPECT_EQ(WebGLCommandList::command_buffer_state(registration), WebGLCommandBufferState::Free);
+    commands.mark_submitted();
+    EXPECT_EQ(WebGLCommandList::command_buffer_state(registration), WebGLCommandBufferState::Submitted);
+    WebGLCommandList::set_command_buffer_state(registration, WebGLCommandBufferState::Free);
+    EXPECT(commands.is_available());
+}
+
+TEST_CASE(webgl_command_list_grows_registered_shared_storage)
+{
+    using namespace Web::WebGL;
+
+    WebGLCommandList commands;
+    commands.append(Commands::Clear { .mask = 1 });
+    auto original_registration = commands.take_registration_buffer();
+    EXPECT(original_registration.is_valid());
+
+    auto large_data_size = WebGLCommandList::initial_buffer_capacity + 16;
+    Commands::BufferSubData command {
+        .target = 1,
+        .offset = 2,
+        .size = static_cast<GLsizeiptr>(large_data_size),
+        .data = { WebGLCommandList::first_inline_data_offset(sizeof(Commands::BufferSubData)), static_cast<u32>(large_data_size) },
+    };
+    commands.append(command, large_data_size, [](Bytes destination) {
+        destination[0] = 0x11;
+        destination[destination.size() - 1] = 0x44;
+    });
+
+    auto grown_registration = commands.take_registration_buffer();
+    EXPECT(grown_registration.is_valid());
+    EXPECT(grown_registration.size() > original_registration.size());
+
+    size_t command_count = 0;
+    auto result = WebGLCommandList::for_each_command(commands.bytes(), [&]<typename Command>(Command const&, ReadonlyBytes payload) -> ErrorOr<void> {
+        ++command_count;
+        if constexpr (IsSame<Command, Commands::BufferSubData>) {
+            auto data = WebGLCommandList::resolve_data_span(payload, command.data);
+            EXPECT_EQ(data.size(), large_data_size);
+            EXPECT_EQ(data[0], 0x11);
+            EXPECT_EQ(data[data.size() - 1], 0x44);
+        }
+        return {};
+    });
+    EXPECT(!result.is_error());
+    EXPECT_EQ(command_count, 2uz);
+}
+
 TEST_CASE(array_buffer_view_checked_write_handles_out_of_bounds_views)
 {
     TestVM test_vm;

@@ -152,14 +152,17 @@ Messages::CompositorWebContentServer::CreateWebglContextResponse ConnectionFromW
     };
 }
 
-void ConnectionFromWebContent::webgl_commands(Web::Painting::CanvasId canvas_id, Core::AnonymousBuffer commands, Vector<Gfx::DecodedImageFrame> bitmaps)
+void ConnectionFromWebContent::webgl_commands(Web::Painting::CanvasId canvas_id, u32 command_buffer_id, u32 command_size, Core::AnonymousBuffer command_buffer, Vector<Gfx::DecodedImageFrame> bitmaps)
 {
-    if (!commands.is_valid()) {
-        did_misbehave("WebContent sent an invalid WebGL command buffer");
+    if (m_canvas_host.execute_webgl_command_buffer(canvas_id, command_buffer_id, command_size, move(command_buffer), bitmaps).is_error()) {
+        did_misbehave("WebContent sent an invalid WebGL command submission");
         return;
     }
+}
 
-    m_canvas_host.execute_webgl_commands(canvas_id, commands.bytes(), bitmaps);
+Messages::CompositorWebContentServer::WebglWaitForCommandBuffersResponse ConnectionFromWebContent::webgl_wait_for_command_buffers(Web::Painting::CanvasId canvas_id)
+{
+    return { m_canvas_host.has_context(canvas_id) };
 }
 
 void ConnectionFromWebContent::webgl_present_canvas(Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer)

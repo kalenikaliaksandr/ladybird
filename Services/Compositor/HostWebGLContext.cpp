@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/ScopeGuard.h>
 #include <AK/Vector.h>
 #include <Compositor/HostWebGLContext.h>
 #include <Compositor/WebGLCommandReplayer.h>
@@ -69,6 +70,35 @@ ErrorOr<void> HostWebGLContext::execute_commands(ReadonlyBytes bytes, Vector<Gfx
             return replay_webgl_command(*m_gl_context, m_objects, command, payload);
         }
     });
+}
+
+ErrorOr<void> HostWebGLContext::execute_command_buffer(u32 command_buffer_id, u32 command_size, Core::AnonymousBuffer command_buffer, Vector<Gfx::DecodedImageFrame> const& bitmaps)
+{
+    if (command_buffer_id >= WebGLCommandList::buffer_count)
+        return Error::from_string_literal("WebGL command buffer id is out of range");
+
+    if (command_buffer.is_valid()) {
+        if (command_buffer.size() < WebGLCommandList::buffer_header_size)
+            return Error::from_string_literal("WebGL command buffer is too small");
+        if (auto existing_buffer = m_command_buffers.get(command_buffer_id); existing_buffer.has_value()) {
+            if (WebGLCommandList::command_buffer_state(*existing_buffer) != WebGLCommandBufferState::Free)
+                return Error::from_string_literal("WebGL replaced a command buffer that is still in use");
+        }
+        m_command_buffers.set(command_buffer_id, move(command_buffer));
+    }
+
+    auto registered_buffer = m_command_buffers.get(command_buffer_id);
+    if (!registered_buffer.has_value())
+        return Error::from_string_literal("WebGL command buffer is not registered");
+    if (WebGLCommandList::command_buffer_state(*registered_buffer) != WebGLCommandBufferState::Submitted)
+        return Error::from_string_literal("WebGL command buffer is not submitted");
+    if (command_size == 0 || command_size > registered_buffer->size() - WebGLCommandList::buffer_header_size)
+        return Error::from_string_literal("WebGL command buffer size is invalid");
+
+    ScopeGuard mark_command_buffer_available = [&] {
+        WebGLCommandList::set_command_buffer_state(*registered_buffer, WebGLCommandBufferState::Free);
+    };
+    return execute_commands(WebGLCommandList::command_bytes(*registered_buffer, command_size), bitmaps);
 }
 
 static ErrorOr<Gfx::BitmapExportResult> convert_bitmap_for_upload(Vector<Gfx::DecodedImageFrame> const& bitmaps, u32 bitmap_index, GLenum format, GLenum type, bool has_explicit_destination_size, GLsizei destination_width, GLsizei destination_height, bool flip_y, bool premultiply_alpha)
