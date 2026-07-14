@@ -1980,6 +1980,7 @@ void Document::update_layout(UpdateLayoutReason reason)
                 }
 
                 update_scrollable_overflow(UpdateScrollableOverflowMode::Scheduled);
+                ++m_partial_layout_count;
 
                 after_layout_commit(LayoutTreeChanged::No);
                 return;
@@ -2077,6 +2078,8 @@ void Document::update_layout(UpdateLayoutReason reason)
 
         style_invalidation_counters().relayouts_performed++;
         update_scrollable_overflow(UpdateScrollableOverflowMode::AfterLayout);
+
+        ++m_full_layout_count;
 
         after_layout_commit(LayoutTreeChanged::Yes);
 
