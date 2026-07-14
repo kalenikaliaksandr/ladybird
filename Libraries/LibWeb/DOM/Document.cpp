@@ -1740,6 +1740,31 @@ static void relayout_subtree(Layout::Box& subtree_root)
     });
 }
 
+// Escape flags are facts derived from the containing block pointers: an absolutely or fixed
+// positioned box whose containing block lies outside an ancestor's subtree is laid out by a
+// formatting context outside that ancestor, so the ancestor cannot be a partial relayout
+// boundary. Re-derive the flags whenever containing block pointers are recomputed, so that
+// boundary qualification always reads facts matching the tree it is about to lay out. The
+// traversal visits ancestors before the descendants that mark them, so clearing on visit and
+// marking upwards compose within one pre-order walk.
+void Document::recompute_containing_block_and_derive_abspos_escape_flags(Layout::Node& layout_node)
+{
+    layout_node.recompute_containing_block({});
+
+    auto* box = as_if<Layout::Box>(layout_node);
+    if (!box)
+        return;
+    box->set_abspos_descendant_escapes(false);
+
+    if (!box->is_absolutely_positioned())
+        return;
+    auto const* containing_block = box->containing_block();
+    for (auto* ancestor = box->parent(); ancestor && ancestor != containing_block; ancestor = ancestor->parent()) {
+        if (auto* ancestor_box = as_if<Layout::Box>(*ancestor))
+            ancestor_box->set_abspos_descendant_escapes(true);
+    }
+}
+
 // Post-commit finalization shared by the partial and full layout paths. Every structure derived
 // from committed layout results is refreshed here, in one place, so no layout path can forget
 // one: paintables rebuilt by the commit lost their scroll frames, accumulated visual contexts,
@@ -1977,7 +2002,7 @@ void Document::update_layout(UpdateLayoutReason reason)
             if (auto* node_with_style = as_if<Layout::NodeWithStyle>(layout_node))
                 node_with_style->set_layout_index(layout_index_counter++);
 
-            layout_node.recompute_containing_block({});
+            recompute_containing_block_and_derive_abspos_escape_flags(layout_node);
 
             return TraversalDecision::Continue;
         });
