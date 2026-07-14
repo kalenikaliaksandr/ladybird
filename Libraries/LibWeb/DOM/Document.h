@@ -1509,6 +1509,7 @@ private:
     bool m_suppresses_attribute_style_invalidation { false };
     HashTable<GC::Ref<Element>> m_query_containers_needing_container_query_evaluation_after_layout;
     bool m_needs_full_layout_tree_update { false };
+    PartialRelayoutInvalidation m_partial_relayout_invalidation;
 
     bool m_is_decoded_svg { false };
 
@@ -1516,8 +1517,6 @@ private:
 
     u32 m_next_layout_node_index { 0 };
     u32 m_layout_node_index_count_after_last_full_pass { 0 };
-
-    PartialRelayoutInvalidation m_partial_relayout_invalidation;
 
     u64 m_partial_layout_count { 0 };
     u64 m_full_layout_count { 0 };
