@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+    #stage { position: relative; width: 400px; height: 300px; }
+    #anchor {
+        anchor-name: --btn;
+        margin-left: 40px;
+        margin-top: 30px;
+        width: 100px;
+        height: 30px;
+    }
+    #boundary {
+        position: absolute;
+        position-anchor: --btn;
+        left: anchor(left);
+        top: anchor(bottom);
+        width: 120px;
+    }
+    #inner { width: 80px; height: 20px; }
+</style>
+<div id="stage">
+    <div id="anchor"></div>
+    <div id="boundary">
+        <div id="inner"></div>
+    </div>
+</div>
+<script>
+    // A boundary whose own insets come from anchor() functions replays the resolved values
+    // from the last full pass, which stay valid while the anchor outside the subtree is
+    // clean, so a change inside the boundary stays on the partial relayout path and the
+    // boundary keeps its anchored position.
+    function rectToString(rect) {
+        return `${rect.left},${rect.top},${rect.width},${rect.height}`;
+    }
+
+    asyncTest(async (done) => {
+        document.body.offsetHeight;
+
+        const boundaryBefore = document.getElementById("boundary").getBoundingClientRect();
+        const partialBefore = internals.partialLayoutCount();
+        const fullBefore = internals.fullLayoutCount();
+        document.getElementById("inner").style.height = "60px";
+        document.body.offsetHeight;
+        const partialDelta = internals.partialLayoutCount() - partialBefore;
+        const fullDelta = internals.fullLayoutCount() - fullBefore;
+
+        const anchor = document.getElementById("anchor").getBoundingClientRect();
+        const boundaryAfter = document.getElementById("boundary").getBoundingClientRect();
+        const inner = document.getElementById("inner").getBoundingClientRect();
+        println(`layout-passes partial=${partialDelta} full=${fullDelta}`);
+        println(`anchor=${rectToString(anchor)}`);
+        println(`boundary-before=${rectToString(boundaryBefore)}`);
+        println(`boundary-after=${rectToString(boundaryAfter)}`);
+        println(`inner=${rectToString(inner)}`);
+        println(partialDelta === 1 && fullDelta === 0
+            && rectToString(anchor) === "40,30,100,30"
+            && rectToString(boundaryBefore) === "40,60,120,20"
+            && rectToString(boundaryAfter) === "40,60,120,60"
+            && rectToString(inner) === "40,60,80,60" ? "PASS" : "FAIL");
+        done();
+    });
+</script>

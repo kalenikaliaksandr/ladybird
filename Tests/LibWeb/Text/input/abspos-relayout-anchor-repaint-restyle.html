@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+    #stage { position: relative; width: 400px; height: 300px; }
+    #anchor {
+        anchor-name: --btn;
+        position: absolute;
+        left: 60px;
+        top: 40px;
+        width: 100px;
+        height: 30px;
+    }
+    #boundary {
+        position: absolute;
+        position-anchor: --btn;
+        left: anchor(left);
+        top: anchor(bottom);
+        width: 120px;
+    }
+    #inner { width: 80px; height: 20px; }
+</style>
+<div id="stage">
+    <div id="anchor"></div>
+    <div id="boundary">
+        <div id="inner"></div>
+    </div>
+</div>
+<script>
+    // Any restyle rebuilds computed insets from the raw properties, degrading a bare anchor()
+    // to auto and wiping the values the last full pass resolved. A repaint-only restyle on the
+    // boundary (color) followed by a change inside it must not make the replay fall back to
+    // the static position: the replay re-resolves the anchor() insets itself, so the boundary
+    // stays anchored and the update stays on the partial path.
+    function rectToString(rect) {
+        return `${rect.left},${rect.top},${rect.width},${rect.height}`;
+    }
+
+    asyncTest(async (done) => {
+        document.body.offsetHeight;
+
+        document.getElementById("boundary").style.color = "red";
+        const partialBefore = internals.partialLayoutCount();
+        const fullBefore = internals.fullLayoutCount();
+        document.getElementById("inner").style.height = "60px";
+        document.body.offsetHeight;
+        const partialDelta = internals.partialLayoutCount() - partialBefore;
+        const fullDelta = internals.fullLayoutCount() - fullBefore;
+
+        const boundary = document.getElementById("boundary").getBoundingClientRect();
+        println(`layout-passes partial=${partialDelta} full=${fullDelta}`);
+        println(`boundary=${rectToString(boundary)}`);
+        println(partialDelta === 1 && fullDelta === 0
+            && rectToString(boundary) === "60,70,120,60" ? "PASS" : "FAIL");
+        done();
+    });
+</script>

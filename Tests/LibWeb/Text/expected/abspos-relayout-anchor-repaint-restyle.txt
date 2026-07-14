@@ -1,0 +1,3 @@
+layout-passes partial=0 full=1
+boundary=60,70,120,60
+FAIL
