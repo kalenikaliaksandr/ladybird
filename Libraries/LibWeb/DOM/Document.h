@@ -715,6 +715,8 @@ public:
     void reset_layout_node_index_counter(u32 next_index) { m_next_layout_node_index = next_index; }
 
     void register_partial_relayout_root(Layout::Box&);
+    [[nodiscard]] bool pending_updates_escape_partial_relayout_boundaries() const { return m_pending_updates_escape_partial_relayout_boundaries; }
+    void set_pending_updates_escape_partial_relayout_boundaries(bool, char const* reason);
 
     void set_needs_to_refresh_scroll_state(bool b);
 
@@ -1469,6 +1471,7 @@ private:
     bool m_suppresses_attribute_style_invalidation { false };
     HashTable<GC::Ref<Element>> m_query_containers_needing_container_query_evaluation_after_layout;
     bool m_needs_full_layout_tree_update { false };
+    bool m_pending_updates_escape_partial_relayout_boundaries { false };
 
     bool m_is_decoded_svg { false };
 

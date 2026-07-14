@@ -39,6 +39,12 @@ static void apply_element_style_invalidation_after_style_change(DOM::Element& el
     if (invalidation.needs_scrollable_overflow_recalculation())
         element.document().schedule_scrollable_overflow_recalculation(element);
 
+    // Containing block pointers, and the escaped-by-abspos facts derived from them, are only
+    // recomputed by a full layout pass, so partial relayout boundary qualification cannot be
+    // trusted until one runs.
+    if (invalidation.changes_containing_block_establishment)
+        element.document().set_pending_updates_escape_partial_relayout_boundaries(true, "containing block establishment change");
+
     if (invalidation.needs_relayout())
         element.set_needs_layout_update(DOM::SetNeedsLayoutReason::StyleChange);
     if (invalidation.needs_layout_tree_rebuild())

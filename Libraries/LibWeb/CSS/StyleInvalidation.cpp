@@ -60,6 +60,40 @@ static bool is_stacking_context_creating_value(CSS::PropertyID property_id, Styl
     }
 }
 
+// Whether this value makes the element establish a containing block for absolutely and/or
+// fixed positioned descendants, mirroring the checks in
+// Layout::Node::establishes_a_fixed_positioning_containing_block().
+static bool is_containing_block_establishing_value(CSS::PropertyID property_id, StyleValue const* value)
+{
+    if (!value)
+        return false;
+
+    switch (property_id) {
+    case CSS::PropertyID::Transform:
+        if (value->to_keyword() == CSS::Keyword::None)
+            return false;
+        if (value->is_value_list())
+            return value->as_value_list().size() > 0;
+        return value->is_transformation();
+    case CSS::PropertyID::Translate:
+    case CSS::PropertyID::Rotate:
+    case CSS::PropertyID::Scale:
+    case CSS::PropertyID::Perspective:
+        return value->to_keyword() != CSS::Keyword::None;
+    case CSS::PropertyID::TransformStyle:
+        return value->to_keyword() == CSS::Keyword::Preserve3d;
+    case CSS::PropertyID::Filter:
+    case CSS::PropertyID::BackdropFilter:
+        if (value->is_keyword())
+            return value->to_keyword() != CSS::Keyword::None;
+        return value->is_filter_value_list();
+    default:
+        // contain, container-type and will-change have value forms this function does not
+        // dissect; assume any value establishes a containing block to stay safe.
+        return true;
+    }
+}
+
 static bool opacity_change_affects_paintable_visibility(CSS::PropertyID property_id, StyleValue const* old_value, StyleValue const* new_value)
 {
     if (property_id != CSS::PropertyID::Opacity)
@@ -239,6 +273,15 @@ RequiredInvalidationAfterStyleChange compute_property_invalidation(CSS::Property
                 invalidation.set_needs_stacking_context_tree_rebuild();
             }
         }
+    }
+
+    if (AK::first_is_one_of(property_id,
+            CSS::PropertyID::Transform, CSS::PropertyID::Translate, CSS::PropertyID::Rotate,
+            CSS::PropertyID::Scale, CSS::PropertyID::Perspective, CSS::PropertyID::TransformStyle,
+            CSS::PropertyID::Filter, CSS::PropertyID::BackdropFilter, CSS::PropertyID::Contain,
+            CSS::PropertyID::WillChange, CSS::PropertyID::ContainerType)) {
+        if (is_containing_block_establishing_value(property_id, old_value) != is_containing_block_establishing_value(property_id, new_value))
+            invalidation.changes_containing_block_establishment = true;
     }
 
     bool needs_repaint = true;

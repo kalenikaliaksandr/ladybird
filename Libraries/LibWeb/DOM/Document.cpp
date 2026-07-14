@@ -1690,6 +1690,18 @@ void Document::register_partial_relayout_root(Layout::Box& box)
     m_partial_relayout_roots.set(box.make_weak_ptr<Layout::Box>());
 }
 
+void Document::set_pending_updates_escape_partial_relayout_boundaries(bool value, char const* reason)
+{
+    if (m_pending_updates_escape_partial_relayout_boundaries == value) {
+        if (value)
+            dbgln_if(UPDATE_LAYOUT_DEBUG, "Set pending updates escape partial relayout boundaries ({})", reason);
+        return;
+    }
+
+    m_pending_updates_escape_partial_relayout_boundaries = value;
+    dbgln_if(UPDATE_LAYOUT_DEBUG, "{} pending updates escape partial relayout boundaries ({})", value ? "Set" : "Cleared", reason);
+}
+
 void Document::set_needs_container_query_evaluation_after_layout(Element const& query_container)
 {
     m_query_containers_needing_container_query_evaluation_after_layout.set(const_cast<Element&>(query_container));
@@ -1930,7 +1942,10 @@ void Document::update_layout(UpdateLayoutReason reason)
         auto const needs_layout_tree_rebuild = !m_layout_root || needs_layout_tree_update() || child_needs_layout_tree_update() || needs_full_layout_tree_update();
 
         // Partial relayout
-        if (!needs_layout_tree_rebuild && !registered_partial_relayout_roots.is_empty() && !m_layout_root->needs_layout_update()) {
+        if (!needs_layout_tree_rebuild
+            && !pending_updates_escape_partial_relayout_boundaries()
+            && !registered_partial_relayout_roots.is_empty()
+            && !m_layout_root->needs_layout_update()) {
             bool can_run_partial_relayout = true;
 
             // Boundaries are owned by the layout tree, not by the registration: resolve the
@@ -2006,6 +2021,10 @@ void Document::update_layout(UpdateLayoutReason reason)
 
             return TraversalDecision::Continue;
         });
+
+        // The walk above re-derived every fact partial relayout boundary qualification depends
+        // on, so pending changes that escaped classification are accounted for from here on.
+        set_pending_updates_escape_partial_relayout_boundaries(false, "full layout pass");
 
         // Layout nodes created between full passes take their indices from this counter, so
         // they never collide with the dense range just assigned.
