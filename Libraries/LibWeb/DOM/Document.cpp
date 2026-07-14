@@ -1702,6 +1702,26 @@ void Document::set_pending_updates_escape_partial_relayout_boundaries(bool value
     dbgln_if(UPDATE_LAYOUT_DEBUG, "{} pending updates escape partial relayout boundaries ({})", value ? "Set" : "Cleared", reason);
 }
 
+// Whether any element with a registered anchor-name has its layout node inside the given
+// subtree. Such a subtree cannot be laid out in isolation: positioned boxes outside it may
+// read the anchor's geometry through anchor() functions, so a geometry change inside the
+// subtree has to re-lay them out too, which only a full layout does.
+bool Document::any_registered_anchor_element_inside(Layout::Node const& subtree_root) const
+{
+    bool found_anchor_element_inside = false;
+    auto check_element = [&](Element& element) {
+        if (found_anchor_element_inside)
+            return;
+        if (auto const* layout_node = element.unsafe_layout_node(); layout_node && subtree_root.is_inclusive_ancestor_of(*layout_node))
+            found_anchor_element_inside = true;
+    };
+    m_anchor_name_map.for_each_element(check_element);
+    for_each_shadow_root([&](auto& shadow_root) {
+        shadow_root.anchor_name_map().for_each_element(check_element);
+    });
+    return found_anchor_element_inside;
+}
+
 void Document::set_needs_container_query_evaluation_after_layout(Element const& query_container)
 {
     m_query_containers_needing_container_query_evaluation_after_layout.set(const_cast<Element&>(query_container));
@@ -1740,10 +1760,41 @@ static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutStat
     context->parent_context_did_dimension_child_root_box();
 }
 
+// Replays the absolutely positioned element layout algorithm for `subtree_root` from the inputs
+// saved by the last committing layout pass. The inputs pin everything the algorithm consumes
+// from outside the subtree (containing block info and static position), so the box's own size
+// and position are re-resolved exactly the way its ancestor formatting context resolved them,
+// without running any layout outside the subtree. Everything outside is clean by the partial
+// relayout precondition, so the saved inputs are current.
+static void compute_subtree_layout_by_replay(Layout::Box& subtree_root, Layout::LayoutState& layout_state)
+{
+    auto* containing_block = subtree_root.containing_block();
+    VERIFY(containing_block);
+    auto inputs = *subtree_root.saved_abspos_layout_inputs();
+
+    // Mirror how the ancestor formatting context prepares an absolutely positioned child during
+    // a full pass: create its used values (the percentage basis is pinned by the algorithm once
+    // the containing block rect is known).
+    layout_state.create(subtree_root, {}, {});
+
+    // Runs the full pipeline: sizing, inside layout, and the boundary's own absolutely
+    // positioned children via parent_context_did_dimension_child_root_box(). The algorithm
+    // consumes nothing from the containing block's used values (which don't exist in this
+    // state); everything from outside the subtree comes as plain values in the saved inputs.
+    auto context = Layout::FormattingContext::create_dummy_formatting_context(layout_state, Layout::LayoutMode::Normal, *containing_block);
+    context->layout_absolutely_positioned_element(subtree_root, inputs);
+}
+
 static void relayout_subtree(Layout::Box& subtree_root)
 {
     Layout::LayoutState layout_state(subtree_root, Layout::LayoutState::Purpose::Commit);
-    compute_subtree_layout(subtree_root, layout_state);
+    // Absolutely positioned boundaries replay their own layout from saved inputs; SVG roots
+    // keep the frozen geometry from the previous layout (their used size never depends on
+    // subtree content).
+    if (subtree_root.is_absolutely_positioned())
+        compute_subtree_layout_by_replay(subtree_root, layout_state);
+    else
+        compute_subtree_layout(subtree_root, layout_state);
     layout_state.commit(subtree_root);
 
     subtree_root.for_each_in_inclusive_subtree([](auto& node) {
@@ -1945,7 +1996,9 @@ void Document::update_layout(UpdateLayoutReason reason)
         if (!needs_layout_tree_rebuild
             && !pending_updates_escape_partial_relayout_boundaries()
             && !registered_partial_relayout_roots.is_empty()
-            && !m_layout_root->needs_layout_update()) {
+            && !m_layout_root->needs_layout_update()
+            && m_query_containers_needing_container_query_evaluation_after_layout.is_empty()
+            && !should_collect_devtools_layout_data) {
             bool can_run_partial_relayout = true;
 
             // Boundaries are owned by the layout tree, not by the registration: resolve the
@@ -1967,8 +2020,39 @@ void Document::update_layout(UpdateLayoutReason reason)
                 partial_relayout_roots.append(box);
             }
 
+            // A root nested inside another root is relaid out as part of the ancestor's subtree.
+            if (can_run_partial_relayout) {
+                HashTable<Layout::Node const*> live_root_boxes;
+                for (auto const* root : partial_relayout_roots)
+                    live_root_boxes.set(root);
+                partial_relayout_roots.remove_all_matching([&](auto const* root) {
+                    for (auto const* ancestor = root->parent(); ancestor; ancestor = ancestor->parent()) {
+                        if (live_root_boxes.contains(ancestor))
+                            return true;
+                    }
+                    return false;
+                });
+            }
+
             if (partial_relayout_roots.is_empty())
                 can_run_partial_relayout = false;
+
+            // Anchor names inside a subtree publish geometry that anchor() functions on
+            // positioned boxes outside it consume, so such a subtree cannot be laid out in
+            // isolation. Anchor USE inside a subtree needs no check: an acceptable anchor's
+            // containing block chain must pass through the positioned box's containing block,
+            // which lies inside the subtree for every positioned box below the boundary, so
+            // every anchor those boxes can reference is inside the subtree too. The boundary's
+            // own anchor() insets replay the values resolve_anchor_insets() wrote during the
+            // last full pass, which stay valid while everything outside the subtree is clean.
+            if (can_run_partial_relayout) {
+                for (auto* root : partial_relayout_roots) {
+                    if (any_registered_anchor_element_inside(*root)) {
+                        can_run_partial_relayout = false;
+                        break;
+                    }
+                }
+            }
 
             if (can_run_partial_relayout) {
                 for (auto* root : partial_relayout_roots) {
@@ -1982,6 +2066,8 @@ void Document::update_layout(UpdateLayoutReason reason)
                 ++m_partial_layout_count;
 
                 after_layout_commit(LayoutTreeChanged::No);
+                if (needs_style_update_after_layout() || !layout_is_up_to_date())
+                    continue;
                 return;
             }
         }

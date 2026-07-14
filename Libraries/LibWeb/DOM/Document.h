@@ -1272,6 +1272,7 @@ private:
     void update_active_element();
     void collect_paintable_boxes_with_auto_content_visibility();
     bool needs_style_update_after_layout();
+    bool any_registered_anchor_element_inside(Layout::Node const& subtree_root) const;
     static void recompute_containing_block_and_derive_abspos_escape_flags(Layout::Node&);
     enum class LayoutTreeChanged : u8 {
         No,

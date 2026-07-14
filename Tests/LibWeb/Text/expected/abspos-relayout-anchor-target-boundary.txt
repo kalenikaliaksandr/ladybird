@@ -1,0 +1,6 @@
+layout-passes partial=1 full=0
+anchor=40,30,100,30
+boundary-before=40,60,120,20
+boundary-after=40,60,120,60
+inner=40,60,80,60
+PASS

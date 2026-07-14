@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+    #parent { position: relative; width: 220px; height: 160px; }
+    #boundary {
+        position: absolute;
+        left: 20px;
+        top: 30px;
+        width: 100px;
+        height: 100px;
+        overflow: auto;
+    }
+    #content {
+        width: 50px;
+        height: 500px;
+        box-sizing: border-box;
+        padding-top: 180px;
+    }
+    #probe { height: 20px; }
+</style>
+<div id="parent">
+    <div id="boundary">
+        <div id="content">
+            <div id="probe">probe</div>
+        </div>
+    </div>
+</div>
+<script>
+    asyncTest(async (done) => {
+        document.body.offsetHeight;
+
+        const scroller = document.getElementById("boundary");
+        scroller.scrollTop = 150;
+
+        document.getElementById("content").style.height = "520px";
+        document.body.offsetHeight;
+
+        const hit = document.elementFromPoint(30, 65);
+        println(`scrollTop=${scroller.scrollTop}`);
+        println(`hit=${hit ? (hit.id || hit.tagName) : "null"}`);
+        println(scroller.scrollTop === 150 && hit && hit.id === "probe" ? "PASS" : "FAIL");
+        done();
+    });
+</script>

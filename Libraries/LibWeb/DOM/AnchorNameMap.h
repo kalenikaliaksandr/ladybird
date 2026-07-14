@@ -21,6 +21,15 @@ public:
     void unregister_name(Utf16FlyString const& name, GC::Ref<Element>);
     GC::Ptr<Element> last_element_by_name_matching(Utf16FlyString const& name, Function<bool(Element&)> const& is_acceptable) const;
 
+    template<typename Callback>
+    void for_each_element(Callback callback) const
+    {
+        for (auto const& [name, elements] : m_map) {
+            for (auto const& element : elements)
+                callback(*element);
+        }
+    }
+
     template<typename Visitor>
     void visit_edges(Visitor& visitor) { visitor.visit(m_map); }
 
