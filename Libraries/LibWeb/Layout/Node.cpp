@@ -1723,7 +1723,11 @@ void Node::set_needs_layout_update(DOM::SetNeedsLayoutReason reason)
         if (ancestor->m_needs_layout_update)
             break;
         ancestor->m_needs_layout_update = true;
-        if (auto* svg_box = as_if<SVGSVGBox>(ancestor)) {
+        // Only outermost SVG roots are partial relayout boundaries: descendants of a nested
+        // <svg> are laid out in the outer SVG's viewBox-transformed coordinate system, which a
+        // subtree relayout starting at the inner root cannot reproduce (it would create its
+        // formatting context with an identity parent viewBox transform).
+        if (auto* svg_box = as_if<SVGSVGBox>(ancestor); svg_box && !(svg_box->parent() && (svg_box->parent()->is_svg_box() || svg_box->parent()->is_svg_svg_box()))) {
             document().mark_svg_root_as_needing_relayout(*svg_box);
             break;
         }
