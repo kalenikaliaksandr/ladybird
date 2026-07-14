@@ -121,6 +121,10 @@ public:
 
     void layout_absolutely_positioned_element(Box&, AbsposLayoutInputs const&);
 
+    // Whether any of the box's inset properties carries anchor() functions, which only
+    // resolve_anchor_insets() can turn into plain values during a full layout pass.
+    [[nodiscard]] static bool box_inset_properties_contain_anchor_functions(Box const&);
+
     [[nodiscard]] static ContainingBlockConstraints constraints_for_child_context(
         LayoutState::UsedValues const& containing_block_used_values,
         ContainingBlockConstraints const& containing_block_constraints);

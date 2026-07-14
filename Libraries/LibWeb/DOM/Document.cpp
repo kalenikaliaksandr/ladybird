@@ -1727,6 +1727,48 @@ void Document::set_needs_container_query_evaluation_after_layout(Element const& 
     m_query_containers_needing_container_query_evaluation_after_layout.set(const_cast<Element&>(query_container));
 }
 
+// Whether the saved layout inputs are still valid for replaying the boundary's layout after a
+// style change on the boundary itself. Inputs captured under identical style are always valid;
+// a boundary-self style change invalidates the parts of the inputs that were derived from the
+// box's own computed values.
+static bool can_replay_partial_relayout_root_after_style_change(Layout::Box& box)
+{
+    if (!box.containing_block())
+        return false;
+
+    // Replay bypasses resolve_anchor_insets(), so it reads the box's computed inset values as
+    // they are. That is only correct while those values were resolved under the current style:
+    // a boundary-self style change re-derives the computed insets from the inset properties,
+    // and anchor() functions in them come through unresolved (a bare anchor() even degrades to
+    // auto). Resolving them needs resolve_anchor_insets() in the ancestor formatting context,
+    // which only a full layout runs.
+    if (Layout::FormattingContext::box_inset_properties_contain_anchor_functions(box))
+        return false;
+
+    auto const& inset = box.computed_values().inset();
+
+    // Grid containers derive the containing block rect and the alignments from the box's own
+    // grid-row/column and align/justify-self properties, which may have changed.
+    auto const& formatting_context_root = Layout::FormattingContext::box_establishing_containing_formatting_context(box);
+    if (Layout::FormattingContext::formatting_context_type_created_by_box(formatting_context_root) == Layout::FormattingContext::Type::Grid)
+        return false;
+
+    // An axis with both insets auto takes its position from the saved static position rect. A
+    // flex container derives that rect's alignment from the box's own align-self, so it may be
+    // stale after a self style change; block and inline static positions depend only on the
+    // in-flow layout of the ancestor formatting context, which a boundary-self change cannot
+    // affect.
+    auto uses_static_position = (inset.left().is_auto() && inset.right().is_auto())
+        || (inset.top().is_auto() && inset.bottom().is_auto());
+    if (uses_static_position) {
+        auto const* static_position_cb = box.static_position_containing_block();
+        if (static_position_cb && Layout::FormattingContext::formatting_context_type_created_by_box(*static_position_cb) == Layout::FormattingContext::Type::Flex)
+            return false;
+    }
+
+    return true;
+}
+
 static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutState& layout_state)
 {
     // Pre-populate the subtree root itself: its size and position are frozen at the values from
@@ -1771,6 +1813,22 @@ static void compute_subtree_layout_by_replay(Layout::Box& subtree_root, Layout::
     auto* containing_block = subtree_root.containing_block();
     VERIFY(containing_block);
     auto inputs = *subtree_root.saved_abspos_layout_inputs();
+
+    // The axis modes are the only saved input derived from the box's own computed values, which
+    // a boundary-self style change may have altered since capture; recompute them from the live
+    // insets. Grid containing blocks pin the axis modes structurally (and never replay after a
+    // boundary-self style change), so their saved modes stay.
+    if (Layout::FormattingContext::formatting_context_type_created_by_box(
+            Layout::FormattingContext::box_establishing_containing_formatting_context(subtree_root))
+        != Layout::FormattingContext::Type::Grid) {
+        auto const& inset = subtree_root.computed_values().inset();
+        inputs.containing_block_info.horizontal_axis_mode = inset.left().is_auto() && inset.right().is_auto()
+            ? Layout::AbsposAxisMode::StaticPosition
+            : Layout::AbsposAxisMode::InsetFromRect;
+        inputs.containing_block_info.vertical_axis_mode = inset.top().is_auto() && inset.bottom().is_auto()
+            ? Layout::AbsposAxisMode::StaticPosition
+            : Layout::AbsposAxisMode::InsetFromRect;
+    }
 
     // Mirror how the ancestor formatting context prepares an absolutely positioned child during
     // a full pass: create its used values (the percentage basis is pinned by the algorithm once
@@ -2060,6 +2118,14 @@ void Document::update_layout(UpdateLayoutReason reason)
                     if (!box || !box->parent())
                         continue;
                     if (!box->is_partial_relayout_boundary()) {
+                        can_run_partial_relayout = false;
+                        break;
+                    }
+                    // Replay re-resolves the boundary's size and position from the saved inputs;
+                    // take the full layout path when a style change on the boundary itself may
+                    // have invalidated the parts of those inputs derived from its own computed
+                    // values.
+                    if (box->needs_own_geometry_update() && box->is_absolutely_positioned() && !can_replay_partial_relayout_root_after_style_change(*box)) {
                         can_run_partial_relayout = false;
                         break;
                     }

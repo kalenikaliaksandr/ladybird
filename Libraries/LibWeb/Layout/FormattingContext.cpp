@@ -1901,6 +1901,37 @@ static bool calculation_tree_contains_anchor(CSS::CalculationNode const& root)
     return false;
 }
 
+static bool style_value_contains_anchor(CSS::StyleValue const& value)
+{
+    if (value.is_anchor())
+        return true;
+    if (value.is_calculated())
+        return calculation_tree_contains_anchor(value.as_calculated().calculation());
+    return false;
+}
+
+bool FormattingContext::box_inset_properties_contain_anchor_functions(Box const& box)
+{
+    DOM::Element const* element = nullptr;
+    Optional<CSS::PseudoElement> pseudo_element;
+    if (box.is_generated_for_pseudo_element()) {
+        element = box.pseudo_element_generator();
+        pseudo_element = box.generated_for_pseudo_element();
+    } else {
+        element = as_if<DOM::Element>(box.dom_node());
+    }
+    if (!element)
+        return false;
+
+    auto computed = element->computed_properties(pseudo_element);
+    if (!computed)
+        return false;
+    return style_value_contains_anchor(computed->property(CSS::PropertyID::Top))
+        || style_value_contains_anchor(computed->property(CSS::PropertyID::Right))
+        || style_value_contains_anchor(computed->property(CSS::PropertyID::Bottom))
+        || style_value_contains_anchor(computed->property(CSS::PropertyID::Left));
+}
+
 static Box const* nearest_scroll_container_ancestor(Box const& box)
 {
     for (auto const* ancestor = box.containing_block(); ancestor; ancestor = ancestor->containing_block()) {
@@ -1992,14 +2023,6 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
     auto const& right = computed->property(CSS::PropertyID::Right);
     auto const& bottom = computed->property(CSS::PropertyID::Bottom);
     auto const& left = computed->property(CSS::PropertyID::Left);
-
-    auto style_value_contains_anchor = [](CSS::StyleValue const& value) {
-        if (value.is_anchor())
-            return true;
-        if (value.is_calculated())
-            return calculation_tree_contains_anchor(value.as_calculated().calculation());
-        return false;
-    };
 
     bool top_contains_anchor = style_value_contains_anchor(top);
     bool right_contains_anchor = style_value_contains_anchor(right);
