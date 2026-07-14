@@ -2470,6 +2470,13 @@ void FormattingContext::layout_absolutely_positioned_element(Box& box, AbsposLay
 
     place_child(box, used_offset);
 
+    // Record the resolved inputs so a partial relayout can replay this box's layout without
+    // re-running its ancestor formatting context. They reach the box itself only through
+    // LayoutState::commit(), so throwaway measurement states discard them with the rest of
+    // their used values.
+    if (m_layout_mode == LayoutMode::Normal)
+        box_state.set_abspos_layout_inputs(inputs);
+
     if (independent_formatting_context)
         independent_formatting_context->parent_context_did_dimension_child_root_box();
 }
