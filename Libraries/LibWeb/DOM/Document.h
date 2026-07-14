@@ -714,17 +714,23 @@ public:
     [[nodiscard]] u32 allocate_layout_node_index() { return m_next_layout_node_index++; }
     void reset_layout_node_index_counter(u32 next_index) { m_next_layout_node_index = next_index; }
 
-    // Attribution of pending updates for partial relayout: boundaries that the invalidation
-    // walk stopped at since the last layout pass, resolved into the live boundary set by the
-    // dispatch in Document::update_layout().
+    // Attribution of pending updates for partial relayout. Invariant: every update recorded
+    // since the last layout pass is either attributed to a boundary in the registered root
+    // set (the invalidation walk stopped there), or the escape bit is set. The dispatch may
+    // only run partial relayout while the escape bit is clear; a full layout pass re-derives
+    // every fact boundary qualification depends on, so it clears the bit.
     class PartialRelayoutInvalidation {
     public:
         void record_boundary(Layout::Box&);
+        void record_escape(char const* reason);
+        void clear_escape(char const* reason);
+        [[nodiscard]] bool escapes() const { return m_escapes; }
         [[nodiscard]] bool has_registered_roots() const { return !m_registered_roots.is_empty(); }
         [[nodiscard]] HashTable<WeakPtr<Layout::Box>> take_registered_roots() { return move(m_registered_roots); }
 
     private:
         HashTable<WeakPtr<Layout::Box>> m_registered_roots;
+        bool m_escapes { false };
     };
     [[nodiscard]] PartialRelayoutInvalidation& partial_relayout_invalidation() { return m_partial_relayout_invalidation; }
 

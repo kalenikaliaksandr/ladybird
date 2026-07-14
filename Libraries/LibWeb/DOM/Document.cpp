@@ -1690,6 +1690,19 @@ void Document::PartialRelayoutInvalidation::record_boundary(Layout::Box& box)
     m_registered_roots.set(box.make_weak_ptr<Layout::Box>());
 }
 
+void Document::PartialRelayoutInvalidation::record_escape(char const* reason)
+{
+    dbgln_if(UPDATE_LAYOUT_DEBUG, "Pending updates escape partial relayout boundaries ({})", reason);
+    m_escapes = true;
+}
+
+void Document::PartialRelayoutInvalidation::clear_escape(char const* reason)
+{
+    if (m_escapes)
+        dbgln_if(UPDATE_LAYOUT_DEBUG, "Pending updates no longer escape partial relayout boundaries ({})", reason);
+    m_escapes = false;
+}
+
 void Document::set_needs_container_query_evaluation_after_layout(Element const& query_container)
 {
     m_query_containers_needing_container_query_evaluation_after_layout.set(const_cast<Element&>(query_container));
@@ -1930,7 +1943,10 @@ void Document::update_layout(UpdateLayoutReason reason)
         auto const needs_layout_tree_rebuild = !m_layout_root || needs_layout_tree_update() || child_needs_layout_tree_update() || needs_full_layout_tree_update();
 
         // Partial relayout
-        if (!needs_layout_tree_rebuild && !registered_partial_relayout_roots.is_empty() && !m_layout_root->needs_layout_update()) {
+        if (!needs_layout_tree_rebuild
+            && !m_partial_relayout_invalidation.escapes()
+            && !registered_partial_relayout_roots.is_empty()
+            && !m_layout_root->needs_layout_update()) {
             bool can_run_partial_relayout = true;
 
             // Boundaries are owned by the layout tree, not by the registration: resolve the
@@ -2006,6 +2022,10 @@ void Document::update_layout(UpdateLayoutReason reason)
 
             return TraversalDecision::Continue;
         });
+
+        // The walk above re-derived every fact partial relayout boundary qualification depends
+        // on, so pending changes that escaped classification are accounted for from here on.
+        m_partial_relayout_invalidation.clear_escape("full layout pass");
 
         // Layout nodes created between full passes take their indices from this counter, so
         // they never collide with the dense range just assigned.
