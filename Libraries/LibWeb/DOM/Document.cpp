@@ -1769,13 +1769,12 @@ static bool can_replay_partial_relayout_root_after_style_change(Layout::Box& box
     return true;
 }
 
-static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutState& layout_state)
+static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutState& layout_state, Painting::Paintable const& root_geometry_source)
 {
     // Pre-populate the subtree root itself: its size and position are frozen at the values from
     // the previous layout, since a partial relayout boundary guarantees they cannot change when
     // layout is only invalidated somewhere inside its subtree.
-    if (auto paintable = subtree_root.paintable_box())
-        layout_state.populate_from_paintable(subtree_root, *paintable);
+    layout_state.populate_from_paintable(subtree_root, root_geometry_source);
 
     // Pre-populate the viewport for position:fixed elements inside the subtree.
     auto& viewport = subtree_root.root();
@@ -1843,17 +1842,17 @@ static void compute_subtree_layout_by_replay(Layout::Box& subtree_root, Layout::
     context->layout_absolutely_positioned_element(subtree_root, inputs);
 }
 
-static void relayout_subtree(Layout::Box& subtree_root)
+static void relayout_subtree(Layout::Box& subtree_root, Painting::Paintable const& root_geometry_source, RefPtr<Painting::Paintable> parent_paintable)
 {
     Layout::LayoutState layout_state(subtree_root, Layout::LayoutState::Purpose::Commit);
     // Absolutely positioned boundaries replay their own layout from saved inputs; SVG roots
     // keep the frozen geometry from the previous layout (their used size never depends on
-    // subtree content).
+    // subtree content), taken from the given paintable since a replaced box no longer has one.
     if (subtree_root.is_absolutely_positioned())
         compute_subtree_layout_by_replay(subtree_root, layout_state);
     else
-        compute_subtree_layout(subtree_root, layout_state);
-    layout_state.commit(subtree_root);
+        compute_subtree_layout(subtree_root, layout_state, root_geometry_source);
+    layout_state.commit(subtree_root, move(parent_paintable));
 
     subtree_root.for_each_in_inclusive_subtree([](auto& node) {
         node.reset_needs_layout_update();
@@ -2100,63 +2099,92 @@ void Document::update_layout(UpdateLayoutReason reason)
 
             // Collect the live boundary set from the post-build tree: boundaries registered by
             // the invalidation walk that survived the build, plus the nearest boundary
-            // containing each subtree the build rebuilt in place, so the set is re-discovered
-            // from the tree instead of anchoring boxes across the build.
-            Vector<Layout::Box*> partial_relayout_roots;
+            // containing each subtree the build rebuilt in place - which re-discovers a
+            // boundary whose own box the build replaced, since the saved layout inputs carried
+            // over to the replacement - so the set is re-discovered from the tree instead of
+            // anchoring boxes across the build.
+            struct PartialRelayoutRoot {
+                Layout::Box* box { nullptr };
+                RefPtr<Painting::Paintable> old_paintable;
+                RefPtr<Painting::Paintable> old_paintable_parent;
+            };
+            Vector<PartialRelayoutRoot> partial_relayout_roots;
             HashTable<Layout::Box*> collected_boundaries;
-            auto collect_boundary = [&](Layout::Box& box) {
-                if (collected_boundaries.set(&box) == AK::HashSetResult::InsertedNewEntry)
-                    partial_relayout_roots.append(&box);
+            auto collect_boundary = [&](Layout::Box& box, bool box_was_replaced) {
+                if (collected_boundaries.set(&box) != AK::HashSetResult::InsertedNewEntry)
+                    return true;
+
+                RefPtr<Painting::Paintable> old_paintable = box.paintable_box();
+                if (!old_paintable && box_was_replaced && box.dom_node()) {
+                    // A replaced box has no paintable yet; the previous one stays referenced by the
+                    // DOM node until the next commit replaces it there.
+                    old_paintable = box.dom_node()->unsafe_paintable();
+                }
+                if (!old_paintable)
+                    return false;
+
+                // Replay re-resolves the boundary's size and position from the saved inputs;
+                // take the full layout path when a style change on the boundary itself may have
+                // invalidated the parts of those inputs derived from its own computed values. A
+                // replaced box applies the stricter check unconditionally, since the change that
+                // drove the replacement cannot be classified anymore.
+                bool saved_inputs_may_be_style_stale = box.needs_own_geometry_update() || box_was_replaced;
+                if (saved_inputs_may_be_style_stale && box.is_absolutely_positioned() && !can_replay_partial_relayout_root_after_style_change(box))
+                    return false;
+
+                partial_relayout_roots.append({
+                    .box = &box,
+                    .old_paintable = old_paintable,
+                    .old_paintable_parent = old_paintable->parent(),
+                });
+                return true;
             };
 
             if (can_run_partial_relayout) {
                 for (auto const& root : registered_partial_relayout_roots) {
                     auto* box = root.ptr();
-                    // A registered boundary that did not survive the build was removed together
-                    // with the dirt inside it: the removal dirtied its parent, whose own marking
-                    // covers the mutation.
+                    // A registered boundary that did not survive the build was either replaced
+                    // (its detached box is re-discovered through the rebuilt subtree roots
+                    // below) or removed together with the dirt inside it (the removal dirtied
+                    // its parent, whose own marking covers the mutation).
                     if (!box || !box->parent())
                         continue;
-                    if (!box->is_partial_relayout_boundary()) {
+                    if (!box->is_partial_relayout_boundary() || !collect_boundary(*box, false)) {
                         can_run_partial_relayout = false;
                         break;
                     }
-                    // Replay re-resolves the boundary's size and position from the saved inputs;
-                    // take the full layout path when a style change on the boundary itself may
-                    // have invalidated the parts of those inputs derived from its own computed
-                    // values.
-                    if (box->needs_own_geometry_update() && box->is_absolutely_positioned() && !can_replay_partial_relayout_root_after_style_change(*box)) {
-                        can_run_partial_relayout = false;
-                        break;
-                    }
-                    collect_boundary(*box);
                 }
             }
 
             if (can_run_partial_relayout) {
                 for (auto* rebuilt_root : rebuilt_subtree_roots) {
-                    // Every subtree the build rebuilt in place must lie inside a boundary for
-                    // its dirt to be confined.
+                    // Every subtree the build rebuilt in place must lie inside a boundary for its
+                    // dirt to be confined. The rebuilt box itself qualifies with its paintable still
+                    // pending; boundaries above it were not replaced and must have one. A boundary
+                    // that participated in inline layout is safe to accept when replaced: the swap
+                    // repointed the line box fragments referencing it, and the freshly built paint
+                    // subtree is spliced where the old one was removed.
                     Layout::Box* containing_boundary = nullptr;
+                    if (auto* rebuilt_box = as_if<Layout::Box>(*rebuilt_root); rebuilt_box && rebuilt_box->is_partial_relayout_boundary(Layout::RequireExistingPaintable::No))
+                        containing_boundary = rebuilt_box;
                     for (auto* ancestor = rebuilt_root->parent(); !containing_boundary && ancestor; ancestor = ancestor->parent()) {
                         if (auto* ancestor_box = as_if<Layout::Box>(*ancestor); ancestor_box && ancestor_box->is_partial_relayout_boundary())
                             containing_boundary = ancestor_box;
                     }
-                    if (!containing_boundary) {
+                    if (!containing_boundary || !collect_boundary(*containing_boundary, containing_boundary == rebuilt_root)) {
                         can_run_partial_relayout = false;
                         break;
                     }
-                    collect_boundary(*containing_boundary);
                 }
             }
 
             // A root nested inside another root is relaid out as part of the ancestor's subtree.
             if (can_run_partial_relayout) {
                 HashTable<Layout::Node const*> live_root_boxes;
-                for (auto const* root : partial_relayout_roots)
-                    live_root_boxes.set(root);
-                partial_relayout_roots.remove_all_matching([&](auto const* root) {
-                    for (auto const* ancestor = root->parent(); ancestor; ancestor = ancestor->parent()) {
+                for (auto const& root : partial_relayout_roots)
+                    live_root_boxes.set(root.box);
+                partial_relayout_roots.remove_all_matching([&](auto const& root) {
+                    for (auto const* ancestor = root.box->parent(); ancestor; ancestor = ancestor->parent()) {
                         if (live_root_boxes.contains(ancestor))
                             return true;
                     }
@@ -2176,8 +2204,8 @@ void Document::update_layout(UpdateLayoutReason reason)
             // own anchor() insets replay the values resolve_anchor_insets() wrote during the
             // last full pass, which stay valid while everything outside the subtree is clean.
             if (can_run_partial_relayout) {
-                for (auto* root : partial_relayout_roots) {
-                    if (any_registered_anchor_element_inside(*root)) {
+                for (auto const& root : partial_relayout_roots) {
+                    if (any_registered_anchor_element_inside(*root.box)) {
                         can_run_partial_relayout = false;
                         break;
                     }
@@ -2185,11 +2213,13 @@ void Document::update_layout(UpdateLayoutReason reason)
             }
 
             if (can_run_partial_relayout) {
-                for (auto* root : partial_relayout_roots) {
-                    relayout_subtree(*root);
+                for (auto const& root : partial_relayout_roots) {
+                    if (auto old_paintable_parent = root.old_paintable->parent())
+                        old_paintable_parent->remove_child(*root.old_paintable);
+                    relayout_subtree(*root.box, *root.old_paintable, root.old_paintable_parent);
                     // NB: The subtree commit reset the root's descendant paintables, and the subtree's
                     //     new size may change ancestor scrollable overflow; scheduling the root covers both.
-                    schedule_scrollable_overflow_recalculation(*root);
+                    schedule_scrollable_overflow_recalculation(*root.box);
                 }
 
                 // Structural updates can replace boxes referenced by the contained-boxes map cached

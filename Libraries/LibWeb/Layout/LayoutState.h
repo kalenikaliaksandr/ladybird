@@ -369,6 +369,7 @@ struct LayoutState {
 
     // Commits the used values produced by layout and builds a paintable tree.
     void commit(Box& root);
+    void commit(Box& root, RefPtr<Painting::Paintable> parent_paintable);
 
     void ensure_capacity(u32 node_count);
 

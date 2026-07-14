@@ -257,8 +257,18 @@ void LayoutState::commit(Box& root)
     if (!root.is_viewport()) {
         if (auto existing = root.paintable(); auto* existing_box = existing.ptr()) {
             parent_paintable = existing_box->parent();
-            if (parent_paintable)
-                parent_paintable->remove_child(*existing_box);
+        }
+    }
+
+    commit(root, move(parent_paintable));
+}
+
+void LayoutState::commit(Box& root, RefPtr<Painting::Paintable> parent_paintable)
+{
+    if (!root.is_viewport()) {
+        if (auto existing = root.paintable(); auto* existing_box = existing.ptr()) {
+            if (auto existing_parent = existing_box->parent())
+                existing_parent->remove_child(*existing_box);
         }
     }
 

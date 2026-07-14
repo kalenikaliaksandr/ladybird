@@ -71,6 +71,7 @@
 #include <LibWeb/Infra/CharacterTypes.h>
 #include <LibWeb/Infra/SerializedURL.h>
 #include <LibWeb/InvalidateDisplayList.h>
+#include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/Node.h>
 #include <LibWeb/Layout/TextNode.h>
 #include <LibWeb/Layout/TextOffsetMapping.h>
@@ -1783,6 +1784,21 @@ EventTarget* Node::get_parent(Event const&)
     return parent();
 }
 
+bool is_structural_boundary_self_rebuild_reason(SetNeedsLayoutTreeUpdateReason reason)
+{
+    switch (reason) {
+    case SetNeedsLayoutTreeUpdateReason::NodeInsertBefore:
+    case SetNeedsLayoutTreeUpdateReason::NodeRemove:
+    case SetNeedsLayoutTreeUpdateReason::NodeSetTextContent:
+    case SetNeedsLayoutTreeUpdateReason::CharacterDataReplaceData:
+    case SetNeedsLayoutTreeUpdateReason::ElementSetInnerHTML:
+    case SetNeedsLayoutTreeUpdateReason::ShadowRootSetInnerHTML:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void Node::set_needs_layout_tree_update(bool value, SetNeedsLayoutTreeUpdateReason reason)
 {
     if (m_needs_layout_tree_update == value)
@@ -1837,11 +1853,22 @@ void Node::set_needs_layout_tree_update(bool value, SetNeedsLayoutTreeUpdateReas
             if (!layout_node->parent() && layout_node != layout_root)
                 document().set_pending_updates_escape_partial_relayout_boundaries(true, "dirty DOM node has detached layout node");
 
-            layout_node->set_needs_layout_update(SetNeedsLayoutReason::LayoutTreeUpdate);
+            bool registered_boundary_self_rebuild = false;
+            if (auto* box = as_if<Layout::Box>(layout_node); box
+                && is_structural_boundary_self_rebuild_reason(reason)
+                && box->is_partial_relayout_boundary()) {
+                box->set_needs_layout_update(SetNeedsLayoutReason::LayoutTreeUpdate, Layout::LayoutUpdatePropagation::BoundarySelfOnly);
+                registered_boundary_self_rebuild = true;
+            } else {
+                layout_node->set_needs_layout_update(SetNeedsLayoutReason::LayoutTreeUpdate);
+            }
 
             // If the layout node has an anonymous parent, rebuild from the nearest non-anonymous ancestor.
+            // That concern does not apply to a boundary that registered itself for a structural change:
+            // its own box kind cannot change from a child-list mutation, so replacing its box in
+            // place cannot require restructuring the surrounding (possibly anonymous) siblings.
             // FIXME: This is not optimal, and we should figure out how to rebuild a smaller part of the tree.
-            if (layout_node->parent() && layout_node->parent()->is_anonymous()) {
+            if (!registered_boundary_self_rebuild && layout_node->parent() && layout_node->parent()->is_anonymous()) {
                 auto* ancestor = layout_node->parent();
                 while (ancestor && ancestor->is_anonymous())
                     ancestor = ancestor->parent();
