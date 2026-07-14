@@ -719,7 +719,20 @@ public:
     // one at construction; a full layout pass renumbers the whole tree densely and resets the
     // counter, so indices handed out between passes continue past the dense range.
     [[nodiscard]] u32 allocate_layout_node_index() { return m_next_layout_node_index++; }
-    void reset_layout_node_index_counter(u32 next_index) { m_next_layout_node_index = next_index; }
+    void reset_layout_node_index_counter(u32 next_index)
+    {
+        m_next_layout_node_index = next_index;
+        m_layout_node_index_count_after_last_full_pass = next_index;
+    }
+
+    // The per-pass used values store sizes its page table by the highest index it touches, so
+    // indices handed out between full passes (partial relayout never renumbers) grow its cost
+    // without bound. Once between-pass allocation outgrows the dense range, the next layout
+    // must be a full pass, which renumbers the tree densely and resets the counter.
+    [[nodiscard]] bool layout_node_indices_outgrew_dense_range() const
+    {
+        return m_next_layout_node_index > 2 * m_layout_node_index_count_after_last_full_pass + 2048;
+    }
 
     // Attribution of pending updates for partial relayout. Invariant: every update recorded
     // since the last layout pass is either attributed to a boundary in the registered root
@@ -1294,7 +1307,7 @@ private:
     void collect_paintable_boxes_with_auto_content_visibility();
     bool needs_style_update_after_layout();
     bool any_registered_anchor_element_inside(Layout::Node const& subtree_root) const;
-    PartialRelayoutResult try_partial_relayout(HashTable<WeakPtr<Layout::Box>> registered_partial_relayout_roots, bool needs_layout_tree_rebuild, bool should_collect_devtools_layout_data);
+    PartialRelayoutResult try_partial_relayout(HashTable<WeakPtr<Layout::Box>> registered_partial_relayout_roots, bool& needs_layout_tree_rebuild, bool should_collect_devtools_layout_data);
     static void recompute_containing_block_and_derive_abspos_escape_flags(Layout::Node&);
     enum class LayoutTreeChanged : u8 {
         No,
@@ -1502,6 +1515,7 @@ private:
     bool m_is_running_update_layout { false };
 
     u32 m_next_layout_node_index { 0 };
+    u32 m_layout_node_index_count_after_last_full_pass { 0 };
 
     PartialRelayoutInvalidation m_partial_relayout_invalidation;
 

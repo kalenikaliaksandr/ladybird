@@ -28,6 +28,7 @@
 #include <LibWeb/DOM/CDATASection.h>
 #include <LibWeb/DOM/CharacterData.h>
 #include <LibWeb/DOM/Comment.h>
+#include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/DocumentFragment.h>
 #include <LibWeb/DOM/DocumentType.h>
 #include <LibWeb/DOM/Element.h>
@@ -73,6 +74,7 @@
 #include <LibWeb/Layout/Node.h>
 #include <LibWeb/Layout/TextNode.h>
 #include <LibWeb/Layout/TextOffsetMapping.h>
+#include <LibWeb/Layout/Viewport.h>
 #include <LibWeb/MathML/MathMLElement.h>
 #include <LibWeb/Namespace.h>
 #include <LibWeb/Page/Page.h>
@@ -1831,6 +1833,10 @@ void Node::set_needs_layout_tree_update(bool value, SetNeedsLayoutTreeUpdateReas
 
         // NB: Propagating layout invalidation, layout is not up to date.
         if (auto layout_node = this->unsafe_layout_node()) {
+            auto* layout_root = static_cast<Layout::Node*>(document().unsafe_layout_node());
+            if (!layout_node->parent() && layout_node != layout_root)
+                document().partial_relayout_invalidation().record_escape("dirty DOM node has detached layout node");
+
             layout_node->set_needs_layout_update(SetNeedsLayoutReason::LayoutTreeUpdate);
 
             // If the layout node has an anonymous parent, rebuild from the nearest non-anonymous ancestor.
@@ -1843,6 +1849,11 @@ void Node::set_needs_layout_tree_update(bool value, SetNeedsLayoutTreeUpdateReas
                     ancestor->dom_node()->set_needs_layout_tree_update(true, reason);
             }
         }
+        // NB: A dirty node with no layout node needs no escape tracking: rebuilding it either
+        //     still produces no layout node (display:none and friends, no layout mutation at
+        //     all), or the change is covered by the display:contents and anonymous
+        //     escalations and shadow-root host forwarding above, which mark a node whose
+        //     layout node classifies the change through the ancestor walk.
     }
 }
 

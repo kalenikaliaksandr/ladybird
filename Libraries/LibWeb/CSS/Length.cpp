@@ -220,7 +220,11 @@ double Length::container_relative_length_to_px_without_rounding(ResolutionContex
 
         auto paintable_box = query_container->unsafe_paintable_box();
         if (!paintable_box) {
-            if (!subject.document().layout_is_up_to_date())
+            // A partial relayout pass reports layout as up to date while it runs (the dirty
+            // flags it consumed are already cleared), but a container without a paintable at
+            // that point still needs the post-layout evaluation: registering it routes the
+            // next pass to the full layout path, which resolves the container's size.
+            if (!subject.document().layout_is_up_to_date() || subject.document().is_running_update_layout())
                 const_cast<DOM::Document&>(subject.document()).set_needs_container_query_evaluation_after_layout(*query_container);
             return 0.0;
         }

@@ -1937,36 +1937,103 @@ bool Document::needs_style_update_after_layout()
 }
 
 // Attempts to satisfy the pending layout update by re-laying out only the registered partial
-// relayout boundary subtrees.
-Document::PartialRelayoutResult Document::try_partial_relayout(HashTable<WeakPtr<Layout::Box>> registered_partial_relayout_roots, bool needs_layout_tree_rebuild, bool should_collect_devtools_layout_data)
+// relayout boundary subtrees. Runs the incremental layout tree build itself when tree updates
+// are pending (consuming `needs_layout_tree_rebuild`), so an update that turns out not to be
+// eligible continues to the full layout path without rebuilding again.
+Document::PartialRelayoutResult Document::try_partial_relayout(HashTable<WeakPtr<Layout::Box>> registered_partial_relayout_roots, bool& needs_layout_tree_rebuild, bool should_collect_devtools_layout_data)
 {
-    if (needs_layout_tree_rebuild
+    if (!m_layout_root
+        || needs_full_layout_tree_update()
         || m_partial_relayout_invalidation.escapes()
         || registered_partial_relayout_roots.is_empty()
         || m_layout_root->needs_layout_update()
         || !m_query_containers_needing_container_query_evaluation_after_layout.is_empty()
+        || layout_node_indices_outgrew_dense_range()
         || should_collect_devtools_layout_data)
         return PartialRelayoutResult::NotEligible;
 
     bool can_run_partial_relayout = true;
 
-    // Boundaries are owned by the layout tree, not by the registration: resolve the
-    // live boundary set at dispatch time by re-checking each registered root against
-    // the tree it is about to lay out. A registered root that is no longer attached
-    // was removed together with the dirt inside it, and one that no longer qualifies
-    // as a boundary sends the update to the full layout path. Upcoming structural
-    // partial relayout will rebuild subtrees in place before this point, so the set
-    // must never anchor boxes across intervening layout tree updates.
-    Vector<Layout::Box*> partial_relayout_roots;
-    for (auto const& root : registered_partial_relayout_roots) {
-        auto* box = root.ptr();
-        if (!box || !box->parent())
-            continue;
-        if (!box->is_partial_relayout_boundary()) {
-            can_run_partial_relayout = false;
-            break;
+    bool layout_tree_was_built_in_partial_branch = false;
+    bool pending_updates_escaped_during_partial_build = false;
+    Vector<Layout::Node*> rebuilt_subtree_roots;
+    if (needs_layout_tree_rebuild) {
+        auto tree_build_timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
+        Layout::TreeBuilder tree_builder;
+        m_layout_root = as<Layout::Viewport>(*tree_builder.build(*this));
+        needs_layout_tree_rebuild = false;
+        layout_tree_was_built_in_partial_branch = true;
+        pending_updates_escaped_during_partial_build = m_partial_relayout_invalidation.escapes()
+            || tree_builder.layout_tree_update_escaped_rebuild_roots();
+        m_partial_relayout_invalidation.clear_escape("partial layout tree build");
+        rebuilt_subtree_roots = tree_builder.rebuilt_subtree_roots();
+
+        if constexpr (UPDATE_LAYOUT_DEBUG) {
+            dbgln("TREEBUILD {} µs", tree_build_timer.elapsed_time().to_microseconds());
         }
-        partial_relayout_roots.append(box);
+    }
+
+    if (m_layout_root->needs_layout_update() || pending_updates_escaped_during_partial_build)
+        can_run_partial_relayout = false;
+
+    // Nodes created by the incremental build have no containing blocks assigned yet, and
+    // the mutation may have moved where existing out-of-flow descendants belong. Walk
+    // each rebuilt subtree to recompute them and re-derive the escape flags they feed,
+    // so boundary qualification below reads facts matching the just-built tree. An
+    // out-of-flow box whose containing block now lies outside a candidate boundary marks
+    // it here, which rejects the boundary below; the mark persists, so the invalidation
+    // walk stops registering the boundary until a full pass re-derives the flags.
+    if (can_run_partial_relayout) {
+        for (auto* rebuilt_root : rebuilt_subtree_roots) {
+            rebuilt_root->for_each_in_inclusive_subtree([](Layout::Node& node) {
+                recompute_containing_block_and_derive_abspos_escape_flags(node);
+                return TraversalDecision::Continue;
+            });
+        }
+    }
+
+    // Collect the live boundary set from the post-build tree: boundaries registered by
+    // the invalidation walk that survived the build, plus the nearest boundary
+    // containing each subtree the build rebuilt in place, so the set is re-discovered
+    // from the tree instead of anchoring boxes across the build.
+    Vector<Layout::Box*> partial_relayout_roots;
+    HashTable<Layout::Box*> collected_boundaries;
+    auto collect_boundary = [&](Layout::Box& box) {
+        if (collected_boundaries.set(&box) == AK::HashSetResult::InsertedNewEntry)
+            partial_relayout_roots.append(&box);
+    };
+
+    if (can_run_partial_relayout) {
+        for (auto const& root : registered_partial_relayout_roots) {
+            auto* box = root.ptr();
+            // A registered boundary that did not survive the build was removed together
+            // with the dirt inside it: the removal dirtied its parent, whose own marking
+            // covers the mutation.
+            if (!box || !box->parent())
+                continue;
+            if (!box->is_partial_relayout_boundary()) {
+                can_run_partial_relayout = false;
+                break;
+            }
+            collect_boundary(*box);
+        }
+    }
+
+    if (can_run_partial_relayout) {
+        for (auto* rebuilt_root : rebuilt_subtree_roots) {
+            // Every subtree the build rebuilt in place must lie inside a boundary for
+            // its dirt to be confined.
+            Layout::Box* containing_boundary = nullptr;
+            for (auto* ancestor = rebuilt_root->parent(); !containing_boundary && ancestor; ancestor = ancestor->parent()) {
+                if (auto* ancestor_box = as_if<Layout::Box>(*ancestor); ancestor_box && ancestor_box->is_partial_relayout_boundary())
+                    containing_boundary = ancestor_box;
+            }
+            if (!containing_boundary) {
+                can_run_partial_relayout = false;
+                break;
+            }
+            collect_boundary(*containing_boundary);
+        }
     }
 
     // A root nested inside another root is relaid out as part of the ancestor's subtree.
@@ -2011,10 +2078,18 @@ Document::PartialRelayoutResult Document::try_partial_relayout(HashTable<WeakPtr
             schedule_scrollable_overflow_recalculation(*root);
         }
 
+        // Structural updates can replace boxes referenced by the contained-boxes map cached
+        // at the last full layout. Refresh it after the subtree commits have created paintables
+        // for any new boxes, before scheduled overflow measurement follows those references.
+        if (layout_tree_was_built_in_partial_branch) {
+            auto work = Layout::collect_scrollable_overflow_measurement_work(*m_layout_root);
+            m_scrollable_overflow_contained_boxes_from_last_layout = move(work.contained_boxes_map);
+        }
+
         update_scrollable_overflow(UpdateScrollableOverflowMode::Scheduled);
         ++m_partial_layout_count;
 
-        after_layout_commit(LayoutTreeChanged::No);
+        after_layout_commit(layout_tree_was_built_in_partial_branch ? LayoutTreeChanged::Yes : LayoutTreeChanged::No);
         if (needs_style_update_after_layout() || !layout_is_up_to_date())
             return PartialRelayoutResult::NeedsAnotherLayoutPass;
         return PartialRelayoutResult::Done;
@@ -2055,7 +2130,7 @@ void Document::update_layout(UpdateLayoutReason reason)
         if (m_created_for_appropriate_template_contents)
             return;
 
-        auto const needs_layout_tree_rebuild = !m_layout_root || needs_layout_tree_update() || child_needs_layout_tree_update() || needs_full_layout_tree_update();
+        auto needs_layout_tree_rebuild = !m_layout_root || needs_layout_tree_update() || child_needs_layout_tree_update() || needs_full_layout_tree_update();
 
         switch (try_partial_relayout(move(registered_partial_relayout_roots), needs_layout_tree_rebuild, should_collect_devtools_layout_data)) {
         case PartialRelayoutResult::Done:
