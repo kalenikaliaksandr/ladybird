@@ -23,6 +23,15 @@ public:
         Prepend,
     };
 
+    // Confinement report for the build: the roots of the subtrees that were rebuilt in place,
+    // and whether any insertion had to restructure the tree outside those subtrees (an
+    // inline/block mix forcing an anonymous wrapper around siblings of an ancestor). A caller
+    // that wants to relayout only the rebuilt subtrees must check that nothing escaped them.
+    Vector<Layout::Node*> const& rebuilt_subtree_roots() const { return m_rebuilt_subtree_roots; }
+    bool layout_tree_update_escaped_rebuild_roots() const { return m_layout_tree_update_escaped_rebuild_roots; }
+
+    void note_tree_restructuring_at(Layout::Node const&);
+
 private:
     struct Context {
         bool has_svg_root = false;
@@ -67,6 +76,11 @@ private:
 
     RefPtr<Layout::Node> m_layout_root;
     Vector<Layout::NodeWithStyle*> m_ancestor_stack;
+
+    // The root of the in-place subtree replacement currently being built, if any.
+    Layout::Node* m_current_rebuild_root { nullptr };
+    Vector<Layout::Node*> m_rebuilt_subtree_roots;
+    bool m_layout_tree_update_escaped_rebuild_roots { false };
 
     u32 m_quote_nesting_level { 0 };
 };
