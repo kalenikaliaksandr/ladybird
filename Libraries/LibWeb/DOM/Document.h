@@ -1270,7 +1270,11 @@ private:
     void update_active_element();
     void collect_paintable_boxes_with_auto_content_visibility();
     static bool prepare_subtree_for_partial_relayout(Layout::Box&);
-    void refresh_paint_state_after_layout();
+    enum class LayoutTreeChanged : u8 {
+        No,
+        Yes,
+    };
+    void after_layout_commit(LayoutTreeChanged);
 
     void run_unloading_cleanup_steps();
 

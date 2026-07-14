@@ -1788,11 +1788,20 @@ bool Document::prepare_subtree_for_partial_relayout(Layout::Box& subtree_root)
     return can_relayout_subtree;
 }
 
-// Post-commit finalization shared by the partial and full layout paths: paintables in the
-// (re)laid-out subtrees were rebuilt during commit and lost their derived paint state.
-void Document::refresh_paint_state_after_layout()
+// Post-commit finalization shared by the partial and full layout paths. Every structure derived
+// from committed layout results is refreshed here, in one place, so no layout path can forget
+// one: paintables rebuilt by the commit lost their scroll frames, accumulated visual contexts,
+// and selection state, and the text blocks cache, stacking context tree, display list, and
+// scroll state describe the previous paint tree.
+void Document::after_layout_commit(LayoutTreeChanged layout_tree_changed)
 {
     // NB: Called during layout update.
+    m_layout_root->invalidate_text_blocks_cache();
+
+    invalidate_stacking_context_tree();
+    set_needs_to_record_display_list();
+    set_needs_to_refresh_scroll_state(true);
+
     unsafe_paintable()->reassign_scroll_frames();
 
     set_needs_accumulated_visual_contexts_update(true);
@@ -1801,6 +1810,15 @@ void Document::refresh_paint_state_after_layout()
     // Selection state lives on paintable fragments, which the commit rebuilt.
     if (auto range = get_selection()->range())
         unsafe_paintable()->recompute_selection_states(*range);
+
+    if (layout_tree_changed == LayoutTreeChanged::Yes) {
+        // Broadcast the current viewport rect to any new paintables, so they know whether
+        // they're visible or not, and re-collect the content-visibility:auto set.
+        inform_all_viewport_clients_about_the_current_viewport_rect();
+        collect_paintable_boxes_with_auto_content_visibility();
+    }
+
+    m_document->set_needs_repaint();
 }
 
 static void propagate_scrollbar_width_to_viewport(Element& root_element, Layout::Viewport& viewport)
@@ -1980,26 +1998,12 @@ void Document::update_layout(UpdateLayoutReason reason)
 
                 update_scrollable_overflow(UpdateScrollableOverflowMode::Scheduled);
 
-                // Clear text blocks cache so we rebuild them on the next find action.
-                m_layout_root->invalidate_text_blocks_cache();
-
-                invalidate_stacking_context_tree();
-                set_needs_to_record_display_list();
-
-                refresh_paint_state_after_layout();
-
-                m_document->set_needs_repaint();
+                after_layout_commit(LayoutTreeChanged::No);
                 if (needs_style_update_after_layout())
                     continue;
                 return;
             }
         }
-
-        // Clear text blocks cache so we rebuild them on the next find action.
-        if (m_layout_root)
-            m_layout_root->invalidate_text_blocks_cache();
-
-        set_needs_to_record_display_list();
 
         auto* document_element = this->document_element();
         auto viewport_rect = navigable->viewport_rect();
@@ -2090,14 +2094,7 @@ void Document::update_layout(UpdateLayoutReason reason)
         style_invalidation_counters().relayouts_performed++;
         update_scrollable_overflow(UpdateScrollableOverflowMode::AfterLayout);
 
-        // Broadcast the current viewport rect to any new paintables, so they know whether they're visible or not.
-        inform_all_viewport_clients_about_the_current_viewport_rect();
-
-        m_document->set_needs_repaint();
-
-        refresh_paint_state_after_layout();
-
-        collect_paintable_boxes_with_auto_content_visibility();
+        after_layout_commit(LayoutTreeChanged::Yes);
 
         m_layout_root->for_each_in_inclusive_subtree([](auto& node) {
             node.reset_needs_layout_update();
