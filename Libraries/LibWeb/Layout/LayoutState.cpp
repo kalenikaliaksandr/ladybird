@@ -251,6 +251,16 @@ static void build_paint_tree(Node& node, Painting::Paintable* parent_paintable =
         build_paint_tree(*child, paintable_for_children);
 }
 
+void LayoutState::ensure_populated_from_committed_paintable_if_outside_subtree(NodeWithStyle const& node)
+{
+    if (!m_subtree_root || m_subtree_root->is_inclusive_ancestor_of(node))
+        return;
+    if (try_get(node))
+        return;
+    if (auto paintable = node.paintable())
+        populate_from_paintable(node, *paintable);
+}
+
 void LayoutState::commit(Box& root)
 {
     // The rebuilt paint subtree takes over the old paintable's position among its siblings:

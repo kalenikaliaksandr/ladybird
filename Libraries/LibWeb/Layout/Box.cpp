@@ -58,10 +58,46 @@ bool Box::is_partial_relayout_boundary() const
     // outer SVG's viewBox-transformed coordinate system, which a subtree
     // relayout starting at the inner root cannot reproduce (it would create
     // its formatting context with an identity parent viewBox transform).
-    if (is_svg_svg_box())
+    // An absolutely positioned SVG root does not take this arm: its own
+    // placement is not frozen, so it must qualify through the saved-inputs
+    // replay path below like any other absolutely positioned box.
+    if (is_svg_svg_box() && !is_absolutely_positioned())
         return !(parent() && (parent()->is_svg_box() || parent()->is_svg_svg_box()));
 
-    return false;
+    if (!is_absolutely_positioned())
+        return false;
+    if (is_anonymous())
+        return false;
+    if (!paintable_box())
+        return false;
+    if (dom_node() == document().document_element())
+        return false;
+
+    // The saved inputs are what a partial relayout replays to re-resolve this box's own size
+    // and position without re-running its ancestor formatting context.
+    if (!saved_abspos_layout_inputs())
+        return false;
+
+    // NOTE: Content-dependent sizing (shrink-to-fit, intrinsic min/max constraints, aspect
+    //       ratio) does not disqualify a boundary: replay re-solves the boundary's own size on
+    //       every partial relayout, intrinsic sizing stays contained in the subtree, and a
+    //       resized boundary triggers ancestor scrollable overflow recomputation after commit.
+
+    auto formatting_context_type = FormattingContext::formatting_context_type_created_by_box(*this);
+    if (!formatting_context_type.has_value())
+        return false;
+    switch (*formatting_context_type) {
+    case FormattingContext::Type::Block:
+    case FormattingContext::Type::Flex:
+    case FormattingContext::Type::Grid:
+        return true;
+    case FormattingContext::Type::SVG:
+        // An absolutely positioned SVG root replays like any other absolutely positioned
+        // boundary; the outermost-only restriction applies the same way as above.
+        return !(parent() && (parent()->is_svg_box() || parent()->is_svg_svg_box()));
+    default:
+        return false;
+    }
 }
 
 CSS::SizeWithAspectRatio Box::auto_content_box_size() const

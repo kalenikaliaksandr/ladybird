@@ -391,6 +391,14 @@ struct LayoutState {
     [[nodiscard]] CSSPixelPoint cumulative_offset(UsedValues const&) const;
 
     bool has_subtree_root() const { return m_subtree_root != nullptr; }
+    Layout::NodeWithStyle const* subtree_root() const { return m_subtree_root; }
+
+    // During a subtree-rooted (partial relayout) pass, boxes outside the subtree have no used
+    // values in this state, but their committed geometry is valid by the partial relayout
+    // precondition (everything outside the subtree is clean). Materialize used values for such
+    // a box from its paintable on first use; no-op for boxes that already have used values or
+    // when this state covers the whole tree.
+    void ensure_populated_from_committed_paintable_if_outside_subtree(NodeWithStyle const&);
 
     struct ContainedAbsposChild {
         Box const* box { nullptr };

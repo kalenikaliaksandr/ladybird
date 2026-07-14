@@ -1703,6 +1703,26 @@ void Document::PartialRelayoutInvalidation::clear_escape(char const* reason)
     m_escapes = false;
 }
 
+// Whether any element with a registered anchor-name has its layout node inside the given
+// subtree. Such a subtree cannot be laid out in isolation: positioned boxes outside it may
+// read the anchor's geometry through anchor() functions, so a geometry change inside the
+// subtree has to re-lay them out too, which only a full layout does.
+bool Document::any_registered_anchor_element_inside(Layout::Node const& subtree_root) const
+{
+    bool found_anchor_element_inside = false;
+    auto check_element = [&](Element& element) {
+        if (found_anchor_element_inside)
+            return;
+        if (auto const* layout_node = element.unsafe_layout_node(); layout_node && subtree_root.is_inclusive_ancestor_of(*layout_node))
+            found_anchor_element_inside = true;
+    };
+    m_anchor_name_map.for_each_element(check_element);
+    for_each_shadow_root([&](auto& shadow_root) {
+        shadow_root.anchor_name_map().for_each_element(check_element);
+    });
+    return found_anchor_element_inside;
+}
+
 void Document::set_needs_container_query_evaluation_after_layout(Element const& query_container)
 {
     m_query_containers_needing_container_query_evaluation_after_layout.set(const_cast<Element&>(query_container));
@@ -1744,7 +1764,15 @@ static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutStat
 static void relayout_subtree(Layout::Box& subtree_root)
 {
     Layout::LayoutState layout_state(subtree_root, Layout::LayoutState::Purpose::Commit);
-    compute_subtree_layout(subtree_root, layout_state);
+    // Absolutely positioned boundaries replay their own layout from saved inputs, which pin
+    // everything the algorithm consumes from outside the subtree and re-resolve the
+    // boundary's own size and position exactly the way its ancestor formatting context did
+    // during the last full pass. SVG roots keep the frozen geometry from the previous layout
+    // (their used size never depends on subtree content).
+    if (subtree_root.is_absolutely_positioned())
+        Layout::FormattingContext::layout_absolutely_positioned_element_from_saved_inputs(layout_state, subtree_root);
+    else
+        compute_subtree_layout(subtree_root, layout_state);
     layout_state.commit(subtree_root);
 
     subtree_root.for_each_in_inclusive_subtree([](auto& node) {
@@ -1908,6 +1936,93 @@ bool Document::needs_style_update_after_layout()
         || child_needs_style_update();
 }
 
+// Attempts to satisfy the pending layout update by re-laying out only the registered partial
+// relayout boundary subtrees.
+Document::PartialRelayoutResult Document::try_partial_relayout(HashTable<WeakPtr<Layout::Box>> registered_partial_relayout_roots, bool needs_layout_tree_rebuild, bool should_collect_devtools_layout_data)
+{
+    if (needs_layout_tree_rebuild
+        || m_partial_relayout_invalidation.escapes()
+        || registered_partial_relayout_roots.is_empty()
+        || m_layout_root->needs_layout_update()
+        || !m_query_containers_needing_container_query_evaluation_after_layout.is_empty()
+        || should_collect_devtools_layout_data)
+        return PartialRelayoutResult::NotEligible;
+
+    bool can_run_partial_relayout = true;
+
+    // Boundaries are owned by the layout tree, not by the registration: resolve the
+    // live boundary set at dispatch time by re-checking each registered root against
+    // the tree it is about to lay out. A registered root that is no longer attached
+    // was removed together with the dirt inside it, and one that no longer qualifies
+    // as a boundary sends the update to the full layout path. Upcoming structural
+    // partial relayout will rebuild subtrees in place before this point, so the set
+    // must never anchor boxes across intervening layout tree updates.
+    Vector<Layout::Box*> partial_relayout_roots;
+    for (auto const& root : registered_partial_relayout_roots) {
+        auto* box = root.ptr();
+        if (!box || !box->parent())
+            continue;
+        if (!box->is_partial_relayout_boundary()) {
+            can_run_partial_relayout = false;
+            break;
+        }
+        partial_relayout_roots.append(box);
+    }
+
+    // A root nested inside another root is relaid out as part of the ancestor's subtree.
+    if (can_run_partial_relayout) {
+        HashTable<Layout::Node const*> live_root_boxes;
+        for (auto const* root : partial_relayout_roots)
+            live_root_boxes.set(root);
+        partial_relayout_roots.remove_all_matching([&](auto const* root) {
+            for (auto const* ancestor = root->parent(); ancestor; ancestor = ancestor->parent()) {
+                if (live_root_boxes.contains(ancestor))
+                    return true;
+            }
+            return false;
+        });
+    }
+
+    if (partial_relayout_roots.is_empty())
+        can_run_partial_relayout = false;
+
+    // Anchor names inside a subtree publish geometry that anchor() functions on
+    // positioned boxes outside it consume, so such a subtree cannot be laid out in
+    // isolation. Anchor USE inside a subtree needs no check: an acceptable anchor's
+    // containing block chain must pass through the positioned box's containing block,
+    // which lies inside the subtree for every positioned box below the boundary, so
+    // every anchor those boxes can reference is inside the subtree too. The boundary's
+    // own anchor() insets are re-resolved during replay against committed geometry
+    // outside the subtree, which is exact while everything outside stays clean.
+    if (can_run_partial_relayout) {
+        for (auto* root : partial_relayout_roots) {
+            if (any_registered_anchor_element_inside(*root)) {
+                can_run_partial_relayout = false;
+                break;
+            }
+        }
+    }
+
+    if (can_run_partial_relayout) {
+        for (auto* root : partial_relayout_roots) {
+            relayout_subtree(*root);
+            // NB: The subtree commit reset the root's descendant paintables, and the subtree's
+            //     new size may change ancestor scrollable overflow; scheduling the root covers both.
+            schedule_scrollable_overflow_recalculation(*root);
+        }
+
+        update_scrollable_overflow(UpdateScrollableOverflowMode::Scheduled);
+        ++m_partial_layout_count;
+
+        after_layout_commit(LayoutTreeChanged::No);
+        if (needs_style_update_after_layout() || !layout_is_up_to_date())
+            return PartialRelayoutResult::NeedsAnotherLayoutPass;
+        return PartialRelayoutResult::Done;
+    }
+
+    return PartialRelayoutResult::NotEligible;
+}
+
 void Document::update_layout(UpdateLayoutReason reason)
 {
     auto navigable = this->navigable();
@@ -1942,49 +2057,13 @@ void Document::update_layout(UpdateLayoutReason reason)
 
         auto const needs_layout_tree_rebuild = !m_layout_root || needs_layout_tree_update() || child_needs_layout_tree_update() || needs_full_layout_tree_update();
 
-        // Partial relayout
-        if (!needs_layout_tree_rebuild
-            && !m_partial_relayout_invalidation.escapes()
-            && !registered_partial_relayout_roots.is_empty()
-            && !m_layout_root->needs_layout_update()) {
-            bool can_run_partial_relayout = true;
-
-            // Boundaries are owned by the layout tree, not by the registration: resolve the
-            // live boundary set at dispatch time by re-checking each registered root against
-            // the tree it is about to lay out. A registered root that is no longer attached
-            // was removed together with the dirt inside it, and one that no longer qualifies
-            // as a boundary sends the update to the full layout path. Upcoming structural
-            // partial relayout will rebuild subtrees in place before this point, so the set
-            // must never anchor boxes across intervening layout tree updates.
-            Vector<Layout::Box*> partial_relayout_roots;
-            for (auto const& root : registered_partial_relayout_roots) {
-                auto* box = root.ptr();
-                if (!box || !box->parent())
-                    continue;
-                if (!box->is_partial_relayout_boundary()) {
-                    can_run_partial_relayout = false;
-                    break;
-                }
-                partial_relayout_roots.append(box);
-            }
-
-            if (partial_relayout_roots.is_empty())
-                can_run_partial_relayout = false;
-
-            if (can_run_partial_relayout) {
-                for (auto* root : partial_relayout_roots) {
-                    relayout_subtree(*root);
-                    // NB: The subtree commit reset the root's descendant paintables, and the subtree's
-                    //     new size may change ancestor scrollable overflow; scheduling the root covers both.
-                    schedule_scrollable_overflow_recalculation(*root);
-                }
-
-                update_scrollable_overflow(UpdateScrollableOverflowMode::Scheduled);
-                ++m_partial_layout_count;
-
-                after_layout_commit(LayoutTreeChanged::No);
-                return;
-            }
+        switch (try_partial_relayout(move(registered_partial_relayout_roots), needs_layout_tree_rebuild, should_collect_devtools_layout_data)) {
+        case PartialRelayoutResult::Done:
+            return;
+        case PartialRelayoutResult::NeedsAnotherLayoutPass:
+            continue;
+        case PartialRelayoutResult::NotEligible:
+            break;
         }
 
         auto* document_element = this->document_element();

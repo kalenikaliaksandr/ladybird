@@ -1190,14 +1190,30 @@ CSS::RequiredInvalidationAfterStyleChange Element::recompute_style(bool& did_cha
         auto& anchor_names = as_if<ShadowRoot>(root())
             ? as<ShadowRoot>(root()).anchor_name_map()
             : document().anchor_name_map();
+        Vector<Utf16FlyString> old_anchor_names;
         if (m_computed_properties) {
             m_computed_properties->for_each_anchor_name([&](Utf16FlyString const& name) {
+                old_anchor_names.append(name);
                 anchor_names.unregister_name(name, *this);
             });
         }
+        bool anchor_name_set_changed = false;
+        size_t new_anchor_name_count = 0;
         new_computed_properties->for_each_anchor_name([&](Utf16FlyString const& name) {
+            ++new_anchor_name_count;
+            if (!old_anchor_names.contains_slow(name))
+                anchor_name_set_changed = true;
             anchor_names.register_name(name, *this);
         });
+        if (new_anchor_name_count != old_anchor_names.size())
+            anchor_name_set_changed = true;
+
+        // Anchor geometry is consumed by positioned boxes anywhere in the document, and only a
+        // full layout re-resolves them all. A provider appearing or vanishing between layouts
+        // (a changed anchor-name set, or a rebuild that may detach or recreate the provider's
+        // box) is invisible to the dispatch-time containment guard, which reads the live map.
+        if (anchor_name_set_changed || ((new_anchor_name_count > 0 || !old_anchor_names.is_empty()) && invalidation.needs_layout_tree_rebuild()))
+            document().partial_relayout_invalidation().record_escape("anchor name set changed");
     }
 
     auto old_non_animated_display_is_none = m_computed_properties ? m_computed_properties->property(CSS::PropertyID::Display, CSS::ComputedProperties::WithAnimationsApplied::No).as_display().display().is_none() : true;
@@ -2004,9 +2020,16 @@ void Element::removed_from(IsSubtreeRoot is_subtree_root, Node* old_ancestor, No
             auto& anchor_names = is<ShadowRoot>(old_root)
                 ? as<ShadowRoot>(old_root).anchor_name_map()
                 : document().anchor_name_map();
+            bool had_anchor_names = false;
             m_computed_properties->for_each_anchor_name([&](Utf16FlyString const& name) {
+                had_anchor_names = true;
                 anchor_names.unregister_name(name, *this);
             });
+            // Positioned boxes anywhere may hold geometry resolved against this anchor; only
+            // a full layout re-resolves them, and the dispatch-time guard cannot see a
+            // provider that is already gone from the map.
+            if (had_anchor_names)
+                document().partial_relayout_invalidation().record_escape("anchor name element removed");
         }
     }
 

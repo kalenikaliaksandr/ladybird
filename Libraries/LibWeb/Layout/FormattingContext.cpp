@@ -1896,6 +1896,37 @@ static bool calculation_tree_contains_anchor(CSS::CalculationNode const& root)
     return false;
 }
 
+static bool style_value_contains_anchor(CSS::StyleValue const& value)
+{
+    if (value.is_anchor())
+        return true;
+    if (value.is_calculated())
+        return calculation_tree_contains_anchor(value.as_calculated().calculation());
+    return false;
+}
+
+bool FormattingContext::box_inset_properties_contain_anchor_functions(Box const& box)
+{
+    DOM::Element const* element = nullptr;
+    Optional<CSS::PseudoElement> pseudo_element;
+    if (box.is_generated_for_pseudo_element()) {
+        element = box.pseudo_element_generator();
+        pseudo_element = box.generated_for_pseudo_element();
+    } else {
+        element = as_if<DOM::Element>(box.dom_node());
+    }
+    if (!element)
+        return false;
+
+    auto computed = element->computed_properties(pseudo_element);
+    if (!computed)
+        return false;
+    return style_value_contains_anchor(computed->property(CSS::PropertyID::Top))
+        || style_value_contains_anchor(computed->property(CSS::PropertyID::Right))
+        || style_value_contains_anchor(computed->property(CSS::PropertyID::Bottom))
+        || style_value_contains_anchor(computed->property(CSS::PropertyID::Left));
+}
+
 static Box const* nearest_scroll_container_ancestor(Box const& box)
 {
     for (auto const* ancestor = box.containing_block(); ancestor; ancestor = ancestor->containing_block()) {
@@ -1988,14 +2019,6 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
     auto const& bottom = computed->property(CSS::PropertyID::Bottom);
     auto const& left = computed->property(CSS::PropertyID::Left);
 
-    auto style_value_contains_anchor = [](CSS::StyleValue const& value) {
-        if (value.is_anchor())
-            return true;
-        if (value.is_calculated())
-            return calculation_tree_contains_anchor(value.as_calculated().calculation());
-        return false;
-    };
-
     bool top_contains_anchor = style_value_contains_anchor(top);
     bool right_contains_anchor = style_value_contains_anchor(right);
     bool bottom_contains_anchor = style_value_contains_anchor(bottom);
@@ -2008,6 +2031,10 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
         return;
 
     auto const& default_anchor_name = box.computed_values().position_anchor();
+    // A subtree-rooted (partial relayout) pass resolves the subtree root's anchors against
+    // boxes outside the subtree, whose committed geometry is valid by the partial relayout
+    // precondition; materialize their used values from the paintables on demand.
+    m_state.ensure_populated_from_committed_paintable_if_outside_subtree(*containing_block);
     auto const& containing_block_state = m_state.get(*containing_block);
 
     // https://drafts.csswg.org/css-anchor-position-1/#acceptable-anchor-element
@@ -2037,7 +2064,9 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
             return false;
 
         // The anchor element may not have been laid out (it must be laid out strictly before
-        // the positioned element to be an acceptable anchor).
+        // the positioned element to be an acceptable anchor). In a subtree-rooted pass an
+        // anchor outside the subtree carries its committed layout instead.
+        m_state.ensure_populated_from_committed_paintable_if_outside_subtree(*anchor_box);
         if (!m_state.try_get(*anchor_box))
             return false;
 
@@ -2087,6 +2116,7 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
         CSSPixelPoint anchor_offset_from_containing_block;
         for (auto const* node = anchor_box; node != containing_block; node = node->containing_block()) {
             VERIFY(node);
+            m_state.ensure_populated_from_committed_paintable_if_outside_subtree(*node);
             anchor_offset_from_containing_block += m_state.get(*node).content_offset();
         }
         // The anchor rect is expressed relative to the containing block's padding box.
@@ -2330,6 +2360,51 @@ StaticPositionRect FormattingContext::resolve_static_position_relative_to_contai
     };
     static_position_rect.rect.translate_by(offset_relative_to_merge_point(*static_position_cb) - offset_relative_to_merge_point(*actual_containing_block));
     return static_position_rect;
+}
+
+// The absolutely positioned element layout algorithm is defined on the FormattingContext base
+// and consumes nothing from the concrete context hosting it: everything from outside the box's
+// subtree arrives as plain values in AbsposLayoutInputs, and the box's inside layout runs in
+// the box's own independent context. This context hosts runs of the algorithm that happen
+// outside any ancestor formatting context run, and can do nothing else.
+class AbsposLayoutReplayContext final : public FormattingContext {
+public:
+    AbsposLayoutReplayContext(LayoutState& state, Box const& containing_block)
+        : FormattingContext(Type::AbsposReplay, LayoutMode::Normal, state, containing_block)
+    {
+    }
+
+    virtual CSSPixels automatic_content_width() const override { VERIFY_NOT_REACHED(); }
+    virtual CSSPixels automatic_content_height() const override { VERIFY_NOT_REACHED(); }
+    virtual void run(LayoutInput const&) override { VERIFY_NOT_REACHED(); }
+};
+
+void FormattingContext::layout_absolutely_positioned_element_from_saved_inputs(LayoutState& state, Box& box)
+{
+    auto* containing_block = box.containing_block();
+    VERIFY(containing_block);
+    VERIFY(box.saved_abspos_layout_inputs());
+    auto inputs = *box.saved_abspos_layout_inputs();
+
+    AbsposLayoutReplayContext context(state, *containing_block);
+
+    // Any restyle rebuilds the box's computed insets from its properties, wiping the values
+    // resolve_anchor_insets() wrote during the last full pass (a bare anchor() degrades to
+    // auto). Re-resolve them here instead of trusting them to survive: the anchors live
+    // outside the subtree, whose committed geometry is exact by the partial relayout
+    // precondition, so this reproduces what the ancestor formatting context would resolve.
+    if (box_inset_properties_contain_anchor_functions(box))
+        context.resolve_anchor_insets(box);
+
+    // Mirror how the ancestor formatting context prepares an absolutely positioned child
+    // during a full pass: create its used values (the percentage basis is pinned by the
+    // algorithm once the containing block rect is known).
+    state.create(box, {}, {});
+
+    // Runs the full pipeline: sizing, inside layout, and the box's own absolutely positioned
+    // children via parent_context_did_dimension_child_root_box(). Everything the algorithm
+    // consumes from outside the box's subtree comes as plain values in the inputs.
+    context.layout_absolutely_positioned_element(box, inputs);
 }
 
 void FormattingContext::layout_absolutely_positioned_element(Box& box, AbsposLayoutInputs const& inputs)

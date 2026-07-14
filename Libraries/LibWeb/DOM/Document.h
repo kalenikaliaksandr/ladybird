@@ -408,6 +408,11 @@ public:
     CSS::ComputedProperties const* update_style_for_element(AbstractElement const&, StyleUpdateMode);
     [[nodiscard]] bool element_needs_style_update(AbstractElement const&) const;
     void update_layout(UpdateLayoutReason);
+    enum class PartialRelayoutResult : u8 {
+        NotEligible,
+        Done,
+        NeedsAnotherLayoutPass,
+    };
     void update_layout_if_needed_for_node(Node const&, UpdateLayoutReason);
     [[nodiscard]] u64 partial_layout_count() const { return m_partial_layout_count; }
     [[nodiscard]] u64 full_layout_count() const { return m_full_layout_count; }
@@ -1288,6 +1293,8 @@ private:
     void update_active_element();
     void collect_paintable_boxes_with_auto_content_visibility();
     bool needs_style_update_after_layout();
+    bool any_registered_anchor_element_inside(Layout::Node const& subtree_root) const;
+    PartialRelayoutResult try_partial_relayout(HashTable<WeakPtr<Layout::Box>> registered_partial_relayout_roots, bool needs_layout_tree_rebuild, bool should_collect_devtools_layout_data);
     static void recompute_containing_block_and_derive_abspos_escape_flags(Layout::Node&);
     enum class LayoutTreeChanged : u8 {
         No,
