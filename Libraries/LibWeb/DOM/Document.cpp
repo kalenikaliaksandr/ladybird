@@ -1728,6 +1728,36 @@ void Document::set_needs_container_query_evaluation_after_layout(Element const& 
     m_query_containers_needing_container_query_evaluation_after_layout.set(const_cast<Element&>(query_container));
 }
 
+// Whether the saved layout inputs are still valid for replaying the boundary's layout after a
+// style change on the boundary itself. Inputs captured under identical style are always valid;
+// a boundary-self style change invalidates the parts of the inputs that were derived from the
+// box's own computed values.
+static bool can_replay_partial_relayout_root_after_style_change(Layout::Box& box)
+{
+    if (!box.containing_block())
+        return false;
+
+    // NB: anchor() functions in the inset properties do not refuse replay: the replay
+    // re-resolves them against the committed geometry outside the subtree, which the partial
+    // relayout precondition keeps exact.
+
+    // The inputs record where their parts were derived from the box's own computed values
+    // (grid placement, self-alignment under a flex container); those parts may be stale after
+    // a style change on the box itself. Everything else is derived from layout outside the
+    // subtree, which a boundary-self change cannot affect.
+    auto const& inputs = *box.saved_abspos_layout_inputs();
+    if (inputs.containing_block_info.derives_from_own_computed_values)
+        return false;
+
+    auto const& inset = box.computed_values().inset();
+    auto uses_static_position = (inset.left().is_auto() && inset.right().is_auto())
+        || (inset.top().is_auto() && inset.bottom().is_auto());
+    if (uses_static_position && inputs.static_position_rect.alignment_derives_from_own_computed_values)
+        return false;
+
+    return true;
+}
+
 static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutState& layout_state)
 {
     // Pre-populate the subtree root itself: its size and position are frozen at the values from
@@ -2012,6 +2042,14 @@ Document::PartialRelayoutResult Document::try_partial_relayout(HashTable<WeakPtr
             if (!box || !box->parent())
                 continue;
             if (!box->is_partial_relayout_boundary()) {
+                can_run_partial_relayout = false;
+                break;
+            }
+            // Replay re-resolves the boundary's size and position from the saved inputs;
+            // take the full layout path when a style change on the boundary itself may
+            // have invalidated the parts of those inputs derived from its own computed
+            // values.
+            if (box->needs_own_geometry_update() && box->is_absolutely_positioned() && !can_replay_partial_relayout_root_after_style_change(*box)) {
                 can_run_partial_relayout = false;
                 break;
             }

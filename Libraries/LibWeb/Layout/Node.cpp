@@ -1693,27 +1693,29 @@ bool NodeWithStyleAndBoxModelMetrics::is_inline_flow_interrupting_block() const
     return true;
 }
 
-void Node::set_needs_layout_update(DOM::SetNeedsLayoutReason reason)
+void Node::set_needs_layout_update(DOM::SetNeedsLayoutReason reason, LayoutUpdatePropagation propagation)
 {
-    if (m_needs_layout_update) {
-        // A dirty node normally implies already-dirty ancestors, making repeated marks no-ops.
-        // Not so for an outermost SVG root registered for partial relayout: dirt inside the
-        // svg marks the root itself but stops propagating there, so a later invalidation on
-        // the root (say, a changed CSS size) still has to reach the ancestors, or the update
-        // would stay confined to the svg subtree and relayout it with a stale size.
-        bool is_partial_relayout_root_candidate = is_svg_svg_box() && !(parent() && (parent()->is_svg_box() || parent()->is_svg_svg_box()));
-        if (!is_partial_relayout_root_candidate)
+    if (m_needs_layout_update && propagation == LayoutUpdatePropagation::ThroughAncestors) {
+        // A dirty node normally implies dirty ancestors, making this invalidation redundant.
+        // Not so for a registered partial relayout boundary: the walk that marked it stopped
+        // there and left its ancestors clean, so a through-ancestors invalidation arriving on
+        // the boundary itself (a style change on it, a tree-update marking) must still walk
+        // and mark them, or the change never escalates past the boundary.
+        auto* box = as_if<Box>(this);
+        if (!box || !box->is_partial_relayout_boundary())
             return;
     }
 
-    if constexpr (UPDATE_LAYOUT_DEBUG) {
-        // NOTE: We check some conditions here to avoid debug spam in documents that don't do layout.
-        auto navigable = this->navigable();
-        if (navigable && navigable->active_document() == &document())
-            dbgln_if(UPDATE_LAYOUT_DEBUG, "NEED LAYOUT {}", DOM::to_string(reason));
-    }
+    if (!m_needs_layout_update) {
+        if constexpr (UPDATE_LAYOUT_DEBUG) {
+            // NOTE: We check some conditions here to avoid debug spam in documents that don't do layout.
+            auto navigable = this->navigable();
+            if (navigable && navigable->active_document() == &document())
+                dbgln_if(UPDATE_LAYOUT_DEBUG, "NEED LAYOUT {}", DOM::to_string(reason));
+        }
 
-    m_needs_layout_update = true;
+        m_needs_layout_update = true;
+    }
 
     if (auto* box = as_if<Box>(this))
         box->reset_cached_intrinsic_sizes();
@@ -1727,6 +1729,11 @@ void Node::set_needs_layout_update(DOM::SetNeedsLayoutReason reason)
         }
         return IterationDecision::Continue;
     });
+
+    if (propagation == LayoutUpdatePropagation::BoundarySelfOnly) {
+        document().partial_relayout_invalidation().record_boundary(as<Box>(*this));
+        return;
+    }
 
     for (auto* ancestor = parent(); ancestor; ancestor = ancestor->parent()) {
         if (ancestor->m_needs_layout_update)

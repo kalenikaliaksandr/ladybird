@@ -2396,6 +2396,21 @@ void FormattingContext::layout_absolutely_positioned_element_from_saved_inputs(L
     if (box_inset_properties_contain_anchor_functions(box))
         context.resolve_anchor_insets(box);
 
+    // The axis modes are the only replay-relevant input derived from the box's own computed
+    // values, which a style change on the box itself may have altered since capture;
+    // recompute them from the live insets. Inputs that record deriving from the box's own
+    // computed values (grid placement) pin their axis modes structurally instead, and never
+    // replay after a style change on the box itself, so their saved modes stay.
+    if (!inputs.containing_block_info.derives_from_own_computed_values) {
+        auto const& inset = box.computed_values().inset();
+        inputs.containing_block_info.horizontal_axis_mode = inset.left().is_auto() && inset.right().is_auto()
+            ? AbsposAxisMode::StaticPosition
+            : AbsposAxisMode::InsetFromRect;
+        inputs.containing_block_info.vertical_axis_mode = inset.top().is_auto() && inset.bottom().is_auto()
+            ? AbsposAxisMode::StaticPosition
+            : AbsposAxisMode::InsetFromRect;
+    }
+
     // Mirror how the ancestor formatting context prepares an absolutely positioned child
     // during a full pass: create its used values (the percentage basis is pinned by the
     // algorithm once the containing block rect is known).

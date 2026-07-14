@@ -43,6 +43,11 @@ struct AbsposContainingBlockInfo {
     // When set, the base method applies alignment-driven insets after sizing.
     Optional<Alignment> horizontal_alignment;
     Optional<Alignment> vertical_alignment;
+    // Whether the rect, the alignments or the axis modes were derived from the box's own
+    // computed values (grid placement and self-alignment do this), recorded where they are
+    // derived. A saved copy of such inputs cannot be replayed after a style change on the box
+    // itself, and the axis modes must not be recomputed from the live insets at replay.
+    bool derives_from_own_computed_values { false };
 };
 
 // https://www.w3.org/TR/css-position-3/#static-position-rectangle
@@ -56,6 +61,10 @@ struct StaticPositionRect {
     CSSPixelRect rect;
     Alignment horizontal_alignment { Alignment::Start };
     Alignment vertical_alignment { Alignment::Start };
+    // Whether the alignments were derived from the box's own computed values (self-alignment
+    // under a flex container does this), recorded where they are derived. A saved copy of such
+    // a rect cannot be replayed after a style change on the box itself.
+    bool alignment_derives_from_own_computed_values { false };
 
     CSSPixelPoint aligned_position_for_box_with_size(CSSPixelSize const& size) const
     {

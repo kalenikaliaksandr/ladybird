@@ -23,6 +23,7 @@
 #include <LibWeb/HTML/HTMLSlotElement.h>
 #include <LibWeb/HTML/LocalNavigable.h>
 #include <LibWeb/HTML/NavigableContainer.h>
+#include <LibWeb/Layout/Box.h>
 
 namespace Web::CSS {
 
@@ -45,8 +46,27 @@ static void apply_element_style_invalidation_after_style_change(DOM::Element& el
     if (invalidation.changes_containing_block_establishment)
         element.document().partial_relayout_invalidation().record_escape("containing block establishment change");
 
-    if (invalidation.needs_relayout())
-        element.set_needs_layout_update(DOM::SetNeedsLayoutReason::StyleChange);
+    if (invalidation.needs_relayout()) {
+        // A style change on an absolutely positioned partial relayout boundary that doesn't rebuild the
+        // layout tree doesn't need to dirty anything outside the boundary: the box contributes nothing to
+        // ancestor layout, so partial relayout can re-resolve the boundary's own size and position against
+        // its containing block and re-lay out its subtree, reproducing what a full layout would compute.
+        // A rendered ::backdrop disqualifies the element from this route: pseudo-element style diffs are
+        // merged into the element's aggregated invalidation, and the ::backdrop box lives outside the
+        // element's subtree (it is a sibling of the element's box), so a backdrop-only relayout change
+        // attributed to the boundary would never re-lay the backdrop out.
+        auto* box = as_if<Layout::Box>(element.unsafe_layout_node());
+        if (!invalidation.needs_layout_tree_rebuild()
+            && box
+            && box->is_absolutely_positioned()
+            && box->is_partial_relayout_boundary()
+            && !element.pseudo_element_unsafe_layout_node(CSS::PseudoElement::Backdrop)) {
+            box->set_needs_own_geometry_update();
+            element.set_needs_layout_update(DOM::SetNeedsLayoutReason::StyleChange, Layout::LayoutUpdatePropagation::BoundarySelfOnly);
+        } else {
+            element.set_needs_layout_update(DOM::SetNeedsLayoutReason::StyleChange);
+        }
+    }
     if (invalidation.needs_layout_tree_rebuild())
         element.set_needs_layout_tree_rebuild(DOM::SetNeedsLayoutTreeUpdateReason::StyleChange);
 
