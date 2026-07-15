@@ -211,7 +211,7 @@ void DisplayListPlayer::execute_impl(
                 },
                 [&](AnchorScrollShift const& shift) {
                     play_command(Save {});
-                    auto offset = shift.masked_offset(scroll_state);
+                    auto offset = shift.offset(scroll_state);
                     if (!offset.is_zero())
                         play_command(Translate { .delta = offset.to_type<int>() });
                 },

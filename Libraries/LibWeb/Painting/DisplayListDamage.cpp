@@ -153,11 +153,7 @@ static bool visual_context_data_is_equal(VisualContextData const& a, VisualConte
         },
         [&](AnchorScrollShift const& data) {
             auto const* other = b.get_pointer<AnchorScrollShift>();
-            return other
-                && data.scroll_frame_index == other->scroll_frame_index
-                && data.negate == other->negate
-                && data.compensate_x == other->compensate_x
-                && data.compensate_y == other->compensate_y;
+            return other && data.entries == other->entries;
         });
 }
 

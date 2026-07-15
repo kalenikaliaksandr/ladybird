@@ -58,6 +58,37 @@ static ScrollFrameIndex scroll_frame_common_ancestor(ScrollState const& scroll_s
     return {};
 }
 
+static Vector<AnchorScrollShiftEntry> compute_anchor_scroll_shift_entries(ScrollState const& scroll_state, Layout::Box const& anchor_positioned_box)
+{
+    Vector<AnchorScrollShiftEntry> entries;
+    auto const* box = &anchor_positioned_box;
+    bool compensate_x = true;
+    bool compensate_y = true;
+    Vector<Layout::Box const*, 8> visited;
+    constexpr size_t max_anchor_chain_depth = 32;
+    while (box && !visited.contains_slow(box) && visited.size() < max_anchor_chain_depth) {
+        auto const* anchor_box = as_if<Layout::Box>(box->default_scroll_shift_anchor());
+        if (!anchor_box)
+            break;
+        auto box_paintable = box->paintable_box();
+        auto anchor_paintable = anchor_box->paintable_box();
+        if (!box_paintable || !anchor_paintable)
+            break;
+        visited.append(box);
+        compensate_x = compensate_x && box->compensates_for_scroll_in_x();
+        compensate_y = compensate_y && box->compensates_for_scroll_in_y();
+        auto anchor_frame = anchor_paintable->enclosing_scroll_frame_index();
+        auto base_frame = box_paintable->enclosing_scroll_frame_index();
+        auto shared_frame = scroll_frame_common_ancestor(scroll_state, anchor_frame, base_frame);
+        for (auto frame = anchor_frame; frame.value() && frame != shared_frame; frame = scroll_state.frame_at(frame).parent_index())
+            entries.append({ frame, false, compensate_x, compensate_y });
+        for (auto frame = base_frame; frame.value() && frame != shared_frame; frame = scroll_state.frame_at(frame).parent_index())
+            entries.append({ frame, true, compensate_x, compensate_y });
+        box = anchor_box;
+    }
+    return entries;
+}
+
 static TransformData identity_visual_viewport_transform()
 {
     return { Gfx::FloatMatrix4x4::identity(), { 0.f, 0.f } };
@@ -390,30 +421,9 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         //     below it compensates in. The visited set and depth cap guard against malformed anchor chains.
         if (auto const* box = as_if<Layout::Box>(&layout_node)) {
             auto const& scroll_state = viewport_paintable.scroll_state();
-            bool compensate_x = true;
-            bool compensate_y = true;
-            Vector<Layout::Box const*, 8> visited;
-            constexpr size_t max_anchor_chain_depth = 32;
-            while (box && !visited.contains_slow(box) && visited.size() < max_anchor_chain_depth) {
-                auto const* anchor_box = as_if<Layout::Box>(box->default_scroll_shift_anchor());
-                if (!anchor_box)
-                    break;
-                auto box_paintable = box->paintable_box();
-                auto anchor_paintable = anchor_box->paintable_box();
-                if (!box_paintable || !anchor_paintable)
-                    break;
-                visited.append(box);
-                compensate_x = compensate_x && box->compensates_for_scroll_in_x();
-                compensate_y = compensate_y && box->compensates_for_scroll_in_y();
-                auto anchor_frame = anchor_paintable->enclosing_scroll_frame_index();
-                auto base_frame = box_paintable->enclosing_scroll_frame_index();
-                auto shared_frame = scroll_frame_common_ancestor(scroll_state, anchor_frame, base_frame);
-                for (auto frame = anchor_frame; frame.value() && frame != shared_frame; frame = scroll_state.frame_at(frame).parent_index())
-                    own_state = append_node(own_state, AnchorScrollShift { frame, false, compensate_x, compensate_y });
-                for (auto frame = base_frame; frame.value() && frame != shared_frame; frame = scroll_state.frame_at(frame).parent_index())
-                    own_state = append_node(own_state, AnchorScrollShift { frame, true, compensate_x, compensate_y });
-                box = anchor_box;
-            }
+            auto entries = compute_anchor_scroll_shift_entries(scroll_state, *box);
+            if (!entries.is_empty())
+                own_state = append_node(own_state, AnchorScrollShift { move(entries) });
         }
 
         // Out-of-flow descendants can skip overflow and scroll clips from intermediate ancestors. Keep their visual
@@ -774,7 +784,7 @@ Optional<Gfx::FloatPoint> AccumulatedVisualContextTree::transform_point_for_hit_
                 return point;
             },
             [&](AnchorScrollShift const& shift) -> Optional<Gfx::FloatPoint> {
-                point.translate_by(-shift.masked_offset(scroll_state));
+                point.translate_by(-shift.offset(scroll_state));
                 return point;
             });
 
@@ -840,7 +850,7 @@ Gfx::FloatRect AccumulatedVisualContextTree::transform_rect_to_viewport(VisualCo
                     rect.translate_by(-offset);
                 },
                 [&](AnchorScrollShift const& shift) {
-                    rect.translate_by(shift.masked_offset(scroll_state));
+                    rect.translate_by(shift.offset(scroll_state));
                 },
                 [&](ClipData const&) { /* clips don't affect rect coordinates */ },
                 [&](ClipPathData const&) { /* clip paths don't affect rect coordinates */ },
@@ -853,7 +863,7 @@ Gfx::FloatRect AccumulatedVisualContextTree::transform_rect_to_viewport(VisualCo
     return rect;
 }
 
-Gfx::FloatPoint AnchorScrollShift::masked_offset(ScrollStateSnapshot const& scroll_state) const
+Gfx::FloatPoint AnchorScrollShiftEntry::masked_offset(ScrollStateSnapshot const& scroll_state) const
 {
     auto offset = scroll_state.device_offset_for_index(scroll_frame_index);
     if (!compensate_x)
@@ -861,6 +871,14 @@ Gfx::FloatPoint AnchorScrollShift::masked_offset(ScrollStateSnapshot const& scro
     if (!compensate_y)
         offset.set_y(0);
     return negate ? -offset : offset;
+}
+
+Gfx::FloatPoint AnchorScrollShift::offset(ScrollStateSnapshot const& scroll_state) const
+{
+    Gfx::FloatPoint offset;
+    for (auto const& entry : entries)
+        offset.translate_by(entry.masked_offset(scroll_state));
+    return offset;
 }
 
 void AccumulatedVisualContextTree::dump(VisualContextIndex index, StringBuilder& builder) const
@@ -918,10 +936,17 @@ void AccumulatedVisualContextTree::dump(VisualContextIndex index, StringBuilder&
             builder.appendff("scroll_compensation(frame_id={})", compensation.scroll_frame_index.value());
         },
         [&](AnchorScrollShift const& shift) {
-            builder.appendff("anchor_scroll_shift(frame_id={}{}{}{})", shift.scroll_frame_index.value(),
-                shift.negate ? ", negate"sv : ""sv,
-                shift.compensate_x ? ""sv : ", no-x"sv,
-                shift.compensate_y ? ""sv : ", no-y"sv);
+            builder.append("anchor_scroll_shift("sv);
+            for (size_t i = 0; i < shift.entries.size(); ++i) {
+                auto const& entry = shift.entries[i];
+                if (i > 0)
+                    builder.append("; "sv);
+                builder.appendff("frame_id={}{}{}{}", entry.scroll_frame_index.value(),
+                    entry.negate ? ", negate"sv : ""sv,
+                    entry.compensate_x ? ""sv : ", no-x"sv,
+                    entry.compensate_y ? ""sv : ", no-y"sv);
+            }
+            builder.append(")"sv);
         });
 }
 
@@ -1049,7 +1074,7 @@ ErrorOr<Web::Painting::ScrollCompensation> decode(Decoder& decoder)
 }
 
 template<>
-ErrorOr<void> encode(Encoder& encoder, Web::Painting::AnchorScrollShift const& data)
+ErrorOr<void> encode(Encoder& encoder, Web::Painting::AnchorScrollShiftEntry const& data)
 {
     TRY(encoder.encode(data.scroll_frame_index));
     TRY(encoder.encode(data.negate));
@@ -1059,13 +1084,28 @@ ErrorOr<void> encode(Encoder& encoder, Web::Painting::AnchorScrollShift const& d
 }
 
 template<>
-ErrorOr<Web::Painting::AnchorScrollShift> decode(Decoder& decoder)
+ErrorOr<Web::Painting::AnchorScrollShiftEntry> decode(Decoder& decoder)
 {
-    return Web::Painting::AnchorScrollShift {
+    return Web::Painting::AnchorScrollShiftEntry {
         .scroll_frame_index = TRY(decoder.decode<Web::Painting::ScrollFrameIndex>()),
         .negate = TRY(decoder.decode<bool>()),
         .compensate_x = TRY(decoder.decode<bool>()),
         .compensate_y = TRY(decoder.decode<bool>()),
+    };
+}
+
+template<>
+ErrorOr<void> encode(Encoder& encoder, Web::Painting::AnchorScrollShift const& data)
+{
+    TRY(encoder.encode(data.entries));
+    return {};
+}
+
+template<>
+ErrorOr<Web::Painting::AnchorScrollShift> decode(Decoder& decoder)
+{
+    return Web::Painting::AnchorScrollShift {
+        .entries = TRY(decoder.decode<Vector<Web::Painting::AnchorScrollShiftEntry>>()),
     };
 }
 
