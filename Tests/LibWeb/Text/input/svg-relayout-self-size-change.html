@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+    #svg { display: block; }
+    #after { width: 80px; height: 20px; }
+</style>
+<svg id="svg" width="100" height="80" viewBox="0 0 100 80">
+    <text id="t" x="10" y="30">hi</text>
+</svg>
+<div id="after"></div>
+<script>
+    // A character data mutation inside the <svg> dirties and registers it as a partial
+    // relayout root, leaving its ancestors clean. A size change on the <svg> itself in the
+    // same update must not be swallowed by the "already dirty" early return: the svg is in
+    // flow, so its new size has to reflow the surrounding content (#after sits below the svg
+    // and must move with its new height), which only escalating to a full layout delivers.
+    function rectToString(rect) {
+        return `${rect.left},${rect.top},${rect.width},${rect.height}`;
+    }
+
+    asyncTest(async (done) => {
+        document.body.offsetHeight;
+
+        document.getElementById("t").firstChild.data = "hello longer text";
+        document.getElementById("svg").style.width = "300px";
+        document.getElementById("svg").style.height = "200px";
+        document.body.offsetHeight;
+
+        const svg = document.getElementById("svg").getBoundingClientRect();
+        const after = document.getElementById("after").getBoundingClientRect();
+        println(`svg=${rectToString(svg)}`);
+        println(`after=${rectToString(after)}`);
+        println(svg.width === 300 && svg.height === 200 && after.top === svg.height ? "PASS" : "FAIL");
+        done();
+    });
+</script>

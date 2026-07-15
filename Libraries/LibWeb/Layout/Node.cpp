@@ -1694,8 +1694,16 @@ bool NodeWithStyleAndBoxModelMetrics::is_inline_flow_interrupting_block() const
 
 void Node::set_needs_layout_update(DOM::SetNeedsLayoutReason reason)
 {
-    if (m_needs_layout_update)
-        return;
+    if (m_needs_layout_update) {
+        // A dirty node normally implies already-dirty ancestors, making repeated marks no-ops.
+        // Not so for an outermost SVG root registered for partial relayout: dirt inside the
+        // svg marks the root itself but stops propagating there, so a later invalidation on
+        // the root (say, a changed CSS size) still has to reach the ancestors, or the update
+        // would stay confined to the svg subtree and relayout it with a stale size.
+        bool is_partial_relayout_root_candidate = is_svg_svg_box() && !(parent() && (parent()->is_svg_box() || parent()->is_svg_svg_box()));
+        if (!is_partial_relayout_root_candidate)
+            return;
+    }
 
     if constexpr (UPDATE_LAYOUT_DEBUG) {
         // NOTE: We check some conditions here to avoid debug spam in documents that don't do layout.
