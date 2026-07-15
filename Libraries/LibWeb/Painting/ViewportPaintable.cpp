@@ -26,7 +26,7 @@
 
 namespace Web::Painting {
 
-AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable&);
+AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable&, ScrollState&);
 bool update_accumulated_visual_context_values(ViewportPaintable&, Paintable&);
 void update_visual_viewport_accumulated_visual_context(ViewportPaintable&);
 
@@ -161,61 +161,10 @@ void ViewportPaintable::clear_scroll_state()
     m_needs_to_refresh_scroll_state = true;
 }
 
-void ViewportPaintable::reassign_scroll_frames()
+void ViewportPaintable::assign_scroll_frames_and_accumulated_visual_contexts()
 {
     clear_scroll_state();
-    assign_scroll_frames();
-}
-
-void ViewportPaintable::assign_scroll_frames()
-{
-    for_each_in_inclusive_subtree_of_type<Paintable>([&](auto& paintable_box) {
-        paintable_box.set_enclosing_scroll_frame_index({});
-        paintable_box.set_own_scroll_frame_index({});
-
-        ScrollFrameIndex sticky_scroll_frame_index;
-        if (paintable_box.is_sticky_position() && paintable_box.has_sticky_insets()) {
-            auto parent_index = paintable_box.nearest_scroll_frame_index();
-            sticky_scroll_frame_index = m_scroll_state.create_sticky_frame_for(paintable_box, parent_index);
-            precompute_sticky_constraints(m_scroll_state, sticky_scroll_frame_index, paintable_box);
-            paintable_box.set_enclosing_scroll_frame_index(sticky_scroll_frame_index);
-            paintable_box.set_own_scroll_frame_index(sticky_scroll_frame_index);
-        }
-
-        if (paintable_box.has_scrollable_overflow() || is<ViewportPaintable>(paintable_box)) {
-            ScrollFrameIndex parent_index;
-            if (sticky_scroll_frame_index.value()) {
-                parent_index = sticky_scroll_frame_index;
-            } else {
-                parent_index = paintable_box.nearest_scroll_frame_index();
-            }
-            auto scroll_frame_index = m_scroll_state.create_scroll_frame_for(paintable_box, parent_index);
-            paintable_box.set_own_scroll_frame_index(scroll_frame_index);
-        }
-
-        return TraversalDecision::Continue;
-    });
-
-    for_each_in_subtree([&](auto& paintable) {
-        if (paintable.is_fixed_position() || paintable.is_sticky_position())
-            return TraversalDecision::Continue;
-
-        for (auto block = paintable.containing_block(); block; block = block->containing_block()) {
-            if (auto index = block->own_scroll_frame_index(); index.value()) {
-                paintable.set_enclosing_scroll_frame_index(index);
-                return TraversalDecision::Continue;
-            }
-            if (block->is_fixed_position()) {
-                return TraversalDecision::Continue;
-            }
-        }
-        VERIFY_NOT_REACHED();
-    });
-}
-
-void ViewportPaintable::assign_accumulated_visual_contexts()
-{
-    auto visual_context_tree = build_accumulated_visual_context_tree(*this);
+    auto visual_context_tree = build_accumulated_visual_context_tree(*this, m_scroll_state);
     auto is_compatible = m_visual_context_tree.has_value() && visual_context_tree.is_compatible_with(*m_visual_context_tree);
     if (m_force_incompatible_visual_context_tree_rebuild_for_testing) {
         m_force_incompatible_visual_context_tree_rebuild_for_testing = false;
@@ -245,7 +194,7 @@ bool ViewportPaintable::update_accumulated_visual_context_values(Paintable& pain
 void ViewportPaintable::update_visual_viewport_accumulated_visual_context()
 {
     if (!m_visual_context_tree.has_value()) {
-        assign_accumulated_visual_contexts();
+        assign_scroll_frames_and_accumulated_visual_contexts();
         return;
     }
     Painting::update_visual_viewport_accumulated_visual_context(*this);

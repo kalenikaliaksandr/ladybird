@@ -1801,8 +1801,7 @@ void Document::after_layout_commit(LayoutTreeChanged layout_tree_changed)
     set_needs_to_record_display_list();
     set_needs_to_refresh_scroll_state(true);
 
-    unsafe_paintable()->reassign_scroll_frames();
-
+    // NB: This rebuilds the scroll frames along with the accumulated visual context tree.
     set_needs_accumulated_visual_contexts_update(true);
     update_paint_and_hit_testing_properties_if_needed();
 
@@ -2533,11 +2532,10 @@ void Document::update_scrollable_overflow(UpdateScrollableOverflowMode mode)
 
     if (any_has_scrollable_overflow_flipped) {
         // The set of scroll frames changed, and the accumulated visual context tree embeds scroll frame
-        // indices, so both have to be rebuilt. Sticky insets feed the sticky constraints computed during
-        // scroll frame assignment (and the set of scrollable ancestors they resolve against may have
-        // changed), so rebuild them first.
+        // indices, so both have to be rebuilt; that happens in one shared pass during paint property
+        // resolution. Sticky insets feed the sticky constraints computed during that pass (and the set of
+        // scrollable ancestors they resolve against may have changed), so rebuild them first.
         rebuild_sticky_insets(*m_layout_root);
-        unsafe_paintable()->reassign_scroll_frames();
         set_needs_accumulated_visual_contexts_update(true);
     } else {
         // Sticky insets only depend on scrollport geometry and which ancestor is scrollable, neither of
@@ -2552,15 +2550,11 @@ void Document::update_scrollable_overflow(UpdateScrollableOverflowMode mode)
 void Document::update_paint_and_hit_testing_properties_if_needed()
 {
     // NB: Called during paint property resolution.
-    if (auto paintable = this->unsafe_paintable()) {
-        paintable->refresh_scroll_state();
-    }
-
     if (m_needs_accumulated_visual_contexts_update) {
         m_needs_accumulated_visual_contexts_update = false;
         m_paintable_boxes_needing_visual_context_value_update.clear_with_capacity();
         if (auto paintable = this->unsafe_paintable()) {
-            paintable->assign_accumulated_visual_contexts();
+            paintable->assign_scroll_frames_and_accumulated_visual_contexts();
         }
     } else if (!m_paintable_boxes_needing_visual_context_value_update.is_empty()) {
         auto paintable_boxes = move(m_paintable_boxes_needing_visual_context_value_update);
@@ -2569,11 +2563,16 @@ void Document::update_paint_and_hit_testing_properties_if_needed()
                 auto paintable_box = weak_paintable_box.strong_ref();
                 if (!paintable_box || !paintable->update_accumulated_visual_context_values(*paintable_box)) {
                     // Structure changed after all; rebuild the whole tree.
-                    paintable->assign_accumulated_visual_contexts();
+                    paintable->assign_scroll_frames_and_accumulated_visual_contexts();
                     break;
                 }
             }
         }
+    }
+
+    // NB: A rebuild above recreates the scroll frames, so the offset refresh has to come after it.
+    if (auto paintable = this->unsafe_paintable()) {
+        paintable->refresh_scroll_state();
     }
 }
 

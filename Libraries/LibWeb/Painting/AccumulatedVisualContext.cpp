@@ -30,7 +30,7 @@
 
 namespace Web::Painting {
 
-AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable&);
+AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable&, ScrollState&);
 bool update_accumulated_visual_context_values(ViewportPaintable&, Paintable&);
 void update_visual_viewport_accumulated_visual_context(ViewportPaintable&);
 
@@ -56,6 +56,29 @@ static ScrollFrameIndex scroll_frame_common_ancestor(ScrollState const& scroll_s
             break;
     }
     return {};
+}
+
+// The scroll frame moving boxes whose containing block chain continues at `block`: the frame `block` itself
+// provides, otherwise the frame its containing block chain provides. The traversal visits ancestors first, so
+// their already-resolved indices replace the per-box containing block chain walk this used to require.
+static ScrollFrameIndex nearest_scroll_frame_at_or_above(Paintable const& block)
+{
+    if (block.own_scroll_frame_index().value())
+        return block.own_scroll_frame_index();
+    if (block.is_fixed_position())
+        return {};
+    if (block.is_sticky_position()) {
+        // A sticky box that provides no frame also records no enclosing frame; resolve through its
+        // containing block chain (rare).
+        for (auto ancestor = block.containing_block(); ancestor; ancestor = ancestor->containing_block()) {
+            if (ancestor->own_scroll_frame_index().value())
+                return ancestor->own_scroll_frame_index();
+            if (ancestor->is_fixed_position())
+                return {};
+        }
+        VERIFY_NOT_REACHED();
+    }
+    return block.enclosing_scroll_frame_index();
 }
 
 static Vector<AnchorScrollShiftEntry> compute_anchor_scroll_shift_entries(ScrollState const& scroll_state, Layout::Box const& anchor_positioned_box)
@@ -368,7 +391,7 @@ static Optional<EffectsData> compute_effects_data(Paintable& box, CSS::ComputedV
     return effects;
 }
 
-AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable& viewport_paintable)
+AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable& viewport_paintable, ScrollState& scroll_state)
 {
     auto& document = viewport_paintable.document();
     auto visual_context_tree = AccumulatedVisualContextTree::create(visual_viewport_transform_data(document));
@@ -380,11 +403,45 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         return visual_context_tree.append(move(data), parent_index);
     };
 
+    // The viewport always provides a scroll frame; create it up front so descendants can resolve their
+    // parent frames against it.
+    viewport_paintable.set_enclosing_scroll_frame_index({});
+    viewport_paintable.set_own_scroll_frame_index(scroll_state.create_scroll_frame_for(viewport_paintable, {}));
+
+    auto assign_scroll_frames = [&](Paintable& paintable_box) {
+        paintable_box.set_enclosing_scroll_frame_index({});
+        paintable_box.set_own_scroll_frame_index({});
+
+        ScrollFrameIndex sticky_scroll_frame_index;
+        if (paintable_box.is_sticky_position() && paintable_box.has_sticky_insets()) {
+            sticky_scroll_frame_index = scroll_state.create_sticky_frame_for(paintable_box, paintable_box.nearest_scroll_frame_index());
+            precompute_sticky_constraints(scroll_state, sticky_scroll_frame_index, paintable_box);
+            paintable_box.set_enclosing_scroll_frame_index(sticky_scroll_frame_index);
+            paintable_box.set_own_scroll_frame_index(sticky_scroll_frame_index);
+        }
+
+        if (paintable_box.has_scrollable_overflow()) {
+            ScrollFrameIndex parent_index;
+            if (sticky_scroll_frame_index.value()) {
+                parent_index = sticky_scroll_frame_index;
+            } else {
+                parent_index = paintable_box.nearest_scroll_frame_index();
+            }
+            paintable_box.set_own_scroll_frame_index(scroll_state.create_scroll_frame_for(paintable_box, parent_index));
+        }
+
+        // Sticky boxes keep their sticky frame as the enclosing frame; fixed boxes keep none.
+        if (paintable_box.is_fixed_position() || paintable_box.is_sticky_position())
+            return;
+
+        auto containing_block = paintable_box.containing_block();
+        VERIFY(containing_block);
+        paintable_box.set_enclosing_scroll_frame_index(nearest_scroll_frame_at_or_above(*containing_block));
+    };
+
     auto visual_viewport_context_index = VISUAL_VIEWPORT_NODE_INDEX;
 
-    VisualContextIndex viewport_state_for_descendants = visual_viewport_context_index;
-    if (viewport_paintable.own_scroll_frame_index().value())
-        viewport_state_for_descendants = append_node(visual_viewport_context_index, ScrollData { viewport_paintable.own_scroll_frame_index(), false });
+    VisualContextIndex viewport_state_for_descendants = append_node(visual_viewport_context_index, ScrollData { viewport_paintable.own_scroll_frame_index(), false });
     viewport_paintable.set_accumulated_visual_context(VISUAL_VIEWPORT_NODE_INDEX);
     viewport_paintable.set_accumulated_visual_context_for_descendants(viewport_state_for_descendants);
 
@@ -394,7 +451,15 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         VisualContextIndex fixed_position;
     };
 
+    struct AnchorScrollShiftFixup {
+        VisualContextIndex node_index;
+        Layout::Box const* box;
+    };
+    Vector<AnchorScrollShiftFixup> anchor_scroll_shift_fixups;
+
     auto build_paintable_box = [&](Paintable& paintable_box, DescendantVisualContexts inherited_contexts, bool may_be_root_element) -> DescendantVisualContexts {
+        assign_scroll_frames(paintable_box);
+
         auto first_visual_context_node_index = visual_context_tree.nodes().size();
         auto& layout_node = paintable_box.layout_node();
 
@@ -415,15 +480,11 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         // https://drafts.csswg.org/css-anchor-position-1/#default-scroll-shift
         // After layout has been performed for abspos, it is additionally shifted by the default scroll shift, as if
         // affected by a transform (before any other transforms).
-        // NB: The shift is the scroll movement of the frames between the box's containing block and its default anchor
-        //     box. When the anchor is itself an anchor-positioned box, its layout position does not include its own
-        //     paint-time shift, so each chained anchor's shift is emitted as well, masked to the axes that every link
-        //     below it compensates in. The visited set and depth cap guard against malformed anchor chains.
-        if (auto const* box = as_if<Layout::Box>(&layout_node)) {
-            auto const& scroll_state = viewport_paintable.scroll_state();
-            auto entries = compute_anchor_scroll_shift_entries(scroll_state, *box);
-            if (!entries.is_empty())
-                own_state = append_node(own_state, AnchorScrollShift { move(entries) });
+        // NB: An acceptable anchor may follow this box in tree order, so the scroll frames its shift references may
+        //     not exist yet; emit an empty node now and resolve the entries once every frame has been created.
+        if (auto const* box = as_if<Layout::Box>(&layout_node); box && box->default_scroll_shift_anchor()) {
+            own_state = append_node(own_state, AnchorScrollShift {});
+            anchor_scroll_shift_fixups.append({ own_state, box });
         }
 
         // Out-of-flow descendants can skip overflow and scroll clips from intermediate ancestors. Keep their visual
@@ -441,7 +502,7 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         if (paintable_box.is_sticky_position()) {
             // For sticky elements, use enclosing_scroll_frame which holds the sticky frame.
             // own_scroll_frame may be a different scroll frame if the sticky element also has scrollable overflow.
-            if (auto sticky_idx = paintable_box.enclosing_scroll_frame_index(); sticky_idx.value() && viewport_paintable.scroll_state().frame_at(sticky_idx).is_sticky())
+            if (auto sticky_idx = paintable_box.enclosing_scroll_frame_index(); sticky_idx.value() && scroll_state.frame_at(sticky_idx).is_sticky())
                 own_state = append_node(own_state, ScrollData { sticky_idx, true });
         }
 
@@ -578,6 +639,9 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         for (auto* child = pending.paintable->last_child_ptr(); child; child = child->previous_sibling_ptr())
             pending_paintables.append({ child, child_contexts, false });
     }
+
+    for (auto const& fixup : anchor_scroll_shift_fixups)
+        visual_context_tree.node_at(fixup.node_index).data = AnchorScrollShift { compute_anchor_scroll_shift_entries(scroll_state, *fixup.box) };
 
     return visual_context_tree;
 }

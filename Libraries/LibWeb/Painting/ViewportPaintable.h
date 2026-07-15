@@ -27,12 +27,12 @@ public:
     void finalize_async_scrolling_metadata_recording(DisplayListRecordingContext&, HTML::LocalNavigable&, Gfx::IntRect viewport_rect);
     void build_stacking_context_tree_if_needed();
 
-    void assign_scroll_frames();
-    void reassign_scroll_frames();
     void refresh_scroll_state();
     void refresh_sticky_constraints();
 
-    void assign_accumulated_visual_contexts();
+    // Rebuilds the scroll frames and the accumulated visual context tree in one traversal; the tree embeds
+    // scroll frame indices, so the two are only ever rebuilt together.
+    void assign_scroll_frames_and_accumulated_visual_contexts();
     bool update_accumulated_visual_context_values(Paintable&);
     void update_visual_viewport_accumulated_visual_context();
     bool visual_context_tree_needs_compositor_update() const { return m_visual_context_tree_needs_compositor_update; }
