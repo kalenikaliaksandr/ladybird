@@ -74,7 +74,6 @@ private:
 
     void build_stacking_context_tree();
     void clear_scroll_state();
-    void precompute_sticky_constraints(ScrollFrameIndex, Paintable const&);
 
     explicit ViewportPaintable(Layout::Viewport const&);
 

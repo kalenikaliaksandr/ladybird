@@ -132,6 +132,10 @@ private:
     Vector<ScrollFrame> m_scroll_frames;
 };
 
+// Captures the geometry a sticky frame's offset is computed from, so scrolling only has to replay the
+// calculation against fresh scroll offsets.
+void precompute_sticky_constraints(ScrollState&, ScrollFrameIndex sticky_frame_index, Paintable const&);
+
 }
 
 namespace IPC {
