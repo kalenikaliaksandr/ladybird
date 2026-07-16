@@ -230,12 +230,61 @@ FormattingContext::~FormattingContext() = default;
 void FormattingContext::run(LayoutInput const& layout_input)
 {
     if (auto const* saved_candidate = save_layout_run_input_if_eligible(layout_input)) {
-        if (try_reuse_committed_subtree(*saved_candidate))
+        if (try_reuse_committed_subtree(*saved_candidate)) {
+            if constexpr (!LAYOUT_RUN_CACHE_VERIFY_DEBUG)
+                return;
+            // Verify mode: run the context anyway and cross-check its output against the
+            // committed paintables the cache would have reused. A divergence means the
+            // saved inputs failed to capture something the run depends on.
+            m_state.clear_subtree_reused(context_box());
+            run_impl(layout_input);
+            verify_layout_run_cache_consistency();
             return;
+        }
         // An earlier run of this pass may have recorded a reuse that this run supersedes.
         m_state.clear_subtree_reused(context_box());
     }
     run_impl(layout_input);
+}
+
+void FormattingContext::verify_layout_run_cache_consistency() const
+{
+    auto const& box = context_box();
+    auto root_paintable = box.paintable_box();
+    VERIFY(root_paintable);
+
+    bool found_mismatch = false;
+    auto const& root_used_values = m_state.get(box);
+    if (root_used_values.first_baseline != root_paintable->first_baseline()
+        || root_used_values.last_baseline != root_paintable->last_baseline()) {
+        dbgln("LAYOUT RUN CACHE VERIFY: baseline mismatch on {}", box.debug_description());
+        found_mismatch = true;
+    }
+
+    // Offsets are excluded on purpose: committed paintable offsets include relative
+    // positioning adjustments that used values do not carry. The root box is excluded too:
+    // its auto height is resolved by the parent context only after run() returns (the commit
+    // path VERIFYs it separately when a subtree is actually reused). Inline boxes are
+    // excluded because their committed sizes are assigned at commit from inline box piece
+    // geometry and never enter used values. Descendant boxes are final.
+    box.for_each_in_subtree_of_type<Box>([&](Box const& node) {
+        if (node.is_fragmented_inline())
+            return TraversalDecision::Continue;
+        auto const* used_values = m_state.try_get(node);
+        if (!used_values)
+            return TraversalDecision::Continue;
+        auto node_paintable = node.paintable();
+        if (!node_paintable)
+            return TraversalDecision::Continue;
+        if (used_values->content_size() != node_paintable->content_size()) {
+            dbgln("LAYOUT RUN CACHE VERIFY: content size mismatch on {}: {} vs committed {}",
+                node.debug_description(), used_values->content_size(), node_paintable->content_size());
+            found_mismatch = true;
+        }
+        return TraversalDecision::Continue;
+    });
+
+    VERIFY(!found_mismatch);
 }
 
 bool FormattingContext::try_reuse_committed_subtree(SavedLayoutRunInput const& candidate_input)

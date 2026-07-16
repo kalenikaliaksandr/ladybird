@@ -138,6 +138,10 @@
 #    cmakedefine01 JS_MODULE_DEBUG
 #endif
 
+#ifndef LAYOUT_RUN_CACHE_VERIFY_DEBUG
+#    cmakedefine01 LAYOUT_RUN_CACHE_VERIFY_DEBUG
+#endif
+
 #ifndef LEXER_DEBUG
 #    cmakedefine01 LEXER_DEBUG
 #endif

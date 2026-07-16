@@ -274,6 +274,7 @@ protected:
 
     SavedLayoutRunInput const* save_layout_run_input_if_eligible(LayoutInput const&);
     bool try_reuse_committed_subtree(SavedLayoutRunInput const& candidate_input);
+    void verify_layout_run_cache_consistency() const;
 
     Type m_type {};
     LayoutMode m_layout_mode;
