@@ -574,6 +574,11 @@ WebIDL::UnsignedLongLong Internals::full_layout_count()
     return window().associated_document().full_layout_count();
 }
 
+WebIDL::UnsignedLongLong Internals::layout_run_cache_hit_count()
+{
+    return window().associated_document().layout_run_cache_hit_count();
+}
+
 WebIDL::UnsignedLongLong Internals::accumulated_visual_context_tree_build_count()
 {
     auto paintable = window().associated_document().unsafe_paintable();
