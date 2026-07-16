@@ -413,6 +413,18 @@ struct LayoutState {
     void register_contained_abspos_child(Box const& target, Box const& child, StaticPositionRect const&);
     [[nodiscard]] Optional<ContainedAbsposChild> take_next_contained_abspos_child(Box const& target);
 
+    // A reused subtree is one whose formatting context run was skipped because the committed
+    // output of a previous pass is still valid for this pass's inputs. commit() re-attaches
+    // the existing paintable subtree as an opaque unit instead of rebuilding it, and shifts
+    // its absolute geometry if the unit landed at a different position.
+    void set_subtree_reused(Box const&, NonnullRefPtr<Painting::Paintable>, CSSPixelPoint old_absolute_position);
+    void clear_subtree_reused(Box const&);
+    [[nodiscard]] bool subtree_is_reused(Box const&) const;
+
+    // Whether a strict ancestor of this node is a reused subtree root. Used values recorded
+    // for such nodes by an earlier run in the same pass are superseded by the reused unit.
+    [[nodiscard]] bool is_inside_reused_subtree(Node const&) const;
+
 private:
     void resolve_relative_positions();
 
@@ -423,6 +435,12 @@ private:
     Purpose m_purpose { Purpose::Commit };
     bool m_should_collect_devtools_layout_data { false };
     HashMap<Box const*, Vector<ContainedAbsposChild>> m_contained_abspos_children;
+
+    struct ReusedSubtree {
+        NonnullRefPtr<Painting::Paintable> paintable;
+        CSSPixelPoint old_absolute_position;
+    };
+    HashMap<Box const*, ReusedSubtree> m_reused_subtrees;
 };
 
 inline CSSPixels clamp_to_max_dimension_value(CSSPixels value)

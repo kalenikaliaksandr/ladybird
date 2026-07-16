@@ -1057,14 +1057,34 @@ void Paintable::set_cached_commands(PaintPhase phase, ByteBuffer const& commands
     m_cached_paint_data->set(phase, command_bytes);
 }
 
-void Paintable::reset_for_relayout()
+void Paintable::detach_from_paint_tree()
 {
     if (parent())
         remove();
+
+    // The cached containing block may be a paintable that the commit in progress is replacing.
+    m_containing_block = {};
+
+    invalidate_absolute_geometry_cache(InvalidateDescendantGeometry::No);
+}
+
+void Paintable::translate_reused_subtree_absolute_geometry(CSSPixelPoint delta)
+{
+    for_each_in_inclusive_subtree([&](Paintable& paintable) {
+        paintable.invalidate_absolute_geometry_cache(InvalidateDescendantGeometry::No);
+        if (paintable.m_overflow_data.has_value())
+            paintable.m_overflow_data->scrollable_overflow_rect.translate_by(delta);
+        // Recorded paint commands bake absolute coordinates.
+        paintable.invalidate_paint_cache();
+        return TraversalDecision::Continue;
+    });
+}
+
+void Paintable::reset_for_relayout()
+{
+    detach_from_paint_tree();
     while (first_child())
         first_child()->remove();
-
-    m_containing_block = {};
 
     m_offset = {};
     m_content_size = {};
@@ -1079,8 +1099,6 @@ void Paintable::reset_for_relayout()
     m_table_cell_coordinates.clear();
     m_containing_line_box_index.clear();
     m_sticky_insets = nullptr;
-
-    invalidate_absolute_geometry_cache(InvalidateDescendantGeometry::No);
 
     m_enclosing_scroll_frame_index = {};
     m_own_scroll_frame_index = {};

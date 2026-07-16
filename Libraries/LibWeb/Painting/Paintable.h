@@ -163,6 +163,16 @@ public:
 
     virtual void reset_for_relayout();
 
+    // Detaches this paintable from its parent in the paint tree while keeping its own subtree
+    // intact, so a committed subtree can be re-inserted elsewhere as one unit.
+    void detach_from_paint_tree();
+
+    // After a reused subtree is re-attached at a different absolute position, its cached
+    // absolute geometry, scrollable overflow rects (stored in absolute coordinates), and
+    // recorded paint commands are stale. The subtree's internal layout is unchanged, so its
+    // absolute rects all shift rigidly: translate the overflow data and drop the caches.
+    void translate_reused_subtree_absolute_geometry(CSSPixelPoint delta);
+
     virtual void paint(DisplayListRecordingContext&, PaintPhase) const;
     virtual void record_hit_test_items(DisplayListRecordingContext&, PaintPhase) const;
     void record_async_scrolling_metadata(DisplayListRecordingContext&) const;

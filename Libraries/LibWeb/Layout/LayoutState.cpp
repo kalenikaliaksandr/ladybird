@@ -68,6 +68,32 @@ void LayoutState::ensure_capacity(u32 node_count)
     m_used_values_store.ensure_capacity(node_count);
 }
 
+void LayoutState::set_subtree_reused(Box const& box, NonnullRefPtr<Painting::Paintable> paintable, CSSPixelPoint old_absolute_position)
+{
+    m_reused_subtrees.set(&box, ReusedSubtree { move(paintable), old_absolute_position });
+}
+
+void LayoutState::clear_subtree_reused(Box const& box)
+{
+    m_reused_subtrees.remove(&box);
+}
+
+bool LayoutState::subtree_is_reused(Box const& box) const
+{
+    return m_reused_subtrees.contains(&box);
+}
+
+bool LayoutState::is_inside_reused_subtree(Node const& node) const
+{
+    if (m_reused_subtrees.is_empty())
+        return false;
+    for (auto const* ancestor = node.parent(); ancestor; ancestor = ancestor->parent()) {
+        if (auto const* box = as_if<Box>(*ancestor); box && m_reused_subtrees.contains(box))
+            return true;
+    }
+    return false;
+}
+
 LayoutState::UsedValues& LayoutState::get_mutable(NodeWithStyle const& node)
 {
     auto* used_values = m_used_values_store.get(node.layout_index());
@@ -194,13 +220,27 @@ void LayoutState::resolve_relative_positions()
         if (m_subtree_root && !m_subtree_root->is_inclusive_ancestor_of(node))
             return;
 
-        if (auto const* box = as_if<Box>(node); box && box->is_in_flow() && box->display().is_block_outside()) {
+        auto const* box = as_if<Box>(node);
+        bool node_is_reused_subtree_root = box && subtree_is_reused(*box);
+
+        // Stale used values from an earlier run of this pass; the reused unit's offsets are
+        // already final.
+        if (!node_is_reused_subtree_root && is_inside_reused_subtree(node))
+            return;
+
+        if (box && box->is_in_flow() && box->display().is_block_outside()) {
             auto accumulated = accumulated_relative_insets_from_inline_ancestor_chain(box->parent(), box->containing_block());
             if (accumulated.found_fragmented_inline_node) {
                 if (auto paintable = node.paintable())
                     paintable->set_offset(paintable->offset().translated(accumulated.offset));
             }
         }
+
+        // A reused root's fragments and inline box pieces already carry the relative
+        // adjustments applied when they were committed; the inline-flow ancestor chains that
+        // contribute them cannot cross a formatting context root.
+        if (node_is_reused_subtree_root)
+            return;
 
         auto* paintable_with_lines = as_if<Painting::PaintableWithLines>(node.paintable().ptr());
         if (!paintable_with_lines)
@@ -227,9 +267,10 @@ void LayoutState::resolve_relative_positions()
     });
 }
 
-static void build_paint_tree(Node& node, Painting::Paintable* parent_paintable = nullptr, Painting::Paintable* insert_before_paintable = nullptr)
+static void build_paint_tree(LayoutState const& state, Node& node, Painting::Paintable* parent_paintable = nullptr, Painting::Paintable* insert_before_paintable = nullptr)
 {
     Painting::Paintable* paintable_for_children = nullptr;
+    bool descend_into_children = true;
     if (auto paintable = node.paintable()) {
         if (parent_paintable && !paintable->forms_unconnected_subtree()) {
             VERIFY(!paintable->parent());
@@ -239,6 +280,11 @@ static void build_paint_tree(Node& node, Painting::Paintable* parent_paintable =
         if (node.dom_node())
             node.dom_node()->set_paintable(paintable);
         paintable_for_children = paintable.ptr();
+
+        // A reused subtree keeps its existing paint subtree: the root was just spliced in as
+        // one unit, and its descendants are still attached under it.
+        if (auto* box = as_if<Box>(node); box && state.subtree_is_reused(*box))
+            descend_into_children = false;
     } else if (node.is_fragmented_inline()) {
         // An inline box without a paintable (it was never laid out) must not orphan its
         // descendants' paintables; pass the nearest ancestor paintable through. Other
@@ -247,8 +293,10 @@ static void build_paint_tree(Node& node, Painting::Paintable* parent_paintable =
         paintable_for_children = parent_paintable;
     }
 
-    for (auto child = node.first_child(); child; child = child->next_sibling())
-        build_paint_tree(*child, paintable_for_children);
+    if (descend_into_children) {
+        for (auto child = node.first_child(); child; child = child->next_sibling())
+            build_paint_tree(state, *child, paintable_for_children);
+    }
 }
 
 void LayoutState::commit(Box& root)
@@ -279,9 +327,28 @@ void LayoutState::commit(Box& root, Painting::Paintable& paintable_to_replace)
 
 void LayoutState::commit_used_values_and_build_paint_tree(Box& root, RefPtr<Painting::Paintable> parent_paintable, RefPtr<Painting::Paintable> insert_before_paintable)
 {
-    // Cache existing paintables before clearing.
+    // A reused subtree nested inside another reused subtree is already covered by the outer
+    // unit; drop it so each surviving entry is an independent unit.
+    if (!m_reused_subtrees.is_empty()) {
+        Vector<Box const*> nested_reused_roots;
+        for (auto const& [box, reused_subtree] : m_reused_subtrees) {
+            if (is_inside_reused_subtree(*box))
+                nested_reused_roots.append(box);
+        }
+        for (auto const* box : nested_reused_roots)
+            m_reused_subtrees.remove(box);
+    }
+
+    auto is_reused_subtree_root = [&](Node& node) {
+        auto* box = as_if<Box>(node);
+        return box && subtree_is_reused(*box);
+    };
+
+    // Cache existing paintables before clearing. Reused subtrees keep theirs.
     HashMap<Node const*, NonnullRefPtr<Painting::Paintable>> paintable_cache;
     root.for_each_in_inclusive_subtree([&](Node& node) {
+        if (is_reused_subtree_root(node))
+            return TraversalDecision::SkipChildrenAndContinue;
         if (auto paintable = node.paintable())
             paintable_cache.set(&node, *paintable);
         return TraversalDecision::Continue;
@@ -289,7 +356,9 @@ void LayoutState::commit_used_values_and_build_paint_tree(Box& root, RefPtr<Pain
 
     // Go through the layout tree and detach all paintables. The layout tree should only point to the new paintable tree
     // which we're about to build.
-    root.for_each_in_inclusive_subtree([](Node& node) {
+    root.for_each_in_inclusive_subtree([&](Node& node) {
+        if (is_reused_subtree_root(node))
+            return TraversalDecision::SkipChildrenAndContinue;
         node.clear_paintable();
         return TraversalDecision::Continue;
     });
@@ -298,6 +367,8 @@ void LayoutState::commit_used_values_and_build_paint_tree(Box& root, RefPtr<Pain
 
     Vector<Node*> fragmented_inline_nodes;
     root.for_each_in_inclusive_subtree([&](Node& node) {
+        if (is_reused_subtree_root(node))
+            return TraversalDecision::SkipChildrenAndContinue;
         if (auto* dom_node = node.dom_node())
             dom_node->clear_paintable();
         if (node.is_fragmented_inline() && node.dom_node())
@@ -320,10 +391,17 @@ void LayoutState::commit_used_values_and_build_paint_tree(Box& root, RefPtr<Pain
         if (m_subtree_root && !m_subtree_root->is_inclusive_ancestor_of(node))
             return;
 
+        // Used values recorded for nodes inside a reused subtree by an earlier run of this
+        // pass are stale; the reused unit's committed paintables supersede them.
+        auto* layout_box = as_if<Box>(const_cast<NodeWithStyle&>(node));
+        bool node_is_reused_subtree_root = layout_box && subtree_is_reused(*layout_box);
+        if (!node_is_reused_subtree_root && is_inside_reused_subtree(node))
+            return;
+
         // Clearing on absence keeps saved inputs from a previous pass from surviving a pass
         // that no longer laid the box out as absolutely positioned (or no longer ran an
         // eligible formatting context for it).
-        if (auto* layout_box = as_if<Box>(const_cast<NodeWithStyle&>(node))) {
+        if (layout_box) {
             if (auto const* abspos_layout_inputs = used_values.abspos_layout_inputs())
                 layout_box->set_saved_abspos_layout_inputs(*abspos_layout_inputs);
             else
@@ -333,6 +411,21 @@ void LayoutState::commit_used_values_and_build_paint_tree(Box& root, RefPtr<Pain
                 layout_box->set_saved_layout_run_input(*layout_run_input);
             else
                 layout_box->clear_saved_layout_run_input();
+        }
+
+        if (node_is_reused_subtree_root) {
+            // The subtree's committed paintables are kept as one unit: refresh the root's
+            // box model (the parent context resolved it fresh this pass) and detach the
+            // root paintable so build_paint_tree can splice the unit in at its position.
+            // Everything else on the paintable is still valid, including line box fragments;
+            // in particular, set_content_size is skipped because the size is unchanged by
+            // construction and its side effects must not fire.
+            auto paintable = node.paintable();
+            VERIFY(paintable);
+            paintable->detach_from_paint_tree();
+            transfer_box_model_metrics(paintable->box_model(), used_values);
+            VERIFY(paintable->content_size() == CSSPixelSize(used_values.content_width(), used_values.content_height()));
+            return;
         }
 
         RefPtr<Painting::Paintable> paintable;
@@ -437,6 +530,11 @@ void LayoutState::commit_used_values_and_build_paint_tree(Box& root, RefPtr<Pain
         if (!node.is_box() || node.is_fragmented_inline())
             return;
 
+        // Stale used values from an earlier run of this pass; the reused unit's offsets are
+        // already final. The reused root itself participates: its offset is parent-resolved.
+        if (!subtree_is_reused(as<Box>(node)) && is_inside_reused_subtree(node))
+            return;
+
         auto paintable_ref = node.paintable();
         auto& paintable = *paintable_ref;
         CSSPixelPoint offset;
@@ -474,13 +572,23 @@ void LayoutState::commit_used_values_and_build_paint_tree(Box& root, RefPtr<Pain
         paintable.set_offset(offset);
     });
 
-    build_paint_tree(root, parent_paintable.ptr(), insert_before_paintable.ptr());
+    build_paint_tree(*this, root, parent_paintable.ptr(), insert_before_paintable.ptr());
 
     resolve_relative_positions();
 
     // Piece rects are final only now that relative positions are resolved.
     for (auto const& paintable_with_lines : blocks_with_inline_box_pieces)
         paintable_with_lines->assign_inline_box_geometry();
+
+    // Reused subtrees that landed at a different absolute position carry stale absolute
+    // geometry: shift it now that every ancestor offset is final.
+    for (auto& [box, reused_subtree] : m_reused_subtrees) {
+        auto& paintable = *reused_subtree.paintable;
+        auto new_absolute_position = paintable.absolute_rect().location();
+        if (new_absolute_position == reused_subtree.old_absolute_position)
+            continue;
+        paintable.translate_reused_subtree_absolute_geometry(new_absolute_position - reused_subtree.old_absolute_position);
+    }
 }
 
 LayoutState::UsedValues& LayoutState::UsedValues::operator=(UsedValues const& other)
