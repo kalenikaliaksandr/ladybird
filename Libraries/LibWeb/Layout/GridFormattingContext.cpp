@@ -3139,12 +3139,12 @@ void GridFormattingContext::determine_intrinsic_size_of_grid_container(Available
     }
 }
 
-CSSPixels GridFormattingContext::automatic_content_width() const
+CSSPixels GridFormattingContext::automatic_content_width_impl() const
 {
     return m_grid_container_used_values.content_width();
 }
 
-CSSPixels GridFormattingContext::automatic_content_height() const
+CSSPixels GridFormattingContext::automatic_content_height_impl() const
 {
     return m_automatic_content_height;
 }

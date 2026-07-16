@@ -49,7 +49,7 @@ BlockFormattingContext::~BlockFormattingContext()
     }
 }
 
-CSSPixels BlockFormattingContext::automatic_content_width() const
+CSSPixels BlockFormattingContext::automatic_content_width_impl() const
 {
     if (root().children_are_inline())
         return m_state.get(root()).content_width();
@@ -67,7 +67,7 @@ CSSPixels BlockFormattingContext::automatic_content_width() const
     return greatest_child_width(root());
 }
 
-CSSPixels BlockFormattingContext::automatic_content_height() const
+CSSPixels BlockFormattingContext::automatic_content_height_impl() const
 {
     return compute_auto_height_for_block_formatting_context_root(root());
 }

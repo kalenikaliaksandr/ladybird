@@ -30,8 +30,8 @@ public:
     void run_until_width_calculation(LayoutInput const&, RowMeasurement = RowMeasurement::Include);
 
     virtual void run_impl(LayoutInput const&) override;
-    virtual CSSPixels automatic_content_width() const override;
-    virtual CSSPixels automatic_content_height() const override;
+    virtual CSSPixels automatic_content_width_impl() const override;
+    virtual CSSPixels automatic_content_height_impl() const override;
 
     Box const& table_box() const { return context_box(); }
 

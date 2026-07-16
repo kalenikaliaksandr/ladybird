@@ -232,6 +232,16 @@ void FormattingContext::run(LayoutInput const& layout_input)
     run_impl(layout_input);
 }
 
+CSSPixels FormattingContext::automatic_content_width() const
+{
+    return automatic_content_width_impl();
+}
+
+CSSPixels FormattingContext::automatic_content_height() const
+{
+    return automatic_content_height_impl();
+}
+
 void FormattingContext::place_child(Box const& child, CSSPixelPoint content_offset)
 {
     m_state.get_mutable(child).place(content_offset);
@@ -473,8 +483,8 @@ struct ReplacedFormattingContext : public FormattingContext {
         : FormattingContext(Type::InternalReplaced, layout_mode, state, box)
     {
     }
-    virtual CSSPixels automatic_content_width() const override { return 0; }
-    virtual CSSPixels automatic_content_height() const override { return 0; }
+    virtual CSSPixels automatic_content_width_impl() const override { return 0; }
+    virtual CSSPixels automatic_content_height_impl() const override { return 0; }
     virtual void run_impl(LayoutInput const&) override { }
 };
 
@@ -484,8 +494,8 @@ struct DummyFormattingContext : public FormattingContext {
         : FormattingContext(Type::InternalDummy, layout_mode, state, box)
     {
     }
-    virtual CSSPixels automatic_content_width() const override { return 0; }
-    virtual CSSPixels automatic_content_height() const override { return 0; }
+    virtual CSSPixels automatic_content_width_impl() const override { return 0; }
+    virtual CSSPixels automatic_content_height_impl() const override { return 0; }
     virtual void run_impl(LayoutInput const&) override { }
 };
 
@@ -2375,8 +2385,8 @@ public:
     {
     }
 
-    virtual CSSPixels automatic_content_width() const override { VERIFY_NOT_REACHED(); }
-    virtual CSSPixels automatic_content_height() const override { VERIFY_NOT_REACHED(); }
+    virtual CSSPixels automatic_content_width_impl() const override { VERIFY_NOT_REACHED(); }
+    virtual CSSPixels automatic_content_height_impl() const override { VERIFY_NOT_REACHED(); }
     virtual void run_impl(LayoutInput const&) override { VERIFY_NOT_REACHED(); }
 };
 

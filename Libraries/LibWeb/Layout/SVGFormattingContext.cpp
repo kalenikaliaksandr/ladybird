@@ -48,12 +48,12 @@ SVGFormattingContext::SVGFormattingContext(LayoutState& state, LayoutMode layout
 
 SVGFormattingContext::~SVGFormattingContext() = default;
 
-CSSPixels SVGFormattingContext::automatic_content_width() const
+CSSPixels SVGFormattingContext::automatic_content_width_impl() const
 {
     return 0;
 }
 
-CSSPixels SVGFormattingContext::automatic_content_height() const
+CSSPixels SVGFormattingContext::automatic_content_height_impl() const
 {
     return 0;
 }

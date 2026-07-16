@@ -61,12 +61,12 @@ void ReplacedWithChildrenFormattingContext::run_impl(LayoutInput const& layout_i
     bfc->parent_context_did_dimension_child_root_box();
 }
 
-CSSPixels ReplacedWithChildrenFormattingContext::automatic_content_width() const
+CSSPixels ReplacedWithChildrenFormattingContext::automatic_content_width_impl() const
 {
     return m_automatic_content_width;
 }
 
-CSSPixels ReplacedWithChildrenFormattingContext::automatic_content_height() const
+CSSPixels ReplacedWithChildrenFormattingContext::automatic_content_height_impl() const
 {
     return m_automatic_content_height;
 }

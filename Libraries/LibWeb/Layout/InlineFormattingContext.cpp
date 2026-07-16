@@ -63,12 +63,12 @@ AvailableSize InlineFormattingContext::available_space_for_line(CSSPixels block_
     return AvailableSize::make_definite(m_available_space->width.to_px_or_zero() - intrusions.left - intrusions.right);
 }
 
-CSSPixels InlineFormattingContext::automatic_content_width() const
+CSSPixels InlineFormattingContext::automatic_content_width_impl() const
 {
     return m_automatic_content_width;
 }
 
-CSSPixels InlineFormattingContext::automatic_content_height() const
+CSSPixels InlineFormattingContext::automatic_content_height_impl() const
 {
     return m_automatic_content_height;
 }

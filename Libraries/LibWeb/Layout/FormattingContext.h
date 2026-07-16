@@ -87,8 +87,10 @@ public:
     void run(LayoutInput const&);
 
     // These functions return the automatic content dimensions of the context's root box.
-    virtual CSSPixels automatic_content_width() const = 0;
-    virtual CSSPixels automatic_content_height() const = 0;
+    // Non-virtual entry points, so that logic common to all context types has a single
+    // place to hook into.
+    CSSPixels automatic_content_width() const;
+    CSSPixels automatic_content_height() const;
 
     Box const& context_box() const { return m_context_box; }
 
@@ -180,6 +182,9 @@ protected:
     FormattingContext(Type, LayoutMode, LayoutState&, Box const&, FormattingContext* parent = nullptr);
 
     virtual void run_impl(LayoutInput const&) = 0;
+
+    virtual CSSPixels automatic_content_width_impl() const = 0;
+    virtual CSSPixels automatic_content_height_impl() const = 0;
 
     void dimension_list_item_marker(ListItemMarkerBox const&);
     [[nodiscard]] static CSSPixels distance_between_marker_and_list_item(ListItemMarkerBox const&);

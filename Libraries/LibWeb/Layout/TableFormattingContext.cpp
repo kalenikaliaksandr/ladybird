@@ -2005,12 +2005,12 @@ void TableFormattingContext::run_impl(LayoutInput const& layout_input)
     m_automatic_content_height = m_table_height;
 }
 
-CSSPixels TableFormattingContext::automatic_content_width() const
+CSSPixels TableFormattingContext::automatic_content_width_impl() const
 {
     return m_state.get(table_box()).content_width();
 }
 
-CSSPixels TableFormattingContext::automatic_content_height() const
+CSSPixels TableFormattingContext::automatic_content_height_impl() const
 {
     return m_automatic_content_height;
 }

@@ -167,8 +167,8 @@ public:
     virtual bool inhibits_floating() const override { return true; }
 
     virtual void run_impl(LayoutInput const&) override;
-    virtual CSSPixels automatic_content_width() const override;
-    virtual CSSPixels automatic_content_height() const override;
+    virtual CSSPixels automatic_content_width_impl() const override;
+    virtual CSSPixels automatic_content_height_impl() const override;
 
     Box const& grid_container() const { return context_box(); }
 
