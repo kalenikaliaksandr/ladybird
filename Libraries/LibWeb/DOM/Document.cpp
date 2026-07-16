@@ -2117,6 +2117,16 @@ void Document::update_layout(UpdateLayoutReason reason)
             Layout::TreeBuilder tree_builder;
             m_layout_root = as<Layout::Viewport>(*tree_builder.build(*this));
 
+            // Boxes rebuilt in place start with clean layout-dirty flags, but their subtrees
+            // no longer match what the last pass laid out, so anything relying on those flags
+            // (such as layout run caching) must see them as dirty.
+            for (auto* rebuilt_subtree_root : tree_builder.rebuilt_subtree_roots())
+                rebuilt_subtree_root->set_needs_layout_update(SetNeedsLayoutReason::LayoutTreeUpdate);
+
+            // The marking walk may have recorded partial relayout boundaries; this pass lays
+            // out the whole tree, so drop them instead of leaving stale roots registered.
+            (void)m_partial_relayout_invalidation.take_registered_roots();
+
             // NB: Called during layout update.
             if (document_element && document_element->unsafe_layout_node())
                 propagate_scrollbar_width_to_viewport(*document_element, *m_layout_root);
