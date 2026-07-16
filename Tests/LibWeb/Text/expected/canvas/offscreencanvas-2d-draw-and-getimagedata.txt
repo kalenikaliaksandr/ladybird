@@ -1,0 +1,3 @@
+corner: [255,0,0,255]
+center: [0,128,0,255]
+after putImageData: [0,0,255,255]

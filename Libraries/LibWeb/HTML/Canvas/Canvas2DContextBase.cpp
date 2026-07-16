@@ -321,6 +321,15 @@ void Canvas2DContextBase::set_size(Gfx::IntSize const& size)
     discard_backing_storage();
 }
 
+void Canvas2DContextBase::clear_entire_bitmap()
+{
+    if (auto* canvas_command_list = this->canvas_command_list()) {
+        auto rect = Gfx::FloatRect { {}, m_size.to_type<float>() };
+        canvas_command_list->append(Gfx::CanvasCommands::ClearRect { .rect = rect, .color = clear_color() });
+        did_draw(rect);
+    }
+}
+
 void Canvas2DContextBase::prepare_for_compositing()
 {
     if (!has_backing_storage())

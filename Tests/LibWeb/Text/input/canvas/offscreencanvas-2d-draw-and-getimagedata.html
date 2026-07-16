@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        const canvas = new OffscreenCanvas(8, 8);
+        const context = canvas.getContext("2d");
+
+        context.fillStyle = "#ff0000";
+        context.fillRect(0, 0, 8, 8);
+        context.fillStyle = "rgb(0, 128, 0)";
+        context.fillRect(2, 2, 4, 4);
+
+        const fullImageData = context.getImageData(0, 0, 8, 8);
+        const cornerPixel = Array.from(fullImageData.data.slice(0, 4));
+        const centerOffset = (4 * 8 + 4) * 4;
+        const centerPixel = Array.from(fullImageData.data.slice(centerOffset, centerOffset + 4));
+
+        println("corner: " + JSON.stringify(cornerPixel));
+        println("center: " + JSON.stringify(centerPixel));
+
+        const putData = context.createImageData(2, 2);
+        for (let i = 0; i < putData.data.length; i += 4) {
+            putData.data[i] = 0;
+            putData.data[i + 1] = 0;
+            putData.data[i + 2] = 255;
+            putData.data[i + 3] = 255;
+        }
+        context.putImageData(putData, 0, 0);
+        const afterPut = Array.from(context.getImageData(0, 0, 1, 1).data);
+        println("after putImageData: " + JSON.stringify(afterPut));
+    });
+</script>

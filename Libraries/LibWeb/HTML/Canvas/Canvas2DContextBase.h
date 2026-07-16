@@ -134,6 +134,11 @@ public:
 
     RefPtr<Gfx::Bitmap> read_pixels(Gfx::IntRect const&);
 
+    // Resets every pixel to the canvas clear color (transparent black, or opaque black
+    // for alpha=false contexts) without touching the drawing state. Used by
+    // OffscreenCanvas.transferToImageBitmap(), which moves the bitmap out.
+    void clear_entire_bitmap();
+
 protected:
     Canvas2DContextBase(JS::Realm&, Gfx::IntSize initial_size, Bindings::CanvasRenderingContext2DSettings);
 

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <LibGfx/Forward.h>
+#include <LibGfx/Size.h>
 #include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Bindings/Transferable.h>
 #include <LibWeb/DOM/EventTarget.h>
@@ -43,7 +44,10 @@ public:
     WebIDL::UnsignedLong width() const;
     WebIDL::UnsignedLong height() const;
 
-    RefPtr<Gfx::Bitmap> bitmap() const;
+    // The canvas pixels live in the Compositor process; this synchronously reads
+    // them back, or returns a transparent bitmap when there is no rendering
+    // context (or no Compositor). Returns null for zero-area canvases.
+    RefPtr<Gfx::Bitmap> read_back_bitmap();
 
     WebIDL::ExceptionOr<void> set_width(WebIDL::UnsignedLong);
     WebIDL::ExceptionOr<void> set_height(WebIDL::UnsignedLong);
@@ -64,7 +68,7 @@ public:
     CSS::ComputationContext canvas_font_computation_context() const;
 
 private:
-    OffscreenCanvas(JS::Realm&, RefPtr<Gfx::Bitmap> bitmap);
+    OffscreenCanvas(JS::Realm&, Gfx::IntSize);
 
     virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
@@ -76,11 +80,11 @@ private:
     JS::ThrowCompletionOr<HasOrCreatedContext> create_2d_context(JS::Value options);
 
     void reset_context_to_default_state();
-    WebIDL::ExceptionOr<void> set_new_bitmap_size(Gfx::IntSize new_size);
+    void set_new_bitmap_size(Gfx::IntSize new_size);
 
     Variant<GC::Ref<HTML::OffscreenCanvasRenderingContext2D>, GC::Ref<WebGL::WebGLRenderingContext>, GC::Ref<WebGL::WebGL2RenderingContext>, Empty> m_context;
 
-    RefPtr<Gfx::Bitmap> m_bitmap;
+    Gfx::IntSize m_size;
 };
 
 }
