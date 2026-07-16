@@ -221,6 +221,16 @@ public:
     CSSPixels content_width() const { return m_content_size.width(); }
     CSSPixels content_height() const { return m_content_size.height(); }
 
+    // Baselines of the box as committed by the last layout pass, so that later passes can
+    // reuse them without re-running layout for the box's subtree.
+    Optional<CSSPixels> const& first_baseline() const { return m_first_baseline; }
+    Optional<CSSPixels> const& last_baseline() const { return m_last_baseline; }
+    void set_baselines(Optional<CSSPixels> first_baseline, Optional<CSSPixels> last_baseline)
+    {
+        m_first_baseline = first_baseline;
+        m_last_baseline = last_baseline;
+    }
+
     CSSPixelRect absolute_rect() const;
     CSSPixelRect absolute_padding_box_rect() const;
     CSSPixelRect absolute_border_box_rect() const;
@@ -493,6 +503,9 @@ private:
 
     CSSPixelPoint m_offset;
     CSSPixelSize m_content_size;
+
+    Optional<CSSPixels> m_first_baseline;
+    Optional<CSSPixels> m_last_baseline;
 
     Optional<CSSPixelRect> mutable m_absolute_rect;
     Optional<CSSPixelRect> mutable m_absolute_padding_box_rect;

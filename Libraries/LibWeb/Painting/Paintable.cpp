@@ -1069,6 +1069,9 @@ void Paintable::reset_for_relayout()
     m_offset = {};
     m_content_size = {};
 
+    m_first_baseline = {};
+    m_last_baseline = {};
+
     m_box_model = {};
 
     m_overflow_data.clear();

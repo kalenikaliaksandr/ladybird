@@ -350,6 +350,7 @@ void LayoutState::commit_used_values_and_build_paint_tree(Box& root, RefPtr<Pain
 
             paintable_box->set_offset(used_values.content_offset());
             paintable_box->set_content_size(used_values.content_width(), used_values.content_height());
+            paintable_box->set_baselines(used_values.first_baseline, used_values.last_baseline);
             if (used_values.override_borders_data().has_value())
                 paintable_box->set_override_borders_data(used_values.override_borders_data().value());
             if (used_values.table_cell_coordinates().has_value())
@@ -657,6 +658,9 @@ void LayoutState::UsedValues::materialize_from_paintable(Painting::Paintable con
 
     m_content_offset = paintable.offset();
     m_cumulative_offset = paintable.absolute_rect().location();
+
+    first_baseline = paintable.first_baseline();
+    last_baseline = paintable.last_baseline();
 
     margin_left = box_model.margin.left;
     margin_right = box_model.margin.right;
