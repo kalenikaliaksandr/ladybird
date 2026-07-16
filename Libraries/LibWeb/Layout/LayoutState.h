@@ -15,6 +15,7 @@
 #include <LibWeb/Layout/AbsposLayoutInputs.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/LineBox.h>
+#include <LibWeb/Layout/SavedLayoutRunInput.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/SVGGraphicsPaintable.h>
 
@@ -283,6 +284,14 @@ struct LayoutState {
             return &*m_rare->abspos_layout_inputs;
         }
 
+        void set_layout_run_input(SavedLayoutRunInput layout_run_input) { ensure_rare_data().layout_run_input = move(layout_run_input); }
+        SavedLayoutRunInput const* layout_run_input() const
+        {
+            if (!m_rare || !m_rare->layout_run_input.has_value())
+                return nullptr;
+            return &*m_rare->layout_run_input;
+        }
+
     private:
         friend struct LayoutState;
         friend class FormattingContext;
@@ -316,6 +325,7 @@ struct LayoutState {
                 , override_borders_data(other.override_borders_data)
                 , computed_svg_transforms(other.computed_svg_transforms)
                 , abspos_layout_inputs(other.abspos_layout_inputs)
+                , layout_run_input(other.layout_run_input)
             {
                 if (other.grid_layout_data)
                     grid_layout_data = make<GridLayoutData>(*other.grid_layout_data);
@@ -333,6 +343,7 @@ struct LayoutState {
             Optional<Painting::Paintable::BordersDataWithElementKind> override_borders_data;
             Optional<Painting::SVGGraphicsPaintable::ComputedTransforms> computed_svg_transforms;
             Optional<AbsposLayoutInputs> abspos_layout_inputs;
+            Optional<SavedLayoutRunInput> layout_run_input;
         };
 
         RareData& ensure_rare_data()

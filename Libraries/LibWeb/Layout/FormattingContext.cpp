@@ -229,7 +229,98 @@ FormattingContext::~FormattingContext() = default;
 
 void FormattingContext::run(LayoutInput const& layout_input)
 {
+    save_layout_run_input_if_eligible(layout_input);
     run_impl(layout_input);
+}
+
+bool FormattingContext::is_layout_run_cache_candidate(Box const& box)
+{
+    // Layout run caching v1 covers in-flow and floating roots of Block, Flex and Grid
+    // formatting contexts. Other context types read inputs beyond (LayoutInput, root used
+    // values, subtree): a table context lays out captions around the table box inside the
+    // wrapper, a subgrid reads the parent grid's tracks, and SVG contexts inherit the
+    // viewBox transform chain. Absolutely positioned roots are already served by the
+    // partial relayout boundary machinery.
+    auto type = formatting_context_type_created_by_box(box);
+    if (type != Type::Block && type != Type::Flex && type != Type::Grid)
+        return false;
+
+    if (box.is_absolutely_positioned())
+        return false;
+    if (box.is_anonymous())
+        return false;
+    if (box.is_viewport())
+        return false;
+    if (is<TableWrapper>(box))
+        return false;
+
+    // The document element's context participates in quirks-mode html/body special cases
+    // that read boxes outside its subtree.
+    if (box.dom_node() && box.dom_node() == box.document().document_element())
+        return false;
+
+    // An absolutely or fixed positioned descendant whose containing block is outside the
+    // subtree is laid out by a formatting context outside it.
+    if (box.abspos_descendant_escapes())
+        return false;
+
+    // A subgridded grid container's tracks come from the parent grid.
+    if (type == Type::Grid
+        && (box.computed_values().grid_template_columns().is_subgrid() || box.computed_values().grid_template_rows().is_subgrid()))
+        return false;
+
+    // content-visibility relevancy is an input to layout that LayoutInput does not capture.
+    if (box.computed_values().content_visibility() != CSS::ContentVisibility::Visible)
+        return false;
+
+    return true;
+}
+
+void FormattingContext::save_layout_run_input_if_eligible(LayoutInput const& layout_input)
+{
+    if (m_layout_mode != LayoutMode::Normal || m_state.is_for_measurement())
+        return;
+    if (m_type != Type::Block && m_type != Type::Flex && m_type != Type::Grid)
+        return;
+
+    auto const& box = context_box();
+    if (!is_layout_run_cache_candidate(box))
+        return;
+
+    auto& used_values = m_state.get_mutable(const_cast<Box&>(box));
+
+    // A committing normal-mode run cannot carry intrinsic sizing constraints on its root.
+    if (used_values.width_constraint != SizeConstraint::None || used_values.height_constraint != SizeConstraint::None)
+        return;
+
+    // Positions within a block formatting context never reach an independent context's run;
+    // if this fires, the input carries state the saved key does not capture.
+    VERIFY(!layout_input.content_box_position_in_bfc_root.has_value());
+
+    used_values.set_layout_run_input(SavedLayoutRunInput {
+        .available_space = layout_input.available_space,
+        .containing_block_constraints = layout_input.containing_block_constraints,
+        .table_grid_min_border_box_height = layout_input.table_grid_min_border_box_height,
+        .root_snapshot = {
+            .content_width = used_values.content_width(),
+            .content_height = used_values.content_height(),
+            .has_definite_width = used_values.has_definite_width(),
+            .has_definite_height = used_values.has_definite_height(),
+            .margin_left = used_values.margin_left,
+            .margin_right = used_values.margin_right,
+            .margin_top = used_values.margin_top,
+            .margin_bottom = used_values.margin_bottom,
+            .border_left = used_values.border_left,
+            .border_right = used_values.border_right,
+            .border_top = used_values.border_top,
+            .border_bottom = used_values.border_bottom,
+            .padding_left = used_values.padding_left,
+            .padding_right = used_values.padding_right,
+            .padding_top = used_values.padding_top,
+            .padding_bottom = used_values.padding_bottom,
+        },
+        .viewport_size = box.document().viewport_rect().size(),
+    });
 }
 
 CSSPixels FormattingContext::automatic_content_width() const

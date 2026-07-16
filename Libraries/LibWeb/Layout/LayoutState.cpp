@@ -321,12 +321,18 @@ void LayoutState::commit_used_values_and_build_paint_tree(Box& root, RefPtr<Pain
             return;
 
         // Clearing on absence keeps saved inputs from a previous pass from surviving a pass
-        // that no longer laid the box out as absolutely positioned.
+        // that no longer laid the box out as absolutely positioned (or no longer ran an
+        // eligible formatting context for it).
         if (auto* layout_box = as_if<Box>(const_cast<NodeWithStyle&>(node))) {
             if (auto const* abspos_layout_inputs = used_values.abspos_layout_inputs())
                 layout_box->set_saved_abspos_layout_inputs(*abspos_layout_inputs);
             else
                 layout_box->clear_saved_abspos_layout_inputs();
+
+            if (auto const* layout_run_input = used_values.layout_run_input())
+                layout_box->set_saved_layout_run_input(*layout_run_input);
+            else
+                layout_box->clear_saved_layout_run_input();
         }
 
         RefPtr<Painting::Paintable> paintable;

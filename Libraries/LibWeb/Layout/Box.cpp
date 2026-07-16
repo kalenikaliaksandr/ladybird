@@ -11,6 +11,7 @@
 #include <LibWeb/Layout/BlockContainer.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/FormattingContext.h>
+#include <LibWeb/Layout/SavedLayoutRunInput.h>
 #include <LibWeb/Layout/TableWrapper.h>
 #include <LibWeb/Painting/Paintable.h>
 
@@ -41,6 +42,19 @@ void Box::set_saved_abspos_layout_inputs(AbsposLayoutInputs const& abspos_layout
 void Box::clear_saved_abspos_layout_inputs()
 {
     m_saved_abspos_layout_inputs = nullptr;
+}
+
+void Box::set_saved_layout_run_input(SavedLayoutRunInput const& layout_run_input)
+{
+    if (m_saved_layout_run_input)
+        *m_saved_layout_run_input = layout_run_input;
+    else
+        m_saved_layout_run_input = make<SavedLayoutRunInput>(layout_run_input);
+}
+
+void Box::clear_saved_layout_run_input()
+{
+    m_saved_layout_run_input = nullptr;
 }
 
 bool Box::is_partial_relayout_boundary(RequireExistingPaintable require_existing_paintable) const

@@ -136,6 +136,11 @@ public:
     // resolve_anchor_insets() can turn into plain values during a full layout pass.
     [[nodiscard]] static bool box_inset_properties_contain_anchor_functions(Box const&);
 
+    // Whether the formatting context established by this box is a candidate for layout run
+    // caching: an in-flow or floating root of a Block/Flex/Grid context whose output is fully
+    // determined by (LayoutInput, root used values at entry, subtree, viewport size).
+    [[nodiscard]] static bool is_layout_run_cache_candidate(Box const&);
+
     [[nodiscard]] static ContainingBlockConstraints constraints_for_child_context(
         LayoutState::UsedValues const& containing_block_used_values,
         ContainingBlockConstraints const& containing_block_constraints);
@@ -266,6 +271,8 @@ protected:
     void compute_height_for_absolutely_positioned_replaced_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, StaticPositionRect const&, BeforeOrAfterInsideLayout);
 
     [[nodiscard]] Optional<CSSPixels> compute_auto_height_for_absolutely_positioned_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, BeforeOrAfterInsideLayout) const;
+
+    void save_layout_run_input_if_eligible(LayoutInput const&);
 
     Type m_type {};
     LayoutMode m_layout_mode;

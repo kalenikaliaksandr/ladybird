@@ -16,6 +16,7 @@
 namespace Web::Layout {
 
 struct AbsposLayoutInputs;
+struct SavedLayoutRunInput;
 
 enum class RequireExistingPaintable : u8 {
     No,
@@ -84,6 +85,13 @@ public:
     void set_saved_abspos_layout_inputs(AbsposLayoutInputs const&);
     void clear_saved_abspos_layout_inputs();
 
+    // The inputs the formatting context established by this box consumed the last time a
+    // committing layout pass ran it. Layout run caching compares them against a new run's
+    // inputs to decide whether the committed subtree can be reused as-is.
+    SavedLayoutRunInput const* saved_layout_run_input() const { return m_saved_layout_run_input.ptr(); }
+    void set_saved_layout_run_input(SavedLayoutRunInput const&);
+    void clear_saved_layout_run_input();
+
     // Whether an absolutely or fixed positioned descendant of this box has its containing
     // block outside this box's subtree, so the descendant's layout escapes the subtree.
     // Re-derived whenever containing block pointers are recomputed.
@@ -118,6 +126,7 @@ private:
     virtual bool is_box() const final { return true; }
 
     OwnPtr<AbsposLayoutInputs> m_saved_abspos_layout_inputs;
+    OwnPtr<SavedLayoutRunInput> m_saved_layout_run_input;
 
     WeakPtr<Node> m_default_scroll_shift_anchor;
     bool m_compensates_for_scroll_in_x { false };
