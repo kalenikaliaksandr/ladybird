@@ -1754,6 +1754,10 @@ static void compute_subtree_layout(Layout::Box& subtree_root, Layout::LayoutStat
 static void relayout_subtree(Layout::Box& subtree_root, Painting::Paintable& old_paintable)
 {
     Layout::LayoutState layout_state(subtree_root, Layout::LayoutState::Purpose::Commit);
+    // Partial relayout eligibility already rejected everything that would disable layout run
+    // reuse: devtools layout data collection, registered anchor names, and invalidation that
+    // escaped classification.
+    layout_state.set_layout_run_reuse_allowed(true);
     // Absolutely positioned boundaries re-resolve their own size and position by replaying
     // their layout from saved inputs; SVG root boundaries keep the frozen geometry from the
     // previous layout, taken from the old paintable since a replaced box no longer has one.
@@ -2113,6 +2117,13 @@ void Document::update_layout(UpdateLayoutReason reason)
 
         auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
 
+        // Layout run reuse requires every relevant invalidation to be visible in the layout
+        // dirty flags; an escape means something was not classified, and the escape flag is
+        // cleared further down once this pass has re-derived the facts it guards.
+        auto layout_run_reuse_allowed = !should_collect_devtools_layout_data
+            && !any_anchor_names_are_registered()
+            && !m_partial_relayout_invalidation.escapes();
+
         if (needs_layout_tree_rebuild) {
             Layout::TreeBuilder tree_builder;
             m_layout_root = as<Layout::Viewport>(*tree_builder.build(*this));
@@ -2122,6 +2133,11 @@ void Document::update_layout(UpdateLayoutReason reason)
             // (such as layout run caching) must see them as dirty.
             for (auto* rebuilt_subtree_root : tree_builder.rebuilt_subtree_roots())
                 rebuilt_subtree_root->set_needs_layout_update(SetNeedsLayoutReason::LayoutTreeUpdate);
+
+            // Fresh subtrees that replaced no box in place are not covered by the marking
+            // above, so the flags cannot be trusted this pass.
+            if (tree_builder.layout_tree_update_escaped_rebuild_roots())
+                layout_run_reuse_allowed = false;
 
             // The marking walk may have recorded partial relayout boundaries; this pass lays
             // out the whole tree, so drop them instead of leaving stale roots registered.
@@ -2164,6 +2180,7 @@ void Document::update_layout(UpdateLayoutReason reason)
         Layout::LayoutState layout_state;
         layout_state.ensure_capacity(layout_index_counter);
         layout_state.set_should_collect_devtools_layout_data(should_collect_devtools_layout_data);
+        layout_state.set_layout_run_reuse_allowed(layout_run_reuse_allowed);
 
         {
             auto& viewport = static_cast<Layout::Viewport&>(*m_layout_root);

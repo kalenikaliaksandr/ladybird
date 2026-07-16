@@ -229,8 +229,45 @@ FormattingContext::~FormattingContext() = default;
 
 void FormattingContext::run(LayoutInput const& layout_input)
 {
-    save_layout_run_input_if_eligible(layout_input);
+    if (auto const* saved_candidate = save_layout_run_input_if_eligible(layout_input)) {
+        if (try_reuse_committed_subtree(*saved_candidate))
+            return;
+        // An earlier run of this pass may have recorded a reuse that this run supersedes.
+        m_state.clear_subtree_reused(context_box());
+    }
     run_impl(layout_input);
+}
+
+bool FormattingContext::try_reuse_committed_subtree(SavedLayoutRunInput const& candidate_input)
+{
+    if (!m_state.layout_run_reuse_allowed())
+        return false;
+
+    auto const& box = context_box();
+
+    // The saved inputs describe the last committed run; anything dirty at or below this box
+    // means the committed output no longer matches the subtree.
+    if (box.needs_layout_update() || box.descendant_needs_layout_update())
+        return false;
+
+    auto paintable = box.paintable_box();
+    if (!paintable)
+        return false;
+
+    auto const* saved_input = box.saved_layout_run_input();
+    if (!saved_input || !(*saved_input == candidate_input))
+        return false;
+
+    dbgln_if(UPDATE_LAYOUT_DEBUG, "LAYOUT RUN CACHE HIT {}", box.debug_description());
+
+    // Restore the outputs the parent context reads from the root's used values after a run.
+    auto& used_values = m_state.get_mutable(box);
+    used_values.first_baseline = paintable->first_baseline();
+    used_values.last_baseline = paintable->last_baseline();
+
+    m_state.set_subtree_reused(box, const_cast<Painting::Paintable&>(*paintable), paintable->absolute_rect().location());
+    const_cast<DOM::Document&>(box.document()).increment_layout_run_cache_hit_count();
+    return true;
 }
 
 bool FormattingContext::is_layout_run_cache_candidate(Box const& box)
@@ -276,22 +313,22 @@ bool FormattingContext::is_layout_run_cache_candidate(Box const& box)
     return true;
 }
 
-void FormattingContext::save_layout_run_input_if_eligible(LayoutInput const& layout_input)
+SavedLayoutRunInput const* FormattingContext::save_layout_run_input_if_eligible(LayoutInput const& layout_input)
 {
     if (m_layout_mode != LayoutMode::Normal || m_state.is_for_measurement())
-        return;
+        return nullptr;
     if (m_type != Type::Block && m_type != Type::Flex && m_type != Type::Grid)
-        return;
+        return nullptr;
 
     auto const& box = context_box();
     if (!is_layout_run_cache_candidate(box))
-        return;
+        return nullptr;
 
     auto& used_values = m_state.get_mutable(const_cast<Box&>(box));
 
     // A committing normal-mode run cannot carry intrinsic sizing constraints on its root.
     if (used_values.width_constraint != SizeConstraint::None || used_values.height_constraint != SizeConstraint::None)
-        return;
+        return nullptr;
 
     // Positions within a block formatting context never reach an independent context's run;
     // if this fires, the input carries state the saved key does not capture.
@@ -321,20 +358,32 @@ void FormattingContext::save_layout_run_input_if_eligible(LayoutInput const& lay
         },
         .viewport_size = box.document().viewport_rect().size(),
     });
+    return used_values.layout_run_input();
 }
 
 CSSPixels FormattingContext::automatic_content_width() const
 {
+    // When the run was skipped, the implementation has no per-run state to answer from; the
+    // committed content size is the already-clamped result of the same computation, and the
+    // clamps the caller re-applies are idempotent.
+    if (m_state.subtree_is_reused(context_box()))
+        return context_box().paintable_box()->content_width();
     return automatic_content_width_impl();
 }
 
 CSSPixels FormattingContext::automatic_content_height() const
 {
+    if (m_state.subtree_is_reused(context_box()))
+        return context_box().paintable_box()->content_height();
     return automatic_content_height_impl();
 }
 
 void FormattingContext::parent_context_did_dimension_child_root_box()
 {
+    // A reused subtree has nothing to finalize: floats are placed, and no abspos children
+    // were registered because the run was skipped.
+    if (m_state.subtree_is_reused(context_box()))
+        return;
     parent_context_did_dimension_child_root_box_impl();
 }
 
@@ -789,6 +838,12 @@ Optional<CSSPixels> FormattingContext::compute_auto_height_for_absolutely_positi
 // https://www.w3.org/TR/CSS22/visudet.html#root-height
 CSSPixels FormattingContext::compute_auto_height_for_block_formatting_context_root(Box const& root) const
 {
+    // A reused subtree has no used values for its children (their layout was skipped), so
+    // this computation would silently come up empty. The committed content height is the
+    // already-clamped result of the same computation, and clamps are idempotent.
+    if (m_state.subtree_is_reused(root))
+        return root.paintable_box()->content_height();
+
     // 10.6.7 'Auto' heights for block formatting context roots
     Optional<CSSPixels> top;
     Optional<CSSPixels> bottom;

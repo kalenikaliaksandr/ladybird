@@ -389,6 +389,12 @@ struct LayoutState {
     void set_should_collect_devtools_layout_data(bool should_collect) { m_should_collect_devtools_layout_data = should_collect; }
     bool should_collect_devtools_layout_data() const { return m_should_collect_devtools_layout_data; }
 
+    // Whether formatting context runs in this state may be served from committed output of a
+    // previous pass. Only committing layout passes whose invalidation was fully classified
+    // enable this.
+    void set_layout_run_reuse_allowed(bool allowed) { m_layout_run_reuse_allowed = allowed; }
+    bool layout_run_reuse_allowed() const { return m_layout_run_reuse_allowed; }
+
     UsedValues& get_mutable(NodeWithStyle const&);
     UsedValues const& get(NodeWithStyle const&) const;
 
@@ -434,6 +440,7 @@ private:
 
     Purpose m_purpose { Purpose::Commit };
     bool m_should_collect_devtools_layout_data { false };
+    bool m_layout_run_reuse_allowed { false };
     HashMap<Box const*, Vector<ContainedAbsposChild>> m_contained_abspos_children;
 
     struct ReusedSubtree {

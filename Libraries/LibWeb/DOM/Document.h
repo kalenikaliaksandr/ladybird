@@ -440,6 +440,8 @@ public:
     void update_layout_if_needed_for_node(Node const&, UpdateLayoutReason);
     [[nodiscard]] u64 partial_layout_count() const { return m_partial_layout_count; }
     [[nodiscard]] u64 full_layout_count() const { return m_full_layout_count; }
+    [[nodiscard]] u64 layout_run_cache_hit_count() const { return m_layout_run_cache_hit_count; }
+    void increment_layout_run_cache_hit_count() { ++m_layout_run_cache_hit_count; }
     [[nodiscard]] bool layout_is_up_to_date() const;
     void clear_devtools_layout_inspection_data();
     enum class UpdateScrollableOverflowMode : u8 {
@@ -1548,6 +1550,7 @@ private:
 
     u64 m_partial_layout_count { 0 };
     u64 m_full_layout_count { 0 };
+    u64 m_layout_run_cache_hit_count { 0 };
 
     bool m_needs_animated_style_update { false };
 

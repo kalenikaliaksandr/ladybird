@@ -272,7 +272,8 @@ protected:
 
     [[nodiscard]] Optional<CSSPixels> compute_auto_height_for_absolutely_positioned_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, BeforeOrAfterInsideLayout) const;
 
-    void save_layout_run_input_if_eligible(LayoutInput const&);
+    SavedLayoutRunInput const* save_layout_run_input_if_eligible(LayoutInput const&);
+    bool try_reuse_committed_subtree(SavedLayoutRunInput const& candidate_input);
 
     Type m_type {};
     LayoutMode m_layout_mode;
