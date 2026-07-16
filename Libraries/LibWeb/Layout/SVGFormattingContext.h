@@ -20,7 +20,7 @@ public:
     explicit SVGFormattingContext(LayoutState&, LayoutMode, Box const&, FormattingContext* parent, Gfx::AffineTransform parent_viewbox_transform = {}, Optional<Gfx::AffineTransform> parent_svg_transform = {});
     ~SVGFormattingContext();
 
-    virtual void run(LayoutInput const&) override;
+    virtual void run_impl(LayoutInput const&) override;
     virtual CSSPixels automatic_content_width() const override;
     virtual CSSPixels automatic_content_height() const override;
 

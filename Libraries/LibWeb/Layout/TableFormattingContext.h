@@ -29,7 +29,7 @@ public:
 
     void run_until_width_calculation(LayoutInput const&, RowMeasurement = RowMeasurement::Include);
 
-    virtual void run(LayoutInput const&) override;
+    virtual void run_impl(LayoutInput const&) override;
     virtual CSSPixels automatic_content_width() const override;
     virtual CSSPixels automatic_content_height() const override;
 

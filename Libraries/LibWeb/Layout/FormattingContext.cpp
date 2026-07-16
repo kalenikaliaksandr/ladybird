@@ -227,6 +227,11 @@ FormattingContext::FormattingContext(Type type, LayoutMode layout_mode, LayoutSt
 
 FormattingContext::~FormattingContext() = default;
 
+void FormattingContext::run(LayoutInput const& layout_input)
+{
+    run_impl(layout_input);
+}
+
 void FormattingContext::place_child(Box const& child, CSSPixelPoint content_offset)
 {
     m_state.get_mutable(child).place(content_offset);
@@ -470,7 +475,7 @@ struct ReplacedFormattingContext : public FormattingContext {
     }
     virtual CSSPixels automatic_content_width() const override { return 0; }
     virtual CSSPixels automatic_content_height() const override { return 0; }
-    virtual void run(LayoutInput const&) override { }
+    virtual void run_impl(LayoutInput const&) override { }
 };
 
 // FIXME: This is a hack. Get rid of it.
@@ -481,7 +486,7 @@ struct DummyFormattingContext : public FormattingContext {
     }
     virtual CSSPixels automatic_content_width() const override { return 0; }
     virtual CSSPixels automatic_content_height() const override { return 0; }
-    virtual void run(LayoutInput const&) override { }
+    virtual void run_impl(LayoutInput const&) override { }
 };
 
 OwnPtr<FormattingContext> FormattingContext::create_independent_formatting_context_if_needed(LayoutState& state, LayoutMode layout_mode, Box const& child_box, FormattingContext* parent)
@@ -561,7 +566,7 @@ OwnPtr<FormattingContext> FormattingContext::layout_inside(Box const& child_box,
     if (independent_formatting_context)
         independent_formatting_context->run(layout_input);
     else
-        run(layout_input);
+        run_impl(layout_input);
 
     return independent_formatting_context;
 }
@@ -2372,7 +2377,7 @@ public:
 
     virtual CSSPixels automatic_content_width() const override { VERIFY_NOT_REACHED(); }
     virtual CSSPixels automatic_content_height() const override { VERIFY_NOT_REACHED(); }
-    virtual void run(LayoutInput const&) override { VERIFY_NOT_REACHED(); }
+    virtual void run_impl(LayoutInput const&) override { VERIFY_NOT_REACHED(); }
 };
 
 bool FormattingContext::can_replay_saved_abspos_layout_inputs_after_style_change(Box const& box)

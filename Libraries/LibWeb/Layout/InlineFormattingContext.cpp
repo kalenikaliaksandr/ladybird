@@ -73,7 +73,7 @@ CSSPixels InlineFormattingContext::automatic_content_height() const
     return m_automatic_content_height;
 }
 
-void InlineFormattingContext::run(LayoutInput const& layout_input)
+void InlineFormattingContext::run_impl(LayoutInput const& layout_input)
 {
     auto const& available_space = layout_input.available_space;
     FORMATTING_CONTEXT_TRACE();

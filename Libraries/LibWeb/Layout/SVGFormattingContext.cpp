@@ -193,7 +193,7 @@ static bool is_container_element(Node const& node)
     return false;
 }
 
-void SVGFormattingContext::run(LayoutInput const& layout_input)
+void SVGFormattingContext::run_impl(LayoutInput const& layout_input)
 {
     auto const& available_space = layout_input.available_space;
     FORMATTING_CONTEXT_TRACE();

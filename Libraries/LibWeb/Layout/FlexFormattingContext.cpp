@@ -70,7 +70,7 @@ CSSPixels FlexFormattingContext::automatic_content_height() const
     return m_flex_container_state.content_height();
 }
 
-void FlexFormattingContext::run(LayoutInput const& layout_input)
+void FlexFormattingContext::run_impl(LayoutInput const& layout_input)
 {
     auto const& available_space = layout_input.available_space;
     // This implements https://www.w3.org/TR/css-flexbox-1/#layout-algorithm

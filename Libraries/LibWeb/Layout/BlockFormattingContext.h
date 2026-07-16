@@ -22,7 +22,7 @@ public:
     explicit BlockFormattingContext(LayoutState&, LayoutMode layout_mode, BlockContainer const&, FormattingContext* parent);
     ~BlockFormattingContext();
 
-    virtual void run(LayoutInput const&) override;
+    virtual void run_impl(LayoutInput const&) override;
     virtual CSSPixels automatic_content_width() const override;
     virtual CSSPixels automatic_content_height() const override;
 

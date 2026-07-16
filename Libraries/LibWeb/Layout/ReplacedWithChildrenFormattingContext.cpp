@@ -14,7 +14,7 @@ ReplacedWithChildrenFormattingContext::ReplacedWithChildrenFormattingContext(Lay
 {
 }
 
-void ReplacedWithChildrenFormattingContext::run(LayoutInput const& layout_input)
+void ReplacedWithChildrenFormattingContext::run_impl(LayoutInput const& layout_input)
 {
     auto const& available_space = layout_input.available_space;
     auto& root_state = m_state.get_mutable(context_box());

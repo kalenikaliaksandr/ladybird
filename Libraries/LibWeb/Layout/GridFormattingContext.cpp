@@ -2810,7 +2810,7 @@ CSSPixelRect GridFormattingContext::get_grid_area_rect(GridItem const& grid_item
     return area_rect;
 }
 
-void GridFormattingContext::run(LayoutInput const& layout_input)
+void GridFormattingContext::run_impl(LayoutInput const& layout_input)
 {
     auto const& available_space = layout_input.available_space;
     // OPTIMIZATION: If we're in intrinsic sizing layout, but the grid container is not the

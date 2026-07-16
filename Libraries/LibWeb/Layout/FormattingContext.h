@@ -82,7 +82,9 @@ public:
         Last,
     };
 
-    virtual void run(LayoutInput const&) = 0;
+    // Non-virtual entry point for running a formatting context, so that logic common to all
+    // context types (such as reusing cached layout results) has a single place to hook into.
+    void run(LayoutInput const&);
 
     // These functions return the automatic content dimensions of the context's root box.
     virtual CSSPixels automatic_content_width() const = 0;
@@ -176,6 +178,8 @@ public:
 
 protected:
     FormattingContext(Type, LayoutMode, LayoutState&, Box const&, FormattingContext* parent = nullptr);
+
+    virtual void run_impl(LayoutInput const&) = 0;
 
     void dimension_list_item_marker(ListItemMarkerBox const&);
     [[nodiscard]] static CSSPixels distance_between_marker_and_list_item(ListItemMarkerBox const&);

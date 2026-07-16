@@ -116,7 +116,7 @@ static bool margins_collapse_through(Box const& box, LayoutState& state)
     return true;
 }
 
-void BlockFormattingContext::run(LayoutInput const& layout_input)
+void BlockFormattingContext::run_impl(LayoutInput const& layout_input)
 {
     auto const& available_space = layout_input.available_space;
     FORMATTING_CONTEXT_TRACE();

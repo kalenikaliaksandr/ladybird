@@ -1947,7 +1947,7 @@ void TableFormattingContext::parent_context_did_dimension_child_root_box()
     layout_absolutely_positioned_children();
 }
 
-void TableFormattingContext::run(LayoutInput const& layout_input)
+void TableFormattingContext::run_impl(LayoutInput const& layout_input)
 {
     auto const& available_space = layout_input.available_space;
     FORMATTING_CONTEXT_TRACE();
