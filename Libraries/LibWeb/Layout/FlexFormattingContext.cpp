@@ -296,7 +296,7 @@ void FlexFormattingContext::run_impl(LayoutInput const& layout_input)
         save_flex_layout_data();
 }
 
-void FlexFormattingContext::parent_context_did_dimension_child_root_box()
+void FlexFormattingContext::parent_context_did_dimension_child_root_box_impl()
 {
     if (m_layout_mode != LayoutMode::Normal)
         return;

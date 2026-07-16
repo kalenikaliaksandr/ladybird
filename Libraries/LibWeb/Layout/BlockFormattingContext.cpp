@@ -161,7 +161,7 @@ void BlockFormattingContext::run_impl(LayoutInput const& layout_input)
     }
 }
 
-void BlockFormattingContext::parent_context_did_dimension_child_root_box()
+void BlockFormattingContext::parent_context_did_dimension_child_root_box_impl()
 {
     m_was_notified_after_parent_dimensioned_my_root_box = true;
 

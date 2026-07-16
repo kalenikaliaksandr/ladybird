@@ -318,7 +318,7 @@ private:
     void determine_intrinsic_size_of_grid_container(AvailableSpace const& available_space);
 
     virtual AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&) override;
-    virtual void parent_context_did_dimension_child_root_box() override;
+    virtual void parent_context_did_dimension_child_root_box_impl() override;
 
     void resolve_grid_item_sizes(GridDimension dimension);
 

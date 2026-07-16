@@ -17,7 +17,7 @@ public:
     virtual void run_impl(LayoutInput const&) override;
     virtual CSSPixels automatic_content_width_impl() const override;
     virtual CSSPixels automatic_content_height_impl() const override;
-    virtual void parent_context_did_dimension_child_root_box() override;
+    virtual void parent_context_did_dimension_child_root_box_impl() override;
 
 private:
     CSSPixels m_automatic_content_width { 0 };

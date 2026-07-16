@@ -3098,7 +3098,7 @@ AbsposContainingBlockInfo GridFormattingContext::resolve_abspos_containing_block
     return containing_block_info;
 }
 
-void GridFormattingContext::parent_context_did_dimension_child_root_box()
+void GridFormattingContext::parent_context_did_dimension_child_root_box_impl()
 {
     if (m_layout_mode != LayoutMode::Normal)
         return;

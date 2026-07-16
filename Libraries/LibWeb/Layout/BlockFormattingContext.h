@@ -33,7 +33,7 @@ public:
     // https://www.w3.org/TR/css-display/#block-formatting-context-root
     BlockContainer const& root() const { return static_cast<BlockContainer const&>(context_box()); }
 
-    virtual void parent_context_did_dimension_child_root_box() override;
+    virtual void parent_context_did_dimension_child_root_box_impl() override;
 
     void resolve_used_height_if_not_treated_as_auto(Box const&, AvailableSpace const&, ContainingBlockConstraints const& containing_block_constraints);
     void resolve_used_height_if_treated_as_auto(Box const&, AvailableSpace const&, ContainingBlockConstraints const& containing_block_constraints, FormattingContext const* box_formatting_context = nullptr);

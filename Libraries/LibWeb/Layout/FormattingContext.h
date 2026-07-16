@@ -145,7 +145,9 @@ public:
         LayoutInput const& containing_block_layout_input,
         AvailableSpace available_space);
 
-    virtual void parent_context_did_dimension_child_root_box() { }
+    // Non-virtual entry point, so that logic common to all context types has a single place
+    // to hook into.
+    void parent_context_did_dimension_child_root_box();
 
     void place_child(Box const& child, CSSPixelPoint content_offset);
 
@@ -185,6 +187,8 @@ protected:
 
     virtual CSSPixels automatic_content_width_impl() const = 0;
     virtual CSSPixels automatic_content_height_impl() const = 0;
+
+    virtual void parent_context_did_dimension_child_root_box_impl() { }
 
     void dimension_list_item_marker(ListItemMarkerBox const&);
     [[nodiscard]] static CSSPixels distance_between_marker_and_list_item(ListItemMarkerBox const&);

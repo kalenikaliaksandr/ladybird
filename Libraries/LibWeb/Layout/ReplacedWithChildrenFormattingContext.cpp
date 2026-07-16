@@ -71,7 +71,7 @@ CSSPixels ReplacedWithChildrenFormattingContext::automatic_content_height_impl()
     return m_automatic_content_height;
 }
 
-void ReplacedWithChildrenFormattingContext::parent_context_did_dimension_child_root_box()
+void ReplacedWithChildrenFormattingContext::parent_context_did_dimension_child_root_box_impl()
 {
     layout_absolutely_positioned_children();
 }

@@ -1925,7 +1925,7 @@ void TableFormattingContext::run_until_width_calculation(LayoutInput const& layo
     compute_table_width();
 }
 
-void TableFormattingContext::parent_context_did_dimension_child_root_box()
+void TableFormattingContext::parent_context_did_dimension_child_root_box_impl()
 {
     if (m_layout_mode != LayoutMode::Normal)
         return;

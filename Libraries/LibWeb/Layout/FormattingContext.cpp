@@ -242,6 +242,11 @@ CSSPixels FormattingContext::automatic_content_height() const
     return automatic_content_height_impl();
 }
 
+void FormattingContext::parent_context_did_dimension_child_root_box()
+{
+    parent_context_did_dimension_child_root_box_impl();
+}
+
 void FormattingContext::place_child(Box const& child, CSSPixelPoint content_offset)
 {
     m_state.get_mutable(child).place(content_offset);

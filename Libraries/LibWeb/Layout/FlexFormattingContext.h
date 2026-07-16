@@ -238,7 +238,7 @@ private:
 
     [[nodiscard]] CSSPixels calculate_width_to_use_when_determining_intrinsic_height_of_item(FlexItem const&) const;
 
-    virtual void parent_context_did_dimension_child_root_box() override;
+    virtual void parent_context_did_dimension_child_root_box_impl() override;
 
     CSS::FlexBasis used_flex_basis_for_item(FlexItem const&) const;
 
