@@ -16,6 +16,8 @@ struct ContainingBlockConstraints {
     Optional<CSSPixels> percentage_basis_width;
     Optional<CSSPixels> percentage_basis_height;
     Optional<CSSPixels> quirks_mode_percentage_basis_height;
+
+    bool operator==(ContainingBlockConstraints const&) const = default;
 };
 
 struct LayoutInput {
@@ -41,6 +43,8 @@ struct LayoutInput {
     {
         return LayoutInput { available_space, containing_block_constraints, content_box_position_in_bfc_root, height };
     }
+
+    bool operator==(LayoutInput const&) const = default;
 
     AvailableSpace const available_space;
     ContainingBlockConstraints const containing_block_constraints;
