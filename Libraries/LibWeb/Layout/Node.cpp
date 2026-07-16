@@ -1722,9 +1722,19 @@ void Node::set_needs_layout_update(DOM::SetNeedsLayoutReason reason, LayoutUpdat
         if (child.is_anonymous() && !is<TableWrapper>(child)) {
             child.m_needs_layout_update = true;
             child.reset_cached_intrinsic_sizes();
+            m_descendant_needs_layout_update = true;
         }
         return IterationDecision::Continue;
     });
+
+    // Unlike the needs-layout walk below, which stops at partial relayout boundaries, the
+    // descendant-dirty bit must reach every ancestor so that a clean bit guarantees a clean
+    // subtree. A node that already has the bit implies all its ancestors do too.
+    for (auto* ancestor = parent(); ancestor; ancestor = ancestor->parent()) {
+        if (ancestor->m_descendant_needs_layout_update)
+            break;
+        ancestor->m_descendant_needs_layout_update = true;
+    }
 
     if (propagation == LayoutUpdatePropagation::BoundarySelfOnly) {
         document().partial_relayout_invalidation().record_boundary(as<Box>(*this));

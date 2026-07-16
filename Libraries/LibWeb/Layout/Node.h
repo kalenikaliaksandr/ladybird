@@ -74,6 +74,12 @@ public:
 
     bool needs_layout_update() const { return m_needs_layout_update; }
 
+    // Unlike needs_layout_update(), which the marking walk stops propagating at partial
+    // relayout boundaries, this bit reaches every ancestor of a dirty node unconditionally.
+    // A node with this bit clear (and needs_layout_update() clear) is guaranteed to have a
+    // clean inclusive subtree.
+    bool descendant_needs_layout_update() const { return m_descendant_needs_layout_update; }
+
     // Set when a style change altered geometry-determining properties of this node itself, so
     // a partial relayout must re-resolve its own size and position instead of reusing them.
     bool needs_own_geometry_update() const { return m_needs_own_geometry_update; }
@@ -82,6 +88,7 @@ public:
     void reset_needs_layout_update()
     {
         m_needs_layout_update = false;
+        m_descendant_needs_layout_update = false;
         m_needs_own_geometry_update = false;
     }
 
@@ -316,6 +323,7 @@ private:
     bool m_is_body { false };
 
     bool m_needs_layout_update { false };
+    bool m_descendant_needs_layout_update { false };
     bool m_needs_own_geometry_update { false };
 
     Optional<CSS::PseudoElement> m_generated_for;
