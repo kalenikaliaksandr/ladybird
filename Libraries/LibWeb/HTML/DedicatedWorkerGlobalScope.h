@@ -11,6 +11,10 @@
 #include <LibWeb/Export.h>
 #include <LibWeb/HTML/WorkerGlobalScope.h>
 
+namespace WebWorker {
+class WorkerHost;
+}
+
 namespace Web::HTML {
 
 class WEB_API DedicatedWorkerGlobalScope
@@ -29,6 +33,16 @@ public:
 
     void close();
 
+    WebIDL::ExceptionOr<WebIDL::UnsignedLong> request_animation_frame(GC::Ref<WebIDL::CallbackType>);
+    WebIDL::ExceptionOr<void> cancel_animation_frame(WebIDL::UnsignedLong handle);
+
+    // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#the-animationframeprovider-interface
+    // Whether this scope's owner set reaches a Document through supported
+    // dedicated workers; computed by the spawning realm and handed to the
+    // worker process at startup.
+    bool is_supported_animation_frame_provider() const { return m_is_supported_animation_frame_provider; }
+    void set_is_supported_animation_frame_provider(Badge<WebWorker::WorkerHost>, bool supported) { m_is_supported_animation_frame_provider = supported; }
+
     WebIDL::CallbackType* onmessage();
     void set_onmessage(WebIDL::CallbackType* callback);
 
@@ -41,6 +55,15 @@ private:
     DedicatedWorkerGlobalScope(JS::Realm&, GC::Ref<Web::Page>);
 
     virtual void initialize_web_interfaces_impl() override;
+    virtual void visit_edges(Cell::Visitor&) override;
+
+    virtual void run_animation_frame_callbacks_for_rendering_update(double now) override;
+    virtual bool has_pending_animation_frame_callbacks() const override;
+
+    AnimationFrameCallbackDriver& animation_frame_callback_driver();
+
+    GC::Ptr<AnimationFrameCallbackDriver> m_animation_frame_callback_driver;
+    bool m_is_supported_animation_frame_provider { false };
 };
 
 }

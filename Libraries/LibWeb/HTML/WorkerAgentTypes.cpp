@@ -24,6 +24,7 @@ ErrorOr<void> encode(Encoder& encoder, Web::HTML::WorkerAgentStartRequest const&
     TRY(encoder.encode(request.storage_key));
     TRY(encoder.encode(request.caller_is_secure_context));
     TRY(encoder.encode(request.owner_token));
+    TRY(encoder.encode(request.animation_frame_provider_supported));
     return {};
 }
 
@@ -42,6 +43,7 @@ ErrorOr<Web::HTML::WorkerAgentStartRequest> decode(Decoder& decoder)
         .storage_key = TRY(decoder.decode<Web::StorageAPI::StorageKey>()),
         .caller_is_secure_context = TRY(decoder.decode<bool>()),
         .owner_token = TRY(decoder.decode<Web::HTML::WorkerAgentOwnerToken>()),
+        .animation_frame_provider_supported = TRY(decoder.decode<bool>()),
     };
 }
 

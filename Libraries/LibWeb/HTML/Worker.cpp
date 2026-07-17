@@ -7,6 +7,7 @@
 #include <AK/Debug.h>
 #include <LibJS/Runtime/Realm.h>
 #include <LibWeb/Bindings/Worker.h>
+#include <LibWeb/HTML/DedicatedWorkerGlobalScope.h>
 #include <LibWeb/HTML/MessagePort.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.h>
@@ -112,8 +113,21 @@ void run_a_worker(Variant<GC::Ref<Worker>, GC::Ref<SharedWorker>> worker, URL::U
 
     auto event_target = worker.visit([](auto& worker) -> GC::Ref<DOM::EventTarget> { return worker; });
 
+    // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#the-animationframeprovider-interface
+    // A DedicatedWorkerGlobalScope is a supported AnimationFrameProvider only when
+    // its owner set reaches a Document, directly or through other supported
+    // dedicated workers; a worker owned by a shared (or service) worker is not.
+    // The bit is computed here, where the owner is known, and travels to the
+    // worker process with the start request.
+    bool animation_frame_provider_supported = false;
+    auto& outside_global = outside_settings.global_object();
+    if (is<Window>(outside_global))
+        animation_frame_provider_supported = true;
+    else if (auto* dedicated_scope = as_if<DedicatedWorkerGlobalScope>(outside_global))
+        animation_frame_provider_supported = dedicated_scope->is_supported_animation_frame_provider();
+
     // Note: This spawns a new process to act as the 'agent' for the worker.
-    auto agent = outside_settings.realm().create<WorkerAgentParent>(url, options, port, outside_settings, event_target, agent_type);
+    auto agent = outside_settings.realm().create<WorkerAgentParent>(url, options, port, outside_settings, event_target, agent_type, animation_frame_provider_supported);
     worker.visit([&](auto worker) { worker->set_agent(agent); });
 }
 

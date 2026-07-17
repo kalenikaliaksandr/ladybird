@@ -119,8 +119,16 @@ public:
     auto& owner_set() { return m_owner_set; }
     auto const& owner_set() const { return m_owner_set; }
 
+    // Requests a near-term "update the rendering of this worker" pass: run pending
+    // animation frame callbacks (dedicated workers only) and commit OffscreenCanvas
+    // frames to their placeholder canvases.
+    void schedule_rendering_update();
+
 protected:
     explicit WorkerGlobalScope(JS::Realm&, GC::Ref<Web::Page>);
+
+    virtual void run_animation_frame_callbacks_for_rendering_update(double) { }
+    virtual bool has_pending_animation_frame_callbacks() const { return false; }
 
     virtual void visit_edges(Cell::Visitor&) override;
 
@@ -134,6 +142,10 @@ protected:
 
 private:
     virtual bool is_universal_global_scope_mixin() const final { return true; }
+
+    void run_rendering_update();
+
+    GC::Ptr<Platform::Timer> m_rendering_update_timer;
 
     GC::Ptr<WorkerLocation> m_location;
     GC::Ptr<WorkerNavigator> m_navigator;

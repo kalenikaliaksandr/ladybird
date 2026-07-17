@@ -25,7 +25,7 @@ public:
     explicit WorkerHost(URL::URL url, Web::Bindings::WorkerType type, Utf16String name);
     ~WorkerHost();
 
-    void run(GC::Ref<Web::Page>, Web::HTML::TransferDataEncoder message_port_data, Web::HTML::SerializedEnvironmentSettingsObject const&, Web::Bindings::RequestCredentials, bool is_shared);
+    void run(GC::Ref<Web::Page>, Web::HTML::TransferDataEncoder message_port_data, Web::HTML::SerializedEnvironmentSettingsObject const&, Web::Bindings::RequestCredentials, bool is_shared, bool animation_frame_provider_supported);
     void connect_shared_worker(Web::HTML::TransferDataEncoder message_port_data, Web::HTML::SerializedEnvironmentSettingsObject);
 
 private:

@@ -23,7 +23,9 @@
 #include <LibWeb/HTML/WorkerGlobalScope.h>
 #include <LibWeb/HTML/WorkerLocation.h>
 #include <LibWeb/HTML/WorkerNavigator.h>
+#include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/Page/Page.h>
+#include <LibWeb/Platform/Timer.h>
 
 namespace Web::HTML {
 
@@ -69,6 +71,45 @@ void WorkerGlobalScope::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_page);
     visitor.visit(m_fonts);
     visitor.visit(m_policy_container);
+    visitor.visit(m_rendering_update_timer);
+}
+
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-loop-processing-model
+// The processing model leaves it to the user agent to decide when a worker "would
+// benefit from having its rendering updated". Worker event loops have no
+// document-driven rendering, so a single-shot timer paced at roughly display rate
+// provides the rendering opportunities while animation frame callbacks or
+// uncommitted OffscreenCanvas frames are pending.
+static constexpr int worker_rendering_update_interval_ms = 16;
+
+void WorkerGlobalScope::schedule_rendering_update()
+{
+    if (!m_rendering_update_timer) {
+        m_rendering_update_timer = Platform::Timer::create_single_shot(heap(), worker_rendering_update_interval_ms, GC::create_function(heap(), [this] {
+            run_rendering_update();
+        }));
+    }
+    if (m_rendering_update_timer->is_active())
+        return;
+    m_rendering_update_timer->start();
+}
+
+void WorkerGlobalScope::run_rendering_update()
+{
+    // Run the animation frame callbacks, passing the current high resolution time.
+    // Only dedicated workers provide requestAnimationFrame.
+    auto now = HighResolutionTime::current_high_resolution_time(*this);
+    run_animation_frame_callbacks_for_rendering_update(now);
+
+    // Update the rendering of this worker to reflect the current state: present the
+    // frames of placeholder-linked OffscreenCanvases that were drawn to. This runs
+    // whether or not animation frame callbacks were used, so canvases driven by
+    // timers or messages commit too.
+    if (auto* page = this->page())
+        page->prepare_canvas_contexts_for_compositing();
+
+    if (has_pending_animation_frame_callbacks())
+        schedule_rendering_update();
 }
 
 void WorkerGlobalScope::finalize()

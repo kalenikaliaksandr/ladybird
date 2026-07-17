@@ -7,11 +7,18 @@
 #include <LibWeb/Bindings/DedicatedWorkerExposedInterfaces.h>
 #include <LibWeb/Bindings/DedicatedWorkerGlobalScope.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/HTML/AnimationFrameCallbackDriver.h>
 #include <LibWeb/HTML/DedicatedWorkerGlobalScope.h>
 #include <LibWeb/HTML/EventHandler.h>
 #include <LibWeb/HTML/EventNames.h>
 #include <LibWeb/HTML/MessageEvent.h>
 #include <LibWeb/HTML/MessagePort.h>
+#include <LibWeb/HTML/Scripting/ExceptionReporter.h>
+#include <LibWeb/HighResolutionTime/TimeOrigin.h>
+#include <LibWeb/Page/Page.h>
+#include <LibWeb/Platform/Timer.h>
+#include <LibWeb/WebIDL/AbstractOperations.h>
+#include <LibWeb/WebIDL/DOMException.h>
 
 namespace Web::HTML {
 
@@ -42,10 +49,60 @@ void DedicatedWorkerGlobalScope::close()
     close_a_worker();
 }
 
+// https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#dom-animationframeprovider-requestanimationframe
+WebIDL::ExceptionOr<WebIDL::UnsignedLong> DedicatedWorkerGlobalScope::request_animation_frame(GC::Ref<WebIDL::CallbackType> callback)
+{
+    // 1. If this is not supported, then throw a "NotSupportedError" DOMException.
+    if (!is_supported_animation_frame_provider())
+        return WebIDL::NotSupportedError::create(realm(), "Worker's owner set does not reach a Document"_utf16);
+
+    auto handle = animation_frame_callback_driver().add_idl_callback(callback);
+    schedule_rendering_update();
+    return handle;
+}
+
+// https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#animationframeprovider-cancelanimationframe
+WebIDL::ExceptionOr<void> DedicatedWorkerGlobalScope::cancel_animation_frame(WebIDL::UnsignedLong handle)
+{
+    // 1. If this is not supported, then throw a "NotSupportedError" DOMException.
+    if (!is_supported_animation_frame_provider())
+        return WebIDL::NotSupportedError::create(realm(), "Worker's owner set does not reach a Document"_utf16);
+
+    // 2. Let callbacks be this's target object's map of animation frame callbacks.
+    // 3. Remove callbacks[handle].
+    if (m_animation_frame_callback_driver)
+        (void)m_animation_frame_callback_driver->remove(handle);
+    return {};
+}
+
+AnimationFrameCallbackDriver& DedicatedWorkerGlobalScope::animation_frame_callback_driver()
+{
+    if (!m_animation_frame_callback_driver)
+        m_animation_frame_callback_driver = realm().create<AnimationFrameCallbackDriver>();
+    return *m_animation_frame_callback_driver;
+}
+
+void DedicatedWorkerGlobalScope::run_animation_frame_callbacks_for_rendering_update(double now)
+{
+    if (m_animation_frame_callback_driver)
+        m_animation_frame_callback_driver->run(now);
+}
+
+bool DedicatedWorkerGlobalScope::has_pending_animation_frame_callbacks() const
+{
+    return m_animation_frame_callback_driver && m_animation_frame_callback_driver->has_callbacks();
+}
+
 void DedicatedWorkerGlobalScope::finalize()
 {
     Base::finalize();
     WindowOrWorkerGlobalScopeMixin::finalize();
+}
+
+void DedicatedWorkerGlobalScope::visit_edges(Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_animation_frame_callback_driver);
 }
 
 // https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-postmessage-options

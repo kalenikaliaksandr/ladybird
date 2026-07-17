@@ -13,6 +13,7 @@
 #include <LibGC/Ptr.h>
 #include <LibJS/Heap/Cell.h>
 #include <LibWeb/Export.h>
+#include <LibWeb/Forward.h>
 #include <LibWeb/WebIDL/Types.h>
 
 namespace Web::HTML {
@@ -25,6 +26,11 @@ class WEB_API AnimationFrameCallbackDriver final : public JS::Cell {
 
 public:
     [[nodiscard]] WebIDL::UnsignedLong add(Callback handler);
+
+    // Adds an IDL requestAnimationFrame callback wrapped in the spec's
+    // invoke-and-report-exception steps, shared by every AnimationFrameProvider.
+    [[nodiscard]] WebIDL::UnsignedLong add_idl_callback(GC::Ref<WebIDL::CallbackType>);
+
     bool remove(WebIDL::UnsignedLong);
     bool has_callbacks() const;
     void run(double now);

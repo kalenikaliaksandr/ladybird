@@ -32,6 +32,9 @@ struct WEB_API WorkerAgentStartRequest {
     StorageAPI::StorageKey storage_key;
     bool caller_is_secure_context { false };
     WorkerAgentOwnerToken owner_token { 0 };
+    // Whether the worker's owner chain reaches a Document through supported
+    // dedicated workers (the AnimationFrameProvider support bit).
+    bool animation_frame_provider_supported { false };
 };
 
 }

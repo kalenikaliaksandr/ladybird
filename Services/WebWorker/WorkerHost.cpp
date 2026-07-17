@@ -51,7 +51,7 @@ static Web::HTML::WorkerGlobalScope::Owner relevant_owner_to_add(Web::HTML::Seri
 }
 
 // https://html.spec.whatwg.org/multipage/workers.html#run-a-worker
-void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataEncoder message_port_data, Web::HTML::SerializedEnvironmentSettingsObject const& outside_settings_snapshot, Web::Bindings::RequestCredentials credentials, bool is_shared)
+void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataEncoder message_port_data, Web::HTML::SerializedEnvironmentSettingsObject const& outside_settings_snapshot, Web::Bindings::RequestCredentials credentials, bool is_shared, bool animation_frame_provider_supported)
 {
     m_is_shared = is_shared;
 
@@ -78,6 +78,8 @@ void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataEncoder mes
     // NOTE: This is the DedicatedWorkerGlobalScope or SharedWorkerGlobalScope object created in the previous step.
     GC::Ref<Web::HTML::WorkerGlobalScope> worker_global_scope = as<Web::HTML::WorkerGlobalScope>(realm_execution_context->realm->global_object());
     m_worker_global_scope = worker_global_scope;
+    if (!is_shared)
+        static_cast<Web::HTML::DedicatedWorkerGlobalScope&>(*worker_global_scope).set_is_supported_animation_frame_provider({}, animation_frame_provider_supported);
 
     // AD-HOC: The spec assumes when setting up the worker environment settings object that the URL is already set on
     //         the worker global scope. This is not the case. This URL is only known after performing the fetch, and in

@@ -15,6 +15,7 @@
 #include <LibWeb/Compositor/CompositorHost.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/Canvas/SerializeBitmap.h>
+#include <LibWeb/HTML/DedicatedWorkerGlobalScope.h>
 #include <LibWeb/HTML/EventLoop/EventLoop.h>
 #include <LibWeb/HTML/OffscreenCanvas.h>
 #include <LibWeb/HTML/OffscreenCanvasRenderingContext2D.h>
@@ -131,9 +132,11 @@ void OffscreenCanvas::notify_context_did_draw()
     // A committed frame only reaches the placeholder after the canvas-compositing
     // sweep presents it, so make sure a rendering update actually happens: nothing
     // else marks documents dirty when script only draws to an OffscreenCanvas.
-    if (is<Window>(relevant_global_object(*this)))
+    auto& global = relevant_global_object(*this);
+    if (is<Window>(global))
         main_thread_event_loop().queue_task_to_update_the_rendering();
-    // FIXME: Schedule the worker rendering update here once dedicated workers have one.
+    else if (auto* worker_scope = as_if<WorkerGlobalScope>(global))
+        worker_scope->schedule_rendering_update();
 }
 
 void OffscreenCanvas::commit_frame_if_needed()

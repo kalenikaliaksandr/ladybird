@@ -33,9 +33,10 @@ static HashMap<WorkerAgentOwnerToken, GC::Ref<WorkerAgentParent>>& worker_agent_
     return *map;
 }
 
-WorkerAgentParent::WorkerAgentParent(URL::URL url, Bindings::WorkerOptions const& options, GC::Ptr<MessagePort> outside_port, GC::Ref<EnvironmentSettingsObject> outside_settings, GC::Ref<DOM::EventTarget> worker_event_target, Bindings::AgentType agent_type)
+WorkerAgentParent::WorkerAgentParent(URL::URL url, Bindings::WorkerOptions const& options, GC::Ptr<MessagePort> outside_port, GC::Ref<EnvironmentSettingsObject> outside_settings, GC::Ref<DOM::EventTarget> worker_event_target, Bindings::AgentType agent_type, bool animation_frame_provider_supported)
     : m_worker_options(options)
     , m_agent_type(agent_type)
+    , m_animation_frame_provider_supported(animation_frame_provider_supported)
     , m_url(move(url))
     , m_owner_token(next_owner_token())
     , m_outside_port(outside_port)
@@ -77,6 +78,7 @@ void WorkerAgentParent::initialize(JS::Realm& realm)
         .storage_key = StorageAPI::obtain_a_storage_key_for_non_storage_purposes(*m_outside_settings),
         .caller_is_secure_context = is_secure_context(*m_outside_settings),
         .owner_token = m_owner_token,
+        .animation_frame_provider_supported = m_animation_frame_provider_supported,
     };
 
     // NOTE: This blocking IPC call may launch another process.

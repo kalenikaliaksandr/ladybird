@@ -8,6 +8,10 @@
 
 #include <AK/ScopeGuard.h>
 #include <LibWeb/HTML/AnimationFrameCallbackDriver.h>
+#include <LibWeb/HTML/Scripting/Environments.h>
+#include <LibWeb/HTML/Scripting/ExceptionReporter.h>
+#include <LibWeb/WebIDL/AbstractOperations.h>
+#include <LibWeb/WebIDL/CallbackType.h>
 
 namespace Web::HTML {
 
@@ -25,6 +29,16 @@ WebIDL::UnsignedLong AnimationFrameCallbackDriver::add(Callback handler)
     auto id = ++m_animation_frame_callback_identifier;
     m_callbacks.set(id, handler);
     return id;
+}
+
+WebIDL::UnsignedLong AnimationFrameCallbackDriver::add_idl_callback(GC::Ref<WebIDL::CallbackType> callback)
+{
+    return add(GC::create_function(heap(), [callback](double now) {
+        // Invoke callback, passing now as the only argument, and if an exception is thrown, report the exception.
+        auto result = WebIDL::invoke_callback(*callback, {}, { { JS::Value(now) } });
+        if (result.is_error())
+            report_exception(result, callback->callback_context->realm());
+    }));
 }
 
 bool AnimationFrameCallbackDriver::remove(WebIDL::UnsignedLong id)

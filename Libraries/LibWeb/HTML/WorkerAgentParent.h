@@ -30,7 +30,7 @@ public:
     static WEB_API void did_close_worker(WorkerAgentOwnerToken);
 
 protected:
-    WorkerAgentParent(URL::URL url, Bindings::WorkerOptions const& options, GC::Ptr<MessagePort> outside_port, GC::Ref<EnvironmentSettingsObject> outside_settings, GC::Ref<DOM::EventTarget> worker_event_target, Bindings::AgentType);
+    WorkerAgentParent(URL::URL url, Bindings::WorkerOptions const& options, GC::Ptr<MessagePort> outside_port, GC::Ref<EnvironmentSettingsObject> outside_settings, GC::Ref<DOM::EventTarget> worker_event_target, Bindings::AgentType, bool animation_frame_provider_supported = false);
     virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
     virtual void finalize() override;
@@ -44,6 +44,7 @@ private:
 
     Bindings::WorkerOptions m_worker_options;
     Bindings::AgentType m_agent_type { Bindings::AgentType::DedicatedWorker };
+    bool m_animation_frame_provider_supported { false };
     URL::URL m_url;
     WorkerAgentId m_agent_id { 0 };
     WorkerAgentOwnerToken m_owner_token { 0 };
