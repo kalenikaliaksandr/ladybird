@@ -1,0 +1,2 @@
+measureText width is positive: true
+fillText and strokeText did not crash

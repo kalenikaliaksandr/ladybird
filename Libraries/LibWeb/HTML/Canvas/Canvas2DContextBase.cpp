@@ -17,6 +17,7 @@
 #include <LibGfx/CanvasCommandList.h>
 #include <LibGfx/CompositingAndBlendingOperator.h>
 #include <LibGfx/DecodedImageFrame.h>
+#include <LibGfx/FontCascadeList.h>
 #include <LibGfx/Painter.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibGfx/Rect.h>
@@ -51,6 +52,7 @@
 #include <LibWeb/Layout/ImageProvider.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/Canvas2DCommandStream.h>
+#include <LibWeb/Platform/FontPlugin.h>
 #include <LibWeb/SVG/SVGImageElement.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 
@@ -1050,11 +1052,30 @@ GC::Ref<TextMetrics> Canvas2DContextBase::measure_text(Utf16View text)
     return metrics;
 }
 
+RefPtr<Gfx::FontCascadeList const> Canvas2DContextBase::create_default_font_cascade(float point_size)
+{
+    auto default_font = Platform::FontPlugin::the().default_font(point_size);
+    if (!default_font)
+        return {};
+    auto font_cascade_list = Gfx::FontCascadeList::create();
+    font_cascade_list->add(*default_font);
+    return font_cascade_list;
+}
+
 RefPtr<Gfx::FontCascadeList const> Canvas2DContextBase::font_cascade_list()
 {
     // When font style value is empty load default font
     if (!drawing_state().font_style_value) {
         set_font(u"10px sans-serif"sv);
+    }
+
+    // Font resolution can fail and leave no cascade (e.g. worker realms have no full
+    // font matching yet); every caller dereferences the returned list, so hand out a
+    // platform-default cascade rather than null. The default canvas font is
+    // 10px sans-serif; the platform API takes points.
+    if (!drawing_state().current_font_cascade_list) {
+        if (auto fallback_cascade = create_default_font_cascade(10.0f * 0.75f))
+            drawing_state().current_font_cascade_list = move(fallback_cascade);
     }
 
     // Get current loaded font

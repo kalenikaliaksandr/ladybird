@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    asyncTest(done => {
+        const workerScript = `
+            self.onmessage = () => {
+                try {
+                    const canvas = new OffscreenCanvas(64, 32);
+                    const context = canvas.getContext("2d");
+                    context.font = "16px sans-serif";
+                    const metrics = context.measureText("hello");
+                    self.postMessage("measureText width is positive: " + (metrics.width > 0));
+                    context.fillStyle = "#000";
+                    context.fillText("hello", 2, 20);
+                    context.strokeText("hello", 2, 20);
+                    self.postMessage("fillText and strokeText did not crash");
+                    self.postMessage(null);
+                } catch (err) {
+                    self.postMessage("Error: " + err);
+                    self.postMessage(null);
+                }
+            };
+        `;
+        const blob = new Blob([workerScript], { type: "application/javascript" });
+        const worker = new Worker(URL.createObjectURL(blob));
+        worker.onmessage = evt => {
+            if (evt.data === null) {
+                done();
+                return;
+            }
+            println(evt.data);
+        };
+        worker.postMessage("start");
+    });
+</script>

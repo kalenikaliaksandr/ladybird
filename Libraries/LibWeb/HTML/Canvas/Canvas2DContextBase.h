@@ -153,6 +153,11 @@ public:
     // https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-settings:concept-canvas-alpha
     Gfx::Color clear_color() const;
 
+    // The platform-default cascade used when font resolution is unavailable
+    // (worker realms have no full font matching yet). set_font and the lazy
+    // cascade fallback must agree, or measureText would disagree with fillText.
+    static RefPtr<Gfx::FontCascadeList const> create_default_font_cascade(float point_size);
+
 protected:
     Canvas2DContextBase(JS::Realm&, Gfx::IntSize initial_size, Bindings::CanvasRenderingContext2DSettings);
 

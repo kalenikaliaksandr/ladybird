@@ -7,6 +7,7 @@
 
 #include "CanvasTextDrawingStyles.h"
 #include <AK/Utf16StringBuilder.h>
+#include <LibGfx/FontCascadeList.h>
 #include <LibWeb/CSS/ComputedProperties.h>
 #include <LibWeb/CSS/FontComputer.h>
 #include <LibWeb/CSS/Parser/Parser.h>
@@ -22,6 +23,7 @@
 #include <LibWeb/HTML/OffscreenCanvasRenderingContext2D.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/HTML/WorkerGlobalScope.h>
+#include <LibWeb/Platform/FontPlugin.h>
 
 namespace Web::HTML {
 
@@ -178,9 +180,14 @@ void CanvasTextDrawingStyles<CanvasType>::set_font(Utf16View font)
                 {},
                 font_feature_data);
         },
-        [](HTML::WorkerGlobalScope*) -> RefPtr<Gfx::FontCascadeList const> {
-            // FIXME: implement computing the font for HTML::WorkerGlobalScope
-            return {};
+        [&](HTML::WorkerGlobalScope*) -> RefPtr<Gfx::FontCascadeList const> {
+            // FIXME: Implement real font matching for worker realms (including fonts
+            //        added through the worker's FontFaceSource). Until then, resolve
+            //        to the platform default font at the requested size so canvas text
+            //        in workers renders instead of crashing on a null cascade.
+            auto font_size_in_px = computed_font_size->as_length().length().absolute_length_to_px();
+            auto font_size_in_pt = static_cast<float>(font_size_in_px) * 0.75f;
+            return Canvas2DContextBase::create_default_font_cascade(font_size_in_pt);
         });
 
     if (!font_list)
