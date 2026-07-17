@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<canvas id="c" width="0" height="0"></canvas>
+<script>
+    asyncTest(async done => {
+        const canvas = document.getElementById("c");
+        const offscreen = canvas.transferControlToOffscreen();
+        offscreen.width = 2;
+        offscreen.height = 2;
+        const ctx = offscreen.getContext("2d");
+        ctx.fillStyle = "rgb(0, 128, 0)";
+        ctx.fillRect(0, 0, 2, 2);
+
+        const waitFrames = n =>
+            new Promise(resolve => {
+                const tick = () => (--n === 0 ? resolve() : requestAnimationFrame(tick));
+                requestAnimationFrame(tick);
+            });
+        await waitFrames(10);
+
+        // The placeholder's bitmap dimensions are the committed ones, not the
+        // frozen 0x0 attributes: snapshot APIs must work.
+        println("toDataURL yields data: " + (canvas.toDataURL().length > "data:,".length));
+        const target = document.createElement("canvas");
+        target.width = target.height = 2;
+        const targetCtx = target.getContext("2d");
+        targetCtx.drawImage(canvas, 0, 0);
+        const pixel = targetCtx.getImageData(0, 0, 1, 1).data;
+        println("drawImage(placeholder) pixel: " + [pixel[0], pixel[1], pixel[2], pixel[3]].join(","));
+        done();
+    });
+</script>

@@ -1,0 +1,4 @@
+width attribute after commit: 40
+used width after commit: 40px
+width attribute after zero resize: 40
+used width after zero resize: 0px

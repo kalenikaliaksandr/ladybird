@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<canvas id="c" width="40" height="30"></canvas>
+<script>
+    asyncTest(async done => {
+        const canvas = document.getElementById("c");
+        const offscreen = canvas.transferControlToOffscreen();
+
+        // Resizing before getContext() must still commit the new logical size.
+        offscreen.width = 50;
+
+        const waitFrames = n =>
+            new Promise(resolve => {
+                const tick = () => (--n === 0 ? resolve() : requestAnimationFrame(tick));
+                requestAnimationFrame(tick);
+            });
+        await waitFrames(10);
+        println("used width after pre-context resize: " + getComputedStyle(canvas).width);
+        done();
+    });
+</script>

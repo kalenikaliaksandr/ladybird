@@ -12,7 +12,7 @@
 #include <LibWeb/Bindings/Transferable.h>
 #include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/Forward.h>
-#include <LibWeb/Painting/DisplayListResourceIds.h>
+#include <LibWeb/Painting/OffscreenCanvasLink.h>
 #include <LibWeb/WebIDL/Types.h>
 
 namespace Web::HTML {
@@ -28,6 +28,8 @@ class OffscreenCanvas : public DOM::EventTarget
     GC_DECLARE_ALLOCATOR(OffscreenCanvas);
 
 public:
+    static constexpr bool OVERRIDES_FINALIZE = true;
+
     static GC::Ref<OffscreenCanvas> create(JS::Realm&, WebIDL::UnsignedLongLong width, WebIDL::UnsignedLongLong height);
 
     static WebIDL::ExceptionOr<GC::Ref<OffscreenCanvas>> construct_impl(
@@ -87,11 +89,24 @@ public:
 
     CSS::ComputationContext canvas_font_computation_context() const;
 
+    // Links this OffscreenCanvas to a placeholder canvas element via a pre-allocated
+    // compositor canvas id; the first rendering context claims that id so the
+    // placeholder's DrawCanvas resolves the frames committed here.
+    void set_placeholder_link(Badge<HTMLCanvasElement>, Painting::OffscreenCanvasPlaceholderLink);
+    Optional<Painting::OffscreenCanvasPlaceholderLink> placeholder_link() const { return m_placeholder_link; }
+
+    void notify_context_did_draw();
+    void commit_frame_if_needed();
+
 private:
     OffscreenCanvas(JS::Realm&, WebIDL::UnsignedLongLong width, WebIDL::UnsignedLongLong height);
 
     virtual void initialize(JS::Realm&) override;
+    virtual void finalize() override;
     virtual void visit_edges(Cell::Visitor&) override;
+
+    Page* page_of_relevant_global_object() const;
+    void register_with_page_for_frame_commits();
 
     enum class HasOrCreatedContext {
         No,
@@ -113,6 +128,10 @@ private:
     // empty and drawing no-ops).
     WebIDL::UnsignedLongLong m_width { 0 };
     WebIDL::UnsignedLongLong m_height { 0 };
+
+    Optional<Painting::OffscreenCanvasPlaceholderLink> m_placeholder_link;
+    bool m_needs_frame_commit { false };
+    bool m_is_registered_with_page { false };
 };
 
 }

@@ -39,6 +39,7 @@ private:
     virtual Page* page_for_compositor() override;
     virtual DOM::EventTarget& context_event_target() override;
     virtual Gfx::Color resolve_drop_shadow_color(CSS::DropShadowFilterStyleValue const&) const override;
+    virtual Optional<Painting::OffscreenCanvasPlaceholderLink> preallocated_canvas_link() const override;
 
     GC::Ref<OffscreenCanvas> m_canvas;
 };

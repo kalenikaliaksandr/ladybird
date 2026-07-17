@@ -12,14 +12,18 @@
 #include <LibWeb/Bindings/OffscreenCanvas.h>
 #include <LibWeb/Bindings/PrincipalHostDefined.h>
 #include <LibWeb/CSS/ComputedValues.h>
+#include <LibWeb/Compositor/CompositorHost.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/Canvas/SerializeBitmap.h>
+#include <LibWeb/HTML/EventLoop/EventLoop.h>
 #include <LibWeb/HTML/OffscreenCanvas.h>
 #include <LibWeb/HTML/OffscreenCanvasRenderingContext2D.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
+#include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/HTML/WorkerGlobalScope.h>
+#include <LibWeb/Page/Page.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWeb/WebGL/WebGL2RenderingContext.h>
@@ -91,25 +95,132 @@ OffscreenCanvas::OffscreenCanvas(JS::Realm& realm, WebIDL::UnsignedLongLong widt
 
 OffscreenCanvas::~OffscreenCanvas() = default;
 
-WebIDL::ExceptionOr<void> OffscreenCanvas::transfer_steps(HTML::TransferDataEncoder&)
+Page* OffscreenCanvas::page_of_relevant_global_object() const
 {
-    // FIXME: Implement this
-    dbgln("(STUBBED) OffscreenCanvas::transfer_steps(HTML::TransferDataEncoder&)");
+    return &Bindings::principal_host_defined_page(HTML::relevant_realm(*this));
+}
+
+void OffscreenCanvas::set_placeholder_link(Badge<HTMLCanvasElement>, Painting::OffscreenCanvasPlaceholderLink placeholder_link)
+{
+    m_placeholder_link = placeholder_link;
+    register_with_page_for_frame_commits();
+}
+
+void OffscreenCanvas::register_with_page_for_frame_commits()
+{
+    if (m_is_registered_with_page || !m_placeholder_link.has_value())
+        return;
+    if (auto* page = page_of_relevant_global_object()) {
+        page->register_offscreen_canvas({}, *this);
+        m_is_registered_with_page = true;
+    }
+}
+
+void OffscreenCanvas::notify_context_did_draw()
+{
+    if (!m_placeholder_link.has_value()) {
+        return;
+    }
+    // One pending commit marker is enough; the rendering update is already
+    // scheduled, and re-queuing it for every drawing primitive would rescan the
+    // task queue each time.
+    if (m_needs_frame_commit)
+        return;
+    m_needs_frame_commit = true;
+
+    // A committed frame only reaches the placeholder after the canvas-compositing
+    // sweep presents it, so make sure a rendering update actually happens: nothing
+    // else marks documents dirty when script only draws to an OffscreenCanvas.
+    if (is<Window>(relevant_global_object(*this)))
+        main_thread_event_loop().queue_task_to_update_the_rendering();
+    // FIXME: Schedule the worker rendering update here once dedicated workers have one.
+}
+
+void OffscreenCanvas::commit_frame_if_needed()
+{
+    if (!m_needs_frame_commit || !m_placeholder_link.has_value())
+        return;
+    m_needs_frame_commit = false;
+
+    // Recording the commit marker makes the Compositor copy the live surface into
+    // the presented one and notify the placeholder's watcher with the committed
+    // logical size and origin-clean state; the caller flushes the shared command
+    // stream afterwards.
+    auto commit_logical_size_without_surface = [&] {
+        // No bitmap backs the canvas (no context yet, a zero size, or one
+        // beyond the maximum area): commit the logical size alone so the
+        // placeholder still follows it instead of keeping the old frame and
+        // dimensions.
+        if (auto* page = page_of_relevant_global_object(); page && page->has_compositor_host())
+            page->compositor_host().commit_offscreen_canvas_size(*m_placeholder_link, clamped_logical_size());
+    };
+    if (auto* context = m_context.get_pointer<GC::Ref<OffscreenCanvasRenderingContext2D>>()) {
+        // A resize or context creation leaves no backing storage until the next
+        // draw; presenting the initial (cleared) bitmap requires creating it.
+        (*context)->ensure_backing_storage();
+        if (!(*context)->commit_frame_for_placeholder(clamped_logical_size()))
+            commit_logical_size_without_surface();
+    } else {
+        // A resize before getContext() must still reach the placeholder.
+        commit_logical_size_without_surface();
+    }
+}
+
+// https://html.spec.whatwg.org/multipage/canvas.html#the-offscreencanvas-interface:transfer-steps
+WebIDL::ExceptionOr<void> OffscreenCanvas::transfer_steps(HTML::TransferDataEncoder& data_holder)
+{
+    // 1. If value's context mode is not equal to none, then throw an "InvalidStateError" DOMException.
+    if (!m_context.has<Empty>())
+        return WebIDL::InvalidStateError::create(realm(), "Cannot transfer an OffscreenCanvas with a rendering context"_utf16);
+
+    // 2. Set dataHolder.[[Width]] to value's width, and dataHolder.[[Height]] to value's height.
+    MUST(data_holder.encode(m_width));
+    MUST(data_holder.encode(m_height));
+
+    // 3. Set dataHolder.[[PlaceholderCanvas]] to be a weak reference to value's placeholder canvas
+    //    element, if value has one, or null if it does not.
+    // AD-HOC: The placeholder may live in another process; what identifies it is the pre-allocated
+    //         compositor canvas id, which travels as plain data through any number of transfers.
+    MUST(data_holder.encode(m_placeholder_link));
+
+    // FIXME: Also transfer the inherited language and inherited direction.
+
+    if (m_is_registered_with_page) {
+        if (auto* page = page_of_relevant_global_object())
+            page->unregister_offscreen_canvas({}, *this);
+        m_is_registered_with_page = false;
+    }
+    m_placeholder_link.clear();
+    m_needs_frame_commit = false;
+
+    // 4. Unset value's width and height: the detached source must report 0x0 while
+    //    the receiver carries the encoded dimensions.
+    m_width = 0;
+    m_height = 0;
     return {};
 }
 
-WebIDL::ExceptionOr<void> OffscreenCanvas::transfer_receiving_steps(HTML::TransferDataDecoder&)
+// https://html.spec.whatwg.org/multipage/canvas.html#the-offscreencanvas-interface:transfer-receiving-steps
+WebIDL::ExceptionOr<void> OffscreenCanvas::transfer_receiving_steps(HTML::TransferDataDecoder& data_holder)
 {
-    // FIXME: Implement this
-    dbgln("(STUBBED) OffscreenCanvas::transfer_receiving_steps(HTML::TransferDataDecoder&)");
+    // 1. Initialize value's bitmap to a rectangular array of transparent black pixels with width equal
+    //    to dataHolder.[[Width]] and height equal to dataHolder.[[Height]].
+    m_width = TRY(decode_or_throw_data_clone_error<WebIDL::UnsignedLongLong>(realm(), data_holder));
+    m_height = TRY(decode_or_throw_data_clone_error<WebIDL::UnsignedLongLong>(realm(), data_holder));
+
+    // 2. If dataHolder.[[PlaceholderCanvas]] is not null, set value's placeholder canvas element to
+    //    dataHolder.[[PlaceholderCanvas]] (while maintaining the weak reference semantics).
+    m_placeholder_link = TRY(decode_or_throw_data_clone_error<Optional<Painting::OffscreenCanvasPlaceholderLink>>(realm(), data_holder));
+    register_with_page_for_frame_commits();
+
+    // FIXME: Also receive the inherited language and inherited direction.
+
     return {};
 }
 
 HTML::TransferType OffscreenCanvas::primary_interface() const
 {
-    // FIXME: Implement this
-    dbgln("(STUBBED) OffscreenCanvas::primary_interface()");
-    return {};
+    return HTML::TransferType::OffscreenCanvas;
 }
 
 WebIDL::UnsignedLongLong OffscreenCanvas::width() const
@@ -160,6 +271,10 @@ void OffscreenCanvas::update_context_bitmap_size()
         [](Empty) {
             // Do nothing.
         });
+
+    // Resizing replaces the bitmap with a cleared one; a placeholder must be shown
+    // that new bitmap even when nothing is drawn afterwards.
+    notify_context_did_draw();
 }
 
 RefPtr<Gfx::Bitmap> OffscreenCanvas::read_back_bitmap()
@@ -292,6 +407,11 @@ JS::ThrowCompletionOr<OffscreenRenderingContext> OffscreenCanvas::get_context(Bi
 
     // 3. Run the steps in the cell of the following table whose column header matches this OffscreenCanvas object's context mode and whose row header matches contextId:
     // NOTE: See the spec for the full table.
+
+    // detached column: every context type throws an "InvalidStateError" DOMException.
+    if (is_detached())
+        return JS::throw_completion(WebIDL::InvalidStateError::create(realm(), "OffscreenCanvas is detached"_utf16));
+
     if (contextId == Bindings::OffscreenRenderingContextId::_2d) {
         if (TRY(create_2d_context(options)) == HasOrCreatedContext::Yes)
             return *m_context.get<GC::Ref<HTML::OffscreenCanvasRenderingContext2D>>();
@@ -467,8 +587,29 @@ CSS::ComputationContext OffscreenCanvas::canvas_font_computation_context() const
 
 void OffscreenCanvas::initialize(JS::Realm& realm)
 {
-    Base::initialize(realm);
+    // NB: The own prototype must be claimed before Base::initialize, or EventTarget's
+    //     initialize takes the prototype slot and this macro becomes a no-op. Only
+    //     objects created outside the generated constructor (like transfer-receiving)
+    //     would notice, because the constructor overrides the prototype afterwards.
     WEB_SET_PROTOTYPE_FOR_INTERFACE(OffscreenCanvas);
+    Base::initialize(realm);
+}
+
+void OffscreenCanvas::finalize()
+{
+    Base::finalize();
+    if (m_is_registered_with_page) {
+        if (auto* page = page_of_relevant_global_object())
+            page->unregister_offscreen_canvas({}, *this);
+    }
+    // This link holder dies, so no claim (or resize re-claim) can arrive from it
+    // anymore; telling the Compositor lets it drop the reservation once the
+    // placeholder element has released it, instead of waiting for this whole
+    // process to disconnect.
+    if (m_placeholder_link.has_value()) {
+        if (auto* page = page_of_relevant_global_object(); page && page->has_compositor_host())
+            page->compositor_host().decline_offscreen_canvas_claim(*m_placeholder_link);
+    }
 }
 
 void OffscreenCanvas::visit_edges(Cell::Visitor& visitor)
@@ -483,6 +624,10 @@ JS::ThrowCompletionOr<OffscreenCanvas::HasOrCreatedContext> OffscreenCanvas::cre
         return m_context.has<GC::Ref<OffscreenCanvasRenderingContext2D>>() ? HasOrCreatedContext::Yes : HasOrCreatedContext::No;
 
     m_context = TRY(OffscreenCanvasRenderingContext2D::create(realm(), *this, options));
+
+    // A placeholder must show the context's initial output bitmap even before any
+    // drawing call: transparent black, or opaque black for alpha=false contexts.
+    notify_context_did_draw();
     return HasOrCreatedContext::Yes;
 }
 

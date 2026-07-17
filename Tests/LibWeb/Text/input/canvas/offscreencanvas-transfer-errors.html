@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        const placeholder = document.createElement("canvas");
+        placeholder.transferControlToOffscreen();
+        try {
+            placeholder.transferControlToOffscreen();
+            println("FAIL: second transferControlToOffscreen did not throw");
+        } catch (e) {
+            println("second transferControlToOffscreen: " + e.name);
+        }
+        try {
+            placeholder.getContext("2d");
+            println("FAIL: getContext on placeholder did not throw");
+        } catch (e) {
+            println("getContext on placeholder: " + e.name);
+        }
+        try {
+            placeholder.width = 50;
+            println("FAIL: width setter on placeholder did not throw");
+        } catch (e) {
+            println("set width on placeholder: " + e.name);
+        }
+        println("placeholder width unchanged: " + placeholder.width);
+
+        const canvasWithContext = document.createElement("canvas");
+        canvasWithContext.getContext("2d");
+        try {
+            canvasWithContext.transferControlToOffscreen();
+            println("FAIL: transferControlToOffscreen after getContext did not throw");
+        } catch (e) {
+            println("transferControlToOffscreen after getContext: " + e.name);
+        }
+
+        const offscreenWithContext = new OffscreenCanvas(4, 4);
+        offscreenWithContext.getContext("2d");
+        try {
+            window.postMessage("x", "*", [offscreenWithContext]);
+            println("FAIL: transferring an OffscreenCanvas with a context did not throw");
+        } catch (e) {
+            println("transfer with context: " + e.name);
+        }
+
+        const transferredOffscreen = new OffscreenCanvas(4, 4);
+        window.postMessage("x", "*", [transferredOffscreen]);
+        println("detached source size: " + transferredOffscreen.width + "x" + transferredOffscreen.height);
+        try {
+            window.postMessage("y", "*", [transferredOffscreen]);
+            println("FAIL: double transfer did not throw");
+        } catch (e) {
+            println("double transfer: " + e.name);
+        }
+        try {
+            transferredOffscreen.transferToImageBitmap();
+            println("FAIL: transferToImageBitmap on detached did not throw");
+        } catch (e) {
+            println("transferToImageBitmap on detached: " + e.name);
+        }
+        try {
+            transferredOffscreen.getContext("2d");
+            println("FAIL: getContext on detached did not throw");
+        } catch (e) {
+            println("getContext on detached: " + e.name);
+        }
+        try {
+            transferredOffscreen.width = 10;
+            println("FAIL: width setter on detached did not throw");
+        } catch (e) {
+            println("set width on detached: " + e.name);
+        }
+        try {
+            transferredOffscreen.height = 10;
+            println("FAIL: height setter on detached did not throw");
+        } catch (e) {
+            println("set height on detached: " + e.name);
+        }
+    });
+</script>

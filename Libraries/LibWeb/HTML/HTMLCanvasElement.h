@@ -38,8 +38,10 @@ public:
     WebIDL::UnsignedLong width() const;
     WebIDL::UnsignedLong height() const;
 
-    void set_width(WebIDL::UnsignedLong);
-    void set_height(WebIDL::UnsignedLong);
+    WebIDL::ExceptionOr<void> set_width(WebIDL::UnsignedLong);
+    WebIDL::ExceptionOr<void> set_height(WebIDL::UnsignedLong);
+
+    WebIDL::ExceptionOr<GC::Ref<OffscreenCanvas>> transfer_control_to_offscreen();
 
     virtual void attribute_changed(Utf16FlyString const& local_name, Optional<Utf16String> const& old_value, Optional<Utf16String> const& value, Optional<Utf16FlyString> const& namespace_) override;
 
@@ -70,9 +72,12 @@ public:
 
     bool did_commit_offscreen_frame(Painting::CanvasId, Gfx::IntSize committed_size, bool origin_clean);
 
+    // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-context-mode
+    bool is_placeholder() const { return m_is_placeholder; }
+
     // The natural (intrinsic) dimensions layout sizes the canvas box from: the
-    // width/height content attributes, or the size a linked OffscreenCanvas
-    // last committed to this placeholder.
+    // width/height content attributes, or for a placeholder the size its linked
+    // OffscreenCanvas last committed.
     Gfx::IntSize natural_size() const;
 
     CSS::ComputationContext canvas_font_computation_context();
@@ -102,7 +107,12 @@ private:
     bool m_canvas_content_dirty { false };
     u64 m_content_generation { 0 };
 
-    // Placeholder-mode state, set by transferControlToOffscreen() in a later change.
+    // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-context-mode
+    // The 2d/webgl/webgl2 modes are implied by m_context; this only tracks placeholder mode.
+    bool m_is_placeholder { false };
+
+    // Placeholder-mode state: the pre-allocated compositor canvas id the transferred
+    // OffscreenCanvas renders into, and the size of the last committed frame.
     Optional<Painting::CanvasId> m_placeholder_canvas_id;
     // The size the linked OffscreenCanvas last committed; empty until the first
     // commit arrives. A committed zero size is a real natural size, distinct

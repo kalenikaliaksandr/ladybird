@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html class="reftest-wait">
+<link rel="match" href="../expected/offscreencanvas-placeholder-same-realm-ref.html">
+<canvas id="canvas" width="100" height="100"></canvas>
+<script>
+    const offscreen = canvas.transferControlToOffscreen();
+    const context = offscreen.getContext("2d");
+    context.fillStyle = "rgb(0, 128, 0)";
+    context.fillRect(0, 0, 100, 100);
+
+    // The committed frame reaches the placeholder element through a Compositor
+    // round trip; give it a few frames before taking the screenshot.
+    let remaining_frames = 10;
+    function tick() {
+        if (--remaining_frames === 0) {
+            document.documentElement.classList.remove("reftest-wait");
+            return;
+        }
+        requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+</script>
+</html>

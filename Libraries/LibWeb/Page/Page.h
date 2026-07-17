@@ -251,6 +251,9 @@ public:
     void register_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId, UniqueNodeID element_id);
     void unregister_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId);
 
+    void register_offscreen_canvas(Badge<HTML::OffscreenCanvas>, HTML::OffscreenCanvas&);
+    void unregister_offscreen_canvas(Badge<HTML::OffscreenCanvas>, HTML::OffscreenCanvas&);
+
     void prepare_canvas_contexts_for_compositing();
     void notify_all_canvas_elements_of_lost_backing_storage();
     void notify_all_webgl_contexts_lost();
@@ -387,6 +390,14 @@ private:
     // commits to, for O(1) frame-commit delivery. Entries unregister in
     // HTMLCanvasElement::finalize.
     HashMap<Painting::CanvasId, UniqueNodeID> m_placeholder_canvas_elements;
+
+    // Placeholder-linked OffscreenCanvases whose committed frames must be presented
+    // during the canvas-compositing sweep. Raw pointers: entries unregister in
+    // OffscreenCanvas::finalize.
+    Vector<HTML::OffscreenCanvas*> m_registered_offscreen_canvases;
+
+    template<typename Callback>
+    void for_each_registered_offscreen_canvas(Callback&&);
     Optional<UniqueNodeID> m_media_context_menu_element_id;
 
     Web::HTML::MuteState m_mute_state { Web::HTML::MuteState::Unmuted };

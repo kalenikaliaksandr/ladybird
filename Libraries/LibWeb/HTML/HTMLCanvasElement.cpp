@@ -18,12 +18,14 @@
 #include <LibWeb/CSS/StyleValues/NumberStyleValue.h>
 #include <LibWeb/CSS/StyleValues/RatioStyleValue.h>
 #include <LibWeb/CSS/StyleValues/StyleValueList.h>
+#include <LibWeb/Compositor/CompositorHost.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/Canvas/SerializeBitmap.h>
 #include <LibWeb/HTML/CanvasRenderingContext2D.h>
 #include <LibWeb/HTML/HTMLCanvasElement.h>
 #include <LibWeb/HTML/LocalNavigable.h>
 #include <LibWeb/HTML/Numbers.h>
+#include <LibWeb/HTML/OffscreenCanvas.h>
 #include <LibWeb/HTML/Scripting/ExceptionReporter.h>
 #include <LibWeb/Infra/SerializedURL.h>
 #include <LibWeb/Layout/CanvasBox.h>
@@ -69,6 +71,13 @@ void HTMLCanvasElement::finalize()
     // element, since nothing will reach the context afterwards.
     if (auto context = canvas_rendering_context_2d())
         context->discard_backing_storage();
+    if (m_placeholder_canvas_id.has_value()) {
+        document().page().unregister_placeholder_canvas_element({}, *m_placeholder_canvas_id);
+        if (document().page().has_compositor_host()) {
+            document().page().compositor_host().unwatch_canvas_surface(*m_placeholder_canvas_id);
+            document().page().compositor_host().release_offscreen_canvas_id(*m_placeholder_canvas_id);
+        }
+    }
     Base::finalize();
     document().page().unregister_canvas_element({}, unique_id());
 }
@@ -214,24 +223,74 @@ void HTMLCanvasElement::notify_context_about_canvas_size_change()
         });
 }
 
-void HTMLCanvasElement::set_width(unsigned value)
+WebIDL::ExceptionOr<void> HTMLCanvasElement::set_width(WebIDL::UnsignedLong value)
 {
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width
+    // When setting the value of the width or height attribute, if the context mode of the canvas element
+    // is set to placeholder, the user agent must throw an "InvalidStateError" DOMException and leave the
+    // attribute's value unchanged.
+    if (m_is_placeholder)
+        return WebIDL::InvalidStateError::create(realm(), "Cannot set width of a placeholder canvas"_utf16);
+
     if (value > 2147483647)
         value = 300;
 
     set_attribute_value(HTML::AttributeNames::width, Utf16String::number(value));
     notify_context_about_canvas_size_change();
     reset_context_to_default_state();
+    return {};
 }
 
-void HTMLCanvasElement::set_height(WebIDL::UnsignedLong value)
+WebIDL::ExceptionOr<void> HTMLCanvasElement::set_height(WebIDL::UnsignedLong value)
 {
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-height
+    if (m_is_placeholder)
+        return WebIDL::InvalidStateError::create(realm(), "Cannot set height of a placeholder canvas"_utf16);
+
     if (value > 2147483647)
         value = 150;
 
     set_attribute_value(HTML::AttributeNames::height, Utf16String::number(value));
     notify_context_about_canvas_size_change();
     reset_context_to_default_state();
+    return {};
+}
+
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-transfercontroltooffscreen
+WebIDL::ExceptionOr<GC::Ref<OffscreenCanvas>> HTMLCanvasElement::transfer_control_to_offscreen()
+{
+    // 1. If this canvas element's context mode is not set to none, throw an "InvalidStateError" DOMException.
+    if (m_is_placeholder || !m_context.has<Empty>())
+        return WebIDL::InvalidStateError::create(realm(), "Canvas already has a rendering context"_utf16);
+
+    // 2. Let offscreenCanvas be a new OffscreenCanvas object with its width and height equal to the values
+    //    of the width and height content attributes of this canvas element.
+    auto offscreen_canvas = OffscreenCanvas::create(realm(), width(), height());
+
+    // 3. Set the offscreenCanvas's placeholder canvas element to a weak reference to this canvas element.
+    // AD-HOC: The link is a pre-allocated compositor canvas id instead of an object reference: the
+    //         OffscreenCanvas may be transferred to a worker process, and commits route back to this
+    //         element by id through the Compositor's watch mechanism. Without a Compositor the
+    //         placeholder simply never receives frames.
+    auto& page = document().page();
+    page.ensure_compositor_host();
+    if (page.has_compositor_host()) {
+        if (auto placeholder_link = page.compositor_host().allocate_offscreen_canvas_id(); placeholder_link.has_value()) {
+            m_placeholder_canvas_id = placeholder_link->canvas_id;
+            page.register_placeholder_canvas_element({}, placeholder_link->canvas_id, unique_id());
+            page.compositor_host().watch_canvas_surface(*placeholder_link);
+            offscreen_canvas->set_placeholder_link({}, *placeholder_link);
+        }
+    }
+
+    // 4. Set this canvas element's context mode to placeholder.
+    m_is_placeholder = true;
+
+    // FIXME: 5. Set the offscreenCanvas's inherited language to the language of this canvas element.
+    // FIXME: 6. Set the offscreenCanvas's inherited direction to the directionality of this canvas element.
+
+    // 7. Return offscreenCanvas.
+    return offscreen_canvas;
 }
 
 void HTMLCanvasElement::attribute_changed(Utf16FlyString const& local_name, Optional<Utf16String> const& old_value, Optional<Utf16String> const& value, Optional<Utf16FlyString> const& namespace_)
@@ -292,6 +351,11 @@ JS::ThrowCompletionOr<HTMLCanvasElement::RenderingContext> HTMLCanvasElement::ge
 
     // 3. Run the steps in the cell of the following table whose column header matches this canvas element's canvas context mode and whose row header matches contextId:
     // NOTE: See the spec for the full table.
+
+    // placeholder column: every context type throws an "InvalidStateError" DOMException.
+    if (m_is_placeholder)
+        return JS::throw_completion(WebIDL::InvalidStateError::create(realm(), "Canvas control was transferred to an OffscreenCanvas"_utf16));
+
     if (type == u"2d"sv) {
         if (TRY(create_2d_context(options)) == HasOrCreatedContext::Yes)
             return m_context.get<GC::Ref<HTML::CanvasRenderingContext2D>>();
@@ -339,6 +403,10 @@ Gfx::IntSize HTMLCanvasElement::bitmap_size_for_canvas(size_t minimum_width, siz
 // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-origin-clean
 bool HTMLCanvasElement::is_origin_clean() const
 {
+    // A placeholder's bitmap is whatever its linked OffscreenCanvas committed;
+    // the taint travels with the commits (and with pixel readbacks).
+    if (m_is_placeholder)
+        return m_placeholder_content_origin_clean;
     return m_context.visit(
         [](GC::Ref<CanvasRenderingContext2D> const& context) { return context->origin_clean(); },
         // FIXME: WebGL and WebGL2 contexts do not track the origin-clean flag yet.
@@ -357,6 +425,11 @@ WebIDL::ExceptionOr<Utf16String> HTMLCanvasElement::to_data_url(Utf16View type, 
     auto bitmap = get_bitmap_from_surface();
     if (!bitmap)
         return "data:,"_utf16;
+
+    // A placeholder learns its committed frame's taint together with the pixels;
+    // re-check so a tainted commit racing the readback cannot leak.
+    if (!is_origin_clean())
+        return WebIDL::SecurityError::create(realm(), "Canvas is not origin-clean"_utf16);
 
     // 3. Let file be a serialization of this canvas element's bitmap as a file, passing type and quality if given.
     Optional<double> quality = js_quality.has_value() && js_quality->is_number() ? js_quality->as_double() : Optional<double>();
@@ -388,6 +461,11 @@ WebIDL::ExceptionOr<void> HTMLCanvasElement::to_blob(GC::Ref<WebIDL::CallbackTyp
     // 3. If this canvas element's bitmap has pixels (i.e., neither its horizontal dimension nor its vertical dimension is zero),
     //    then set result to a copy of this canvas element's bitmap.
     auto bitmap_result = get_bitmap_from_surface();
+
+    // A placeholder learns its committed frame's taint together with the pixels;
+    // re-check so a tainted commit racing the readback cannot leak.
+    if (!is_origin_clean())
+        return WebIDL::SecurityError::create(realm(), "Canvas is not origin-clean"_utf16);
 
     Optional<double> quality = js_quality.has_value() && js_quality->is_number() ? js_quality->as_double() : Optional<double>();
 
@@ -430,6 +508,8 @@ WebGL::WebGLRenderingContextBase* HTMLCanvasElement::webgl_context() const
 
 Optional<Painting::CanvasId> HTMLCanvasElement::canvas_id() const
 {
+    if (m_placeholder_canvas_id.has_value())
+        return m_placeholder_canvas_id;
     if (auto context = canvas_rendering_context_2d())
         return context->canvas_id();
     if (auto* webgl_context = this->webgl_context(); webgl_context && !webgl_context->is_context_lost())
@@ -439,6 +519,24 @@ Optional<Painting::CanvasId> HTMLCanvasElement::canvas_id() const
 
 RefPtr<Gfx::Bitmap> HTMLCanvasElement::get_bitmap_from_surface()
 {
+    // A placeholder has no local rendering context; its pixels are the frames the
+    // linked OffscreenCanvas committed, reachable only through the shared registry,
+    // and its bitmap dimensions are the committed ones, not the frozen attributes.
+    // The readback reports the frame's origin-clean state with the pixels; callers
+    // gating on is_origin_clean() re-check after fetching.
+    if (m_is_placeholder) {
+        auto placeholder_size = natural_size();
+        if (placeholder_size.is_empty())
+            return nullptr;
+        if (m_placeholder_canvas_id.has_value() && m_placeholder_content_size.has_value() && !m_placeholder_content_size->is_empty() && document().page().has_compositor_host()) {
+            auto readback = document().page().compositor_host().read_back_canvas_surface(*m_placeholder_canvas_id, { {}, *m_placeholder_content_size });
+            m_placeholder_content_origin_clean = readback.origin_clean;
+            if (readback.bitmap)
+                return readback.bitmap;
+        }
+        return create_transparent_canvas_bitmap(placeholder_size);
+    }
+
     auto const size = bitmap_size_for_canvas();
     if (size.is_empty())
         return nullptr;
@@ -495,7 +593,7 @@ bool HTMLCanvasElement::did_commit_offscreen_frame(Painting::CanvasId canvas_id,
 
 Gfx::IntSize HTMLCanvasElement::natural_size() const
 {
-    if (m_placeholder_content_size.has_value())
+    if (m_is_placeholder && m_placeholder_content_size.has_value())
         return *m_placeholder_content_size;
     return { width(), height() };
 }
@@ -545,6 +643,15 @@ Optional<Gfx::IntSize> HTMLCanvasElement::canvas_surface_content_size() const
 {
     if (!canvas_id().has_value())
         return {};
+
+    // A placeholder paints whatever the OffscreenCanvas last committed, which may
+    // differ from this element's width/height attributes after an offscreen resize.
+    // Before the first commit there is nothing to paint.
+    if (m_is_placeholder) {
+        if (!m_placeholder_content_size.has_value() || m_placeholder_content_size->is_empty())
+            return {};
+        return *m_placeholder_content_size;
+    }
 
     auto size = bitmap_size_for_canvas();
     if (size.is_empty())

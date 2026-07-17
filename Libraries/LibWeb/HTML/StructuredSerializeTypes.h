@@ -63,6 +63,7 @@ enum class TransferType : u8 {
     WritableStream = 5,
     TransformStream = 6,
     ImageBitmap = 7,
+    OffscreenCanvas = 8,
 };
 
 enum class ValueTag : u8 {

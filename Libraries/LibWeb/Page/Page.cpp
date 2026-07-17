@@ -7,6 +7,7 @@
  */
 
 #include <AK/SourceLocation.h>
+#include <LibGC/RootVector.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
@@ -26,6 +27,7 @@
 #include <LibWeb/HTML/HTMLMediaElement.h>
 #include <LibWeb/HTML/HTMLSelectElement.h>
 #include <LibWeb/HTML/LocalTraversableNavigable.h>
+#include <LibWeb/HTML/OffscreenCanvas.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/SelectedFile.h>
@@ -728,10 +730,44 @@ void Page::for_each_canvas_element(Callback&& callback)
     }
 }
 
+void Page::register_offscreen_canvas(Badge<HTML::OffscreenCanvas>, HTML::OffscreenCanvas& offscreen_canvas)
+{
+    m_registered_offscreen_canvases.append(&offscreen_canvas);
+}
+
+void Page::unregister_offscreen_canvas(Badge<HTML::OffscreenCanvas>, HTML::OffscreenCanvas& offscreen_canvas)
+{
+    m_registered_offscreen_canvases.remove_all_matching([&](auto* candidate) {
+        return candidate == &offscreen_canvas;
+    });
+}
+
+template<typename Callback>
+void Page::for_each_registered_offscreen_canvas(Callback&& callback)
+{
+    if (m_registered_offscreen_canvases.is_empty())
+        return;
+
+    // The callbacks may allocate, and a garbage collection at that point runs
+    // OffscreenCanvas finalizers that unregister entries mid-iteration; iterating
+    // a rooted copy keeps the visited canvases alive and the loop away from the
+    // mutating vector.
+    GC::RootVector<GC::Ref<HTML::OffscreenCanvas>> offscreen_canvases;
+    offscreen_canvases.ensure_capacity(m_registered_offscreen_canvases.size());
+    for (auto* offscreen_canvas : m_registered_offscreen_canvases)
+        offscreen_canvases.append(*offscreen_canvas);
+    for (auto& offscreen_canvas : offscreen_canvases)
+        callback(*offscreen_canvas);
+}
+
 void Page::prepare_canvas_contexts_for_compositing()
 {
     for_each_canvas_element([](auto& canvas_element) {
         canvas_element.prepare_for_compositing();
+    });
+
+    for_each_registered_offscreen_canvas([](auto& offscreen_canvas) {
+        offscreen_canvas.commit_frame_if_needed();
     });
 
     // Preparing only records commands and present markers into the shared

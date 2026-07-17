@@ -11,6 +11,8 @@ interface HTMLCanvasElement : HTMLElement {
 
     RenderingContext? getContext(Utf16DOMString contextId, optional any options = null);
 
+    [Experimental] OffscreenCanvas transferControlToOffscreen();
+
     Utf16USVString toDataURL(optional Utf16DOMString type = "image/png", optional any quality);
     undefined toBlob(BlobCallback _callback, optional Utf16DOMString type = "image/png", optional any quality);
 

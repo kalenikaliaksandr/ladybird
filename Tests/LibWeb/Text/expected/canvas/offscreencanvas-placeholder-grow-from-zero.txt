@@ -1,0 +1,2 @@
+toDataURL yields data: true
+drawImage(placeholder) pixel: 0,128,0,255

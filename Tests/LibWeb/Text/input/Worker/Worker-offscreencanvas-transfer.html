@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    asyncTest(done => {
+        const workerScript = `
+            self.onmessage = function(evt) {
+                try {
+                    const canvas = evt.data;
+                    self.postMessage("transferred size: " + canvas.width + "x" + canvas.height);
+                    const context = canvas.getContext("2d");
+                    context.fillStyle = "rgb(0, 0, 255)";
+                    context.fillRect(0, 0, canvas.width, canvas.height);
+                    const pixel = Array.from(context.getImageData(3, 3, 1, 1).data);
+                    self.postMessage("pixel: " + JSON.stringify(pixel));
+                    self.postMessage(null);
+                } catch (err) {
+                    self.postMessage("Error: " + err);
+                    self.postMessage(null);
+                }
+            };
+        `;
+        const blob = new Blob([workerScript], { type: "application/javascript" });
+        const worker = new Worker(URL.createObjectURL(blob));
+
+        worker.onmessage = evt => {
+            if (evt.data === null) {
+                done();
+                return;
+            }
+            println(evt.data);
+        };
+
+        const offscreen = new OffscreenCanvas(6, 6);
+        worker.postMessage(offscreen, [offscreen]);
+
+        try {
+            offscreen.transferToImageBitmap();
+            println("FAIL: source OffscreenCanvas was not detached by the transfer");
+        } catch (e) {
+            println("source after transfer: " + e.name);
+        }
+    });
+</script>

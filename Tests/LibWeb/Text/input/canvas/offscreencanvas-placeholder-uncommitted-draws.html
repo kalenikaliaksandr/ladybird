@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<canvas id="c" width="2" height="2"></canvas>
+<script>
+    asyncTest(async done => {
+        const canvas = document.getElementById("c");
+        const offscreen = canvas.transferControlToOffscreen();
+        const ctx = offscreen.getContext("2d");
+        ctx.fillStyle = "red";
+        ctx.fillRect(0, 0, 2, 2);
+
+        const waitFrames = n =>
+            new Promise(resolve => {
+                const tick = () => (--n === 0 ? resolve() : requestAnimationFrame(tick));
+                requestAnimationFrame(tick);
+            });
+        await waitFrames(10);
+        const committed = canvas.toDataURL();
+
+        // Draw more without yielding: these commands are not committed yet, so
+        // placeholder reads must keep showing the previous frame.
+        ctx.fillStyle = "blue";
+        ctx.fillRect(0, 0, 2, 2);
+        println("uncommitted draws hidden from placeholder: " + (canvas.toDataURL() === committed));
+        done();
+    });
+</script>

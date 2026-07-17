@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html class="reftest-wait">
+<link rel="match" href="../expected/offscreencanvas-placeholder-initial-frame-ref.html">
+<canvas id="canvas" width="100" height="100"></canvas>
+<script>
+    // Creating an alpha:false context and never drawing must still present the
+    // initial opaque-black bitmap to the placeholder.
+    const offscreen = canvas.transferControlToOffscreen();
+    offscreen.getContext("2d", { alpha: false });
+
+    // The committed frame reaches the placeholder element through a Compositor
+    // round trip; give it a few frames before taking the screenshot.
+    let remaining_frames = 10;
+    function tick() {
+        if (--remaining_frames === 0) {
+            document.documentElement.classList.remove("reftest-wait");
+            return;
+        }
+        requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+</script>
+</html>

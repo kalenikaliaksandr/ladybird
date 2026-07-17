@@ -1,0 +1,12 @@
+second transferControlToOffscreen: InvalidStateError
+getContext on placeholder: InvalidStateError
+set width on placeholder: InvalidStateError
+placeholder width unchanged: 300
+transferControlToOffscreen after getContext: InvalidStateError
+transfer with context: InvalidStateError
+detached source size: 0x0
+double transfer: DataCloneError
+transferToImageBitmap on detached: InvalidStateError
+getContext on detached: InvalidStateError
+set width on detached: InvalidStateError
+set height on detached: InvalidStateError

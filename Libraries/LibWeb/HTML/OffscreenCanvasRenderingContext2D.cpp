@@ -49,8 +49,12 @@ GC::Ref<OffscreenCanvas> OffscreenCanvasRenderingContext2D::canvas()
 
 void OffscreenCanvasRenderingContext2D::did_draw_hook()
 {
-    // FIXME: Once transferControlToOffscreen() placeholder links exist, schedule a
-    //        commit so the placeholder canvas element picks up the new frame.
+    m_canvas->notify_context_did_draw();
+}
+
+Optional<Painting::OffscreenCanvasPlaceholderLink> OffscreenCanvasRenderingContext2D::preallocated_canvas_link() const
+{
+    return m_canvas->placeholder_link();
 }
 
 Page* OffscreenCanvasRenderingContext2D::page_for_compositor()

@@ -238,7 +238,9 @@ WebIDL::ExceptionOr<void> Canvas2DContextBase::draw_image_internal(CanvasImageSo
         if (!source_is_2d)
             (*source_canvas)->prepare_for_compositing();
         if (auto source_canvas_id = (*source_canvas)->canvas_id(); source_canvas_id.has_value()) {
-            draw_canvas_source_by_id(*source_canvas_id, source_is_2d, /* committed_surface_only= */ false);
+            // A placeholder's pixels are the frames its OffscreenCanvas committed;
+            // the live surface may already hold newer, uncommitted draws.
+            draw_canvas_source_by_id(*source_canvas_id, source_is_2d, (*source_canvas)->is_placeholder());
             return {};
         }
     } else if (auto const* source_offscreen_canvas = image.get_pointer<GC::Ref<OffscreenCanvas>>()) {
@@ -312,7 +314,7 @@ bool Canvas2DContextBase::ensure_remote_canvas_context()
     // FIXME: implement context attribute .color_type
     // FIXME: implement context attribute .desynchronized
     // FIXME: implement context attribute .will_read_frequently
-    if (!transport->create_context(m_size, m_context_attributes.alpha))
+    if (!transport->create_context(m_size, m_context_attributes.alpha, preallocated_canvas_link()))
         return false;
     m_transport = move(transport);
     return true;
@@ -397,6 +399,14 @@ void Canvas2DContextBase::prepare_for_compositing()
     if (!has_backing_storage())
         return;
     m_transport->shared_stream().record_present(*m_transport->canvas_id());
+}
+
+bool Canvas2DContextBase::commit_frame_for_placeholder(Gfx::IntSize logical_size)
+{
+    if (!has_backing_storage())
+        return false;
+    m_transport->shared_stream().record_present(*m_transport->canvas_id(), logical_size, m_origin_clean);
+    return true;
 }
 
 Optional<Painting::CanvasId> Canvas2DContextBase::canvas_id() const

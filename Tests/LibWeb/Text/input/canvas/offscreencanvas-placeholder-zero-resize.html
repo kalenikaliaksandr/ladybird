@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<canvas id="c" width="40" height="30"></canvas>
+<script>
+    asyncTest(async done => {
+        const canvas = document.getElementById("c");
+        const offscreen = canvas.transferControlToOffscreen();
+        const ctx = offscreen.getContext("2d");
+        ctx.fillRect(0, 0, 40, 30);
+
+        const waitFrames = n =>
+            new Promise(resolve => {
+                const tick = () => (--n === 0 ? resolve() : requestAnimationFrame(tick));
+                requestAnimationFrame(tick);
+            });
+
+        await waitFrames(10);
+        // Commits drive the placeholder's natural size, not its content attributes.
+        println("width attribute after commit: " + canvas.width);
+        println("used width after commit: " + getComputedStyle(canvas).width);
+
+        // A resize to zero has no backing bitmap to present; the committed logical
+        // size must still reach the placeholder.
+        offscreen.width = 0;
+        await waitFrames(10);
+        println("width attribute after zero resize: " + canvas.width);
+        println("used width after zero resize: " + getComputedStyle(canvas).width);
+        done();
+    });
+</script>

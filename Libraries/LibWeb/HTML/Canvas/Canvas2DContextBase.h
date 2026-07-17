@@ -31,6 +31,7 @@
 #include <LibWeb/HTML/Canvas/CanvasState.h>
 #include <LibWeb/HTML/Canvas/CanvasText.h>
 #include <LibWeb/HTML/Canvas/CanvasTransform.h>
+#include <LibWeb/Painting/OffscreenCanvasLink.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
 
 namespace Web::HTML {
@@ -129,6 +130,11 @@ public:
 
     void prepare_for_compositing();
 
+    // Records a present that commits the frame to placeholder watchers, carrying
+    // the canvas's logical size and origin-clean state. Returns false when there
+    // is no backing storage to present (the caller commits metadata separately).
+    bool commit_frame_for_placeholder(Gfx::IntSize logical_size);
+
     void ensure_backing_storage();
 
     void discard_backing_storage();
@@ -198,6 +204,9 @@ protected:
     // Style-resolved color for a drop-shadow() canvas filter; element canvases resolve
     // against their computed style, offscreen canvases have no style context.
     virtual Gfx::Color resolve_drop_shadow_color(CSS::DropShadowFilterStyleValue const&) const = 0;
+    // Placeholder-linked OffscreenCanvas contexts claim a pre-allocated compositor
+    // canvas id instead of letting the Compositor pick one.
+    virtual Optional<Painting::OffscreenCanvasPlaceholderLink> preallocated_canvas_link() const { return {}; }
 
     RefPtr<RemoteCanvas2DTransport> m_transport;
 
