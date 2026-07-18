@@ -1,0 +1,2 @@
+bitmap fully cleared after transfer under transform and clip: true
+pixels after clipped transformed fill: 0,0,0,0 | 0,0,0,0 | 0,255,0,255 | 0,0,0,0

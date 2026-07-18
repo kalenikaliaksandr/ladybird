@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        // A never-drawn alpha:false 2D context has no backing storage yet; its
+        // read-back bitmap must still be opaque black, not transparent black.
+        const offscreen = new OffscreenCanvas(2, 2);
+        offscreen.getContext("2d", { alpha: false });
+        const bitmap = offscreen.transferToImageBitmap();
+
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 2;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(bitmap, 0, 0);
+        const data = ctx.getImageData(0, 0, 1, 1).data;
+        println("alpha:false never-drawn pixel: " + [data[0], data[1], data[2], data[3]].join(","));
+
+        // getImageData straight off a fresh alpha:false context must also see
+        // opaque black, not a zero-filled fallback.
+        const direct = new OffscreenCanvas(2, 2).getContext("2d", { alpha: false });
+        const directData = direct.getImageData(0, 0, 1, 1).data;
+        println("alpha:false direct getImageData pixel: " + [directData[0], directData[1], directData[2], directData[3]].join(","));
+    });
+</script>

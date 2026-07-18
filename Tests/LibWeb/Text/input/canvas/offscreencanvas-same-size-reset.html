@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        // Assigning the current width value must still replace the bitmap, even
+        // under a live transform and clip, while resetting the drawing state.
+        const offscreen = new OffscreenCanvas(4, 1);
+        const ctx = offscreen.getContext("2d");
+        ctx.fillStyle = "red";
+        ctx.fillRect(0, 0, 4, 1);
+        ctx.translate(2, 0);
+        ctx.beginPath();
+        ctx.rect(0, 0, 1, 1);
+        ctx.clip();
+
+        offscreen.width = 4;
+
+        const data = ctx.getImageData(0, 0, 4, 1).data;
+        let cleared = true;
+        for (let i = 0; i < data.length; ++i) {
+            if (data[i] !== 0)
+                cleared = false;
+        }
+        println("bitmap cleared after same-size assignment: " + cleared);
+
+        // The drawing state was reset with the bitmap: this fill is neither
+        // translated nor clipped.
+        ctx.fillStyle = "rgb(0, 255, 0)";
+        ctx.fillRect(0, 0, 4, 1);
+        const after = ctx.getImageData(0, 0, 4, 1).data;
+        let all_green = true;
+        for (let x = 0; x < 4; ++x) {
+            if (after[x * 4] !== 0 || after[x * 4 + 1] !== 255 || after[x * 4 + 2] !== 0 || after[x * 4 + 3] !== 255)
+                all_green = false;
+        }
+        println("fill after reset covers the whole bitmap: " + all_green);
+    });
+</script>

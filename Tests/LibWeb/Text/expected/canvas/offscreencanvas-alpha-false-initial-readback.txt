@@ -1,0 +1,2 @@
+alpha:false never-drawn pixel: 0,0,0,255
+alpha:false direct getImageData pixel: 0,0,0,255

@@ -1,0 +1,2 @@
+bitmap cleared after same-size assignment: true
+fill after reset covers the whole bitmap: true

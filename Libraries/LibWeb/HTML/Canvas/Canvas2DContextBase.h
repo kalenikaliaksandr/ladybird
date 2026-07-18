@@ -122,6 +122,11 @@ public:
     virtual void set_shadow_color(Utf16View) override;
 
     void set_size(Gfx::IntSize const&);
+
+    // Setting a canvas dimension always replaces the bitmap, even when the value
+    // did not change; a same-size replacement clears the storage in place.
+    void replace_bitmap(Gfx::IntSize const&);
+
     void prepare_for_compositing();
 
     void ensure_backing_storage();
@@ -133,6 +138,14 @@ public:
     Optional<Painting::CanvasId> canvas_id() const;
 
     RefPtr<Gfx::Bitmap> read_pixels(Gfx::IntRect const&);
+
+    // Resets every pixel to the canvas clear color (transparent black, or opaque black
+    // for alpha=false contexts) without touching the drawing state. Used by
+    // OffscreenCanvas.transferToImageBitmap(), which moves the bitmap out.
+    void clear_entire_bitmap();
+
+    // https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-settings:concept-canvas-alpha
+    Gfx::Color clear_color() const;
 
 protected:
     Canvas2DContextBase(JS::Realm&, Gfx::IntSize initial_size, Bindings::CanvasRenderingContext2DSettings);
@@ -159,8 +172,6 @@ protected:
 
     [[nodiscard]] Gfx::Path rect_path(float x, float y, float width, float height);
     [[nodiscard]] Gfx::Path text_path(Utf16View, float x, float y, Optional<double> max_width);
-
-    Gfx::Color clear_color() const;
 
     void stroke_internal(Gfx::Path);
     void fill_internal(Gfx::Path, Gfx::WindingRule);

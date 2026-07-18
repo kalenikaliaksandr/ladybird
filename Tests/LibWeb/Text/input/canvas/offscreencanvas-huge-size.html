@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        const huge = new OffscreenCanvas(4294967295, 10);
+        println("size: " + huge.width + "x" + huge.height);
+        huge.height = 3000000000;
+        println("resized: " + huge.width + "x" + huge.height);
+        const ctx = huge.getContext("2d");
+        ctx.fillRect(0, 0, 10, 10);
+        println("draw on oversized canvas did not crash");
+
+        const small = new OffscreenCanvas(4, 4);
+        small.getContext("2d");
+        small.width = 4294967295;
+        println("preserved width: " + small.width);
+    });
+</script>

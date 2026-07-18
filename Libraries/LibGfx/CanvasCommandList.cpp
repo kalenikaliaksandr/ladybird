@@ -217,6 +217,7 @@ ErrorOr<void> encode(Encoder& encoder, Gfx::CanvasCommands::DrawCanvas const& co
     TRY(encoder.encode(command.filter));
     TRY(encoder.encode(command.global_alpha));
     TRY(encoder.encode(command.compositing_and_blending_operator));
+    TRY(encoder.encode(command.committed_surface_only));
     return {};
 }
 
@@ -231,6 +232,7 @@ ErrorOr<Gfx::CanvasCommands::DrawCanvas> decode(Decoder& decoder)
         .filter = TRY(decoder.decode<Optional<Gfx::Filter>>()),
         .global_alpha = TRY(decoder.decode<float>()),
         .compositing_and_blending_operator = TRY(decoder.decode<Gfx::CompositingAndBlendingOperator>()),
+        .committed_surface_only = TRY(decoder.decode<bool>()),
     };
 }
 

@@ -441,11 +441,9 @@ GC::Ref<WebIDL::Promise> WindowOrWorkerGlobalScopeMixin::create_image_bitmap_imp
                 [&](GC::Ref<ImageBitmap> source_image_bitmap) {
                     set_cropped_bitmap_and_resolve(source_image_bitmap->bitmap());
                 },
-                [&](GC::Ref<OffscreenCanvas>) {
-                    dbgln("(STUBBED) createImageBitmap() for OffscreenCanvas");
-                    auto const error = JS::Error::create(realm, "Not Implemented: createImageBitmap() for OffscreenCanvas"_utf16);
-                    TemporaryExecutionContext const context { relevant_realm(p->promise()), TemporaryExecutionContext::CallbacksEnabled::Yes };
-                    WebIDL::reject_promise(realm, *p, error);
+                // -> OffscreenCanvas
+                [&](GC::Ref<OffscreenCanvas> offscreen_canvas) {
+                    set_cropped_bitmap_and_resolve(offscreen_canvas->read_back_bitmap());
                 },
                 // -> video
                 [&](GC::Ref<HTMLVideoElement>) {

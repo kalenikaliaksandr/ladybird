@@ -90,6 +90,10 @@ struct DrawCanvas {
     Optional<Filter> filter;
     float global_alpha { 1 };
     CompositingAndBlendingOperator compositing_and_blending_operator { CompositingAndBlendingOperator::SourceOver };
+    // Placeholder canvas sources must show their last committed frame; live
+    // sources (drawImage of a same-process canvas) resolve the draw surface so
+    // recording order is preserved.
+    bool committed_surface_only { false };
 };
 
 struct FillPath {

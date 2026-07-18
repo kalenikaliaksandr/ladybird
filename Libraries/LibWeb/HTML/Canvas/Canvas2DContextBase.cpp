@@ -43,6 +43,7 @@
 #include <LibWeb/HTML/ImageBitmap.h>
 #include <LibWeb/HTML/ImageData.h>
 #include <LibWeb/HTML/ImageRequest.h>
+#include <LibWeb/HTML/OffscreenCanvas.h>
 #include <LibWeb/HTML/Path2D.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/TextMetrics.h>
@@ -203,37 +204,48 @@ WebIDL::ExceptionOr<void> Canvas2DContextBase::draw_image_internal(CanvasImageSo
         scaling_mode = Gfx::ScalingMode::BilinearMipmap;
     }
 
+    // A 2D source needs no eager synchronization: its recorded commands
+    // precede this DrawCanvas in the shared ordered stream, so the replay
+    // sees them by construction. WebGL frames are presented by a separate
+    // message and the source's registry surface is its live drawing buffer,
+    // so present the source now and flush the DrawCanvas right after it,
+    // before a later WebGL frame can overtake the reference.
+    auto draw_canvas_source_by_id = [&](Painting::CanvasId source_canvas_id, bool source_is_2d) {
+        if (auto* canvas_command_list = this->canvas_command_list()) {
+            canvas_command_list->append(Gfx::CanvasCommands::DrawCanvas {
+                .source_canvas_id = source_canvas_id.value(),
+                .dst_rect = destination_rect,
+                .src_rect = source_rect.to_rounded<int>(),
+                .scaling_mode = scaling_mode,
+                .filter = drawing_state().filter,
+                .global_alpha = drawing_state().global_alpha,
+                .compositing_and_blending_operator = drawing_state().current_compositing_and_blending_operator,
+            });
+            did_draw(destination_rect);
+            if (!source_is_2d)
+                m_transport->flush_shared_stream();
+        }
+
+        // 7. If image is not origin-clean, then set the CanvasRenderingContext2D's origin-clean flag to false.
+        if (image_is_not_origin_clean(image))
+            m_origin_clean = false;
+    };
+
     if (auto const* source_canvas = image.get_pointer<GC::Ref<HTMLCanvasElement>>()) {
-        // A 2D source needs no eager synchronization: its recorded commands
-        // precede this DrawCanvas in the shared ordered stream, so the replay
-        // sees them by construction. WebGL frames are presented by a separate
-        // message and the source's registry surface is its live drawing buffer,
-        // so present the source now and flush the DrawCanvas right after it,
-        // before a later WebGL frame can overtake the reference.
         bool const source_is_2d = (*source_canvas)->canvas_rendering_context_2d() != nullptr;
         (*source_canvas)->ensure_backing_storage();
         if (!source_is_2d)
             (*source_canvas)->prepare_for_compositing();
         if (auto source_canvas_id = (*source_canvas)->canvas_id(); source_canvas_id.has_value()) {
-            if (auto* canvas_command_list = this->canvas_command_list()) {
-                canvas_command_list->append(Gfx::CanvasCommands::DrawCanvas {
-                    .source_canvas_id = source_canvas_id->value(),
-                    .dst_rect = destination_rect,
-                    .src_rect = source_rect.to_rounded<int>(),
-                    .scaling_mode = scaling_mode,
-                    .filter = drawing_state().filter,
-                    .global_alpha = drawing_state().global_alpha,
-                    .compositing_and_blending_operator = drawing_state().current_compositing_and_blending_operator,
-                });
-                did_draw(destination_rect);
-                if (!source_is_2d)
-                    m_transport->flush_shared_stream();
-            }
-
-            // 7. If image is not origin-clean, then set the CanvasRenderingContext2D's origin-clean flag to false.
-            if (image_is_not_origin_clean(image))
-                m_origin_clean = false;
-
+            draw_canvas_source_by_id(*source_canvas_id, source_is_2d);
+            return {};
+        }
+    } else if (auto const* source_offscreen_canvas = image.get_pointer<GC::Ref<OffscreenCanvas>>()) {
+        // An OffscreenCanvas source lives in the same Compositor as this context's
+        // surface, so composite it by id like an element canvas source; the
+        // readback fallback below remains for canvases without a compositor context.
+        if (auto source = (*source_offscreen_canvas)->prepare_as_canvas_draw_source(); source.has_value()) {
+            draw_canvas_source_by_id(source->canvas_id, source->is_2d);
             return {};
         }
     }
@@ -343,6 +355,34 @@ void Canvas2DContextBase::set_size(Gfx::IntSize const& size)
     // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-origin-clean
     // The freshly allocated bitmap is origin-clean regardless of what the old
     // one accumulated.
+    m_origin_clean = true;
+}
+
+void Canvas2DContextBase::replace_bitmap(Gfx::IntSize const& size)
+{
+    // Setting a canvas dimension always replaces the bitmap: a changed size
+    // recreates the backing storage lazily, and an unchanged one clears the
+    // existing storage in place (indistinguishable from a fresh bitmap).
+    if (m_size != size) {
+        set_size(size);
+        return;
+    }
+    if (has_backing_storage())
+        clear_entire_bitmap();
+    m_origin_clean = true;
+}
+
+void Canvas2DContextBase::clear_entire_bitmap()
+{
+    if (auto* canvas_command_list = this->canvas_command_list()) {
+        // ClearCanvas ignores the current transform and clip: the replacement
+        // bitmap must be fully cleared even while the drawing state lives on.
+        canvas_command_list->append(Gfx::CanvasCommands::ClearCanvas { .color = clear_color() });
+        did_draw(Gfx::FloatRect { {}, m_size.to_type<float>() });
+    }
+
+    // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-origin-clean
+    // The conceptually new bitmap starts origin-clean.
     m_origin_clean = true;
 }
 
@@ -1173,13 +1213,17 @@ bool image_is_not_origin_clean(CanvasImageSource const& image)
             // FIXME: image's media data is CORS-cross-origin.
             return false;
         },
-        // HTMLCanvasElement
+        // HTMLCanvasElement or OffscreenCanvas
         [](GC::Ref<HTMLCanvasElement> canvas) {
             // image's bitmap's origin-clean flag is false.
             return !canvas->is_origin_clean();
         },
-        // ImageBitmap or OffscreenCanvas
-        [](OneOf<GC::Ref<ImageBitmap>, GC::Ref<OffscreenCanvas>> auto const&) {
+        [](GC::Ref<OffscreenCanvas> canvas) {
+            // image's bitmap's origin-clean flag is false.
+            return !canvas->is_origin_clean();
+        },
+        // ImageBitmap
+        [](GC::Ref<ImageBitmap>) {
             // FIXME: image's bitmap's origin-clean flag is false.
             return false;
         });

@@ -1,0 +1,4 @@
+size: 4294967295x10
+resized: 4294967295x3000000000
+draw on oversized canvas did not crash
+preserved width: 4294967295

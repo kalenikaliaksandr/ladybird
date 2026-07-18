@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        // The bitmap replacing the transferred one must be fully cleared even
+        // while a transform and clip are active on the drawing state.
+        const offscreen = new OffscreenCanvas(4, 1);
+        const ctx = offscreen.getContext("2d");
+        ctx.fillStyle = "red";
+        ctx.fillRect(0, 0, 4, 1);
+        ctx.translate(2, 0);
+        ctx.beginPath();
+        ctx.rect(0, 0, 1, 1);
+        ctx.clip();
+        offscreen.transferToImageBitmap();
+        const data = ctx.getImageData(0, 0, 4, 1).data;
+        let cleared = true;
+        for (let i = 0; i < data.length; ++i) {
+            if (data[i] !== 0)
+                cleared = false;
+        }
+        println("bitmap fully cleared after transfer under transform and clip: " + cleared);
+
+        // The drawing state must survive: this fill goes through the live
+        // translate(2, 0) and clip, landing only in the third pixel.
+        ctx.fillStyle = "rgb(0, 255, 0)";
+        ctx.fillRect(0, 0, 4, 1);
+        const after = ctx.getImageData(0, 0, 4, 1).data;
+        const pixels = [];
+        for (let x = 0; x < 4; ++x)
+            pixels.push([after[x * 4], after[x * 4 + 1], after[x * 4 + 2], after[x * 4 + 3]].join(","));
+        println("pixels after clipped transformed fill: " + pixels.join(" | "));
+    });
+</script>
