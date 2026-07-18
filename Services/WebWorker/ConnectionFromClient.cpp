@@ -6,6 +6,7 @@
 
 #include <LibCore/Process.h>
 #include <LibCore/System.h>
+#include <LibWeb/Compositor/CompositorHost.h>
 #include <LibWeb/HTML/BroadcastChannel.h>
 #include <LibWeb/HTML/WorkerAgentParent.h>
 #include <LibWeb/Platform/FontPlugin.h>
@@ -39,6 +40,8 @@ void ConnectionFromClient::connect_to_image_decoder(IPC::TransportHandle handle)
 
 void ConnectionFromClient::connect_to_compositor(IPC::TransportHandle handle)
 {
+    bool is_reconnect_after_compositor_loss = m_compositor_connection != nullptr;
+
     auto transport = MUST(handle.create_transport());
     m_compositor_connection = adopt_ref(*new WebView::CompositorConnection(move(transport)));
     m_compositor_connection->on_compositor_lost = [this] {
@@ -46,12 +49,22 @@ void ConnectionFromClient::connect_to_compositor(IPC::TransportHandle handle)
     };
 
 #ifdef AK_OS_WINDOWS
-    // Perform Windows peer PID handshake before any other IPC
+    // Perform Windows peer PID handshake before any other IPC. This must precede the
+    // backing-storage-lost notifications below: those can synchronously recreate
+    // remote contexts, which would send messages over the unhandshaken transport.
     if constexpr (requires { m_compositor_connection->transport().set_peer_pid(0); }) {
         auto response = m_compositor_connection->send_sync<Messages::CompositorWebContentServer::InitTransport>(Core::System::getpid());
         m_compositor_connection->transport().set_peer_pid(response->compositor_pid());
     }
 #endif
+
+    if (is_reconnect_after_compositor_loss) {
+        // Segments recorded for the dead Compositor target canvas ids from its
+        // registry; flushing them to the new process would draw into nothing.
+        if (auto* compositor_host = m_page_host->compositor_host())
+            compositor_host->discard_canvas_2d_stream();
+        m_page_host->page().notify_all_canvas_elements_of_lost_backing_storage();
+    }
 }
 
 WebView::CompositorConnection* ConnectionFromClient::compositor_process_connection() const

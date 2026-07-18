@@ -22,8 +22,19 @@ public:
     CanvasSurfaceRegistry() = default;
     ~CanvasSurfaceRegistry() = default;
 
+    // Renderer processes may hold canvas ids minted by a previous Compositor instance
+    // (placeholder canvas links survive a Compositor restart). Seeding each launch with
+    // a distinct namespace makes such stale ids resolve to registry misses instead of
+    // colliding with freshly allocated ids. Must be called before any registry exists.
+    static void set_canvas_id_namespace_for_this_process(u64 canvas_id_namespace)
+    {
+        s_first_canvas_id = (canvas_id_namespace << 48) | 1;
+    }
+
     CanvasId allocate_canvas_id()
     {
+        if (m_next_canvas_id == 0)
+            m_next_canvas_id = s_first_canvas_id;
         return CanvasId { m_next_canvas_id++ };
     }
 
@@ -263,8 +274,11 @@ private:
         }
     }
 
-    u64 m_next_canvas_id { 1 };
+    // 0 means "not yet allocated from"; the first allocation picks up the process-wide
+    // namespace seed, which may be set after a registry is constructed but before use.
+    u64 m_next_canvas_id { 0 };
 
+    static inline u64 s_first_canvas_id { 1 };
     HashMap<CanvasId, NonnullRefPtr<Gfx::PaintingSurface>> m_surfaces;
     HashMap<CanvasId, CanvasIdReservation> m_reservations;
 };

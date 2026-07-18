@@ -44,6 +44,7 @@
 #include <LibWebView/UserAgent.h>
 #include <LibWebView/Utilities.h>
 #include <LibWebView/WebContentClient.h>
+#include <LibWebView/WorkerProcessManager.h>
 
 #if defined(AK_OS_MACOS)
 #    include <LibIPC/MachBootstrapListener.h>
@@ -1135,7 +1136,7 @@ ErrorOr<void> Application::launch_services()
 ErrorOr<void> Application::launch_compositor_process()
 {
     VERIFY(!m_compositor_client);
-    m_compositor_client = TRY(WebView::launch_compositor_process());
+    m_compositor_client = TRY(WebView::launch_compositor_process(m_compositor_restart_count));
     m_compositor_client->on_death = [this]() {
         handle_compositor_process_death();
     };
@@ -1218,6 +1219,12 @@ void Application::recover_compositor_process()
         client->replay_compositor_view_state_after_reconnect({});
     for (auto& client : clients)
         client->notify_compositor_process_reconnected({});
+
+    // Worker processes hold their own Compositor connections for OffscreenCanvas
+    // rendering; hand each live worker a transport to the new process. Placeholder
+    // links minted by the dead Compositor stay stale (the placeholder shows blank
+    // until reload), but fresh OffscreenCanvas work keeps functioning.
+    WorkerProcessManager::the().reconnect_workers_to_compositor();
 }
 
 ErrorOr<void> Application::launch_request_server()

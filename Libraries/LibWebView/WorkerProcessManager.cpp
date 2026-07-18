@@ -21,6 +21,14 @@ WorkerProcessManager& WorkerProcessManager::the()
     return manager;
 }
 
+void WorkerProcessManager::reconnect_workers_to_compositor()
+{
+    for (auto& [agent_id, agent] : m_agents) {
+        if (auto compositor_handle = Application::the().connect_new_compositor_canvas_client(); !compositor_handle.is_error())
+            agent.client->async_connect_to_compositor(compositor_handle.release_value());
+    }
+}
+
 Web::HTML::WorkerAgentId WorkerProcessManager::start_worker_agent(WebContentClient& owner, u64 page_id, Web::HTML::WorkerAgentStartRequest request)
 {
     auto abstract_owner = Owner {

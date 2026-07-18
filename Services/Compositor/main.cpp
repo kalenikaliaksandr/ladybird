@@ -15,6 +15,7 @@
 #include <LibGfx/SkiaBackendContext.h>
 #include <LibIPC/SingleServer.h>
 #include <LibMain/Main.h>
+#include <LibWeb/Painting/CanvasSurfaceRegistry.h>
 #include <LibWebView/Utilities.h>
 
 ErrorOr<int> ladybird_main(Main::Arguments arguments)
@@ -29,8 +30,10 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
     bool force_fontconfig = false;
     bool disable_async_scrolling = false;
     bool disable_sandbox = false;
+    u64 canvas_id_namespace = 0;
 
     Core::ArgsParser args_parser;
+    args_parser.add_option(canvas_id_namespace, "Namespace for canvas ids allocated by this process", "canvas-id-namespace", 0, "namespace");
     args_parser.add_option(mach_server_name, "Mach server name", "mach-server-name", 0, "mach_server_name");
     args_parser.add_option(cache_path, "Path to the profile cache", "cache-path", 0, "path");
     args_parser.add_option(wait_for_debugger, "Wait for debugger", "wait-for-debugger");
@@ -46,6 +49,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
 
     if (enable_test_mode)
         Gfx::force_hinting_for_testing(Gfx::FontHintingStyle::Normal);
+
+    Web::Painting::CanvasSurfaceRegistry::set_canvas_id_namespace_for_this_process(canvas_id_namespace);
 
     WebView::platform_init();
     auto& font_provider = static_cast<Gfx::PathFontProvider&>(Gfx::FontDatabase::the().install_system_font_provider(make<Gfx::PathFontProvider>()));

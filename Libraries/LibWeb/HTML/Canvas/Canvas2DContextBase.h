@@ -210,6 +210,11 @@ protected:
 
     RefPtr<RemoteCanvas2DTransport> m_transport;
 
+    // Latched synchronously when a create is refused and context loss is queued,
+    // so the remaining drawing calls of the same task stop retrying the failing
+    // synchronous create; the queued loss task resets it.
+    bool m_pending_backing_storage_loss { false };
+
     // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-origin-clean
     bool m_origin_clean { true };
 

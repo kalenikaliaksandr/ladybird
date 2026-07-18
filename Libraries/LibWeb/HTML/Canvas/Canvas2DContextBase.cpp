@@ -302,6 +302,8 @@ bool Canvas2DContextBase::ensure_remote_canvas_context()
 {
     if (m_transport)
         return true;
+    if (m_pending_backing_storage_loss)
+        return false;
 
     auto* page = page_for_compositor();
     if (!page || !page->has_compositor_host())
@@ -314,8 +316,19 @@ bool Canvas2DContextBase::ensure_remote_canvas_context()
     // FIXME: implement context attribute .color_type
     // FIXME: implement context attribute .desynchronized
     // FIXME: implement context attribute .will_read_frequently
-    if (!transport->create_context(m_size, m_context_attributes.alpha, preallocated_canvas_link()))
+    if (!transport->create_context(m_size, m_context_attributes.alpha, preallocated_canvas_link())) {
+        // A placeholder-linked create failed to claim its pre-reserved id — stale
+        // after a Compositor restart — and can never succeed; latch the failure
+        // and run the loss steps so recording is gated instead of repeating a
+        // failing synchronous create for every drawn primitive (the loss flag
+        // itself is only set in the queued task).
+        if (preallocated_canvas_link().has_value()) {
+            m_pending_backing_storage_loss = true;
+            if (!is_context_lost())
+                notify_backing_storage_lost();
+        }
         return false;
+    }
     m_transport = move(transport);
     return true;
 }
@@ -419,13 +432,21 @@ Optional<Painting::CanvasId> Canvas2DContextBase::canvas_id() const
 // https://html.spec.whatwg.org/multipage/canvas.html#context-loss
 void Canvas2DContextBase::notify_backing_storage_lost()
 {
-    if (!has_backing_storage())
+    // Without backing storage there is usually nothing to lose, except when the
+    // storage was to claim a pre-reserved placeholder id: that reservation died
+    // with the Compositor that minted it, so the context must still go through
+    // the loss steps to gate future drawing (the restore attempt below fails).
+    if (!has_backing_storage() && !preallocated_canvas_link().has_value())
         return;
 
     // When the user agent detects that the backing storage associated with a canvas context has been lost, then it
     // must queue a global task on the DOM manipulation task source given canvas's relevant global object to run
     // these steps:
     queue_global_task(HTML::Task::Source::DOMManipulation, relevant_global_object(*this), GC::create_function(heap(), [this] {
+        // The synchronous latch has served its purpose once the loss steps run;
+        // the restore attempt below must be able to try creating storage again.
+        m_pending_backing_storage_loss = false;
+
         // 1. Let canvas be context's canvas element.
         // 2. If context's context lost is true, then abort these steps.
         if (is_context_lost())

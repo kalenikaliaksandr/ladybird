@@ -166,12 +166,20 @@ ErrorOr<NonnullRefPtr<ImageDecoderClient::Client>> launch_image_decoder_process(
     return launch_server_process<ImageDecoderClient::Client>("ImageDecoder"sv, arguments);
 }
 
-ErrorOr<NonnullRefPtr<WebView::CompositorClient>> launch_compositor_process()
+ErrorOr<NonnullRefPtr<WebView::CompositorClient>> launch_compositor_process(u64 canvas_id_namespace)
 {
     auto const& browser_options = WebView::Application::browser_options();
     auto const& web_content_options = WebView::Application::web_content_options();
 
     Vector<ByteString> arguments;
+
+    // Renderer processes may still hold canvas ids minted by a previous Compositor
+    // instance (e.g. placeholder canvas links); a per-launch id namespace makes
+    // those stale ids resolve to registry misses instead of someone else's canvas.
+    if (canvas_id_namespace != 0) {
+        arguments.append("--canvas-id-namespace"sv);
+        arguments.append(ByteString::number(canvas_id_namespace));
+    }
 
     if (web_content_options.cache_path.has_value()) {
         arguments.append("--cache-path"sv);

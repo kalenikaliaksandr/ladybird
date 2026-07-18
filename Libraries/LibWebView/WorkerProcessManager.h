@@ -24,6 +24,9 @@ class WorkerProcessManager {
 public:
     static WorkerProcessManager& the();
 
+    // Hands every live worker a transport to the (freshly restarted) Compositor.
+    void reconnect_workers_to_compositor();
+
     struct SharedWorkerKey {
         IsPrivate is_private { IsPrivate::No };
         Web::StorageAPI::StorageKey storage_key;

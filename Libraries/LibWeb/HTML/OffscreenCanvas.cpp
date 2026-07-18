@@ -177,6 +177,10 @@ void OffscreenCanvas::commit_frame_if_needed()
     // own command stream.
     m_context.visit(
         [&](GC::Ref<OffscreenCanvasRenderingContext2D>& context) {
+            // A lost context must not recreate storage behind the loss steps'
+            // back; the contextrestored path retries creation itself.
+            if (context->is_context_lost())
+                return;
             // A resize or context creation leaves no backing storage until the next
             // draw; presenting the initial (cleared) bitmap requires creating it.
             context->ensure_backing_storage();
@@ -189,10 +193,12 @@ void OffscreenCanvas::commit_frame_if_needed()
                 page->compositor_host().commit_offscreen_canvas_size(*m_placeholder_link, clamped_logical_size());
         },
         [&](GC::Ref<WebGL::WebGLRenderingContext>& context) {
-            context->commit_frame_for_placeholder(clamped_logical_size());
+            if (!context->is_context_lost())
+                context->commit_frame_for_placeholder(clamped_logical_size());
         },
         [&](GC::Ref<WebGL::WebGL2RenderingContext>& context) {
-            context->commit_frame_for_placeholder(clamped_logical_size());
+            if (!context->is_context_lost())
+                context->commit_frame_for_placeholder(clamped_logical_size());
         },
         [&](Empty) {
             // No context yet: a resize before getContext() must still commit the
