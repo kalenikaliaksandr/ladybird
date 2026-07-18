@@ -105,29 +105,104 @@ void CanvasCommandPlayer::play_command(CanvasCommands::StrokePath const& command
     m_painter->stroke_path(command.path, resolve_paint_style(command.style), command.filter, command.thickness, command.global_alpha, command.compositing_and_blending_operator, command.cap_style, command.join_style, command.miter_limit, command.dash_array, command.dash_offset);
 }
 
+static constexpr size_t max_tracked_state_commands = 4096;
+
+void CanvasCommandPlayer::record_state_command(CanvasCommand&& command)
+{
+    if (m_state_commands_overflowed)
+        return;
+    // Consecutive absolute transforms supersede each other, so a rAF loop
+    // calling setTransform()/translate() every frame stays bounded.
+    if (command.has<CanvasCommands::SetTransform>() && !m_state_commands.is_empty() && m_state_commands.last().has<CanvasCommands::SetTransform>()) {
+        m_state_commands.last() = move(command);
+        return;
+    }
+    if (m_state_commands.size() >= max_tracked_state_commands) {
+        m_state_commands.clear();
+        m_state_commands_overflowed = true;
+        return;
+    }
+    m_state_commands.append(move(command));
+}
+
 void CanvasCommandPlayer::play_command(CanvasCommands::SetTransform const& command)
 {
+    record_state_command(CanvasCommands::SetTransform { command.transform });
     m_painter->set_transform(command.transform);
 }
 
 void CanvasCommandPlayer::play_command(CanvasCommands::Save const&)
 {
+    record_state_command(CanvasCommands::Save {});
     m_painter->save();
 }
 
 void CanvasCommandPlayer::play_command(CanvasCommands::Restore const&)
 {
+    // Drop the state recorded since (and including) the matching Save.
+    while (!m_state_commands.is_empty()) {
+        bool was_save = m_state_commands.last().has<CanvasCommands::Save>();
+        (void)m_state_commands.take_last();
+        if (was_save)
+            break;
+    }
     m_painter->restore();
 }
 
 void CanvasCommandPlayer::play_command(CanvasCommands::ClipPath const& command)
 {
+    record_state_command(CanvasCommands::ClipPath { command.path.clone(), command.winding_rule });
     m_painter->clip(command.path, command.winding_rule);
 }
 
 void CanvasCommandPlayer::play_command(CanvasCommands::Reset const&)
 {
+    m_state_commands.clear();
+    m_state_commands_overflowed = false;
     m_painter->reset();
+}
+
+void CanvasCommandPlayer::play_command(CanvasCommands::ClearCanvas const& command)
+{
+    // The clear must ignore the painter's current transform and clip without
+    // disturbing them (the recording context's drawing state survives a bitmap
+    // reset). Skia offers no clip-defeating clear, so pop the painter back to
+    // its pristine state, clear everything, and replay the tracked state
+    // commands — no surface-sized temporary needed.
+    if (!m_state_commands_overflowed) {
+        m_painter->reset();
+        m_painter->clear_rect({ {}, m_surface->size().to_type<float>() }, command.color);
+        for (auto const& state_command : m_state_commands) {
+            state_command.visit(
+                [&](CanvasCommands::SetTransform const& transform) { m_painter->set_transform(transform.transform); },
+                [&](CanvasCommands::Save const&) { m_painter->save(); },
+                [&](CanvasCommands::ClipPath const& clip) { m_painter->clip(clip.path, clip.winding_rule); },
+                [&](auto const&) { VERIFY_NOT_REACHED(); });
+        }
+        return;
+    }
+
+    // The state log overflowed (a pathological unbalanced state-op stream), so
+    // the painter state cannot be re-established after a reset; clear by
+    // writing pixel strips straight into the surface instead, which bypasses
+    // canvas state with only a strip-sized temporary.
+    auto size = m_surface->size();
+    int const strip_height = min(size.height(), 64);
+    if (strip_height == 0)
+        return;
+    auto bitmap_or_error = Bitmap::create(BitmapFormat::BGRA8888, AlphaType::Premultiplied, { size.width(), strip_height });
+    if (bitmap_or_error.is_error())
+        return;
+    auto bitmap = bitmap_or_error.release_value();
+    if (command.color != Color::Transparent) {
+        for (int y = 0; y < bitmap->height(); ++y) {
+            auto* scanline = bitmap->scanline(y);
+            for (int x = 0; x < bitmap->width(); ++x)
+                scanline[x] = command.color.value();
+        }
+    }
+    for (int y = 0; y < size.height(); y += strip_height)
+        m_surface->write_from_bitmap(*bitmap, { 0, y });
 }
 
 NonnullRefPtr<PaintStyle> CanvasCommandPlayer::resolve_paint_style(CanvasPaintStyle const& style) const

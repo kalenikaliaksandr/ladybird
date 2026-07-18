@@ -44,12 +44,24 @@ private:
     void play_command(CanvasCommands::Restore const&);
     void play_command(CanvasCommands::ClipPath const&);
     void play_command(CanvasCommands::Reset const&);
+    void play_command(CanvasCommands::ClearCanvas const&);
 
     NonnullRefPtr<PaintStyle> resolve_paint_style(CanvasPaintStyle const&) const;
+
+    void record_state_command(CanvasCommand&&);
 
     NonnullRefPtr<PaintingSurface> m_surface;
     NonnullOwnPtr<PainterSkia> m_painter;
     CanvasSurfaceResolver m_canvas_surface_resolver;
+
+    // The transform/clip/save commands currently in effect, so ClearCanvas can
+    // reset the painter, clear the whole surface, and re-establish the state
+    // without a surface-sized temporary. Reset empties it. Consecutive absolute
+    // transforms coalesce, and a pathological unbalanced stream that exceeds the
+    // cap flips the overflow flag instead of growing without bound (ClearCanvas
+    // then clears by writing pixel strips).
+    Vector<CanvasCommand> m_state_commands;
+    bool m_state_commands_overflowed { false };
 };
 
 }

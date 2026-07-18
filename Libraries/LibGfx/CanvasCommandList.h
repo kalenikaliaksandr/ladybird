@@ -132,6 +132,14 @@ struct ClipPath {
 
 struct Reset { };
 
+// Fills the whole surface with a color regardless of the current transform and
+// clip, without disturbing them; used to reset a canvas bitmap (for example
+// after OffscreenCanvas.transferToImageBitmap() moved it out) while the
+// recording context's drawing state lives on.
+struct ClearCanvas {
+    Color color;
+};
+
 }
 
 using CanvasCommand = Variant<
@@ -145,7 +153,8 @@ using CanvasCommand = Variant<
     CanvasCommands::Save,
     CanvasCommands::Restore,
     CanvasCommands::ClipPath,
-    CanvasCommands::Reset>;
+    CanvasCommands::Reset,
+    CanvasCommands::ClearCanvas>;
 
 class CanvasCommandList {
 public:
@@ -246,6 +255,11 @@ template<>
 ErrorOr<void> encode(Encoder&, Gfx::CanvasCommands::Reset const&);
 template<>
 ErrorOr<Gfx::CanvasCommands::Reset> decode(Decoder&);
+
+template<>
+ErrorOr<void> encode(Encoder&, Gfx::CanvasCommands::ClearCanvas const&);
+template<>
+ErrorOr<Gfx::CanvasCommands::ClearCanvas> decode(Decoder&);
 
 template<>
 ErrorOr<void> encode(Encoder&, Gfx::CanvasCommandList const&);
