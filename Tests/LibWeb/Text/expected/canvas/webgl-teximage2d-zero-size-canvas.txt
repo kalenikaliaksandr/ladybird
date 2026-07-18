@@ -1,0 +1,1 @@
+texImage2D from zero-size canvas did not crash

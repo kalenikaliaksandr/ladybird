@@ -230,7 +230,11 @@ Optional<WebGLRenderingContextBase::TexImageSourceFrame> WebGLRenderingContextBa
             return source->current_image_frame();
         },
         [](GC::Ref<HTML::HTMLCanvasElement> source) -> Optional<Gfx::DecodedImageFrame> {
-            return Gfx::DecodedImageFrame { *source->get_bitmap_from_surface() };
+            // A zero-size canvas has no bitmap at all.
+            auto bitmap = source->get_bitmap_from_surface();
+            if (!bitmap)
+                return OptionalNone {};
+            return Gfx::DecodedImageFrame { *bitmap };
         },
         [](GC::Ref<HTML::OffscreenCanvas> source) -> Optional<Gfx::DecodedImageFrame> {
             return Gfx::DecodedImageFrame { *source->bitmap() };
