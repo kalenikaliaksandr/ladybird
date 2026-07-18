@@ -407,55 +407,39 @@ GC::Ref<WebIDL::Promise> WindowOrWorkerGlobalScopeMixin::create_image_bitmap_imp
             }));
         },
         [&](CanvasImageSource const& image_source) {
+            // Shared steps for sources whose pixels arrive as a plain bitmap copy.
+            auto set_cropped_bitmap_and_resolve = [&](RefPtr<Gfx::Bitmap const> source_bitmap) {
+                // 1. Set imageBitmap's bitmap data to a copy of image's bitmap data, cropped to the source rectangle with formatting.
+                // AD-HOC: Reject promise with an "InvalidStateError" DOMException on allocation failure
+                // Spec issue: https://github.com/whatwg/html/issues/3323
+                if (!source_bitmap) {
+                    WebIDL::reject_promise(realm, *p, WebIDL::InvalidStateError::create(image_bitmap->realm(), "Image size is invalid"_utf16));
+                    return;
+                }
+                auto cropped_bitmap_or_error = crop_to_the_source_rectangle_with_formatting(move(source_bitmap), sx, sy, sw, sh, options);
+                if (cropped_bitmap_or_error.is_error()) {
+                    WebIDL::reject_promise(realm, *p, WebIDL::InvalidStateError::create(image_bitmap->realm(), "Image size is invalid"_utf16));
+                    return;
+                }
+                image_bitmap->set_bitmap(cropped_bitmap_or_error.release_value());
+
+                // FIXME: 2. Set the origin-clean flag of the imageBitmap's bitmap to the same value as the origin-clean flag of image's bitmap.
+
+                // 3. Queue a global task, using the bitmap task source, to resolve promise with imageBitmap.
+                queue_global_task(Task::Source::BitmapTask, image_bitmap, GC::create_function(realm.heap(), [p, image_bitmap] {
+                    auto& realm = relevant_realm(image_bitmap);
+                    TemporaryExecutionContext const context { realm, TemporaryExecutionContext::CallbacksEnabled::Yes };
+                    WebIDL::resolve_promise(realm, *p, image_bitmap);
+                }));
+            };
             image_source.visit(
                 // -> canvas
                 [&](GC::Ref<HTMLCanvasElement> canvas_element) {
-                    // 1. Set imageBitmap's bitmap data to a copy of image's bitmap data, cropped to the source rectangle with formatting.
-                    auto canvas_bitmap = canvas_element->get_bitmap_from_surface();
-                    // AD-HOC: Reject promise with an "InvalidStateError" DOMException on allocation failure
-                    // Spec issue: https://github.com/whatwg/html/issues/3323
-                    if (!canvas_bitmap) {
-                        WebIDL::reject_promise(realm, *p, WebIDL::InvalidStateError::create(image_bitmap->realm(), "Image size is invalid"_utf16));
-                        return;
-                    }
-                    auto cropped_bitmap_or_error = crop_to_the_source_rectangle_with_formatting(canvas_bitmap, sx, sy, sw, sh, options);
-                    // AD-HOC: Reject promise with an "InvalidStateError" DOMException on allocation failure
-                    // Spec issue: https://github.com/whatwg/html/issues/3323
-                    if (cropped_bitmap_or_error.is_error()) {
-                        WebIDL::reject_promise(realm, *p, WebIDL::InvalidStateError::create(image_bitmap->realm(), "Image size is invalid"_utf16));
-                        return;
-                    }
-                    image_bitmap->set_bitmap(cropped_bitmap_or_error.release_value());
-
-                    // FIXME: 2. Set the origin-clean flag of the imageBitmap's bitmap to the same value as the origin-clean flag of image's bitmap.
-
-                    // 3. Queue a global task, using the bitmap task source, to resolve promise with imageBitmap.
-                    queue_global_task(Task::Source::BitmapTask, image_bitmap, GC::create_function(realm.heap(), [p, image_bitmap] {
-                        auto& realm = relevant_realm(image_bitmap);
-                        TemporaryExecutionContext const context { realm, TemporaryExecutionContext::CallbacksEnabled::Yes };
-                        WebIDL::resolve_promise(realm, *p, image_bitmap);
-                    }));
+                    set_cropped_bitmap_and_resolve(canvas_element->get_bitmap_from_surface());
                 },
                 // -> ImageBitmap
                 [&](GC::Ref<ImageBitmap> source_image_bitmap) {
-                    // 1. Set imageBitmap's bitmap data to a copy of image's bitmap data, cropped to the source rectangle with formatting.
-                    auto cropped_bitmap_or_error = crop_to_the_source_rectangle_with_formatting(source_image_bitmap->bitmap(), sx, sy, sw, sh, options);
-                    // AD-HOC: Reject promise with an "InvalidStateError" DOMException on allocation failure
-                    // Spec issue: https://github.com/whatwg/html/issues/3323
-                    if (cropped_bitmap_or_error.is_error()) {
-                        WebIDL::reject_promise(realm, *p, WebIDL::InvalidStateError::create(image_bitmap->realm(), "Image size is invalid"_utf16));
-                        return;
-                    }
-                    image_bitmap->set_bitmap(cropped_bitmap_or_error.release_value());
-
-                    // FIXME: 2. Set the origin-clean flag of imageBitmap's bitmap to the same value as the origin-clean flag of image's bitmap.
-
-                    // 3. Queue a global task, using the bitmap task source, to resolve promise with imageBitmap.
-                    queue_global_task(Task::Source::BitmapTask, image_bitmap, GC::create_function(realm.heap(), [p, image_bitmap] {
-                        auto& realm = relevant_realm(image_bitmap);
-                        TemporaryExecutionContext const context { realm, TemporaryExecutionContext::CallbacksEnabled::Yes };
-                        WebIDL::resolve_promise(realm, *p, image_bitmap);
-                    }));
+                    set_cropped_bitmap_and_resolve(source_image_bitmap->bitmap());
                 },
                 [&](GC::Ref<OffscreenCanvas>) {
                     dbgln("(STUBBED) createImageBitmap() for OffscreenCanvas");
