@@ -29,7 +29,9 @@ WebIDL::UnsignedLong AnimationFrameCallbackDriver::add(Callback handler)
 
 bool AnimationFrameCallbackDriver::remove(WebIDL::UnsignedLong id)
 {
-    return m_callbacks.remove(id);
+    // A callback can cancel another one queued for the same rendering update,
+    // whose batch has already been moved into m_executing_callbacks.
+    return m_callbacks.remove(id) || m_executing_callbacks.remove(id);
 }
 
 bool AnimationFrameCallbackDriver::has_callbacks() const
@@ -42,8 +44,14 @@ void AnimationFrameCallbackDriver::run(double now)
     AK::ScopeGuard guard { [&]() { m_executing_callbacks.clear(); } };
     m_executing_callbacks = move(m_callbacks);
 
-    for (auto& [id, callback] : m_executing_callbacks)
+    // Take entries one at a time instead of iterating: an invoked callback may
+    // cancel a later callback of this same batch through remove().
+    while (!m_executing_callbacks.is_empty()) {
+        auto it = m_executing_callbacks.begin();
+        auto callback = it->value;
+        m_executing_callbacks.remove(it);
         callback->function()(now);
+    }
 }
 
 }

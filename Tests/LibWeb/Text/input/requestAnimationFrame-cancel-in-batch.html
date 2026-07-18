@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<script>
+    asyncTest(done => {
+        // A callback canceling another callback queued for the same rendering
+        // update must prevent it from running.
+        let secondRan = false;
+        let secondHandle = 0;
+        requestAnimationFrame(() => {
+            cancelAnimationFrame(secondHandle);
+        });
+        secondHandle = requestAnimationFrame(() => {
+            secondRan = true;
+        });
+        requestAnimationFrame(() => {
+            println("canceled same-batch callback ran: " + secondRan);
+            done();
+        });
+    });
+</script>
