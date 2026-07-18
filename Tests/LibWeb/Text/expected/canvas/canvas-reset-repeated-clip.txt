@@ -1,0 +1,1 @@
+fill after repeated reset covers the whole bitmap: true

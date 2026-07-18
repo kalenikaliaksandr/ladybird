@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        // reset() must stay effective when used repeatedly: clip state applied
+        // after one reset has to pop on the next one.
+        const canvas = document.createElement("canvas");
+        canvas.width = 4;
+        canvas.height = 1;
+        const ctx = canvas.getContext("2d");
+        ctx.beginPath();
+        ctx.rect(0, 0, 1, 1);
+        ctx.clip();
+        ctx.reset();
+        ctx.beginPath();
+        ctx.rect(1, 0, 1, 1);
+        ctx.clip();
+        ctx.reset();
+        ctx.fillStyle = "rgb(0, 255, 0)";
+        ctx.fillRect(0, 0, 4, 1);
+        const data = ctx.getImageData(0, 0, 4, 1).data;
+        let all_green = true;
+        for (let x = 0; x < 4; ++x) {
+            if (data[x * 4] !== 0 || data[x * 4 + 1] !== 255 || data[x * 4 + 2] !== 0 || data[x * 4 + 3] !== 255)
+                all_green = false;
+        }
+        println("fill after repeated reset covers the whole bitmap: " + all_green);
+    });
+</script>

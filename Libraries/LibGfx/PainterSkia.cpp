@@ -301,6 +301,9 @@ void PainterSkia::reset()
 {
     auto& canvas = m_painting_surface->canvas();
     canvas.restoreToCount(m_initial_save_count);
+    // Re-establish the guard save so reset() stays repeatable: transform and
+    // clip state applied after this reset must pop again on the next one.
+    m_initial_save_count = canvas.save();
 }
 
 }
