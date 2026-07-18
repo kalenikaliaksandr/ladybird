@@ -20,6 +20,7 @@
 #include <LibCore/AnonymousBuffer.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/ShareableBitmap.h>
+#include <LibGfx/Size.h>
 #include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
@@ -47,12 +48,20 @@ public:
     CanvasHost(RefPtr<Gfx::SkiaBackendContext>, Web::Painting::CanvasSurfaceRegistry&);
     ~CanvasHost();
 
+    // Authorizes resolving registry surfaces this connection does not own (its
+    // placeholder watches); without it, sequential enumerable canvas ids would
+    // let any renderer read other connections' committed canvases.
+    void set_cross_connection_read_authorizer(Function<bool(Web::Painting::CanvasId)> authorizer) { m_cross_connection_read_authorizer = move(authorizer); }
+
     Optional<Web::Painting::CanvasId> create_2d_context(Gfx::IntSize, bool alpha);
+    bool create_2d_context_with_id(Web::Painting::CanvasId, Gfx::IntSize, bool alpha);
     CreateWebGLContextResult create_webgl_context(Web::WebGL::WebGLVersion, Gfx::IntSize, bool depth, bool stencil, bool antialias);
+    CreateWebGLContextResult create_webgl_context_with_id(Web::Painting::CanvasId, Web::WebGL::WebGLVersion, Gfx::IntSize, bool depth, bool stencil, bool antialias);
     void destroy_context(Web::Painting::CanvasId);
     bool has_context(Web::Painting::CanvasId) const;
 
-    void execute_canvas_2d_stream(Vector<Web::Painting::Canvas2DCommandStreamSegment> const&);
+    // Returns the ids of the canvases this batch committed to placeholder watchers.
+    [[nodiscard]] Vector<Web::Painting::CanvasId> execute_canvas_2d_stream(Vector<Web::Painting::Canvas2DCommandStreamSegment> const&);
     void execute_webgl_commands(Web::Painting::CanvasId, ReadonlyBytes, Vector<Gfx::DecodedImageFrame> const&);
     void set_webgl_shared_command_buffer(Web::Painting::CanvasId, Web::WebGL::WebGLSharedCommandBuffer);
     [[nodiscard]] bool execute_webgl_commands_from_shared_buffer(Web::Painting::CanvasId, u64 offset, u64 size_in_bytes, u64 flush_sequence_number, Vector<Gfx::DecodedImageFrame> const&);
@@ -60,14 +69,29 @@ public:
     Web::WebGL::ReadPixelsResult webgl_read_pixels_robust_angle(Web::Painting::CanvasId, Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer pixels);
     bool webgl_read_buffer_sub_data(Web::Painting::CanvasId, Web::WebGL::GLenum target, Web::WebGL::GLintptr offset, Web::WebGL::GLintptr size, Core::AnonymousBuffer data);
 
-    void present_webgl_canvas(Web::Painting::CanvasId, bool preserve_drawing_buffer);
-    Gfx::ShareableBitmap read_back_pixels(Web::Painting::CanvasId, Gfx::IntRect);
+    Optional<Gfx::IntSize> present_webgl_canvas(Web::Painting::CanvasId, bool preserve_drawing_buffer);
+
+    enum class ReadbackSurface {
+        Live,
+        CommittedOnly,
+    };
+    Gfx::ShareableBitmap read_back_pixels(Web::Painting::CanvasId, Gfx::IntRect, ReadbackSurface = ReadbackSurface::Live);
+
+    // The origin-clean state belonging to the pixels read_back_pixels() returns:
+    // committed reads report the committed taint, live reads of an own 2D
+    // context also account for tainted committed sources composited by the
+    // player (which the client cannot observe synchronously).
+    bool canvas_pixels_origin_clean(Web::Painting::CanvasId, ReadbackSurface);
+
+    // Snapshots the current WebGL surface as the committed frame; the plain
+    // registry slot holds the live drawing surface, which committed-only
+    // consumers must never observe.
+    void commit_presented_webgl_surface(Web::Painting::CanvasId);
 
 private:
     struct Canvas2DContext {
         NonnullOwnPtr<Gfx::CanvasCommandPlayer> command_player;
         NonnullRefPtr<Gfx::PaintingSurface> presented_surface;
-        bool has_uncommitted_commands { false };
     };
     using WebGLContext = NonnullOwnPtr<HostWebGLContext>;
     using Context = Variant<Canvas2DContext, WebGLContext>;
@@ -77,8 +101,11 @@ private:
     static HostWebGLContext& as_webgl(Context&);
     void present_canvas_2d_context(Web::Painting::CanvasId, Canvas2DContext&);
 
+    bool may_read_registry_surface(Web::Painting::CanvasId) const;
+
     RefPtr<Gfx::SkiaBackendContext> m_skia_backend_context;
     Web::Painting::CanvasSurfaceRegistry& m_canvas_surface_registry;
+    Function<bool(Web::Painting::CanvasId)> m_cross_connection_read_authorizer;
     HashMap<Web::Painting::CanvasId, Context> m_contexts;
 };
 

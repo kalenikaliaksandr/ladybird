@@ -61,6 +61,149 @@ void CompositorState::destroy_contexts_for_web_content_client(CompositorStateWeb
     for (auto context_id : context_ids) {
         destroy_context(context_id);
     }
+
+    Vector<Web::Painting::CanvasId> canvas_ids_watched_by_client;
+    for (auto& watcher : m_canvas_watchers) {
+        if (watcher.value == &client)
+            canvas_ids_watched_by_client.append(watcher.key);
+    }
+    for (auto canvas_id : canvas_ids_watched_by_client) {
+        m_canvas_watchers.remove(canvas_id);
+        m_canvas_surface_registry.unpin_canvas_surface(canvas_id);
+    }
+
+    Vector<Web::Painting::CanvasId> canvas_ids_reserved_by_client;
+    for (auto& allocator : m_offscreen_canvas_id_allocators) {
+        if (allocator.value == &client)
+            canvas_ids_reserved_by_client.append(allocator.key);
+    }
+    for (auto canvas_id : canvas_ids_reserved_by_client) {
+        m_offscreen_canvas_id_allocators.remove(canvas_id);
+        // The placeholder reference is weak: its process dying only means nobody
+        // watches commits anymore, not that the surviving OffscreenCanvas (for
+        // example in a shared worker) loses its id. The claim window stays open
+        // so the producer can keep re-claiming across resizes; it closes when a
+        // producer-side signal arrives (connection death or decline).
+        m_canvas_surface_registry.release_canvas_id_reservation(canvas_id);
+    }
+}
+
+Web::Painting::CanvasId CompositorState::allocate_offscreen_canvas_id(u64 canvas_id_nonce, CompositorStateWebContentClient& client)
+{
+    // A page can strand reservations by transferring canvases to workers that
+    // terminate without ever claiming: no GC finalizer runs there, so no
+    // decline arrives, and the claim window stays open by design. Reservations
+    // whose placeholder element is already gone are worthless once nothing can
+    // watch them again; when a single connection exceeds the cap, reclaim those
+    // instead of growing without bound.
+    static constexpr size_t max_offscreen_canvas_reservations_per_connection = 4096;
+    size_t reservations_for_client = 0;
+    for (auto const& allocator : m_offscreen_canvas_id_allocators) {
+        if (allocator.value == &client)
+            ++reservations_for_client;
+    }
+    if (reservations_for_client >= max_offscreen_canvas_reservations_per_connection) {
+        for (auto const& allocator : m_offscreen_canvas_id_allocators) {
+            if (allocator.value == &client)
+                m_canvas_surface_registry.close_claim_window_of_released_unclaimed_reservation(allocator.key);
+        }
+        m_offscreen_canvas_id_allocators.remove_all_matching([&](auto id, auto) {
+            return !m_canvas_surface_registry.has_reservation(id);
+        });
+    }
+
+    auto canvas_id = m_canvas_surface_registry.reserve_canvas_id(canvas_id_nonce);
+    m_offscreen_canvas_id_allocators.set(canvas_id, &client);
+    return canvas_id;
+}
+
+bool CompositorState::is_canvas_watcher(Web::Painting::CanvasId canvas_id, CompositorStateWebContentClient const& client) const
+{
+    auto watcher = m_canvas_watchers.find(canvas_id);
+    return watcher != m_canvas_watchers.end() && watcher->value == &client;
+}
+
+void CompositorState::release_offscreen_canvas_id(Web::Painting::CanvasId canvas_id, CompositorStateWebContentClient& client)
+{
+    auto allocator = m_offscreen_canvas_id_allocators.find(canvas_id);
+    if (allocator == m_offscreen_canvas_id_allocators.end() || allocator->value != &client)
+        return;
+    // The allocator entry stays: releasing marks the reservation, but the claim
+    // window is still open for a producer that has not claimed yet, and it must
+    // still close if this connection dies first. Entries whose reservation has
+    // dropped in the meantime are pruned here so churny pages cannot grow the
+    // maps without bound.
+    m_canvas_surface_registry.release_canvas_id_reservation(canvas_id);
+    m_offscreen_canvas_id_allocators.remove_all_matching([&](auto id, auto) {
+        return !m_canvas_surface_registry.has_reservation(id);
+    });
+}
+
+void CompositorState::decline_offscreen_canvas_claim(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce)
+{
+    // A stale id (e.g. from before a Compositor restart) is legitimate client
+    // state rather than a protocol violation, so a failed check is ignored.
+    if (!m_canvas_surface_registry.canvas_id_reservation_matches_nonce(canvas_id, canvas_id_nonce))
+        return;
+    // The link holder was destroyed without ever claiming the id: no claim can
+    // arrive anymore, so the reservation is dropped as soon as the allocator has
+    // released it and no watcher pin remains.
+    m_canvas_surface_registry.close_canvas_id_claim_window(canvas_id);
+}
+
+void CompositorState::commit_offscreen_canvas_size(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce, Gfx::IntSize logical_size)
+{
+    if (!m_canvas_surface_registry.canvas_id_reservation_matches_nonce(canvas_id, canvas_id_nonce))
+        return;
+    // A commit without a backing surface (for example a resize to zero, or to
+    // dimensions no bitmap can back): watchers still learn the new logical size,
+    // and the fresh bitmap is clean by construction. The previously committed
+    // surface no longer backs anything — drop it even past the watcher pin, or
+    // painting and readback would keep exposing the old (possibly tainted)
+    // pixels under the new clean metadata.
+    m_canvas_surface_registry.drop_canvas_surface_for_commit(canvas_id);
+    m_canvas_surface_registry.record_canvas_commit(canvas_id, logical_size, /* origin_clean= */ true);
+    notify_canvas_committed(canvas_id);
+}
+
+void CompositorState::add_canvas_watcher(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce, CompositorStateWebContentClient& client)
+{
+    // A stale id (e.g. from before a Compositor restart) is legitimate client
+    // state rather than a protocol violation, so a failed check is ignored.
+    if (!m_canvas_surface_registry.canvas_id_reservation_matches_nonce(canvas_id, canvas_id_nonce))
+        return;
+
+    m_canvas_watchers.set(canvas_id, &client);
+    m_canvas_surface_registry.pin_canvas_surface(canvas_id);
+
+    // The producer may have committed on another connection before this watch
+    // arrived; notify immediately so the watcher never misses the first frame.
+    if (auto commit_state = m_canvas_surface_registry.canvas_commit_state(canvas_id); commit_state.has_value())
+        client.notify_canvas_surface_committed(canvas_id, commit_state->logical_size, commit_state->origin_clean);
+}
+
+void CompositorState::remove_canvas_watcher(Web::Painting::CanvasId canvas_id, CompositorStateWebContentClient& client)
+{
+    auto watcher = m_canvas_watchers.find(canvas_id);
+    if (watcher == m_canvas_watchers.end() || watcher->value != &client)
+        return;
+    m_canvas_watchers.remove(canvas_id);
+    m_canvas_surface_registry.unpin_canvas_surface(canvas_id);
+}
+
+void CompositorState::notify_canvas_committed(Web::Painting::CanvasId canvas_id)
+{
+    auto watcher = m_canvas_watchers.find(canvas_id);
+    if (watcher == m_canvas_watchers.end())
+        return;
+
+    // Commits carry the producer's logical canvas size and origin-clean state;
+    // a surface is not required (a zero-size or unallocatable resize commits
+    // metadata only).
+    auto commit_state = m_canvas_surface_registry.canvas_commit_state(canvas_id);
+    if (!commit_state.has_value())
+        return;
+    watcher->value->notify_canvas_surface_committed(canvas_id, commit_state->logical_size, commit_state->origin_clean);
 }
 
 void CompositorState::create_context(Web::Compositor::CompositorContextId context_id, Optional<u64> page_id, CompositorStateWebContentClient& web_content_client)

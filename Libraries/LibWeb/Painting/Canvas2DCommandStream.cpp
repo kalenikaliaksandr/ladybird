@@ -14,7 +14,7 @@ void Canvas2DCommandStream::append_segment(CanvasId canvas_id, bool present)
 {
     if (!m_segments.is_empty())
         m_command_count_excluding_tail += m_segments.last().commands.size();
-    m_segments.append({ .canvas_id = canvas_id, .commands = {}, .present = present });
+    m_segments.append({ .canvas_id = canvas_id, .commands = {}, .present = present, .commit_size = {}, .origin_clean = true });
 }
 
 Gfx::CanvasCommandList& Canvas2DCommandStream::commands_for(CanvasId canvas_id)
@@ -26,13 +26,14 @@ Gfx::CanvasCommandList& Canvas2DCommandStream::commands_for(CanvasId canvas_id)
     return m_segments.last().commands;
 }
 
-void Canvas2DCommandStream::record_present(CanvasId canvas_id)
+void Canvas2DCommandStream::record_present(CanvasId canvas_id, Optional<Gfx::IntSize> commit_size, bool origin_clean)
 {
-    if (!m_segments.is_empty() && m_segments.last().canvas_id == canvas_id) {
-        m_segments.last().present = true;
-        return;
-    }
-    append_segment(canvas_id, true);
+    if (m_segments.is_empty() || m_segments.last().canvas_id != canvas_id)
+        append_segment(canvas_id, true);
+    auto& segment = m_segments.last();
+    segment.present = true;
+    segment.commit_size = commit_size;
+    segment.origin_clean = origin_clean;
 }
 
 size_t Canvas2DCommandStream::total_command_count() const
@@ -58,6 +59,8 @@ ErrorOr<void> encode(Encoder& encoder, Web::Painting::Canvas2DCommandStreamSegme
     TRY(encoder.encode(segment.canvas_id));
     TRY(encoder.encode(segment.commands));
     TRY(encoder.encode(segment.present));
+    TRY(encoder.encode(segment.commit_size));
+    TRY(encoder.encode(segment.origin_clean));
     return {};
 }
 
@@ -68,6 +71,8 @@ ErrorOr<Web::Painting::Canvas2DCommandStreamSegment> decode(Decoder& decoder)
         .canvas_id = TRY(decoder.decode<Web::Painting::CanvasId>()),
         .commands = TRY(decoder.decode<Gfx::CanvasCommandList>()),
         .present = TRY(decoder.decode<bool>()),
+        .commit_size = TRY(decoder.decode<Optional<Gfx::IntSize>>()),
+        .origin_clean = TRY(decoder.decode<bool>()),
     };
 }
 

@@ -18,8 +18,9 @@ CanvasBox::~CanvasBox() = default;
 
 CSS::SizeWithAspectRatio CanvasBox::compute_auto_content_box_size() const
 {
-    auto width = dom_node().width();
-    auto height = dom_node().height();
+    auto natural_size = dom_node().natural_size();
+    auto width = natural_size.width();
+    auto height = natural_size.height();
     if (width == 0 || height == 0)
         return { width, height, {} };
     return { width, height, CSSPixelFraction(width, height) };

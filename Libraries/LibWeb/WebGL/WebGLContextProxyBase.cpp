@@ -187,10 +187,10 @@ void WebGLContextProxyBase::set_size(Gfx::IntSize const& size)
     record(Commands::SetDrawingBufferSize { .width = size.width(), .height = size.height() });
 }
 
-void WebGLContextProxyBase::present_canvas_for_compositing(bool preserve_drawing_buffer)
+void WebGLContextProxyBase::present_canvas_for_compositing(bool preserve_drawing_buffer, Optional<Gfx::IntSize> commit_size)
 {
     flush_commands();
-    m_transport->present_canvas(preserve_drawing_buffer);
+    m_transport->present_canvas(preserve_drawing_buffer, commit_size);
 }
 
 RefPtr<Gfx::Bitmap> WebGLContextProxyBase::read_back_drawing_buffer(Gfx::IntRect const& rect)

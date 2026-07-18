@@ -94,6 +94,7 @@ public:
     void set_window_size(Web::DevicePixelSize);
     void compositor_process_reconnected();
     void compositor_process_lost();
+    void notify_canvas_surface_committed(Web::Painting::CanvasId, Gfx::IntSize logical_size, bool origin_clean);
 
     void toggle_media_play_state();
     void toggle_media_mute_state();

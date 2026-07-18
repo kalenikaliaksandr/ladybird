@@ -36,14 +36,23 @@ endpoint CompositorWebContentServer
     create_canvas_2d_context(Gfx::IntSize size, bool alpha) => (bool success, Web::Painting::CanvasId canvas_id)
     update_canvas_2d_stream(Vector<Web::Painting::Canvas2DCommandStreamSegment> segments) =|
     destroy_canvas_context(Web::Painting::CanvasId canvas_id) =|
-    get_canvas_pixels(Web::Painting::CanvasId canvas_id, Gfx::IntRect rect) => (Gfx::ShareableBitmap pixels)
+    get_canvas_pixels(Web::Painting::CanvasId canvas_id, Gfx::IntRect rect, bool committed_only) => (Gfx::ShareableBitmap pixels, bool origin_clean)
+
+    allocate_offscreen_canvas_id() => (bool success, Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce)
+    create_canvas_2d_context_with_id(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce, Gfx::IntSize size, bool alpha) => (bool success)
+    create_webgl_context_with_id(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce, Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias) => (bool success, Vector<String> supported_extensions)
+    release_offscreen_canvas_id(Web::Painting::CanvasId canvas_id) =|
+    decline_offscreen_canvas_claim(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce) =|
+    commit_offscreen_canvas_size(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce, Gfx::IntSize logical_size) =|
+    watch_canvas_surface(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce) =|
+    unwatch_canvas_surface(Web::Painting::CanvasId canvas_id) =|
 
     create_webgl_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias) => (bool success, Web::Painting::CanvasId canvas_id, Vector<String> supported_extensions)
     webgl_set_command_buffer(Web::Painting::CanvasId canvas_id, Core::AnonymousBuffer command_buffer) =|
     webgl_commands_from_shared_buffer(Web::Painting::CanvasId canvas_id, u64 offset, u64 size_in_bytes, u64 flush_sequence_number, Vector<Gfx::DecodedImageFrame> bitmaps) =|
     webgl_drain_command_buffer(Web::Painting::CanvasId canvas_id) => ()
     webgl_commands(Web::Painting::CanvasId canvas_id, Core::AnonymousBuffer commands, Vector<Gfx::DecodedImageFrame> bitmaps) =|
-    webgl_present_canvas(Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer) =|
+    webgl_present_canvas(Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer, Optional<Gfx::IntSize> commit_size) =|
     webgl_sync_call(Web::Painting::CanvasId canvas_id, ByteBuffer request) => (ByteBuffer reply)
     webgl_read_pixels(Web::Painting::CanvasId canvas_id, i32 x, i32 y, i32 width, i32 height, u32 format, u32 type, i32 buf_size, Core::AnonymousBuffer pixels) => (i32 length, i32 columns, i32 rows)
     webgl_read_buffer_sub_data(Web::Painting::CanvasId canvas_id, u32 target, i64 offset, i64 size, Core::AnonymousBuffer data) => (bool success)

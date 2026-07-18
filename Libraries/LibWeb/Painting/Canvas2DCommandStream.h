@@ -9,6 +9,7 @@
 #include <AK/RefCounted.h>
 #include <AK/Vector.h>
 #include <LibGfx/CanvasCommandList.h>
+#include <LibGfx/Size.h>
 #include <LibIPC/Forward.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
@@ -19,6 +20,11 @@ struct WEB_API Canvas2DCommandStreamSegment {
     CanvasId canvas_id;
     Gfx::CanvasCommandList commands;
     bool present { false };
+    // A present that also commits to placeholder watchers carries the canvas's
+    // logical size and origin-clean state at commit time; plain presents (for
+    // example element canvases, or internal presents) leave it empty.
+    Optional<Gfx::IntSize> commit_size;
+    bool origin_clean { true };
 };
 
 // An ordered stream of canvas 2D commands covering all canvases of a WebContent
@@ -31,7 +37,7 @@ public:
     // (recording for another canvas, a present marker, or a flush) — do not
     // hold it across calls that may touch the stream.
     Gfx::CanvasCommandList& commands_for(CanvasId);
-    void record_present(CanvasId);
+    void record_present(CanvasId, Optional<Gfx::IntSize> commit_size = {}, bool origin_clean = true);
 
     bool is_empty() const { return m_segments.is_empty(); }
     size_t total_command_count() const;

@@ -8,6 +8,7 @@
 
 #include <AK/Optional.h>
 #include <LibGfx/Forward.h>
+#include <LibGfx/Size.h>
 #include <LibWeb/HTML/HTMLElement.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/WebIDL/Types.h>
@@ -67,6 +68,13 @@ public:
 
     void notify_compositor_connection_lost();
 
+    bool did_commit_offscreen_frame(Painting::CanvasId, Gfx::IntSize committed_size, bool origin_clean);
+
+    // The natural (intrinsic) dimensions layout sizes the canvas box from: the
+    // width/height content attributes, or the size a linked OffscreenCanvas
+    // last committed to this placeholder.
+    Gfx::IntSize natural_size() const;
+
     CSS::ComputationContext canvas_font_computation_context();
 
 private:
@@ -93,6 +101,14 @@ private:
     Variant<GC::Ref<HTML::CanvasRenderingContext2D>, GC::Ref<WebGL::WebGLRenderingContext>, GC::Ref<WebGL::WebGL2RenderingContext>, Empty> m_context;
     bool m_canvas_content_dirty { false };
     u64 m_content_generation { 0 };
+
+    // Placeholder-mode state, set by transferControlToOffscreen() in a later change.
+    Optional<Painting::CanvasId> m_placeholder_canvas_id;
+    // The size the linked OffscreenCanvas last committed; empty until the first
+    // commit arrives. A committed zero size is a real natural size, distinct
+    // from "no commit yet".
+    Optional<Gfx::IntSize> m_placeholder_content_size;
+    bool m_placeholder_content_origin_clean { true };
 };
 
 }

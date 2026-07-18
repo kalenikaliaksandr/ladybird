@@ -903,6 +903,7 @@ set(SOURCES
     Painting/InlinePaintable.cpp
     Painting/MarkerPaintable.cpp
     Painting/NavigableContainerViewportPaintable.cpp
+    Painting/OffscreenCanvasLink.cpp
     Painting/Paintable.cpp
     Painting/PaintStyle.cpp
     Painting/PaintableFragment.cpp

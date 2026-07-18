@@ -13,7 +13,9 @@
 #include <AK/NonnullOwnPtr.h>
 #include <AK/OwnPtr.h>
 #include <LibGC/Root.h>
+#include <LibGfx/Size.h>
 #include <LibWeb/HTML/CrossProcessId.h>
+#include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <WebContent/Forward.h>
 
 namespace Web {
@@ -47,6 +49,7 @@ public:
     void ensure_compositor_host();
     void compositor_process_reconnected();
     void compositor_process_lost();
+    void notify_canvas_surface_committed(Web::Painting::CanvasId, Gfx::IntSize logical_size, bool origin_clean);
     Web::Compositor::CompositorHost* compositor_host() { return m_compositor_host.ptr(); }
     Web::Compositor::CompositorHost const* compositor_host() const { return m_compositor_host.ptr(); }
 

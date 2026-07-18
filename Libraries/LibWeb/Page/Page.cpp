@@ -755,6 +755,28 @@ void Page::notify_all_webgl_contexts_lost()
     });
 }
 
+void Page::register_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId canvas_id, UniqueNodeID element_id)
+{
+    m_placeholder_canvas_elements.set(canvas_id, element_id);
+}
+
+void Page::unregister_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId canvas_id)
+{
+    m_placeholder_canvas_elements.remove(canvas_id);
+}
+
+void Page::notify_offscreen_canvas_surface_committed(Painting::CanvasId canvas_id, Gfx::IntSize committed_size, bool origin_clean)
+{
+    auto element_id = m_placeholder_canvas_elements.get(canvas_id);
+    if (!element_id.has_value())
+        return;
+    auto* node = DOM::Node::from_unique_id(*element_id);
+    if (!node)
+        return;
+    if (as<HTML::HTMLCanvasElement>(*node).did_commit_offscreen_frame(canvas_id, committed_size, origin_clean))
+        HTML::main_thread_event_loop().queue_task_to_update_the_rendering();
+}
+
 void Page::did_request_media_context_menu(UniqueNodeID media_id, CSSPixelPoint position, ByteString const& target, unsigned modifiers, MediaContextMenu const& menu)
 {
     m_media_context_menu_element_id = media_id;

@@ -25,10 +25,17 @@ public:
     }
 
 private:
-    virtual CreateResult create_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize initial_size, bool depth, bool stencil, bool antialias) override
+    virtual CreateResult create_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize initial_size, bool depth, bool stencil, bool antialias, Optional<Web::Painting::OffscreenCanvasPlaceholderLink> placeholder_link) override
     {
         VERIFY(!m_canvas_id.has_value());
         CreateResult result;
+        if (placeholder_link.has_value()) {
+            if (m_connection->create_webgl_context_with_id(*placeholder_link, webgl_version, initial_size, depth, stencil, antialias, result.supported_extensions)) {
+                result.success = true;
+                m_canvas_id = placeholder_link->canvas_id;
+            }
+            return result;
+        }
         auto canvas_id = m_connection->create_webgl_context(webgl_version, initial_size, depth, stencil, antialias, result.supported_extensions);
         if (canvas_id.has_value()) {
             result.success = true;
@@ -78,11 +85,11 @@ private:
         m_connection->send_webgl_commands(*m_canvas_id, commands, bitmaps);
     }
 
-    virtual void present_canvas(bool preserve_drawing_buffer) override
+    virtual void present_canvas(bool preserve_drawing_buffer, Optional<Gfx::IntSize> commit_size) override
     {
         if (!m_canvas_id.has_value())
             return;
-        m_connection->present_webgl_canvas(*m_canvas_id, preserve_drawing_buffer);
+        m_connection->present_webgl_canvas(*m_canvas_id, preserve_drawing_buffer, commit_size);
     }
 
     virtual ByteBuffer sync_call(ByteBuffer request) override
@@ -110,7 +117,7 @@ private:
     {
         if (!m_canvas_id.has_value())
             return {};
-        return m_connection->get_canvas_pixels(*m_canvas_id, rect);
+        return m_connection->get_canvas_pixels(*m_canvas_id, rect).pixels;
     }
 
     NonnullRefPtr<CompositorConnection> m_connection;
@@ -126,9 +133,15 @@ public:
     }
 
 private:
-    virtual bool create_context(Gfx::IntSize size, bool alpha) override
+    virtual bool create_context(Gfx::IntSize size, bool alpha, Optional<Web::Painting::OffscreenCanvasPlaceholderLink> placeholder_link) override
     {
         VERIFY(!m_canvas_id.has_value());
+        if (placeholder_link.has_value()) {
+            if (!m_connection->create_canvas_2d_context_with_id(*placeholder_link, size, alpha))
+                return false;
+            m_canvas_id = placeholder_link->canvas_id;
+            return true;
+        }
         auto canvas_id = m_connection->create_canvas_2d_context(size, alpha);
         if (!canvas_id.has_value())
             return false;
@@ -159,14 +172,14 @@ private:
         m_connection->update_canvas_2d_stream(*m_stream);
     }
 
-    virtual RefPtr<Gfx::Bitmap> read_back_pixels(Gfx::IntRect const& rect) override
+    virtual PixelReadback read_back_pixels(Gfx::IntRect const& rect) override
     {
         if (!m_canvas_id.has_value())
-            return nullptr;
-        auto shareable_bitmap = m_connection->get_canvas_pixels(*m_canvas_id, rect);
-        if (!shareable_bitmap.is_valid())
-            return nullptr;
-        return shareable_bitmap.bitmap();
+            return {};
+        auto readback = m_connection->get_canvas_pixels(*m_canvas_id, rect);
+        if (!readback.pixels.is_valid())
+            return { nullptr, readback.origin_clean };
+        return { readback.pixels.bitmap(), readback.origin_clean };
     }
 
     NonnullRefPtr<CompositorConnection> m_connection;
@@ -186,6 +199,56 @@ RefPtr<Web::HTML::RemoteCanvas2DTransport> CompositorHostBase::create_canvas_2d_
     if (auto* connection = compositor_connection())
         return adopt_ref(*new CompositorRemoteCanvas2DTransport(*connection, canvas_2d_stream()));
     return nullptr;
+}
+
+Optional<Web::Painting::OffscreenCanvasPlaceholderLink> CompositorHostBase::allocate_offscreen_canvas_id()
+{
+    if (auto* connection = compositor_connection())
+        return connection->allocate_offscreen_canvas_id();
+    return {};
+}
+
+Web::Compositor::CompositorHost::CanvasSurfaceReadback CompositorHostBase::read_back_canvas_surface(Web::Painting::CanvasId canvas_id, Gfx::IntRect const& rect)
+{
+    auto* connection = compositor_connection();
+    if (!connection)
+        return {};
+    // Placeholder reads must show the last committed frame even when the
+    // producer lives on this same connection with newer, uncommitted draws.
+    auto readback = connection->get_canvas_pixels(canvas_id, rect, CompositorConnection::CanvasReadbackSurface::CommittedOnly);
+    if (!readback.pixels.is_valid())
+        return { nullptr, readback.origin_clean };
+    return { readback.pixels.bitmap(), readback.origin_clean };
+}
+
+void CompositorHostBase::decline_offscreen_canvas_claim(Web::Painting::OffscreenCanvasPlaceholderLink placeholder_link)
+{
+    if (auto* connection = compositor_connection())
+        connection->decline_offscreen_canvas_claim(placeholder_link);
+}
+
+void CompositorHostBase::commit_offscreen_canvas_size(Web::Painting::OffscreenCanvasPlaceholderLink placeholder_link, Gfx::IntSize logical_size)
+{
+    if (auto* connection = compositor_connection())
+        connection->commit_offscreen_canvas_size(placeholder_link, logical_size);
+}
+
+void CompositorHostBase::watch_canvas_surface(Web::Painting::OffscreenCanvasPlaceholderLink placeholder_link)
+{
+    if (auto* connection = compositor_connection())
+        connection->watch_canvas_surface(placeholder_link);
+}
+
+void CompositorHostBase::unwatch_canvas_surface(Web::Painting::CanvasId canvas_id)
+{
+    if (auto* connection = compositor_connection())
+        connection->unwatch_canvas_surface(canvas_id);
+}
+
+void CompositorHostBase::release_offscreen_canvas_id(Web::Painting::CanvasId canvas_id)
+{
+    if (auto* connection = compositor_connection())
+        connection->release_offscreen_canvas_id(canvas_id);
 }
 
 void CompositorHostBase::send_canvas_2d_stream(Web::Painting::Canvas2DCommandStream& stream)

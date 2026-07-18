@@ -83,4 +83,10 @@ void PageHost::compositor_process_lost()
         page->compositor_process_lost();
 }
 
+void PageHost::notify_canvas_surface_committed(Web::Painting::CanvasId canvas_id, Gfx::IntSize logical_size, bool origin_clean)
+{
+    for (auto& [_, page] : m_pages)
+        page->notify_canvas_surface_committed(canvas_id, logical_size, origin_clean);
+}
+
 }

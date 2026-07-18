@@ -39,7 +39,9 @@ Gfx::IntSize canvas_image_source_dimensions(CanvasImageSource const& image)
             return { source->width()->anim_val()->value(), source->height()->anim_val()->value() };
         },
         [](GC::Ref<HTMLCanvasElement> source) -> Gfx::IntSize {
-            return { source->width(), source->height() };
+            // A placeholder's bitmap dimensions are the committed ones, not its
+            // frozen attributes.
+            return source->natural_size();
         },
         [](GC::Ref<ImageBitmap> source) -> Gfx::IntSize {
             if (auto* bitmap = source->bitmap())

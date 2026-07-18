@@ -245,6 +245,9 @@ void ConnectionFromClient::connect_to_compositor_process(IPC::TransportHandle ha
     m_compositor_connection->on_compositor_lost = [this] {
         m_page_host->compositor_process_lost();
     };
+    m_compositor_connection->on_canvas_surface_committed = [this](Web::Painting::CanvasId canvas_id, Gfx::IntSize logical_size, bool origin_clean) {
+        m_page_host->notify_canvas_surface_committed(canvas_id, logical_size, origin_clean);
+    };
 
 #ifdef AK_OS_WINDOWS
     // Perform Windows peer PID handshake before any other IPC

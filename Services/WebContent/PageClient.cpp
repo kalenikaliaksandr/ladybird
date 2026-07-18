@@ -355,6 +355,11 @@ void PageClient::compositor_process_lost()
     page().notify_all_webgl_contexts_lost();
 }
 
+void PageClient::notify_canvas_surface_committed(Web::Painting::CanvasId canvas_id, Gfx::IntSize logical_size, bool origin_clean)
+{
+    page().notify_offscreen_canvas_surface_committed(canvas_id, logical_size, origin_clean);
+}
+
 void PageClient::compositor_process_reconnected()
 {
     // Drop canvas commands recorded for the previous Compositor process: the

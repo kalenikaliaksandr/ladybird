@@ -19,6 +19,7 @@
 #include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
+#include <LibWeb/Painting/OffscreenCanvasLink.h>
 
 namespace Web::Compositor {
 
@@ -72,6 +73,28 @@ public:
 
     virtual RefPtr<WebGL::RemoteWebGLTransport> create_webgl_transport() = 0;
     virtual RefPtr<HTML::RemoteCanvas2DTransport> create_canvas_2d_transport() = 0;
+
+    virtual Optional<Painting::OffscreenCanvasPlaceholderLink> allocate_offscreen_canvas_id() = 0;
+    // Reads back a canvas surface by id from the shared registry, including surfaces
+    // whose producing context lives on another connection (placeholder canvases).
+    // The origin-clean state arrives with the pixels so the reader can never pair
+    // a tainted frame with a stale clean flag.
+    struct CanvasSurfaceReadback {
+        RefPtr<Gfx::Bitmap> bitmap;
+        bool origin_clean { true };
+    };
+    virtual CanvasSurfaceReadback read_back_canvas_surface(Painting::CanvasId, Gfx::IntRect const&) = 0;
+    virtual void watch_canvas_surface(Painting::OffscreenCanvasPlaceholderLink) = 0;
+    virtual void unwatch_canvas_surface(Painting::CanvasId) = 0;
+    virtual void release_offscreen_canvas_id(Painting::CanvasId) = 0;
+
+    // Tells the Compositor no claim will ever arrive for this link (its holder
+    // died unclaimed), so the reservation can be garbage collected.
+    virtual void decline_offscreen_canvas_claim(Painting::OffscreenCanvasPlaceholderLink) = 0;
+
+    // Commits a logical size to placeholder watchers without presenting a
+    // surface (a resize to zero, or to dimensions no bitmap can back).
+    virtual void commit_offscreen_canvas_size(Painting::OffscreenCanvasPlaceholderLink, Gfx::IntSize logical_size) = 0;
 
     virtual void destroy_context(CompositorContextId) = 0;
     virtual void set_parent_context(CompositorContextId, Optional<CompositorContextId>) = 0;

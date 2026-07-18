@@ -63,6 +63,7 @@
 #include <LibWeb/Page/ScreenWakeLockHandle.h>
 #include <LibWeb/Page/ViewportIsFullscreen.h>
 #include <LibWeb/Painting/ChromeMetrics.h>
+#include <LibWeb/Painting/DisplayListResourceIds.h>
 #include <LibWeb/PixelUnits.h>
 #include <LibWeb/StorageAPI/StorageEndpoint.h>
 #include <LibWeb/UIEvents/KeyCode.h>
@@ -247,9 +248,13 @@ public:
     void register_canvas_element(Badge<HTML::HTMLCanvasElement>, UniqueNodeID canvas_id);
     void unregister_canvas_element(Badge<HTML::HTMLCanvasElement>, UniqueNodeID canvas_id);
 
+    void register_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId, UniqueNodeID element_id);
+    void unregister_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId);
+
     void prepare_canvas_contexts_for_compositing();
     void notify_all_canvas_elements_of_lost_backing_storage();
     void notify_all_webgl_contexts_lost();
+    void notify_offscreen_canvas_surface_committed(Painting::CanvasId, Gfx::IntSize committed_size, bool origin_clean);
 
     struct MediaContextMenu {
         URL::URL media_url;
@@ -377,6 +382,11 @@ private:
 
     Vector<UniqueNodeID> m_media_elements;
     Vector<UniqueNodeID> m_canvas_elements;
+
+    // Placeholder canvas elements by the canvas id their transferred OffscreenCanvas
+    // commits to, for O(1) frame-commit delivery. Entries unregister in
+    // HTMLCanvasElement::finalize.
+    HashMap<Painting::CanvasId, UniqueNodeID> m_placeholder_canvas_elements;
     Optional<UniqueNodeID> m_media_context_menu_element_id;
 
     Web::HTML::MuteState m_mute_state { Web::HTML::MuteState::Unmuted };

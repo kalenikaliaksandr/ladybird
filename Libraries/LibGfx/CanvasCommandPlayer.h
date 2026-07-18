@@ -21,9 +21,17 @@ class CanvasCommandPlayer {
     AK_MAKE_NONMOVABLE(CanvasCommandPlayer);
 
 public:
-    using CanvasSurfaceResolver = Function<PaintingSurface const*(u64)>;
+    // committed_only asks for the last committed (presented) surface even when a
+    // live drawing surface exists on the same host: placeholder canvas sources
+    // must never expose uncommitted pixels.
+    using CanvasSurfaceResolver = Function<PaintingSurface const*(u64, bool committed_only)>;
 
-    CanvasCommandPlayer(RefPtr<SkiaBackendContext>, IntSize, BitmapFormat, AlphaType, CanvasSurfaceResolver = {});
+    // Whether a committed source canvas's frame is origin-tainted; consulted when
+    // compositing committed-only DrawCanvas commands so the taint decision is
+    // atomic with the pixels actually composited.
+    using CanvasTaintResolver = Function<bool(u64)>;
+
+    CanvasCommandPlayer(RefPtr<SkiaBackendContext>, IntSize, BitmapFormat, AlphaType, CanvasSurfaceResolver = {}, CanvasTaintResolver = {});
     ~CanvasCommandPlayer();
 
     NonnullRefPtr<PaintingSurface> surface() const;
@@ -31,6 +39,10 @@ public:
     void clear(Color);
 
     void play(CanvasCommandList const&);
+
+    // True once a committed-only DrawCanvas composited a source whose committed
+    // frame was tainted; cleared when the bitmap is replaced (ClearCanvas).
+    bool has_composited_tainted_source() const { return m_composited_tainted_source; }
 
 private:
     void play_command(CanvasCommands::ClearRect const&);
@@ -53,6 +65,7 @@ private:
     NonnullRefPtr<PaintingSurface> m_surface;
     NonnullOwnPtr<PainterSkia> m_painter;
     CanvasSurfaceResolver m_canvas_surface_resolver;
+    CanvasTaintResolver m_canvas_taint_resolver;
 
     // The transform/clip/save commands currently in effect, so ClearCanvas can
     // reset the painter, clear the whole surface, and re-establish the state
@@ -62,6 +75,8 @@ private:
     // then clears by writing pixel strips).
     Vector<CanvasCommand> m_state_commands;
     bool m_state_commands_overflowed { false };
+
+    bool m_composited_tainted_source { false };
 };
 
 }

@@ -18,6 +18,7 @@
 #include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Painting/DisplayListResourceIds.h>
+#include <LibWeb/Painting/OffscreenCanvasLink.h>
 #include <LibWeb/WebGL/Types.h>
 
 namespace Web::WebGL {
@@ -30,7 +31,7 @@ public:
         bool success { false };
         Vector<String> supported_extensions;
     };
-    virtual CreateResult create_context(WebGLVersion, Gfx::IntSize initial_size, bool depth, bool stencil, bool antialias) = 0;
+    virtual CreateResult create_context(WebGLVersion, Gfx::IntSize initial_size, bool depth, bool stencil, bool antialias, Optional<Painting::OffscreenCanvasPlaceholderLink> = {}) = 0;
     virtual Optional<Painting::CanvasId> canvas_id() const = 0;
     virtual void destroy_context() = 0;
 
@@ -39,7 +40,7 @@ public:
     virtual bool wait_until_published_commands_executed() = 0;
 
     virtual void send_commands(ByteBuffer const&, Vector<Gfx::DecodedImageFrame> const& bitmaps) = 0;
-    virtual void present_canvas(bool preserve_drawing_buffer) = 0;
+    virtual void present_canvas(bool preserve_drawing_buffer, Optional<Gfx::IntSize> commit_size) = 0;
     virtual ByteBuffer sync_call(ByteBuffer request) = 0;
     virtual ReadPixelsResult read_pixels_robust_angle(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei buf_size, Core::AnonymousBuffer pixels) = 0;
     virtual bool read_buffer_sub_data(GLenum target, GLintptr offset, GLintptr size, Core::AnonymousBuffer data) = 0;

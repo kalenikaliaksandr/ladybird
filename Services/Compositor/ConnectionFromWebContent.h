@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/Function.h>
+#include <AK/HashTable.h>
 #include <AK/Optional.h>
 #include <Compositor/CanvasHost.h>
 #include <Compositor/CompositorState.h>
@@ -49,14 +50,23 @@ private:
     virtual Messages::CompositorWebContentServer::CreateCanvas2dContextResponse create_canvas_2d_context(Gfx::IntSize, bool) override;
     virtual void update_canvas_2d_stream(Vector<Web::Painting::Canvas2DCommandStreamSegment>) override;
     virtual void destroy_canvas_context(Web::Painting::CanvasId) override;
-    virtual Messages::CompositorWebContentServer::GetCanvasPixelsResponse get_canvas_pixels(Web::Painting::CanvasId, Gfx::IntRect) override;
+    virtual Messages::CompositorWebContentServer::GetCanvasPixelsResponse get_canvas_pixels(Web::Painting::CanvasId, Gfx::IntRect, bool committed_only) override;
+
+    virtual Messages::CompositorWebContentServer::AllocateOffscreenCanvasIdResponse allocate_offscreen_canvas_id() override;
+    virtual Messages::CompositorWebContentServer::CreateCanvas2dContextWithIdResponse create_canvas_2d_context_with_id(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce, Gfx::IntSize size, bool alpha) override;
+    virtual Messages::CompositorWebContentServer::CreateWebglContextWithIdResponse create_webgl_context_with_id(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce, Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias) override;
+    virtual void release_offscreen_canvas_id(Web::Painting::CanvasId canvas_id) override;
+    virtual void decline_offscreen_canvas_claim(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce) override;
+    virtual void commit_offscreen_canvas_size(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce, Gfx::IntSize logical_size) override;
+    virtual void watch_canvas_surface(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce) override;
+    virtual void unwatch_canvas_surface(Web::Painting::CanvasId canvas_id) override;
 
     virtual Messages::CompositorWebContentServer::CreateWebglContextResponse create_webgl_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias) override;
     virtual void webgl_set_command_buffer(Web::Painting::CanvasId canvas_id, Core::AnonymousBuffer command_buffer) override;
     virtual void webgl_commands_from_shared_buffer(Web::Painting::CanvasId canvas_id, u64 offset, u64 size_in_bytes, u64 flush_sequence_number, Vector<Gfx::DecodedImageFrame> bitmaps) override;
     virtual void webgl_drain_command_buffer(Web::Painting::CanvasId canvas_id) override;
     virtual void webgl_commands(Web::Painting::CanvasId canvas_id, Core::AnonymousBuffer commands, Vector<Gfx::DecodedImageFrame> bitmaps) override;
-    virtual void webgl_present_canvas(Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer) override;
+    virtual void webgl_present_canvas(Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer, Optional<Gfx::IntSize> commit_size) override;
     virtual Messages::CompositorWebContentServer::WebglSyncCallResponse webgl_sync_call(Web::Painting::CanvasId canvas_id, ByteBuffer request) override;
     virtual Messages::CompositorWebContentServer::WebglReadPixelsResponse webgl_read_pixels(Web::Painting::CanvasId canvas_id, i32 x, i32 y, i32 width, i32 height, u32 format, u32 type, i32 buf_size, Core::AnonymousBuffer pixels) override;
     virtual Messages::CompositorWebContentServer::WebglReadBufferSubDataResponse webgl_read_buffer_sub_data(Web::Painting::CanvasId canvas_id, u32 target, i64 offset, i64 size, Core::AnonymousBuffer data) override;
@@ -69,11 +79,17 @@ private:
 
     virtual void dispatch_mouse_event_to_web_content(u64 page_id, Web::MouseEvent const&) override;
     virtual void request_rendering_update() override;
+    virtual void notify_canvas_surface_committed(Web::Painting::CanvasId, Gfx::IntSize logical_size, bool origin_clean) override;
     bool context_is_owned_by_this_connection(Web::Compositor::CompositorContextId);
 
     NonnullRefPtr<CompositorState> m_compositor_state;
     CanvasHost m_canvas_host;
     Function<void(ConnectionFromWebContent&)> m_on_death;
+
+    // Reserved ids this connection claimed through create_*_with_id; their claim
+    // windows close when the connection dies, even for contexts destroyed and not
+    // (yet) recreated by a resize.
+    HashTable<Web::Painting::CanvasId> m_adopted_offscreen_canvas_ids;
 };
 
 }

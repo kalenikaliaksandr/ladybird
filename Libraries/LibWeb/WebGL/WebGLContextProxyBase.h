@@ -49,7 +49,10 @@ public:
     Vector<String> const& get_supported_opengl_extensions() const { return m_supported_extensions; }
     void set_size(Gfx::IntSize const&);
 
-    void present_canvas_for_compositing(bool preserve_drawing_buffer);
+    // A present carrying a commit size updates placeholder watchers; internal
+    // presents (drawImage source preparation, transferToImageBitmap resets)
+    // leave it empty.
+    void present_canvas_for_compositing(bool preserve_drawing_buffer, Optional<Gfx::IntSize> commit_size = {});
 
     RefPtr<Gfx::Bitmap> read_back_drawing_buffer(Gfx::IntRect const&);
 

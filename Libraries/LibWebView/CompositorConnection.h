@@ -25,6 +25,7 @@
 #include <LibWeb/Painting/Canvas2DCommandStream.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
+#include <LibWeb/Painting/OffscreenCanvasLink.h>
 #include <LibWeb/Painting/ScrollState.h>
 #include <LibWeb/WebGL/Types.h>
 #include <LibWebView/Forward.h>
@@ -50,7 +51,23 @@ public:
     Optional<Web::Painting::CanvasId> create_canvas_2d_context(Gfx::IntSize, bool alpha);
     void update_canvas_2d_stream(Web::Painting::Canvas2DCommandStream&);
     void destroy_canvas_context(Web::Painting::CanvasId);
-    Gfx::ShareableBitmap get_canvas_pixels(Web::Painting::CanvasId, Gfx::IntRect);
+    struct CanvasPixelsReadback {
+        Gfx::ShareableBitmap pixels;
+        bool origin_clean { true };
+    };
+    enum class CanvasReadbackSurface {
+        Live,
+        CommittedOnly,
+    };
+    CanvasPixelsReadback get_canvas_pixels(Web::Painting::CanvasId, Gfx::IntRect, CanvasReadbackSurface = CanvasReadbackSurface::Live);
+    Optional<Web::Painting::OffscreenCanvasPlaceholderLink> allocate_offscreen_canvas_id();
+    bool create_canvas_2d_context_with_id(Web::Painting::OffscreenCanvasPlaceholderLink, Gfx::IntSize, bool alpha);
+    bool create_webgl_context_with_id(Web::Painting::OffscreenCanvasPlaceholderLink, Web::WebGL::WebGLVersion, Gfx::IntSize, bool depth, bool stencil, bool antialias, Vector<String>& out_supported_extensions);
+    void release_offscreen_canvas_id(Web::Painting::CanvasId);
+    void decline_offscreen_canvas_claim(Web::Painting::OffscreenCanvasPlaceholderLink);
+    void commit_offscreen_canvas_size(Web::Painting::OffscreenCanvasPlaceholderLink, Gfx::IntSize logical_size);
+    void watch_canvas_surface(Web::Painting::OffscreenCanvasPlaceholderLink);
+    void unwatch_canvas_surface(Web::Painting::CanvasId);
     void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation);
     Web::Compositor::AsyncScrollEnqueueResult async_scroll_by(Web::Compositor::CompositorContextId, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollOperationTracking);
     Web::Compositor::PendingAsyncScrollUpdates take_pending_async_scroll_updates(Web::Compositor::CompositorContextId);
@@ -63,13 +80,14 @@ public:
     void send_webgl_commands_from_shared_buffer(Web::Painting::CanvasId, u64 offset, u64 size_in_bytes, u64 flush_sequence_number, Vector<Gfx::DecodedImageFrame> const& bitmaps);
     bool drain_webgl_command_buffer(Web::Painting::CanvasId);
     void send_webgl_commands(Web::Painting::CanvasId, ByteBuffer const&, Vector<Gfx::DecodedImageFrame> const& bitmaps);
-    void present_webgl_canvas(Web::Painting::CanvasId, bool preserve_drawing_buffer);
+    void present_webgl_canvas(Web::Painting::CanvasId, bool preserve_drawing_buffer, Optional<Gfx::IntSize> commit_size);
     ByteBuffer webgl_sync_call(Web::Painting::CanvasId, ByteBuffer request);
     Web::WebGL::ReadPixelsResult read_webgl_pixels(Web::Painting::CanvasId, Web::WebGL::GLint x, Web::WebGL::GLint y, Web::WebGL::GLsizei width, Web::WebGL::GLsizei height, Web::WebGL::GLenum format, Web::WebGL::GLenum type, Web::WebGL::GLsizei buf_size, Core::AnonymousBuffer const& pixels);
     bool read_webgl_buffer_sub_data(Web::Painting::CanvasId, Web::WebGL::GLenum target, Web::WebGL::GLintptr offset, Web::WebGL::GLintptr size, Core::AnonymousBuffer const& data);
 
     Function<void(u64 page_id, Web::MouseEvent)> on_mouse_event;
     Function<void()> on_compositor_lost;
+    Function<void(Web::Painting::CanvasId, Gfx::IntSize, bool)> on_canvas_surface_committed;
 
 private:
     struct PendingScreenshot {
@@ -83,6 +101,7 @@ private:
 
     virtual void mouse_event(u64 page_id, Web::MouseEvent) override;
     virtual void request_rendering_update() override;
+    virtual void canvas_surface_committed(Web::Painting::CanvasId, Gfx::IntSize, bool) override;
     virtual void did_complete_screenshot(Web::Compositor::ScreenshotRequestId) override;
     virtual void did_fail_screenshot(Web::Compositor::ScreenshotRequestId) override;
     virtual void did_lose_compositor() override;

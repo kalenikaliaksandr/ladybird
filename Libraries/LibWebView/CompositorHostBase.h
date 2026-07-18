@@ -18,6 +18,14 @@ public:
     virtual RefPtr<Web::WebGL::RemoteWebGLTransport> create_webgl_transport() override;
     virtual RefPtr<Web::HTML::RemoteCanvas2DTransport> create_canvas_2d_transport() override;
 
+    virtual Optional<Web::Painting::OffscreenCanvasPlaceholderLink> allocate_offscreen_canvas_id() override;
+    virtual CanvasSurfaceReadback read_back_canvas_surface(Web::Painting::CanvasId, Gfx::IntRect const&) override;
+    virtual void decline_offscreen_canvas_claim(Web::Painting::OffscreenCanvasPlaceholderLink) override;
+    virtual void commit_offscreen_canvas_size(Web::Painting::OffscreenCanvasPlaceholderLink, Gfx::IntSize logical_size) override;
+    virtual void watch_canvas_surface(Web::Painting::OffscreenCanvasPlaceholderLink) override;
+    virtual void unwatch_canvas_surface(Web::Painting::CanvasId) override;
+    virtual void release_offscreen_canvas_id(Web::Painting::CanvasId) override;
+
     virtual void destroy_context(Web::Compositor::CompositorContextId) override;
     virtual void set_parent_context(Web::Compositor::CompositorContextId, Optional<Web::Compositor::CompositorContextId>) override;
     virtual void stop_presenting_to_client(Web::Compositor::CompositorContextId) override;

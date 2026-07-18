@@ -249,12 +249,16 @@ void DisplayListPlayerSkia::play_command(DrawCompositedContext const& command)
 void DisplayListPlayerSkia::play_command(DrawCanvas const& command)
 {
     auto const* registry = canvas_surface_registry();
-    if (!registry)
+    if (!registry) {
         return;
+    }
 
-    auto* canvas_surface = registry->canvas_surface(command.canvas_id);
-    if (!canvas_surface)
+    // Reserved (placeholder-linked) ids paint their committed frame; the plain
+    // slot may hold the producer's uncommitted work mid-frame.
+    auto* canvas_surface = registry->canvas_surface_for_presentation(command.canvas_id);
+    if (!canvas_surface) {
         return;
+    }
 
     auto image = canvas_surface->sk_image_snapshot<sk_sp<SkImage>>();
     if (!image)

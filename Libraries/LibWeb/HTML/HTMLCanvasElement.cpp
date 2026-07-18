@@ -28,6 +28,7 @@
 #include <LibWeb/Infra/SerializedURL.h>
 #include <LibWeb/Layout/CanvasBox.h>
 #include <LibWeb/Page/Page.h>
+#include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWeb/WebGL/WebGL2RenderingContext.h>
@@ -462,6 +463,41 @@ void HTMLCanvasElement::notify_compositor_connection_lost()
 {
     if (auto* webgl_context = this->webgl_context())
         webgl_context->lose_context_from_compositor_loss();
+}
+
+bool HTMLCanvasElement::did_commit_offscreen_frame(Painting::CanvasId canvas_id, Gfx::IntSize committed_size, bool origin_clean)
+{
+    if (m_placeholder_canvas_id != canvas_id)
+        return false;
+
+    bool first_commit_or_content_resized = !m_placeholder_content_size.has_value() || *m_placeholder_content_size != committed_size;
+    m_placeholder_content_size = committed_size;
+    m_placeholder_content_origin_clean = origin_clean;
+    ++m_content_generation;
+
+    // The placeholder's natural dimensions follow the committed bitmap, but the
+    // width/height content attributes stay untouched: writing them would change
+    // the observable IDL values and fire attribute mutations the spec does not
+    // prescribe. Layout consumes the committed size through natural_size(), so a
+    // resized commit must invalidate layout as well as the display list.
+    if (auto paintable = unsafe_paintable())
+        paintable->invalidate_paint_cache();
+    if (first_commit_or_content_resized)
+        set_needs_layout_update(DOM::SetNeedsLayoutReason::HTMLCanvasElementWidthOrHeightChange);
+    // NB: Invalidate the cached DrawCanvas command so that if another change causes the display list to be
+    //     recorded, it contains the new content generation and damages the canvas. The committed content
+    //     itself reaches the compositor through the canvas surface registry, so same-size commits don't
+    //     need the display list re-recorded. The first commit does: before it the paintable emitted no
+    //     DrawCanvas at all (there was nothing to show), and a resize changes the recorded command.
+    set_needs_repaint(first_commit_or_content_resized ? InvalidateDisplayList::Yes : InvalidateDisplayList::No);
+    return true;
+}
+
+Gfx::IntSize HTMLCanvasElement::natural_size() const
+{
+    if (m_placeholder_content_size.has_value())
+        return *m_placeholder_content_size;
+    return { width(), height() };
 }
 
 void HTMLCanvasElement::set_canvas_content_dirty()

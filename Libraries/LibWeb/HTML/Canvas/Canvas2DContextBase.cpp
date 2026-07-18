@@ -210,7 +210,7 @@ WebIDL::ExceptionOr<void> Canvas2DContextBase::draw_image_internal(CanvasImageSo
     // message and the source's registry surface is its live drawing buffer,
     // so present the source now and flush the DrawCanvas right after it,
     // before a later WebGL frame can overtake the reference.
-    auto draw_canvas_source_by_id = [&](Painting::CanvasId source_canvas_id, bool source_is_2d) {
+    auto draw_canvas_source_by_id = [&](Painting::CanvasId source_canvas_id, bool source_is_2d, bool committed_surface_only) {
         if (auto* canvas_command_list = this->canvas_command_list()) {
             canvas_command_list->append(Gfx::CanvasCommands::DrawCanvas {
                 .source_canvas_id = source_canvas_id.value(),
@@ -220,6 +220,7 @@ WebIDL::ExceptionOr<void> Canvas2DContextBase::draw_image_internal(CanvasImageSo
                 .filter = drawing_state().filter,
                 .global_alpha = drawing_state().global_alpha,
                 .compositing_and_blending_operator = drawing_state().current_compositing_and_blending_operator,
+                .committed_surface_only = committed_surface_only,
             });
             did_draw(destination_rect);
             if (!source_is_2d)
@@ -237,7 +238,7 @@ WebIDL::ExceptionOr<void> Canvas2DContextBase::draw_image_internal(CanvasImageSo
         if (!source_is_2d)
             (*source_canvas)->prepare_for_compositing();
         if (auto source_canvas_id = (*source_canvas)->canvas_id(); source_canvas_id.has_value()) {
-            draw_canvas_source_by_id(*source_canvas_id, source_is_2d);
+            draw_canvas_source_by_id(*source_canvas_id, source_is_2d, /* committed_surface_only= */ false);
             return {};
         }
     } else if (auto const* source_offscreen_canvas = image.get_pointer<GC::Ref<OffscreenCanvas>>()) {
@@ -245,7 +246,7 @@ WebIDL::ExceptionOr<void> Canvas2DContextBase::draw_image_internal(CanvasImageSo
         // surface, so composite it by id like an element canvas source; the
         // readback fallback below remains for canvases without a compositor context.
         if (auto source = (*source_offscreen_canvas)->prepare_as_canvas_draw_source(); source.has_value()) {
-            draw_canvas_source_by_id(source->canvas_id, source->is_2d);
+            draw_canvas_source_by_id(source->canvas_id, source->is_2d, /* committed_surface_only= */ false);
             return {};
         }
     }
@@ -342,7 +343,12 @@ RefPtr<Gfx::Bitmap> Canvas2DContextBase::read_pixels(Gfx::IntRect const& rect)
         return bitmap;
     }
     m_transport->flush_shared_stream();
-    return m_transport->read_back_pixels(rect);
+    auto readback = m_transport->read_back_pixels(rect);
+    // The Compositor may know taint the client could not observe synchronously
+    // (a tainted committed source composited at replay time).
+    if (!readback.origin_clean)
+        m_origin_clean = false;
+    return readback.bitmap;
 }
 
 void Canvas2DContextBase::set_size(Gfx::IntSize const& size)
@@ -787,6 +793,11 @@ WebIDL::ExceptionOr<GC::Ptr<ImageData>> Canvas2DContextBase::get_image_data(int 
     // NOTE: If reading back from the Compositor fails (no backing storage or no connection),
     //       it's like copying only transparent black pixels (which is a no-op).
     auto pixels = read_pixels(source_rect_intersected);
+
+    // The readback can reveal taint composited compositor-side; re-check.
+    if (!m_origin_clean)
+        return WebIDL::SecurityError::create(realm(), "CanvasRenderingContext2D is not origin-clean"_utf16);
+
     if (!pixels)
         return image_data;
     auto const snapshot = Gfx::DecodedImageFrame { *pixels };
@@ -1176,7 +1187,9 @@ WebIDL::ExceptionOr<CanvasImageSourceUsability> check_usability_of_image(CanvasI
         // HTMLCanvasElement
         [](GC::Ref<HTMLCanvasElement> canvas_element) -> WebIDL::ExceptionOr<Optional<CanvasImageSourceUsability>> {
             // If image has either a horizontal dimension or a vertical dimension equal to zero, then throw an "InvalidStateError" DOMException.
-            if (canvas_element->width() == 0 || canvas_element->height() == 0)
+            // NB: A placeholder's bitmap dimensions are the committed ones, not its frozen attributes.
+            auto size = canvas_element->natural_size();
+            if (size.width() == 0 || size.height() == 0)
                 return WebIDL::InvalidStateError::create(canvas_element->realm(), "Canvas width or height is zero"_utf16);
             return Optional<CanvasImageSourceUsability> {};
         },

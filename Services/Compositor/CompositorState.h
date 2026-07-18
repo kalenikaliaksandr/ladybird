@@ -54,6 +54,7 @@ public:
 
     virtual void dispatch_mouse_event_to_web_content(u64 page_id, Web::MouseEvent const&) = 0;
     virtual void request_rendering_update() = 0;
+    virtual void notify_canvas_surface_committed(Web::Painting::CanvasId, Gfx::IntSize logical_size, bool origin_clean) = 0;
 };
 
 class CompositorState final : public RefCounted<CompositorState> {
@@ -77,6 +78,15 @@ public:
 
     void create_context(Web::Compositor::CompositorContextId, Optional<u64> page_id, CompositorStateWebContentClient&);
     void destroy_context(Web::Compositor::CompositorContextId);
+
+    Web::Painting::CanvasId allocate_offscreen_canvas_id(u64 canvas_id_nonce, CompositorStateWebContentClient&);
+    void release_offscreen_canvas_id(Web::Painting::CanvasId, CompositorStateWebContentClient&);
+    void decline_offscreen_canvas_claim(Web::Painting::CanvasId, u64 canvas_id_nonce);
+    void commit_offscreen_canvas_size(Web::Painting::CanvasId, u64 canvas_id_nonce, Gfx::IntSize logical_size);
+    bool is_canvas_watcher(Web::Painting::CanvasId, CompositorStateWebContentClient const&) const;
+    void add_canvas_watcher(Web::Painting::CanvasId, u64 canvas_id_nonce, CompositorStateWebContentClient&);
+    void remove_canvas_watcher(Web::Painting::CanvasId, CompositorStateWebContentClient&);
+    void notify_canvas_committed(Web::Painting::CanvasId);
 
     void set_parent_context(Web::Compositor::CompositorContextId, Optional<Web::Compositor::CompositorContextId> parent_context_id);
     void stop_presenting_to_client(Web::Compositor::CompositorContextId);
@@ -147,6 +157,8 @@ private:
     void check_gpu_completions();
 
     HashMap<Web::Compositor::CompositorContextId, OwnPtr<ContextState>> m_contexts;
+    HashMap<Web::Painting::CanvasId, CompositorStateWebContentClient*> m_canvas_watchers;
+    HashMap<Web::Painting::CanvasId, CompositorStateWebContentClient*> m_offscreen_canvas_id_allocators;
     DoublyLinkedList<PendingAsyncPresent> m_pending_async_presents;
     RefPtr<Gfx::SkiaBackendContext> m_skia_backend_context;
     Web::Painting::CanvasSurfaceRegistry m_canvas_surface_registry;

@@ -16,10 +16,11 @@
 
 namespace Gfx {
 
-CanvasCommandPlayer::CanvasCommandPlayer(RefPtr<SkiaBackendContext> skia_backend_context, IntSize size, BitmapFormat format, AlphaType alpha_type, CanvasSurfaceResolver canvas_surface_resolver)
+CanvasCommandPlayer::CanvasCommandPlayer(RefPtr<SkiaBackendContext> skia_backend_context, IntSize size, BitmapFormat format, AlphaType alpha_type, CanvasSurfaceResolver canvas_surface_resolver, CanvasTaintResolver canvas_taint_resolver)
     : m_surface(PaintingSurface::create_with_size(size, format, alpha_type, move(skia_backend_context)))
     , m_painter(make<PainterSkia>(*m_surface))
     , m_canvas_surface_resolver(move(canvas_surface_resolver))
+    , m_canvas_taint_resolver(move(canvas_taint_resolver))
 {
 }
 
@@ -61,9 +62,15 @@ void CanvasCommandPlayer::play_command(CanvasCommands::DrawCanvas const& command
     if (!m_canvas_surface_resolver)
         return;
 
-    auto* source_surface = m_canvas_surface_resolver(command.source_canvas_id);
+    auto* source_surface = m_canvas_surface_resolver(command.source_canvas_id, command.committed_surface_only);
     if (!source_surface)
         return;
+
+    // For committed-only sources the taint decision must be atomic with the
+    // pixels composited: the client's cached flag can lag the async commit
+    // notification, so ask about the committed frame we are about to draw.
+    if (command.committed_surface_only && m_canvas_taint_resolver && m_canvas_taint_resolver(command.source_canvas_id))
+        m_composited_tainted_source = true;
 
     auto image = source_surface->sk_image_snapshot<sk_sp<SkImage>>();
     if (!image)
@@ -164,6 +171,9 @@ void CanvasCommandPlayer::play_command(CanvasCommands::Reset const&)
 
 void CanvasCommandPlayer::play_command(CanvasCommands::ClearCanvas const& command)
 {
+    // The conceptually fresh bitmap starts origin-clean.
+    m_composited_tainted_source = false;
+
     // The clear must ignore the painter's current transform and clip without
     // disturbing them (the recording context's drawing state survives a bitmap
     // reset). Skia offers no clip-defeating clear, so pop the painter back to

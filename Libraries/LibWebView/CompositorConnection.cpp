@@ -133,13 +133,90 @@ void CompositorConnection::destroy_canvas_context(Web::Painting::CanvasId canvas
     async_destroy_canvas_context(canvas_id);
 }
 
-Gfx::ShareableBitmap CompositorConnection::get_canvas_pixels(Web::Painting::CanvasId canvas_id, Gfx::IntRect rect)
+CompositorConnection::CanvasPixelsReadback CompositorConnection::get_canvas_pixels(Web::Painting::CanvasId canvas_id, Gfx::IntRect rect, CanvasReadbackSurface readback_surface)
 {
     if (!can_send_message_to_compositor())
         return {};
 
-    auto response = send_sync<Messages::CompositorWebContentServer::GetCanvasPixels>(canvas_id, rect);
-    return response->take_pixels();
+    auto response = send_sync<Messages::CompositorWebContentServer::GetCanvasPixels>(canvas_id, rect, readback_surface == CanvasReadbackSurface::CommittedOnly);
+    return { response->take_pixels(), response->origin_clean() };
+}
+
+Optional<Web::Painting::OffscreenCanvasPlaceholderLink> CompositorConnection::allocate_offscreen_canvas_id()
+{
+    if (!can_send_message_to_compositor())
+        return {};
+
+    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::AllocateOffscreenCanvasId>();
+    if (!response) {
+        did_lose_compositor();
+        return {};
+    }
+    if (!response->success())
+        return {};
+    return Web::Painting::OffscreenCanvasPlaceholderLink { response->canvas_id(), response->canvas_id_nonce() };
+}
+
+bool CompositorConnection::create_canvas_2d_context_with_id(Web::Painting::OffscreenCanvasPlaceholderLink placeholder_link, Gfx::IntSize size, bool alpha)
+{
+    if (!can_send_message_to_compositor())
+        return false;
+
+    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::CreateCanvas2dContextWithId>(placeholder_link.canvas_id, placeholder_link.nonce, size, alpha);
+    if (!response) {
+        did_lose_compositor();
+        return false;
+    }
+    return response->success();
+}
+
+bool CompositorConnection::create_webgl_context_with_id(Web::Painting::OffscreenCanvasPlaceholderLink placeholder_link, Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias, Vector<String>& out_supported_extensions)
+{
+    if (!can_send_message_to_compositor())
+        return false;
+
+    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::CreateWebglContextWithId>(placeholder_link.canvas_id, placeholder_link.nonce, webgl_version, size, depth, stencil, antialias);
+    if (!response) {
+        did_lose_compositor();
+        return false;
+    }
+    out_supported_extensions = response->take_supported_extensions();
+    return response->success();
+}
+
+void CompositorConnection::release_offscreen_canvas_id(Web::Painting::CanvasId canvas_id)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_release_offscreen_canvas_id(canvas_id);
+}
+
+void CompositorConnection::decline_offscreen_canvas_claim(Web::Painting::OffscreenCanvasPlaceholderLink placeholder_link)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_decline_offscreen_canvas_claim(placeholder_link.canvas_id, placeholder_link.nonce);
+}
+
+void CompositorConnection::commit_offscreen_canvas_size(Web::Painting::OffscreenCanvasPlaceholderLink placeholder_link, Gfx::IntSize logical_size)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_commit_offscreen_canvas_size(placeholder_link.canvas_id, placeholder_link.nonce, logical_size);
+}
+
+void CompositorConnection::watch_canvas_surface(Web::Painting::OffscreenCanvasPlaceholderLink placeholder_link)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_watch_canvas_surface(placeholder_link.canvas_id, placeholder_link.nonce);
+}
+
+void CompositorConnection::unwatch_canvas_surface(Web::Painting::CanvasId canvas_id)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    async_unwatch_canvas_surface(canvas_id);
 }
 
 void CompositorConnection::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)
@@ -247,12 +324,12 @@ void CompositorConnection::send_webgl_commands(Web::Painting::CanvasId canvas_id
         did_lose_compositor();
 }
 
-void CompositorConnection::present_webgl_canvas(Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer)
+void CompositorConnection::present_webgl_canvas(Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer, Optional<Gfx::IntSize> commit_size)
 {
     if (!can_send_message_to_compositor())
         return;
 
-    async_webgl_present_canvas(canvas_id, preserve_drawing_buffer);
+    async_webgl_present_canvas(canvas_id, preserve_drawing_buffer, commit_size);
 }
 
 ByteBuffer CompositorConnection::webgl_sync_call(Web::Painting::CanvasId canvas_id, ByteBuffer request)
@@ -310,6 +387,12 @@ void CompositorConnection::mouse_event(u64 page_id, Web::MouseEvent event)
 void CompositorConnection::request_rendering_update()
 {
     Web::HTML::main_thread_event_loop().queue_task_to_update_the_rendering();
+}
+
+void CompositorConnection::canvas_surface_committed(Web::Painting::CanvasId canvas_id, Gfx::IntSize logical_size, bool origin_clean)
+{
+    if (on_canvas_surface_committed)
+        on_canvas_surface_committed(canvas_id, logical_size, origin_clean);
 }
 
 void CompositorConnection::did_complete_screenshot(Web::Compositor::ScreenshotRequestId request_id)

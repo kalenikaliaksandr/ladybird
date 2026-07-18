@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Random.h>
 #include <Compositor/ConnectionFromWebContent.h>
 #include <LibCore/System.h>
 #include <LibWeb/Page/InputEvent.h>
@@ -16,11 +17,21 @@ ConnectionFromWebContent::ConnectionFromWebContent(NonnullOwnPtr<IPC::Transport>
     , m_compositor_state(move(compositor_state))
     , m_canvas_host(m_compositor_state->skia_backend_context(), m_compositor_state->canvas_surface_registry())
 {
+    m_canvas_host.set_cross_connection_read_authorizer([this](Web::Painting::CanvasId canvas_id) {
+        // Watching is nonce-validated, so it proves this connection was handed
+        // the placeholder link for the id it wants to read.
+        return m_compositor_state->is_canvas_watcher(canvas_id, *this);
+    });
 }
 
 void ConnectionFromWebContent::die()
 {
     auto protector = NonnullRefPtr { *this };
+    // No future claim can arrive for reserved ids this connection adopted: the
+    // OffscreenCanvas objects holding their nonces lived in the process that
+    // just disconnected.
+    for (auto canvas_id : m_adopted_offscreen_canvas_ids)
+        m_compositor_state->canvas_surface_registry().close_canvas_id_claim_window(canvas_id);
     m_compositor_state->destroy_contexts_for_web_content_client(*this);
     if (m_on_death)
         m_on_death(*this);
@@ -48,6 +59,11 @@ void ConnectionFromWebContent::request_rendering_update()
 void ConnectionFromWebContent::dispatch_mouse_event_to_web_content(u64 page_id, Web::MouseEvent const& event)
 {
     async_mouse_event(page_id, event);
+}
+
+void ConnectionFromWebContent::notify_canvas_surface_committed(Web::Painting::CanvasId canvas_id, Gfx::IntSize logical_size, bool origin_clean)
+{
+    async_canvas_surface_committed(canvas_id, logical_size, origin_clean);
 }
 
 bool ConnectionFromWebContent::context_is_owned_by_this_connection(Web::Compositor::CompositorContextId context_id)
@@ -138,7 +154,12 @@ Messages::CompositorWebContentServer::CreateCanvas2dContextResponse ConnectionFr
 
 void ConnectionFromWebContent::update_canvas_2d_stream(Vector<Web::Painting::Canvas2DCommandStreamSegment> segments)
 {
-    m_canvas_host.execute_canvas_2d_stream(segments);
+    // A present marker carrying commit metadata is the commit operation for a
+    // 2D canvas; watchers of pre-allocated ids learn about it through the
+    // Compositor so the signal can never overtake the command stream.
+    auto committed_canvas_ids = m_canvas_host.execute_canvas_2d_stream(segments);
+    for (auto canvas_id : committed_canvas_ids)
+        m_compositor_state->notify_canvas_committed(canvas_id);
 }
 
 void ConnectionFromWebContent::destroy_canvas_context(Web::Painting::CanvasId canvas_id)
@@ -146,15 +167,88 @@ void ConnectionFromWebContent::destroy_canvas_context(Web::Painting::CanvasId ca
     m_canvas_host.destroy_context(canvas_id);
 }
 
-Messages::CompositorWebContentServer::GetCanvasPixelsResponse ConnectionFromWebContent::get_canvas_pixels(Web::Painting::CanvasId canvas_id, Gfx::IntRect rect)
+Messages::CompositorWebContentServer::GetCanvasPixelsResponse ConnectionFromWebContent::get_canvas_pixels(Web::Painting::CanvasId canvas_id, Gfx::IntRect rect, bool committed_only)
 {
-    return m_canvas_host.read_back_pixels(canvas_id, rect);
+    // The origin-clean state travels with the pixels themselves so a reader can
+    // never observe a tainted frame paired with a stale clean flag.
+    auto readback_surface = committed_only ? CanvasHost::ReadbackSurface::CommittedOnly : CanvasHost::ReadbackSurface::Live;
+    return { m_canvas_host.read_back_pixels(canvas_id, rect, readback_surface),
+        m_canvas_host.canvas_pixels_origin_clean(canvas_id, readback_surface) };
 }
 
 Messages::CompositorWebContentServer::CreateWebglContextResponse ConnectionFromWebContent::create_webgl_context(Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias)
 {
     auto result = m_canvas_host.create_webgl_context(webgl_version, size, depth, stencil, antialias);
     return { result.success, result.canvas_id, move(result.supported_extensions) };
+}
+
+Messages::CompositorWebContentServer::AllocateOffscreenCanvasIdResponse ConnectionFromWebContent::allocate_offscreen_canvas_id()
+{
+    auto canvas_id_nonce = AK::get_random<u64>();
+    auto canvas_id = m_compositor_state->allocate_offscreen_canvas_id(canvas_id_nonce, *this);
+    return { true, canvas_id, canvas_id_nonce };
+}
+
+Messages::CompositorWebContentServer::CreateCanvas2dContextWithIdResponse ConnectionFromWebContent::create_canvas_2d_context_with_id(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce, Gfx::IntSize size, bool alpha)
+{
+    auto& canvas_surface_registry = m_compositor_state->canvas_surface_registry();
+    // A failed claim is not did_misbehave: ids reserved before a Compositor
+    // restart are legitimate client state that simply no longer resolves.
+    if (!canvas_surface_registry.claim_canvas_id(canvas_id, canvas_id_nonce))
+        return { false };
+
+    if (!m_canvas_host.create_2d_context_with_id(canvas_id, size, alpha)) {
+        canvas_surface_registry.unclaim_canvas_id(canvas_id);
+        return { false };
+    }
+    m_adopted_offscreen_canvas_ids.set(canvas_id);
+    return { true };
+}
+
+Messages::CompositorWebContentServer::CreateWebglContextWithIdResponse ConnectionFromWebContent::create_webgl_context_with_id(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce, Web::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias)
+{
+    auto& canvas_surface_registry = m_compositor_state->canvas_surface_registry();
+    // A failed claim is not did_misbehave: ids reserved before a Compositor
+    // restart are legitimate client state that simply no longer resolves.
+    if (!canvas_surface_registry.claim_canvas_id(canvas_id, canvas_id_nonce))
+        return { false, {} };
+
+    auto result = m_canvas_host.create_webgl_context_with_id(canvas_id, webgl_version, size, depth, stencil, antialias);
+    if (!result.success) {
+        canvas_surface_registry.unclaim_canvas_id(canvas_id);
+        return { false, {} };
+    }
+    m_adopted_offscreen_canvas_ids.set(canvas_id);
+    return { true, move(result.supported_extensions) };
+}
+
+void ConnectionFromWebContent::release_offscreen_canvas_id(Web::Painting::CanvasId canvas_id)
+{
+    m_compositor_state->release_offscreen_canvas_id(canvas_id, *this);
+}
+
+void ConnectionFromWebContent::decline_offscreen_canvas_claim(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce)
+{
+    m_compositor_state->decline_offscreen_canvas_claim(canvas_id, canvas_id_nonce);
+    // The link holder is gone for good, so this connection can never re-claim
+    // the id: without this, renderers repeatedly creating and collecting
+    // transferred canvases would grow the adopted set without bound.
+    m_adopted_offscreen_canvas_ids.remove(canvas_id);
+}
+
+void ConnectionFromWebContent::commit_offscreen_canvas_size(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce, Gfx::IntSize logical_size)
+{
+    m_compositor_state->commit_offscreen_canvas_size(canvas_id, canvas_id_nonce, logical_size);
+}
+
+void ConnectionFromWebContent::watch_canvas_surface(Web::Painting::CanvasId canvas_id, u64 canvas_id_nonce)
+{
+    m_compositor_state->add_canvas_watcher(canvas_id, canvas_id_nonce, *this);
+}
+
+void ConnectionFromWebContent::unwatch_canvas_surface(Web::Painting::CanvasId canvas_id)
+{
+    m_compositor_state->remove_canvas_watcher(canvas_id, *this);
 }
 
 void ConnectionFromWebContent::webgl_set_command_buffer(Web::Painting::CanvasId canvas_id, Core::AnonymousBuffer command_buffer)
@@ -190,9 +284,21 @@ void ConnectionFromWebContent::webgl_commands(Web::Painting::CanvasId canvas_id,
     m_canvas_host.execute_webgl_commands(canvas_id, commands.bytes(), bitmaps);
 }
 
-void ConnectionFromWebContent::webgl_present_canvas(Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer)
+void ConnectionFromWebContent::webgl_present_canvas(Web::Painting::CanvasId canvas_id, bool preserve_drawing_buffer, Optional<Gfx::IntSize> commit_size)
 {
-    m_canvas_host.present_webgl_canvas(canvas_id, preserve_drawing_buffer);
+    // Only presents carrying commit metadata update placeholder watchers:
+    // internal presents (a transferToImageBitmap reset, preparing a drawImage
+    // source) must not repaint the placeholder with a frame the producer never
+    // committed.
+    auto presented_surface_size = m_canvas_host.present_webgl_canvas(canvas_id, preserve_drawing_buffer);
+    if (!presented_surface_size.has_value() || !commit_size.has_value())
+        return;
+    // The registry's plain slot tracks the live GL surface; committed-only
+    // consumers (placeholder paints and readbacks) need a stable snapshot of
+    // exactly this commit.
+    m_canvas_host.commit_presented_webgl_surface(canvas_id);
+    m_compositor_state->canvas_surface_registry().record_canvas_commit(canvas_id, *commit_size, /* origin_clean= */ true);
+    m_compositor_state->notify_canvas_committed(canvas_id);
 }
 
 Messages::CompositorWebContentServer::WebglSyncCallResponse ConnectionFromWebContent::webgl_sync_call(Web::Painting::CanvasId canvas_id, ByteBuffer request)

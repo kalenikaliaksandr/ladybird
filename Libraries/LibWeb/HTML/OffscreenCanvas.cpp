@@ -382,6 +382,12 @@ GC::Ref<WebIDL::Promise> OffscreenCanvas::convert_to_blob(Optional<Bindings::Ima
     //       from the Compositor produces an independent copy already.
     RefPtr<Gfx::Bitmap> bitmap = read_back_bitmap();
 
+    // The readback can reveal taint composited compositor-side; re-check.
+    if (auto* context = m_context.get_pointer<GC::Ref<OffscreenCanvasRenderingContext2D>>(); context && !(*context)->origin_clean()) {
+        auto error = WebIDL::SecurityError::create(realm(), "OffscreenCanvas is not origin-clean"_utf16);
+        return WebIDL::create_rejected_promise_from_exception(realm(), error);
+    }
+
     // 5. Let result be a new promise object.
     auto result_promise = WebIDL::create_promise(realm());
 

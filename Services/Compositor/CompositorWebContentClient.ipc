@@ -1,10 +1,13 @@
+#include <LibGfx/Size.h>
 #include <LibWeb/Compositor/Types.h>
 #include <LibWeb/Page/InputEvent.h>
+#include <LibWeb/Painting/DisplayListResourceIds.h>
 
 endpoint CompositorWebContentClient
 {
     mouse_event(u64 page_id, Web::MouseEvent event) =|
     request_rendering_update() =|
+    canvas_surface_committed(Web::Painting::CanvasId canvas_id, Gfx::IntSize logical_size, bool origin_clean) =|
     did_complete_screenshot(Web::Compositor::ScreenshotRequestId request_id) =|
     did_fail_screenshot(Web::Compositor::ScreenshotRequestId request_id) =|
     did_lose_compositor() =|
