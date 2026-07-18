@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        // A never-drawn alpha:false context reads back opaque black, not a
+        // zero-filled fallback.
+        const ctx = document.createElement("canvas").getContext("2d", { alpha: false });
+        const data = ctx.getImageData(0, 0, 1, 1).data;
+        println("alpha:false never-drawn pixel: " + [data[0], data[1], data[2], data[3]].join(","));
+    });
+</script>

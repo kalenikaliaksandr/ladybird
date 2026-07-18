@@ -307,8 +307,28 @@ bool Canvas2DContextBase::ensure_remote_canvas_context()
 
 RefPtr<Gfx::Bitmap> Canvas2DContextBase::read_pixels(Gfx::IntRect const& rect)
 {
-    if (!has_backing_storage())
-        return nullptr;
+    // A never-drawn context has constant, well-defined pixels (transparent
+    // black, or opaque black for alpha:false); synthesize them locally instead
+    // of returning nothing — getImageData() would otherwise hand out
+    // zero-filled data for an alpha:false context — and without creating a
+    // remote context just to read back the clear color.
+    if (!has_backing_storage()) {
+        auto clipped_rect = rect.intersected({ {}, m_size });
+        if (clipped_rect.is_empty())
+            return nullptr;
+        auto bitmap_or_error = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, clipped_rect.size());
+        if (bitmap_or_error.is_error())
+            return nullptr;
+        auto bitmap = bitmap_or_error.release_value();
+        if (auto color = clear_color(); color != Gfx::Color::Transparent) {
+            for (int y = 0; y < bitmap->height(); ++y) {
+                auto* scanline = bitmap->scanline(y);
+                for (int x = 0; x < bitmap->width(); ++x)
+                    scanline[x] = color.value();
+            }
+        }
+        return bitmap;
+    }
     m_transport->flush_shared_stream();
     return m_transport->read_back_pixels(rect);
 }
