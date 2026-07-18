@@ -339,6 +339,11 @@ void Canvas2DContextBase::set_size(Gfx::IntSize const& size)
         return;
     m_size = size;
     discard_backing_storage();
+
+    // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-origin-clean
+    // The freshly allocated bitmap is origin-clean regardless of what the old
+    // one accumulated.
+    m_origin_clean = true;
 }
 
 void Canvas2DContextBase::prepare_for_compositing()
