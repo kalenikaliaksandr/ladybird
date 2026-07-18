@@ -114,14 +114,16 @@ void WebGL2RenderingContext::reset_to_default_state()
 
 WebIDL::Long WebGL2RenderingContext::drawing_buffer_width() const
 {
+    // The actual drawing buffer is clamped to at least 1x1 at creation and
+    // resize; a zero-size canvas must report that, not its bitmap dimension.
     auto size = canvas_for_binding()->bitmap_size_for_canvas();
-    return min(size.width(), max_webgl_drawing_buffer_dimension);
+    return clamp(size.width(), 1, max_webgl_drawing_buffer_dimension);
 }
 
 WebIDL::Long WebGL2RenderingContext::drawing_buffer_height() const
 {
     auto size = canvas_for_binding()->bitmap_size_for_canvas();
-    return min(size.height(), max_webgl_drawing_buffer_dimension);
+    return clamp(size.height(), 1, max_webgl_drawing_buffer_dimension);
 }
 
 }

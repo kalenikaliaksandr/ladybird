@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        // The actual drawing buffer is clamped to at least 1x1; the getters
+        // must report that for a zero-size canvas.
+        const canvas = document.createElement("canvas");
+        const gl = canvas.getContext("webgl");
+        if (!gl) {
+            println("webgl unavailable");
+            return;
+        }
+        canvas.width = 0;
+        canvas.height = 0;
+        println("drawingBuffer: " + gl.drawingBufferWidth + "x" + gl.drawingBufferHeight);
+    });
+</script>
