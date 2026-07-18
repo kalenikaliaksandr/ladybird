@@ -28,8 +28,8 @@ public:
     GC::Ref<HTMLCanvasElement> canvas_for_binding() const;
 
 protected:
-    Variant<GC::Ref<HTMLCanvasElement>, GC::Ref<OffscreenCanvas>> canvas_element() override { return m_element; }
-    Variant<GC::Ref<HTMLCanvasElement>, GC::Ref<OffscreenCanvas>> canvas_element() const override { return m_element; }
+    CanvasOwner canvas_element() override { return m_element; }
+    CanvasOwner canvas_element() const override { return m_element; }
 
 private:
     CanvasRenderingContext2D(JS::Realm&, HTMLCanvasElement&, Bindings::CanvasRenderingContext2DSettings);

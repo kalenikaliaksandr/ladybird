@@ -1,0 +1,6 @@
+Message received from worker: gl is null: false
+Message received from worker: gl instanceof WebGLRenderingContext: true
+Message received from worker: gl.canvas === canvas: true
+Message received from worker: drawingBufferWidth: 16
+Message received from worker: drawingBufferHeight: 8
+Message received from worker: pixel after clear: 0,128,0,255

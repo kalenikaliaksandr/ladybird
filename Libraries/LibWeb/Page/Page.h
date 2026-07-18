@@ -248,11 +248,11 @@ public:
     void register_canvas_element(Badge<HTML::HTMLCanvasElement>, UniqueNodeID canvas_id);
     void unregister_canvas_element(Badge<HTML::HTMLCanvasElement>, UniqueNodeID canvas_id);
 
-    void register_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId, UniqueNodeID element_id);
-    void unregister_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId);
-
     void register_offscreen_canvas(Badge<HTML::OffscreenCanvas>, HTML::OffscreenCanvas&);
     void unregister_offscreen_canvas(Badge<HTML::OffscreenCanvas>, HTML::OffscreenCanvas&);
+
+    void register_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId, UniqueNodeID element_id);
+    void unregister_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId);
 
     void prepare_canvas_contexts_for_compositing();
     void notify_all_canvas_elements_of_lost_backing_storage();
@@ -386,18 +386,19 @@ private:
     Vector<UniqueNodeID> m_media_elements;
     Vector<UniqueNodeID> m_canvas_elements;
 
-    // Placeholder canvas elements by the canvas id their transferred OffscreenCanvas
-    // commits to, for O(1) frame-commit delivery. Entries unregister in
-    // HTMLCanvasElement::finalize.
-    HashMap<Painting::CanvasId, UniqueNodeID> m_placeholder_canvas_elements;
-
-    // Placeholder-linked OffscreenCanvases whose committed frames must be presented
-    // during the canvas-compositing sweep. Raw pointers: entries unregister in
-    // OffscreenCanvas::finalize.
+    // OffscreenCanvases with a rendering context or a placeholder link: the
+    // canvas-compositing sweep presents their committed frames, and compositor
+    // loss/reconnect sweeps notify their contexts. Raw pointers: entries
+    // unregister in OffscreenCanvas::finalize.
     Vector<HTML::OffscreenCanvas*> m_registered_offscreen_canvases;
 
     template<typename Callback>
     void for_each_registered_offscreen_canvas(Callback&&);
+
+    // Placeholder canvas elements by the canvas id their transferred OffscreenCanvas
+    // commits to, for O(1) frame-commit delivery. Entries unregister in
+    // HTMLCanvasElement::finalize.
+    HashMap<Painting::CanvasId, UniqueNodeID> m_placeholder_canvas_elements;
     Optional<UniqueNodeID> m_media_context_menu_element_id;
 
     Web::HTML::MuteState m_mute_state { Web::HTML::MuteState::Unmuted };

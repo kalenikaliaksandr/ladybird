@@ -331,7 +331,7 @@ JS::ThrowCompletionOr<HTMLCanvasElement::HasOrCreatedContext> HTMLCanvasElement:
     if (!m_context.has<Empty>())
         return m_context.has<GC::Ref<ContextType>>() ? HasOrCreatedContext::Yes : HasOrCreatedContext::No;
 
-    auto maybe_context = TRY(ContextType::create(realm(), *this, options));
+    auto maybe_context = TRY(ContextType::create(realm(), GC::Ref { *this }, options));
     if (!maybe_context)
         return HasOrCreatedContext::No;
 

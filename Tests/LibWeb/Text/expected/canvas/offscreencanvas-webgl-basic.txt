@@ -1,0 +1,11 @@
+gl is null: false
+gl instanceof WebGLRenderingContext: true
+gl.canvas === canvas: true
+drawingBufferWidth: 16
+drawingBufferHeight: 8
+pixel after clear: 0,128,0,255
+getContext("webgl") returns same context: true
+getContext("webgl2") on webgl canvas: null
+getContext("2d") on webgl canvas: null
+gl2 instanceof WebGL2RenderingContext: true
+gl2.canvas === canvas2: true

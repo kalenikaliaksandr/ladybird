@@ -13,6 +13,7 @@ extern "C" {
 
 #include <LibGfx/DecodedImageFrame.h>
 #include <LibJS/Runtime/Object.h>
+#include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/HTML/DecodedImageData.h>
 #include <LibWeb/HTML/EventLoop/Task.h>
 #include <LibWeb/HTML/HTMLCanvasElement.h>
@@ -20,6 +21,7 @@ extern "C" {
 #include <LibWeb/HTML/HTMLVideoElement.h>
 #include <LibWeb/HTML/ImageBitmap.h>
 #include <LibWeb/HTML/ImageData.h>
+#include <LibWeb/HTML/OffscreenCanvas.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/UniversalGlobalScope.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
@@ -48,6 +50,11 @@ namespace Web::WebGL {
 WebGLRenderingContextBase::WebGLRenderingContextBase(JS::Realm& realm)
     : Bindings::PlatformObject(realm)
 {
+}
+
+GC::Ref<DOM::EventTarget> WebGLRenderingContextBase::canvas_event_target() const
+{
+    return canvas_for_binding().visit([](auto const& canvas) -> GC::Ref<DOM::EventTarget> { return canvas; });
 }
 
 struct Extension {
@@ -324,10 +331,10 @@ void WebGLRenderingContextBase::lose_context_from_compositor_loss()
     // The next getError() must report CONTEXT_LOST_WEBGL (one-shot) per the spec.
     m_error = CONTEXT_LOST_WEBGL;
 
-    HTML::queue_a_task(HTML::Task::Source::WebGL, nullptr, nullptr, GC::create_function(heap(), [this, canvas = canvas_for_binding()] {
+    HTML::queue_a_task(HTML::Task::Source::WebGL, nullptr, nullptr, GC::create_function(heap(), [this, event_target = canvas_event_target()] {
         // webglcontextlost is cancelable; preventDefault() means the page wants the context
         // restored once a compositor is available again.
-        m_context_restore_requested = !fire_webgl_context_event(canvas, EventNames::webglcontextlost);
+        m_context_restore_requested = !fire_webgl_context_event(*event_target, EventNames::webglcontextlost);
     }));
 }
 
@@ -346,8 +353,8 @@ void WebGLRenderingContextBase::restore_context_after_compositor_reconnect()
     m_context_restore_requested = false;
     m_error = GL_NO_ERROR;
 
-    HTML::queue_a_task(HTML::Task::Source::WebGL, nullptr, nullptr, GC::create_function(heap(), [canvas = canvas_for_binding()] {
-        fire_webgl_context_event(canvas, EventNames::webglcontextrestored);
+    HTML::queue_a_task(HTML::Task::Source::WebGL, nullptr, nullptr, GC::create_function(heap(), [event_target = canvas_event_target()] {
+        fire_webgl_context_event(*event_target, EventNames::webglcontextrestored);
     }));
 }
 

@@ -22,7 +22,6 @@
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/Window.h>
-#include <LibWeb/Page/Page.h>
 #include <LibWeb/HTML/WorkerGlobalScope.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
@@ -30,6 +29,7 @@
 #include <LibWeb/WebGL/WebGL2RenderingContext.h>
 #include <LibWeb/WebGL/WebGLContextProxy.h>
 #include <LibWeb/WebGL/WebGLRenderingContext.h>
+#include <LibWeb/WebGL/WebGLRenderingContextBase.h>
 
 namespace Web::HTML {
 
@@ -86,6 +86,19 @@ WebIDL::ExceptionOr<GC::Ref<OffscreenCanvas>> OffscreenCanvas::construct_impl(
     return realm.create<OffscreenCanvas>(realm, width, height);
 }
 
+// Presenting without preserve-drawing-buffer flags the Compositor-side deferred
+// clear-to-default-values; the (possibly same-size) resize forms the command
+// batch that executes it, so readbacks and the next frame observe a fresh
+// buffer instead of the old pixels.
+template<typename ContextType>
+static void replace_webgl_drawing_buffer(ContextType& context, Gfx::IntSize bitmap_size)
+{
+    if (!context.is_context_lost())
+        context.context().present_canvas_for_compositing(/* preserve_drawing_buffer= */ false);
+    // A lost context still tracks the logical size for its restore path.
+    context.set_size(bitmap_size);
+}
+
 // https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas
 OffscreenCanvas::OffscreenCanvas(JS::Realm& realm, WebIDL::UnsignedLongLong width, WebIDL::UnsignedLongLong height)
     : EventTarget(realm)
@@ -101,15 +114,27 @@ Page* OffscreenCanvas::page_of_relevant_global_object() const
     return &Bindings::principal_host_defined_page(HTML::relevant_realm(*this));
 }
 
+Page* OffscreenCanvas::page_for_compositor()
+{
+    auto* page = page_of_relevant_global_object();
+    if (page)
+        page->ensure_compositor_host();
+    return page;
+}
+
 void OffscreenCanvas::set_placeholder_link(Badge<HTMLCanvasElement>, Painting::OffscreenCanvasPlaceholderLink placeholder_link)
 {
     m_placeholder_link = placeholder_link;
-    register_with_page_for_frame_commits();
+    register_with_page_for_compositor_notifications();
 }
 
-void OffscreenCanvas::register_with_page_for_frame_commits()
+// Registered canvases get frame commits swept by the Page's canvas-compositing pass
+// (placeholder-linked ones) and compositor loss/reconnect notifications (any canvas
+// with a rendering context, whose remote state lives in the Compositor process).
+void OffscreenCanvas::register_with_page_for_compositor_notifications()
 {
-    if (m_is_registered_with_page || !m_placeholder_link.has_value())
+    bool has_rendering_context = !m_context.has<Empty>();
+    if (m_is_registered_with_page || (!m_placeholder_link.has_value() && !has_rendering_context))
         return;
     if (auto* page = page_of_relevant_global_object()) {
         page->register_offscreen_canvas({}, *this);
@@ -147,26 +172,58 @@ void OffscreenCanvas::commit_frame_if_needed()
 
     // Recording the commit marker makes the Compositor copy the live surface into
     // the presented one and notify the placeholder's watcher with the committed
-    // logical size and origin-clean state; the caller flushes the shared command
-    // stream afterwards.
-    auto commit_logical_size_without_surface = [&] {
-        // No bitmap backs the canvas (no context yet, a zero size, or one
-        // beyond the maximum area): commit the logical size alone so the
-        // placeholder still follows it instead of keeping the old frame and
-        // dimensions.
-        if (auto* page = page_of_relevant_global_object(); page && page->has_compositor_host())
-            page->compositor_host().commit_offscreen_canvas_size(*m_placeholder_link, clamped_logical_size());
-    };
-    if (auto* context = m_context.get_pointer<GC::Ref<OffscreenCanvasRenderingContext2D>>()) {
-        // A resize or context creation leaves no backing storage until the next
-        // draw; presenting the initial (cleared) bitmap requires creating it.
-        (*context)->ensure_backing_storage();
-        if (!(*context)->commit_frame_for_placeholder(clamped_logical_size()))
-            commit_logical_size_without_surface();
-    } else {
-        // A resize before getContext() must still reach the placeholder.
-        commit_logical_size_without_surface();
+    // logical size and origin-clean state; a 2D commit travels in the shared
+    // command stream the caller flushes afterwards, a WebGL commit flushes its
+    // own command stream.
+    m_context.visit(
+        [&](GC::Ref<OffscreenCanvasRenderingContext2D>& context) {
+            // A resize or context creation leaves no backing storage until the next
+            // draw; presenting the initial (cleared) bitmap requires creating it.
+            context->ensure_backing_storage();
+            if (context->commit_frame_for_placeholder(clamped_logical_size()))
+                return;
+            // No bitmap can back the current dimensions (zero, or beyond the
+            // maximum area): commit the logical size alone so the placeholder
+            // still follows it instead of keeping the old frame and dimensions.
+            if (auto* page = page_of_relevant_global_object(); page && page->has_compositor_host())
+                page->compositor_host().commit_offscreen_canvas_size(*m_placeholder_link, clamped_logical_size());
+        },
+        [&](GC::Ref<WebGL::WebGLRenderingContext>& context) {
+            context->commit_frame_for_placeholder(clamped_logical_size());
+        },
+        [&](GC::Ref<WebGL::WebGL2RenderingContext>& context) {
+            context->commit_frame_for_placeholder(clamped_logical_size());
+        },
+        [&](Empty) {
+            // No context yet: a resize before getContext() must still commit the
+            // logical size so the placeholder follows it.
+            if (auto* page = page_of_relevant_global_object(); page && page->has_compositor_host())
+                page->compositor_host().commit_offscreen_canvas_size(*m_placeholder_link, clamped_logical_size());
+        });
+}
+
+WebGL::WebGLRenderingContextBase* OffscreenCanvas::webgl_context() const
+{
+    return m_context.visit(
+        [](GC::Ref<WebGL::WebGLRenderingContext> const& context) -> WebGL::WebGLRenderingContextBase* { return context.ptr(); },
+        [](GC::Ref<WebGL::WebGL2RenderingContext> const& context) -> WebGL::WebGLRenderingContextBase* { return context.ptr(); },
+        [](auto const&) -> WebGL::WebGLRenderingContextBase* { return nullptr; });
+}
+
+void OffscreenCanvas::notify_compositor_connection_lost()
+{
+    if (auto* webgl_context = this->webgl_context())
+        webgl_context->lose_context_from_compositor_loss();
+}
+
+void OffscreenCanvas::notify_compositor_backing_storage_lost()
+{
+    if (auto* webgl_context = this->webgl_context()) {
+        webgl_context->restore_context_after_compositor_reconnect();
+        return;
     }
+    if (auto* context_2d = m_context.get_pointer<GC::Ref<OffscreenCanvasRenderingContext2D>>())
+        (*context_2d)->notify_backing_storage_lost();
 }
 
 // https://html.spec.whatwg.org/multipage/canvas.html#the-offscreencanvas-interface:transfer-steps
@@ -214,7 +271,7 @@ WebIDL::ExceptionOr<void> OffscreenCanvas::transfer_receiving_steps(HTML::Transf
     // 2. If dataHolder.[[PlaceholderCanvas]] is not null, set value's placeholder canvas element to
     //    dataHolder.[[PlaceholderCanvas]] (while maintaining the weak reference semantics).
     m_placeholder_link = TRY(decode_or_throw_data_clone_error<Optional<Painting::OffscreenCanvasPlaceholderLink>>(realm(), data_holder));
-    register_with_page_for_frame_commits();
+    register_with_page_for_compositor_notifications();
 
     // FIXME: Also receive the inherited language and inherited direction.
 
@@ -261,15 +318,15 @@ void OffscreenCanvas::update_context_bitmap_size()
     auto bitmap_size = bitmap_size_for_canvas();
     m_context.visit(
         [&](GC::Ref<OffscreenCanvasRenderingContext2D>& context) {
-            // Setting a dimension always replaces the bitmap, even when the value
-            // did not change.
+            // Setting a dimension always replaces the bitmap even when the
+            // value did not change.
             context->replace_bitmap(bitmap_size);
         },
         [&](GC::Ref<WebGL::WebGLRenderingContext>& context) {
-            context->set_size(bitmap_size);
+            replace_webgl_drawing_buffer(*context, bitmap_size);
         },
         [&](GC::Ref<WebGL::WebGL2RenderingContext>& context) {
-            context->set_size(bitmap_size);
+            replace_webgl_drawing_buffer(*context, bitmap_size);
         },
         [](Empty) {
             // Do nothing.
@@ -289,12 +346,13 @@ RefPtr<Gfx::Bitmap> OffscreenCanvas::read_back_bitmap()
     RefPtr<Gfx::Bitmap> bitmap;
     if (auto* context = m_context.get_pointer<GC::Ref<OffscreenCanvasRenderingContext2D>>())
         bitmap = (*context)->read_pixels({ {}, size });
-    // FIXME: Read back the WebGL drawing buffer once OffscreenCanvas supports WebGL contexts.
+    else if (auto* webgl_context = this->webgl_context())
+        bitmap = webgl_context->context().read_back_drawing_buffer({ {}, size });
 
     if (!bitmap) {
-        // No rendering context, or no Compositor to read from: the bitmap is
-        // transparent black. (A 2D context synthesizes its clear color in
-        // read_pixels() itself.)
+        // No rendering context, or a WebGL context with no Compositor to read
+        // from: the bitmap is transparent black. (A 2D context synthesizes its
+        // clear color in read_pixels() itself.)
         auto bitmap_or_error = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, size);
         if (bitmap_or_error.is_error())
             return nullptr;
@@ -343,13 +401,6 @@ static Optional<OffscreenCanvas::CanvasDrawSource> prepare_webgl_context_as_canv
     if (!canvas_id.has_value())
         return {};
     return OffscreenCanvas::CanvasDrawSource { .canvas_id = *canvas_id, .is_2d = false };
-}
-
-Page* OffscreenCanvas::page_for_compositor()
-{
-    auto& page = Bindings::principal_host_defined_page(HTML::relevant_realm(*this));
-    page.ensure_compositor_host();
-    return &page;
 }
 
 // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-origin-clean
@@ -423,13 +474,15 @@ JS::ThrowCompletionOr<OffscreenRenderingContext> OffscreenCanvas::get_context(Bi
     }
 
     if (contextId == Bindings::OffscreenRenderingContextId::Webgl) {
-        dbgln("(STUBBED) OffscreenCanvas::get_context(Webgl)");
+        if (TRY(create_webgl_context<WebGL::WebGLRenderingContext>(options)) == HasOrCreatedContext::Yes)
+            return *m_context.get<GC::Ref<WebGL::WebGLRenderingContext>>();
 
         return Empty {};
     }
 
     if (contextId == Bindings::OffscreenRenderingContextId::Webgl2) {
-        dbgln("(STUBBED) OffscreenCanvas::get_context(Webgl2)");
+        if (TRY(create_webgl_context<WebGL::WebGL2RenderingContext>(options)) == HasOrCreatedContext::Yes)
+            return *m_context.get<GC::Ref<WebGL::WebGL2RenderingContext>>();
 
         return Empty {};
     }
@@ -459,8 +512,26 @@ WebIDL::ExceptionOr<GC::Ref<ImageBitmap>> OffscreenCanvas::transfer_to_image_bit
     image->set_bitmap(read_back_bitmap());
 
     // 4. Set this OffscreenCanvas object's bitmap to reference a newly created bitmap of the same dimensions and color space as the previous bitmap, and with its pixels initialized to transparent black, or opaque black if the rendering context' s alpha is false.
-    if (auto* context = m_context.get_pointer<GC::Ref<OffscreenCanvasRenderingContext2D>>())
-        (*context)->clear_entire_bitmap();
+    auto reset_webgl_drawing_buffer = [&](auto& context) {
+        // A lost context has no drawing buffer to reset (and must not commit).
+        if (context.is_context_lost())
+            return;
+        replace_webgl_drawing_buffer(context, bitmap_size_for_canvas());
+        notify_context_did_draw();
+    };
+    m_context.visit(
+        [](GC::Ref<OffscreenCanvasRenderingContext2D>& context) {
+            context->clear_entire_bitmap();
+        },
+        [&](GC::Ref<WebGL::WebGLRenderingContext>& context) {
+            reset_webgl_drawing_buffer(*context);
+        },
+        [&](GC::Ref<WebGL::WebGL2RenderingContext>& context) {
+            reset_webgl_drawing_buffer(*context);
+        },
+        [](Empty) {
+            // Unreachable: step 2 threw for context mode none.
+        });
 
     // 5. Return image.
     return image;
@@ -627,10 +698,26 @@ JS::ThrowCompletionOr<OffscreenCanvas::HasOrCreatedContext> OffscreenCanvas::cre
         return m_context.has<GC::Ref<OffscreenCanvasRenderingContext2D>>() ? HasOrCreatedContext::Yes : HasOrCreatedContext::No;
 
     m_context = TRY(OffscreenCanvasRenderingContext2D::create(realm(), *this, options));
+    register_with_page_for_compositor_notifications();
 
     // A placeholder must show the context's initial output bitmap even before any
     // drawing call: transparent black, or opaque black for alpha=false contexts.
     notify_context_did_draw();
+    return HasOrCreatedContext::Yes;
+}
+
+template<typename ContextType>
+JS::ThrowCompletionOr<OffscreenCanvas::HasOrCreatedContext> OffscreenCanvas::create_webgl_context(JS::Value options)
+{
+    if (!m_context.has<Empty>())
+        return m_context.has<GC::Ref<ContextType>>() ? HasOrCreatedContext::Yes : HasOrCreatedContext::No;
+
+    auto maybe_context = TRY(ContextType::create(realm(), GC::Ref { *this }, options));
+    if (!maybe_context)
+        return HasOrCreatedContext::No;
+
+    m_context = GC::Ref<ContextType>(*maybe_context);
+    register_with_page_for_compositor_notifications();
     return HasOrCreatedContext::Yes;
 }
 

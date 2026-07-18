@@ -1,0 +1,2 @@
+bitmap size: 4x4
+pixel after transfer: [0,0,0,0]

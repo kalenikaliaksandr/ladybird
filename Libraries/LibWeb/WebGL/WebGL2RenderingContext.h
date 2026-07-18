@@ -11,6 +11,7 @@
 #include <LibGC/Ptr.h>
 #include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/HTML/Canvas/CanvasOwner.h>
 #include <LibWeb/WebGL/Types.h>
 #include <LibWeb/WebGL/WebGL2RenderingContextOverloads.h>
 #include <LibWeb/WebGL/WebGLContextAttributes.h>
@@ -22,14 +23,15 @@ class WebGL2RenderingContext final : public WebGL2RenderingContextOverloads {
     GC_DECLARE_ALLOCATOR(WebGL2RenderingContext);
 
 public:
-    static JS::ThrowCompletionOr<GC::Ptr<WebGL2RenderingContext>> create(JS::Realm&, HTML::HTMLCanvasElement& canvas_element, JS::Value options);
+    static JS::ThrowCompletionOr<GC::Ptr<WebGL2RenderingContext>> create(JS::Realm&, HTML::CanvasOwner, JS::Value options);
 
     virtual ~WebGL2RenderingContext() override;
 
     void prepare_for_compositing() override;
+    void commit_frame_for_placeholder(Gfx::IntSize logical_size);
     void did_update_canvas_content() override;
 
-    virtual GC::Ref<HTML::HTMLCanvasElement> canvas_for_binding() const override;
+    virtual HTML::CanvasOwner canvas_for_binding() const override;
 
     Optional<WebGLContextAttributes> get_context_attributes();
 
@@ -42,12 +44,12 @@ public:
 private:
     virtual void initialize(JS::Realm&) override;
 
-    WebGL2RenderingContext(JS::Realm&, HTML::HTMLCanvasElement&, NonnullOwnPtr<WebGLContextProxy> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters);
+    WebGL2RenderingContext(JS::Realm&, HTML::CanvasOwner, NonnullOwnPtr<WebGLContextProxy> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters);
 
     virtual void visit_edges(Cell::Visitor&) override;
     virtual bool reestablish_remote_context() override;
 
-    GC::Ref<HTML::HTMLCanvasElement> m_canvas_element;
+    HTML::CanvasOwner m_canvas_owner;
 
     // https://www.khronos.org/registry/webgl/specs/latest/1.0/#context-creation-parameters
     // Each WebGLRenderingContext has context creation parameters, set upon creation, in a WebGLContextAttributes object.

@@ -98,6 +98,14 @@ public:
     void notify_context_did_draw();
     void commit_frame_if_needed();
 
+    // The Compositor process holding this canvas's pixels went away; a WebGL context
+    // must be marked lost (webglcontextlost).
+    void notify_compositor_connection_lost();
+
+    // A fresh Compositor process is available again: a 2D context re-creates its remote
+    // canvas on the next draw, a WebGL context restores if the page requested it.
+    void notify_compositor_backing_storage_lost();
+
 private:
     OffscreenCanvas(JS::Realm&, WebIDL::UnsignedLongLong width, WebIDL::UnsignedLongLong height);
 
@@ -106,13 +114,18 @@ private:
     virtual void visit_edges(Cell::Visitor&) override;
 
     Page* page_of_relevant_global_object() const;
-    void register_with_page_for_frame_commits();
+    void register_with_page_for_compositor_notifications();
+
+    WebGL::WebGLRenderingContextBase* webgl_context() const;
 
     enum class HasOrCreatedContext {
         No,
         Yes,
     };
     JS::ThrowCompletionOr<HasOrCreatedContext> create_2d_context(JS::Value options);
+
+    template<typename ContextType>
+    JS::ThrowCompletionOr<HasOrCreatedContext> create_webgl_context(JS::Value options);
 
     void reset_context_to_default_state();
     void update_context_bitmap_size();

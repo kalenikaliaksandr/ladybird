@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    asyncTest(done => {
+        const workerScript = `
+            self.onmessage = function() {
+                try {
+                    const canvas = new OffscreenCanvas(16, 8);
+                    const gl = canvas.getContext("webgl");
+                    self.postMessage("gl is null: " + (gl === null));
+                    self.postMessage("gl instanceof WebGLRenderingContext: " + (gl instanceof WebGLRenderingContext));
+                    self.postMessage("gl.canvas === canvas: " + (gl.canvas === canvas));
+                    self.postMessage("drawingBufferWidth: " + gl.drawingBufferWidth);
+                    self.postMessage("drawingBufferHeight: " + gl.drawingBufferHeight);
+
+                    gl.clearColor(0, 128 / 255, 0, 1);
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    const pixel = new Uint8Array(4);
+                    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+                    self.postMessage("pixel after clear: " + Array.from(pixel));
+                    self.postMessage(null);
+                } catch (err) {
+                    self.postMessage("Error: " + err);
+                    self.postMessage(null);
+                }
+            };
+        `;
+        const blob = new Blob([workerScript], { type: "application/javascript" });
+        const worker = new Worker(URL.createObjectURL(blob));
+
+        worker.onmessage = function (evt) {
+            if (evt.data === null) {
+                done();
+                return;
+            }
+            println("Message received from worker: " + evt.data);
+        };
+
+        worker.postMessage("start");
+    });
+</script>

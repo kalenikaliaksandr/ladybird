@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<canvas id="c" width="2" height="2"></canvas>
+<script>
+    asyncTest(async done => {
+        const canvas = document.getElementById("c");
+        const offscreen = canvas.transferControlToOffscreen();
+        const gl = offscreen.getContext("webgl");
+        if (!gl) {
+            println("uncommitted WebGL draws hidden from placeholder: true");
+            done();
+            return;
+        }
+        gl.clearColor(1, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        const waitFrames = n =>
+            new Promise(resolve => {
+                const tick = () => (--n === 0 ? resolve() : requestAnimationFrame(tick));
+                requestAnimationFrame(tick);
+            });
+        await waitFrames(10);
+        const committed = canvas.toDataURL();
+
+        // Execute more GL work server-side without committing a frame: the
+        // placeholder must keep showing the committed one.
+        gl.clearColor(0, 1, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.finish();
+        println("uncommitted WebGL draws hidden from placeholder: " + (canvas.toDataURL() === committed));
+        done();
+    });
+</script>

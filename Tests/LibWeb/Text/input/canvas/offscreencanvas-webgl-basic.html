@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        const canvas = new OffscreenCanvas(16, 8);
+        const gl = canvas.getContext("webgl");
+
+        const results = [];
+        results.push(`gl is null: ${gl === null}`);
+        results.push(`gl instanceof WebGLRenderingContext: ${gl instanceof WebGLRenderingContext}`);
+        results.push(`gl.canvas === canvas: ${gl.canvas === canvas}`);
+        results.push(`drawingBufferWidth: ${gl.drawingBufferWidth}`);
+        results.push(`drawingBufferHeight: ${gl.drawingBufferHeight}`);
+
+        gl.clearColor(0, 128 / 255, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        const pixel = new Uint8Array(4);
+        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        results.push(`pixel after clear: ${Array.from(pixel)}`);
+
+        results.push(`getContext("webgl") returns same context: ${canvas.getContext("webgl") === gl}`);
+        results.push(`getContext("webgl2") on webgl canvas: ${canvas.getContext("webgl2")}`);
+        results.push(`getContext("2d") on webgl canvas: ${canvas.getContext("2d")}`);
+
+        const canvas2 = new OffscreenCanvas(4, 4);
+        const gl2 = canvas2.getContext("webgl2");
+        results.push(`gl2 instanceof WebGL2RenderingContext: ${gl2 instanceof WebGL2RenderingContext}`);
+        results.push(`gl2.canvas === canvas2: ${gl2.canvas === canvas2}`);
+
+        for (const line of results) println(line);
+    });
+</script>

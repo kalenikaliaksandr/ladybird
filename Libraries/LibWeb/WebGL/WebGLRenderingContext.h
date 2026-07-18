@@ -11,6 +11,7 @@
 #include <LibGC/Ptr.h>
 #include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/HTML/Canvas/CanvasOwner.h>
 #include <LibWeb/WebGL/Types.h>
 #include <LibWeb/WebGL/WebGLContextAttributes.h>
 #include <LibWeb/WebGL/WebGLRenderingContextOverloads.h>
@@ -22,14 +23,15 @@ class WebGLRenderingContext final : public WebGLRenderingContextOverloads {
     GC_DECLARE_ALLOCATOR(WebGLRenderingContext);
 
 public:
-    static JS::ThrowCompletionOr<GC::Ptr<WebGLRenderingContext>> create(JS::Realm&, HTML::HTMLCanvasElement& canvas_element, JS::Value options);
+    static JS::ThrowCompletionOr<GC::Ptr<WebGLRenderingContext>> create(JS::Realm&, HTML::CanvasOwner, JS::Value options);
 
     virtual ~WebGLRenderingContext() override;
 
     void prepare_for_compositing() override;
+    void commit_frame_for_placeholder(Gfx::IntSize logical_size);
     void did_update_canvas_content() override;
 
-    virtual GC::Ref<HTML::HTMLCanvasElement> canvas_for_binding() const override;
+    virtual HTML::CanvasOwner canvas_for_binding() const override;
 
     Optional<WebGLContextAttributes> get_context_attributes();
 
@@ -42,12 +44,12 @@ public:
 private:
     virtual void initialize(JS::Realm&) override;
 
-    WebGLRenderingContext(JS::Realm&, HTML::HTMLCanvasElement&, NonnullOwnPtr<WebGLContextProxy> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters);
+    WebGLRenderingContext(JS::Realm&, HTML::CanvasOwner, NonnullOwnPtr<WebGLContextProxy> context, WebGLContextAttributes context_creation_parameters, WebGLContextAttributes actual_context_parameters);
 
     virtual void visit_edges(Cell::Visitor&) override;
     virtual bool reestablish_remote_context() override;
 
-    GC::Ref<HTML::HTMLCanvasElement> m_canvas_element;
+    HTML::CanvasOwner m_canvas_owner;
 
     // https://www.khronos.org/registry/webgl/specs/latest/1.0/#context-creation-parameters
     // Each WebGLRenderingContext has context creation parameters, set upon creation, in a WebGLContextAttributes object.
@@ -58,10 +60,17 @@ private:
     WebGLContextAttributes m_actual_context_parameters {};
 };
 
-bool fire_webgl_context_event(HTML::HTMLCanvasElement& canvas_element, Utf16FlyString const& type);
-void fire_webgl_context_creation_error(HTML::HTMLCanvasElement& canvas_element);
+bool fire_webgl_context_event(DOM::EventTarget& canvas, Utf16FlyString const& type);
+void fire_webgl_context_creation_error(DOM::EventTarget& canvas);
 
-OwnPtr<WebGLContextProxy> create_webgl_context_proxy(HTML::HTMLCanvasElement&, WebGLVersion, WebGLContextAttributes const&);
-bool restore_webgl_context_proxy(WebGLContextProxy&, HTML::HTMLCanvasElement&, WebGLVersion, WebGLContextAttributes const&);
+OwnPtr<WebGLContextProxy> create_webgl_context_proxy(HTML::CanvasOwner const&, WebGLVersion, WebGLContextAttributes const&);
+bool restore_webgl_context_proxy(WebGLContextProxy&, HTML::CanvasOwner const&, WebGLVersion, WebGLContextAttributes const&);
+
+// Marks the owner canvas's content dirty and requests the repaint/commit machinery
+// appropriate for it: display-list invalidation for a <canvas> element, a frame commit
+// plus rendering update for an OffscreenCanvas.
+void dispatch_canvas_content_update(HTML::CanvasOwner const&);
+
+Gfx::IntSize canvas_owner_bitmap_size(HTML::CanvasOwner const&);
 
 }

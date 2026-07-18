@@ -760,6 +760,16 @@ void Page::for_each_registered_offscreen_canvas(Callback&& callback)
         callback(*offscreen_canvas);
 }
 
+void Page::register_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId canvas_id, UniqueNodeID element_id)
+{
+    m_placeholder_canvas_elements.set(canvas_id, element_id);
+}
+
+void Page::unregister_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId canvas_id)
+{
+    m_placeholder_canvas_elements.remove(canvas_id);
+}
+
 void Page::prepare_canvas_contexts_for_compositing()
 {
     for_each_canvas_element([](auto& canvas_element) {
@@ -782,6 +792,9 @@ void Page::notify_all_canvas_elements_of_lost_backing_storage()
     for_each_canvas_element([](auto& canvas_element) {
         canvas_element.notify_compositor_backing_storage_lost();
     });
+    for_each_registered_offscreen_canvas([](auto& offscreen_canvas) {
+        offscreen_canvas.notify_compositor_backing_storage_lost();
+    });
 }
 
 void Page::notify_all_webgl_contexts_lost()
@@ -789,16 +802,9 @@ void Page::notify_all_webgl_contexts_lost()
     for_each_canvas_element([](auto& canvas_element) {
         canvas_element.notify_compositor_connection_lost();
     });
-}
-
-void Page::register_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId canvas_id, UniqueNodeID element_id)
-{
-    m_placeholder_canvas_elements.set(canvas_id, element_id);
-}
-
-void Page::unregister_placeholder_canvas_element(Badge<HTML::HTMLCanvasElement>, Painting::CanvasId canvas_id)
-{
-    m_placeholder_canvas_elements.remove(canvas_id);
+    for_each_registered_offscreen_canvas([](auto& offscreen_canvas) {
+        offscreen_canvas.notify_compositor_connection_lost();
+    });
 }
 
 void Page::notify_offscreen_canvas_surface_committed(Painting::CanvasId canvas_id, Gfx::IntSize committed_size, bool origin_clean)

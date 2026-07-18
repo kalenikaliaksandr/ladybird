@@ -15,6 +15,7 @@
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/HTML/Canvas/CanvasOwner.h>
 #include <LibWeb/WebGL/Types.h>
 #include <LibWeb/WebIDL/Buffers.h>
 #include <LibWeb/WebIDL/Types.h>
@@ -50,7 +51,7 @@ public:
     using Uint32List = Variant<GC::Ref<JS::Uint32Array>, Vector<WebIDL::UnsignedLong>>;
 
     virtual WebGLContextProxy& context() = 0;
-    virtual GC::Ref<HTML::HTMLCanvasElement> canvas_for_binding() const = 0;
+    virtual HTML::CanvasOwner canvas_for_binding() const = 0;
 
     u64 context_generation() const { return m_context_generation; }
 
@@ -84,6 +85,10 @@ public:
 
 protected:
     WebGLRenderingContextBase(JS::Realm&);
+
+    // The owner canvas as the target for webglcontextlost/webglcontextrestored events;
+    // both HTMLCanvasElement and OffscreenCanvas are EventTargets.
+    GC::Ref<DOM::EventTarget> canvas_event_target() const;
 
     virtual void visit_edges(Cell::Visitor&) override;
 

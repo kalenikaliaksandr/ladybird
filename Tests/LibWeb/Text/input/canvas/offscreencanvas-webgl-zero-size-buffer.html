@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        // A zero-size canvas gets a drawing buffer clamped to 1x1, and the
+        // getters must report the actual buffer size.
+        const gl = new OffscreenCanvas(0, 0).getContext("webgl");
+        if (!gl) {
+            println("webgl unavailable");
+            return;
+        }
+        println("drawingBuffer: " + gl.drawingBufferWidth + "x" + gl.drawingBufferHeight);
+    });
+</script>
