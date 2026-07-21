@@ -1,0 +1,78 @@
+<!doctype html>
+<style>
+    body {
+        margin: 0;
+    }
+    #boundary {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        width: 200px;
+    }
+    #inner-scroller {
+        overflow: scroll;
+        height: 80px;
+    }
+    #inner-scroller-content {
+        height: 300px;
+    }
+    #content {
+        height: 40px;
+    }
+    .filler {
+        width: 10px;
+        height: 2px;
+    }
+    #big-sibling {
+        position: absolute;
+        top: 300px;
+        left: 10px;
+    }
+</style>
+<div id="boundary">
+    <div id="inner-scroller"><div id="inner-scroller-content"></div></div>
+    <div id="content"></div>
+</div>
+<div id="big-sibling"></div>
+<script src="include.js"></script>
+<script>
+    // A wide sibling subtree the reconcile must not visit when only the boundary relays out.
+    const sibling = document.getElementById("big-sibling");
+    for (let i = 0; i < 100; ++i) {
+        const filler = document.createElement("div");
+        filler.className = "filler";
+        sibling.appendChild(filler);
+    }
+
+    test(() => {
+        const scrollNodeIndices = () => {
+            const state = internals.asyncScrollingState();
+            const indices = [];
+            for (const node of state.scrollNodes)
+                indices.push(node.scrollNodeIndex);
+            return indices.join(",");
+        };
+
+        // Force the initial full build before the partial relayout.
+        document.getElementById("content").getBoundingClientRect();
+        const indices_before = scrollNodeIndices();
+        const partial_layouts_before = internals.partialLayoutCount();
+        const full_layouts_before = internals.fullLayoutCount();
+
+        // Layout dirt confined to the absolutely positioned boundary takes the partial relayout
+        // path, whose commit must reconcile only the boundary's visual context subtree.
+        document.getElementById("content").style.height = "60px";
+        document.getElementById("content").getBoundingClientRect();
+
+        const indices_after = scrollNodeIndices();
+        const statistics = internals.lastVisualContextReconcileStatistics();
+        const partial_layouts = internals.partialLayoutCount() - partial_layouts_before;
+        const full_layouts = internals.fullLayoutCount() - full_layouts_before;
+
+        println(`partial relayouts: ${partial_layouts}`);
+        println(`full relayouts: ${full_layouts}`);
+        println(`scroll node indices unchanged: ${indices_after === indices_before}`);
+        println(`reconcile visited paintables: ${statistics.visitedPaintableCount}`);
+        println(`reconcile was structural: ${statistics.structuralChange}`);
+    });
+</script>

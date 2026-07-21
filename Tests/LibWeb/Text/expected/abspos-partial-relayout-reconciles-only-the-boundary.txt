@@ -1,0 +1,5 @@
+partial relayouts: 1
+full relayouts: 0
+scroll node indices unchanged: true
+reconcile visited paintables: 7
+reconcile was structural: false

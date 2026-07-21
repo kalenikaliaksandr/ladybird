@@ -220,9 +220,11 @@ void ViewportPaintable::precompute_sticky_constraints(ScrollStateSlot sticky_slo
 void ViewportPaintable::refresh_sticky_constraints()
 {
     m_scroll_state.for_each_sticky_node([&](ScrollStateSlot slot, ScrollNodeState& state) {
-        // Skip entries whose paintables a subtree relayout has replaced; the pending visual context
-        // tree rebuild recreates those entries before anything reads them.
-        if (auto paintable_box = state.paintable_box_if_alive())
+        // Skip entries whose paintables a subtree relayout has replaced or reset: replaced ones
+        // are dead, and a reset one has no sticky insets until the pending reconcile of its
+        // subtree recomputes them together with its scroll node entry.
+        auto paintable_box = state.paintable_box_if_alive();
+        if (paintable_box && paintable_box->has_sticky_insets())
             precompute_sticky_constraints(slot, *paintable_box);
     });
     m_needs_to_refresh_scroll_state = true;
