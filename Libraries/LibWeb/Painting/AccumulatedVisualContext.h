@@ -103,7 +103,12 @@ struct AnchorScrollShift {
     Gfx::FloatPoint masked_offset(ScrollStateSnapshot const&) const;
 };
 
-using VisualContextData = Variant<ScrollData, ClipData, TransformData, PerspectiveData, ClipPathData, EffectsData, ScrollCompensation, AnchorScrollShift>;
+// Occupies a freed node slot until the slot is reused. Free slots are never reachable from any
+// live chain; consumers that walk chains treat touching one as a hard error, which turns a stale
+// index into a deterministic crash instead of silently resolving to an unrelated node.
+struct FreeSlot { };
+
+using VisualContextData = Variant<ScrollData, ClipData, TransformData, PerspectiveData, ClipPathData, EffectsData, ScrollCompensation, AnchorScrollShift, FreeSlot>;
 
 Optional<TransformData> compute_transform(Paintable const&, CSS::ComputedValues const&, double pixel_ratio);
 
@@ -225,6 +230,11 @@ template<>
 WEB_API ErrorOr<void> encode(Encoder&, Web::Painting::AnchorScrollShift const&);
 template<>
 WEB_API ErrorOr<Web::Painting::AnchorScrollShift> decode(Decoder&);
+
+template<>
+WEB_API ErrorOr<void> encode(Encoder&, Web::Painting::FreeSlot const&);
+template<>
+WEB_API ErrorOr<Web::Painting::FreeSlot> decode(Decoder&);
 
 template<>
 WEB_API ErrorOr<void> encode(Encoder&, Web::Painting::AccumulatedVisualContextNode const&);

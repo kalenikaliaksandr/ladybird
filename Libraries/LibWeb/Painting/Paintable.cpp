@@ -195,7 +195,8 @@ void Paintable::paint_with_inspector_overlay_context(DisplayListRecordingContext
                 [](ClipPathData const&) { return false; },
                 [](EffectsData const&) { return false; },
                 [](ScrollCompensation const&) { return true; },
-                [](AnchorScrollShift const&) { return true; });
+                [](AnchorScrollShift const&) { return true; },
+                [](FreeSlot const&) -> bool { VERIFY_NOT_REACHED(); });
             if (should_keep)
                 relevant_indices.append(i);
         }

@@ -237,6 +237,9 @@ void DisplayListPlayer::execute_impl(
                 [&](ClipPathData const& clip_path) {
                     play_command(Save {});
                     add_clip_path(clip_path.path, clip_path.fill_rule);
+                },
+                [&](FreeSlot const&) {
+                    VERIFY_NOT_REACHED();
                 });
         };
 
