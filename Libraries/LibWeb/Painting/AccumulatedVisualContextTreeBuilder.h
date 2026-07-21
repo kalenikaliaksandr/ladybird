@@ -19,6 +19,7 @@ struct VisualContextReconcileOutcome {
 
 AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable&);
 VisualContextReconcileOutcome reconcile_accumulated_visual_context_tree(ViewportPaintable&, AccumulatedVisualContextTree&);
+void verify_reconciled_visual_context_tree_matches_fresh_build(ViewportPaintable&, AccumulatedVisualContextTree const& reconciled_tree);
 bool update_accumulated_visual_context_values(ViewportPaintable&, Paintable&);
 void update_visual_viewport_accumulated_visual_context(ViewportPaintable&);
 

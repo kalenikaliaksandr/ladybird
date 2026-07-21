@@ -6,6 +6,7 @@
  */
 
 #include <AK/HashTable.h>
+#include <LibCore/Environment.h>
 #include <LibGfx/Matrix4x4.h>
 #include <LibWeb/CSS/ComputedValues.h>
 #include <LibWeb/CSS/StyleValues/TransformationStyleValue.h>
@@ -736,6 +737,133 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
     return visual_context_tree;
 }
 
+static bool verify_visual_context_tree_reconcile_enabled()
+{
+    static bool enabled = Core::Environment::has("LADYBIRD_VERIFY_VISUAL_CONTEXT_TREE"sv);
+    return enabled;
+}
+
+static String visual_context_chain_dump(AccumulatedVisualContextTree const& visual_context_tree, VisualContextIndex index)
+{
+    StringBuilder builder;
+    for (auto i = index;; i = visual_context_tree.node_at(i).parent_index) {
+        visual_context_tree.dump(i, builder);
+        builder.appendff(" empty_clip={} / ", visual_context_tree.has_empty_effective_clip(i));
+        if (i == VISUAL_VIEWPORT_NODE_INDEX)
+            break;
+    }
+    return MUST(builder.to_string());
+}
+
+// The scroll-parent linkage deliberately differs from the visual context parent chain, so it is
+// compared through its own slot-independent walk.
+static String scroll_parent_chain_dump(AccumulatedVisualContextTree const& visual_context_tree, ScrollState const& scroll_state, VisualContextIndex scroll_node_index)
+{
+    StringBuilder builder;
+    for (auto slot = visual_context_tree.scroll_state_slot_for_node(scroll_node_index); slot != NO_SCROLL_STATE_SLOT; slot = scroll_state.state_at_slot(slot).parent_slot()) {
+        auto const& state = scroll_state.state_at_slot(slot);
+        builder.appendff("{}[{}] / ", state.is_sticky() ? "sticky"sv : "scroll"sv, visual_context_chain_dump(visual_context_tree, state.node_index()));
+    }
+    return MUST(builder.to_string());
+}
+
+// Reruns the fresh build into a scratch tree and compares every connected paintable's chains
+// against the reconciled tree. The fresh build overwrites the paintables' stored contexts and the
+// scroll state — both inputs the reconcile derives from — so they are snapshotted and restored,
+// keeping checker-mode behavior identical to normal mode after each check.
+void verify_reconciled_visual_context_tree_matches_fresh_build(ViewportPaintable& viewport_paintable, AccumulatedVisualContextTree const& reconciled_tree)
+{
+    struct PaintableVisualContexts {
+        VisualContextIndex own;
+        VisualContextIndex for_descendants;
+        VisualContextIndex for_absolute_position_descendants;
+        VisualContextIndex for_fixed_position_descendants;
+        Optional<VisualContextIndex> fixed_background;
+        VisualContextIndex enclosing_scroll_node;
+        VisualContextIndex own_scroll_node;
+        Vector<VisualContextIndex> owned_nodes;
+    };
+
+    auto capture = [](Paintable const& paintable) {
+        Vector<VisualContextIndex> owned_nodes;
+        owned_nodes.append(paintable.owned_visual_context_nodes().data(), paintable.owned_visual_context_nodes().size());
+        return PaintableVisualContexts {
+            paintable.accumulated_visual_context_index(),
+            paintable.accumulated_visual_context_for_descendants_index(),
+            paintable.accumulated_visual_context_for_absolute_position_descendants_index(),
+            paintable.accumulated_visual_context_for_fixed_position_descendants_index(),
+            paintable.fixed_background_visual_context(),
+            paintable.enclosing_scroll_node_index(),
+            paintable.own_scroll_node_index(),
+            move(owned_nodes),
+        };
+    };
+
+    Vector<Paintable*> paintables;
+    HashMap<Paintable*, PaintableVisualContexts> reconciled_contexts;
+    viewport_paintable.for_each_in_inclusive_subtree([&](auto& paintable) {
+        paintables.append(&paintable);
+        reconciled_contexts.set(&paintable, capture(paintable));
+        return TraversalDecision::Continue;
+    });
+    auto reconciled_scroll_state = viewport_paintable.m_scroll_state;
+
+    viewport_paintable.clear_scroll_state();
+    auto fresh_tree = build_accumulated_visual_context_tree(viewport_paintable);
+    auto const& fresh_scroll_state = viewport_paintable.m_scroll_state;
+
+    for (auto* paintable : paintables) {
+        auto const& reconciled = reconciled_contexts.get(paintable).value();
+        auto fresh = capture(*paintable);
+
+        struct ChainToCompare {
+            StringView name;
+            String reconciled_dump;
+            String fresh_dump;
+        };
+        ChainToCompare chains[] = {
+            { "own"sv, visual_context_chain_dump(reconciled_tree, reconciled.own), visual_context_chain_dump(fresh_tree, fresh.own) },
+            { "descendants"sv, visual_context_chain_dump(reconciled_tree, reconciled.for_descendants), visual_context_chain_dump(fresh_tree, fresh.for_descendants) },
+            { "absolute"sv, visual_context_chain_dump(reconciled_tree, reconciled.for_absolute_position_descendants), visual_context_chain_dump(fresh_tree, fresh.for_absolute_position_descendants) },
+            { "fixed"sv, visual_context_chain_dump(reconciled_tree, reconciled.for_fixed_position_descendants), visual_context_chain_dump(fresh_tree, fresh.for_fixed_position_descendants) },
+            { "fixed-background"sv,
+                reconciled.fixed_background.has_value() ? visual_context_chain_dump(reconciled_tree, *reconciled.fixed_background) : String {},
+                fresh.fixed_background.has_value() ? visual_context_chain_dump(fresh_tree, *fresh.fixed_background) : String {} },
+            { "enclosing-scroll"sv,
+                scroll_parent_chain_dump(reconciled_tree, reconciled_scroll_state, reconciled.enclosing_scroll_node),
+                scroll_parent_chain_dump(fresh_tree, fresh_scroll_state, fresh.enclosing_scroll_node) },
+            { "own-scroll"sv,
+                scroll_parent_chain_dump(reconciled_tree, reconciled_scroll_state, reconciled.own_scroll_node),
+                scroll_parent_chain_dump(fresh_tree, fresh_scroll_state, fresh.own_scroll_node) },
+        };
+        for (auto const& chain : chains) {
+            if (chain.reconciled_dump == chain.fresh_dump)
+                continue;
+            dbgln("Reconciled visual context tree mismatch for {} ({} chain)", paintable->layout_node().debug_description(), chain.name);
+            dbgln("  reconciled: {}", chain.reconciled_dump);
+            dbgln("  fresh:      {}", chain.fresh_dump);
+            VERIFY_NOT_REACHED();
+        }
+    }
+
+    for (auto* paintable : paintables) {
+        auto& reconciled = reconciled_contexts.get(paintable).value();
+        paintable->set_accumulated_visual_context(reconciled.own);
+        paintable->set_accumulated_visual_context_for_descendants(reconciled.for_descendants);
+        paintable->set_accumulated_visual_context_for_absolute_position_descendants(reconciled.for_absolute_position_descendants);
+        paintable->set_accumulated_visual_context_for_fixed_position_descendants(reconciled.for_fixed_position_descendants);
+        if (reconciled.fixed_background.has_value())
+            paintable->set_fixed_background_visual_context(*reconciled.fixed_background);
+        else
+            paintable->clear_fixed_background_visual_context();
+        paintable->set_enclosing_scroll_node_index(reconciled.enclosing_scroll_node);
+        paintable->set_own_scroll_node_index(reconciled.own_scroll_node);
+        paintable->set_owned_visual_context_nodes(move(reconciled.owned_nodes));
+    }
+    viewport_paintable.m_scroll_state = move(reconciled_scroll_state);
+    viewport_paintable.set_needs_to_refresh_scroll_state(true);
+}
+
 VisualContextReconcileOutcome reconcile_accumulated_visual_context_tree(ViewportPaintable& viewport_paintable, AccumulatedVisualContextTree& visual_context_tree)
 {
     auto& document = viewport_paintable.document();
@@ -766,6 +894,9 @@ VisualContextReconcileOutcome reconcile_accumulated_visual_context_tree(Viewport
     for (auto* child = viewport_paintable.first_child_ptr(); child; child = child->next_sibling_ptr())
         builder.build_subtree(*child, viewport_contexts, true);
     builder.build_deferred_anchor_positioned_subtrees();
+
+    if (verify_visual_context_tree_reconcile_enabled()) [[unlikely]]
+        verify_reconciled_visual_context_tree_matches_fresh_build(viewport_paintable, visual_context_tree);
 
     return builder.reconcile_outcome();
 }
