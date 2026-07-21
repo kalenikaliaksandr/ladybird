@@ -56,8 +56,28 @@ public:
         return append_state(ScrollNodeState { node_index, paintable_box, true, parent_slot });
     }
 
-    ScrollNodeState const& state_at_slot(ScrollStateSlot slot) const { return m_states_by_slot[slot.value()]; }
-    ScrollNodeState& state_at_slot(ScrollStateSlot slot) { return m_states_by_slot[slot.value()]; }
+    ScrollNodeState const& state_at_slot(ScrollStateSlot slot) const
+    {
+        auto const& state = m_states_by_slot[slot.value()];
+        VERIFY(!state.is_free());
+        return state;
+    }
+    ScrollNodeState& state_at_slot(ScrollStateSlot slot)
+    {
+        auto& state = m_states_by_slot[slot.value()];
+        VERIFY(!state.is_free());
+        return state;
+    }
+
+    // Freed entries are reusable immediately: slots are process-local (never on the wire), and
+    // after a rebuild completes no live state's parent chain and no live tree node references a
+    // freed slot.
+    void free_state(ScrollStateSlot slot)
+    {
+        VERIFY(!m_states_by_slot[slot.value()].is_free());
+        m_states_by_slot[slot.value()].mark_free();
+        m_reusable_free_slots.append(slot);
+    }
 
     size_t slot_count() const { return m_states_by_slot.size(); }
 
@@ -104,12 +124,12 @@ public:
         return NO_SCROLL_STATE_SLOT;
     }
 
-    // Iteration follows registration order, which is the tree's append order, so parent nodes are
-    // always visited before their descendants.
     template<typename Callback>
     void for_each_scroll_node(Callback callback)
     {
         for (size_t slot_value = 0; slot_value < m_states_by_slot.size(); ++slot_value) {
+            if (m_states_by_slot[slot_value].is_free())
+                continue;
             if (!m_states_by_slot[slot_value].is_sticky())
                 callback(ScrollStateSlot { slot_value }, m_states_by_slot[slot_value]);
         }
@@ -119,6 +139,8 @@ public:
     void for_each_sticky_node(Callback callback)
     {
         for (size_t slot_value = 0; slot_value < m_states_by_slot.size(); ++slot_value) {
+            if (m_states_by_slot[slot_value].is_free())
+                continue;
             if (m_states_by_slot[slot_value].is_sticky())
                 callback(ScrollStateSlot { slot_value }, m_states_by_slot[slot_value]);
         }
@@ -127,6 +149,7 @@ public:
     void clear()
     {
         m_states_by_slot.clear_with_capacity();
+        m_reusable_free_slots.clear_with_capacity();
     }
 
 private:
@@ -134,6 +157,11 @@ private:
 
     ScrollStateSlot append_state(ScrollNodeState state)
     {
+        if (!m_reusable_free_slots.is_empty()) {
+            auto slot = m_reusable_free_slots.take_last();
+            m_states_by_slot[slot.value()] = move(state);
+            return slot;
+        }
         auto slot = ScrollStateSlot { m_states_by_slot.size() };
         m_states_by_slot.append(move(state));
         return slot;
@@ -142,6 +170,7 @@ private:
     ScrollStateSnapshot snapshot(double device_pixels_per_css_pixel) const;
 
     Vector<ScrollNodeState> m_states_by_slot;
+    Vector<ScrollStateSlot> m_reusable_free_slots;
 };
 
 }

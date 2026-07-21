@@ -4353,6 +4353,10 @@ bool LocalNavigable::record_display_list_and_scroll_state(PaintConfig paint_conf
         m_compositor_display_list_visual_context_tree_version = display_list->compatible_visual_context_tree_version();
         compositor_context().update_display_list(*display_list, visual_context_tree.release_value(), move(resource_transaction), move(scroll_state_snapshot));
         document_paintable->did_update_visual_context_tree_in_compositor();
+        // Freed visual context slots become reusable only now: every retained consumer of the
+        // previous binding (the damage baseline, the splice source, the compositor copy) has
+        // just been replaced by this update.
+        document_paintable->promote_quarantined_visual_context_free_slots();
         m_display_list_resource_storage.retain_only(display_list_resources);
         m_compositor_display_list_resources = move(display_list_resources);
         m_needs_to_record_display_list = false;

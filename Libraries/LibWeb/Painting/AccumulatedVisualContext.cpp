@@ -711,23 +711,59 @@ void update_visual_viewport_accumulated_visual_context(ViewportPaintable& viewpo
     viewport_paintable.m_visual_context_tree->set_visual_viewport_transform(visual_viewport_transform_data(viewport_paintable.document()));
 }
 
+bool AccumulatedVisualContextTree::derive_has_empty_effective_clip(VisualContextData const& data, VisualContextIndex parent_index) const
+{
+    if (m_nodes[parent_index.value()].has_empty_effective_clip)
+        return true;
+    if (auto const* clip = data.get_pointer<ClipData>())
+        return clip->rect.is_empty();
+    if (auto const* clip_path = data.get_pointer<ClipPathData>())
+        return clip_path->path.bounding_box().is_empty();
+    return false;
+}
+
 VisualContextIndex AccumulatedVisualContextTree::append(VisualContextData data, VisualContextIndex parent_index)
 {
     VERIFY(parent_index.value() < m_nodes.size());
     size_t depth = m_nodes[parent_index.value()].depth + 1;
-
-    bool empty_clip = false;
-    if (m_nodes[parent_index.value()].has_empty_effective_clip) {
-        empty_clip = true;
-    } else if (data.has<ClipData>()) {
-        empty_clip = data.get<ClipData>().rect.is_empty();
-    } else if (data.has<ClipPathData>()) {
-        empty_clip = data.get<ClipPathData>().path.bounding_box().is_empty();
-    }
+    bool empty_clip = derive_has_empty_effective_clip(data, parent_index);
 
     auto index = VisualContextIndex(m_nodes.size());
     m_nodes.append({ move(data), parent_index, depth, empty_clip });
     return index;
+}
+
+VisualContextIndex AccumulatedVisualContextTree::allocate_node(VisualContextData data, VisualContextIndex parent_index)
+{
+    if (m_reusable_free_slots.is_empty())
+        return append(move(data), parent_index);
+
+    VERIFY(parent_index.value() < m_nodes.size());
+    auto index = m_reusable_free_slots.take_last();
+    auto& node = m_nodes[index.value()];
+    VERIFY(node.data.has<FreeSlot>());
+    node.has_empty_effective_clip = derive_has_empty_effective_clip(data, parent_index);
+    node.data = move(data);
+    node.parent_index = parent_index;
+    node.depth = m_nodes[parent_index.value()].depth + 1;
+    return index;
+}
+
+void AccumulatedVisualContextTree::free_node(VisualContextIndex index)
+{
+    VERIFY(index != VISUAL_VIEWPORT_NODE_INDEX);
+    auto& node = m_nodes[index.value()];
+    VERIFY(!node.data.has<FreeSlot>());
+    node.data = FreeSlot {};
+    node.parent_index = {};
+    node.depth = 0;
+    node.has_empty_effective_clip = false;
+    m_quarantined_free_slots.append(index);
+}
+
+void AccumulatedVisualContextTree::promote_quarantined_free_slots()
+{
+    m_reusable_free_slots.extend(move(m_quarantined_free_slots));
 }
 
 void AccumulatedVisualContextTree::shrink(size_t node_count)
@@ -735,6 +771,12 @@ void AccumulatedVisualContextTree::shrink(size_t node_count)
     // The visual viewport root node must always remain.
     VERIFY(node_count >= 1);
     VERIFY(node_count <= m_nodes.size());
+    // Only tail-appended inspector overlay nodes are ever shrunk away; freed slots always sit
+    // below the overlay watermark, so shrinking must never cut into the freelist.
+    for (auto index : m_reusable_free_slots)
+        VERIFY(index.value() < node_count);
+    for (auto index : m_quarantined_free_slots)
+        VERIFY(index.value() < node_count);
     m_nodes.shrink(node_count, true);
 }
 

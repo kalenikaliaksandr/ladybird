@@ -66,9 +66,13 @@ public:
     bool has_sticky_constraints() const { return m_sticky_constraints.has_value(); }
     StickyConstraints const& sticky_constraints() const { return m_sticky_constraints.value(); }
 
+    bool is_free() const { return m_free; }
+    void mark_free() { m_free = true; }
+
 private:
     WeakPtr<Paintable> m_paintable_box;
     bool m_sticky { false };
+    bool m_free { false };
     VisualContextIndex m_node_index;
     ScrollStateSlot m_parent_slot { NO_SCROLL_STATE_SLOT };
     CSSPixelPoint m_own_offset;
