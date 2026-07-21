@@ -314,7 +314,20 @@ void ViewportPaintable::refresh_scroll_state()
     // https://drafts.csswg.org/css-position/#sticky-pos
     // Sticky positioning is similar to relative positioning except the offsets are automatically calculated
     // in reference to the nearest scrollport.
-    m_scroll_state.for_each_sticky_node([&](auto slot, auto& state) {
+    // NB: A sticky offset builds on the just-computed offsets of the consecutive sticky ancestors
+    //     along its scroll-parent chain. Recursing on the sticky parent refreshes those first, so
+    //     the result does not depend on the store's iteration order.
+    Vector<bool> sticky_offset_is_refreshed;
+    sticky_offset_is_refreshed.resize(m_scroll_state.slot_count());
+    auto refresh_sticky_offset = [&](this auto const& refresh_sticky_offset, ScrollStateSlot slot) -> void {
+        if (sticky_offset_is_refreshed[slot.value()])
+            return;
+        sticky_offset_is_refreshed[slot.value()] = true;
+
+        auto& state = m_scroll_state.state_at_slot(slot);
+        if (auto parent_slot = state.parent_slot(); parent_slot != NO_SCROLL_STATE_SLOT && m_scroll_state.state_at_slot(parent_slot).is_sticky())
+            refresh_sticky_offset(parent_slot);
+
         auto nearest_scrolling_ancestor_slot = m_scroll_state.nearest_scrolling_ancestor_slot(slot);
         if (nearest_scrolling_ancestor_slot == NO_SCROLL_STATE_SLOT || !state.has_sticky_constraints())
             return;
@@ -363,6 +376,9 @@ void ViewportPaintable::refresh_scroll_state()
         }
 
         state.set_own_offset(sticky_offset);
+    };
+    m_scroll_state.for_each_sticky_node([&](ScrollStateSlot slot, ScrollNodeState&) {
+        refresh_sticky_offset(slot);
     });
 
     m_scroll_state.for_each_scroll_node([&](auto, auto& state) {

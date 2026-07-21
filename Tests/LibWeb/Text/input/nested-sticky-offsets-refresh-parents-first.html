@@ -1,0 +1,62 @@
+<!doctype html>
+<style>
+    body {
+        margin: 0;
+    }
+    #scroller {
+        width: 300px;
+        height: 200px;
+        overflow: scroll;
+    }
+    #spacer-above-wrapper {
+        height: 50px;
+    }
+    #wrapper {
+        height: 600px;
+    }
+    #outer-sticky {
+        position: sticky;
+        top: 10px;
+        height: 500px;
+    }
+    #spacer-above-inner {
+        height: 40px;
+    }
+    #inner-sticky {
+        position: sticky;
+        top: 30px;
+        height: 50px;
+    }
+    #tail {
+        height: 1000px;
+    }
+</style>
+<div id="scroller">
+    <div id="spacer-above-wrapper"></div>
+    <div id="wrapper">
+        <div id="outer-sticky">
+            <div id="spacer-above-inner"></div>
+            <div id="inner-sticky"></div>
+        </div>
+    </div>
+    <div id="tail"></div>
+</div>
+<script src="include.js"></script>
+<script>
+    test(() => {
+        const scroller = document.getElementById("scroller");
+        const scrollerTop = scroller.getBoundingClientRect().top;
+        const outer = document.getElementById("outer-sticky");
+        const inner = document.getElementById("inner-sticky");
+
+        // The inner sticky box's offset is computed against the current offset of its sticky
+        // ancestor. At scrollTop 120 the outer box is stuck while the inner one must ride along
+        // unstuck; a stale outer offset flips the inner box's engagement decision.
+        for (const scrollTop of [0, 120, 300]) {
+            scroller.scrollTop = scrollTop;
+            const outerTop = outer.getBoundingClientRect().top - scrollerTop;
+            const innerTop = inner.getBoundingClientRect().top - scrollerTop;
+            println(`scrollTop=${scrollTop}: outer top=${outerTop} inner top=${innerTop}`);
+        }
+    });
+</script>

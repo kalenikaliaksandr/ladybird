@@ -59,6 +59,8 @@ public:
     ScrollNodeState const& state_at_slot(ScrollStateSlot slot) const { return m_states_by_slot[slot.value()]; }
     ScrollNodeState& state_at_slot(ScrollStateSlot slot) { return m_states_by_slot[slot.value()]; }
 
+    size_t slot_count() const { return m_states_by_slot.size(); }
+
     VisualContextIndex node_index_for_slot(ScrollStateSlot slot) const
     {
         if (slot == NO_SCROLL_STATE_SLOT)
