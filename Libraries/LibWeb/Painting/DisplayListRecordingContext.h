@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <AK/HashMap.h>
 #include <LibGfx/AffineTransform.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Palette.h>
@@ -15,6 +16,7 @@
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/ChromeMetrics.h>
 #include <LibWeb/Painting/DevicePixelConverter.h>
+#include <LibWeb/Painting/VisualContextIndex.h>
 #include <LibWeb/PixelUnits.h>
 
 namespace Web::Painting {
@@ -22,12 +24,19 @@ namespace Web::Painting {
 class AccumulatedVisualContextTree;
 class DisplayList;
 class HitTestDisplayList;
+class Paintable;
 class ScrollState;
 
 enum class PaintCommandCacheMode : u8 {
     ReadOnly,
     ReadWrite,
 };
+
+// Context assignments for paintables painted into a nested display list with its own private
+// visual context tree (SVG mask and clip-path recordings). Kept beside the recording context
+// instead of being written into the paintables' persistent stamps, which always describe the
+// document's visual context tree.
+using NestedVisualContextAssignments = HashMap<Paintable const*, VisualContextIndex>;
 
 }
 
@@ -40,6 +49,10 @@ public:
     Painting::DisplayListRecorder& display_list_recorder() const { return m_display_list_recorder; }
     Painting::HitTestDisplayList* hit_test_display_list() const { return m_hit_test_display_list; }
     Palette const& palette() const { return m_palette; }
+
+    void set_nested_visual_context_assignments(Painting::NestedVisualContextAssignments const* assignments) { m_nested_visual_context_assignments = assignments; }
+    Painting::VisualContextIndex visual_context_index_for_paintable(Painting::Paintable const&) const;
+    Painting::VisualContextIndex visual_context_index_for_paintable_descendants(Painting::Paintable const&) const;
 
     bool should_show_line_box_borders() const { return m_should_show_line_box_borders; }
     void set_should_show_line_box_borders(bool value) { m_should_show_line_box_borders = value; }
@@ -125,6 +138,7 @@ public:
 private:
     Painting::DisplayListRecorder& m_display_list_recorder;
     Painting::HitTestDisplayList* m_hit_test_display_list { nullptr };
+    Painting::NestedVisualContextAssignments const* m_nested_visual_context_assignments { nullptr };
     Palette m_palette;
     Painting::DevicePixelConverter m_device_pixel_converter;
     ChromeMetrics m_chrome_metrics;

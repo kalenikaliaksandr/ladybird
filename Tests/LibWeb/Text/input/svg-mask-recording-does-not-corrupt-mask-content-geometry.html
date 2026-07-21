@@ -1,0 +1,40 @@
+<!doctype html>
+<script src="include.js"></script>
+<style>
+    body {
+        height: 2000px;
+    }
+</style>
+<svg width="200" height="200">
+    <defs>
+        <mask id="mask">
+            <rect id="mask-content" x="10" y="10" width="100" height="100" fill="white" opacity="0.9"></rect>
+        </mask>
+    </defs>
+    <rect width="200" height="200" fill="green" mask="url(#mask)"></rect>
+</svg>
+<script>
+    asyncTest(async (done) => {
+        const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+
+        // Painting a masked element records the mask content into a nested display list with its
+        // own private visual context tree. Geometry queries on the mask content must resolve
+        // against the document's visual context tree before and after that recording; a scroll
+        // offset makes a leaked private-tree context assignment observable as shifted geometry.
+        const before = document.getElementById("mask-content").getBoundingClientRect();
+
+        window.scrollTo(0, 100);
+        // Two frames: the requestAnimationFrame continuation resumes before this frame's display
+        // list is recorded, and the mask recording must actually happen while the page is scrolled.
+        await nextFrame();
+        await nextFrame();
+
+        const after = document.getElementById("mask-content").getBoundingClientRect();
+        const same = before.x === after.x && before.y === after.y
+            && before.width === after.width && before.height === after.height;
+        println(`mask content geometry unchanged by scrolled paint: ${same}`);
+        if (!same)
+            println(`before=(${before.x},${before.y} ${before.width}x${before.height}) after=(${after.x},${after.y} ${after.width}x${after.height})`);
+        done();
+    });
+</script>

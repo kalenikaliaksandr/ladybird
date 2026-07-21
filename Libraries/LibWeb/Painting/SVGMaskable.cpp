@@ -10,6 +10,7 @@
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/Blending.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
+#include <LibWeb/Painting/DisplayListRecordingContext.h>
 #include <LibWeb/Painting/ResolvedCSSFilter.h>
 #include <LibWeb/Painting/SVGClipPaintable.h>
 #include <LibWeb/Painting/SVGGraphicsPaintable.h>
@@ -72,7 +73,7 @@ static Gfx::MaskKind mask_type_to_gfx_mask_kind(CSS::MaskType mask_type)
     }
 }
 
-static void build_nested_svg_visual_context_tree_for_subtree(AccumulatedVisualContextTree& visual_context_tree, Paintable& paintable_box, VisualContextIndex inherited_state, float pixel_ratio)
+static void build_nested_svg_visual_context_tree_for_subtree(AccumulatedVisualContextTree& visual_context_tree, NestedVisualContextAssignments& context_assignments, Paintable& paintable_box, VisualContextIndex inherited_state, float pixel_ratio)
 {
     auto const& computed_values = paintable_box.computed_values();
     if (computed_values.filter().has_filters())
@@ -91,20 +92,19 @@ static void build_nested_svg_visual_context_tree_for_subtree(AccumulatedVisualCo
     if (effects.needs_layer())
         own_state = visual_context_tree.append(move(effects), inherited_state);
 
-    paintable_box.set_accumulated_visual_context(own_state);
-    paintable_box.set_accumulated_visual_context_for_descendants(own_state);
+    context_assignments.set(&paintable_box, own_state);
 
     paintable_box.for_each_child_of_type<Paintable>([&](Paintable& child) {
-        build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, child, own_state, pixel_ratio);
+        build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, context_assignments, child, own_state, pixel_ratio);
         return IterationDecision::Continue;
     });
 }
 
-static AccumulatedVisualContextTree build_nested_svg_visual_context_tree(Paintable& root_paintable)
+static AccumulatedVisualContextTree build_nested_svg_visual_context_tree(Paintable& root_paintable, NestedVisualContextAssignments& context_assignments)
 {
     auto visual_context_tree = AccumulatedVisualContextTree::create();
     auto pixel_ratio = root_paintable.document().page().client().device_pixels_per_css_pixel();
-    build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, root_paintable, {}, pixel_ratio);
+    build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, context_assignments, root_paintable, {}, pixel_ratio);
 
     return visual_context_tree;
 }
@@ -125,11 +125,13 @@ static Optional<DisplayListResource> paint_mask_or_clip_to_display_list(
     bool is_clip_path)
 {
     auto mask_rect = context.enclosing_device_rect(area);
-    auto visual_context_tree = build_nested_svg_visual_context_tree(const_cast<Paintable&>(paintable));
+    NestedVisualContextAssignments context_assignments;
+    auto visual_context_tree = build_nested_svg_visual_context_tree(const_cast<Paintable&>(paintable), context_assignments);
     auto display_list = DisplayList::create(visual_context_tree);
     DisplayListRecorder display_list_recorder(*display_list, visual_context_tree, context.display_list_recorder().resource_storage());
     display_list_recorder.translate(-mask_rect.location().to_type<int>());
     auto paint_context = context.clone(display_list_recorder);
+    paint_context.set_nested_visual_context_assignments(&context_assignments);
     auto const& mask_element = as<SVG::SVGGraphicsElement const>(*paintable.dom_node());
     // Layout computes transforms only within the mask/clip subtree, so prepend the target's accumulated transform here.
     auto svg_transform = Gfx::AffineTransform { target_svg_transform }.multiply(mask_element.element_transform());

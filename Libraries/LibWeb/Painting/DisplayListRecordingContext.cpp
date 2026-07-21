@@ -6,6 +6,7 @@
  */
 
 #include <LibWeb/Painting/DisplayListRecordingContext.h>
+#include <LibWeb/Painting/Paintable.h>
 
 namespace Web {
 
@@ -19,6 +20,20 @@ DisplayListRecordingContext::DisplayListRecordingContext(Painting::DisplayListRe
     , m_chrome_metrics(chrome_metrics)
     , m_paint_generation_id(s_next_paint_generation_id++)
 {
+}
+
+Painting::VisualContextIndex DisplayListRecordingContext::visual_context_index_for_paintable(Painting::Paintable const& paintable) const
+{
+    if (m_nested_visual_context_assignments) [[unlikely]]
+        return m_nested_visual_context_assignments->get(&paintable).value_or(Painting::VISUAL_VIEWPORT_NODE_INDEX);
+    return paintable.accumulated_visual_context_index();
+}
+
+Painting::VisualContextIndex DisplayListRecordingContext::visual_context_index_for_paintable_descendants(Painting::Paintable const& paintable) const
+{
+    if (m_nested_visual_context_assignments) [[unlikely]]
+        return m_nested_visual_context_assignments->get(&paintable).value_or(Painting::VISUAL_VIEWPORT_NODE_INDEX);
+    return paintable.accumulated_visual_context_for_descendants_index();
 }
 
 DevicePixels DisplayListRecordingContext::rounded_device_pixels(CSSPixels css_pixels) const
