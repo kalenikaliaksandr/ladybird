@@ -1,0 +1,48 @@
+<!doctype html>
+<style>
+    body {
+        margin: 0;
+    }
+    #toggle {
+        width: 40px;
+        height: 40px;
+        background: blue;
+    }
+    .filler {
+        width: 10px;
+        height: 2px;
+    }
+    #big-sibling-scroller {
+        width: 200px;
+        height: 100px;
+        overflow: scroll;
+    }
+    #big-sibling-content {
+        height: 400px;
+    }
+</style>
+<div id="toggle"></div>
+<div id="big-sibling-scroller"><div id="big-sibling-content"></div></div>
+<script src="include.js"></script>
+<script>
+    // A wide sibling subtree the reconcile must not visit when only #toggle changes structurally.
+    const content = document.getElementById("big-sibling-content");
+    for (let i = 0; i < 100; ++i) {
+        const filler = document.createElement("div");
+        filler.className = "filler";
+        content.appendChild(filler);
+    }
+
+    test(() => {
+        // Force the initial full build before the structural change.
+        document.getElementById("toggle").getBoundingClientRect();
+
+        document.getElementById("toggle").style.opacity = "0.5";
+        document.getElementById("toggle").getBoundingClientRect();
+        const statistics = internals.lastVisualContextReconcileStatistics();
+
+        println(`reconcile was structural: ${statistics.structuralChange}`);
+        println(`visited paintables: ${statistics.visitedPaintableCount}`);
+        println(`allocated nodes: ${statistics.allocatedNodeCount}`);
+    });
+</script>

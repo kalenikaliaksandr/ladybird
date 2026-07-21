@@ -1080,6 +1080,19 @@ void Internals::set_page_muted(bool muted)
     window().associated_document().page().set_page_mute_state(muted ? HTML::MuteState::Muted : HTML::MuteState::Unmuted);
 }
 
+JS::Object* Internals::last_visual_context_reconcile_statistics()
+{
+    auto object = JS::Object::create(realm(), nullptr);
+    Painting::VisualContextReconcileOutcome outcome;
+    if (auto paintable = window().associated_document().paintable())
+        outcome = paintable->last_visual_context_reconcile_outcome();
+    object->define_direct_property("visitedPaintableCount"_utf16_fly_string, JS::Value(outcome.visited_paintable_count), JS::default_attributes);
+    object->define_direct_property("allocatedNodeCount"_utf16_fly_string, JS::Value(outcome.allocated_node_count), JS::default_attributes);
+    object->define_direct_property("freedNodeCount"_utf16_fly_string, JS::Value(outcome.freed_node_count), JS::default_attributes);
+    object->define_direct_property("structuralChange"_utf16_fly_string, JS::Value(outcome.structural_change), JS::default_attributes);
+    return object;
+}
+
 JS::Object* Internals::async_scrolling_state()
 {
     auto object = JS::Object::create(realm(), nullptr);

@@ -254,13 +254,8 @@ void ViewportPaintable::assign_accumulated_visual_contexts()
     m_visual_context_tree_needs_compositor_update = true;
 }
 
-void ViewportPaintable::reconcile_accumulated_visual_contexts()
+void ViewportPaintable::prune_inspector_overlay_visual_contexts_before_reconcile()
 {
-    if (!m_visual_context_tree.has_value()) {
-        assign_accumulated_visual_contexts();
-        return;
-    }
-
     // Overlay nodes are transient tail appends referenced only by the retained display list; a
     // reconciled tree must not carry them forward, and the retained list must not be paired with
     // the pruned tree through the value-only compositor update lane.
@@ -268,17 +263,45 @@ void ViewportPaintable::reconcile_accumulated_visual_contexts()
         m_visual_context_tree->shrink(m_visual_context_tree_node_count_without_inspector_overlays);
         document().set_needs_to_record_display_list();
     }
+}
 
-    auto outcome = reconcile_accumulated_visual_context_tree(*this, *m_visual_context_tree);
+void ViewportPaintable::finish_visual_context_reconcile(Painting::VisualContextReconcileOutcome outcome)
+{
     ++m_accumulated_visual_context_tree_build_count;
     m_visual_context_tree_node_count_without_inspector_overlays = m_visual_context_tree->nodes().size();
     m_visual_context_tree_needs_compositor_update = true;
     set_needs_to_refresh_scroll_state(true);
+    m_last_visual_context_reconcile_outcome = outcome;
 
     if (outcome.structural_change) {
         m_visual_context_tree->mint_new_version();
         document().set_needs_to_record_display_list();
     }
+}
+
+void ViewportPaintable::reconcile_accumulated_visual_contexts()
+{
+    if (!m_visual_context_tree.has_value()) {
+        assign_accumulated_visual_contexts();
+        return;
+    }
+    prune_inspector_overlay_visual_contexts_before_reconcile();
+    finish_visual_context_reconcile(reconcile_accumulated_visual_context_tree(*this, *m_visual_context_tree));
+}
+
+void ViewportPaintable::reconcile_accumulated_visual_context_subtrees(Vector<NonnullRefPtr<Paintable>> const& subtree_roots)
+{
+    if (!m_visual_context_tree.has_value()) {
+        assign_accumulated_visual_contexts();
+        return;
+    }
+    prune_inspector_overlay_visual_contexts_before_reconcile();
+    VisualContextReconcileOutcome outcome;
+    for (auto const& subtree_root : subtree_roots)
+        outcome.merge(reconcile_accumulated_visual_context_subtree(*this, *m_visual_context_tree, *subtree_root));
+    if (verify_visual_context_tree_reconcile_enabled()) [[unlikely]]
+        verify_reconciled_visual_context_tree_matches_fresh_build(*this, *m_visual_context_tree);
+    finish_visual_context_reconcile(outcome);
 }
 
 bool ViewportPaintable::update_accumulated_visual_context_values(Paintable& paintable_box)

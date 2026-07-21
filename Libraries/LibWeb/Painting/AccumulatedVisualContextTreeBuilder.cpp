@@ -394,8 +394,10 @@ private:
             }
             free_remaining_reusable_nodes();
         }
-        if (m_reconcile_in_place)
+        if (m_reconcile_in_place) {
             m_outcome.structural_change = true;
+            ++m_outcome.allocated_node_count;
+        }
         auto index = m_visual_context_tree.allocate_node(move(data), parent_index);
         m_emitted_nodes_for_current_paintable.append(index);
         return index;
@@ -410,6 +412,7 @@ private:
                 m_viewport_paintable.free_scroll_node_state(scroll->state_slot);
             m_visual_context_tree.free_node(index);
             m_outcome.structural_change = true;
+            ++m_outcome.freed_node_count;
         }
     }
 
@@ -483,6 +486,7 @@ private:
             m_reuse_cursor_position = 0;
         }
         auto& layout_node = paintable_box.layout_node();
+        ++m_outcome.visited_paintable_count;
 
         paintable_box.set_enclosing_scroll_node_index({});
         paintable_box.set_own_scroll_node_index({});
@@ -737,7 +741,7 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
     return visual_context_tree;
 }
 
-static bool verify_visual_context_tree_reconcile_enabled()
+bool verify_visual_context_tree_reconcile_enabled()
 {
     static bool enabled = Core::Environment::has("LADYBIRD_VERIFY_VISUAL_CONTEXT_TREE"sv);
     return enabled;
@@ -901,6 +905,26 @@ VisualContextReconcileOutcome reconcile_accumulated_visual_context_tree(Viewport
     return builder.reconcile_outcome();
 }
 
+VisualContextReconcileOutcome reconcile_accumulated_visual_context_subtree(ViewportPaintable& viewport_paintable, AccumulatedVisualContextTree& visual_context_tree, Paintable& subtree_root)
+{
+    auto const* visual_parent = subtree_root.parent_ptr();
+    VERIFY(visual_parent);
+
+    // The parent is outside the reconciled scope, so its stored contexts seed the subtree walk.
+    DescendantVisualContexts parent_contexts {
+        visual_parent->accumulated_visual_context_for_descendants_index(),
+        visual_parent->accumulated_visual_context_for_absolute_position_descendants_index(),
+        visual_parent->accumulated_visual_context_for_fixed_position_descendants_index(),
+    };
+
+    VisualContextTreeBuilder builder { viewport_paintable, visual_context_tree, VisualContextTreeBuilder::Mode::ReconcileInPlace };
+    builder.build_subtree(subtree_root, parent_contexts, true);
+    builder.build_deferred_anchor_positioned_subtrees();
+
+    // NB: The fresh-build comparison runs once after every queued subtree has reconciled — the
+    //     caller drives it — since a fresh build recomputes values for subtrees still waiting.
+    return builder.reconcile_outcome();
+}
 // Patches the transform/effects/perspective values of the box's existing visual context nodes in place.
 // Returns false if the box's node structure no longer matches; the caller must then do a full rebuild.
 bool update_accumulated_visual_context_values(ViewportPaintable& viewport_paintable, Paintable& paintable_box)

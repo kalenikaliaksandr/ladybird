@@ -159,6 +159,7 @@ interface Internals {
     undefined setPageMuted(boolean muted);
 
     object asyncScrollingState();
+    object lastVisualContextReconcileStatistics();
     boolean asyncScrollingStateBlocksWheelEventAt(double x, double y);
     boolean asyncScrollingStateCanWheelScrollAt(double x, double y, double deltaX, double deltaY, optional boolean forceStaleWheelEventRegions = false);
     Utf16DOMString asyncScrollingStateWheelRoutingAdmission();

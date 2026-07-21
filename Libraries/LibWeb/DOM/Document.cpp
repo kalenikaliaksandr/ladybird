@@ -2537,31 +2537,80 @@ void Document::update_paint_and_hit_testing_properties_if_needed()
     if (m_needs_accumulated_visual_contexts_update) {
         m_needs_accumulated_visual_contexts_update = false;
         m_needs_accumulated_visual_contexts_reconcile = false;
+        m_paintable_subtrees_needing_visual_context_reconcile.clear_with_capacity();
         m_paintable_boxes_needing_visual_context_value_update.clear_with_capacity();
         if (auto paintable = this->unsafe_paintable()) {
             if (m_layout_root)
                 rebuild_sticky_insets(*m_layout_root);
             paintable->assign_accumulated_visual_contexts();
         }
-    } else if (m_needs_accumulated_visual_contexts_reconcile) {
+    } else if (m_needs_accumulated_visual_contexts_reconcile || !m_paintable_subtrees_needing_visual_context_reconcile.is_empty()) {
+        // Anchor-positioned boxes read scroll nodes of anchors in arbitrary other subtrees, so any
+        // registered anchor name disqualifies subtree scoping — the same rule partial relayout uses.
+        bool reconcile_whole_tree = m_needs_accumulated_visual_contexts_reconcile || any_anchor_names_are_registered();
         m_needs_accumulated_visual_contexts_reconcile = false;
+        auto weak_subtree_roots = move(m_paintable_subtrees_needing_visual_context_reconcile);
         m_paintable_boxes_needing_visual_context_value_update.clear_with_capacity();
         if (auto paintable = this->unsafe_paintable()) {
             if (m_layout_root)
                 rebuild_sticky_insets(*m_layout_root);
-            paintable->reconcile_accumulated_visual_contexts();
+            if (reconcile_whole_tree) {
+                paintable->reconcile_accumulated_visual_contexts();
+            } else {
+                Vector<NonnullRefPtr<Painting::Paintable>> subtree_roots;
+                HashTable<Painting::Paintable const*> scheduled_roots;
+                for (auto const& weak_subtree_root : weak_subtree_roots) {
+                    auto subtree_root = weak_subtree_root.strong_ref();
+                    if (!subtree_root || scheduled_roots.contains(subtree_root.ptr()))
+                        continue;
+                    scheduled_roots.set(subtree_root.ptr());
+                    subtree_roots.append(*subtree_root);
+                }
+                // A root nested inside another scheduled root reconciles as part of that subtree,
+                // and a root whose parent chain never reaches the viewport paintable belongs to an
+                // unconnected subtree the tree has never described.
+                subtree_roots.remove_all_matching([&](auto const& subtree_root) {
+                    for (auto const* ancestor = subtree_root.ptr(); ancestor; ancestor = ancestor->parent_ptr()) {
+                        if (ancestor != subtree_root.ptr() && scheduled_roots.contains(ancestor))
+                            return true;
+                        if (ancestor == paintable.ptr())
+                            return false;
+                    }
+                    return true;
+                });
+                if (!subtree_roots.is_empty())
+                    paintable->reconcile_accumulated_visual_context_subtrees(subtree_roots);
+            }
         }
     } else if (!m_paintable_boxes_needing_visual_context_value_update.is_empty()) {
         auto paintable_boxes = move(m_paintable_boxes_needing_visual_context_value_update);
         if (auto paintable = this->unsafe_paintable()) {
+            auto is_connected_to_viewport = [&](Painting::Paintable const& paintable_box) {
+                for (auto const* ancestor = paintable_box.parent_ptr(); ancestor; ancestor = ancestor->parent_ptr()) {
+                    if (ancestor == paintable.ptr())
+                        return true;
+                }
+                return false;
+            };
             for (auto const& weak_paintable_box : paintable_boxes) {
                 auto paintable_box = weak_paintable_box.strong_ref();
-                if (!paintable_box || !paintable->update_accumulated_visual_context_values(*paintable_box)) {
-                    // Structure changed after all; reconcile the whole tree in place, which
-                    // refreshes every box's node values and so covers the rest of the queue.
-                    paintable->reconcile_accumulated_visual_contexts();
-                    break;
+                if (!paintable_box)
+                    continue;
+                if (paintable->update_accumulated_visual_context_values(*paintable_box))
+                    continue;
+                // Structure changed after all. The tree only describes paintables connected to
+                // the viewport, so an unconnected box has nothing to reconcile.
+                if (!is_connected_to_viewport(*paintable_box))
+                    continue;
+                if (!any_anchor_names_are_registered()) {
+                    paintable->reconcile_accumulated_visual_context_subtrees({ NonnullRefPtr<Painting::Paintable> { *paintable_box } });
+                    continue;
                 }
+                // Anchor-positioned boxes can reference scroll nodes in other subtrees; the
+                // whole-tree reconcile refreshes every box's node values and covers the rest
+                // of the queue.
+                paintable->reconcile_accumulated_visual_contexts();
+                break;
             }
         }
     }
@@ -8732,7 +8781,41 @@ void Document::set_needs_accumulated_visual_contexts_update(bool value)
 void Document::set_needs_accumulated_visual_contexts_reconcile()
 {
     m_needs_accumulated_visual_contexts_reconcile = true;
+    m_paintable_subtrees_needing_visual_context_reconcile.clear_with_capacity();
     set_needs_repaint(InvalidateDisplayList::No);
+}
+
+void Document::schedule_accumulated_visual_context_subtree_reconcile(Layout::Node const& layout_node)
+{
+    // NB: A pending rebuild or whole-tree reconcile covers every subtree anyway.
+    if (m_needs_accumulated_visual_contexts_update || m_needs_accumulated_visual_contexts_reconcile)
+        return;
+
+    static constexpr size_t max_pending_visual_context_subtree_reconciles = 64;
+    if (m_paintable_subtrees_needing_visual_context_reconcile.size() >= max_pending_visual_context_subtree_reconciles) {
+        set_needs_accumulated_visual_contexts_reconcile();
+        return;
+    }
+
+    if (layout_node.is_viewport()) {
+        set_needs_accumulated_visual_contexts_reconcile();
+        return;
+    }
+
+    if (auto layout_node_paintable = layout_node.paintable()) {
+        m_paintable_subtrees_needing_visual_context_reconcile.append(*layout_node_paintable);
+        set_needs_repaint(InvalidateDisplayList::No);
+    }
+}
+
+void Document::schedule_accumulated_visual_context_subtree_reconcile(Element& element)
+{
+    if (auto* layout_node = element.unsafe_layout_node())
+        schedule_accumulated_visual_context_subtree_reconcile(*layout_node);
+    element.for_each_synthetic_pseudo_element([&](CSS::PseudoElement, SyntheticPseudoElement const& pseudo_element) {
+        if (auto* pseudo_element_layout_node = pseudo_element.unsafe_layout_node())
+            schedule_accumulated_visual_context_subtree_reconcile(*pseudo_element_layout_node);
+    });
 }
 
 void Document::schedule_accumulated_visual_context_value_update(Layout::Node const& layout_node)

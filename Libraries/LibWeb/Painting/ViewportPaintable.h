@@ -9,6 +9,7 @@
 
 #include <AK/Optional.h>
 #include <LibWeb/Export.h>
+#include <LibWeb/Painting/AccumulatedVisualContextTreeBuilder.h>
 #include <LibWeb/Painting/DisplayListResourceStorage.h>
 #include <LibWeb/Painting/PaintableWithLines.h>
 #include <LibWeb/Painting/ScrollState.h>
@@ -38,6 +39,8 @@ public:
 
     void assign_accumulated_visual_contexts();
     void reconcile_accumulated_visual_contexts();
+    void reconcile_accumulated_visual_context_subtrees(Vector<NonnullRefPtr<Paintable>> const& subtree_roots);
+    VisualContextReconcileOutcome last_visual_context_reconcile_outcome() const { return m_last_visual_context_reconcile_outcome; }
     bool update_accumulated_visual_context_values(Paintable&);
     void update_visual_viewport_accumulated_visual_context();
     void prune_inspector_overlay_visual_contexts();
@@ -90,6 +93,8 @@ private:
     void build_stacking_context_tree();
     void clear_scroll_state();
     void precompute_sticky_constraints(ScrollStateSlot, Paintable const&);
+    void prune_inspector_overlay_visual_contexts_before_reconcile();
+    void finish_visual_context_reconcile(VisualContextReconcileOutcome);
 
     explicit ViewportPaintable(Layout::Viewport const&);
 
@@ -103,6 +108,7 @@ private:
     DisplayListResourceSet m_paint_command_cache_source_referenced_resources;
 
     Optional<AccumulatedVisualContextTree> m_visual_context_tree;
+    VisualContextReconcileOutcome m_last_visual_context_reconcile_outcome;
     u64 m_accumulated_visual_context_tree_build_count { 0 };
     size_t m_visual_context_tree_node_count_without_inspector_overlays { 0 };
     bool m_visual_context_tree_needs_compositor_update { false };

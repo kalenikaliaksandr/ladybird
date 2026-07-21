@@ -36,6 +36,8 @@ static void apply_element_style_invalidation_after_style_change(DOM::Element& el
 
     if (invalidation.accumulated_visual_contexts() == AccumulatedVisualContextInvalidation::UpdateValues)
         element.document().schedule_accumulated_visual_context_value_update(element);
+    else if (invalidation.accumulated_visual_contexts() == AccumulatedVisualContextInvalidation::Rebuild)
+        element.document().schedule_accumulated_visual_context_subtree_reconcile(element);
 
     if (invalidation.needs_scrollable_overflow_recalculation())
         element.document().schedule_scrollable_overflow_recalculation(element);
@@ -72,8 +74,6 @@ static void apply_document_style_invalidation_after_style_change(DOM::Document& 
 {
     if (invalidation.needs_repaint())
         document.set_needs_to_record_display_list();
-    if (invalidation.accumulated_visual_contexts() == AccumulatedVisualContextInvalidation::Rebuild)
-        document.set_needs_accumulated_visual_contexts_reconcile();
     if (invalidation.needs_stacking_context_tree_rebuild())
         document.invalidate_stacking_context_tree();
 }

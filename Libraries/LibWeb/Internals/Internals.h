@@ -158,6 +158,7 @@ public:
     bool media_element_is_playing_audio(HTML::HTMLMediaElement&);
     void set_page_muted(bool muted);
     JS::Object* async_scrolling_state();
+    JS::Object* last_visual_context_reconcile_statistics();
     bool async_scrolling_state_blocks_wheel_event_at(double x, double y);
     bool async_scrolling_state_can_wheel_scroll_at(double x, double y, double delta_x, double delta_y, bool force_stale_wheel_event_regions);
     Utf16String async_scrolling_state_wheel_routing_admission();
