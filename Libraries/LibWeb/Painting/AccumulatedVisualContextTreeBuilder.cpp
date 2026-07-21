@@ -474,14 +474,18 @@ private:
 
         // Out-of-flow descendants can skip overflow and scroll clips from intermediate ancestors. Keep their visual
         // contexts separate as we descend, and replace them with the normal descendant context only when this box
-        // establishes the relevant containing block.
+        // establishes the relevant containing block. A chain this box replaces below gets no copies appended:
+        // they would be orphaned nodes that nothing in the built tree ever references.
+        auto positioning_containing_blocks = layout_node.establishes_positioning_containing_blocks();
         VisualContextIndex state_for_absolute_position_descendants = inherited_contexts.absolute_position;
         VisualContextIndex state_for_fixed_position_descendants = inherited_contexts.fixed_position;
 
         auto append_to_own_and_positioned_descendant_contexts = [&](auto const& data) {
             own_state = append_node(own_state, data);
-            state_for_absolute_position_descendants = append_node(state_for_absolute_position_descendants, data);
-            state_for_fixed_position_descendants = append_node(state_for_fixed_position_descendants, data);
+            if (!positioning_containing_blocks.absolute)
+                state_for_absolute_position_descendants = append_node(state_for_absolute_position_descendants, data);
+            if (!positioning_containing_blocks.fixed)
+                state_for_fixed_position_descendants = append_node(state_for_fixed_position_descendants, data);
         };
 
         VisualContextIndex sticky_scroll_node_index;
@@ -593,7 +597,6 @@ private:
 
         paintable_box.set_accumulated_visual_context_for_descendants(state_for_descendants);
         paintable_box.set_visual_context_node_range(first_visual_context_node_index, m_visual_context_tree.nodes().size());
-        auto positioning_containing_blocks = layout_node.establishes_positioning_containing_blocks();
         if (positioning_containing_blocks.absolute)
             state_for_absolute_position_descendants = state_for_descendants;
         if (positioning_containing_blocks.fixed)
