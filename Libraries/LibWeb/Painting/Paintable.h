@@ -429,9 +429,11 @@ public:
     [[nodiscard]] Optional<VisualContextIndex> fixed_background_visual_context() const { return m_fixed_background_visual_context; }
 
     // The visual context nodes this box contributed during the last tree build, in emission order.
-    // Most paintables contribute none and carry no allocation.
-    void set_owned_visual_context_nodes(Vector<VisualContextIndex> owned_nodes)
+    // Most paintables contribute none and carry no allocation. The tree identity tag recognizes
+    // lists orphaned by a wholesale tree replacement, whose indices mean nothing anymore.
+    void set_owned_visual_context_nodes(Vector<VisualContextIndex> owned_nodes, u64 tree_identity)
     {
+        m_owned_visual_context_nodes_tree_identity = tree_identity;
         if (owned_nodes.is_empty())
             m_owned_visual_context_nodes = nullptr;
         else
@@ -451,6 +453,7 @@ public:
         m_owned_visual_context_nodes = nullptr;
         return owned_nodes;
     }
+    void release_owned_visual_context_nodes_on_death();
 
     [[nodiscard]] VisualContextIndex enclosing_scroll_node_index() const { return m_enclosing_scroll_node_index; }
 
@@ -530,6 +533,7 @@ private:
     VisualContextIndex m_accumulated_visual_context_for_fixed_position_descendants_index { VISUAL_VIEWPORT_NODE_INDEX };
     Optional<VisualContextIndex> m_fixed_background_visual_context;
     OwnPtr<Vector<VisualContextIndex>> m_owned_visual_context_nodes;
+    u64 m_owned_visual_context_nodes_tree_identity { 0 };
 
     Optional<BordersDataWithElementKind> m_override_borders_data;
     Optional<TableCellCoordinates> m_table_cell_coordinates;

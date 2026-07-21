@@ -37,10 +37,12 @@ AccumulatedVisualContextTree AccumulatedVisualContextTree::create(TransformData 
     Vector<AccumulatedVisualContextNode> nodes;
     // Visual viewport transform root. This is identity for trees that are not attached to a document viewport.
     nodes.append({ move(visual_viewport_transform), {}, 0, false });
-    return AccumulatedVisualContextTree {
+    auto tree = AccumulatedVisualContextTree {
         s_next_accumulated_visual_context_tree_version.fetch_add(1, AK::MemoryOrder::memory_order_relaxed),
         move(nodes)
     };
+    tree.m_identity = s_next_accumulated_visual_context_tree_version.fetch_add(1, AK::MemoryOrder::memory_order_relaxed);
+    return tree;
 }
 
 bool AccumulatedVisualContextTree::derive_has_empty_effective_clip(VisualContextData const& data, VisualContextIndex parent_index) const

@@ -676,7 +676,7 @@ private:
             free_remaining_reusable_nodes();
 
         paintable_box.set_accumulated_visual_context_for_descendants(state_for_descendants);
-        paintable_box.set_owned_visual_context_nodes(move(m_emitted_nodes_for_current_paintable));
+        paintable_box.set_owned_visual_context_nodes(move(m_emitted_nodes_for_current_paintable), m_visual_context_tree.identity());
         if (positioning_containing_blocks.absolute)
             state_for_absolute_position_descendants = state_for_descendants;
         if (positioning_containing_blocks.fixed)
@@ -862,7 +862,7 @@ void verify_reconciled_visual_context_tree_matches_fresh_build(ViewportPaintable
             paintable->clear_fixed_background_visual_context();
         paintable->set_enclosing_scroll_node_index(reconciled.enclosing_scroll_node);
         paintable->set_own_scroll_node_index(reconciled.own_scroll_node);
-        paintable->set_owned_visual_context_nodes(move(reconciled.owned_nodes));
+        paintable->set_owned_visual_context_nodes(move(reconciled.owned_nodes), reconciled_tree.identity());
     }
     viewport_paintable.m_scroll_state = move(reconciled_scroll_state);
     viewport_paintable.set_needs_to_refresh_scroll_state(true);

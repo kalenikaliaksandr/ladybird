@@ -36,7 +36,26 @@ ViewportPaintable::ViewportPaintable(Layout::Viewport const& layout_viewport)
 {
 }
 
-ViewportPaintable::~ViewportPaintable() = default;
+ViewportPaintable::~ViewportPaintable()
+{
+    // Descendants released during this teardown must not free their recorded nodes into the tree
+    // dying with it: drop the tree in the destructor body, before base teardown detaches them.
+    m_visual_context_tree.clear();
+}
+
+void ViewportPaintable::release_visual_context_nodes_of_dead_paintable(ReadonlySpan<VisualContextIndex> owned_nodes, u64 tree_identity)
+{
+    // A list recorded against a tree that a fresh build has since replaced indexes nothing
+    // meaningful; those nodes died with their tree.
+    if (!m_visual_context_tree.has_value() || m_visual_context_tree->identity() != tree_identity)
+        return;
+    for (auto node_index : owned_nodes) {
+        auto const& node = m_visual_context_tree->node_at(node_index);
+        if (auto const* scroll = node.data.get_pointer<ScrollData>(); scroll && scroll->state_slot != NO_SCROLL_STATE_SLOT)
+            m_scroll_state.free_state(scroll->state_slot);
+        m_visual_context_tree->free_node(node_index);
+    }
+}
 
 void ViewportPaintable::ensure_visual_context_tree() const
 {
