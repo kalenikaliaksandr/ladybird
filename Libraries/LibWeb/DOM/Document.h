@@ -1049,6 +1049,7 @@ public:
 
     void set_needs_accumulated_visual_contexts_update(bool);
     bool needs_accumulated_visual_contexts_update() const { return m_needs_accumulated_visual_contexts_update; }
+    void set_needs_accumulated_visual_contexts_reconcile();
     void schedule_accumulated_visual_context_value_update(Element&);
     void schedule_accumulated_visual_context_value_update(Layout::Node const&);
     void schedule_scrollable_overflow_recalculation(Element&);
@@ -1700,6 +1701,7 @@ private:
     bool m_design_mode_enabled { false };
 
     bool m_needs_accumulated_visual_contexts_update { false };
+    bool m_needs_accumulated_visual_contexts_reconcile { false };
     Vector<WeakPtr<Painting::Paintable>> m_paintable_boxes_needing_visual_context_value_update;
 
     bool m_needs_full_scrollable_overflow_recalculation { false };

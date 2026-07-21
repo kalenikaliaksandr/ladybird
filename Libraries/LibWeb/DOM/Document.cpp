@@ -2518,8 +2518,8 @@ void Document::update_scrollable_overflow(ScrollableOverflowDerivedStructureUpda
         return;
 
     if (any_has_scrollable_overflow_flipped) {
-        set_needs_accumulated_visual_contexts_update(true);
-    } else if (!m_needs_accumulated_visual_contexts_update) {
+        set_needs_accumulated_visual_contexts_reconcile();
+    } else if (!m_needs_accumulated_visual_contexts_update && !m_needs_accumulated_visual_contexts_reconcile) {
         // Sticky insets only depend on scrollport geometry and which ancestor is scrollable, neither of
         // which changes without a flip; the constraints capture the scroll ancestor's scrollable
         // overflow size though, so they have to be refreshed. When a full visual context rebuild is
@@ -2536,11 +2536,20 @@ void Document::update_paint_and_hit_testing_properties_if_needed()
     // NB: Called during paint property resolution.
     if (m_needs_accumulated_visual_contexts_update) {
         m_needs_accumulated_visual_contexts_update = false;
+        m_needs_accumulated_visual_contexts_reconcile = false;
         m_paintable_boxes_needing_visual_context_value_update.clear_with_capacity();
         if (auto paintable = this->unsafe_paintable()) {
             if (m_layout_root)
                 rebuild_sticky_insets(*m_layout_root);
             paintable->assign_accumulated_visual_contexts();
+        }
+    } else if (m_needs_accumulated_visual_contexts_reconcile) {
+        m_needs_accumulated_visual_contexts_reconcile = false;
+        m_paintable_boxes_needing_visual_context_value_update.clear_with_capacity();
+        if (auto paintable = this->unsafe_paintable()) {
+            if (m_layout_root)
+                rebuild_sticky_insets(*m_layout_root);
+            paintable->reconcile_accumulated_visual_contexts();
         }
     } else if (!m_paintable_boxes_needing_visual_context_value_update.is_empty()) {
         auto paintable_boxes = move(m_paintable_boxes_needing_visual_context_value_update);
@@ -2548,8 +2557,9 @@ void Document::update_paint_and_hit_testing_properties_if_needed()
             for (auto const& weak_paintable_box : paintable_boxes) {
                 auto paintable_box = weak_paintable_box.strong_ref();
                 if (!paintable_box || !paintable->update_accumulated_visual_context_values(*paintable_box)) {
-                    // Structure changed after all; rebuild the whole tree.
-                    paintable->assign_accumulated_visual_contexts();
+                    // Structure changed after all; reconcile the whole tree in place, which
+                    // refreshes every box's node values and so covers the rest of the queue.
+                    paintable->reconcile_accumulated_visual_contexts();
                     break;
                 }
             }
@@ -8719,17 +8729,23 @@ void Document::set_needs_accumulated_visual_contexts_update(bool value)
         set_needs_repaint(InvalidateDisplayList::No);
 }
 
+void Document::set_needs_accumulated_visual_contexts_reconcile()
+{
+    m_needs_accumulated_visual_contexts_reconcile = true;
+    set_needs_repaint(InvalidateDisplayList::No);
+}
+
 void Document::schedule_accumulated_visual_context_value_update(Layout::Node const& layout_node)
 {
-    // NB: A full rebuild is already pending and will refresh all node values anyway.
-    if (m_needs_accumulated_visual_contexts_update)
+    // NB: A pending rebuild or reconcile will refresh all node values anyway.
+    if (m_needs_accumulated_visual_contexts_update || m_needs_accumulated_visual_contexts_reconcile)
         return;
 
     // NB: Cap the queue in case it's never consumed (e.g. forced style updates in a document that never paints).
     static constexpr size_t max_pending_visual_context_value_updates = 1024;
     if (m_paintable_boxes_needing_visual_context_value_update.size() >= max_pending_visual_context_value_updates) {
         m_paintable_boxes_needing_visual_context_value_update.clear();
-        set_needs_accumulated_visual_contexts_update(true);
+        set_needs_accumulated_visual_contexts_reconcile();
         return;
     }
 

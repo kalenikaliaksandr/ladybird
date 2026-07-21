@@ -104,12 +104,8 @@ void Internals::set_test_timeout(double milliseconds)
 
 void Internals::force_incompatible_visual_context_tree_rebuild()
 {
-    auto& document = window().associated_document();
-    auto paintable = document.paintable();
-    if (!paintable)
-        return;
-    paintable->set_force_incompatible_visual_context_tree_rebuild_for_testing();
-    document.set_needs_accumulated_visual_contexts_update(true);
+    // A scheduled full rebuild always constructs a fresh tree with a newly minted version.
+    window().associated_document().set_needs_accumulated_visual_contexts_update(true);
 }
 
 u64 Internals::visual_context_tree_node_count()
@@ -131,9 +127,8 @@ void Internals::send_mismatched_visual_context_tree_update_to_compositor()
     if (!paintable || !paintable->has_visual_context_tree())
         return;
 
-    // Force a fresh, incompatible rebuild — so the tree is minted with a new version that the Compositor's installed
+    // Force a fresh rebuild — the tree is minted with a new version that the Compositor's installed
     // display list was never recorded against.
-    paintable->set_force_incompatible_visual_context_tree_rebuild_for_testing();
     document.set_needs_accumulated_visual_contexts_update(true);
     document.update_paint_and_hit_testing_properties_if_needed();
 

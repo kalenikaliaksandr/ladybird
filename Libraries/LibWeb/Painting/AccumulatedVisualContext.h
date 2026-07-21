@@ -144,12 +144,16 @@ public:
 
     WEB_API VisualContextIndex append(VisualContextData data, VisualContextIndex parent_index);
     WEB_API VisualContextIndex allocate_node(VisualContextData data, VisualContextIndex parent_index);
+    struct NodePatchResult {
+        bool parent_or_depth_changed { false };
+        bool empty_effective_clip_flipped { false };
+    };
+    WEB_API NodePatchResult patch_node(VisualContextIndex, VisualContextData data, VisualContextIndex parent_index);
     WEB_API void free_node(VisualContextIndex);
     WEB_API void promote_quarantined_free_slots();
     WEB_API void shrink(size_t node_count);
     WEB_API void set_visual_viewport_transform(TransformData);
-    WEB_API bool is_compatible_with(AccumulatedVisualContextTree const&) const;
-    WEB_API void reuse_version_from(AccumulatedVisualContextTree const&);
+    WEB_API void mint_new_version();
 
     AccumulatedVisualContextNode const& node_at(VisualContextIndex index) const { return m_nodes[index.value()]; }
     AccumulatedVisualContextNode& node_at(VisualContextIndex index) { return m_nodes[index.value()]; }

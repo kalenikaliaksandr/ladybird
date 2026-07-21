@@ -229,6 +229,16 @@ void ViewportPaintable::register_sticky_node(AccumulatedVisualContextTree& visua
     precompute_sticky_constraints(slot, paintable_box);
 }
 
+void ViewportPaintable::update_scroll_node_state_keeping_slot(AccumulatedVisualContextTree& visual_context_tree, VisualContextIndex node_index, Paintable const& paintable_box, VisualContextIndex parent_index)
+{
+    auto slot = visual_context_tree.scroll_state_slot_for_node(node_index);
+    auto parent_slot = visual_context_tree.scroll_state_slot_for_node(parent_index);
+    bool is_sticky = m_scroll_state.state_at_slot(slot).is_sticky();
+    m_scroll_state.state_at_slot(slot) = ScrollNodeState { node_index, paintable_box, is_sticky, parent_slot };
+    if (is_sticky)
+        precompute_sticky_constraints(slot, paintable_box);
+}
+
 CSSPixelPoint ViewportPaintable::cumulative_scroll_offset_for_node(VisualContextIndex scroll_node_index) const
 {
     return m_scroll_state.cumulative_offset(visual_context_tree().scroll_state_slot_for_node(scroll_node_index));
@@ -237,28 +247,43 @@ CSSPixelPoint ViewportPaintable::cumulative_scroll_offset_for_node(VisualContext
 void ViewportPaintable::assign_accumulated_visual_contexts()
 {
     clear_scroll_state();
-    auto visual_context_tree = build_accumulated_visual_context_tree(*this);
+    m_visual_context_tree = build_accumulated_visual_context_tree(*this);
     ++m_accumulated_visual_context_tree_build_count;
-    auto is_compatible = m_visual_context_tree.has_value() && visual_context_tree.is_compatible_with(*m_visual_context_tree);
-    if (m_force_incompatible_visual_context_tree_rebuild_for_testing) {
-        m_force_incompatible_visual_context_tree_rebuild_for_testing = false;
-        is_compatible = false;
-    }
-    if (is_compatible) {
-        visual_context_tree.reuse_version_from(*m_visual_context_tree);
-    } else {
-        document().set_needs_to_record_display_list();
-    }
-    m_visual_context_tree = move(visual_context_tree);
+    document().set_needs_to_record_display_list();
     m_visual_context_tree_node_count_without_inspector_overlays = m_visual_context_tree->nodes().size();
     m_visual_context_tree_needs_compositor_update = true;
+}
+
+void ViewportPaintable::reconcile_accumulated_visual_contexts()
+{
+    if (!m_visual_context_tree.has_value()) {
+        assign_accumulated_visual_contexts();
+        return;
+    }
+
+    // Overlay nodes are transient tail appends referenced only by the retained display list; a
+    // reconciled tree must not carry them forward, and the retained list must not be paired with
+    // the pruned tree through the value-only compositor update lane.
+    if (m_visual_context_tree->nodes().size() > m_visual_context_tree_node_count_without_inspector_overlays) {
+        m_visual_context_tree->shrink(m_visual_context_tree_node_count_without_inspector_overlays);
+        document().set_needs_to_record_display_list();
+    }
+
+    auto outcome = reconcile_accumulated_visual_context_tree(*this, *m_visual_context_tree);
+    ++m_accumulated_visual_context_tree_build_count;
+    m_visual_context_tree_node_count_without_inspector_overlays = m_visual_context_tree->nodes().size();
+    m_visual_context_tree_needs_compositor_update = true;
+    set_needs_to_refresh_scroll_state(true);
+
+    if (outcome.structural_change) {
+        m_visual_context_tree->mint_new_version();
+        document().set_needs_to_record_display_list();
+    }
 }
 
 bool ViewportPaintable::update_accumulated_visual_context_values(Paintable& paintable_box)
 {
     if (!m_visual_context_tree.has_value())
-        return false;
-    if (m_force_incompatible_visual_context_tree_rebuild_for_testing)
         return false;
     if (!Painting::update_accumulated_visual_context_values(*this, paintable_box))
         return false;

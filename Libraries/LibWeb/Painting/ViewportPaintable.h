@@ -30,18 +30,20 @@ public:
 
     void register_scroll_node(AccumulatedVisualContextTree& visual_context_tree_being_built, VisualContextIndex node_index, Paintable const&, VisualContextIndex parent_index);
     void register_sticky_node(AccumulatedVisualContextTree& visual_context_tree_being_built, VisualContextIndex node_index, Paintable const&, VisualContextIndex parent_index);
+    void update_scroll_node_state_keeping_slot(AccumulatedVisualContextTree&, VisualContextIndex node_index, Paintable const&, VisualContextIndex parent_index);
+    void free_scroll_node_state(ScrollStateSlot slot) { m_scroll_state.free_state(slot); }
     void refresh_scroll_state();
     void refresh_sticky_constraints();
     CSSPixelPoint cumulative_scroll_offset_for_node(VisualContextIndex scroll_node_index) const;
 
     void assign_accumulated_visual_contexts();
+    void reconcile_accumulated_visual_contexts();
     bool update_accumulated_visual_context_values(Paintable&);
     void update_visual_viewport_accumulated_visual_context();
     void prune_inspector_overlay_visual_contexts();
     void promote_quarantined_visual_context_free_slots();
     bool visual_context_tree_needs_compositor_update() const { return m_visual_context_tree_needs_compositor_update; }
     void did_update_visual_context_tree_in_compositor() { m_visual_context_tree_needs_compositor_update = false; }
-    void set_force_incompatible_visual_context_tree_rebuild_for_testing() { m_force_incompatible_visual_context_tree_rebuild_for_testing = true; }
     bool has_visual_context_tree() const { return m_visual_context_tree.has_value(); }
     u64 accumulated_visual_context_tree_build_count() const { return m_accumulated_visual_context_tree_build_count; }
 
@@ -103,7 +105,6 @@ private:
     u64 m_accumulated_visual_context_tree_build_count { 0 };
     size_t m_visual_context_tree_node_count_without_inspector_overlays { 0 };
     bool m_visual_context_tree_needs_compositor_update { false };
-    bool m_force_incompatible_visual_context_tree_rebuild_for_testing { false };
 };
 
 template<>

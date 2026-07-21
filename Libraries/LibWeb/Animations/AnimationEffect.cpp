@@ -910,7 +910,7 @@ AnimationUpdateContext::~AnimationUpdateContext()
         if (invalidation.needs_layout_tree_rebuild())
             target->set_needs_layout_tree_rebuild(DOM::SetNeedsLayoutTreeUpdateReason::KeyframeEffect);
         if (invalidation.accumulated_visual_contexts() == CSS::AccumulatedVisualContextInvalidation::Rebuild) {
-            element.document().set_needs_accumulated_visual_contexts_update(true);
+            element.document().set_needs_accumulated_visual_contexts_reconcile();
         } else if (invalidation.accumulated_visual_contexts() == CSS::AccumulatedVisualContextInvalidation::UpdateValues) {
             // NB: Element-reference pseudo elements (e.g. ::placeholder) are not synthetic, so schedule their
             //     layout node directly instead of going through the owning element.

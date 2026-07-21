@@ -13,7 +13,12 @@ namespace Web::Painting {
 class Paintable;
 class ViewportPaintable;
 
+struct VisualContextReconcileOutcome {
+    bool structural_change { false };
+};
+
 AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable&);
+VisualContextReconcileOutcome reconcile_accumulated_visual_context_tree(ViewportPaintable&, AccumulatedVisualContextTree&);
 bool update_accumulated_visual_context_values(ViewportPaintable&, Paintable&);
 void update_visual_viewport_accumulated_visual_context(ViewportPaintable&);
 
