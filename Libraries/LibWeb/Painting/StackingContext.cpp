@@ -108,9 +108,10 @@ static void paint_node(Paintable const& paintable, DisplayListRecordingContext& 
     auto const* cache_source_display_list = context.paint_command_cache_source_display_list();
     auto const phase_context_index = recorder.accumulated_visual_context();
     bool const phase_has_empty_effective_clip = recorder.visual_context_tree().has_empty_effective_clip(phase_context_index);
+    auto const visual_context_tree_version = recorder.visual_context_tree().version();
 
     auto cached_commands = !skip_cache && cache_source_display_list
-        ? paintable.valid_cached_commands(phase, cache_source_display_list->id(), phase_has_empty_effective_clip)
+        ? paintable.valid_cached_commands(phase, cache_source_display_list->id(), phase_has_empty_effective_clip, visual_context_tree_version)
         : Optional<Paintable::CachedCommandRange> {};
 
     if (cached_commands.has_value()) {
@@ -118,7 +119,7 @@ static void paint_node(Paintable const& paintable, DisplayListRecordingContext& 
         if (verify_display_list_cache_enabled()) [[unlikely]]
             verify_spliced_commands_match_fresh_recording(paintable, context, phase, destination_range);
         if (cache_writes_enabled)
-            paintable.set_cached_commands(phase, recorder.display_list().id(), destination_range, phase_context_index, phase_has_empty_effective_clip);
+            paintable.set_cached_commands(phase, recorder.display_list().id(), destination_range, phase_context_index, phase_has_empty_effective_clip, visual_context_tree_version, cached_commands->contains_visual_context_index_payloads);
     } else {
         auto capture = !skip_cache && cache_writes_enabled
             ? Optional<DisplayListRecorder::CommandCapture>(recorder.begin_command_capture())
@@ -126,8 +127,10 @@ static void paint_node(Paintable const& paintable, DisplayListRecordingContext& 
         if (phase == PaintPhase::Background)
             paintable.record_async_scrolling_metadata(context);
         paintable.paint(context, phase);
-        if (capture.has_value())
-            paintable.set_cached_commands(phase, recorder.display_list().id(), capture->take(), phase_context_index, phase_has_empty_effective_clip);
+        if (capture.has_value()) {
+            auto captured_range = capture->take();
+            paintable.set_cached_commands(phase, recorder.display_list().id(), captured_range, phase_context_index, phase_has_empty_effective_clip, visual_context_tree_version, recorder.capture_contains_visual_context_index_payloads());
+        }
     }
 
     context.display_list_recorder().set_accumulated_visual_context(VISUAL_VIEWPORT_NODE_INDEX);

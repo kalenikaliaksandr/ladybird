@@ -53,6 +53,7 @@ DisplayListRecorder::CommandCapture DisplayListRecorder::begin_command_capture()
     m_is_capturing = true;
     m_capture_start_command_offset = m_display_list.command_byte_size();
     m_capture_accumulated_visual_context_index = m_accumulated_visual_context_index;
+    m_capture_contains_visual_context_index_payloads = false;
     return CommandCapture(*this);
 }
 

@@ -134,6 +134,7 @@ public:
     };
 
     CommandCapture begin_command_capture();
+    bool capture_contains_visual_context_index_payloads() const { return m_capture_contains_visual_context_index_payloads; }
 
     void save();
     void save_layer();
@@ -188,7 +189,9 @@ private:
     void append_command(Command const& command, ReadonlyBytes inline_data = {})
     {
         m_save_nesting_level += display_list_command_nesting_level_change<Command>();
-        m_display_list.append(command, m_visual_context_tree, m_accumulated_visual_context_index, inline_data);
+        bool appended = m_display_list.append(command, m_visual_context_tree, m_accumulated_visual_context_index, inline_data);
+        if (appended && m_is_capturing && display_list_command_payload_embeds_visual_context_indices(Command::command_type))
+            m_capture_contains_visual_context_index_payloads = true;
     }
 
     VisualContextIndex m_accumulated_visual_context_index { VISUAL_VIEWPORT_NODE_INDEX };
@@ -198,6 +201,7 @@ private:
     bool m_is_capturing { false };
     size_t m_capture_start_command_offset { 0 };
     VisualContextIndex m_capture_accumulated_visual_context_index { VISUAL_VIEWPORT_NODE_INDEX };
+    bool m_capture_contains_visual_context_index_payloads { false };
 };
 
 class DisplayListRecorderStateSaver {

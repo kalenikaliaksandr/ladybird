@@ -98,6 +98,15 @@ constexpr bool display_list_command_is_compositor_metadata(DisplayListCommandTyp
     }
 }
 
+// Splicing a cached command range into a new recording rewrites only the headers' context
+// indices. These commands also carry VisualContextIndex values inside their payloads, so a
+// cached range containing them stays valid only for the exact visual context tree version it
+// was recorded against.
+constexpr bool display_list_command_payload_embeds_visual_context_indices(DisplayListCommandType type)
+{
+    return display_list_command_is_compositor_metadata(type) || type == DisplayListCommandType::PaintScrollBar;
+}
+
 enum class CompositorScrollNodeKind : u8 {
     Viewport,
     Element,

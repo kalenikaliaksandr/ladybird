@@ -1,0 +1,47 @@
+<!doctype html>
+<style>
+    body {
+        margin: 0;
+    }
+    #toggle {
+        width: 40px;
+        height: 40px;
+        background: blue;
+    }
+    #scroller {
+        width: 200px;
+        height: 100px;
+        overflow: scroll;
+    }
+    #scroller-content {
+        height: 400px;
+    }
+</style>
+<div id="toggle"></div>
+<div id="scroller"><div id="scroller-content"></div></div>
+<script src="include.js"></script>
+<script>
+    test(() => {
+        const scroller = document.getElementById("scroller");
+        scroller.scrollTop = 50;
+
+        // The first query records a display list, which caches the scroller's commands together
+        // with compositor metadata whose payloads embed its scroll node index. Wheel-scrolling
+        // up only resolves to the scroller if the compositor finds its actual scroll offset,
+        // stored under the node's current index.
+        //
+        // NB: println() before the second query would dirty layout and force a full relayout,
+        //     which wipes the caches this test needs to survive; results are printed at the end.
+        const target_before_renumber = internals.asyncScrollingStateWheelTargetAt(100, 90, 0, -40);
+
+        // Giving an earlier element an effects node shifts every later visual context index.
+        // The scroller's cached commands survive this and must not replay metadata that still
+        // carries the old index.
+        document.getElementById("toggle").style.opacity = "0.5";
+
+        const target_after_renumber = internals.asyncScrollingStateWheelTargetAt(100, 90, 0, -40);
+
+        println(`wheel target before renumber: ${target_before_renumber}`);
+        println(`wheel target after renumber: ${target_after_renumber}`);
+    });
+</script>
