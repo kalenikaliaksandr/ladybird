@@ -427,14 +427,29 @@ public:
     void set_fixed_background_visual_context(VisualContextIndex index) { m_fixed_background_visual_context = index; }
     [[nodiscard]] Optional<VisualContextIndex> fixed_background_visual_context() const { return m_fixed_background_visual_context; }
 
-    // Range of visual context nodes this box appended during the last tree build, used for in-place value patching.
-    void set_visual_context_node_range(size_t begin, size_t end)
+    // The visual context nodes this box contributed during the last tree build, in emission order.
+    // Most paintables contribute none and carry no allocation.
+    void set_owned_visual_context_nodes(Vector<VisualContextIndex> owned_nodes)
     {
-        m_visual_context_nodes_begin = begin;
-        m_visual_context_nodes_end = end;
+        if (owned_nodes.is_empty())
+            m_owned_visual_context_nodes = nullptr;
+        else
+            m_owned_visual_context_nodes = make<Vector<VisualContextIndex>>(move(owned_nodes));
     }
-    [[nodiscard]] size_t visual_context_nodes_begin() const { return m_visual_context_nodes_begin; }
-    [[nodiscard]] size_t visual_context_nodes_end() const { return m_visual_context_nodes_end; }
+    [[nodiscard]] ReadonlySpan<VisualContextIndex> owned_visual_context_nodes() const
+    {
+        if (!m_owned_visual_context_nodes)
+            return {};
+        return m_owned_visual_context_nodes->span();
+    }
+    [[nodiscard]] Vector<VisualContextIndex> take_owned_visual_context_nodes()
+    {
+        if (!m_owned_visual_context_nodes)
+            return {};
+        auto owned_nodes = move(*m_owned_visual_context_nodes);
+        m_owned_visual_context_nodes = nullptr;
+        return owned_nodes;
+    }
 
     [[nodiscard]] VisualContextIndex enclosing_scroll_node_index() const { return m_enclosing_scroll_node_index; }
 
@@ -513,8 +528,7 @@ private:
     VisualContextIndex m_accumulated_visual_context_for_absolute_position_descendants_index { VISUAL_VIEWPORT_NODE_INDEX };
     VisualContextIndex m_accumulated_visual_context_for_fixed_position_descendants_index { VISUAL_VIEWPORT_NODE_INDEX };
     Optional<VisualContextIndex> m_fixed_background_visual_context;
-    size_t m_visual_context_nodes_begin { 0 };
-    size_t m_visual_context_nodes_end { 0 };
+    OwnPtr<Vector<VisualContextIndex>> m_owned_visual_context_nodes;
 
     Optional<BordersDataWithElementKind> m_override_borders_data;
     Optional<TableCellCoordinates> m_table_cell_coordinates;

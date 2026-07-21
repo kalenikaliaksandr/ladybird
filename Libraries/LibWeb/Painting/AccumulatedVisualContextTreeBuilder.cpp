@@ -363,7 +363,9 @@ private:
 
     VisualContextIndex append_node(VisualContextIndex parent_index, VisualContextData data)
     {
-        return m_visual_context_tree.append(move(data), parent_index);
+        auto index = m_visual_context_tree.append(move(data), parent_index);
+        m_emitted_nodes_for_current_paintable.append(index);
+        return index;
     }
 
     static bool has_default_scroll_shift_anchor(Paintable const& paintable_box)
@@ -409,7 +411,7 @@ private:
 
     DescendantVisualContexts build_paintable_box(Paintable& paintable_box, DescendantVisualContexts inherited_contexts, bool may_be_root_element)
     {
-        auto first_visual_context_node_index = m_visual_context_tree.nodes().size();
+        m_emitted_nodes_for_current_paintable.clear_with_capacity();
         auto& layout_node = paintable_box.layout_node();
 
         paintable_box.set_enclosing_scroll_node_index({});
@@ -596,7 +598,7 @@ private:
         }
 
         paintable_box.set_accumulated_visual_context_for_descendants(state_for_descendants);
-        paintable_box.set_visual_context_node_range(first_visual_context_node_index, m_visual_context_tree.nodes().size());
+        paintable_box.set_owned_visual_context_nodes(move(m_emitted_nodes_for_current_paintable));
         if (positioning_containing_blocks.absolute)
             state_for_absolute_position_descendants = state_for_descendants;
         if (positioning_containing_blocks.fixed)
@@ -624,6 +626,7 @@ private:
     Vector<PendingPaintable> m_deferred_anchor_positioned_paintables;
     HashTable<Paintable const*> m_deferred_paintables_awaiting_build;
     Vector<PendingPaintable, 64> m_pending_paintables;
+    Vector<VisualContextIndex> m_emitted_nodes_for_current_paintable;
 };
 
 AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable& viewport_paintable)
@@ -661,10 +664,11 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
 bool update_accumulated_visual_context_values(ViewportPaintable& viewport_paintable, Paintable& paintable_box)
 {
     auto& visual_context_tree = viewport_paintable.visual_context_tree();
-    auto begin = paintable_box.visual_context_nodes_begin();
-    auto end = paintable_box.visual_context_nodes_end();
-    if (end > visual_context_tree.nodes().size())
-        return false;
+    auto owned_node_indices = paintable_box.owned_visual_context_nodes();
+    for (auto node_index : owned_node_indices) {
+        if (node_index.value() >= visual_context_tree.nodes().size())
+            return false;
+    }
 
     auto pixel_ratio = viewport_paintable.document().page().client().device_pixels_per_css_pixel();
     auto const& computed_values = paintable_box.computed_values();
@@ -678,8 +682,8 @@ bool update_accumulated_visual_context_values(ViewportPaintable& viewport_painta
     bool found_transform = false;
     bool found_effects = false;
     bool found_perspective = false;
-    for (size_t i = begin; i < end; ++i) {
-        auto& node = visual_context_tree.node_at(VisualContextIndex { i });
+    for (auto node_index : owned_node_indices) {
+        auto& node = visual_context_tree.node_at(node_index);
         if (auto* transform_data = node.data.get_pointer<TransformData>()) {
             if (!transform.has_value())
                 return false;

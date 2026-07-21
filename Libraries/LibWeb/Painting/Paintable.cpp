@@ -1022,6 +1022,7 @@ void Paintable::reset_for_relayout()
     m_accumulated_visual_context_for_absolute_position_descendants_index = VISUAL_VIEWPORT_NODE_INDEX;
     m_accumulated_visual_context_for_fixed_position_descendants_index = VISUAL_VIEWPORT_NODE_INDEX;
     m_fixed_background_visual_context = {};
+    m_owned_visual_context_nodes = nullptr;
 
     m_used_values_for_grid_template_columns = nullptr;
     m_used_values_for_grid_template_rows = nullptr;
