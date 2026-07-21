@@ -358,6 +358,8 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
     viewport_paintable.set_own_scroll_node_index(viewport_state_for_descendants);
     viewport_paintable.set_accumulated_visual_context(VISUAL_VIEWPORT_NODE_INDEX);
     viewport_paintable.set_accumulated_visual_context_for_descendants(viewport_state_for_descendants);
+    viewport_paintable.set_accumulated_visual_context_for_absolute_position_descendants(viewport_state_for_descendants);
+    viewport_paintable.set_accumulated_visual_context_for_fixed_position_descendants(visual_viewport_context_index);
 
     struct DescendantVisualContexts {
         VisualContextIndex normal;
@@ -555,6 +557,9 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
             state_for_absolute_position_descendants = state_for_descendants;
         if (positioning_containing_blocks.fixed)
             state_for_fixed_position_descendants = state_for_descendants;
+
+        paintable_box.set_accumulated_visual_context_for_absolute_position_descendants(state_for_absolute_position_descendants);
+        paintable_box.set_accumulated_visual_context_for_fixed_position_descendants(state_for_fixed_position_descendants);
 
         return DescendantVisualContexts {
             state_for_descendants,

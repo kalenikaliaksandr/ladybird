@@ -1018,6 +1018,8 @@ void Paintable::reset_for_relayout()
     m_own_scroll_node_index = {};
     m_accumulated_visual_context_index = VISUAL_VIEWPORT_NODE_INDEX;
     m_accumulated_visual_context_for_descendants_index = VISUAL_VIEWPORT_NODE_INDEX;
+    m_accumulated_visual_context_for_absolute_position_descendants_index = VISUAL_VIEWPORT_NODE_INDEX;
+    m_accumulated_visual_context_for_fixed_position_descendants_index = VISUAL_VIEWPORT_NODE_INDEX;
     m_fixed_background_visual_context = {};
 
     m_used_values_for_grid_template_columns = nullptr;
