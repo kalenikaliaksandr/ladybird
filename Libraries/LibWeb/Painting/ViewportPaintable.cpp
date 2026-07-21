@@ -16,7 +16,7 @@
 #include <LibWeb/Layout/TextOffsetMapping.h>
 #include <LibWeb/Layout/Viewport.h>
 #include <LibWeb/Page/Page.h>
-#include <LibWeb/Painting/AccumulatedVisualContext.h>
+#include <LibWeb/Painting/AccumulatedVisualContextTreeBuilder.h>
 #include <LibWeb/Painting/DisplayListRecorder.h>
 #include <LibWeb/Painting/DisplayListRecordingContext.h>
 #include <LibWeb/Painting/ScrollNodeState.h>
@@ -25,10 +25,6 @@
 #include <LibWeb/Selection/Selection.h>
 
 namespace Web::Painting {
-
-AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable&);
-bool update_accumulated_visual_context_values(ViewportPaintable&, Paintable&);
-void update_visual_viewport_accumulated_visual_context(ViewportPaintable&);
 
 NonnullRefPtr<ViewportPaintable> ViewportPaintable::create(Layout::Viewport const& layout_viewport)
 {

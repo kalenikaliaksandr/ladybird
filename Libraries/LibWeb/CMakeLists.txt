@@ -901,6 +901,7 @@ set(SOURCES
     Page/Page.cpp
     Page/ScreenWakeLockHandle.cpp
     Painting/AccumulatedVisualContext.cpp
+    Painting/AccumulatedVisualContextTreeBuilder.cpp
     Painting/BackgroundPainting.cpp
     Painting/Blending.cpp
     Painting/BorderPainting.cpp

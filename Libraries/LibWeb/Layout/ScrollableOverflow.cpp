@@ -12,7 +12,7 @@
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/SVGSVGBox.h>
 #include <LibWeb/Layout/ScrollableOverflow.h>
-#include <LibWeb/Painting/AccumulatedVisualContext.h>
+#include <LibWeb/Painting/AccumulatedVisualContextTreeBuilder.h>
 #include <LibWeb/Painting/PaintableWithLines.h>
 
 namespace Web::Layout {
