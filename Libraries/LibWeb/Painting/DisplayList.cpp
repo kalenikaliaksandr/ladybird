@@ -170,21 +170,6 @@ void DisplayListPlayer::execute_impl(
 
     VERIFY(m_surface);
 
-    auto for_each_node_from_common_ancestor_to_target =
-        [&](this auto const& self,
-            Optional<VisualContextIndex> common_ancestor_index,
-            VisualContextIndex target_index,
-            auto&& callback) -> IterationDecision {
-        if (common_ancestor_index.has_value() && target_index == common_ancestor_index.value())
-            return IterationDecision::Continue;
-        if (target_index != VISUAL_VIEWPORT_NODE_INDEX
-            && self(common_ancestor_index, visual_context_tree.node_at(target_index).parent_index, callback)
-                == IterationDecision::Break) {
-            return IterationDecision::Break;
-        }
-        return callback(target_index, visual_context_tree.node_at(target_index));
-    };
-
     auto apply_accumulated_visual_context =
         [&](VisualContextIndex node_index, AccumulatedVisualContextNode const& node, bool geometry_only) {
             // Geometry-only application skips nodes that don't affect coordinates, but still pushes a
@@ -247,10 +232,59 @@ void DisplayListPlayer::execute_impl(
                 });
         };
 
-    VisualContextIndex applied_context_index;
+    // Derived per-kind references for one recording context: the deepest coordinate-affecting
+    // (spatial), clip, and effect node on the chain from the root to the context. The chain's tip
+    // always has one of the three kinds, so the union of the three references' ancestor chains
+    // reproduces the recorded chain exactly; tracking the triple instead of the raw context index
+    // is what the split into spatial/clip/effect trees generalizes.
+    struct DerivedContextRefs {
+        VisualContextIndex spatial { VISUAL_VIEWPORT_NODE_INDEX };
+        VisualContextIndex clip { VISUAL_VIEWPORT_NODE_INDEX };
+        VisualContextIndex effect { VISUAL_VIEWPORT_NODE_INDEX };
+        bool operator==(DerivedContextRefs const&) const = default;
+    };
+
+    Vector<Optional<DerivedContextRefs>> derived_refs_by_context;
+    derived_refs_by_context.resize(visual_context_tree.nodes().size());
+    derived_refs_by_context[VISUAL_VIEWPORT_NODE_INDEX.value()] = DerivedContextRefs {};
+
+    auto derive_context_refs = [&](VisualContextIndex context_index) -> DerivedContextRefs {
+        Vector<VisualContextIndex, 16> pending;
+        auto index = context_index;
+        while (!derived_refs_by_context[index.value()].has_value()) {
+            pending.append(index);
+            index = visual_context_tree.node_at(index).parent_index;
+        }
+        auto refs = *derived_refs_by_context[index.value()];
+        for (size_t i = pending.size(); i > 0; --i) {
+            auto node_index = pending[i - 1];
+            auto const& node = visual_context_tree.node_at(node_index);
+            if (node.data.has<ClipData>() || node.data.has<ClipPathData>())
+                refs.clip = node_index;
+            else if (node.data.has<EffectsData>())
+                refs.effect = node_index;
+            else
+                refs.spatial = node_index;
+            derived_refs_by_context[node_index.value()] = refs;
+        }
+        return refs;
+    };
+
+    // The chain of visual context nodes currently applied to the canvas, root node included and
+    // first. Every entry holds exactly one canvas save (a Save, or the layer pushed by
+    // ApplyEffects), so unwinding is one Restore per popped entry.
+    Vector<VisualContextIndex, 32> applied_chain;
+    Vector<VisualContextIndex, 32> target_chain;
+    DerivedContextRefs applied_refs;
     bool has_applied_context { false };
     bool applied_context_geometry_only { false };
-    size_t applied_depth = 0;
+
+    auto restore_to_length = [&](size_t length) {
+        while (applied_chain.size() > length) {
+            play_command(Restore {});
+            applied_chain.take_last();
+        }
+    };
 
     // OPTIMIZATION: When walking down to apply effects (opacity, filters, blend modes), check culling before applying
     //               each effect. Effects don't affect clip state, so the culling check is valid before applying them.
@@ -259,75 +293,67 @@ void DisplayListPlayer::execute_impl(
         Switched,
         CulledByEffect,
     };
-    auto switch_to_context = [&](VisualContextIndex target_index, bool geometry_only, Optional<Gfx::IntRect> bounding_rect = {}) -> SwitchResult {
-        if (has_applied_context && applied_context_index == target_index && applied_context_geometry_only == geometry_only)
+    auto switch_to_context = [&](DerivedContextRefs const& refs, VisualContextIndex target_index, bool geometry_only, Optional<Gfx::IntRect> bounding_rect = {}) -> SwitchResult {
+        if (has_applied_context && applied_refs == refs && applied_context_geometry_only == geometry_only)
             return SwitchResult::Switched;
 
         // A chain applied in one mode can't be partially reused in the other: the modes disagree on what
         // every shared ancestor contributes. Unwind fully and reapply from the root instead.
         if (has_applied_context && applied_context_geometry_only != geometry_only) {
-            while (applied_depth > 0) {
-                play_command(Restore {});
-                --applied_depth;
-            }
+            restore_to_length(0);
             has_applied_context = false;
         }
 
-        Optional<VisualContextIndex> common_ancestor_index;
-        if (has_applied_context)
-            common_ancestor_index = visual_context_tree.find_common_ancestor(applied_context_index, target_index);
-        size_t const common_ancestor_depth = common_ancestor_index.has_value() ? visual_context_tree.node_at(common_ancestor_index.value()).depth + 1 : 0;
-
-        auto has_coordinate_changing_descendant = [&](Optional<VisualContextIndex> ancestor_index) {
-            for (auto index = target_index;; index = visual_context_tree.node_at(index).parent_index) {
-                if (ancestor_index.has_value() && index == ancestor_index.value())
-                    break;
-                auto const& node = visual_context_tree.node_at(index);
-                if (node.data.has<TransformData>()
-                    || node.data.has<PerspectiveData>()
-                    || node.data.has<ScrollData>()
-                    || node.data.has<ScrollCompensation>()
-                    || node.data.has<AnchorScrollShift>())
-                    return true;
-                if (index == VISUAL_VIEWPORT_NODE_INDEX)
-                    break;
-            }
-            return false;
-        };
-
-        auto restore_to_depth = [&](size_t target_depth) {
-            while (applied_depth > target_depth) {
-                play_command(Restore {});
-                --applied_depth;
-            }
-        };
-        restore_to_depth(common_ancestor_depth);
-
-        auto result = SwitchResult::Switched;
-        for_each_node_from_common_ancestor_to_target(
-            common_ancestor_index,
-            target_index,
-            [&](VisualContextIndex node_index, AccumulatedVisualContextNode const& node) {
-                if (!geometry_only && bounding_rect.has_value() && node.data.has<EffectsData>()) {
-                    auto can_cull_before_effect = !has_coordinate_changing_descendant(Optional<VisualContextIndex> { node_index });
-                    if (bounding_rect->is_empty() || (can_cull_before_effect && would_be_fully_clipped_by_painter(*bounding_rect))) {
-                        result = SwitchResult::CulledByEffect;
-                        return IterationDecision::Break;
-                    }
-                }
-                apply_accumulated_visual_context(node_index, node, geometry_only);
-                applied_depth++;
-                return IterationDecision::Continue;
-            });
-
-        if (result == SwitchResult::Switched) {
-            applied_context_index = target_index;
-            applied_context_geometry_only = geometry_only;
-            has_applied_context = true;
-        } else {
-            restore_to_depth(common_ancestor_depth);
+        // Parents always have smaller indices than their children, so the deepest of the three
+        // per-kind references is the recorded context itself.
+        VERIFY(max(refs.spatial.value(), max(refs.clip.value(), refs.effect.value())) == target_index.value());
+        target_chain.clear_with_capacity();
+        for (auto index = target_index;; index = visual_context_tree.node_at(index).parent_index) {
+            target_chain.append(index);
+            if (index == VISUAL_VIEWPORT_NODE_INDEX)
+                break;
         }
-        return result;
+        target_chain.reverse();
+
+        size_t common_prefix_length = 0;
+        while (common_prefix_length < applied_chain.size()
+            && common_prefix_length < target_chain.size()
+            && applied_chain[common_prefix_length] == target_chain[common_prefix_length])
+            ++common_prefix_length;
+
+        restore_to_length(common_prefix_length);
+
+        for (size_t i = common_prefix_length; i < target_chain.size(); ++i) {
+            auto node_index = target_chain[i];
+            auto const& node = visual_context_tree.node_at(node_index);
+            if (!geometry_only && bounding_rect.has_value() && node.data.has<EffectsData>()) {
+                // A coordinate-affecting node sits below this effect exactly when the target's
+                // deepest spatial reference is deeper than the effect, in which case the bounding
+                // rect cannot be culled against the current canvas state.
+                auto can_cull_before_effect = refs.spatial.value() <= node_index.value();
+                if (bounding_rect->is_empty() || (can_cull_before_effect && would_be_fully_clipped_by_painter(*bounding_rect))) {
+                    restore_to_length(common_prefix_length);
+                    // The canvas is unwound to the shared prefix, so the applied state has to
+                    // follow: keeping the previous, deeper context would let the next switch reuse
+                    // nodes the unwind just popped.
+                    if (applied_chain.is_empty()) {
+                        has_applied_context = false;
+                    } else {
+                        applied_refs = derive_context_refs(applied_chain.last());
+                        applied_context_geometry_only = geometry_only;
+                        has_applied_context = true;
+                    }
+                    return SwitchResult::CulledByEffect;
+                }
+            }
+            apply_accumulated_visual_context(node_index, node, geometry_only);
+            applied_chain.append(node_index);
+        }
+
+        applied_refs = refs;
+        applied_context_geometry_only = geometry_only;
+        has_applied_context = true;
+        return SwitchResult::Switched;
     };
 
     DisplayList::for_each_command_header(commands, [&](DisplayListCommandHeader const& header, ReadonlyBytes payload) {
@@ -338,7 +364,7 @@ void DisplayListPlayer::execute_impl(
             ? Optional<Gfx::IntRect>(header.bounding_rect)
             : Optional<Gfx::IntRect> {};
 
-        if (switch_to_context(header.context_index, header.context_geometry_only, bounding_rect) == SwitchResult::CulledByEffect)
+        if (switch_to_context(derive_context_refs(header.context_index), header.context_index, header.context_geometry_only, bounding_rect) == SwitchResult::CulledByEffect)
             return;
 
         if (bounding_rect.has_value() && (bounding_rect->is_empty() || would_be_fully_clipped_by_painter(*bounding_rect))) {
@@ -378,10 +404,7 @@ void DisplayListPlayer::execute_impl(
         }
     });
 
-    while (applied_depth > 0) {
-        play_command(Restore {});
-        applied_depth--;
-    }
+    restore_to_length(0);
 }
 
 }
