@@ -1,27 +1,29 @@
 AccumulatedVisualContext Tree:
   [0] transform=[1,0,0,1,0,0] origin=(0,0) (ViewportPaintable(Viewport<#document>))
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
-      [2] clip=[10,10 200x150]
+      [2] scroll (PaintableWithLines(BlockContainer(anonymous)))
         [3] scroll (PaintableWithLines(BlockContainer(anonymous)))
-          [4] clip=[11,11 300x100]
-            [5] scroll (PaintableWithLines(BlockContainer(anonymous)))
+
+ClipNodes:
+  [1] parent=0 clip=[10,10 200x150] spatial_ref=1 sequence=4 (PaintableWithLines(BlockContainer(anonymous)))
+  [2] parent=1 clip=[11,11 300x100] spatial_ref=2 sequence=6 (PaintableWithLines(BlockContainer(anonymous)))
 
 DisplayList:
 SaveLayer@0/0/0
   CompositorWheelHitTestTarget@0/0/0 target_scroll_node_index=0 rect=[0,0 800x600]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x175]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x154]
-  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=3 rect=[8,8 204x154]
-  CompositorScrollNode@1/0/0 scroll_node_index=3 parent_scroll_node_index=0 scrollport_rect=[10,10 200x150] max_scroll_offset=[102,0] is_viewport=false
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=2 rect=[8,8 204x154]
+  CompositorScrollNode@1/0/0 scroll_node_index=2 parent_scroll_node_index=0 scrollport_rect=[10,10 200x150] max_scroll_offset=[102,0] is_viewport=false
   FillPath@1/0/0 path_bounding_rect=[8,8 204x154]
-  CompositorWheelHitTestTarget@3/2/0 target_scroll_node_index=5 rect=[10,10 302x102]
-  CompositorScrollNode@3/2/0 scroll_node_index=5 parent_scroll_node_index=3 scrollport_rect=[11,11 300x100] max_scroll_offset=[100,0] is_viewport=false
-  FillRect@3/2/0 rect=[10,10 302x102] color=rgb(255, 255, 224)
-  FillPath@3/2/0 path_bounding_rect=[10,10 302x102]
-  CompositorWheelHitTestTarget@5/4/0 target_scroll_node_index=5 rect=[11,11 400x80]
-  FillRect@5/4/0 rect=[11,11 400x80] color=rgb(240, 128, 128)
-  DrawGlyphRun@5/4/0 rect=[11,11 178x16] translation=[11,23.796875] color=rgb(0, 0, 0)
-  PaintScrollBar@3/2/0
+  CompositorWheelHitTestTarget@2/1/0 target_scroll_node_index=3 rect=[10,10 302x102]
+  CompositorScrollNode@2/1/0 scroll_node_index=3 parent_scroll_node_index=2 scrollport_rect=[11,11 300x100] max_scroll_offset=[100,0] is_viewport=false
+  FillRect@2/1/0 rect=[10,10 302x102] color=rgb(255, 255, 224)
+  FillPath@2/1/0 path_bounding_rect=[10,10 302x102]
+  CompositorWheelHitTestTarget@3/2/0 target_scroll_node_index=3 rect=[11,11 400x80]
+  FillRect@3/2/0 rect=[11,11 400x80] color=rgb(240, 128, 128)
+  DrawGlyphRun@3/2/0 rect=[11,11 178x16] translation=[11,23.796875] color=rgb(0, 0, 0)
+  PaintScrollBar@2/1/0
   PaintScrollBar@1/0/0
 Restore@0/0/0
 

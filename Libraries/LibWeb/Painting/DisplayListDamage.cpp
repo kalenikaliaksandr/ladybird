@@ -116,10 +116,6 @@ static bool visual_context_data_is_equal(VisualContextIndex a_index, VisualConte
             return other && data.is_sticky == other->is_sticky
                 && a_scroll_state.device_offset_for_index(to_scroll_node_index(a_index)) == b_scroll_state.device_offset_for_index(to_scroll_node_index(b_index));
         },
-        [&](ClipData const& data) {
-            auto const* other = b.get_pointer<ClipData>();
-            return other && data.rect == other->rect && corner_radii_are_equal(data.corner_radii, other->corner_radii);
-        },
         [&](TransformData const& data) {
             auto const* other = b.get_pointer<TransformData>();
             return other && matrices_are_equal(data.matrix, other->matrix) && data.origin == other->origin;
@@ -127,13 +123,6 @@ static bool visual_context_data_is_equal(VisualContextIndex a_index, VisualConte
         [&](PerspectiveData const& data) {
             auto const* other = b.get_pointer<PerspectiveData>();
             return other && matrices_are_equal(data.matrix, other->matrix);
-        },
-        [&](ClipPathData const& data) {
-            auto const* other = b.get_pointer<ClipPathData>();
-            return other
-                && data.bounding_rect == other->bounding_rect
-                && data.fill_rule == other->fill_rule
-                && data.path.serialize_to_bytes() == other->path.serialize_to_bytes();
         },
         [&](ScrollCompensation const& data) {
             auto const* other = b.get_pointer<ScrollCompensation>();
@@ -162,6 +151,60 @@ static bool effects_data_is_equal(EffectsData const& a, EffectsData const& b)
             return false;
     }
     return a.opacity == b.opacity && a.blend_mode == b.blend_mode;
+}
+
+static bool clip_data_is_equal(Variant<ClipData, ClipPathData> const& a, Variant<ClipData, ClipPathData> const& b)
+{
+    return a.visit(
+        [&](ClipData const& data) {
+            auto const* other = b.get_pointer<ClipData>();
+            return other && data.rect == other->rect && corner_radii_are_equal(data.corner_radii, other->corner_radii);
+        },
+        [&](ClipPathData const& data) {
+            auto const* other = b.get_pointer<ClipPathData>();
+            return other
+                && data.bounding_rect == other->bounding_rect
+                && data.fill_rule == other->fill_rule
+                && data.path.serialize_to_bytes() == other->path.serialize_to_bytes();
+        });
+}
+
+// Structural comparison of two clip chains: depth, sequence, alternative, and the empty flag pin
+// each node's interleave position and append-time drop behavior; the spatial_ref links are
+// covered by the command-level spatial chain comparison, since they always lie on that chain.
+static bool clip_chains_are_compatible(ClipNodeIndex old_index, AccumulatedVisualContextTree const& old_tree, ClipNodeIndex new_index, AccumulatedVisualContextTree const& new_tree)
+{
+    for (;;) {
+        if ((old_index == ROOT_CLIP_NODE_INDEX) != (new_index == ROOT_CLIP_NODE_INDEX))
+            return false;
+        if (old_index == ROOT_CLIP_NODE_INDEX)
+            return true;
+        auto const& old_node = old_tree.clip_node_at(old_index);
+        auto const& new_node = new_tree.clip_node_at(new_index);
+        if (old_node.depth != new_node.depth
+            || old_node.sequence != new_node.sequence
+            || old_node.data.index() != new_node.data.index()
+            || old_node.has_empty_effective_clip != new_node.has_empty_effective_clip)
+            return false;
+        old_index = old_node.parent_index;
+        new_index = new_node.parent_index;
+    }
+}
+
+static bool clip_chains_are_equal(ClipNodeIndex old_index, AccumulatedVisualContextTree const& old_tree, ClipNodeIndex new_index, AccumulatedVisualContextTree const& new_tree)
+{
+    for (;;) {
+        if ((old_index == ROOT_CLIP_NODE_INDEX) != (new_index == ROOT_CLIP_NODE_INDEX))
+            return false;
+        if (old_index == ROOT_CLIP_NODE_INDEX)
+            return true;
+        auto const& old_node = old_tree.clip_node_at(old_index);
+        auto const& new_node = new_tree.clip_node_at(new_index);
+        if (!clip_data_is_equal(old_node.data, new_node.data))
+            return false;
+        old_index = old_node.parent_index;
+        new_index = new_node.parent_index;
+    }
 }
 
 // Structural comparison of two effect chains: depth and sequence pin each node's interleave
@@ -225,8 +268,7 @@ static bool visual_context_chains_are_equal(VisualContextIndex old_index, Accumu
     for (;;) {
         auto const& old_node = old_tree.node_at(old_index);
         auto const& new_node = new_tree.node_at(new_index);
-        if (old_node.has_empty_effective_clip != new_node.has_empty_effective_clip
-            || !visual_context_data_is_equal(old_index, old_node.data, old_scroll_state, new_index, new_node.data, new_scroll_state))
+        if (!visual_context_data_is_equal(old_index, old_node.data, old_scroll_state, new_index, new_node.data, new_scroll_state))
             return false;
         if (old_index == VISUAL_VIEWPORT_NODE_INDEX)
             return true;
@@ -252,7 +294,7 @@ Optional<Gfx::IntRect> compute_display_list_damage(
         auto const& new_refs = new_command.header.context_refs;
         return display_list_commands_are_equal(old_command, new_command)
             && visual_context_chains_are_compatible(old_refs.spatial, old_visual_context_tree, new_refs.spatial, new_visual_context_tree)
-            && visual_context_chains_are_compatible(old_refs.clip, old_visual_context_tree, new_refs.clip, new_visual_context_tree)
+            && clip_chains_are_compatible(old_refs.clip, old_visual_context_tree, new_refs.clip, new_visual_context_tree)
             && effect_chains_are_compatible(old_refs.effect, old_visual_context_tree, new_refs.effect, new_visual_context_tree);
     };
     size_t common_prefix_length = 0;
@@ -288,7 +330,7 @@ Optional<Gfx::IntRect> compute_display_list_damage(
         auto const& old_refs = old_command.header.context_refs;
         auto const& new_refs = new_command.header.context_refs;
         if (visual_context_chains_are_equal(old_refs.spatial, old_visual_context_tree, old_scroll_state, new_refs.spatial, new_visual_context_tree, new_scroll_state)
-            && visual_context_chains_are_equal(old_refs.clip, old_visual_context_tree, old_scroll_state, new_refs.clip, new_visual_context_tree, new_scroll_state)
+            && clip_chains_are_equal(old_refs.clip, old_visual_context_tree, new_refs.clip, new_visual_context_tree)
             && effect_chains_are_equal(old_refs.effect, old_visual_context_tree, new_refs.effect, new_visual_context_tree))
             return;
         if (!old_command.header.has_bounding_rect || !new_command.header.has_bounding_rect) {

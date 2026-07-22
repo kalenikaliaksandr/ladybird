@@ -197,22 +197,6 @@ void DisplayListPlayer::execute_impl(
                 [&](TransformData const& transform) {
                     play_command(Save {});
                     apply_transform(transform.origin, transform.matrix);
-                },
-                [&](ClipData const& clip) {
-                    play_command(Save {});
-                    if (clip.corner_radii.has_any_radius()) {
-                        play_command(AddRoundedRectClip {
-                            .corner_radii = clip.corner_radii,
-                            .border_rect = clip.rect.to_type<int>(),
-                            .corner_clip = Gfx::CornerClip::Outside,
-                        });
-                    } else {
-                        play_command(AddClipRect { .rect = clip.rect.to_type<int>() });
-                    }
-                },
-                [&](ClipPathData const& clip_path) {
-                    play_command(Save {});
-                    add_clip_path(clip_path.path, clip_path.fill_rule);
                 });
         };
 
@@ -230,12 +214,10 @@ void DisplayListPlayer::execute_impl(
     struct ChainEntry {
         ChainEntryKind kind { ChainEntryKind::Spatial };
         u32 index { 0 };
-        u64 merge_key { 0 };
+        u32 merge_key { 0 };
 
         bool operator==(ChainEntry const& other) const { return kind == other.kind && index == other.index; }
     };
-    auto main_tree_merge_key = [](VisualContextIndex index) { return (static_cast<u64>(index.value()) << 32) | 0xFFFFFFFFu; };
-    auto effect_merge_key = [](EffectNode const& node, EffectNodeIndex index) { return (static_cast<u64>(node.sequence) << 32) | index.value(); };
 
     Vector<ChainEntry, 32> applied_chain;
     Vector<ChainEntry, 32> target_chain;
@@ -249,25 +231,18 @@ void DisplayListPlayer::execute_impl(
     auto build_target_chain = [&](VisualContextRefs refs) {
         target_chain.clear_with_capacity();
         for (auto index = refs.spatial;; index = visual_context_tree.node_at(index).parent_index) {
-            auto const& node = visual_context_tree.node_at(index);
-            bool is_clip_kind = node.data.has<ClipData>() || node.data.has<ClipPathData>();
-            if (!is_clip_kind)
-                target_chain.append({ ChainEntryKind::Spatial, index.value(), main_tree_merge_key(index) });
+            target_chain.append({ ChainEntryKind::Spatial, index.value(), visual_context_tree.node_at(index).sequence });
             if (index == VISUAL_VIEWPORT_NODE_INDEX)
                 break;
         }
-        if (refs.clip != VISUAL_VIEWPORT_NODE_INDEX) {
-            for (auto index = refs.clip;; index = visual_context_tree.node_at(index).parent_index) {
-                auto const& node = visual_context_tree.node_at(index);
-                if (node.data.has<ClipData>() || node.data.has<ClipPathData>())
-                    target_chain.append({ ChainEntryKind::Clip, index.value(), main_tree_merge_key(index) });
-                if (index == VISUAL_VIEWPORT_NODE_INDEX)
-                    break;
-            }
+        for (auto index = refs.clip; index != ROOT_CLIP_NODE_INDEX;) {
+            auto const& node = visual_context_tree.clip_node_at(index);
+            target_chain.append({ ChainEntryKind::Clip, index.value(), node.sequence });
+            index = node.parent_index;
         }
         for (auto index = refs.effect; index != ROOT_EFFECT_NODE_INDEX;) {
             auto const& node = visual_context_tree.effect_node_at(index);
-            target_chain.append({ ChainEntryKind::Effect, index.value(), effect_merge_key(node, index) });
+            target_chain.append({ ChainEntryKind::Effect, index.value(), node.sequence });
             index = node.parent_index;
         }
         AK::quick_sort(target_chain, [](auto const& a, auto const& b) { return a.merge_key < b.merge_key; });
@@ -332,6 +307,24 @@ void DisplayListPlayer::execute_impl(
                                  .filter_data = {},
                              },
                     effects.gfx_filter.has_value() ? &effects.gfx_filter.value() : nullptr);
+            } else if (entry.kind == ChainEntryKind::Clip) {
+                auto const& clip_node = visual_context_tree.clip_node_at(ClipNodeIndex { entry.index });
+                play_command(Save {});
+                clip_node.data.visit(
+                    [&](ClipData const& clip) {
+                        if (clip.corner_radii.has_any_radius()) {
+                            play_command(AddRoundedRectClip {
+                                .corner_radii = clip.corner_radii,
+                                .border_rect = clip.rect.to_type<int>(),
+                                .corner_clip = Gfx::CornerClip::Outside,
+                            });
+                        } else {
+                            play_command(AddClipRect { .rect = clip.rect.to_type<int>() });
+                        }
+                    },
+                    [&](ClipPathData const& clip_path) {
+                        add_clip_path(clip_path.path, clip_path.fill_rule);
+                    });
             } else {
                 auto node_index = VisualContextIndex { entry.index };
                 apply_accumulated_visual_context(node_index, visual_context_tree.node_at(node_index));

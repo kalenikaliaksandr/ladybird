@@ -100,7 +100,7 @@ struct AnchorScrollShift {
     Gfx::FloatPoint masked_offset(ScrollStateSnapshot const&) const;
 };
 
-using VisualContextData = Variant<ScrollData, ClipData, TransformData, PerspectiveData, ClipPathData, ScrollCompensation, AnchorScrollShift>;
+using VisualContextData = Variant<ScrollData, TransformData, PerspectiveData, ScrollCompensation, AnchorScrollShift>;
 
 Optional<TransformData> compute_transform(Paintable const&, CSS::ComputedValues const&, double pixel_ratio);
 
@@ -108,6 +108,23 @@ struct AccumulatedVisualContextNode {
     VisualContextData data;
     VisualContextIndex parent_index {};
     size_t depth { 0 };
+    // Position in the shared append order across the main, clip, and effect node lists; replay
+    // interleaves the three chains by it.
+    u32 sequence { 0 };
+};
+
+// Overflow clips, CSS `clip`, and clip-path live in their own node list. Each node pins the
+// coordinate space its rect or path is expressed in via spatial_ref, decoupled from its
+// parent_clip chain, which expresses pure set intersection.
+struct ClipNode {
+    Variant<ClipData, ClipPathData> data;
+    ClipNodeIndex parent_index { ROOT_CLIP_NODE_INDEX };
+    VisualContextIndex spatial_ref { VISUAL_VIEWPORT_NODE_INDEX };
+    u32 depth { 0 };
+    // Position in the shared append order across the main, clip, and effect node lists.
+    u32 sequence { 0 };
+    // True when this node's region or any ancestor's is empty; commands recorded under such a
+    // chain are dropped at append time.
     bool has_empty_effective_clip { false };
 };
 
@@ -118,10 +135,9 @@ struct EffectNode {
     EffectsData data;
     EffectNodeIndex parent_index { ROOT_EFFECT_NODE_INDEX };
     VisualContextIndex spatial_ref { VISUAL_VIEWPORT_NODE_INDEX };
-    VisualContextIndex clip_ref { VISUAL_VIEWPORT_NODE_INDEX };
+    ClipNodeIndex clip_ref { ROOT_CLIP_NODE_INDEX };
     u32 depth { 0 };
-    // Number of main-tree nodes that existed when this node was appended; orders effect nodes
-    // relative to main-tree nodes during replay without stamping the main tree.
+    // Position in the shared append order across the main, clip, and effect node lists.
     u32 sequence { 0 };
 };
 
@@ -151,7 +167,8 @@ public:
     u64 version() const { return m_version; }
 
     WEB_API VisualContextIndex append(VisualContextData data, VisualContextIndex parent_index);
-    WEB_API EffectNodeIndex append_effect(EffectsData, EffectNodeIndex parent_index, VisualContextIndex spatial_ref, VisualContextIndex clip_ref);
+    WEB_API EffectNodeIndex append_effect(EffectsData, EffectNodeIndex parent_index, VisualContextIndex spatial_ref, ClipNodeIndex clip_ref);
+    WEB_API ClipNodeIndex append_clip(Variant<ClipData, ClipPathData>, ClipNodeIndex parent_index, VisualContextIndex spatial_ref);
     WEB_API void set_visual_viewport_transform(TransformData);
     WEB_API bool is_compatible_with(AccumulatedVisualContextTree const&) const;
     WEB_API void reuse_version_from(AccumulatedVisualContextTree const&);
@@ -164,19 +181,23 @@ public:
     EffectNode& effect_node_at(EffectNodeIndex index) { return m_effect_nodes[index.value()]; }
     ReadonlySpan<EffectNode> effect_nodes() const { return m_effect_nodes.span(); }
 
+    ClipNode const& clip_node_at(ClipNodeIndex index) const { return m_clip_nodes[index.value()]; }
+    ClipNode& clip_node_at(ClipNodeIndex index) { return m_clip_nodes[index.value()]; }
+    ReadonlySpan<ClipNode> clip_nodes() const { return m_clip_nodes.span(); }
+
     VisualContextIndex find_common_ancestor(VisualContextIndex a, VisualContextIndex b) const;
     Optional<Gfx::FloatPoint> transform_point_for_hit_test(VisualContextRefs, Gfx::FloatPoint, ScrollStateSnapshot const&, ClipBehavior = ClipBehavior::Respect) const;
     Gfx::FloatPoint inverse_transform_point(VisualContextRefs, Gfx::FloatPoint) const;
     Gfx::FloatRect transform_rect_to_viewport(VisualContextRefs, Gfx::FloatRect const&, ScrollStateSnapshot const&, IncludeVisualViewportTransform = IncludeVisualViewportTransform::Yes) const;
     void dump(VisualContextIndex, StringBuilder&) const;
     void dump_effect(EffectNodeIndex, StringBuilder&) const;
+    void dump_clip(ClipNodeIndex, StringBuilder&) const;
 
-    // The deepest coordinate-affecting and clip node on the chain from the root to the given
-    // context. Effects live in their own node list, so the returned effect reference is always
-    // the identity sentinel; the builder tracks effect contexts explicitly.
-    WEB_API VisualContextRefs derive_context_refs(VisualContextIndex) const;
+    // With clips and effects in their own node lists, every main-tree node is spatial: the
+    // spatial reference for a chain position is the position itself. The builder tracks clip and
+    // effect contexts explicitly.
 
-    bool has_empty_effective_clip(VisualContextIndex i) const { return m_nodes[i.value()].has_empty_effective_clip; }
+    bool has_empty_effective_clip(ClipNodeIndex i) const { return m_clip_nodes[i.value()].has_empty_effective_clip; }
 
     ScrollStateSlot scroll_state_slot_for_node(ScrollNodeIndex index) const
     {
@@ -186,10 +207,12 @@ public:
     }
 
 private:
-    AccumulatedVisualContextTree(u64 version, Vector<AccumulatedVisualContextNode>&& nodes, Vector<EffectNode>&& effect_nodes)
+    AccumulatedVisualContextTree(u64 version, Vector<AccumulatedVisualContextNode>&& nodes, Vector<EffectNode>&& effect_nodes, Vector<ClipNode>&& clip_nodes)
         : m_version(version)
         , m_nodes(move(nodes))
         , m_effect_nodes(move(effect_nodes))
+        , m_clip_nodes(move(clip_nodes))
+        , m_next_sequence(static_cast<u32>(m_nodes.size() + m_effect_nodes.size() + m_clip_nodes.size()))
     {
     }
 
@@ -198,6 +221,8 @@ private:
     u64 m_version { 0 };
     Vector<AccumulatedVisualContextNode> m_nodes;
     Vector<EffectNode> m_effect_nodes;
+    Vector<ClipNode> m_clip_nodes;
+    u32 m_next_sequence { 0 };
 
     template<typename T>
     friend ErrorOr<void> IPC::encode(IPC::Encoder&, T const&);

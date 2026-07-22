@@ -1,11 +1,13 @@
 AccumulatedVisualContext Tree:
   [0] transform=[1,0,0,1,0,0] origin=(0,0) (ViewportPaintable(Viewport<#document>))
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
-      [2] clip=[8,8 200x200]
-        [3] transform=[1,0,0,1,20,20] origin=(8,8) (SVGPathPaintable(SVGGeometryBox<rect>))
+      [2] transform=[1,0,0,1,20,20] origin=(8,8) (SVGPathPaintable(SVGGeometryBox<rect>))
+
+ClipNodes:
+  [1] parent=0 clip=[8,8 200x200] spatial_ref=1 sequence=4 (SVGPathPaintable(SVGGeometryBox<rect>))
 
 EffectNodes:
-  [1] parent=0 effects=[opacity=0.5] spatial_ref=1 clip_ref=2 sequence=3 (SVGPathPaintable(SVGGeometryBox<rect>))
+  [1] parent=0 effects=[opacity=0.5] spatial_ref=1 clip_ref=1 sequence=5 (SVGPathPaintable(SVGGeometryBox<rect>))
 
 DisplayList:
 SaveLayer@0/0/0
@@ -14,6 +16,6 @@ SaveLayer@0/0/0
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x200]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x200]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 200x200]
-  FillPath@3/2/1 path_bounding_rect=[8,8 100x100]
+  FillPath@2/1/1 path_bounding_rect=[8,8 100x100]
 Restore@0/0/0
 

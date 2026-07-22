@@ -4,7 +4,7 @@ AccumulatedVisualContext Tree:
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
 
 EffectNodes:
-  [1] parent=0 effects=[opacity=0.5] spatial_ref=1 clip_ref=0 sequence=2 (InlinePaintable(InlineNode<SPAN>#inner))
+  [1] parent=0 effects=[opacity=0.5] spatial_ref=1 clip_ref=0 sequence=4 (InlinePaintable(InlineNode<SPAN>#inner))
 
 DisplayList:
 SaveLayer@0/0/0
@@ -28,7 +28,7 @@ AccumulatedVisualContext Tree:
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
 
 EffectNodes:
-  [1] parent=0 effects=[opacity=0.5] spatial_ref=1 clip_ref=0 sequence=2 (InlinePaintable(InlineNode<SPAN>#inner))
+  [1] parent=0 effects=[opacity=0.5] spatial_ref=1 clip_ref=0 sequence=4 (InlinePaintable(InlineNode<SPAN>#inner))
 
 DisplayList:
 SaveLayer@0/0/0
@@ -42,7 +42,7 @@ SaveLayer@0/0/0
   DrawGlyphRun@1/0/0 rect=[8,111 546x13] translation=[8,121.390625] color=rgb(0, 0, 0)
   DrawGlyphRun@1/0/0 rect=[8,124 404x13] translation=[8,134.39062] color=rgb(0, 0, 0)
   DrawGlyphRun@1/0/0 rect=[8,150 81x13] translation=[8,160.39062] color=rgb(0, 0, 0)
-  DrawGlyphRun@1/0/0 rect=[8,163 748x13] translation=[8,173.39062] color=rgb(0, 0, 0)
+  DrawGlyphRun@1/0/0 rect=[8,163 747x13] translation=[8,173.39062] color=rgb(0, 0, 0)
   DrawGlyphRun@1/0/0 rect=[8,189 74x13] translation=[8,199.39062] color=rgb(0, 0, 0)
   DrawGlyphRun@1/0/0 rect=[8,202 113x13] translation=[8,212.39062] color=rgb(0, 0, 0)
   DrawGlyphRun@1/0/0 rect=[8,215 578x13] translation=[8,225.39062] color=rgb(0, 0, 0)

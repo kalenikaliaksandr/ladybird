@@ -18,7 +18,7 @@ AccumulatedVisualContext Tree:
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
 
 EffectNodes:
-  [1] parent=0 effects=[blend_mode=2] spatial_ref=1 clip_ref=0 sequence=2 (PaintableWithLines(BlockContainer<DIV>#box))
+  [1] parent=0 effects=[blend_mode=2] spatial_ref=1 clip_ref=0 sequence=4 (PaintableWithLines(BlockContainer<DIV>#box))
 
 DisplayList:
 SaveLayer@0/0/0

@@ -2,31 +2,39 @@ Before clip-path change:
 AccumulatedVisualContext Tree:
   [0] transform=[1,0,0,1,0,0] origin=(0,0) (ViewportPaintable(Viewport<#document>))
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
-      [2] clip_path=[bounds: 8,8 100x100, path: M8 8L108 8L108 108L8 108L8 8Z] (PaintableWithLines(BlockContainer<DIV>#box.box))
+
+ClipNodes:
+  [1] parent=0 clip_path=[bounds: 8,8 100x100, path: M8 8L108 8L108 108L8 108L8 8Z] spatial_ref=1 sequence=4 (PaintableWithLines(BlockContainer<DIV>#box.box))
+  [2] parent=0 clip_path=[bounds: 8,8 100x100, path: M8 8L108 8L108 108L8 108L8 8Z] spatial_ref=1 sequence=5
+  [3] parent=0 clip_path=[bounds: 8,8 100x100, path: M8 8L108 8L108 108L8 108L8 8Z] spatial_ref=0 sequence=6
 
 DisplayList:
 SaveLayer@0/0/0
   CompositorWheelHitTestTarget@0/0/0 target_scroll_node_index=0 rect=[0,0 800x600]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x121]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x100]
-  CompositorWheelHitTestTarget@1/2/0 target_scroll_node_index=0 rect=[8,8 100x100]
-  FillRect@1/2/0 rect=[8,8 100x100] color=rgb(173, 216, 230)
-  DrawGlyphRun@1/2/0 rect=[8,8 30x16] translation=[8,20.796875] color=rgb(0, 0, 0)
+  CompositorWheelHitTestTarget@1/1/0 target_scroll_node_index=0 rect=[8,8 100x100]
+  FillRect@1/1/0 rect=[8,8 100x100] color=rgb(173, 216, 230)
+  DrawGlyphRun@1/1/0 rect=[8,8 30x16] translation=[8,20.796875] color=rgb(0, 0, 0)
 Restore@0/0/0
 
 After clip-path change:
 AccumulatedVisualContext Tree:
   [0] transform=[1,0,0,1,0,0] origin=(0,0) (ViewportPaintable(Viewport<#document>))
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
-      [2] clip_path=[bounds: 8,8 100x100, path: M58 8L108 58L58 108L8 58L58 8Z] (PaintableWithLines(BlockContainer<DIV>#box.box))
+
+ClipNodes:
+  [1] parent=0 clip_path=[bounds: 8,8 100x100, path: M58 8L108 58L58 108L8 58L58 8Z] spatial_ref=1 sequence=4 (PaintableWithLines(BlockContainer<DIV>#box.box))
+  [2] parent=0 clip_path=[bounds: 8,8 100x100, path: M58 8L108 58L58 108L8 58L58 8Z] spatial_ref=1 sequence=5
+  [3] parent=0 clip_path=[bounds: 8,8 100x100, path: M58 8L108 58L58 108L8 58L58 8Z] spatial_ref=0 sequence=6
 
 DisplayList:
 SaveLayer@0/0/0
   CompositorWheelHitTestTarget@0/0/0 target_scroll_node_index=0 rect=[0,0 800x600]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x121]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x100]
-  CompositorWheelHitTestTarget@1/2/0 target_scroll_node_index=0 rect=[8,8 100x100]
-  FillRect@1/2/0 rect=[8,8 100x100] color=rgb(173, 216, 230)
-  DrawGlyphRun@1/2/0 rect=[8,8 30x16] translation=[8,20.796875] color=rgb(0, 0, 0)
+  CompositorWheelHitTestTarget@1/1/0 target_scroll_node_index=0 rect=[8,8 100x100]
+  FillRect@1/1/0 rect=[8,8 100x100] color=rgb(173, 216, 230)
+  DrawGlyphRun@1/1/0 rect=[8,8 30x16] translation=[8,20.796875] color=rgb(0, 0, 0)
 Restore@0/0/0
 

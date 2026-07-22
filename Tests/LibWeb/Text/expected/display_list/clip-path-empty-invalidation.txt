@@ -2,21 +2,30 @@ Before clip-path change:
 AccumulatedVisualContext Tree:
   [0] transform=[1,0,0,1,0,0] origin=(0,0) (ViewportPaintable(Viewport<#document>))
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
-      [2] clip_path=[bounds: 8,8 100x100, path: M8 8L108 8L108 108L8 108L8 8Z] (PaintableWithLines(BlockContainer<DIV>#box))
+
+ClipNodes:
+  [1] parent=0 clip_path=[bounds: 8,8 100x100, path: M8 8L108 8L108 108L8 108L8 8Z] spatial_ref=1 sequence=4 (PaintableWithLines(BlockContainer<DIV>#box))
+  [2] parent=0 clip_path=[bounds: 8,8 100x100, path: M8 8L108 8L108 108L8 108L8 8Z] spatial_ref=1 sequence=5
+  [3] parent=0 clip_path=[bounds: 8,8 100x100, path: M8 8L108 8L108 108L8 108L8 8Z] spatial_ref=0 sequence=6
 
 DisplayList:
 SaveLayer@0/0/0
   CompositorWheelHitTestTarget@0/0/0 target_scroll_node_index=0 rect=[0,0 800x600]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x121]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x100]
-  CompositorWheelHitTestTarget@1/2/0 target_scroll_node_index=0 rect=[8,8 100x100]
-  FillRect@1/2/0 rect=[8,8 100x100] color=rgb(0, 128, 0)
+  CompositorWheelHitTestTarget@1/1/0 target_scroll_node_index=0 rect=[8,8 100x100]
+  FillRect@1/1/0 rect=[8,8 100x100] color=rgb(0, 128, 0)
 Restore@0/0/0
 
 After clip-path change:
 AccumulatedVisualContext Tree:
   [0] transform=[1,0,0,1,0,0] origin=(0,0) (ViewportPaintable(Viewport<#document>))
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
+
+ClipNodes:
+  [1] parent=0 clip_path=[bounds: 8,8 100x100, path: M58 58L58 58L58 58L58 58Z] spatial_ref=1 sequence=4 (PaintableWithLines(BlockContainer<DIV>#box))
+  [2] parent=0 clip_path=[bounds: 8,8 100x100, path: M58 58L58 58L58 58L58 58Z] spatial_ref=1 sequence=5
+  [3] parent=0 clip_path=[bounds: 8,8 100x100, path: M58 58L58 58L58 58L58 58Z] spatial_ref=0 sequence=6
 
 DisplayList:
 SaveLayer@0/0/0

@@ -58,10 +58,10 @@ TEST_CASE(compatibility_requires_same_shape)
 TEST_CASE(compatibility_requires_same_empty_effective_clip)
 {
     auto empty_clip_tree = AccumulatedVisualContextTree::create();
-    empty_clip_tree.append(ClipData { Web::DevicePixelRect {}, {} }, VISUAL_VIEWPORT_NODE_INDEX);
+    empty_clip_tree.append_clip(ClipData { Web::DevicePixelRect {}, {} }, ROOT_CLIP_NODE_INDEX, VISUAL_VIEWPORT_NODE_INDEX);
 
     auto non_empty_clip_tree = AccumulatedVisualContextTree::create();
-    non_empty_clip_tree.append(ClipData { Web::DevicePixelRect { 0, 0, 1, 1 }, {} }, VISUAL_VIEWPORT_NODE_INDEX);
+    non_empty_clip_tree.append_clip(ClipData { Web::DevicePixelRect { 0, 0, 1, 1 }, {} }, ROOT_CLIP_NODE_INDEX, VISUAL_VIEWPORT_NODE_INDEX);
 
     EXPECT(!empty_clip_tree.is_compatible_with(non_empty_clip_tree));
 }
@@ -69,7 +69,7 @@ TEST_CASE(compatibility_requires_same_empty_effective_clip)
 TEST_CASE(compatibility_requires_same_visual_context_types)
 {
     auto clip_tree = AccumulatedVisualContextTree::create();
-    clip_tree.append(ClipData { Web::DevicePixelRect { 0, 0, 1, 1 }, {} }, VISUAL_VIEWPORT_NODE_INDEX);
+    clip_tree.append_clip(ClipData { Web::DevicePixelRect { 0, 0, 1, 1 }, {} }, ROOT_CLIP_NODE_INDEX, VISUAL_VIEWPORT_NODE_INDEX);
 
     Gfx::Path path;
     path.move_to({ 0, 0 });
@@ -78,7 +78,7 @@ TEST_CASE(compatibility_requires_same_visual_context_types)
     path.close();
 
     auto clip_path_tree = AccumulatedVisualContextTree::create();
-    clip_path_tree.append(ClipPathData { path, Web::DevicePixelRect { 0, 0, 1, 1 }, Gfx::WindingRule::Nonzero }, VISUAL_VIEWPORT_NODE_INDEX);
+    clip_path_tree.append_clip(ClipPathData { path, Web::DevicePixelRect { 0, 0, 1, 1 }, Gfx::WindingRule::Nonzero }, ROOT_CLIP_NODE_INDEX, VISUAL_VIEWPORT_NODE_INDEX);
 
     EXPECT(!clip_tree.is_compatible_with(clip_path_tree));
 }

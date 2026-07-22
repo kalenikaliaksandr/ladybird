@@ -1,7 +1,11 @@
 AccumulatedVisualContext Tree:
   [0] transform=[1,0,0,1,0,0] origin=(0,0) (ViewportPaintable(Viewport<#document>))
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
-      [6] clip=[8,108 100x100] (PaintableWithLines(BlockContainer<DIV>.child))
+
+ClipNodes:
+  [1] parent=0 clip=[8,8 0x100] spatial_ref=1 sequence=4 (PaintableWithLines(BlockContainer<DIV>.child))
+  [2] parent=0 clip=[8,108 100x0] spatial_ref=1 sequence=6 (PaintableWithLines(BlockContainer<DIV>.child))
+  [3] parent=0 clip=[8,108 100x100] spatial_ref=1 sequence=8 (PaintableWithLines(BlockContainer<DIV>.child))
 
 DisplayList:
 SaveLayer@0/0/0
@@ -9,7 +13,7 @@ SaveLayer@0/0/0
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x221]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x200]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,108 100x100]
-  CompositorWheelHitTestTarget@1/6/0 target_scroll_node_index=0 rect=[8,108 50x50]
-  FillRect@1/6/0 rect=[8,108 50x50] color=rgb(255, 0, 0)
+  CompositorWheelHitTestTarget@1/3/0 target_scroll_node_index=0 rect=[8,108 50x50]
+  FillRect@1/3/0 rect=[8,108 50x50] color=rgb(255, 0, 0)
 Restore@0/0/0
 

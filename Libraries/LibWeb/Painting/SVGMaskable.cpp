@@ -89,13 +89,10 @@ static void build_nested_svg_visual_context_tree_for_subtree(AccumulatedVisualCo
 
     auto own_state = inherited_state;
     auto own_effect = inherited_effect;
-    if (effects.needs_layer()) {
-        auto inherited_refs = visual_context_tree.derive_context_refs(own_state);
-        own_effect = visual_context_tree.append_effect(move(effects), inherited_effect, inherited_refs.spatial, inherited_refs.clip);
-    }
+    if (effects.needs_layer())
+        own_effect = visual_context_tree.append_effect(move(effects), inherited_effect, own_state, ROOT_CLIP_NODE_INDEX);
 
-    auto own_refs = visual_context_tree.derive_context_refs(own_state);
-    own_refs.effect = own_effect;
+    VisualContextRefs own_refs { .spatial = own_state, .clip = ROOT_CLIP_NODE_INDEX, .effect = own_effect };
     paintable_box.set_accumulated_visual_context(own_refs);
     paintable_box.set_accumulated_visual_context_for_descendants(own_refs);
 

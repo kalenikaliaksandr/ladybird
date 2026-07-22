@@ -1,8 +1,10 @@
 AccumulatedVisualContext Tree:
   [0] transform=[1,0,0,1,0,0] origin=(0,0) (ViewportPaintable(Viewport<#document>))
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
-      [2] clip=[8,8 100x100] (SVGForeignObjectPaintable(SVGForeignObjectBox<foreignObject>#fo))
-        [3] clip=[9,8 100x100] (PaintableWithLines(BlockContainer(anonymous)))
+
+ClipNodes:
+  [1] parent=0 clip=[8,8 100x100] spatial_ref=1 sequence=4 (SVGForeignObjectPaintable(SVGForeignObjectBox<foreignObject>#fo))
+  [2] parent=1 clip=[9,8 100x100] spatial_ref=1 sequence=5 (PaintableWithLines(BlockContainer(anonymous)))
 
 DisplayList:
 SaveLayer@0/0/0
@@ -11,22 +13,9 @@ SaveLayer@0/0/0
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x100]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x100]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 100x100]
-  Save@1/2/0
-    AddClipRect@1/2/0 rect=[-2,-2 119x119]
-    SaveLayer@1/2/0
-      ApplyEffects@1/3/0 opacity=1 has_filter=false
-        PaintNestedDisplayList@1/3/0 rect=[-2,-2 119x119]
-          Translate@0/0/0 delta=[2,2]
-          FillPath@0/0/0 path_bounding_rect=[8,8 100x100]
-      Restore@1/3/0
-    Restore@1/3/0
-  Restore@1/3/0
-  Save@1/2/0
-    AddClipRect@1/2/0 rect=[-2,-2 119x119]
-    SaveLayer@1/2/0
-      CompositorWheelHitTestTarget@1/2/0 target_scroll_node_index=0 rect=[9,8 100x100]
-      CompositorWheelHitTestTarget@1/3/0 target_scroll_node_index=0 rect=[9,8 100x100]
-      FillRect@1/3/0 rect=[9,8 100x100] color=rgb(0, 0, 0)
+  Save@1/1/0
+    AddClipRect@1/1/0 rect=[-2,-2 119x119]
+    SaveLayer@1/1/0
       ApplyEffects@1/2/0 opacity=1 has_filter=false
         PaintNestedDisplayList@1/2/0 rect=[-2,-2 119x119]
           Translate@0/0/0 delta=[2,2]
@@ -34,5 +23,18 @@ SaveLayer@0/0/0
       Restore@1/2/0
     Restore@1/2/0
   Restore@1/2/0
+  Save@1/1/0
+    AddClipRect@1/1/0 rect=[-2,-2 119x119]
+    SaveLayer@1/1/0
+      CompositorWheelHitTestTarget@1/1/0 target_scroll_node_index=0 rect=[9,8 100x100]
+      CompositorWheelHitTestTarget@1/2/0 target_scroll_node_index=0 rect=[9,8 100x100]
+      FillRect@1/2/0 rect=[9,8 100x100] color=rgb(0, 0, 0)
+      ApplyEffects@1/1/0 opacity=1 has_filter=false
+        PaintNestedDisplayList@1/1/0 rect=[-2,-2 119x119]
+          Translate@0/0/0 delta=[2,2]
+          FillPath@0/0/0 path_bounding_rect=[8,8 100x100]
+      Restore@1/1/0
+    Restore@1/1/0
+  Restore@1/1/0
 Restore@0/0/0
 
