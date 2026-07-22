@@ -215,6 +215,9 @@ void DisplayListPlayer::execute_impl(
 
     Vector<ChainEntry, 32> applied_chain;
     Vector<ChainEntry, 32> target_chain;
+    Vector<ChainEntry, 16> spatial_walk;
+    Vector<ChainEntry, 8> clip_walk;
+    Vector<ChainEntry, 8> effect_walk;
     VisualContextRefs applied_refs;
     bool has_applied_context { false };
 
@@ -223,23 +226,44 @@ void DisplayListPlayer::execute_impl(
     // merge reproduces the recorded interleave exactly; inspector-overlay references
     // { spatial, 0, 0 } naturally yield only the coordinate-affecting nodes.
     auto build_target_chain = [&](VisualContextRefs refs) {
-        target_chain.clear_with_capacity();
+        spatial_walk.clear_with_capacity();
+        clip_walk.clear_with_capacity();
+        effect_walk.clear_with_capacity();
         for (auto index = refs.spatial;; index = visual_context_tree.node_at(index).parent_index) {
-            target_chain.append({ ChainEntryKind::Spatial, index.value(), visual_context_tree.node_at(index).sequence });
+            spatial_walk.append({ ChainEntryKind::Spatial, index.value(), visual_context_tree.node_at(index).sequence });
             if (index == VISUAL_VIEWPORT_NODE_INDEX)
                 break;
         }
         for (auto index = refs.clip; index != ROOT_CLIP_NODE_INDEX;) {
             auto const& node = visual_context_tree.clip_node_at(index);
-            target_chain.append({ ChainEntryKind::Clip, index.value(), node.sequence });
+            clip_walk.append({ ChainEntryKind::Clip, index.value(), node.sequence });
             index = node.parent_index;
         }
         for (auto index = refs.effect; index != ROOT_EFFECT_NODE_INDEX;) {
             auto const& node = visual_context_tree.effect_node_at(index);
-            target_chain.append({ ChainEntryKind::Effect, index.value(), node.sequence });
+            effect_walk.append({ ChainEntryKind::Effect, index.value(), node.sequence });
             index = node.parent_index;
         }
-        AK::quick_sort(target_chain, [](auto const& a, auto const& b) { return a.merge_key < b.merge_key; });
+
+        // The walks run tip-to-root, so each per-kind list is in descending build order with its
+        // smallest entry at the back, and the shared append counter makes keys unique across the
+        // lists: a three-way back-to-front merge assembles the chain without sorting.
+        target_chain.clear_with_capacity();
+        target_chain.ensure_capacity(spatial_walk.size() + clip_walk.size() + effect_walk.size());
+        size_t spatial_remaining = spatial_walk.size();
+        size_t clip_remaining = clip_walk.size();
+        size_t effect_remaining = effect_walk.size();
+        while (spatial_remaining > 0 || clip_remaining > 0 || effect_remaining > 0) {
+            auto spatial_key = spatial_remaining > 0 ? spatial_walk[spatial_remaining - 1].merge_key : NumericLimits<u32>::max();
+            auto clip_key = clip_remaining > 0 ? clip_walk[clip_remaining - 1].merge_key : NumericLimits<u32>::max();
+            auto effect_key = effect_remaining > 0 ? effect_walk[effect_remaining - 1].merge_key : NumericLimits<u32>::max();
+            if (spatial_key < clip_key && spatial_key < effect_key)
+                target_chain.unchecked_append(spatial_walk[--spatial_remaining]);
+            else if (clip_key < effect_key)
+                target_chain.unchecked_append(clip_walk[--clip_remaining]);
+            else
+                target_chain.unchecked_append(effect_walk[--effect_remaining]);
+        }
     };
 
     auto restore_to_length = [&](size_t length) {

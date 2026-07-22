@@ -918,20 +918,36 @@ Optional<Gfx::FloatPoint> AccumulatedVisualContextTree::transform_point_for_hit_
         u32 index { 0 };
         u64 merge_key { 0 };
     };
-    Vector<Entry, 16> chain;
+    Vector<Entry, 16> spatial_walk;
+    Vector<Entry, 8> clip_walk;
     for (auto index = refs.spatial;; index = m_nodes[index.value()].parent_index) {
-        chain.append({ false, index.value(), m_nodes[index.value()].sequence });
+        spatial_walk.append({ false, index.value(), m_nodes[index.value()].sequence });
         if (index == VISUAL_VIEWPORT_NODE_INDEX)
             break;
     }
     if (clip_behavior == ClipBehavior::Respect) {
         for (auto index = refs.clip; index != ROOT_CLIP_NODE_INDEX;) {
             auto const& clip_node = m_clip_nodes[index.value()];
-            chain.append({ true, index.value(), clip_node.sequence });
+            clip_walk.append({ true, index.value(), clip_node.sequence });
             index = clip_node.parent_index;
         }
     }
-    AK::quick_sort(chain, [](auto const& a, auto const& b) { return a.merge_key < b.merge_key; });
+
+    // Both walks run tip-to-root, so each list is in descending build order with its smallest
+    // entry at the back, and the shared append counter makes keys unique across the lists: a
+    // back-to-front merge assembles the chain without sorting.
+    Vector<Entry, 16> chain;
+    chain.ensure_capacity(spatial_walk.size() + clip_walk.size());
+    size_t spatial_remaining = spatial_walk.size();
+    size_t clip_remaining = clip_walk.size();
+    while (spatial_remaining > 0 || clip_remaining > 0) {
+        auto spatial_key = spatial_remaining > 0 ? spatial_walk[spatial_remaining - 1].merge_key : NumericLimits<u32>::max();
+        auto clip_key = clip_remaining > 0 ? clip_walk[clip_remaining - 1].merge_key : NumericLimits<u32>::max();
+        if (spatial_key < clip_key)
+            chain.unchecked_append(spatial_walk[--spatial_remaining]);
+        else
+            chain.unchecked_append(clip_walk[--clip_remaining]);
+    }
 
     auto point = screen_point;
     for (auto const& entry : chain) {
