@@ -56,7 +56,7 @@ AsyncScrollingState async_scrolling_state_from_display_list(Painting::DisplayLis
     display_list.for_each_command_header([&](Painting::DisplayListCommandHeader const& header, ReadonlyBytes payload) {
         auto append_wheel_hit_test_target = [&](auto const& command, Gfx::CornerRadii corner_radii) {
             async_scrolling_state.wheel_hit_test_targets.append({
-                .visual_context_index = header.context_index,
+                .visual_context_refs = header.context_refs,
                 .rect = command.rect,
                 .corner_radii = corner_radii,
                 .target_node_id = {},
@@ -70,7 +70,7 @@ AsyncScrollingState async_scrolling_state_from_display_list(Painting::DisplayLis
             auto command = Painting::read_display_list_command_payload<Painting::CompositorBlockingWheelEventRegion>(payload);
             async_scrolling_state.has_blocking_wheel_event_listeners = true;
             async_scrolling_state.blocking_wheel_event_regions.append({
-                .visual_context_index = header.context_index,
+                .visual_context_refs = header.context_refs,
                 .rect = command.rect,
             });
             break;
@@ -122,7 +122,7 @@ AsyncScrollingState async_scrolling_state_from_display_list(Painting::DisplayLis
         case Painting::DisplayListCommandType::CompositorMainThreadWheelEventRegion: {
             auto command = Painting::read_display_list_command_payload<Painting::CompositorMainThreadWheelEventRegion>(payload);
             async_scrolling_state.main_thread_wheel_event_regions.append({
-                .visual_context_index = header.context_index,
+                .visual_context_refs = header.context_refs,
                 .rect = command.rect,
             });
             break;
@@ -207,7 +207,7 @@ bool blocks_wheel_event_at_position(AsyncScrollingState const& async_scrolling_s
 
     VERIFY(display_list->compatible_visual_context_tree_version() == visual_context_tree->version());
     for (auto const& region : async_scrolling_state.blocking_wheel_event_regions) {
-        auto position_in_context = visual_context_tree->transform_point_for_hit_test(region.visual_context_index, position, scroll_state_snapshot);
+        auto position_in_context = visual_context_tree->transform_point_for_hit_test(region.visual_context_refs, position, scroll_state_snapshot);
         if (position_in_context.has_value() && region.rect.contains(*position_in_context))
             return true;
     }

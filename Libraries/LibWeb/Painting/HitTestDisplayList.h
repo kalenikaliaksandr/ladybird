@@ -49,13 +49,13 @@ class WEB_API HitTestDisplayList : public RefCounted<HitTestDisplayList> {
 public:
     static NonnullRefPtr<HitTestDisplayList> create(u64 visual_context_tree_version);
 
-    void append_box(Paintable const&, Paintable& target, CSSPixelRect, VisualContextIndex, BorderRadiiData);
-    void append_svg_path(Paintable& target, Gfx::Path, Gfx::WindingRule, CSSPixelRect bounding_box, VisualContextIndex);
-    void append_text_fragment(PaintableFragment const&, VisualContextIndex);
-    void append_empty_line(PaintableFragment const& sibling_fragment, size_t caret_offset, size_t line_box_index, CSSPixelRect line_rect, VisualContextIndex);
-    void append_empty_line(PaintableWithLines const&, DOM::Node const&, size_t caret_offset, CSSPixelRect line_rect, VisualContextIndex);
-    void append_empty_editable(Paintable const&, CSSPixelRect, VisualContextIndex);
-    void append_chrome_widget(Paintable const&, ChromeWidget&, VisualContextIndex);
+    void append_box(Paintable const&, Paintable& target, CSSPixelRect, VisualContextRefs, BorderRadiiData);
+    void append_svg_path(Paintable& target, Gfx::Path, Gfx::WindingRule, CSSPixelRect bounding_box, VisualContextRefs);
+    void append_text_fragment(PaintableFragment const&, VisualContextRefs);
+    void append_empty_line(PaintableFragment const& sibling_fragment, size_t caret_offset, size_t line_box_index, CSSPixelRect line_rect, VisualContextRefs);
+    void append_empty_line(PaintableWithLines const&, DOM::Node const&, size_t caret_offset, CSSPixelRect line_rect, VisualContextRefs);
+    void append_empty_editable(Paintable const&, CSSPixelRect, VisualContextRefs);
+    void append_chrome_widget(Paintable const&, ChromeWidget&, VisualContextRefs);
     void visit_edges(GC::Cell::Visitor&);
 
     u64 visual_context_tree_version() const { return m_visual_context_tree_version; }
@@ -98,7 +98,7 @@ private:
         Optional<size_t> caret_line_index;
         Optional<CSSPixelRect> caret_line_rect;
         Optional<CSSPixelRect> block_container_margin_rect;
-        VisualContextIndex visual_context_index;
+        VisualContextRefs visual_context_refs;
         BorderRadiiData border_radii;
         Optional<Gfx::Path> path {};
         Gfx::WindingRule winding_rule { Gfx::WindingRule::Nonzero };
@@ -115,7 +115,7 @@ private:
     struct CaretLine {
         CSSPixelRect rect;
         Optional<CSSPixelRect> block_container_margin_rect;
-        VisualContextIndex visual_context_index;
+        VisualContextRefs visual_context_refs;
         size_t first_caret_item_index { 0 };
         size_t last_caret_item_index { 0 };
     };
@@ -130,9 +130,9 @@ private:
     void verify_no_item_appended_after_derived_structures_are_built() const { VERIFY(!m_derived_structures_built); }
     void add_item_to_spatial_index(size_t item_index) const;
     void add_item_to_caret_items(size_t item_index) const;
-    SpatialIndex& spatial_index_for(VisualContextIndex) const;
+    SpatialIndex& spatial_index_for(VisualContextRefs) const;
 
-    [[nodiscard]] Optional<CSSPixelPoint> local_point_for_visual_context(VisualContextIndex, CSSPixelPoint, ViewportPaintable const&, double device_pixels_per_css_pixel, AccumulatedVisualContextTree::ClipBehavior = AccumulatedVisualContextTree::ClipBehavior::Respect) const;
+    [[nodiscard]] Optional<CSSPixelPoint> local_point_for_visual_context(VisualContextRefs, CSSPixelPoint, ViewportPaintable const&, double device_pixels_per_css_pixel, AccumulatedVisualContextTree::ClipBehavior = AccumulatedVisualContextTree::ClipBehavior::Respect) const;
     [[nodiscard]] CSSPixelRect viewport_rect_for_item(Item const&, CSSPixelRect const&, ViewportPaintable const&, double device_pixels_per_css_pixel) const;
     [[nodiscard]] CSSPixelRect caret_line_rect_for_item(Item const&) const;
     [[nodiscard]] bool item_contains(Item const&, CSSPixelPoint local_point, ChromeMetrics const&) const;
@@ -159,7 +159,7 @@ private:
     mutable Vector<size_t> m_caret_item_indices;
     mutable Vector<CaretLine> m_caret_lines;
     mutable Vector<OwnPtr<SpatialIndex>> m_spatial_indexes;
-    mutable Vector<VisualContextIndex> m_used_visual_context_indices;
+    mutable Vector<VisualContextRefs> m_used_visual_context_refs;
 };
 
 }

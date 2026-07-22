@@ -96,9 +96,9 @@ static void paint_node(Paintable const& paintable, DisplayListRecordingContext& 
     // Text fragments are content of the block container (or of a self-painting inline box).
     // They need the descendants' visual context, not the element's own visual context.
     if (paintable.foreground_paints_descendant_content() && phase == PaintPhase::Foreground)
-        context.display_list_recorder().set_accumulated_visual_context(paintable.accumulated_visual_context_for_descendants_index());
+        context.display_list_recorder().set_accumulated_visual_context(paintable.visual_context_refs_for_descendants());
     else
-        context.display_list_recorder().set_accumulated_visual_context(paintable.accumulated_visual_context_index());
+        context.display_list_recorder().set_accumulated_visual_context(paintable.visual_context_refs());
 
     paintable.record_hit_test_items(context, phase);
 
@@ -111,19 +111,19 @@ static void paint_node(Paintable const& paintable, DisplayListRecordingContext& 
         && cache_source_display_list->compatible_visual_context_tree_version() == recorder.visual_context_tree().version();
     bool const skip_cache = paintable.has_fixed_background_visual_context();
     bool const cache_writes_enabled = context.paint_command_cache_mode() == PaintCommandCacheMode::ReadWrite;
-    auto const phase_context_index = recorder.accumulated_visual_context();
-    bool const phase_has_empty_effective_clip = recorder.visual_context_tree().has_empty_effective_clip(phase_context_index);
+    auto const phase_context_refs = recorder.accumulated_visual_context();
+    bool const phase_has_empty_effective_clip = recorder.visual_context_tree().has_empty_effective_clip(phase_context_refs.clip);
 
     auto cached_commands = !skip_cache && cache_reads_enabled
         ? paintable.valid_cached_commands(phase, cache_source_display_list->id(), phase_has_empty_effective_clip)
         : Optional<Paintable::CachedCommandRange> {};
 
     if (cached_commands.has_value()) {
-        auto destination_range = recorder.append_cached_command_range(*cache_source_display_list, cached_commands->range, cached_commands->recorded_context_index);
+        auto destination_range = recorder.append_cached_command_range(*cache_source_display_list, cached_commands->range, cached_commands->recorded_context_refs);
         if (verify_display_list_cache_enabled()) [[unlikely]]
             verify_spliced_commands_match_fresh_recording(paintable, context, phase, destination_range);
         if (cache_writes_enabled)
-            paintable.set_cached_commands(phase, recorder.display_list().id(), destination_range, phase_context_index, phase_has_empty_effective_clip);
+            paintable.set_cached_commands(phase, recorder.display_list().id(), destination_range, phase_context_refs, phase_has_empty_effective_clip);
     } else {
         auto const command_range_start = recorder.display_list().command_byte_size();
         if (phase == PaintPhase::Background)
@@ -135,11 +135,11 @@ static void paint_node(Paintable const& paintable, DisplayListRecordingContext& 
                 static_cast<u32>(command_range_start),
                 static_cast<u32>(command_range_end - command_range_start),
             };
-            paintable.set_cached_commands(phase, recorder.display_list().id(), command_range, phase_context_index, phase_has_empty_effective_clip);
+            paintable.set_cached_commands(phase, recorder.display_list().id(), command_range, phase_context_refs, phase_has_empty_effective_clip);
         }
     }
 
-    context.display_list_recorder().set_accumulated_visual_context(VISUAL_VIEWPORT_NODE_INDEX);
+    context.display_list_recorder().set_accumulated_visual_context({});
 
     VERIFY(context.display_list_recorder().m_save_nesting_level == 0);
 }
@@ -449,7 +449,7 @@ void StackingContext::paint(DisplayListRecordingContext& context) const
     auto const& computed_values = paintable_box().computed_values();
     auto const& mask_layers = computed_values.mask_layers();
 
-    auto effective_context_index = paintable_box().accumulated_visual_context_index();
+    auto effective_context_index = paintable_box().visual_context_refs();
     context.display_list_recorder().set_accumulated_visual_context(effective_context_index);
 
     // For elements with SVG filters, emit a transparent FillRect to trigger filter application.

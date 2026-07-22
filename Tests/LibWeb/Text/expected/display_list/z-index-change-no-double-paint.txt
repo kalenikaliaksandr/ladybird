@@ -4,14 +4,14 @@ AccumulatedVisualContext Tree:
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
 
 DisplayList:
-SaveLayer@0
-  CompositorWheelHitTestTarget@0 target_scroll_node_index=0 rect=[0,0 800x600]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[0,0 800x221]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[8,8 784x200]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[8,8 200x200]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[8,8 50x50]
-  FillRect@1 rect=[8,8 50x50] color=rgb(0, 0, 255)
-Restore@0
+SaveLayer@0/0/0
+  CompositorWheelHitTestTarget@0/0/0 target_scroll_node_index=0 rect=[0,0 800x600]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x221]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x200]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 200x200]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 50x50]
+  FillRect@1/0/0 rect=[8,8 50x50] color=rgb(0, 0, 255)
+Restore@0/0/0
 
 After z-index change:
 AccumulatedVisualContext Tree:
@@ -19,12 +19,12 @@ AccumulatedVisualContext Tree:
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
 
 DisplayList:
-SaveLayer@0
-  CompositorWheelHitTestTarget@0 target_scroll_node_index=0 rect=[0,0 800x600]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[0,0 800x221]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[8,8 784x200]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[8,8 200x200]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[8,8 50x50]
-  FillRect@1 rect=[8,8 50x50] color=rgb(0, 0, 255)
-Restore@0
+SaveLayer@0/0/0
+  CompositorWheelHitTestTarget@0/0/0 target_scroll_node_index=0 rect=[0,0 800x600]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x221]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x200]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 200x200]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 50x50]
+  FillRect@1/0/0 rect=[8,8 50x50] color=rgb(0, 0, 255)
+Restore@0/0/0
 

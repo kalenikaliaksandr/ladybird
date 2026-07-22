@@ -28,21 +28,21 @@ struct WheelHitTestResult {
 
 struct CachedWheelHitTestTarget {
     Optional<AsyncScrollNodeID> target_node_id;
-    Painting::VisualContextIndex visual_context_index;
+    Painting::VisualContextRefs visual_context_refs;
     Gfx::FloatRect rect;
     Gfx::CornerRadii corner_radii;
     Gfx::FloatRect viewport_rect;
 };
 
 struct CachedMainThreadWheelEventTarget {
-    Painting::VisualContextIndex visual_context_index;
+    Painting::VisualContextRefs visual_context_refs;
     Gfx::FloatRect rect;
     Gfx::FloatRect viewport_rect;
 };
 
 // Viewport-space cache of regions containing non-passive wheel listeners.
 struct CachedBlockingWheelEventTarget {
-    Painting::VisualContextIndex visual_context_index;
+    Painting::VisualContextRefs visual_context_refs;
     Gfx::FloatRect rect;
     Gfx::FloatRect viewport_rect;
 };

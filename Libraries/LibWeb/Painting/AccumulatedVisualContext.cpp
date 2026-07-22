@@ -357,8 +357,8 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
     auto viewport_state_for_descendants = append_node(visual_viewport_context_index, ScrollData { .is_sticky = false });
     viewport_paintable.register_scroll_node(visual_context_tree, viewport_state_for_descendants, viewport_paintable, {});
     viewport_paintable.set_own_scroll_node_index(to_scroll_node_index(viewport_state_for_descendants));
-    viewport_paintable.set_accumulated_visual_context(VISUAL_VIEWPORT_NODE_INDEX);
-    viewport_paintable.set_accumulated_visual_context_for_descendants(viewport_state_for_descendants);
+    viewport_paintable.set_accumulated_visual_context(visual_context_tree.derive_context_refs(VISUAL_VIEWPORT_NODE_INDEX));
+    viewport_paintable.set_accumulated_visual_context_for_descendants(visual_context_tree.derive_context_refs(viewport_state_for_descendants));
 
     struct DescendantVisualContexts {
         VisualContextIndex normal;
@@ -475,7 +475,7 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         if (auto clip_path_data = compute_basic_shape_clip_path_data(paintable_box, computed_values, converter, scale); clip_path_data.has_value())
             append_to_own_and_positioned_descendant_contexts(clip_path_data.value());
 
-        paintable_box.set_accumulated_visual_context(own_state);
+        paintable_box.set_accumulated_visual_context(visual_context_tree.derive_context_refs(own_state));
 
         Vector<CSS::BackgroundLayerData> const* background_layers = &computed_values.background_layers();
         auto is_root_element = may_be_root_element && layout_node.is_root_element();
@@ -535,7 +535,7 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
                             if (node.data.has<ScrollData>())
                                 fixed_background_context = append_node(fixed_background_context, ScrollCompensation { to_scroll_node_index(index) });
                         }
-                        paintable_box.set_fixed_background_visual_context(clip_box_kind, fixed_background_context);
+                        paintable_box.set_fixed_background_visual_context(clip_box_kind, visual_context_tree.derive_context_refs(fixed_background_context));
                     }
                 }
             }
@@ -566,7 +566,7 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
             paintable_box.set_own_scroll_node_index(to_scroll_node_index(scroll_node_index));
         }
 
-        paintable_box.set_accumulated_visual_context_for_descendants(state_for_descendants);
+        paintable_box.set_accumulated_visual_context_for_descendants(visual_context_tree.derive_context_refs(state_for_descendants));
         paintable_box.set_visual_context_node_range(first_visual_context_node_index, visual_context_tree.nodes().size());
         auto positioning_containing_blocks = layout_node.establishes_positioning_containing_blocks();
         if (positioning_containing_blocks.absolute)
@@ -809,9 +809,42 @@ Vector<size_t, 8> AccumulatedVisualContextTree::build_ancestor_chain(VisualConte
     return chain;
 }
 
-Optional<Gfx::FloatPoint> AccumulatedVisualContextTree::transform_point_for_hit_test(VisualContextIndex index, Gfx::FloatPoint screen_point, ScrollStateSnapshot const& scroll_state, ClipBehavior clip_behavior) const
+VisualContextRefs AccumulatedVisualContextTree::derive_context_refs(VisualContextIndex index) const
 {
-    auto chain = build_ancestor_chain(index);
+    VERIFY(index.value() < m_nodes.size());
+    VisualContextRefs refs;
+    bool found_spatial = false;
+    bool found_clip = false;
+    bool found_effect = false;
+    // Walking up meets the deepest node of each kind first.
+    for (auto i = index;; i = m_nodes[i.value()].parent_index) {
+        auto const& node = m_nodes[i.value()];
+        if (node.data.has<ClipData>() || node.data.has<ClipPathData>()) {
+            if (!found_clip) {
+                refs.clip = i;
+                found_clip = true;
+            }
+        } else if (node.data.has<EffectsData>()) {
+            if (!found_effect) {
+                refs.effect = i;
+                found_effect = true;
+            }
+        } else if (!found_spatial) {
+            refs.spatial = i;
+            found_spatial = true;
+        }
+        if (i == VISUAL_VIEWPORT_NODE_INDEX || (found_spatial && found_clip && found_effect))
+            break;
+    }
+    return refs;
+}
+
+// Until the tree is physically split, the references of one recording all lie on a single chain
+// whose tip is the deepest of the three, so walking that chain reproduces the recorded context;
+// non-spatial nodes deeper than the respective reference cannot exist on it.
+Optional<Gfx::FloatPoint> AccumulatedVisualContextTree::transform_point_for_hit_test(VisualContextRefs refs, Gfx::FloatPoint screen_point, ScrollStateSnapshot const& scroll_state, ClipBehavior clip_behavior) const
+{
+    auto chain = build_ancestor_chain(VisualContextIndex { max(refs.spatial.value(), refs.clip.value()) });
 
     auto point = screen_point;
     for (size_t i = chain.size(); i > 0; --i) {
@@ -882,9 +915,9 @@ Optional<Gfx::FloatPoint> AccumulatedVisualContextTree::transform_point_for_hit_
     return point;
 }
 
-Gfx::FloatPoint AccumulatedVisualContextTree::inverse_transform_point(VisualContextIndex index, Gfx::FloatPoint screen_point) const
+Gfx::FloatPoint AccumulatedVisualContextTree::inverse_transform_point(VisualContextRefs refs, Gfx::FloatPoint screen_point) const
 {
-    auto chain = build_ancestor_chain(index);
+    auto chain = build_ancestor_chain(refs.spatial);
 
     auto point = screen_point;
     for (size_t i = chain.size(); i > 0; --i) {
@@ -912,10 +945,10 @@ Gfx::FloatPoint AccumulatedVisualContextTree::inverse_transform_point(VisualCont
     return point;
 }
 
-Gfx::FloatRect AccumulatedVisualContextTree::transform_rect_to_viewport(VisualContextIndex index, Gfx::FloatRect const& source_rect, ScrollStateSnapshot const& scroll_state, IncludeVisualViewportTransform include_visual_viewport_transform) const
+Gfx::FloatRect AccumulatedVisualContextTree::transform_rect_to_viewport(VisualContextRefs refs, Gfx::FloatRect const& source_rect, ScrollStateSnapshot const& scroll_state, IncludeVisualViewportTransform include_visual_viewport_transform) const
 {
     auto rect = source_rect;
-    for (size_t i = index.value();; i = m_nodes[i].parent_index.value()) {
+    for (size_t i = refs.spatial.value();; i = m_nodes[i].parent_index.value()) {
         auto const& node = m_nodes[i];
         if (i != VISUAL_VIEWPORT_NODE_INDEX.value() || include_visual_viewport_transform == IncludeVisualViewportTransform::Yes) {
             node.data.visit(

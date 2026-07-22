@@ -247,7 +247,7 @@ void SVGPathPaintable::record_hit_test_items(DisplayListRecordingContext& contex
         return;
 
     auto winding_rule = to_gfx_winding_rule(graphics_element.fill_rule().value_or(SVG::FillRule::Nonzero));
-    hit_test_display_list->append_svg_path(const_cast<SVGPathPaintable&>(*this), move(transformed_path), winding_rule, bounding_box, accumulated_visual_context_index());
+    hit_test_display_list->append_svg_path(const_cast<SVGPathPaintable&>(*this), move(transformed_path), winding_rule, bounding_box, visual_context_refs());
 }
 
 }

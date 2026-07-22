@@ -277,27 +277,27 @@ void AsyncScrollTree::rebuild_wheel_hit_test_targets(RefPtr<Painting::DisplayLis
     for (auto const& target : m_wheel_hit_test_regions) {
         m_cached_wheel_hit_test_targets.append({
             .target_node_id = target.target_node_id,
-            .visual_context_index = target.visual_context_index,
+            .visual_context_refs = target.visual_context_refs,
             .rect = target.rect,
             .corner_radii = target.corner_radii,
-            .viewport_rect = visual_context_tree->transform_rect_to_viewport(target.visual_context_index, target.rect, scroll_state_snapshot),
+            .viewport_rect = visual_context_tree->transform_rect_to_viewport(target.visual_context_refs, target.rect, scroll_state_snapshot),
         });
     }
 
     m_cached_main_thread_wheel_event_targets.ensure_capacity(m_main_thread_wheel_event_regions.size());
     for (auto const& region : m_main_thread_wheel_event_regions) {
         m_cached_main_thread_wheel_event_targets.append({
-            .visual_context_index = region.visual_context_index,
+            .visual_context_refs = region.visual_context_refs,
             .rect = region.rect,
-            .viewport_rect = visual_context_tree->transform_rect_to_viewport(region.visual_context_index, region.rect, scroll_state_snapshot),
+            .viewport_rect = visual_context_tree->transform_rect_to_viewport(region.visual_context_refs, region.rect, scroll_state_snapshot),
         });
     }
 
     for (auto const& region : m_blocking_wheel_event_regions) {
         m_cached_blocking_wheel_event_targets.append({
-            .visual_context_index = region.visual_context_index,
+            .visual_context_refs = region.visual_context_refs,
             .rect = region.rect,
-            .viewport_rect = visual_context_tree->transform_rect_to_viewport(region.visual_context_index, region.rect, scroll_state_snapshot),
+            .viewport_rect = visual_context_tree->transform_rect_to_viewport(region.visual_context_refs, region.rect, scroll_state_snapshot),
         });
     }
 }
@@ -354,7 +354,7 @@ WheelHitTestResult AsyncScrollTree::hit_test_scroll_node_for_wheel(Gfx::FloatPoi
         if (!target.viewport_rect.contains(position))
             continue;
 
-        auto position_in_context = m_visual_context_tree->transform_point_for_hit_test(target.visual_context_index, position, m_scroll_state_snapshot);
+        auto position_in_context = m_visual_context_tree->transform_point_for_hit_test(target.visual_context_refs, position, m_scroll_state_snapshot);
         if (position_in_context.has_value() && target.rect.contains(*position_in_context))
             return { {}, true };
     }
@@ -363,7 +363,7 @@ WheelHitTestResult AsyncScrollTree::hit_test_scroll_node_for_wheel(Gfx::FloatPoi
         if (!target.viewport_rect.contains(position))
             continue;
 
-        auto position_in_context = m_visual_context_tree->transform_point_for_hit_test(target.visual_context_index, position, m_scroll_state_snapshot);
+        auto position_in_context = m_visual_context_tree->transform_point_for_hit_test(target.visual_context_refs, position, m_scroll_state_snapshot);
         if (position_in_context.has_value() && target.rect.contains(*position_in_context))
             return { {}, false, true };
     }
@@ -372,7 +372,7 @@ WheelHitTestResult AsyncScrollTree::hit_test_scroll_node_for_wheel(Gfx::FloatPoi
         if (!target.viewport_rect.contains(position))
             continue;
 
-        auto position_in_context = m_visual_context_tree->transform_point_for_hit_test(target.visual_context_index, position, m_scroll_state_snapshot);
+        auto position_in_context = m_visual_context_tree->transform_point_for_hit_test(target.visual_context_refs, position, m_scroll_state_snapshot);
         if (!position_in_context.has_value() || !wheel_hit_test_target_contains_point(target, *position_in_context))
             continue;
         if (!target.target_node_id.has_value())

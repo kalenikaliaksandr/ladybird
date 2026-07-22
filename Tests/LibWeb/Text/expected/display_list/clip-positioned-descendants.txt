@@ -7,15 +7,15 @@ AccumulatedVisualContext Tree:
     [7] clip=[220,0 100x100] (PaintableWithLines(BlockContainer<DIV>.fixed))
 
 DisplayList:
-SaveLayer@0
-  CompositorWheelHitTestTarget@0 target_scroll_node_index=0 rect=[0,0 800x600]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[0,0 800x213]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[0,0 800x200]
-  CompositorWheelHitTestTarget@2 target_scroll_node_index=0 rect=[0,0 200x200]
-  CompositorWheelHitTestTarget@3 target_scroll_node_index=0 rect=[0,0 200x200]
-  FillRect@3 rect=[0,0 200x200] color=rgb(255, 0, 0)
-  CompositorWheelHitTestTarget@5 target_scroll_node_index=0 rect=[220,0 200x200]
-  CompositorWheelHitTestTarget@7 target_scroll_node_index=0 rect=[220,0 200x200]
-  FillRect@7 rect=[220,0 200x200] color=rgb(0, 128, 0)
-Restore@0
+SaveLayer@0/0/0
+  CompositorWheelHitTestTarget@0/0/0 target_scroll_node_index=0 rect=[0,0 800x600]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x213]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x200]
+  CompositorWheelHitTestTarget@1/2/0 target_scroll_node_index=0 rect=[0,0 200x200]
+  CompositorWheelHitTestTarget@1/3/0 target_scroll_node_index=0 rect=[0,0 200x200]
+  FillRect@1/3/0 rect=[0,0 200x200] color=rgb(255, 0, 0)
+  CompositorWheelHitTestTarget@1/5/0 target_scroll_node_index=0 rect=[220,0 200x200]
+  CompositorWheelHitTestTarget@0/7/0 target_scroll_node_index=0 rect=[220,0 200x200]
+  FillRect@0/7/0 rect=[220,0 200x200] color=rgb(0, 128, 0)
+Restore@0/0/0
 

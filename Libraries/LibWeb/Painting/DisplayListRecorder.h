@@ -103,15 +103,13 @@ public:
 
     void translate(Gfx::IntPoint delta);
 
-    void set_accumulated_visual_context(VisualContextIndex index) { m_accumulated_visual_context_index = index; }
-    VisualContextIndex accumulated_visual_context() const { return m_accumulated_visual_context_index; }
-
-    void set_context_geometry_only(bool context_geometry_only) { m_context_geometry_only = context_geometry_only; }
+    void set_accumulated_visual_context(VisualContextRefs refs) { m_visual_context_refs = refs; }
+    VisualContextRefs accumulated_visual_context() const { return m_visual_context_refs; }
 
     DisplayList const& display_list() const { return m_display_list; }
     AccumulatedVisualContextTree const& visual_context_tree() const { return m_visual_context_tree; }
 
-    DisplayListCommandRange append_cached_command_range(DisplayList const& source_display_list, DisplayListCommandRange, VisualContextIndex recorded_context_index);
+    DisplayListCommandRange append_cached_command_range(DisplayList const& source_display_list, DisplayListCommandRange, VisualContextRefs recorded_context_refs);
 
     void save();
     void save_layer();
@@ -164,11 +162,10 @@ private:
     void append_command(Command const& command, ReadonlyBytes inline_data = {})
     {
         m_save_nesting_level += display_list_command_nesting_level_change<Command>();
-        m_display_list.append(command, m_visual_context_tree, m_accumulated_visual_context_index, m_context_geometry_only, inline_data);
+        m_display_list.append(command, m_visual_context_tree, m_visual_context_refs, inline_data);
     }
 
-    VisualContextIndex m_accumulated_visual_context_index { VISUAL_VIEWPORT_NODE_INDEX };
-    bool m_context_geometry_only { false };
+    VisualContextRefs m_visual_context_refs;
     DisplayList& m_display_list;
     AccumulatedVisualContextTree const& m_visual_context_tree;
     DisplayListResourceStorage& m_resource_storage;

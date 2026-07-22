@@ -95,15 +95,14 @@ public:
     }
 
     template<DisplayListCommand Command>
-    bool append(Command const& command, AccumulatedVisualContextTree const& visual_context_tree, VisualContextIndex context_index, bool context_geometry_only, ReadonlyBytes inline_data = {})
+    bool append(Command const& command, AccumulatedVisualContextTree const& visual_context_tree, VisualContextRefs context_refs, ReadonlyBytes inline_data = {})
     {
         return append_bytes(
             Command::command_type,
             display_list_object_bytes(command),
             inline_data,
             visual_context_tree,
-            context_index,
-            context_geometry_only,
+            context_refs,
             command_bounding_rectangle(command),
             command_is_clip(command));
     }
@@ -138,7 +137,7 @@ public:
         for_each_command_header(command_bytes(), move(callback));
     }
 
-    u32 append_command_range_from(DisplayList const& source_display_list, DisplayListCommandRange, AccumulatedVisualContextTree const&, VisualContextIndex recorded_context_index, VisualContextIndex current_context_index);
+    u32 append_command_range_from(DisplayList const& source_display_list, DisplayListCommandRange, AccumulatedVisualContextTree const&, VisualContextRefs recorded_context_refs, VisualContextRefs current_context_refs);
     size_t command_byte_size() const { return m_command_bytes.size(); }
 
 private:
@@ -166,8 +165,7 @@ private:
         ReadonlyBytes payload,
         ReadonlyBytes inline_data,
         AccumulatedVisualContextTree const&,
-        VisualContextIndex context_index,
-        bool context_geometry_only,
+        VisualContextRefs context_refs,
         Optional<Gfx::IntRect> bounding_rect,
         bool is_clip);
 

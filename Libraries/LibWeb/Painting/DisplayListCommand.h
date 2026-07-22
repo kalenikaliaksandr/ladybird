@@ -121,11 +121,9 @@ struct DisplayListGradientColorStops {
 struct DisplayListCommandHeader {
     DisplayListCommandType type;
     u32 payload_size { 0 };
-    VisualContextIndex context_index { VISUAL_VIEWPORT_NODE_INDEX };
-    // Apply only the coordinate-affecting nodes of the context chain, skipping clips and effects. Used
-    // by inspector overlays, which track the highlighted element's transforms and scroll offsets but
-    // must not be clipped or faded by its ancestors.
-    bool context_geometry_only { false };
+    // Inspector overlays record { spatial, 0, 0 }: they track the highlighted element's transforms
+    // and scroll offsets but must not be clipped or faded by its ancestors.
+    VisualContextRefs context_refs;
     bool has_bounding_rect { false };
     bool is_clip { false };
     Gfx::IntRect bounding_rect {};

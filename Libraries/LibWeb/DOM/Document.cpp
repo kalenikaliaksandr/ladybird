@@ -2869,7 +2869,7 @@ static CSSPixelPoint compute_mouse_event_offset(CSSPixelPoint position, Painting
         auto pixel_ratio = static_cast<float>(paintable_box.document().page().client().device_pixels_per_css_pixel());
         auto const& visual_context_tree = viewport_paintable->visual_context_tree();
         auto transformed_position = visual_context_tree.inverse_transform_point(
-            paintable_box.accumulated_visual_context_index(), position.to_type<float>() * pixel_ratio);
+            paintable_box.visual_context_refs(), position.to_type<float>() * pixel_ratio);
         return (transformed_position / pixel_ratio).to_type<CSSPixels>();
     };
 
@@ -9392,8 +9392,9 @@ Utf16String Document::dump_display_list()
 
     HashMap<size_t, RefPtr<Painting::Paintable const>> context_id_to_paintable;
     viewport_paintable->for_each_in_inclusive_subtree_of_type<Painting::Paintable>([&](auto const& paintable_box) {
-        auto visual_context_index = paintable_box.accumulated_visual_context_index();
-        (void)context_id_to_paintable.try_set(visual_context_index.value(), paintable_box);
+        auto refs = paintable_box.visual_context_refs();
+        auto tip = max(refs.spatial.value(), max(refs.clip.value(), refs.effect.value()));
+        (void)context_id_to_paintable.try_set(tip, paintable_box);
         return TraversalDecision::Continue;
     });
 
@@ -9406,16 +9407,18 @@ Utf16String Document::dump_display_list()
     Vector<size_t> root_contexts;
 
     display_list->for_each_command_header([&](Painting::DisplayListCommandHeader const& header, ReadonlyBytes) {
-        for (size_t node_index = header.context_index.value(); !visited.contains(node_index);) {
-            visited.set(node_index);
-            if (node_index == Painting::VISUAL_VIEWPORT_NODE_INDEX.value()) {
-                if (!root_contexts.contains_slow(node_index))
-                    root_contexts.append(node_index);
-                break;
+        for (auto ref : { header.context_refs.spatial, header.context_refs.clip, header.context_refs.effect }) {
+            for (size_t node_index = ref.value(); !visited.contains(node_index);) {
+                visited.set(node_index);
+                if (node_index == Painting::VISUAL_VIEWPORT_NODE_INDEX.value()) {
+                    if (!root_contexts.contains_slow(node_index))
+                        root_contexts.append(node_index);
+                    break;
+                }
+                auto parent = visual_context_tree.node_at(Painting::VisualContextIndex(node_index)).parent_index.value();
+                children.ensure(parent).append(node_index);
+                node_index = parent;
             }
-            auto parent = visual_context_tree.node_at(Painting::VisualContextIndex(node_index)).parent_index.value();
-            children.ensure(parent).append(node_index);
-            node_index = parent;
         }
     });
 
@@ -9447,7 +9450,7 @@ Utf16String Document::dump_display_list()
                 builder.append_repeated(' ', indent * 2);
                 Optional<Painting::DisplayListResourceId> nested_display_list_id;
                 Painting::visit_display_list_command(header.type, payload, [&]<typename Command>(Command const& command) {
-                    builder.appendff("{}@{}", command.command_name, header.context_index.value());
+                    builder.appendff("{}@{}/{}/{}", command.command_name, header.context_refs.spatial.value(), header.context_refs.clip.value(), header.context_refs.effect.value());
                     command.dump(builder);
                     if constexpr (IsSame<Command, Painting::PaintNestedDisplayList>)
                         nested_display_list_id = command.display_list_id;

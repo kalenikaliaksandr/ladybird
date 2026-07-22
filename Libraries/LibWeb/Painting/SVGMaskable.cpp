@@ -91,8 +91,8 @@ static void build_nested_svg_visual_context_tree_for_subtree(AccumulatedVisualCo
     if (effects.needs_layer())
         own_state = visual_context_tree.append(move(effects), inherited_state);
 
-    paintable_box.set_accumulated_visual_context(own_state);
-    paintable_box.set_accumulated_visual_context_for_descendants(own_state);
+    paintable_box.set_accumulated_visual_context(visual_context_tree.derive_context_refs(own_state));
+    paintable_box.set_accumulated_visual_context_for_descendants(visual_context_tree.derive_context_refs(own_state));
 
     paintable_box.for_each_child_of_type<Paintable>([&](Paintable& child) {
         build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, child, own_state, pixel_ratio);

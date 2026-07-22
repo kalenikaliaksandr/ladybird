@@ -85,12 +85,12 @@ struct AsyncStickyArea {
 
 // A region with a non-passive wheel listener. Wheels inside it must stay on the main thread because script may cancel.
 struct BlockingWheelEventRegion {
-    Painting::VisualContextIndex visual_context_index;
+    Painting::VisualContextRefs visual_context_refs;
     Gfx::FloatRect rect;
 };
 
 struct WheelHitTestTarget {
-    Painting::VisualContextIndex visual_context_index;
+    Painting::VisualContextRefs visual_context_refs;
     Gfx::FloatRect rect;
     Gfx::CornerRadii corner_radii;
     Optional<AsyncScrollNodeID> target_node_id;
@@ -98,7 +98,7 @@ struct WheelHitTestTarget {
 
 // A region that must always use main-thread wheel routing even without a blocking listener, such as a nested navigable.
 struct MainThreadWheelEventRegion {
-    Painting::VisualContextIndex visual_context_index;
+    Painting::VisualContextRefs visual_context_refs;
     Gfx::FloatRect rect;
 };
 

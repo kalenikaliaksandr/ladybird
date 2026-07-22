@@ -396,10 +396,10 @@ public:
     void set_enclosing_scroll_node_index(ScrollNodeIndex index) { m_enclosing_scroll_node_index = index; }
     void set_own_scroll_node_index(ScrollNodeIndex index) { m_own_scroll_node_index = index; }
 
-    void set_accumulated_visual_context(VisualContextIndex index) { m_accumulated_visual_context_index = index; }
-    [[nodiscard]] VisualContextIndex accumulated_visual_context_index() const { return m_accumulated_visual_context_index; }
-    void set_accumulated_visual_context_for_descendants(VisualContextIndex index) { m_accumulated_visual_context_for_descendants_index = index; }
-    [[nodiscard]] VisualContextIndex accumulated_visual_context_for_descendants_index() const { return m_accumulated_visual_context_for_descendants_index; }
+    void set_accumulated_visual_context(VisualContextRefs refs) { m_visual_context_refs = refs; }
+    [[nodiscard]] VisualContextRefs visual_context_refs() const { return m_visual_context_refs; }
+    void set_accumulated_visual_context_for_descendants(VisualContextRefs refs) { m_visual_context_refs_for_descendants = refs; }
+    [[nodiscard]] VisualContextRefs visual_context_refs_for_descendants() const { return m_visual_context_refs_for_descendants; }
 
     Optional<CSSPixelPoint> transform_point_to_local(CSSPixelPoint screen_position) const;
     Optional<CSSPixelPoint> transform_point_to_local_for_descendants(CSSPixelPoint screen_position) const;
@@ -414,15 +414,15 @@ public:
     // usable only while the emptiness of the phase's effective clip matches what it was at capture time.
     struct CachedCommandRange {
         DisplayListCommandRange range;
-        VisualContextIndex recorded_context_index {};
+        VisualContextRefs recorded_context_refs;
     };
     Optional<CachedCommandRange> valid_cached_commands(PaintPhase, u64 source_display_list_id, bool phase_has_empty_effective_clip) const;
-    void set_cached_commands(PaintPhase, u64 display_list_id, DisplayListCommandRange, VisualContextIndex recorded_context_index, bool captured_under_empty_effective_clip) const;
+    void set_cached_commands(PaintPhase, u64 display_list_id, DisplayListCommandRange, VisualContextRefs recorded_context_refs, bool captured_under_empty_effective_clip) const;
 
     // One context per background clip box: fixed layers share the element's scroll-compensated
     // space but each clips to the box its background-clip resolves to.
-    void set_fixed_background_visual_context(CSS::BackgroundBox clip_box, VisualContextIndex index) { m_fixed_background_visual_contexts[to_underlying(clip_box)] = index; }
-    [[nodiscard]] Optional<VisualContextIndex> fixed_background_visual_context(CSS::BackgroundBox clip_box) const { return m_fixed_background_visual_contexts[to_underlying(clip_box)]; }
+    void set_fixed_background_visual_context(CSS::BackgroundBox clip_box, VisualContextRefs refs) { m_fixed_background_visual_contexts[to_underlying(clip_box)] = refs; }
+    [[nodiscard]] Optional<VisualContextRefs> fixed_background_visual_context(CSS::BackgroundBox clip_box) const { return m_fixed_background_visual_contexts[to_underlying(clip_box)]; }
     [[nodiscard]] bool has_fixed_background_visual_context() const
     {
         for (auto const& context : m_fixed_background_visual_contexts) {
@@ -513,9 +513,9 @@ private:
 
     ScrollNodeIndex m_enclosing_scroll_node_index {};
     ScrollNodeIndex m_own_scroll_node_index {};
-    VisualContextIndex m_accumulated_visual_context_index { VISUAL_VIEWPORT_NODE_INDEX };
-    VisualContextIndex m_accumulated_visual_context_for_descendants_index { VISUAL_VIEWPORT_NODE_INDEX };
-    Array<Optional<VisualContextIndex>, 4> m_fixed_background_visual_contexts;
+    VisualContextRefs m_visual_context_refs;
+    VisualContextRefs m_visual_context_refs_for_descendants;
+    Array<Optional<VisualContextRefs>, 4> m_fixed_background_visual_contexts;
     size_t m_visual_context_nodes_begin { 0 };
     size_t m_visual_context_nodes_end { 0 };
 

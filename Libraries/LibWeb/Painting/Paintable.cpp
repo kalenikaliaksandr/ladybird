@@ -180,11 +180,9 @@ void Paintable::paint_with_inspector_overlay_context(DisplayListRecordingContext
     auto previous_visual_context_index = display_list_recorder.accumulated_visual_context();
 
     // Overlays follow the highlighted element's transforms and scroll offsets, but must not be clipped
-    // or faded by its ancestors, so their commands apply the element's context in geometry-only mode.
-    display_list_recorder.set_accumulated_visual_context(accumulated_visual_context_index());
-    display_list_recorder.set_context_geometry_only(true);
+    // or faded by its ancestors, so their commands reference the element's spatial context alone.
+    display_list_recorder.set_accumulated_visual_context({ .spatial = visual_context_refs().spatial });
     callback();
-    display_list_recorder.set_context_geometry_only(false);
     display_list_recorder.set_accumulated_visual_context(previous_visual_context_index);
 }
 
@@ -377,7 +375,7 @@ void Paintable::record_empty_editable_hit_test_item(HitTestDisplayList& hit_test
     auto const* dom_node = layout_node().dom_node();
     if (!dom_node || !dom_node->is_editable_or_editing_host())
         return;
-    hit_test_display_list.append_empty_editable(*this, absolute_border_box_rect(), accumulated_visual_context_index());
+    hit_test_display_list.append_empty_editable(*this, absolute_border_box_rect(), visual_context_refs());
 }
 
 void Paintable::scroll_text_offset_into_view(DOM::Text const& text, size_t offset, TextAffinity affinity, ScrollBlockDirection scroll_block_direction)
@@ -446,7 +444,7 @@ struct Paintable::CachedPaintData {
         // Display list ids start at 1, so a default-constructed entry never matches a real source list.
         u64 source_display_list_id { 0 };
         DisplayListCommandRange range;
-        VisualContextIndex recorded_context_index {};
+        VisualContextRefs recorded_context_refs;
         bool captured_under_empty_effective_clip { false };
     };
 
@@ -926,7 +924,7 @@ Optional<Paintable::CachedCommandRange> Paintable::valid_cached_commands(PaintPh
     if (entry.source_display_list_id != source_display_list_id
         || entry.captured_under_empty_effective_clip != phase_has_empty_effective_clip)
         return {};
-    return CachedCommandRange { entry.range, entry.recorded_context_index };
+    return CachedCommandRange { entry.range, entry.recorded_context_refs };
 }
 
 void Paintable::invalidate_paint_cache() const
@@ -934,7 +932,7 @@ void Paintable::invalidate_paint_cache() const
     m_cached_paint_data = nullptr;
 }
 
-void Paintable::set_cached_commands(PaintPhase phase, u64 display_list_id, DisplayListCommandRange range, VisualContextIndex recorded_context_index, bool captured_under_empty_effective_clip) const
+void Paintable::set_cached_commands(PaintPhase phase, u64 display_list_id, DisplayListCommandRange range, VisualContextRefs recorded_context_refs, bool captured_under_empty_effective_clip) const
 {
     if (!m_cached_paint_data)
         m_cached_paint_data = make<CachedPaintData>();
@@ -942,7 +940,7 @@ void Paintable::set_cached_commands(PaintPhase phase, u64 display_list_id, Displ
     m_cached_paint_data->phase_entries[to_underlying(phase)] = {
         .source_display_list_id = display_list_id,
         .range = range,
-        .recorded_context_index = recorded_context_index,
+        .recorded_context_refs = recorded_context_refs,
         .captured_under_empty_effective_clip = captured_under_empty_effective_clip,
     };
 }
@@ -975,8 +973,8 @@ void Paintable::reset_for_relayout()
 
     m_enclosing_scroll_node_index = {};
     m_own_scroll_node_index = {};
-    m_accumulated_visual_context_index = VISUAL_VIEWPORT_NODE_INDEX;
-    m_accumulated_visual_context_for_descendants_index = VISUAL_VIEWPORT_NODE_INDEX;
+    m_visual_context_refs = {};
+    m_visual_context_refs_for_descendants = {};
     m_fixed_background_visual_contexts = {};
 
     m_used_values_for_grid_template_columns = nullptr;
@@ -1556,7 +1554,7 @@ void Paintable::record_hit_test_items(DisplayListRecordingContext& context, Pain
             return;
         }
 
-        hit_test_display_list->append_box(*this, *target, absolute_border_box_rect(), accumulated_visual_context_index(), border_radii_data());
+        hit_test_display_list->append_box(*this, *target, absolute_border_box_rect(), visual_context_refs(), border_radii_data());
         return;
     }
 
@@ -1565,12 +1563,12 @@ void Paintable::record_hit_test_items(DisplayListRecordingContext& context, Pain
 
     auto& box = const_cast<Paintable&>(*this);
     if (has_resizer())
-        hit_test_display_list->append_chrome_widget(*this, box.ensure_resize_handle(), accumulated_visual_context_index());
+        hit_test_display_list->append_chrome_widget(*this, box.ensure_resize_handle(), visual_context_refs());
 
     if (could_be_scrolled_by_wheel_event(ScrollDirection::Horizontal))
-        hit_test_display_list->append_chrome_widget(*this, box.ensure_scrollbar(ScrollDirection::Horizontal), accumulated_visual_context_index());
+        hit_test_display_list->append_chrome_widget(*this, box.ensure_scrollbar(ScrollDirection::Horizontal), visual_context_refs());
     if (could_be_scrolled_by_wheel_event(ScrollDirection::Vertical))
-        hit_test_display_list->append_chrome_widget(*this, box.ensure_scrollbar(ScrollDirection::Vertical), accumulated_visual_context_index());
+        hit_test_display_list->append_chrome_widget(*this, box.ensure_scrollbar(ScrollDirection::Vertical), visual_context_refs());
 }
 
 void Paintable::paint(DisplayListRecordingContext& context, PaintPhase phase) const
@@ -2480,7 +2478,7 @@ Optional<CSSPixelPoint> Paintable::transform_point_to_local(CSSPixelPoint screen
     auto pixel_ratio = static_cast<float>(document().page().client().device_pixels_per_css_pixel());
     auto const& scroll_state = viewport_paintable->scroll_state_snapshot();
     auto const& visual_context_tree = viewport_paintable->visual_context_tree();
-    auto result = visual_context_tree.transform_point_for_hit_test(m_accumulated_visual_context_index, screen_position.to_type<float>() * pixel_ratio, scroll_state);
+    auto result = visual_context_tree.transform_point_for_hit_test(m_visual_context_refs, screen_position.to_type<float>() * pixel_ratio, scroll_state);
     if (!result.has_value())
         return {};
     return (*result / pixel_ratio).to_type<CSSPixels>();
@@ -2494,7 +2492,7 @@ Optional<CSSPixelPoint> Paintable::transform_point_to_local_for_descendants(CSSP
     auto pixel_ratio = static_cast<float>(document().page().client().device_pixels_per_css_pixel());
     auto const& scroll_state = viewport_paintable->scroll_state_snapshot();
     auto const& visual_context_tree = viewport_paintable->visual_context_tree();
-    auto result = visual_context_tree.transform_point_for_hit_test(m_accumulated_visual_context_for_descendants_index, screen_position.to_type<float>() * pixel_ratio, scroll_state);
+    auto result = visual_context_tree.transform_point_for_hit_test(m_visual_context_refs_for_descendants, screen_position.to_type<float>() * pixel_ratio, scroll_state);
     if (!result.has_value())
         return {};
     return (*result / pixel_ratio).to_type<CSSPixels>();
@@ -2508,7 +2506,7 @@ CSSPixelRect Paintable::transform_rect_to_viewport(CSSPixelRect const& rect, Acc
     auto pixel_ratio = static_cast<float>(document().page().client().device_pixels_per_css_pixel());
     auto const& scroll_state = viewport_paintable->scroll_state_snapshot();
     auto const& visual_context_tree = viewport_paintable->visual_context_tree();
-    auto result = visual_context_tree.transform_rect_to_viewport(m_accumulated_visual_context_index, rect.to_type<float>() * pixel_ratio, scroll_state, include_visual_viewport_transform);
+    auto result = visual_context_tree.transform_rect_to_viewport(m_visual_context_refs, rect.to_type<float>() * pixel_ratio, scroll_state, include_visual_viewport_transform);
     return (result * (1.f / pixel_ratio)).to_type<CSSPixels>();
 }
 
@@ -2519,7 +2517,7 @@ CSSPixelPoint Paintable::inverse_transform_point(CSSPixelPoint screen_position) 
         return screen_position;
     auto pixel_ratio = static_cast<float>(document().page().client().device_pixels_per_css_pixel());
     auto const& visual_context_tree = viewport_paintable->visual_context_tree();
-    auto result = visual_context_tree.inverse_transform_point(m_accumulated_visual_context_index, screen_position.to_type<float>() * pixel_ratio);
+    auto result = visual_context_tree.inverse_transform_point(m_visual_context_refs, screen_position.to_type<float>() * pixel_ratio);
     return (result / pixel_ratio).to_type<CSSPixels>();
 }
 

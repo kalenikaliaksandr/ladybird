@@ -118,7 +118,7 @@ private:
         CSSPixelRect rect;
     };
     Vector<EmptyLineCaretTarget> empty_line_caret_targets() const;
-    void record_empty_line_caret_items(HitTestDisplayList&, VisualContextIndex) const;
+    void record_empty_line_caret_items(HitTestDisplayList&, VisualContextRefs) const;
 
     Vector<PaintableFragment> m_fragments;
     Vector<LineRecord> m_lines;

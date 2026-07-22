@@ -6,12 +6,12 @@ AccumulatedVisualContext Tree:
           [7] effects=[opacity=0.3] (PaintableWithLines(BlockContainer<DIV>.abspos))
 
 DisplayList:
-SaveLayer@0
-  CompositorWheelHitTestTarget@0 target_scroll_node_index=0 rect=[0,0 800x600]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[0,0 800x221]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[8,8 784x200]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[8,8 200x200]
-  CompositorWheelHitTestTarget@7 target_scroll_node_index=0 rect=[8,8 100x100]
-  FillRect@7 rect=[8,8 100x100] color=rgb(0, 0, 0)
-Restore@0
+SaveLayer@0/0/0
+  CompositorWheelHitTestTarget@0/0/0 target_scroll_node_index=0 rect=[0,0 800x600]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x221]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x200]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 200x200]
+  CompositorWheelHitTestTarget@1/2/7 target_scroll_node_index=0 rect=[8,8 100x100]
+  FillRect@1/2/7 rect=[8,8 100x100] color=rgb(0, 0, 0)
+Restore@0/0/0
 

@@ -4,7 +4,7 @@
     asyncTest(async (done) => {
         const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
         const canvasContentGeneration = () => {
-            const match = internals.dumpDisplayList().match(/DrawCanvas@\d+ .*content_generation=(\d+)/);
+            const match = internals.dumpDisplayList().match(/DrawCanvas@[\d/]+ .*content_generation=(\d+)/);
             return Number(match[1]);
         };
 

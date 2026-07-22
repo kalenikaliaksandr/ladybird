@@ -36,7 +36,6 @@ static Vector<DisplayListCommandReference> collect_display_list_command_referenc
 static bool display_list_commands_are_equal(DisplayListCommandReference const& a, DisplayListCommandReference const& b)
 {
     if (a.header.type != b.header.type
-        || a.header.context_geometry_only != b.header.context_geometry_only
         || a.header.has_bounding_rect != b.header.has_bounding_rect
         || a.header.is_clip != b.header.is_clip
         || a.header.bounding_rect != b.header.bounding_rect)
@@ -215,8 +214,12 @@ Optional<Gfx::IntRect> compute_display_list_damage(
     auto new_commands = collect_display_list_command_references(new_display_list_commands);
 
     auto commands_are_equal = [&](DisplayListCommandReference const& old_command, DisplayListCommandReference const& new_command) {
+        auto const& old_refs = old_command.header.context_refs;
+        auto const& new_refs = new_command.header.context_refs;
         return display_list_commands_are_equal(old_command, new_command)
-            && visual_context_chains_are_compatible(old_command.header.context_index, old_visual_context_tree, new_command.header.context_index, new_visual_context_tree);
+            && visual_context_chains_are_compatible(old_refs.spatial, old_visual_context_tree, new_refs.spatial, new_visual_context_tree)
+            && visual_context_chains_are_compatible(old_refs.clip, old_visual_context_tree, new_refs.clip, new_visual_context_tree)
+            && visual_context_chains_are_compatible(old_refs.effect, old_visual_context_tree, new_refs.effect, new_visual_context_tree);
     };
     size_t common_prefix_length = 0;
     auto common_length = min(old_commands.size(), new_commands.size());
@@ -239,7 +242,7 @@ Optional<Gfx::IntRect> compute_display_list_damage(
             changed_unbounded_command = true;
             return;
         }
-        auto transformed_rect = visual_context_tree.transform_rect_to_viewport(command.header.context_index, command.header.bounding_rect.to_type<float>(), scroll_state);
+        auto transformed_rect = visual_context_tree.transform_rect_to_viewport(command.header.context_refs, command.header.bounding_rect.to_type<float>(), scroll_state);
         auto command_damage = Gfx::enclosing_int_rect(transformed_rect);
         if (damage_rect.has_value())
             damage_rect->unite(command_damage);
@@ -248,7 +251,11 @@ Optional<Gfx::IntRect> compute_display_list_damage(
     };
 
     auto add_visual_context_damage = [&](DisplayListCommandReference const& old_command, DisplayListCommandReference const& new_command) {
-        if (visual_context_chains_are_equal(old_command.header.context_index, old_visual_context_tree, old_scroll_state, new_command.header.context_index, new_visual_context_tree, new_scroll_state))
+        auto const& old_refs = old_command.header.context_refs;
+        auto const& new_refs = new_command.header.context_refs;
+        if (visual_context_chains_are_equal(old_refs.spatial, old_visual_context_tree, old_scroll_state, new_refs.spatial, new_visual_context_tree, new_scroll_state)
+            && visual_context_chains_are_equal(old_refs.clip, old_visual_context_tree, old_scroll_state, new_refs.clip, new_visual_context_tree, new_scroll_state)
+            && visual_context_chains_are_equal(old_refs.effect, old_visual_context_tree, old_scroll_state, new_refs.effect, new_visual_context_tree, new_scroll_state))
             return;
         if (!old_command.header.has_bounding_rect || !new_command.header.has_bounding_rect) {
             if (old_command.header.type == DisplayListCommandType::CompositorViewportScrollbar || old_command.header.type == DisplayListCommandType::PaintScrollBar)

@@ -226,7 +226,7 @@ void InlinePaintable::record_hit_test_items(DisplayListRecordingContext& context
         for_each_piece([&](auto const& piece) {
             if (piece.is_geometry_only_placeholder)
                 return;
-            hit_test_display_list->append_box(*this, const_cast<InlinePaintable&>(*this), absolute_piece_border_box_rect(piece), accumulated_visual_context_index(), piece_border_radii_data(piece));
+            hit_test_display_list->append_box(*this, const_cast<InlinePaintable&>(*this), absolute_piece_border_box_rect(piece), visual_context_refs(), piece_border_radii_data(piece));
         });
     };
 
@@ -254,14 +254,14 @@ void InlinePaintable::record_hit_test_items(DisplayListRecordingContext& context
             if (fragment.is_block_level_box())
                 return;
             if (fragment.layout_node().nearest_fragmented_inline_ancestor() == &layout_node())
-                hit_test_display_list->append_text_fragment(fragment, accumulated_visual_context_for_descendants_index());
+                hit_test_display_list->append_text_fragment(fragment, visual_context_refs_for_descendants());
             else
                 nested_content_indices.append(index);
         });
         if (box_itself_is_hit_testable && stacking_context())
             append_piece_boxes();
         for (auto index : nested_content_indices)
-            hit_test_display_list->append_text_fragment(fragments[index], accumulated_visual_context_for_descendants_index());
+            hit_test_display_list->append_text_fragment(fragments[index], visual_context_refs_for_descendants());
     }
 
     // Clicks must be able to place the caret in an editable element with no content, so its

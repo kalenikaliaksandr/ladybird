@@ -3,17 +3,17 @@ AccumulatedVisualContext Tree:
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
 
 DisplayList:
-SaveLayer@0
-  CompositorWheelHitTestTarget@0 target_scroll_node_index=0 rect=[0,0 800x600]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[0,0 800x41]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[8,8 784x20]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[8,8 784x20]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[8,8 105.671875x20]
-  FillRect@1 rect=[8,8 106x20] color=rgb(212, 208, 200)
-  FillPath@1 path_bounding_rect=[8,8 106x20]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[13,10 95.671875x16]
-  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[13,10 95.671875x16]
-  DrawGlyphRun@1 rect=[13,10 96x16] translation=[13,22.796875] color=rgb(0, 0, 0)
-  DrawLine@1 from=[13,26] to=[109,26] color=rgb(0, 0, 0) thickness=2
-Restore@0
+SaveLayer@0/0/0
+  CompositorWheelHitTestTarget@0/0/0 target_scroll_node_index=0 rect=[0,0 800x600]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x41]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x20]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 784x20]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[8,8 105.671875x20]
+  FillRect@1/0/0 rect=[8,8 106x20] color=rgb(212, 208, 200)
+  FillPath@1/0/0 path_bounding_rect=[8,8 106x20]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[13,10 95.671875x16]
+  CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[13,10 95.671875x16]
+  DrawGlyphRun@1/0/0 rect=[13,10 96x16] translation=[13,22.796875] color=rgb(0, 0, 0)
+  DrawLine@1/0/0 from=[13,26] to=[109,26] color=rgb(0, 0, 0) thickness=2
+Restore@0/0/0
 

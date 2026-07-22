@@ -258,14 +258,14 @@ static DisplayListDataSpan append_filter_data(
 }
 
 // Captures are save/restore balanced (verified at capture end), so splicing never shifts the save nesting level.
-DisplayListCommandRange DisplayListRecorder::append_cached_command_range(DisplayList const& source_display_list, DisplayListCommandRange source_range, VisualContextIndex recorded_context_index)
+DisplayListCommandRange DisplayListRecorder::append_cached_command_range(DisplayList const& source_display_list, DisplayListCommandRange source_range, VisualContextRefs recorded_context_refs)
 {
     auto destination_offset = m_display_list.append_command_range_from(
         source_display_list,
         source_range,
         m_visual_context_tree,
-        recorded_context_index,
-        m_accumulated_visual_context_index);
+        recorded_context_refs,
+        m_visual_context_refs);
     return { destination_offset, source_range.size };
 }
 

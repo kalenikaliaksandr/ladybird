@@ -12,7 +12,7 @@
 using namespace Web::Painting;
 
 template<DisplayListCommand Command>
-static ByteBuffer command_bytes(Command const& command, Optional<Gfx::IntRect> bounding_rect = {}, VisualContextIndex context_index = VISUAL_VIEWPORT_NODE_INDEX)
+static ByteBuffer command_bytes(Command const& command, Optional<Gfx::IntRect> bounding_rect = {}, VisualContextRefs context_refs = {})
 {
     auto payload = display_list_object_bytes(command);
     auto record_size = sizeof(DisplayListCommandHeader) + payload.size();
@@ -21,7 +21,7 @@ static ByteBuffer command_bytes(Command const& command, Optional<Gfx::IntRect> b
     DisplayListCommandHeader header {
         .type = Command::command_type,
         .payload_size = static_cast<u32>(payload_size),
-        .context_index = context_index,
+        .context_refs = context_refs,
         .has_bounding_rect = bounding_rect.has_value(),
         .bounding_rect = bounding_rect.value_or({}),
     };
@@ -54,7 +54,7 @@ static ByteBuffer glyph_run_command_bytes(size_t inline_padding)
     DisplayListCommandHeader header {
         .type = DrawGlyphRun::command_type,
         .payload_size = static_cast<u32>(payload_size),
-        .context_index = VISUAL_VIEWPORT_NODE_INDEX,
+        .context_refs = {},
         .has_bounding_rect = true,
         .bounding_rect = command.glyph_bounding_rect,
     };
@@ -172,8 +172,8 @@ TEST_CASE(unrelated_inserted_visual_context_does_not_damage_commands)
     new_visual_context_tree.append(EffectsData { .opacity = 0.5f, .blend_mode = Gfx::CompositingAndBlendingOperator::Normal, .gfx_filter = {} }, VISUAL_VIEWPORT_NODE_INDEX);
     auto new_command_context = new_visual_context_tree.append(TransformData { Gfx::FloatMatrix4x4::identity(), {} }, VISUAL_VIEWPORT_NODE_INDEX);
 
-    auto old_display_list = command_bytes(FillRect { { 10, 10, 20, 20 }, Gfx::Color::Red }, Gfx::IntRect { 10, 10, 20, 20 }, old_command_context);
-    auto new_display_list = command_bytes(FillRect { { 10, 10, 20, 20 }, Gfx::Color::Red }, Gfx::IntRect { 10, 10, 20, 20 }, new_command_context);
+    auto old_display_list = command_bytes(FillRect { { 10, 10, 20, 20 }, Gfx::Color::Red }, Gfx::IntRect { 10, 10, 20, 20 }, old_visual_context_tree.derive_context_refs(old_command_context));
+    auto new_display_list = command_bytes(FillRect { { 10, 10, 20, 20 }, Gfx::Color::Red }, Gfx::IntRect { 10, 10, 20, 20 }, new_visual_context_tree.derive_context_refs(new_command_context));
     ScrollStateSnapshot scroll_state;
 
     auto damage = compute_display_list_damage(old_display_list, old_visual_context_tree, scroll_state, new_display_list, new_visual_context_tree, scroll_state, { 0, 0, 100, 100 });

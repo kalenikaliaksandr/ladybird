@@ -146,10 +146,14 @@ public:
     ReadonlySpan<AccumulatedVisualContextNode> nodes() const { return m_nodes.span(); }
 
     VisualContextIndex find_common_ancestor(VisualContextIndex a, VisualContextIndex b) const;
-    Optional<Gfx::FloatPoint> transform_point_for_hit_test(VisualContextIndex, Gfx::FloatPoint, ScrollStateSnapshot const&, ClipBehavior = ClipBehavior::Respect) const;
-    Gfx::FloatPoint inverse_transform_point(VisualContextIndex, Gfx::FloatPoint) const;
-    Gfx::FloatRect transform_rect_to_viewport(VisualContextIndex, Gfx::FloatRect const&, ScrollStateSnapshot const&, IncludeVisualViewportTransform = IncludeVisualViewportTransform::Yes) const;
+    Optional<Gfx::FloatPoint> transform_point_for_hit_test(VisualContextRefs, Gfx::FloatPoint, ScrollStateSnapshot const&, ClipBehavior = ClipBehavior::Respect) const;
+    Gfx::FloatPoint inverse_transform_point(VisualContextRefs, Gfx::FloatPoint) const;
+    Gfx::FloatRect transform_rect_to_viewport(VisualContextRefs, Gfx::FloatRect const&, ScrollStateSnapshot const&, IncludeVisualViewportTransform = IncludeVisualViewportTransform::Yes) const;
     void dump(VisualContextIndex, StringBuilder&) const;
+
+    // The deepest coordinate-affecting, clip, and effect node on the chain from the root to the
+    // given context; the context itself is always one of the three.
+    WEB_API VisualContextRefs derive_context_refs(VisualContextIndex) const;
 
     bool has_empty_effective_clip(VisualContextIndex i) const { return m_nodes[i.value()].has_empty_effective_clip; }
 

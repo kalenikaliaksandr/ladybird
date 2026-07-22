@@ -35,4 +35,17 @@ constexpr VisualContextIndex to_visual_context_index(ScrollNodeIndex index)
     return VisualContextIndex { index.value() };
 }
 
+// The per-kind references a display list command records: the deepest coordinate-affecting
+// (spatial), clip, and effect node applying to it. Until the tree is physically split all three
+// index the same tree; 0 means "none" for clip and effect, and the viewport transform root for
+// spatial. Inspector overlays record { spatial, 0, 0 } so replay applies coordinates but neither
+// clips nor effects.
+struct VisualContextRefs {
+    VisualContextIndex spatial { VISUAL_VIEWPORT_NODE_INDEX };
+    VisualContextIndex clip { VISUAL_VIEWPORT_NODE_INDEX };
+    VisualContextIndex effect { VISUAL_VIEWPORT_NODE_INDEX };
+
+    bool operator==(VisualContextRefs const&) const = default;
+};
+
 }

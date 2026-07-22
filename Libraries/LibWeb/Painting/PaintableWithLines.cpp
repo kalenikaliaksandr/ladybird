@@ -222,10 +222,10 @@ void PaintableWithLines::record_hit_test_items(DisplayListRecordingContext& cont
         auto const& fragment = m_fragments[index];
         if (fragment.is_block_level_box())
             return;
-        hit_test_display_list->append_text_fragment(fragment, accumulated_visual_context_for_descendants_index());
+        hit_test_display_list->append_text_fragment(fragment, visual_context_refs_for_descendants());
     });
 
-    record_empty_line_caret_items(*hit_test_display_list, accumulated_visual_context_for_descendants_index());
+    record_empty_line_caret_items(*hit_test_display_list, visual_context_refs_for_descendants());
 }
 
 Vector<PaintableWithLines::EmptyLineCaretTarget> PaintableWithLines::empty_line_caret_targets() const
@@ -312,10 +312,10 @@ Optional<CSSPixelRect> PaintableWithLines::empty_line_caret_rect(DOM::Position c
     return {};
 }
 
-void PaintableWithLines::record_empty_line_caret_items(HitTestDisplayList& hit_test_display_list, VisualContextIndex visual_context_index) const
+void PaintableWithLines::record_empty_line_caret_items(HitTestDisplayList& hit_test_display_list, VisualContextRefs visual_context_refs) const
 {
     for (auto const& target : empty_line_caret_targets())
-        hit_test_display_list.append_empty_line(m_fragments.first(), target.offset, target.line_index, target.rect, visual_context_index);
+        hit_test_display_list.append_empty_line(m_fragments.first(), target.offset, target.line_index, target.rect, visual_context_refs);
 
     auto* dom_node = layout_node().dom_node();
     if (!dom_node || m_fragments.is_empty())
@@ -326,7 +326,7 @@ void PaintableWithLines::record_empty_line_caret_items(HitTestDisplayList& hit_t
         auto* br = as_if<HTML::HTMLBRElement>(*child);
         if (!br || !br->represents_empty_line())
             continue;
-        hit_test_display_list.append_empty_line(*this, *dom_node, br->index(), caret_rect_for_child_offset(br->index()), visual_context_index);
+        hit_test_display_list.append_empty_line(*this, *dom_node, br->index(), caret_rect_for_child_offset(br->index()), visual_context_refs);
     }
 }
 
