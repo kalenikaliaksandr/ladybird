@@ -169,107 +169,103 @@ void DisplayListPlayer::execute_impl(
 
     VERIFY(m_surface);
 
-    auto apply_accumulated_visual_context =
-        [&](VisualContextIndex node_index, AccumulatedVisualContextNode const& node) {
-            node.data.visit(
-                [&](PerspectiveData const& perspective) {
-                    play_command(Save {});
-                    apply_transform({ 0, 0 }, perspective.matrix);
-                },
-                [&](ScrollData const&) {
-                    play_command(Save {});
-                    auto offset = scroll_state.device_offset_for_index(to_scroll_node_index(node_index));
-                    if (!offset.is_zero())
-                        play_command(Translate { .delta = offset.to_type<int>() });
-                },
-                [&](AnchorScrollShift const& shift) {
-                    play_command(Save {});
-                    auto offset = shift.masked_offset(scroll_state);
-                    if (!offset.is_zero())
-                        play_command(Translate { .delta = offset.to_type<int>() });
-                },
-                [&](TransformData const& transform) {
-                    play_command(Save {});
-                    apply_transform(transform.origin, transform.matrix);
-                });
-        };
+    // Cumulative to-root matrices for every spatial node, resolved against the live scroll
+    // offsets and folded onto the canvas matrix at replay entry, so any node's space can be
+    // entered absolutely with a single set_matrix(). Spatial nodes therefore never touch the
+    // canvas save stack; only clips and effects do.
+    auto const& spatial_nodes = visual_context_tree.nodes();
+    Vector<Gfx::FloatMatrix4x4> transform_palette;
+    transform_palette.ensure_capacity(spatial_nodes.size());
+    auto base_matrix = canvas_matrix();
+    for (size_t i = 0; i < spatial_nodes.size(); ++i) {
+        auto const& node = spatial_nodes[i];
+        auto local = node.data.visit(
+            [&](TransformData const& transform) {
+                auto matrix = Gfx::translation_matrix(Vector3<float>(transform.origin.x(), transform.origin.y(), 0));
+                matrix = matrix * transform.matrix;
+                return matrix * Gfx::translation_matrix(Vector3<float>(-transform.origin.x(), -transform.origin.y(), 0));
+            },
+            [&](PerspectiveData const& perspective) {
+                return perspective.matrix;
+            },
+            [&](ScrollData const&) {
+                // Whole device pixels, matching the Translate ops scrolled content replayed under.
+                auto offset = scroll_state.device_offset_for_index(to_scroll_node_index(VisualContextIndex { static_cast<u32>(i) })).to_type<int>();
+                return Gfx::translation_matrix(Vector3<float>(static_cast<float>(offset.x()), static_cast<float>(offset.y()), 0));
+            },
+            [&](AnchorScrollShift const& shift) {
+                auto offset = shift.masked_offset(scroll_state).to_type<int>();
+                return Gfx::translation_matrix(Vector3<float>(static_cast<float>(offset.x()), static_cast<float>(offset.y()), 0));
+            });
+        if (i == 0)
+            transform_palette.unchecked_append(base_matrix * local);
+        else
+            transform_palette.unchecked_append(transform_palette[node.parent_index.value()] * local);
+    }
 
-    // One entry of the applied/target chain: a main-tree node (spatial or clip kind) or an effect
-    // node. Every applied entry holds exactly one canvas save (a Save, or the layer pushed by
-    // ApplyEffects), so unwinding is one Restore per popped entry. The merge key interleaves
-    // effect nodes with main-tree nodes in build order: an effect node's sequence is the main-tree
-    // size at its append, so it sorts before the main-tree node of that index, and effect nodes
-    // sharing a sequence sort by their own index.
-    enum class ChainEntryKind : u8 {
-        Spatial,
-        Clip,
-        Effect,
+    // The palette entry the canvas matrix currently equals, if known; every Restore resets the
+    // matrix to its save point, so popping frames invalidates it.
+    Optional<VisualContextIndex> current_ctm_space;
+    auto ensure_ctm_space = [&](VisualContextIndex spatial) {
+        if (current_ctm_space == spatial)
+            return;
+        set_matrix(transform_palette[spatial.value()]);
+        current_ctm_space = spatial;
     };
-    struct ChainEntry {
-        ChainEntryKind kind { ChainEntryKind::Spatial };
+
+    // One entry of the applied/target context: a clip or effect node, each holding exactly one
+    // canvas save (a Save for clips, the layer pushed by ApplyEffects for effects), so unwinding
+    // is one Restore per popped frame.
+    struct Frame {
+        bool is_effect { false };
         u32 index { 0 };
-        u32 merge_key { 0 };
 
-        bool operator==(ChainEntry const& other) const { return kind == other.kind && index == other.index; }
+        bool operator==(Frame const&) const = default;
     };
-
-    Vector<ChainEntry, 32> applied_chain;
-    Vector<ChainEntry, 32> target_chain;
-    Vector<ChainEntry, 16> spatial_walk;
-    Vector<ChainEntry, 8> clip_walk;
-    Vector<ChainEntry, 8> effect_walk;
+    Vector<Frame, 16> applied_frames;
+    Vector<Frame, 16> target_frames;
+    Vector<u32, 8> clip_walk;
+    Vector<u32, 8> effect_walk;
     VisualContextRefs applied_refs;
     bool has_applied_context { false };
 
-    // Collects, per reference, the nodes of its own kind on its root chain, merged in build order.
-    // The spatial and clip references of one recording lie on a single main-tree chain, so the
-    // merge reproduces the recorded interleave exactly; inspector-overlay references
-    // { spatial, 0, 0 } naturally yield only the coordinate-affecting nodes.
-    auto build_target_chain = [&](VisualContextRefs refs) {
-        spatial_walk.clear_with_capacity();
+    // Effects nest outermost-first; the shared append counter interleaves the clip chain with the
+    // effect chain exactly as recorded: clips appended before an effect bound its layer from
+    // outside, deeper clips apply to the layer's contents.
+    auto build_target_frames = [&](VisualContextRefs refs) {
+        target_frames.clear_with_capacity();
         clip_walk.clear_with_capacity();
-        effect_walk.clear_with_capacity();
-        for (auto index = refs.spatial;; index = visual_context_tree.node_at(index).parent_index) {
-            spatial_walk.append({ ChainEntryKind::Spatial, index.value(), visual_context_tree.node_at(index).sequence });
-            if (index == VISUAL_VIEWPORT_NODE_INDEX)
-                break;
-        }
         for (auto index = refs.clip; index != ROOT_CLIP_NODE_INDEX;) {
-            auto const& node = visual_context_tree.clip_node_at(index);
-            clip_walk.append({ ChainEntryKind::Clip, index.value(), node.sequence });
-            index = node.parent_index;
+            clip_walk.append(index.value());
+            index = visual_context_tree.clip_node_at(index).parent_index;
         }
+        effect_walk.clear_with_capacity();
         for (auto index = refs.effect; index != ROOT_EFFECT_NODE_INDEX;) {
-            auto const& node = visual_context_tree.effect_node_at(index);
-            effect_walk.append({ ChainEntryKind::Effect, index.value(), node.sequence });
-            index = node.parent_index;
+            effect_walk.append(index.value());
+            index = visual_context_tree.effect_node_at(index).parent_index;
         }
-
-        // The walks run tip-to-root, so each per-kind list is in descending build order with its
-        // smallest entry at the back, and the shared append counter makes keys unique across the
-        // lists: a three-way back-to-front merge assembles the chain without sorting.
-        target_chain.clear_with_capacity();
-        target_chain.ensure_capacity(spatial_walk.size() + clip_walk.size() + effect_walk.size());
-        size_t spatial_remaining = spatial_walk.size();
         size_t clip_remaining = clip_walk.size();
-        size_t effect_remaining = effect_walk.size();
-        while (spatial_remaining > 0 || clip_remaining > 0 || effect_remaining > 0) {
-            auto spatial_key = spatial_remaining > 0 ? spatial_walk[spatial_remaining - 1].merge_key : NumericLimits<u32>::max();
-            auto clip_key = clip_remaining > 0 ? clip_walk[clip_remaining - 1].merge_key : NumericLimits<u32>::max();
-            auto effect_key = effect_remaining > 0 ? effect_walk[effect_remaining - 1].merge_key : NumericLimits<u32>::max();
-            if (spatial_key < clip_key && spatial_key < effect_key)
-                target_chain.unchecked_append(spatial_walk[--spatial_remaining]);
-            else if (clip_key < effect_key)
-                target_chain.unchecked_append(clip_walk[--clip_remaining]);
-            else
-                target_chain.unchecked_append(effect_walk[--effect_remaining]);
+        for (size_t i = effect_walk.size(); i > 0; --i) {
+            auto effect_index = effect_walk[i - 1];
+            auto effect_sequence = visual_context_tree.effect_node_at(EffectNodeIndex { effect_index }).sequence;
+            while (clip_remaining > 0 && visual_context_tree.clip_node_at(ClipNodeIndex { clip_walk[clip_remaining - 1] }).sequence < effect_sequence) {
+                --clip_remaining;
+                target_frames.append({ .is_effect = false, .index = clip_walk[clip_remaining] });
+            }
+            target_frames.append({ .is_effect = true, .index = effect_index });
+        }
+        while (clip_remaining > 0) {
+            --clip_remaining;
+            target_frames.append({ .is_effect = false, .index = clip_walk[clip_remaining] });
         }
     };
 
     auto restore_to_length = [&](size_t length) {
-        while (applied_chain.size() > length) {
+        if (applied_frames.size() > length)
+            current_ctm_space = {};
+        while (applied_frames.size() > length) {
             play_command(Restore {});
-            applied_chain.take_last();
+            applied_frames.take_last();
         }
     };
 
@@ -284,40 +280,37 @@ void DisplayListPlayer::execute_impl(
         if (has_applied_context && applied_refs == refs)
             return SwitchResult::Switched;
 
-        build_target_chain(refs);
+        build_target_frames(refs);
 
         size_t common_prefix_length = 0;
-        while (common_prefix_length < applied_chain.size()
-            && common_prefix_length < target_chain.size()
-            && applied_chain[common_prefix_length] == target_chain[common_prefix_length])
+        while (common_prefix_length < applied_frames.size()
+            && common_prefix_length < target_frames.size()
+            && applied_frames[common_prefix_length] == target_frames[common_prefix_length])
             ++common_prefix_length;
 
         restore_to_length(common_prefix_length);
 
-        size_t last_spatial_position = 0;
-        for (size_t i = 0; i < target_chain.size(); ++i) {
-            if (target_chain[i].kind == ChainEntryKind::Spatial)
-                last_spatial_position = i;
-        }
-
-        for (size_t i = common_prefix_length; i < target_chain.size(); ++i) {
-            auto const& entry = target_chain[i];
-            if (entry.kind == ChainEntryKind::Effect) {
-                auto const& effect_node = visual_context_tree.effect_node_at(EffectNodeIndex { entry.index });
+        for (size_t i = common_prefix_length; i < target_frames.size(); ++i) {
+            auto const& frame = target_frames[i];
+            if (frame.is_effect) {
+                auto const& effect_node = visual_context_tree.effect_node_at(EffectNodeIndex { frame.index });
                 if (bounding_rect.has_value()) {
-                    // The bounding rect can only be culled against the current canvas state when no
-                    // coordinate-affecting node follows this effect in the chain.
-                    auto can_cull_before_effect = last_spatial_position < i;
-                    if (bounding_rect->is_empty() || (can_cull_before_effect && would_be_fully_clipped_by_painter(*bounding_rect))) {
+                    bool culled = bounding_rect->is_empty();
+                    if (!culled) {
+                        ensure_ctm_space(refs.spatial);
+                        culled = would_be_fully_clipped_by_painter(*bounding_rect);
+                    }
+                    if (culled) {
                         restore_to_length(common_prefix_length);
                         // The canvas is unwound to the shared prefix; dropping the applied flag
-                        // keeps the fast path from reusing the pre-cull context while the chain
+                        // keeps the fast path from reusing the pre-cull context while the frame
                         // vector still enables prefix reuse on the next switch.
                         has_applied_context = false;
                         return SwitchResult::CulledByEffect;
                     }
                 }
                 auto const& effects = effect_node.data;
+                ensure_ctm_space(effect_node.spatial_ref);
                 play_command(ApplyEffects {
                                  .opacity = effects.opacity,
                                  .compositing_and_blending_operator = effects.blend_mode,
@@ -325,27 +318,10 @@ void DisplayListPlayer::execute_impl(
                                  .filter_data = {},
                              },
                     effects.gfx_filter.has_value() ? &effects.gfx_filter.value() : nullptr);
-            } else if (entry.kind == ChainEntryKind::Clip) {
-                auto const& clip_node = visual_context_tree.clip_node_at(ClipNodeIndex { entry.index });
-                // A clip is expressed in its spatial_ref space. When that space is deeper than the
-                // command's - fixed backgrounds record commands in the viewport space while their
-                // clips stay pinned to the scrolled box - bridge with the live translations of the
-                // unapplied nodes; the builder guarantees no transform sits between the two spaces.
-                Gfx::IntPoint unapplied_delta;
-                if (clip_node.spatial_ref != refs.spatial
-                    && visual_context_tree.find_common_ancestor(clip_node.spatial_ref, refs.spatial) != clip_node.spatial_ref) {
-                    Gfx::FloatPoint unapplied_offset;
-                    for (auto index = clip_node.spatial_ref; index != refs.spatial && index != VISUAL_VIEWPORT_NODE_INDEX; index = visual_context_tree.node_at(index).parent_index) {
-                        visual_context_tree.node_at(index).data.visit(
-                            [&](ScrollData const&) { unapplied_offset.translate_by(scroll_state.device_offset_for_index(to_scroll_node_index(index))); },
-                            [&](AnchorScrollShift const& shift) { unapplied_offset.translate_by(shift.masked_offset(scroll_state)); },
-                            [&](auto const&) {});
-                    }
-                    unapplied_delta = unapplied_offset.to_type<int>();
-                }
+            } else {
+                auto const& clip_node = visual_context_tree.clip_node_at(ClipNodeIndex { frame.index });
                 play_command(Save {});
-                if (!unapplied_delta.is_zero())
-                    play_command(Translate { .delta = unapplied_delta });
+                ensure_ctm_space(clip_node.spatial_ref);
                 clip_node.data.visit(
                     [&](ClipData const& clip) {
                         if (clip.corner_radii.has_any_radius()) {
@@ -361,13 +337,8 @@ void DisplayListPlayer::execute_impl(
                     [&](ClipPathData const& clip_path) {
                         add_clip_path(clip_path.path, clip_path.fill_rule);
                     });
-                if (!unapplied_delta.is_zero())
-                    play_command(Translate { .delta = { -unapplied_delta.x(), -unapplied_delta.y() } });
-            } else {
-                auto node_index = VisualContextIndex { entry.index };
-                apply_accumulated_visual_context(node_index, visual_context_tree.node_at(node_index));
             }
-            applied_chain.append(entry);
+            applied_frames.append(frame);
         }
 
         applied_refs = refs;
@@ -385,6 +356,8 @@ void DisplayListPlayer::execute_impl(
 
         if (switch_to_context(header.context_refs, bounding_rect) == SwitchResult::CulledByEffect)
             return;
+
+        ensure_ctm_space(header.context_refs.spatial);
 
         if (bounding_rect.has_value() && (bounding_rect->is_empty() || would_be_fully_clipped_by_painter(*bounding_rect))) {
             // Any clip that's located outside of the visible region is equivalent to a simple clip-rect,
