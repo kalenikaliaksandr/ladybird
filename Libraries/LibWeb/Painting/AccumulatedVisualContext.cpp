@@ -913,97 +913,111 @@ Vector<size_t, 8> AccumulatedVisualContextTree::build_ancestor_chain(VisualConte
 // recorded above it.
 Optional<Gfx::FloatPoint> AccumulatedVisualContextTree::transform_point_for_hit_test(VisualContextRefs refs, Gfx::FloatPoint screen_point, ScrollStateSnapshot const& scroll_state, ClipBehavior clip_behavior) const
 {
-    struct Entry {
-        bool is_clip { false };
-        u32 index { 0 };
-        u64 merge_key { 0 };
-    };
-    Vector<Entry, 16> spatial_walk;
-    Vector<Entry, 8> clip_walk;
+    // The point descends from the root through the target's spatial chain, and every clip is
+    // tested once the point has entered the clip's own space - the state replay would have when
+    // applying that clip. Chains link child to parent, so the spatial chain is collected tip-first
+    // and consumed back-to-front.
+    Vector<u32, 16> spatial_chain;
     for (auto index = refs.spatial;; index = m_nodes[index.value()].parent_index) {
-        spatial_walk.append({ false, index.value(), m_nodes[index.value()].sequence });
+        spatial_chain.append(index.value());
         if (index == VISUAL_VIEWPORT_NODE_INDEX)
             break;
     }
-    if (clip_behavior == ClipBehavior::Respect) {
-        for (auto index = refs.clip; index != ROOT_CLIP_NODE_INDEX;) {
-            auto const& clip_node = m_clip_nodes[index.value()];
-            clip_walk.append({ true, index.value(), clip_node.sequence });
-            index = clip_node.parent_index;
-        }
-    }
-
-    // Both walks run tip-to-root, so each list is in descending build order with its smallest
-    // entry at the back, and the shared append counter makes keys unique across the lists: a
-    // back-to-front merge assembles the chain without sorting.
-    Vector<Entry, 16> chain;
-    chain.ensure_capacity(spatial_walk.size() + clip_walk.size());
-    size_t spatial_remaining = spatial_walk.size();
-    size_t clip_remaining = clip_walk.size();
-    while (spatial_remaining > 0 || clip_remaining > 0) {
-        auto spatial_key = spatial_remaining > 0 ? spatial_walk[spatial_remaining - 1].merge_key : NumericLimits<u32>::max();
-        auto clip_key = clip_remaining > 0 ? clip_walk[clip_remaining - 1].merge_key : NumericLimits<u32>::max();
-        if (spatial_key < clip_key)
-            chain.unchecked_append(spatial_walk[--spatial_remaining]);
-        else
-            chain.unchecked_append(clip_walk[--clip_remaining]);
-    }
 
     auto point = screen_point;
-    for (auto const& entry : chain) {
-        if (entry.is_clip) {
-            auto const& clip_node = m_clip_nodes[entry.index];
-            bool contains = clip_node.data.visit(
-                [&](ClipData const& clip) {
-                    // NOTE: The clip rect is in absolute device-pixel coordinates. After inverse-transforming,
-                    //       `point` is also in device-pixel coordinates, so we compare them directly.
-                    return clip.contains(point.to_type<int>().to_type<DevicePixels>());
-                },
-                [&](ClipPathData const& clip_path) {
-                    if (!clip_path.bounding_rect.contains(point.to_type<int>().to_type<DevicePixels>()))
-                        return false;
-                    return clip_path.path.contains(point, clip_path.fill_rule);
-                });
-            if (!contains)
-                return {};
-            continue;
-        }
-
-        auto node_index = VisualContextIndex { entry.index };
-        auto const& node = m_nodes[entry.index];
-        auto result = node.data.visit(
-            [&](PerspectiveData const& perspective) -> Optional<Gfx::FloatPoint> {
+    auto apply_inverse = [&](VisualContextIndex node_index, Gfx::FloatPoint& target) -> bool {
+        return m_nodes[node_index.value()].data.visit(
+            [&](PerspectiveData const& perspective) {
                 auto affine = Gfx::extract_2d_affine_transform(perspective.matrix);
                 auto inverse = affine.inverse();
                 if (!inverse.has_value())
-                    return {};
-                point = inverse->map(point);
-                return point;
+                    return false;
+                target = inverse->map(target);
+                return true;
             },
-            [&](ScrollData const&) -> Optional<Gfx::FloatPoint> {
-                point.translate_by(-scroll_state.device_offset_for_index(to_scroll_node_index(node_index)));
-                return point;
+            [&](ScrollData const&) {
+                target.translate_by(-scroll_state.device_offset_for_index(to_scroll_node_index(node_index)));
+                return true;
             },
-            [&](TransformData const& transform) -> Optional<Gfx::FloatPoint> {
+            [&](TransformData const& transform) {
                 auto affine = Gfx::extract_2d_affine_transform(transform.matrix);
                 auto inverse = affine.inverse();
                 if (!inverse.has_value())
-                    return {};
+                    return false;
 
-                auto offset_point = point - transform.origin;
+                auto offset_point = target - transform.origin;
                 auto transformed = inverse->map(offset_point);
-                point = transformed + transform.origin;
-                return point;
+                target = transformed + transform.origin;
+                return true;
             },
-            [&](AnchorScrollShift const& shift) -> Optional<Gfx::FloatPoint> {
-                point.translate_by(-shift.masked_offset(scroll_state));
-                return point;
+            [&](AnchorScrollShift const& shift) {
+                target.translate_by(-shift.masked_offset(scroll_state));
+                return true;
             });
+    };
 
-        if (!result.has_value())
-            return {};
+    size_t next_spatial = spatial_chain.size();
+    Optional<VisualContextIndex> current_space;
+    auto advance_into = [&](VisualContextIndex space) -> bool {
+        while (current_space != space) {
+            VERIFY(next_spatial > 0);
+            --next_spatial;
+            auto node_index = VisualContextIndex { spatial_chain[next_spatial] };
+            if (!apply_inverse(node_index, point))
+                return false;
+            current_space = node_index;
+        }
+        return true;
+    };
+
+    if (clip_behavior == ClipBehavior::Respect) {
+        Vector<u32, 8> clip_chain;
+        for (auto index = refs.clip; index != ROOT_CLIP_NODE_INDEX;) {
+            clip_chain.append(index.value());
+            index = m_clip_nodes[index.value()].parent_index;
+        }
+
+        for (size_t i = clip_chain.size(); i > 0; --i) {
+            auto const& clip_node = m_clip_nodes[clip_chain[i - 1]];
+            Gfx::FloatPoint test_point;
+            if (find_common_ancestor(clip_node.spatial_ref, refs.spatial) == clip_node.spatial_ref) {
+                if (!advance_into(clip_node.spatial_ref))
+                    return {};
+                test_point = point;
+            } else {
+                // The clip is pinned in a space that is not on the target chain: map the point
+                // into that space along its own chain instead.
+                Vector<u32, 16> clip_space_chain;
+                for (auto index = clip_node.spatial_ref;; index = m_nodes[index.value()].parent_index) {
+                    clip_space_chain.append(index.value());
+                    if (index == VISUAL_VIEWPORT_NODE_INDEX)
+                        break;
+                }
+                test_point = screen_point;
+                for (size_t chain_i = clip_space_chain.size(); chain_i > 0; --chain_i) {
+                    if (!apply_inverse(VisualContextIndex { clip_space_chain[chain_i - 1] }, test_point))
+                        return {};
+                }
+            }
+
+            // NOTE: Clip regions are in absolute device-pixel coordinates, as is the point once it
+            //       has entered the clip's space, so they compare directly.
+            bool contains = clip_node.data.visit(
+                [&](ClipData const& clip) {
+                    return clip.contains(test_point.to_type<int>().to_type<DevicePixels>());
+                },
+                [&](ClipPathData const& clip_path) {
+                    if (!clip_path.bounding_rect.contains(test_point.to_type<int>().to_type<DevicePixels>()))
+                        return false;
+                    return clip_path.path.contains(test_point, clip_path.fill_rule);
+                });
+            if (!contains)
+                return {};
+        }
     }
 
+    if (!advance_into(refs.spatial))
+        return {};
     return point;
 }
 
