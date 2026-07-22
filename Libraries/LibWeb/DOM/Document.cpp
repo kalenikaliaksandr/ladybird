@@ -9391,10 +9391,13 @@ Utf16String Document::dump_display_list()
         return "No display list"_utf16;
 
     HashMap<size_t, RefPtr<Painting::Paintable const>> context_id_to_paintable;
+    HashMap<size_t, RefPtr<Painting::Paintable const>> effect_id_to_paintable;
     viewport_paintable->for_each_in_inclusive_subtree_of_type<Painting::Paintable>([&](auto const& paintable_box) {
         auto refs = paintable_box.visual_context_refs();
-        auto tip = max(refs.spatial.value(), max(refs.clip.value(), refs.effect.value()));
+        auto tip = max(refs.spatial.value(), refs.clip.value());
         (void)context_id_to_paintable.try_set(tip, paintable_box);
+        if (refs.effect.value())
+            (void)effect_id_to_paintable.try_set(refs.effect.value(), paintable_box);
         return TraversalDecision::Continue;
     });
 
@@ -9407,7 +9410,7 @@ Utf16String Document::dump_display_list()
     Vector<size_t> root_contexts;
 
     display_list->for_each_command_header([&](Painting::DisplayListCommandHeader const& header, ReadonlyBytes) {
-        for (auto ref : { header.context_refs.spatial, header.context_refs.clip, header.context_refs.effect }) {
+        for (auto ref : { header.context_refs.spatial, header.context_refs.clip }) {
             for (size_t node_index = ref.value(); !visited.contains(node_index);) {
                 visited.set(node_index);
                 if (node_index == Painting::VISUAL_VIEWPORT_NODE_INDEX.value()) {
@@ -9435,6 +9438,18 @@ Utf16String Document::dump_display_list()
 
     for (auto root : root_contexts)
         dump_context(root, 1);
+
+    if (visual_context_tree.effect_nodes().size() > 1) {
+        builder.append("\nEffectNodes:\n"sv);
+        for (size_t i = 1; i < visual_context_tree.effect_nodes().size(); ++i) {
+            auto const& node = visual_context_tree.effect_nodes()[i];
+            builder.appendff("  [{}] parent={} ", i, node.parent_index.value());
+            visual_context_tree.dump_effect(Painting::EffectNodeIndex { static_cast<u32>(i) }, builder);
+            if (auto it = effect_id_to_paintable.find(i); it != effect_id_to_paintable.end())
+                builder.appendff(" ({})", it->value->debug_description());
+            builder.append('\n');
+        }
+    }
 
     builder.append("\nDisplayList:\n"sv);
 

@@ -75,10 +75,28 @@ AccumulatedVisualContextTree AccumulatedVisualContextTree::create(TransformData 
     Vector<AccumulatedVisualContextNode> nodes;
     // Visual viewport transform root. This is identity for trees that are not attached to a document viewport.
     nodes.append({ move(visual_viewport_transform), {}, 0, false });
+    // Identity effect sentinel; never applied, so index 0 doubles as "no effect".
+    Vector<EffectNode> effect_nodes;
+    effect_nodes.append({});
     return AccumulatedVisualContextTree {
         s_next_accumulated_visual_context_tree_version.fetch_add(1, AK::MemoryOrder::memory_order_relaxed),
-        move(nodes)
+        move(nodes),
+        move(effect_nodes)
     };
+}
+
+EffectNodeIndex AccumulatedVisualContextTree::append_effect(EffectsData data, EffectNodeIndex parent_index, VisualContextIndex spatial_ref, VisualContextIndex clip_ref)
+{
+    auto index = EffectNodeIndex { static_cast<u32>(m_effect_nodes.size()) };
+    m_effect_nodes.append({
+        .data = move(data),
+        .parent_index = parent_index,
+        .spatial_ref = spatial_ref,
+        .clip_ref = clip_ref,
+        .depth = m_effect_nodes[parent_index.value()].depth + 1,
+        .sequence = static_cast<u32>(m_nodes.size()),
+    });
+    return index;
 }
 
 static CSSPixelRect effective_css_clip_rect(CSSPixelRect const& css_clip)
@@ -364,10 +382,14 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         VisualContextIndex normal;
         VisualContextIndex absolute_position;
         VisualContextIndex fixed_position;
+        EffectNodeIndex normal_effect;
+        EffectNodeIndex absolute_position_effect;
+        EffectNodeIndex fixed_position_effect;
     };
 
     auto build_paintable_box = [&](Paintable& paintable_box, DescendantVisualContexts inherited_contexts, bool may_be_root_element) -> DescendantVisualContexts {
         auto first_visual_context_node_index = visual_context_tree.nodes().size();
+        auto first_effect_node_index = visual_context_tree.effect_nodes().size();
         auto& layout_node = paintable_box.layout_node();
 
         paintable_box.set_enclosing_scroll_node_index({});
@@ -382,18 +404,23 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         bool creates_sticky_scroll_node = paintable_box.is_sticky_position() && paintable_box.has_sticky_insets();
 
         VisualContextIndex inherited_state;
+        EffectNodeIndex inherited_effect;
 
         if (paintable_box.is_fixed_position()) {
             inherited_state = inherited_contexts.fixed_position;
+            inherited_effect = inherited_contexts.fixed_position_effect;
         } else if (paintable_box.is_absolutely_positioned()) {
             inherited_state = inherited_contexts.absolute_position;
+            inherited_effect = inherited_contexts.absolute_position_effect;
         } else {
             // In-flow and relatively positioned boxes inherit the normal descendant context from their visual parent.
             inherited_state = inherited_contexts.normal;
+            inherited_effect = inherited_contexts.normal_effect;
         }
 
         // Build this element's own state from inherited state.
         VisualContextIndex own_state = inherited_state;
+        EffectNodeIndex own_effect = inherited_effect;
 
         // https://drafts.csswg.org/css-anchor-position-1/#default-scroll-shift
         // After layout has been performed for abspos, it is additionally shifted by the default scroll shift, as if
@@ -435,6 +462,8 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         // establishes the relevant containing block.
         VisualContextIndex state_for_absolute_position_descendants = inherited_contexts.absolute_position;
         VisualContextIndex state_for_fixed_position_descendants = inherited_contexts.fixed_position;
+        EffectNodeIndex effect_for_absolute_position_descendants = inherited_contexts.absolute_position_effect;
+        EffectNodeIndex effect_for_fixed_position_descendants = inherited_contexts.fixed_position_effect;
 
         auto append_to_own_and_positioned_descendant_contexts = [&](auto const& data) {
             own_state = append_node(own_state, data);
@@ -453,8 +482,17 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
 
         auto const& computed_values = layout_node.computed_values();
 
-        if (auto effects = compute_effects_data(paintable_box, computed_values, pixel_ratio); effects.has_value())
-            append_to_own_and_positioned_descendant_contexts(effects.value());
+        if (auto effects = compute_effects_data(paintable_box, computed_values, pixel_ratio); effects.has_value()) {
+            // One node per partition mirrors the previous per-chain duplication; each pins the
+            // partition's space and output-clip cut at this point of the walk.
+            auto append_effect_for = [&](VisualContextIndex chain, EffectNodeIndex parent) {
+                auto refs = visual_context_tree.derive_context_refs(chain);
+                return visual_context_tree.append_effect(effects.value(), parent, refs.spatial, refs.clip);
+            };
+            own_effect = append_effect_for(own_state, own_effect);
+            effect_for_absolute_position_descendants = append_effect_for(state_for_absolute_position_descendants, effect_for_absolute_position_descendants);
+            effect_for_fixed_position_descendants = append_effect_for(state_for_fixed_position_descendants, effect_for_fixed_position_descendants);
+        }
 
         if (computed_values_have_transform(computed_values)) {
             if (auto transform_data = compute_transform(paintable_box, computed_values, pixel_ratio); transform_data.has_value()) {
@@ -475,7 +513,9 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         if (auto clip_path_data = compute_basic_shape_clip_path_data(paintable_box, computed_values, converter, scale); clip_path_data.has_value())
             append_to_own_and_positioned_descendant_contexts(clip_path_data.value());
 
-        paintable_box.set_accumulated_visual_context(visual_context_tree.derive_context_refs(own_state));
+        auto own_refs = visual_context_tree.derive_context_refs(own_state);
+        own_refs.effect = own_effect;
+        paintable_box.set_accumulated_visual_context(own_refs);
 
         Vector<CSS::BackgroundLayerData> const* background_layers = &computed_values.background_layers();
         auto is_root_element = may_be_root_element && layout_node.is_root_element();
@@ -535,7 +575,9 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
                             if (node.data.has<ScrollData>())
                                 fixed_background_context = append_node(fixed_background_context, ScrollCompensation { to_scroll_node_index(index) });
                         }
-                        paintable_box.set_fixed_background_visual_context(clip_box_kind, visual_context_tree.derive_context_refs(fixed_background_context));
+                        auto fixed_background_refs = visual_context_tree.derive_context_refs(fixed_background_context);
+                        fixed_background_refs.effect = own_effect;
+                        paintable_box.set_fixed_background_visual_context(clip_box_kind, fixed_background_refs);
                     }
                 }
             }
@@ -566,18 +608,28 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
             paintable_box.set_own_scroll_node_index(to_scroll_node_index(scroll_node_index));
         }
 
-        paintable_box.set_accumulated_visual_context_for_descendants(visual_context_tree.derive_context_refs(state_for_descendants));
+        auto descendants_refs = visual_context_tree.derive_context_refs(state_for_descendants);
+        descendants_refs.effect = own_effect;
+        paintable_box.set_accumulated_visual_context_for_descendants(descendants_refs);
         paintable_box.set_visual_context_node_range(first_visual_context_node_index, visual_context_tree.nodes().size());
+        paintable_box.set_visual_context_effect_node_range(first_effect_node_index, visual_context_tree.effect_nodes().size());
         auto positioning_containing_blocks = layout_node.establishes_positioning_containing_blocks();
-        if (positioning_containing_blocks.absolute)
+        if (positioning_containing_blocks.absolute) {
             state_for_absolute_position_descendants = state_for_descendants;
-        if (positioning_containing_blocks.fixed)
+            effect_for_absolute_position_descendants = own_effect;
+        }
+        if (positioning_containing_blocks.fixed) {
             state_for_fixed_position_descendants = state_for_descendants;
+            effect_for_fixed_position_descendants = own_effect;
+        }
 
         return DescendantVisualContexts {
             state_for_descendants,
             state_for_absolute_position_descendants,
             state_for_fixed_position_descendants,
+            own_effect,
+            effect_for_absolute_position_descendants,
+            effect_for_fixed_position_descendants,
         };
     };
 
@@ -585,6 +637,9 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         viewport_state_for_descendants,
         viewport_state_for_descendants,
         visual_viewport_context_index,
+        ROOT_EFFECT_NODE_INDEX,
+        ROOT_EFFECT_NODE_INDEX,
+        ROOT_EFFECT_NODE_INDEX,
     };
 
     struct PendingPaintable {
@@ -687,7 +742,6 @@ bool update_accumulated_visual_context_values(ViewportPaintable& viewport_painta
     paintable_box.set_has_non_invertible_css_transform(transform.has_value() && !transform->matrix.is_invertible());
 
     bool found_transform = false;
-    bool found_effects = false;
     bool found_perspective = false;
     for (size_t i = begin; i < end; ++i) {
         auto& node = visual_context_tree.node_at(VisualContextIndex { static_cast<u32>(i) });
@@ -696,11 +750,6 @@ bool update_accumulated_visual_context_values(ViewportPaintable& viewport_painta
                 return false;
             *transform_data = *transform;
             found_transform = true;
-        } else if (auto* effects_data = node.data.get_pointer<EffectsData>()) {
-            if (!effects.has_value())
-                return false;
-            *effects_data = *effects;
-            found_effects = true;
         } else if (auto* perspective_data = node.data.get_pointer<PerspectiveData>()) {
             if (!perspective.has_value())
                 return false;
@@ -708,6 +757,16 @@ bool update_accumulated_visual_context_values(ViewportPaintable& viewport_painta
             found_perspective = true;
         }
     }
+
+    auto effect_begin = paintable_box.visual_context_effect_nodes_begin();
+    auto effect_end = paintable_box.visual_context_effect_nodes_end();
+    if (effect_end > visual_context_tree.effect_nodes().size())
+        return false;
+    bool found_effects = effect_begin < effect_end;
+    if (found_effects && !effects.has_value())
+        return false;
+    for (size_t i = effect_begin; i < effect_end; ++i)
+        visual_context_tree.effect_node_at(EffectNodeIndex { static_cast<u32>(i) }).data = *effects;
 
     if (transform.has_value() != found_transform)
         return false;
@@ -769,6 +828,18 @@ bool AccumulatedVisualContextTree::is_compatible_with(AccumulatedVisualContextTr
             return false;
     }
 
+    if (m_effect_nodes.size() != other.m_effect_nodes.size())
+        return false;
+    for (size_t i = 0; i < m_effect_nodes.size(); ++i) {
+        auto const& effect = m_effect_nodes[i];
+        auto const& other_effect = other.m_effect_nodes[i];
+        if (effect.parent_index != other_effect.parent_index
+            || effect.spatial_ref != other_effect.spatial_ref
+            || effect.clip_ref != other_effect.clip_ref
+            || effect.sequence != other_effect.sequence)
+            return false;
+    }
+
     return true;
 }
 
@@ -815,7 +886,6 @@ VisualContextRefs AccumulatedVisualContextTree::derive_context_refs(VisualContex
     VisualContextRefs refs;
     bool found_spatial = false;
     bool found_clip = false;
-    bool found_effect = false;
     // Walking up meets the deepest node of each kind first.
     for (auto i = index;; i = m_nodes[i.value()].parent_index) {
         auto const& node = m_nodes[i.value()];
@@ -824,16 +894,11 @@ VisualContextRefs AccumulatedVisualContextTree::derive_context_refs(VisualContex
                 refs.clip = i;
                 found_clip = true;
             }
-        } else if (node.data.has<EffectsData>()) {
-            if (!found_effect) {
-                refs.effect = i;
-                found_effect = true;
-            }
         } else if (!found_spatial) {
             refs.spatial = i;
             found_spatial = true;
         }
-        if (i == VISUAL_VIEWPORT_NODE_INDEX || (found_spatial && found_clip && found_effect))
+        if (i == VISUAL_VIEWPORT_NODE_INDEX || (found_spatial && found_clip))
             break;
     }
     return refs;
@@ -893,10 +958,6 @@ Optional<Gfx::FloatPoint> AccumulatedVisualContextTree::transform_point_for_hit_
                     return {};
                 if (!clip_path.path.contains(point, clip_path.fill_rule))
                     return {};
-                return point;
-            },
-            [&](EffectsData const&) -> Optional<Gfx::FloatPoint> {
-                // Effects don't affect coordinate transforms
                 return point;
             },
             [&](ScrollCompensation const& compensation) -> Optional<Gfx::FloatPoint> {
@@ -972,8 +1033,7 @@ Gfx::FloatRect AccumulatedVisualContextTree::transform_rect_to_viewport(VisualCo
                     rect.translate_by(shift.masked_offset(scroll_state));
                 },
                 [&](ClipData const&) { /* clips don't affect rect coordinates */ },
-                [&](ClipPathData const&) { /* clip paths don't affect rect coordinates */ },
-                [&](EffectsData const&) { /* effects don't affect rect coordinates */ });
+                [&](ClipPathData const&) { /* clip paths don't affect rect coordinates */ });
         }
         if (i == VISUAL_VIEWPORT_NODE_INDEX.value())
             break;
@@ -1022,27 +1082,6 @@ void AccumulatedVisualContextTree::dump(VisualContextIndex index, StringBuilder&
             auto const& rect = clip_path.bounding_rect;
             builder.appendff("clip_path=[bounds: {},{} {}x{}, path: {}]", rect.x(), rect.y(), rect.width(), rect.height(), clip_path.path.to_svg_string());
         },
-        [&](EffectsData const& effects) {
-            builder.append("effects=["sv);
-            bool has_content = false;
-            if (effects.opacity < 1.0f) {
-                builder.appendff("opacity={}", effects.opacity);
-                has_content = true;
-            }
-            if (effects.blend_mode != Gfx::CompositingAndBlendingOperator::Normal) {
-                if (has_content)
-                    builder.append(' ');
-                builder.appendff("blend_mode={}", static_cast<int>(effects.blend_mode));
-                has_content = true;
-            }
-            if (effects.gfx_filter.has_value()) {
-                if (has_content)
-                    builder.append(' ');
-                builder.append("filter"sv);
-                has_content = true;
-            }
-            builder.append("]"sv);
-        },
         [&](ScrollCompensation const& compensation) {
             builder.appendff("scroll_compensation(node_index={})", compensation.scroll_node_index.value());
         },
@@ -1052,6 +1091,31 @@ void AccumulatedVisualContextTree::dump(VisualContextIndex index, StringBuilder&
                 shift.compensate_horizontal_scroll ? ""sv : ", no-x"sv,
                 shift.compensate_vertical_scroll ? ""sv : ", no-y"sv);
         });
+}
+
+void AccumulatedVisualContextTree::dump_effect(EffectNodeIndex index, StringBuilder& builder) const
+{
+    auto const& node = m_effect_nodes[index.value()];
+    auto const& effects = node.data;
+    builder.append("effects=["sv);
+    bool has_content = false;
+    if (effects.opacity < 1.0f) {
+        builder.appendff("opacity={}", effects.opacity);
+        has_content = true;
+    }
+    if (effects.blend_mode != Gfx::CompositingAndBlendingOperator::Normal) {
+        if (has_content)
+            builder.append(' ');
+        builder.appendff("blend_mode={}", static_cast<int>(effects.blend_mode));
+        has_content = true;
+    }
+    if (effects.gfx_filter.has_value()) {
+        if (has_content)
+            builder.append(' ');
+        builder.append("filter"sv);
+        has_content = true;
+    }
+    builder.appendff("] spatial_ref={} clip_ref={} sequence={}", node.spatial_ref.value(), node.clip_ref.value(), node.sequence);
 }
 
 }
@@ -1197,6 +1261,31 @@ ErrorOr<Web::Painting::AnchorScrollShift> decode(Decoder& decoder)
 }
 
 template<>
+ErrorOr<void> encode(Encoder& encoder, Web::Painting::EffectNode const& node)
+{
+    TRY(encoder.encode(node.data));
+    TRY(encoder.encode(node.parent_index));
+    TRY(encoder.encode(node.spatial_ref));
+    TRY(encoder.encode(node.clip_ref));
+    TRY(encoder.encode(node.depth));
+    TRY(encoder.encode(node.sequence));
+    return {};
+}
+
+template<>
+ErrorOr<Web::Painting::EffectNode> decode(Decoder& decoder)
+{
+    return Web::Painting::EffectNode {
+        .data = TRY(decoder.decode<Web::Painting::EffectsData>()),
+        .parent_index = TRY(decoder.decode<Web::Painting::EffectNodeIndex>()),
+        .spatial_ref = TRY(decoder.decode<Web::Painting::VisualContextIndex>()),
+        .clip_ref = TRY(decoder.decode<Web::Painting::VisualContextIndex>()),
+        .depth = TRY(decoder.decode<u32>()),
+        .sequence = TRY(decoder.decode<u32>()),
+    };
+}
+
+template<>
 ErrorOr<void> encode(Encoder& encoder, Web::Painting::AccumulatedVisualContextNode const& node)
 {
     TRY(encoder.encode(node.data));
@@ -1222,6 +1311,7 @@ ErrorOr<void> encode(Encoder& encoder, Web::Painting::AccumulatedVisualContextTr
 {
     TRY(encoder.encode(tree.m_version));
     TRY(encoder.encode(tree.m_nodes));
+    TRY(encoder.encode(tree.m_effect_nodes));
     return {};
 }
 
@@ -1230,11 +1320,14 @@ ErrorOr<Web::Painting::AccumulatedVisualContextTree> decode(Decoder& decoder)
 {
     auto version = TRY(decoder.decode<u64>());
     auto nodes = TRY(decoder.decode<Vector<Web::Painting::AccumulatedVisualContextNode>>());
+    auto effect_nodes = TRY(decoder.decode<Vector<Web::Painting::EffectNode>>());
     if (nodes.is_empty())
         return Error::from_string_literal("IPC decode: AccumulatedVisualContextTree missing visual viewport node");
     if (!nodes[Web::Painting::VISUAL_VIEWPORT_NODE_INDEX.value()].data.has<Web::Painting::TransformData>())
         return Error::from_string_literal("IPC decode: AccumulatedVisualContextTree visual viewport node is not a transform");
-    return Web::Painting::AccumulatedVisualContextTree { version, move(nodes) };
+    if (effect_nodes.is_empty())
+        return Error::from_string_literal("IPC decode: AccumulatedVisualContextTree missing identity effect node");
+    return Web::Painting::AccumulatedVisualContextTree { version, move(nodes), move(effect_nodes) };
 }
 
 }

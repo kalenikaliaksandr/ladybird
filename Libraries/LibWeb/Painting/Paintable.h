@@ -441,6 +441,14 @@ public:
     [[nodiscard]] size_t visual_context_nodes_begin() const { return m_visual_context_nodes_begin; }
     [[nodiscard]] size_t visual_context_nodes_end() const { return m_visual_context_nodes_end; }
 
+    void set_visual_context_effect_node_range(size_t begin, size_t end)
+    {
+        m_visual_context_effect_nodes_begin = begin;
+        m_visual_context_effect_nodes_end = end;
+    }
+    [[nodiscard]] size_t visual_context_effect_nodes_begin() const { return m_visual_context_effect_nodes_begin; }
+    [[nodiscard]] size_t visual_context_effect_nodes_end() const { return m_visual_context_effect_nodes_end; }
+
     [[nodiscard]] ScrollNodeIndex enclosing_scroll_node_index() const { return m_enclosing_scroll_node_index; }
 
     [[nodiscard]] ScrollNodeIndex own_scroll_node_index() const { return m_own_scroll_node_index; }
@@ -518,6 +526,8 @@ private:
     Array<Optional<VisualContextRefs>, 4> m_fixed_background_visual_contexts;
     size_t m_visual_context_nodes_begin { 0 };
     size_t m_visual_context_nodes_end { 0 };
+    size_t m_visual_context_effect_nodes_begin { 0 };
+    size_t m_visual_context_effect_nodes_end { 0 };
 
     Optional<BordersDataWithElementKind> m_override_borders_data;
     Optional<TableCellCoordinates> m_table_cell_coordinates;

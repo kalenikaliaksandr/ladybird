@@ -100,7 +100,7 @@ struct AnchorScrollShift {
     Gfx::FloatPoint masked_offset(ScrollStateSnapshot const&) const;
 };
 
-using VisualContextData = Variant<ScrollData, ClipData, TransformData, PerspectiveData, ClipPathData, EffectsData, ScrollCompensation, AnchorScrollShift>;
+using VisualContextData = Variant<ScrollData, ClipData, TransformData, PerspectiveData, ClipPathData, ScrollCompensation, AnchorScrollShift>;
 
 Optional<TransformData> compute_transform(Paintable const&, CSS::ComputedValues const&, double pixel_ratio);
 
@@ -109,6 +109,20 @@ struct AccumulatedVisualContextNode {
     VisualContextIndex parent_index {};
     size_t depth { 0 };
     bool has_empty_effective_clip { false };
+};
+
+// Opacity/blend/filter groups live in their own node list, referencing the main tree for the
+// space their layer is established in and for the output-clip cut point: that clip and its
+// ancestors apply outside the group's layer, deeper clips apply to the layer's contents.
+struct EffectNode {
+    EffectsData data;
+    EffectNodeIndex parent_index { ROOT_EFFECT_NODE_INDEX };
+    VisualContextIndex spatial_ref { VISUAL_VIEWPORT_NODE_INDEX };
+    VisualContextIndex clip_ref { VISUAL_VIEWPORT_NODE_INDEX };
+    u32 depth { 0 };
+    // Number of main-tree nodes that existed when this node was appended; orders effect nodes
+    // relative to main-tree nodes during replay without stamping the main tree.
+    u32 sequence { 0 };
 };
 
 class AccumulatedVisualContextTree {
@@ -137,6 +151,7 @@ public:
     u64 version() const { return m_version; }
 
     WEB_API VisualContextIndex append(VisualContextData data, VisualContextIndex parent_index);
+    WEB_API EffectNodeIndex append_effect(EffectsData, EffectNodeIndex parent_index, VisualContextIndex spatial_ref, VisualContextIndex clip_ref);
     WEB_API void set_visual_viewport_transform(TransformData);
     WEB_API bool is_compatible_with(AccumulatedVisualContextTree const&) const;
     WEB_API void reuse_version_from(AccumulatedVisualContextTree const&);
@@ -145,14 +160,20 @@ public:
     AccumulatedVisualContextNode& node_at(VisualContextIndex index) { return m_nodes[index.value()]; }
     ReadonlySpan<AccumulatedVisualContextNode> nodes() const { return m_nodes.span(); }
 
+    EffectNode const& effect_node_at(EffectNodeIndex index) const { return m_effect_nodes[index.value()]; }
+    EffectNode& effect_node_at(EffectNodeIndex index) { return m_effect_nodes[index.value()]; }
+    ReadonlySpan<EffectNode> effect_nodes() const { return m_effect_nodes.span(); }
+
     VisualContextIndex find_common_ancestor(VisualContextIndex a, VisualContextIndex b) const;
     Optional<Gfx::FloatPoint> transform_point_for_hit_test(VisualContextRefs, Gfx::FloatPoint, ScrollStateSnapshot const&, ClipBehavior = ClipBehavior::Respect) const;
     Gfx::FloatPoint inverse_transform_point(VisualContextRefs, Gfx::FloatPoint) const;
     Gfx::FloatRect transform_rect_to_viewport(VisualContextRefs, Gfx::FloatRect const&, ScrollStateSnapshot const&, IncludeVisualViewportTransform = IncludeVisualViewportTransform::Yes) const;
     void dump(VisualContextIndex, StringBuilder&) const;
+    void dump_effect(EffectNodeIndex, StringBuilder&) const;
 
-    // The deepest coordinate-affecting, clip, and effect node on the chain from the root to the
-    // given context; the context itself is always one of the three.
+    // The deepest coordinate-affecting and clip node on the chain from the root to the given
+    // context. Effects live in their own node list, so the returned effect reference is always
+    // the identity sentinel; the builder tracks effect contexts explicitly.
     WEB_API VisualContextRefs derive_context_refs(VisualContextIndex) const;
 
     bool has_empty_effective_clip(VisualContextIndex i) const { return m_nodes[i.value()].has_empty_effective_clip; }
@@ -165,9 +186,10 @@ public:
     }
 
 private:
-    AccumulatedVisualContextTree(u64 version, Vector<AccumulatedVisualContextNode>&& nodes)
+    AccumulatedVisualContextTree(u64 version, Vector<AccumulatedVisualContextNode>&& nodes, Vector<EffectNode>&& effect_nodes)
         : m_version(version)
         , m_nodes(move(nodes))
+        , m_effect_nodes(move(effect_nodes))
     {
     }
 
@@ -175,6 +197,7 @@ private:
 
     u64 m_version { 0 };
     Vector<AccumulatedVisualContextNode> m_nodes;
+    Vector<EffectNode> m_effect_nodes;
 
     template<typename T>
     friend ErrorOr<void> IPC::encode(IPC::Encoder&, T const&);

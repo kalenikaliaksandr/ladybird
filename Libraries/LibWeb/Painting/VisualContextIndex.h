@@ -35,15 +35,20 @@ constexpr VisualContextIndex to_visual_context_index(ScrollNodeIndex index)
     return VisualContextIndex { index.value() };
 }
 
+// Index of an effect node in the tree's effect node list. Node 0 is the identity sentinel, which
+// is never applied, so 0 doubles as "no effect".
+AK_TYPEDEF_DISTINCT_ORDERED_ID(u32, EffectNodeIndex);
+static constexpr EffectNodeIndex ROOT_EFFECT_NODE_INDEX { 0 };
+
 // The per-kind references a display list command records: the deepest coordinate-affecting
-// (spatial), clip, and effect node applying to it. Until the tree is physically split all three
-// index the same tree; 0 means "none" for clip and effect, and the viewport transform root for
-// spatial. Inspector overlays record { spatial, 0, 0 } so replay applies coordinates but neither
-// clips nor effects.
+// (spatial), clip, and effect node applying to it. Spatial and clip references index the main
+// tree (0 means "none" for clip and the viewport transform root for spatial); the effect
+// reference indexes the effect node list. Inspector overlays record { spatial, 0, 0 } so replay
+// applies coordinates but neither clips nor effects.
 struct VisualContextRefs {
     VisualContextIndex spatial { VISUAL_VIEWPORT_NODE_INDEX };
     VisualContextIndex clip { VISUAL_VIEWPORT_NODE_INDEX };
-    VisualContextIndex effect { VISUAL_VIEWPORT_NODE_INDEX };
+    EffectNodeIndex effect { ROOT_EFFECT_NODE_INDEX };
 
     bool operator==(VisualContextRefs const&) const = default;
 };

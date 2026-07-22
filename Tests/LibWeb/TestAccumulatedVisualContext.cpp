@@ -41,7 +41,7 @@ TEST_CASE(compatibility_requires_same_shape)
     EXPECT(!shorter_tree.is_compatible_with(tree));
 
     auto different_type_tree = AccumulatedVisualContextTree::create();
-    different_type_tree.append(EffectsData {}, VISUAL_VIEWPORT_NODE_INDEX);
+    different_type_tree.append(PerspectiveData { Gfx::FloatMatrix4x4::identity() }, VISUAL_VIEWPORT_NODE_INDEX);
     EXPECT(!different_type_tree.is_compatible_with(tree));
 
     auto different_parent_tree = AccumulatedVisualContextTree::create();

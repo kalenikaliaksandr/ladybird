@@ -72,7 +72,7 @@ static Gfx::MaskKind mask_type_to_gfx_mask_kind(CSS::MaskType mask_type)
     }
 }
 
-static void build_nested_svg_visual_context_tree_for_subtree(AccumulatedVisualContextTree& visual_context_tree, Paintable& paintable_box, VisualContextIndex inherited_state, float pixel_ratio)
+static void build_nested_svg_visual_context_tree_for_subtree(AccumulatedVisualContextTree& visual_context_tree, Paintable& paintable_box, VisualContextIndex inherited_state, EffectNodeIndex inherited_effect, float pixel_ratio)
 {
     auto const& computed_values = paintable_box.computed_values();
     if (computed_values.filter().has_filters())
@@ -88,14 +88,19 @@ static void build_nested_svg_visual_context_tree_for_subtree(AccumulatedVisualCo
     };
 
     auto own_state = inherited_state;
-    if (effects.needs_layer())
-        own_state = visual_context_tree.append(move(effects), inherited_state);
+    auto own_effect = inherited_effect;
+    if (effects.needs_layer()) {
+        auto inherited_refs = visual_context_tree.derive_context_refs(own_state);
+        own_effect = visual_context_tree.append_effect(move(effects), inherited_effect, inherited_refs.spatial, inherited_refs.clip);
+    }
 
-    paintable_box.set_accumulated_visual_context(visual_context_tree.derive_context_refs(own_state));
-    paintable_box.set_accumulated_visual_context_for_descendants(visual_context_tree.derive_context_refs(own_state));
+    auto own_refs = visual_context_tree.derive_context_refs(own_state);
+    own_refs.effect = own_effect;
+    paintable_box.set_accumulated_visual_context(own_refs);
+    paintable_box.set_accumulated_visual_context_for_descendants(own_refs);
 
     paintable_box.for_each_child_of_type<Paintable>([&](Paintable& child) {
-        build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, child, own_state, pixel_ratio);
+        build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, child, own_state, own_effect, pixel_ratio);
         return IterationDecision::Continue;
     });
 }
@@ -104,7 +109,7 @@ static AccumulatedVisualContextTree build_nested_svg_visual_context_tree(Paintab
 {
     auto visual_context_tree = AccumulatedVisualContextTree::create();
     auto pixel_ratio = root_paintable.document().page().client().device_pixels_per_css_pixel();
-    build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, root_paintable, {}, pixel_ratio);
+    build_nested_svg_visual_context_tree_for_subtree(visual_context_tree, root_paintable, {}, ROOT_EFFECT_NODE_INDEX, pixel_ratio);
 
     return visual_context_tree;
 }

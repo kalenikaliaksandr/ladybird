@@ -172,15 +172,6 @@ void DisplayListPlayer::execute_impl(
     auto apply_accumulated_visual_context =
         [&](VisualContextIndex node_index, AccumulatedVisualContextNode const& node) {
             node.data.visit(
-                [&](EffectsData const& effects) {
-                    play_command(ApplyEffects {
-                                     .opacity = effects.opacity,
-                                     .compositing_and_blending_operator = effects.blend_mode,
-                                     .has_filter = effects.gfx_filter.has_value(),
-                                     .filter_data = {},
-                                 },
-                        effects.gfx_filter.has_value() ? &effects.gfx_filter.value() : nullptr);
-                },
                 [&](PerspectiveData const& perspective) {
                     play_command(Save {});
                     apply_transform({ 0, 0 }, perspective.matrix);
@@ -225,25 +216,43 @@ void DisplayListPlayer::execute_impl(
                 });
         };
 
-    // The chain of visual context nodes currently applied to the canvas, root node included and
-    // first. Every entry holds exactly one canvas save (a Save, or the layer pushed by
-    // ApplyEffects), so unwinding is one Restore per popped entry.
-    Vector<VisualContextIndex, 32> applied_chain;
-    Vector<VisualContextIndex, 32> target_chain;
+    // One entry of the applied/target chain: a main-tree node (spatial or clip kind) or an effect
+    // node. Every applied entry holds exactly one canvas save (a Save, or the layer pushed by
+    // ApplyEffects), so unwinding is one Restore per popped entry. The merge key interleaves
+    // effect nodes with main-tree nodes in build order: an effect node's sequence is the main-tree
+    // size at its append, so it sorts before the main-tree node of that index, and effect nodes
+    // sharing a sequence sort by their own index.
+    enum class ChainEntryKind : u8 {
+        Spatial,
+        Clip,
+        Effect,
+    };
+    struct ChainEntry {
+        ChainEntryKind kind { ChainEntryKind::Spatial };
+        u32 index { 0 };
+        u64 merge_key { 0 };
+
+        bool operator==(ChainEntry const& other) const { return kind == other.kind && index == other.index; }
+    };
+    auto main_tree_merge_key = [](VisualContextIndex index) { return (static_cast<u64>(index.value()) << 32) | 0xFFFFFFFFu; };
+    auto effect_merge_key = [](EffectNode const& node, EffectNodeIndex index) { return (static_cast<u64>(node.sequence) << 32) | index.value(); };
+
+    Vector<ChainEntry, 32> applied_chain;
+    Vector<ChainEntry, 32> target_chain;
     VisualContextRefs applied_refs;
     bool has_applied_context { false };
 
-    // Collects, per reference, the nodes of its own kind on its root chain, merged in ancestor
-    // order. The references of one recording all lie on a single chain whose tip is the deepest of
-    // the three, so the merge reproduces the recorded chain exactly; inspector-overlay references
+    // Collects, per reference, the nodes of its own kind on its root chain, merged in build order.
+    // The spatial and clip references of one recording lie on a single main-tree chain, so the
+    // merge reproduces the recorded interleave exactly; inspector-overlay references
     // { spatial, 0, 0 } naturally yield only the coordinate-affecting nodes.
     auto build_target_chain = [&](VisualContextRefs refs) {
         target_chain.clear_with_capacity();
         for (auto index = refs.spatial;; index = visual_context_tree.node_at(index).parent_index) {
             auto const& node = visual_context_tree.node_at(index);
             bool is_clip_kind = node.data.has<ClipData>() || node.data.has<ClipPathData>();
-            if (!is_clip_kind && !node.data.has<EffectsData>())
-                target_chain.append(index);
+            if (!is_clip_kind)
+                target_chain.append({ ChainEntryKind::Spatial, index.value(), main_tree_merge_key(index) });
             if (index == VISUAL_VIEWPORT_NODE_INDEX)
                 break;
         }
@@ -251,20 +260,17 @@ void DisplayListPlayer::execute_impl(
             for (auto index = refs.clip;; index = visual_context_tree.node_at(index).parent_index) {
                 auto const& node = visual_context_tree.node_at(index);
                 if (node.data.has<ClipData>() || node.data.has<ClipPathData>())
-                    target_chain.append(index);
+                    target_chain.append({ ChainEntryKind::Clip, index.value(), main_tree_merge_key(index) });
                 if (index == VISUAL_VIEWPORT_NODE_INDEX)
                     break;
             }
         }
-        if (refs.effect != VISUAL_VIEWPORT_NODE_INDEX) {
-            for (auto index = refs.effect;; index = visual_context_tree.node_at(index).parent_index) {
-                if (visual_context_tree.node_at(index).data.has<EffectsData>())
-                    target_chain.append(index);
-                if (index == VISUAL_VIEWPORT_NODE_INDEX)
-                    break;
-            }
+        for (auto index = refs.effect; index != ROOT_EFFECT_NODE_INDEX;) {
+            auto const& node = visual_context_tree.effect_node_at(index);
+            target_chain.append({ ChainEntryKind::Effect, index.value(), effect_merge_key(node, index) });
+            index = node.parent_index;
         }
-        AK::quick_sort(target_chain, [](auto a, auto b) { return a.value() < b.value(); });
+        AK::quick_sort(target_chain, [](auto const& a, auto const& b) { return a.merge_key < b.merge_key; });
     };
 
     auto restore_to_length = [&](size_t length) {
@@ -295,30 +301,42 @@ void DisplayListPlayer::execute_impl(
 
         restore_to_length(common_prefix_length);
 
+        size_t last_spatial_position = 0;
+        for (size_t i = 0; i < target_chain.size(); ++i) {
+            if (target_chain[i].kind == ChainEntryKind::Spatial)
+                last_spatial_position = i;
+        }
+
         for (size_t i = common_prefix_length; i < target_chain.size(); ++i) {
-            auto node_index = target_chain[i];
-            auto const& node = visual_context_tree.node_at(node_index);
-            if (bounding_rect.has_value() && node.data.has<EffectsData>()) {
-                // A coordinate-affecting node sits below this effect exactly when the target's
-                // deepest spatial reference is deeper than the effect, in which case the bounding
-                // rect cannot be culled against the current canvas state.
-                auto can_cull_before_effect = refs.spatial.value() <= node_index.value();
-                if (bounding_rect->is_empty() || (can_cull_before_effect && would_be_fully_clipped_by_painter(*bounding_rect))) {
-                    restore_to_length(common_prefix_length);
-                    // The canvas is unwound to the shared prefix, so the applied state has to
-                    // follow: keeping the previous, deeper context would let the next switch reuse
-                    // nodes the unwind just popped.
-                    if (applied_chain.is_empty()) {
+            auto const& entry = target_chain[i];
+            if (entry.kind == ChainEntryKind::Effect) {
+                auto const& effect_node = visual_context_tree.effect_node_at(EffectNodeIndex { entry.index });
+                if (bounding_rect.has_value()) {
+                    // The bounding rect can only be culled against the current canvas state when no
+                    // coordinate-affecting node follows this effect in the chain.
+                    auto can_cull_before_effect = last_spatial_position < i;
+                    if (bounding_rect->is_empty() || (can_cull_before_effect && would_be_fully_clipped_by_painter(*bounding_rect))) {
+                        restore_to_length(common_prefix_length);
+                        // The canvas is unwound to the shared prefix; dropping the applied flag
+                        // keeps the fast path from reusing the pre-cull context while the chain
+                        // vector still enables prefix reuse on the next switch.
                         has_applied_context = false;
-                    } else {
-                        applied_refs = visual_context_tree.derive_context_refs(applied_chain.last());
-                        has_applied_context = true;
+                        return SwitchResult::CulledByEffect;
                     }
-                    return SwitchResult::CulledByEffect;
                 }
+                auto const& effects = effect_node.data;
+                play_command(ApplyEffects {
+                                 .opacity = effects.opacity,
+                                 .compositing_and_blending_operator = effects.blend_mode,
+                                 .has_filter = effects.gfx_filter.has_value(),
+                                 .filter_data = {},
+                             },
+                    effects.gfx_filter.has_value() ? &effects.gfx_filter.value() : nullptr);
+            } else {
+                auto node_index = VisualContextIndex { entry.index };
+                apply_accumulated_visual_context(node_index, visual_context_tree.node_at(node_index));
             }
-            apply_accumulated_visual_context(node_index, node);
-            applied_chain.append(node_index);
+            applied_chain.append(entry);
         }
 
         applied_refs = refs;

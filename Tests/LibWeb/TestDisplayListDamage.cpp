@@ -169,7 +169,7 @@ TEST_CASE(unrelated_inserted_visual_context_does_not_damage_commands)
     auto old_command_context = old_visual_context_tree.append(TransformData { Gfx::FloatMatrix4x4::identity(), {} }, VISUAL_VIEWPORT_NODE_INDEX);
 
     auto new_visual_context_tree = AccumulatedVisualContextTree::create();
-    new_visual_context_tree.append(EffectsData { .opacity = 0.5f, .blend_mode = Gfx::CompositingAndBlendingOperator::Normal, .gfx_filter = {} }, VISUAL_VIEWPORT_NODE_INDEX);
+    new_visual_context_tree.append_effect(EffectsData { .opacity = 0.5f, .blend_mode = Gfx::CompositingAndBlendingOperator::Normal, .gfx_filter = {} }, ROOT_EFFECT_NODE_INDEX, VISUAL_VIEWPORT_NODE_INDEX, VISUAL_VIEWPORT_NODE_INDEX);
     auto new_command_context = new_visual_context_tree.append(TransformData { Gfx::FloatMatrix4x4::identity(), {} }, VISUAL_VIEWPORT_NODE_INDEX);
 
     auto old_display_list = command_bytes(FillRect { { 10, 10, 20, 20 }, Gfx::Color::Red }, Gfx::IntRect { 10, 10, 20, 20 }, old_visual_context_tree.derive_context_refs(old_command_context));

@@ -135,21 +135,6 @@ static bool visual_context_data_is_equal(VisualContextIndex a_index, VisualConte
                 && data.fill_rule == other->fill_rule
                 && data.path.serialize_to_bytes() == other->path.serialize_to_bytes();
         },
-        [&](EffectsData const& data) {
-            auto const* other = b.get_pointer<EffectsData>();
-            if (!other || data.gfx_filter.has_value() != other->gfx_filter.has_value())
-                return false;
-            if (data.gfx_filter.has_value()) {
-                Function<u64(Gfx::DecodedImageFrame const&)> encode_image = [](Gfx::DecodedImageFrame const& image) -> u64 {
-                    return reinterpret_cast<FlatPtr>(&image);
-                };
-                if (Gfx::serialize_filter(*data.gfx_filter, encode_image) != Gfx::serialize_filter(*other->gfx_filter, encode_image))
-                    return false;
-            }
-            return other
-                && data.opacity == other->opacity
-                && data.blend_mode == other->blend_mode;
-        },
         [&](ScrollCompensation const& data) {
             auto const* other = b.get_pointer<ScrollCompensation>();
             return other
@@ -163,6 +148,55 @@ static bool visual_context_data_is_equal(VisualContextIndex a_index, VisualConte
                 && data.compensate_vertical_scroll == other->compensate_vertical_scroll
                 && data.masked_offset(a_scroll_state) == other->masked_offset(b_scroll_state);
         });
+}
+
+static bool effects_data_is_equal(EffectsData const& a, EffectsData const& b)
+{
+    if (a.gfx_filter.has_value() != b.gfx_filter.has_value())
+        return false;
+    if (a.gfx_filter.has_value()) {
+        Function<u64(Gfx::DecodedImageFrame const&)> encode_image = [](Gfx::DecodedImageFrame const& image) -> u64 {
+            return reinterpret_cast<FlatPtr>(&image);
+        };
+        if (Gfx::serialize_filter(*a.gfx_filter, encode_image) != Gfx::serialize_filter(*b.gfx_filter, encode_image))
+            return false;
+    }
+    return a.opacity == b.opacity && a.blend_mode == b.blend_mode;
+}
+
+// Structural comparison of two effect chains: depth and sequence pin each node's interleave
+// position; the spatial_ref/clip_ref links are covered by the command-level spatial and clip
+// chain comparisons, since they always lie on those chains.
+static bool effect_chains_are_compatible(EffectNodeIndex old_index, AccumulatedVisualContextTree const& old_tree, EffectNodeIndex new_index, AccumulatedVisualContextTree const& new_tree)
+{
+    for (;;) {
+        if ((old_index == ROOT_EFFECT_NODE_INDEX) != (new_index == ROOT_EFFECT_NODE_INDEX))
+            return false;
+        if (old_index == ROOT_EFFECT_NODE_INDEX)
+            return true;
+        auto const& old_node = old_tree.effect_node_at(old_index);
+        auto const& new_node = new_tree.effect_node_at(new_index);
+        if (old_node.depth != new_node.depth || old_node.sequence != new_node.sequence)
+            return false;
+        old_index = old_node.parent_index;
+        new_index = new_node.parent_index;
+    }
+}
+
+static bool effect_chains_are_equal(EffectNodeIndex old_index, AccumulatedVisualContextTree const& old_tree, EffectNodeIndex new_index, AccumulatedVisualContextTree const& new_tree)
+{
+    for (;;) {
+        if ((old_index == ROOT_EFFECT_NODE_INDEX) != (new_index == ROOT_EFFECT_NODE_INDEX))
+            return false;
+        if (old_index == ROOT_EFFECT_NODE_INDEX)
+            return true;
+        auto const& old_node = old_tree.effect_node_at(old_index);
+        auto const& new_node = new_tree.effect_node_at(new_index);
+        if (!effects_data_is_equal(old_node.data, new_node.data))
+            return false;
+        old_index = old_node.parent_index;
+        new_index = new_node.parent_index;
+    }
 }
 
 static bool visual_context_chains_are_compatible(VisualContextIndex old_index, AccumulatedVisualContextTree const& old_tree, VisualContextIndex new_index, AccumulatedVisualContextTree const& new_tree)
@@ -219,7 +253,7 @@ Optional<Gfx::IntRect> compute_display_list_damage(
         return display_list_commands_are_equal(old_command, new_command)
             && visual_context_chains_are_compatible(old_refs.spatial, old_visual_context_tree, new_refs.spatial, new_visual_context_tree)
             && visual_context_chains_are_compatible(old_refs.clip, old_visual_context_tree, new_refs.clip, new_visual_context_tree)
-            && visual_context_chains_are_compatible(old_refs.effect, old_visual_context_tree, new_refs.effect, new_visual_context_tree);
+            && effect_chains_are_compatible(old_refs.effect, old_visual_context_tree, new_refs.effect, new_visual_context_tree);
     };
     size_t common_prefix_length = 0;
     auto common_length = min(old_commands.size(), new_commands.size());
@@ -255,7 +289,7 @@ Optional<Gfx::IntRect> compute_display_list_damage(
         auto const& new_refs = new_command.header.context_refs;
         if (visual_context_chains_are_equal(old_refs.spatial, old_visual_context_tree, old_scroll_state, new_refs.spatial, new_visual_context_tree, new_scroll_state)
             && visual_context_chains_are_equal(old_refs.clip, old_visual_context_tree, old_scroll_state, new_refs.clip, new_visual_context_tree, new_scroll_state)
-            && visual_context_chains_are_equal(old_refs.effect, old_visual_context_tree, old_scroll_state, new_refs.effect, new_visual_context_tree, new_scroll_state))
+            && effect_chains_are_equal(old_refs.effect, old_visual_context_tree, new_refs.effect, new_visual_context_tree))
             return;
         if (!old_command.header.has_bounding_rect || !new_command.header.has_bounding_rect) {
             if (old_command.header.type == DisplayListCommandType::CompositorViewportScrollbar || old_command.header.type == DisplayListCommandType::PaintScrollBar)
