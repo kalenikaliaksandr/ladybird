@@ -419,8 +419,18 @@ public:
     Optional<CachedCommandRange> valid_cached_commands(PaintPhase, u64 source_display_list_id, bool phase_has_empty_effective_clip) const;
     void set_cached_commands(PaintPhase, u64 display_list_id, DisplayListCommandRange, VisualContextIndex recorded_context_index, bool captured_under_empty_effective_clip) const;
 
-    void set_fixed_background_visual_context(VisualContextIndex index) { m_fixed_background_visual_context = index; }
-    [[nodiscard]] Optional<VisualContextIndex> fixed_background_visual_context() const { return m_fixed_background_visual_context; }
+    // One context per background clip box: fixed layers share the element's scroll-compensated
+    // space but each clips to the box its background-clip resolves to.
+    void set_fixed_background_visual_context(CSS::BackgroundBox clip_box, VisualContextIndex index) { m_fixed_background_visual_contexts[to_underlying(clip_box)] = index; }
+    [[nodiscard]] Optional<VisualContextIndex> fixed_background_visual_context(CSS::BackgroundBox clip_box) const { return m_fixed_background_visual_contexts[to_underlying(clip_box)]; }
+    [[nodiscard]] bool has_fixed_background_visual_context() const
+    {
+        for (auto const& context : m_fixed_background_visual_contexts) {
+            if (context.has_value())
+                return true;
+        }
+        return false;
+    }
 
     // Range of visual context nodes this box appended during the last tree build, used for in-place value patching.
     void set_visual_context_node_range(size_t begin, size_t end)
@@ -505,7 +515,7 @@ private:
     VisualContextIndex m_own_scroll_node_index {};
     VisualContextIndex m_accumulated_visual_context_index { VISUAL_VIEWPORT_NODE_INDEX };
     VisualContextIndex m_accumulated_visual_context_for_descendants_index { VISUAL_VIEWPORT_NODE_INDEX };
-    Optional<VisualContextIndex> m_fixed_background_visual_context;
+    Array<Optional<VisualContextIndex>, 4> m_fixed_background_visual_contexts;
     size_t m_visual_context_nodes_begin { 0 };
     size_t m_visual_context_nodes_end { 0 };
 

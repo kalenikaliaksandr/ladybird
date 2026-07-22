@@ -19,6 +19,7 @@
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
+#include <LibWeb/Painting/BackgroundPainting.h>
 #include <LibWeb/Painting/Blending.h>
 #include <LibWeb/Painting/DevicePixelConverter.h>
 #include <LibWeb/Painting/Paintable.h>
@@ -510,15 +511,32 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
                 }
 
                 if (!has_transform_ancestor) {
-                    // Build a context that negates all scroll nodes in the ancestor chain. This keeps the background
-                    // fixed relative to the viewport.
-                    auto fixed_background_context = own_state;
-                    for (auto index = own_state; index.value(); index = visual_context_tree.node_at(index).parent_index) {
-                        auto const& node = visual_context_tree.node_at(index);
-                        if (node.data.has<ScrollData>())
-                            fixed_background_context = append_node(fixed_background_context, ScrollCompensation { index });
+                    // One context per background clip box used by fixed layers: the clip node keeps
+                    // the layer clipped to the element's box in its scrolled space, while the
+                    // compensation nodes negate every ancestor scroll so the background itself
+                    // stays stationary relative to the viewport.
+                    Array<bool, 4> used_clip_boxes {};
+                    for (auto const& layer : *background_layers) {
+                        if (layer.background_image && layer.attachment == CSS::BackgroundAttachment::Fixed)
+                            used_clip_boxes[to_underlying(layer.clip)] = true;
                     }
-                    paintable_box.set_fixed_background_visual_context(fixed_background_context);
+                    for (size_t clip_box_value = 0; clip_box_value < used_clip_boxes.size(); ++clip_box_value) {
+                        if (!used_clip_boxes[clip_box_value])
+                            continue;
+                        auto clip_box_kind = static_cast<CSS::BackgroundBox>(clip_box_value);
+                        auto fixed_background_context = own_state;
+                        if (!is_root_element) {
+                            auto clip_box = background_clip_box(clip_box_kind, paintable_box);
+                            fixed_background_context = append_node(fixed_background_context,
+                                ClipData { converter.rounded_device_rect(clip_box.rect), clip_box.radii.as_corners(converter) });
+                        }
+                        for (auto index = own_state; index.value(); index = visual_context_tree.node_at(index).parent_index) {
+                            auto const& node = visual_context_tree.node_at(index);
+                            if (node.data.has<ScrollData>())
+                                fixed_background_context = append_node(fixed_background_context, ScrollCompensation { index });
+                        }
+                        paintable_box.set_fixed_background_visual_context(clip_box_kind, fixed_background_context);
+                    }
                 }
             }
         }

@@ -47,6 +47,10 @@ struct ResolvedBackground {
 
 WEB_API ResolvedBackground resolve_background_layers(Vector<CSS::BackgroundLayerData> const& layers, Paintable const& paintable_box, Color background_color, CSS::BackgroundBox background_color_clip, CSSPixelRect const& border_rect, BorderRadiiData const& border_radii);
 
+// The box a background layer's background-clip resolves to, in absolute CSS pixels - the same
+// geometry paint_background clips each layer to.
+WEB_API BackgroundBox background_clip_box(CSS::BackgroundBox, Paintable const&);
+
 WEB_API void paint_background(DisplayListRecordingContext&, Paintable const&, CSS::ImageRendering, ResolvedBackground const&, BorderRadiiData const&);
 
 }

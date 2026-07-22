@@ -99,6 +99,15 @@ static BackgroundBox get_box(CSS::BackgroundBox box_clip, BackgroundBox border_b
     }
 }
 
+BackgroundBox background_clip_box(CSS::BackgroundBox box_clip, Paintable const& paintable_box)
+{
+    // Mirrors Paintable::paint_background: borderless boxes paint their background within the
+    // padding box so border-radius leaves no gap to the border.
+    auto background_rect = paintable_box.has_css_borders() ? paintable_box.absolute_border_box_rect() : paintable_box.absolute_padding_box_rect();
+    BackgroundBox border_box { background_rect, paintable_box.normalized_border_radii_data() };
+    return get_box(box_clip, border_box, paintable_box);
+}
+
 // https://www.w3.org/TR/css-backgrounds-3/#backgrounds
 void paint_background(DisplayListRecordingContext& context, Paintable const& paintable_box, CSS::ImageRendering image_rendering, ResolvedBackground const& resolved_background, BorderRadiiData const& border_radii)
 {
@@ -174,6 +183,22 @@ void paint_background(DisplayListRecordingContext& context, Paintable const& pai
 
     // Note: Background layers are ordered front-to-back, so we paint them in reverse
     for (auto& layer : resolved_background.layers.in_reverse()) {
+        // Fixed layers paint under the fixed background context, whose chain already carries this
+        // layer's clip box pinned in the element's scrolled space: the clip keeps tracking the
+        // element while the image stays viewport-stationary. The switch happens before any scoped
+        // save so no recorded save spans a context change.
+        auto original_context = display_list_recorder.accumulated_visual_context();
+        bool layer_uses_fixed_context = false;
+        if (layer.attachment == CSS::BackgroundAttachment::Fixed) {
+            if (auto fixed_context = paintable_box.fixed_background_visual_context(layer.clip); fixed_context.has_value()) {
+                display_list_recorder.set_accumulated_visual_context(*fixed_context);
+                layer_uses_fixed_context = true;
+            }
+        }
+        ScopeGuard restore_context = [&] {
+            display_list_recorder.set_accumulated_visual_context(original_context);
+        };
+
         DisplayListRecorderStateSaver state { display_list_recorder };
 
         // Clip
@@ -181,9 +206,10 @@ void paint_background(DisplayListRecordingContext& context, Paintable const& pai
 
         CSSPixelRect const& css_clip_rect = clip_box.rect;
         auto clip_rect = context.rounded_device_rect(css_clip_rect);
-        ScopedCornerRadiusClip corner_clip { context, context.rounded_device_rect(css_clip_rect), clip_box.radii, Gfx::CornerClip::Outside, !is_root_element };
+        ScopedCornerRadiusClip corner_clip { context, context.rounded_device_rect(css_clip_rect), clip_box.radii, Gfx::CornerClip::Outside, !is_root_element && !layer_uses_fixed_context };
         if (!is_root_element) {
-            display_list_recorder.add_clip_rect(clip_rect.to_type<int>());
+            if (!layer_uses_fixed_context)
+                display_list_recorder.add_clip_rect(clip_rect.to_type<int>());
 
             if (layer.clip == CSS::BackgroundBox::BorderBox) {
                 // Shrink the effective clip rect if to account for the bits the borders will definitely paint over
@@ -196,15 +222,8 @@ void paint_background(DisplayListRecordingContext& context, Paintable const& pai
         auto image_rect = layer.image_rect;
         auto background_positioning_area = layer.background_positioning_area;
 
-        auto original_context = display_list_recorder.accumulated_visual_context();
-        ScopeGuard restore_context = [&] {
-            display_list_recorder.set_accumulated_visual_context(original_context);
-        };
-
         switch (layer.attachment) {
         case CSS::BackgroundAttachment::Fixed:
-            if (auto fixed_context = paintable_box.fixed_background_visual_context(); fixed_context.has_value())
-                display_list_recorder.set_accumulated_visual_context(*fixed_context);
             break;
         case CSS::BackgroundAttachment::Local:
             if (!paintable_box.is_viewport_paintable()) {
@@ -475,7 +494,7 @@ ResolvedBackground resolve_background_layers(Vector<CSS::BackgroundLayerData> co
         // If the background-attachment value for this layer is fixed, then this property has no effect: in this case
         // the background positioning area is the initial containing block.
         if (layer.attachment == CSS::BackgroundAttachment::Fixed
-            && paintable_box.fixed_background_visual_context().has_value()) {
+            && paintable_box.has_fixed_background_visual_context()) {
             if (auto navigable = paintable_box.navigable()) {
                 auto viewport_size = navigable->viewport_rect().size();
                 background_positioning_area = CSSPixelRect { { 0, 0 }, viewport_size };
