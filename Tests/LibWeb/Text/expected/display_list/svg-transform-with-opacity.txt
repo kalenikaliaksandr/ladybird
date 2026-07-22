@@ -6,8 +6,6 @@ AccumulatedVisualContext Tree:
 
 EffectNodes:
   [1] parent=0 effects=[opacity=0.5] spatial_ref=1 clip_ref=2 sequence=3 (SVGPathPaintable(SVGGeometryBox<rect>))
-  [2] parent=0 effects=[opacity=0.5] spatial_ref=1 clip_ref=0 sequence=3
-  [3] parent=0 effects=[opacity=0.5] spatial_ref=0 clip_ref=0 sequence=3
 
 DisplayList:
 SaveLayer@0/0/0

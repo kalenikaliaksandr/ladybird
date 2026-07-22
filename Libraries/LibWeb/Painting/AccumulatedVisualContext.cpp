@@ -382,9 +382,9 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         VisualContextIndex normal;
         VisualContextIndex absolute_position;
         VisualContextIndex fixed_position;
-        EffectNodeIndex normal_effect;
-        EffectNodeIndex absolute_position_effect;
-        EffectNodeIndex fixed_position_effect;
+        // One field serves all three partitions: an effect applies to the element's content as a
+        // whole, including positioned descendants, which cannot escape its stacking context.
+        EffectNodeIndex effect;
     };
 
     auto build_paintable_box = [&](Paintable& paintable_box, DescendantVisualContexts inherited_contexts, bool may_be_root_element) -> DescendantVisualContexts {
@@ -404,23 +404,19 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         bool creates_sticky_scroll_node = paintable_box.is_sticky_position() && paintable_box.has_sticky_insets();
 
         VisualContextIndex inherited_state;
-        EffectNodeIndex inherited_effect;
 
         if (paintable_box.is_fixed_position()) {
             inherited_state = inherited_contexts.fixed_position;
-            inherited_effect = inherited_contexts.fixed_position_effect;
         } else if (paintable_box.is_absolutely_positioned()) {
             inherited_state = inherited_contexts.absolute_position;
-            inherited_effect = inherited_contexts.absolute_position_effect;
         } else {
             // In-flow and relatively positioned boxes inherit the normal descendant context from their visual parent.
             inherited_state = inherited_contexts.normal;
-            inherited_effect = inherited_contexts.normal_effect;
         }
 
         // Build this element's own state from inherited state.
         VisualContextIndex own_state = inherited_state;
-        EffectNodeIndex own_effect = inherited_effect;
+        EffectNodeIndex own_effect = inherited_contexts.effect;
 
         // https://drafts.csswg.org/css-anchor-position-1/#default-scroll-shift
         // After layout has been performed for abspos, it is additionally shifted by the default scroll shift, as if
@@ -462,8 +458,6 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         // establishes the relevant containing block.
         VisualContextIndex state_for_absolute_position_descendants = inherited_contexts.absolute_position;
         VisualContextIndex state_for_fixed_position_descendants = inherited_contexts.fixed_position;
-        EffectNodeIndex effect_for_absolute_position_descendants = inherited_contexts.absolute_position_effect;
-        EffectNodeIndex effect_for_fixed_position_descendants = inherited_contexts.fixed_position_effect;
 
         auto append_to_own_and_positioned_descendant_contexts = [&](auto const& data) {
             own_state = append_node(own_state, data);
@@ -483,15 +477,12 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         auto const& computed_values = layout_node.computed_values();
 
         if (auto effects = compute_effects_data(paintable_box, computed_values, pixel_ratio); effects.has_value()) {
-            // One node per partition mirrors the previous per-chain duplication; each pins the
-            // partition's space and output-clip cut at this point of the walk.
-            auto append_effect_for = [&](VisualContextIndex chain, EffectNodeIndex parent) {
-                auto refs = visual_context_tree.derive_context_refs(chain);
-                return visual_context_tree.append_effect(effects.value(), parent, refs.spatial, refs.clip);
-            };
-            own_effect = append_effect_for(own_state, own_effect);
-            effect_for_absolute_position_descendants = append_effect_for(state_for_absolute_position_descendants, effect_for_absolute_position_descendants);
-            effect_for_fixed_position_descendants = append_effect_for(state_for_fixed_position_descendants, effect_for_fixed_position_descendants);
+            // One node covers the whole element, including out-of-flow descendants: a single CSS
+            // opacity/blend/filter group composites once. The layer is pinned to the element's
+            // inherited state at this point of the walk - the element's own transform and clips,
+            // appended below, apply inside the group, while ancestor clips bound its output.
+            auto inherited_refs = visual_context_tree.derive_context_refs(own_state);
+            own_effect = visual_context_tree.append_effect(effects.value(), own_effect, inherited_refs.spatial, inherited_refs.clip);
         }
 
         if (computed_values_have_transform(computed_values)) {
@@ -614,22 +605,16 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         paintable_box.set_visual_context_node_range(first_visual_context_node_index, visual_context_tree.nodes().size());
         paintable_box.set_visual_context_effect_node_range(first_effect_node_index, visual_context_tree.effect_nodes().size());
         auto positioning_containing_blocks = layout_node.establishes_positioning_containing_blocks();
-        if (positioning_containing_blocks.absolute) {
+        if (positioning_containing_blocks.absolute)
             state_for_absolute_position_descendants = state_for_descendants;
-            effect_for_absolute_position_descendants = own_effect;
-        }
-        if (positioning_containing_blocks.fixed) {
+        if (positioning_containing_blocks.fixed)
             state_for_fixed_position_descendants = state_for_descendants;
-            effect_for_fixed_position_descendants = own_effect;
-        }
 
         return DescendantVisualContexts {
             state_for_descendants,
             state_for_absolute_position_descendants,
             state_for_fixed_position_descendants,
             own_effect,
-            effect_for_absolute_position_descendants,
-            effect_for_fixed_position_descendants,
         };
     };
 
@@ -637,8 +622,6 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         viewport_state_for_descendants,
         viewport_state_for_descendants,
         visual_viewport_context_index,
-        ROOT_EFFECT_NODE_INDEX,
-        ROOT_EFFECT_NODE_INDEX,
         ROOT_EFFECT_NODE_INDEX,
     };
 

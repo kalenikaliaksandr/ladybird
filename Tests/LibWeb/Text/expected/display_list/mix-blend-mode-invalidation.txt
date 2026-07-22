@@ -19,8 +19,6 @@ AccumulatedVisualContext Tree:
 
 EffectNodes:
   [1] parent=0 effects=[blend_mode=2] spatial_ref=1 clip_ref=0 sequence=2 (PaintableWithLines(BlockContainer<DIV>#box))
-  [2] parent=0 effects=[blend_mode=2] spatial_ref=1 clip_ref=0 sequence=2
-  [3] parent=0 effects=[blend_mode=2] spatial_ref=0 clip_ref=0 sequence=2
 
 DisplayList:
 SaveLayer@0/0/0
