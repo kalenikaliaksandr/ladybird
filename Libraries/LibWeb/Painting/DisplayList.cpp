@@ -182,12 +182,6 @@ void DisplayListPlayer::execute_impl(
                     if (!offset.is_zero())
                         play_command(Translate { .delta = offset.to_type<int>() });
                 },
-                [&](ScrollCompensation const& compensation) {
-                    play_command(Save {});
-                    auto offset = -scroll_state.device_offset_for_index(compensation.scroll_node_index);
-                    if (!offset.is_zero())
-                        play_command(Translate { .delta = offset.to_type<int>() });
-                },
                 [&](AnchorScrollShift const& shift) {
                     play_command(Save {});
                     auto offset = shift.masked_offset(scroll_state);
@@ -309,7 +303,25 @@ void DisplayListPlayer::execute_impl(
                     effects.gfx_filter.has_value() ? &effects.gfx_filter.value() : nullptr);
             } else if (entry.kind == ChainEntryKind::Clip) {
                 auto const& clip_node = visual_context_tree.clip_node_at(ClipNodeIndex { entry.index });
+                // A clip is expressed in its spatial_ref space. When that space is deeper than the
+                // command's - fixed backgrounds record commands in the viewport space while their
+                // clips stay pinned to the scrolled box - bridge with the live translations of the
+                // unapplied nodes; the builder guarantees no transform sits between the two spaces.
+                Gfx::IntPoint unapplied_delta;
+                if (clip_node.spatial_ref != refs.spatial
+                    && visual_context_tree.find_common_ancestor(clip_node.spatial_ref, refs.spatial) != clip_node.spatial_ref) {
+                    Gfx::FloatPoint unapplied_offset;
+                    for (auto index = clip_node.spatial_ref; index != refs.spatial && index != VISUAL_VIEWPORT_NODE_INDEX; index = visual_context_tree.node_at(index).parent_index) {
+                        visual_context_tree.node_at(index).data.visit(
+                            [&](ScrollData const&) { unapplied_offset.translate_by(scroll_state.device_offset_for_index(to_scroll_node_index(index))); },
+                            [&](AnchorScrollShift const& shift) { unapplied_offset.translate_by(shift.masked_offset(scroll_state)); },
+                            [&](auto const&) {});
+                    }
+                    unapplied_delta = unapplied_offset.to_type<int>();
+                }
                 play_command(Save {});
+                if (!unapplied_delta.is_zero())
+                    play_command(Translate { .delta = unapplied_delta });
                 clip_node.data.visit(
                     [&](ClipData const& clip) {
                         if (clip.corner_radii.has_any_radius()) {
@@ -325,6 +337,8 @@ void DisplayListPlayer::execute_impl(
                     [&](ClipPathData const& clip_path) {
                         add_clip_path(clip_path.path, clip_path.fill_rule);
                     });
+                if (!unapplied_delta.is_zero())
+                    play_command(Translate { .delta = { -unapplied_delta.x(), -unapplied_delta.y() } });
             } else {
                 auto node_index = VisualContextIndex { entry.index };
                 apply_accumulated_visual_context(node_index, visual_context_tree.node_at(node_index));

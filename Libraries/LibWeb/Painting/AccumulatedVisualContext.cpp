@@ -552,10 +552,12 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
                 }
 
                 if (!has_transform_ancestor) {
-                    // One context per background clip box used by fixed layers: the clip node keeps
-                    // the layer clipped to the element's box in its scrolled space, while the
-                    // compensation nodes negate every ancestor scroll so the background itself
-                    // stays stationary relative to the viewport.
+                    // One context per background clip box used by fixed layers. The background is
+                    // stationary relative to the viewport: its commands reference the viewport root
+                    // as their space, while the clip node stays pinned in the element's scrolled
+                    // space - the clip tracks the scrolled box, the background does not. No
+                    // transform sits between the two spaces (checked above), so replay bridges
+                    // them with scroll translations alone.
                     Array<bool, 4> used_clip_boxes {};
                     for (auto const& layer : *background_layers) {
                         if (layer.background_image && layer.attachment == CSS::BackgroundAttachment::Fixed)
@@ -572,13 +574,7 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
                                 ClipData { converter.rounded_device_rect(clip_box.rect), clip_box.radii.as_corners(converter) },
                                 own_clip, own_state);
                         }
-                        auto fixed_background_context = own_state;
-                        for (auto index = own_state; index.value(); index = visual_context_tree.node_at(index).parent_index) {
-                            auto const& node = visual_context_tree.node_at(index);
-                            if (node.data.has<ScrollData>())
-                                fixed_background_context = append_node(fixed_background_context, ScrollCompensation { to_scroll_node_index(index) });
-                        }
-                        paintable_box.set_fixed_background_visual_context(clip_box_kind, { .spatial = fixed_background_context, .clip = fixed_background_clip, .effect = own_effect });
+                        paintable_box.set_fixed_background_visual_context(clip_box_kind, { .spatial = VISUAL_VIEWPORT_NODE_INDEX, .clip = fixed_background_clip, .effect = own_effect });
                     }
                 }
             }
@@ -983,10 +979,6 @@ Optional<Gfx::FloatPoint> AccumulatedVisualContextTree::transform_point_for_hit_
                 point = transformed + transform.origin;
                 return point;
             },
-            [&](ScrollCompensation const& compensation) -> Optional<Gfx::FloatPoint> {
-                point.translate_by(scroll_state.device_offset_for_index(compensation.scroll_node_index));
-                return point;
-            },
             [&](AnchorScrollShift const& shift) -> Optional<Gfx::FloatPoint> {
                 point.translate_by(-shift.masked_offset(scroll_state));
                 return point;
@@ -1049,9 +1041,6 @@ Gfx::FloatRect AccumulatedVisualContextTree::transform_rect_to_viewport(VisualCo
                 [&](ScrollData const&) {
                     rect.translate_by(scroll_state.device_offset_for_index(ScrollNodeIndex { static_cast<u32>(i) }));
                 },
-                [&](ScrollCompensation const& compensation) {
-                    rect.translate_by(-scroll_state.device_offset_for_index(compensation.scroll_node_index));
-                },
                 [&](AnchorScrollShift const& shift) {
                     rect.translate_by(shift.masked_offset(scroll_state));
                 });
@@ -1089,9 +1078,6 @@ void AccumulatedVisualContextTree::dump(VisualContextIndex index, StringBuilder&
             auto const& matrix = transform.matrix.elements();
             auto const& origin = transform.origin;
             builder.appendff("transform=[{},{},{},{},{},{}] origin=({},{})", matrix[0][0], matrix[0][1], matrix[1][0], matrix[1][1], matrix[0][3], matrix[1][3], origin.x(), origin.y());
-        },
-        [&](ScrollCompensation const& compensation) {
-            builder.appendff("scroll_compensation(node_index={})", compensation.scroll_node_index.value());
         },
         [&](AnchorScrollShift const& shift) {
             builder.appendff("anchor_scroll_shift(node_index={}{}{}{})", shift.scroll_node_index.value(),
@@ -1249,21 +1235,6 @@ ErrorOr<Web::Painting::EffectsData> decode(Decoder& decoder)
         .opacity = TRY(decoder.decode<float>()),
         .blend_mode = TRY(decoder.decode<Gfx::CompositingAndBlendingOperator>()),
         .gfx_filter = TRY(decoder.decode<Optional<Gfx::Filter>>()),
-    };
-}
-
-template<>
-ErrorOr<void> encode(Encoder& encoder, Web::Painting::ScrollCompensation const& data)
-{
-    TRY(encoder.encode(data.scroll_node_index));
-    return {};
-}
-
-template<>
-ErrorOr<Web::Painting::ScrollCompensation> decode(Decoder& decoder)
-{
-    return Web::Painting::ScrollCompensation {
-        .scroll_node_index = TRY(decoder.decode<Web::Painting::ScrollNodeIndex>()),
     };
 }
 

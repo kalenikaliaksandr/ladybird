@@ -19,7 +19,6 @@ After background-attachment change:
 AccumulatedVisualContext Tree:
   [0] transform=[1,0,0,1,0,0] origin=(0,0) (ViewportPaintable(Viewport<#document>))
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
-      [2] scroll_compensation(node_index=1)
 
 ClipNodes:
   [1] parent=0 clip=[0,0 200x200] spatial_ref=1 sequence=4
@@ -30,8 +29,8 @@ SaveLayer@0/0/0
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x213]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 800x200]
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=0 rect=[0,0 200x200]
-  Save@2/1/0
-    PaintLinearGradient@2/1/0 rect=[0,0 800x600]
-  Restore@2/1/0
+  Save@0/1/0
+    PaintLinearGradient@0/1/0 rect=[0,0 800x600]
+  Restore@0/1/0
 Restore@0/0/0
 

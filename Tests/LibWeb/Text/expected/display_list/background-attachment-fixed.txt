@@ -1,19 +1,18 @@
 AccumulatedVisualContext Tree:
   [0] transform=[1,0,0,1,0,0] origin=(0,0) (ViewportPaintable(Viewport<#document>))
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
-      [2] scroll_compensation(node_index=1)
 
 ClipNodes:
-  [1] parent=0 clip=[0,13 800x1200] spatial_ref=1 sequence=5
+  [1] parent=0 clip=[0,13 800x1200] spatial_ref=1 sequence=4
 
 DisplayList:
 SaveLayer@0/0/0
   CompositorWheelHitTestTarget@0/0/0 target_scroll_node_index=1 rect=[0,0 800x600]
   CompositorScrollNode@0/0/0 scroll_node_index=1 parent_scroll_node_index=0 scrollport_rect=[0,0 800x600] max_scroll_offset=[0,613] is_viewport=true
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=1 rect=[0,0 800x1213]
-  Save@2/0/0
-    PaintLinearGradient@2/0/0 rect=[0,0 800x600]
-  Restore@2/0/0
+  Save@0/0/0
+    PaintLinearGradient@0/0/0 rect=[0,0 800x600]
+  Restore@0/0/0
   CompositorWheelHitTestTarget@1/0/0 target_scroll_node_index=1 rect=[0,13 800x1200]
 Restore@0/0/0
 

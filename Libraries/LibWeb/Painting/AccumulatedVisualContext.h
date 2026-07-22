@@ -83,12 +83,6 @@ struct EffectsData {
     }
 };
 
-// Translates by another scroll node's negated offset during display list replay, keeping fixed
-// backgrounds stationary relative to the viewport regardless of scroll position.
-struct ScrollCompensation {
-    ScrollNodeIndex scroll_node_index;
-};
-
 // One scroll node's contribution to the default scroll shift of an anchor-positioned box, masked to the axes in which
 // the box compensates for scroll. Nodes that move the box but not its default anchor contribute negated.
 struct AnchorScrollShift {
@@ -100,7 +94,7 @@ struct AnchorScrollShift {
     Gfx::FloatPoint masked_offset(ScrollStateSnapshot const&) const;
 };
 
-using VisualContextData = Variant<ScrollData, TransformData, PerspectiveData, ScrollCompensation, AnchorScrollShift>;
+using VisualContextData = Variant<ScrollData, TransformData, PerspectiveData, AnchorScrollShift>;
 
 Optional<TransformData> compute_transform(Paintable const&, CSS::ComputedValues const&, double pixel_ratio);
 
@@ -264,10 +258,6 @@ WEB_API ErrorOr<void> encode(Encoder&, Web::Painting::EffectsData const&);
 template<>
 WEB_API ErrorOr<Web::Painting::EffectsData> decode(Decoder&);
 
-template<>
-WEB_API ErrorOr<void> encode(Encoder&, Web::Painting::ScrollCompensation const&);
-template<>
-WEB_API ErrorOr<Web::Painting::ScrollCompensation> decode(Decoder&);
 
 template<>
 WEB_API ErrorOr<void> encode(Encoder&, Web::Painting::AnchorScrollShift const&);
