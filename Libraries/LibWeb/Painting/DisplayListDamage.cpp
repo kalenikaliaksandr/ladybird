@@ -115,7 +115,7 @@ static bool visual_context_data_is_equal(VisualContextIndex a_index, VisualConte
             // The payload carries no offset key; replay reads the offset stored under each node's
             // own index, so that is what has to match.
             return other && data.is_sticky == other->is_sticky
-                && a_scroll_state.device_offset_for_index(a_index) == b_scroll_state.device_offset_for_index(b_index);
+                && a_scroll_state.device_offset_for_index(to_scroll_node_index(a_index)) == b_scroll_state.device_offset_for_index(to_scroll_node_index(b_index));
         },
         [&](ClipData const& data) {
             auto const* other = b.get_pointer<ClipData>();

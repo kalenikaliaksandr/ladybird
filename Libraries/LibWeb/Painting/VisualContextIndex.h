@@ -16,4 +16,23 @@ AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, VisualContextIndex);
 // references to scroll nodes, which can never sit at the root.
 static constexpr VisualContextIndex VISUAL_VIEWPORT_NODE_INDEX { 0 };
 
+// A reference to a scroll or sticky node specifically, as opposed to an arbitrary node of the
+// tree: these are the references that key the scroll offset snapshot and appear in compositor
+// metadata command payloads. Values share the tree's index space, but the distinct type keeps
+// scroll-node references compiler-checked apart from recording context indices.
+AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, ScrollNodeIndex);
+
+// The root transform node can never be a scroll node, so index 0 doubles as "no scroll node".
+static constexpr ScrollNodeIndex NO_SCROLL_NODE_INDEX { 0 };
+
+constexpr ScrollNodeIndex to_scroll_node_index(VisualContextIndex index)
+{
+    return ScrollNodeIndex { index.value() };
+}
+
+constexpr VisualContextIndex to_visual_context_index(ScrollNodeIndex index)
+{
+    return VisualContextIndex { index.value() };
+}
+
 }

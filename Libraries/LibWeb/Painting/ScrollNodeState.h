@@ -45,7 +45,7 @@ struct StickyConstraints {
 class ScrollNodeState {
 public:
     ScrollNodeState() = default;
-    ScrollNodeState(VisualContextIndex node_index, Paintable const& paintable_box, bool sticky, ScrollStateSlot parent_slot);
+    ScrollNodeState(ScrollNodeIndex node_index, Paintable const& paintable_box, bool sticky, ScrollStateSlot parent_slot);
 
     RefPtr<Paintable const> paintable_box_if_alive() const;
 
@@ -58,7 +58,7 @@ public:
         m_own_offset = offset;
     }
 
-    VisualContextIndex node_index() const { return m_node_index; }
+    ScrollNodeIndex node_index() const { return m_node_index; }
 
     ScrollStateSlot parent_slot() const { return m_parent_slot; }
 
@@ -69,7 +69,7 @@ public:
 private:
     WeakPtr<Paintable> m_paintable_box;
     bool m_sticky { false };
-    VisualContextIndex m_node_index;
+    ScrollNodeIndex m_node_index;
     ScrollStateSlot m_parent_slot { NO_SCROLL_STATE_SLOT };
     CSSPixelPoint m_own_offset;
     Optional<StickyConstraints> m_sticky_constraints;

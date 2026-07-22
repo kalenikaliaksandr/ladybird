@@ -219,20 +219,20 @@ void ViewportPaintable::clear_scroll_state()
     m_needs_to_refresh_scroll_state = true;
 }
 
-void ViewportPaintable::register_scroll_node(AccumulatedVisualContextTree& visual_context_tree_being_built, VisualContextIndex node_index, Paintable const& paintable_box, VisualContextIndex parent_index)
+void ViewportPaintable::register_scroll_node(AccumulatedVisualContextTree& visual_context_tree_being_built, VisualContextIndex node_index, Paintable const& paintable_box, ScrollNodeIndex parent_index)
 {
-    auto slot = m_scroll_state.register_scroll_node(node_index, paintable_box, visual_context_tree_being_built.scroll_state_slot_for_node(parent_index));
+    auto slot = m_scroll_state.register_scroll_node(to_scroll_node_index(node_index), paintable_box, visual_context_tree_being_built.scroll_state_slot_for_node(parent_index));
     visual_context_tree_being_built.node_at(node_index).data.get<ScrollData>().state_slot = slot;
 }
 
-void ViewportPaintable::register_sticky_node(AccumulatedVisualContextTree& visual_context_tree_being_built, VisualContextIndex node_index, Paintable const& paintable_box, VisualContextIndex parent_index)
+void ViewportPaintable::register_sticky_node(AccumulatedVisualContextTree& visual_context_tree_being_built, VisualContextIndex node_index, Paintable const& paintable_box, ScrollNodeIndex parent_index)
 {
-    auto slot = m_scroll_state.register_sticky_node(node_index, paintable_box, visual_context_tree_being_built.scroll_state_slot_for_node(parent_index));
+    auto slot = m_scroll_state.register_sticky_node(to_scroll_node_index(node_index), paintable_box, visual_context_tree_being_built.scroll_state_slot_for_node(parent_index));
     visual_context_tree_being_built.node_at(node_index).data.get<ScrollData>().state_slot = slot;
     precompute_sticky_constraints(slot, paintable_box);
 }
 
-CSSPixelPoint ViewportPaintable::cumulative_scroll_offset_for_node(VisualContextIndex scroll_node_index) const
+CSSPixelPoint ViewportPaintable::cumulative_scroll_offset_for_node(ScrollNodeIndex scroll_node_index) const
 {
     return m_scroll_state.cumulative_offset(visual_context_tree().scroll_state_slot_for_node(scroll_node_index));
 }

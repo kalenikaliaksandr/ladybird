@@ -9,7 +9,7 @@
 
 namespace Web::Painting {
 
-ScrollNodeState::ScrollNodeState(VisualContextIndex node_index, Paintable const& paintable_box, bool sticky, ScrollStateSlot parent_slot)
+ScrollNodeState::ScrollNodeState(ScrollNodeIndex node_index, Paintable const& paintable_box, bool sticky, ScrollStateSlot parent_slot)
     : m_paintable_box(paintable_box)
     , m_sticky(sticky)
     , m_node_index(node_index)

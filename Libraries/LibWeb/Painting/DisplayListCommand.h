@@ -609,8 +609,8 @@ struct CompositorScrollNode {
 
     UniqueNodeID document_id;
     UniqueNodeID scrollable_node_id;
-    VisualContextIndex scroll_node_index;
-    VisualContextIndex parent_scroll_node_index;
+    ScrollNodeIndex scroll_node_index;
+    ScrollNodeIndex parent_scroll_node_index;
     Gfx::IntRect scrollport_rect;
     Gfx::FloatPoint max_scroll_offset;
     CompositorScrollNodeKind scroll_node_kind { CompositorScrollNodeKind::Element };
@@ -627,9 +627,9 @@ struct CompositorStickyArea {
     static constexpr DisplayListCommandType command_type = DisplayListCommandType::CompositorStickyArea;
 
     UniqueNodeID document_id;
-    VisualContextIndex scroll_node_index;
-    VisualContextIndex parent_scroll_node_index;
-    VisualContextIndex nearest_scrolling_ancestor_index;
+    ScrollNodeIndex scroll_node_index;
+    ScrollNodeIndex parent_scroll_node_index;
+    ScrollNodeIndex nearest_scrolling_ancestor_index;
     Gfx::FloatPoint position_relative_to_scroll_ancestor;
     Gfx::FloatSize border_box_size;
     Gfx::FloatSize scrollport_size;
@@ -657,7 +657,7 @@ struct CompositorWheelHitTestTarget {
     static constexpr DisplayListCommandType command_type = DisplayListCommandType::CompositorWheelHitTestTarget;
 
     UniqueNodeID document_id;
-    VisualContextIndex target_scroll_node_index;
+    ScrollNodeIndex target_scroll_node_index;
     Gfx::FloatRect rect;
 
     void dump(StringBuilder&) const;
@@ -668,7 +668,7 @@ struct CompositorWheelHitTestTargetWithCornerRadii {
     static constexpr DisplayListCommandType command_type = DisplayListCommandType::CompositorWheelHitTestTargetWithCornerRadii;
 
     UniqueNodeID document_id;
-    VisualContextIndex target_scroll_node_index;
+    ScrollNodeIndex target_scroll_node_index;
     Gfx::FloatRect rect;
     Gfx::CornerRadii corner_radii;
 
@@ -689,7 +689,7 @@ struct CompositorViewportScrollbar {
     static constexpr DisplayListCommandType command_type = DisplayListCommandType::CompositorViewportScrollbar;
 
     UniqueNodeID document_id;
-    VisualContextIndex scroll_node_index;
+    ScrollNodeIndex scroll_node_index;
     Gfx::IntRect gutter_rect;
     Gfx::IntRect thumb_rect;
     Gfx::IntRect expanded_gutter_rect;
@@ -708,7 +708,7 @@ struct PaintScrollBar {
     static constexpr StringView command_name = "PaintScrollBar"sv;
     static constexpr DisplayListCommandType command_type = DisplayListCommandType::PaintScrollBar;
 
-    VisualContextIndex scroll_node_index;
+    ScrollNodeIndex scroll_node_index;
     Gfx::IntRect gutter_rect;
     Gfx::IntRect thumb_rect;
     double scroll_size;

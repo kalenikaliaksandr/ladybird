@@ -356,7 +356,7 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
     viewport_paintable.set_enclosing_scroll_node_index({});
     auto viewport_state_for_descendants = append_node(visual_viewport_context_index, ScrollData { .is_sticky = false });
     viewport_paintable.register_scroll_node(visual_context_tree, viewport_state_for_descendants, viewport_paintable, {});
-    viewport_paintable.set_own_scroll_node_index(viewport_state_for_descendants);
+    viewport_paintable.set_own_scroll_node_index(to_scroll_node_index(viewport_state_for_descendants));
     viewport_paintable.set_accumulated_visual_context(VISUAL_VIEWPORT_NODE_INDEX);
     viewport_paintable.set_accumulated_visual_context_for_descendants(viewport_state_for_descendants);
 
@@ -447,8 +447,8 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
             sticky_scroll_node_index = append_node(own_state, ScrollData { .is_sticky = true });
             own_state = sticky_scroll_node_index;
             viewport_paintable.register_sticky_node(visual_context_tree, sticky_scroll_node_index, paintable_box, nearest_ancestor_scroll_node_index);
-            paintable_box.set_enclosing_scroll_node_index(sticky_scroll_node_index);
-            paintable_box.set_own_scroll_node_index(sticky_scroll_node_index);
+            paintable_box.set_enclosing_scroll_node_index(to_scroll_node_index(sticky_scroll_node_index));
+            paintable_box.set_own_scroll_node_index(to_scroll_node_index(sticky_scroll_node_index));
         }
 
         auto const& computed_values = layout_node.computed_values();
@@ -533,7 +533,7 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
                         for (auto index = own_state; index.value(); index = visual_context_tree.node_at(index).parent_index) {
                             auto const& node = visual_context_tree.node_at(index);
                             if (node.data.has<ScrollData>())
-                                fixed_background_context = append_node(fixed_background_context, ScrollCompensation { index });
+                                fixed_background_context = append_node(fixed_background_context, ScrollCompensation { to_scroll_node_index(index) });
                         }
                         paintable_box.set_fixed_background_visual_context(clip_box_kind, fixed_background_context);
                     }
@@ -559,11 +559,11 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         }
 
         if (paintable_box.has_scrollable_overflow()) {
-            auto parent_index = creates_sticky_scroll_node ? sticky_scroll_node_index : nearest_ancestor_scroll_node_index;
+            auto parent_index = creates_sticky_scroll_node ? to_scroll_node_index(sticky_scroll_node_index) : nearest_ancestor_scroll_node_index;
             auto scroll_node_index = append_node(state_for_descendants, ScrollData { .is_sticky = false });
             state_for_descendants = scroll_node_index;
             viewport_paintable.register_scroll_node(visual_context_tree, scroll_node_index, paintable_box, parent_index);
-            paintable_box.set_own_scroll_node_index(scroll_node_index);
+            paintable_box.set_own_scroll_node_index(to_scroll_node_index(scroll_node_index));
         }
 
         paintable_box.set_accumulated_visual_context_for_descendants(state_for_descendants);
@@ -828,7 +828,7 @@ Optional<Gfx::FloatPoint> AccumulatedVisualContextTree::transform_point_for_hit_
                 return point;
             },
             [&](ScrollData const&) -> Optional<Gfx::FloatPoint> {
-                point.translate_by(-scroll_state.device_offset_for_index(node_index));
+                point.translate_by(-scroll_state.device_offset_for_index(to_scroll_node_index(node_index)));
                 return point;
             },
             [&](TransformData const& transform) -> Optional<Gfx::FloatPoint> {
@@ -930,7 +930,7 @@ Gfx::FloatRect AccumulatedVisualContextTree::transform_rect_to_viewport(VisualCo
                     rect = affine.map(rect);
                 },
                 [&](ScrollData const&) {
-                    rect.translate_by(scroll_state.device_offset_for_index(VisualContextIndex { i }));
+                    rect.translate_by(scroll_state.device_offset_for_index(ScrollNodeIndex { i }));
                 },
                 [&](ScrollCompensation const& compensation) {
                     rect.translate_by(-scroll_state.device_offset_for_index(compensation.scroll_node_index));
@@ -1138,7 +1138,7 @@ template<>
 ErrorOr<Web::Painting::ScrollCompensation> decode(Decoder& decoder)
 {
     return Web::Painting::ScrollCompensation {
-        .scroll_node_index = TRY(decoder.decode<Web::Painting::VisualContextIndex>()),
+        .scroll_node_index = TRY(decoder.decode<Web::Painting::ScrollNodeIndex>()),
     };
 }
 
@@ -1156,7 +1156,7 @@ template<>
 ErrorOr<Web::Painting::AnchorScrollShift> decode(Decoder& decoder)
 {
     return Web::Painting::AnchorScrollShift {
-        .scroll_node_index = TRY(decoder.decode<Web::Painting::VisualContextIndex>()),
+        .scroll_node_index = TRY(decoder.decode<Web::Painting::ScrollNodeIndex>()),
         .negate = TRY(decoder.decode<bool>()),
         .compensate_horizontal_scroll = TRY(decoder.decode<bool>()),
         .compensate_vertical_scroll = TRY(decoder.decode<bool>()),

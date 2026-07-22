@@ -368,7 +368,7 @@ public:
 
     CSSPixelRect transform_reference_box() const;
 
-    VisualContextIndex nearest_scroll_node_index() const;
+    ScrollNodeIndex nearest_scroll_node_index() const;
 
     RefPtr<Paintable const> nearest_scrollable_ancestor() const;
 
@@ -393,8 +393,8 @@ public:
     void paint_flexbox_inspector_overlay(DisplayListRecordingContext&, FlexboxInspectorOverlayOptions const&) const;
     void paint_grid_inspector_overlay(DisplayListRecordingContext&, GridInspectorOverlayOptions const&) const;
 
-    void set_enclosing_scroll_node_index(VisualContextIndex index) { m_enclosing_scroll_node_index = index; }
-    void set_own_scroll_node_index(VisualContextIndex index) { m_own_scroll_node_index = index; }
+    void set_enclosing_scroll_node_index(ScrollNodeIndex index) { m_enclosing_scroll_node_index = index; }
+    void set_own_scroll_node_index(ScrollNodeIndex index) { m_own_scroll_node_index = index; }
 
     void set_accumulated_visual_context(VisualContextIndex index) { m_accumulated_visual_context_index = index; }
     [[nodiscard]] VisualContextIndex accumulated_visual_context_index() const { return m_accumulated_visual_context_index; }
@@ -441,9 +441,9 @@ public:
     [[nodiscard]] size_t visual_context_nodes_begin() const { return m_visual_context_nodes_begin; }
     [[nodiscard]] size_t visual_context_nodes_end() const { return m_visual_context_nodes_end; }
 
-    [[nodiscard]] VisualContextIndex enclosing_scroll_node_index() const { return m_enclosing_scroll_node_index; }
+    [[nodiscard]] ScrollNodeIndex enclosing_scroll_node_index() const { return m_enclosing_scroll_node_index; }
 
-    [[nodiscard]] VisualContextIndex own_scroll_node_index() const { return m_own_scroll_node_index; }
+    [[nodiscard]] ScrollNodeIndex own_scroll_node_index() const { return m_own_scroll_node_index; }
 
 protected:
     explicit Paintable(Layout::NodeWithStyleAndBoxModelMetrics const&);
@@ -511,8 +511,8 @@ private:
     Optional<CSSPixelRect> mutable m_absolute_padding_box_rect;
     Optional<CSSPixelRect> mutable m_absolute_border_box_rect;
 
-    VisualContextIndex m_enclosing_scroll_node_index {};
-    VisualContextIndex m_own_scroll_node_index {};
+    ScrollNodeIndex m_enclosing_scroll_node_index {};
+    ScrollNodeIndex m_own_scroll_node_index {};
     VisualContextIndex m_accumulated_visual_context_index { VISUAL_VIEWPORT_NODE_INDEX };
     VisualContextIndex m_accumulated_visual_context_for_descendants_index { VISUAL_VIEWPORT_NODE_INDEX };
     Array<Optional<VisualContextIndex>, 4> m_fixed_background_visual_contexts;

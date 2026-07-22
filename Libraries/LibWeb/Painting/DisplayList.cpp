@@ -209,7 +209,7 @@ void DisplayListPlayer::execute_impl(
                 },
                 [&](ScrollData const&) {
                     play_command(Save {});
-                    auto offset = scroll_state.device_offset_for_index(node_index);
+                    auto offset = scroll_state.device_offset_for_index(to_scroll_node_index(node_index));
                     if (!offset.is_zero())
                         play_command(Translate { .delta = offset.to_type<int>() });
                 },

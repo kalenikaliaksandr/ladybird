@@ -12,7 +12,7 @@
 
 namespace Web::Compositor {
 
-static AsyncScrollNodeID scroll_node_id_for(UniqueNodeID document_id, Painting::VisualContextIndex scroll_node_index)
+static AsyncScrollNodeID scroll_node_id_for(UniqueNodeID document_id, Painting::ScrollNodeIndex scroll_node_index)
 {
     return { .document_id = document_id, .scroll_node_index = scroll_node_index };
 }
@@ -42,8 +42,8 @@ static AsyncScrollNodeStableID stable_scroll_node_id_for(UniqueNodeID scrollable
 AsyncScrollingState async_scrolling_state_from_display_list(Painting::DisplayList const& display_list)
 {
     AsyncScrollingState async_scrolling_state;
-    Vector<Painting::VisualContextIndex> parent_scroll_node_indices;
-    Vector<Painting::VisualContextIndex> wheel_hit_test_target_scroll_node_indices;
+    Vector<Painting::ScrollNodeIndex> parent_scroll_node_indices;
+    Vector<Painting::ScrollNodeIndex> wheel_hit_test_target_scroll_node_indices;
     Vector<UniqueNodeID> wheel_hit_test_target_document_ids;
 
     if (auto const& metadata = display_list.async_scrolling_metadata(); metadata.has_value()) {

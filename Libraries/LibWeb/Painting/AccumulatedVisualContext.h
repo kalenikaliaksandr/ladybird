@@ -86,13 +86,13 @@ struct EffectsData {
 // Translates by another scroll node's negated offset during display list replay, keeping fixed
 // backgrounds stationary relative to the viewport regardless of scroll position.
 struct ScrollCompensation {
-    VisualContextIndex scroll_node_index;
+    ScrollNodeIndex scroll_node_index;
 };
 
 // One scroll node's contribution to the default scroll shift of an anchor-positioned box, masked to the axes in which
 // the box compensates for scroll. Nodes that move the box but not its default anchor contribute negated.
 struct AnchorScrollShift {
-    VisualContextIndex scroll_node_index;
+    ScrollNodeIndex scroll_node_index;
     bool negate { false };
     bool compensate_horizontal_scroll { true };
     bool compensate_vertical_scroll { true };
@@ -153,7 +153,7 @@ public:
 
     bool has_empty_effective_clip(VisualContextIndex i) const { return m_nodes[i.value()].has_empty_effective_clip; }
 
-    ScrollStateSlot scroll_state_slot_for_node(VisualContextIndex index) const
+    ScrollStateSlot scroll_state_slot_for_node(ScrollNodeIndex index) const
     {
         if (!index.value())
             return NO_SCROLL_STATE_SLOT;

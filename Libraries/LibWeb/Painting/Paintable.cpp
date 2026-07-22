@@ -570,7 +570,7 @@ static void record_scroll_node(Paintable const& paintable_box, DisplayListRecord
     if (!scroll_node_kind.has_value())
         return;
 
-    auto parent_scroll_node_index = VisualContextIndex {};
+    auto parent_scroll_node_index = ScrollNodeIndex {};
     if (auto scrollable_ancestor = paintable_box.nearest_scrollable_ancestor())
         parent_scroll_node_index = scrollable_ancestor->own_scroll_node_index();
 
@@ -605,7 +605,7 @@ static void record_main_thread_wheel_event_region(Paintable const& paintable_box
     });
 }
 
-static Optional<VisualContextIndex> wheel_hit_test_target_scroll_node_index_for(Paintable const& paintable_box)
+static Optional<ScrollNodeIndex> wheel_hit_test_target_scroll_node_index_for(Paintable const& paintable_box)
 {
     if (paintable_box.own_scroll_node_index().value() && paintable_box.could_be_scrolled_by_wheel_event())
         return paintable_box.own_scroll_node_index();
@@ -2715,7 +2715,7 @@ CSSPixels Paintable::outline_offset() const
     return computed_values().outline_offset();
 }
 
-VisualContextIndex Paintable::nearest_scroll_node_index() const
+ScrollNodeIndex Paintable::nearest_scroll_node_index() const
 {
     if (is_fixed_position())
         return {};

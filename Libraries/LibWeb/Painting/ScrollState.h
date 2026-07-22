@@ -13,21 +13,21 @@
 
 namespace Web::Painting {
 
-// Device-pixel scroll offsets keyed by the scroll node's VisualContextIndex. Stored dense in
+// Device-pixel scroll offsets keyed by the scroll node's ScrollNodeIndex. Stored dense in
 // process so display list replay and hit testing index it directly; indices that are not scroll
 // nodes read as zero offsets. The IPC representation is sparse (index, offset) pairs.
 class ScrollStateSnapshot {
 public:
     ReadonlySpan<Gfx::FloatPoint> device_offsets() const { return m_device_offsets; }
 
-    Gfx::FloatPoint device_offset_for_index(VisualContextIndex index) const
+    Gfx::FloatPoint device_offset_for_index(ScrollNodeIndex index) const
     {
         if (index.value() >= m_device_offsets.size())
             return {};
         return m_device_offsets[index.value()];
     }
 
-    void set_device_offset_for_index(VisualContextIndex index, Gfx::FloatPoint offset)
+    void set_device_offset_for_index(ScrollNodeIndex index, Gfx::FloatPoint offset)
     {
         if (index.value() >= m_device_offsets.size())
             m_device_offsets.resize(index.value() + 1);
@@ -46,12 +46,12 @@ private:
 // between rebuilds.
 class ScrollState {
 public:
-    ScrollStateSlot register_scroll_node(VisualContextIndex node_index, Paintable const& paintable_box, ScrollStateSlot parent_slot)
+    ScrollStateSlot register_scroll_node(ScrollNodeIndex node_index, Paintable const& paintable_box, ScrollStateSlot parent_slot)
     {
         return append_state(ScrollNodeState { node_index, paintable_box, false, parent_slot });
     }
 
-    ScrollStateSlot register_sticky_node(VisualContextIndex node_index, Paintable const& paintable_box, ScrollStateSlot parent_slot)
+    ScrollStateSlot register_sticky_node(ScrollNodeIndex node_index, Paintable const& paintable_box, ScrollStateSlot parent_slot)
     {
         return append_state(ScrollNodeState { node_index, paintable_box, true, parent_slot });
     }
@@ -59,7 +59,7 @@ public:
     ScrollNodeState const& state_at_slot(ScrollStateSlot slot) const { return m_states_by_slot[slot.value()]; }
     ScrollNodeState& state_at_slot(ScrollStateSlot slot) { return m_states_by_slot[slot.value()]; }
 
-    VisualContextIndex node_index_for_slot(ScrollStateSlot slot) const
+    ScrollNodeIndex node_index_for_slot(ScrollStateSlot slot) const
     {
         if (slot == NO_SCROLL_STATE_SLOT)
             return {};
