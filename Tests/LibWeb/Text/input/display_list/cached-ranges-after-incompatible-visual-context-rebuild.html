@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body {
+        margin: 0;
+    }
+    #scroller {
+        width: 200px;
+        height: 100px;
+        overflow: scroll;
+    }
+    #content {
+        height: 400px;
+        background: linear-gradient(green, blue);
+    }
+    #sibling {
+        width: 50px;
+        height: 50px;
+        background: red;
+        border-radius: 10px;
+    }
+</style>
+<div id="scroller"><div id="content"></div></div>
+<div id="sibling"></div>
+<script>
+    test(() => {
+        // Prime the display list cache, then repaint once under a nonzero scroll offset so
+        // the second recording splices cached command ranges (compatible rebuild path).
+        internals.dumpDisplayList();
+        scroller.scrollTop = 60;
+        const cached = internals.dumpDisplayList();
+
+        // Force the incompatible path: every visual context index is reassigned and all
+        // cached ranges are dropped, so the next recording is from scratch. Output must
+        // not change.
+        internals.forceIncompatibleVisualContextTreeRebuild();
+        const rerecorded = internals.dumpDisplayList();
+
+        println(`dump unchanged after forced incompatible rebuild: ${cached === rerecorded}`);
+        println(rerecorded);
+    });
+</script>

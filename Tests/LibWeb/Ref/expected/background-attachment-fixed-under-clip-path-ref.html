@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<style>
+    body {
+        margin: 0;
+        height: 200vh;
+        background: white;
+    }
+    #clipper {
+        position: absolute;
+        left: 20px;
+        top: 150px;
+        width: 300px;
+        height: 300px;
+        clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+    }
+    /* Lands at the screen origin once the page is scrolled by 100px, reproducing the
+       viewport-anchored gradient. */
+    #viewport-gradient {
+        position: absolute;
+        left: -20px;
+        top: -50px;
+        width: 100vw;
+        height: 100vh;
+        background-image: linear-gradient(to bottom, red, blue);
+    }
+</style>
+<div id="clipper"><div id="viewport-gradient"></div></div>
+<script>
+    window.scrollTo(0, 100);
+</script>

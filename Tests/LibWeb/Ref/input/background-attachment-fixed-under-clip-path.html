@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/background-attachment-fixed-under-clip-path-ref.html">
+<!-- A fixed-attachment background under an ancestor clip-path: the background stays
+     stationary relative to the viewport while the ancestor's clip-path scrolls with
+     the document. -->
+<style>
+    body {
+        margin: 0;
+        height: 200vh;
+        background: white;
+    }
+    #clipper {
+        position: absolute;
+        left: 20px;
+        top: 150px;
+        width: 300px;
+        height: 300px;
+        clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+    }
+    #fixed-background {
+        width: 300px;
+        height: 300px;
+        background-image: linear-gradient(to bottom, red, blue);
+        background-attachment: fixed;
+    }
+</style>
+<div id="clipper"><div id="fixed-background"></div></div>
+<script>
+    window.scrollTo(0, 100);
+</script>

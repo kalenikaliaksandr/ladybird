@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/filter-drop-shadow-clipped-by-ancestor-overflow-ref.html">
+<!-- An ancestor overflow clip applies OUTSIDE a descendant's filter layer: the
+     drop-shadow output is cut at the ancestor's edge. -->
+<style>
+    body {
+        margin: 0;
+        background: white;
+    }
+    #clip-box {
+        position: absolute;
+        left: 20px;
+        top: 20px;
+        width: 150px;
+        height: 150px;
+        overflow: hidden;
+    }
+    #shadowed {
+        width: 100px;
+        height: 100px;
+        background: green;
+        filter: drop-shadow(60px 60px 0 red);
+    }
+</style>
+<div id="clip-box"><div id="shadowed"></div></div>

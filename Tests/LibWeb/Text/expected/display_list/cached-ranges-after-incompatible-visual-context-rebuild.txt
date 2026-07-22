@@ -1,0 +1,24 @@
+dump unchanged after forced incompatible rebuild: true
+AccumulatedVisualContext Tree:
+  [0] transform=[1,0,0,1,0,0] origin=(0,0) (ViewportPaintable(Viewport<#document>))
+    [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
+      [2] clip=[0,0 200x100]
+        [3] scroll (PaintableWithLines(BlockContainer<DIV>#content))
+
+DisplayList:
+SaveLayer@0
+  CompositorWheelHitTestTarget@0 target_scroll_node_index=0 rect=[0,0 800x600]
+  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[0,0 800x163]
+  CompositorWheelHitTestTarget@1 target_scroll_node_index=0 rect=[0,0 800x150]
+  CompositorWheelHitTestTarget@1 target_scroll_node_index=3 rect=[0,0 200x100]
+  CompositorScrollNode@1 scroll_node_index=3 parent_scroll_node_index=0 scrollport_rect=[0,0 200x100] max_scroll_offset=[0,300] is_viewport=false
+  CompositorWheelHitTestTarget@3 target_scroll_node_index=3 rect=[0,0 200x400]
+  Save@3
+    AddClipRect@3 rect=[0,0 200x400]
+    PaintLinearGradient@3 rect=[0,0 200x400]
+  Restore@3
+  CompositorWheelHitTestTargetWithCornerRadii@1 target_scroll_node_index=0 rect=[0,100 50x50] corner_radii=[10x10,10x10,10x10,10x10]
+  FillRectWithRoundedCorners@1 rect=[0,100 50x50] color=rgb(255, 0, 0)
+  PaintScrollBar@1
+Restore@0
+

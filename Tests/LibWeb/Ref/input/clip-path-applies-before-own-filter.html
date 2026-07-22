@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/clip-path-applies-before-own-filter-ref.html">
+<!-- Pins today's interleave order: an element's own clip-path is applied INSIDE its
+     filter layer, so the filter sees clipped input and the drop-shadow is a copy of the
+     clipped shape (rather than the shadow being erased by a clip applied to the filter
+     output). -->
+<style>
+    body {
+        margin: 0;
+        background: white;
+    }
+    #target {
+        position: absolute;
+        left: 20px;
+        top: 20px;
+        width: 100px;
+        height: 100px;
+        background: green;
+        filter: drop-shadow(120px 0 0 red);
+        clip-path: inset(0 50px 0 0);
+    }
+</style>
+<div id="target"></div>

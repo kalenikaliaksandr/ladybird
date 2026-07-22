@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/opacity-group-with-overlapping-abspos-ref.html">
+<!-- Documents CURRENT behavior: an absolutely positioned child whose containing block sits
+     above its opacity ancestor replays in a SEPARATE opacity group from the in-flow
+     content, so the overlap is composited twice. Per CSS a single opacity group is
+     correct; the effect-tree dedup fix will update this reference to the single-group
+     rendering. -->
+<style>
+    body {
+        margin: 0;
+        background: white;
+    }
+    .relpos {
+        position: relative;
+    }
+    .opacity {
+        opacity: 0.5;
+    }
+    .inflow {
+        width: 120px;
+        height: 120px;
+        background: green;
+    }
+    .abspos {
+        position: absolute;
+        left: 60px;
+        top: 60px;
+        width: 120px;
+        height: 120px;
+        background: green;
+    }
+</style>
+<div class="relpos">
+    <div class="opacity">
+        <div class="inflow"></div>
+        <div class="abspos"></div>
+    </div>
+</div>

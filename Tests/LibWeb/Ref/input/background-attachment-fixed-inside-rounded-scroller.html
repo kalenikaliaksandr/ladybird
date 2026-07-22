@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<link rel="match" href="../expected/background-attachment-fixed-inside-rounded-scroller-ref.html">
+<!-- A fixed-attachment background inside a scrolled rounded scroller must stay stationary
+     relative to the viewport (through both the page scroll and the scroller's own scroll),
+     while the scroller's rounded clip tracks the scrolled box. -->
+<style>
+    body {
+        margin: 0;
+        height: 200vh;
+        background: white;
+    }
+    #scroller {
+        position: absolute;
+        left: 40px;
+        top: 130px;
+        width: 200px;
+        height: 200px;
+        overflow: hidden;
+        border-radius: 30px;
+    }
+    #spacer {
+        height: 120px;
+    }
+    #fixed-background {
+        height: 600px;
+        background-image: linear-gradient(to bottom, red, blue);
+        background-attachment: fixed;
+    }
+</style>
+<div id="scroller">
+    <div id="spacer"></div>
+    <div id="fixed-background"></div>
+</div>
+<script>
+    window.scrollTo(0, 100);
+    scroller.scrollTop = 120;
+</script>
