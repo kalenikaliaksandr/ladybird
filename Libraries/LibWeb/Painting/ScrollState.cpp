@@ -54,7 +54,7 @@ ErrorOr<Web::Painting::ScrollStateSnapshot> decode(Decoder& decoder)
     for (u64 i = 0; i < pair_count; ++i) {
         auto index = TRY(decoder.decode<u64>());
         auto offset = TRY(decoder.decode<Gfx::FloatPoint>());
-        snapshot.set_device_offset_for_index(Web::Painting::ScrollNodeIndex { index }, offset);
+        snapshot.set_device_offset_for_index(Web::Painting::ScrollNodeIndex { static_cast<u32>(index) }, offset);
     }
     return snapshot;
 }

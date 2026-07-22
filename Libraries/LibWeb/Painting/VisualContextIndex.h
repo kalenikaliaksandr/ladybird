@@ -10,7 +10,7 @@
 
 namespace Web::Painting {
 
-AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, VisualContextIndex);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(u32, VisualContextIndex);
 
 // Node 0 is always the visual viewport transform node, so index 0 doubles as "no node" for
 // references to scroll nodes, which can never sit at the root.
@@ -20,7 +20,7 @@ static constexpr VisualContextIndex VISUAL_VIEWPORT_NODE_INDEX { 0 };
 // tree: these are the references that key the scroll offset snapshot and appear in compositor
 // metadata command payloads. Values share the tree's index space, but the distinct type keeps
 // scroll-node references compiler-checked apart from recording context indices.
-AK_TYPEDEF_DISTINCT_ORDERED_ID(size_t, ScrollNodeIndex);
+AK_TYPEDEF_DISTINCT_ORDERED_ID(u32, ScrollNodeIndex);
 
 // The root transform node can never be a scroll node, so index 0 doubles as "no scroll node".
 static constexpr ScrollNodeIndex NO_SCROLL_NODE_INDEX { 0 };

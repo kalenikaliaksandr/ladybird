@@ -690,7 +690,7 @@ bool update_accumulated_visual_context_values(ViewportPaintable& viewport_painta
     bool found_effects = false;
     bool found_perspective = false;
     for (size_t i = begin; i < end; ++i) {
-        auto& node = visual_context_tree.node_at(VisualContextIndex { i });
+        auto& node = visual_context_tree.node_at(VisualContextIndex { static_cast<u32>(i) });
         if (auto* transform_data = node.data.get_pointer<TransformData>()) {
             if (!transform.has_value())
                 return false;
@@ -815,7 +815,7 @@ Optional<Gfx::FloatPoint> AccumulatedVisualContextTree::transform_point_for_hit_
 
     auto point = screen_point;
     for (size_t i = chain.size(); i > 0; --i) {
-        auto node_index = VisualContextIndex { chain[i - 1] };
+        auto node_index = VisualContextIndex { static_cast<u32>(chain[i - 1]) };
         auto const& node = m_nodes[node_index.value()];
 
         auto result = node.data.visit(
@@ -930,7 +930,7 @@ Gfx::FloatRect AccumulatedVisualContextTree::transform_rect_to_viewport(VisualCo
                     rect = affine.map(rect);
                 },
                 [&](ScrollData const&) {
-                    rect.translate_by(scroll_state.device_offset_for_index(ScrollNodeIndex { i }));
+                    rect.translate_by(scroll_state.device_offset_for_index(ScrollNodeIndex { static_cast<u32>(i) }));
                 },
                 [&](ScrollCompensation const& compensation) {
                     rect.translate_by(-scroll_state.device_offset_for_index(compensation.scroll_node_index));
