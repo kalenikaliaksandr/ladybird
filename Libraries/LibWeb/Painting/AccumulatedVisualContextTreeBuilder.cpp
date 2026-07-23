@@ -302,47 +302,126 @@ static Optional<EffectsData> compute_effects_data(Paintable& box, CSS::ComputedV
     return effects;
 }
 
-AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable& viewport_paintable)
-{
-    auto& document = viewport_paintable.document();
-    auto visual_context_tree = AccumulatedVisualContextTree::create(visual_viewport_transform_data(document));
-    auto pixel_ratio = document.page().client().device_pixels_per_css_pixel();
-    DevicePixelConverter converter { pixel_ratio };
-    auto scale = static_cast<float>(pixel_ratio);
+// Nearest ancestor scroll node resolved along the containing block chain, drilled down alongside
+// the visual context indices. A fixed-position ancestor decouples its subtree from all outer
+// scrollers, but sticky boxes must still reference a scrollport through fixed-position ancestors
+// for their sticky offset computation, so both resolutions are carried.
+struct NearestScrollNodeIndices {
+    VisualContextIndex stopping_at_fixed_position_ancestors;
+    VisualContextIndex continuing_through_fixed_position_ancestors;
+};
 
-    auto append_node = [&](VisualContextIndex parent_index, VisualContextData data) -> VisualContextIndex {
-        return visual_context_tree.append(move(data), parent_index);
+struct DescendantVisualContexts {
+    VisualContextIndex normal;
+    VisualContextIndex absolute_position;
+    VisualContextIndex fixed_position;
+    NearestScrollNodeIndices normal_nearest_scroll_nodes;
+    NearestScrollNodeIndices absolute_position_nearest_scroll_nodes;
+    NearestScrollNodeIndices fixed_position_nearest_scroll_nodes;
+};
+
+// Builds visual context nodes for whole paintable subtrees, seeded with the contexts the subtree
+// root inherits. One builder spans one build operation, so anchor-positioned subtree deferral
+// works across every subtree it builds.
+class VisualContextTreeBuilder {
+public:
+    VisualContextTreeBuilder(ViewportPaintable& viewport_paintable, AccumulatedVisualContextTree& visual_context_tree)
+        : m_viewport_paintable(viewport_paintable)
+        , m_visual_context_tree(visual_context_tree)
+        , m_pixel_ratio(viewport_paintable.document().page().client().device_pixels_per_css_pixel())
+        , m_converter(m_pixel_ratio)
+        , m_scale(static_cast<float>(m_pixel_ratio))
+    {
+    }
+
+    void build_subtree(Paintable& root, DescendantVisualContexts inherited_contexts, bool may_be_root_element)
+    {
+        m_pending_paintables.clear_with_capacity();
+        m_pending_paintables.append({ &root, inherited_contexts, may_be_root_element });
+        build_paintables_deferring_anchor_positioned(nullptr);
+    }
+
+    void build_deferred_anchor_positioned_subtrees()
+    {
+        while (!m_deferred_anchor_positioned_paintables.is_empty()) {
+            auto entries = move(m_deferred_anchor_positioned_paintables);
+            Vector<PendingPaintable> entries_whose_anchor_is_still_deferred;
+            for (auto& entry : entries) {
+                if (anchor_is_awaiting_build(*entry.paintable))
+                    entries_whose_anchor_is_still_deferred.append(entry);
+                else
+                    build_deferred_subtree(entry);
+            }
+
+            bool no_entry_was_ready = entries_whose_anchor_is_still_deferred.size() == entries.size();
+            if (no_entry_was_ready) {
+                // Cyclic or otherwise malformed anchor chains can leave every remaining entry waiting on another;
+                // build them in queue order then — the anchor chain walk's visited set and depth cap bound the
+                // damage the same way they do for cycles discovered mid-walk.
+                for (auto& entry : entries_whose_anchor_is_still_deferred)
+                    build_deferred_subtree(entry);
+            } else {
+                m_deferred_anchor_positioned_paintables.extend(move(entries_whose_anchor_is_still_deferred));
+            }
+        }
+    }
+
+private:
+    struct PendingPaintable {
+        Paintable* paintable;
+        DescendantVisualContexts inherited_contexts;
+        bool may_be_root_element;
     };
 
-    auto visual_viewport_context_index = VISUAL_VIEWPORT_NODE_INDEX;
+    VisualContextIndex append_node(VisualContextIndex parent_index, VisualContextData data)
+    {
+        return m_visual_context_tree.append(move(data), parent_index);
+    }
 
-    viewport_paintable.set_enclosing_scroll_node_index({});
-    auto viewport_state_for_descendants = append_node(visual_viewport_context_index, ScrollData { .is_sticky = false });
-    viewport_paintable.register_scroll_node(visual_context_tree, viewport_state_for_descendants, viewport_paintable, {});
-    viewport_paintable.set_own_scroll_node_index(viewport_state_for_descendants);
-    viewport_paintable.set_accumulated_visual_context(VISUAL_VIEWPORT_NODE_INDEX);
-    viewport_paintable.set_accumulated_visual_context_for_descendants(viewport_state_for_descendants);
+    static bool has_default_scroll_shift_anchor(Paintable const& paintable_box)
+    {
+        auto const* box = as_if<Layout::Box>(paintable_box.layout_node());
+        return box && box->default_scroll_shift_anchor();
+    }
 
-    // Nearest ancestor scroll node resolved along the containing block chain, drilled down alongside
-    // the visual context indices. A fixed-position ancestor decouples its subtree from all outer
-    // scrollers, but sticky boxes must still reference a scrollport through fixed-position ancestors
-    // for their sticky offset computation, so both resolutions are carried.
-    struct NearestScrollNodeIndices {
-        VisualContextIndex stopping_at_fixed_position_ancestors;
-        VisualContextIndex continuing_through_fixed_position_ancestors;
-    };
+    void build_paintables_deferring_anchor_positioned(Paintable const* paintable_exempt_from_deferral)
+    {
+        while (!m_pending_paintables.is_empty()) {
+            auto pending = m_pending_paintables.take_last();
+            if (pending.paintable != paintable_exempt_from_deferral && has_default_scroll_shift_anchor(*pending.paintable)) {
+                m_deferred_anchor_positioned_paintables.append(pending);
+                m_deferred_paintables_awaiting_build.set(pending.paintable);
+                continue;
+            }
+            auto child_contexts = build_paintable_box(*pending.paintable, pending.inherited_contexts, pending.may_be_root_element);
+            for (auto* child = pending.paintable->last_child_ptr(); child; child = child->previous_sibling_ptr())
+                m_pending_paintables.append({ child, child_contexts, false });
+        }
+    }
 
-    struct DescendantVisualContexts {
-        VisualContextIndex normal;
-        VisualContextIndex absolute_position;
-        VisualContextIndex fixed_position;
-        NearestScrollNodeIndices normal_nearest_scroll_nodes;
-        NearestScrollNodeIndices absolute_position_nearest_scroll_nodes;
-        NearestScrollNodeIndices fixed_position_nearest_scroll_nodes;
-    };
+    bool anchor_is_awaiting_build(Paintable const& paintable_box) const
+    {
+        auto const* box = as_if<Layout::Box>(paintable_box.layout_node());
+        auto const* anchor_box = box ? as_if<Layout::Box>(box->default_scroll_shift_anchor()) : nullptr;
+        auto anchor_paintable = anchor_box ? anchor_box->paintable_box() : nullptr;
+        for (auto const* paintable = anchor_paintable.ptr(); paintable; paintable = paintable->parent_ptr()) {
+            if (m_deferred_paintables_awaiting_build.contains(paintable))
+                return true;
+        }
+        return false;
+    }
 
-    auto build_paintable_box = [&](Paintable& paintable_box, DescendantVisualContexts inherited_contexts, bool may_be_root_element) -> DescendantVisualContexts {
-        auto first_visual_context_node_index = visual_context_tree.nodes().size();
+    void build_deferred_subtree(PendingPaintable& entry)
+    {
+        m_deferred_paintables_awaiting_build.remove(entry.paintable);
+        m_pending_paintables.clear_with_capacity();
+        m_pending_paintables.append(entry);
+        build_paintables_deferring_anchor_positioned(entry.paintable);
+    }
+
+    DescendantVisualContexts build_paintable_box(Paintable& paintable_box, DescendantVisualContexts inherited_contexts, bool may_be_root_element)
+    {
+        auto first_visual_context_node_index = m_visual_context_tree.nodes().size();
         auto& layout_node = paintable_box.layout_node();
 
         paintable_box.set_enclosing_scroll_node_index({});
@@ -385,7 +464,7 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         //     paint-time shift, so each chained anchor's shift is emitted as well, masked to the axes that every link
         //     below it compensates in. The visited set and depth cap guard against malformed anchor chains.
         if (auto const* box = as_if<Layout::Box>(&layout_node)) {
-            auto const& scroll_state = viewport_paintable.scroll_state();
+            auto const& scroll_state = m_viewport_paintable.scroll_state();
             bool compensate_horizontal_scroll = true;
             bool compensate_vertical_scroll = true;
             Vector<Layout::Box const*, 8> visited;
@@ -401,8 +480,8 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
                 visited.append(box);
                 compensate_horizontal_scroll = compensate_horizontal_scroll && box->compensates_for_horizontal_scroll();
                 compensate_vertical_scroll = compensate_vertical_scroll && box->compensates_for_vertical_scroll();
-                auto anchor_scroll_slot = visual_context_tree.scroll_state_slot_for_node(anchor_paintable->enclosing_scroll_node_index());
-                auto base_scroll_slot = visual_context_tree.scroll_state_slot_for_node(box_paintable->enclosing_scroll_node_index());
+                auto anchor_scroll_slot = m_visual_context_tree.scroll_state_slot_for_node(anchor_paintable->enclosing_scroll_node_index());
+                auto base_scroll_slot = m_visual_context_tree.scroll_state_slot_for_node(box_paintable->enclosing_scroll_node_index());
                 auto shared_scroll_slot = common_ancestor_slot_along_scroll_parent_chain(scroll_state, anchor_scroll_slot, base_scroll_slot);
                 for (auto slot = anchor_scroll_slot; slot != NO_SCROLL_STATE_SLOT && slot != shared_scroll_slot; slot = scroll_state.state_at_slot(slot).parent_slot())
                     own_state = append_node(own_state, AnchorScrollShift { scroll_state.node_index_for_slot(slot), false, compensate_horizontal_scroll, compensate_vertical_scroll });
@@ -428,7 +507,7 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         if (creates_sticky_scroll_node) {
             sticky_scroll_node_index = append_node(own_state, ScrollData { .is_sticky = true });
             own_state = sticky_scroll_node_index;
-            viewport_paintable.register_sticky_node(visual_context_tree, sticky_scroll_node_index, paintable_box, nearest_ancestor_scroll_node_index);
+            m_viewport_paintable.register_sticky_node(m_visual_context_tree, sticky_scroll_node_index, paintable_box, nearest_ancestor_scroll_node_index);
             paintable_box.set_enclosing_scroll_node_index(sticky_scroll_node_index);
             paintable_box.set_own_scroll_node_index(sticky_scroll_node_index);
             nearest_scroll_nodes_for_descendants = { sticky_scroll_node_index, sticky_scroll_node_index };
@@ -436,11 +515,11 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
 
         auto const& computed_values = layout_node.computed_values();
 
-        if (auto effects = compute_effects_data(paintable_box, computed_values, pixel_ratio); effects.has_value())
+        if (auto effects = compute_effects_data(paintable_box, computed_values, m_pixel_ratio); effects.has_value())
             append_to_own_and_positioned_descendant_contexts(effects.value());
 
         if (computed_values_have_transform(computed_values)) {
-            if (auto transform_data = compute_transform(paintable_box, computed_values, pixel_ratio); transform_data.has_value()) {
+            if (auto transform_data = compute_transform(paintable_box, computed_values, m_pixel_ratio); transform_data.has_value()) {
                 paintable_box.set_has_non_invertible_css_transform(!transform_data->matrix.is_invertible());
                 own_state = append_node(own_state, *transform_data);
             } else {
@@ -451,15 +530,15 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         }
 
         if (computed_values.clip().is_rect()) {
-            if (auto css_clip = compute_css_clip_data(paintable_box, computed_values, converter); css_clip.has_value())
+            if (auto css_clip = compute_css_clip_data(paintable_box, computed_values, m_converter); css_clip.has_value())
                 append_to_own_and_positioned_descendant_contexts(css_clip.value());
         }
 
-        if (auto clip_path_data = compute_basic_shape_clip_path_data(paintable_box, computed_values, converter, scale); clip_path_data.has_value())
+        if (auto clip_path_data = compute_basic_shape_clip_path_data(paintable_box, computed_values, m_converter, m_scale); clip_path_data.has_value())
             append_to_own_and_positioned_descendant_contexts(clip_path_data.value());
 
         for (auto const& mask_layer : paintable_box.mask_layer_presence(MaskLayerSet::CssAndSvg))
-            append_to_own_and_positioned_descendant_contexts(MaskData { converter.enclosing_device_rect(mask_layer.area), mask_layer.kind, mask_layer.origin });
+            append_to_own_and_positioned_descendant_contexts(MaskData { m_converter.enclosing_device_rect(mask_layer.area), mask_layer.kind, mask_layer.origin });
 
         paintable_box.set_accumulated_visual_context(own_state);
 
@@ -500,8 +579,8 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
                     // Build a context that negates all scroll nodes in the ancestor chain. This keeps the background
                     // fixed relative to the viewport.
                     auto fixed_background_context = own_state;
-                    for (auto index = own_state; index.value(); index = visual_context_tree.node_at(index).parent_index) {
-                        auto const& node = visual_context_tree.node_at(index);
+                    for (auto index = own_state; index.value(); index = m_visual_context_tree.node_at(index).parent_index) {
+                        auto const& node = m_visual_context_tree.node_at(index);
                         if (node.data.has<ScrollData>())
                             fixed_background_context = append_node(fixed_background_context, ScrollCompensation { index });
                     }
@@ -514,7 +593,7 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         VisualContextIndex state_for_descendants = own_state;
 
         if (computed_values.perspective().has_value()) {
-            if (auto perspective_data = compute_perspective_data(paintable_box, computed_values, scale); perspective_data.has_value())
+            if (auto perspective_data = compute_perspective_data(paintable_box, computed_values, m_scale); perspective_data.has_value())
                 state_for_descendants = append_node(state_for_descendants, *perspective_data);
         }
 
@@ -523,7 +602,7 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
             || computed_values.contain().paint_containment
             || computed_values.content_visibility() == CSS::ContentVisibility::Auto;
         if (may_have_clip) {
-            if (auto clip_data = compute_clip_data(paintable_box, computed_values, converter); clip_data.has_value())
+            if (auto clip_data = compute_clip_data(paintable_box, computed_values, m_converter); clip_data.has_value())
                 state_for_descendants = append_node(state_for_descendants, clip_data.value());
         }
 
@@ -531,13 +610,13 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
             auto parent_index = creates_sticky_scroll_node ? sticky_scroll_node_index : nearest_ancestor_scroll_node_index;
             auto scroll_node_index = append_node(state_for_descendants, ScrollData { .is_sticky = false });
             state_for_descendants = scroll_node_index;
-            viewport_paintable.register_scroll_node(visual_context_tree, scroll_node_index, paintable_box, parent_index);
+            m_viewport_paintable.register_scroll_node(m_visual_context_tree, scroll_node_index, paintable_box, parent_index);
             paintable_box.set_own_scroll_node_index(scroll_node_index);
             nearest_scroll_nodes_for_descendants = { scroll_node_index, scroll_node_index };
         }
 
         paintable_box.set_accumulated_visual_context_for_descendants(state_for_descendants);
-        paintable_box.set_visual_context_node_range(first_visual_context_node_index, visual_context_tree.nodes().size());
+        paintable_box.set_visual_context_node_range(first_visual_context_node_index, m_visual_context_tree.nodes().size());
         auto absolute_position_nearest_scroll_nodes = inherited_contexts.absolute_position_nearest_scroll_nodes;
         auto fixed_position_nearest_scroll_nodes = inherited_contexts.fixed_position_nearest_scroll_nodes;
         auto positioning_containing_blocks = layout_node.establishes_positioning_containing_blocks();
@@ -558,7 +637,37 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
             absolute_position_nearest_scroll_nodes,
             fixed_position_nearest_scroll_nodes,
         };
-    };
+    }
+
+    ViewportPaintable& m_viewport_paintable;
+    AccumulatedVisualContextTree& m_visual_context_tree;
+    double m_pixel_ratio { 0 };
+    DevicePixelConverter m_converter;
+    float m_scale { 0 };
+
+    // Anchor-positioned boxes emit AnchorScrollShift nodes by reading the enclosing scroll nodes of their
+    // anchors, and an acceptable anchor may come later in tree order than the positioned box. Building such
+    // boxes' subtrees is deferred until their anchors have been built; the hash table mirrors the queue so
+    // readiness checks stay cheap across rounds.
+    Vector<PendingPaintable> m_deferred_anchor_positioned_paintables;
+    HashTable<Paintable const*> m_deferred_paintables_awaiting_build;
+
+    Vector<PendingPaintable, 64> m_pending_paintables;
+};
+
+AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable& viewport_paintable)
+{
+    auto& document = viewport_paintable.document();
+    auto visual_context_tree = AccumulatedVisualContextTree::create(visual_viewport_transform_data(document));
+
+    auto visual_viewport_context_index = VISUAL_VIEWPORT_NODE_INDEX;
+
+    viewport_paintable.set_enclosing_scroll_node_index({});
+    auto viewport_state_for_descendants = visual_context_tree.append(ScrollData { .is_sticky = false }, visual_viewport_context_index);
+    viewport_paintable.register_scroll_node(visual_context_tree, viewport_state_for_descendants, viewport_paintable, {});
+    viewport_paintable.set_own_scroll_node_index(viewport_state_for_descendants);
+    viewport_paintable.set_accumulated_visual_context(VISUAL_VIEWPORT_NODE_INDEX);
+    viewport_paintable.set_accumulated_visual_context_for_descendants(viewport_state_for_descendants);
 
     NearestScrollNodeIndices viewport_nearest_scroll_nodes { viewport_state_for_descendants, viewport_state_for_descendants };
     DescendantVisualContexts viewport_contexts {
@@ -570,82 +679,10 @@ AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaint
         viewport_nearest_scroll_nodes,
     };
 
-    struct PendingPaintable {
-        Paintable* paintable;
-        DescendantVisualContexts inherited_contexts;
-        bool may_be_root_element;
-    };
-
-    auto has_default_scroll_shift_anchor = [](Paintable const& paintable_box) {
-        auto const* box = as_if<Layout::Box>(paintable_box.layout_node());
-        return box && box->default_scroll_shift_anchor();
-    };
-
-    // Anchor-positioned boxes emit AnchorScrollShift nodes by reading the enclosing scroll nodes of their
-    // anchors, and an acceptable anchor may come later in tree order than the positioned box. Building such
-    // boxes' subtrees is deferred until their anchors have been built; the hash table mirrors the queue so
-    // readiness checks stay cheap across rounds.
-    Vector<PendingPaintable> deferred_anchor_positioned_paintables;
-    HashTable<Paintable const*> deferred_paintables_awaiting_build;
-
-    auto build_paintables_deferring_anchor_positioned = [&](Vector<PendingPaintable, 64>& stack, Paintable const* paintable_exempt_from_deferral) {
-        while (!stack.is_empty()) {
-            auto pending = stack.take_last();
-            if (pending.paintable != paintable_exempt_from_deferral && has_default_scroll_shift_anchor(*pending.paintable)) {
-                deferred_anchor_positioned_paintables.append(pending);
-                deferred_paintables_awaiting_build.set(pending.paintable);
-                continue;
-            }
-            auto child_contexts = build_paintable_box(*pending.paintable, pending.inherited_contexts, pending.may_be_root_element);
-            for (auto* child = pending.paintable->last_child_ptr(); child; child = child->previous_sibling_ptr())
-                stack.append({ child, child_contexts, false });
-        }
-    };
-
-    Vector<PendingPaintable, 64> pending_paintables;
-    for (auto* child = viewport_paintable.last_child_ptr(); child; child = child->previous_sibling_ptr())
-        pending_paintables.append({ child, viewport_contexts, true });
-    build_paintables_deferring_anchor_positioned(pending_paintables, nullptr);
-
-    auto anchor_is_awaiting_build = [&](Paintable const& paintable_box) {
-        auto const* box = as_if<Layout::Box>(paintable_box.layout_node());
-        auto const* anchor_box = box ? as_if<Layout::Box>(box->default_scroll_shift_anchor()) : nullptr;
-        auto anchor_paintable = anchor_box ? anchor_box->paintable_box() : nullptr;
-        for (auto const* paintable = anchor_paintable.ptr(); paintable; paintable = paintable->parent_ptr()) {
-            if (deferred_paintables_awaiting_build.contains(paintable))
-                return true;
-        }
-        return false;
-    };
-
-    auto build_deferred_subtree = [&](PendingPaintable& entry) {
-        deferred_paintables_awaiting_build.remove(entry.paintable);
-        pending_paintables.clear_with_capacity();
-        pending_paintables.append(entry);
-        build_paintables_deferring_anchor_positioned(pending_paintables, entry.paintable);
-    };
-
-    while (!deferred_anchor_positioned_paintables.is_empty()) {
-        auto entries = move(deferred_anchor_positioned_paintables);
-        Vector<PendingPaintable> entries_whose_anchor_is_still_deferred;
-        for (auto& entry : entries) {
-            if (anchor_is_awaiting_build(*entry.paintable))
-                entries_whose_anchor_is_still_deferred.append(entry);
-            else
-                build_deferred_subtree(entry);
-        }
-
-        bool no_entry_was_ready = entries_whose_anchor_is_still_deferred.size() == entries.size();
-        if (no_entry_was_ready) {
-            // Cyclic or otherwise malformed anchor chains can leave every remaining entry waiting on another;
-            // build them in queue order then — the anchor chain walk's visited set and depth cap bound the
-            // damage the same way they do for cycles discovered mid-walk.
-            for (auto& entry : entries_whose_anchor_is_still_deferred)
-                build_deferred_subtree(entry);
-        } else {
-            deferred_anchor_positioned_paintables.extend(move(entries_whose_anchor_is_still_deferred));
-        }
-    }
+    VisualContextTreeBuilder builder { viewport_paintable, visual_context_tree };
+    for (auto* child = viewport_paintable.first_child_ptr(); child; child = child->next_sibling_ptr())
+        builder.build_subtree(*child, viewport_contexts, true);
+    builder.build_deferred_anchor_positioned_subtrees();
 
     return visual_context_tree;
 }
