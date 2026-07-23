@@ -120,8 +120,6 @@ struct FreeSlot { };
 
 using VisualContextData = Variant<ScrollData, ClipData, TransformData, PerspectiveData, ClipPathData, EffectsData, ScrollCompensation, AnchorScrollShift, MaskData, FreeSlot>;
 
-Optional<TransformData> compute_transform(Paintable const&, CSS::ComputedValues const&, double pixel_ratio);
-
 struct AccumulatedVisualContextNode {
     VisualContextData data;
     VisualContextIndex parent_index {};
