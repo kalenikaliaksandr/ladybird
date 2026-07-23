@@ -3,8 +3,8 @@ AccumulatedVisualContext Tree:
     [1] scroll (PaintableWithLines(BlockContainer<PRE>#out))
       [2] clip_path=[bounds: 0,0 200x200, path: M50 50L150 50L150 150L50 150L50 50Z] (PaintableWithLines(BlockContainer<DIV>.clip-path-ancestor))
       [3] clip_path=[bounds: 0,0 200x200, path: M50 50L150 50L150 150L50 150L50 50Z] (PaintableWithLines(BlockContainer<DIV>.abspos))
-      [5] clip=[220,0 100x100] (PaintableWithLines(BlockContainer<DIV>.clip-ancestor))
-    [6] clip=[220,0 100x100] (PaintableWithLines(BlockContainer<DIV>.fixed))
+      [4] clip=[220,0 100x100] (PaintableWithLines(BlockContainer<DIV>.clip-ancestor))
+    [5] clip=[220,0 100x100] (PaintableWithLines(BlockContainer<DIV>.fixed))
 
 DisplayList:
 SaveLayer@0
@@ -14,8 +14,8 @@ SaveLayer@0
   CompositorWheelHitTestTarget@2 target_scroll_node_index=0 rect=[0,0 200x200]
   CompositorWheelHitTestTarget@3 target_scroll_node_index=0 rect=[0,0 200x200]
   FillRect@3 rect=[0,0 200x200] color=rgb(255, 0, 0)
+  CompositorWheelHitTestTarget@4 target_scroll_node_index=0 rect=[220,0 200x200]
   CompositorWheelHitTestTarget@5 target_scroll_node_index=0 rect=[220,0 200x200]
-  CompositorWheelHitTestTarget@6 target_scroll_node_index=0 rect=[220,0 200x200]
-  FillRect@6 rect=[220,0 200x200] color=rgb(0, 128, 0)
+  FillRect@5 rect=[220,0 200x200] color=rgb(0, 128, 0)
 Restore@0
 

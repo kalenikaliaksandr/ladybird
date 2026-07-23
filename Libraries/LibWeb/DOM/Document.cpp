@@ -9476,9 +9476,15 @@ Utf16String Document::dump_display_list()
         }
     });
 
+    // Freed slots recycle in an order that depends on how many reconciles and compositor updates
+    // preceded the dump, so raw node indices are not reproducible across runs. Dumps number the
+    // nodes by their position in this walk instead; slot stability itself is asserted through
+    // the dedicated internals hooks.
+    HashMap<size_t, size_t> canonical_context_indices;
     Function<void(size_t, size_t)> dump_context = [&](size_t node_index, size_t indent) {
+        canonical_context_indices.set(node_index, canonical_context_indices.size());
         builder.append_repeated(' ', indent * 2);
-        builder.appendff("[{}] ", node_index);
+        builder.appendff("[{}] ", canonical_context_indices.get(node_index).value());
         visual_context_tree.dump(Painting::VisualContextIndex(node_index), builder);
         if (auto it = context_id_to_paintable.find(node_index); it != context_id_to_paintable.end())
             builder.appendff(" ({})", it->value->debug_description());
@@ -9490,10 +9496,23 @@ Utf16String Document::dump_display_list()
     for (auto root : root_contexts)
         dump_context(root, 1);
 
+    auto canonical_context_index = [&](Painting::VisualContextIndex index) -> size_t {
+        return canonical_context_indices.get(index.value()).value_or(index.value());
+    };
+
     builder.append("\nDisplayList:\n"sv);
 
-    Function<void(Painting::DisplayList const&, int)> dump_commands =
-        [&](Painting::DisplayList const& list, int base_indent) {
+    // Nested display lists carry their own private trees, whose append-only indices are already
+    // reproducible; only document-tree references get the canonical numbering.
+    enum class ContextNumbering : u8 {
+        Canonical,
+        Raw,
+    };
+    Function<void(Painting::DisplayList const&, int, ContextNumbering)> dump_commands =
+        [&](Painting::DisplayList const& list, int base_indent, ContextNumbering context_numbering) {
+            auto context_label = [&](Painting::VisualContextIndex index) -> size_t {
+                return context_numbering == ContextNumbering::Canonical ? canonical_context_index(index) : index.value();
+            };
             int indent = base_indent;
             list.for_each_command_header([&](Painting::DisplayListCommandHeader const& header, ReadonlyBytes payload) {
                 auto nesting_change = Painting::display_list_command_nesting_level_change(header.type);
@@ -9504,8 +9523,29 @@ Utf16String Document::dump_display_list()
                 builder.append_repeated(' ', indent * 2);
                 Optional<Painting::DisplayListResourceId> nested_display_list_id;
                 Painting::visit_display_list_command(header.type, payload, [&]<typename Command>(Command const& command) {
-                    builder.appendff("{}@{}", command.command_name, header.context_index.value());
-                    command.dump(builder);
+                    builder.appendff("{}@{}", command.command_name, context_label(header.context_index));
+                    if constexpr (IsSame<Command, Painting::CompositorWheelHitTestTarget> || IsSame<Command, Painting::CompositorWheelHitTestTargetWithCornerRadii>) {
+                        auto remapped = command;
+                        remapped.target_scroll_node_index = Painting::VisualContextIndex { context_label(command.target_scroll_node_index) };
+                        remapped.dump(builder);
+                    } else if constexpr (IsSame<Command, Painting::CompositorScrollNode>) {
+                        auto remapped = command;
+                        remapped.scroll_node_index = Painting::VisualContextIndex { context_label(command.scroll_node_index) };
+                        remapped.parent_scroll_node_index = Painting::VisualContextIndex { context_label(command.parent_scroll_node_index) };
+                        remapped.dump(builder);
+                    } else if constexpr (IsSame<Command, Painting::CompositorStickyArea>) {
+                        auto remapped = command;
+                        remapped.scroll_node_index = Painting::VisualContextIndex { context_label(command.scroll_node_index) };
+                        remapped.parent_scroll_node_index = Painting::VisualContextIndex { context_label(command.parent_scroll_node_index) };
+                        remapped.nearest_scrolling_ancestor_index = Painting::VisualContextIndex { context_label(command.nearest_scrolling_ancestor_index) };
+                        remapped.dump(builder);
+                    } else if constexpr (IsSame<Command, Painting::CompositorViewportScrollbar>) {
+                        auto remapped = command;
+                        remapped.scroll_node_index = Painting::VisualContextIndex { context_label(command.scroll_node_index) };
+                        remapped.dump(builder);
+                    } else {
+                        command.dump(builder);
+                    }
                     if constexpr (IsSame<Command, Painting::PaintNestedDisplayList>)
                         nested_display_list_id = command.display_list_id;
                 });
@@ -9513,7 +9553,7 @@ Utf16String Document::dump_display_list()
 
                 if (nested_display_list_id.has_value()) {
                     auto& nested_display_list = resource_storage.display_list(*nested_display_list_id);
-                    dump_commands(nested_display_list, indent + 1);
+                    dump_commands(nested_display_list, indent + 1, ContextNumbering::Raw);
                 }
 
                 if (nesting_change > 0)
@@ -9521,17 +9561,17 @@ Utf16String Document::dump_display_list()
             });
 
             auto mask_context_indices = list.mask_display_lists().keys();
-            insertion_sort(mask_context_indices);
+            insertion_sort(mask_context_indices, [&](auto& a, auto& b) { return context_label(a) < context_label(b); });
             for (auto context_index : mask_context_indices) {
                 builder.append_repeated(' ', base_indent * 2);
-                builder.appendff("MaskDisplayList for context {}:\n", context_index.value());
+                builder.appendff("MaskDisplayList for context {}:\n", context_label(context_index));
                 auto display_list_id = list.mask_display_list_id(context_index).release_value();
                 auto& mask_display_list = resource_storage.display_list(display_list_id);
-                dump_commands(mask_display_list, base_indent + 1);
+                dump_commands(mask_display_list, base_indent + 1, ContextNumbering::Raw);
             }
         };
 
-    dump_commands(*display_list, 0);
+    dump_commands(*display_list, 0, ContextNumbering::Canonical);
 
     return Utf16String::from_utf8_without_validation(builder.string_view());
 }
