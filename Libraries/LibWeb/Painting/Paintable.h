@@ -419,6 +419,10 @@ public:
     [[nodiscard]] VisualContextIndex accumulated_visual_context_index() const { return m_accumulated_visual_context_index; }
     void set_accumulated_visual_context_for_descendants(VisualContextIndex index) { m_accumulated_visual_context_for_descendants_index = index; }
     [[nodiscard]] VisualContextIndex accumulated_visual_context_for_descendants_index() const { return m_accumulated_visual_context_for_descendants_index; }
+    void set_accumulated_visual_context_for_absolute_position_descendants(VisualContextIndex index) { m_accumulated_visual_context_for_absolute_position_descendants_index = index; }
+    [[nodiscard]] VisualContextIndex accumulated_visual_context_for_absolute_position_descendants_index() const { return m_accumulated_visual_context_for_absolute_position_descendants_index; }
+    void set_accumulated_visual_context_for_fixed_position_descendants(VisualContextIndex index) { m_accumulated_visual_context_for_fixed_position_descendants_index = index; }
+    [[nodiscard]] VisualContextIndex accumulated_visual_context_for_fixed_position_descendants_index() const { return m_accumulated_visual_context_for_fixed_position_descendants_index; }
 
     Optional<CSSPixelPoint> transform_point_to_local(CSSPixelPoint screen_position) const;
     Optional<CSSPixelPoint> transform_point_to_local_for_descendants(CSSPixelPoint screen_position) const;
@@ -524,6 +528,8 @@ private:
     VisualContextIndex m_own_scroll_node_index {};
     VisualContextIndex m_accumulated_visual_context_index { VISUAL_VIEWPORT_NODE_INDEX };
     VisualContextIndex m_accumulated_visual_context_for_descendants_index { VISUAL_VIEWPORT_NODE_INDEX };
+    VisualContextIndex m_accumulated_visual_context_for_absolute_position_descendants_index { VISUAL_VIEWPORT_NODE_INDEX };
+    VisualContextIndex m_accumulated_visual_context_for_fixed_position_descendants_index { VISUAL_VIEWPORT_NODE_INDEX };
     Optional<VisualContextIndex> m_fixed_background_visual_context;
     size_t m_visual_context_nodes_begin { 0 };
     size_t m_visual_context_nodes_end { 0 };
