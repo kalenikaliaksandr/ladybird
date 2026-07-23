@@ -1854,14 +1854,19 @@ void Document::after_layout_commit(LayoutTreeChanged layout_tree_changed)
     set_needs_to_record_display_list();
     set_needs_to_refresh_scroll_state(true);
 
+    // Reused paintables kept their recorded node lists across the commit, and paintables the
+    // commit replaced have already handed their nodes back on death, so an in-place reconcile
+    // restamps everything the commit touched while every surviving node keeps its index — even
+    // after a full relayout. Scheduled before the overflow update, whose sticky constraint
+    // refresh is redundant while a reconcile is pending.
+    set_needs_accumulated_visual_contexts_reconcile();
+
     // A commit that changed the tree can have replaced boxes referenced by the cached
     // contained-boxes map; refresh it before overflow measurement follows them. A pending full
     // recalculation rebuilds the map inside its own measurement traversal instead.
     if (layout_tree_changed == LayoutTreeChanged::Yes && !m_needs_full_scrollable_overflow_recalculation)
         m_scrollable_overflow_contained_boxes_from_last_layout = Layout::collect_scrollable_overflow_contained_boxes(*m_layout_root);
-    update_scrollable_overflow(ScrollableOverflowDerivedStructureUpdates::HandledByAfterLayoutCommit);
-
-    set_needs_accumulated_visual_contexts_update(true);
+    update_scrollable_overflow();
 
     // Selection state lives on paintable fragments, which the commit has rebuilt.
     if (auto range = get_selection()->range())
@@ -2144,7 +2149,7 @@ void Document::update_layout(UpdateLayoutReason reason)
             && reason == UpdateLayoutReason::InspectDevToolsLayoutData;
 
         if (layout_is_up_to_date() && !force_devtools_layout_data_collection) {
-            update_scrollable_overflow(ScrollableOverflowDerivedStructureUpdates::UpdateAfterMeasure);
+            update_scrollable_overflow();
             return;
         }
 
@@ -2464,7 +2469,7 @@ static void rebuild_sticky_insets(Layout::Node const& root)
     });
 }
 
-void Document::update_scrollable_overflow(ScrollableOverflowDerivedStructureUpdates derived_structure_updates)
+void Document::update_scrollable_overflow()
 {
     // For every box that will be re-measured, the overflow data it had before, so the diff below
     // can tell what actually changed; an empty value means the box's paintable was reset by a
@@ -2535,16 +2540,17 @@ void Document::update_scrollable_overflow(ScrollableOverflowDerivedStructureUpda
             clamp_scroll_offset(const_cast<Painting::Paintable&>(*box_paintable));
     }
 
-    if (derived_structure_updates == ScrollableOverflowDerivedStructureUpdates::HandledByAfterLayoutCommit)
-        return;
-
     bool any_overflow_changed = false;
     bool any_has_scrollable_overflow_flipped = false;
     for (auto const& [box, old_overflow_data] : old_overflow_data_by_box) {
         auto box_paintable = box->paintable_box();
         if (!box_paintable || !box_paintable->overflow_data().has_value())
             continue;
-        VERIFY(old_overflow_data.has_value());
+        // A recorded-empty entry means a layout commit reset the box's paintable; the reconcile
+        // scheduled after the commit recreates its scroll node either way, so there is no old
+        // state to diff against.
+        if (!old_overflow_data.has_value())
+            continue;
         auto const& new_overflow_data = *box_paintable->overflow_data();
         bool rect_changed = old_overflow_data->scrollable_overflow_rect != new_overflow_data.scrollable_overflow_rect;
         bool has_scrollable_overflow_flipped = old_overflow_data->has_scrollable_overflow != new_overflow_data.has_scrollable_overflow;

@@ -441,11 +441,7 @@ public:
     [[nodiscard]] u64 full_layout_count() const { return m_full_layout_count; }
     [[nodiscard]] bool layout_is_up_to_date() const;
     void clear_devtools_layout_inspection_data();
-    enum class ScrollableOverflowDerivedStructureUpdates : u8 {
-        UpdateAfterMeasure,
-        HandledByAfterLayoutCommit,
-    };
-    void update_scrollable_overflow(ScrollableOverflowDerivedStructureUpdates);
+    void update_scrollable_overflow();
     void update_paint_and_hit_testing_properties_if_needed();
     void update_animated_style_if_needed();
     void update_style_computer_viewport_rect();

@@ -118,6 +118,15 @@ u64 Internals::visual_context_tree_node_count()
     return paintable->visual_context_tree().nodes().size();
 }
 
+u64 Internals::visual_context_tree_version()
+{
+    auto& document = window().associated_document();
+    auto paintable = document.paintable();
+    if (!paintable || !paintable->has_visual_context_tree())
+        return 0;
+    return paintable->visual_context_tree().version();
+}
+
 void Internals::send_mismatched_visual_context_tree_update_to_compositor()
 {
     auto& document = window().associated_document();

@@ -134,12 +134,12 @@ void ViewportPaintable::finalize_async_scrolling_metadata_recording(DisplayListR
 void ViewportPaintable::reset_for_relayout()
 {
     PaintableWithLines::reset_for_relayout();
-    clear_scroll_state();
+    // The visual context tree and the scroll state survive full relayouts on purpose: reused
+    // paintables keep their recorded node lists, so the reconcile scheduled after the commit
+    // patches surviving nodes at their slots instead of renumbering the whole tree.
     m_display_list_used_as_paint_command_cache_source = nullptr;
     m_paint_command_cache_source_referenced_resources = {};
     m_paintable_boxes_with_auto_content_visibility.clear();
-    m_visual_context_tree.clear();
-    m_visual_context_tree_needs_compositor_update = false;
 }
 
 void ViewportPaintable::build_stacking_context_tree_if_needed()
@@ -226,9 +226,11 @@ void ViewportPaintable::precompute_sticky_constraints(ScrollStateSlot sticky_slo
 void ViewportPaintable::refresh_sticky_constraints()
 {
     m_scroll_state.for_each_sticky_node([&](ScrollStateSlot slot, ScrollNodeState& state) {
-        // Skip entries whose paintables a subtree relayout has replaced; the pending visual context
-        // tree rebuild recreates those entries before anything reads them.
-        if (auto paintable_box = state.paintable_box_if_alive())
+        // Skip entries whose paintables a subtree relayout has replaced or reset: replaced ones
+        // are dead, and a reset one has no sticky insets until the pending reconcile of its
+        // subtree recomputes them together with its scroll node entry.
+        auto paintable_box = state.paintable_box_if_alive();
+        if (paintable_box && paintable_box->has_sticky_insets())
             precompute_sticky_constraints(slot, *paintable_box);
     });
     m_needs_to_refresh_scroll_state = true;

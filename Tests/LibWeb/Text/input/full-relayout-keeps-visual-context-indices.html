@@ -1,0 +1,64 @@
+<!doctype html>
+<style>
+    body {
+        margin: 0;
+    }
+    #scroller {
+        overflow: scroll;
+        height: 80px;
+    }
+    #scroller-content {
+        height: 300px;
+    }
+    #sticky {
+        position: sticky;
+        top: 5px;
+        height: 20px;
+    }
+    #transformed {
+        transform: translateX(10px);
+        width: 50px;
+        height: 20px;
+    }
+    #plain {
+        height: 40px;
+    }
+</style>
+<div id="scroller">
+    <div id="scroller-content"><div id="sticky"></div></div>
+</div>
+<div id="transformed"></div>
+<div id="plain"></div>
+<script src="include.js"></script>
+<script>
+    test(() => {
+        const scrollNodeIndices = () => {
+            const state = internals.asyncScrollingState();
+            const indices = [];
+            for (const node of state.scrollNodes)
+                indices.push(node.scrollNodeIndex);
+            return indices.join(",");
+        };
+
+        // Force the initial full build.
+        document.getElementById("plain").getBoundingClientRect();
+        const indices_before = scrollNodeIndices();
+        const version_before = internals.visualContextTreeVersion();
+        const full_layouts_before = internals.fullLayoutCount();
+
+        // An in-flow height change dirties layout outside any partial relayout boundary, so the
+        // whole page relays out. Reused paintables keep their recorded node lists across the
+        // commit, so the reconcile patches values in place: every index and the tree version
+        // survive even a full relayout.
+        document.getElementById("plain").style.height = "60px";
+        document.getElementById("plain").getBoundingClientRect();
+
+        const indices_after = scrollNodeIndices();
+        const version_after = internals.visualContextTreeVersion();
+        const full_layouts = internals.fullLayoutCount() - full_layouts_before;
+
+        println(`full relayouts at least one: ${full_layouts >= 1}`);
+        println(`scroll node indices unchanged: ${indices_after === indices_before}`);
+        println(`tree version unchanged: ${version_after === version_before}`);
+    });
+</script>
