@@ -889,6 +889,9 @@ Optional<Gfx::FloatPoint> AccumulatedVisualContextTree::transform_point_for_hit_
             [&](AnchorScrollShift const& shift) -> Optional<Gfx::FloatPoint> {
                 point.translate_by(-shift.masked_offset(scroll_state));
                 return point;
+            },
+            [&](FreeSlot const&) -> Optional<Gfx::FloatPoint> {
+                VERIFY_NOT_REACHED();
             });
 
         if (!result.has_value())
@@ -922,6 +925,7 @@ Gfx::FloatPoint AccumulatedVisualContextTree::inverse_transform_point(VisualCont
                     point = transformed + transform.origin;
                 }
             },
+            [&](FreeSlot const&) { VERIFY_NOT_REACHED(); },
             [&](auto const&) {});
     }
 
@@ -957,7 +961,8 @@ Gfx::FloatRect AccumulatedVisualContextTree::transform_rect_to_viewport(VisualCo
                 [&](ClipData const&) { /* clips don't affect rect coordinates */ },
                 [&](ClipPathData const&) { /* clip paths don't affect rect coordinates */ },
                 [&](EffectsData const&) { /* effects don't affect rect coordinates */ },
-                [&](MaskData const&) {});
+                [&](MaskData const&) {},
+                [&](FreeSlot const&) { VERIFY_NOT_REACHED(); });
         }
         if (i == VISUAL_VIEWPORT_NODE_INDEX.value())
             break;
@@ -1051,6 +1056,9 @@ void AccumulatedVisualContextTree::dump(VisualContextIndex index, StringBuilder&
                 shift.negate ? ", negate"sv : ""sv,
                 shift.compensate_horizontal_scroll ? ""sv : ", no-x"sv,
                 shift.compensate_vertical_scroll ? ""sv : ", no-y"sv);
+        },
+        [&](FreeSlot const&) {
+            builder.append("free"sv);
         });
 }
 
@@ -1213,6 +1221,18 @@ ErrorOr<Web::Painting::AnchorScrollShift> decode(Decoder& decoder)
         .compensate_horizontal_scroll = TRY(decoder.decode<bool>()),
         .compensate_vertical_scroll = TRY(decoder.decode<bool>()),
     };
+}
+
+template<>
+ErrorOr<void> encode(Encoder&, Web::Painting::FreeSlot const&)
+{
+    return {};
+}
+
+template<>
+ErrorOr<Web::Painting::FreeSlot> decode(Decoder&)
+{
+    return Web::Painting::FreeSlot {};
 }
 
 template<>

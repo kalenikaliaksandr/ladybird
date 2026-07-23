@@ -187,54 +187,77 @@ void DisplayListPlayer::execute_impl(
     auto& nearest_spatial_node = palette_storage.nearest_spatial_nodes;
     auto& nearest_frame_node = palette_storage.nearest_frame_nodes;
     auto const& nodes = visual_context_tree.nodes();
-    transform_palette.clear_with_capacity();
-    transform_palette.ensure_capacity(nodes.size());
-    nearest_spatial_node.clear_with_capacity();
-    nearest_spatial_node.ensure_capacity(nodes.size());
-    nearest_frame_node.clear_with_capacity();
-    nearest_frame_node.ensure_capacity(nodes.size());
     auto const replay_base_matrix = canvas_matrix();
-    for (size_t i = 0; i < nodes.size(); ++i) {
+    static constexpr VisualContextIndex UNRESOLVED_PALETTE_ENTRY { NumericLimits<size_t>::max() };
+    transform_palette.clear_with_capacity();
+    transform_palette.resize_with_default_value_and_keep_capacity(nodes.size(), replay_base_matrix);
+    nearest_spatial_node.clear_with_capacity();
+    nearest_spatial_node.resize_with_default_value_and_keep_capacity(nodes.size(), UNRESOLVED_PALETTE_ENTRY);
+    nearest_frame_node.clear_with_capacity();
+    nearest_frame_node.resize_with_default_value_and_keep_capacity(nodes.size(), VISUAL_VIEWPORT_NODE_INDEX);
+    auto resolve_palette_entry = [&](VisualContextIndex index) {
+        auto i = index.value();
         auto const& node = nodes[i];
-        auto append_spatial = [&](Gfx::FloatMatrix4x4 const& local_matrix) {
+        auto assign_spatial = [&](Gfx::FloatMatrix4x4 const& local_matrix) {
             auto const& parent_matrix = i == 0 ? replay_base_matrix : transform_palette[node.parent_index.value()];
-            transform_palette.unchecked_append(parent_matrix * local_matrix);
-            nearest_spatial_node.unchecked_append(VisualContextIndex { i });
-            nearest_frame_node.unchecked_append(i == 0 ? VISUAL_VIEWPORT_NODE_INDEX : nearest_frame_node[node.parent_index.value()]);
+            transform_palette[i] = parent_matrix * local_matrix;
+            nearest_spatial_node[i] = index;
+            nearest_frame_node[i] = i == 0 ? VISUAL_VIEWPORT_NODE_INDEX : nearest_frame_node[node.parent_index.value()];
         };
-        auto append_spatial_translation = [&](Gfx::IntPoint offset) {
+        auto assign_spatial_translation = [&](Gfx::IntPoint offset) {
             // Whole device pixels, so scrolled content never lands on subpixel positions.
-            append_spatial(Gfx::translation_matrix(Vector3<float>(static_cast<float>(offset.x()), static_cast<float>(offset.y()), 0)));
+            assign_spatial(Gfx::translation_matrix(Vector3<float>(static_cast<float>(offset.x()), static_cast<float>(offset.y()), 0)));
         };
-        auto append_non_spatial = [&] {
+        auto assign_non_spatial = [&] {
             VERIFY(i != 0);
-            transform_palette.unchecked_append(transform_palette[node.parent_index.value()]);
-            nearest_spatial_node.unchecked_append(nearest_spatial_node[node.parent_index.value()]);
-            nearest_frame_node.unchecked_append(VisualContextIndex { i });
+            transform_palette[i] = transform_palette[node.parent_index.value()];
+            nearest_spatial_node[i] = nearest_spatial_node[node.parent_index.value()];
+            nearest_frame_node[i] = index;
         };
         node.data.visit(
             [&](TransformData const& transform) {
                 auto matrix = Gfx::translation_matrix(Vector3<float>(transform.origin.x(), transform.origin.y(), 0));
                 matrix = matrix * transform.matrix;
                 matrix = matrix * Gfx::translation_matrix(Vector3<float>(-transform.origin.x(), -transform.origin.y(), 0));
-                append_spatial(matrix);
+                assign_spatial(matrix);
             },
             [&](PerspectiveData const& perspective) {
-                append_spatial(perspective.matrix);
+                assign_spatial(perspective.matrix);
             },
             [&](ScrollData const&) {
-                append_spatial_translation(scroll_state.device_offset_for_index(VisualContextIndex { i }).to_type<int>());
+                assign_spatial_translation(scroll_state.device_offset_for_index(index).to_type<int>());
             },
             [&](ScrollCompensation const& compensation) {
-                append_spatial_translation((-scroll_state.device_offset_for_index(compensation.scroll_node_index)).to_type<int>());
+                assign_spatial_translation((-scroll_state.device_offset_for_index(compensation.scroll_node_index)).to_type<int>());
             },
             [&](AnchorScrollShift const& shift) {
-                append_spatial_translation(shift.masked_offset(scroll_state).to_type<int>());
+                assign_spatial_translation(shift.masked_offset(scroll_state).to_type<int>());
             },
-            [&](ClipData const&) { append_non_spatial(); },
-            [&](ClipPathData const&) { append_non_spatial(); },
-            [&](EffectsData const&) { append_non_spatial(); },
-            [&](MaskData const&) { append_non_spatial(); });
+            [&](ClipData const&) { assign_non_spatial(); },
+            [&](ClipPathData const&) { assign_non_spatial(); },
+            [&](EffectsData const&) { assign_non_spatial(); },
+            [&](MaskData const&) { assign_non_spatial(); },
+            [&](FreeSlot const&) {
+                // Freed slots stay in the node vector to keep palette indices aligned with node
+                // indices; no live command header or reachable chain resolves one, so their
+                // entries keep the vector-fill defaults and only the resolution marker is set.
+                nearest_spatial_node[i] = VISUAL_VIEWPORT_NODE_INDEX;
+            });
+    };
+    // An in-place reconciled tree reuses freed slots and reparents surviving nodes, so a node's
+    // parent can sit at a higher index; entries resolve through the parent chain instead of in
+    // index order, memoized so every node is still computed exactly once.
+    Vector<VisualContextIndex, 16> unresolved_palette_chain;
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        auto index = VisualContextIndex { i };
+        while (nearest_spatial_node[index.value()] == UNRESOLVED_PALETTE_ENTRY) {
+            unresolved_palette_chain.append(index);
+            if (index.value() == 0)
+                break;
+            index = nodes[index.value()].parent_index;
+        }
+        while (!unresolved_palette_chain.is_empty())
+            resolve_palette_entry(unresolved_palette_chain.take_last());
     }
 
     // The palette entry the canvas matrix currently equals, if known; every Restore resets the

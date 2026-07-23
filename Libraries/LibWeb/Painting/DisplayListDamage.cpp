@@ -167,6 +167,9 @@ static bool visual_context_data_is_equal(VisualContextIndex a_index, VisualConte
                 && data.compensate_horizontal_scroll == other->compensate_horizontal_scroll
                 && data.compensate_vertical_scroll == other->compensate_vertical_scroll
                 && data.masked_offset(a_scroll_state) == other->masked_offset(b_scroll_state);
+        },
+        [&](FreeSlot const&) -> bool {
+            VERIFY_NOT_REACHED();
         });
 }
 
