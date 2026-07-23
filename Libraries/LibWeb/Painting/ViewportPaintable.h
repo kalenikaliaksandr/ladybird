@@ -81,6 +81,7 @@ public:
 
 private:
     friend void update_visual_viewport_accumulated_visual_context(ViewportPaintable&);
+    friend void verify_reconciled_visual_context_tree_matches_fresh_build(ViewportPaintable&, AccumulatedVisualContextTree const& reconciled_tree);
 
     virtual bool is_viewport_paintable() const override { return true; }
 
