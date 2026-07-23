@@ -73,7 +73,7 @@ static void apply_document_style_invalidation_after_style_change(DOM::Document& 
     if (invalidation.needs_repaint())
         document.set_needs_to_record_display_list();
     if (invalidation.accumulated_visual_contexts() == AccumulatedVisualContextInvalidation::Rebuild)
-        document.set_needs_accumulated_visual_contexts_update(true);
+        document.set_needs_accumulated_visual_contexts_reconcile();
     if (invalidation.needs_stacking_context_tree_rebuild())
         document.invalidate_stacking_context_tree();
 }

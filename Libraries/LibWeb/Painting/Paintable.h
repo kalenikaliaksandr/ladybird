@@ -443,6 +443,7 @@ public:
     void set_cached_commands(PaintPhase, u64 display_list_id, DisplayListCommandRange, VisualContextIndex recorded_context_index, bool captured_under_empty_effective_clip) const;
 
     void set_fixed_background_visual_context(VisualContextIndex index) { m_fixed_background_visual_context = index; }
+    void clear_fixed_background_visual_context() { m_fixed_background_visual_context = {}; }
     [[nodiscard]] Optional<VisualContextIndex> fixed_background_visual_context() const { return m_fixed_background_visual_context; }
 
     // The visual context nodes this box contributed during the last tree build, in emission order.

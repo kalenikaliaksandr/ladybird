@@ -1,0 +1,63 @@
+<!doctype html>
+<style>
+    body {
+        margin: 0;
+    }
+    #toggle {
+        width: 40px;
+        height: 40px;
+        background: blue;
+    }
+    #scroller {
+        width: 200px;
+        height: 100px;
+        overflow: scroll;
+    }
+    #scroller-content {
+        height: 400px;
+    }
+    #sticky {
+        position: sticky;
+        top: 10px;
+        height: 20px;
+    }
+</style>
+<div id="toggle"></div>
+<div id="scroller">
+    <div id="scroller-content">
+        <div id="sticky"></div>
+    </div>
+</div>
+<script src="include.js"></script>
+<script>
+    test(() => {
+        const scrollNodeIndices = () => {
+            const state = internals.asyncScrollingState();
+            const indices = [];
+            for (const node of state.scrollNodes)
+                indices.push(node.scrollNodeIndex);
+            for (const area of state.stickyAreas)
+                indices.push(area.scrollNodeIndex);
+            return indices.join(",");
+        };
+
+        // NB: println() before the later queries would dirty layout and force a full relayout,
+        //     whose commit schedules a full tree rebuild; results are printed at the end.
+        const indices_before = scrollNodeIndices();
+        const builds_before = internals.accumulatedVisualContextTreeBuildCount();
+
+        // Gaining and losing an effects node ahead of the scroller is a structural change the
+        // in-place patcher refuses; the reconcile it falls back to must keep every surviving
+        // node at its index.
+        document.getElementById("toggle").style.opacity = "0.5";
+        const indices_with_effects = scrollNodeIndices();
+        const builds_with_effects = internals.accumulatedVisualContextTreeBuildCount();
+
+        document.getElementById("toggle").style.opacity = "";
+        const indices_after_revert = scrollNodeIndices();
+
+        println(`indices unchanged after effects node appears: ${indices_with_effects === indices_before}`);
+        println(`indices unchanged after effects node disappears: ${indices_after_revert === indices_before}`);
+        println(`structural change rebuilt the tree: ${builds_with_effects - builds_before === 1}`);
+    });
+</script>

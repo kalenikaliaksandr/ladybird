@@ -92,6 +92,29 @@ VisualContextIndex AccumulatedVisualContextTree::allocate_node(VisualContextData
     return index;
 }
 
+AccumulatedVisualContextTree::NodePatchResult AccumulatedVisualContextTree::patch_node(VisualContextIndex index, VisualContextData data, VisualContextIndex parent_index)
+{
+    VERIFY(parent_index.value() < m_nodes.size());
+    auto& node = m_nodes[index.value()];
+    VERIFY(!node.data.has<FreeSlot>());
+
+    NodePatchResult result;
+    auto empty_clip = derive_has_empty_effective_clip(data, parent_index);
+    result.empty_effective_clip_flipped = node.has_empty_effective_clip != empty_clip;
+    node.has_empty_effective_clip = empty_clip;
+    node.data = move(data);
+    if (node.parent_index != parent_index) {
+        node.parent_index = parent_index;
+        result.parent_or_depth_changed = true;
+    }
+    auto depth = m_nodes[parent_index.value()].depth + 1;
+    if (node.depth != depth) {
+        node.depth = depth;
+        result.parent_or_depth_changed = true;
+    }
+    return result;
+}
+
 void AccumulatedVisualContextTree::free_node(VisualContextIndex index)
 {
     VERIFY(index != VISUAL_VIEWPORT_NODE_INDEX);
@@ -116,32 +139,9 @@ void AccumulatedVisualContextTree::set_visual_viewport_transform(TransformData t
     m_nodes[VISUAL_VIEWPORT_NODE_INDEX.value()].data = move(transform);
 }
 
-bool AccumulatedVisualContextTree::is_compatible_with(AccumulatedVisualContextTree const& other) const
+void AccumulatedVisualContextTree::mint_new_version()
 {
-    if (m_nodes.size() != other.m_nodes.size())
-        return false;
-
-    for (size_t i = 0; i < m_nodes.size(); ++i) {
-        auto const& node = m_nodes[i];
-        auto const& other_node = other.m_nodes[i];
-        if (node.parent_index != other_node.parent_index)
-            return false;
-        if (node.has_empty_effective_clip != other_node.has_empty_effective_clip)
-            return false;
-        if (!node.data.visit([&](auto const& data) {
-                using DataType = RemoveCVReference<decltype(data)>;
-                return other_node.data.has<DataType>();
-            }))
-            return false;
-    }
-
-    return true;
-}
-
-void AccumulatedVisualContextTree::reuse_version_from(AccumulatedVisualContextTree const& other)
-{
-    VERIFY(is_compatible_with(other));
-    m_version = other.m_version;
+    m_version = s_next_accumulated_visual_context_tree_version.fetch_add(1, AK::MemoryOrder::memory_order_relaxed);
 }
 
 Vector<size_t, 8> AccumulatedVisualContextTree::build_ancestor_chain(VisualContextIndex index) const

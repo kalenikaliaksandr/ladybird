@@ -322,17 +322,27 @@ struct DescendantVisualContexts {
 
 // Builds visual context nodes for whole paintable subtrees, seeded with the contexts the subtree
 // root inherits. One builder spans one build operation, so anchor-positioned subtree deferral
-// works across every subtree it builds.
+// works across every subtree it builds. In reconcile mode the walk runs over a tree that already
+// describes these paintables: each box's recorded nodes are consumed by matching fresh emissions,
+// which patch surviving nodes at their slots; only divergences allocate or free.
 class VisualContextTreeBuilder {
 public:
-    VisualContextTreeBuilder(ViewportPaintable& viewport_paintable, AccumulatedVisualContextTree& visual_context_tree)
+    enum class Mode {
+        Build,
+        ReconcileInPlace,
+    };
+
+    VisualContextTreeBuilder(ViewportPaintable& viewport_paintable, AccumulatedVisualContextTree& visual_context_tree, Mode mode)
         : m_viewport_paintable(viewport_paintable)
         , m_visual_context_tree(visual_context_tree)
+        , m_reconcile_in_place(mode == Mode::ReconcileInPlace)
         , m_pixel_ratio(viewport_paintable.document().page().client().device_pixels_per_css_pixel())
         , m_converter(m_pixel_ratio)
         , m_scale(static_cast<float>(m_pixel_ratio))
     {
     }
+
+    VisualContextReconcileOutcome reconcile_outcome() const { return m_outcome; }
 
     void build_subtree(Paintable& root, DescendantVisualContexts inherited_contexts, bool may_be_root_element)
     {
@@ -375,9 +385,57 @@ private:
 
     VisualContextIndex append_node(VisualContextIndex parent_index, VisualContextData data)
     {
-        auto index = m_visual_context_tree.append(move(data), parent_index);
+        if (m_reconcile_in_place && m_reuse_cursor_position < m_reusable_nodes_of_current_paintable.size()) {
+            auto index = m_reusable_nodes_of_current_paintable[m_reuse_cursor_position];
+            auto& node = m_visual_context_tree.node_at(index);
+            bool same_alternative = node.data.visit([&]<typename DataType>(DataType const&) { return data.has<DataType>(); });
+            if (same_alternative) {
+                if (auto const* old_scroll = node.data.get_pointer<ScrollData>(); old_scroll && old_scroll->is_sticky != data.get<ScrollData>().is_sticky)
+                    same_alternative = false;
+            }
+            if (same_alternative) {
+                ++m_reuse_cursor_position;
+                if (auto const* old_scroll = node.data.get_pointer<ScrollData>())
+                    data.get<ScrollData>().state_slot = old_scroll->state_slot;
+                auto patch_result = m_visual_context_tree.patch_node(index, move(data), parent_index);
+                if (patch_result.parent_or_depth_changed || patch_result.empty_effective_clip_flipped)
+                    m_outcome.structural_change = true;
+                m_emitted_nodes_for_current_paintable.append(index);
+                return index;
+            }
+            free_remaining_reusable_nodes();
+        }
+        if (m_reconcile_in_place)
+            m_outcome.structural_change = true;
+        auto index = m_visual_context_tree.allocate_node(move(data), parent_index);
         m_emitted_nodes_for_current_paintable.append(index);
         return index;
+    }
+
+    void free_remaining_reusable_nodes()
+    {
+        while (m_reuse_cursor_position < m_reusable_nodes_of_current_paintable.size()) {
+            m_viewport_paintable.free_visual_context_node(m_visual_context_tree, m_reusable_nodes_of_current_paintable[m_reuse_cursor_position++]);
+            m_outcome.structural_change = true;
+        }
+    }
+
+    enum class StickyNode {
+        No,
+        Yes,
+    };
+
+    void register_or_update_scroll_node(VisualContextIndex node_index, Paintable const& paintable_box, VisualContextIndex parent_index, StickyNode sticky)
+    {
+        // A patched node kept its state slot; a freshly allocated one still carries the sentinel.
+        if (m_visual_context_tree.scroll_state_slot_for_node(node_index) != NO_SCROLL_STATE_SLOT) {
+            m_viewport_paintable.update_scroll_node_state_keeping_slot(m_visual_context_tree, node_index, paintable_box, parent_index);
+            return;
+        }
+        if (sticky == StickyNode::Yes)
+            m_viewport_paintable.register_sticky_node(m_visual_context_tree, node_index, paintable_box, parent_index);
+        else
+            m_viewport_paintable.register_scroll_node(m_visual_context_tree, node_index, paintable_box, parent_index);
     }
 
     static bool has_default_scroll_shift_anchor(Paintable const& paintable_box)
@@ -424,6 +482,14 @@ private:
     DescendantVisualContexts build_paintable_box(Paintable& paintable_box, DescendantVisualContexts inherited_contexts, bool may_be_root_element)
     {
         m_emitted_nodes_for_current_paintable.clear_with_capacity();
+        // A fresh build discards the old tree wholesale, so only a reconcile may interpret the
+        // recorded nodes: they index the tree being reconciled, and freeing them anywhere else
+        // would tombstone whatever occupies those slots in the new tree.
+        if (m_reconcile_in_place) {
+            m_reusable_nodes_of_current_paintable.clear_with_capacity();
+            m_reusable_nodes_of_current_paintable.append(paintable_box.owned_visual_context_nodes().data(), paintable_box.owned_visual_context_nodes().size());
+            m_reuse_cursor_position = 0;
+        }
         auto& layout_node = paintable_box.layout_node();
 
         paintable_box.set_enclosing_scroll_node_index({});
@@ -513,7 +579,7 @@ private:
         if (creates_sticky_scroll_node) {
             sticky_scroll_node_index = append_node(own_state, ScrollData { .is_sticky = true });
             own_state = sticky_scroll_node_index;
-            m_viewport_paintable.register_sticky_node(m_visual_context_tree, sticky_scroll_node_index, paintable_box, nearest_ancestor_scroll_node_index);
+            register_or_update_scroll_node(sticky_scroll_node_index, paintable_box, nearest_ancestor_scroll_node_index, StickyNode::Yes);
             paintable_box.set_enclosing_scroll_node_index(sticky_scroll_node_index);
             paintable_box.set_own_scroll_node_index(sticky_scroll_node_index);
             nearest_scroll_nodes_for_descendants = { sticky_scroll_node_index, sticky_scroll_node_index };
@@ -547,6 +613,7 @@ private:
             append_to_own_and_positioned_descendant_contexts(MaskData { m_converter.enclosing_device_rect(mask_layer.area), mask_layer.kind, mask_layer.origin });
 
         paintable_box.set_accumulated_visual_context(own_state);
+        paintable_box.clear_fixed_background_visual_context();
 
         Vector<CSS::BackgroundLayerData> const* background_layers = &computed_values.background_layers();
         auto is_root_element = may_be_root_element && layout_node.is_root_element();
@@ -616,10 +683,13 @@ private:
             auto parent_index = creates_sticky_scroll_node ? sticky_scroll_node_index : nearest_ancestor_scroll_node_index;
             auto scroll_node_index = append_node(state_for_descendants, ScrollData { .is_sticky = false });
             state_for_descendants = scroll_node_index;
-            m_viewport_paintable.register_scroll_node(m_visual_context_tree, scroll_node_index, paintable_box, parent_index);
+            register_or_update_scroll_node(scroll_node_index, paintable_box, parent_index, StickyNode::No);
             paintable_box.set_own_scroll_node_index(scroll_node_index);
             nearest_scroll_nodes_for_descendants = { scroll_node_index, scroll_node_index };
         }
+
+        if (m_reconcile_in_place)
+            free_remaining_reusable_nodes();
 
         paintable_box.set_accumulated_visual_context_for_descendants(state_for_descendants);
         paintable_box.set_owned_visual_context_nodes(move(m_emitted_nodes_for_current_paintable));
@@ -649,6 +719,8 @@ private:
 
     ViewportPaintable& m_viewport_paintable;
     AccumulatedVisualContextTree& m_visual_context_tree;
+    bool m_reconcile_in_place { false };
+    VisualContextReconcileOutcome m_outcome;
     double m_pixel_ratio { 0 };
     DevicePixelConverter m_converter;
     float m_scale { 0 };
@@ -662,40 +734,63 @@ private:
 
     Vector<PendingPaintable, 64> m_pending_paintables;
     Vector<VisualContextIndex> m_emitted_nodes_for_current_paintable;
+    Vector<VisualContextIndex> m_reusable_nodes_of_current_paintable;
+    size_t m_reuse_cursor_position { 0 };
 };
+
+static VisualContextReconcileOutcome stamp_viewport_and_build_subtrees(ViewportPaintable& viewport_paintable, AccumulatedVisualContextTree& visual_context_tree, VisualContextIndex viewport_state_for_descendants, VisualContextTreeBuilder::Mode mode)
+{
+    viewport_paintable.set_enclosing_scroll_node_index({});
+    viewport_paintable.set_own_scroll_node_index(viewport_state_for_descendants);
+    viewport_paintable.set_accumulated_visual_context(VISUAL_VIEWPORT_NODE_INDEX);
+    viewport_paintable.set_accumulated_visual_context_for_descendants(viewport_state_for_descendants);
+    viewport_paintable.set_accumulated_visual_context_for_absolute_position_descendants(viewport_state_for_descendants);
+    viewport_paintable.set_accumulated_visual_context_for_fixed_position_descendants(VISUAL_VIEWPORT_NODE_INDEX);
+
+    NearestScrollNodeIndices viewport_nearest_scroll_nodes { viewport_state_for_descendants, viewport_state_for_descendants };
+    DescendantVisualContexts viewport_contexts {
+        viewport_state_for_descendants,
+        viewport_state_for_descendants,
+        VISUAL_VIEWPORT_NODE_INDEX,
+        viewport_nearest_scroll_nodes,
+        viewport_nearest_scroll_nodes,
+        viewport_nearest_scroll_nodes,
+    };
+
+    VisualContextTreeBuilder builder { viewport_paintable, visual_context_tree, mode };
+    for (auto* child = viewport_paintable.first_child_ptr(); child; child = child->next_sibling_ptr())
+        builder.build_subtree(*child, viewport_contexts, true);
+    builder.build_deferred_anchor_positioned_subtrees();
+    return builder.reconcile_outcome();
+}
 
 AccumulatedVisualContextTree build_accumulated_visual_context_tree(ViewportPaintable& viewport_paintable)
 {
     auto& document = viewport_paintable.document();
     auto visual_context_tree = AccumulatedVisualContextTree::create(visual_viewport_transform_data(document));
 
-    auto visual_viewport_context_index = VISUAL_VIEWPORT_NODE_INDEX;
-
-    viewport_paintable.set_enclosing_scroll_node_index({});
-    auto viewport_state_for_descendants = visual_context_tree.append(ScrollData { .is_sticky = false }, visual_viewport_context_index);
+    auto viewport_state_for_descendants = visual_context_tree.append(ScrollData { .is_sticky = false }, VISUAL_VIEWPORT_NODE_INDEX);
     viewport_paintable.register_scroll_node(visual_context_tree, viewport_state_for_descendants, viewport_paintable, {});
-    viewport_paintable.set_own_scroll_node_index(viewport_state_for_descendants);
-    viewport_paintable.set_accumulated_visual_context(VISUAL_VIEWPORT_NODE_INDEX);
-    viewport_paintable.set_accumulated_visual_context_for_descendants(viewport_state_for_descendants);
-    viewport_paintable.set_accumulated_visual_context_for_absolute_position_descendants(viewport_state_for_descendants);
-    viewport_paintable.set_accumulated_visual_context_for_fixed_position_descendants(visual_viewport_context_index);
 
-    NearestScrollNodeIndices viewport_nearest_scroll_nodes { viewport_state_for_descendants, viewport_state_for_descendants };
-    DescendantVisualContexts viewport_contexts {
-        viewport_state_for_descendants,
-        viewport_state_for_descendants,
-        visual_viewport_context_index,
-        viewport_nearest_scroll_nodes,
-        viewport_nearest_scroll_nodes,
-        viewport_nearest_scroll_nodes,
-    };
-
-    VisualContextTreeBuilder builder { viewport_paintable, visual_context_tree };
-    for (auto* child = viewport_paintable.first_child_ptr(); child; child = child->next_sibling_ptr())
-        builder.build_subtree(*child, viewport_contexts, true);
-    builder.build_deferred_anchor_positioned_subtrees();
+    stamp_viewport_and_build_subtrees(viewport_paintable, visual_context_tree, viewport_state_for_descendants, VisualContextTreeBuilder::Mode::Build);
 
     return visual_context_tree;
+}
+
+VisualContextReconcileOutcome reconcile_accumulated_visual_context_tree(ViewportPaintable& viewport_paintable, AccumulatedVisualContextTree& visual_context_tree)
+{
+    auto& document = viewport_paintable.document();
+    visual_context_tree.set_visual_viewport_transform(visual_viewport_transform_data(document));
+
+    // The viewport prelude of the full build always appends its scroll node first, so a tree being
+    // reconciled carries it at index 1 with its state slot intact.
+    auto viewport_state_for_descendants = VisualContextIndex { 1 };
+    VERIFY(visual_context_tree.nodes().size() > viewport_state_for_descendants.value());
+    VERIFY(visual_context_tree.node_at(viewport_state_for_descendants).data.has<ScrollData>());
+
+    auto outcome = stamp_viewport_and_build_subtrees(viewport_paintable, visual_context_tree, viewport_state_for_descendants, VisualContextTreeBuilder::Mode::ReconcileInPlace);
+
+    return outcome;
 }
 
 // Patches the transform/effects/perspective values of the box's existing visual context nodes in place.

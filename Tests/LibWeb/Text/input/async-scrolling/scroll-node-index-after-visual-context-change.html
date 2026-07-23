@@ -29,6 +29,6 @@
         const updatedState = internals.asyncScrollingState();
         const updatedNode = updatedState.scrollNodes.find(node => !node.isViewport);
 
-        println(`scroll node index changed: ${initialNode.scrollNodeIndex !== updatedNode.scrollNodeIndex}`);
+        println(`scroll node index preserved: ${initialNode.scrollNodeIndex === updatedNode.scrollNodeIndex}`);
     });
 </script>

@@ -1,0 +1,3 @@
+indices unchanged after effects node appears: true
+indices unchanged after effects node disappears: true
+structural change rebuilt the tree: true
