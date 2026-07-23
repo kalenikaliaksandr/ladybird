@@ -97,6 +97,15 @@ constexpr bool display_list_command_is_compositor_metadata(DisplayListCommandTyp
     }
 }
 
+// Splicing a cached command range into a new recording rewrites only the headers' context
+// indices. Commands providing remap_visual_context_indices also carry VisualContextIndex values
+// inside their payloads, so a cached range containing them stays valid only for the exact visual
+// context tree version it was recorded against, and dumps must translate the embedded indices.
+template<typename Command>
+concept DisplayListCommandPayloadEmbedsVisualContextIndices = requires(Command command) {
+    command.remap_visual_context_indices([](VisualContextIndex index) { return index; });
+};
+
 enum class CompositorScrollNodeKind : u8 {
     Viewport,
     Element,
@@ -609,6 +618,11 @@ struct CompositorScrollNode {
     bool can_be_wheel_scrolled_horizontally { false };
     bool can_be_wheel_scrolled_vertically { false };
 
+    void remap_visual_context_indices(auto&& remap)
+    {
+        scroll_node_index = remap(scroll_node_index);
+        parent_scroll_node_index = remap(parent_scroll_node_index);
+    }
     void dump(StringBuilder&) const;
 };
 
@@ -630,6 +644,12 @@ struct CompositorStickyArea {
     Optional<float> inset_bottom;
     Optional<float> inset_left;
 
+    void remap_visual_context_indices(auto&& remap)
+    {
+        scroll_node_index = remap(scroll_node_index);
+        parent_scroll_node_index = remap(parent_scroll_node_index);
+        nearest_scrolling_ancestor_index = remap(nearest_scrolling_ancestor_index);
+    }
     void dump(StringBuilder&) const;
 };
 
@@ -650,6 +670,7 @@ struct CompositorWheelHitTestTarget {
     VisualContextIndex target_scroll_node_index;
     Gfx::FloatRect rect;
 
+    void remap_visual_context_indices(auto&& remap) { target_scroll_node_index = remap(target_scroll_node_index); }
     void dump(StringBuilder&) const;
 };
 
@@ -662,6 +683,7 @@ struct CompositorWheelHitTestTargetWithCornerRadii {
     Gfx::FloatRect rect;
     Gfx::CornerRadii corner_radii;
 
+    void remap_visual_context_indices(auto&& remap) { target_scroll_node_index = remap(target_scroll_node_index); }
     void dump(StringBuilder&) const;
 };
 
@@ -691,6 +713,7 @@ struct CompositorViewportScrollbar {
     Color track_color;
     bool vertical { false };
 
+    void remap_visual_context_indices(auto&& remap) { scroll_node_index = remap(scroll_node_index); }
     void dump(StringBuilder&) const;
 };
 
@@ -706,6 +729,7 @@ struct PaintScrollBar {
     Color track_color;
     bool vertical;
 
+    void remap_visual_context_indices(auto&& remap) { scroll_node_index = remap(scroll_node_index); }
     void dump(StringBuilder&) const;
 };
 

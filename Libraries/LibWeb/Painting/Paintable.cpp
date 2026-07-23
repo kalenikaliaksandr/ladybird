@@ -511,6 +511,10 @@ struct Paintable::CachedPaintData {
         DisplayListCommandRange range;
         VisualContextIndex recorded_context_index {};
         bool captured_under_empty_effective_clip { false };
+        // Splicing rewrites the copied headers' context indices but never payload bytes, so a range
+        // whose payloads embed VisualContextIndex values is bound to the tree version its source
+        // display list was recorded against.
+        bool contains_visual_context_index_payloads { false };
     };
 
     Array<PhaseEntry, paint_phase_count> phase_entries {};
@@ -1002,7 +1006,7 @@ bool Paintable::has_css_transform() const
     return layout_node().has_css_transform();
 }
 
-Optional<Paintable::CachedCommandRange> Paintable::valid_cached_commands(PaintPhase phase, u64 source_display_list_id, bool phase_has_empty_effective_clip) const
+Optional<Paintable::CachedCommandRange> Paintable::valid_cached_commands(PaintPhase phase, u64 source_display_list_id, bool phase_has_empty_effective_clip, bool payload_bearing_entries_are_valid) const
 {
     if (!m_cached_paint_data)
         return {};
@@ -1010,7 +1014,9 @@ Optional<Paintable::CachedCommandRange> Paintable::valid_cached_commands(PaintPh
     if (entry.source_display_list_id != source_display_list_id
         || entry.captured_under_empty_effective_clip != phase_has_empty_effective_clip)
         return {};
-    return CachedCommandRange { entry.range, entry.recorded_context_index };
+    if (entry.contains_visual_context_index_payloads && !payload_bearing_entries_are_valid)
+        return {};
+    return CachedCommandRange { entry.range, entry.recorded_context_index, entry.contains_visual_context_index_payloads };
 }
 
 void Paintable::invalidate_paint_cache() const
@@ -1018,7 +1024,7 @@ void Paintable::invalidate_paint_cache() const
     m_cached_paint_data = nullptr;
 }
 
-void Paintable::set_cached_commands(PaintPhase phase, u64 display_list_id, DisplayListCommandRange range, VisualContextIndex recorded_context_index, bool captured_under_empty_effective_clip) const
+void Paintable::set_cached_commands(PaintPhase phase, u64 display_list_id, DisplayListCommandRange range, VisualContextIndex recorded_context_index, bool captured_under_empty_effective_clip, bool contains_visual_context_index_payloads) const
 {
     if (!m_cached_paint_data)
         m_cached_paint_data = make<CachedPaintData>();
@@ -1028,6 +1034,7 @@ void Paintable::set_cached_commands(PaintPhase phase, u64 display_list_id, Displ
         .range = range,
         .recorded_context_index = recorded_context_index,
         .captured_under_empty_effective_clip = captured_under_empty_effective_clip,
+        .contains_visual_context_index_payloads = contains_visual_context_index_payloads,
     };
 }
 

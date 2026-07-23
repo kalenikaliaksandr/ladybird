@@ -9524,24 +9524,9 @@ Utf16String Document::dump_display_list()
                 Optional<Painting::DisplayListResourceId> nested_display_list_id;
                 Painting::visit_display_list_command(header.type, payload, [&]<typename Command>(Command const& command) {
                     builder.appendff("{}@{}", command.command_name, context_label(header.context_index));
-                    if constexpr (IsSame<Command, Painting::CompositorWheelHitTestTarget> || IsSame<Command, Painting::CompositorWheelHitTestTargetWithCornerRadii>) {
+                    if constexpr (Painting::DisplayListCommandPayloadEmbedsVisualContextIndices<Command>) {
                         auto remapped = command;
-                        remapped.target_scroll_node_index = Painting::VisualContextIndex { context_label(command.target_scroll_node_index) };
-                        remapped.dump(builder);
-                    } else if constexpr (IsSame<Command, Painting::CompositorScrollNode>) {
-                        auto remapped = command;
-                        remapped.scroll_node_index = Painting::VisualContextIndex { context_label(command.scroll_node_index) };
-                        remapped.parent_scroll_node_index = Painting::VisualContextIndex { context_label(command.parent_scroll_node_index) };
-                        remapped.dump(builder);
-                    } else if constexpr (IsSame<Command, Painting::CompositorStickyArea>) {
-                        auto remapped = command;
-                        remapped.scroll_node_index = Painting::VisualContextIndex { context_label(command.scroll_node_index) };
-                        remapped.parent_scroll_node_index = Painting::VisualContextIndex { context_label(command.parent_scroll_node_index) };
-                        remapped.nearest_scrolling_ancestor_index = Painting::VisualContextIndex { context_label(command.nearest_scrolling_ancestor_index) };
-                        remapped.dump(builder);
-                    } else if constexpr (IsSame<Command, Painting::CompositorViewportScrollbar>) {
-                        auto remapped = command;
-                        remapped.scroll_node_index = Painting::VisualContextIndex { context_label(command.scroll_node_index) };
+                        remapped.remap_visual_context_indices([&](Painting::VisualContextIndex index) { return Painting::VisualContextIndex { context_label(index) }; });
                         remapped.dump(builder);
                     } else {
                         command.dump(builder);

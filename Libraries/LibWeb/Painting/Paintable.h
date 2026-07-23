@@ -438,9 +438,10 @@ public:
     struct CachedCommandRange {
         DisplayListCommandRange range;
         VisualContextIndex recorded_context_index {};
+        bool contains_visual_context_index_payloads { false };
     };
-    Optional<CachedCommandRange> valid_cached_commands(PaintPhase, u64 source_display_list_id, bool phase_has_empty_effective_clip) const;
-    void set_cached_commands(PaintPhase, u64 display_list_id, DisplayListCommandRange, VisualContextIndex recorded_context_index, bool captured_under_empty_effective_clip) const;
+    Optional<CachedCommandRange> valid_cached_commands(PaintPhase, u64 source_display_list_id, bool phase_has_empty_effective_clip, bool payload_bearing_entries_are_valid) const;
+    void set_cached_commands(PaintPhase, u64 display_list_id, DisplayListCommandRange, VisualContextIndex recorded_context_index, bool captured_under_empty_effective_clip, bool contains_visual_context_index_payloads) const;
 
     void set_fixed_background_visual_context(VisualContextIndex index) { m_fixed_background_visual_context = index; }
     void clear_fixed_background_visual_context() { m_fixed_background_visual_context = {}; }

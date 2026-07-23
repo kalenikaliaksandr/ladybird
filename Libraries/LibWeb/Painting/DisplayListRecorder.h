@@ -109,7 +109,7 @@ public:
     DisplayList const& display_list() const { return m_display_list; }
     AccumulatedVisualContextTree const& visual_context_tree() const { return m_visual_context_tree; }
 
-    DisplayListCommandRange append_cached_command_range(DisplayList const& source_display_list, DisplayListCommandRange, VisualContextIndex recorded_context_index);
+    DisplayListCommandRange append_cached_command_range(DisplayList const& source_display_list, DisplayListCommandRange, VisualContextIndex recorded_context_index, bool contains_visual_context_index_payloads);
 
     void save();
     void save_layer();
@@ -148,6 +148,11 @@ public:
 
     DisplayListResourceStorage& resource_storage() { return m_resource_storage; }
 
+    // Monotonic count of appended commands whose payloads embed visual context indices; sampling
+    // it at a command range's start and end tells whether the range contains any. Spliced ranges
+    // carrying such payloads bump it too, so an enclosing range's samples stay conservative.
+    u64 visual_context_index_payload_command_count() const { return m_visual_context_index_payload_command_count; }
+
     int m_save_nesting_level { 0 };
 
 private:
@@ -155,7 +160,11 @@ private:
     void append_command(Command const& command, ReadonlyBytes inline_data = {})
     {
         m_save_nesting_level += display_list_command_nesting_level_change<Command>();
-        m_display_list.append(command, m_visual_context_tree, m_accumulated_visual_context_index, m_context_geometry_only, inline_data);
+        bool appended = m_display_list.append(command, m_visual_context_tree, m_accumulated_visual_context_index, m_context_geometry_only, inline_data);
+        if constexpr (DisplayListCommandPayloadEmbedsVisualContextIndices<Command>) {
+            if (appended)
+                ++m_visual_context_index_payload_command_count;
+        }
     }
 
     VisualContextIndex m_accumulated_visual_context_index { VISUAL_VIEWPORT_NODE_INDEX };
@@ -163,6 +172,7 @@ private:
     DisplayList& m_display_list;
     AccumulatedVisualContextTree const& m_visual_context_tree;
     DisplayListResourceStorage& m_resource_storage;
+    u64 m_visual_context_index_payload_command_count { 0 };
 };
 
 class DisplayListRecorderStateSaver {
