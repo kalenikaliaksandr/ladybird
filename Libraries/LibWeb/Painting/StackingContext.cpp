@@ -95,9 +95,9 @@ static void paint_node(Paintable const& paintable, DisplayListRecordingContext& 
     // Text fragments are content of the block container (or of a self-painting inline box).
     // They need the descendants' visual context, not the element's own visual context.
     if (paintable.foreground_paints_descendant_content() && phase == PaintPhase::Foreground)
-        context.display_list_recorder().set_accumulated_visual_context(paintable.accumulated_visual_context_for_descendants_index());
+        context.display_list_recorder().set_accumulated_visual_context(context.visual_context_index_for_paintable_descendants(paintable));
     else
-        context.display_list_recorder().set_accumulated_visual_context(paintable.accumulated_visual_context_index());
+        context.display_list_recorder().set_accumulated_visual_context(context.visual_context_index_for_paintable(paintable));
 
     paintable.record_hit_test_items(context, phase);
 
@@ -448,7 +448,7 @@ void StackingContext::paint(DisplayListRecordingContext& context) const
     auto const& computed_values = paintable_box().computed_values();
     auto const& mask_layers = computed_values.mask_layers();
 
-    auto effective_context_index = paintable_box().accumulated_visual_context_index();
+    auto effective_context_index = context.visual_context_index_for_paintable(paintable_box());
     context.display_list_recorder().set_accumulated_visual_context(effective_context_index);
 
     // For elements with SVG filters, emit a transparent FillRect to trigger filter application.

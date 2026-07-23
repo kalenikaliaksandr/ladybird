@@ -28,7 +28,15 @@ class HitTestDisplayList;
 class Paintable;
 class ScrollState;
 
-using NestedMaskNodeAssignments = HashMap<Paintable const*, Vector<VisualContextIndex>>;
+// Context assignments for paintables painted into a nested display list with its own private
+// visual context tree (SVG mask and clip-path recordings). Kept beside the recording context
+// instead of being written into the paintables' persistent stamps, which always describe the
+// document's visual context tree.
+struct NestedVisualContextAssignment {
+    VisualContextIndex context { VISUAL_VIEWPORT_NODE_INDEX };
+    Vector<VisualContextIndex> mask_nodes;
+};
+using NestedVisualContextAssignments = HashMap<Paintable const*, NestedVisualContextAssignment>;
 
 enum class PaintCommandCacheMode : u8 {
     ReadOnly,
@@ -82,8 +90,10 @@ public:
         m_draw_svg_geometry_for_clip_path = draw_svg_geometry_for_clip_path;
     }
 
-    Optional<Painting::NestedMaskNodeAssignments> const& nested_mask_node_assignments() const { return m_nested_mask_node_assignments; }
-    void set_nested_mask_node_assignments(Painting::NestedMaskNodeAssignments assignments) { m_nested_mask_node_assignments = move(assignments); }
+    Optional<Painting::NestedVisualContextAssignments> const& nested_visual_context_assignments() const { return m_nested_visual_context_assignments; }
+    void set_nested_visual_context_assignments(Painting::NestedVisualContextAssignments assignments) { m_nested_visual_context_assignments = move(assignments); }
+    Painting::VisualContextIndex visual_context_index_for_paintable(Painting::Paintable const&) const;
+    Painting::VisualContextIndex visual_context_index_for_paintable_descendants(Painting::Paintable const&) const;
 
     DevicePixels enclosing_device_pixels(CSSPixels css_pixels) const;
     DevicePixels floored_device_pixels(CSSPixels css_pixels) const;
@@ -144,7 +154,7 @@ private:
     bool m_should_paint_overlay { true };
     bool m_draw_svg_geometry_for_clip_path { false };
     Gfx::AffineTransform m_svg_transform;
-    Optional<Painting::NestedMaskNodeAssignments> m_nested_mask_node_assignments;
+    Optional<Painting::NestedVisualContextAssignments> m_nested_visual_context_assignments;
     u64 m_paint_generation_id { 0 };
     UniqueNodeID m_async_scrolling_document_id {};
     Painting::AccumulatedVisualContextTree const* m_async_scrolling_visual_context_tree { nullptr };

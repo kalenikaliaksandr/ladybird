@@ -143,9 +143,9 @@ void register_mask_display_lists(DisplayListRecordingContext& context, Paintable
     auto const& visual_context_tree = context.display_list_recorder().visual_context_tree();
 
     Vector<VisualContextIndex, 9> mask_node_indices;
-    if (auto const& nested_assignments = context.nested_mask_node_assignments(); nested_assignments.has_value()) {
+    if (auto const& nested_assignments = context.nested_visual_context_assignments(); nested_assignments.has_value()) {
         if (auto assignment = nested_assignments->find(&paintable); assignment != nested_assignments->end())
-            mask_node_indices.extend(assignment->value);
+            mask_node_indices.extend(assignment->value.mask_nodes);
     } else {
         for (size_t index = paintable.visual_context_nodes_begin(); index < paintable.visual_context_nodes_end(); ++index) {
             if (visual_context_tree.node_at(VisualContextIndex { index }).data.has<MaskData>())
