@@ -155,6 +155,10 @@ public:
     ~AccumulatedVisualContextTree() = default;
 
     u64 version() const { return m_version; }
+    // Unlike the version, which a structural reconcile of the same tree object mints anew, the
+    // identity never changes after creation: recorded node lists are tagged with it so lists
+    // orphaned by a wholesale tree replacement are recognizably meaningless.
+    u64 identity() const { return m_identity; }
 
     WEB_API VisualContextIndex append(VisualContextData data, VisualContextIndex parent_index);
     WEB_API VisualContextIndex allocate_node(VisualContextData data, VisualContextIndex parent_index);
@@ -197,6 +201,8 @@ private:
     bool derive_has_empty_effective_clip(VisualContextData const&, VisualContextIndex parent_index) const;
 
     u64 m_version { 0 };
+    // 0 on IPC-decoded copies, which never host node freeing.
+    u64 m_identity { 0 };
     Vector<AccumulatedVisualContextNode> m_nodes;
     // Freed slots pass through quarantine before becoming reusable: retained display lists can
     // still carry a freed slot's index until the next compositor update replaces them.

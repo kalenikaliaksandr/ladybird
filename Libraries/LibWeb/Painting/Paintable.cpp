@@ -953,10 +953,29 @@ Paintable::Paintable(Layout::Box const& layout_box)
 {
 }
 
-Paintable::~Paintable() = default;
+Paintable::~Paintable()
+{
+    release_owned_visual_context_nodes_on_death();
+}
+
+// A paintable that dies while its tree lives on — replaced by a subtree relayout or dropped with
+// a removed layout subtree — returns its recorded nodes to the tree here; a reconcile releases
+// the nodes of surviving paintables itself. Taking the list makes the two death paths idempotent.
+// NB: Death happens in the middle of layout commits, so this must not assert layout freshness.
+void Paintable::release_owned_visual_context_nodes_on_death()
+{
+    if (!m_owned_visual_context_nodes || !has_layout_node())
+        return;
+    auto owned_nodes = take_owned_visual_context_nodes();
+    auto viewport = document().unsafe_paintable();
+    if (!viewport || viewport.ptr() == this)
+        return;
+    viewport->release_visual_context_nodes_of_dead_paintable(owned_nodes.span(), m_owned_visual_context_nodes_tree_identity);
+}
 
 void Paintable::detach_from_layout_node(Badge<Layout::Node>)
 {
+    release_owned_visual_context_nodes_on_death();
     m_containing_block = nullptr;
     m_layout_node.clear();
     detach_chrome_widgets();

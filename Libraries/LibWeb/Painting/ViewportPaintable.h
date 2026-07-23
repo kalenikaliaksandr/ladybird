@@ -32,6 +32,7 @@ public:
     void register_sticky_node(AccumulatedVisualContextTree& visual_context_tree_being_built, VisualContextIndex node_index, Paintable const&, VisualContextIndex parent_index);
     void update_scroll_node_state_keeping_slot(AccumulatedVisualContextTree&, VisualContextIndex node_index, Paintable const&, VisualContextIndex parent_index);
     void free_visual_context_node(AccumulatedVisualContextTree&, VisualContextIndex);
+    void release_visual_context_nodes_of_dead_paintable(ReadonlySpan<VisualContextIndex> owned_nodes, u64 tree_identity);
     void refresh_scroll_state();
     void refresh_sticky_constraints();
     CSSPixelPoint cumulative_scroll_offset_for_node(VisualContextIndex scroll_node_index) const;

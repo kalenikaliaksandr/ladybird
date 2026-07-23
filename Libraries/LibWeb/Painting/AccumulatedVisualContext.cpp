@@ -38,10 +38,12 @@ AccumulatedVisualContextTree AccumulatedVisualContextTree::create(TransformData 
     // Whole-tree transform root: the visual viewport transform for document trees, the content
     // offset for nested display list trees, identity otherwise.
     nodes.append({ move(visual_viewport_transform), {}, 0, false });
-    return AccumulatedVisualContextTree {
+    auto tree = AccumulatedVisualContextTree {
         s_next_accumulated_visual_context_tree_version.fetch_add(1, AK::MemoryOrder::memory_order_relaxed),
         move(nodes)
     };
+    tree.m_identity = s_next_accumulated_visual_context_tree_version.fetch_add(1, AK::MemoryOrder::memory_order_relaxed);
+    return tree;
 }
 
 AccumulatedVisualContextTree AccumulatedVisualContextTree::create_with_content_offset(Gfx::IntPoint content_offset)
