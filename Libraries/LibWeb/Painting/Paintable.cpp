@@ -147,9 +147,9 @@ void register_mask_display_lists(DisplayListRecordingContext& context, Paintable
         if (auto assignment = nested_assignments->find(&paintable); assignment != nested_assignments->end())
             mask_node_indices.extend(assignment->value.mask_nodes);
     } else {
-        for (size_t index = paintable.visual_context_nodes_begin(); index < paintable.visual_context_nodes_end(); ++index) {
-            if (visual_context_tree.node_at(VisualContextIndex { index }).data.has<MaskData>())
-                mask_node_indices.append(VisualContextIndex { index });
+        for (auto node_index : paintable.owned_visual_context_nodes()) {
+            if (visual_context_tree.node_at(node_index).data.has<MaskData>())
+                mask_node_indices.append(node_index);
         }
     }
 
@@ -1045,6 +1045,7 @@ void Paintable::reset_for_relayout()
     m_accumulated_visual_context_for_absolute_position_descendants_index = VISUAL_VIEWPORT_NODE_INDEX;
     m_accumulated_visual_context_for_fixed_position_descendants_index = VISUAL_VIEWPORT_NODE_INDEX;
     m_fixed_background_visual_context = {};
+    m_owned_visual_context_nodes = nullptr;
 
     m_used_values_for_grid_template_columns = nullptr;
     m_used_values_for_grid_template_rows = nullptr;
