@@ -283,6 +283,12 @@ void ViewportPaintable::append_paint_command_cache_source_resources(DisplayListR
     retained_resources.include(m_paint_command_cache_source_referenced_resources);
 }
 
+void ViewportPaintable::promote_quarantined_visual_context_free_slots()
+{
+    if (m_visual_context_tree.has_value())
+        m_visual_context_tree->promote_quarantined_free_slots();
+}
+
 void ViewportPaintable::invalidate_all_cached_paint()
 {
     for_each_in_inclusive_subtree([](auto& paintable) {

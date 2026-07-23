@@ -159,6 +159,9 @@ public:
     u64 version() const { return m_version; }
 
     WEB_API VisualContextIndex append(VisualContextData data, VisualContextIndex parent_index);
+    WEB_API VisualContextIndex allocate_node(VisualContextData data, VisualContextIndex parent_index);
+    WEB_API void free_node(VisualContextIndex);
+    WEB_API void promote_quarantined_free_slots();
     WEB_API void set_visual_viewport_transform(TransformData);
     WEB_API bool is_compatible_with(AccumulatedVisualContextTree const&) const;
     WEB_API void reuse_version_from(AccumulatedVisualContextTree const&);
@@ -189,9 +192,14 @@ private:
     }
 
     Vector<size_t, 8> build_ancestor_chain(VisualContextIndex index) const;
+    bool derive_has_empty_effective_clip(VisualContextData const&, VisualContextIndex parent_index) const;
 
     u64 m_version { 0 };
     Vector<AccumulatedVisualContextNode> m_nodes;
+    // Freed slots pass through quarantine before becoming reusable: retained display lists can
+    // still carry a freed slot's index until the next compositor update replaces them.
+    Vector<VisualContextIndex> m_reusable_free_slots;
+    Vector<VisualContextIndex> m_quarantined_free_slots;
 
     template<typename T>
     friend ErrorOr<void> IPC::encode(IPC::Encoder&, T const&);
