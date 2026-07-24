@@ -20,7 +20,6 @@
 #include <LibWeb/HTML/HTMLInputElement.h>
 #include <LibWeb/Layout/BlockFormattingContext.h>
 #include <LibWeb/Layout/Box.h>
-#include <LibWeb/Layout/FlexFormattingContext.h>
 #include <LibWeb/Layout/FormattingContext.h>
 #include <LibWeb/Layout/GridFormattingContext.h>
 #include <LibWeb/Layout/InlineNode.h>
@@ -526,7 +525,7 @@ OwnPtr<FormattingContext> FormattingContext::create_independent_formatting_conte
     case Type::SVG:
         return make<SVGFormattingContext>(state, layout_mode, child_box, parent);
     case Type::Flex:
-        return make<FlexFormattingContext>(state, layout_mode, child_box, parent);
+        VERIFY_NOT_REACHED();
     case Type::Grid:
         return make<GridFormattingContext>(state, layout_mode, child_box, parent);
     case Type::Table:

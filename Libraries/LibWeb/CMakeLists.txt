@@ -813,7 +813,6 @@ set(SOURCES
     Layout/CanvasBox.cpp
     Layout/CheckBox.cpp
     Layout/FieldSetBox.cpp
-    Layout/FlexFormattingContext.cpp
     Layout/FormattingContext.cpp
     Layout/GridFormattingContext.cpp
     Layout/ImageBox.cpp

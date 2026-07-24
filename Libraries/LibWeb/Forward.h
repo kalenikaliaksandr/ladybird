@@ -974,7 +974,6 @@ class Box;
 class ButtonBox;
 class CheckBox;
 class FieldSetBox;
-class FlexFormattingContext;
 class FormattingContext;
 class ImageBox;
 class InlineFormattingContext;
