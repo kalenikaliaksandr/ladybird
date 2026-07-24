@@ -17,6 +17,7 @@ use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
 use std::ffi::c_void;
 
 mod flex;
+pub(crate) mod grid;
 mod sizing;
 mod table;
 
@@ -205,6 +206,8 @@ pub struct FfiLayoutFcCallbacks {
     pub build_style_facts: FfiBuildStyleFactsCallback,
     pub build_box_facts: FfiBuildBoxFactsCallback,
     pub build_table_box_facts: FfiBuildTableBoxFactsCallback,
+    pub build_grid_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> grid::facts::FfiGridStyleFacts,
+    pub release_grid_facts_snapshot: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub create_used_values:
         unsafe extern "C" fn(*mut c_void, *mut c_void, bool, CssPixels, bool, CssPixels) -> *mut UsedValuesCore,
     pub get_used_values: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut UsedValuesCore,
@@ -250,6 +253,7 @@ pub struct FfiLayoutFcCallbacks {
         unsafe extern "C" fn(*mut c_void, *mut c_void, FfiContainingBlockConstraints) -> FfiContainingBlockConstraints,
     pub can_skip_is_anonymous_text_run: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
     pub set_flex_item: unsafe extern "C" fn(*mut c_void, *mut c_void, bool),
+    pub set_grid_item: unsafe extern "C" fn(*mut c_void, *mut c_void, bool),
     pub calculate_fit_content_size: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -290,14 +294,31 @@ pub struct FfiLayoutFcCallbacks {
         unsafe extern "C" fn(*mut c_void, *mut c_void, FfiIntrinsicSizeCacheKind, FfiIntrinsicSizeCacheKey, CssPixels),
     pub compute_table_box_block_size_inside_wrapper:
         unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSpace, FfiContainingBlockConstraints) -> CssPixels,
+    pub compute_table_box_inline_size_inside_wrapper: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        AvailableSpace,
+        FfiContainingBlockConstraints,
+        bool,
+        CssPixels,
+        u8,
+    ) -> CssPixels,
     pub register_contained_abspos_child: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiStaticPositionRect),
     pub compute_inset: unsafe extern "C" fn(*mut c_void, *mut c_void, CssPixels, CssPixels),
     pub set_flex_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const FfiFlexLayoutData),
+    pub set_grid_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const grid::facts::FfiGridLayoutData),
+    pub set_used_grid_template_tracks: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        *const grid::facts::FfiUsedGridTrackList,
+        *const grid::facts::FfiUsedGridTrackList,
+    ),
 }
 
 struct FormattingContextInstance {
     state: *mut c_void,
     box_: *mut c_void,
+    parent_rust_fc: *mut c_void,
     fc_type: u8,
     layout_mode: u8,
     callbacks: FfiLayoutFcCallbacks,
@@ -392,6 +413,7 @@ pub extern "C" fn rust_layout_formatting_context_type_for_box(facts: FfiLayoutBo
 pub extern "C" fn rust_layout_fc_create(
     state: *mut c_void,
     box_: *mut c_void,
+    parent_rust_fc: *mut c_void,
     fc_type: u8,
     layout_mode: u8,
     should_collect_devtools_layout_data: bool,
@@ -409,6 +431,7 @@ pub extern "C" fn rust_layout_fc_create(
         Box::into_raw(Box::new(FormattingContextInstance {
             state,
             box_,
+            parent_rust_fc,
             fc_type,
             layout_mode,
             callbacks,

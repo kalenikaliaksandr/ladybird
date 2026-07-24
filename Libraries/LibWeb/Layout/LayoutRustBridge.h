@@ -71,6 +71,8 @@ void verify_style_calc_handles_balanced();
 // Non-null calc handles returned in FfiSizeValue keep their corresponding
 // CSS::CalculatedStyleValue alive. This is their matching release hook.
 extern "C" WEB_API void ladybird_layout_release_calc_handle(void const*);
+// Releases one name-table reference transferred by FfiGridStyleFacts.
+extern "C" WEB_API void ladybird_layout_release_grid_name_handle(size_t);
 
 extern "C" WEB_API Web::Layout::RustFFI::FfiSizeValue ladybird_layout_test_build_size_value(u8 kind, i32 px_raw, double fraction);
 extern "C" WEB_API Web::Layout::RustFFI::FfiSizeValue ladybird_layout_test_build_auto_margin_value();
@@ -78,3 +80,5 @@ extern "C" WEB_API Web::Layout::StyleVerticalAlignFacts ladybird_layout_test_bui
 extern "C" WEB_API Web::Layout::RustFFI::FfiSizeValue ladybird_layout_test_build_calc_size_value();
 extern "C" WEB_API i32 ladybird_layout_test_resolve_calc_handle_cpp(void const*, i32 percentage_basis_raw);
 extern "C" WEB_API void ladybird_layout_test_verify_calc_handles_balanced();
+extern "C" WEB_API Web::Layout::RustFFI::FfiGridStyleFacts ladybird_layout_test_build_grid_facts_snapshot();
+extern "C" WEB_API void ladybird_layout_test_release_grid_facts_snapshot(Web::Layout::RustFFI::FfiGridStyleFacts const*);

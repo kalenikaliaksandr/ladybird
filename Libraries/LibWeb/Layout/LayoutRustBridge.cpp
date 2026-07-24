@@ -7,13 +7,22 @@
 #include <AK/Atomic.h>
 #include <AK/HashMap.h>
 #include <AK/NeverDestroyed.h>
+#include <AK/Utf16StringBuilder.h>
 #include <AK/Variant.h>
 #include <LibWeb/CSS/ComputedValues.h>
 #include <LibWeb/CSS/Display.h>
+#include <LibWeb/CSS/GridTrackPlacement.h>
+#include <LibWeb/CSS/GridTrackSize.h>
 #include <LibWeb/CSS/LengthBox.h>
 #include <LibWeb/CSS/Size.h>
 #include <LibWeb/CSS/StyleValues/CalcNodeRef.h>
 #include <LibWeb/CSS/StyleValues/CalculatedStyleValue.h>
+#include <LibWeb/CSS/StyleValues/FlexStyleValue.h>
+#include <LibWeb/CSS/StyleValues/FunctionStyleValue.h>
+#include <LibWeb/CSS/StyleValues/GridTrackSizeListStyleValue.h>
+#include <LibWeb/CSS/StyleValues/IntegerStyleValue.h>
+#include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
+#include <LibWeb/CSS/StyleValues/PercentageStyleValue.h>
 #include <LibWeb/CSS/ValueType.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Node.h>
@@ -24,6 +33,7 @@
 #include <LibWeb/HTML/HTMLTableColElement.h>
 #include <LibWeb/Layout/BlockFormattingContext.h>
 #include <LibWeb/Layout/FlexLayoutData.h>
+#include <LibWeb/Layout/GridLayoutData.h>
 #include <LibWeb/Layout/LayoutRustBridge.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/FormattingContext.h>
@@ -33,6 +43,7 @@
 namespace Web::Layout {
 
 static Atomic<size_t> s_outstanding_calc_handles;
+static Atomic<size_t> s_outstanding_grid_name_handles;
 
 struct RetainedCalcHandle {
     CSS::CalculatedStyleValue const* style_value;
@@ -77,6 +88,269 @@ static RustFFI::FfiSizeValue retain_calculated(CSS::CalculatedStyleValue const& 
         .calc = handle,
         .contains_percentage = contains_percentage,
     };
+}
+
+static constexpr u32 no_grid_index = static_cast<u32>(-1);
+
+static Utf16FlyString make_grid_implicit_line_name(Utf16View name, StringView suffix)
+{
+    Utf16StringBuilder builder;
+    builder.append(name);
+    builder.append_ascii(suffix);
+    auto line_name = builder.to_string();
+    return Utf16FlyString::from_utf16(line_name.utf16_view());
+}
+
+struct GridFactsSnapshotArena {
+    Vector<size_t> names;
+    Vector<u32> name_indices;
+    Vector<RustFFI::FfiGridTrackEntry> entries;
+    Vector<RustFFI::FfiGridArea> areas;
+    HashMap<Utf16FlyString, u32> indices_by_name;
+
+    u32 intern_name(Utf16FlyString const& name)
+    {
+        if (auto existing = indices_by_name.get(name); existing.has_value())
+            return existing.value();
+
+        VERIFY(names.size() < no_grid_index);
+        auto index = static_cast<u32>(names.size());
+        names.append(name.to_raw_leaked());
+        indices_by_name.set(name, index);
+        ++s_outstanding_grid_name_handles;
+        RustFFI::rust_layout_ffi_note_grid_name_retain();
+        return index;
+    }
+};
+
+static RustFFI::FfiGridTrackBreadth grid_track_breadth(CSS::GridSize const& grid_size)
+{
+    if (grid_size.is_flexible_length()) {
+        return {
+            .kind = to_underlying(RustFFI::FfiGridTrackBreadthKind::Flex),
+            .value = size_value_with_kind(RustFFI::FfiSizeKind::Auto),
+            .flex_factor = grid_size.flex_factor(),
+        };
+    }
+
+    auto size = grid_size.css_size();
+    auto kind = [&] {
+        switch (size.type()) {
+        case CSS::Size::Type::Auto:
+            return RustFFI::FfiGridTrackBreadthKind::Auto;
+        case CSS::Size::Type::Calculated:
+        case CSS::Size::Type::Length:
+        case CSS::Size::Type::Percentage:
+            return RustFFI::FfiGridTrackBreadthKind::LengthPercentage;
+        case CSS::Size::Type::MinContent:
+            return RustFFI::FfiGridTrackBreadthKind::MinContent;
+        case CSS::Size::Type::MaxContent:
+            return RustFFI::FfiGridTrackBreadthKind::MaxContent;
+        case CSS::Size::Type::FitContent:
+            return RustFFI::FfiGridTrackBreadthKind::FitContent;
+        case CSS::Size::Type::None:
+            VERIFY_NOT_REACHED();
+        }
+        VERIFY_NOT_REACHED();
+    }();
+    return {
+        .kind = to_underlying(kind),
+        .value = build_style_size_value(size),
+        .flex_factor = 0,
+    };
+}
+
+static RustFFI::FfiGridTrackList build_grid_track_list(CSS::GridTrackSizeList const& list, GridFactsSnapshotArena& arena)
+{
+    RustFFI::FfiGridTrackList result {
+        .is_subgrid = list.is_subgrid(),
+        .preserves_line_name_sets = list.preserves_line_name_sets(),
+        .first_entry = no_grid_index,
+    };
+    u32 previous_entry = no_grid_index;
+
+    for (auto const& item : list.list()) {
+        VERIFY(arena.entries.size() < no_grid_index);
+        auto entry_index = static_cast<u32>(arena.entries.size());
+        auto auto_breadth = grid_track_breadth(CSS::GridSize::make_auto());
+        arena.entries.append({
+            .kind = 0,
+            .next_sibling = no_grid_index,
+            .name_index_start = 0,
+            .name_index_count = 0,
+            .size = auto_breadth,
+            .min_size = auto_breadth,
+            .max_size = auto_breadth,
+            .repeat_type = 0,
+            .repeat_count = 0,
+            .repeat_list = {
+                .is_subgrid = false,
+                .preserves_line_name_sets = false,
+                .first_entry = no_grid_index,
+            },
+        });
+
+        if (result.first_entry == no_grid_index)
+            result.first_entry = entry_index;
+        if (previous_entry != no_grid_index)
+            arena.entries[previous_entry].next_sibling = entry_index;
+        previous_entry = entry_index;
+
+        item.visit(
+            [&](CSS::GridLineNames const& line_names) {
+                auto name_index_start = arena.name_indices.size();
+                for (auto const& line_name : line_names.names())
+                    arena.name_indices.append(arena.intern_name(line_name.name));
+                auto& entry = arena.entries[entry_index];
+                entry.kind = to_underlying(RustFFI::FfiGridTrackEntryKind::LineNames);
+                entry.name_index_start = name_index_start;
+                entry.name_index_count = arena.name_indices.size() - name_index_start;
+            },
+            [&](CSS::ExplicitGridTrack const& track) {
+                if (track.is_default()) {
+                    auto& entry = arena.entries[entry_index];
+                    entry.kind = to_underlying(RustFFI::FfiGridTrackEntryKind::TrackSize);
+                    entry.size = grid_track_breadth(track.grid_size());
+                    return;
+                }
+                if (track.is_minmax()) {
+                    auto& entry = arena.entries[entry_index];
+                    entry.kind = to_underlying(RustFFI::FfiGridTrackEntryKind::MinMax);
+                    entry.min_size = grid_track_breadth(track.minmax().min_grid_size());
+                    entry.max_size = grid_track_breadth(track.minmax().max_grid_size());
+                    return;
+                }
+
+                auto const& repeat = track.repeat();
+                auto repeat_list = build_grid_track_list(repeat.grid_track_size_list(), arena);
+                auto& entry = arena.entries[entry_index];
+                entry.kind = to_underlying(RustFFI::FfiGridTrackEntryKind::Repeat);
+                entry.repeat_type = to_underlying(repeat.type());
+                entry.repeat_count = repeat.is_fixed() ? repeat.repeat_count() : 0;
+                entry.repeat_list = repeat_list;
+            });
+    }
+    return result;
+}
+
+static RustFFI::FfiGridPlacement build_grid_placement(CSS::GridTrackPlacement const& placement, GridFactsSnapshotArena& arena)
+{
+    RustFFI::FfiGridPlacement result {
+        .kind = to_underlying(RustFFI::FfiGridPlacementKind::Auto),
+        .has_line_number = false,
+        .line_number = 0,
+        .has_name = false,
+        .name_index = no_grid_index,
+        .implicit_start_name_index = no_grid_index,
+        .implicit_end_name_index = no_grid_index,
+    };
+    if (placement.is_auto())
+        return result;
+
+    if (placement.is_span()) {
+        result.kind = to_underlying(RustFFI::FfiGridPlacementKind::Span);
+        result.has_line_number = true;
+        result.line_number = CSS::int_from_style_value(placement.span());
+        if (placement.span_name().has_value()) {
+            result.has_name = true;
+            result.name_index = arena.intern_name(*placement.span_name());
+        }
+        return result;
+    }
+
+    result.kind = to_underlying(RustFFI::FfiGridPlacementKind::Line);
+    if (placement.has_line_number()) {
+        result.has_line_number = true;
+        result.line_number = CSS::int_from_style_value(placement.line_number());
+    }
+    if (placement.has_identifier()) {
+        result.has_name = true;
+        result.name_index = arena.intern_name(placement.identifier());
+        result.implicit_start_name_index = arena.intern_name(
+            make_grid_implicit_line_name(placement.identifier().view(), "-start"sv));
+        result.implicit_end_name_index = arena.intern_name(
+            make_grid_implicit_line_name(placement.identifier().view(), "-end"sv));
+    }
+    return result;
+}
+
+static RustFFI::FfiGridStyleFacts build_grid_style_facts(NodeWithStyle const& node)
+{
+    RustFFI::rust_layout_ffi_note_grid_facts_build();
+    auto arena = make<GridFactsSnapshotArena>();
+    auto const& values = node.computed_values();
+
+    auto template_columns = build_grid_track_list(values.grid_template_columns(), *arena);
+    auto template_rows = build_grid_track_list(values.grid_template_rows(), *arena);
+    auto auto_columns = build_grid_track_list(values.grid_auto_columns(), *arena);
+    auto auto_rows = build_grid_track_list(values.grid_auto_rows(), *arena);
+
+    auto const& template_areas = values.grid_template_areas();
+    arena->areas.ensure_capacity(template_areas.areas.size());
+    for (auto const& [name, area] : template_areas.areas) {
+        arena->areas.unchecked_append({
+            .name_index = arena->intern_name(name),
+            .implicit_start_name_index = arena->intern_name(
+                make_grid_implicit_line_name(name.view(), "-start"sv)),
+            .implicit_end_name_index = arena->intern_name(
+                make_grid_implicit_line_name(name.view(), "-end"sv)),
+            .row_start = area.row_start,
+            .row_end = area.row_end,
+            .column_start = area.column_start,
+            .column_end = area.column_end,
+        });
+    }
+
+    auto column_start = build_grid_placement(values.grid_column_start(), *arena);
+    auto column_end = build_grid_placement(values.grid_column_end(), *arena);
+    auto row_start = build_grid_placement(values.grid_row_start(), *arena);
+    auto row_end = build_grid_placement(values.grid_row_end(), *arena);
+
+    auto* owner = arena.leak_ptr();
+    return {
+        .snapshot_owner = owner,
+        .names = owner->names.data(),
+        .name_count = owner->names.size(),
+        .name_indices = owner->name_indices.data(),
+        .name_index_count = owner->name_indices.size(),
+        .entries = owner->entries.data(),
+        .entry_count = owner->entries.size(),
+        .template_columns = template_columns,
+        .template_rows = template_rows,
+        .auto_columns = auto_columns,
+        .auto_rows = auto_rows,
+        .areas = owner->areas.data(),
+        .area_count = owner->areas.size(),
+        .area_row_count = template_areas.row_count,
+        .area_column_count = template_areas.column_count,
+        .column_start = column_start,
+        .column_end = column_end,
+        .row_start = row_start,
+        .row_end = row_end,
+    };
+}
+
+static CSS::GridTrackSizeList build_used_grid_track_list(RustFFI::FfiUsedGridTrackList const& list)
+{
+    auto result = list.is_subgrid ? CSS::GridTrackSizeList::make_subgrid() : CSS::GridTrackSizeList::make_none();
+    VERIFY(list.is_subgrid ? list.track_count == 0 : list.track_count + 1 == list.line_count);
+
+    for (size_t line_index = 0; line_index < list.line_count; ++line_index) {
+        CSS::GridLineNames line_names;
+        auto const& line = list.lines[line_index];
+        for (size_t name_index = 0; name_index < line.name_count; ++name_index)
+            line_names.append(Utf16FlyString::from_raw(line.names[name_index]));
+        if (list.is_subgrid || !line_names.is_empty())
+            result.append(move(line_names));
+
+        if (line_index < list.track_count) {
+            auto size = CSSPixels::from_raw(list.track_sizes[line_index]);
+            result.append(CSS::ExplicitGridTrack {
+                CSS::GridSize { CSS::LengthStyleValue::create(CSS::Length::make_px(size)) },
+            });
+        }
+    }
+    return result;
 }
 
 RustFFI::FfiSizeValue build_style_size_value(CSS::LengthPercentage const& value)
@@ -533,6 +807,11 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
     static_assert(to_underlying(StaticPositionRect::Alignment::Start) == 0);
     static_assert(to_underlying(StaticPositionRect::Alignment::Center) == 1);
     static_assert(to_underlying(StaticPositionRect::Alignment::End) == 2);
+    static_assert(to_underlying(TableWrapperInlineSizeMode::ClampToAvailableInlineSize) == 0);
+    static_assert(to_underlying(TableWrapperInlineSizeMode::UseTableUsedInlineSizeIfNotAuto) == 1);
+    static_assert(to_underlying(CSS::GridRepeatType::AutoFit) == 0);
+    static_assert(to_underlying(CSS::GridRepeatType::AutoFill) == 1);
+    static_assert(to_underlying(CSS::GridRepeatType::Fixed) == 2);
 
     return {
         .context = this,
@@ -546,6 +825,12 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
         },
         .build_table_box_facts = [](void*, void* node) {
             return build_table_box_facts(*static_cast<NodeWithStyle const*>(node));
+        },
+        .build_grid_facts = [](void*, void* node) {
+            return build_grid_style_facts(*static_cast<NodeWithStyle const*>(node));
+        },
+        .release_grid_facts_snapshot = [](void*, void* snapshot) {
+            delete static_cast<GridFactsSnapshotArena*>(snapshot);
         },
         .create_used_values = [](void* context, void* node, bool has_inline_basis, i32 inline_basis, bool has_block_basis, i32 block_basis) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
@@ -791,6 +1076,9 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
         .set_flex_item = [](void*, void* box, bool is_flex_item) {
             static_cast<Box*>(box)->set_flex_item(is_flex_item);
         },
+        .set_grid_item = [](void*, void* box, bool is_grid_item) {
+            static_cast<Box*>(box)->set_grid_item(is_grid_item);
+        },
         .calculate_fit_content_size = [](void* context, void* box, RustFFI::FfiFlexAxis axis, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             auto const& child_box = *static_cast<Box const*>(box);
@@ -962,6 +1250,22 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
                 from_ffi_constraints(constraints))
                 .raw_value();
         },
+        .compute_table_box_inline_size_inside_wrapper = [](void* context, void* box, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints, bool has_containing_block_inline_size, i32 containing_block_inline_size, u8 mode) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            Optional<CSSPixels> converted_containing_block_inline_size;
+            if (has_containing_block_inline_size)
+                converted_containing_block_inline_size = CSSPixels::from_raw(containing_block_inline_size);
+            return bridge.m_formatting_context.compute_table_box_inline_size_inside_table_wrapper(
+                *static_cast<Box const*>(box),
+                {
+                    from_ffi_available_size(available_space.inline_size),
+                    from_ffi_available_size(available_space.block_size),
+                },
+                from_ffi_constraints(constraints),
+                converted_containing_block_inline_size,
+                static_cast<TableWrapperInlineSizeMode>(mode))
+                .raw_value();
+        },
         .register_contained_abspos_child = [](void* context, void* child, RustFFI::FfiStaticPositionRect rect) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             bridge.m_formatting_context.register_contained_abspos_child(
@@ -1048,6 +1352,84 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
                 data->lines.append(move(line));
             }
             bridge.m_formatting_context.m_state.get_mutable(*static_cast<Box const*>(box)).set_flex_layout_data(move(data));
+        },
+        .set_grid_layout_data = [](void* context, void* box, RustFFI::FfiGridLayoutData const* ffi_data) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            VERIFY(ffi_data);
+            static_assert(to_underlying(GridTrackType::Explicit) == 0);
+            static_assert(to_underlying(GridTrackType::Implicit) == 1);
+            static_assert(to_underlying(GridTrackState::Static) == 0);
+            static_assert(to_underlying(GridTrackState::Repeat) == 1);
+            static_assert(to_underlying(GridTrackState::Removed) == 2);
+
+            auto data = make<GridLayoutData>();
+            data->direction = static_cast<CSS::Direction>(ffi_data->direction);
+            data->writing_mode = static_cast<CSS::WritingMode>(ffi_data->writing_mode);
+            data->is_subgrid = ffi_data->is_subgrid;
+
+            auto build_dimension = [](RustFFI::FfiGridLayoutDimension const& ffi_dimension) {
+                GridLayoutDimension dimension;
+                dimension.lines.ensure_capacity(ffi_dimension.line_count);
+                for (size_t line_index = 0; line_index < ffi_dimension.line_count; ++line_index) {
+                    auto const& ffi_line = ffi_dimension.lines[line_index];
+                    GridLayoutLine line {
+                        .names = {},
+                        .start = CSSPixels::from_raw(ffi_line.start),
+                        .breadth = CSSPixels::from_raw(ffi_line.breadth),
+                        .type = static_cast<GridTrackType>(ffi_line.type_),
+                        .number = ffi_line.number,
+                        .negative_number = ffi_line.negative_number,
+                    };
+                    line.names.ensure_capacity(ffi_line.name_count);
+                    for (size_t name_index = 0; name_index < ffi_line.name_count; ++name_index)
+                        line.names.unchecked_append(Utf16FlyString::from_raw(ffi_line.names[name_index]));
+                    dimension.lines.unchecked_append(move(line));
+                }
+
+                dimension.tracks.ensure_capacity(ffi_dimension.track_count);
+                for (size_t track_index = 0; track_index < ffi_dimension.track_count; ++track_index) {
+                    auto const& ffi_track = ffi_dimension.tracks[track_index];
+                    dimension.tracks.unchecked_append({
+                        .start = CSSPixels::from_raw(ffi_track.start),
+                        .breadth = CSSPixels::from_raw(ffi_track.breadth),
+                        .type = static_cast<GridTrackType>(ffi_track.type_),
+                        .state = static_cast<GridTrackState>(ffi_track.state),
+                    });
+                }
+                return dimension;
+            };
+
+            data->fragments.ensure_capacity(ffi_data->fragment_count);
+            for (size_t fragment_index = 0; fragment_index < ffi_data->fragment_count; ++fragment_index) {
+                auto const& ffi_fragment = ffi_data->fragments[fragment_index];
+                GridLayoutFragment fragment {
+                    .areas = {},
+                    .columns = build_dimension(ffi_fragment.columns),
+                    .rows = build_dimension(ffi_fragment.rows),
+                };
+                fragment.areas.ensure_capacity(ffi_fragment.area_count);
+                for (size_t area_index = 0; area_index < ffi_fragment.area_count; ++area_index) {
+                    auto const& ffi_area = ffi_fragment.areas[area_index];
+                    fragment.areas.unchecked_append({
+                        .name = Utf16FlyString::from_raw(ffi_area.name),
+                        .type = static_cast<GridTrackType>(ffi_area.type_),
+                        .row_start = ffi_area.row_start,
+                        .row_end = ffi_area.row_end,
+                        .column_start = ffi_area.column_start,
+                        .column_end = ffi_area.column_end,
+                    });
+                }
+                data->fragments.unchecked_append(move(fragment));
+            }
+            bridge.m_formatting_context.m_state.get_mutable(*static_cast<Box const*>(box)).set_grid_layout_data(move(data));
+        },
+        .set_used_grid_template_tracks = [](void* context, void* box, RustFFI::FfiUsedGridTrackList const* columns, RustFFI::FfiUsedGridTrackList const* rows) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            VERIFY(columns);
+            VERIFY(rows);
+            auto& used_values = bridge.m_formatting_context.m_state.get_mutable(*static_cast<Box const*>(box));
+            used_values.set_grid_template_columns(CSS::GridTrackSizeListStyleValue::create(build_used_grid_track_list(*columns)));
+            used_values.set_grid_template_rows(CSS::GridTrackSizeListStyleValue::create(build_used_grid_track_list(*rows)));
         },
     };
 }
@@ -1238,6 +1620,7 @@ void verify_style_calc_handles_balanced()
 {
     VERIFY(s_outstanding_calc_handles.load() == 0);
     VERIFY(retained_calc_handles().is_empty());
+    VERIFY(s_outstanding_grid_name_handles.load() == 0);
 }
 
 void release_style_facts(RustFFI::FfiStyleFacts const& facts)
@@ -1278,6 +1661,14 @@ void release_style_facts(RustFFI::FfiStyleFacts const& facts)
 extern "C" WEB_API void ladybird_layout_release_calc_handle(void const* handle)
 {
     Web::Layout::release_calc_handle(handle);
+}
+
+extern "C" WEB_API void ladybird_layout_release_grid_name_handle(size_t raw)
+{
+    VERIFY(Web::Layout::s_outstanding_grid_name_handles.load() > 0);
+    --Web::Layout::s_outstanding_grid_name_handles;
+    Web::Layout::RustFFI::rust_layout_ffi_note_grid_name_release();
+    Utf16FlyString::unref_raw(raw);
 }
 
 extern "C" WEB_API Web::Layout::RustFFI::FfiSizeValue ladybird_layout_test_build_size_value(u8 kind, i32 px_raw, double fraction)
@@ -1346,4 +1737,103 @@ extern "C" WEB_API i32 ladybird_layout_test_resolve_calc_handle_cpp(void const* 
 extern "C" WEB_API void ladybird_layout_test_verify_calc_handles_balanced()
 {
     Web::Layout::verify_style_calc_handles_balanced();
+}
+
+extern "C" WEB_API Web::Layout::RustFFI::FfiGridStyleFacts ladybird_layout_test_build_grid_facts_snapshot()
+{
+    using namespace Web;
+    auto arena = make<Layout::GridFactsSnapshotArena>();
+    auto alpha = "alpha"_utf16_fly_string;
+    auto beta = "beta"_utf16_fly_string;
+
+    CSS::GridTrackSizeList list;
+    CSS::GridLineNames alpha_names;
+    alpha_names.append(alpha);
+    list.append(move(alpha_names));
+    list.append(CSS::ExplicitGridTrack {
+        CSS::GridSize { CSS::LengthStyleValue::create(CSS::Length::make_px(10)) },
+    });
+    list.append(CSS::ExplicitGridTrack {
+        CSS::GridMinMax {
+            CSS::GridSize { CSS::PercentageStyleValue::create(CSS::Percentage { 25 }) },
+            CSS::GridSize { CSS::FlexStyleValue::create(CSS::Flex::make_fr(2)) },
+        },
+    });
+
+    CSS::GridTrackSizeList repeated_list;
+    CSS::GridLineNames beta_names;
+    beta_names.append(beta);
+    repeated_list.append(move(beta_names));
+    repeated_list.append(CSS::ExplicitGridTrack {
+        CSS::GridSize {
+            CSS::FunctionStyleValue::create(
+                "fit-content"_utf16_fly_string,
+                CSS::LengthStyleValue::create(CSS::Length::make_px(40))),
+        },
+    });
+    list.append(CSS::ExplicitGridTrack {
+        CSS::GridRepeat {
+            CSS::GridRepeatType::Fixed,
+            move(repeated_list),
+            CSS::IntegerStyleValue::create(3),
+        },
+    });
+
+    auto template_columns = Layout::build_grid_track_list(list, *arena);
+    auto empty_list = Layout::build_grid_track_list(CSS::GridTrackSizeList::make_none(), *arena);
+    arena->areas.append({
+        .name_index = arena->intern_name(alpha),
+        .implicit_start_name_index = arena->intern_name(
+            Layout::make_grid_implicit_line_name(alpha.view(), "-start"sv)),
+        .implicit_end_name_index = arena->intern_name(
+            Layout::make_grid_implicit_line_name(alpha.view(), "-end"sv)),
+        .row_start = 1,
+        .row_end = 3,
+        .column_start = 2,
+        .column_end = 4,
+    });
+    auto column_start = Layout::build_grid_placement(
+        CSS::GridTrackPlacement::make_line(CSS::IntegerStyleValue::create(-1), alpha), *arena);
+    auto column_end = Layout::build_grid_placement(
+        CSS::GridTrackPlacement::make_span(CSS::IntegerStyleValue::create(2), beta), *arena);
+
+    auto* owner = arena.leak_ptr();
+    return {
+        .snapshot_owner = owner,
+        .names = owner->names.data(),
+        .name_count = owner->names.size(),
+        .name_indices = owner->name_indices.data(),
+        .name_index_count = owner->name_indices.size(),
+        .entries = owner->entries.data(),
+        .entry_count = owner->entries.size(),
+        .template_columns = template_columns,
+        .template_rows = empty_list,
+        .auto_columns = empty_list,
+        .auto_rows = empty_list,
+        .areas = owner->areas.data(),
+        .area_count = owner->areas.size(),
+        .area_row_count = 3,
+        .area_column_count = 4,
+        .column_start = column_start,
+        .column_end = column_end,
+        .row_start = Layout::build_grid_placement(CSS::GridTrackPlacement::make_auto(), *owner),
+        .row_end = Layout::build_grid_placement(CSS::GridTrackPlacement::make_auto(), *owner),
+    };
+}
+
+extern "C" WEB_API void ladybird_layout_test_release_grid_facts_snapshot(Web::Layout::RustFFI::FfiGridStyleFacts const* facts)
+{
+    using namespace Web;
+    VERIFY(facts);
+    auto* owner = static_cast<Layout::GridFactsSnapshotArena*>(facts->snapshot_owner);
+    VERIFY(owner);
+    for (auto const& entry : owner->entries) {
+        ladybird_layout_release_calc_handle(entry.size.value.calc);
+        ladybird_layout_release_calc_handle(entry.min_size.value.calc);
+        ladybird_layout_release_calc_handle(entry.max_size.value.calc);
+    }
+    for (auto raw : owner->names)
+        ladybird_layout_release_grid_name_handle(raw);
+    delete owner;
+    Layout::verify_style_calc_handles_balanced();
 }

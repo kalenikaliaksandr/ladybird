@@ -28,6 +28,7 @@ RustFormattingContext::RustFormattingContext(Type type, LayoutMode layout_mode, 
     m_rust_context = RustFFI::rust_layout_fc_create(
         state.rust_state_handle(),
         const_cast<Box*>(&box),
+        parent ? parent->rust_context_handle() : nullptr,
         to_underlying(type),
         to_underlying(layout_mode),
         state.should_collect_devtools_layout_data(),

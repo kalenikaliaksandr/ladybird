@@ -35,6 +35,9 @@ define_ffi_ops! {
     BoxFactsBuild => "boxFactsBuildEntries",
     FcTypeDecision => "fcTypeDecisionEntries",
     TableFactsBuild => "tableFactsBuildEntries",
+    GridFactsBuild => "gridFactsBuildEntries",
+    GridNameRetain => "gridNameRetainEntries",
+    GridNameRelease => "gridNameReleaseEntries",
     FcCreate => "fcCreateEntries",
     FcDestroy => "fcDestroyEntries",
     FcRun => "fcRunEntries",
@@ -70,6 +73,7 @@ define_ffi_ops! {
     StyleFactsCacheHit => "styleFactsCacheHits",
     BoxFactsCacheHit => "boxFactsCacheHits",
     TableFactsCacheHit => "tableFactsCacheHits",
+    GridFactsCacheHit => "gridFactsCacheHits",
 }
 
 static COUNTERS: [AtomicU64; FFI_OP_COUNT] = [const { AtomicU64::new(0) }; FFI_OP_COUNT];
@@ -102,6 +106,21 @@ pub extern "C" fn rust_layout_ffi_note_box_facts_build() {
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_layout_ffi_note_table_facts_build() {
     abort_on_panic(|| bump(FfiOp::TableFactsBuild));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_grid_facts_build() {
+    abort_on_panic(|| bump(FfiOp::GridFactsBuild));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_grid_name_retain() {
+    abort_on_panic(|| bump(FfiOp::GridNameRetain));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_grid_name_release() {
+    abort_on_panic(|| bump(FfiOp::GridNameRelease));
 }
 
 #[unsafe(no_mangle)]

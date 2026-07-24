@@ -6,6 +6,7 @@
 
 use crate::abort_on_panic;
 use crate::box_facts::FfiLayoutBoxFacts;
+use crate::fc::grid::facts::GridStyleFacts;
 use crate::fc::{FfiLayoutFcCallbacks, FfiTableBoxFacts};
 use crate::ffi_stats::{FfiOp, bump};
 use crate::geometry::LogicalRect;
@@ -205,6 +206,7 @@ pub(crate) struct LayoutState {
     style_facts: PagedStore<FfiStyleFacts>,
     box_facts: PagedStore<FfiLayoutBoxFacts>,
     table_facts: PagedStore<FfiTableBoxFacts>,
+    grid_facts: PagedStore<GridStyleFacts>,
     layout_indices_by_node: HashMap<usize, u32>,
 }
 
@@ -280,6 +282,20 @@ impl LayoutState {
         let facts = unsafe { (callbacks.build_table_box_facts)(callbacks.context, node) };
         self.table_facts.allocate(index, facts);
         facts
+    }
+
+    pub(crate) fn grid_facts(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> &GridStyleFacts {
+        let index = self.layout_index(callbacks, node);
+        let facts = self.grid_facts.get(index);
+        if !facts.is_null() {
+            bump(FfiOp::GridFactsCacheHit);
+            // SAFETY: Non-null store entries remain valid for the state.
+            return unsafe { &*facts };
+        }
+        let facts = GridStyleFacts::build(callbacks, node);
+        let facts = self.grid_facts.allocate(index, facts);
+        // SAFETY: `allocate` returns a live entry owned by the state arena.
+        unsafe { &*facts }
     }
 
     pub(crate) fn used_values(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> *mut UsedValuesCore {

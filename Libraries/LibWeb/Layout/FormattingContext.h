@@ -98,6 +98,7 @@ public:
     Type type() const { return m_type; }
 
     virtual bool inhibits_floating() const { return false; }
+    virtual void* rust_context_handle() const { return nullptr; }
 
     [[nodiscard]] static Optional<Type> formatting_context_type_created_by_box(Box const&);
 
