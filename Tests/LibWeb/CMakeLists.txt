@@ -29,6 +29,8 @@ set(TEST_SOURCES
     TestStructuredSerializeHardening.cpp
     TestStrings.cpp
     TestLengthAbsolutizeParity.cpp
+    TestLayoutGeometryParity.cpp
+    TestLayoutUsedValuesParity.cpp
     TestNumericTypeParity.cpp
     TestStylePropertyMetadataParity.cpp
     TestStyleStructRef.cpp

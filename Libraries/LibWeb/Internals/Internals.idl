@@ -153,6 +153,9 @@ interface Internals {
     // operation, counting calls into the Rust style core and callbacks it makes into C++.
     object styleFfiCounters();
     undefined resetStyleFfiCounters();
+    // Returns a snapshot of the process-wide layout FFI boundary counters.
+    object layoutFfiCounters();
+    undefined resetLayoutFfiCounters();
     // Returns, for each ComputedValues style value group of the given element, whether the
     // group payload is shared with the parent element and whether it is the default payload.
     object styleGroupSharingInfo(Element element);
