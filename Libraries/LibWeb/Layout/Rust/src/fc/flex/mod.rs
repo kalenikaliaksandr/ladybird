@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+use super::sizing::SizingContext;
 use super::{
     FfiChildLayoutResult, FfiFlexAxis, FfiFlexLayoutData, FfiFlexLayoutItem, FfiFlexLayoutItemRect, FfiFlexLayoutLine,
     FfiFlexSizeProperty, FfiFormattingContextType, FfiLayoutFcCallbacks, FormattingContextInstance,
@@ -274,6 +275,10 @@ impl FlexFormattingContext {
         state_mut(self.state).box_facts(&self.callbacks, node)
     }
 
+    fn sizing(&self) -> SizingContext {
+        SizingContext::new(self.state, self.callbacks)
+    }
+
     fn navigate(&self, callback: crate::box_facts::FfiLayoutNavCallback, node: Node) -> Node {
         // SAFETY: Navigation is synchronous and the host owns every node.
         unsafe { callback(self.callbacks.navigation.context, node) }
@@ -301,8 +306,7 @@ impl FlexFormattingContext {
         node: Node,
         constraints: FfiContainingBlockConstraints,
     ) -> FfiContainingBlockConstraints {
-        // SAFETY: The node and state remain live during this synchronous call.
-        unsafe { (self.callbacks.constraints_for_child_context)(self.callbacks.context, node, constraints) }
+        self.sizing().constraints_for_child_context(node, constraints)
     }
 
     fn item_containing_block_constraints(&self) -> FfiContainingBlockConstraints {
@@ -597,17 +601,8 @@ impl FlexFormattingContext {
         available_space: AvailableSpace,
         constraints: FfiContainingBlockConstraints,
     ) -> CssPixels {
-        // SAFETY: The node and state remain live during this synchronous call.
-        unsafe {
-            (self.callbacks.calculate_inner_size_for_property)(
-                self.callbacks.context,
-                node,
-                axis,
-                property,
-                available_space,
-                constraints,
-            )
-        }
+        self.sizing()
+            .calculate_inner_size_for_property(node, axis, property, available_space, constraints)
     }
 
     fn resolve_inner_inline_size(&self, index: usize, property: FfiFlexSizeProperty) -> CssPixels {
@@ -657,29 +652,21 @@ impl FlexFormattingContext {
     }
 
     fn calculate_fit_content_size(&self, index: usize, axis: FfiFlexAxis, space: AvailableSpace) -> CssPixels {
-        // SAFETY: The node and state remain live during this synchronous call.
-        unsafe {
-            (self.callbacks.calculate_fit_content_size)(
-                self.callbacks.context,
-                self.flex_items[index].box_,
-                axis,
-                space,
-                self.item_containing_block_constraints(),
-            )
-        }
+        self.sizing().calculate_fit_content_size(
+            self.flex_items[index].box_,
+            axis,
+            space,
+            self.item_containing_block_constraints(),
+        )
     }
 
     fn should_treat_size_as_auto(&self, node: Node, axis: FfiFlexAxis) -> bool {
-        // SAFETY: The node and state remain live during this synchronous call.
-        unsafe {
-            (self.callbacks.should_treat_size_as_auto)(
-                self.callbacks.context,
-                node,
-                axis,
-                self.available_space_for_items.unwrap().space,
-                self.item_containing_block_constraints(),
-            )
-        }
+        self.sizing().should_treat_size_as_auto(
+            node,
+            axis,
+            self.available_space_for_items.unwrap().space,
+            self.item_containing_block_constraints(),
+        )
     }
 
     fn should_treat_main_size_as_auto(&self, node: Node) -> bool {
@@ -715,23 +702,15 @@ impl FlexFormattingContext {
         } else {
             self.available_space_for_items.unwrap().main
         };
-        // SAFETY: The node and state remain live during this synchronous call.
-        unsafe {
-            if axis_is_horizontal {
-                (self.callbacks.should_treat_max_inline_size_as_none)(
-                    self.callbacks.context,
-                    node,
-                    available,
-                    self.item_containing_block_constraints(),
-                )
-            } else {
-                (self.callbacks.should_treat_max_block_size_as_none)(
-                    self.callbacks.context,
-                    node,
-                    available,
-                    self.item_containing_block_constraints(),
-                )
-            }
+        if axis_is_horizontal {
+            self.sizing().should_treat_max_inline_size_as_none(
+                node,
+                available,
+                self.item_containing_block_constraints(),
+            )
+        } else {
+            self.sizing()
+                .should_treat_max_block_size_as_none(node, available, self.item_containing_block_constraints())
         }
     }
 
@@ -936,49 +915,29 @@ impl FlexFormattingContext {
     }
 
     fn calculate_min_content_inline_size(&self, index: usize) -> CssPixels {
-        // SAFETY: Intrinsic sizing is synchronous for a live item.
-        unsafe {
-            (self.callbacks.calculate_min_content_inline_size)(
-                self.callbacks.context,
-                self.flex_items[index].box_,
-                self.item_containing_block_constraints(),
-            )
-        }
+        self.sizing()
+            .calculate_min_content_inline_size(self.flex_items[index].box_, self.item_containing_block_constraints())
     }
 
     fn calculate_max_content_inline_size(&self, index: usize) -> CssPixels {
-        // SAFETY: Intrinsic sizing is synchronous for a live item.
-        unsafe {
-            (self.callbacks.calculate_max_content_inline_size)(
-                self.callbacks.context,
-                self.flex_items[index].box_,
-                self.item_containing_block_constraints(),
-            )
-        }
+        self.sizing()
+            .calculate_max_content_inline_size(self.flex_items[index].box_, self.item_containing_block_constraints())
     }
 
     fn calculate_min_content_block_size(&self, index: usize, inline_size: CssPixels) -> CssPixels {
-        // SAFETY: Intrinsic sizing is synchronous for a live item.
-        unsafe {
-            (self.callbacks.calculate_min_content_block_size)(
-                self.callbacks.context,
-                self.flex_items[index].box_,
-                inline_size,
-                self.item_containing_block_constraints(),
-            )
-        }
+        self.sizing().calculate_min_content_block_size(
+            self.flex_items[index].box_,
+            inline_size,
+            self.item_containing_block_constraints(),
+        )
     }
 
     fn calculate_max_content_block_size(&self, index: usize, inline_size: CssPixels) -> CssPixels {
-        // SAFETY: Intrinsic sizing is synchronous for a live item.
-        unsafe {
-            (self.callbacks.calculate_max_content_block_size)(
-                self.callbacks.context,
-                self.flex_items[index].box_,
-                inline_size,
-                self.item_containing_block_constraints(),
-            )
-        }
+        self.sizing().calculate_max_content_block_size(
+            self.flex_items[index].box_,
+            inline_size,
+            self.item_containing_block_constraints(),
+        )
     }
 
     fn calculate_inline_size_for_intrinsic_block_size(&self, index: usize) -> CssPixels {
@@ -1019,22 +978,17 @@ impl FlexFormattingContext {
     }
 
     fn should_treat_max_size_as_none_for_axis(&self, node: Node, axis: FfiFlexAxis, available: AvailableSize) -> bool {
-        // SAFETY: The node and state remain live during this synchronous call.
-        unsafe {
-            match axis {
-                FfiFlexAxis::Inline => (self.callbacks.should_treat_max_inline_size_as_none)(
-                    self.callbacks.context,
-                    node,
-                    available,
-                    self.item_containing_block_constraints(),
-                ),
-                FfiFlexAxis::Block => (self.callbacks.should_treat_max_block_size_as_none)(
-                    self.callbacks.context,
-                    node,
-                    available,
-                    self.item_containing_block_constraints(),
-                ),
-            }
+        match axis {
+            FfiFlexAxis::Inline => self.sizing().should_treat_max_inline_size_as_none(
+                node,
+                available,
+                self.item_containing_block_constraints(),
+            ),
+            FfiFlexAxis::Block => self.sizing().should_treat_max_block_size_as_none(
+                node,
+                available,
+                self.item_containing_block_constraints(),
+            ),
         }
     }
 

@@ -19,6 +19,7 @@
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/HTML/AttributeNames.h>
 #include <LibWeb/HTML/HTMLElement.h>
+#include <LibWeb/HTML/HTMLInputElement.h>
 #include <LibWeb/HTML/HTMLTableCellElement.h>
 #include <LibWeb/HTML/HTMLTableColElement.h>
 #include <LibWeb/Layout/BlockFormattingContext.h>
@@ -27,6 +28,7 @@
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/FormattingContext.h>
 #include <LibWeb/Layout/Node.h>
+#include <LibWeb/Layout/TextInputBox.h>
 
 namespace Web::Layout {
 
@@ -233,6 +235,24 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
     auto preferred_aspect_ratio = box ? box->preferred_aspect_ratio() : Optional<CSSPixelFraction> {};
     auto display = node.display();
     auto const* dom_node = node.dom_node();
+    Optional<CSS::SizeWithAspectRatio> default_preferred_size;
+    if (box && box->computed_values().appearance() == CSS::Appearance::None) {
+        if (auto const* input = as_if<HTML::HTMLInputElement>(dom_node)) {
+            switch (input->type_state()) {
+            case HTML::HTMLInputElement::TypeAttributeState::Text:
+            case HTML::HTMLInputElement::TypeAttributeState::Search:
+            case HTML::HTMLInputElement::TypeAttributeState::URL:
+            case HTML::HTMLInputElement::TypeAttributeState::Telephone:
+            case HTML::HTMLInputElement::TypeAttributeState::Email:
+            case HTML::HTMLInputElement::TypeAttributeState::Password:
+            case HTML::HTMLInputElement::TypeAttributeState::Number:
+                default_preferred_size = TextInputBox::default_preferred_size_for_text_control(*input, *box);
+                break;
+            default:
+                break;
+            }
+        }
+    }
 
     return {
         .is_box = node.is_box(),
@@ -261,9 +281,15 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
         .has_auto_content_aspect_ratio = auto_content_size.has_aspect_ratio(),
         .auto_content_aspect_ratio_numerator = auto_content_size.aspect_ratio.has_value() ? auto_content_size.aspect_ratio->numerator().raw_value() : 0,
         .auto_content_aspect_ratio_denominator = auto_content_size.aspect_ratio.has_value() ? auto_content_size.aspect_ratio->denominator().raw_value() : 0,
+        .has_auto_content_box_size = box && box->has_auto_content_box_size(),
         .has_preferred_aspect_ratio = preferred_aspect_ratio.has_value(),
         .preferred_aspect_ratio_numerator = preferred_aspect_ratio.has_value() ? preferred_aspect_ratio->numerator().raw_value() : 0,
         .preferred_aspect_ratio_denominator = preferred_aspect_ratio.has_value() ? preferred_aspect_ratio->denominator().raw_value() : 0,
+        .has_default_preferred_width = default_preferred_size.has_value() && default_preferred_size->has_width(),
+        .default_preferred_width = default_preferred_size.has_value() ? default_preferred_size->width.value_or(0).raw_value() : 0,
+        .has_default_preferred_height = default_preferred_size.has_value() && default_preferred_size->has_height(),
+        .default_preferred_height = default_preferred_size.has_value() ? default_preferred_size->height.value_or(0).raw_value() : 0,
+        .initial_containing_block_inline_size = node.document().viewport_rect().width().raw_value(),
         .is_scroll_container = node.is_scroll_container(),
         .layout_index = node.layout_index(),
         .display = encode_display(display),
@@ -281,6 +307,7 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
         .is_table_caption = display.is_table_caption(),
         .is_viewport = node.is_viewport(),
         .document_in_quirks_mode = node.document().in_quirks_mode(),
+        .is_in_user_agent_shadow_tree = dom_node && dom_node->containing_shadow_root() && dom_node->containing_shadow_root()->is_user_agent_internal(),
         .is_html_html_element = dom_node && dom_node->is_html_html_element(),
         .is_html_body_element = dom_node && dom_node->is_html_body_element(),
     };
@@ -830,6 +857,99 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
                 *static_cast<Box const*>(box),
                 from_ffi_available_size(available_size),
                 from_ffi_constraints(constraints));
+        },
+        .create_measurement_state = [](void*, void* box, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto converted_constraints = from_ffi_constraints(constraints);
+            auto state = make<LayoutState>(*static_cast<Box const*>(box), LayoutState::Purpose::Measurement);
+            auto& root_used_values = state->create(
+                *static_cast<Box const*>(box),
+                converted_constraints.percentage_basis_inline_size,
+                converted_constraints.percentage_basis_block_size);
+            auto* rust_state = state->rust_state_handle();
+            return RustFFI::FfiMeasurementState {
+                .cpp_state = state.leak_ptr(),
+                .rust_state = rust_state,
+                .root_used_values = &root_used_values.core(),
+            };
+        },
+        .destroy_measurement_state = [](void*, void* state) {
+            auto* measurement_state = static_cast<LayoutState*>(state);
+            VERIFY(measurement_state);
+            VERIFY(measurement_state->is_for_measurement());
+            delete measurement_state;
+        },
+        .run_measurement_context = [](void* context, void* state, void* box, RustFFI::FfiLayoutInput input) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto& measurement_state = *static_cast<LayoutState*>(state);
+            VERIFY(measurement_state.is_for_measurement());
+            auto measuring_context = FormattingContext::create_independent_formatting_context(
+                measurement_state,
+                LayoutMode::IntrinsicSizing,
+                *static_cast<Box const*>(box),
+                &bridge.m_formatting_context);
+            measuring_context->run(from_ffi(input));
+            return RustFFI::FfiChildLayoutResult {
+                .automatic_content_inline_size = measuring_context->automatic_content_inline_size().raw_value(),
+                .automatic_content_block_size = measuring_context->automatic_content_block_size().raw_value(),
+            };
+        },
+        .intrinsic_size_cache_get = [](void*, void* box, RustFFI::FfiIntrinsicSizeCacheKind kind, RustFFI::FfiIntrinsicSizeCacheKey key, i32* out) {
+            auto to_optional = [](bool has_value, i32 value) -> Optional<CSSPixels> {
+                return has_value ? Optional<CSSPixels> { CSSPixels::from_raw(value) } : Optional<CSSPixels> {};
+            };
+            auto converted_key = IntrinsicSizeCacheKey {
+                .measured_at_inline_size = to_optional(key.has_measured_at_inline_size, key.measured_at_inline_size),
+                .percentage_basis_inline_size = to_optional(key.has_percentage_basis_inline_size, key.percentage_basis_inline_size),
+                .percentage_basis_block_size = to_optional(key.has_percentage_basis_block_size, key.percentage_basis_block_size),
+                .quirks_mode_percentage_basis_block_size = to_optional(key.has_quirks_mode_percentage_basis_block_size, key.quirks_mode_percentage_basis_block_size),
+            };
+            auto& sizes = static_cast<Box const*>(box)->cached_intrinsic_sizes();
+            Optional<CSSPixels> cached;
+            switch (kind) {
+            case RustFFI::FfiIntrinsicSizeCacheKind::MinContentInline:
+                cached = sizes.min_content_inline_size.get(converted_key);
+                break;
+            case RustFFI::FfiIntrinsicSizeCacheKind::MaxContentInline:
+                cached = sizes.max_content_inline_size.get(converted_key);
+                break;
+            case RustFFI::FfiIntrinsicSizeCacheKind::MinContentBlock:
+                cached = sizes.min_content_block_size.get(converted_key);
+                break;
+            case RustFFI::FfiIntrinsicSizeCacheKind::MaxContentBlock:
+                cached = sizes.max_content_block_size.get(converted_key);
+                break;
+            }
+            if (!cached.has_value())
+                return false;
+            *out = cached->raw_value();
+            return true;
+        },
+        .intrinsic_size_cache_put = [](void*, void* box, RustFFI::FfiIntrinsicSizeCacheKind kind, RustFFI::FfiIntrinsicSizeCacheKey key, i32 value) {
+            auto to_optional = [](bool has_value, i32 raw_value) -> Optional<CSSPixels> {
+                return has_value ? Optional<CSSPixels> { CSSPixels::from_raw(raw_value) } : Optional<CSSPixels> {};
+            };
+            auto converted_key = IntrinsicSizeCacheKey {
+                .measured_at_inline_size = to_optional(key.has_measured_at_inline_size, key.measured_at_inline_size),
+                .percentage_basis_inline_size = to_optional(key.has_percentage_basis_inline_size, key.percentage_basis_inline_size),
+                .percentage_basis_block_size = to_optional(key.has_percentage_basis_block_size, key.percentage_basis_block_size),
+                .quirks_mode_percentage_basis_block_size = to_optional(key.has_quirks_mode_percentage_basis_block_size, key.quirks_mode_percentage_basis_block_size),
+            };
+            auto& sizes = static_cast<Box const*>(box)->cached_intrinsic_sizes();
+            auto converted_value = CSSPixels::from_raw(value);
+            switch (kind) {
+            case RustFFI::FfiIntrinsicSizeCacheKind::MinContentInline:
+                sizes.min_content_inline_size.set(converted_key, converted_value);
+                break;
+            case RustFFI::FfiIntrinsicSizeCacheKind::MaxContentInline:
+                sizes.max_content_inline_size.set(converted_key, converted_value);
+                break;
+            case RustFFI::FfiIntrinsicSizeCacheKind::MinContentBlock:
+                sizes.min_content_block_size.set(converted_key, converted_value);
+                break;
+            case RustFFI::FfiIntrinsicSizeCacheKind::MaxContentBlock:
+                sizes.max_content_block_size.set(converted_key, converted_value);
+                break;
+            }
         },
         .compute_table_box_block_size_inside_wrapper = [](void* context, void* box, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);

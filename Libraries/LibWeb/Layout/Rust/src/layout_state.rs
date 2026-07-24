@@ -281,6 +281,13 @@ impl LayoutState {
         self.table_facts.allocate(index, facts);
         facts
     }
+
+    pub(crate) fn used_values(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> *mut UsedValuesCore {
+        let index = self.layout_index(callbacks, node);
+        let used_values = self.used_values.get(index);
+        assert!(!used_values.is_null());
+        used_values
+    }
 }
 
 pub(crate) fn state_mut(state: *mut c_void) -> &'static mut LayoutState {

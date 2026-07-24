@@ -17,6 +17,7 @@ use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
 use std::ffi::c_void;
 
 mod flex;
+mod sizing;
 mod table;
 
 const NO_FORMATTING_CONTEXT: u8 = u8::MAX;
@@ -92,6 +93,36 @@ pub struct FfiMeasuredCellContent {
 pub struct FfiCaptionLayoutResult {
     pub margin_box_block_size: CssPixels,
     pub pending_table_block_offset: CssPixels,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiMeasurementState {
+    pub cpp_state: *mut c_void,
+    pub rust_state: *mut c_void,
+    pub root_used_values: *mut UsedValuesCore,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiIntrinsicSizeCacheKey {
+    pub has_measured_at_inline_size: bool,
+    pub measured_at_inline_size: CssPixels,
+    pub has_percentage_basis_inline_size: bool,
+    pub percentage_basis_inline_size: CssPixels,
+    pub has_percentage_basis_block_size: bool,
+    pub percentage_basis_block_size: CssPixels,
+    pub has_quirks_mode_percentage_basis_block_size: bool,
+    pub quirks_mode_percentage_basis_block_size: CssPixels,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FfiIntrinsicSizeCacheKind {
+    MinContentInline,
+    MaxContentInline,
+    MinContentBlock,
+    MaxContentBlock,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -243,6 +274,20 @@ pub struct FfiLayoutFcCallbacks {
     ) -> bool,
     pub should_treat_max_block_size_as_none:
         unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSize, FfiContainingBlockConstraints) -> bool,
+    pub create_measurement_state:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, FfiContainingBlockConstraints) -> FfiMeasurementState,
+    pub destroy_measurement_state: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    pub run_measurement_context:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, FfiLayoutInput) -> FfiChildLayoutResult,
+    pub intrinsic_size_cache_get: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        FfiIntrinsicSizeCacheKind,
+        FfiIntrinsicSizeCacheKey,
+        *mut CssPixels,
+    ) -> bool,
+    pub intrinsic_size_cache_put:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, FfiIntrinsicSizeCacheKind, FfiIntrinsicSizeCacheKey, CssPixels),
     pub compute_table_box_block_size_inside_wrapper:
         unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSpace, FfiContainingBlockConstraints) -> CssPixels,
     pub register_contained_abspos_child: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiStaticPositionRect),

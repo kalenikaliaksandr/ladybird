@@ -8,6 +8,7 @@ mod borders;
 mod distribution;
 mod grid;
 
+use super::sizing::SizingContext;
 use super::{
     FfiBorderData, FfiCaptionLayoutResult, FfiChildLayoutResult, FfiFormattingContextType, FfiLayoutFcCallbacks,
     FfiMeasuredCellContent, FormattingContextInstance,
@@ -125,6 +126,10 @@ impl TableFormattingContext {
         bump(FfiOp::NavigationCallback);
         // SAFETY: Navigation is synchronous and the host owns every node.
         unsafe { callback(self.callbacks.navigation.context, node) }
+    }
+
+    fn sizing(&self) -> SizingContext {
+        SizingContext::new(self.state, self.callbacks)
     }
 
     fn parent(&self, node: Node) -> Node {
@@ -386,53 +391,23 @@ impl TableFormattingContext {
     }
 
     fn calculate_min_content_inline_size(&self, node: Node) -> CssPixels {
-        bump(FfiOp::IntrinsicMinInlineCallback);
-        // SAFETY: The callback performs synchronous intrinsic measurement.
-        unsafe {
-            (self.callbacks.calculate_min_content_inline_size)(
-                self.callbacks.context,
-                node,
-                self.participant_constraints,
-            )
-        }
+        self.sizing()
+            .calculate_min_content_inline_size(node, self.participant_constraints)
     }
 
     fn calculate_max_content_inline_size(&self, node: Node) -> CssPixels {
-        bump(FfiOp::IntrinsicMaxInlineCallback);
-        // SAFETY: See calculate_min_content_inline_size.
-        unsafe {
-            (self.callbacks.calculate_max_content_inline_size)(
-                self.callbacks.context,
-                node,
-                self.participant_constraints,
-            )
-        }
+        self.sizing()
+            .calculate_max_content_inline_size(node, self.participant_constraints)
     }
 
     fn calculate_min_content_block_size(&self, node: Node, inline_size: CssPixels) -> CssPixels {
-        bump(FfiOp::IntrinsicMinBlockCallback);
-        // SAFETY: See calculate_min_content_inline_size.
-        unsafe {
-            (self.callbacks.calculate_min_content_block_size)(
-                self.callbacks.context,
-                node,
-                inline_size,
-                self.participant_constraints,
-            )
-        }
+        self.sizing()
+            .calculate_min_content_block_size(node, inline_size, self.participant_constraints)
     }
 
     fn calculate_max_content_block_size(&self, node: Node, inline_size: CssPixels) -> CssPixels {
-        bump(FfiOp::IntrinsicMaxBlockCallback);
-        // SAFETY: See calculate_min_content_inline_size.
-        unsafe {
-            (self.callbacks.calculate_max_content_block_size)(
-                self.callbacks.context,
-                node,
-                inline_size,
-                self.participant_constraints,
-            )
-        }
+        self.sizing()
+            .calculate_max_content_block_size(node, inline_size, self.participant_constraints)
     }
 
     fn compute_cell_measures(&mut self, include_rows: bool) {
@@ -892,16 +867,11 @@ impl TableFormattingContext {
             };
             let mut contribution = outer(self.calculate_min_content_inline_size(caption));
             if !style.width.is_auto() && !style.width.contains_percentage {
-                bump(FfiOp::CalculateInnerInlineSizeCallback);
-                // SAFETY: Synchronous generic sizing helper.
-                let preferred = unsafe {
-                    (self.callbacks.calculate_inner_inline_size)(
-                        self.callbacks.context,
-                        caption,
-                        AvailableSize::definite(basis),
-                        self.participant_constraints,
-                    )
-                };
+                let preferred = self.sizing().calculate_inner_inline_width(
+                    caption,
+                    AvailableSize::definite(basis),
+                    self.participant_constraints,
+                );
                 contribution = contribution.max(outer(preferred));
             }
             capmin = capmin.max(contribution);
@@ -945,16 +915,8 @@ impl TableFormattingContext {
     }
 
     fn should_treat_max_inline_size_as_none(&self, available: AvailableSize) -> bool {
-        bump(FfiOp::ShouldTreatMaxInlineAsNoneCallback);
-        // SAFETY: Synchronous generic sizing predicate.
-        unsafe {
-            (self.callbacks.should_treat_max_inline_size_as_none)(
-                self.callbacks.context,
-                self.table_box,
-                available,
-                self.table_constraints,
-            )
-        }
+        self.sizing()
+            .should_treat_max_inline_size_as_none(self.table_box, available, self.table_constraints)
     }
 
     fn compute_table_inline_size(&mut self) {

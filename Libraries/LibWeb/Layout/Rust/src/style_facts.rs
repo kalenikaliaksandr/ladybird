@@ -41,6 +41,16 @@ pub struct FfiSizeValue {
 }
 
 impl FfiSizeValue {
+    pub(crate) fn auto_value() -> Self {
+        Self {
+            kind: FfiSizeKind::Auto as u8,
+            px: CssPixels::default(),
+            fraction: 0.0,
+            calc: std::ptr::null(),
+            contains_percentage: false,
+        }
+    }
+
     #[cfg(test)]
     fn with_kind(kind: FfiSizeKind) -> Self {
         Self {
