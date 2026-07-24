@@ -122,18 +122,18 @@ pub struct FfiSvgPathResult {
     pub text_position_for_children: FfiFloatPoint,
 }
 
-const PRESERVE_ASPECT_RATIO_NONE: u8 = 0;
+pub(crate) const PRESERVE_ASPECT_RATIO_NONE: u8 = 0;
 const PRESERVE_ASPECT_RATIO_X_MIN_Y_MIN: u8 = 1;
 const PRESERVE_ASPECT_RATIO_X_MID_Y_MIN: u8 = 2;
 const PRESERVE_ASPECT_RATIO_X_MAX_Y_MIN: u8 = 3;
 const PRESERVE_ASPECT_RATIO_X_MIN_Y_MID: u8 = 4;
-const PRESERVE_ASPECT_RATIO_X_MID_Y_MID: u8 = 5;
+pub(crate) const PRESERVE_ASPECT_RATIO_X_MID_Y_MID: u8 = 5;
 const PRESERVE_ASPECT_RATIO_X_MAX_Y_MID: u8 = 6;
 const PRESERVE_ASPECT_RATIO_X_MIN_Y_MAX: u8 = 7;
-const PRESERVE_ASPECT_RATIO_X_MID_Y_MAX: u8 = 8;
-const PRESERVE_ASPECT_RATIO_X_MAX_Y_MAX: u8 = 9;
-const MEET_OR_SLICE_MEET: u8 = 0;
-const MEET_OR_SLICE_SLICE: u8 = 1;
+pub(crate) const PRESERVE_ASPECT_RATIO_X_MID_Y_MAX: u8 = 8;
+pub(crate) const PRESERVE_ASPECT_RATIO_X_MAX_Y_MAX: u8 = 9;
+pub(crate) const MEET_OR_SLICE_MEET: u8 = 0;
+pub(crate) const MEET_OR_SLICE_SLICE: u8 = 1;
 const SVG_UNITS_OBJECT_BOUNDING_BOX: u8 = 0;
 const SVG_UNITS_USER_SPACE_ON_USE: u8 = 1;
 
@@ -163,7 +163,7 @@ impl FfiAffineTransform {
         self.a == 1.0 && self.b == 0.0 && self.c == 0.0 && self.d == 1.0
     }
 
-    fn multiply(&mut self, other: Self) {
+    pub(crate) fn multiply(&mut self, other: Self) {
         if other.is_identity() {
             return;
         }
@@ -176,7 +176,7 @@ impl FfiAffineTransform {
         self.f = other.e * this.b + other.f * this.d + this.f;
     }
 
-    fn translated(mut self, x: f32, y: f32) -> Self {
+    pub(crate) fn translated(mut self, x: f32, y: f32) -> Self {
         if self.is_identity_or_translation() {
             self.e += x;
             self.f += y;
@@ -187,7 +187,7 @@ impl FfiAffineTransform {
         self
     }
 
-    fn scaled(mut self, x: f32, y: f32) -> Self {
+    pub(crate) fn scaled(mut self, x: f32, y: f32) -> Self {
         self.a *= x;
         self.b *= x;
         self.c *= y;
@@ -202,7 +202,7 @@ impl FfiAffineTransform {
         }
     }
 
-    fn map_rect(self, rect: FfiFloatRect) -> FfiFloatRect {
+    pub(crate) fn map_rect(self, rect: FfiFloatRect) -> FfiFloatRect {
         if self.is_identity() {
             return rect;
         }
@@ -268,14 +268,14 @@ fn float_rect_to_css_pixels(rect: FfiFloatRect) -> CssPixelRect {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct ViewBoxTransform {
-    offset: FfiCssPixelPoint,
-    scale_factor_x: f64,
-    scale_factor_y: f64,
+pub(crate) struct ViewBoxTransform {
+    pub(crate) offset: FfiCssPixelPoint,
+    pub(crate) scale_factor_x: f64,
+    pub(crate) scale_factor_y: f64,
 }
 
 // https://svgwg.org/svg2-draft/coords.html#PreserveAspectRatioAttribute
-fn scale_and_align_viewbox_content(
+pub(crate) fn scale_and_align_viewbox_content(
     align: u8,
     meet_or_slice: u8,
     view_box: FfiSvgViewBox,
@@ -1181,115 +1181,4 @@ impl SvgFormattingContext {
 
 pub(super) fn run(instance: &mut FormattingContextInstance, input: FfiLayoutInput) {
     instance.svg_context.as_mut().unwrap().run(input);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn px(value: i64) -> CssPixels {
-        CssPixels::from_integer(value)
-    }
-
-    #[test]
-    fn meet_and_slice_choose_uniform_scale_and_align() {
-        let view_box = FfiSvgViewBox {
-            width: 100.0,
-            height: 100.0,
-            ..Default::default()
-        };
-        let meet = scale_and_align_viewbox_content(
-            PRESERVE_ASPECT_RATIO_X_MID_Y_MID,
-            MEET_OR_SLICE_MEET,
-            view_box,
-            2.0,
-            1.0,
-            (px(200), px(100)),
-            true,
-        );
-        assert_eq!(meet.scale_factor_x, 1.0);
-        assert_eq!(meet.scale_factor_y, 1.0);
-        assert_eq!(meet.offset.x, px(50));
-        assert_eq!(meet.offset.y, px(0));
-
-        let slice = scale_and_align_viewbox_content(
-            PRESERVE_ASPECT_RATIO_X_MAX_Y_MAX,
-            MEET_OR_SLICE_SLICE,
-            view_box,
-            2.0,
-            1.0,
-            (px(200), px(100)),
-            true,
-        );
-        assert_eq!(slice.scale_factor_x, 2.0);
-        assert_eq!(slice.scale_factor_y, 2.0);
-        assert_eq!(slice.offset.x, px(0));
-        assert_eq!(slice.offset.y, px(-100));
-    }
-
-    #[test]
-    fn none_keeps_non_uniform_scale_and_zero_offset() {
-        let transform = scale_and_align_viewbox_content(
-            PRESERVE_ASPECT_RATIO_NONE,
-            MEET_OR_SLICE_MEET,
-            FfiSvgViewBox {
-                width: 10.0,
-                height: 20.0,
-                ..Default::default()
-            },
-            3.0,
-            4.0,
-            (px(30), px(80)),
-            true,
-        );
-        assert_eq!(transform.scale_factor_x, 3.0);
-        assert_eq!(transform.scale_factor_y, 4.0);
-        assert_eq!(transform.offset, FfiCssPixelPoint::default());
-    }
-
-    #[test]
-    fn affine_multiplication_and_rect_mapping_match_gfx_order() {
-        let mut transform = FfiAffineTransform::default().translated(10.0, 20.0).scaled(2.0, 3.0);
-        transform.multiply(FfiAffineTransform {
-            a: 1.0,
-            b: 0.0,
-            c: 0.0,
-            d: 1.0,
-            e: 4.0,
-            f: 5.0,
-        });
-        let rect = transform.map_rect(FfiFloatRect {
-            x: 1.0,
-            y: 2.0,
-            width: 3.0,
-            height: 4.0,
-        });
-        assert_eq!(
-            rect,
-            FfiFloatRect {
-                x: 20.0,
-                y: 41.0,
-                width: 6.0,
-                height: 12.0,
-            }
-        );
-    }
-
-    #[test]
-    fn y_alignment_preserves_inline_definiteness_quirk() {
-        let transform = scale_and_align_viewbox_content(
-            PRESERVE_ASPECT_RATIO_X_MID_Y_MAX,
-            MEET_OR_SLICE_MEET,
-            FfiSvgViewBox {
-                width: 100.0,
-                height: 50.0,
-                ..Default::default()
-            },
-            1.0,
-            1.0,
-            (px(100), px(100)),
-            false,
-        );
-        assert_eq!(transform.offset.y, CssPixels::default());
-    }
 }

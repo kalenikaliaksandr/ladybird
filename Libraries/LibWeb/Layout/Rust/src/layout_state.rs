@@ -6,11 +6,11 @@
 
 use crate::abort_on_panic;
 use crate::box_facts::FfiLayoutBoxFacts;
-use crate::fc::grid::facts::GridStyleFacts;
-use crate::fc::inline::text::TextNodeFacts;
-use crate::fc::inline::{line_box::LineBoxData, pieces::InlineBoxPieceData};
-use crate::fc::{FfiLayoutFcCallbacks, FfiTableBoxFacts};
 use crate::ffi_stats::{FfiOp, bump};
+use crate::formatting_context::grid::facts::GridStyleFacts;
+use crate::formatting_context::inline::iterator::text::TextNodeFacts;
+use crate::formatting_context::inline::{line_box::LineBoxData, pieces::InlineBoxPieceData};
+use crate::formatting_context::{FfiLayoutFcCallbacks, FfiTableBoxFacts};
 use crate::geometry::LogicalRect;
 use crate::style_facts::FfiStyleFacts;
 use crate::used_values::UsedValuesCore;
@@ -89,7 +89,7 @@ impl<T> BumpArena<T> {
     }
 }
 
-struct Page<T> {
+pub(crate) struct Page<T> {
     entries: [*mut T; PAGE_SIZE],
 }
 
@@ -101,8 +101,8 @@ impl<T> Default for Page<T> {
     }
 }
 
-struct PagedStore<T> {
-    pages: Vec<Option<Box<Page<T>>>>,
+pub(crate) struct PagedStore<T> {
+    pub(crate) pages: Vec<Option<Box<Page<T>>>>,
     arena: BumpArena<T>,
 }
 
@@ -116,12 +116,12 @@ impl<T> Default for PagedStore<T> {
 }
 
 impl<T> PagedStore<T> {
-    fn ensure_capacity(&mut self, count: u32) {
+    pub(crate) fn ensure_capacity(&mut self, count: u32) {
         let page_count = ((count as usize) + PAGE_SIZE - 1) >> PAGE_BITS;
         self.pages.resize_with(page_count, || None);
     }
 
-    fn get(&self, index: u32) -> *mut T {
+    pub(crate) fn get(&self, index: u32) -> *mut T {
         let index = index as usize;
         let page_index = index >> PAGE_BITS;
         let Some(Some(page)) = self.pages.get(page_index) else {
@@ -130,7 +130,7 @@ impl<T> PagedStore<T> {
         page.entries[index & PAGE_MASK]
     }
 
-    fn allocate(&mut self, index: u32, value: T) -> *mut T {
+    pub(crate) fn allocate(&mut self, index: u32, value: T) -> *mut T {
         let index = index as usize;
         let page_index = index >> PAGE_BITS;
         if page_index >= self.pages.len() {
@@ -163,7 +163,7 @@ impl<T> PagedStore<T> {
     }
 
     #[allow(dead_code)]
-    fn for_each(&self, mut callback: impl FnMut(&T)) {
+    pub(crate) fn for_each(&self, mut callback: impl FnMut(&T)) {
         self.for_each_indexed(|_, value| callback(value));
     }
 }
@@ -335,7 +335,7 @@ impl LayoutState {
         &mut self,
         callbacks: &FfiLayoutFcCallbacks,
         node: *mut c_void,
-        resolved: crate::fc::abspos::FfiResolvedAnchorInsets,
+        resolved: crate::formatting_context::abspos::FfiResolvedAnchorInsets,
     ) {
         let index = self.layout_index(callbacks, node);
         let facts = self.style_facts.get(index);
@@ -604,67 +604,4 @@ pub extern "C" fn rust_layout_take_next_contained_abspos_child(
         }
         true
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn paged_store_allocates_and_gets_sparse_indices() {
-        let mut store = PagedStore::<u32>::default();
-        assert!(store.get(1).is_null());
-        let first = store.allocate(1, 11u32);
-        let distant = store.allocate(63, 22u32);
-        assert_eq!(store.get(1), first);
-        assert_eq!(store.get(63), distant);
-        assert!(store.get(2).is_null());
-        // SAFETY: Both pointers refer to initialized entries owned by store.
-        unsafe {
-            assert_eq!(*first, 11);
-            assert_eq!(*distant, 22);
-        }
-    }
-
-    #[test]
-    fn ensure_capacity_preallocates_only_the_top_level_table() {
-        let mut store = PagedStore::<u32>::default();
-        store.ensure_capacity(33);
-        assert_eq!(store.pages.len(), 3);
-        assert!(store.pages.iter().all(Option::is_none));
-        store.allocate(32, 7);
-        assert!(store.pages[2].is_some());
-        assert!(store.pages[0].is_none());
-    }
-
-    #[test]
-    fn allocation_grows_beyond_ensured_capacity() {
-        let mut store = PagedStore::default();
-        store.ensure_capacity(1);
-        store.allocate(80, 5u32);
-        assert_eq!(store.pages.len(), 6);
-        // SAFETY: The returned entry is initialized and owned by store.
-        unsafe {
-            assert_eq!(*store.get(80), 5);
-        }
-    }
-
-    #[test]
-    fn iteration_follows_page_and_entry_order() {
-        let mut store = PagedStore::default();
-        store.allocate(31, 31u32);
-        store.allocate(1, 1u32);
-        store.allocate(17, 17u32);
-        let mut values = Vec::new();
-        store.for_each(|value| values.push(*value));
-        assert_eq!(values, [1, 17, 31]);
-    }
-
-    #[test]
-    #[should_panic(expected = "assertion failed: entry.is_null()")]
-    fn duplicate_allocation_is_rejected() {
-        let mut store = PagedStore::default();
-        store.allocate(4, 1u32);
-        store.allocate(4, 2u32);
-    }
 }

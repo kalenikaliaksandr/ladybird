@@ -17,13 +17,15 @@ mod css_pixels;
 #[allow(dead_code)]
 mod display;
 
-#[allow(dead_code)]
-mod fc;
 mod ffi_stats;
+#[allow(dead_code)]
+mod formatting_context;
 mod geometry;
 mod layout_state;
 #[allow(dead_code)]
 mod style_facts;
+#[cfg(test)]
+mod tests;
 mod tree_builder;
 mod used_values;
 

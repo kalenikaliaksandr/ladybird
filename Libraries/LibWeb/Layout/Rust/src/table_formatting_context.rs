@@ -4,9 +4,781 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-mod borders;
-mod distribution;
-mod grid;
+pub(crate) mod borders {
+    /*
+     * Copyright (c) 2026-present, the Ladybird developers.
+     *
+     * SPDX-License-Identifier: BSD-2-Clause
+     */
+
+    use crate::css_pixels::CssPixels;
+    use crate::formatting_context::{FfiBorderData, FfiBorderDataWithElementKind, FfiBordersData};
+
+    pub(crate) const ELEMENT_CELL: u8 = 0;
+    pub(crate) const ELEMENT_ROW: u8 = 1;
+    pub(crate) const ELEMENT_ROW_GROUP: u8 = 2;
+    pub(crate) const ELEMENT_COLUMN: u8 = 3;
+    pub(crate) const ELEMENT_TABLE: u8 = 5;
+
+    pub(crate) const LINE_STYLE_NONE: u8 = 0;
+    pub(crate) const LINE_STYLE_HIDDEN: u8 = 1;
+    pub(crate) const LINE_STYLE_DOTTED: u8 = 2;
+    pub(crate) const LINE_STYLE_DASHED: u8 = 3;
+    pub(crate) const LINE_STYLE_SOLID: u8 = 4;
+    pub(crate) const LINE_STYLE_DOUBLE: u8 = 5;
+    const LINE_STYLE_GROOVE: u8 = 6;
+    const LINE_STYLE_RIDGE: u8 = 7;
+    const LINE_STYLE_INSET: u8 = 8;
+    const LINE_STYLE_OUTSET: u8 = 9;
+
+    fn line_style_score(line_style: u8) -> u8 {
+        match line_style {
+            LINE_STYLE_INSET => 0,
+            LINE_STYLE_GROOVE => 1,
+            LINE_STYLE_OUTSET => 2,
+            LINE_STYLE_RIDGE => 3,
+            LINE_STYLE_DOTTED => 4,
+            LINE_STYLE_DASHED => 5,
+            LINE_STYLE_SOLID => 6,
+            LINE_STYLE_DOUBLE => 7,
+            _ => panic!("line style has no conflict-resolution score"),
+        }
+    }
+
+    pub(crate) fn border_is_less_specific(incumbent: FfiBorderData, candidate: FfiBorderData) -> bool {
+        // Implements criteria for steps 1, 2 and 3 of border conflict resolution algorithm, as described in
+        // https://www.w3.org/TR/CSS22/tables.html#border-conflict-resolution.
+
+        // 1. Borders with the 'border-style' of 'hidden' take precedence over all other conflicting borders. Any border with this
+        //    value suppresses all borders at this location.
+        if incumbent.line_style == LINE_STYLE_HIDDEN {
+            return false;
+        }
+        if candidate.line_style == LINE_STYLE_HIDDEN {
+            return true;
+        }
+        // 2. Borders with a style of 'none' have the lowest priority. Only if the border properties of all the elements meeting
+        //    at this edge are 'none' will the border be omitted (but note that 'none' is the default value for the border style.)
+        if incumbent.line_style == LINE_STYLE_NONE {
+            return true;
+        }
+        if candidate.line_style == LINE_STYLE_NONE {
+            return false;
+        }
+        // 3. If none of the styles are 'hidden' and at least one of them is not 'none', then narrow borders are discarded in favor
+        //    of wider ones. If several have the same 'border-width' then styles are preferred in this order: 'double', 'solid',
+        //    'dashed', 'dotted', 'ridge', 'outset', 'groove', and the lowest: 'inset'.
+        if incumbent.width != candidate.width {
+            return incumbent.width < candidate.width;
+        }
+        line_style_score(incumbent.line_style) < line_style_score(candidate.line_style)
+    }
+
+    fn candidate_wins(candidate: FfiBorderData, incumbent: FfiBorderData) -> bool {
+        candidate.line_style != LINE_STYLE_NONE && border_is_less_specific(incumbent, candidate)
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct ElementBorders {
+        pub(crate) top: FfiBorderData,
+        pub(crate) right: FfiBorderData,
+        pub(crate) bottom: FfiBorderData,
+        pub(crate) left: FfiBorderData,
+    }
+
+    // Each segment stores the border that currently wins at one slot boundary of the table grid,
+    // together with the kind of element it came from. A value-initialized segment acts as a sentinel
+    // meaning "no border applied yet": since candidates with a line style of 'none' never replace an
+    // incumbent, a segment whose winner still has style 'none' received no visible contribution at all.
+
+    // Implements border conflict resolution, as described in
+    // https://www.w3.org/TR/CSS22/tables.html#border-conflict-resolution, with a "push" model over a
+    // grid of border line segments: each boundary between two grid slots is a single shared segment, so
+    // borders of adjacent elements collapse by construction instead of requiring neighbor lookups.
+    //
+    // Horizontal border lines run between (and around) rows: there are row_count + 1 of them, each with
+    // one segment per column. Vertical border lines run between (and around) columns: column_count + 1
+    // of them, each with one segment per row.
+    //
+    // Table parts must be applied in order of decreasing precedence — cells, rows, row groups, columns,
+    // column groups, and lastly the table — with parts of equal precedence applied leftmost/topmost
+    // first. A candidate border only replaces the current winner of a segment when it is strictly more
+    // specific (steps 1-3 of the border conflict resolution algorithm), so ties resolve towards the
+    // earlier-applied part, which implements step 4 without tracking element kinds or coordinates.
+    pub(crate) struct CollapsedBorderGrid {
+        horizontal_lines: Vec<Vec<FfiBorderDataWithElementKind>>,
+        vertical_lines: Vec<Vec<FfiBorderDataWithElementKind>>,
+    }
+
+    impl CollapsedBorderGrid {
+        pub(crate) fn new(row_count: usize, column_count: usize) -> Self {
+            Self {
+                horizontal_lines: vec![vec![FfiBorderDataWithElementKind::default(); column_count]; row_count + 1],
+                vertical_lines: vec![vec![FfiBorderDataWithElementKind::default(); row_count]; column_count + 1],
+            }
+        }
+
+        pub(crate) fn apply_borders(
+            &mut self,
+            borders: ElementBorders,
+            row_start: usize,
+            row_end: usize,
+            column_start: usize,
+            column_end: usize,
+            element_kind: u8,
+        ) {
+            Self::apply_to_segments(
+                &mut self.horizontal_lines[row_start],
+                column_start,
+                column_end,
+                borders.top,
+                element_kind,
+            );
+            Self::apply_to_segments(
+                &mut self.horizontal_lines[row_end],
+                column_start,
+                column_end,
+                borders.bottom,
+                element_kind,
+            );
+            Self::apply_to_segments(
+                &mut self.vertical_lines[column_start],
+                row_start,
+                row_end,
+                borders.left,
+                element_kind,
+            );
+            Self::apply_to_segments(
+                &mut self.vertical_lines[column_end],
+                row_start,
+                row_end,
+                borders.right,
+                element_kind,
+            );
+        }
+
+        pub(crate) fn hide_segments_inside_span(
+            &mut self,
+            row_start: usize,
+            row_end: usize,
+            column_start: usize,
+            column_end: usize,
+        ) {
+            // Segments strictly inside a spanning cell are not borders of any element; mark them as hidden
+            // so that borders of rows and columns crossing the span cannot win there.
+            let hidden = FfiBorderDataWithElementKind {
+                border_data: FfiBorderData {
+                    color: 0,
+                    line_style: LINE_STYLE_HIDDEN,
+                    width: CssPixels::default(),
+                },
+                element_kind: ELEMENT_CELL,
+            };
+            for row in row_start + 1..row_end {
+                for column in column_start..column_end {
+                    self.horizontal_lines[row][column] = hidden;
+                }
+            }
+            for column in column_start + 1..column_end {
+                for row in row_start..row_end {
+                    self.vertical_lines[column][row] = hidden;
+                }
+            }
+        }
+
+        pub(crate) fn resolve_for_cell(
+            &self,
+            row_start: usize,
+            row_end: usize,
+            column_start: usize,
+            column_end: usize,
+            own: ElementBorders,
+        ) -> FfiBordersData {
+            let harvest = |winner: FfiBorderDataWithElementKind, own_border: FfiBorderData| {
+                // A winner whose style is 'none' means every border meeting at this edge is 'none'; fall
+                // back to the cell's own (invisible) border so the stored winner matches the cell.
+                if winner.border_data.line_style == LINE_STYLE_NONE {
+                    FfiBorderDataWithElementKind {
+                        border_data: own_border,
+                        element_kind: ELEMENT_CELL,
+                    }
+                } else {
+                    winner
+                }
+            };
+            FfiBordersData {
+                top: harvest(
+                    Self::most_specific(&self.horizontal_lines[row_start], column_start, column_end),
+                    own.top,
+                ),
+                right: harvest(
+                    Self::most_specific(&self.vertical_lines[column_end], row_start, row_end),
+                    own.right,
+                ),
+                bottom: harvest(
+                    Self::most_specific(&self.horizontal_lines[row_end], column_start, column_end),
+                    own.bottom,
+                ),
+                left: harvest(
+                    Self::most_specific(&self.vertical_lines[column_start], row_start, row_end),
+                    own.left,
+                ),
+            }
+        }
+
+        fn apply_to_segments(
+            line: &mut [FfiBorderDataWithElementKind],
+            start: usize,
+            end: usize,
+            data: FfiBorderData,
+            element_kind: u8,
+        ) {
+            if data.line_style == LINE_STYLE_NONE {
+                return;
+            }
+            for segment in &mut line[start..end] {
+                if candidate_wins(data, segment.border_data) {
+                    *segment = FfiBorderDataWithElementKind {
+                        border_data: data,
+                        element_kind,
+                    };
+                }
+            }
+        }
+
+        fn most_specific(
+            line: &[FfiBorderDataWithElementKind],
+            start: usize,
+            end: usize,
+        ) -> FfiBorderDataWithElementKind {
+            let mut winner = line[start];
+            for segment in &line[start + 1..end] {
+                if candidate_wins(segment.border_data, winner.border_data) {
+                    winner = *segment;
+                }
+            }
+            winner
+        }
+    }
+}
+
+pub(crate) mod distribution {
+    /*
+     * Copyright (c) 2026-present, the Ladybird developers.
+     *
+     * SPDX-License-Identifier: BSD-2-Clause
+     */
+
+    use crate::css_pixels::CssPixels;
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub(crate) struct Column {
+        pub(crate) inline_offset: CssPixels,
+        pub(crate) min_size: CssPixels,
+        pub(crate) max_size: CssPixels,
+        pub(crate) used_inline_size: CssPixels,
+        pub(crate) has_intrinsic_percentage: bool,
+        pub(crate) intrinsic_percentage: f64,
+        // Store whether the column is constrained: https://www.w3.org/TR/css-tables-3/#constrainedness
+        pub(crate) is_constrained: bool,
+        // Store whether the column has originating cells, defined in https://www.w3.org/TR/css-tables-3/#terminology.
+        pub(crate) has_originating_cells: bool,
+    }
+
+    fn total_used(columns: &[Column]) -> CssPixels {
+        columns
+            .iter()
+            .fold(CssPixels::default(), |sum, column| sum + column.used_inline_size)
+    }
+
+    fn total_candidates(candidates: &[CssPixels]) -> CssPixels {
+        candidates
+            .iter()
+            .copied()
+            .fold(CssPixels::default(), std::ops::Add::add)
+    }
+
+    fn commit_candidates(columns: &mut [Column], candidates: &[CssPixels]) {
+        assert_eq!(columns.len(), candidates.len());
+        for (column, candidate) in columns.iter_mut().zip(candidates) {
+            column.used_inline_size = *candidate;
+        }
+    }
+
+    fn assign_linear_combination(columns: &mut [Column], candidates: &[CssPixels], available: CssPixels) {
+        let candidate_total = total_candidates(candidates);
+        let used_total = total_used(columns);
+        if candidate_total == used_total {
+            return;
+        }
+        let weight = (available - used_total).to_double() / (candidate_total - used_total).to_double();
+        for (column, candidate) in columns.iter_mut().zip(candidates) {
+            column.used_inline_size = CssPixels::nearest_value_for(
+                weight * candidate.to_double() + (1.0 - weight) * column.used_inline_size.to_double(),
+            );
+        }
+    }
+
+    fn distribute_proportionally(
+        columns: &mut [Column],
+        excess: CssPixels,
+        filter: impl Fn(&Column) -> bool,
+        base: impl Fn(&Column) -> CssPixels,
+    ) -> bool {
+        let mut found = false;
+        let mut total = CssPixels::default();
+        for column in columns.iter() {
+            if filter(column) {
+                total += base(column);
+                found = true;
+            }
+        }
+        if !found {
+            return false;
+        }
+        assert!(total > CssPixels::default());
+        for column in columns.iter_mut() {
+            if filter(column) {
+                column.used_inline_size +=
+                    CssPixels::nearest_value_for(excess.to_double() * base(column).to_double() / total.to_double());
+            }
+        }
+        true
+    }
+
+    fn distribute_equally(columns: &mut [Column], excess: CssPixels, filter: impl Fn(&Column) -> bool) -> bool {
+        let count = columns.iter().filter(|column| filter(column)).count();
+        if count == 0 {
+            return false;
+        }
+        for column in columns.iter_mut() {
+            if filter(column) {
+                column.used_inline_size += excess / count;
+            }
+        }
+        true
+    }
+
+    fn distribute_by_percentage(columns: &mut [Column], excess: CssPixels, filter: impl Fn(&Column) -> bool) -> bool {
+        let mut found = false;
+        let mut total = 0.0;
+        for column in columns.iter() {
+            if filter(column) {
+                found = true;
+                total += column.intrinsic_percentage;
+            }
+        }
+        if !found {
+            return false;
+        }
+        for column in columns.iter_mut() {
+            if filter(column) {
+                column.used_inline_size +=
+                    CssPixels::nearest_value_for(excess.to_double() * column.intrinsic_percentage / total);
+            }
+        }
+        true
+    }
+
+    fn distribute_excess_fixed(columns: &mut [Column], excess: CssPixels) {
+        // Implements the fixed mode for https://www.w3.org/TR/css-tables-3/#distributing-width-to-columns.
+
+        // If any columns have no specified inline size, distribute the excess inline size equally to them.
+        if distribute_equally(columns, excess, |column| {
+            !column.is_constrained && !column.has_intrinsic_percentage
+        }) {
+            return;
+        }
+        // Otherwise, distribute proportionally among columns with non-zero length sizes from the base assignment.
+        if distribute_proportionally(
+            columns,
+            excess,
+            |column| column.used_inline_size > CssPixels::default(),
+            |column| column.used_inline_size,
+        ) {
+            return;
+        }
+        // Otherwise, distribute proportionally among columns with non-zero percentage sizes from the base assignment.
+        if distribute_by_percentage(columns, excess, |column| column.intrinsic_percentage > 0.0) {
+            return;
+        }
+        // Otherwise, distribute the excess inline size equally to the zero-sized columns.
+        distribute_equally(columns, excess, |column| {
+            column.used_inline_size == CssPixels::default()
+        });
+    }
+
+    fn distribute_excess(columns: &mut [Column], available: CssPixels, fixed: bool) {
+        // Implements https://www.w3.org/TR/css-tables-3/#distributing-width-to-columns
+        let used = total_used(columns);
+        if used >= available {
+            return;
+        }
+        let mut excess = available - used;
+        if excess == CssPixels::default() {
+            return;
+        }
+        if fixed {
+            distribute_excess_fixed(columns, excess);
+            return;
+        }
+
+        // 1. If there are non-constrained columns that have originating cells with intrinsic percentage width of 0% and with nonzero
+        //    max-content width (aka the columns allowed to grow by this rule), the distributed widths of the columns allowed to grow
+        //    by this rule are increased in proportion to max-content width so the total increase adds to the excess width.
+        if distribute_proportionally(
+            columns,
+            excess,
+            |column| {
+                !column.is_constrained
+                    && column.has_originating_cells
+                    && column.intrinsic_percentage == 0.0
+                    && column.max_size > CssPixels::default()
+            },
+            |column| column.max_size,
+        ) {
+            excess = available - total_used(columns);
+        }
+        if excess == CssPixels::default() {
+            return;
+        }
+        // 2. Otherwise, if there are non-constrained columns that have originating cells with intrinsic percentage width of 0% (aka the columns
+        //    allowed to grow by this rule, which thanks to the previous rule must have zero max-content width), the distributed widths of the
+        //    columns allowed to grow by this rule are increased by equal amounts so the total increase adds to the excess width.
+        if distribute_equally(columns, excess, |column| {
+            !column.is_constrained && column.has_originating_cells && column.intrinsic_percentage == 0.0
+        }) {
+            excess = available - total_used(columns);
+        }
+        if excess == CssPixels::default() {
+            return;
+        }
+        // 3. Otherwise, if there are constrained columns with intrinsic percentage width of 0% and with nonzero max-content width
+        //    (aka the columns allowed to grow by this rule, which, due to other rules, must have originating cells), the distributed widths of the
+        //    columns allowed to grow by this rule are increased in proportion to max-content width so the total increase adds to the excess width.
+        if distribute_proportionally(
+            columns,
+            excess,
+            |column| {
+                column.is_constrained && column.intrinsic_percentage == 0.0 && column.max_size > CssPixels::default()
+            },
+            |column| column.max_size,
+        ) {
+            excess = available - total_used(columns);
+        }
+        if excess == CssPixels::default() {
+            return;
+        }
+        // 4. Otherwise, if there are columns with intrinsic percentage width greater than 0% (aka the columns allowed to grow by this rule,
+        //    which, due to other rules, must have originating cells), the distributed widths of the columns allowed to grow by this rule are
+        //    increased in proportion to intrinsic percentage width so the total increase adds to the excess width.
+        if distribute_by_percentage(columns, excess, |column| column.intrinsic_percentage > 0.0) {
+            excess = available - total_used(columns);
+        }
+        if excess == CssPixels::default() {
+            return;
+        }
+        // 5. Otherwise, if there is any such column, the distributed widths of all columns that have originating cells are increased by equal amounts
+        //    so the total increase adds to the excess width.
+        if distribute_equally(columns, excess, |column| column.has_originating_cells) {
+            excess = available - total_used(columns);
+        }
+        if excess == CssPixels::default() {
+            return;
+        }
+        // 6. Otherwise, the distributed widths of all columns are increased by equal amounts so the total increase adds to the excess width.
+        distribute_equally(columns, excess, |_| true);
+    }
+
+    pub(crate) fn distribute_inline_size(columns: &mut [Column], available: CssPixels, fixed: bool) {
+        // Implements https://www.w3.org/TR/css-tables-3/#width-distribution-algorithm
+
+        let mut candidates = vec![CssPixels::default(); columns.len()];
+        // 1. The min-content sizing guess assigns every column its min-content inline size.
+        for (index, column) in columns.iter_mut().enumerate() {
+            // In fixed mode, the min-content width of percent-columns and auto-columns is considered to be zero:
+            // https://www.w3.org/TR/css-tables-3/#width-distribution-in-fixed-mode
+            if fixed && !column.is_constrained {
+                continue;
+            }
+            column.used_inline_size = column.min_size;
+            candidates[index] = column.min_size;
+        }
+        // 2. The min-content-percentage sizing-guess is the set of column width assignments where:
+        //    - each percent-column is assigned the larger of:
+        //      - its intrinsic percentage width times the assignable width and
+        //      - its min-content width.
+        //    - all other columns are assigned their min-content width.
+        for (candidate, column) in candidates.iter_mut().zip(columns.iter()) {
+            if column.has_intrinsic_percentage {
+                *candidate = column.min_size.max(CssPixels::nearest_value_for(
+                    column.intrinsic_percentage / 100.0 * available.to_double(),
+                ));
+            }
+        }
+        // If the assignable inline size is no larger than the max-content sizing guess, use the linear combination
+        // of the consecutive sizing guesses whose sums bound the available inline size.
+        if available < total_candidates(&candidates) {
+            assign_linear_combination(columns, &candidates, available);
+            return;
+        }
+        commit_candidates(columns, &candidates);
+
+        // 3. The min-content-specified sizing-guess is the set of column width assignments where:
+        //    - each percent-column is assigned the larger of:
+        //      - its intrinsic percentage width times the assignable width and
+        //      - its min-content width
+        //    - any other column that is constrained is assigned its max-content width
+        //    - all other columns are assigned their min-content width.
+        for (candidate, column) in candidates.iter_mut().zip(columns.iter()) {
+            if column.is_constrained {
+                *candidate = column.max_size;
+            }
+        }
+        if available < total_candidates(&candidates) {
+            assign_linear_combination(columns, &candidates, available);
+            return;
+        }
+        commit_candidates(columns, &candidates);
+
+        // 4. The max-content sizing-guess is the set of column width assignments where:
+        //    - each percent-column is assigned the larger of:
+        //      - its intrinsic percentage width times the assignable width and
+        //      - its min-content width
+        //    - all other columns are assigned their max-content width.
+        for (candidate, column) in candidates.iter_mut().zip(columns.iter()) {
+            if !column.has_intrinsic_percentage {
+                *candidate = column.max_size;
+            }
+        }
+        if available < total_candidates(&candidates) {
+            assign_linear_combination(columns, &candidates, available);
+            return;
+        }
+        commit_candidates(columns, &candidates);
+        // Otherwise, start from the max-content sizing guess and distribute the excess inline size to the columns.
+        distribute_excess(columns, available, fixed);
+    }
+}
+
+mod grid {
+    /*
+     * Copyright (c) 2026-present, the Ladybird developers.
+     *
+     * SPDX-License-Identifier: BSD-2-Clause
+     */
+
+    use super::{Node, TableTree};
+    use crate::css_pixels::CssPixels;
+    use std::collections::HashSet;
+
+    #[derive(Clone, Copy)]
+    pub(crate) struct Cell {
+        pub(crate) box_: Node,
+        pub(crate) column_index: usize,
+        pub(crate) row_index: usize,
+        pub(crate) column_span: usize,
+        pub(crate) row_span: usize,
+        pub(crate) baseline: CssPixels,
+        pub(crate) outer_min_inline_size: CssPixels,
+        pub(crate) outer_max_inline_size: CssPixels,
+        pub(crate) outer_min_block_size: CssPixels,
+        pub(crate) outer_max_block_size: CssPixels,
+    }
+
+    pub(crate) struct Row {
+        pub(crate) box_: Node,
+        pub(crate) base_block_size: CssPixels,
+        pub(crate) reference_block_size: CssPixels,
+        pub(crate) final_block_size: CssPixels,
+        pub(crate) baseline: CssPixels,
+        pub(crate) min_size: CssPixels,
+        pub(crate) max_size: CssPixels,
+        pub(crate) is_collapsed: bool,
+        pub(crate) has_intrinsic_percentage: bool,
+        pub(crate) intrinsic_percentage: f64,
+        pub(crate) is_constrained: bool,
+    }
+
+    impl Row {
+        fn new(box_: Node, is_collapsed: bool) -> Self {
+            Self {
+                box_,
+                base_block_size: CssPixels::default(),
+                reference_block_size: CssPixels::default(),
+                final_block_size: CssPixels::default(),
+                baseline: CssPixels::default(),
+                min_size: CssPixels::default(),
+                max_size: CssPixels::default(),
+                is_collapsed,
+                has_intrinsic_percentage: false,
+                intrinsic_percentage: 0.0,
+                is_constrained: false,
+            }
+        }
+    }
+
+    pub(crate) struct TableGrid {
+        pub(crate) column_count: usize,
+        pub(crate) cells: Vec<Cell>,
+        pub(crate) rows: Vec<Row>,
+    }
+
+    fn matching_children<T: TableTree>(
+        tree: &mut T,
+        parent: Node,
+        predicate: impl Fn(crate::box_facts::FfiLayoutBoxFacts) -> bool,
+    ) -> Vec<Node> {
+        let mut result = Vec::new();
+        let mut child = tree.first_child(parent);
+        while !child.is_null() {
+            let facts = tree.box_facts(child);
+            if facts.is_box && predicate(facts) {
+                result.push(child);
+            }
+            child = tree.next_sibling(child);
+        }
+        result
+    }
+
+    fn count_columns_in_subtree<T: TableTree>(tree: &mut T, root: Node) -> usize {
+        let mut count = 0usize;
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            let mut child = tree.first_child(node);
+            let mut children = Vec::new();
+            while !child.is_null() {
+                children.push(child);
+                child = tree.next_sibling(child);
+            }
+            for child in children.into_iter().rev() {
+                let facts = tree.box_facts(child);
+                if facts.is_box && facts.is_table_column {
+                    count = count.saturating_add(tree.table_facts(child).column_span as usize);
+                }
+                stack.push(child);
+            }
+        }
+        count
+    }
+
+    pub(crate) fn calculate<T: TableTree>(tree: &mut T, table: Node) -> TableGrid {
+        let mut cells = Vec::new();
+        let mut rows = Vec::new();
+        let mut occupancy = HashSet::new();
+        let mut column_count = 0usize;
+        let mut row_count = 0usize;
+        let mut current_row = 0usize;
+
+        for column_group in matching_children(tree, table, |facts| facts.is_table_column_group) {
+            column_count = column_count.saturating_add(count_columns_in_subtree(tree, column_group));
+        }
+
+        let process_row = |tree: &mut T,
+                           row: Node,
+                           row_group: Option<Node>,
+                           cells: &mut Vec<Cell>,
+                           rows: &mut Vec<Row>,
+                           occupancy: &mut HashSet<(usize, usize)>,
+                           column_count: &mut usize,
+                           row_count: &mut usize,
+                           current_row: &mut usize| {
+            if *row_count == *current_row {
+                *row_count += 1;
+            }
+            let mut current_column = 0usize;
+            for cell_box in matching_children(tree, row, |facts| facts.is_table_cell) {
+                while current_column < *column_count && occupancy.contains(&(current_column, *current_row)) {
+                    current_column += 1;
+                }
+                if current_column == *column_count {
+                    *column_count += 1;
+                }
+
+                let table_facts = tree.table_facts(cell_box);
+                let column_span = table_facts.cell_column_span;
+                let mut row_span = table_facts.cell_row_span;
+                if row_span == 0 {
+                    // Downward-growing cells remain deliberately unimplemented,
+                    // matching TableGrid.cpp.
+                    row_span = 1;
+                }
+                *column_count = (*column_count).max(current_column + column_span);
+                *row_count = (*row_count).max(*current_row + row_span);
+                for row_index in *current_row..*current_row + row_span {
+                    for column_index in current_column..current_column + column_span {
+                        occupancy.insert((column_index, row_index));
+                    }
+                }
+                cells.push(Cell {
+                    box_: cell_box,
+                    column_index: current_column,
+                    row_index: *current_row,
+                    column_span,
+                    row_span,
+                    baseline: CssPixels::default(),
+                    outer_min_inline_size: CssPixels::default(),
+                    outer_max_inline_size: CssPixels::default(),
+                    outer_min_block_size: CssPixels::default(),
+                    outer_max_block_size: CssPixels::default(),
+                });
+                current_column += column_span;
+            }
+
+            // CSS::Visibility::Collapse is pinned to zero in
+            // LayoutRustBridge.cpp.
+            let row_collapsed = tree.style_facts(row).visibility == 0;
+            let group_collapsed = row_group.is_some_and(|group| tree.style_facts(group).visibility == 0);
+            rows.push(Row::new(row, row_collapsed || group_collapsed));
+            *current_row += 1;
+        };
+
+        let mut child = tree.first_child(table);
+        while !child.is_null() {
+            let facts = tree.box_facts(child);
+            if facts.is_box && (facts.is_table_row_group || facts.is_table_header_group || facts.is_table_footer_group)
+            {
+                for row in matching_children(tree, child, |row_facts| row_facts.is_table_row) {
+                    process_row(
+                        tree,
+                        row,
+                        Some(child),
+                        &mut cells,
+                        &mut rows,
+                        &mut occupancy,
+                        &mut column_count,
+                        &mut row_count,
+                        &mut current_row,
+                    );
+                }
+            } else if facts.is_box && facts.is_table_row {
+                process_row(
+                    tree,
+                    child,
+                    None,
+                    &mut cells,
+                    &mut rows,
+                    &mut occupancy,
+                    &mut column_count,
+                    &mut row_count,
+                    &mut current_row,
+                );
+            }
+            child = tree.next_sibling(child);
+        }
+
+        for cell in &mut cells {
+            cell.row_span = cell.row_span.min(rows.len() - cell.row_index);
+            cell.column_span = cell.column_span.min(column_count - cell.column_index);
+        }
+
+        TableGrid {
+            column_count,
+            cells,
+            rows,
+        }
+    }
+}
 
 use super::sizing::SizingContext;
 use super::{
