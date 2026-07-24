@@ -814,7 +814,6 @@ set(SOURCES
     Layout/CheckBox.cpp
     Layout/FieldSetBox.cpp
     Layout/FormattingContext.cpp
-    Layout/GridFormattingContext.cpp
     Layout/ImageBox.cpp
     Layout/ImageProvider.cpp
     Layout/InlineFormattingContext.cpp

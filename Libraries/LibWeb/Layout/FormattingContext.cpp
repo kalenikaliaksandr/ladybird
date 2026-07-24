@@ -21,7 +21,6 @@
 #include <LibWeb/Layout/BlockFormattingContext.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/FormattingContext.h>
-#include <LibWeb/Layout/GridFormattingContext.h>
 #include <LibWeb/Layout/InlineNode.h>
 #include <LibWeb/Layout/ListItemMarkerBox.h>
 #include <LibWeb/Layout/ReplacedBox.h>
@@ -527,7 +526,7 @@ OwnPtr<FormattingContext> FormattingContext::create_independent_formatting_conte
     case Type::Flex:
         VERIFY_NOT_REACHED();
     case Type::Grid:
-        return make<GridFormattingContext>(state, layout_mode, child_box, parent);
+        VERIFY_NOT_REACHED();
     case Type::Table:
         VERIFY_NOT_REACHED();
     case Type::ReplacedWithChildren:
