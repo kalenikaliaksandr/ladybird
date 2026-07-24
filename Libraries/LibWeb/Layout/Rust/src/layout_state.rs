@@ -5,8 +5,11 @@
  */
 
 use crate::abort_on_panic;
+use crate::box_facts::FfiLayoutBoxFacts;
+use crate::fc::{FfiLayoutFcCallbacks, FfiTableBoxFacts};
 use crate::ffi_stats::{FfiOp, bump};
 use crate::geometry::LogicalRect;
+use crate::style_facts::FfiStyleFacts;
 use crate::used_values::UsedValuesCore;
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -64,9 +67,14 @@ impl<T> Drop for ArenaChunk<T> {
     }
 }
 
-#[derive(Default)]
 struct BumpArena<T> {
     chunks: Vec<ArenaChunk<T>>,
+}
+
+impl<T> Default for BumpArena<T> {
+    fn default() -> Self {
+        Self { chunks: Vec::new() }
+    }
 }
 
 impl<T> BumpArena<T> {
@@ -90,10 +98,18 @@ impl<T> Default for Page<T> {
     }
 }
 
-#[derive(Default)]
 struct PagedStore<T> {
     pages: Vec<Option<Box<Page<T>>>>,
     arena: BumpArena<T>,
+}
+
+impl<T> Default for PagedStore<T> {
+    fn default() -> Self {
+        Self {
+            pages: Vec::new(),
+            arena: BumpArena::default(),
+        }
+    }
 }
 
 impl<T> PagedStore<T> {
@@ -182,12 +198,92 @@ pub struct FfiContainedAbsposChild {
 }
 
 #[derive(Default)]
-struct LayoutState {
+#[allow(dead_code)]
+pub(crate) struct LayoutState {
     used_values: PagedStore<UsedValuesCore>,
     contained_abspos_children: HashMap<usize, Vec<ContainedAbsposChild>>,
+    style_facts: PagedStore<FfiStyleFacts>,
+    box_facts: PagedStore<FfiLayoutBoxFacts>,
+    table_facts: PagedStore<FfiTableBoxFacts>,
+    layout_indices_by_node: HashMap<usize, u32>,
 }
 
-fn state_mut(state: *mut c_void) -> &'static mut LayoutState {
+impl Drop for LayoutState {
+    fn drop(&mut self) {
+        self.style_facts.for_each(|facts| facts.release_calc_handles());
+    }
+}
+
+#[allow(dead_code)]
+impl LayoutState {
+    fn layout_index(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> u32 {
+        if let Some(index) = self.layout_indices_by_node.get(&(node as usize)) {
+            return *index;
+        }
+        let facts = self.build_box_facts(callbacks, node);
+        facts.layout_index
+    }
+
+    fn build_box_facts(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> FfiLayoutBoxFacts {
+        bump(FfiOp::NavigationCallback);
+        // SAFETY: The callback table and node are supplied by the live C++
+        // formatting-context shim and remain valid for this layout pass.
+        let facts = unsafe { (callbacks.build_box_facts)(callbacks.context, node) };
+        let index = facts.layout_index;
+        self.layout_indices_by_node.insert(node as usize, index);
+        let existing = self.box_facts.get(index);
+        if existing.is_null() {
+            self.box_facts.allocate(index, facts);
+            facts
+        } else {
+            bump(FfiOp::BoxFactsCacheHit);
+            // SAFETY: Non-null store entries remain valid for the state.
+            unsafe { *existing }
+        }
+    }
+
+    pub(crate) fn box_facts(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> FfiLayoutBoxFacts {
+        if let Some(index) = self.layout_indices_by_node.get(&(node as usize)) {
+            let facts = self.box_facts.get(*index);
+            if !facts.is_null() {
+                bump(FfiOp::BoxFactsCacheHit);
+                // SAFETY: Non-null store entries remain valid for the state.
+                return unsafe { *facts };
+            }
+        }
+        self.build_box_facts(callbacks, node)
+    }
+
+    pub(crate) fn style_facts(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> FfiStyleFacts {
+        let index = self.layout_index(callbacks, node);
+        let facts = self.style_facts.get(index);
+        if !facts.is_null() {
+            bump(FfiOp::StyleFactsCacheHit);
+            // SAFETY: Non-null store entries remain valid for the state.
+            return unsafe { *facts };
+        }
+        // SAFETY: See build_box_facts().
+        let facts = unsafe { (callbacks.build_style_facts)(callbacks.context, node) };
+        self.style_facts.allocate(index, facts);
+        facts
+    }
+
+    pub(crate) fn table_facts(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> FfiTableBoxFacts {
+        let index = self.layout_index(callbacks, node);
+        let facts = self.table_facts.get(index);
+        if !facts.is_null() {
+            bump(FfiOp::TableFactsCacheHit);
+            // SAFETY: Non-null store entries remain valid for the state.
+            return unsafe { *facts };
+        }
+        // SAFETY: See build_box_facts().
+        let facts = unsafe { (callbacks.build_table_box_facts)(callbacks.context, node) };
+        self.table_facts.allocate(index, facts);
+        facts
+    }
+}
+
+pub(crate) fn state_mut(state: *mut c_void) -> &'static mut LayoutState {
     assert!(!state.is_null());
     // SAFETY: State pointers are created by rust_layout_state_create, remain
     // exclusively owned by the C++ LayoutState wrapper, and are destroyed

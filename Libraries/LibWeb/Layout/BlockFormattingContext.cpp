@@ -27,7 +27,6 @@
 #include <LibWeb/Layout/ListItemMarkerBox.h>
 #include <LibWeb/Layout/ReplacedBox.h>
 #include <LibWeb/Layout/SVGSVGBox.h>
-#include <LibWeb/Layout/TableFormattingContext.h>
 #include <LibWeb/Layout/TableWrapper.h>
 #include <LibWeb/Layout/Viewport.h>
 
@@ -1174,7 +1173,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     }
 
     auto* table_formatting_context = independent_formatting_context && independent_formatting_context->type() == Type::Table
-        ? static_cast<TableFormattingContext*>(independent_formatting_context.ptr())
+        ? independent_formatting_context.ptr()
         : nullptr;
 
     Optional<CSSPixelPoint> pending_position;

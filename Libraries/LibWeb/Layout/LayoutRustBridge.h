@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <AK/HashMap.h>
+#include <AK/OwnPtr.h>
 #include <AK/Variant.h>
 #include <LibWeb/CSS/Enums.h>
 #include <LibWeb/CSS/PercentageOr.h>
@@ -23,9 +25,18 @@ class Size;
 
 namespace Web::Layout {
 
+struct LayoutInput;
+
 class LayoutRustBridge {
 public:
+    explicit LayoutRustBridge(FormattingContext&);
+    ~LayoutRustBridge();
+
     [[nodiscard]] RustFFI::FfiLayoutNavCallbacks navigation_callbacks();
+    [[nodiscard]] RustFFI::FfiLayoutFcCallbacks formatting_context_callbacks();
+
+    [[nodiscard]] static RustFFI::FfiLayoutInput to_ffi(LayoutInput const&);
+    [[nodiscard]] static LayoutInput from_ffi(RustFFI::FfiLayoutInput const&);
 
 private:
     [[nodiscard]] Node const* parent(Node const&) const;
@@ -33,6 +44,9 @@ private:
     [[nodiscard]] Node const* next_sibling(Node const&) const;
     [[nodiscard]] Node const* previous_sibling(Node const&) const;
     [[nodiscard]] Box const* containing_block(Node const&) const;
+
+    FormattingContext& m_formatting_context;
+    HashMap<Box const*, OwnPtr<FormattingContext>> m_child_contexts;
 };
 
 struct StyleVerticalAlignFacts {
@@ -48,6 +62,7 @@ struct StyleVerticalAlignFacts {
 
 [[nodiscard]] RustFFI::FfiStyleFacts build_style_facts(NodeWithStyle const&);
 [[nodiscard]] RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const&);
+[[nodiscard]] RustFFI::FfiTableBoxFacts build_table_box_facts(NodeWithStyle const&);
 void release_style_facts(RustFFI::FfiStyleFacts const&);
 void verify_style_calc_handles_balanced();
 

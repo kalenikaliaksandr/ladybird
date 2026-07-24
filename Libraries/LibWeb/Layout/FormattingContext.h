@@ -33,6 +33,7 @@ class FormattingContext {
 #if FORMATTING_CONTEXT_TRACE_DEBUG
     friend class FormattingContextTracer;
 #endif
+    friend class LayoutRustBridge;
 
 public:
     virtual ~FormattingContext();
@@ -143,6 +144,9 @@ public:
         AvailableSpace available_space);
 
     virtual void parent_context_did_dimension_child_root_box() { }
+    virtual void set_pending_table_box_content_offset_in_wrapper(LogicalOffset) { VERIFY_NOT_REACHED(); }
+    virtual LogicalOffset pending_table_box_content_offset_in_wrapper() const { VERIFY_NOT_REACHED(); }
+    virtual void run_until_table_inline_size_calculation(LayoutInput const& input, bool) { run(input); }
 
     void place_child(Box const& child, CSSPixelPoint content_offset);
 

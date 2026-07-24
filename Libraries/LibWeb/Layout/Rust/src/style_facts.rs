@@ -37,6 +37,7 @@ pub struct FfiSizeValue {
     pub px: CssPixels,
     pub fraction: f64,
     pub calc: *const c_void,
+    pub contains_percentage: bool,
 }
 
 impl FfiSizeValue {
@@ -47,6 +48,7 @@ impl FfiSizeValue {
             px: CssPixels::default(),
             fraction: 0.0,
             calc: std::ptr::null(),
+            contains_percentage: false,
         }
     }
 
@@ -65,6 +67,105 @@ impl FfiSizeValue {
             ..Self::with_kind(FfiSizeKind::Percentage)
         }
     }
+
+    pub(crate) fn release_calc_handle(self) {
+        if !self.calc.is_null() {
+            // SAFETY: Every non-null handle in a style snapshot was retained
+            // by LayoutRustBridge and is released exactly once when the
+            // per-pass LayoutState cache is dropped.
+            unsafe {
+                ladybird_layout_release_calc_handle(self.calc);
+            }
+        }
+    }
+
+    pub(crate) fn kind(self) -> FfiSizeKind {
+        assert!(self.kind <= FfiSizeKind::None_ as u8);
+        // SAFETY: The range check above covers every repr(u8) variant.
+        unsafe { std::mem::transmute(self.kind) }
+    }
+
+    pub(crate) fn is_auto(self) -> bool {
+        self.kind() == FfiSizeKind::Auto
+    }
+
+    pub(crate) fn is_length(self) -> bool {
+        self.kind() == FfiSizeKind::Px
+    }
+
+    pub(crate) fn is_percentage(self) -> bool {
+        self.kind() == FfiSizeKind::Percentage
+    }
+
+    pub(crate) fn is_length_percentage(self) -> bool {
+        matches!(
+            self.kind(),
+            FfiSizeKind::Px | FfiSizeKind::Percentage | FfiSizeKind::Calc
+        )
+    }
+
+    pub(crate) fn is_min_content(self) -> bool {
+        self.kind() == FfiSizeKind::MinContent
+    }
+
+    pub(crate) fn is_max_content(self) -> bool {
+        self.kind() == FfiSizeKind::MaxContent
+    }
+
+    pub(crate) fn is_fit_content(self) -> bool {
+        self.kind() == FfiSizeKind::FitContent
+    }
+
+    pub(crate) fn is_none(self) -> bool {
+        self.kind() == FfiSizeKind::None_
+    }
+
+    pub(crate) fn to_px(self, reference: CssPixels) -> CssPixels {
+        match self.kind() {
+            FfiSizeKind::Px => self.px,
+            FfiSizeKind::Percentage => truncated_css_pixels(reference.to_double() * self.fraction),
+            FfiSizeKind::Calc => resolve_calc(self.calc, reference),
+            FfiSizeKind::FitContent if !self.calc.is_null() => resolve_calc(self.calc, reference),
+            FfiSizeKind::FitContent if self.contains_percentage => {
+                truncated_css_pixels(reference.to_double() * self.fraction)
+            }
+            FfiSizeKind::FitContent => self.px,
+            FfiSizeKind::Auto | FfiSizeKind::MinContent | FfiSizeKind::MaxContent | FfiSizeKind::None_ => {
+                CssPixels::default()
+            }
+        }
+    }
+}
+
+fn truncated_css_pixels(value: f64) -> CssPixels {
+    if value.is_nan() {
+        return CssPixels::default();
+    }
+    let raw = (value * 64.0).trunc();
+    CssPixels::from_raw(raw.clamp(i32::MIN as f64, i32::MAX as f64) as i32)
+}
+
+fn resolve_calc(calc: *const c_void, percentage_basis: CssPixels) -> CssPixels {
+    assert!(!calc.is_null());
+    // Pinned to C++ LengthUnit::Px; LayoutRustBridge.cpp static-asserts it.
+    const LENGTH_UNIT_PX: u8 = 29;
+    let context = CssFfiCalcResolutionContext {
+        basis_kind: 3,
+        basis_value: percentage_basis.to_double(),
+        basis_unit: LENGTH_UNIT_PX,
+        length_resolution_context: std::ptr::null(),
+        callback_context: std::ptr::null_mut(),
+        resolve_non_math_function: no_non_math_function,
+        resolve_channel_keyword: no_channel_keyword,
+        random_base_value: no_random_base_value,
+        absolutize_random_sharing: no_absolutized_random_sharing,
+        resolve_length: no_fallback_length,
+    };
+    // SAFETY: The handle is retained by this state and the context contains
+    // the same no-host-callback setup used by the Phase B parity hook.
+    let result = unsafe { rust_calc_resolve(calc, &raw const context, true) };
+    assert!(result.resolved);
+    CssPixels::nearest_value_for(result.value)
 }
 
 /// Snapshot of computed values consumed by layout formatting contexts.
@@ -188,6 +289,49 @@ pub struct FfiStyleFacts {
     pub text_decoration_style: u8,
 }
 
+impl FfiStyleFacts {
+    pub(crate) fn release_calc_handles(self) {
+        for value in [
+            self.width,
+            self.height,
+            self.min_width,
+            self.min_height,
+            self.max_width,
+            self.max_height,
+            self.margin_top,
+            self.margin_right,
+            self.margin_bottom,
+            self.margin_left,
+            self.padding_top,
+            self.padding_right,
+            self.padding_bottom,
+            self.padding_left,
+            self.inset_top,
+            self.inset_right,
+            self.inset_bottom,
+            self.inset_left,
+            self.vertical_align_value,
+            self.flex_basis,
+            self.row_gap,
+            self.column_gap,
+            self.column_width,
+            self.text_indent,
+            self.x,
+            self.y,
+        ] {
+            value.release_calc_handle();
+        }
+    }
+}
+
+#[cfg(not(test))]
+unsafe extern "C" {
+    fn ladybird_layout_release_calc_handle(handle: *const c_void);
+}
+
+#[cfg(test)]
+unsafe fn ladybird_layout_release_calc_handle(_handle: *const c_void) {}
+
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct CssFfiNumericType {
@@ -266,22 +410,7 @@ unsafe extern "C" fn no_fallback_length(_context: *mut c_void, _value: f64, _uni
 pub extern "C" fn rust_layout_resolve_calc_handle_for_parity(calc: *const c_void, percentage_basis_raw: i32) -> i32 {
     abort_on_panic(|| {
         // Pinned to C++ LengthUnit::Px; LayoutRustBridge.cpp static-asserts it.
-        const LENGTH_UNIT_PX: u8 = 29;
-        let context = CssFfiCalcResolutionContext {
-            basis_kind: 3,
-            basis_value: CssPixels::from_raw(percentage_basis_raw).to_double(),
-            basis_unit: LENGTH_UNIT_PX,
-            length_resolution_context: std::ptr::null(),
-            callback_context: std::ptr::null_mut(),
-            resolve_non_math_function: no_non_math_function,
-            resolve_channel_keyword: no_channel_keyword,
-            random_base_value: no_random_base_value,
-            absolutize_random_sharing: no_absolutized_random_sharing,
-            resolve_length: no_fallback_length,
-        };
-        let result = unsafe { rust_calc_resolve(calc, &raw const context, true) };
-        assert!(result.resolved);
-        CssPixels::nearest_value_for(result.value).raw_value()
+        resolve_calc(calc, CssPixels::from_raw(percentage_basis_raw)).raw_value()
     })
 }
 

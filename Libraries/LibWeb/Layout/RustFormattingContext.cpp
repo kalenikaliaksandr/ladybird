@@ -20,30 +20,84 @@ static_assert(to_underlying(FormattingContext::Type::AbsposReplay) == to_underly
 static_assert(to_underlying(FormattingContext::Type::InternalReplaced) == to_underlying(RustFFI::FfiFormattingContextType::InternalReplaced));
 static_assert(to_underlying(FormattingContext::Type::InternalDummy) == to_underlying(RustFFI::FfiFormattingContextType::InternalDummy));
 
-RustFormattingContext::RustFormattingContext(Type type, LayoutMode layout_mode, LayoutState& state, Box const& box, FormattingContext* parent, void* rust_context)
+RustFormattingContext::RustFormattingContext(Type type, LayoutMode layout_mode, LayoutState& state, Box const& box, FormattingContext* parent)
     : FormattingContext(type, layout_mode, state, box, parent)
-    , m_rust_context(rust_context)
+    , m_bridge(*this)
 {
+    auto callbacks = m_bridge.formatting_context_callbacks();
+    m_rust_context = RustFFI::rust_layout_fc_create(
+        state.rust_state_handle(),
+        const_cast<Box*>(&box),
+        to_underlying(type),
+        to_underlying(layout_mode),
+        &callbacks);
+    VERIFY(m_rust_context);
 }
 
-RustFormattingContext::~RustFormattingContext() = default;
+RustFormattingContext::~RustFormattingContext()
+{
+    RustFFI::rust_layout_fc_destroy(m_rust_context);
+}
 
-void RustFormattingContext::run(LayoutInput const&)
+void RustFormattingContext::run(LayoutInput const& input)
 {
     VERIFY(m_rust_context);
-    VERIFY_NOT_REACHED();
+    RustFFI::rust_layout_fc_run(m_rust_context, LayoutRustBridge::to_ffi(input));
 }
 
 CSSPixels RustFormattingContext::automatic_content_inline_size() const
 {
     VERIFY(m_rust_context);
-    VERIFY_NOT_REACHED();
+    return CSSPixels::from_raw(RustFFI::rust_layout_fc_automatic_content_inline_size(m_rust_context));
 }
 
 CSSPixels RustFormattingContext::automatic_content_block_size() const
 {
     VERIFY(m_rust_context);
-    VERIFY_NOT_REACHED();
+    return CSSPixels::from_raw(RustFFI::rust_layout_fc_automatic_content_block_size(m_rust_context));
+}
+
+void RustFormattingContext::parent_context_did_dimension_child_root_box()
+{
+    if (m_layout_mode != LayoutMode::Normal)
+        return;
+
+    context_box().for_each_in_subtree_of_type<Box const>([&](Layout::Box const& box) {
+        if (box.is_absolutely_positioned()) {
+            // Keep the table context's existing zero-static-position behavior
+            // until absolute positioning itself moves to Rust.
+            register_contained_abspos_child(box, {});
+        }
+
+        if (formatting_context_type_created_by_box(box).has_value())
+            return TraversalDecision::SkipChildrenAndContinue;
+        return TraversalDecision::Continue;
+    });
+
+    layout_absolutely_positioned_children();
+}
+
+void RustFormattingContext::set_pending_table_box_content_offset_in_wrapper(LogicalOffset offset)
+{
+    RustFFI::rust_layout_fc_set_table_box_content_offset_in_wrapper(m_rust_context, {
+                                                                                       .inline_offset = offset.inline_offset.raw_value(),
+                                                                                       .block_offset = offset.block_offset.raw_value(),
+                                                                                   });
+}
+
+LogicalOffset RustFormattingContext::pending_table_box_content_offset_in_wrapper() const
+{
+    auto offset = RustFFI::rust_layout_fc_table_box_content_offset_in_wrapper(m_rust_context);
+    return {
+        CSSPixels::from_raw(offset.inline_offset),
+        CSSPixels::from_raw(offset.block_offset),
+    };
+}
+
+void RustFormattingContext::run_until_table_inline_size_calculation(LayoutInput const& input, bool skip_row_measurement)
+{
+    RustFFI::rust_layout_fc_run_until_table_inline_size_calculation(
+        m_rust_context, LayoutRustBridge::to_ffi(input), skip_row_measurement);
 }
 
 }

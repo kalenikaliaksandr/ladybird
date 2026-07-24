@@ -134,3 +134,145 @@ impl Default for UsedValuesCore {
         }
     }
 }
+
+impl UsedValuesCore {
+    const MAX_DIMENSION_RAW: i32 = 17_895_700 * 64;
+
+    fn clamp_dimension(value: CssPixels) -> CssPixels {
+        if value.raw_value() == i32::MAX || value.raw_value() == i32::MIN {
+            CssPixels::from_raw(Self::MAX_DIMENSION_RAW)
+        } else {
+            value
+        }
+    }
+
+    pub(crate) fn set_content_inline_size(&mut self, value: CssPixels) {
+        self.content_inline_size = Self::clamp_dimension(value.max(CssPixels::default()));
+        self.has_definite_inline_size = true;
+    }
+
+    pub(crate) fn set_content_block_size(&mut self, value: CssPixels) {
+        self.content_block_size = Self::clamp_dimension(value.max(CssPixels::default()));
+    }
+
+    fn rounded_half_border(value: CssPixels) -> CssPixels {
+        let value = CssPixels::from_raw(value.raw_value() / 2);
+        let raw = value.raw_value();
+        let rounded = if raw > 0 {
+            (raw.saturating_add(32) & !63).min(i32::MAX & !63)
+        } else if raw < 0 {
+            let adjusted = raw.saturating_sub(32);
+            let floor = adjusted & !63;
+            floor.saturating_add(if adjusted & 63 != 0 { 64 } else { 0 })
+        } else {
+            0
+        };
+        CssPixels::from_raw(rounded)
+    }
+
+    pub(crate) fn border_left_collapsed(&self, collapsed: bool) -> CssPixels {
+        if collapsed {
+            Self::rounded_half_border(self.border_left)
+        } else {
+            self.border_left
+        }
+    }
+
+    pub(crate) fn border_right_collapsed(&self, collapsed: bool) -> CssPixels {
+        if collapsed {
+            Self::rounded_half_border(self.border_right)
+        } else {
+            self.border_right
+        }
+    }
+
+    pub(crate) fn border_top_collapsed(&self, collapsed: bool) -> CssPixels {
+        if collapsed {
+            Self::rounded_half_border(self.border_top)
+        } else {
+            self.border_top
+        }
+    }
+
+    pub(crate) fn border_bottom_collapsed(&self, collapsed: bool) -> CssPixels {
+        if collapsed {
+            Self::rounded_half_border(self.border_bottom)
+        } else {
+            self.border_bottom
+        }
+    }
+
+    pub(crate) fn border_box_left(&self, collapsed: bool) -> CssPixels {
+        self.border_left_collapsed(collapsed) + self.padding_left
+    }
+
+    pub(crate) fn border_box_right(&self, collapsed: bool) -> CssPixels {
+        self.border_right_collapsed(collapsed) + self.padding_right
+    }
+
+    pub(crate) fn border_box_top(&self, collapsed: bool) -> CssPixels {
+        self.border_top_collapsed(collapsed) + self.padding_top
+    }
+
+    pub(crate) fn border_box_bottom(&self, collapsed: bool) -> CssPixels {
+        self.border_bottom_collapsed(collapsed) + self.padding_bottom
+    }
+
+    pub(crate) fn border_box_inline_size(&self, collapsed: bool) -> CssPixels {
+        self.border_box_left(collapsed) + self.content_inline_size + self.border_box_right(collapsed)
+    }
+
+    pub(crate) fn border_box_block_size(&self, collapsed: bool) -> CssPixels {
+        self.border_box_top(collapsed) + self.content_block_size + self.border_box_bottom(collapsed)
+    }
+
+    pub(crate) fn margin_box_bottom(&self, collapsed: bool) -> CssPixels {
+        self.margin_bottom + self.border_box_bottom(collapsed)
+    }
+
+    pub(crate) fn margin_box_block_size(&self, collapsed: bool) -> CssPixels {
+        self.margin_top + self.border_box_top(collapsed) + self.content_block_size + self.margin_box_bottom(collapsed)
+    }
+
+    pub(crate) fn available_inner_space_or_constraints_from(
+        &self,
+        outer: crate::geometry::AvailableSpace,
+    ) -> crate::geometry::AvailableSpace {
+        use crate::geometry::{AvailableSize, AvailableSizeType};
+
+        let mut inline_size = match self.inline_size_constraint {
+            FfiSizeConstraint::MinContent => AvailableSize::min_content(),
+            FfiSizeConstraint::MaxContent => AvailableSize::max_content(),
+            FfiSizeConstraint::None if self.has_definite_inline_size => {
+                AvailableSize::definite(self.content_inline_size)
+            }
+            FfiSizeConstraint::None => AvailableSize::indefinite(),
+        };
+        let mut block_size = match self.block_size_constraint {
+            FfiSizeConstraint::MinContent => AvailableSize::min_content(),
+            FfiSizeConstraint::MaxContent => AvailableSize::max_content(),
+            FfiSizeConstraint::None if self.has_definite_block_size => AvailableSize::definite(self.content_block_size),
+            FfiSizeConstraint::None => AvailableSize::indefinite(),
+        };
+        if inline_size.type_ == AvailableSizeType::Indefinite
+            && matches!(
+                outer.inline_size.type_,
+                AvailableSizeType::MinContent | AvailableSizeType::MaxContent
+            )
+        {
+            inline_size = outer.inline_size;
+        }
+        if block_size.type_ == AvailableSizeType::Indefinite
+            && matches!(
+                outer.block_size.type_,
+                AvailableSizeType::MinContent | AvailableSizeType::MaxContent
+            )
+        {
+            block_size = outer.block_size;
+        }
+        crate::geometry::AvailableSpace {
+            inline_size,
+            block_size,
+        }
+    }
+}

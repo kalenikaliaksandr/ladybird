@@ -17,6 +17,11 @@
 #include <LibWeb/CSS/ValueType.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Node.h>
+#include <LibWeb/HTML/AttributeNames.h>
+#include <LibWeb/HTML/HTMLElement.h>
+#include <LibWeb/HTML/HTMLTableCellElement.h>
+#include <LibWeb/HTML/HTMLTableColElement.h>
+#include <LibWeb/Layout/BlockFormattingContext.h>
 #include <LibWeb/Layout/LayoutRustBridge.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/FormattingContext.h>
@@ -44,10 +49,11 @@ static RustFFI::FfiSizeValue size_value_with_kind(RustFFI::FfiSizeKind kind)
         .px = 0,
         .fraction = 0,
         .calc = nullptr,
+        .contains_percentage = false,
     };
 }
 
-static RustFFI::FfiSizeValue retain_calculated(CSS::CalculatedStyleValue const& calculated, RustFFI::FfiSizeKind kind = RustFFI::FfiSizeKind::Calc)
+static RustFFI::FfiSizeValue retain_calculated(CSS::CalculatedStyleValue const& calculated, bool contains_percentage, RustFFI::FfiSizeKind kind = RustFFI::FfiSizeKind::Calc)
 {
     auto const* handle = calculated.rust_style_value_data();
     calculated.ref();
@@ -66,6 +72,7 @@ static RustFFI::FfiSizeValue retain_calculated(CSS::CalculatedStyleValue const& 
         .px = 0,
         .fraction = 0,
         .calc = handle,
+        .contains_percentage = contains_percentage,
     };
 }
 
@@ -78,6 +85,7 @@ RustFFI::FfiSizeValue build_style_size_value(CSS::LengthPercentage const& value)
             .px = value.length().absolute_length_to_px().raw_value(),
             .fraction = 0,
             .calc = nullptr,
+            .contains_percentage = false,
         };
     }
     if (value.is_percentage()) {
@@ -86,9 +94,10 @@ RustFFI::FfiSizeValue build_style_size_value(CSS::LengthPercentage const& value)
             .px = 0,
             .fraction = value.percentage().as_fraction(),
             .calc = nullptr,
+            .contains_percentage = true,
         };
     }
-    return retain_calculated(*value.calculated());
+    return retain_calculated(*value.calculated(), value.contains_percentage());
 }
 
 RustFFI::FfiSizeValue build_style_size_value(CSS::LengthPercentageOrAuto const& value)
@@ -104,7 +113,7 @@ RustFFI::FfiSizeValue build_style_size_value(CSS::Size const& value)
     case CSS::Size::Type::Auto:
         return size_value_with_kind(RustFFI::FfiSizeKind::Auto);
     case CSS::Size::Type::Calculated:
-        return retain_calculated(value.calculated());
+        return retain_calculated(value.calculated(), value.contains_percentage());
     case CSS::Size::Type::Length:
         VERIFY(value.length().is_absolute());
         return {
@@ -112,6 +121,7 @@ RustFFI::FfiSizeValue build_style_size_value(CSS::Size const& value)
             .px = value.length().absolute_length_to_px().raw_value(),
             .fraction = 0,
             .calc = nullptr,
+            .contains_percentage = false,
         };
     case CSS::Size::Type::Percentage:
         return {
@@ -119,6 +129,7 @@ RustFFI::FfiSizeValue build_style_size_value(CSS::Size const& value)
             .px = 0,
             .fraction = value.percentage().as_fraction(),
             .calc = nullptr,
+            .contains_percentage = true,
         };
     case CSS::Size::Type::MinContent:
         return size_value_with_kind(RustFFI::FfiSizeKind::MinContent);
@@ -261,6 +272,138 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
     };
 }
 
+RustFFI::FfiTableBoxFacts build_table_box_facts(NodeWithStyle const& node)
+{
+    RustFFI::rust_layout_ffi_note_table_facts_build();
+    auto const& values = node.computed_values();
+
+    size_t cell_column_span = 1;
+    size_t cell_row_span = 1;
+    u32 column_span = 1;
+    u32 raw_column_span = 1;
+    if (auto const* dom_node = node.dom_node()) {
+        if (auto const* cell = as_if<HTML::HTMLTableCellElement>(*dom_node)) {
+            cell_column_span = cell->col_span();
+            cell_row_span = cell->row_span();
+        }
+        if (auto const* column = as_if<HTML::HTMLTableColElement>(*dom_node))
+            column_span = column->span();
+        if (auto const* element = as_if<HTML::HTMLElement>(*dom_node))
+            raw_column_span = element->get_attribute_value(HTML::AttributeNames::span).to_number<u32>().value_or(1);
+    }
+
+    return {
+        .cell_column_span = cell_column_span,
+        .cell_row_span = cell_row_span,
+        .column_span = column_span,
+        .raw_column_span = raw_column_span,
+        .border_top_color = values.border_top().color.value(),
+        .border_right_color = values.border_right().color.value(),
+        .border_bottom_color = values.border_bottom().color.value(),
+        .border_left_color = values.border_left().color.value(),
+    };
+}
+
+LayoutRustBridge::LayoutRustBridge(FormattingContext& formatting_context)
+    : m_formatting_context(formatting_context)
+{
+}
+
+LayoutRustBridge::~LayoutRustBridge() = default;
+
+static RustFFI::AvailableSize to_ffi_available_size(AvailableSize const& size)
+{
+    RustFFI::AvailableSizeType type;
+    if (size.is_definite())
+        type = RustFFI::AvailableSizeType::Definite;
+    else if (size.is_indefinite())
+        type = RustFFI::AvailableSizeType::Indefinite;
+    else if (size.is_min_content())
+        type = RustFFI::AvailableSizeType::MinContent;
+    else
+        type = RustFFI::AvailableSizeType::MaxContent;
+    return {
+        .type_ = type,
+        .value = size.to_px_or_zero().raw_value(),
+    };
+}
+
+static AvailableSize from_ffi_available_size(RustFFI::AvailableSize const& size)
+{
+    switch (size.type_) {
+    case RustFFI::AvailableSizeType::Definite:
+        return AvailableSize::make_definite(CSSPixels::from_raw(size.value));
+    case RustFFI::AvailableSizeType::Indefinite:
+        return AvailableSize::make_indefinite();
+    case RustFFI::AvailableSizeType::MinContent:
+        return AvailableSize::make_min_content();
+    case RustFFI::AvailableSizeType::MaxContent:
+        return AvailableSize::make_max_content();
+    }
+    VERIFY_NOT_REACHED();
+}
+
+static RustFFI::FfiContainingBlockConstraints to_ffi_constraints(ContainingBlockConstraints const& constraints)
+{
+    return {
+        .has_percentage_basis_inline_size = constraints.percentage_basis_inline_size.has_value(),
+        .percentage_basis_inline_size = constraints.percentage_basis_inline_size.value_or(0).raw_value(),
+        .has_percentage_basis_block_size = constraints.percentage_basis_block_size.has_value(),
+        .percentage_basis_block_size = constraints.percentage_basis_block_size.value_or(0).raw_value(),
+        .has_quirks_mode_percentage_basis_block_size = constraints.quirks_mode_percentage_basis_block_size.has_value(),
+        .quirks_mode_percentage_basis_block_size = constraints.quirks_mode_percentage_basis_block_size.value_or(0).raw_value(),
+    };
+}
+
+static ContainingBlockConstraints from_ffi_constraints(RustFFI::FfiContainingBlockConstraints const& constraints)
+{
+    return {
+        .percentage_basis_inline_size = constraints.has_percentage_basis_inline_size
+            ? Optional<CSSPixels> { CSSPixels::from_raw(constraints.percentage_basis_inline_size) }
+            : Optional<CSSPixels> {},
+        .percentage_basis_block_size = constraints.has_percentage_basis_block_size
+            ? Optional<CSSPixels> { CSSPixels::from_raw(constraints.percentage_basis_block_size) }
+            : Optional<CSSPixels> {},
+        .quirks_mode_percentage_basis_block_size = constraints.has_quirks_mode_percentage_basis_block_size
+            ? Optional<CSSPixels> { CSSPixels::from_raw(constraints.quirks_mode_percentage_basis_block_size) }
+            : Optional<CSSPixels> {},
+    };
+}
+
+RustFFI::FfiLayoutInput LayoutRustBridge::to_ffi(LayoutInput const& input)
+{
+    return {
+        .available_space = {
+            .inline_size = to_ffi_available_size(input.available_space.inline_size),
+            .block_size = to_ffi_available_size(input.available_space.block_size),
+        },
+        .containing_block_constraints = to_ffi_constraints(input.containing_block_constraints),
+        .has_content_box_position_in_bfc_root = input.content_box_position_in_bfc_root.has_value(),
+        .content_box_position_in_bfc_root = {
+            .x = input.content_box_position_in_bfc_root.value_or({}).x().raw_value(),
+            .y = input.content_box_position_in_bfc_root.value_or({}).y().raw_value(),
+        },
+        .has_table_grid_min_border_box_block_size = input.table_grid_min_border_box_block_size.has_value(),
+        .table_grid_min_border_box_block_size = input.table_grid_min_border_box_block_size.value_or(0).raw_value(),
+    };
+}
+
+LayoutInput LayoutRustBridge::from_ffi(RustFFI::FfiLayoutInput const& input)
+{
+    auto available_space = AvailableSpace {
+        from_ffi_available_size(input.available_space.inline_size),
+        from_ffi_available_size(input.available_space.block_size),
+    };
+    auto constraints = from_ffi_constraints(input.containing_block_constraints);
+    auto content_box_position = input.has_content_box_position_in_bfc_root
+        ? Optional<CSSPixelPoint> { CSSPixelPoint { CSSPixels::from_raw(input.content_box_position_in_bfc_root.x), CSSPixels::from_raw(input.content_box_position_in_bfc_root.y) } }
+        : Optional<CSSPixelPoint> {};
+    auto table_min_size = input.has_table_grid_min_border_box_block_size
+        ? Optional<CSSPixels> { CSSPixels::from_raw(input.table_grid_min_border_box_block_size) }
+        : Optional<CSSPixels> {};
+    return LayoutInput { available_space, constraints, content_box_position, table_min_size };
+}
+
 RustFFI::FfiLayoutNavCallbacks LayoutRustBridge::navigation_callbacks()
 {
     return {
@@ -284,6 +427,282 @@ RustFFI::FfiLayoutNavCallbacks LayoutRustBridge::navigation_callbacks()
         .containing_block = [](void* context, void* node) -> void* {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             return const_cast<Box*>(bridge.containing_block(*static_cast<Node const*>(node)));
+        },
+    };
+}
+
+static LayoutMode layout_mode_from_ffi(u8 mode)
+{
+    static_assert(to_underlying(LayoutMode::Normal) == 0);
+    static_assert(to_underlying(LayoutMode::IntrinsicSizing) == 1);
+    VERIFY(mode <= to_underlying(LayoutMode::IntrinsicSizing));
+    return static_cast<LayoutMode>(mode);
+}
+
+static CSS::BorderData from_ffi_border_data(RustFFI::FfiBorderData const& border)
+{
+    return {
+        .color = Gfx::Color::from_bgra(border.color),
+        .line_style = static_cast<CSS::LineStyle>(border.line_style),
+        .width = CSSPixels::from_raw(border.width),
+    };
+}
+
+RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
+{
+    static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::Cell) == 0);
+    static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::Row) == 1);
+    static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::RowGroup) == 2);
+    static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::Column) == 3);
+    static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::ColumnGroup) == 4);
+    static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::Table) == 5);
+    static_assert(to_underlying(FormattingContext::BaselineSet::First) == 0);
+    static_assert(to_underlying(FormattingContext::BaselineSet::Last) == 1);
+
+    return {
+        .context = this,
+        .navigation = navigation_callbacks(),
+        .build_style_facts = [](void*, void* node) {
+            return build_style_facts(*static_cast<NodeWithStyle const*>(node));
+        },
+        .build_box_facts = [](void*, void* node) {
+            auto const* node_with_style = as_if<NodeWithStyle>(*static_cast<Node const*>(node));
+            return node_with_style ? build_layout_box_facts(*node_with_style) : RustFFI::FfiLayoutBoxFacts {};
+        },
+        .build_table_box_facts = [](void*, void* node) {
+            return build_table_box_facts(*static_cast<NodeWithStyle const*>(node));
+        },
+        .create_used_values = [](void* context, void* node, bool has_inline_basis, i32 inline_basis, bool has_block_basis, i32 block_basis) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto& used_values = bridge.m_formatting_context.m_state.create(
+                *static_cast<NodeWithStyle const*>(node),
+                has_inline_basis ? Optional<CSSPixels> { CSSPixels::from_raw(inline_basis) } : Optional<CSSPixels> {},
+                has_block_basis ? Optional<CSSPixels> { CSSPixels::from_raw(block_basis) } : Optional<CSSPixels> {});
+            return &used_values.core();
+        },
+        .get_used_values = [](void* context, void* node) -> RustFFI::UsedValuesCore* {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto* used_values = bridge.m_formatting_context.m_state.try_get_mutable(*static_cast<NodeWithStyle const*>(node));
+            return used_values ? &used_values->core() : nullptr;
+        },
+        .layout_inside_child = [](void* context, void* child, u8 mode, RustFFI::FfiLayoutInput input, RustFFI::FfiChildLayoutResult* out) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto const& child_box = *static_cast<Box const*>(child);
+            VERIFY(!bridge.m_child_contexts.contains(&child_box));
+            auto child_context = bridge.m_formatting_context.layout_inside(child_box, layout_mode_from_ffi(mode), from_ffi(input));
+            if (!child_context)
+                return false;
+            *out = {
+                .automatic_content_inline_size = child_context->automatic_content_inline_size().raw_value(),
+                .automatic_content_block_size = child_context->automatic_content_block_size().raw_value(),
+            };
+            bridge.m_child_contexts.set(&child_box, move(child_context));
+            return true;
+        },
+        .parent_did_dimension_child_root_box = [](void* context, void* child) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto const* child_box = static_cast<Box const*>(child);
+            auto child_context = bridge.m_child_contexts.take(child_box);
+            VERIFY(child_context.has_value());
+            child_context.value()->parent_context_did_dimension_child_root_box();
+        },
+        .discard_child_context = [](void* context, void* child) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto child_context = bridge.m_child_contexts.take(static_cast<Box const*>(child));
+            VERIFY(child_context.has_value());
+        },
+        .calculate_min_content_inline_size = [](void* context, void* box, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            return bridge.m_formatting_context.calculate_min_content_inline_size(*static_cast<Box const*>(box), from_ffi_constraints(constraints)).raw_value();
+        },
+        .calculate_max_content_inline_size = [](void* context, void* box, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            return bridge.m_formatting_context.calculate_max_content_inline_size(*static_cast<Box const*>(box), from_ffi_constraints(constraints)).raw_value();
+        },
+        .calculate_min_content_block_size = [](void* context, void* box, i32 inline_size, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            return bridge.m_formatting_context.calculate_min_content_block_size(*static_cast<Box const*>(box), CSSPixels::from_raw(inline_size), from_ffi_constraints(constraints)).raw_value();
+        },
+        .calculate_max_content_block_size = [](void* context, void* box, i32 inline_size, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            return bridge.m_formatting_context.calculate_max_content_block_size(*static_cast<Box const*>(box), CSSPixels::from_raw(inline_size), from_ffi_constraints(constraints)).raw_value();
+        },
+        .set_table_cell_coordinates = [](void* context, void* node, size_t row_index, size_t column_index, size_t row_span, size_t column_span) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            bridge.m_formatting_context.m_state.get_mutable(*static_cast<NodeWithStyle const*>(node)).set_table_cell_coordinates({
+                .row_index = row_index,
+                .column_index = column_index,
+                .row_span = row_span,
+                .column_span = column_span,
+            });
+        },
+        .set_override_borders_data = [](void* context, void* node, RustFFI::FfiBordersData const* borders) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto convert = [](RustFFI::FfiBorderDataWithElementKind const& border) {
+                return Painting::Paintable::BorderDataWithElementKind {
+                    .border_data = from_ffi_border_data(border.border_data),
+                    .element_kind = static_cast<Painting::Paintable::ConflictingElementKind>(border.element_kind),
+                };
+            };
+            bridge.m_formatting_context.m_state.get_mutable(*static_cast<NodeWithStyle const*>(node)).set_override_borders_data({
+                .top = convert(borders->top),
+                .right = convert(borders->right),
+                .bottom = convert(borders->bottom),
+                .left = convert(borders->left),
+            });
+        },
+        .place_child = [](void* context, void* node, RustFFI::FfiCssPixelPoint offset) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            bridge.m_formatting_context.place_child(
+                *static_cast<Box const*>(node),
+                { CSSPixels::from_raw(offset.x), CSSPixels::from_raw(offset.y) });
+        },
+        .box_baseline = [](void* context, void* node, u8 baseline_set) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            return bridge.m_formatting_context.box_baseline(
+                *static_cast<Box const*>(node),
+                static_cast<FormattingContext::BaselineSet>(baseline_set))
+                .raw_value();
+        },
+        .compute_and_store_baselines = [](void* context, void* node) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            bridge.m_formatting_context.compute_and_store_baselines(
+                bridge.m_formatting_context.m_state.get_mutable(*static_cast<NodeWithStyle const*>(node)));
+        },
+        .layout_absolutely_positioned_children = [](void* context, void* node) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            bridge.m_formatting_context.layout_absolutely_positioned_children(*static_cast<Box const*>(node));
+        },
+        .layout_table_caption = [](void* context, void* child, u8 phase, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints, RustFFI::FfiCaptionLayoutResult* out) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto& formatting_context = bridge.m_formatting_context;
+            auto const& child_box = *static_cast<Box const*>(child);
+            auto caption_available_space = AvailableSpace {
+                from_ffi_available_size(available_space.inline_size),
+                from_ffi_available_size(available_space.block_size),
+            };
+            auto caption_constraints = from_ffi_constraints(constraints);
+            auto caption_phase = static_cast<CSS::CaptionSide>(phase);
+            bool caption_was_placed = false;
+
+            if (auto caption_context = FormattingContext::create_independent_formatting_context_if_needed(
+                    formatting_context.m_state, formatting_context.m_layout_mode, child_box, &formatting_context)) {
+                auto inner_available_space = caption_available_space;
+                auto* block_context = as_if<BlockFormattingContext>(caption_context.ptr());
+                LogicalOffset caption_offset;
+                if (block_context) {
+                    auto available_inline_size = caption_available_space.inline_size.to_px_or_zero();
+                    block_context->resolve_vertical_box_model_metrics(child_box, available_inline_size);
+                    CSSPixelPoint caption_position_in_block_context {};
+                    block_context->compute_inline_size(child_box, caption_available_space, caption_constraints, caption_position_in_block_context);
+                    inner_available_space = formatting_context.m_state.get(child_box).available_inner_space_or_constraints_from(caption_available_space);
+
+                    auto const& caption_state = formatting_context.m_state.get(child_box);
+                    caption_offset = { caption_state.border_box_left(), 0 };
+                    if (caption_phase == CSS::CaptionSide::Bottom)
+                        caption_offset.block_offset = formatting_context.m_state.get(formatting_context.context_box()).margin_box_block_size() + caption_state.margin_box_top();
+                }
+
+                caption_context->run(LayoutInput { inner_available_space, caption_constraints });
+                if (block_context) {
+                    auto& caption_state = formatting_context.m_state.get_mutable(child_box);
+                    if (formatting_context.should_treat_block_size_as_auto(child_box, caption_available_space, caption_constraints)) {
+                        auto content_block_size = child_box.has_size_containment() ? 0 : caption_context->automatic_content_block_size();
+                        caption_state.set_content_block_size(content_block_size);
+                    }
+                    formatting_context.place_child(child_box, { caption_offset.inline_offset, caption_offset.block_offset });
+                    caption_was_placed = true;
+                }
+            }
+
+            auto const& caption_state = formatting_context.m_state.get(child_box);
+            if (caption_phase == CSS::CaptionSide::Bottom && !caption_was_placed) {
+                formatting_context.place_child(child_box, {
+                                                              caption_state.border_box_left(),
+                                                              formatting_context.m_state.get(formatting_context.context_box()).margin_box_block_size() + caption_state.margin_box_top(),
+                                                          });
+            }
+            *out = {
+                .margin_box_block_size = caption_state.margin_box_block_size().raw_value(),
+                .pending_table_block_offset = caption_phase == CSS::CaptionSide::Top
+                    ? (caption_state.content_block_size() + caption_state.margin_box_bottom()).raw_value()
+                    : 0,
+            };
+            return true;
+        },
+        .measure_table_cell_content = [](void* context, void* child, u8 mode, RustFFI::UsedValuesCore const*, RustFFI::AvailableSpace inner_available_space, RustFFI::FfiMeasuredCellContent* out) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto& formatting_context = bridge.m_formatting_context;
+            auto const& cell_box = *static_cast<Box const*>(child);
+            auto const& cell_used_values = formatting_context.m_state.get(cell_box);
+            auto layout_mode = layout_mode_from_ffi(mode);
+
+            if (layout_mode == LayoutMode::IntrinsicSizing
+                && !cell_box.is_inline()
+                && cell_used_values.inline_size_constraint() == SizeConstraint::None
+                && cell_used_values.block_size_constraint() == SizeConstraint::None
+                && cell_used_values.has_definite_inline_size()
+                && cell_used_values.has_definite_block_size())
+                return false;
+            if (!cell_box.can_have_children())
+                return false;
+
+            LayoutState throwaway_state(cell_box, LayoutState::Purpose::Measurement);
+            auto& throwaway_values = throwaway_state.create(cell_box, {}, {});
+            throwaway_values.set_inline_size_constraint(cell_used_values.inline_size_constraint());
+            throwaway_values.set_block_size_constraint(cell_used_values.block_size_constraint());
+            throwaway_values.set_content_inline_size(cell_used_values.content_inline_size());
+            throwaway_values.set_content_block_size(cell_used_values.content_block_size());
+            throwaway_values.set_has_definite_inline_size(cell_used_values.has_definite_inline_size());
+            throwaway_values.set_has_definite_block_size(cell_used_values.has_definite_block_size());
+            throwaway_values.set_margin_left(cell_used_values.margin_left());
+            throwaway_values.set_margin_right(cell_used_values.margin_right());
+            throwaway_values.set_margin_top(cell_used_values.margin_top());
+            throwaway_values.set_margin_bottom(cell_used_values.margin_bottom());
+            throwaway_values.set_border_left(cell_used_values.border_left());
+            throwaway_values.set_border_right(cell_used_values.border_right());
+            throwaway_values.set_border_top(cell_used_values.border_top());
+            throwaway_values.set_border_bottom(cell_used_values.border_bottom());
+            throwaway_values.set_padding_left(cell_used_values.padding_left());
+            throwaway_values.set_padding_right(cell_used_values.padding_right());
+            throwaway_values.set_padding_top(cell_used_values.padding_top());
+            throwaway_values.set_padding_bottom(cell_used_values.padding_bottom());
+            if (auto const& override_borders = cell_used_values.override_borders_data(); override_borders.has_value())
+                throwaway_values.set_override_borders_data(*override_borders);
+
+            auto measuring_context = FormattingContext::create_independent_formatting_context_if_needed(
+                throwaway_state, layout_mode, cell_box, &formatting_context);
+            if (!measuring_context)
+                return false;
+            auto available = AvailableSpace {
+                from_ffi_available_size(inner_available_space.inline_size),
+                from_ffi_available_size(inner_available_space.block_size),
+            };
+            measuring_context->run(LayoutInput { available });
+            auto content_block_size = measuring_context->automatic_content_block_size();
+            throwaway_values.set_content_block_size(content_block_size);
+            *out = {
+                .content_block_size = content_block_size.raw_value(),
+                .first_baseline = measuring_context->box_baseline(cell_box, FormattingContext::BaselineSet::First).raw_value(),
+            };
+            return true;
+        },
+        .should_treat_max_inline_size_as_none = [](void* context, void* box, RustFFI::AvailableSize available_size, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            return bridge.m_formatting_context.should_treat_max_inline_size_as_none(
+                *static_cast<Box const*>(box),
+                from_ffi_available_size(available_size),
+                from_ffi_constraints(constraints));
+        },
+        .calculate_inner_inline_size = [](void* context, void* box, RustFFI::AvailableSize available_size, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto const& child_box = *static_cast<Box const*>(box);
+            return bridge.m_formatting_context.calculate_inner_inline_size(
+                child_box,
+                from_ffi_available_size(available_size),
+                child_box.computed_values().width(),
+                from_ffi_constraints(constraints))
+                .raw_value();
         },
     };
 }

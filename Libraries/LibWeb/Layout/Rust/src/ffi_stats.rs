@@ -34,6 +34,36 @@ define_ffi_ops! {
     CalcHandleRelease => "calcHandleReleaseEntries",
     BoxFactsBuild => "boxFactsBuildEntries",
     FcTypeDecision => "fcTypeDecisionEntries",
+    TableFactsBuild => "tableFactsBuildEntries",
+    FcCreate => "fcCreateEntries",
+    FcDestroy => "fcDestroyEntries",
+    FcRun => "fcRunEntries",
+    FcAutomaticInlineSize => "fcAutomaticInlineSizeEntries",
+    FcAutomaticBlockSize => "fcAutomaticBlockSizeEntries",
+    FcRunUntilTableInlineSize => "fcRunUntilTableInlineSizeEntries",
+    NavigationCallback => "navigationCallbacks",
+    UsedValuesCreateCallback => "usedValuesCreateCallbacks",
+    UsedValuesGetCallback => "usedValuesGetCallbacks",
+    LayoutInsideCallback => "layoutInsideCallbacks",
+    ParentDidDimensionCallback => "parentDidDimensionCallbacks",
+    DiscardChildContextCallback => "discardChildContextCallbacks",
+    IntrinsicMinInlineCallback => "intrinsicMinInlineCallbacks",
+    IntrinsicMaxInlineCallback => "intrinsicMaxInlineCallbacks",
+    IntrinsicMinBlockCallback => "intrinsicMinBlockCallbacks",
+    IntrinsicMaxBlockCallback => "intrinsicMaxBlockCallbacks",
+    SetTableCellCoordinatesCallback => "setTableCellCoordinatesCallbacks",
+    SetOverrideBordersCallback => "setOverrideBordersCallbacks",
+    PlaceChildCallback => "placeChildCallbacks",
+    BoxBaselineCallback => "boxBaselineCallbacks",
+    ComputeBaselinesCallback => "computeBaselinesCallbacks",
+    LayoutAbsposChildrenCallback => "layoutAbsposChildrenCallbacks",
+    CaptionLayoutCallback => "captionLayoutCallbacks",
+    CellMeasurementCallback => "cellMeasurementCallbacks",
+    ShouldTreatMaxInlineAsNoneCallback => "shouldTreatMaxInlineAsNoneCallbacks",
+    CalculateInnerInlineSizeCallback => "calculateInnerInlineSizeCallbacks",
+    StyleFactsCacheHit => "styleFactsCacheHits",
+    BoxFactsCacheHit => "boxFactsCacheHits",
+    TableFactsCacheHit => "tableFactsCacheHits",
 }
 
 static COUNTERS: [AtomicU64; FFI_OP_COUNT] = [const { AtomicU64::new(0) }; FFI_OP_COUNT];
@@ -61,6 +91,11 @@ pub extern "C" fn rust_layout_ffi_note_calc_handle_release() {
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_layout_ffi_note_box_facts_build() {
     abort_on_panic(|| bump(FfiOp::BoxFactsBuild));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_table_facts_build() {
+    abort_on_panic(|| bump(FfiOp::TableFactsBuild));
 }
 
 #[unsafe(no_mangle)]

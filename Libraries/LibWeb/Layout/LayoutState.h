@@ -120,6 +120,8 @@ struct LayoutState {
 
         NodeWithStyle const& node() const { return *static_cast<NodeWithStyle const*>(m_core->node); }
         NodeWithStyle& node() { return *static_cast<NodeWithStyle*>(m_core->node); }
+        RustFFI::UsedValuesCore& core() { return *m_core; }
+        RustFFI::UsedValuesCore const& core() const { return *m_core; }
         void set_node(NodeWithStyle const&, Optional<CSSPixels> percentage_basis_inline_size = {}, Optional<CSSPixels> percentage_basis_block_size = {});
 
         CSSPixels content_inline_size() const { return CSSPixels::from_raw(m_core->content_inline_size); }
@@ -453,6 +455,7 @@ struct LayoutState {
     UsedValues* try_get_mutable(Node const&);
 
     bool has_subtree_root() const { return m_subtree_root != nullptr; }
+    void* rust_state_handle() const { return m_rust_state; }
 
     struct ContainedAbsposChild {
         Box const* box { nullptr };

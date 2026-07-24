@@ -30,7 +30,6 @@
 #include <LibWeb/Layout/RustFormattingContext.h>
 #include <LibWeb/Layout/SVGFormattingContext.h>
 #include <LibWeb/Layout/SVGSVGBox.h>
-#include <LibWeb/Layout/TableFormattingContext.h>
 #include <LibWeb/Layout/TableWrapper.h>
 #include <LibWeb/Layout/TextInputBox.h>
 #include <LibWeb/Layout/TextNode.h>
@@ -519,7 +518,7 @@ OwnPtr<FormattingContext> FormattingContext::create_independent_formatting_conte
         return nullptr;
 
     if (RustFFI::rust_layout_owns_fc_type(to_underlying(*type)))
-        return make<RustFormattingContext>(*type, layout_mode, state, child_box, parent, nullptr);
+        return make<RustFormattingContext>(*type, layout_mode, state, child_box, parent);
 
     switch (type.value()) {
     case Type::Block:
@@ -531,7 +530,7 @@ OwnPtr<FormattingContext> FormattingContext::create_independent_formatting_conte
     case Type::Grid:
         return make<GridFormattingContext>(state, layout_mode, child_box, parent);
     case Type::Table:
-        return make<TableFormattingContext>(state, layout_mode, child_box, parent);
+        VERIFY_NOT_REACHED();
     case Type::ReplacedWithChildren:
         return make<ReplacedWithChildrenFormattingContext>(state, layout_mode, child_box, parent);
     case Type::InternalReplaced:
@@ -868,10 +867,10 @@ CSSPixels FormattingContext::compute_table_box_inline_size_inside_table_wrapper(
     table_box_state.set_padding_left(table_box_computed_values.padding().left().to_px_or_zero(containing_block_inline_size));
     table_box_state.set_padding_right(table_box_computed_values.padding().right().to_px_or_zero(containing_block_inline_size));
 
-    auto context = make<TableFormattingContext>(throwaway_state, LayoutMode::IntrinsicSizing, *table_box, this);
-    context->run_until_inline_size_calculation(
+    auto context = create_independent_formatting_context(throwaway_state, LayoutMode::IntrinsicSizing, *table_box, this);
+    context->run_until_table_inline_size_calculation(
         LayoutInput { table_box_state.available_inner_space_or_constraints_from(available_space), table_constraints },
-        TableFormattingContext::RowMeasurement::Skip);
+        true);
 
     auto table_used_inline_size = throwaway_state.get(*table_box).border_box_inline_size();
     if (table_wrapper_inline_size_mode == TableWrapperInlineSizeMode::UseTableUsedInlineSizeIfNotAuto
@@ -2350,7 +2349,7 @@ void FormattingContext::resolve_anchor_insets(Box& box) const
 
 void FormattingContext::layout_absolutely_positioned_children()
 {
-    // TableFormattingContext handles cell abspos layout after vertical alignment.
+    // The table formatting context handles cell abspos layout after vertical alignment.
     if (context_box().display().is_table_cell())
         return;
     layout_absolutely_positioned_children(context_box());
