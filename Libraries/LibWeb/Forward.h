@@ -973,7 +973,6 @@ class Box;
 class ButtonBox;
 class CheckBox;
 class FieldSetBox;
-class FormattingContext;
 class ImageBox;
 class InlineNode;
 class Label;
