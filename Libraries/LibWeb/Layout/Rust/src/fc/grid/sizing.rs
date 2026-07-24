@@ -575,14 +575,17 @@ pub(crate) fn stretch_auto_tracks(
     }
 }
 
-pub(crate) fn run_track_sizing(
+pub(crate) fn run_track_sizing<MaximumSize>(
     tracks: &mut [Track],
     gap_size: CssPixels,
     items: &[ItemContribution],
     available: AvailableSize,
+    grid_container_maximum_size: MaximumSize,
     row_axis: bool,
     content_distribution_is_normal_or_stretch: bool,
-) {
+) where
+    MaximumSize: FnOnce() -> Option<CssPixels>,
+{
     // https://www.w3.org/TR/css-grid-2/#algo-track-sizing
     // 12.3. Track Sizing Algorithm
     //
@@ -591,7 +594,27 @@ pub(crate) fn run_track_sizing(
     // 2. Resolve Intrinsic Track Sizes
     resolve_intrinsic_track_sizes(tracks, items, available, row_axis);
     // 3. Maximize Tracks
+    let saved_base_sizes = tracks
+        .iter()
+        .filter(|track| !track.is_gap)
+        .map(|track| track.base_size)
+        .collect::<Vec<_>>();
     maximize_tracks(tracks, gap_size, available);
+    // If this would cause the grid to be larger than the grid container’s inner size as limited by its
+    // max-width/height, then redo this step, treating the available grid space as equal to the grid
+    // container’s inner size when it’s sized to its max-width/height.
+    let grid_container_inner_size = tracks
+        .iter()
+        .filter(|track| !track.is_gap)
+        .fold(CssPixels::default(), |sum, track| sum + track.base_size);
+    if let Some(maximum_size) = grid_container_maximum_size()
+        && grid_container_inner_size > maximum_size
+    {
+        for (track, saved_base_size) in tracks.iter_mut().filter(|track| !track.is_gap).zip(saved_base_sizes) {
+            track.base_size = saved_base_size;
+        }
+        maximize_tracks(tracks, gap_size, AvailableSize::definite(maximum_size));
+    }
     // 4. Expand Flexible Tracks
     if has_flexible {
         // https://drafts.csswg.org/css-grid/#algo-flex-tracks
@@ -721,6 +744,7 @@ mod tests {
             px(10),
             &[item],
             AvailableSize::definite(px(210)),
+            || None,
             false,
             true,
         );

@@ -22,7 +22,7 @@ use super::template::{
     ExpandedTrackList, LineName, TrackDefinition, TrackListSource, add_template_area_lines, automatic_subgrid_span,
     expand_standalone, expand_subgrid,
 };
-use super::tracks::{Track, TrackSizingFunction};
+use super::tracks::{PixelFraction, Track, TrackSizingFunction};
 use crate::box_facts::FfiLayoutBoxFacts;
 use crate::css_enums::{align_content, justify_content};
 use crate::css_pixels::CssPixels;
@@ -1301,6 +1301,126 @@ impl GridFormattingContext {
         self.add_outer_size(item, axis, content).min(maximum)
     }
 
+    fn content_size_suggestion(&self, item: GridItem, axis: Axis) -> CssPixels {
+        // The content size suggestion is the min-content size in the relevant axis
+        // FIXME: clamped, if it has a preferred aspect ratio, by any definite opposite-axis minimum and maximum sizes
+        // converted through the aspect ratio.
+        self.min_content_size(item, axis)
+    }
+
+    fn specified_size_suggestion(&self, item: GridItem, axis: Axis) -> Option<CssPixels> {
+        // https://www.w3.org/TR/css-grid-1/#specified-size-suggestion
+        // If the item’s preferred size in the relevant axis is definite, then the specified size suggestion is that size.
+        // It is otherwise undefined.
+        let preferred_size = self.preferred_size(item, axis);
+        if !self.facts(item.box_).is_replaced_box && preferred_size.contains_percentage {
+            return None;
+        }
+
+        let has_definite_preferred_size = if axis.is_column() {
+            self.used(item).has_definite_inline_size()
+        } else {
+            self.used(item).has_definite_block_size()
+        };
+        if has_definite_preferred_size {
+            // FIXME: consider margins, padding and borders because it is outer size.
+            let containing_block_size = self.containing_block_size(item, axis);
+            return Some(preferred_size.to_px(containing_block_size));
+        }
+
+        None
+    }
+
+    fn transferred_size_suggestion(&self, item: GridItem, axis: Axis) -> Option<CssPixels> {
+        // https://www.w3.org/TR/css-grid-2/#transferred-size-suggestion
+        // If the item has a preferred aspect ratio and its preferred size in the opposite axis is definite, then the transferred
+        // size suggestion is that size (clamped by the opposite-axis minimum and maximum sizes if they are definite), converted
+        // through the aspect ratio. It is otherwise undefined.
+        let facts = self.facts(item.box_);
+        if !facts.has_preferred_aspect_ratio {
+            return None;
+        }
+
+        let preferred_size_in_opposite_axis =
+            self.preferred_size(item, if axis.is_column() { Axis::Row } else { Axis::Column });
+        if preferred_size_in_opposite_axis.is_length() {
+            let opposite_axis_size = preferred_size_in_opposite_axis.to_px(CssPixels::default());
+            // FIXME: Clamp by opposite-axis minimum and maximum sizes if they are definite
+            return Some(
+                PixelFraction::new(
+                    facts.preferred_aspect_ratio_numerator,
+                    facts.preferred_aspect_ratio_denominator,
+                )
+                .multiply(opposite_axis_size),
+            );
+        }
+
+        None
+    }
+
+    fn content_based_minimum_size(&self, item: GridItem, axis: Axis) -> CssPixels {
+        // https://www.w3.org/TR/css-grid-1/#content-based-minimum-size
+
+        let mut result;
+        // The content-based minimum size for a grid item in a given dimension is its specified size suggestion if it exists,
+        if let Some(specified_size_suggestion) = self.specified_size_suggestion(item, axis) {
+            result = specified_size_suggestion;
+        }
+        // otherwise its transferred size suggestion if that exists,
+        else if let Some(transferred_size_suggestion) = self.transferred_size_suggestion(item, axis) {
+            result = transferred_size_suggestion;
+        }
+        // else its content size suggestion.
+        else {
+            result = self.content_size_suggestion(item, axis);
+        }
+
+        // However, if in a given dimension the grid item spans only grid tracks that have a fixed max track sizing function, then
+        // its specified size suggestion and content size suggestion in that dimension (and its input from this dimension to the
+        // transferred size suggestion in the opposite dimension) are further clamped to less than or equal to the stretch fit into
+        // the grid area’s maximum size in that dimension, as represented by the sum of those grid tracks’ max track sizing functions
+        // plus any intervening fixed gutters.
+        // FIXME: Account for intervening fixed gutters.
+        let available = self.axis_available(axis);
+        let tracks = self.axis_tracks(axis);
+        let start = item.position(axis).max(0) as usize;
+        let end = start.saturating_add(item.span(axis)).min(tracks.len());
+        let mut fixed_track_limit = CssPixels::default();
+        let mut all_fixed = true;
+        for track in &tracks[start..end] {
+            if !track.max_sizing.is_fixed(available) {
+                all_fixed = false;
+                break;
+            }
+            fixed_track_limit += track.max_sizing.resolve(available);
+        }
+        if all_fixed {
+            result = result.min(fixed_track_limit);
+        }
+
+        // In all cases, the size suggestion is additionally clamped by the maximum size in the affected axis, if it’s definite.
+        let maximum_size = self.maximum_size(item, axis);
+        if maximum_size.is_length_percentage() && !maximum_size.contains_percentage {
+            result = result.min(maximum_size.to_px(CssPixels::default()));
+        }
+
+        // If the item is a compressible replaced element, and has a definite preferred size or maximum size in the relevant axis,
+        // the size suggestion is capped by those sizes; for this purpose, any indefinite percentages in these sizes are resolved
+        // against zero (and considered definite).
+        // FIXME: "compressible replaced element" includes more elements than is_replaced_box().
+        let preferred_size = self.preferred_size(item, axis);
+        if self.facts(item.box_).is_replaced_box
+            && (preferred_size.kind() == crate::style_facts::FfiSizeKind::Percentage
+                || maximum_size.kind() == crate::style_facts::FfiSizeKind::Percentage)
+        {
+            // NOTE: Implements "for this purpose, any indefinite percentages in these sizes are resolved
+            //       against zero (and considered definite)." part.
+            result = CssPixels::default();
+        }
+
+        result
+    }
+
     fn automatic_minimum_size(&self, item: GridItem, axis: Axis) -> CssPixels {
         // To provide a more reasonable default minimum size for grid items, the used value of its automatic minimum size
         // in a given axis is the content-based minimum size if all of the following are true:
@@ -1321,51 +1441,7 @@ impl GridFormattingContext {
             .iter()
             .any(|track| track.max_sizing.flex_factor().is_some());
         if spans_auto && !self.facts(item.box_).is_scroll_container && (item.span(axis) == 1 || !spans_flexible) {
-            // https://www.w3.org/TR/css-grid-1/#content-based-minimum-size
-            //
-            // else its content size suggestion.
-            // The content size suggestion is the min-content size in the relevant axis
-            // FIXME: clamped, if it has a preferred aspect ratio, by any definite opposite-axis minimum and maximum sizes
-            // converted through the aspect ratio.
-            let mut result = self.min_content_size(item, axis);
-            let available = self.axis_available(axis);
-            let mut fixed_track_limit = CssPixels::default();
-            let mut all_fixed = true;
-            for track in &tracks[start..end] {
-                if !track.max_sizing.is_fixed(available) {
-                    all_fixed = false;
-                    break;
-                }
-                fixed_track_limit += track.max_sizing.resolve(available);
-            }
-            if all_fixed {
-                // However, if in a given dimension the grid item spans only grid tracks that have a fixed max track sizing function, then
-                // its specified size suggestion and content size suggestion in that dimension (and its input from this dimension to the
-                // transferred size suggestion in the opposite dimension) are further clamped to less than or equal to the stretch fit into
-                // the grid area’s maximum size in that dimension, as represented by the sum of those grid tracks’ max track sizing functions
-                // plus any intervening fixed gutters.
-                // FIXME: Account for intervening fixed gutters.
-                result = result.min(fixed_track_limit);
-            }
-            let maximum = self.maximum_size(item, axis);
-            if maximum.is_length_percentage() && !maximum.contains_percentage {
-                // In all cases, the size suggestion is additionally clamped by the maximum size in the affected axis, if it’s definite.
-                result = result.min(maximum.to_px(CssPixels::default()));
-            }
-            let preferred = self.preferred_size(item, axis);
-            if self.facts(item.box_).is_replaced_box
-                && (preferred.kind() == crate::style_facts::FfiSizeKind::Percentage
-                    || maximum.kind() == crate::style_facts::FfiSizeKind::Percentage)
-            {
-                // If the item is a compressible replaced element, and has a definite preferred size or maximum size in the relevant axis,
-                // the size suggestion is capped by those sizes; for this purpose, any indefinite percentages in these sizes are resolved
-                // against zero (and considered definite).
-                // FIXME: "compressible replaced element" includes more elements than is_replaced_box().
-                // NOTE: Implements "for this purpose, any indefinite percentages in these sizes are resolved
-                //       against zero (and considered definite)." part.
-                result = CssPixels::default();
-            }
-            return result;
+            return self.content_based_minimum_size(item, axis);
         }
         // Otherwise, the automatic minimum size is zero, as usual.
         CssPixels::default()
@@ -1450,19 +1526,10 @@ impl GridFormattingContext {
         Some(result)
     }
 
-    fn grid_container_maximum_size(&self, axis: Axis) -> Option<CssPixels> {
+    fn calculate_grid_container_maximum_size(&self, axis: Axis) -> CssPixels {
         let available = self.available_space.unwrap();
         let constraints = self.layout_input.unwrap().containing_block_constraints;
-        let sizing = self.sizing();
-        let is_none = if axis.is_column() {
-            sizing.should_treat_max_inline_size_as_none(self.grid_container, available.inline_size, constraints)
-        } else {
-            sizing.should_treat_max_block_size_as_none(self.grid_container, available.block_size, constraints)
-        };
-        if is_none {
-            return None;
-        }
-        Some(sizing.calculate_inner_size_for_property(
+        self.sizing().calculate_inner_size_for_property(
             self.grid_container,
             if axis.is_column() {
                 FfiFlexAxis::Inline
@@ -1476,7 +1543,42 @@ impl GridFormattingContext {
             },
             available,
             constraints,
-        ))
+        )
+    }
+
+    fn grid_container_maximum_size(&self, axis: Axis) -> Option<CssPixels> {
+        let available = self.axis_available(axis);
+        let constraints = self.layout_input.unwrap().containing_block_constraints;
+        let is_none = if axis.is_column() {
+            self.sizing()
+                .should_treat_max_inline_size_as_none(self.grid_container, available, constraints)
+        } else {
+            self.sizing()
+                .should_treat_max_block_size_as_none(self.grid_container, available, constraints)
+        };
+        if is_none {
+            return None;
+        }
+        Some(self.calculate_grid_container_maximum_size(axis))
+    }
+
+    fn grid_container_maximum_size_for_maximize_tracks(&self, axis: Axis) -> Option<CssPixels> {
+        let available_size = self.axis_available(axis);
+        let computed_values = self.style(self.grid_container);
+        let should_treat_grid_container_maximum_size_as_none = if axis.is_column() {
+            self.sizing().should_treat_max_inline_size_as_none(
+                self.grid_container,
+                available_size,
+                self.layout_input.unwrap().containing_block_constraints,
+            )
+        } else {
+            !computed_values.max_height.is_auto()
+        };
+
+        if should_treat_grid_container_maximum_size_as_none {
+            return None;
+        }
+        Some(self.calculate_grid_container_maximum_size(axis))
     }
 
     fn limited_content_contribution(
@@ -1677,6 +1779,7 @@ impl GridFormattingContext {
             CssPixels::default(),
             &contributions,
             self.axis_available(axis),
+            || self.grid_container_maximum_size_for_maximize_tracks(axis),
             !axis.is_column(),
             distribution_stretches,
         );
