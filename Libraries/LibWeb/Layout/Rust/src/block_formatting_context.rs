@@ -212,6 +212,7 @@ pub(crate) struct BlockFormattingContext {
     state: *mut c_void,
     root: Node,
     parent_rust_fc: *mut c_void,
+    rust_context_handle: *mut c_void,
     layout_mode: u8,
     callbacks: FfiLayoutFcCallbacks,
     block_offset_of_current_block_container: Cell<Option<CssPixels>>,
@@ -230,6 +231,7 @@ impl BlockFormattingContext {
         state: *mut c_void,
         root: Node,
         parent_rust_fc: *mut c_void,
+        rust_context_handle: *mut c_void,
         layout_mode: u8,
         callbacks: FfiLayoutFcCallbacks,
     ) -> Self {
@@ -237,6 +239,7 @@ impl BlockFormattingContext {
             state,
             root,
             parent_rust_fc,
+            rust_context_handle,
             layout_mode,
             callbacks,
             block_offset_of_current_block_container: Cell::new(None),
@@ -345,11 +348,7 @@ impl BlockFormattingContext {
     }
 
     fn place_child(&self, node: Node, offset: FfiCssPixelPoint) {
-        bump(FfiOp::PlaceChildCallback);
-        // SAFETY: The node has a live used-values entry.
-        unsafe {
-            (self.callbacks.place_child)(self.callbacks.context, node, offset);
-        }
+        super::place_child(self.state, &self.callbacks, node, offset);
     }
 
     fn register_contained_abspos_child(&self, node: Node, block_offset: CssPixels) {
@@ -365,30 +364,23 @@ impl BlockFormattingContext {
             block_alignment: FfiStaticPositionAlignment::Start,
             alignment_derives_from_own_computed_values: false,
         };
-        // SAFETY: The callback copies the static-position data synchronously.
-        unsafe {
-            (self.callbacks.register_contained_abspos_child)(self.callbacks.context, node, static_position);
-        }
+        super::register_contained_abspos_child(self.state, &self.callbacks, node, static_position);
     }
 
     fn compute_and_store_baselines(&self, node: Node) {
-        bump(FfiOp::ComputeBaselinesCallback);
-        // SAFETY: The host derives baselines from the live shared state.
-        unsafe {
-            (self.callbacks.compute_and_store_baselines)(self.callbacks.context, node);
-        }
+        super::compute_and_store_baselines(self.state, &self.callbacks, node, false);
     }
 
     fn compute_inset(&self, node: Node, containing_block_size: LogicalSize) {
-        // SAFETY: The host mutates the node's shared inset values synchronously.
-        unsafe {
-            (self.callbacks.compute_inset)(
-                self.callbacks.context,
-                node,
-                containing_block_size.inline_size,
-                containing_block_size.block_size,
-            );
-        }
+        super::abspos::compute_inset_native(
+            self.state,
+            self.callbacks,
+            self.layout_mode,
+            self.root,
+            node,
+            containing_block_size.inline_size,
+            containing_block_size.block_size,
+        );
     }
 
     fn containing_block_rect(&self, node: Node, position: FfiCssPixelPoint) -> CssPixelRect {
@@ -624,18 +616,13 @@ impl BlockFormattingContext {
             //       We use that inline size as the input here to ensure that margins get resolved.
             Some(self.used(node).content_inline_size)
         } else if facts.is_table_wrapper {
-            // SAFETY: The host's table-wrapper helper reads and writes the shared state synchronously.
-            Some(unsafe {
-                (self.callbacks.compute_table_box_inline_size_inside_wrapper)(
-                    self.callbacks.context,
-                    node,
-                    remaining_available_space,
-                    constraints,
-                    false,
-                    CssPixels::default(),
-                    0,
-                )
-            })
+            Some(sizing.compute_table_box_inline_size_inside_wrapper(
+                node,
+                remaining_available_space,
+                constraints,
+                None,
+                super::sizing::TableWrapperInlineSizeMode::ClampToAvailableInlineSize,
+            ))
         } else if facts.uses_button_layout && style.width.is_auto() {
             // https://html.spec.whatwg.org/multipage/rendering.html#button-layout
             // If the computed value of 'inline-size' is 'auto', then the used value is the fit-content inline size.
@@ -1555,29 +1542,17 @@ impl BlockFormattingContext {
         if !facts.can_have_children {
             return None;
         }
-        let mut result = FfiChildLayoutResult::default();
-        bump(FfiOp::LayoutInsideCallback);
-        // SAFETY: No Rust borrow crosses the callback. The host retains a child
-        // context until the matching completion callback.
-        let created = unsafe {
-            (self.callbacks.layout_inside_child)(
-                self.callbacks.context,
-                node,
-                self.layout_mode,
-                input,
-                force_independent_context_run,
-                &raw mut result,
-            )
-        };
-        created.then_some(result)
+        super::layout_inside_child(
+            self.rust_context_handle,
+            node,
+            self.layout_mode,
+            input,
+            force_independent_context_run,
+        )
     }
 
     fn finish_inside_layout(&self, node: Node) {
-        bump(FfiOp::ParentDidDimensionCallback);
-        // SAFETY: This matches a successful layout_inside_child call.
-        unsafe {
-            (self.callbacks.parent_did_dimension_child_root_box)(self.callbacks.context, node);
-        }
+        super::finish_child_layout(self.rust_context_handle, node);
     }
 
     fn child_layout_input(
@@ -1596,75 +1571,6 @@ impl BlockFormattingContext {
             has_table_grid_min_border_box_block_size: false,
             table_grid_min_border_box_block_size: CssPixels::default(),
         }
-    }
-
-    fn make_button_content_box_definite(
-        &self,
-        node: Node,
-        available_space: AvailableSpace,
-        constraints: FfiContainingBlockConstraints,
-        measured_content_block_size: Option<CssPixels>,
-    ) {
-        let facts = self.facts(node);
-        if !facts.uses_button_layout {
-            return;
-        }
-        // Flex/grid-inside buttons are their own flex/grid container and get no anonymous content wrapper,
-        // so there is nothing to make definite for centering.
-        let style = self.style(node);
-        if style.display.is_flex_inside() || style.display.is_grid_inside() {
-            return;
-        }
-        // With auto height and no min-height the content box already exactly wraps the content, so there is
-        // no extra space to center within and no need to force a definite content box.
-        if style.height.is_auto() && style.min_height.is_auto() {
-            return;
-        }
-        if self.used(node).has_definite_block_size() {
-            return;
-        }
-        let sizing = self.sizing();
-        let natural = measured_content_block_size.unwrap_or_else(|| {
-            sizing.measure_automatic_content_block_size(
-                node,
-                self.layout_mode,
-                self.used(node)
-                    .available_inner_space_or_constraints_from(available_space),
-                constraints,
-            )
-        });
-        let mut used_block_size = if sizing.should_treat_block_size_as_auto(node, available_space, constraints) {
-            natural
-        } else {
-            sizing.calculate_inner_block_size(node, available_space, style.height, constraints)
-        };
-        if !sizing.should_treat_max_block_size_as_none(node, available_space.block_size, constraints)
-            && !style.max_height.is_auto()
-        {
-            used_block_size = used_block_size.min(sizing.calculate_inner_block_size(
-                node,
-                available_space,
-                style.max_height,
-                constraints,
-            ));
-        }
-        if !style.min_height.is_auto() {
-            used_block_size = used_block_size.max(sizing.calculate_inner_block_size(
-                node,
-                available_space,
-                style.min_height,
-                constraints,
-            ));
-        }
-        // Only force a definite content box when the button's used block size exceeds its content block size, so a larger
-        // preferred or minimum size has room to center within. A content-sized box stays indefinite, so an intrinsic
-        // keyword does not resolve percentage-sized descendants.
-        if used_block_size <= natural {
-            return;
-        }
-        let used = self.used_mut(node);
-        used.set_content_block_size(used_block_size);
-        used.has_definite_block_size = true;
     }
 
     fn layout_block_level_box(
@@ -1949,8 +1855,9 @@ impl BlockFormattingContext {
                     inner_available_space.block_size = AvailableSize::definite(min_block_size);
                 }
             }
-            self.make_button_content_box_definite(
+            self.sizing().make_button_content_box_definite(
                 node,
+                self.layout_mode,
                 available_space,
                 input.containing_block_constraints,
                 measured_content_block_size,
@@ -2503,6 +2410,10 @@ impl BlockFormattingContext {
         self.parent_rust_fc
     }
 
+    pub(crate) fn rust_context_handle(&self) -> *mut c_void {
+        self.rust_context_handle
+    }
+
     pub(crate) fn layout_interrupting_block_inside_inline_context(
         &self,
         node: Node,
@@ -2905,7 +2816,7 @@ impl BlockFormattingContext {
     }
 
     pub(crate) fn greatest_child_inline_size_including_floats(&self, node: Node) -> CssPixels {
-        // Similar to FormattingContext::greatest_child_inline_size()
+        // Similar to the former C++ greatest_child_inline_size() helper.
         // but this one takes floats into account!
         let mut max_inline_size = CssPixels::default();
 

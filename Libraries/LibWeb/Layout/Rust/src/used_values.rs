@@ -240,6 +240,10 @@ impl UsedValuesCore {
         self.margin_bottom + self.border_box_bottom(collapsed)
     }
 
+    pub(crate) fn margin_box_top(&self, collapsed: bool) -> CssPixels {
+        self.margin_top + self.border_box_top(collapsed)
+    }
+
     pub(crate) fn margin_box_inline_size(&self, collapsed: bool) -> CssPixels {
         self.margin_left
             + self.border_box_left(collapsed)

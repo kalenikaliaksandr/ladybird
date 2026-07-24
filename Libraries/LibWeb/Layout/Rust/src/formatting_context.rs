@@ -8,10 +8,11 @@ use crate::abort_on_panic;
 use crate::box_facts::{FfiLayoutBoxFacts, FfiLayoutNavCallbacks};
 use crate::css_pixels::CssPixels;
 use crate::ffi_stats::{FfiOp, bump};
-use crate::geometry::{AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput};
+use crate::geometry::{FfiContainingBlockConstraints, FfiLayoutInput};
 use crate::layout_state::{FfiStaticPositionAlignment, FfiStaticPositionRect, state_mut};
 use crate::style_facts::FfiStyleFacts;
-use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
+use crate::used_values::{FfiCssPixelPoint, FfiSizeConstraint, UsedValuesCore};
+use std::collections::HashMap;
 use std::ffi::c_void;
 
 pub(crate) mod abspos {
@@ -24,8 +25,7 @@ pub(crate) mod abspos {
     use super::block;
     use super::grid::GridFormattingContext;
     use super::sizing::{Node, SizingContext};
-    use super::{FfiChildLayoutResult, FfiFlexAxis, FfiFormattingContextType, FfiLayoutFcCallbacks};
-    use crate::abort_on_panic;
+    use super::{FfiFlexAxis, FfiFormattingContextType, FfiLayoutFcCallbacks};
     use crate::css_pixels::CssPixels;
     use crate::ffi_stats::{FfiOp, bump};
     use crate::geometry::{
@@ -268,6 +268,7 @@ pub(crate) mod abspos {
         layout_mode: u8,
         context_box: Node,
         grid_context: *const GridFormattingContext,
+        rust_context_handle: *mut c_void,
     }
 
     impl AbsposEngine {
@@ -277,6 +278,7 @@ pub(crate) mod abspos {
             layout_mode: u8,
             context_box: Node,
             grid_context: *const GridFormattingContext,
+            rust_context_handle: *mut c_void,
         ) -> Self {
             assert!(!state.is_null());
             assert!(!context_box.is_null());
@@ -286,6 +288,7 @@ pub(crate) mod abspos {
                 layout_mode,
                 context_box,
                 grid_context,
+                rust_context_handle,
             }
         }
 
@@ -1534,19 +1537,13 @@ pub(crate) mod abspos {
             let style = self.style(node);
             let sizing = self.sizing();
             let initial = if self.facts(node).is_table_wrapper {
-                // SAFETY: The callback is synchronous and the node is a live
-                // table wrapper.
-                Some(unsafe {
-                    (self.callbacks.compute_table_box_inline_size_inside_wrapper)(
-                        self.callbacks.context,
-                        node,
-                        available_space,
-                        constraints,
-                        false,
-                        CssPixels::default(),
-                        0,
-                    )
-                })
+                Some(sizing.compute_table_box_inline_size_inside_wrapper(
+                    node,
+                    available_space,
+                    constraints,
+                    None,
+                    super::sizing::TableWrapperInlineSizeMode::ClampToAvailableInlineSize,
+                ))
             } else if style.width.is_auto() {
                 None
             } else {
@@ -1921,15 +1918,10 @@ pub(crate) mod abspos {
             let mut intrinsic_available_space = available_space;
             intrinsic_available_space.inline_size = AvailableSize::definite(self.used(node).content_inline_size);
             let initial = if self.facts(node).is_table_wrapper {
-                // SAFETY: The callback synchronously measures this live wrapper.
-                Some(unsafe {
-                    (self.callbacks.compute_table_box_block_size_inside_wrapper)(
-                        self.callbacks.context,
-                        node,
-                        available_space,
-                        constraints,
-                    )
-                })
+                Some(
+                    self.sizing()
+                        .compute_table_box_block_size_inside_wrapper(node, available_space, constraints),
+                )
             } else if self
                 .sizing()
                 .should_treat_block_size_as_auto(node, available_space, constraints)
@@ -2146,46 +2138,27 @@ pub(crate) mod abspos {
                 }
             }
 
-            bump(FfiOp::AbsposButtonDefiniteCallback);
-            // SAFETY: This callback retains the still-C++ button-specific
-            // measurement helper and mutates only this live used-values entry.
-            unsafe {
-                (self.callbacks.make_button_content_box_definite)(
-                    self.callbacks.context,
-                    node,
-                    available_space,
-                    constraints,
-                );
-            }
+            self.sizing()
+                .make_button_content_box_definite(node, self.layout_mode, available_space, constraints, None);
 
             let inner_available_space = self
                 .used(node)
                 .available_inner_space_or_constraints_from(available_space);
-            let mut child_result = FfiChildLayoutResult {
-                automatic_content_inline_size: CssPixels::default(),
-                automatic_content_block_size: CssPixels::default(),
-            };
-            bump(FfiOp::LayoutInsideCallback);
-            // SAFETY: The callback synchronously creates and runs a child
-            // formatting context and retains it in the bridge until the matching
-            // parent-dimension callback below.
-            let has_independent_context = unsafe {
-                (self.callbacks.layout_inside_child)(
-                    self.callbacks.context,
-                    node,
-                    LAYOUT_MODE_NORMAL,
-                    FfiLayoutInput {
-                        available_space: inner_available_space,
-                        containing_block_constraints: constraints,
-                        has_content_box_position_in_bfc_root: false,
-                        content_box_position_in_bfc_root: FfiCssPixelPoint::default(),
-                        has_table_grid_min_border_box_block_size: false,
-                        table_grid_min_border_box_block_size: CssPixels::default(),
-                    },
-                    false,
-                    &raw mut child_result,
-                )
-            };
+            let has_independent_context = super::layout_inside_child(
+                self.rust_context_handle,
+                node,
+                LAYOUT_MODE_NORMAL,
+                FfiLayoutInput {
+                    available_space: inner_available_space,
+                    containing_block_constraints: constraints,
+                    has_content_box_position_in_bfc_root: false,
+                    content_box_position_in_bfc_root: FfiCssPixelPoint::default(),
+                    has_table_grid_min_border_box_block_size: false,
+                    table_grid_min_border_box_block_size: CssPixels::default(),
+                },
+                false,
+            )
+            .is_some();
 
             if style.height.is_auto() {
                 self.compute_block_size(
@@ -2257,19 +2230,15 @@ pub(crate) mod abspos {
             };
             used_offset.inline_offset += used.margin_left + used.border_box_left(collapsed);
             used_offset.block_offset += used.margin_top + used.border_box_top(collapsed);
-            bump(FfiOp::PlaceChildCallback);
-            // SAFETY: Placement is synchronous and the bridge owns the live
-            // LayoutState wrapper.
-            unsafe {
-                (self.callbacks.place_child)(
-                    self.callbacks.context,
-                    node,
-                    FfiCssPixelPoint {
-                        x: used_offset.inline_offset,
-                        y: used_offset.block_offset,
-                    },
-                );
-            }
+            super::place_child(
+                self.state,
+                &self.callbacks,
+                node,
+                FfiCssPixelPoint {
+                    x: used_offset.inline_offset,
+                    y: used_offset.block_offset,
+                },
+            );
 
             // SAFETY: The callback only reads the LayoutState purpose.
             let is_measurement = unsafe { (self.callbacks.is_measurement_state)(self.callbacks.context) };
@@ -2283,12 +2252,7 @@ pub(crate) mod abspos {
             }
 
             if has_independent_context {
-                bump(FfiOp::ParentDidDimensionCallback);
-                // SAFETY: This consumes the child context retained by the
-                // matching layout_inside_child call.
-                unsafe {
-                    (self.callbacks.parent_did_dimension_child_root_box)(self.callbacks.context, node);
-                }
+                super::finish_child_layout(self.rust_context_handle, node);
             }
         }
 
@@ -2461,6 +2425,7 @@ pub(crate) mod abspos {
             instance.layout_mode,
             instance.box_,
             grid_context,
+            instance as *mut super::FormattingContextInstance as *mut c_void,
         )
         .layout_children(box_);
     }
@@ -2470,9 +2435,18 @@ pub(crate) mod abspos {
         callbacks: FfiLayoutFcCallbacks,
         layout_mode: u8,
         context_box: Node,
+        rust_context_handle: *mut c_void,
         box_: Node,
     ) {
-        AbsposEngine::new(state, callbacks, layout_mode, context_box, std::ptr::null()).layout_children(box_);
+        AbsposEngine::new(
+            state,
+            callbacks,
+            layout_mode,
+            context_box,
+            std::ptr::null(),
+            rust_context_handle,
+        )
+        .layout_children(box_);
     }
 
     pub(crate) fn compute_inset_native(
@@ -2484,52 +2458,21 @@ pub(crate) mod abspos {
         inline_size: CssPixels,
         block_size: CssPixels,
     ) {
-        AbsposEngine::new(state, callbacks, layout_mode, context_box, std::ptr::null()).compute_inset(
+        AbsposEngine::new(
+            state,
+            callbacks,
+            layout_mode,
+            context_box,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        )
+        .compute_inset(
             node,
             LogicalSize {
                 inline_size,
                 block_size,
             },
         );
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn rust_layout_abspos_layout_children(
-        state: *mut c_void,
-        context_box: Node,
-        layout_mode: u8,
-        callbacks: *const FfiLayoutFcCallbacks,
-    ) {
-        abort_on_panic(|| {
-            assert!(!callbacks.is_null());
-            // SAFETY: C++ passes a live table and Rust copies it immediately.
-            let callbacks = unsafe { *callbacks };
-            AbsposEngine::new(state, callbacks, layout_mode, context_box, std::ptr::null())
-                .layout_children(context_box);
-        });
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn rust_layout_abspos_compute_inset(
-        state: *mut c_void,
-        context_box: Node,
-        node: Node,
-        containing_block_inline_size: CssPixels,
-        containing_block_block_size: CssPixels,
-        callbacks: *const FfiLayoutFcCallbacks,
-    ) {
-        abort_on_panic(|| {
-            assert!(!callbacks.is_null());
-            // SAFETY: C++ passes a live table and Rust copies it immediately.
-            let callbacks = unsafe { *callbacks };
-            AbsposEngine::new(state, callbacks, LAYOUT_MODE_NORMAL, context_box, std::ptr::null()).compute_inset(
-                node,
-                LogicalSize {
-                    inline_size: containing_block_inline_size,
-                    block_size: containing_block_block_size,
-                },
-            );
-        });
     }
 
     pub(super) fn replay_for_instance(instance: &mut super::FormattingContextInstance, node: Node) {
@@ -2540,6 +2483,7 @@ pub(crate) mod abspos {
             instance.layout_mode,
             instance.box_,
             std::ptr::null(),
+            instance as *mut super::FormattingContextInstance as *mut c_void,
         )
         .replay(node);
     }
@@ -2618,13 +2562,24 @@ pub(crate) mod sizing {
         Block,
     }
 
-    struct MeasurementState {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum TableWrapperInlineSizeMode {
+        ClampToAvailableInlineSize,
+        UseTableUsedInlineSizeIfNotAuto,
+    }
+
+    pub(crate) struct MeasurementState {
+        owner_callbacks: FfiLayoutFcCallbacks,
         callbacks: FfiLayoutFcCallbacks,
         handles: FfiMeasurementState,
     }
 
     impl MeasurementState {
-        fn create(callbacks: FfiLayoutFcCallbacks, node: Node, constraints: FfiContainingBlockConstraints) -> Self {
+        pub(crate) fn create(
+            callbacks: FfiLayoutFcCallbacks,
+            node: Node,
+            constraints: FfiContainingBlockConstraints,
+        ) -> Self {
             bump(FfiOp::MeasurementStateCreateCallback);
             // SAFETY: The callback synchronously allocates a measurement-only C++
             // wrapper and returns its paired Rust state and root core.
@@ -2632,10 +2587,18 @@ pub(crate) mod sizing {
             assert!(!handles.cpp_state.is_null());
             assert!(!handles.rust_state.is_null());
             assert!(!handles.root_used_values.is_null());
-            Self { callbacks, handles }
+            assert!(!handles.callbacks.is_null());
+            // SAFETY: The measurement host stores this callback table for its
+            // whole lifetime, which is owned by `handles.cpp_state`.
+            let measurement_callbacks = unsafe { *handles.callbacks.cast::<FfiLayoutFcCallbacks>() };
+            Self {
+                owner_callbacks: callbacks,
+                callbacks: measurement_callbacks,
+                handles,
+            }
         }
 
-        fn root_used_mut(&mut self) -> &mut UsedValuesCore {
+        pub(crate) fn root_used_mut(&mut self) -> &mut UsedValuesCore {
             // SAFETY: The measurement state owns the root entry until Drop.
             unsafe { &mut *self.handles.root_used_values }
         }
@@ -2644,24 +2607,35 @@ pub(crate) mod sizing {
             self.run_with_layout_mode(node, LAYOUT_MODE_INTRINSIC_SIZING, input)
         }
 
-        fn run_with_layout_mode(
+        pub(crate) fn run_with_layout_mode(
             &self,
             node: Node,
             layout_mode: u8,
             input: FfiLayoutInput,
         ) -> super::FfiChildLayoutResult {
-            bump(FfiOp::MeasurementContextRunCallback);
-            // SAFETY: The C++ measurement wrapper, node, and input remain live
-            // for this synchronous dispatcher call.
-            unsafe {
-                (self.callbacks.run_measurement_context)(
-                    self.callbacks.context,
-                    self.handles.cpp_state,
-                    node,
-                    layout_mode,
-                    input,
-                )
+            let fc_type = super::independent_formatting_context_type(self.handles.rust_state, node, &self.callbacks);
+            let mut context = super::create_formatting_context(
+                self.handles.rust_state,
+                node,
+                std::ptr::null_mut(),
+                fc_type as u8,
+                layout_mode,
+                false,
+                self.callbacks,
+            );
+            super::run_formatting_context(&mut context, input);
+            super::FfiChildLayoutResult {
+                automatic_content_inline_size: context.automatic_content_inline_size,
+                automatic_content_block_size: context.automatic_content_block_size,
             }
+        }
+
+        pub(crate) fn rust_state(&self) -> *mut c_void {
+            self.handles.rust_state
+        }
+
+        pub(crate) fn callbacks(&self) -> &FfiLayoutFcCallbacks {
+            &self.callbacks
         }
     }
 
@@ -2670,7 +2644,7 @@ pub(crate) mod sizing {
             bump(FfiOp::MeasurementStateDestroyCallback);
             // SAFETY: Ownership of the C++ wrapper is returned exactly once.
             unsafe {
-                (self.callbacks.destroy_measurement_state)(self.callbacks.context, self.handles.cpp_state);
+                (self.owner_callbacks.destroy_measurement_state)(self.owner_callbacks.context, self.handles.cpp_state);
             }
         }
     }
@@ -2832,10 +2806,32 @@ pub(crate) mod sizing {
             unsafe { &*used }
         }
 
+        // The used-values store owns stable, disjoint entries and layout is
+        // single-threaded. Mutability is mediated by the opaque state pointer.
+        #[allow(clippy::mut_from_ref)]
+        fn used_mut(&self, node: Node) -> &mut UsedValuesCore {
+            let used = state_mut(self.state).used_values(&self.callbacks, node);
+            // SAFETY: Layout is single-threaded and this helper serializes
+            // mutations of the selected entry.
+            unsafe { &mut *used }
+        }
+
         fn parent(&self, node: Node) -> Node {
             bump(FfiOp::NavigationCallback);
             // SAFETY: Navigation is synchronous and the host owns the node tree.
             unsafe { (self.callbacks.navigation.parent)(self.callbacks.navigation.context, node) }
+        }
+
+        fn first_child(&self, node: Node) -> Node {
+            bump(FfiOp::NavigationCallback);
+            // SAFETY: Navigation is synchronous and the host owns the node tree.
+            unsafe { (self.callbacks.navigation.first_child)(self.callbacks.navigation.context, node) }
+        }
+
+        fn next_sibling(&self, node: Node) -> Node {
+            bump(FfiOp::NavigationCallback);
+            // SAFETY: Navigation is synchronous and the host owns the node tree.
+            unsafe { (self.callbacks.navigation.next_sibling)(self.callbacks.navigation.context, node) }
         }
 
         fn has_children(&self, node: Node) -> bool {
@@ -4213,6 +4209,242 @@ pub(crate) mod sizing {
                 .automatic_content_block_size
         }
 
+        pub(crate) fn make_button_content_box_definite(
+            &self,
+            node: Node,
+            layout_mode: u8,
+            available_space: AvailableSpace,
+            constraints: FfiContainingBlockConstraints,
+            measured_content_block_size: Option<CssPixels>,
+        ) {
+            let facts = self.facts(node);
+            if !facts.uses_button_layout {
+                return;
+            }
+            // Flex/grid-inside buttons are their own flex/grid container and get no anonymous content wrapper,
+            // so there is nothing to make definite for centering.
+            let style = self.style(node);
+            if style.display.is_flex_inside() || style.display.is_grid_inside() {
+                return;
+            }
+            // With auto height and no min-height the content box already exactly wraps the content, so there is
+            // no extra space to center within and no need to force a definite content box.
+            if style.height.is_auto() && style.min_height.is_auto() {
+                return;
+            }
+            if self.used(node).has_definite_block_size() {
+                return;
+            }
+            let natural = measured_content_block_size.unwrap_or_else(|| {
+                self.measure_automatic_content_block_size(
+                    node,
+                    layout_mode,
+                    self.used(node)
+                        .available_inner_space_or_constraints_from(available_space),
+                    constraints,
+                )
+            });
+            let mut used_block_size = if self.should_treat_block_size_as_auto(node, available_space, constraints) {
+                natural
+            } else {
+                self.calculate_inner_block_size(node, available_space, style.height, constraints)
+            };
+            if !self.should_treat_max_block_size_as_none(node, available_space.block_size, constraints)
+                && !style.max_height.is_auto()
+            {
+                used_block_size = used_block_size.min(self.calculate_inner_block_size(
+                    node,
+                    available_space,
+                    style.max_height,
+                    constraints,
+                ));
+            }
+            if !style.min_height.is_auto() {
+                used_block_size = used_block_size.max(self.calculate_inner_block_size(
+                    node,
+                    available_space,
+                    style.min_height,
+                    constraints,
+                ));
+            }
+            // Only force a definite content box when the button's used block size exceeds its content block size, so a larger
+            // preferred or minimum size has room to center within. A content-sized box stays indefinite, so an intrinsic
+            // keyword does not resolve percentage-sized descendants.
+            if used_block_size <= natural {
+                return;
+            }
+            let used = self.used_mut(node);
+            used.set_content_block_size(used_block_size);
+            used.has_definite_block_size = true;
+        }
+
+        fn table_box_inside_wrapper(&self, wrapper: Node) -> Node {
+            fn find(context: &SizingContext, parent: Node) -> Option<Node> {
+                let mut child = context.first_child(parent);
+                while !child.is_null() {
+                    let facts = context.facts(child);
+                    if facts.is_box && facts.display.is_table_inside() {
+                        return Some(child);
+                    }
+                    if let Some(table) = find(context, child) {
+                        return Some(table);
+                    }
+                    child = context.next_sibling(child);
+                }
+                None
+            }
+
+            find(self, wrapper).expect("table wrapper must contain a table box")
+        }
+
+        fn create_measurement_used_values(
+            measurement: &MeasurementState,
+            node: Node,
+            constraints: FfiContainingBlockConstraints,
+        ) -> *mut UsedValuesCore {
+            // SAFETY: The measurement host owns the node and allocates a paired
+            // C++ wrapper/Rust core entry synchronously.
+            let used = unsafe {
+                (measurement.callbacks().create_used_values)(
+                    measurement.callbacks().context,
+                    node,
+                    constraints.has_percentage_basis_inline_size,
+                    constraints.percentage_basis_inline_size,
+                    constraints.has_percentage_basis_block_size,
+                    constraints.percentage_basis_block_size,
+                )
+            };
+            assert!(!used.is_null());
+            used
+        }
+
+        // 17.5.2 Table width algorithms: the 'table-layout' property
+        // https://www.w3.org/TR/CSS22/tables.html#width-layout
+        pub(crate) fn compute_table_box_inline_size_inside_wrapper(
+            &self,
+            wrapper: Node,
+            available_space: AvailableSpace,
+            table_wrapper_constraints: FfiContainingBlockConstraints,
+            table_wrapper_containing_block_inline_size: Option<CssPixels>,
+            table_wrapper_inline_size_mode: TableWrapperInlineSizeMode,
+        ) -> CssPixels {
+            // CSS 2 says the table wrapper inline size is the border-edge inline size of the table grid box inside it.
+
+            let style = self.style(wrapper);
+            let containing_block_inline_size = table_wrapper_containing_block_inline_size
+                .unwrap_or_else(|| available_space.inline_size.to_px_or_zero());
+
+            // If 'margin-left', or 'margin-right' are computed as 'auto', their used value is '0'.
+            let margin_left = style.margin_left.to_px(containing_block_inline_size);
+            let margin_right = style.margin_right.to_px(containing_block_inline_size);
+
+            // table-wrapper can't have borders or paddings but it might have margin taken from table-root.
+            let available_inline_size = containing_block_inline_size - margin_left - margin_right;
+            let table_box = self.table_box_inside_wrapper(wrapper);
+
+            let measurement = MeasurementState::create(self.callbacks, wrapper, table_wrapper_constraints);
+
+            // The table wrapper is invisible to percentage resolution, so the table box gets the
+            // wrapper's constraints unchanged. Callers measuring a table wrapper for grid alignment
+            // pass the grid-area inline size as the wrapper's percentage basis.
+            let table_constraints = table_wrapper_constraints;
+            let table_used = Self::create_measurement_used_values(&measurement, table_box, table_constraints);
+            let table_style = self.style(table_box);
+            // SAFETY: This is the newly allocated table entry.
+            unsafe {
+                (*table_used).border_left = table_style.border_left_width;
+                (*table_used).border_right = table_style.border_right_width;
+                (*table_used).padding_left = table_style.padding_left.to_px(containing_block_inline_size);
+                (*table_used).padding_right = table_style.padding_right.to_px(containing_block_inline_size);
+            }
+
+            let mut context = super::create_formatting_context(
+                measurement.rust_state(),
+                table_box,
+                std::ptr::null_mut(),
+                super::FfiFormattingContextType::Table as u8,
+                LAYOUT_MODE_INTRINSIC_SIZING,
+                false,
+                *measurement.callbacks(),
+            );
+            // SAFETY: The table entry remains live for the measurement host's lifetime.
+            let table_available = unsafe { (*table_used).available_inner_space_or_constraints_from(available_space) };
+            super::table::run_until_inline_size_calculation(
+                &mut context,
+                FfiLayoutInput {
+                    available_space: table_available,
+                    containing_block_constraints: table_constraints,
+                    has_content_box_position_in_bfc_root: false,
+                    content_box_position_in_bfc_root: Default::default(),
+                    has_table_grid_min_border_box_block_size: false,
+                    table_grid_min_border_box_block_size: CssPixels::default(),
+                },
+                true,
+            );
+
+            // SAFETY: The table entry remains live for the measurement host's lifetime.
+            let table_used_inline_size = unsafe { (*table_used).border_box_inline_size(false) };
+            if table_wrapper_inline_size_mode == TableWrapperInlineSizeMode::UseTableUsedInlineSizeIfNotAuto
+                && !table_style.width.is_auto()
+            {
+                return table_used_inline_size;
+            }
+            if available_space.inline_size.is_definite() {
+                table_used_inline_size.min(available_inline_size)
+            } else {
+                table_used_inline_size
+            }
+        }
+
+        // 17.5.3 Table height algorithms
+        // https://www.w3.org/TR/CSS22/tables.html#height-layout
+        pub(crate) fn compute_table_box_block_size_inside_wrapper(
+            &self,
+            wrapper: Node,
+            available_space: AvailableSpace,
+            table_wrapper_constraints: FfiContainingBlockConstraints,
+        ) -> CssPixels {
+            // The table wrapper block size should equal the block size of the table box it contains.
+
+            let style = self.style(wrapper);
+            let containing_block_inline_size = available_space.inline_size.to_px_or_zero();
+            let containing_block_block_size = available_space.block_size.to_px_or_zero();
+
+            // If 'margin-top', or 'margin-bottom' are computed as 'auto', their used value is '0'.
+            let margin_top = style.margin_top.to_px(containing_block_inline_size);
+            let margin_bottom = style.margin_bottom.to_px(containing_block_inline_size);
+
+            // table-wrapper can't have borders or paddings but it might have margin taken from table-root.
+            let available_block_size = containing_block_block_size - margin_top - margin_bottom;
+            let table_box = self.table_box_inside_wrapper(wrapper);
+
+            let measurement = MeasurementState::create(self.callbacks, wrapper, table_wrapper_constraints);
+            measurement.run_with_layout_mode(
+                wrapper,
+                LAYOUT_MODE_INTRINSIC_SIZING,
+                FfiLayoutInput {
+                    available_space: self
+                        .used(wrapper)
+                        .available_inner_space_or_constraints_from(available_space),
+                    containing_block_constraints: table_wrapper_constraints,
+                    has_content_box_position_in_bfc_root: false,
+                    content_box_position_in_bfc_root: Default::default(),
+                    has_table_grid_min_border_box_block_size: false,
+                    table_grid_min_border_box_block_size: CssPixels::default(),
+                },
+            );
+
+            let table_used = state_mut(measurement.rust_state()).used_values(measurement.callbacks(), table_box);
+            // SAFETY: The table entry remains live for the measurement host's lifetime.
+            let table_used_block_size =
+                unsafe { (*table_used).border_box_block_size((*table_used).uses_collapsing_borders_model) };
+            if available_space.block_size.is_definite() {
+                table_used_block_size.min(available_block_size)
+            } else {
+                table_used_block_size
+            }
+        }
+
         pub(crate) fn calculate_fit_content_size(
             &self,
             node: Node,
@@ -4442,10 +4674,304 @@ pub(crate) mod sizing {
     }
 }
 
+#[path = "replaced_with_children_formatting_context.rs"]
+mod replaced_with_children;
 #[path = "svg_formatting_context.rs"]
 pub(crate) mod svg;
 #[path = "table_formatting_context.rs"]
 pub(crate) mod table;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BaselineSet {
+    First,
+    Last,
+}
+
+fn navigate_for_baseline(
+    callbacks: &FfiLayoutFcCallbacks,
+    callback: crate::box_facts::FfiLayoutNavCallback,
+    node: *mut c_void,
+) -> *mut c_void {
+    bump(FfiOp::NavigationCallback);
+    // SAFETY: Navigation is synchronous and the host owns every node.
+    unsafe { callback(callbacks.navigation.context, node) }
+}
+
+pub(crate) fn place_child(
+    state: *mut c_void,
+    callbacks: &FfiLayoutFcCallbacks,
+    node: *mut c_void,
+    offset: FfiCssPixelPoint,
+) {
+    let used = state_mut(state).used_values(callbacks, node);
+    // SAFETY: The Rust layout state owns this stable entry and placement is
+    // assigned once per layout run.
+    unsafe {
+        assert!(!(*used).has_content_offset);
+        (*used).has_content_offset = true;
+        (*used).content_offset = offset;
+    }
+}
+
+pub(crate) fn register_contained_abspos_child(
+    state: *mut c_void,
+    callbacks: &FfiLayoutFcCallbacks,
+    child: *mut c_void,
+    static_position_rect: FfiStaticPositionRect,
+) {
+    let mut target = navigate_for_baseline(callbacks, callbacks.navigation.containing_block, child);
+    if target.is_null() {
+        return;
+    }
+    loop {
+        let containing_block = navigate_for_baseline(callbacks, callbacks.navigation.containing_block, target);
+        let facts = state_mut(state).box_facts(callbacks, target);
+        if containing_block.is_null() || formatting_context_type_created_by_box(facts).is_some() {
+            break;
+        }
+        target = containing_block;
+    }
+    let child_facts = state_mut(state).box_facts(callbacks, child);
+    bump(FfiOp::AbsposRegister);
+    state_mut(state).register_contained_abspos_child(target, child, child_facts.layout_index, static_position_rect);
+}
+
+pub(crate) fn box_baseline(
+    state: *mut c_void,
+    callbacks: &FfiLayoutFcCallbacks,
+    box_: *mut c_void,
+    mut baseline_set: BaselineSet,
+) -> CssPixels {
+    let facts = state_mut(state).box_facts(callbacks, box_);
+    let style = state_mut(state).style_facts(callbacks, box_);
+    let used_pointer = state_mut(state).used_values(callbacks, box_);
+    // SAFETY: The Rust layout state owns this stable entry.
+    let used = unsafe { &*used_pointer };
+    let collapsed = used.uses_collapsing_borders_model;
+
+    // https://drafts.csswg.org/css2/#propdef-vertical-align
+    if facts.vertical_align_applies && style.vertical_align_is_keyword {
+        match style.vertical_align_keyword {
+            crate::css_enums::vertical_align::TOP => {
+                // Top: Align the top of the aligned subtree with the top of the line box.
+                return used.border_box_top(collapsed);
+            }
+            crate::css_enums::vertical_align::MIDDLE => {
+                // Middle: Align the vertical midpoint of the box with the baseline of the parent box plus half the x-height of the parent.
+                let containing_block = navigate_for_baseline(callbacks, callbacks.navigation.containing_block, box_);
+                assert!(!containing_block.is_null());
+                let containing_style = state_mut(state).style_facts(callbacks, containing_block);
+                return used.margin_box_block_size(collapsed) / 2
+                    + CssPixels::nearest_value_for_f32(containing_style.font_x_height / 2.0);
+            }
+            crate::css_enums::vertical_align::BOTTOM => {
+                // Bottom: Align the bottom of the aligned subtree with the bottom of the line box.
+                return used.content_block_size + used.margin_box_top(collapsed);
+            }
+            crate::css_enums::vertical_align::TEXT_TOP => {
+                // TextTop: Align the top of the box with the top of the parent's content area (see 10.6.1).
+                return style.font_size;
+            }
+            crate::css_enums::vertical_align::TEXT_BOTTOM => {
+                // TextBottom: Align the bottom of the box with the bottom of the parent's content area (see 10.6.1).
+                let containing_block = navigate_for_baseline(callbacks, callbacks.navigation.containing_block, box_);
+                assert!(!containing_block.is_null());
+                let containing_style = state_mut(state).style_facts(callbacks, containing_block);
+                return used.margin_box_block_size(collapsed)
+                    - CssPixels::nearest_value_for_f32(containing_style.font_descent);
+            }
+            _ => {}
+        }
+    }
+
+    // https://drafts.csswg.org/css-inline-3/#baseline-source
+    // auto: Specifies last-baseline alignment for inline-block, first-baseline alignment for everything else.
+    // NB: Callers ask an inline-level box for its last baseline set, since that is what CSS2's inline-block rule below
+    //     describes; inline-level flex and grid containers participate with their first baseline set instead.
+    let display = facts.display;
+    let is_flex_or_grid_container = display.is_flex_inside() || display.is_grid_inside();
+    if display.is_inline_outside() && is_flex_or_grid_container {
+        baseline_set = BaselineSet::First;
+    }
+
+    // https://drafts.csswg.org/css2/#propdef-vertical-align
+    // The baseline of an 'inline-block' is the baseline of its last line box in the normal flow, unless it has either
+    // no in-flow line boxes or if its 'overflow' property has a computed value other than 'visible', in which case the
+    // baseline is the bottom margin edge.
+    // https://drafts.csswg.org/css-align-3/#baseline-rules
+    // CSS Align restates this overflow exception as only applying to the last baseline set: "for legacy reasons if its
+    // baseline-source is auto (the initial value) a block-level or inline-level block container that is a scroll
+    // container always has a last baseline set, whose baselines all correspond to its block-end margin edge". First
+    // baseline sets always derive from content; so do flex and grid containers, which are not block containers.
+    // FIXME: Per CSS Align, a scroll container's content-derived baseline position should be clamped to its border
+    //        edge.
+    let has_visible_overflow = style.overflow_x == crate::css_enums::overflow::VISIBLE
+        && style.overflow_y == crate::css_enums::overflow::VISIBLE;
+    let derive_baseline_from_content =
+        baseline_set == BaselineSet::First || is_flex_or_grid_container || has_visible_overflow;
+
+    // AD-HOC: We also use the content-derived baseline for <input> elements with block children. Per the HTML spec,
+    //         inputs have `overflow: clip !important`, so CSS2 says to use bottom margin edge. However, the internal
+    //         shadow tree baseline should determine the control's baseline for proper alignment with adjacent text.
+    //         https://html.spec.whatwg.org/multipage/rendering.html#form-controls
+    let input_derives_from_children = facts.is_html_input_element && !facts.children_are_inline;
+
+    let content_baseline = match baseline_set {
+        BaselineSet::First if used.has_first_baseline => Some(used.first_baseline),
+        BaselineSet::Last if used.has_last_baseline => Some(used.last_baseline),
+        _ => None,
+    };
+    if let Some(content_baseline) = content_baseline
+        && (derive_baseline_from_content || input_derives_from_children)
+    {
+        return used.margin_box_top(collapsed) + content_baseline;
+    }
+
+    // If the box has no baseline set, the bottom margin edge of the box is used.
+    used.margin_box_block_size(collapsed)
+}
+
+pub(crate) fn compute_and_store_baselines(
+    state: *mut c_void,
+    callbacks: &FfiLayoutFcCallbacks,
+    box_: *mut c_void,
+    inhibits_floating: bool,
+) {
+    let used_pointer = state_mut(state).used_values(callbacks, box_);
+    // NOTE: This may run more than once for the same UsedValues (e.g. table cells are laid out twice),
+    //       so reset both baselines before deriving them anew.
+    // SAFETY: The Rust layout state owns this stable entry.
+    unsafe {
+        (*used_pointer).has_first_baseline = false;
+        (*used_pointer).has_last_baseline = false;
+    }
+
+    let facts = state_mut(state).box_facts(callbacks, box_);
+    let line_count = state_mut(state)
+        .line_data(facts.layout_index)
+        .map_or(0, |data| data.line_boxes.len());
+    if line_count > 0 {
+        let baseline_for_line_box = |line_index: usize, baseline_set: BaselineSet| -> CssPixels {
+            let (has_block_level_box, block_start, baseline, fragment_count, fragment_node) = {
+                let line = &state_mut(state).line_data(facts.layout_index).unwrap().line_boxes[line_index];
+                (
+                    line.has_block_level_box,
+                    line.physical_vertical_end() - line.block_length,
+                    line.baseline,
+                    line.fragments.len(),
+                    line.fragments.first().map(|fragment| fragment.layout_node),
+                )
+            };
+            if !has_block_level_box {
+                return block_start + baseline;
+            }
+
+            assert_eq!(fragment_count, 1);
+            let fragment_node = fragment_node.expect("block-level line must have one fragment");
+            let block_child_state = state_mut(state).used_values(callbacks, fragment_node);
+            // SAFETY: The Rust layout state owns this stable entry.
+            let block_child_state = unsafe { &*block_child_state };
+            let child_offset_from_margin_edge = block_child_state.content_offset.y
+                - block_child_state.margin_box_top(block_child_state.uses_collapsing_borders_model);
+            child_offset_from_margin_edge + box_baseline(state, callbacks, fragment_node, baseline_set)
+        };
+
+        let mut first_line_index = 0;
+        while first_line_index < line_count {
+            let is_empty =
+                state_mut(state).line_data(facts.layout_index).unwrap().line_boxes[first_line_index].is_empty();
+            if !is_empty {
+                break;
+            }
+            first_line_index += 1;
+        }
+        if first_line_index == line_count {
+            first_line_index = 0;
+        }
+        let first_baseline = baseline_for_line_box(first_line_index, BaselineSet::First);
+
+        let mut last_line_index = line_count - 1;
+        while last_line_index > 0 {
+            let is_empty =
+                state_mut(state).line_data(facts.layout_index).unwrap().line_boxes[last_line_index].is_empty();
+            if !is_empty {
+                break;
+            }
+            last_line_index -= 1;
+        }
+        let last_baseline = baseline_for_line_box(last_line_index, BaselineSet::Last);
+        // SAFETY: The stable root entry remains live throughout this pass.
+        unsafe {
+            (*used_pointer).has_first_baseline = true;
+            (*used_pointer).first_baseline = first_baseline;
+            (*used_pointer).has_last_baseline = true;
+            (*used_pointer).last_baseline = last_baseline;
+        }
+        return;
+    }
+
+    if navigate_for_baseline(callbacks, callbacks.navigation.first_child, box_).is_null() || facts.children_are_inline {
+        return;
+    }
+
+    // Derive baselines from the first/last in-flow child that has a baseline set of its own.
+    // https://drafts.csswg.org/css-flexbox-1/#flex-baselines
+    // Otherwise, if the flex container has at least one flex item, the flex container's first/last main-axis baseline
+    // set is generated from the alignment baseline of the startmost/endmost flex item.
+    // https://drafts.csswg.org/css-grid-1/#grid-baselines
+    // Otherwise, the grid container's first (last) baseline set is generated from the alignment baseline of the first
+    // (last) grid item in row-major grid order.
+    // FIXME: This does not yet select the spec-defined startmost/endmost flex item, or the first/last grid item in
+    //        row-major grid order.
+    let baseline_from_children = |baseline_set: BaselineSet| -> Option<CssPixels> {
+        let mut children = Vec::new();
+        let mut child = navigate_for_baseline(callbacks, callbacks.navigation.first_child, box_);
+        while !child.is_null() {
+            children.push(child);
+            child = navigate_for_baseline(callbacks, callbacks.navigation.next_sibling, child);
+        }
+        if baseline_set == BaselineSet::Last {
+            children.reverse();
+        }
+        for child in children {
+            let child_facts = state_mut(state).box_facts(callbacks, child);
+            if !child_facts.is_box {
+                continue;
+            }
+            if child_facts.is_absolutely_positioned || (!inhibits_floating && child_facts.is_floating) {
+                continue;
+            }
+            let child_state = state_mut(state).try_used_values(callbacks, child);
+            if child_state.is_null() {
+                continue;
+            }
+            // SAFETY: A non-null pointer is a stable state entry.
+            let child_state = unsafe { &*child_state };
+            match baseline_set {
+                BaselineSet::First if child_state.has_first_baseline => {}
+                BaselineSet::Last if child_state.has_last_baseline => {}
+                _ => continue,
+            }
+            let child_offset_from_margin_edge =
+                child_state.content_offset.y - child_state.margin_box_top(child_state.uses_collapsing_borders_model);
+            return Some(child_offset_from_margin_edge + box_baseline(state, callbacks, child, baseline_set));
+        }
+        None
+    };
+    let first_baseline = baseline_from_children(BaselineSet::First);
+    let last_baseline = baseline_from_children(BaselineSet::Last);
+    // SAFETY: The stable root entry remains live throughout this pass.
+    unsafe {
+        if let Some(value) = first_baseline {
+            (*used_pointer).has_first_baseline = true;
+            (*used_pointer).first_baseline = value;
+        }
+        if let Some(value) = last_baseline {
+            (*used_pointer).has_last_baseline = true;
+            (*used_pointer).last_baseline = value;
+        }
+    }
+}
 
 const NO_FORMATTING_CONTEXT: u8 = u8::MAX;
 
@@ -4509,8 +5035,7 @@ pub struct FfiChildLayoutResult {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-pub struct FfiMeasuredCellContent {
+struct MeasuredCellContent {
     pub content_block_size: CssPixels,
     pub first_baseline: CssPixels,
 }
@@ -4521,6 +5046,7 @@ pub struct FfiMeasurementState {
     pub cpp_state: *mut c_void,
     pub rust_state: *mut c_void,
     pub root_used_values: *mut UsedValuesCore,
+    pub callbacks: *const c_void,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -4677,32 +5203,14 @@ pub struct FfiLayoutFcCallbacks {
     pub anchor_function_fallback: unsafe extern "C" fn(*mut c_void, *const c_void) -> abspos::FfiAnchorFallbackFacts,
     pub set_resolved_anchor_insets: unsafe extern "C" fn(*mut c_void, *mut c_void, abspos::FfiResolvedAnchorInsets),
     pub set_default_scroll_shift: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, bool, bool),
-    pub layout_inside_child:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, u8, FfiLayoutInput, bool, *mut FfiChildLayoutResult) -> bool,
-    pub parent_did_dimension_child_root_box: unsafe extern "C" fn(*mut c_void, *mut c_void),
-    pub discard_child_context: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub set_table_cell_coordinates: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, usize, usize, usize),
     pub set_override_borders_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const FfiBordersData),
-    pub place_child: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiCssPixelPoint),
-    pub box_baseline: unsafe extern "C" fn(*mut c_void, *mut c_void, u8) -> CssPixels,
-    pub compute_and_store_baselines: unsafe extern "C" fn(*mut c_void, *mut c_void),
-    pub layout_absolutely_positioned_children: unsafe extern "C" fn(*mut c_void, *mut c_void),
-    pub measure_table_cell_content: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        u8,
-        *const UsedValuesCore,
-        AvailableSpace,
-        *mut FfiMeasuredCellContent,
-    ) -> bool,
     pub can_skip_is_anonymous_text_run: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
     pub set_flex_item: unsafe extern "C" fn(*mut c_void, *mut c_void, bool),
     pub set_grid_item: unsafe extern "C" fn(*mut c_void, *mut c_void, bool),
     pub create_measurement_state:
         unsafe extern "C" fn(*mut c_void, *mut c_void, FfiContainingBlockConstraints) -> FfiMeasurementState,
     pub destroy_measurement_state: unsafe extern "C" fn(*mut c_void, *mut c_void),
-    pub run_measurement_context:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, u8, FfiLayoutInput) -> FfiChildLayoutResult,
     pub intrinsic_size_cache_get: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -4712,21 +5220,6 @@ pub struct FfiLayoutFcCallbacks {
     ) -> bool,
     pub intrinsic_size_cache_put:
         unsafe extern "C" fn(*mut c_void, *mut c_void, FfiIntrinsicSizeCacheKind, FfiIntrinsicSizeCacheKey, CssPixels),
-    pub compute_table_box_block_size_inside_wrapper:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSpace, FfiContainingBlockConstraints) -> CssPixels,
-    pub compute_table_box_inline_size_inside_wrapper: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        AvailableSpace,
-        FfiContainingBlockConstraints,
-        bool,
-        CssPixels,
-        u8,
-    ) -> CssPixels,
-    pub register_contained_abspos_child: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiStaticPositionRect),
-    pub compute_inset: unsafe extern "C" fn(*mut c_void, *mut c_void, CssPixels, CssPixels),
-    pub make_button_content_box_definite:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSpace, FfiContainingBlockConstraints),
     pub set_flex_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const FfiFlexLayoutData),
     pub set_grid_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const grid::facts::FfiGridLayoutData),
     pub set_used_grid_template_tracks: unsafe extern "C" fn(
@@ -4750,19 +5243,20 @@ pub(crate) struct FormattingContextInstance {
     should_collect_devtools_layout_data: bool,
     automatic_content_inline_size: CssPixels,
     automatic_content_block_size: CssPixels,
+    child_contexts: HashMap<usize, Box<FormattingContextInstance>>,
 }
 
 fn instance_mut(fc: *mut c_void) -> &'static mut FormattingContextInstance {
     assert!(!fc.is_null());
-    // SAFETY: FC pointers are created below, owned by one C++ shim, and
-    // returned for destruction exactly once.
+    // SAFETY: Formatting-context pointers refer to stable Box allocations
+    // owned by either a top-level pass or their parent context.
     unsafe { &mut *fc.cast::<FormattingContextInstance>() }
 }
 
 pub(crate) fn instance_ref(fc: *mut c_void) -> &'static FormattingContextInstance {
     assert!(!fc.is_null());
-    // SAFETY: Formatting-context handles remain live until their single
-    // matching destroy call.
+    // SAFETY: Formatting-context handles remain live while their owning
+    // top-level pass or parent context is active.
     unsafe { &*fc.cast::<FormattingContextInstance>() }
 }
 
@@ -4831,21 +5325,6 @@ pub(crate) fn formatting_context_type_created_by_box(facts: FfiLayoutBoxFacts) -
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_owns_fc_type(fc_type: u8) -> bool {
-    abort_on_panic(|| {
-        matches!(
-            fc_type,
-            type_ if type_ == FfiFormattingContextType::Block as u8
-                || type_ == FfiFormattingContextType::Flex as u8
-                || type_ == FfiFormattingContextType::Table as u8
-                || type_ == FfiFormattingContextType::Grid as u8
-                || type_ == FfiFormattingContextType::Svg as u8
-                || type_ == FfiFormattingContextType::AbsposReplay as u8
-        )
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn rust_layout_formatting_context_type_for_box(facts: FfiLayoutBoxFacts) -> u8 {
     abort_on_panic(|| {
         bump(FfiOp::FcTypeDecision);
@@ -4855,71 +5334,76 @@ pub extern "C" fn rust_layout_formatting_context_type_for_box(facts: FfiLayoutBo
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_fc_create(
+fn create_formatting_context(
     state: *mut c_void,
     box_: *mut c_void,
     parent_rust_fc: *mut c_void,
     fc_type: u8,
     layout_mode: u8,
     should_collect_devtools_layout_data: bool,
-    callbacks: *const FfiLayoutFcCallbacks,
-) -> *mut c_void {
-    abort_on_panic(|| {
-        bump(FfiOp::FcCreate);
-        assert!(!state.is_null());
-        assert!(!box_.is_null());
-        assert!(!callbacks.is_null());
-        // SAFETY: C++ passes a live callback table and Rust copies it before
-        // returning across the boundary.
-        let callbacks = unsafe { *callbacks };
-        let root_facts = state_mut(state).box_facts(&callbacks, box_);
-        if fc_type == FfiFormattingContextType::Block as u8
-            && state_mut(state).mark_bfc_root_fact_builds_excluded(root_facts.layout_index)
-        {
-            let _ = state_mut(state).style_facts(&callbacks, box_);
-            // Root setup is BFC implementation overhead rather than a newly
-            // visited box. Preserve the pre-flip counter semantics while
-            // retaining both facts in the shared per-pass caches.
-            crate::ffi_stats::exclude_bfc_root_fact_builds();
-        }
-        let block_context = (fc_type == FfiFormattingContextType::Block as u8).then(|| {
-            Box::new(block::BlockFormattingContext::new(
-                state,
-                box_,
-                parent_rust_fc,
-                layout_mode,
-                callbacks,
-            ))
-        });
-        let grid_context = (fc_type == FfiFormattingContextType::Grid as u8).then(|| {
-            Box::new(grid::GridFormattingContext::new(
-                state,
-                box_,
-                parent_rust_fc,
-                layout_mode,
-                callbacks,
-                should_collect_devtools_layout_data,
-            ))
-        });
-        let svg_context = (fc_type == FfiFormattingContextType::Svg as u8)
-            .then(|| Box::new(svg::SvgFormattingContext::new(state, box_, layout_mode, callbacks)));
-        Box::into_raw(Box::new(FormattingContextInstance {
+    callbacks: FfiLayoutFcCallbacks,
+) -> Box<FormattingContextInstance> {
+    bump(FfiOp::FcCreate);
+    assert!(!state.is_null());
+    assert!(!box_.is_null());
+    let root_facts = state_mut(state).box_facts(&callbacks, box_);
+    if fc_type == FfiFormattingContextType::Block as u8
+        && state_mut(state).mark_bfc_root_fact_builds_excluded(root_facts.layout_index)
+    {
+        let _ = state_mut(state).style_facts(&callbacks, box_);
+        // Root setup is BFC implementation overhead rather than a newly
+        // visited box. Preserve the pre-flip counter semantics while
+        // retaining both facts in the shared per-pass caches.
+        crate::ffi_stats::exclude_bfc_root_fact_builds();
+    }
+
+    let mut instance = Box::new(FormattingContextInstance {
+        state,
+        box_,
+        parent_rust_fc,
+        fc_type,
+        layout_mode,
+        callbacks,
+        block_context: None,
+        grid_context: None,
+        svg_context: None,
+        should_collect_devtools_layout_data,
+        automatic_content_inline_size: CssPixels::default(),
+        automatic_content_block_size: CssPixels::default(),
+        child_contexts: HashMap::new(),
+    });
+    let rust_context_handle = (&raw mut *instance).cast();
+    if fc_type == FfiFormattingContextType::Block as u8 {
+        instance.block_context = Some(Box::new(block::BlockFormattingContext::new(
             state,
             box_,
             parent_rust_fc,
-            fc_type,
+            rust_context_handle,
             layout_mode,
             callbacks,
-            block_context,
-            grid_context,
-            svg_context,
+        )));
+    }
+    if fc_type == FfiFormattingContextType::Grid as u8 {
+        instance.grid_context = Some(Box::new(grid::GridFormattingContext::new(
+            state,
+            box_,
+            parent_rust_fc,
+            rust_context_handle,
+            layout_mode,
+            callbacks,
             should_collect_devtools_layout_data,
-            automatic_content_inline_size: CssPixels::default(),
-            automatic_content_block_size: CssPixels::default(),
-        }))
-        .cast()
-    })
+        )));
+    }
+    if fc_type == FfiFormattingContextType::Svg as u8 {
+        instance.svg_context = Some(Box::new(svg::SvgFormattingContext::new(
+            state,
+            box_,
+            rust_context_handle,
+            layout_mode,
+            callbacks,
+        )));
+    }
+    instance
 }
 
 fn navigate(
@@ -4939,19 +5423,17 @@ fn register_table_abspos_descendants(instance: &mut FormattingContextInstance, p
         let facts = state_mut(instance.state).box_facts(&instance.callbacks, child);
         if facts.is_box {
             if facts.is_absolutely_positioned {
-                // SAFETY: Registration is synchronous and the host owns the child.
-                unsafe {
-                    (instance.callbacks.register_contained_abspos_child)(
-                        instance.callbacks.context,
-                        child,
-                        FfiStaticPositionRect {
-                            rect: Default::default(),
-                            inline_alignment: FfiStaticPositionAlignment::Start,
-                            block_alignment: FfiStaticPositionAlignment::Start,
-                            alignment_derives_from_own_computed_values: false,
-                        },
-                    );
-                }
+                register_contained_abspos_child(
+                    instance.state,
+                    &instance.callbacks,
+                    child,
+                    FfiStaticPositionRect {
+                        rect: Default::default(),
+                        inline_alignment: FfiStaticPositionAlignment::Start,
+                        block_alignment: FfiStaticPositionAlignment::Start,
+                        alignment_derives_from_own_computed_values: false,
+                    },
+                );
             }
             if formatting_context_type_created_by_box(facts).is_none() {
                 register_table_abspos_descendants(instance, child);
@@ -4963,165 +5445,306 @@ fn register_table_abspos_descendants(instance: &mut FormattingContextInstance, p
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_fc_parent_did_dimension(fc: *mut c_void) {
-    abort_on_panic(|| {
-        if instance_ref(fc).fc_type == FfiFormattingContextType::Block as u8 {
-            let context = instance_ref(fc).block_context.as_deref().unwrap();
-            context.parent_context_did_dimension_child_root_box();
-            let instance = instance_mut(fc);
-            // The table formatting context handles cell abspos layout after vertical alignment.
-            // SAFETY: This reads the live context box's display.
-            let is_table_cell =
-                unsafe { (instance.callbacks.is_table_cell)(instance.callbacks.context, instance.box_) };
-            if !is_table_cell {
-                let box_ = instance.box_;
-                abspos::layout_children_for_instance(instance, box_);
-            }
-            return;
-        }
-        let instance = instance_mut(fc);
-        if instance.layout_mode != 0 {
-            return;
-        }
-        match instance.fc_type {
-            type_ if type_ == FfiFormattingContextType::Table as u8 => {
-                register_table_abspos_descendants(instance, instance.box_);
-            }
-            type_ if type_ == FfiFormattingContextType::Flex as u8 => {
-                flex::parent_did_dimension(instance);
-            }
-            type_ if type_ == FfiFormattingContextType::Grid as u8 => {
-                instance.grid_context.as_ref().unwrap().parent_did_dimension();
-            }
-            type_ if type_ == FfiFormattingContextType::Svg as u8 => {}
-            _ => panic!("no Rust parent-dimension implementation for this formatting context"),
-        }
-        // SAFETY: This reads the live context box's display without
-        // populating the Rust facts cache solely for this guard.
+fn parent_did_dimension(instance: &mut FormattingContextInstance) {
+    if instance.fc_type == FfiFormattingContextType::Block as u8 {
+        let context = instance.block_context.as_deref().unwrap();
+        context.parent_context_did_dimension_child_root_box();
+        // The table formatting context handles cell abspos layout after vertical alignment.
+        // SAFETY: This reads the live context box's display.
         let is_table_cell = unsafe { (instance.callbacks.is_table_cell)(instance.callbacks.context, instance.box_) };
         if !is_table_cell {
             let box_ = instance.box_;
             abspos::layout_children_for_instance(instance, box_);
         }
-    });
+        return;
+    }
+    if instance.layout_mode != 0 {
+        return;
+    }
+    match instance.fc_type {
+        type_ if type_ == FfiFormattingContextType::Table as u8 => {
+            register_table_abspos_descendants(instance, instance.box_);
+        }
+        type_ if type_ == FfiFormattingContextType::Flex as u8 => {
+            flex::parent_did_dimension(instance);
+        }
+        type_ if type_ == FfiFormattingContextType::Grid as u8 => {
+            instance.grid_context.as_ref().unwrap().parent_did_dimension();
+        }
+        type_ if type_ == FfiFormattingContextType::Svg as u8 => {}
+        type_ if type_ == FfiFormattingContextType::ReplacedWithChildren as u8 => {
+            replaced_with_children::parent_did_dimension(instance);
+            return;
+        }
+        type_
+            if type_ == FfiFormattingContextType::InternalReplaced as u8
+                || type_ == FfiFormattingContextType::InternalDummy as u8 =>
+        {
+            return;
+        }
+        _ => panic!("no Rust parent-dimension implementation for this formatting context"),
+    }
+    // SAFETY: This reads the live context box's display without
+    // populating the Rust facts cache solely for this guard.
+    let is_table_cell = unsafe { (instance.callbacks.is_table_cell)(instance.callbacks.context, instance.box_) };
+    if !is_table_cell {
+        let box_ = instance.box_;
+        abspos::layout_children_for_instance(instance, box_);
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_fc_replay_abspos(fc: *mut c_void, box_: *mut c_void) {
-    abort_on_panic(|| {
-        assert!(!box_.is_null());
-        let instance = instance_mut(fc);
-        abspos::replay_for_instance(instance, box_);
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_fc_destroy(fc: *mut c_void) {
-    abort_on_panic(|| {
-        bump(FfiOp::FcDestroy);
-        assert!(!fc.is_null());
-        if instance_ref(fc).fc_type == FfiFormattingContextType::Block as u8
-            && !instance_ref(fc)
+impl Drop for FormattingContextInstance {
+    fn drop(&mut self) {
+        if self.fc_type != FfiFormattingContextType::Block as u8
+            || self
                 .block_context
                 .as_deref()
                 .unwrap()
                 .was_notified_after_parent_dimensioned_root()
         {
-            // HACK: The parent formatting context never notified us after assigning dimensions to our root box.
-            //       Pretend that it did anyway, to make sure absolutely positioned children get laid out.
-            // FIXME: Get rid of this hack once parent contexts behave properly.
-            instance_ref(fc)
-                .block_context
-                .as_deref()
-                .unwrap()
-                .parent_context_did_dimension_child_root_box();
-            let instance = instance_mut(fc);
-            // The table formatting context handles cell abspos layout after vertical alignment.
-            // SAFETY: This reads the live context box's display.
-            let is_table_cell =
-                unsafe { (instance.callbacks.is_table_cell)(instance.callbacks.context, instance.box_) };
-            if !is_table_cell {
-                let box_ = instance.box_;
-                abspos::layout_children_for_instance(instance, box_);
-            }
-        }
-        // SAFETY: Ownership is transferred back from the C++ shim exactly
-        // once for a pointer returned by rust_layout_fc_create.
-        unsafe {
-            drop(Box::from_raw(fc.cast::<FormattingContextInstance>()));
-        }
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_fc_run(fc: *mut c_void, _input: FfiLayoutInput) {
-    abort_on_panic(|| {
-        bump(FfiOp::FcRun);
-        if instance_ref(fc).fc_type == FfiFormattingContextType::Block as u8 {
-            let context = instance_ref(fc).block_context.as_deref().unwrap();
-            context.run(_input);
-            let automatic_content_inline_size = context.automatic_content_inline_size();
-            let automatic_content_block_size = context.automatic_content_block_size();
-            let instance = instance_mut(fc);
-            instance.automatic_content_inline_size = automatic_content_inline_size;
-            instance.automatic_content_block_size = automatic_content_block_size;
             return;
         }
-        let instance = instance_mut(fc);
-        match instance.fc_type {
-            type_ if type_ == FfiFormattingContextType::Table as u8 => {
-                table::run(instance, _input);
-            }
-            type_ if type_ == FfiFormattingContextType::Flex as u8 => {
-                flex::run(instance, _input);
-            }
-            type_ if type_ == FfiFormattingContextType::Grid as u8 => {
-                let (inline_size, block_size) = {
-                    let context = instance.grid_context.as_mut().unwrap();
-                    context.run(_input);
-                    (
-                        context.automatic_content_inline_size(),
-                        context.automatic_content_block_size(),
-                    )
-                };
-                instance.automatic_content_inline_size = inline_size;
-                instance.automatic_content_block_size = block_size;
-            }
-            type_ if type_ == FfiFormattingContextType::Svg as u8 => {
-                svg::run(instance, _input);
-            }
-            _ => panic!("no Rust implementation for this formatting context"),
+        // HACK: The parent formatting context never notified us after assigning dimensions to our root box.
+        //       Pretend that it did anyway, to make sure absolutely positioned children get laid out.
+        // FIXME: Get rid of this hack once parent contexts behave properly.
+        self.block_context
+            .as_deref()
+            .unwrap()
+            .parent_context_did_dimension_child_root_box();
+        // The table formatting context handles cell abspos layout after vertical alignment.
+        // SAFETY: This reads the live context box's display.
+        let is_table_cell = unsafe { (self.callbacks.is_table_cell)(self.callbacks.context, self.box_) };
+        if !is_table_cell {
+            let box_ = self.box_;
+            abspos::layout_children_for_instance(self, box_);
         }
+    }
+}
+
+fn run_formatting_context(instance: &mut FormattingContextInstance, input: FfiLayoutInput) {
+    bump(FfiOp::FcRun);
+    if instance.fc_type == FfiFormattingContextType::Block as u8 {
+        let context = instance.block_context.as_deref().unwrap();
+        context.run(input);
+        instance.automatic_content_inline_size = context.automatic_content_inline_size();
+        instance.automatic_content_block_size = context.automatic_content_block_size();
+        return;
+    }
+    match instance.fc_type {
+        type_ if type_ == FfiFormattingContextType::Table as u8 => {
+            table::run(instance, input);
+        }
+        type_ if type_ == FfiFormattingContextType::Flex as u8 => {
+            flex::run(instance, input);
+        }
+        type_ if type_ == FfiFormattingContextType::Grid as u8 => {
+            let (inline_size, block_size) = {
+                let context = instance.grid_context.as_mut().unwrap();
+                context.run(input);
+                (
+                    context.automatic_content_inline_size(),
+                    context.automatic_content_block_size(),
+                )
+            };
+            instance.automatic_content_inline_size = inline_size;
+            instance.automatic_content_block_size = block_size;
+        }
+        type_ if type_ == FfiFormattingContextType::Svg as u8 => {
+            svg::run(instance, input);
+        }
+        type_ if type_ == FfiFormattingContextType::ReplacedWithChildren as u8 => {
+            replaced_with_children::run(instance, input);
+        }
+        type_
+            if type_ == FfiFormattingContextType::InternalReplaced as u8
+                || type_ == FfiFormattingContextType::InternalDummy as u8 =>
+        {
+            replaced_with_children::run_noop(instance);
+        }
+        _ => panic!("no Rust implementation for this formatting context"),
+    }
+}
+
+pub(crate) fn layout_inside_child(
+    parent_rust_fc: *mut c_void,
+    child: *mut c_void,
+    layout_mode: u8,
+    input: FfiLayoutInput,
+    force_independent_context_run: bool,
+) -> Option<FfiChildLayoutResult> {
+    assert!(!parent_rust_fc.is_null());
+    let parent = instance_mut(parent_rust_fc);
+    assert!(!parent.child_contexts.contains_key(&(child as usize)));
+
+    let facts = state_mut(parent.state).box_facts(&parent.callbacks, child);
+    let used = state_mut(parent.state).try_used_values(&parent.callbacks, child);
+    if !force_independent_context_run
+        && layout_mode == 1
+        && !facts.is_inline
+        && !used.is_null()
+        // SAFETY: Non-null used-values entries are stable for the pass.
+        && unsafe {
+            (*used).inline_size_constraint == FfiSizeConstraint::None
+                && (*used).block_size_constraint == FfiSizeConstraint::None
+                && (*used).has_definite_inline_size()
+                && (*used).has_definite_block_size()
+        }
+    {
+        return None;
+    }
+    if !facts.can_have_children {
+        return None;
+    }
+
+    let Some(fc_type) = formatting_context_type_created_by_box(facts) else {
+        if !force_independent_context_run {
+            // Preserve the former C++ layout_inside() behavior: when the box
+            // does not establish an independent context, its contents stay in
+            // the current context.
+            run_formatting_context(parent, input);
+        }
+        return None;
+    };
+    let mut context = create_formatting_context(
+        parent.state,
+        child,
+        parent_rust_fc,
+        fc_type as u8,
+        layout_mode,
+        parent.should_collect_devtools_layout_data,
+        parent.callbacks,
+    );
+    run_formatting_context(&mut context, input);
+    let result = FfiChildLayoutResult {
+        automatic_content_inline_size: context.automatic_content_inline_size,
+        automatic_content_block_size: context.automatic_content_block_size,
+    };
+    parent.child_contexts.insert(child as usize, context);
+    Some(result)
+}
+
+pub(crate) fn finish_child_layout(parent_rust_fc: *mut c_void, child: *mut c_void) {
+    let parent = instance_mut(parent_rust_fc);
+    let mut child_context = parent
+        .child_contexts
+        .remove(&(child as usize))
+        .expect("missing child formatting context");
+    parent_did_dimension(&mut child_context);
+}
+
+pub(crate) fn discard_child_layout(parent_rust_fc: *mut c_void, child: *mut c_void) {
+    let parent = instance_mut(parent_rust_fc);
+    parent
+        .child_contexts
+        .remove(&(child as usize))
+        .expect("missing child formatting context");
+}
+
+fn independent_formatting_context_type(
+    state: *mut c_void,
+    box_: *mut c_void,
+    callbacks: &FfiLayoutFcCallbacks,
+) -> FfiFormattingContextType {
+    let facts = state_mut(state).box_facts(callbacks, box_);
+    if let Some(fc_type) = formatting_context_type_created_by_box(facts) {
+        return fc_type;
+    }
+    if facts.is_block_container {
+        return FfiFormattingContextType::Block;
+    }
+
+    // HACK: Instead of crashing in scenarios that assume the formatting context can be created, create a dummy formatting context that does nothing.
+    eprintln!(
+        "FIXME: An independent formatting context was requested from a Box that does not have a formatting context type. A dummy formatting context will be created instead."
+    );
+    FfiFormattingContextType::InternalDummy
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_run_root_layout(
+    state: *mut c_void,
+    root: *mut c_void,
+    input: FfiLayoutInput,
+    should_collect_devtools_layout_data: bool,
+    callbacks: *const FfiLayoutFcCallbacks,
+) {
+    abort_on_panic(|| {
+        assert!(!callbacks.is_null());
+        // SAFETY: The standalone C++ pass host keeps the callback table live
+        // for this synchronous entry.
+        let callbacks = unsafe { *callbacks };
+        let fc_type = independent_formatting_context_type(state, root, &callbacks);
+        let mut context = create_formatting_context(
+            state,
+            root,
+            std::ptr::null_mut(),
+            fc_type as u8,
+            0,
+            should_collect_devtools_layout_data,
+            callbacks,
+        );
+        run_formatting_context(&mut context, input);
     });
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_fc_automatic_content_inline_size(fc: *mut c_void) -> i32 {
-    abort_on_panic(|| {
-        bump(FfiOp::FcAutomaticInlineSize);
-        instance_mut(fc).automatic_content_inline_size.raw_value()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_fc_automatic_content_block_size(fc: *mut c_void) -> i32 {
-    abort_on_panic(|| {
-        bump(FfiOp::FcAutomaticBlockSize);
-        instance_mut(fc).automatic_content_block_size.raw_value()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_fc_run_until_table_inline_size_calculation(
-    fc: *mut c_void,
-    _input: FfiLayoutInput,
-    _skip_row_measurement: bool,
+pub extern "C" fn rust_layout_compute_subtree_layout(
+    state: *mut c_void,
+    root: *mut c_void,
+    input: FfiLayoutInput,
+    should_collect_devtools_layout_data: bool,
+    callbacks: *const FfiLayoutFcCallbacks,
 ) {
     abort_on_panic(|| {
-        bump(FfiOp::FcRunUntilTableInlineSize);
-        let instance = instance_mut(fc);
-        assert_eq!(instance.fc_type, FfiFormattingContextType::Table as u8);
-        table::run_until_inline_size_calculation(instance, _input, _skip_row_measurement);
+        assert!(!callbacks.is_null());
+        // SAFETY: The standalone C++ pass host keeps the callback table live
+        // for this synchronous entry.
+        let callbacks = unsafe { *callbacks };
+        let facts = state_mut(state).box_facts(&callbacks, root);
+        let fc_type = formatting_context_type_created_by_box(facts)
+            .expect("partial relayout root must establish an independent formatting context");
+        let mut context = create_formatting_context(
+            state,
+            root,
+            std::ptr::null_mut(),
+            fc_type as u8,
+            0,
+            should_collect_devtools_layout_data,
+            callbacks,
+        );
+        run_formatting_context(&mut context, input);
+
+        // Lay out the subtree root's own absolutely positioned children, like the parent formatting
+        // context would do after dimensioning the root box during a full layout.
+        parent_did_dimension(&mut context);
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_replay_saved_abspos_layout(
+    state: *mut c_void,
+    box_: *mut c_void,
+    callbacks: *const FfiLayoutFcCallbacks,
+) {
+    abort_on_panic(|| {
+        assert!(!callbacks.is_null());
+        // SAFETY: The standalone C++ pass host keeps the callback table live
+        // for this synchronous entry.
+        let callbacks = unsafe { *callbacks };
+        bump(FfiOp::NavigationCallback);
+        // SAFETY: The target box and its containing block remain live for the
+        // partial-relayout pass.
+        let containing_block = unsafe { (callbacks.navigation.containing_block)(callbacks.navigation.context, box_) };
+        assert!(!containing_block.is_null());
+        let mut context = create_formatting_context(
+            state,
+            containing_block,
+            std::ptr::null_mut(),
+            FfiFormattingContextType::AbsposReplay as u8,
+            0,
+            false,
+            callbacks,
+        );
+        abspos::replay_for_instance(&mut context, box_);
     });
 }

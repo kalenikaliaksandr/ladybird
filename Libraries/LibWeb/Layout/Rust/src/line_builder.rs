@@ -590,9 +590,12 @@ impl LineBuilder {
             let fragment_baseline = if self.context().facts(node).is_text_node {
                 Self::baseline_for_style(style, style.line_height)
             } else {
-                crate::ffi_stats::bump(crate::ffi_stats::FfiOp::BoxBaselineCallback);
-                // SAFETY: BaselineSet::Last is pinned to 1 by the bridge.
-                unsafe { (self.context().callbacks.box_baseline)(self.context().callbacks.context, node, 1) }
+                crate::formatting_context::box_baseline(
+                    self.context().state,
+                    &self.context().callbacks,
+                    node,
+                    crate::formatting_context::BaselineSet::Last,
+                )
             };
             self.line_mut(line_index).fragments[fragment_index].baseline = fragment_baseline;
             let adjusted_baseline = if style.vertical_align_is_keyword {

@@ -7,6 +7,7 @@
 #include <AK/Atomic.h>
 #include <AK/HashMap.h>
 #include <AK/NeverDestroyed.h>
+#include <AK/NumericLimits.h>
 #include <AK/Utf16StringBuilder.h>
 #include <AK/Variant.h>
 #include <AK/Utf16StringBuilder.h>
@@ -48,9 +49,10 @@
 #include <LibWeb/Layout/FieldSetBox.h>
 #include <LibWeb/Layout/FlexLayoutData.h>
 #include <LibWeb/Layout/GridLayoutData.h>
+#include <LibWeb/Layout/LayoutInput.h>
 #include <LibWeb/Layout/LayoutRustBridge.h>
+#include <LibWeb/Layout/LayoutState.h>
 #include <LibWeb/Layout/Box.h>
-#include <LibWeb/Layout/FormattingContext.h>
 #include <LibWeb/Layout/InlineNode.h>
 #include <LibWeb/Layout/ListItemBox.h>
 #include <LibWeb/Layout/ListItemMarkerBox.h>
@@ -835,6 +837,117 @@ static void release_svg_path_handle(void const* handle)
     delete static_cast<Gfx::Path const*>(handle);
 }
 
+// https://developer.mozilla.org/en-US/docs/Web/Guide/CSS/Block_formatting_context
+static bool creates_block_formatting_context(Box const& box)
+{
+    // NOTE: Replaced elements never create a BFC.
+    if (box.is_replaced_box())
+        return false;
+
+    // AD-HOC: We create a BFC for SVG foreignObject.
+    if (box.is_svg_foreign_object_box())
+        return true;
+
+    // display: table
+    if (box.display().is_table_inside())
+        return false;
+
+    // display: flex
+    if (box.display().is_flex_inside())
+        return false;
+
+    // display: grid
+    if (box.display().is_grid_inside())
+        return false;
+
+    // NOTE: This function uses MDN as a reference, not because it's authoritative,
+    //       but because they've gathered all the conditions in one convenient location.
+
+    // The root element of the document (<html>).
+    if (box.is_root_element())
+        return true;
+
+    // Floats (elements where float isn't none).
+    if (box.is_floating())
+        return true;
+
+    // Absolutely positioned elements (elements where position is absolute or fixed).
+    if (box.is_absolutely_positioned())
+        return true;
+
+    // Inline-blocks (elements with display: inline-block).
+    if (box.display().is_inline_block())
+        return true;
+
+    // Table cells (elements with display: table-cell, which is the default for HTML table cells).
+    if (box.display().is_table_cell())
+        return true;
+
+    // Table captions (elements with display: table-caption, which is the default for HTML table captions).
+    if (box.display().is_table_caption())
+        return true;
+
+    // FIXME: Anonymous table cells implicitly created by the elements with display: table, table-row, table-row-group, table-header-group, table-footer-group
+    //        (which is the default for HTML tables, table rows, table bodies, table headers, and table footers, respectively), or inline-table.
+
+    // Block elements where overflow has a value other than visible and clip.
+    CSS::Overflow overflow_x = box.computed_values().overflow_x();
+    if ((overflow_x != CSS::Overflow::Visible) && (overflow_x != CSS::Overflow::Clip))
+        return true;
+    CSS::Overflow overflow_y = box.computed_values().overflow_y();
+    if ((overflow_y != CSS::Overflow::Visible) && (overflow_y != CSS::Overflow::Clip))
+        return true;
+
+    // display: flow-root.
+    if (box.display().is_flow_root_inside())
+        return true;
+
+    // https://drafts.csswg.org/css-contain-2/#containment-types
+    // 1. The layout containment box establishes an independent formatting context.
+    // 4. The paint containment box establishes an independent formatting context.
+    if (box.has_layout_containment() || box.has_paint_containment())
+        return true;
+
+    // https://drafts.csswg.org/css-conditional-5/#valdef-container-type-size
+    // Applies style containment and size containment to the principal box, and establishes an independent formatting
+    // context.
+    if (box.computed_values().container_type().is_size_container || box.computed_values().container_type().is_inline_size_container)
+        return true;
+
+    if (box.parent()) {
+        auto parent_display = box.parent()->display();
+
+        // Flex items (direct children of the element with display: flex or inline-flex) if they are neither flex nor grid nor table containers themselves.
+        if (parent_display.is_flex_inside())
+            return true;
+        // Grid items (direct children of the element with display: grid or inline-grid) if they are neither flex nor grid nor table containers themselves.
+        if (parent_display.is_grid_inside())
+            return true;
+    }
+
+    // https://drafts.csswg.org/css-multicol-2/#the-multi-column-model
+    // An element whose 'column-width', 'column-count', or 'column-height' property is not 'auto' establishes a multi-
+    // column container (or multicol container for short), and therefore acts as a container for multi-column layout.
+    // FIXME: Maybe add column-height, depending on the resolution for https://github.com/w3c/csswg-drafts/issues/12688
+    if (!box.computed_values().column_width().is_auto() || !box.computed_values().column_count().is_auto())
+        return true;
+
+    // FIXME: column-span: all should always create a new formatting context, even when the column-span: all element isn't contained by a multicol container (Spec change, Chrome bug).
+
+    // https://html.spec.whatwg.org/multipage/rendering.html#the-fieldset-and-legend-elements
+    if (box.is_fieldset_box())
+        // The fieldset element, when it generates a CSS box, is expected to act as follows:
+        // The element is expected to establish a new block formatting context.
+        return true;
+
+    // https://html.spec.whatwg.org/multipage/rendering.html#button-layout
+    // An element using button layout establishes a new formatting context for its contents.
+    if (auto const* html_element = as_if<HTML::HTMLElement>(box.dom_node()); html_element && html_element->uses_button_layout())
+        return true;
+
+    return false;
+}
+
 RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
 {
     RustFFI::rust_layout_ffi_note_box_facts_build();
@@ -923,10 +1036,13 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
         .is_anonymous = node.is_anonymous(),
         .can_have_children = node.can_have_children(),
         .has_replaced_element_table_display_adjustment = node.has_replaced_element_table_display_adjustment(),
-        .creates_block_formatting_context = box && FormattingContext::creates_block_formatting_context(*box),
+        .creates_block_formatting_context = box && creates_block_formatting_context(*box),
+        .is_flex_item = node.is_flex_item(),
         .is_grid_item = node.is_grid_item(),
         .is_editing_host = dom_node && dom_node->is_element() && static_cast<DOM::Element const&>(*dom_node).is_editing_host(),
         .uses_button_layout = dom_node && is<HTML::HTMLElement>(*dom_node) && static_cast<HTML::HTMLElement const&>(*dom_node).uses_button_layout(),
+        .vertical_align_applies = box && box->vertical_align_applies(),
+        .is_html_input_element = dom_node && is<HTML::HTMLInputElement>(*dom_node),
         .may_reuse_precreated_used_values = false,
         .is_fieldset_box = fieldset_box != nullptr,
         .rendered_legend = fieldset_box && fieldset_box->rendered_legend() ? const_cast<LegendBox*>(fieldset_box->rendered_legend().ptr()) : nullptr,
@@ -982,6 +1098,52 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
     };
 }
 
+Optional<RustFFI::FfiFormattingContextType> formatting_context_type_created_by_box(Box const& box)
+{
+    RustFFI::FfiLayoutBoxFacts facts {};
+    facts.is_block_container = box.is_block_container();
+    facts.is_replaced_box = box.is_replaced_box();
+    facts.is_replaced_box_with_children = box.is_replaced_box_with_children();
+    facts.children_are_inline = box.children_are_inline();
+    facts.can_have_children = box.can_have_children();
+    facts.has_replaced_element_table_display_adjustment = box.has_replaced_element_table_display_adjustment();
+    facts.creates_block_formatting_context = creates_block_formatting_context(box);
+    facts.display = encode_display(box.display());
+    facts.is_svg_svg_box = box.is_svg_svg_box();
+
+    auto type = RustFFI::rust_layout_formatting_context_type_for_box(facts);
+    if (type == NumericLimits<u8>::max())
+        return {};
+    return static_cast<RustFFI::FfiFormattingContextType>(type);
+}
+
+StringView formatting_context_type_name(RustFFI::FfiFormattingContextType type)
+{
+    switch (type) {
+    case RustFFI::FfiFormattingContextType::Block:
+        return "BFC"sv;
+    case RustFFI::FfiFormattingContextType::Inline:
+        return "IFC"sv;
+    case RustFFI::FfiFormattingContextType::Flex:
+        return "FFC"sv;
+    case RustFFI::FfiFormattingContextType::Grid:
+        return "GFC"sv;
+    case RustFFI::FfiFormattingContextType::Table:
+        return "TFC"sv;
+    case RustFFI::FfiFormattingContextType::Svg:
+        return "SVG"sv;
+    case RustFFI::FfiFormattingContextType::ReplacedWithChildren:
+        return "Replaced, with children"sv;
+    case RustFFI::FfiFormattingContextType::AbsposReplay:
+        return "Abspos replay"sv;
+    case RustFFI::FfiFormattingContextType::InternalReplaced:
+        return "Replaced"sv;
+    case RustFFI::FfiFormattingContextType::InternalDummy:
+        return "Dummy"sv;
+    }
+    VERIFY_NOT_REACHED();
+}
+
 RustFFI::FfiTableBoxFacts build_table_box_facts(NodeWithStyle const& node)
 {
     RustFFI::rust_layout_ffi_note_table_facts_build();
@@ -1014,12 +1176,44 @@ RustFFI::FfiTableBoxFacts build_table_box_facts(NodeWithStyle const& node)
     };
 }
 
-LayoutRustBridge::LayoutRustBridge(FormattingContext& formatting_context)
-    : m_formatting_context(formatting_context)
+LayoutRustBridge::LayoutRustBridge(LayoutState& state, LayoutMode layout_mode)
+    : m_state(state)
+    , m_layout_mode(layout_mode)
 {
 }
 
 LayoutRustBridge::~LayoutRustBridge() = default;
+
+void LayoutRustBridge::run_root_layout(Box& root, LayoutInput const& input)
+{
+    VERIFY(m_layout_mode == LayoutMode::Normal);
+    auto callbacks = formatting_context_callbacks();
+    RustFFI::rust_layout_run_root_layout(
+        m_state.rust_state_handle(),
+        &root,
+        to_ffi(input),
+        m_state.should_collect_devtools_layout_data(),
+        &callbacks);
+}
+
+void LayoutRustBridge::compute_subtree_layout(Box& root, LayoutInput const& input)
+{
+    VERIFY(m_layout_mode == LayoutMode::Normal);
+    auto callbacks = formatting_context_callbacks();
+    RustFFI::rust_layout_compute_subtree_layout(
+        m_state.rust_state_handle(),
+        &root,
+        to_ffi(input),
+        m_state.should_collect_devtools_layout_data(),
+        &callbacks);
+}
+
+void LayoutRustBridge::replay_saved_abspos_layout(Box& box)
+{
+    VERIFY(m_layout_mode == LayoutMode::Normal);
+    auto callbacks = formatting_context_callbacks();
+    RustFFI::rust_layout_replay_saved_abspos_layout(m_state.rust_state_handle(), &box, &callbacks);
+}
 
 static RustFFI::AvailableSize to_ffi_available_size(AvailableSize const& size)
 {
@@ -1036,21 +1230,6 @@ static RustFFI::AvailableSize to_ffi_available_size(AvailableSize const& size)
         .type_ = type,
         .value = size.to_px_or_zero().raw_value(),
     };
-}
-
-static AvailableSize from_ffi_available_size(RustFFI::AvailableSize const& size)
-{
-    switch (size.type_) {
-    case RustFFI::AvailableSizeType::Definite:
-        return AvailableSize::make_definite(CSSPixels::from_raw(size.value));
-    case RustFFI::AvailableSizeType::Indefinite:
-        return AvailableSize::make_indefinite();
-    case RustFFI::AvailableSizeType::MinContent:
-        return AvailableSize::make_min_content();
-    case RustFFI::AvailableSizeType::MaxContent:
-        return AvailableSize::make_max_content();
-    }
-    VERIFY_NOT_REACHED();
 }
 
 static RustFFI::FfiContainingBlockConstraints to_ffi_constraints(ContainingBlockConstraints const& constraints)
@@ -1098,22 +1277,6 @@ RustFFI::FfiLayoutInput LayoutRustBridge::to_ffi(LayoutInput const& input)
     };
 }
 
-LayoutInput LayoutRustBridge::from_ffi(RustFFI::FfiLayoutInput const& input)
-{
-    auto available_space = AvailableSpace {
-        from_ffi_available_size(input.available_space.inline_size),
-        from_ffi_available_size(input.available_space.block_size),
-    };
-    auto constraints = from_ffi_constraints(input.containing_block_constraints);
-    auto content_box_position = input.has_content_box_position_in_bfc_root
-        ? Optional<CSSPixelPoint> { CSSPixelPoint { CSSPixels::from_raw(input.content_box_position_in_bfc_root.x), CSSPixels::from_raw(input.content_box_position_in_bfc_root.y) } }
-        : Optional<CSSPixelPoint> {};
-    auto table_min_size = input.has_table_grid_min_border_box_block_size
-        ? Optional<CSSPixels> { CSSPixels::from_raw(input.table_grid_min_border_box_block_size) }
-        : Optional<CSSPixels> {};
-    return LayoutInput { available_space, constraints, content_box_position, table_min_size };
-}
-
 RustFFI::FfiLayoutNavCallbacks LayoutRustBridge::navigation_callbacks()
 {
     return {
@@ -1139,14 +1302,6 @@ RustFFI::FfiLayoutNavCallbacks LayoutRustBridge::navigation_callbacks()
             return const_cast<Box*>(bridge.containing_block(*static_cast<Node const*>(node)));
         },
     };
-}
-
-static LayoutMode layout_mode_from_ffi(u8 mode)
-{
-    static_assert(to_underlying(LayoutMode::Normal) == 0);
-    static_assert(to_underlying(LayoutMode::IntrinsicSizing) == 1);
-    VERIFY(mode <= to_underlying(LayoutMode::IntrinsicSizing));
-    return static_cast<LayoutMode>(mode);
 }
 
 static CSS::BorderData from_ffi_border_data(RustFFI::FfiBorderData const& border)
@@ -1265,6 +1420,95 @@ static Optional<DOM::AbstractElement> abstract_element_for_abspos_box(Box const&
     return {};
 }
 
+static bool style_value_contains_anchor(CSS::StyleValue const& value)
+{
+    if (value.is_anchor())
+        return true;
+    if (value.is_calculated())
+        return value.as_calculated().contains_anchor_function();
+    return false;
+}
+
+bool box_inset_properties_contain_anchor_functions(Box const& box)
+{
+    auto abstract_element = abstract_element_for_abspos_box(box);
+    if (!abstract_element.has_value())
+        return false;
+
+    auto const* computed = abstract_element->computed_values();
+    if (!computed)
+        return false;
+    // Anchor functions in insets only survive to used-value time inside calculated values, so
+    // when no inset is calculated (the common case), skip reconstructing the style values.
+    auto const& inset = computed->inset();
+    if (!inset.top().is_calculated() && !inset.right().is_calculated() && !inset.bottom().is_calculated() && !inset.left().is_calculated())
+        return false;
+
+    auto top = computed->computed_style_value(CSS::PropertyID::Top);
+    auto right = computed->computed_style_value(CSS::PropertyID::Right);
+    auto bottom = computed->computed_style_value(CSS::PropertyID::Bottom);
+    auto left = computed->computed_style_value(CSS::PropertyID::Left);
+    VERIFY(top && right && bottom && left);
+    return style_value_contains_anchor(*top)
+        || style_value_contains_anchor(*right)
+        || style_value_contains_anchor(*bottom)
+        || style_value_contains_anchor(*left);
+}
+
+bool can_replay_saved_abspos_layout_inputs_after_style_change(Box const& box)
+{
+    if (!box.containing_block())
+        return false;
+
+    auto const& inputs = *box.saved_abspos_layout_inputs();
+    if (inputs.containing_block_info.derives_from_own_computed_values)
+        return false;
+
+    auto const& inset = box.computed_values().inset();
+    bool uses_static_position = (inset.left().is_auto() && inset.right().is_auto())
+        || (inset.top().is_auto() && inset.bottom().is_auto());
+    if (uses_static_position && inputs.static_position_rect.alignment_derives_from_own_computed_values)
+        return false;
+
+    return true;
+}
+
+static bool can_skip_is_anonymous_text_run(Box& box)
+{
+    if (box.is_anonymous() && !box.is_generated_for_pseudo_element() && !box.first_child_of_type<BlockContainer>()) {
+        bool contains_only_white_space = true;
+        box.for_each_in_subtree([&](auto const& node) {
+            if (!is<TextNode>(node) || !static_cast<TextNode const&>(node).text().is_ascii_whitespace()) {
+                contains_only_white_space = false;
+                return TraversalDecision::Break;
+            }
+            return TraversalDecision::Continue;
+        });
+        if (contains_only_white_space)
+            return true;
+    }
+    return false;
+}
+
+struct MeasurementLayoutHost {
+    MeasurementLayoutHost(Box const& box, ContainingBlockConstraints const& constraints)
+        : state(box, LayoutState::Purpose::Measurement)
+        , bridge(state, LayoutMode::IntrinsicSizing)
+        , callbacks(bridge.formatting_context_callbacks())
+    {
+        auto& root_used_values = state.create(
+            box,
+            constraints.percentage_basis_inline_size,
+            constraints.percentage_basis_block_size);
+        root_used_values_core = &root_used_values.core();
+    }
+
+    LayoutState state;
+    LayoutRustBridge bridge;
+    RustFFI::FfiLayoutFcCallbacks callbacks;
+    RustFFI::UsedValuesCore* root_used_values_core { nullptr };
+};
+
 RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
 {
     static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::Cell) == 0);
@@ -1273,8 +1517,6 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
     static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::Column) == 3);
     static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::ColumnGroup) == 4);
     static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::Table) == 5);
-    static_assert(to_underlying(FormattingContext::BaselineSet::First) == 0);
-    static_assert(to_underlying(FormattingContext::BaselineSet::Last) == 1);
     static_assert(to_underlying(CSS::FlexDirection::Row) == 0);
     static_assert(to_underlying(CSS::FlexDirection::RowReverse) == 1);
     static_assert(to_underlying(CSS::FlexDirection::Column) == 2);
@@ -1290,8 +1532,6 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
     static_assert(to_underlying(StaticPositionRect::Alignment::Start) == 0);
     static_assert(to_underlying(StaticPositionRect::Alignment::Center) == 1);
     static_assert(to_underlying(StaticPositionRect::Alignment::End) == 2);
-    static_assert(to_underlying(TableWrapperInlineSizeMode::ClampToAvailableInlineSize) == 0);
-    static_assert(to_underlying(TableWrapperInlineSizeMode::UseTableUsedInlineSizeIfNotAuto) == 1);
     static_assert(to_underlying(CSS::GridRepeatType::AutoFit) == 0);
     static_assert(to_underlying(CSS::GridRepeatType::AutoFill) == 1);
     static_assert(to_underlying(CSS::GridRepeatType::Fixed) == 2);
@@ -1386,7 +1626,7 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             if (styled_node.computed_values().position() == CSS::Positioning::Relative)
                 return true;
             auto const* box = as_if<Box>(styled_node);
-            return box && FormattingContext::box_inset_properties_contain_anchor_functions(*box);
+            return box && box_inset_properties_contain_anchor_functions(*box);
         },
         .build_style_facts = [](void*, void* node) {
             return build_style_facts(*static_cast<NodeWithStyle const*>(node));
@@ -1398,10 +1638,10 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             if (node_with_style) {
                 auto facts = build_layout_box_facts(*node_with_style);
                 auto const* document_element = node_with_style->document().document_element();
-                facts.may_reuse_precreated_used_values = !bridge.m_formatting_context.m_state.has_subtree_root()
+                facts.may_reuse_precreated_used_values = !bridge.m_state.has_subtree_root()
                     && document_element && document_element->unsafe_layout_node()
                     && node_with_style->is_inclusive_ancestor_of(*document_element->unsafe_layout_node())
-                    && bridge.m_formatting_context.m_state.try_get(*node_with_style);
+                    && bridge.m_state.try_get(*node_with_style);
                 return facts;
             }
             RustFFI::FfiLayoutBoxFacts facts {};
@@ -1554,7 +1794,7 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
         .get_computed_svg_transforms = [](void* context, void* node, RustFFI::FfiSvgComputedTransforms* out) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             VERIFY(out);
-            auto const* used_values = bridge.m_formatting_context.m_state.try_get(*static_cast<NodeWithStyle const*>(node));
+            auto const* used_values = bridge.m_state.try_get(*static_cast<NodeWithStyle const*>(node));
             if (!used_values || !used_values->computed_svg_transforms().has_value())
                 return false;
             auto const& transforms = *used_values->computed_svg_transforms();
@@ -1566,7 +1806,7 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
         },
         .set_computed_svg_transforms = [](void* context, void* node, RustFFI::FfiSvgComputedTransforms transforms) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            bridge.m_formatting_context.m_state.get_mutable(*static_cast<NodeWithStyle const*>(node))
+            bridge.m_state.get_mutable(*static_cast<NodeWithStyle const*>(node))
                 .set_computed_svg_transforms(Painting::SVGGraphicsPaintable::ComputedTransforms {
                     from_ffi_affine_transform(transforms.viewbox_transform),
                     from_ffi_affine_transform(transforms.svg_transform),
@@ -1581,7 +1821,7 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
         .set_computed_svg_path = [](void* context, void* node, void const* path_handle) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             VERIFY(path_handle);
-            bridge.m_formatting_context.m_state.get_mutable(*static_cast<NodeWithStyle const*>(node))
+            bridge.m_state.get_mutable(*static_cast<NodeWithStyle const*>(node))
                 .set_computed_svg_path(*static_cast<Gfx::Path const*>(path_handle));
         },
         .svg_image_bounding_box = [](void*, void* node, i32 viewport_width, i32 viewport_height) {
@@ -1599,7 +1839,7 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
         },
         .create_used_values = [](void* context, void* node, bool has_inline_basis, i32 inline_basis, bool has_block_basis, i32 block_basis) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto& used_values = bridge.m_formatting_context.m_state.create(
+            auto& used_values = bridge.m_state.create(
                 *static_cast<NodeWithStyle const*>(node),
                 has_inline_basis ? Optional<CSSPixels> { CSSPixels::from_raw(inline_basis) } : Optional<CSSPixels> {},
                 has_block_basis ? Optional<CSSPixels> { CSSPixels::from_raw(block_basis) } : Optional<CSSPixels> {});
@@ -1607,16 +1847,16 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
         },
         .get_used_values = [](void* context, void* node) -> RustFFI::UsedValuesCore* {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto* used_values = bridge.m_formatting_context.m_state.try_get_mutable(*static_cast<Node const*>(node));
+            auto* used_values = bridge.m_state.try_get_mutable(*static_cast<Node const*>(node));
             return used_values ? &used_values->core() : nullptr;
         },
         .is_measurement_state = [](void* context) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            return bridge.m_formatting_context.m_state.is_for_measurement();
+            return bridge.m_state.is_for_measurement();
         },
         .set_abspos_layout_inputs = [](void* context, void* node, RustFFI::FfiAbsposLayoutInputs inputs) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            bridge.m_formatting_context.m_state.get_mutable(*static_cast<Box const*>(node))
+            bridge.m_state.get_mutable(*static_cast<Box const*>(node))
                 .set_abspos_layout_inputs(from_ffi_abspos_layout_inputs(inputs));
         },
         .get_saved_abspos_layout_inputs = [](void*, void* node, RustFFI::FfiAbsposLayoutInputs* out) {
@@ -1642,7 +1882,7 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
                 auto const* anchor_box = as_if<Box>(candidate.unsafe_layout_node());
                 if (!anchor_box || anchor_box == &box)
                     return false;
-                if (!bridge.m_formatting_context.m_state.try_get(*anchor_box))
+                if (!bridge.m_state.try_get(*anchor_box))
                     return false;
                 for (auto const* ancestor = anchor_box->containing_block(); ancestor; ancestor = ancestor->containing_block()) {
                     if (ancestor == containing_block)
@@ -1808,43 +2048,9 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             }
             box.set_default_scroll_shift(static_cast<Box*>(anchor)->make_weak_ptr(), horizontal, vertical);
         },
-        .layout_inside_child = [](void* context, void* child, u8 mode, RustFFI::FfiLayoutInput input, bool force_independent_context_run, RustFFI::FfiChildLayoutResult* out) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto const& child_box = *static_cast<Box const*>(child);
-            VERIFY(!bridge.m_child_contexts.contains(&child_box));
-            auto child_context = force_independent_context_run
-                ? FormattingContext::create_independent_formatting_context_if_needed(
-                      bridge.m_formatting_context.m_state,
-                      layout_mode_from_ffi(mode),
-                      child_box,
-                      &bridge.m_formatting_context)
-                : bridge.m_formatting_context.layout_inside(child_box, layout_mode_from_ffi(mode), from_ffi(input));
-            if (!child_context)
-                return false;
-            if (force_independent_context_run)
-                child_context->run(from_ffi(input));
-            *out = {
-                .automatic_content_inline_size = child_context->automatic_content_inline_size().raw_value(),
-                .automatic_content_block_size = child_context->automatic_content_block_size().raw_value(),
-            };
-            bridge.m_child_contexts.set(&child_box, move(child_context));
-            return true;
-        },
-        .parent_did_dimension_child_root_box = [](void* context, void* child) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto const* child_box = static_cast<Box const*>(child);
-            auto child_context = bridge.m_child_contexts.take(child_box);
-            VERIFY(child_context.has_value());
-            child_context.value()->parent_context_did_dimension_child_root_box();
-        },
-        .discard_child_context = [](void* context, void* child) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto child_context = bridge.m_child_contexts.take(static_cast<Box const*>(child));
-            VERIFY(child_context.has_value());
-        },
         .set_table_cell_coordinates = [](void* context, void* node, size_t row_index, size_t column_index, size_t row_span, size_t column_span) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            bridge.m_formatting_context.m_state.get_mutable(*static_cast<NodeWithStyle const*>(node)).set_table_cell_coordinates({
+            bridge.m_state.get_mutable(*static_cast<NodeWithStyle const*>(node)).set_table_cell_coordinates({
                 .row_index = row_index,
                 .column_index = column_index,
                 .row_span = row_span,
@@ -1859,95 +2065,15 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
                     .element_kind = static_cast<Painting::Paintable::ConflictingElementKind>(border.element_kind),
                 };
             };
-            bridge.m_formatting_context.m_state.get_mutable(*static_cast<NodeWithStyle const*>(node)).set_override_borders_data({
+            bridge.m_state.get_mutable(*static_cast<NodeWithStyle const*>(node)).set_override_borders_data({
                 .top = convert(borders->top),
                 .right = convert(borders->right),
                 .bottom = convert(borders->bottom),
                 .left = convert(borders->left),
             });
         },
-        .place_child = [](void* context, void* node, RustFFI::FfiCssPixelPoint offset) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            bridge.m_formatting_context.place_child(
-                *static_cast<Box const*>(node),
-                { CSSPixels::from_raw(offset.x), CSSPixels::from_raw(offset.y) });
-        },
-        .box_baseline = [](void* context, void* node, u8 baseline_set) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            return bridge.m_formatting_context.box_baseline(
-                *static_cast<Box const*>(node),
-                static_cast<FormattingContext::BaselineSet>(baseline_set))
-                .raw_value();
-        },
-        .compute_and_store_baselines = [](void* context, void* node) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            bridge.m_formatting_context.compute_and_store_baselines(
-                bridge.m_formatting_context.m_state.get_mutable(*static_cast<NodeWithStyle const*>(node)));
-        },
-        .layout_absolutely_positioned_children = [](void* context, void* node) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            bridge.m_formatting_context.layout_absolutely_positioned_children(*static_cast<Box const*>(node));
-        },
-        .measure_table_cell_content = [](void* context, void* child, u8 mode, RustFFI::UsedValuesCore const*, RustFFI::AvailableSpace inner_available_space, RustFFI::FfiMeasuredCellContent* out) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto& formatting_context = bridge.m_formatting_context;
-            auto const& cell_box = *static_cast<Box const*>(child);
-            auto const& cell_used_values = formatting_context.m_state.get(cell_box);
-            auto layout_mode = layout_mode_from_ffi(mode);
-
-            if (layout_mode == LayoutMode::IntrinsicSizing
-                && !cell_box.is_inline()
-                && cell_used_values.inline_size_constraint() == SizeConstraint::None
-                && cell_used_values.block_size_constraint() == SizeConstraint::None
-                && cell_used_values.has_definite_inline_size()
-                && cell_used_values.has_definite_block_size())
-                return false;
-            if (!cell_box.can_have_children())
-                return false;
-
-            LayoutState throwaway_state(cell_box, LayoutState::Purpose::Measurement);
-            auto& throwaway_values = throwaway_state.create(cell_box, {}, {});
-            throwaway_values.set_inline_size_constraint(cell_used_values.inline_size_constraint());
-            throwaway_values.set_block_size_constraint(cell_used_values.block_size_constraint());
-            throwaway_values.set_content_inline_size(cell_used_values.content_inline_size());
-            throwaway_values.set_content_block_size(cell_used_values.content_block_size());
-            throwaway_values.set_has_definite_inline_size(cell_used_values.has_definite_inline_size());
-            throwaway_values.set_has_definite_block_size(cell_used_values.has_definite_block_size());
-            throwaway_values.set_margin_left(cell_used_values.margin_left());
-            throwaway_values.set_margin_right(cell_used_values.margin_right());
-            throwaway_values.set_margin_top(cell_used_values.margin_top());
-            throwaway_values.set_margin_bottom(cell_used_values.margin_bottom());
-            throwaway_values.set_border_left(cell_used_values.border_left());
-            throwaway_values.set_border_right(cell_used_values.border_right());
-            throwaway_values.set_border_top(cell_used_values.border_top());
-            throwaway_values.set_border_bottom(cell_used_values.border_bottom());
-            throwaway_values.set_padding_left(cell_used_values.padding_left());
-            throwaway_values.set_padding_right(cell_used_values.padding_right());
-            throwaway_values.set_padding_top(cell_used_values.padding_top());
-            throwaway_values.set_padding_bottom(cell_used_values.padding_bottom());
-            if (auto const& override_borders = cell_used_values.override_borders_data(); override_borders.has_value())
-                throwaway_values.set_override_borders_data(*override_borders);
-
-            auto measuring_context = FormattingContext::create_independent_formatting_context_if_needed(
-                throwaway_state, layout_mode, cell_box, &formatting_context);
-            if (!measuring_context)
-                return false;
-            auto available = AvailableSpace {
-                from_ffi_available_size(inner_available_space.inline_size),
-                from_ffi_available_size(inner_available_space.block_size),
-            };
-            measuring_context->run(LayoutInput { available });
-            auto content_block_size = measuring_context->automatic_content_block_size();
-            throwaway_values.set_content_block_size(content_block_size);
-            *out = {
-                .content_block_size = content_block_size.raw_value(),
-                .first_baseline = measuring_context->box_baseline(cell_box, FormattingContext::BaselineSet::First).raw_value(),
-            };
-            return true;
-        },
-        .can_skip_is_anonymous_text_run = [](void* context, void* box) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            return bridge.m_formatting_context.can_skip_is_anonymous_text_run(*static_cast<Box*>(box));
+        .can_skip_is_anonymous_text_run = [](void*, void* box) {
+            return can_skip_is_anonymous_text_run(*static_cast<Box*>(box));
         },
         .set_flex_item = [](void*, void* box, bool is_flex_item) {
             static_cast<Box*>(box)->set_flex_item(is_flex_item);
@@ -1957,38 +2083,19 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
         },
         .create_measurement_state = [](void*, void* box, RustFFI::FfiContainingBlockConstraints constraints) {
             auto converted_constraints = from_ffi_constraints(constraints);
-            auto state = make<LayoutState>(*static_cast<Box const*>(box), LayoutState::Purpose::Measurement);
-            auto& root_used_values = state->create(
-                *static_cast<Box const*>(box),
-                converted_constraints.percentage_basis_inline_size,
-                converted_constraints.percentage_basis_block_size);
-            auto* rust_state = state->rust_state_handle();
+            auto* host = new MeasurementLayoutHost(*static_cast<Box const*>(box), converted_constraints);
             return RustFFI::FfiMeasurementState {
-                .cpp_state = state.leak_ptr(),
-                .rust_state = rust_state,
-                .root_used_values = &root_used_values.core(),
+                .cpp_state = host,
+                .rust_state = host->state.rust_state_handle(),
+                .root_used_values = host->root_used_values_core,
+                .callbacks = &host->callbacks,
             };
         },
         .destroy_measurement_state = [](void*, void* state) {
-            auto* measurement_state = static_cast<LayoutState*>(state);
-            VERIFY(measurement_state);
-            VERIFY(measurement_state->is_for_measurement());
-            delete measurement_state;
-        },
-        .run_measurement_context = [](void* context, void* state, void* box, u8 layout_mode, RustFFI::FfiLayoutInput input) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto& measurement_state = *static_cast<LayoutState*>(state);
-            VERIFY(measurement_state.is_for_measurement());
-            auto measuring_context = FormattingContext::create_independent_formatting_context(
-                measurement_state,
-                layout_mode_from_ffi(layout_mode),
-                *static_cast<Box const*>(box),
-                &bridge.m_formatting_context);
-            measuring_context->run(from_ffi(input));
-            return RustFFI::FfiChildLayoutResult {
-                .automatic_content_inline_size = measuring_context->automatic_content_inline_size().raw_value(),
-                .automatic_content_block_size = measuring_context->automatic_content_block_size().raw_value(),
-            };
+            auto* host = static_cast<MeasurementLayoutHost*>(state);
+            VERIFY(host);
+            VERIFY(host->state.is_for_measurement());
+            delete host;
         },
         .intrinsic_size_cache_get = [](void*, void* box, RustFFI::FfiIntrinsicSizeCacheKind kind, RustFFI::FfiIntrinsicSizeCacheKey key, i32* out) {
             auto to_optional = [](bool has_value, i32 value) -> Optional<CSSPixels> {
@@ -2047,55 +2154,6 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
                 sizes.max_content_block_size.set(converted_key, converted_value);
                 break;
             }
-        },
-        .compute_table_box_block_size_inside_wrapper = [](void* context, void* box, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            return bridge.m_formatting_context.compute_table_box_block_size_inside_table_wrapper(
-                *static_cast<Box const*>(box),
-                {
-                    from_ffi_available_size(available_space.inline_size),
-                    from_ffi_available_size(available_space.block_size),
-                },
-                from_ffi_constraints(constraints))
-                .raw_value();
-        },
-        .compute_table_box_inline_size_inside_wrapper = [](void* context, void* box, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints, bool has_containing_block_inline_size, i32 containing_block_inline_size, u8 mode) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            Optional<CSSPixels> converted_containing_block_inline_size;
-            if (has_containing_block_inline_size)
-                converted_containing_block_inline_size = CSSPixels::from_raw(containing_block_inline_size);
-            return bridge.m_formatting_context.compute_table_box_inline_size_inside_table_wrapper(
-                *static_cast<Box const*>(box),
-                {
-                    from_ffi_available_size(available_space.inline_size),
-                    from_ffi_available_size(available_space.block_size),
-                },
-                from_ffi_constraints(constraints),
-                converted_containing_block_inline_size,
-                static_cast<TableWrapperInlineSizeMode>(mode))
-                .raw_value();
-        },
-        .register_contained_abspos_child = [](void* context, void* child, RustFFI::FfiStaticPositionRect rect) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            bridge.m_formatting_context.register_contained_abspos_child(
-                *static_cast<Box const*>(child),
-                from_ffi_static_position_rect(rect));
-        },
-        .compute_inset = [](void* context, void* box, i32 inline_size, i32 block_size) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            bridge.m_formatting_context.compute_inset(
-                *static_cast<Box const*>(box),
-                { CSSPixels::from_raw(inline_size), CSSPixels::from_raw(block_size) });
-        },
-        .make_button_content_box_definite = [](void* context, void* box, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            bridge.m_formatting_context.make_button_content_box_definite(
-                *static_cast<Box const*>(box),
-                {
-                    from_ffi_available_size(available_space.inline_size),
-                    from_ffi_available_size(available_space.block_size),
-                },
-                from_ffi_constraints(constraints));
         },
         .set_flex_layout_data = [](void* context, void* box, RustFFI::FfiFlexLayoutData const* ffi_data) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
@@ -2170,7 +2228,7 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
                 }
                 data->lines.append(move(line));
             }
-            bridge.m_formatting_context.m_state.get_mutable(*static_cast<Box const*>(box)).set_flex_layout_data(move(data));
+            bridge.m_state.get_mutable(*static_cast<Box const*>(box)).set_flex_layout_data(move(data));
         },
         .set_grid_layout_data = [](void* context, void* box, RustFFI::FfiGridLayoutData const* ffi_data) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
@@ -2240,13 +2298,13 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
                 }
                 data->fragments.unchecked_append(move(fragment));
             }
-            bridge.m_formatting_context.m_state.get_mutable(*static_cast<Box const*>(box)).set_grid_layout_data(move(data));
+            bridge.m_state.get_mutable(*static_cast<Box const*>(box)).set_grid_layout_data(move(data));
         },
         .set_used_grid_template_tracks = [](void* context, void* box, RustFFI::FfiUsedGridTrackList const* columns, RustFFI::FfiUsedGridTrackList const* rows) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             VERIFY(columns);
             VERIFY(rows);
-            auto& used_values = bridge.m_formatting_context.m_state.get_mutable(*static_cast<Box const*>(box));
+            auto& used_values = bridge.m_state.get_mutable(*static_cast<Box const*>(box));
             used_values.set_grid_template_columns(CSS::GridTrackSizeListStyleValue::create(build_used_grid_track_list(*columns)));
             used_values.set_grid_template_rows(CSS::GridTrackSizeListStyleValue::create(build_used_grid_track_list(*rows)));
         },

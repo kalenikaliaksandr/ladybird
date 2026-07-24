@@ -812,7 +812,6 @@ set(SOURCES
     Layout/CanvasBox.cpp
     Layout/CheckBox.cpp
     Layout/FieldSetBox.cpp
-    Layout/FormattingContext.cpp
     Layout/ImageBox.cpp
     Layout/ImageProvider.cpp
     Layout/InlineNode.cpp
@@ -826,8 +825,6 @@ set(SOURCES
     Layout/RadioButton.cpp
     Layout/RangeInputBox.cpp
     Layout/ReplacedBox.cpp
-    Layout/ReplacedWithChildrenFormattingContext.cpp
-    Layout/RustFormattingContext.cpp
     Layout/SVGBox.cpp
     Layout/SVGClipBox.cpp
     Layout/SVGForeignObjectBox.cpp
@@ -1393,7 +1390,6 @@ if(NOT BUILD_SHARED_LIBS)
     # re-merges the fresh Rust objects.
     set_property(SOURCE CSS/Parser/RustTokenizer.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_css_rust_lib})
     set_property(SOURCE HTML/Parser/HTMLEncodingDetection.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_rust_lib})
-    set_property(SOURCE Layout/FormattingContext.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_layout_rust_lib})
     set_property(SOURCE Layout/LayoutRustBridge.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_layout_rust_lib})
     set_property(SOURCE Layout/LayoutState.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_layout_rust_lib})
     set_property(SOURCE Layout/TreeBuilder.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_layout_rust_lib})

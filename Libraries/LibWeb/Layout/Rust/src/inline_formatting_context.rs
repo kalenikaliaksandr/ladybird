@@ -14,9 +14,7 @@ use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
 use crate::{
     ffi_stats::FfiOp,
     ffi_stats::bump,
-    formatting_context::{
-        FfiChildLayoutResult, FfiLayoutFcCallbacks, block::BlockFormattingContext, sizing::SizingContext,
-    },
+    formatting_context::{FfiLayoutFcCallbacks, block::BlockFormattingContext, sizing::SizingContext},
 };
 use std::cell::Cell;
 use std::ffi::c_void;
@@ -630,6 +628,11 @@ impl InlineFormattingContext {
         self.block_axis_float_clearance.get()
     }
 
+    fn parent_context(&self) -> &BlockFormattingContext {
+        // SAFETY: The parent BFC owns this inline context's bounded run.
+        unsafe { &*self.parent }
+    }
+
     pub(crate) fn set_block_axis_float_clearance(&self, clearance: CssPixels) {
         self.block_axis_float_clearance.set(clearance);
     }
@@ -745,15 +748,15 @@ impl InlineFormattingContext {
 
     pub(crate) fn compute_inset(&self, node: Node) {
         let used = self.containing_used();
-        // SAFETY: The host mutates the node's shared used values synchronously.
-        unsafe {
-            (self.callbacks.compute_inset)(
-                self.callbacks.context,
-                node,
-                used.content_inline_size,
-                used.content_block_size,
-            );
-        }
+        super::abspos::compute_inset_native(
+            self.state,
+            self.callbacks,
+            self.layout_mode,
+            self.containing_block,
+            node,
+            used.content_inline_size,
+            used.content_block_size,
+        );
     }
 
     pub(crate) fn parent_commit_pending_margin_before_inline_content(&self) -> CssPixels {
@@ -848,35 +851,25 @@ impl InlineFormattingContext {
     }
 
     fn layout_inside(&self, node: Node, available_space: AvailableSpace) -> bool {
-        let mut result = FfiChildLayoutResult::default();
-        bump(FfiOp::LayoutInsideCallback);
-        // SAFETY: The callback retains an independent child context only
-        // until the matching completion call below.
-        unsafe {
-            (self.callbacks.layout_inside_child)(
-                self.callbacks.context,
-                node,
-                self.layout_mode,
-                FfiLayoutInput {
-                    available_space,
-                    containing_block_constraints: self.input.containing_block_constraints,
-                    has_content_box_position_in_bfc_root: false,
-                    content_box_position_in_bfc_root: FfiCssPixelPoint::default(),
-                    has_table_grid_min_border_box_block_size: false,
-                    table_grid_min_border_box_block_size: CssPixels::default(),
-                },
-                false,
-                &raw mut result,
-            )
-        }
+        super::layout_inside_child(
+            self.parent_context().rust_context_handle(),
+            node,
+            self.layout_mode,
+            FfiLayoutInput {
+                available_space,
+                containing_block_constraints: self.input.containing_block_constraints,
+                has_content_box_position_in_bfc_root: false,
+                content_box_position_in_bfc_root: FfiCssPixelPoint::default(),
+                has_table_grid_min_border_box_block_size: false,
+                table_grid_min_border_box_block_size: CssPixels::default(),
+            },
+            false,
+        )
+        .is_some()
     }
 
     fn finish_inside_layout(&self, node: Node) {
-        bump(FfiOp::ParentDidDimensionCallback);
-        // SAFETY: This matches a successful `layout_inside_child` call.
-        unsafe {
-            (self.callbacks.parent_did_dimension_child_root_box)(self.callbacks.context, node);
-        }
+        super::finish_child_layout(self.parent_context().rust_context_handle(), node);
     }
 
     pub(crate) fn dimension_box_on_line(&mut self, node: Node) {
@@ -998,16 +991,7 @@ impl InlineFormattingContext {
         if style.display.is_flex_inside() {
             self.parent_resolve_used_block_size(node, true, inline_definite_space);
         }
-        bump(FfiOp::AbsposButtonDefiniteCallback);
-        // SAFETY: This preserves the existing button-specific helper.
-        unsafe {
-            (self.callbacks.make_button_content_box_definite)(
-                self.callbacks.context,
-                node,
-                available_space,
-                constraints,
-            );
-        }
+        sizing.make_button_content_box_definite(node, self.layout_mode, available_space, constraints, None);
         let inner = self
             .used(node)
             .available_inner_space_or_constraints_from(available_space);
@@ -1247,15 +1231,12 @@ impl InlineFormattingContext {
                     continue;
                 }
                 let (x, y) = fragment.offset();
-                bump(FfiOp::PlaceChildCallback);
-                // SAFETY: The host mutates only the child used values.
-                unsafe {
-                    (self.callbacks.place_child)(
-                        self.callbacks.context,
-                        fragment.layout_node,
-                        FfiCssPixelPoint { x, y },
-                    );
-                }
+                super::place_child(
+                    self.state,
+                    &self.callbacks,
+                    fragment.layout_node,
+                    FfiCssPixelPoint { x, y },
+                );
             }
         }
 
@@ -1298,10 +1279,7 @@ impl InlineFormattingContext {
                         break 'lines;
                     }
                 }
-                // SAFETY: Registration copies the POD rectangle immediately.
-                unsafe {
-                    (self.callbacks.register_contained_abspos_child)(self.callbacks.context, box_, static_position);
-                }
+                super::register_contained_abspos_child(self.state, &self.callbacks, box_, static_position);
             }
         }
         line_builder.remove_last_line_if_empty();
@@ -1324,11 +1302,7 @@ impl InlineFormattingContext {
         // SAFETY: The parent BFC owns this bounded inline run.
         self.automatic_content_inline_size =
             unsafe { (*self.parent).greatest_child_inline_size_including_floats(self.containing_block) };
-        bump(FfiOp::ComputeBaselinesCallback);
-        // SAFETY: The host baseline helper reads the completed line store.
-        unsafe {
-            (self.callbacks.compute_and_store_baselines)(self.callbacks.context, self.containing_block);
-        }
+        super::compute_and_store_baselines(self.state, &self.callbacks, self.containing_block, false);
     }
 
     fn compute_inline_box_pieces(&mut self) {

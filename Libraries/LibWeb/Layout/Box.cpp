@@ -10,7 +10,7 @@
 #include <LibWeb/Layout/AbsposLayoutInputs.h>
 #include <LibWeb/Layout/BlockContainer.h>
 #include <LibWeb/Layout/Box.h>
-#include <LibWeb/Layout/FormattingContext.h>
+#include <LibWeb/Layout/LayoutRustBridge.h>
 #include <LibWeb/Layout/TableWrapper.h>
 #include <LibWeb/Painting/Paintable.h>
 
@@ -71,22 +71,22 @@ bool Box::is_partial_relayout_boundary(RequireExistingPaintable require_existing
 
     // Only a full layout pass resolves anchor() functions in the inset properties to plain
     // values; a replay from saved inputs cannot.
-    if (FormattingContext::box_inset_properties_contain_anchor_functions(*this))
+    if (box_inset_properties_contain_anchor_functions(*this))
         return false;
 
     // NOTE: Content-dependent sizing (shrink-to-fit, intrinsic constraints, aspect-ratio) does
     //       not disqualify a boundary: replay re-solves the boundary's own size, and a resized
     //       boundary triggers ancestor scrollable overflow recomputation after commit.
 
-    auto formatting_context_type = FormattingContext::formatting_context_type_created_by_box(*this);
+    auto formatting_context_type = formatting_context_type_created_by_box(*this);
     if (!formatting_context_type.has_value())
         return false;
     switch (*formatting_context_type) {
-    case FormattingContext::Type::Block:
-    case FormattingContext::Type::Flex:
-    case FormattingContext::Type::Grid:
+    case RustFFI::FfiFormattingContextType::Block:
+    case RustFFI::FfiFormattingContextType::Flex:
+    case RustFFI::FfiFormattingContextType::Grid:
         return true;
-    case FormattingContext::Type::SVG:
+    case RustFFI::FfiFormattingContextType::Svg:
         return is_outermost_svg_root;
     default:
         return false;

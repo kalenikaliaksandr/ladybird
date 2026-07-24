@@ -11,7 +11,7 @@ use crate::style_facts::FfiStyleFacts;
 use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
 use std::ffi::c_void;
 
-use super::{FfiChildLayoutResult, FfiLayoutFcCallbacks, FormattingContextInstance};
+use super::{FfiLayoutFcCallbacks, FormattingContextInstance};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(C)]
@@ -389,6 +389,7 @@ impl Drop for SvgPathHandle {
 pub(super) struct SvgFormattingContext {
     state: *mut c_void,
     box_: *mut c_void,
+    rust_context_handle: *mut c_void,
     layout_mode: u8,
     callbacks: FfiLayoutFcCallbacks,
     parent_viewbox_transform: FfiAffineTransform,
@@ -402,13 +403,28 @@ pub(super) struct SvgFormattingContext {
 }
 
 impl SvgFormattingContext {
-    pub(super) fn new(state: *mut c_void, box_: *mut c_void, layout_mode: u8, callbacks: FfiLayoutFcCallbacks) -> Self {
-        Self::new_nested(state, box_, layout_mode, callbacks, FfiAffineTransform::default(), None)
+    pub(super) fn new(
+        state: *mut c_void,
+        box_: *mut c_void,
+        rust_context_handle: *mut c_void,
+        layout_mode: u8,
+        callbacks: FfiLayoutFcCallbacks,
+    ) -> Self {
+        Self::new_nested(
+            state,
+            box_,
+            rust_context_handle,
+            layout_mode,
+            callbacks,
+            FfiAffineTransform::default(),
+            None,
+        )
     }
 
     fn new_nested(
         state: *mut c_void,
         box_: *mut c_void,
+        rust_context_handle: *mut c_void,
         layout_mode: u8,
         callbacks: FfiLayoutFcCallbacks,
         parent_viewbox_transform: FfiAffineTransform,
@@ -417,6 +433,7 @@ impl SvgFormattingContext {
         Self {
             state,
             box_,
+            rust_context_handle,
             layout_mode,
             callbacks,
             parent_viewbox_transform,
@@ -494,11 +511,7 @@ impl SvgFormattingContext {
     }
 
     fn place_child(&self, node: *mut c_void, x: CssPixels, y: CssPixels) {
-        // SAFETY: The callback synchronously writes the live node's used
-        // values.
-        unsafe {
-            (self.callbacks.place_child)(self.callbacks.context, node, FfiCssPixelPoint { x, y });
-        }
+        super::place_child(self.state, &self.callbacks, node, FfiCssPixelPoint { x, y });
     }
 
     fn for_each_child(&self, node: *mut c_void, mut callback: impl FnMut(*mut c_void)) {
@@ -725,20 +738,10 @@ impl SvgFormattingContext {
                 has_table_grid_min_border_box_block_size: false,
                 table_grid_min_border_box_block_size: CssPixels::default(),
             };
-            let mut result = FfiChildLayoutResult::default();
-            // SAFETY: The callback runs the child context synchronously and
-            // writes exactly one POD result.
-            let laid_out = unsafe {
-                (self.callbacks.layout_inside_child)(
-                    self.callbacks.context,
-                    child,
-                    self.layout_mode,
-                    child_input,
-                    false,
-                    &raw mut result,
-                )
-            };
-            assert!(laid_out);
+            assert!(
+                super::layout_inside_child(self.rust_context_handle, child, self.layout_mode, child_input, false,)
+                    .is_some()
+            );
 
             // Masks and clips may use this offset for objectBoundingBox units.
             self.place_child(child, transformed_rect.x, transformed_rect.y);
@@ -749,10 +752,8 @@ impl SvgFormattingContext {
                 self.layout_mask_or_clip(clip);
             }
             // The old SVG formatter's stack-local BFC dies at the end of this
-            // branch; discard the bridge-owned equivalent at the same point.
-            unsafe {
-                (self.callbacks.discard_child_context)(self.callbacks.context, child);
-            }
+            // branch; discard the Rust-owned equivalent at the same point.
+            super::discard_child_layout(self.rust_context_handle, child);
         } else if facts.is_graphics_box {
             self.layout_graphics_element(child, input, parent_svg_transform);
         }
@@ -835,6 +836,7 @@ impl SvgFormattingContext {
         let mut nested_context = Self::new_nested(
             self.state,
             viewport,
+            self.rust_context_handle,
             self.layout_mode,
             self.callbacks,
             parent_viewbox_transform,
@@ -1090,6 +1092,7 @@ impl SvgFormattingContext {
         let mut nested_context = Self::new_nested(
             self.state,
             resource,
+            self.rust_context_handle,
             self.layout_mode,
             self.callbacks,
             parent_viewbox_transform,

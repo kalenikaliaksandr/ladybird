@@ -337,6 +337,24 @@ impl LayoutState {
         // and remains stable for its lifetime.
         unsafe {
             (*facts).is_grid_item = is_grid_item;
+            (*facts).vertical_align_applies = !(*facts).is_flex_item && !is_grid_item;
+        }
+    }
+
+    pub(crate) fn set_box_is_flex_item(
+        &mut self,
+        callbacks: &FfiLayoutFcCallbacks,
+        node: *mut c_void,
+        is_flex_item: bool,
+    ) {
+        let index = self.layout_index(callbacks, node);
+        let facts = self.box_facts.get(index);
+        assert!(!facts.is_null());
+        // SAFETY: The cached facts entry is uniquely owned by this layout state
+        // and remains stable for its lifetime.
+        unsafe {
+            (*facts).is_flex_item = is_flex_item;
+            (*facts).vertical_align_applies = !is_flex_item && !(*facts).is_grid_item;
         }
     }
 

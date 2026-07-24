@@ -6,8 +6,7 @@
 
 #pragma once
 
-#include <AK/HashMap.h>
-#include <AK/OwnPtr.h>
+#include <AK/Optional.h>
 #include <AK/Variant.h>
 #include <LibWeb/CSS/Enums.h>
 #include <LibWeb/CSS/PercentageOr.h>
@@ -29,14 +28,17 @@ struct LayoutInput;
 
 class LayoutRustBridge {
 public:
-    explicit LayoutRustBridge(FormattingContext&);
+    LayoutRustBridge(LayoutState&, LayoutMode);
     ~LayoutRustBridge();
 
     [[nodiscard]] RustFFI::FfiLayoutNavCallbacks navigation_callbacks();
     [[nodiscard]] RustFFI::FfiLayoutFcCallbacks formatting_context_callbacks();
 
+    void run_root_layout(Box&, LayoutInput const&);
+    void compute_subtree_layout(Box&, LayoutInput const&);
+    void replay_saved_abspos_layout(Box&);
+
     [[nodiscard]] static RustFFI::FfiLayoutInput to_ffi(LayoutInput const&);
-    [[nodiscard]] static LayoutInput from_ffi(RustFFI::FfiLayoutInput const&);
 
 private:
     [[nodiscard]] Node const* parent(Node const&) const;
@@ -45,8 +47,8 @@ private:
     [[nodiscard]] Node const* previous_sibling(Node const&) const;
     [[nodiscard]] Box const* containing_block(Node const&) const;
 
-    FormattingContext& m_formatting_context;
-    HashMap<Box const*, OwnPtr<FormattingContext>> m_child_contexts;
+    LayoutState& m_state;
+    LayoutMode m_layout_mode;
 };
 
 struct StyleVerticalAlignFacts {
@@ -63,6 +65,10 @@ struct StyleVerticalAlignFacts {
 [[nodiscard]] RustFFI::FfiStyleFacts build_style_facts(NodeWithStyle const&);
 [[nodiscard]] RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const&);
 [[nodiscard]] RustFFI::FfiTableBoxFacts build_table_box_facts(NodeWithStyle const&);
+[[nodiscard]] Optional<RustFFI::FfiFormattingContextType> formatting_context_type_created_by_box(Box const&);
+[[nodiscard]] StringView formatting_context_type_name(RustFFI::FfiFormattingContextType);
+[[nodiscard]] bool box_inset_properties_contain_anchor_functions(Box const&);
+[[nodiscard]] bool can_replay_saved_abspos_layout_inputs_after_style_change(Box const&);
 void release_style_facts(RustFFI::FfiStyleFacts const&);
 void verify_style_calc_handles_balanced();
 

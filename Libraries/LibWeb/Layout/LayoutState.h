@@ -351,7 +351,6 @@ struct LayoutState {
 
     private:
         friend struct LayoutState;
-        friend class FormattingContext;
 
         void place(CSSPixelPoint content_offset)
         {
@@ -403,7 +402,7 @@ struct LayoutState {
         // UniformBumpAllocator's chunk walk assumes that each completed chunk
         // contains an integral number of entries. Keep this cache entry at 80
         // bytes so a 4 KiB layout chunk has no trailing partial entry.
-        u8 m_allocator_padding[64] {};
+        [[maybe_unused]] u8 m_allocator_padding[64] {};
     };
 
     static_assert(sizeof(UsedValues) == 80);

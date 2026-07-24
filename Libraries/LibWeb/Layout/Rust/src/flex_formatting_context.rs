@@ -6,8 +6,8 @@
 
 use super::sizing::SizingContext;
 use super::{
-    FfiChildLayoutResult, FfiFlexAxis, FfiFlexLayoutData, FfiFlexLayoutItem, FfiFlexLayoutItemRect, FfiFlexLayoutLine,
-    FfiFlexSizeProperty, FfiFormattingContextType, FfiLayoutFcCallbacks, FormattingContextInstance,
+    FfiFlexAxis, FfiFlexLayoutData, FfiFlexLayoutItem, FfiFlexLayoutItemRect, FfiFlexLayoutLine, FfiFlexSizeProperty,
+    FfiFormattingContextType, FfiLayoutFcCallbacks, FormattingContextInstance,
 };
 use crate::box_facts::FfiLayoutBoxFacts;
 use crate::css_enums::{
@@ -205,6 +205,7 @@ struct AxisAgnosticAvailableSpace {
 struct FlexFormattingContext {
     state: *mut c_void,
     flex_container: Node,
+    rust_context_handle: *mut c_void,
     layout_mode: u8,
     callbacks: FfiLayoutFcCallbacks,
     should_collect_devtools_layout_data: bool,
@@ -228,6 +229,7 @@ impl FlexFormattingContext {
         Self {
             state: instance.state,
             flex_container: instance.box_,
+            rust_context_handle: instance as *const FormattingContextInstance as *mut c_void,
             layout_mode: instance.layout_mode,
             callbacks: instance.callbacks,
             should_collect_devtools_layout_data: instance.should_collect_devtools_layout_data,
@@ -852,6 +854,7 @@ impl FlexFormattingContext {
                 if !skip && !facts.is_absolutely_positioned {
                     // Flex inhibits floating, so only absolute positioning is out of flow here.
                     unsafe { (self.callbacks.set_flex_item)(self.callbacks.context, child, true) };
+                    state_mut(self.state).set_box_is_flex_item(&self.callbacks, child, true);
                     let used = self.create_used_values(child);
                     let item = FlexItem::new(child, used);
                     buckets.entry(self.style(child).order).or_default().push(item);
@@ -2339,8 +2342,7 @@ impl FlexFormattingContext {
     }
 
     fn box_baseline(&self, node: Node) -> CssPixels {
-        // SAFETY: Baseline calculation is synchronous for a live box.
-        unsafe { (self.callbacks.box_baseline)(self.callbacks.context, node, 0) }
+        super::box_baseline(self.state, &self.callbacks, node, super::BaselineSet::First)
     }
 
     // https://drafts.csswg.org/css-flexbox-1/#valdef-align-items-baseline
@@ -2421,37 +2423,20 @@ impl FlexFormattingContext {
         if self.facts(node).is_table_wrapper && !self.cross_axis_is_horizontal() && self.flex_item_is_stretched(index) {
             let mut intrinsic_space = input.available_space;
             intrinsic_space.block_size = AvailableSize::indefinite();
-            // SAFETY: The wrapper and state remain live during this call.
-            let intrinsic_size = unsafe {
-                (self.callbacks.compute_table_box_block_size_inside_wrapper)(
-                    self.callbacks.context,
-                    node,
-                    intrinsic_space,
-                    input.containing_block_constraints,
-                )
-            };
+            let intrinsic_size = self.sizing().compute_table_box_block_size_inside_wrapper(
+                node,
+                intrinsic_space,
+                input.containing_block_constraints,
+            );
             let extra = (self.flex_items[index].cross_size.unwrap() - self.flex_items[index].hypothetical_cross_size)
                 .max(CssPixels::default());
             input.has_table_grid_min_border_box_block_size = true;
             input.table_grid_min_border_box_block_size = intrinsic_size + extra;
         }
 
-        let mut result = FfiChildLayoutResult::default();
-        // SAFETY: Child layout is synchronous and the bridge retains any
-        // returned context until the parent-dimension callback.
-        let did_layout = unsafe {
-            (self.callbacks.layout_inside_child)(
-                self.callbacks.context,
-                node,
-                LAYOUT_MODE_NORMAL,
-                input,
-                false,
-                &raw mut result,
-            )
-        };
-        if did_layout {
-            // SAFETY: A successful layout call stored this child context.
-            unsafe { (self.callbacks.parent_did_dimension_child_root_box)(self.callbacks.context, node) };
+        let result = super::layout_inside_child(self.rust_context_handle, node, LAYOUT_MODE_NORMAL, input, false);
+        if result.is_some() {
+            super::finish_child_layout(self.rust_context_handle, node);
         }
 
         let container_inline_size = self.container_used().content_inline_size;
@@ -3192,13 +3177,9 @@ impl FlexFormattingContext {
                         y: item.main_offset,
                     }
                 };
-                // SAFETY: The item has live used-values storage.
-                unsafe { (self.callbacks.place_child)(self.callbacks.context, item.box_, offset) };
+                super::place_child(self.state, &self.callbacks, item.box_, offset);
             }
-            // SAFETY: The container has live used-values storage.
-            unsafe {
-                (self.callbacks.compute_and_store_baselines)(self.callbacks.context, self.flex_container);
-            }
+            super::compute_and_store_baselines(self.state, &self.callbacks, self.flex_container, true);
         }
 
         if self.should_collect_devtools_layout_data {
@@ -3224,14 +3205,12 @@ pub(crate) fn parent_did_dimension(instance: &mut FormattingContextInstance) {
         let next = context.navigate(context.callbacks.navigation.next_sibling, child);
         let facts = context.facts(child);
         if facts.is_box && facts.is_absolutely_positioned {
-            // SAFETY: Registration is synchronous and the host owns the child.
-            unsafe {
-                (context.callbacks.register_contained_abspos_child)(
-                    context.callbacks.context,
-                    child,
-                    context.calculate_static_position_rect(child),
-                );
-            }
+            super::register_contained_abspos_child(
+                context.state,
+                &context.callbacks,
+                child,
+                context.calculate_static_position_rect(child),
+            );
         }
         child = next;
     }

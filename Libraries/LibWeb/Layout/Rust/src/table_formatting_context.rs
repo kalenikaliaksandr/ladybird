@@ -780,10 +780,10 @@ mod grid {
     }
 }
 
-use super::sizing::SizingContext;
+use super::sizing::{MeasurementState, SizingContext};
 use super::{
-    FfiBorderData, FfiChildLayoutResult, FfiFormattingContextType, FfiLayoutFcCallbacks, FfiMeasuredCellContent,
-    FormattingContextInstance, block, block_context_for_fc,
+    FfiBorderData, FfiChildLayoutResult, FfiFormattingContextType, FfiLayoutFcCallbacks, FormattingContextInstance,
+    MeasuredCellContent, block, block_context_for_fc,
 };
 use crate::box_facts::FfiLayoutBoxFacts;
 use crate::css_pixels::CssPixels;
@@ -793,7 +793,7 @@ use crate::geometry::{
 };
 use crate::layout_state::state_mut;
 use crate::style_facts::{FfiSizeValue, FfiStyleFacts};
-use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
+use crate::used_values::{FfiCssPixelPoint, FfiSizeConstraint, UsedValuesCore};
 use borders::{
     CollapsedBorderGrid, ELEMENT_CELL, ELEMENT_COLUMN, ELEMENT_ROW, ELEMENT_ROW_GROUP, ELEMENT_TABLE, ElementBorders,
 };
@@ -804,6 +804,7 @@ use std::ffi::c_void;
 pub(crate) type Node = *mut c_void;
 
 const LAYOUT_MODE_NORMAL: u8 = 0;
+const LAYOUT_MODE_INTRINSIC_SIZING: u8 = 1;
 const BOX_SIZING_BORDER_BOX: u8 = 0;
 const BORDER_COLLAPSE_SEPARATE: u8 = 0;
 const CAPTION_SIDE_TOP: u8 = 0;
@@ -836,6 +837,7 @@ struct TableFormattingContext {
     state: *mut c_void,
     table_box: Node,
     parent_rust_fc: *mut c_void,
+    rust_context_handle: *mut c_void,
     layout_mode: u8,
     callbacks: FfiLayoutFcCallbacks,
     table_constraints: FfiContainingBlockConstraints,
@@ -880,6 +882,7 @@ impl TableFormattingContext {
             state: instance.state,
             table_box: instance.box_,
             parent_rust_fc: instance.parent_rust_fc,
+            rust_context_handle: instance as *const FormattingContextInstance as *mut c_void,
             layout_mode: instance.layout_mode,
             callbacks: instance.callbacks,
             table_constraints: FfiContainingBlockConstraints::default(),
@@ -967,11 +970,7 @@ impl TableFormattingContext {
     }
 
     fn place_child(&self, node: Node, x: CssPixels, y: CssPixels) {
-        bump(FfiOp::PlaceChildCallback);
-        // SAFETY: The node has a live used-values entry.
-        unsafe {
-            (self.callbacks.place_child)(self.callbacks.context, node, FfiCssPixelPoint { x, y });
-        }
+        super::place_child(self.state, &self.callbacks, node, FfiCssPixelPoint { x, y });
     }
 
     fn border_spacing_inline(&mut self) -> CssPixels {
@@ -2001,42 +2000,28 @@ impl TableFormattingContext {
     }
 
     fn layout_inside_cell(&self, cell: Cell, input: AvailableSpace) -> Option<FfiChildLayoutResult> {
-        let mut result = FfiChildLayoutResult::default();
-        bump(FfiOp::LayoutInsideCallback);
-        // SAFETY: The host keeps the returned child context until one of the
-        // matching completion callbacks below.
-        let created = unsafe {
-            (self.callbacks.layout_inside_child)(
-                self.callbacks.context,
-                cell.box_,
-                self.layout_mode,
-                FfiLayoutInput {
-                    available_space: input,
-                    containing_block_constraints: FfiContainingBlockConstraints::default(),
-                    has_content_box_position_in_bfc_root: false,
-                    content_box_position_in_bfc_root: FfiCssPixelPoint::default(),
-                    has_table_grid_min_border_box_block_size: false,
-                    table_grid_min_border_box_block_size: CssPixels::default(),
-                },
-                false,
-                &raw mut result,
-            )
-        };
-        created.then_some(result)
+        super::layout_inside_child(
+            self.rust_context_handle,
+            cell.box_,
+            self.layout_mode,
+            FfiLayoutInput {
+                available_space: input,
+                containing_block_constraints: FfiContainingBlockConstraints::default(),
+                has_content_box_position_in_bfc_root: false,
+                content_box_position_in_bfc_root: FfiCssPixelPoint::default(),
+                has_table_grid_min_border_box_block_size: false,
+                table_grid_min_border_box_block_size: CssPixels::default(),
+            },
+            false,
+        )
     }
 
     fn finish_child_layout(&self, cell: Node) {
-        bump(FfiOp::ParentDidDimensionCallback);
-        // SAFETY: This matches a successful layout_inside_child call.
-        unsafe {
-            (self.callbacks.parent_did_dimension_child_root_box)(self.callbacks.context, cell);
-        }
+        super::finish_child_layout(self.rust_context_handle, cell);
     }
 
     fn box_baseline(&self, node: Node) -> CssPixels {
-        bump(FfiOp::BoxBaselineCallback);
-        // SAFETY: Baseline set 0 is First and is statically pinned by C++.
-        unsafe { (self.callbacks.box_baseline)(self.callbacks.context, node, 0) }
+        super::box_baseline(self.state, &self.callbacks, node, super::BaselineSet::First)
     }
 
     fn measure_cell(
@@ -2044,23 +2029,72 @@ impl TableFormattingContext {
         cell: Cell,
         used: *const UsedValuesCore,
         inner: AvailableSpace,
-    ) -> Option<FfiMeasuredCellContent> {
+    ) -> Option<MeasuredCellContent> {
         // The table formatting context owns the cell's outer geometry. Seed the inputs
         // needed to lay out its contents without copying placement or layout outputs.
-        let mut measured = FfiMeasuredCellContent::default();
-        bump(FfiOp::CellMeasurementCallback);
-        // SAFETY: The host copies scalar input and returns scalar output.
-        let did_measure = unsafe {
-            (self.callbacks.measure_table_cell_content)(
-                self.callbacks.context,
+        // SAFETY: The caller passes the live cell entry.
+        let used = unsafe { &*used };
+        let facts = state_mut(self.state).box_facts(&self.callbacks, cell.box_);
+        if self.layout_mode == LAYOUT_MODE_INTRINSIC_SIZING
+            && !facts.is_inline
+            && used.inline_size_constraint == FfiSizeConstraint::None
+            && used.block_size_constraint == FfiSizeConstraint::None
+            && used.has_definite_inline_size()
+            && used.has_definite_block_size()
+        {
+            return None;
+        }
+        if !facts.can_have_children {
+            return None;
+        }
+
+        let mut measurement =
+            MeasurementState::create(self.callbacks, cell.box_, FfiContainingBlockConstraints::default());
+        let measured_root = measurement.root_used_mut();
+        measured_root.inline_size_constraint = used.inline_size_constraint;
+        measured_root.block_size_constraint = used.block_size_constraint;
+        measured_root.content_inline_size = used.content_inline_size;
+        measured_root.content_block_size = used.content_block_size;
+        measured_root.has_definite_inline_size = used.has_definite_inline_size();
+        measured_root.has_definite_block_size = used.has_definite_block_size();
+        measured_root.margin_left = used.margin_left;
+        measured_root.margin_right = used.margin_right;
+        measured_root.margin_top = used.margin_top;
+        measured_root.margin_bottom = used.margin_bottom;
+        measured_root.border_left = used.border_left;
+        measured_root.border_right = used.border_right;
+        measured_root.border_top = used.border_top;
+        measured_root.border_bottom = used.border_bottom;
+        measured_root.padding_left = used.padding_left;
+        measured_root.padding_right = used.padding_right;
+        measured_root.padding_top = used.padding_top;
+        measured_root.padding_bottom = used.padding_bottom;
+        measured_root.uses_collapsing_borders_model = used.uses_collapsing_borders_model;
+
+        let result = measurement.run_with_layout_mode(
+            cell.box_,
+            self.layout_mode,
+            FfiLayoutInput {
+                available_space: inner,
+                containing_block_constraints: FfiContainingBlockConstraints::default(),
+                has_content_box_position_in_bfc_root: false,
+                content_box_position_in_bfc_root: FfiCssPixelPoint::default(),
+                has_table_grid_min_border_box_block_size: false,
+                table_grid_min_border_box_block_size: CssPixels::default(),
+            },
+        );
+        measurement
+            .root_used_mut()
+            .set_content_block_size(result.automatic_content_block_size);
+        Some(MeasuredCellContent {
+            content_block_size: result.automatic_content_block_size,
+            first_baseline: super::box_baseline(
+                measurement.rust_state(),
+                measurement.callbacks(),
                 cell.box_,
-                self.layout_mode,
-                used,
-                inner,
-                &raw mut measured,
-            )
-        };
-        did_measure.then_some(measured)
+                super::BaselineSet::First,
+            ),
+        })
     }
 
     fn compute_table_block_size(&mut self) {
@@ -2542,6 +2576,7 @@ impl TableFormattingContext {
                     self.state,
                     self.table_box,
                     std::ptr::null_mut(),
+                    self.rust_context_handle,
                     self.layout_mode,
                     self.callbacks,
                 )
@@ -2562,11 +2597,7 @@ impl TableFormattingContext {
     }
 
     fn compute_and_store_baselines(&self, node: Node) {
-        bump(FfiOp::ComputeBaselinesCallback);
-        // SAFETY: The host computes baselines in the current state.
-        unsafe {
-            (self.callbacks.compute_and_store_baselines)(self.callbacks.context, node);
-        }
+        super::compute_and_store_baselines(self.state, &self.callbacks, node, false);
     }
 
     fn run(&mut self, input: FfiLayoutInput) {
@@ -2618,6 +2649,7 @@ impl TableFormattingContext {
                 self.callbacks,
                 self.layout_mode,
                 self.table_box,
+                self.rust_context_handle,
                 cell.box_,
             );
         }

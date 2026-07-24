@@ -1096,8 +1096,7 @@ mod runtime {
     use crate::css_pixels::CssPixels;
     use crate::formatting_context::sizing::SizingContext;
     use crate::formatting_context::{
-        FfiChildLayoutResult, FfiFlexAxis, FfiFlexSizeProperty, FfiFormattingContextType, FfiLayoutFcCallbacks,
-        FormattingContextInstance,
+        FfiFlexAxis, FfiFlexSizeProperty, FfiFormattingContextType, FfiLayoutFcCallbacks, FormattingContextInstance,
     };
     use crate::geometry::{
         AvailableSize, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput, LogicalOffset, LogicalRect,
@@ -1208,6 +1207,7 @@ mod runtime {
         state: *mut c_void,
         grid_container: Node,
         parent_rust_fc: *mut c_void,
+        rust_context_handle: *mut c_void,
         parent_grid_override: *const GridFormattingContext,
         layout_mode: u8,
         callbacks: FfiLayoutFcCallbacks,
@@ -1236,6 +1236,7 @@ mod runtime {
             state: *mut c_void,
             grid_container: Node,
             parent_rust_fc: *mut c_void,
+            rust_context_handle: *mut c_void,
             layout_mode: u8,
             callbacks: FfiLayoutFcCallbacks,
             should_collect_devtools_layout_data: bool,
@@ -1248,6 +1249,7 @@ mod runtime {
                 state,
                 grid_container,
                 parent_rust_fc,
+                rust_context_handle,
                 parent_grid_override: std::ptr::null(),
                 layout_mode,
                 callbacks,
@@ -1341,8 +1343,8 @@ mod runtime {
             if self.parent_rust_fc.is_null() {
                 return None;
             }
-            // SAFETY: The parent handle is supplied only for a live
-            // RustFormattingContext and outlives this child context.
+            // SAFETY: The parent handle is supplied only for a live formatting
+            // context instance and outlives this child context.
             let parent = unsafe { &*self.parent_rust_fc.cast::<FormattingContextInstance>() };
             if parent.fc_type != FfiFormattingContextType::Grid as u8 {
                 return None;
@@ -2758,6 +2760,7 @@ mod runtime {
                 self.state,
                 subgrid.box_,
                 std::ptr::null_mut(),
+                std::ptr::null_mut(),
                 LAYOUT_MODE_INTRINSIC_SIZING,
                 self.callbacks,
                 false,
@@ -3005,19 +3008,13 @@ mod runtime {
             constraints.has_percentage_basis_inline_size = true;
             constraints.percentage_basis_inline_size = containing_for_wrapper;
 
-            // SAFETY: The callback runs the existing table inline-size algorithm
-            // synchronously in a throwaway measurement state.
-            let mut wrapper_size = unsafe {
-                (self.callbacks.compute_table_box_inline_size_inside_wrapper)(
-                    self.callbacks.context,
-                    item.box_,
-                    available,
-                    constraints,
-                    true,
-                    containing_for_wrapper,
-                    1,
-                )
-            };
+            let mut wrapper_size = self.sizing().compute_table_box_inline_size_inside_wrapper(
+                item.box_,
+                available,
+                constraints,
+                Some(containing_for_wrapper),
+                crate::formatting_context::sizing::TableWrapperInlineSizeMode::UseTableUsedInlineSizeIfNotAuto,
+            );
             let wrapper_style = self.style(item.box_);
             let table_box = self.table_box_inside_wrapper(item.box_);
             let table_style = self.style(table_box);
@@ -3610,26 +3607,19 @@ mod runtime {
                     has_table_grid_min_border_box_block_size: false,
                     table_grid_min_border_box_block_size: CssPixels::default(),
                 };
-                let mut result = FfiChildLayoutResult::default();
-                // SAFETY: Child layout and callback dispatch are synchronous.
-                let did_layout = unsafe {
-                    (self.callbacks.layout_inside_child)(
-                        self.callbacks.context,
-                        item.box_,
-                        LAYOUT_MODE_NORMAL,
-                        input,
-                        false,
-                        &raw mut result,
-                    )
-                };
+                let did_layout = super::super::layout_inside_child(
+                    self.rust_context_handle,
+                    item.box_,
+                    LAYOUT_MODE_NORMAL,
+                    input,
+                    false,
+                )
+                .is_some();
                 let offset = FfiCssPixelPoint {
                     x: area.offset.inline_offset + self.item_margin_box_start(item, Axis::Column),
                     y: area.offset.block_offset + self.item_margin_box_start(item, Axis::Row),
                 };
-                // SAFETY: The host owns this live item.
-                unsafe {
-                    (self.callbacks.place_child)(self.callbacks.context, item.box_, offset);
-                }
+                crate::formatting_context::place_child(self.state, &self.callbacks, item.box_, offset);
                 super::super::abspos::compute_inset_native(
                     self.state,
                     self.callbacks,
@@ -3640,17 +3630,15 @@ mod runtime {
                     area.size.block_size,
                 );
                 if did_layout {
-                    // SAFETY: A successful layout call retained this child
-                    // context until the matching parent-dimension callback.
-                    unsafe {
-                        (self.callbacks.parent_did_dimension_child_root_box)(self.callbacks.context, item.box_);
-                    }
+                    super::super::finish_child_layout(self.rust_context_handle, item.box_);
                 }
             }
-            // SAFETY: Baseline computation reads the finished live subtree.
-            unsafe {
-                (self.callbacks.compute_and_store_baselines)(self.callbacks.context, self.grid_container);
-            }
+            crate::formatting_context::compute_and_store_baselines(
+                self.state,
+                &self.callbacks,
+                self.grid_container,
+                false,
+            );
         }
 
         fn used_track_list_storage(
@@ -3966,10 +3954,12 @@ mod runtime {
                         block_alignment: FfiStaticPositionAlignment::Start,
                         alignment_derives_from_own_computed_values: false,
                     };
-                    // SAFETY: Registration deep-copies this POD value.
-                    unsafe {
-                        (self.callbacks.register_contained_abspos_child)(self.callbacks.context, child, rect);
-                    }
+                    crate::formatting_context::register_contained_abspos_child(
+                        self.state,
+                        &self.callbacks,
+                        child,
+                        rect,
+                    );
                 }
                 child = next;
             }

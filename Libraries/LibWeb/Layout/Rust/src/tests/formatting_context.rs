@@ -97,21 +97,6 @@ fn table_parts_and_unknown_non_flow_inside_match_cpp() {
     );
 }
 
-#[test]
-fn rust_owns_native_formatting_contexts_and_abspos_replay() {
-    for type_ in 0..=u8::MAX {
-        assert_eq!(
-            rust_layout_owns_fc_type(type_),
-            type_ == FfiFormattingContextType::Block as u8
-                || type_ == FfiFormattingContextType::Flex as u8
-                || type_ == FfiFormattingContextType::Table as u8
-                || type_ == FfiFormattingContextType::Grid as u8
-                || type_ == FfiFormattingContextType::Svg as u8
-                || type_ == FfiFormattingContextType::AbsposReplay as u8
-        );
-    }
-}
-
 mod abspos {
     use crate::css_pixels::CssPixels;
     use crate::formatting_context::abspos::*;
