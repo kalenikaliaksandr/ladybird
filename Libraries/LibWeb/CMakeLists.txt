@@ -837,7 +837,6 @@ set(SOURCES
     Layout/SVGBox.cpp
     Layout/SVGClipBox.cpp
     Layout/SVGForeignObjectBox.cpp
-    Layout/SVGFormattingContext.cpp
     Layout/SVGGeometryBox.cpp
     Layout/SVGGraphicsBox.cpp
     Layout/SVGImageBox.cpp

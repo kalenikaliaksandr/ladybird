@@ -26,7 +26,6 @@
 #include <LibWeb/Layout/ReplacedBox.h>
 #include <LibWeb/Layout/ReplacedWithChildrenFormattingContext.h>
 #include <LibWeb/Layout/RustFormattingContext.h>
-#include <LibWeb/Layout/SVGFormattingContext.h>
 #include <LibWeb/Layout/SVGSVGBox.h>
 #include <LibWeb/Layout/TableWrapper.h>
 #include <LibWeb/Layout/TextInputBox.h>
@@ -522,7 +521,7 @@ OwnPtr<FormattingContext> FormattingContext::create_independent_formatting_conte
     case Type::Block:
         return make<BlockFormattingContext>(state, layout_mode, as<BlockContainer>(child_box), parent);
     case Type::SVG:
-        return make<SVGFormattingContext>(state, layout_mode, child_box, parent);
+        VERIFY_NOT_REACHED();
     case Type::Flex:
         VERIFY_NOT_REACHED();
     case Type::Grid:

@@ -188,7 +188,6 @@
 #include <LibWeb/Infra/Strings.h>
 #include <LibWeb/IntersectionObserver/IntersectionObserver.h>
 #include <LibWeb/Layout/BlockFormattingContext.h>
-#include <LibWeb/Layout/SVGFormattingContext.h>
 #include <LibWeb/Layout/SVGSVGBox.h>
 #include <LibWeb/Layout/ScrollableOverflow.h>
 #include <LibWeb/Layout/TextNode.h>
@@ -2253,8 +2252,9 @@ void Document::update_layout(UpdateLayoutReason reason)
                 auto const& svg_root = as<Layout::SVGSVGBox>(*m_layout_root->first_child());
                 auto content_block_size = layout_state.get(*svg_root.containing_block()).content_block_size();
                 layout_state.get_mutable(svg_root).set_content_block_size(content_block_size);
-                Layout::SVGFormattingContext svg_formatting_context(layout_state, Layout::LayoutMode::Normal, svg_root, nullptr);
-                svg_formatting_context.run(Layout::LayoutInput { available_space });
+                auto svg_formatting_context = Layout::FormattingContext::create_independent_formatting_context(
+                    layout_state, Layout::LayoutMode::Normal, svg_root, nullptr);
+                svg_formatting_context->run(Layout::LayoutInput { available_space });
             } else {
                 Layout::BlockFormattingContext root_formatting_context(layout_state, Layout::LayoutMode::Normal, *m_layout_root, nullptr);
                 root_formatting_context.run(Layout::LayoutInput { available_space });
