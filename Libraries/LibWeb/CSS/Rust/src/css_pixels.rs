@@ -47,6 +47,16 @@ fn clamp_f64_to_i32(value: f64) -> i32 {
     value.round_ties_even() as i32
 }
 
+fn clamp_f32_to_i32(value: f32) -> i32 {
+    if value >= i32::MAX as f32 {
+        return i32::MAX;
+    }
+    if value <= i32::MIN as f32 {
+        return i32::MIN;
+    }
+    value.round_ties_even() as i32
+}
+
 impl CssPixels {
     pub fn from_raw(raw: i32) -> Self {
         Self(raw)
@@ -71,6 +81,29 @@ impl CssPixels {
             return Self(0);
         }
         Self(clamp_f64_to_i32(value * FIXED_POINT_DENOMINATOR as f64))
+    }
+
+    /// Matches `CSSPixels::nearest_value_for(float)`: the scaling and
+    /// ties-to-even conversion both stay on the f32 path.
+    pub fn nearest_value_for_f32(value: f32) -> Self {
+        if value.is_nan() {
+            return Self(0);
+        }
+        Self(clamp_f32_to_i32(value * FIXED_POINT_DENOMINATOR as f32))
+    }
+
+    pub fn floor(self) -> Self {
+        Self(self.0 & !RADIX_MASK)
+    }
+
+    pub fn ceil(self) -> Self {
+        let floor = self.0 & !RADIX_MASK;
+        let increment = if self.0 & RADIX_MASK != 0 {
+            FIXED_POINT_DENOMINATOR
+        } else {
+            0
+        };
+        Self(floor.wrapping_add(increment))
     }
 
     pub fn to_double(self) -> f64 {
@@ -125,6 +158,36 @@ mod tests {
         // 0.0234375 * 64 = 1.5: ties to even -> 2.
         assert_eq!(CssPixels::nearest_value_for(0.0234375).raw_value(), 2);
         assert_eq!(CssPixels::nearest_value_for(f64::NAN).raw_value(), 0);
+    }
+
+    #[test]
+    fn f32_nearest_value_keeps_the_float_instantiation() {
+        assert_eq!(CssPixels::nearest_value_for_f32(0.0078125).raw_value(), 0);
+        assert_eq!(CssPixels::nearest_value_for_f32(0.0234375).raw_value(), 2);
+        assert_eq!(CssPixels::nearest_value_for_f32(f32::NAN).raw_value(), 0);
+        assert_eq!(CssPixels::nearest_value_for_f32(f32::INFINITY).raw_value(), i32::MAX);
+        assert_eq!(
+            CssPixels::nearest_value_for_f32(f32::NEG_INFINITY).raw_value(),
+            i32::MIN
+        );
+    }
+
+    #[test]
+    fn fixed_point_floor_and_ceil_match_cpp_bit_operations() {
+        for (raw, floor, ceil) in [
+            (0, 0, 0),
+            (1, 0, 64),
+            (63, 0, 64),
+            (64, 64, 64),
+            (65, 64, 128),
+            (-1, -64, 0),
+            (-63, -64, 0),
+            (-64, -64, -64),
+            (-65, -128, -64),
+        ] {
+            assert_eq!(CssPixels::from_raw(raw).floor().raw_value(), floor);
+            assert_eq!(CssPixels::from_raw(raw).ceil().raw_value(), ceil);
+        }
     }
 
     #[test]

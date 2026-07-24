@@ -1,0 +1,1349 @@
+/*
+ * Copyright (c) 2026-present, the Ladybird developers.
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+use crate::abort_on_panic;
+use crate::box_facts::FfiLayoutBoxFacts;
+use crate::css_pixels::CssPixels;
+use crate::geometry::{AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput};
+use crate::layout_state::{FfiStaticPositionAlignment, FfiStaticPositionRect, LineData, state_mut};
+use crate::style_facts::FfiStyleFacts;
+use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
+use crate::{
+    fc::{FfiChildLayoutResult, FfiLayoutFcCallbacks, sizing::SizingContext},
+    ffi_stats::FfiOp,
+    ffi_stats::bump,
+};
+use std::ffi::c_void;
+
+pub(crate) mod ellipsis;
+pub(crate) mod fragment;
+pub(crate) mod iterator;
+pub(crate) mod justification;
+pub(crate) mod line_box;
+pub(crate) mod line_builder;
+pub(crate) mod pieces;
+pub(crate) mod text;
+
+pub(crate) type Node = *mut c_void;
+
+pub(crate) struct InlineFormattingContext {
+    pub(crate) state: *mut c_void,
+    pub(crate) containing_block: Node,
+    pub(crate) layout_mode: u8,
+    pub(crate) input: FfiLayoutInput,
+    pub(crate) callbacks: FfiLayoutFcCallbacks,
+    pub(crate) parent: FfiParentBfcCallbacks,
+    pub(crate) containing_used_values: *mut UsedValuesCore,
+    pub(crate) line_data: *mut LineData,
+    pub(crate) fragmented_inlines_in_pre_order: Vec<Node>,
+    pub(crate) automatic_content_inline_size: CssPixels,
+    pub(crate) automatic_content_block_size: CssPixels,
+    pub(crate) block_axis_float_clearance: CssPixels,
+}
+
+impl InlineFormattingContext {
+    pub(crate) fn new(
+        state: *mut c_void,
+        containing_block: Node,
+        layout_mode: u8,
+        input: FfiLayoutInput,
+        callbacks: FfiLayoutFcCallbacks,
+        parent: FfiParentBfcCallbacks,
+    ) -> Self {
+        let containing_facts = state_mut(state).box_facts(&callbacks, containing_block);
+        assert!(containing_facts.has_layout_index);
+        let containing_used_values = state_mut(state).used_values(&callbacks, containing_block);
+        let line_data = state_mut(state).line_data_mut(containing_facts.layout_index);
+        Self {
+            state,
+            containing_block,
+            layout_mode,
+            input,
+            callbacks,
+            parent,
+            containing_used_values,
+            line_data,
+            fragmented_inlines_in_pre_order: Vec::new(),
+            automatic_content_inline_size: CssPixels::default(),
+            automatic_content_block_size: CssPixels::default(),
+            block_axis_float_clearance: CssPixels::default(),
+        }
+    }
+
+    pub(crate) fn style(&self, node: Node) -> FfiStyleFacts {
+        state_mut(self.state).style_facts(&self.callbacks, node)
+    }
+
+    pub(crate) fn facts(&self, node: Node) -> FfiLayoutBoxFacts {
+        state_mut(self.state).box_facts(&self.callbacks, node)
+    }
+
+    pub(crate) fn style_source(&self, node: Node) -> Node {
+        if self.facts(node).is_text_node {
+            self.parent_node(node)
+        } else {
+            node
+        }
+    }
+
+    pub(crate) fn line_data(&self) -> &LineData {
+        // SAFETY: The paged-store entry remains stable for the state lifetime.
+        unsafe { &*self.line_data }
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    pub(crate) fn line_data_mut(&self) -> &mut LineData {
+        // SAFETY: Inline layout serializes access to this containing block's
+        // line entry, including re-entrant calls through raw handles.
+        unsafe { &mut *self.line_data }
+    }
+
+    pub(crate) fn containing_used(&self) -> &UsedValuesCore {
+        // SAFETY: This points to the live state entry for the context box.
+        unsafe { &*self.containing_used_values }
+    }
+
+    pub(crate) fn used(&self, node: Node) -> &UsedValuesCore {
+        let pointer = state_mut(self.state).used_values(&self.callbacks, node);
+        // SAFETY: State-owned used values remain stable for the pass.
+        unsafe { &*pointer }
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    pub(crate) fn used_mut(&self, node: Node) -> &mut UsedValuesCore {
+        let pointer = state_mut(self.state).used_values(&self.callbacks, node);
+        // SAFETY: Layout mutates used values serially.
+        unsafe { &mut *pointer }
+    }
+
+    pub(crate) fn try_used_pointer(&self, node: Node) -> *mut UsedValuesCore {
+        state_mut(self.state).try_used_values(&self.callbacks, node)
+    }
+
+    pub(crate) fn create_used_values(
+        &self,
+        node: Node,
+        constraints: FfiContainingBlockConstraints,
+    ) -> *mut UsedValuesCore {
+        bump(FfiOp::UsedValuesCreateCallback);
+        // SAFETY: The host creates one state entry for this node.
+        let pointer = unsafe {
+            (self.callbacks.create_used_values)(
+                self.callbacks.context,
+                node,
+                constraints.has_percentage_basis_inline_size,
+                constraints.percentage_basis_inline_size,
+                constraints.has_percentage_basis_block_size,
+                constraints.percentage_basis_block_size,
+            )
+        };
+        assert!(!pointer.is_null());
+        pointer
+    }
+
+    pub(crate) fn navigate(&self, callback: crate::box_facts::FfiLayoutNavCallback, node: Node) -> Node {
+        bump(FfiOp::NavigationCallback);
+        // SAFETY: Navigation is synchronous and the host owns the nodes.
+        unsafe { callback(self.callbacks.navigation.context, node) }
+    }
+
+    pub(crate) fn parent_node(&self, node: Node) -> Node {
+        self.navigate(self.callbacks.navigation.parent, node)
+    }
+
+    pub(crate) fn first_child(&self, node: Node) -> Node {
+        self.navigate(self.callbacks.navigation.first_child, node)
+    }
+
+    pub(crate) fn next_sibling(&self, node: Node) -> Node {
+        self.navigate(self.callbacks.navigation.next_sibling, node)
+    }
+
+    pub(crate) fn nearest_fragmented_inline_ancestor(&self, node: Node) -> Node {
+        let mut ancestor = self.parent_node(node);
+        while !ancestor.is_null() {
+            let display = self.style(ancestor).display;
+            if !display.is_inline_outside() || !display.is_flow_inside() {
+                break;
+            }
+            if self.facts(ancestor).is_fragmented_inline {
+                return ancestor;
+            }
+            ancestor = self.parent_node(ancestor);
+        }
+        std::ptr::null_mut()
+    }
+
+    pub(crate) fn text_may_require_bidi_processing(&self, node: Node) -> bool {
+        // SAFETY: The host reads the live TextNode synchronously.
+        unsafe { (self.callbacks.text_may_require_bidi_processing)(self.callbacks.context, node) }
+    }
+
+    pub(crate) fn compute_inset(&self, node: Node) {
+        let used = self.containing_used();
+        // SAFETY: The host mutates the node's shared used values synchronously.
+        unsafe {
+            (self.callbacks.compute_inset)(
+                self.callbacks.context,
+                node,
+                used.content_inline_size,
+                used.content_block_size,
+            );
+        }
+    }
+
+    pub(crate) fn parent_commit_pending_margin_before_inline_content(&self) -> CssPixels {
+        bump(FfiOp::ParentBfcCommitMarginCallback);
+        // SAFETY: The parent BFC host is live for this inline run.
+        unsafe { (self.parent.commit_pending_margin_before_inline_content)(self.parent.context) }
+    }
+
+    pub(crate) fn intrusion_by_floats_into_containing_block(
+        &self,
+        block_start: CssPixels,
+        block_end: CssPixels,
+    ) -> FfiSpaceUsedByFloats {
+        assert!(self.input.has_content_box_position_in_bfc_root);
+        bump(FfiOp::ParentBfcPendingMarginAdjustmentCallback);
+        // SAFETY: The parent BFC host and containing block are live.
+        let adjustment = unsafe {
+            (self
+                .parent
+                .block_offset_adjustment_from_pending_ancestor_block_start_margins)(
+                self.parent.context,
+                self.containing_block,
+            )
+        };
+        let rect = FfiCssPixelRect {
+            x: self.input.content_box_position_in_bfc_root.x,
+            y: self.input.content_box_position_in_bfc_root.y + adjustment,
+            width: self.containing_used().content_inline_size,
+            height: self.containing_used().content_block_size,
+        };
+        bump(FfiOp::ParentBfcIntrusionCallback);
+        // SAFETY: The parent BFC reads its float state synchronously.
+        unsafe { (self.parent.intrusion_by_floats_into_rect)(self.parent.context, rect, block_start, block_end) }
+    }
+
+    pub(crate) fn leftmost_inline_offset_at(&self, block_offset: CssPixels, line_block_size: CssPixels) -> CssPixels {
+        self.intrusion_by_floats_into_containing_block(block_offset, block_offset + line_block_size)
+            .left
+    }
+
+    pub(crate) fn available_space_for_line(
+        &self,
+        block_offset: CssPixels,
+        line_block_size: CssPixels,
+    ) -> crate::geometry::AvailableSize {
+        if !self.input.available_space.inline_size.is_definite() {
+            return self.input.available_space.inline_size;
+        }
+        let intrusions = self.intrusion_by_floats_into_containing_block(block_offset, block_offset + line_block_size);
+        crate::geometry::AvailableSize::definite(
+            self.input.available_space.inline_size.to_px_or_zero() - intrusions.left - intrusions.right,
+        )
+    }
+
+    pub(crate) fn any_floats_intrude_in_block_range(&self, block_start: CssPixels, block_end: CssPixels) -> bool {
+        let intrusions = self.intrusion_by_floats_into_containing_block(block_start, block_end);
+        intrusions.left > CssPixels::default() || intrusions.right > CssPixels::default()
+    }
+
+    pub(crate) fn can_fit_new_line_at_block_offset(&self, block_offset: CssPixels, line_block_size: CssPixels) -> bool {
+        if !self.input.available_space.inline_size.is_definite() {
+            return true;
+        }
+        self.available_space_for_line(block_offset, line_block_size)
+            .to_px_or_zero()
+            > CssPixels::default()
+    }
+
+    pub(crate) fn next_float_band_block_start_after(&self, block_offset: CssPixels) -> Option<CssPixels> {
+        assert!(self.input.has_content_box_position_in_bfc_root);
+        bump(FfiOp::ParentBfcPendingMarginAdjustmentCallback);
+        // SAFETY: The BFC host is live for the run.
+        let adjustment = unsafe {
+            (self
+                .parent
+                .block_offset_adjustment_from_pending_ancestor_block_start_margins)(
+                self.parent.context,
+                self.containing_block,
+            )
+        };
+        let containing_block_offset_in_root = self.input.content_box_position_in_bfc_root.y + adjustment;
+        let mut next = CssPixels::default();
+        bump(FfiOp::ParentBfcNextFloatBandCallback);
+        // SAFETY: `next` is a valid optional out pointer.
+        let has_next = unsafe {
+            (self.parent.next_float_band_block_start_after)(
+                self.parent.context,
+                containing_block_offset_in_root + block_offset,
+                &raw mut next,
+            )
+        };
+        has_next.then_some(next - containing_block_offset_in_root)
+    }
+
+    fn parent_resolve_used_block_size(&self, node: Node, treated_as_auto: bool, available_space: AvailableSpace) {
+        bump(FfiOp::ParentBfcResolveBlockSizeCallback);
+        let callback = if treated_as_auto {
+            self.parent.resolve_used_block_size_if_treated_as_auto
+        } else {
+            self.parent.resolve_used_block_size_if_not_treated_as_auto
+        };
+        // SAFETY: The host BFC and shared used-values entry are live.
+        unsafe {
+            callback(
+                self.parent.context,
+                node,
+                available_space,
+                self.input.containing_block_constraints,
+            );
+        }
+    }
+
+    fn layout_inside(&self, node: Node, available_space: AvailableSpace) -> bool {
+        let mut result = FfiChildLayoutResult::default();
+        bump(FfiOp::LayoutInsideCallback);
+        // SAFETY: The callback retains an independent child context only
+        // until the matching completion call below.
+        unsafe {
+            (self.callbacks.layout_inside_child)(
+                self.callbacks.context,
+                node,
+                self.layout_mode,
+                FfiLayoutInput {
+                    available_space,
+                    containing_block_constraints: self.input.containing_block_constraints,
+                    has_content_box_position_in_bfc_root: false,
+                    content_box_position_in_bfc_root: FfiCssPixelPoint::default(),
+                    has_table_grid_min_border_box_block_size: false,
+                    table_grid_min_border_box_block_size: CssPixels::default(),
+                },
+                &raw mut result,
+            )
+        }
+    }
+
+    fn finish_inside_layout(&self, node: Node) {
+        bump(FfiOp::ParentDidDimensionCallback);
+        // SAFETY: This matches a successful `layout_inside_child` call.
+        unsafe {
+            (self.callbacks.parent_did_dimension_child_root_box)(self.callbacks.context, node);
+        }
+    }
+
+    pub(crate) fn dimension_box_on_line(&mut self, node: Node) {
+        let available_space = self.input.available_space;
+        let constraints = self.input.containing_block_constraints;
+        let containing_inline_size = available_space.inline_size.to_px_or_zero();
+        let style = self.style(node);
+        {
+            let used = self.used_mut(node);
+            used.margin_left = style.margin_left.to_px(containing_inline_size);
+            used.border_left = style.border_left_width;
+            used.padding_left = style.padding_left.to_px(containing_inline_size);
+            used.margin_right = style.margin_right.to_px(containing_inline_size);
+            used.border_right = style.border_right_width;
+            used.padding_right = style.padding_right.to_px(containing_inline_size);
+            used.margin_top = style.margin_top.to_px(containing_inline_size);
+            used.border_top = style.border_top_width;
+            used.padding_top = style.padding_top.to_px(containing_inline_size);
+            used.padding_bottom = style.padding_bottom.to_px(containing_inline_size);
+            used.border_bottom = style.border_bottom_width;
+            used.margin_bottom = style.margin_bottom.to_px(containing_inline_size);
+        }
+
+        let facts = self.facts(node);
+        if facts.is_list_item_marker_box {
+            bump(FfiOp::ParentBfcDimensionMarkerCallback);
+            // SAFETY: Marker dimensioning mutates this live used-values entry.
+            unsafe {
+                (self.parent.dimension_list_item_marker)(self.parent.context, node);
+            }
+            bump(FfiOp::ParentBfcMarkerDistanceCallback);
+            // SAFETY: The marker and its list item are live.
+            let distance = unsafe { (self.parent.distance_between_marker_and_list_item)(self.parent.context, node) };
+            let used = self.used_mut(node);
+            if style.direction == crate::css_enums::direction::LTR {
+                used.margin_right += distance;
+            } else {
+                used.margin_left += distance;
+            }
+            return;
+        }
+
+        let sizing = SizingContext::new(self.state, self.callbacks);
+        if sizing.box_is_sized_as_replaced_element(node, available_space, constraints) {
+            let inline_size = sizing.compute_inline_size_for_replaced_element(node, available_space, constraints);
+            self.used_mut(node).set_content_inline_size(inline_size);
+            let block_size = sizing.compute_block_size_for_replaced_element(node, available_space, constraints);
+            self.used_mut(node).set_content_block_size(block_size);
+            let block_size_is_automatic =
+                style.height.is_auto() || sizing.should_treat_block_size_as_auto(node, available_space, constraints);
+            if self.used(node).has_definite_inline_size() && facts.has_preferred_aspect_ratio && block_size_is_automatic
+            {
+                self.used_mut(node).has_definite_block_size = true;
+            }
+            let inner = self
+                .used(node)
+                .available_inner_space_or_constraints_from(available_space);
+            if self.layout_inside(node, inner) {
+                self.finish_inside_layout(node);
+            }
+            return;
+        }
+
+        if facts.is_fragmented_inline {
+            return;
+        }
+
+        let unconstrained_inline_size = if sizing.should_treat_inline_size_as_auto(node, available_space) {
+            if available_space.inline_size.is_definite() {
+                let used = self.used(node);
+                let available = available_space.inline_size.to_px_or_zero()
+                    - used.margin_left
+                    - used.border_left
+                    - used.padding_left
+                    - used.padding_right
+                    - used.border_right
+                    - used.margin_right;
+                let preferred = sizing.calculate_max_content_inline_size(node, constraints);
+                if preferred <= available {
+                    preferred
+                } else {
+                    sizing
+                        .calculate_min_content_inline_size(node, constraints)
+                        .max(available)
+                        .min(preferred)
+                }
+            } else if available_space.inline_size.is_min_content() {
+                sizing.calculate_min_content_inline_size(node, constraints)
+            } else {
+                sizing.calculate_max_content_inline_size(node, constraints)
+            }
+        } else if style.width.contains_percentage && !available_space.inline_size.is_definite() {
+            CssPixels::default()
+        } else {
+            sizing.calculate_inner_inline_size(node, available_space.inline_size, style.width, constraints)
+        };
+
+        let mut inline_size = unconstrained_inline_size;
+        if !sizing.should_treat_max_inline_size_as_none(node, available_space.inline_size, constraints) {
+            inline_size = inline_size.min(sizing.calculate_inner_inline_size(
+                node,
+                available_space.inline_size,
+                style.max_width,
+                constraints,
+            ));
+        }
+        if !style.min_width.is_auto() {
+            inline_size = inline_size.max(sizing.calculate_inner_inline_size(
+                node,
+                available_space.inline_size,
+                style.min_width,
+                constraints,
+            ));
+        }
+        self.used_mut(node).set_content_inline_size(inline_size);
+
+        let inline_definite_space = AvailableSpace {
+            inline_size: crate::geometry::AvailableSize::definite(inline_size),
+            block_size: crate::geometry::AvailableSize::indefinite(),
+        };
+        self.parent_resolve_used_block_size(node, false, inline_definite_space);
+        if style.display.is_flex_inside() {
+            self.parent_resolve_used_block_size(node, true, inline_definite_space);
+        }
+        bump(FfiOp::AbsposButtonDefiniteCallback);
+        // SAFETY: This preserves the existing button-specific helper.
+        unsafe {
+            (self.callbacks.make_button_content_box_definite)(
+                self.callbacks.context,
+                node,
+                available_space,
+                constraints,
+            );
+        }
+        let inner = self
+            .used(node)
+            .available_inner_space_or_constraints_from(available_space);
+        let has_child_context = self.layout_inside(node, inner);
+        if sizing.should_treat_block_size_as_auto(node, available_space, constraints) {
+            self.parent_resolve_used_block_size(node, true, available_space);
+        } else {
+            self.parent_resolve_used_block_size(node, false, available_space);
+        }
+        if has_child_context {
+            self.finish_inside_layout(node);
+        }
+    }
+
+    fn clear_floating_boxes(&self, node: Node) -> bool {
+        bump(FfiOp::ParentBfcClearFloatsCallback);
+        // SAFETY: The host synchronously accesses this raw IFC instance only
+        // through the clearance exports.
+        unsafe {
+            (self.parent.clear_floating_boxes)(
+                self.parent.context,
+                node,
+                self as *const Self as *mut c_void,
+                self.input.content_box_position_in_bfc_root,
+            )
+        }
+    }
+
+    fn reset_parent_margin_state(&self) {
+        bump(FfiOp::ParentBfcResetMarginCallback);
+        // SAFETY: The parent BFC is live for the run.
+        unsafe {
+            (self.parent.reset_margin_state)(self.parent.context);
+        }
+    }
+
+    fn text_overflow_applies(&self) -> bool {
+        let mut block = self.containing_block;
+        if self.facts(block).is_anonymous {
+            // SAFETY: The callback returns a live layout box or null.
+            block = unsafe { (self.callbacks.non_anonymous_containing_block)(self.callbacks.context, block) };
+        }
+        if block.is_null() {
+            return false;
+        }
+        let style = self.style(block);
+        style.text_overflow == crate::css_enums::text_overflow::ELLIPSIS
+            && style.overflow_x != crate::css_enums::overflow::VISIBLE
+    }
+
+    pub(crate) fn generate_line_boxes(&mut self) {
+        self.line_data_mut().line_boxes.clear();
+        self.line_data_mut().inline_box_pieces.clear();
+        let context_pointer = self as *mut Self;
+        let mut iterator = iterator::InlineLevelIterator::new(context_pointer);
+        self.fragmented_inlines_in_pre_order = iterator.take_visited_fragmented_inlines();
+        let mut line_builder = line_builder::LineBuilder::new(context_pointer);
+        let line_builder_pointer = (&raw mut line_builder).cast::<c_void>();
+
+        let mut leading_margin = CssPixels::default();
+        let mut leading_border = CssPixels::default();
+        let mut leading_padding = CssPixels::default();
+        let mut absolute_boxes = Vec::new();
+
+        while let Some(item_ref) = iterator.next() {
+            let mut item = item_ref.clone();
+            let line_starts_with_whitespace = self
+                .line_data()
+                .line_boxes
+                .last()
+                .is_none_or(|line| line.is_empty_or_ends_in_whitespace() || line.has_block_level_box);
+            if item.is_collapsible_whitespace && line_starts_with_whitespace {
+                if self.style(self.style_source(item.node)).text_wrap_mode == crate::css_enums::text_wrap_mode::WRAP {
+                    let next_inline_size = iterator.next_non_whitespace_sequence_inline_size();
+                    if next_inline_size > CssPixels::default() {
+                        line_builder.prepare_to_append_inline_content();
+                        line_builder.break_if_needed(next_inline_size);
+                    }
+                }
+                leading_margin += item.margin_start;
+                leading_border += item.border_start;
+                leading_padding += item.padding_start;
+                continue;
+            }
+
+            item.margin_start += leading_margin;
+            item.border_start += leading_border;
+            item.padding_start += leading_padding;
+            leading_margin = CssPixels::default();
+            leading_border = CssPixels::default();
+            leading_padding = CssPixels::default();
+
+            match item.type_ {
+                iterator::ItemType::ForcedBreak => {
+                    line_builder.break_line(line_builder::ForcedBreak::Yes, None);
+                    if !item.node.is_null() && self.clear_floating_boxes(item.node) {
+                        line_builder.did_introduce_clearance(self.block_axis_float_clearance);
+                        self.reset_parent_margin_state();
+                    }
+                }
+                iterator::ItemType::Element => {
+                    line_builder.prepare_to_append_inline_content();
+                    self.compute_inset(item.node);
+                    if self.style(self.containing_block).text_wrap_mode == crate::css_enums::text_wrap_mode::WRAP {
+                        let mut minimum = item.border_box_inline_size();
+                        if item.margin_start < CssPixels::default() {
+                            minimum += item.margin_start;
+                        }
+                        if item.margin_end < CssPixels::default() {
+                            minimum += item.margin_end;
+                        }
+                        line_builder.break_if_needed(minimum);
+                    }
+                    line_builder.append_box(
+                        item.node,
+                        item.border_start + item.padding_start,
+                        item.padding_end + item.border_end,
+                        item.margin_start,
+                        item.margin_end,
+                    );
+                }
+                iterator::ItemType::BlockLevelBox => {
+                    leading_margin += item.margin_start;
+                    leading_border += item.border_start;
+                    leading_padding += item.padding_start;
+                    line_builder.finish_current_line_before_block_level_box();
+                    bump(FfiOp::ParentBfcInterruptingBlockCallback);
+                    // SAFETY: The raw line-builder instance supports the
+                    // bounded re-entrant exports used by this callback.
+                    unsafe {
+                        (self.parent.layout_interrupting_block_inside_inline_context)(
+                            self.parent.context,
+                            item.node,
+                            self.input,
+                            line_builder_pointer,
+                        );
+                    }
+                }
+                iterator::ItemType::AbsolutelyPositionedElement => {
+                    if !self.facts(item.node).is_box {
+                        continue;
+                    }
+                    let preceded = item.preceded_by_unattached_inline_start_edges
+                        || item.margin_start != CssPixels::default()
+                        || item.border_start != CssPixels::default()
+                        || item.padding_start != CssPixels::default();
+                    line_builder.append_static_position_marker(item.node, preceded);
+                    absolute_boxes.push(item.node);
+                }
+                iterator::ItemType::FloatingElement => {
+                    line_builder.commit_pending_margin_before_float();
+                    if !self.facts(item.node).is_list_item_marker_box {
+                        self.create_used_values(item.node, self.input.containing_block_constraints);
+                    }
+                    self.clear_floating_boxes(item.node);
+                    line_builder.set_unbreakable_run_inline_size_interrupted_by_float(
+                        iterator.next_non_whitespace_sequence_inline_size(),
+                    );
+                    bump(FfiOp::ParentBfcLayoutFloatCallback);
+                    // SAFETY: The callback may re-enter only through the raw
+                    // builder and IFC exports; no Rust borrow crosses it.
+                    unsafe {
+                        (self.parent.layout_floating_box)(
+                            self.parent.context,
+                            item.node,
+                            self.input,
+                            CssPixels::default(),
+                            line_builder_pointer,
+                        );
+                    }
+                }
+                iterator::ItemType::Text => {
+                    line_builder.prepare_to_append_inline_content();
+                    if self.style(self.parent_node(item.node)).text_wrap_mode == crate::css_enums::text_wrap_mode::WRAP
+                    {
+                        let is_whitespace = item.is_collapsible_whitespace || iterator.item_is_ascii_whitespace(&item);
+                        let next_inline_size = if is_whitespace {
+                            iterator.next_non_whitespace_sequence_inline_size()
+                        } else {
+                            CssPixels::default()
+                        };
+                        if is_whitespace
+                            && next_inline_size > CssPixels::default()
+                            && line_builder.break_if_needed(item.border_box_inline_size() + next_inline_size)
+                        {
+                            line_builder.set_trailing_whitespace_on_previous_line();
+                            continue;
+                        }
+                        let line_is_empty = self
+                            .line_data()
+                            .line_boxes
+                            .last()
+                            .is_some_and(line_box::LineBoxData::is_empty);
+                        if !is_whitespace && (item.can_break_before || line_is_empty) {
+                            line_builder.break_if_needed(item.border_box_inline_size());
+                        }
+                    }
+                    let line_height = self.style(self.parent_node(item.node)).line_height;
+                    line_builder.append_text_chunk(
+                        item.node,
+                        item.offset_in_node,
+                        item.length_in_node,
+                        item.border_start + item.padding_start,
+                        item.padding_end + item.border_end,
+                        item.margin_start,
+                        item.margin_end,
+                        item.inline_size,
+                        line_height,
+                        item.glyphs.take().unwrap(),
+                    );
+                }
+            }
+        }
+
+        for line_index in 0..self.line_data().line_boxes.len() {
+            let line = &raw mut self.line_data_mut().line_boxes[line_index];
+            // SAFETY: The line store and IFC are distinct live objects.
+            unsafe {
+                (*line).trim_trailing_whitespace(&mut *context_pointer);
+            }
+        }
+        if self.text_overflow_applies() {
+            let lines = &raw mut self.line_data_mut().line_boxes;
+            // SAFETY: Ellipsis mutates the line store while font callbacks
+            // access the separate context.
+            unsafe {
+                ellipsis::apply((*lines).as_mut_slice(), &mut *context_pointer);
+            }
+        }
+        let containing_style = self.style(self.containing_block);
+        if containing_style.text_align == crate::css_enums::text_align::JUSTIFY {
+            let line_count = self.line_data().line_boxes.len();
+            for index in 0..line_count {
+                justification::apply_to_fragments(
+                    containing_style.text_justify,
+                    &mut self.line_data_mut().line_boxes[index],
+                    index + 1 == line_count,
+                );
+            }
+        }
+        line_builder.update_last_line();
+
+        for line_index in 0..self.line_data().line_boxes.len() {
+            if self.line_data().line_boxes[line_index].has_block_level_box {
+                continue;
+            }
+            let fragment_count = self.line_data().line_boxes[line_index].fragments.len();
+            for fragment_index in 0..fragment_count {
+                let fragment = &self.line_data().line_boxes[line_index].fragments[fragment_index];
+                if !fragment.is_atomic_inline {
+                    continue;
+                }
+                let (x, y) = fragment.offset();
+                bump(FfiOp::PlaceChildCallback);
+                // SAFETY: The host mutates only the child used values.
+                unsafe {
+                    (self.callbacks.place_child)(
+                        self.callbacks.context,
+                        fragment.layout_node,
+                        FfiCssPixelPoint { x, y },
+                    );
+                }
+            }
+        }
+
+        if self.layout_mode == 0 {
+            for box_ in absolute_boxes {
+                let mut static_position = FfiStaticPositionRect {
+                    rect: Default::default(),
+                    inline_alignment: FfiStaticPositionAlignment::Start,
+                    block_alignment: FfiStaticPositionAlignment::Start,
+                    alignment_derives_from_own_computed_values: false,
+                };
+                'lines: for line in &self.line_data().line_boxes {
+                    for marker in &line.static_position_markers {
+                        if marker.box_ != box_ {
+                            continue;
+                        }
+                        if self.facts(box_).display_before_box_type_transformation_is_block_outside {
+                            let block_position = if marker.preceded_by_in_flow_content {
+                                line.physical_vertical_end()
+                            } else {
+                                marker.offset().1
+                            };
+                            let inline_size =
+                                if self.input.containing_block_constraints.has_percentage_basis_inline_size {
+                                    self.input.containing_block_constraints.percentage_basis_inline_size
+                                } else {
+                                    CssPixels::default()
+                                };
+                            static_position.rect.offset.inline_offset = CssPixels::default();
+                            static_position.rect.offset.block_offset = block_position;
+                            static_position.rect.size.inline_size = inline_size;
+                        } else {
+                            let (x, y) = marker.offset();
+                            static_position.rect.offset.inline_offset = x;
+                            static_position.rect.offset.block_offset = y;
+                        }
+                        if containing_style.direction == crate::css_enums::direction::RTL {
+                            static_position.inline_alignment = FfiStaticPositionAlignment::End;
+                        }
+                        break 'lines;
+                    }
+                }
+                // SAFETY: Registration copies the POD rectangle immediately.
+                unsafe {
+                    (self.callbacks.register_contained_abspos_child)(self.callbacks.context, box_, static_position);
+                }
+            }
+        }
+        line_builder.remove_last_line_if_empty();
+    }
+
+    pub(crate) fn run(&mut self) {
+        assert!(self.facts(self.containing_block).children_are_inline);
+        self.generate_line_boxes();
+        self.compute_inline_box_pieces();
+        let lines = &self.line_data().line_boxes;
+        self.automatic_content_block_size = if lines.iter().any(|line| line.has_block_level_box) {
+            lines
+                .last()
+                .map_or(CssPixels::default(), line_box::LineBoxData::physical_vertical_end)
+        } else {
+            lines
+                .iter()
+                .fold(CssPixels::default(), |sum, line| sum + line.physical_vertical_extent())
+        };
+        bump(FfiOp::ParentBfcGreatestInlineSizeCallback);
+        // SAFETY: The BFC reads the completed line store through summary
+        // exports and includes its own float state.
+        self.automatic_content_inline_size = unsafe {
+            (self.parent.greatest_child_inline_size_including_floats)(self.parent.context, self.containing_block)
+        };
+        bump(FfiOp::ComputeBaselinesCallback);
+        // SAFETY: The host baseline helper reads the completed line store.
+        unsafe {
+            (self.callbacks.compute_and_store_baselines)(self.callbacks.context, self.containing_block);
+        }
+    }
+
+    fn compute_inline_box_pieces(&mut self) {
+        if self.layout_mode != 0 {
+            return;
+        }
+        // SAFETY: The callback only reads the state purpose.
+        if unsafe { (self.callbacks.is_measurement_state)(self.callbacks.context) } {
+            return;
+        }
+        let pieces = pieces::compute(self);
+        self.line_data_mut().inline_box_pieces = pieces;
+    }
+}
+
+impl line_box::LineBoxTextProvider for InlineFormattingContext {
+    fn document_cursor_is_on_node(&mut self, node: Node) -> bool {
+        // SAFETY: The host reads document state synchronously.
+        unsafe { (self.callbacks.document_cursor_is_on_node)(self.callbacks.context, node) }
+    }
+
+    fn font_glyph_width(&mut self, font: *const c_void, code_point: u32) -> f32 {
+        // SAFETY: Fonts are borrowed for the pass.
+        unsafe { (self.callbacks.font_glyph_width)(self.callbacks.context, font, code_point) }
+    }
+}
+
+impl ellipsis::EllipsisFontProvider for InlineFormattingContext {
+    fn font_glyph_width(&mut self, font: *const c_void, code_point: u32) -> f32 {
+        <Self as line_box::LineBoxTextProvider>::font_glyph_width(self, font, code_point)
+    }
+
+    fn font_glyph_id(&mut self, font: *const c_void, code_point: u32) -> u32 {
+        // SAFETY: Fonts are borrowed for the pass.
+        unsafe { (self.callbacks.font_glyph_id)(self.callbacks.context, font, code_point) }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiCssPixelRect {
+    pub x: CssPixels,
+    pub y: CssPixels,
+    pub width: CssPixels,
+    pub height: CssPixels,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiSpaceUsedByFloats {
+    pub left: CssPixels,
+    pub right: CssPixels,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct FfiParentBfcCallbacks {
+    pub context: *mut c_void,
+    pub intrusion_by_floats_into_rect:
+        unsafe extern "C" fn(*mut c_void, FfiCssPixelRect, CssPixels, CssPixels) -> FfiSpaceUsedByFloats,
+    pub next_float_band_block_start_after: unsafe extern "C" fn(*mut c_void, CssPixels, *mut CssPixels) -> bool,
+    pub block_offset_adjustment_from_pending_ancestor_block_start_margins:
+        unsafe extern "C" fn(*mut c_void, *mut c_void) -> CssPixels,
+    pub greatest_child_inline_size_including_floats: unsafe extern "C" fn(*mut c_void, *mut c_void) -> CssPixels,
+    pub clear_floating_boxes: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, FfiCssPixelPoint) -> bool,
+    pub reset_margin_state: unsafe extern "C" fn(*mut c_void),
+    pub commit_pending_margin_before_inline_content: unsafe extern "C" fn(*mut c_void) -> CssPixels,
+    pub layout_interrupting_block_inside_inline_context:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, FfiLayoutInput, *mut c_void),
+    pub layout_floating_box: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiLayoutInput, CssPixels, *mut c_void),
+    pub resolve_used_block_size_if_not_treated_as_auto:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSpace, FfiContainingBlockConstraints),
+    pub resolve_used_block_size_if_treated_as_auto:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSpace, FfiContainingBlockConstraints),
+    pub dimension_list_item_marker: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    pub distance_between_marker_and_list_item: unsafe extern "C" fn(*mut c_void, *mut c_void) -> CssPixels,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiInlineLayoutResult {
+    pub automatic_content_inline_size: CssPixels,
+    pub automatic_content_block_size: CssPixels,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiLineSummary {
+    pub inline_length: CssPixels,
+    pub block_length: CssPixels,
+    pub block_end: CssPixels,
+    pub baseline: CssPixels,
+    pub block_level_box_block_end_margin: CssPixels,
+    pub physical_vertical_end: CssPixels,
+    pub physical_vertical_extent: CssPixels,
+    pub physical_horizontal_extent: CssPixels,
+    pub is_empty: bool,
+    pub has_break: bool,
+    pub has_forced_break: bool,
+    pub has_block_level_box: bool,
+    pub fragment_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiLineRecord {
+    pub rect: FfiCssPixelRect,
+    pub committed_fragment_count: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct FfiCommittedFragment {
+    pub layout_node: Node,
+    pub offset: FfiCssPixelPoint,
+    pub size: FfiCssPixelPoint,
+    pub start: usize,
+    pub length_in_code_units: usize,
+    pub baseline: CssPixels,
+    pub writing_mode: u8,
+    pub has_trailing_whitespace: bool,
+    pub has_glyph_run: bool,
+    pub glyphs: *const text::FfiDrawGlyph,
+    pub glyph_count: usize,
+    pub glyph_font: *const c_void,
+    pub glyph_text_type: u8,
+    pub glyph_run_width: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct FfiInlineBoxPiece {
+    pub node: Node,
+    pub first_fragment_index: u32,
+    pub fragment_count: u32,
+    pub border_box_rect: FfiCssPixelRect,
+    pub present_edges: u8,
+    pub is_geometry_only_placeholder: bool,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct FfiLineSinkCallbacks {
+    pub context: *mut c_void,
+    pub begin_line: unsafe extern "C" fn(*mut c_void, FfiLineRecord),
+    pub emit_fragment: unsafe extern "C" fn(*mut c_void, FfiCommittedFragment),
+    pub emit_inline_box_piece: unsafe extern "C" fn(*mut c_void, FfiInlineBoxPiece),
+}
+
+fn line_physical_horizontal_extent(line: &line_box::LineBoxData) -> CssPixels {
+    if line.has_block_level_box || line.writing_mode == crate::css_enums::writing_mode::HORIZONTAL_TB {
+        return line.inline_length;
+    }
+    let Some(first) = line.fragments.first() else {
+        return CssPixels::default();
+    };
+    let mut left = first.offset().0;
+    let mut right = left + first.physical_horizontal_extent();
+    for fragment in &line.fragments[1..] {
+        let fragment_left = fragment.offset().0;
+        left = left.min(fragment_left);
+        right = right.max(fragment_left + fragment.physical_horizontal_extent());
+    }
+    right - left
+}
+
+fn line_rect(line: &line_box::LineBoxData, content_inline_size: CssPixels) -> FfiCssPixelRect {
+    let Some(first) = line.fragments.first() else {
+        return FfiCssPixelRect {
+            x: CssPixels::default(),
+            y: line.physical_vertical_end() - line.physical_vertical_extent(),
+            width: content_inline_size,
+            height: line.physical_vertical_extent(),
+        };
+    };
+    let (first_x, first_y) = first.offset();
+    let (first_width, first_height) = first.size();
+    let mut left = first_x;
+    let mut top = first_y;
+    let mut right = first_x + first_width;
+    let mut bottom = first_y + first_height;
+    for fragment in &line.fragments[1..] {
+        let (x, y) = fragment.offset();
+        let (width, height) = fragment.size();
+        left = left.min(x);
+        top = top.min(y);
+        right = right.max(x + width);
+        bottom = bottom.max(y + height);
+    }
+    if first.writing_mode == crate::css_enums::writing_mode::HORIZONTAL_TB {
+        top = line.physical_vertical_end() - line.physical_vertical_extent();
+        bottom = top + line.physical_vertical_extent();
+    }
+    FfiCssPixelRect {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_run_inline_formatting_context(
+    state: *mut c_void,
+    containing_block: Node,
+    layout_mode: u8,
+    input: FfiLayoutInput,
+    callbacks: *const FfiLayoutFcCallbacks,
+    parent: *const FfiParentBfcCallbacks,
+    out: *mut FfiInlineLayoutResult,
+) -> bool {
+    abort_on_panic(|| {
+        assert!(!state.is_null());
+        assert!(!containing_block.is_null());
+        assert!(!callbacks.is_null());
+        assert!(!parent.is_null());
+        assert!(!out.is_null());
+        // SAFETY: Both callback tables are live and copied before callbacks.
+        let callbacks = unsafe { *callbacks };
+        let parent = unsafe { *parent };
+        let fact_build_counts = crate::ffi_stats::fact_build_counts();
+        let mut context = Box::new(InlineFormattingContext::new(
+            state,
+            containing_block,
+            layout_mode,
+            input,
+            callbacks,
+            parent,
+        ));
+        // Root facts, including the non-anonymous style owner consulted by an
+        // anonymous wrapper, are IFC setup overhead rather than facts for a
+        // visited descendant. Keep the pre-flip fact-build counter semantics
+        // while retaining those entries in the shared per-pass caches.
+        context.style(containing_block);
+        if context.facts(containing_block).is_anonymous {
+            // SAFETY: The host returns the live percentage/style owner.
+            let non_anonymous = unsafe {
+                (context.callbacks.non_anonymous_containing_block)(context.callbacks.context, containing_block)
+            };
+            if !non_anonymous.is_null() {
+                context.style(non_anonymous);
+            }
+        }
+        crate::ffi_stats::exclude_inline_root_fact_builds(fact_build_counts);
+        context.run();
+        // SAFETY: `out` is a valid caller-owned result slot.
+        unsafe {
+            out.write(FfiInlineLayoutResult {
+                automatic_content_inline_size: context.automatic_content_inline_size,
+                automatic_content_block_size: context.automatic_content_block_size,
+            });
+        }
+        true
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_line_builder_current_block_offset(line_builder: *mut c_void) -> CssPixels {
+    abort_on_panic(|| {
+        assert!(!line_builder.is_null());
+        // SAFETY: The pointer is live only during its parent callback.
+        unsafe { (*line_builder.cast::<line_builder::LineBuilder>()).current_block_offset() }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_line_builder_append_block_level_box(
+    line_builder: *mut c_void,
+    box_: *mut c_void,
+    block_end: CssPixels,
+    block_end_margin: CssPixels,
+) {
+    abort_on_panic(|| {
+        assert!(!line_builder.is_null());
+        // SAFETY: The parent callback has exclusive logical access.
+        unsafe {
+            (*line_builder.cast::<line_builder::LineBuilder>()).append_block_level_box(
+                box_,
+                block_end,
+                block_end_margin,
+            );
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_line_builder_ceiling_for_float(
+    line_builder: *mut c_void,
+    box_: *mut c_void,
+) -> CssPixels {
+    abort_on_panic(|| {
+        assert!(!line_builder.is_null());
+        // SAFETY: The pointer is live only during the float callback.
+        unsafe { (*line_builder.cast::<line_builder::LineBuilder>()).ceiling_for_float_to_be_inserted_here(box_) }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_line_builder_recalculate_available_space(line_builder: *mut c_void) {
+    abort_on_panic(|| {
+        assert!(!line_builder.is_null());
+        // SAFETY: The pointer is live only during the float callback.
+        unsafe {
+            (*line_builder.cast::<line_builder::LineBuilder>()).recalculate_available_space();
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_inline_fc_block_axis_float_clearance(inline_fc: *mut c_void) -> CssPixels {
+    abort_on_panic(|| {
+        assert!(!inline_fc.is_null());
+        // SAFETY: The IFC is live for its parent callback.
+        unsafe { (*inline_fc.cast::<InlineFormattingContext>()).block_axis_float_clearance }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_inline_fc_set_block_axis_float_clearance(inline_fc: *mut c_void, clearance: CssPixels) {
+    abort_on_panic(|| {
+        assert!(!inline_fc.is_null());
+        // SAFETY: The IFC is live for its parent callback.
+        unsafe {
+            (*inline_fc.cast::<InlineFormattingContext>()).block_axis_float_clearance = clearance;
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_uv_line_count(state: *mut c_void, layout_index: u32) -> usize {
+    abort_on_panic(|| {
+        assert!(!state.is_null());
+        state_mut(state)
+            .line_data(layout_index)
+            .map_or(0, |data| data.line_boxes.len())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_uv_line_summary(
+    state: *mut c_void,
+    layout_index: u32,
+    line_index: usize,
+    out: *mut FfiLineSummary,
+) -> bool {
+    abort_on_panic(|| {
+        assert!(!state.is_null());
+        assert!(!out.is_null());
+        let Some(line) = state_mut(state)
+            .line_data(layout_index)
+            .and_then(|data| data.line_boxes.get(line_index))
+        else {
+            return false;
+        };
+        let summary = FfiLineSummary {
+            inline_length: line.inline_length,
+            block_length: line.block_length,
+            block_end: line.block_end,
+            baseline: line.baseline,
+            block_level_box_block_end_margin: line.block_level_box_block_end_margin,
+            physical_vertical_end: line.physical_vertical_end(),
+            physical_vertical_extent: line.physical_vertical_extent(),
+            physical_horizontal_extent: line_physical_horizontal_extent(line),
+            is_empty: line.is_empty(),
+            has_break: line.has_break,
+            has_forced_break: line.has_forced_break,
+            has_block_level_box: line.has_block_level_box,
+            fragment_count: line.fragments.len(),
+        };
+        // SAFETY: `out` is caller-owned and writable.
+        unsafe {
+            out.write(summary);
+        }
+        true
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_uv_line_first_fragment_node(
+    state: *mut c_void,
+    layout_index: u32,
+    line_index: usize,
+) -> Node {
+    abort_on_panic(|| {
+        assert!(!state.is_null());
+        state_mut(state)
+            .line_data(layout_index)
+            .and_then(|data| data.line_boxes.get(line_index))
+            .and_then(|line| line.fragments.first())
+            .map_or(std::ptr::null_mut(), |fragment| fragment.layout_node)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_uv_drain_lines(
+    state: *mut c_void,
+    layout_index: u32,
+    sink: *const FfiLineSinkCallbacks,
+) -> bool {
+    abort_on_panic(|| {
+        assert!(!state.is_null());
+        assert!(!sink.is_null());
+        // SAFETY: The callback table remains live for this synchronous drain.
+        let sink = unsafe { *sink };
+        let content_inline_size = state_mut(state)
+            .used_values_by_index(layout_index)
+            .map_or(CssPixels::default(), |used| used.content_inline_size);
+        let Some(data) = state_mut(state).line_data_mut_if_present(layout_index) else {
+            return false;
+        };
+        for line in &mut data.line_boxes {
+            let committed_fragment_count = line
+                .fragments
+                .iter()
+                .filter(|fragment| !fragment.is_fully_truncated)
+                .count() as u32;
+            // SAFETY: Sink callbacks consume each POD record synchronously.
+            unsafe {
+                (sink.begin_line)(
+                    sink.context,
+                    FfiLineRecord {
+                        rect: line_rect(line, content_inline_size),
+                        committed_fragment_count,
+                    },
+                );
+            }
+            for fragment in &mut line.fragments {
+                if fragment.is_fully_truncated {
+                    continue;
+                }
+                let (x, y) = fragment.offset();
+                let (width, height) = fragment.size();
+                let glyphs = fragment
+                    .glyphs
+                    .as_mut()
+                    .map(|glyph_data| std::mem::take(&mut glyph_data.glyphs));
+                let (glyph_pointer, glyph_count, glyph_font, glyph_text_type, glyph_run_width) =
+                    if let (Some(glyphs), Some(glyph_data)) = (glyphs.as_ref(), fragment.glyphs.as_ref()) {
+                        (
+                            glyphs.as_ptr(),
+                            glyphs.len(),
+                            glyph_data.font,
+                            glyph_data.text_type,
+                            glyph_data.width,
+                        )
+                    } else {
+                        (std::ptr::null(), 0, std::ptr::null(), 0, 0.0)
+                    };
+                // SAFETY: Glyph storage stays live through this callback.
+                unsafe {
+                    (sink.emit_fragment)(
+                        sink.context,
+                        FfiCommittedFragment {
+                            layout_node: fragment.layout_node,
+                            offset: FfiCssPixelPoint { x, y },
+                            size: FfiCssPixelPoint { x: width, y: height },
+                            start: fragment.start,
+                            length_in_code_units: fragment.length_in_code_units,
+                            baseline: fragment.baseline,
+                            writing_mode: fragment.writing_mode,
+                            has_trailing_whitespace: fragment.has_trailing_whitespace,
+                            has_glyph_run: glyphs.is_some(),
+                            glyphs: glyph_pointer,
+                            glyph_count,
+                            glyph_font,
+                            glyph_text_type,
+                            glyph_run_width,
+                        },
+                    );
+                }
+            }
+        }
+        for piece in &data.inline_box_pieces {
+            // SAFETY: The sink copies the POD piece synchronously.
+            unsafe {
+                (sink.emit_inline_box_piece)(
+                    sink.context,
+                    FfiInlineBoxPiece {
+                        node: piece.node,
+                        first_fragment_index: piece.first_fragment_index,
+                        fragment_count: piece.fragment_count,
+                        border_box_rect: FfiCssPixelRect {
+                            x: piece.border_box_rect.x,
+                            y: piece.border_box_rect.y,
+                            width: piece.border_box_rect.width,
+                            height: piece.border_box_rect.height,
+                        },
+                        present_edges: piece.present_edges,
+                        is_geometry_only_placeholder: piece.is_geometry_only_placeholder,
+                    },
+                );
+            }
+        }
+        bump(FfiOp::LineDrain);
+        true
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_uv_lookup_line_fragment_offset(
+    state: *mut c_void,
+    layout_index: u32,
+    line_index: usize,
+    fragment_index: usize,
+    out: *mut FfiCssPixelPoint,
+) -> u8 {
+    abort_on_panic(|| {
+        assert!(!state.is_null());
+        let Some(line) = state_mut(state)
+            .line_data(layout_index)
+            .and_then(|data| data.line_boxes.get(line_index))
+        else {
+            return 0;
+        };
+        let Some(fragment) = line.fragments.get(fragment_index) else {
+            return 1;
+        };
+        assert!(!out.is_null());
+        let (x, y) = fragment.offset();
+        // SAFETY: Status 2 requires a writable output slot.
+        unsafe {
+            out.write(FfiCssPixelPoint { x, y });
+        }
+        2
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_css_pixels_nearest_value_for_f32(value: f32) -> i32 {
+    abort_on_panic(|| CssPixels::nearest_value_for_f32(value).raw_value())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_css_pixels_floor(raw: i32) -> i32 {
+    abort_on_panic(|| CssPixels::from_raw(raw).floor().raw_value())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_css_pixels_ceil(raw: i32) -> i32 {
+    abort_on_panic(|| CssPixels::from_raw(raw).ceil().raw_value())
+}

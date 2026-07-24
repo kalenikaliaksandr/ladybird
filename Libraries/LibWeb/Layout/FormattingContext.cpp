@@ -588,8 +588,12 @@ CSSPixels FormattingContext::greatest_child_inline_size(Box const& box) const
 {
     CSSPixels max_inline_size = 0;
     if (box.children_are_inline()) {
-        for (auto& line_box : m_state.get(box).line_boxes())
-            max_inline_size = max(max_inline_size, line_box_physical_horizontal_extent(box, line_box));
+        auto line_count = m_state.rust_line_count(box);
+        for (size_t line_index = 0; line_index < line_count; ++line_index) {
+            auto summary = m_state.rust_line_summary(box, line_index);
+            VERIFY(summary.has_value());
+            max_inline_size = max(max_inline_size, CSSPixels::from_raw(summary->physical_horizontal_extent));
+        }
     } else {
         box.for_each_child_of_type<Box>([&](Box const& child) {
             if (!child.is_absolutely_positioned())
@@ -598,31 +602,6 @@ CSSPixels FormattingContext::greatest_child_inline_size(Box const& box) const
         });
     }
     return max_inline_size;
-}
-
-CSSPixels FormattingContext::line_box_physical_horizontal_extent(Box const& box, LineBox const& line_box)
-{
-    if (line_box.has_block_level_box())
-        return line_box.inline_length();
-
-    if (box.computed_values().writing_mode() == CSS::WritingMode::HorizontalTb)
-        return line_box.inline_length();
-
-    CSSPixels leftmost_physical_horizontal_offset = 0;
-    CSSPixels rightmost_physical_horizontal_offset = 0;
-    bool saw_fragment = false;
-    for (auto const& fragment : line_box.fragments()) {
-        auto fragment_physical_left = fragment.offset().x();
-        auto fragment_physical_right = fragment_physical_left + fragment.physical_horizontal_extent();
-        leftmost_physical_horizontal_offset = saw_fragment ? min(leftmost_physical_horizontal_offset, fragment_physical_left) : fragment_physical_left;
-        rightmost_physical_horizontal_offset = saw_fragment ? max(rightmost_physical_horizontal_offset, fragment_physical_right) : fragment_physical_right;
-        saw_fragment = true;
-    }
-
-    if (!saw_fragment)
-        return 0;
-
-    return rightmost_physical_horizontal_offset - leftmost_physical_horizontal_offset;
 }
 
 FormattingContext::ShrinkToFitInlineSizeResult FormattingContext::calculate_shrink_to_fit_inline_sizes(Box const& box, ContainingBlockConstraints const& containing_block_constraints)
@@ -687,14 +666,16 @@ CSSPixels FormattingContext::compute_automatic_block_size_for_block_formatting_c
     if (root.children_are_inline()) {
         // If it only has inline-level children, the block size is the distance between
         // the top content edge and the bottom of the bottommost line box.
-        auto const& line_boxes = m_state.get(root).line_boxes();
         top = 0;
-        if (!line_boxes.is_empty()) {
-            bottom = line_boxes.last().physical_vertical_end();
+        auto line_count = m_state.rust_line_count(root);
+        if (line_count > 0) {
+            auto last_line = m_state.rust_line_summary(root, line_count - 1);
+            VERIFY(last_line.has_value());
+            bottom = CSSPixels::from_raw(last_line->physical_vertical_end);
             // A trailing interrupting block's bottom margin cannot collapse out of a BFC root,
             // so it contributes to the root's automatic block size. The line box bottom excludes it.
-            if (line_boxes.last().has_block_level_box())
-                bottom = max(CSSPixels(0), bottom.value() + line_boxes.last().block_level_box_block_end_margin());
+            if (last_line->has_block_level_box)
+                bottom = max(CSSPixels(0), bottom.value() + CSSPixels::from_raw(last_line->block_level_box_block_end_margin));
         }
     } else {
         // If it has block-level children, the block size is the distance between
@@ -1855,24 +1836,45 @@ void FormattingContext::compute_and_store_baselines(LayoutState::UsedValues& use
 
     auto const& box = as<Box>(used_values.node());
 
-    if (!used_values.line_boxes().is_empty()) {
-        auto baseline_for_line_box = [&](LineBox const& line_box, BaselineSet baseline_set) -> CSSPixels {
-            if (!line_box.has_block_level_box()) {
-                auto line_box_block_start = line_box.physical_vertical_end() - line_box.block_length();
-                return line_box_block_start + line_box.baseline();
+    auto line_count = m_state.rust_line_count(box);
+    if (line_count > 0) {
+        auto baseline_for_line_box = [&](size_t line_index, BaselineSet baseline_set) -> CSSPixels {
+            auto line = m_state.rust_line_summary(box, line_index);
+            VERIFY(line.has_value());
+            if (!line->has_block_level_box) {
+                auto line_box_block_start = CSSPixels::from_raw(line->physical_vertical_end) - CSSPixels::from_raw(line->block_length);
+                return line_box_block_start + CSSPixels::from_raw(line->baseline);
             }
 
-            VERIFY(line_box.fragments().size() == 1);
-            auto const& block_child = as<Box>(line_box.fragments().first().layout_node());
+            VERIFY(line->fragment_count == 1);
+            auto const* fragment_node = m_state.rust_line_first_fragment_node(box, line_index);
+            VERIFY(fragment_node);
+            auto const& block_child = as<Box>(*fragment_node);
             auto const& block_child_state = m_state.get(block_child);
             auto child_offset_from_margin_edge = block_child_state.content_logical_offset().block_offset - block_child_state.margin_box_top();
             return child_offset_from_margin_edge + box_baseline(block_child, baseline_set);
         };
 
-        auto first_line_box = used_values.line_boxes().first_matching([](auto& line_box) { return !line_box.is_empty(); });
-        used_values.set_first_baseline(baseline_for_line_box(first_line_box.value_or(used_values.line_boxes().first()), BaselineSet::First));
-        auto last_line_box = used_values.line_boxes().last_matching([](auto& line_box) { return !line_box.is_empty(); });
-        used_values.set_last_baseline(baseline_for_line_box(last_line_box.value_or(used_values.line_boxes().last()), BaselineSet::Last));
+        size_t first_line_index = 0;
+        for (; first_line_index < line_count; ++first_line_index) {
+            auto line = m_state.rust_line_summary(box, first_line_index);
+            VERIFY(line.has_value());
+            if (!line->is_empty)
+                break;
+        }
+        if (first_line_index == line_count)
+            first_line_index = 0;
+        used_values.set_first_baseline(baseline_for_line_box(first_line_index, BaselineSet::First));
+
+        size_t last_line_index = line_count - 1;
+        while (last_line_index > 0) {
+            auto line = m_state.rust_line_summary(box, last_line_index);
+            VERIFY(line.has_value());
+            if (!line->is_empty)
+                break;
+            --last_line_index;
+        }
+        used_values.set_last_baseline(baseline_for_line_box(last_line_index, BaselineSet::Last));
         return;
     }
 

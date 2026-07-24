@@ -7,6 +7,8 @@
 use crate::abort_on_panic;
 use crate::box_facts::FfiLayoutBoxFacts;
 use crate::fc::grid::facts::GridStyleFacts;
+use crate::fc::inline::text::TextNodeFacts;
+use crate::fc::inline::{line_box::LineBoxData, pieces::InlineBoxPieceData};
 use crate::fc::{FfiLayoutFcCallbacks, FfiTableBoxFacts};
 use crate::ffi_stats::{FfiOp, bump};
 use crate::geometry::LogicalRect;
@@ -253,7 +255,16 @@ pub(crate) struct LayoutState {
     box_facts: PagedStore<FfiLayoutBoxFacts>,
     table_facts: PagedStore<FfiTableBoxFacts>,
     grid_facts: PagedStore<GridStyleFacts>,
+    text_facts: HashMap<usize, TextNodeFacts>,
+    line_data: PagedStore<LineData>,
     layout_indices_by_node: HashMap<usize, u32>,
+}
+
+#[derive(Default)]
+#[allow(dead_code)]
+pub(crate) struct LineData {
+    pub(crate) line_boxes: Vec<LineBoxData>,
+    pub(crate) inline_box_pieces: Vec<InlineBoxPieceData>,
 }
 
 impl Drop for LayoutState {
@@ -381,6 +392,68 @@ impl LayoutState {
         let facts = self.grid_facts.allocate(index, facts);
         // SAFETY: `allocate` returns a live entry owned by the state arena.
         unsafe { &*facts }
+    }
+
+    pub(crate) fn text_facts(
+        &mut self,
+        callbacks: &FfiLayoutFcCallbacks,
+        node: *mut c_void,
+        should_wrap_lines: bool,
+        should_respect_linebreaks: bool,
+        unidirectional_ltr: bool,
+    ) -> &TextNodeFacts {
+        let key = node as usize;
+        self.text_facts.entry(key).or_insert_with(|| {
+            TextNodeFacts::build(
+                callbacks,
+                node,
+                should_wrap_lines,
+                should_respect_linebreaks,
+                unidirectional_ltr,
+            )
+        });
+        self.text_facts.get(&key).unwrap()
+    }
+
+    pub(crate) fn line_data_mut(&mut self, layout_index: u32) -> &mut LineData {
+        let data = self.line_data.get(layout_index);
+        let data = if data.is_null() {
+            self.line_data.allocate(layout_index, LineData::default())
+        } else {
+            data
+        };
+        // SAFETY: The entry is uniquely accessed through this mutable state.
+        unsafe { &mut *data }
+    }
+
+    pub(crate) fn line_data(&self, layout_index: u32) -> Option<&LineData> {
+        let data = self.line_data.get(layout_index);
+        if data.is_null() {
+            None
+        } else {
+            // SAFETY: Non-null store entries remain valid for the state.
+            Some(unsafe { &*data })
+        }
+    }
+
+    pub(crate) fn line_data_mut_if_present(&mut self, layout_index: u32) -> Option<&mut LineData> {
+        let data = self.line_data.get(layout_index);
+        if data.is_null() {
+            None
+        } else {
+            // SAFETY: The entry is uniquely accessed through this state.
+            Some(unsafe { &mut *data })
+        }
+    }
+
+    pub(crate) fn used_values_by_index(&self, layout_index: u32) -> Option<&UsedValuesCore> {
+        let used = self.used_values.get(layout_index);
+        if used.is_null() {
+            None
+        } else {
+            // SAFETY: The state owns this stable entry.
+            Some(unsafe { &*used })
+        }
     }
 
     pub(crate) fn used_values(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> *mut UsedValuesCore {

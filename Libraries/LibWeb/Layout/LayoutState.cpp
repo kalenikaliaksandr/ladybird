@@ -50,36 +50,25 @@ LayoutState::~LayoutState()
     RustFFI::rust_layout_state_destroy(m_rust_state);
 }
 
+size_t LayoutState::rust_line_count(NodeWithStyle const& node) const
+{
+    return RustFFI::rust_layout_uv_line_count(m_rust_state, node.layout_index());
+}
+
+Optional<RustFFI::FfiLineSummary> LayoutState::rust_line_summary(NodeWithStyle const& node, size_t line_index) const
+{
+    RustFFI::FfiLineSummary summary {};
+    if (!RustFFI::rust_layout_uv_line_summary(m_rust_state, node.layout_index(), line_index, &summary))
+        return {};
+    return summary;
+}
+
+Node const* LayoutState::rust_line_first_fragment_node(NodeWithStyle const& node, size_t line_index) const
+{
+    return static_cast<Node const*>(RustFFI::rust_layout_uv_line_first_fragment_node(m_rust_state, node.layout_index(), line_index));
+}
+
 LayoutState::UsedValues::~UsedValues() = default;
-
-static CSSPixelRect united_fragment_rect_for_line_box(LineBox const& line_box)
-{
-    CSSPixelRect rect;
-    bool saw_fragment = false;
-    for (auto const& fragment : line_box.fragments()) {
-        auto fragment_rect = CSSPixelRect { fragment.offset(), fragment.size() };
-        if (saw_fragment)
-            rect.unite(fragment_rect);
-        else
-            rect = fragment_rect;
-        saw_fragment = true;
-    }
-
-    auto writing_mode = line_box.fragments().first().writing_mode();
-    if (writing_mode == CSS::WritingMode::HorizontalTb) {
-        rect.set_y(line_box.physical_vertical_end() - line_box.physical_vertical_extent());
-        rect.set_height(line_box.physical_vertical_extent());
-    }
-
-    return rect;
-}
-
-static CSSPixelRect rect_for_line_box(LineBox const& line_box, CSSPixels containing_block_content_inline_size)
-{
-    if (line_box.fragments().is_empty())
-        return { 0, line_box.physical_vertical_end() - line_box.physical_vertical_extent(), containing_block_content_inline_size, line_box.physical_vertical_extent() };
-    return united_fragment_rect_for_line_box(line_box);
-}
 
 void LayoutState::ensure_capacity(u32 node_count)
 {
@@ -330,26 +319,83 @@ RefPtr<Painting::Paintable> LayoutState::commit_used_values_to_paintable(UsedVal
         paintable->set_table_cell_coordinates(used_values.table_cell_coordinates().value());
 
     if (auto* paintable_with_lines = as_if<Painting::PaintableWithLines>(*paintable)) {
-        auto& line_boxes = used_values.line_boxes();
-        Vector<Painting::LineRecord> lines;
-        lines.ensure_capacity(line_boxes.size());
-        for (size_t line_index = 0; line_index < line_boxes.size(); ++line_index) {
-            auto const& line_box = line_boxes[line_index];
-
-            auto first_fragment_index = paintable_with_lines->fragments().size();
-            for (auto const& fragment : line_box.fragments()) {
-                if (fragment.is_fully_truncated())
-                    continue;
-                paintable_with_lines->add_fragment(fragment, static_cast<u32>(line_index));
-            }
-
-            lines.append({
-                .rect = rect_for_line_box(line_box, used_values.content_inline_size()),
-                .fragment_count = static_cast<u32>(paintable_with_lines->fragments().size() - first_fragment_index),
-            });
-        }
-        paintable_with_lines->set_lines(move(lines));
-        paintable_with_lines->set_inline_box_pieces(move(used_values.inline_box_pieces()));
+        struct LineDrainContext {
+            Painting::PaintableWithLines& paintable;
+            Vector<Painting::LineRecord> lines;
+            Vector<Painting::InlineBoxPiece> pieces;
+        } context { *paintable_with_lines, {}, {} };
+        RustFFI::FfiLineSinkCallbacks sink {
+            .context = &context,
+            .begin_line = [](void* raw_context, RustFFI::FfiLineRecord record) {
+                auto& context = *static_cast<LineDrainContext*>(raw_context);
+                context.lines.append({
+                    .rect = {
+                        CSSPixels::from_raw(record.rect.x),
+                        CSSPixels::from_raw(record.rect.y),
+                        CSSPixels::from_raw(record.rect.width),
+                        CSSPixels::from_raw(record.rect.height),
+                    },
+                    .fragment_count = record.committed_fragment_count,
+                });
+            },
+            .emit_fragment = [](void* raw_context, RustFFI::FfiCommittedFragment fragment) {
+                auto& context = *static_cast<LineDrainContext*>(raw_context);
+                VERIFY(fragment.layout_node);
+                RefPtr<Gfx::GlyphRun> glyph_run;
+                if (fragment.has_glyph_run) {
+                    VERIFY(fragment.glyph_font);
+                    VERIFY(fragment.glyphs || fragment.glyph_count == 0);
+                    Vector<Gfx::DrawGlyph> glyphs;
+                    glyphs.ensure_capacity(fragment.glyph_count);
+                    auto const* draw_glyphs = reinterpret_cast<Gfx::DrawGlyph const*>(fragment.glyphs);
+                    for (size_t index = 0; index < fragment.glyph_count; ++index)
+                        glyphs.unchecked_append(draw_glyphs[index]);
+                    glyph_run = adopt_ref(*new Gfx::GlyphRun(
+                        move(glyphs),
+                        *static_cast<Gfx::Font const*>(fragment.glyph_font),
+                        static_cast<Gfx::GlyphRun::TextType>(fragment.glyph_text_type),
+                        fragment.glyph_run_width));
+                }
+                context.paintable.add_fragment({
+                    .layout_node = *static_cast<Node const*>(fragment.layout_node),
+                    .offset = {
+                        CSSPixels::from_raw(fragment.offset.x),
+                        CSSPixels::from_raw(fragment.offset.y),
+                    },
+                    .size = {
+                        CSSPixels::from_raw(fragment.size.x),
+                        CSSPixels::from_raw(fragment.size.y),
+                    },
+                    .line_index = static_cast<u32>(context.lines.size() - 1),
+                    .start_offset = fragment.start,
+                    .length_in_code_units = fragment.length_in_code_units,
+                    .glyph_run = move(glyph_run),
+                    .baseline = CSSPixels::from_raw(fragment.baseline),
+                    .writing_mode = static_cast<CSS::WritingMode>(fragment.writing_mode),
+                    .has_trailing_whitespace = fragment.has_trailing_whitespace,
+                });
+            },
+            .emit_inline_box_piece = [](void* raw_context, RustFFI::FfiInlineBoxPiece piece) {
+                auto& context = *static_cast<LineDrainContext*>(raw_context);
+                VERIFY(piece.node);
+                context.pieces.append({
+                    .node = *static_cast<Node const*>(piece.node),
+                    .first_fragment_index = piece.first_fragment_index,
+                    .fragment_count = piece.fragment_count,
+                    .border_box_rect = {
+                        CSSPixels::from_raw(piece.border_box_rect.x),
+                        CSSPixels::from_raw(piece.border_box_rect.y),
+                        CSSPixels::from_raw(piece.border_box_rect.width),
+                        CSSPixels::from_raw(piece.border_box_rect.height),
+                    },
+                    .present_edges = piece.present_edges,
+                    .is_geometry_only_placeholder = piece.is_geometry_only_placeholder,
+                });
+            },
+        };
+        (void)RustFFI::rust_layout_uv_drain_lines(m_rust_state, node.layout_index(), &sink);
+        paintable_with_lines->set_lines(move(context.lines));
+        paintable_with_lines->set_inline_box_pieces(move(context.pieces));
 
         // Piece fragment ranges were counted against the same skip-fully-truncated
         // fragment stream during inline layout; a divergence would let piece
@@ -398,12 +444,19 @@ RefPtr<Painting::Paintable> LayoutState::commit_used_values_to_paintable(UsedVal
             // offset for the atomic inline, but line box post-processing may remove fragments after the
             // coordinate was recorded, in which case the content offset stands.
             auto const& coordinate = containing_line_box_fragment.value();
-            auto const& containing_block_used_values = get(*node.containing_block());
-            if (coordinate.line_box_index < containing_block_used_values.line_boxes().size()) {
-                auto const& line_box = containing_block_used_values.line_boxes()[coordinate.line_box_index];
+            auto const* containing_block = node.containing_block();
+            VERIFY(containing_block);
+            RustFFI::FfiCssPixelPoint fragment_offset {};
+            auto lookup = RustFFI::rust_layout_uv_lookup_line_fragment_offset(
+                m_rust_state,
+                containing_block->layout_index(),
+                coordinate.line_box_index,
+                coordinate.fragment_index,
+                &fragment_offset);
+            if (lookup >= 1) {
                 paintable->set_containing_line_box_index(coordinate.line_box_index);
-                if (coordinate.fragment_index < line_box.fragments().size())
-                    offset = line_box.fragments()[coordinate.fragment_index].offset();
+                if (lookup == 2)
+                    offset = { CSSPixels::from_raw(fragment_offset.x), CSSPixels::from_raw(fragment_offset.y) };
             }
         }
 

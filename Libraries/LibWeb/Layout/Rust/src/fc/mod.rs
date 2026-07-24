@@ -19,6 +19,7 @@ use std::ffi::c_void;
 pub(crate) mod abspos;
 mod flex;
 pub(crate) mod grid;
+pub(crate) mod inline;
 mod sizing;
 mod svg;
 mod table;
@@ -212,10 +213,18 @@ pub struct FfiLayoutFcCallbacks {
     pub dom_node_is_inclusive_ancestor: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool,
     pub is_table_cell: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
     pub needs_inset_resolution: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
-    pub for_each_line_box_fragment:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, abspos::FfiLineBoxFragmentVisitor),
     pub build_style_facts: FfiBuildStyleFactsCallback,
     pub build_box_facts: FfiBuildBoxFactsCallback,
+    pub build_text_facts:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, bool, bool, bool, *mut inline::text::FfiTextNodeFacts) -> bool,
+    pub release_text_facts: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    pub text_may_require_bidi_processing: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
+    pub document_cursor_is_on_node: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
+    pub shape_text: unsafe extern "C" fn(*mut c_void, inline::text::FfiShapeRequest) -> inline::text::FfiShapedRunView,
+    pub release_shaped_run: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    pub font_metrics: unsafe extern "C" fn(*mut c_void, *const c_void, *mut inline::text::FfiFontPixelMetrics),
+    pub font_glyph_width: unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> f32,
+    pub font_glyph_id: unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32,
     pub build_table_box_facts: FfiBuildTableBoxFactsCallback,
     pub build_grid_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> grid::facts::FfiGridStyleFacts,
     pub release_grid_facts_snapshot: unsafe extern "C" fn(*mut c_void, *mut c_void),

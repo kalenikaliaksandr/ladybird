@@ -15,7 +15,6 @@
 #include <LibWeb/Layout/AbsposLayoutInputs.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/LayoutRustFFI.h>
-#include <LibWeb/Layout/LineBox.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/SVGGraphicsPaintable.h>
 
@@ -202,12 +201,6 @@ struct LayoutState {
         void set_inset_top(CSSPixels value) { m_core->inset_top = value.raw_value(); }
         CSSPixels inset_bottom() const { return CSSPixels::from_raw(m_core->inset_bottom); }
         void set_inset_bottom(CSSPixels value) { m_core->inset_bottom = value.raw_value(); }
-
-        Vector<LineBox>& line_boxes() { return m_cpp_extension.line_boxes; }
-        Vector<LineBox> const& line_boxes() const { return m_cpp_extension.line_boxes; }
-
-        Vector<Painting::InlineBoxPiece>& inline_box_pieces() { return m_cpp_extension.inline_box_pieces; }
-        Vector<Painting::InlineBoxPiece> const& inline_box_pieces() const { return m_cpp_extension.inline_box_pieces; }
 
         // Baselines of this box's in-flow content, relative to the box's content-box top edge.
         // Populated eagerly by the formatting context that lays out this box's children.
@@ -404,8 +397,6 @@ struct LayoutState {
         };
 
         struct CppUsedValuesExtension {
-            Vector<LineBox> line_boxes;
-            Vector<Painting::InlineBoxPiece> inline_box_pieces;
             OwnPtr<RareData> rare;
         };
 
@@ -421,8 +412,10 @@ struct LayoutState {
         // UniformBumpAllocator's chunk walk assumes that each completed chunk
         // contains an integral number of entries. Keep this cache entry at 80
         // bytes so a 4 KiB layout chunk has no trailing partial entry.
-        u8 m_allocator_padding[16] {};
+        u8 m_allocator_padding[64] {};
     };
+
+    static_assert(sizeof(UsedValues) == 80);
 
     enum class Purpose : u8 {
         Commit,      // Results will be committed (full layout, or a partial relayout of a subtree).
@@ -460,6 +453,9 @@ struct LayoutState {
 
     bool has_subtree_root() const { return m_subtree_root != nullptr; }
     void* rust_state_handle() const { return m_rust_state; }
+    size_t rust_line_count(NodeWithStyle const&) const;
+    Optional<RustFFI::FfiLineSummary> rust_line_summary(NodeWithStyle const&, size_t line_index) const;
+    Node const* rust_line_first_fragment_node(NodeWithStyle const&, size_t line_index) const;
 
     struct ContainedAbsposChild {
         Box const* box { nullptr };

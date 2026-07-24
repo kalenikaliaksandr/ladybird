@@ -10,11 +10,8 @@
 #include <LibWeb/Forward.h>
 #include <LibWeb/Layout/BlockContainer.h>
 #include <LibWeb/Layout/FormattingContext.h>
-#include <LibWeb/Layout/InlineFormattingContext.h>
 
 namespace Web::Layout {
-
-class LineBuilder;
 
 // https://www.w3.org/TR/css-display/#block-formatting-context
 class BlockFormattingContext : public FormattingContext {
@@ -66,9 +63,9 @@ public:
     virtual CSSPixels greatest_child_inline_size(Box const&) const override;
     [[nodiscard]] CSSPixels greatest_child_inline_size_including_floats(Box const&) const;
 
-    void layout_floating_box(Box const& child, BlockContainer const& containing_block, LayoutInput const&, CSSPixels block_offset, LineBuilder* = nullptr);
+    void layout_floating_box(Box const& child, BlockContainer const& containing_block, LayoutInput const&, CSSPixels block_offset, void* rust_line_builder = nullptr);
 
-    void layout_interrupting_block_inside_inline_context(Box const&, BlockContainer const& containing_block, LayoutInput const&, LineBuilder&);
+    void layout_interrupting_block_inside_inline_context(Box const&, BlockContainer const& containing_block, LayoutInput const&, void* rust_line_builder);
     CSSPixels commit_pending_margin_before_inline_content();
 
     void layout_block_level_box(Box const&, BlockContainer const&, CSSPixels& bottom_of_lowest_margin_box, LayoutInput const&);
@@ -81,7 +78,7 @@ public:
         No,
     };
 
-    [[nodiscard]] DidIntroduceClearance clear_floating_boxes(NodeWithStyle const& child_box, Optional<InlineFormattingContext&> inline_formatting_context, CSSPixelPoint containing_block_position_in_root);
+    [[nodiscard]] DidIntroduceClearance clear_floating_boxes(NodeWithStyle const& child_box, void* rust_inline_formatting_context, CSSPixelPoint containing_block_position_in_root);
 
     void reset_margin_state() { m_margin_state.reset(); }
 

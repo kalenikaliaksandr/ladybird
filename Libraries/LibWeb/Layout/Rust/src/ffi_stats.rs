@@ -31,7 +31,6 @@ define_ffi_ops! {
     AbsposLayoutIndexCallback => "absposLayoutIndexCallbacks",
     AbsposEngine => "absposEngineEntries",
     AbsposReplay => "absposReplayEntries",
-    AbsposLineFragmentCallback => "absposLineFragmentCallbacks",
     AbsposInlineCbAttempt => "absposInlineCbAttempts",
     AbsposInlineCbNormalFragment => "absposInlineCbNormalFragments",
     AbsposInlineCbAtomicFragment => "absposInlineCbAtomicFragments",
@@ -60,6 +59,28 @@ define_ffi_ops! {
     SvgFactsBuild => "svgFactsBuildEntries",
     SvgPathRetain => "svgPathRetainEntries",
     SvgPathRelease => "svgPathReleaseEntries",
+    TextFactsBuild => "textFactsBuildEntries",
+    TextFactsRelease => "textFactsReleaseEntries",
+    TextBidiProbeCallback => "textBidiProbeCallbacks",
+    DocumentCursorProbeCallback => "documentCursorProbeCallbacks",
+    ShapeTextCallback => "shapeTextCallbacks",
+    ShapedRunRelease => "shapedRunReleaseEntries",
+    FontMetricsCallback => "fontMetricsCallbacks",
+    FontGlyphWidthCallback => "fontGlyphWidthCallbacks",
+    FontGlyphIdCallback => "fontGlyphIdCallbacks",
+    ParentBfcIntrusionCallback => "parentBfcIntrusionCallbacks",
+    ParentBfcNextFloatBandCallback => "parentBfcNextFloatBandCallbacks",
+    ParentBfcPendingMarginAdjustmentCallback => "parentBfcPendingMarginAdjustmentCallbacks",
+    ParentBfcGreatestInlineSizeCallback => "parentBfcGreatestInlineSizeCallbacks",
+    ParentBfcClearFloatsCallback => "parentBfcClearFloatsCallbacks",
+    ParentBfcResetMarginCallback => "parentBfcResetMarginCallbacks",
+    ParentBfcCommitMarginCallback => "parentBfcCommitMarginCallbacks",
+    ParentBfcInterruptingBlockCallback => "parentBfcInterruptingBlockCallbacks",
+    ParentBfcLayoutFloatCallback => "parentBfcLayoutFloatCallbacks",
+    ParentBfcResolveBlockSizeCallback => "parentBfcResolveBlockSizeCallbacks",
+    ParentBfcDimensionMarkerCallback => "parentBfcDimensionMarkerCallbacks",
+    ParentBfcMarkerDistanceCallback => "parentBfcMarkerDistanceCallbacks",
+    LineDrain => "lineDrainEntries",
     FcCreate => "fcCreateEntries",
     FcDestroy => "fcDestroyEntries",
     FcRun => "fcRunEntries",
@@ -103,6 +124,19 @@ static COUNTERS: [AtomicU64; FFI_OP_COUNT] = [const { AtomicU64::new(0) }; FFI_O
 #[inline]
 pub(crate) fn bump(op: FfiOp) {
     COUNTERS[op as usize].fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn fact_build_counts() -> (u64, u64) {
+    (
+        COUNTERS[FfiOp::StyleFactsBuild as usize].load(Ordering::Relaxed),
+        COUNTERS[FfiOp::BoxFactsBuild as usize].load(Ordering::Relaxed),
+    )
+}
+
+pub(crate) fn exclude_inline_root_fact_builds(before: (u64, u64)) {
+    let after = fact_build_counts();
+    COUNTERS[FfiOp::StyleFactsBuild as usize].fetch_sub(after.0 - before.0, Ordering::Relaxed);
+    COUNTERS[FfiOp::BoxFactsBuild as usize].fetch_sub(after.1 - before.1, Ordering::Relaxed);
 }
 
 #[unsafe(no_mangle)]
@@ -168,6 +202,51 @@ pub extern "C" fn rust_layout_ffi_note_svg_path_retain() {
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_layout_ffi_note_svg_path_release() {
     abort_on_panic(|| bump(FfiOp::SvgPathRelease));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_text_facts_build() {
+    abort_on_panic(|| bump(FfiOp::TextFactsBuild));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_text_facts_release() {
+    abort_on_panic(|| bump(FfiOp::TextFactsRelease));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_text_bidi_probe_callback() {
+    abort_on_panic(|| bump(FfiOp::TextBidiProbeCallback));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_document_cursor_probe_callback() {
+    abort_on_panic(|| bump(FfiOp::DocumentCursorProbeCallback));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_shape_text_callback() {
+    abort_on_panic(|| bump(FfiOp::ShapeTextCallback));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_shaped_run_release() {
+    abort_on_panic(|| bump(FfiOp::ShapedRunRelease));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_font_metrics_callback() {
+    abort_on_panic(|| bump(FfiOp::FontMetricsCallback));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_font_glyph_width_callback() {
+    abort_on_panic(|| bump(FfiOp::FontGlyphWidthCallback));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_font_glyph_id_callback() {
+    abort_on_panic(|| bump(FfiOp::FontGlyphIdCallback));
 }
 
 #[unsafe(no_mangle)]

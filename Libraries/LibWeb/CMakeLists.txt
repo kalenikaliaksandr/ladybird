@@ -816,14 +816,9 @@ set(SOURCES
     Layout/FormattingContext.cpp
     Layout/ImageBox.cpp
     Layout/ImageProvider.cpp
-    Layout/InlineFormattingContext.cpp
-    Layout/InlineLevelIterator.cpp
     Layout/InlineNode.cpp
     Layout/LayoutState.cpp
     Layout/LegendBox.cpp
-    Layout/LineBox.cpp
-    Layout/LineBoxFragment.cpp
-    Layout/LineBuilder.cpp
     Layout/ListItemBox.cpp
     Layout/ListItemMarkerBox.cpp
     Layout/LayoutRustBridge.cpp

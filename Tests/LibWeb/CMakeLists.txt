@@ -31,6 +31,7 @@ set(TEST_SOURCES
     TestLengthAbsolutizeParity.cpp
     TestLayoutGeometryParity.cpp
     TestLayoutGridFactsParity.cpp
+    TestLayoutInlineParity.cpp
     TestLayoutStyleFactsParity.cpp
     TestLayoutUsedValuesParity.cpp
     TestNumericTypeParity.cpp

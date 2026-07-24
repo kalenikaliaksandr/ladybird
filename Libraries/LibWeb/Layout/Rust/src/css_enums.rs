@@ -163,3 +163,68 @@ pub mod writing_mode {
     pub const SIDEWAYS_RL: u8 = 3;
     pub const SIDEWAYS_LR: u8 = 4;
 }
+
+pub mod direction {
+    pub const LTR: u8 = 0;
+    pub const RTL: u8 = 1;
+}
+
+pub mod white_space_collapse {
+    pub const COLLAPSE: u8 = 0;
+    pub const DISCARD: u8 = 1;
+    pub const PRESERVE: u8 = 2;
+    pub const PRESERVE_BREAKS: u8 = 3;
+    pub const PRESERVE_SPACES: u8 = 4;
+    pub const BREAK_SPACES: u8 = 5;
+}
+
+pub mod text_align {
+    pub const CENTER: u8 = 0;
+    pub const JUSTIFY: u8 = 1;
+    pub const START: u8 = 2;
+    pub const END: u8 = 3;
+    pub const LEFT: u8 = 4;
+    pub const RIGHT: u8 = 5;
+    pub const MATCH_PARENT: u8 = 6;
+    pub const LIBWEB_CENTER: u8 = 7;
+    pub const LIBWEB_INHERIT_OR_CENTER: u8 = 8;
+    pub const LIBWEB_LEFT: u8 = 9;
+    pub const LIBWEB_RIGHT: u8 = 10;
+}
+
+pub mod text_justify {
+    pub const AUTO: u8 = 0;
+    pub const NONE: u8 = 1;
+    pub const INTER_WORD: u8 = 2;
+    pub const INTER_CHARACTER: u8 = 3;
+}
+
+pub mod text_overflow {
+    pub const CLIP: u8 = 0;
+    pub const ELLIPSIS: u8 = 1;
+}
+
+pub mod text_wrap_mode {
+    pub const WRAP: u8 = 0;
+    pub const NOWRAP: u8 = 1;
+}
+
+pub mod unicode_bidi {
+    pub const BIDI_OVERRIDE: u8 = 0;
+    pub const EMBED: u8 = 1;
+    pub const ISOLATE: u8 = 2;
+    pub const ISOLATE_OVERRIDE: u8 = 3;
+    pub const NORMAL: u8 = 4;
+    pub const PLAINTEXT: u8 = 5;
+}
+
+pub mod vertical_align {
+    pub const BASELINE: u8 = 0;
+    pub const BOTTOM: u8 = 1;
+    pub const MIDDLE: u8 = 2;
+    pub const SUB: u8 = 3;
+    pub const SUPER: u8 = 4;
+    pub const TEXT_BOTTOM: u8 = 5;
+    pub const TEXT_TOP: u8 = 6;
+    pub const TOP: u8 = 7;
+}

@@ -93,19 +93,16 @@ pub struct FfiResolvedAnchorInsets {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-pub struct FfiLineBoxFragmentFacts {
-    pub layout_node: *mut c_void,
-    pub is_atomic_inline: bool,
-    pub writing_mode: u8,
-    pub style_block_axis_is_reverse: bool,
-    pub inline_offset: CssPixels,
-    pub block_offset: CssPixels,
-    pub offset: FfiCssPixelPoint,
-    pub size: FfiCssPixelPoint,
+struct LineFragmentFacts {
+    layout_node: *mut c_void,
+    is_atomic_inline: bool,
+    writing_mode: u8,
+    style_block_axis_is_reverse: bool,
+    inline_offset: CssPixels,
+    block_offset: CssPixels,
+    offset: FfiCssPixelPoint,
+    size: FfiCssPixelPoint,
 }
-
-pub type FfiLineBoxFragmentVisitor = unsafe extern "C" fn(*mut c_void, FfiLineBoxFragmentFacts);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PhysicalRect {
@@ -400,26 +397,30 @@ impl AbsposEngine {
         )
     }
 
-    fn line_fragments(&self, node: Node) -> Vec<FfiLineBoxFragmentFacts> {
-        unsafe extern "C" fn append_fragment(context: *mut c_void, fragment: FfiLineBoxFragmentFacts) {
-            // SAFETY: The callback context points to the stack-local vector
-            // for the duration of for_each_line_box_fragment().
-            unsafe {
-                (*context.cast::<Vec<FfiLineBoxFragmentFacts>>()).push(fragment);
-            }
+    fn line_fragments(&self, node: Node) -> Vec<LineFragmentFacts> {
+        let facts = self.facts(node);
+        if !facts.has_layout_index {
+            return Vec::new();
         }
-
         let mut fragments = Vec::new();
-        bump(FfiOp::AbsposLineFragmentCallback);
-        // SAFETY: The visitor and its stack context remain valid until the
-        // synchronous callback returns.
-        unsafe {
-            (self.callbacks.for_each_line_box_fragment)(
-                self.callbacks.context,
-                node,
-                (&raw mut fragments).cast(),
-                append_fragment,
-            );
+        let Some(lines) = state_mut(self.state).line_data(facts.layout_index) else {
+            return fragments;
+        };
+        for line in &lines.line_boxes {
+            for fragment in &line.fragments {
+                let (x, y) = fragment.offset();
+                let (width, height) = fragment.size();
+                fragments.push(LineFragmentFacts {
+                    layout_node: fragment.layout_node,
+                    is_atomic_inline: fragment.is_atomic_inline,
+                    writing_mode: fragment.writing_mode,
+                    style_block_axis_is_reverse: fragment.style_block_axis_is_reverse,
+                    inline_offset: fragment.inline_offset,
+                    block_offset: fragment.block_offset,
+                    offset: FfiCssPixelPoint { x, y },
+                    size: FfiCssPixelPoint { x: width, y: height },
+                });
+            }
         }
         fragments
     }
@@ -427,7 +428,7 @@ impl AbsposEngine {
     fn add_atomic_inline_fragment_rect(
         &self,
         inline_node: Node,
-        fragment: FfiLineBoxFragmentFacts,
+        fragment: LineFragmentFacts,
         offset: FfiCssPixelPoint,
         bounding_rect: &mut Option<PhysicalRect>,
         empty_bounding_rect: &mut Option<PhysicalRect>,

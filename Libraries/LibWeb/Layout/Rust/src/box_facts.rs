@@ -11,6 +11,8 @@ use std::ffi::c_void;
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct FfiLayoutBoxFacts {
+    pub is_text_node: bool,
+    pub is_break_node: bool,
     pub is_box: bool,
     pub is_block_container: bool,
     pub is_replaced_box: bool,
@@ -20,6 +22,17 @@ pub struct FfiLayoutBoxFacts {
     pub is_inline: bool,
     pub is_inline_block: bool,
     pub is_atomic_inline: bool,
+    pub is_inline_node: bool,
+    pub has_box_model_metrics: bool,
+    pub is_fragmented_inline: bool,
+    pub is_inline_flow_interrupting_block: bool,
+    pub is_list_item_marker_box: bool,
+    pub is_list_item_box: bool,
+    pub is_svg_mask_box: bool,
+    pub is_replaced_element: bool,
+    pub display_before_box_type_transformation_is_block_outside: bool,
+    pub inline_axis_is_reverse: bool,
+    pub has_dom_node: bool,
     pub children_are_inline: bool,
     pub is_anonymous: bool,
     pub can_have_children: bool,
@@ -77,6 +90,8 @@ pub struct FfiLayoutBoxFacts {
 impl Default for FfiLayoutBoxFacts {
     fn default() -> Self {
         Self {
+            is_text_node: false,
+            is_break_node: false,
             is_box: false,
             is_block_container: false,
             is_replaced_box: false,
@@ -86,6 +101,17 @@ impl Default for FfiLayoutBoxFacts {
             is_inline: false,
             is_inline_block: false,
             is_atomic_inline: false,
+            is_inline_node: false,
+            has_box_model_metrics: false,
+            is_fragmented_inline: false,
+            is_inline_flow_interrupting_block: false,
+            is_list_item_marker_box: false,
+            is_list_item_box: false,
+            is_svg_mask_box: false,
+            is_replaced_element: false,
+            display_before_box_type_transformation_is_block_outside: false,
+            inline_axis_is_reverse: false,
+            has_dom_node: false,
             children_are_inline: false,
             is_anonymous: false,
             can_have_children: false,

@@ -27,10 +27,13 @@
 #include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
 #include <LibWeb/CSS/StyleValues/PercentageStyleValue.h>
 #include <LibWeb/CSS/ValueType.h>
+#include <LibUnicode/Bidi.h>
 #include <LibWeb/DOM/AbstractElement.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/Node.h>
+#include <LibWeb/DOM/Position.h>
+#include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/DOM/Text.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/Path.h>
@@ -40,6 +43,7 @@
 #include <LibWeb/HTML/HTMLInputElement.h>
 #include <LibWeb/HTML/HTMLTableCellElement.h>
 #include <LibWeb/HTML/HTMLTableColElement.h>
+#include <LibWeb/HTML/FormAssociatedElement.h>
 #include <LibWeb/Layout/BlockFormattingContext.h>
 #include <LibWeb/Layout/DominantBaseline.h>
 #include <LibWeb/Layout/FlexLayoutData.h>
@@ -58,6 +62,7 @@
 #include <LibWeb/Layout/SVGTextBox.h>
 #include <LibWeb/Layout/SVGTextPathBox.h>
 #include <LibWeb/Layout/TextInputBox.h>
+#include <LibWeb/Layout/TextNode.h>
 #include <LibWeb/SVG/SVGAElement.h>
 #include <LibWeb/SVG/SVGClipPathElement.h>
 #include <LibWeb/SVG/SVGForeignObjectElement.h>
@@ -74,6 +79,29 @@ static Atomic<size_t> s_outstanding_calc_handles;
 static Atomic<size_t> s_outstanding_grid_name_handles;
 static Atomic<size_t> s_outstanding_anchor_name_handles;
 static Atomic<size_t> s_outstanding_svg_path_handles;
+static Atomic<size_t> s_outstanding_shaped_run_handles;
+
+struct TextFactsSnapshotArena {
+    Vector<u16> text;
+    Vector<RustFFI::FfiTextChunk> chunks;
+};
+
+static bool is_empty_editable_text_node(TextNode const& text_node)
+{
+    if (!text_node.text_for_rendering().is_empty())
+        return false;
+    auto const* dom_text = text_node.dom_text();
+    if (!dom_text)
+        return false;
+
+    auto is_empty_editable = false;
+    if (auto const* shadow_root = as_if<DOM::ShadowRoot>(dom_text->root())) {
+        if (auto const* form_associated_element = as_if<HTML::FormAssociatedTextControlElement>(shadow_root->host()))
+            is_empty_editable = form_associated_element->text_control_to_html_element().is_mutable();
+    }
+    is_empty_editable |= dom_text->parent() && dom_text->parent()->is_editing_host();
+    return is_empty_editable;
+}
 
 struct RetainedCalcHandle {
     CSS::CalculatedStyleValue const* style_value;
@@ -834,6 +862,8 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
     }
 
     return {
+        .is_text_node = node.is_text_node(),
+        .is_break_node = node.is_break_node(),
         .is_box = node.is_box(),
         .is_block_container = node.is_block_container(),
         .is_replaced_box = node.is_replaced_box(),
@@ -843,6 +873,17 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
         .is_inline = node.is_inline(),
         .is_inline_block = node.is_inline_block(),
         .is_atomic_inline = node.is_atomic_inline(),
+        .is_inline_node = is<InlineNode>(node),
+        .has_box_model_metrics = is<NodeWithStyleAndBoxModelMetrics>(node),
+        .is_fragmented_inline = node.is_fragmented_inline(),
+        .is_inline_flow_interrupting_block = is<NodeWithStyleAndBoxModelMetrics>(node) && static_cast<NodeWithStyleAndBoxModelMetrics const&>(node).is_inline_flow_interrupting_block(),
+        .is_list_item_marker_box = node.is_list_item_marker_box(),
+        .is_list_item_box = node.is_list_item_box(),
+        .is_svg_mask_box = node.is_svg_mask_box(),
+        .is_replaced_element = node.is_replaced_element(),
+        .display_before_box_type_transformation_is_block_outside = node.display_before_box_type_transformation().is_block_outside(),
+        .inline_axis_is_reverse = node.computed_values().inline_axis_is_reverse(),
+        .has_dom_node = node.dom_node() != nullptr,
         .children_are_inline = node.children_are_inline(),
         .is_anonymous = node.is_anonymous(),
         .can_have_children = node.can_have_children(),
@@ -1255,6 +1296,20 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
     static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Inside) == 10);
     static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Outside) == 11);
     static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Percentage) == 12);
+    static_assert(to_underlying(Gfx::GlyphRun::TextType::Common) == 0);
+    static_assert(to_underlying(Gfx::GlyphRun::TextType::ContextDependent) == 1);
+    static_assert(to_underlying(Gfx::GlyphRun::TextType::EndPadding) == 2);
+    static_assert(to_underlying(Gfx::GlyphRun::TextType::Ltr) == 3);
+    static_assert(to_underlying(Gfx::GlyphRun::TextType::Rtl) == 4);
+    static_assert(sizeof(RustFFI::FfiDrawGlyph) == sizeof(Gfx::DrawGlyph));
+    static_assert(alignof(RustFFI::FfiDrawGlyph) == alignof(Gfx::DrawGlyph));
+    static_assert(sizeof(Gfx::FloatPoint) == 2 * sizeof(float));
+    static_assert(offsetof(RustFFI::FfiDrawGlyph, x) == offsetof(Gfx::DrawGlyph, position));
+    static_assert(offsetof(RustFFI::FfiDrawGlyph, y) == offsetof(Gfx::DrawGlyph, position) + sizeof(float));
+    static_assert(offsetof(RustFFI::FfiDrawGlyph, length_in_code_units) == offsetof(Gfx::DrawGlyph, length_in_code_units));
+    static_assert(offsetof(RustFFI::FfiDrawGlyph, glyph_width) == offsetof(Gfx::DrawGlyph, glyph_width));
+    static_assert(offsetof(RustFFI::FfiDrawGlyph, glyph_id) == offsetof(Gfx::DrawGlyph, glyph_id));
+    static_assert(offsetof(RustFFI::FfiDrawGlyph, should_paint) == offsetof(Gfx::DrawGlyph, should_paint));
 
     return {
         .context = this,
@@ -1286,34 +1341,6 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             auto const* box = as_if<Box>(styled_node);
             return box && FormattingContext::box_inset_properties_contain_anchor_functions(*box);
         },
-        .for_each_line_box_fragment = [](void* context, void* node, void* visitor_context, RustFFI::FfiLineBoxFragmentVisitor visitor) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto const* used_values = bridge.m_formatting_context.m_state.try_get(*static_cast<Node const*>(node));
-            if (!used_values)
-                return;
-            for (auto const& line_box : used_values->line_boxes()) {
-                for (auto const& fragment : line_box.fragments()) {
-                    auto offset = fragment.offset();
-                    auto size = fragment.size();
-                    visitor(visitor_context, {
-                                                 .layout_node = const_cast<Node*>(&fragment.layout_node()),
-                                                 .is_atomic_inline = fragment.is_atomic_inline(),
-                                                 .writing_mode = to_underlying(fragment.writing_mode()),
-                                                 .style_block_axis_is_reverse = fragment.style_source().computed_values().block_axis_is_reverse(),
-                                                 .inline_offset = fragment.inline_offset().raw_value(),
-                                                 .block_offset = fragment.block_offset().raw_value(),
-                                                 .offset = {
-                                                     .x = offset.x().raw_value(),
-                                                     .y = offset.y().raw_value(),
-                                                 },
-                                                 .size = {
-                                                     .x = size.width().raw_value(),
-                                                     .y = size.height().raw_value(),
-                                                 },
-                                             });
-                }
-            }
-        },
         .build_style_facts = [](void*, void* node) {
             return build_style_facts(*static_cast<NodeWithStyle const*>(node));
         },
@@ -1322,7 +1349,140 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             auto const* node_with_style = as_if<NodeWithStyle>(layout_node);
             if (node_with_style)
                 return build_layout_box_facts(*node_with_style);
-            return RustFFI::FfiLayoutBoxFacts {};
+            RustFFI::FfiLayoutBoxFacts facts {};
+            facts.is_text_node = layout_node.is_text_node();
+            facts.is_break_node = layout_node.is_break_node();
+            facts.is_box = layout_node.is_box();
+            facts.is_inline = layout_node.is_inline();
+            facts.is_atomic_inline = layout_node.is_atomic_inline();
+            facts.is_inline_node = is<InlineNode>(layout_node);
+            facts.is_fragmented_inline = layout_node.is_fragmented_inline();
+            facts.is_list_item_marker_box = layout_node.is_list_item_marker_box();
+            facts.is_list_item_box = layout_node.is_list_item_box();
+            facts.is_svg_mask_box = layout_node.is_svg_mask_box();
+            facts.is_replaced_element = layout_node.is_replaced_element();
+            facts.has_dom_node = layout_node.dom_node() != nullptr;
+            facts.is_anonymous = layout_node.is_anonymous();
+            facts.can_have_children = layout_node.can_have_children();
+            facts.initial_containing_block_inline_size = layout_node.document().viewport_rect().width().raw_value();
+            facts.document_in_quirks_mode = layout_node.document().in_quirks_mode();
+            return facts;
+        },
+        .build_text_facts = [](void*, void* node, bool should_wrap_lines, bool should_respect_linebreaks, bool unidirectional_ltr, RustFFI::FfiTextNodeFacts* out) {
+            VERIFY(out);
+            auto const* text_node = as_if<TextNode>(*static_cast<Node const*>(node));
+            if (!text_node)
+                return false;
+
+            RustFFI::rust_layout_ffi_note_text_facts_build();
+            auto text_direction_mode = unidirectional_ltr
+                ? TextNode::TextDirectionMode::UnidirectionalLeftToRight
+                : TextNode::TextDirectionMode::PerCodePoint;
+            auto const& chunk_list = text_node->chunks_for_layout(should_wrap_lines, should_respect_linebreaks, text_direction_mode);
+            auto arena = make<TextFactsSnapshotArena>();
+            auto const text = text_node->text_for_rendering().utf16_view();
+            arena->text.ensure_capacity(text.length_in_code_units());
+            for (size_t index = 0; index < text.length_in_code_units(); ++index)
+                arena->text.unchecked_append(text.code_unit_at(index));
+            arena->chunks.ensure_capacity(chunk_list.chunks.size());
+            for (auto const& chunk : chunk_list.chunks) {
+                arena->chunks.unchecked_append({
+                    .start = chunk.start,
+                    .length = chunk.length,
+                    .font = chunk.font.ptr(),
+                    .has_breaking_newline = chunk.has_breaking_newline,
+                    .has_breaking_tab = chunk.has_breaking_tab,
+                    .is_all_whitespace = chunk.is_all_whitespace,
+                    .can_break_after = chunk.can_break_after,
+                    .text_type = static_cast<u8>(to_underlying(chunk.text_type)),
+                });
+            }
+
+            auto* owner = arena.leak_ptr();
+            *out = {
+                .text_utf16 = owner->text.data(),
+                .text_length_in_code_units = owner->text.size(),
+                .chunks = owner->chunks.data(),
+                .chunk_count = owner->chunks.size(),
+                .should_collapse_whitespace = chunk_list.should_collapse_whitespace,
+                .is_generated_for_pseudo_element = text_node->is_generated_for_pseudo_element(),
+                .is_empty_editable = is_empty_editable_text_node(*text_node),
+                .has_dom_node = static_cast<Node const&>(*text_node).dom_node() != nullptr,
+                .retained = owner,
+            };
+            return true;
+        },
+        .release_text_facts = [](void*, void* retained) {
+            VERIFY(retained);
+            RustFFI::rust_layout_ffi_note_text_facts_release();
+            delete static_cast<TextFactsSnapshotArena*>(retained);
+        },
+        .text_may_require_bidi_processing = [](void*, void* node) {
+            RustFFI::rust_layout_ffi_note_text_bidi_probe_callback();
+            auto const& text_node = *static_cast<TextNode const*>(node);
+            return Unicode::may_require_bidi_processing(text_node.text_for_rendering());
+        },
+        .document_cursor_is_on_node = [](void*, void* node) {
+            RustFFI::rust_layout_ffi_note_document_cursor_probe_callback();
+            auto const* dom_node = static_cast<Node const*>(node)->dom_node();
+            if (!dom_node)
+                return false;
+            auto cursor_position = dom_node->document().cursor_position();
+            return cursor_position && cursor_position->node() == dom_node;
+        },
+        .shape_text = [](void*, RustFFI::FfiShapeRequest request) {
+            VERIFY(request.font);
+            VERIFY(request.text_utf16 || request.length_in_code_units == 0);
+            VERIFY(request.text_type <= to_underlying(Gfx::GlyphRun::TextType::Rtl));
+            RustFFI::rust_layout_ffi_note_shape_text_callback();
+            auto text = request.length_in_code_units == 0
+                ? Utf16View {}
+                : Utf16View { reinterpret_cast<char16_t const*>(request.text_utf16), request.length_in_code_units };
+            auto run = Gfx::shape_text(
+                { request.baseline_start_x, 0 },
+                request.letter_spacing,
+                text,
+                *static_cast<Gfx::Font const*>(request.font),
+                static_cast<Gfx::GlyphRun::TextType>(request.text_type));
+            auto* retained = &run.leak_ref();
+            ++s_outstanding_shaped_run_handles;
+            return RustFFI::FfiShapedRunView {
+                .glyphs = reinterpret_cast<RustFFI::FfiDrawGlyph const*>(retained->glyphs().data()),
+                .glyph_count = retained->glyphs().size(),
+                .width = retained->width(),
+                .retained = retained,
+            };
+        },
+        .release_shaped_run = [](void*, void* retained) {
+            VERIFY(retained);
+            VERIFY(s_outstanding_shaped_run_handles.load() > 0);
+            --s_outstanding_shaped_run_handles;
+            RustFFI::rust_layout_ffi_note_shaped_run_release();
+            static_cast<Gfx::GlyphRun*>(retained)->unref();
+        },
+        .font_metrics = [](void*, void const* font_pointer, RustFFI::FfiFontPixelMetrics* out) {
+            VERIFY(font_pointer);
+            VERIFY(out);
+            RustFFI::rust_layout_ffi_note_font_metrics_callback();
+            auto const& font = *static_cast<Gfx::Font const*>(font_pointer);
+            auto const& metrics = font.pixel_metrics();
+            *out = {
+                .x_height = metrics.x_height,
+                .advance_of_ascii_zero = metrics.advance_of_ascii_zero,
+                .ascent = metrics.ascent,
+                .descent = metrics.descent,
+                .pixel_size = font.pixel_size(),
+            };
+        },
+        .font_glyph_width = [](void*, void const* font_pointer, u32 code_point) {
+            VERIFY(font_pointer);
+            RustFFI::rust_layout_ffi_note_font_glyph_width_callback();
+            return static_cast<Gfx::Font const*>(font_pointer)->glyph_width(code_point);
+        },
+        .font_glyph_id = [](void*, void const* font_pointer, u32 code_point) {
+            VERIFY(font_pointer);
+            RustFFI::rust_layout_ffi_note_font_glyph_id_callback();
+            return static_cast<Gfx::Font const*>(font_pointer)->glyph_id_for_code_point(code_point);
         },
         .build_table_box_facts = [](void*, void* node) {
             return build_table_box_facts(*static_cast<NodeWithStyle const*>(node));
@@ -2249,6 +2409,8 @@ RustFFI::FfiStyleFacts build_style_facts(NodeWithStyle const& node)
     auto text_indent = values.text_indent();
     auto tab_size = values.tab_size();
     auto grid_auto_flow = values.grid_auto_flow();
+    auto const& first_available_font = node.first_available_font();
+    auto const& first_available_font_metrics = first_available_font.pixel_metrics();
     auto build_inset = [&](CSS::PropertyID property_id, CSS::LengthPercentageOrAuto const& inset) {
         auto anchor_inset = values.anchor_inset(property_id);
         if (!anchor_inset)
@@ -2316,10 +2478,16 @@ RustFFI::FfiStyleFacts build_style_facts(NodeWithStyle const& node)
         .vertical_align_value = vertical_align.value,
         .line_height = values.line_height().raw_value(),
         .font_size = values.font_size().raw_value(),
+        .first_available_font = &first_available_font,
+        .font_ascent = first_available_font_metrics.ascent,
+        .font_descent = first_available_font_metrics.descent,
+        .font_x_height = first_available_font_metrics.x_height,
+        .font_pixel_size = first_available_font.pixel_size(),
         .box_sizing = to_underlying(values.box_sizing()),
         .box_sizing_for_aspect_ratio = to_underlying(values.box_sizing_for_aspect_ratio()),
         .overflow_x = to_underlying(values.overflow_x()),
         .overflow_y = to_underlying(values.overflow_y()),
+        .text_overflow = to_underlying(values.text_overflow()),
         .flex_direction = to_underlying(values.flex_direction()),
         .flex_wrap = to_underlying(values.flex_wrap()),
         .flex_grow = values.flex_grow(),
@@ -2411,6 +2579,7 @@ void verify_style_calc_handles_balanced()
     VERIFY(s_outstanding_grid_name_handles.load() == 0);
     VERIFY(s_outstanding_anchor_name_handles.load() == 0);
     VERIFY(s_outstanding_svg_path_handles.load() == 0);
+    VERIFY(s_outstanding_shaped_run_handles.load() == 0);
 }
 
 void release_style_facts(RustFFI::FfiStyleFacts const& facts)

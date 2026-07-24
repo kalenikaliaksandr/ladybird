@@ -20,9 +20,8 @@
 #include <LibWeb/Layout/BlockFormattingContext.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/FieldSetBox.h>
-#include <LibWeb/Layout/InlineFormattingContext.h>
 #include <LibWeb/Layout/LegendBox.h>
-#include <LibWeb/Layout/LineBuilder.h>
+#include <LibWeb/Layout/LayoutRustBridge.h>
 #include <LibWeb/Layout/ListItemBox.h>
 #include <LibWeb/Layout/ListItemMarkerBox.h>
 #include <LibWeb/Layout/ReplacedBox.h>
@@ -887,13 +886,129 @@ void BlockFormattingContext::layout_inline_children(BlockContainer const& block_
 
     auto& block_container_state = m_state.get_mutable(block_container);
 
-    InlineFormattingContext context(m_state, m_layout_mode, block_container, block_container_state, *this);
-    context.run(layout_input_for_child_context(block_container_state, layout_input, available_space_for_children));
+    LayoutRustBridge bridge(*this);
+    auto callbacks = bridge.formatting_context_callbacks();
+    struct InlineParentBfcHost {
+        BlockFormattingContext& bfc;
+        BlockContainer const& containing_block;
+    } parent_host { *this, block_container };
+    RustFFI::FfiParentBfcCallbacks parent_callbacks {
+        .context = &parent_host,
+        .intrusion_by_floats_into_rect = [](void* context, RustFFI::FfiCssPixelRect rect, i32 block_start, i32 block_end) {
+            auto& host = *static_cast<InlineParentBfcHost*>(context);
+            auto intrusion = host.bfc.intrusion_by_floats_into_rect(
+                {
+                    CSSPixels::from_raw(rect.x),
+                    CSSPixels::from_raw(rect.y),
+                    CSSPixels::from_raw(rect.width),
+                    CSSPixels::from_raw(rect.height),
+                },
+                CSSPixels::from_raw(block_start),
+                CSSPixels::from_raw(block_end));
+            return RustFFI::FfiSpaceUsedByFloats {
+                .left = intrusion.left.raw_value(),
+                .right = intrusion.right.raw_value(),
+            };
+        },
+        .next_float_band_block_start_after = [](void* context, i32 block_offset, i32* out) {
+            VERIFY(out);
+            auto value = static_cast<InlineParentBfcHost*>(context)->bfc.next_float_band_block_start_after(CSSPixels::from_raw(block_offset));
+            if (!value.has_value())
+                return false;
+            *out = value->raw_value();
+            return true;
+        },
+        .block_offset_adjustment_from_pending_ancestor_block_start_margins = [](void* context, void* node) {
+            return static_cast<InlineParentBfcHost*>(context)->bfc
+                .block_offset_adjustment_from_pending_ancestor_block_start_margins(*static_cast<Node const*>(node))
+                .raw_value();
+        },
+        .greatest_child_inline_size_including_floats = [](void* context, void* box) {
+            return static_cast<InlineParentBfcHost*>(context)->bfc
+                .greatest_child_inline_size_including_floats(*static_cast<Box const*>(box))
+                .raw_value();
+        },
+        .clear_floating_boxes = [](void* context, void* node, void* inline_context, RustFFI::FfiCssPixelPoint position) {
+            auto result = static_cast<InlineParentBfcHost*>(context)->bfc.clear_floating_boxes(
+                *static_cast<NodeWithStyle const*>(node),
+                inline_context,
+                { CSSPixels::from_raw(position.x), CSSPixels::from_raw(position.y) });
+            return result == DidIntroduceClearance::Yes;
+        },
+        .reset_margin_state = [](void* context) {
+            static_cast<InlineParentBfcHost*>(context)->bfc.reset_margin_state();
+        },
+        .commit_pending_margin_before_inline_content = [](void* context) {
+            return static_cast<InlineParentBfcHost*>(context)->bfc.commit_pending_margin_before_inline_content().raw_value();
+        },
+        .layout_interrupting_block_inside_inline_context = [](void* context, void* box, RustFFI::FfiLayoutInput input, void* line_builder) {
+            auto& host = *static_cast<InlineParentBfcHost*>(context);
+            host.bfc.layout_interrupting_block_inside_inline_context(
+                *static_cast<Box const*>(box),
+                host.containing_block,
+                LayoutRustBridge::from_ffi(input),
+                line_builder);
+        },
+        .layout_floating_box = [](void* context, void* box, RustFFI::FfiLayoutInput input, i32 block_offset, void* line_builder) {
+            auto& host = *static_cast<InlineParentBfcHost*>(context);
+            auto const& child = *static_cast<Box const*>(box);
+            host.bfc.layout_floating_box(
+                child,
+                host.containing_block,
+                LayoutRustBridge::from_ffi(input),
+                CSSPixels::from_raw(block_offset),
+                line_builder);
+        },
+        .resolve_used_block_size_if_not_treated_as_auto = [](void* context, void* box, RustFFI::AvailableSpace available, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto input = LayoutRustBridge::from_ffi({
+                .available_space = available,
+                .containing_block_constraints = constraints,
+                .has_content_box_position_in_bfc_root = false,
+                .content_box_position_in_bfc_root = {},
+                .has_table_grid_min_border_box_block_size = false,
+                .table_grid_min_border_box_block_size = 0,
+            });
+            static_cast<InlineParentBfcHost*>(context)->bfc.resolve_used_block_size_if_not_treated_as_auto(
+                *static_cast<Box const*>(box),
+                input.available_space,
+                input.containing_block_constraints);
+        },
+        .resolve_used_block_size_if_treated_as_auto = [](void* context, void* box, RustFFI::AvailableSpace available, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto input = LayoutRustBridge::from_ffi({
+                .available_space = available,
+                .containing_block_constraints = constraints,
+                .has_content_box_position_in_bfc_root = false,
+                .content_box_position_in_bfc_root = {},
+                .has_table_grid_min_border_box_block_size = false,
+                .table_grid_min_border_box_block_size = 0,
+            });
+            static_cast<InlineParentBfcHost*>(context)->bfc.resolve_used_block_size_if_treated_as_auto(
+                *static_cast<Box const*>(box),
+                input.available_space,
+                input.containing_block_constraints);
+        },
+        .dimension_list_item_marker = [](void* context, void* marker) {
+            static_cast<InlineParentBfcHost*>(context)->bfc.dimension_list_item_marker(*static_cast<ListItemMarkerBox const*>(marker));
+        },
+        .distance_between_marker_and_list_item = [](void*, void* marker) {
+            return distance_between_marker_and_list_item(*static_cast<ListItemMarkerBox const*>(marker)).raw_value();
+        },
+    };
+    RustFFI::FfiInlineLayoutResult inline_result {};
+    auto inline_input = layout_input_for_child_context(block_container_state, layout_input, available_space_for_children);
+    VERIFY(RustFFI::rust_layout_run_inline_formatting_context(
+        m_state.rust_state_handle(),
+        const_cast<BlockContainer*>(&block_container),
+        to_underlying(m_layout_mode),
+        LayoutRustBridge::to_ffi(inline_input),
+        &callbacks,
+        &parent_callbacks,
+        &inline_result));
 
     if (!block_container_state.has_definite_inline_size()) {
         // NOTE: min-width or max-width for boxes with inline children can only be applied after inside layout
         //       is done and the inline size of the box content is known
-        auto used_inline_size_px = context.automatic_content_inline_size();
+        auto used_inline_size_px = CSSPixels::from_raw(inline_result.automatic_content_inline_size);
         // NOTE: Min and max constraints are not applied to a box that is being sized under an intrinsic
         //       sizing constraint: per css-sizing-3, min/max-width affect a box's intrinsic size
         //       *contributions*, and the callers of calculate_{min,max}_content_inline_size() apply them.
@@ -931,7 +1046,7 @@ void BlockFormattingContext::layout_inline_children(BlockContainer const& block_
             }
         }
         block_container_state.set_content_inline_size(used_inline_size_px);
-        block_container_state.set_content_block_size(context.automatic_content_block_size());
+        block_container_state.set_content_block_size(CSSPixels::from_raw(inline_result.automatic_content_block_size));
     }
 }
 
@@ -965,9 +1080,12 @@ CSSPixels BlockFormattingContext::compute_automatic_block_size_for_block_level_e
     // The element's block size is the distance from its block-start content edge to the first applicable edge below.
 
     // 1. the bottom edge of the last line box, if the box establishes a inline formatting context with one or more lines
-    if (box.children_are_inline() && !box_state.line_boxes().is_empty()) {
-        auto block_size = box_state.line_boxes().last().physical_vertical_end();
-        if (box_state.line_boxes().last().has_block_level_box()) {
+    auto line_count = box.children_are_inline() ? m_state.rust_line_count(box) : 0;
+    if (line_count > 0) {
+        auto last_line = m_state.rust_line_summary(box, line_count - 1);
+        VERIFY(last_line.has_value());
+        auto block_size = CSSPixels::from_raw(last_line->physical_vertical_end);
+        if (last_line->has_block_level_box) {
             auto margin_bottom = m_margin_state.current_collapsed_margin();
             if (box_state.padding_bottom() == 0 && box_state.border_bottom() == 0) {
                 m_margin_state.set_box_last_in_flow_child_margin_bottom_collapsed(true);
@@ -1023,16 +1141,23 @@ CSSPixels BlockFormattingContext::compute_automatic_block_size_for_block_level_e
     return 0;
 }
 
-void BlockFormattingContext::layout_interrupting_block_inside_inline_context(Box const& box, BlockContainer const& containing_block, LayoutInput const& layout_input, LineBuilder& line_builder)
+void BlockFormattingContext::layout_interrupting_block_inside_inline_context(Box const& box, BlockContainer const& containing_block, LayoutInput const& layout_input, void* rust_line_builder)
 {
+    VERIFY(rust_line_builder);
     CSSPixels dummy_bottom_of_lowest_margin_box = 0;
     CSSPixels block_bottom;
     {
-        TemporaryChange<Optional<CSSPixels>> change { m_block_offset_of_current_block_container, line_builder.current_block_offset() };
+        auto current_block_offset = CSSPixels::from_raw(RustFFI::rust_layout_line_builder_current_block_offset(rust_line_builder));
+        TemporaryChange<Optional<CSSPixels>> change { m_block_offset_of_current_block_container, current_block_offset };
         layout_block_level_box(box, containing_block, dummy_bottom_of_lowest_margin_box, layout_input);
-        block_bottom = m_block_offset_of_current_block_container.value_or(line_builder.current_block_offset());
+        block_bottom = m_block_offset_of_current_block_container.value_or(
+            CSSPixels::from_raw(RustFFI::rust_layout_line_builder_current_block_offset(rust_line_builder)));
     }
-    line_builder.append_block_level_box(box, block_bottom, m_margin_state.current_collapsed_margin());
+    RustFFI::rust_layout_line_builder_append_block_level_box(
+        rust_line_builder,
+        const_cast<Box*>(&box),
+        block_bottom.raw_value(),
+        m_margin_state.current_collapsed_margin().raw_value());
 }
 
 CSSPixels BlockFormattingContext::commit_pending_margin_before_inline_content()
@@ -1474,7 +1599,7 @@ void BlockFormattingContext::resolve_horizontal_box_model_metrics(Box const& box
     box_state.set_padding_right(computed_values.padding().right().to_px_or_zero(containing_block_inline_size));
 }
 
-BlockFormattingContext::DidIntroduceClearance BlockFormattingContext::clear_floating_boxes(NodeWithStyle const& child_box, Optional<InlineFormattingContext&> inline_formatting_context, CSSPixelPoint containing_block_position_in_root)
+BlockFormattingContext::DidIntroduceClearance BlockFormattingContext::clear_floating_boxes(NodeWithStyle const& child_box, void* rust_inline_formatting_context, CSSPixelPoint containing_block_position_in_root)
 {
     auto const& computed_values = child_box.computed_values();
     auto result = DidIntroduceClearance::No;
@@ -1491,10 +1616,13 @@ BlockFormattingContext::DidIntroduceClearance BlockFormattingContext::clear_floa
         CSSPixels clearance_block_offset_in_containing_block = clearance_block_offset_in_root
             - containing_block_position_in_root.y() - block_offset_adjustment_from_pending_ancestor_block_start_margins(child_box);
 
-        if (inline_formatting_context.has_value()) {
-            if (clearance_block_offset_in_containing_block > inline_formatting_context->block_axis_float_clearance()) {
+        if (rust_inline_formatting_context) {
+            auto current_clearance = CSSPixels::from_raw(RustFFI::rust_layout_inline_fc_block_axis_float_clearance(rust_inline_formatting_context));
+            if (clearance_block_offset_in_containing_block > current_clearance) {
                 result = DidIntroduceClearance::Yes;
-                inline_formatting_context->set_block_axis_float_clearance(clearance_block_offset_in_containing_block);
+                RustFFI::rust_layout_inline_fc_set_block_axis_float_clearance(
+                    rust_inline_formatting_context,
+                    clearance_block_offset_in_containing_block.raw_value());
             }
         } else if (clearance_block_offset_in_containing_block > m_block_offset_of_current_block_container.value()) {
             result = DidIntroduceClearance::Yes;
@@ -1538,7 +1666,7 @@ CSSPixels BlockFormattingContext::compute_normal_flow_inline_offset(Box const& c
     return inline_offset;
 }
 
-void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer const& block_container, LayoutInput const& layout_input, CSSPixels block_offset, LineBuilder* line_builder)
+void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer const& block_container, LayoutInput const& layout_input, CSSPixels block_offset, void* rust_line_builder)
 {
     auto const& available_space = layout_input.available_space;
     VERIFY(box.is_floating());
@@ -1580,7 +1708,9 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
     if (!side.has_value())
         return;
 
-    auto margin_box_ceiling = line_builder ? line_builder->ceiling_for_float_to_be_inserted_here(box) : block_offset;
+    auto margin_box_ceiling = rust_line_builder
+        ? CSSPixels::from_raw(RustFFI::rust_layout_line_builder_ceiling_for_float(rust_line_builder, const_cast<Box*>(&box)))
+        : block_offset;
     auto clearance = computed_values.clear();
     if (side.value() == FloatSide::Left && first_is_one_of(clearance, CSS::Clear::Left, CSS::Clear::Both, CSS::Clear::InlineStart))
         margin_box_ceiling = max(margin_box_ceiling, m_lowest_left_margin_edge - containing_block_rect_in_root_now.y());
@@ -1618,8 +1748,8 @@ void BlockFormattingContext::layout_floating_box(Box const& box, BlockContainer 
     if (!lowest.has_value() || bottom_margin_edge > *lowest)
         root_state.set_lowest_floating_descendant_bottom_margin_edge(bottom_margin_edge);
 
-    if (line_builder)
-        line_builder->recalculate_available_space();
+    if (rust_line_builder)
+        RustFFI::rust_layout_line_builder_recalculate_available_space(rust_line_builder);
 
     compute_inset(box, content_box_rect(block_container_state).size());
 
@@ -1712,10 +1842,13 @@ CSSPixels BlockFormattingContext::greatest_child_inline_size_including_floats(Bo
     }
 
     if (box.children_are_inline()) {
-        for (auto const& line_box : m_state.get(as<BlockContainer>(box)).line_boxes()) {
-            auto inline_size_here = line_box_physical_horizontal_extent(box, line_box);
-            auto line_block_start = line_box.physical_vertical_end() - line_box.physical_vertical_extent();
-            auto line_block_end = line_box.physical_vertical_end();
+        auto line_count = m_state.rust_line_count(box);
+        for (size_t line_index = 0; line_index < line_count; ++line_index) {
+            auto line = m_state.rust_line_summary(box, line_index);
+            VERIFY(line.has_value());
+            auto inline_size_here = CSSPixels::from_raw(line->physical_horizontal_extent);
+            auto line_block_start = CSSPixels::from_raw(line->physical_vertical_end) - CSSPixels::from_raw(line->physical_vertical_extent);
+            auto line_block_end = CSSPixels::from_raw(line->physical_vertical_end);
             CSSPixels extra_inline_size_from_left_floats = 0;
             for (auto& left_float : m_floats) {
                 if (left_float->side != FloatSide::Left)

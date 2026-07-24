@@ -53,8 +53,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let base_config = cbindgen::Config::from_file(manifest_dir.join("cbindgen.toml"))?;
 
     let tree_builder_sources = [
-        manifest_dir.join("../../../RustAllocator.rs"),
         manifest_dir.join("src/tree_builder.rs"),
+        manifest_dir.join("../../../RustAllocator.rs"),
     ];
     generate_ffi_header(
         base_config.clone(),
@@ -85,6 +85,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         "FfiLayoutBoxFacts".to_string(),
         "FfiLayoutNavCallbacks".to_string(),
         "FfiLayoutFcCallbacks".to_string(),
+        "FfiCssPixelRect".to_string(),
+        "FfiSpaceUsedByFloats".to_string(),
+        "FfiParentBfcCallbacks".to_string(),
+        "FfiInlineLayoutResult".to_string(),
+        "FfiLineSummary".to_string(),
+        "FfiLineRecord".to_string(),
+        "FfiCommittedFragment".to_string(),
+        "FfiInlineBoxPiece".to_string(),
+        "FfiLineSinkCallbacks".to_string(),
         "FfiBorderData".to_string(),
         "FfiBorderDataWithElementKind".to_string(),
         "FfiBordersData".to_string(),
