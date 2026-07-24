@@ -38,6 +38,7 @@ pub struct FfiSizeValue {
     pub fraction: f64,
     pub calc: *const c_void,
     pub contains_percentage: bool,
+    pub contains_anchor_function: bool,
 }
 
 impl FfiSizeValue {
@@ -48,6 +49,18 @@ impl FfiSizeValue {
             fraction: 0.0,
             calc: std::ptr::null(),
             contains_percentage: false,
+            contains_anchor_function: false,
+        }
+    }
+
+    pub(crate) fn px_value(px: CssPixels) -> Self {
+        Self {
+            kind: FfiSizeKind::Px as u8,
+            px,
+            fraction: 0.0,
+            calc: std::ptr::null(),
+            contains_percentage: false,
+            contains_anchor_function: false,
         }
     }
 
@@ -59,15 +72,13 @@ impl FfiSizeValue {
             fraction: 0.0,
             calc: std::ptr::null(),
             contains_percentage: false,
+            contains_anchor_function: false,
         }
     }
 
     #[cfg(test)]
     fn px(px: CssPixels) -> Self {
-        Self {
-            px,
-            ..Self::with_kind(FfiSizeKind::Px)
-        }
+        Self::px_value(px)
     }
 
     #[cfg(test)]
@@ -211,6 +222,8 @@ pub struct FfiStyleFacts {
     pub inset_right: FfiSizeValue,
     pub inset_bottom: FfiSizeValue,
     pub inset_left: FfiSizeValue,
+    pub has_position_anchor: bool,
+    pub position_anchor_name: usize,
 
     pub border_top_width: CssPixels,
     pub border_right_width: CssPixels,
@@ -338,16 +351,26 @@ impl FfiStyleFacts {
         ] {
             value.release_calc_handle();
         }
+        if self.has_position_anchor {
+            // SAFETY: The C++ snapshot builder leaked exactly one reference
+            // for this raw fly-string handle.
+            unsafe {
+                ladybird_layout_release_anchor_name_handle(self.position_anchor_name);
+            }
+        }
     }
 }
 
 #[cfg(not(test))]
 unsafe extern "C" {
     fn ladybird_layout_release_calc_handle(handle: *const c_void);
+    fn ladybird_layout_release_anchor_name_handle(raw: usize);
 }
 
 #[cfg(test)]
 unsafe fn ladybird_layout_release_calc_handle(_handle: *const c_void) {}
+#[cfg(test)]
+unsafe fn ladybird_layout_release_anchor_name_handle(_raw: usize) {}
 
 #[derive(Clone, Copy)]
 #[repr(C)]

@@ -79,6 +79,7 @@ pub struct UsedValuesCore {
     pub has_definite_inline_size: bool,
     pub has_definite_block_size: bool,
     pub materialized_from_paintable: bool,
+    pub uses_collapsing_borders_model: bool,
 
     pub inline_size_constraint: FfiSizeConstraint,
     pub block_size_constraint: FfiSizeConstraint,
@@ -121,6 +122,7 @@ impl Default for UsedValuesCore {
             has_definite_inline_size: false,
             has_definite_block_size: false,
             materialized_from_paintable: false,
+            uses_collapsing_borders_model: false,
             inline_size_constraint: FfiSizeConstraint::None,
             block_size_constraint: FfiSizeConstraint::None,
             has_content_offset: false,
@@ -236,6 +238,14 @@ impl UsedValuesCore {
 
     pub(crate) fn margin_box_bottom(&self, collapsed: bool) -> CssPixels {
         self.margin_bottom + self.border_box_bottom(collapsed)
+    }
+
+    pub(crate) fn margin_box_inline_size(&self, collapsed: bool) -> CssPixels {
+        self.margin_left
+            + self.border_box_left(collapsed)
+            + self.content_inline_size
+            + self.border_box_right(collapsed)
+            + self.margin_right
     }
 
     pub(crate) fn margin_box_block_size(&self, collapsed: bool) -> CssPixels {

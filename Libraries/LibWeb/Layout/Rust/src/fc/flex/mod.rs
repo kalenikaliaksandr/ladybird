@@ -2169,15 +2169,15 @@ impl FlexFormattingContext {
 
         let container_inline_size = self.container_used().content_inline_size;
         let container_block_size = self.container_used().content_block_size;
-        // SAFETY: Insets are computed synchronously for a live box.
-        unsafe {
-            (self.callbacks.compute_inset)(
-                self.callbacks.context,
-                node,
-                container_inline_size,
-                container_block_size,
-            );
-        }
+        super::abspos::compute_inset_native(
+            self.state,
+            self.callbacks,
+            self.layout_mode,
+            self.flex_container,
+            node,
+            container_inline_size,
+            container_block_size,
+        );
     }
 
     fn calculate_static_position_rect(&self, node: Node) -> FfiStaticPositionRect {

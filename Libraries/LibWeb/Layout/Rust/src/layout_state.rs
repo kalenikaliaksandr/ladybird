@@ -223,6 +223,13 @@ pub struct FfiAbsposContainingBlockInfo {
     pub derives_from_own_computed_values: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiAbsposLayoutInputs {
+    pub static_position_rect: FfiStaticPositionRect,
+    pub containing_block_info: FfiAbsposContainingBlockInfo,
+}
+
 #[derive(Clone, Copy)]
 struct ContainedAbsposChild {
     child_box: *mut c_void,
@@ -262,6 +269,7 @@ impl LayoutState {
             return *index;
         }
         let facts = self.build_box_facts(callbacks, node);
+        assert!(facts.has_layout_index);
         facts.layout_index
     }
 
@@ -270,6 +278,9 @@ impl LayoutState {
         // SAFETY: The callback table and node are supplied by the live C++
         // formatting-context shim and remain valid for this layout pass.
         let facts = unsafe { (callbacks.build_box_facts)(callbacks.context, node) };
+        if !facts.has_layout_index {
+            return facts;
+        }
         let index = facts.layout_index;
         self.layout_indices_by_node.insert(node as usize, index);
         let existing = self.box_facts.get(index);
@@ -309,6 +320,41 @@ impl LayoutState {
         facts
     }
 
+    pub(crate) fn replace_resolved_anchor_insets(
+        &mut self,
+        callbacks: &FfiLayoutFcCallbacks,
+        node: *mut c_void,
+        resolved: crate::fc::abspos::FfiResolvedAnchorInsets,
+    ) {
+        let index = self.layout_index(callbacks, node);
+        let facts = self.style_facts.get(index);
+        assert!(!facts.is_null());
+        // SAFETY: The style-facts entry is stable and layout mutates it
+        // serially when anchor functions become plain used-value insets.
+        let facts = unsafe { &mut *facts };
+        let replace =
+            |slot: &mut crate::style_facts::FfiSizeValue, is_auto: bool, value: crate::css_pixels::CssPixels| {
+                slot.release_calc_handle();
+                *slot = if is_auto {
+                    crate::style_facts::FfiSizeValue::auto_value()
+                } else {
+                    crate::style_facts::FfiSizeValue::px_value(value)
+                };
+            };
+        if resolved.resolves_top {
+            replace(&mut facts.inset_top, resolved.top_is_auto, resolved.top);
+        }
+        if resolved.resolves_right {
+            replace(&mut facts.inset_right, resolved.right_is_auto, resolved.right);
+        }
+        if resolved.resolves_bottom {
+            replace(&mut facts.inset_bottom, resolved.bottom_is_auto, resolved.bottom);
+        }
+        if resolved.resolves_left {
+            replace(&mut facts.inset_left, resolved.left_is_auto, resolved.left);
+        }
+    }
+
     pub(crate) fn table_facts(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> FfiTableBoxFacts {
         let index = self.layout_index(callbacks, node);
         let facts = self.table_facts.get(index);
@@ -342,6 +388,54 @@ impl LayoutState {
         let used_values = self.used_values.get(index);
         assert!(!used_values.is_null());
         used_values
+    }
+
+    pub(crate) fn try_used_values(
+        &mut self,
+        callbacks: &FfiLayoutFcCallbacks,
+        node: *mut c_void,
+    ) -> *mut UsedValuesCore {
+        let index = self.layout_index(callbacks, node);
+        self.used_values.get(index)
+    }
+
+    pub(crate) fn register_contained_abspos_child(
+        &mut self,
+        target_box: *mut c_void,
+        child_box: *mut c_void,
+        child_layout_index: u32,
+        static_position_rect: FfiStaticPositionRect,
+    ) {
+        let children = self.contained_abspos_children.entry(target_box as usize).or_default();
+        assert!(children.iter().all(|entry| entry.child_box != child_box));
+        let insertion_index = children
+            .iter()
+            .position(|entry| child_layout_index < entry.child_layout_index)
+            .unwrap_or(children.len());
+        children.insert(
+            insertion_index,
+            ContainedAbsposChild {
+                child_box,
+                child_layout_index,
+                static_position_rect,
+            },
+        );
+    }
+
+    pub(crate) fn take_next_contained_abspos_child(
+        &mut self,
+        target_box: *mut c_void,
+    ) -> Option<FfiContainedAbsposChild> {
+        let key = target_box as usize;
+        let children = self.contained_abspos_children.get_mut(&key)?;
+        let child = children.remove(0);
+        if children.is_empty() {
+            self.contained_abspos_children.remove(&key);
+        }
+        Some(FfiContainedAbsposChild {
+            child_box: child.child_box,
+            static_position_rect: child.static_position_rect,
+        })
     }
 }
 
@@ -413,20 +507,7 @@ pub extern "C" fn rust_layout_register_contained_abspos_child(
         // SAFETY: The pointer is supplied by the C++ caller and remains a
         // live Layout::Box for the duration of this synchronous callback.
         let child_layout_index = unsafe { ladybird_layout_box_layout_index(child_box) };
-        let children = state.contained_abspos_children.entry(target_box as usize).or_default();
-        assert!(children.iter().all(|entry| entry.child_box != child_box));
-        let insertion_index = children
-            .iter()
-            .position(|entry| child_layout_index < entry.child_layout_index)
-            .unwrap_or(children.len());
-        children.insert(
-            insertion_index,
-            ContainedAbsposChild {
-                child_box,
-                child_layout_index,
-                static_position_rect,
-            },
-        );
+        state.register_contained_abspos_child(target_box, child_box, child_layout_index, static_position_rect);
     });
 }
 
@@ -440,21 +521,13 @@ pub extern "C" fn rust_layout_take_next_contained_abspos_child(
         bump(FfiOp::AbsposTake);
         assert!(!out.is_null());
         let state = state_mut(state);
-        let key = target_box as usize;
-        let Some(children) = state.contained_abspos_children.get_mut(&key) else {
+        let Some(child) = state.take_next_contained_abspos_child(target_box) else {
             return false;
         };
-        let child = children.remove(0);
-        if children.is_empty() {
-            state.contained_abspos_children.remove(&key);
-        }
         // SAFETY: C++ supplies a valid writable out pointer whenever it calls
         // this function. It is written only on the true return path.
         unsafe {
-            out.write(FfiContainedAbsposChild {
-                child_box: child.child_box,
-                static_position_rect: child.static_position_rect,
-            });
+            out.write(child);
         }
         true
     })

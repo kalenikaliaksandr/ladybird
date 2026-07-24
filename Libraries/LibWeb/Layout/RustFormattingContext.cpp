@@ -62,62 +62,12 @@ CSSPixels RustFormattingContext::automatic_content_block_size() const
 void RustFormattingContext::parent_context_did_dimension_child_root_box()
 {
     RustFFI::rust_layout_fc_parent_did_dimension(m_rust_context);
-    if (m_layout_mode != LayoutMode::Normal)
-        return;
-    layout_absolutely_positioned_children();
 }
 
-AbsposContainingBlockInfo RustFormattingContext::resolve_abspos_containing_block_info(Box const& box)
+void RustFormattingContext::replay_absolutely_positioned_element(Box& box)
 {
-    if (type() != Type::Grid)
-        return FormattingContext::resolve_abspos_containing_block_info(box);
-    auto base_info = FormattingContext::resolve_abspos_containing_block_info(box);
-
-    static_assert(to_underlying(AbsposAxisMode::StaticPosition) == to_underlying(RustFFI::FfiAbsposAxisMode::StaticPosition));
-    static_assert(to_underlying(AbsposAxisMode::InsetFromRect) == to_underlying(RustFFI::FfiAbsposAxisMode::InsetFromRect));
-    static_assert(to_underlying(Alignment::Baseline) == to_underlying(RustFFI::FfiAbsposAlignment::Baseline));
-    static_assert(to_underlying(Alignment::Center) == to_underlying(RustFFI::FfiAbsposAlignment::Center));
-    static_assert(to_underlying(Alignment::End) == to_underlying(RustFFI::FfiAbsposAlignment::End));
-    static_assert(to_underlying(Alignment::Normal) == to_underlying(RustFFI::FfiAbsposAlignment::Normal));
-    static_assert(to_underlying(Alignment::Safe) == to_underlying(RustFFI::FfiAbsposAlignment::Safe));
-    static_assert(to_underlying(Alignment::SelfEnd) == to_underlying(RustFFI::FfiAbsposAlignment::SelfEnd));
-    static_assert(to_underlying(Alignment::SelfStart) == to_underlying(RustFFI::FfiAbsposAlignment::SelfStart));
-    static_assert(to_underlying(Alignment::SpaceAround) == to_underlying(RustFFI::FfiAbsposAlignment::SpaceAround));
-    static_assert(to_underlying(Alignment::SpaceBetween) == to_underlying(RustFFI::FfiAbsposAlignment::SpaceBetween));
-    static_assert(to_underlying(Alignment::SpaceEvenly) == to_underlying(RustFFI::FfiAbsposAlignment::SpaceEvenly));
-    static_assert(to_underlying(Alignment::Start) == to_underlying(RustFFI::FfiAbsposAlignment::Start));
-    static_assert(to_underlying(Alignment::Stretch) == to_underlying(RustFFI::FfiAbsposAlignment::Stretch));
-    static_assert(to_underlying(Alignment::Unsafe) == to_underlying(RustFFI::FfiAbsposAlignment::Unsafe));
-
-    RustFFI::FfiAbsposContainingBlockInfo info {};
-    RustFFI::rust_layout_fc_resolve_abspos_containing_block_info(
-        m_rust_context, const_cast<Box*>(&box), &info);
-    auto const uses_grid_area_as_static_position = box.static_position_containing_block() == &context_box();
-    return {
-        .rect = {
-            .offset = {
-                .inline_offset = CSSPixels::from_raw(info.rect.offset.inline_offset),
-                .block_offset = CSSPixels::from_raw(info.rect.offset.block_offset),
-            },
-            .size = {
-                .inline_size = CSSPixels::from_raw(info.rect.size.inline_size),
-                .block_size = CSSPixels::from_raw(info.rect.size.block_size),
-            },
-        },
-        .inline_axis_mode = uses_grid_area_as_static_position
-            ? static_cast<AbsposAxisMode>(info.inline_axis_mode)
-            : base_info.inline_axis_mode,
-        .block_axis_mode = uses_grid_area_as_static_position
-            ? static_cast<AbsposAxisMode>(info.block_axis_mode)
-            : base_info.block_axis_mode,
-        .inline_alignment = info.has_inline_alignment
-            ? Optional<Alignment> { static_cast<Alignment>(info.inline_alignment) }
-            : Optional<Alignment> {},
-        .block_alignment = info.has_block_alignment
-            ? Optional<Alignment> { static_cast<Alignment>(info.block_alignment) }
-            : Optional<Alignment> {},
-        .derives_from_own_computed_values = info.derives_from_own_computed_values,
-    };
+    VERIFY(type() == Type::AbsposReplay);
+    RustFFI::rust_layout_fc_replay_abspos(m_rust_context, &box);
 }
 
 void RustFormattingContext::set_pending_table_box_content_offset_in_wrapper(LogicalOffset offset)

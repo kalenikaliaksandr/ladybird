@@ -131,8 +131,8 @@ public:
     // which such a change cannot affect.
     [[nodiscard]] static bool can_replay_saved_abspos_layout_inputs_after_style_change(Box const&);
 
-    // Whether any of the box's inset properties carries anchor() functions, which only
-    // resolve_anchor_insets() can turn into plain values during a full layout pass.
+    // Whether any inset carries anchor() functions that the Rust abspos engine
+    // turns into plain used values during a full layout pass.
     [[nodiscard]] static bool box_inset_properties_contain_anchor_functions(Box const&);
 
     [[nodiscard]] static ContainingBlockConstraints constraints_for_child_context(
@@ -232,30 +232,11 @@ protected:
 
     ShrinkToFitInlineSizeResult calculate_shrink_to_fit_inline_sizes(Box const&, ContainingBlockConstraints const&);
 
-    void layout_absolutely_positioned_element(Box&, AbsposLayoutInputs const&);
-
     CSSPixels gap_to_px(Variant<CSS::LengthPercentage, CSS::NormalGap> const& gap, CSSPixels reference_value) const;
 
     void register_contained_abspos_child(Box const& child, StaticPositionRect const&);
-    [[nodiscard]] StaticPositionRect resolve_static_position_relative_to_containing_block(Box const&, StaticPositionRect) const;
-    [[nodiscard]] static LogicalOffset aligned_static_offset(StaticPositionRect const&, LayoutState::UsedValues const&);
     void layout_absolutely_positioned_children();
     void layout_absolutely_positioned_children(Box const&);
-    virtual AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&);
-    void resolve_anchor_insets(Box&) const;
-    void compute_inline_size_for_absolutely_positioned_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, StaticPositionRect const&);
-    void compute_inline_size_for_absolutely_positioned_non_replaced_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, StaticPositionRect const&);
-    void compute_inline_size_for_absolutely_positioned_replaced_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, StaticPositionRect const&);
-
-    enum class BeforeOrAfterInsideLayout {
-        Before,
-        After,
-    };
-    void compute_block_size_for_absolutely_positioned_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, StaticPositionRect const&, BeforeOrAfterInsideLayout);
-    void compute_block_size_for_absolutely_positioned_non_replaced_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, StaticPositionRect const&, BeforeOrAfterInsideLayout);
-    void compute_block_size_for_absolutely_positioned_replaced_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, StaticPositionRect const&, BeforeOrAfterInsideLayout);
-
-    [[nodiscard]] Optional<CSSPixels> compute_automatic_block_size_for_absolutely_positioned_element(Box const&, AvailableSpace const&, ContainingBlockConstraints const&, BeforeOrAfterInsideLayout) const;
 
     Type m_type {};
     LayoutMode m_layout_mode;

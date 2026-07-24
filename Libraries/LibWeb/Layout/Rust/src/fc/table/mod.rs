@@ -1585,11 +1585,13 @@ impl TableFormattingContext {
         self.position_row_boxes();
         self.position_cell_boxes();
         for cell in &self.cells {
-            bump(FfiOp::LayoutAbsposChildrenCallback);
-            // SAFETY: Cell layout is complete before abspos descendants run.
-            unsafe {
-                (self.callbacks.layout_absolutely_positioned_children)(self.callbacks.context, cell.box_);
-            }
+            super::abspos::layout_children_native(
+                self.state,
+                self.callbacks,
+                self.layout_mode,
+                self.table_box,
+                cell.box_,
+            );
         }
         // SAFETY: Unique table entry.
         unsafe {

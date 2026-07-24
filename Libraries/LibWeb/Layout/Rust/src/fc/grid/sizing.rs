@@ -623,6 +623,7 @@ mod tests {
             fraction: 0.5,
             calc: std::ptr::null(),
             contains_percentage: true,
+            contains_anchor_function: false,
         };
         let auto = FfiGridTrackBreadth {
             kind: FfiGridTrackBreadthKind::Auto as u8,

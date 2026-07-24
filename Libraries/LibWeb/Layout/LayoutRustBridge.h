@@ -73,6 +73,8 @@ void verify_style_calc_handles_balanced();
 extern "C" WEB_API void ladybird_layout_release_calc_handle(void const*);
 // Releases one name-table reference transferred by FfiGridStyleFacts.
 extern "C" WEB_API void ladybird_layout_release_grid_name_handle(size_t);
+// Releases one position-anchor name reference transferred by FfiStyleFacts.
+extern "C" WEB_API void ladybird_layout_release_anchor_name_handle(size_t);
 
 extern "C" WEB_API Web::Layout::RustFFI::FfiSizeValue ladybird_layout_test_build_size_value(u8 kind, i32 px_raw, double fraction);
 extern "C" WEB_API Web::Layout::RustFFI::FfiSizeValue ladybird_layout_test_build_auto_margin_value();

@@ -2236,13 +2236,20 @@ impl GridFormattingContext {
             // SAFETY: The host owns this live item.
             unsafe {
                 (self.callbacks.place_child)(self.callbacks.context, item.box_, offset);
-                (self.callbacks.compute_inset)(
-                    self.callbacks.context,
-                    item.box_,
-                    area.size.inline_size,
-                    area.size.block_size,
-                );
-                if did_layout {
+            }
+            super::super::abspos::compute_inset_native(
+                self.state,
+                self.callbacks,
+                self.layout_mode,
+                self.grid_container,
+                item.box_,
+                area.size.inline_size,
+                area.size.block_size,
+            );
+            if did_layout {
+                // SAFETY: A successful layout call retained this child
+                // context until the matching parent-dimension callback.
+                unsafe {
                     (self.callbacks.parent_did_dimension_child_root_box)(self.callbacks.context, item.box_);
                 }
             }

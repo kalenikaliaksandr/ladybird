@@ -1427,7 +1427,7 @@ impl SizingContext {
         }
     }
 
-    fn calculate_inner_inline_size(
+    pub(crate) fn calculate_inner_inline_size(
         &self,
         node: Node,
         available: AvailableSize,
@@ -1476,7 +1476,7 @@ impl SizingContext {
         value
     }
 
-    fn calculate_inner_block_size(
+    pub(crate) fn calculate_inner_block_size(
         &self,
         node: Node,
         available_space: AvailableSpace,

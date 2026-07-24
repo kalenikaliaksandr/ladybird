@@ -11,11 +11,12 @@ use crate::css_pixels::CssPixels;
 use crate::display::FfiDisplay;
 use crate::ffi_stats::{FfiOp, bump};
 use crate::geometry::{AvailableSize, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput, LogicalOffset};
-use crate::layout_state::{FfiAbsposContainingBlockInfo, FfiStaticPositionAlignment, FfiStaticPositionRect, state_mut};
+use crate::layout_state::{FfiStaticPositionAlignment, FfiStaticPositionRect, state_mut};
 use crate::style_facts::FfiStyleFacts;
 use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
 use std::ffi::c_void;
 
+pub(crate) mod abspos;
 mod flex;
 pub(crate) mod grid;
 mod sizing;
@@ -204,6 +205,15 @@ pub type FfiBuildTableBoxFactsCallback = unsafe extern "C" fn(*mut c_void, *mut 
 pub struct FfiLayoutFcCallbacks {
     pub context: *mut c_void,
     pub navigation: FfiLayoutNavCallbacks,
+    pub static_position_containing_block: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void,
+    pub inline_containing_block: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void,
+    pub non_anonymous_containing_block: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void,
+    pub node_is_ancestor: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool,
+    pub dom_node_is_inclusive_ancestor: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool,
+    pub is_table_cell: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
+    pub needs_inset_resolution: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
+    pub for_each_line_box_fragment:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, abspos::FfiLineBoxFragmentVisitor),
     pub build_style_facts: FfiBuildStyleFactsCallback,
     pub build_box_facts: FfiBuildBoxFactsCallback,
     pub build_table_box_facts: FfiBuildTableBoxFactsCallback,
@@ -222,6 +232,16 @@ pub struct FfiLayoutFcCallbacks {
     pub create_used_values:
         unsafe extern "C" fn(*mut c_void, *mut c_void, bool, CssPixels, bool, CssPixels) -> *mut UsedValuesCore,
     pub get_used_values: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut UsedValuesCore,
+    pub is_measurement_state: unsafe extern "C" fn(*mut c_void) -> bool,
+    pub set_abspos_layout_inputs:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, crate::layout_state::FfiAbsposLayoutInputs),
+    pub get_saved_abspos_layout_inputs:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut crate::layout_state::FfiAbsposLayoutInputs) -> bool,
+    pub anchor_lookup: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, *mut *mut c_void) -> bool,
+    pub build_anchor_function_facts: unsafe extern "C" fn(*mut c_void, *const c_void) -> abspos::FfiAnchorFunctionFacts,
+    pub anchor_function_fallback: unsafe extern "C" fn(*mut c_void, *const c_void) -> abspos::FfiAnchorFallbackFacts,
+    pub set_resolved_anchor_insets: unsafe extern "C" fn(*mut c_void, *mut c_void, abspos::FfiResolvedAnchorInsets),
+    pub set_default_scroll_shift: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, bool, bool),
     pub layout_inside_child:
         unsafe extern "C" fn(*mut c_void, *mut c_void, u8, FfiLayoutInput, *mut FfiChildLayoutResult) -> bool,
     pub parent_did_dimension_child_root_box: unsafe extern "C" fn(*mut c_void, *mut c_void),
@@ -316,6 +336,9 @@ pub struct FfiLayoutFcCallbacks {
     ) -> CssPixels,
     pub register_contained_abspos_child: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiStaticPositionRect),
     pub compute_inset: unsafe extern "C" fn(*mut c_void, *mut c_void, CssPixels, CssPixels),
+    pub make_button_content_box_definite:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSpace, FfiContainingBlockConstraints),
+    pub automatic_block_size_for_abspos_bfc_root: unsafe extern "C" fn(*mut c_void, *mut c_void) -> CssPixels,
     pub set_flex_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const FfiFlexLayoutData),
     pub set_grid_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const grid::facts::FfiGridLayoutData),
     pub set_used_grid_template_tracks: unsafe extern "C" fn(
@@ -410,6 +433,7 @@ pub extern "C" fn rust_layout_owns_fc_type(fc_type: u8) -> bool {
                 || type_ == FfiFormattingContextType::Table as u8
                 || type_ == FfiFormattingContextType::Grid as u8
                 || type_ == FfiFormattingContextType::Svg as u8
+                || type_ == FfiFormattingContextType::AbsposReplay as u8
         )
     })
 }
@@ -534,27 +558,22 @@ pub extern "C" fn rust_layout_fc_parent_did_dimension(fc: *mut c_void) {
             type_ if type_ == FfiFormattingContextType::Svg as u8 => {}
             _ => panic!("no Rust parent-dimension implementation for this formatting context"),
         }
+        // SAFETY: This reads the live context box's display without
+        // populating the Rust facts cache solely for this guard.
+        let is_table_cell = unsafe { (instance.callbacks.is_table_cell)(instance.callbacks.context, instance.box_) };
+        if !is_table_cell {
+            let box_ = instance.box_;
+            abspos::layout_children_for_instance(instance, box_);
+        }
     });
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_fc_resolve_abspos_containing_block_info(
-    fc: *mut c_void,
-    box_: *mut c_void,
-    out: *mut FfiAbsposContainingBlockInfo,
-) {
+pub extern "C" fn rust_layout_fc_replay_abspos(fc: *mut c_void, box_: *mut c_void) {
     abort_on_panic(|| {
         assert!(!box_.is_null());
-        assert!(!out.is_null());
         let instance = instance_mut(fc);
-        assert_eq!(instance.fc_type, FfiFormattingContextType::Grid as u8);
-        let info = instance
-            .grid_context
-            .as_ref()
-            .unwrap()
-            .abspos_containing_block_info(box_);
-        // SAFETY: C++ supplies writable storage for one POD result.
-        unsafe { out.write(info) };
+        abspos::replay_for_instance(instance, box_);
     });
 }
 
@@ -745,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_owns_flex_table_grid_and_svg_formatting_contexts() {
+    fn rust_owns_native_formatting_contexts_and_abspos_replay() {
         for type_ in 0..=u8::MAX {
             assert_eq!(
                 rust_layout_owns_fc_type(type_),
@@ -753,6 +772,7 @@ mod tests {
                     || type_ == FfiFormattingContextType::Table as u8
                     || type_ == FfiFormattingContextType::Grid as u8
                     || type_ == FfiFormattingContextType::Svg as u8
+                    || type_ == FfiFormattingContextType::AbsposReplay as u8
             );
         }
     }

@@ -392,6 +392,7 @@ mod tests {
                 fraction: 0.0,
                 calc: std::ptr::null(),
                 contains_percentage: false,
+                contains_anchor_function: false,
             },
             flex_factor: 0.0,
         }

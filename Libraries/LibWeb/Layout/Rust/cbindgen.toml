@@ -19,5 +19,11 @@ parse_deps = false
 [parse.expand]
 all_features = false
 
+[export]
+exclude = [
+    "rust_calc_node_create_numeric_dimension",
+    "rust_calc_resolve",
+]
+
 [export.mangle]
 rename_types = "PascalCase"

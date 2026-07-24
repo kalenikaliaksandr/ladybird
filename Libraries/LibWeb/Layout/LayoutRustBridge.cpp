@@ -15,7 +15,9 @@
 #include <LibWeb/CSS/GridTrackPlacement.h>
 #include <LibWeb/CSS/GridTrackSize.h>
 #include <LibWeb/CSS/LengthBox.h>
+#include <LibWeb/CSS/PropertyNameAndID.h>
 #include <LibWeb/CSS/Size.h>
+#include <LibWeb/CSS/StyleValues/AnchorStyleValue.h>
 #include <LibWeb/CSS/StyleValues/CalcNodeRef.h>
 #include <LibWeb/CSS/StyleValues/CalculatedStyleValue.h>
 #include <LibWeb/CSS/StyleValues/FlexStyleValue.h>
@@ -25,7 +27,9 @@
 #include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
 #include <LibWeb/CSS/StyleValues/PercentageStyleValue.h>
 #include <LibWeb/CSS/ValueType.h>
+#include <LibWeb/DOM/AbstractElement.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/Text.h>
 #include <LibGfx/Font/Font.h>
@@ -43,6 +47,7 @@
 #include <LibWeb/Layout/LayoutRustBridge.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/FormattingContext.h>
+#include <LibWeb/Layout/InlineNode.h>
 #include <LibWeb/Layout/Node.h>
 #include <LibWeb/Layout/SVGClipBox.h>
 #include <LibWeb/Layout/SVGGeometryBox.h>
@@ -67,6 +72,7 @@ namespace Web::Layout {
 
 static Atomic<size_t> s_outstanding_calc_handles;
 static Atomic<size_t> s_outstanding_grid_name_handles;
+static Atomic<size_t> s_outstanding_anchor_name_handles;
 static Atomic<size_t> s_outstanding_svg_path_handles;
 
 struct RetainedCalcHandle {
@@ -88,6 +94,7 @@ static RustFFI::FfiSizeValue size_value_with_kind(RustFFI::FfiSizeKind kind)
         .fraction = 0,
         .calc = nullptr,
         .contains_percentage = false,
+        .contains_anchor_function = false,
     };
 }
 
@@ -111,6 +118,7 @@ static RustFFI::FfiSizeValue retain_calculated(CSS::CalculatedStyleValue const& 
         .fraction = 0,
         .calc = handle,
         .contains_percentage = contains_percentage,
+        .contains_anchor_function = calculated.contains_anchor_function(),
     };
 }
 
@@ -387,6 +395,7 @@ RustFFI::FfiSizeValue build_style_size_value(CSS::LengthPercentage const& value)
             .fraction = 0,
             .calc = nullptr,
             .contains_percentage = false,
+            .contains_anchor_function = false,
         };
     }
     if (value.is_percentage()) {
@@ -396,6 +405,7 @@ RustFFI::FfiSizeValue build_style_size_value(CSS::LengthPercentage const& value)
             .fraction = value.percentage().as_fraction(),
             .calc = nullptr,
             .contains_percentage = true,
+            .contains_anchor_function = false,
         };
     }
     return retain_calculated(*value.calculated(), value.contains_percentage());
@@ -423,6 +433,7 @@ RustFFI::FfiSizeValue build_style_size_value(CSS::Size const& value)
             .fraction = 0,
             .calc = nullptr,
             .contains_percentage = false,
+            .contains_anchor_function = false,
         };
     case CSS::Size::Type::Percentage:
         return {
@@ -431,6 +442,7 @@ RustFFI::FfiSizeValue build_style_size_value(CSS::Size const& value)
             .fraction = value.percentage().as_fraction(),
             .calc = nullptr,
             .contains_percentage = true,
+            .contains_anchor_function = false,
         };
     case CSS::Size::Type::MinContent:
         return size_value_with_kind(RustFFI::FfiSizeKind::MinContent);
@@ -830,6 +842,7 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
         .is_absolutely_positioned = node.is_absolutely_positioned(),
         .is_inline = node.is_inline(),
         .is_inline_block = node.is_inline_block(),
+        .is_atomic_inline = node.is_atomic_inline(),
         .children_are_inline = node.children_are_inline(),
         .is_anonymous = node.is_anonymous(),
         .can_have_children = node.can_have_children(),
@@ -858,6 +871,7 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
         .default_preferred_height = default_preferred_size.has_value() ? default_preferred_size->height.value_or(0).raw_value() : 0,
         .initial_containing_block_inline_size = node.document().viewport_rect().width().raw_value(),
         .is_scroll_container = node.is_scroll_container(),
+        .has_layout_index = true,
         .layout_index = node.layout_index(),
         .display = encode_display(display),
         .is_svg_box = node.is_svg_box(),
@@ -1075,6 +1089,94 @@ static StaticPositionRect from_ffi_static_position_rect(RustFFI::FfiStaticPositi
     };
 }
 
+static RustFFI::FfiStaticPositionRect to_ffi_static_position_rect(StaticPositionRect const& rect)
+{
+    return {
+        .rect = {
+            .offset = {
+                .inline_offset = rect.rect.offset.inline_offset.raw_value(),
+                .block_offset = rect.rect.offset.block_offset.raw_value(),
+            },
+            .size = {
+                .inline_size = rect.rect.size.inline_size.raw_value(),
+                .block_size = rect.rect.size.block_size.raw_value(),
+            },
+        },
+        .inline_alignment = static_cast<RustFFI::FfiStaticPositionAlignment>(rect.inline_alignment),
+        .block_alignment = static_cast<RustFFI::FfiStaticPositionAlignment>(rect.block_alignment),
+        .alignment_derives_from_own_computed_values = rect.alignment_derives_from_own_computed_values,
+    };
+}
+
+static RustFFI::FfiAbsposContainingBlockInfo to_ffi_abspos_containing_block_info(AbsposContainingBlockInfo const& info)
+{
+    return {
+        .rect = {
+            .offset = {
+                .inline_offset = info.rect.offset.inline_offset.raw_value(),
+                .block_offset = info.rect.offset.block_offset.raw_value(),
+            },
+            .size = {
+                .inline_size = info.rect.size.inline_size.raw_value(),
+                .block_size = info.rect.size.block_size.raw_value(),
+            },
+        },
+        .inline_axis_mode = static_cast<RustFFI::FfiAbsposAxisMode>(info.inline_axis_mode),
+        .block_axis_mode = static_cast<RustFFI::FfiAbsposAxisMode>(info.block_axis_mode),
+        .has_inline_alignment = info.inline_alignment.has_value(),
+        .inline_alignment = static_cast<RustFFI::FfiAbsposAlignment>(info.inline_alignment.value_or(Alignment::Normal)),
+        .has_block_alignment = info.block_alignment.has_value(),
+        .block_alignment = static_cast<RustFFI::FfiAbsposAlignment>(info.block_alignment.value_or(Alignment::Normal)),
+        .derives_from_own_computed_values = info.derives_from_own_computed_values,
+    };
+}
+
+static AbsposContainingBlockInfo from_ffi_abspos_containing_block_info(RustFFI::FfiAbsposContainingBlockInfo const& info)
+{
+    return {
+        .rect = {
+            .offset = {
+                .inline_offset = CSSPixels::from_raw(info.rect.offset.inline_offset),
+                .block_offset = CSSPixels::from_raw(info.rect.offset.block_offset),
+            },
+            .size = {
+                .inline_size = CSSPixels::from_raw(info.rect.size.inline_size),
+                .block_size = CSSPixels::from_raw(info.rect.size.block_size),
+            },
+        },
+        .inline_axis_mode = static_cast<AbsposAxisMode>(info.inline_axis_mode),
+        .block_axis_mode = static_cast<AbsposAxisMode>(info.block_axis_mode),
+        .inline_alignment = info.has_inline_alignment ? Optional<Alignment> { static_cast<Alignment>(info.inline_alignment) } : Optional<Alignment> {},
+        .block_alignment = info.has_block_alignment ? Optional<Alignment> { static_cast<Alignment>(info.block_alignment) } : Optional<Alignment> {},
+        .derives_from_own_computed_values = info.derives_from_own_computed_values,
+    };
+}
+
+static RustFFI::FfiAbsposLayoutInputs to_ffi_abspos_layout_inputs(AbsposLayoutInputs const& inputs)
+{
+    return {
+        .static_position_rect = to_ffi_static_position_rect(inputs.static_position_rect),
+        .containing_block_info = to_ffi_abspos_containing_block_info(inputs.containing_block_info),
+    };
+}
+
+static AbsposLayoutInputs from_ffi_abspos_layout_inputs(RustFFI::FfiAbsposLayoutInputs const& inputs)
+{
+    return {
+        .static_position_rect = from_ffi_static_position_rect(inputs.static_position_rect),
+        .containing_block_info = from_ffi_abspos_containing_block_info(inputs.containing_block_info),
+    };
+}
+
+static Optional<DOM::AbstractElement> abstract_element_for_abspos_box(Box const& box)
+{
+    if (box.is_generated_for_pseudo_element())
+        return DOM::AbstractElement { *box.pseudo_element_generator(), box.generated_for_pseudo_element() };
+    if (auto const* element = as_if<DOM::Element>(box.dom_node()))
+        return DOM::AbstractElement { *element };
+    return {};
+}
+
 RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
 {
     static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::Cell) == 0);
@@ -1119,16 +1221,108 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
     static_assert(to_underlying(SVG::PreserveAspectRatio::MeetOrSlice::Slice) == 1);
     static_assert(to_underlying(SVG::SVGUnits::ObjectBoundingBox) == 0);
     static_assert(to_underlying(SVG::SVGUnits::UserSpaceOnUse) == 1);
+    static_assert(to_underlying(CSS::Positioning::Relative) == 2);
+    static_assert(to_underlying(CSS::Direction::Ltr) == 0);
+    static_assert(to_underlying(CSS::WritingMode::HorizontalTb) == 0);
+    static_assert(to_underlying(StaticPositionRect::Alignment::Start) == to_underlying(RustFFI::FfiStaticPositionAlignment::Start));
+    static_assert(to_underlying(StaticPositionRect::Alignment::Center) == to_underlying(RustFFI::FfiStaticPositionAlignment::Center));
+    static_assert(to_underlying(StaticPositionRect::Alignment::End) == to_underlying(RustFFI::FfiStaticPositionAlignment::End));
+    static_assert(to_underlying(AbsposAxisMode::StaticPosition) == to_underlying(RustFFI::FfiAbsposAxisMode::StaticPosition));
+    static_assert(to_underlying(AbsposAxisMode::InsetFromRect) == to_underlying(RustFFI::FfiAbsposAxisMode::InsetFromRect));
+    static_assert(to_underlying(Alignment::Baseline) == to_underlying(RustFFI::FfiAbsposAlignment::Baseline));
+    static_assert(to_underlying(Alignment::Center) == to_underlying(RustFFI::FfiAbsposAlignment::Center));
+    static_assert(to_underlying(Alignment::End) == to_underlying(RustFFI::FfiAbsposAlignment::End));
+    static_assert(to_underlying(Alignment::Normal) == to_underlying(RustFFI::FfiAbsposAlignment::Normal));
+    static_assert(to_underlying(Alignment::Safe) == to_underlying(RustFFI::FfiAbsposAlignment::Safe));
+    static_assert(to_underlying(Alignment::SelfEnd) == to_underlying(RustFFI::FfiAbsposAlignment::SelfEnd));
+    static_assert(to_underlying(Alignment::SelfStart) == to_underlying(RustFFI::FfiAbsposAlignment::SelfStart));
+    static_assert(to_underlying(Alignment::SpaceAround) == to_underlying(RustFFI::FfiAbsposAlignment::SpaceAround));
+    static_assert(to_underlying(Alignment::SpaceBetween) == to_underlying(RustFFI::FfiAbsposAlignment::SpaceBetween));
+    static_assert(to_underlying(Alignment::SpaceEvenly) == to_underlying(RustFFI::FfiAbsposAlignment::SpaceEvenly));
+    static_assert(to_underlying(Alignment::Start) == to_underlying(RustFFI::FfiAbsposAlignment::Start));
+    static_assert(to_underlying(Alignment::Stretch) == to_underlying(RustFFI::FfiAbsposAlignment::Stretch));
+    static_assert(to_underlying(Alignment::Unsafe) == to_underlying(RustFFI::FfiAbsposAlignment::Unsafe));
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Invalid) == 0);
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Top) == 1);
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Right) == 2);
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Bottom) == 3);
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Left) == 4);
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Center) == 5);
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Start) == 6);
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::End) == 7);
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::SelfStart) == 8);
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::SelfEnd) == 9);
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Inside) == 10);
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Outside) == 11);
+    static_assert(to_underlying(RustFFI::FfiAnchorSideKind::Percentage) == 12);
 
     return {
         .context = this,
         .navigation = navigation_callbacks(),
+        .static_position_containing_block = [](void*, void* node) -> void* {
+            return const_cast<Box*>(static_cast<Box const*>(node)->static_position_containing_block());
+        },
+        .inline_containing_block = [](void*, void* node) -> void* {
+            return const_cast<InlineNode*>(static_cast<Box const*>(node)->inline_containing_block_if_applicable());
+        },
+        .non_anonymous_containing_block = [](void*, void* node) -> void* {
+            return const_cast<Box*>(static_cast<InlineNode const*>(node)->non_anonymous_containing_block());
+        },
+        .node_is_ancestor = [](void*, void* ancestor, void* node) {
+            return static_cast<Node const*>(ancestor)->is_ancestor_of(*static_cast<Node const*>(node));
+        },
+        .dom_node_is_inclusive_ancestor = [](void*, void* ancestor, void* node) {
+            auto const* ancestor_dom_node = static_cast<Node const*>(ancestor)->dom_node();
+            auto const* dom_node = static_cast<Node const*>(node)->dom_node();
+            return ancestor_dom_node && dom_node && ancestor_dom_node->is_inclusive_ancestor_of(*dom_node);
+        },
+        .is_table_cell = [](void*, void* node) {
+            return static_cast<Box const*>(node)->display().is_table_cell();
+        },
+        .needs_inset_resolution = [](void*, void* node) {
+            auto const& styled_node = *static_cast<NodeWithStyleAndBoxModelMetrics const*>(node);
+            if (styled_node.computed_values().position() == CSS::Positioning::Relative)
+                return true;
+            auto const* box = as_if<Box>(styled_node);
+            return box && FormattingContext::box_inset_properties_contain_anchor_functions(*box);
+        },
+        .for_each_line_box_fragment = [](void* context, void* node, void* visitor_context, RustFFI::FfiLineBoxFragmentVisitor visitor) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto const* used_values = bridge.m_formatting_context.m_state.try_get(*static_cast<Node const*>(node));
+            if (!used_values)
+                return;
+            for (auto const& line_box : used_values->line_boxes()) {
+                for (auto const& fragment : line_box.fragments()) {
+                    auto offset = fragment.offset();
+                    auto size = fragment.size();
+                    visitor(visitor_context, {
+                                                 .layout_node = const_cast<Node*>(&fragment.layout_node()),
+                                                 .is_atomic_inline = fragment.is_atomic_inline(),
+                                                 .writing_mode = to_underlying(fragment.writing_mode()),
+                                                 .style_block_axis_is_reverse = fragment.style_source().computed_values().block_axis_is_reverse(),
+                                                 .inline_offset = fragment.inline_offset().raw_value(),
+                                                 .block_offset = fragment.block_offset().raw_value(),
+                                                 .offset = {
+                                                     .x = offset.x().raw_value(),
+                                                     .y = offset.y().raw_value(),
+                                                 },
+                                                 .size = {
+                                                     .x = size.width().raw_value(),
+                                                     .y = size.height().raw_value(),
+                                                 },
+                                             });
+                }
+            }
+        },
         .build_style_facts = [](void*, void* node) {
             return build_style_facts(*static_cast<NodeWithStyle const*>(node));
         },
         .build_box_facts = [](void*, void* node) {
-            auto const* node_with_style = as_if<NodeWithStyle>(*static_cast<Node const*>(node));
-            return node_with_style ? build_layout_box_facts(*node_with_style) : RustFFI::FfiLayoutBoxFacts {};
+            auto const& layout_node = *static_cast<Node const*>(node);
+            auto const* node_with_style = as_if<NodeWithStyle>(layout_node);
+            if (node_with_style)
+                return build_layout_box_facts(*node_with_style);
+            return RustFFI::FfiLayoutBoxFacts {};
         },
         .build_table_box_facts = [](void*, void* node) {
             return build_table_box_facts(*static_cast<NodeWithStyle const*>(node));
@@ -1198,8 +1392,206 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
         },
         .get_used_values = [](void* context, void* node) -> RustFFI::UsedValuesCore* {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto* used_values = bridge.m_formatting_context.m_state.try_get_mutable(*static_cast<NodeWithStyle const*>(node));
+            auto* used_values = bridge.m_formatting_context.m_state.try_get_mutable(*static_cast<Node const*>(node));
             return used_values ? &used_values->core() : nullptr;
+        },
+        .is_measurement_state = [](void* context) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            return bridge.m_formatting_context.m_state.is_for_measurement();
+        },
+        .set_abspos_layout_inputs = [](void* context, void* node, RustFFI::FfiAbsposLayoutInputs inputs) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            bridge.m_formatting_context.m_state.get_mutable(*static_cast<Box const*>(node))
+                .set_abspos_layout_inputs(from_ffi_abspos_layout_inputs(inputs));
+        },
+        .get_saved_abspos_layout_inputs = [](void*, void* node, RustFFI::FfiAbsposLayoutInputs* out) {
+            VERIFY(out);
+            auto const* inputs = static_cast<Box const*>(node)->saved_abspos_layout_inputs();
+            if (!inputs)
+                return false;
+            *out = to_ffi_abspos_layout_inputs(*inputs);
+            return true;
+        },
+        .anchor_lookup = [](void* context, void* node, size_t anchor_name, void** out_anchor_box) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            VERIFY(out_anchor_box);
+            *out_anchor_box = nullptr;
+            auto const& box = *static_cast<Box const*>(node);
+            auto abstract_element = abstract_element_for_abspos_box(box);
+            if (!abstract_element.has_value())
+                return false;
+            auto const* containing_block = box.containing_block();
+            if (!containing_block)
+                return false;
+            Function<bool(DOM::Element&)> is_acceptable_anchor_element = [&](DOM::Element& candidate) {
+                auto const* anchor_box = as_if<Box>(candidate.unsafe_layout_node());
+                if (!anchor_box || anchor_box == &box)
+                    return false;
+                if (!bridge.m_formatting_context.m_state.try_get(*anchor_box))
+                    return false;
+                for (auto const* ancestor = anchor_box->containing_block(); ancestor; ancestor = ancestor->containing_block()) {
+                    if (ancestor == containing_block)
+                        return true;
+                }
+                return false;
+            };
+            auto anchor_element = abstract_element->element().document().element_by_anchor_name(
+                Utf16FlyString::from_raw(anchor_name),
+                abstract_element->element(),
+                is_acceptable_anchor_element);
+            if (!anchor_element)
+                return false;
+            auto* anchor_box = as_if<Box>(anchor_element->unsafe_layout_node());
+            if (!anchor_box)
+                return false;
+            *out_anchor_box = anchor_box;
+            return true;
+        },
+        .build_anchor_function_facts = [](void*, void const* shell) {
+            auto const& value = *static_cast<CSS::StyleValue const*>(shell);
+            if (!value.is_anchor()) {
+                return RustFFI::FfiAnchorFunctionFacts {
+                    .has_anchor_name = false,
+                    .anchor_name = 0,
+                    .side_kind = RustFFI::FfiAnchorSideKind::Invalid,
+                    .side_percentage = 0,
+                };
+            }
+            auto const& anchor = value.as_anchor();
+            auto const& side = *anchor.anchor_side();
+            auto side_kind = RustFFI::FfiAnchorSideKind::Invalid;
+            double side_percentage = 0;
+            if (side.is_keyword()) {
+                switch (side.to_keyword()) {
+                case CSS::Keyword::Top:
+                    side_kind = RustFFI::FfiAnchorSideKind::Top;
+                    break;
+                case CSS::Keyword::Right:
+                    side_kind = RustFFI::FfiAnchorSideKind::Right;
+                    break;
+                case CSS::Keyword::Bottom:
+                    side_kind = RustFFI::FfiAnchorSideKind::Bottom;
+                    break;
+                case CSS::Keyword::Left:
+                    side_kind = RustFFI::FfiAnchorSideKind::Left;
+                    break;
+                case CSS::Keyword::Center:
+                    side_kind = RustFFI::FfiAnchorSideKind::Center;
+                    break;
+                case CSS::Keyword::Start:
+                    side_kind = RustFFI::FfiAnchorSideKind::Start;
+                    break;
+                case CSS::Keyword::End:
+                    side_kind = RustFFI::FfiAnchorSideKind::End;
+                    break;
+                case CSS::Keyword::SelfStart:
+                    side_kind = RustFFI::FfiAnchorSideKind::SelfStart;
+                    break;
+                case CSS::Keyword::SelfEnd:
+                    side_kind = RustFFI::FfiAnchorSideKind::SelfEnd;
+                    break;
+                case CSS::Keyword::Inside:
+                    side_kind = RustFFI::FfiAnchorSideKind::Inside;
+                    break;
+                case CSS::Keyword::Outside:
+                    side_kind = RustFFI::FfiAnchorSideKind::Outside;
+                    break;
+                default:
+                    break;
+                }
+            } else if (side.is_percentage()) {
+                side_kind = RustFFI::FfiAnchorSideKind::Percentage;
+                side_percentage = side.as_percentage().percentage().as_fraction();
+            }
+            size_t anchor_name = 0;
+            if (auto name = anchor.anchor_name(); name.has_value()) {
+                anchor_name = name->to_raw_leaked();
+                ++s_outstanding_anchor_name_handles;
+                RustFFI::rust_layout_ffi_note_anchor_name_retain();
+            }
+            return RustFFI::FfiAnchorFunctionFacts {
+                .has_anchor_name = anchor_name != 0,
+                .anchor_name = anchor_name,
+                .side_kind = side_kind,
+                .side_percentage = side_percentage,
+            };
+        },
+        .anchor_function_fallback = [](void*, void const* shell) {
+            auto const& value = *static_cast<CSS::StyleValue const*>(shell);
+            if (!value.is_anchor())
+                return RustFFI::FfiAnchorFallbackFacts {
+                    .kind = RustFFI::FfiAnchorFallbackKind::None,
+                    .px = 0,
+                    .fraction = 0,
+                    .value = nullptr,
+                };
+            auto fallback = value.as_anchor().fallback_value();
+            if (!fallback)
+                return RustFFI::FfiAnchorFallbackFacts {
+                    .kind = RustFFI::FfiAnchorFallbackKind::None,
+                    .px = 0,
+                    .fraction = 0,
+                    .value = nullptr,
+                };
+            if (fallback->is_length()) {
+                VERIFY(fallback->as_length().length().is_absolute());
+                return RustFFI::FfiAnchorFallbackFacts {
+                    .kind = RustFFI::FfiAnchorFallbackKind::Px,
+                    .px = fallback->as_length().length().absolute_length_to_px().raw_value(),
+                    .fraction = 0,
+                    .value = nullptr,
+                };
+            }
+            if (fallback->is_percentage()) {
+                return RustFFI::FfiAnchorFallbackFacts {
+                    .kind = RustFFI::FfiAnchorFallbackKind::Percentage,
+                    .px = 0,
+                    .fraction = fallback->as_percentage().percentage().as_fraction(),
+                    .value = nullptr,
+                };
+            }
+            if (fallback->is_calculated()) {
+                return RustFFI::FfiAnchorFallbackFacts {
+                    .kind = RustFFI::FfiAnchorFallbackKind::Calculated,
+                    .px = 0,
+                    .fraction = 0,
+                    .value = fallback->as_calculated().rust_style_value_data(),
+                };
+            }
+            VERIFY(fallback->is_anchor());
+            return RustFFI::FfiAnchorFallbackFacts {
+                .kind = RustFFI::FfiAnchorFallbackKind::Anchor,
+                .px = 0,
+                .fraction = 0,
+                .value = fallback.ptr(),
+            };
+        },
+        .set_resolved_anchor_insets = [](void*, void* node, RustFFI::FfiResolvedAnchorInsets resolved) {
+            auto& box = *static_cast<Box*>(node);
+            auto const& existing = box.computed_values().inset();
+            auto resolve = [](bool resolves, bool is_auto, i32 value, CSS::LengthPercentageOrAuto const& existing_value) {
+                if (!resolves)
+                    return existing_value;
+                if (is_auto)
+                    return CSS::LengthPercentageOrAuto::make_auto();
+                return CSS::LengthPercentageOrAuto { CSS::LengthPercentage { CSS::Length::make_px(CSSPixels::from_raw(value)) } };
+            };
+            box.modify_computed_values([&](auto& values) {
+                values.set_inset({
+                    resolve(resolved.resolves_top, resolved.top_is_auto, resolved.top, existing.top()),
+                    resolve(resolved.resolves_right, resolved.right_is_auto, resolved.right, existing.right()),
+                    resolve(resolved.resolves_bottom, resolved.bottom_is_auto, resolved.bottom, existing.bottom()),
+                    resolve(resolved.resolves_left, resolved.left_is_auto, resolved.left, existing.left()),
+                });
+            });
+        },
+        .set_default_scroll_shift = [](void*, void* node, void* anchor, bool horizontal, bool vertical) {
+            auto& box = *static_cast<Box*>(node);
+            if (!anchor) {
+                box.set_default_scroll_shift({}, false, false);
+                return;
+            }
+            box.set_default_scroll_shift(static_cast<Box*>(anchor)->make_weak_ptr(), horizontal, vertical);
         },
         .layout_inside_child = [](void* context, void* child, u8 mode, RustFFI::FfiLayoutInput input, RustFFI::FfiChildLayoutResult* out) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
@@ -1634,6 +2026,22 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
                 *static_cast<Box const*>(box),
                 { CSSPixels::from_raw(inline_size), CSSPixels::from_raw(block_size) });
         },
+        .make_button_content_box_definite = [](void* context, void* box, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            bridge.m_formatting_context.make_button_content_box_definite(
+                *static_cast<Box const*>(box),
+                {
+                    from_ffi_available_size(available_space.inline_size),
+                    from_ffi_available_size(available_space.block_size),
+                },
+                from_ffi_constraints(constraints));
+        },
+        .automatic_block_size_for_abspos_bfc_root = [](void* context, void* box) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            return bridge.m_formatting_context.compute_automatic_block_size_for_block_formatting_context_root(
+                *static_cast<Box const*>(box))
+                .raw_value();
+        },
         .set_flex_layout_data = [](void* context, void* box, RustFFI::FfiFlexLayoutData const* ffi_data) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             VERIFY(ffi_data);
@@ -1841,6 +2249,22 @@ RustFFI::FfiStyleFacts build_style_facts(NodeWithStyle const& node)
     auto text_indent = values.text_indent();
     auto tab_size = values.tab_size();
     auto grid_auto_flow = values.grid_auto_flow();
+    auto build_inset = [&](CSS::PropertyID property_id, CSS::LengthPercentageOrAuto const& inset) {
+        auto anchor_inset = values.anchor_inset(property_id);
+        if (!anchor_inset)
+            return build_style_size_value(inset);
+
+        VERIFY(anchor_inset->is_anchor());
+        auto calculation_context = CSS::CalculationContext::for_property(CSS::PropertyNameAndID::from_id(property_id));
+        auto root = CSS::CalcNodeRef::non_math_function(
+            anchor_inset->as_anchor(),
+            CSS::NumericType { CSS::NumericType::BaseType::Length, 1 });
+        auto calculated = CSS::CalculatedStyleValue::create(
+            move(root),
+            CSS::NumericType { CSS::NumericType::BaseType::Length, 1 },
+            calculation_context);
+        return retain_calculated(*calculated, false);
+    };
 
     return {
         .width = build_style_size_value(values.width()),
@@ -1857,10 +2281,18 @@ RustFFI::FfiStyleFacts build_style_facts(NodeWithStyle const& node)
         .padding_right = build_style_size_value(values.padding().right()),
         .padding_bottom = build_style_size_value(values.padding().bottom()),
         .padding_left = build_style_size_value(values.padding().left()),
-        .inset_top = build_style_size_value(values.inset().top()),
-        .inset_right = build_style_size_value(values.inset().right()),
-        .inset_bottom = build_style_size_value(values.inset().bottom()),
-        .inset_left = build_style_size_value(values.inset().left()),
+        .inset_top = build_inset(CSS::PropertyID::Top, values.inset().top()),
+        .inset_right = build_inset(CSS::PropertyID::Right, values.inset().right()),
+        .inset_bottom = build_inset(CSS::PropertyID::Bottom, values.inset().bottom()),
+        .inset_left = build_inset(CSS::PropertyID::Left, values.inset().left()),
+        .has_position_anchor = values.position_anchor().has_value(),
+        .position_anchor_name = [&] {
+            if (!values.position_anchor().has_value())
+                return static_cast<size_t>(0);
+            ++s_outstanding_anchor_name_handles;
+            RustFFI::rust_layout_ffi_note_anchor_name_retain();
+            return values.position_anchor()->to_raw_leaked();
+        }(),
         .border_top_width = values.border_top().width.raw_value(),
         .border_right_width = values.border_right().width.raw_value(),
         .border_bottom_width = values.border_bottom().width.raw_value(),
@@ -1977,6 +2409,7 @@ void verify_style_calc_handles_balanced()
     VERIFY(s_outstanding_calc_handles.load() == 0);
     VERIFY(retained_calc_handles().is_empty());
     VERIFY(s_outstanding_grid_name_handles.load() == 0);
+    VERIFY(s_outstanding_anchor_name_handles.load() == 0);
     VERIFY(s_outstanding_svg_path_handles.load() == 0);
 }
 
@@ -2011,6 +2444,8 @@ void release_style_facts(RustFFI::FfiStyleFacts const& facts)
     release(facts.text_indent);
     release(facts.x);
     release(facts.y);
+    if (facts.has_position_anchor)
+        ladybird_layout_release_anchor_name_handle(facts.position_anchor_name);
 }
 
 }
@@ -2025,6 +2460,14 @@ extern "C" WEB_API void ladybird_layout_release_grid_name_handle(size_t raw)
     VERIFY(Web::Layout::s_outstanding_grid_name_handles.load() > 0);
     --Web::Layout::s_outstanding_grid_name_handles;
     Web::Layout::RustFFI::rust_layout_ffi_note_grid_name_release();
+    Utf16FlyString::unref_raw(raw);
+}
+
+extern "C" WEB_API void ladybird_layout_release_anchor_name_handle(size_t raw)
+{
+    VERIFY(Web::Layout::s_outstanding_anchor_name_handles.load() > 0);
+    --Web::Layout::s_outstanding_anchor_name_handles;
+    Web::Layout::RustFFI::rust_layout_ffi_note_anchor_name_release();
     Utf16FlyString::unref_raw(raw);
 }
 

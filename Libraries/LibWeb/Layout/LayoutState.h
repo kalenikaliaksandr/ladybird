@@ -285,7 +285,11 @@ struct LayoutState {
             return m_cpp_extension.rare->lowest_floating_descendant_bottom_margin_edge;
         }
 
-        void set_override_borders_data(Painting::Paintable::BordersDataWithElementKind const& override_borders_data) { ensure_rare_data().override_borders_data = override_borders_data; }
+        void set_override_borders_data(Painting::Paintable::BordersDataWithElementKind const& override_borders_data)
+        {
+            m_core->uses_collapsing_borders_model = true;
+            ensure_rare_data().override_borders_data = override_borders_data;
+        }
         Optional<Painting::Paintable::BordersDataWithElementKind> const& override_borders_data() const
         {
             static Optional<Painting::Paintable::BordersDataWithElementKind> const empty;

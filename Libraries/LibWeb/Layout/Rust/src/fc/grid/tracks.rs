@@ -239,6 +239,7 @@ fn fixed_size_value(value: CssPixels) -> FfiSizeValue {
         fraction: 0.0,
         calc: std::ptr::null(),
         contains_percentage: false,
+        contains_anchor_function: false,
     }
 }
 

@@ -29,6 +29,23 @@ define_ffi_ops! {
     AbsposRegister => "absposRegisterEntries",
     AbsposTake => "absposTakeEntries",
     AbsposLayoutIndexCallback => "absposLayoutIndexCallbacks",
+    AbsposEngine => "absposEngineEntries",
+    AbsposReplay => "absposReplayEntries",
+    AbsposLineFragmentCallback => "absposLineFragmentCallbacks",
+    AbsposInlineCbAttempt => "absposInlineCbAttempts",
+    AbsposInlineCbNormalFragment => "absposInlineCbNormalFragments",
+    AbsposInlineCbAtomicFragment => "absposInlineCbAtomicFragments",
+    AbsposInlineCbSuccess => "absposInlineCbSuccesses",
+    AbsposSavedInputsGetCallback => "absposSavedInputsGetCallbacks",
+    AbsposSavedInputsSetCallback => "absposSavedInputsSetCallbacks",
+    AbsposAnchorResolve => "absposAnchorResolveEntries",
+    AbsposAnchorLookupCallback => "absposAnchorLookupCallbacks",
+    AbsposAnchorFactsCallback => "absposAnchorFactsCallbacks",
+    AbsposAnchorFallbackCallback => "absposAnchorFallbackCallbacks",
+    AbsposSetResolvedInsetsCallback => "absposSetResolvedInsetsCallbacks",
+    AbsposSetScrollShiftCallback => "absposSetScrollShiftCallbacks",
+    AbsposAutomaticBlockSizeCallback => "absposAutomaticBlockSizeCallbacks",
+    AbsposButtonDefiniteCallback => "absposButtonDefiniteCallbacks",
     StyleFactsBuild => "styleFactsBuildEntries",
     CalcHandleRetain => "calcHandleRetainEntries",
     CalcHandleRelease => "calcHandleReleaseEntries",
@@ -38,6 +55,8 @@ define_ffi_ops! {
     GridFactsBuild => "gridFactsBuildEntries",
     GridNameRetain => "gridNameRetainEntries",
     GridNameRelease => "gridNameReleaseEntries",
+    AnchorNameRetain => "anchorNameRetainEntries",
+    AnchorNameRelease => "anchorNameReleaseEntries",
     SvgFactsBuild => "svgFactsBuildEntries",
     SvgPathRetain => "svgPathRetainEntries",
     SvgPathRelease => "svgPathReleaseEntries",
@@ -124,6 +143,16 @@ pub extern "C" fn rust_layout_ffi_note_grid_name_retain() {
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_layout_ffi_note_grid_name_release() {
     abort_on_panic(|| bump(FfiOp::GridNameRelease));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_anchor_name_retain() {
+    abort_on_panic(|| bump(FfiOp::AnchorNameRetain));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_anchor_name_release() {
+    abort_on_panic(|| bump(FfiOp::AnchorNameRelease));
 }
 
 #[unsafe(no_mangle)]
