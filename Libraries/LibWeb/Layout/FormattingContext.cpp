@@ -27,6 +27,7 @@
 #include <LibWeb/Layout/ListItemMarkerBox.h>
 #include <LibWeb/Layout/ReplacedBox.h>
 #include <LibWeb/Layout/ReplacedWithChildrenFormattingContext.h>
+#include <LibWeb/Layout/RustFormattingContext.h>
 #include <LibWeb/Layout/SVGFormattingContext.h>
 #include <LibWeb/Layout/SVGSVGBox.h>
 #include <LibWeb/Layout/TableFormattingContext.h>
@@ -516,6 +517,9 @@ OwnPtr<FormattingContext> FormattingContext::create_independent_formatting_conte
     auto type = formatting_context_type_created_by_box(child_box);
     if (!type.has_value())
         return nullptr;
+
+    if (RustFFI::rust_layout_owns_fc_type(to_underlying(*type)))
+        return make<RustFormattingContext>(*type, layout_mode, state, child_box, parent, nullptr);
 
     switch (type.value()) {
     case Type::Block:

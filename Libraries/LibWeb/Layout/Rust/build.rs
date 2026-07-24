@@ -70,6 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // representation in the generated ABI rather than generating a second
     // C++ pixel type in the RustFFI namespace.
     layout_config.export.exclude.push("CssPixels".to_string());
+    layout_config.export.exclude.push("rust_calc_resolve".to_string());
     layout_config
         .export
         .rename
@@ -81,6 +82,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         "LogicalRect".to_string(),
         "FfiContainingBlockConstraints".to_string(),
         "FfiLayoutInput".to_string(),
+        "FfiLayoutBoxFacts".to_string(),
+        "FfiLayoutNavCallbacks".to_string(),
+        "FfiDisplay".to_string(),
+        "FfiFormattingContextType".to_string(),
+        "FfiSizeKind".to_string(),
+        "FfiSizeValue".to_string(),
+        "FfiStyleFacts".to_string(),
     ];
     generate_ffi_header(
         layout_config,
@@ -89,6 +97,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             manifest_dir.join("src/layout_state.rs"),
             manifest_dir.join("src/geometry.rs"),
             manifest_dir.join("src/ffi_stats.rs"),
+            manifest_dir.join("src/style_facts.rs"),
+            manifest_dir.join("src/box_facts.rs"),
+            manifest_dir.join("../../CSS/Rust/src/display.rs"),
+            manifest_dir.join("src/fc/mod.rs"),
         ],
         &out_dir,
         &ffi_out_dir,

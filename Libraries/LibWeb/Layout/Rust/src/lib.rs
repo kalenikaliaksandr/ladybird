@@ -8,10 +8,22 @@
 #[path = "../../../../RustAllocator.rs"]
 mod rust_allocator;
 
+#[allow(dead_code)]
+mod box_facts;
+#[allow(dead_code)]
+mod css_enums;
 mod css_pixels;
+#[path = "../../../CSS/Rust/src/display.rs"]
+#[allow(dead_code)]
+mod display;
+
+#[allow(dead_code)]
+mod fc;
 mod ffi_stats;
 mod geometry;
 mod layout_state;
+#[allow(dead_code)]
+mod style_facts;
 mod tree_builder;
 mod used_values;
 
