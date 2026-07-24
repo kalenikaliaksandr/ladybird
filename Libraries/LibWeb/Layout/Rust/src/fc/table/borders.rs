@@ -39,18 +39,28 @@ fn line_style_score(line_style: u8) -> u8 {
 }
 
 pub(crate) fn border_is_less_specific(incumbent: FfiBorderData, candidate: FfiBorderData) -> bool {
+    // Implements criteria for steps 1, 2 and 3 of border conflict resolution algorithm, as described in
+    // https://www.w3.org/TR/CSS22/tables.html#border-conflict-resolution.
+
+    // 1. Borders with the 'border-style' of 'hidden' take precedence over all other conflicting borders. Any border with this
+    //    value suppresses all borders at this location.
     if incumbent.line_style == LINE_STYLE_HIDDEN {
         return false;
     }
     if candidate.line_style == LINE_STYLE_HIDDEN {
         return true;
     }
+    // 2. Borders with a style of 'none' have the lowest priority. Only if the border properties of all the elements meeting
+    //    at this edge are 'none' will the border be omitted (but note that 'none' is the default value for the border style.)
     if incumbent.line_style == LINE_STYLE_NONE {
         return true;
     }
     if candidate.line_style == LINE_STYLE_NONE {
         return false;
     }
+    // 3. If none of the styles are 'hidden' and at least one of them is not 'none', then narrow borders are discarded in favor
+    //    of wider ones. If several have the same 'border-width' then styles are preferred in this order: 'double', 'solid',
+    //    'dashed', 'dotted', 'ridge', 'outset', 'groove', and the lowest: 'inset'.
     if incumbent.width != candidate.width {
         return incumbent.width < candidate.width;
     }
@@ -69,6 +79,25 @@ pub(crate) struct ElementBorders {
     pub(crate) left: FfiBorderData,
 }
 
+// Each segment stores the border that currently wins at one slot boundary of the table grid,
+// together with the kind of element it came from. A value-initialized segment acts as a sentinel
+// meaning "no border applied yet": since candidates with a line style of 'none' never replace an
+// incumbent, a segment whose winner still has style 'none' received no visible contribution at all.
+
+// Implements border conflict resolution, as described in
+// https://www.w3.org/TR/CSS22/tables.html#border-conflict-resolution, with a "push" model over a
+// grid of border line segments: each boundary between two grid slots is a single shared segment, so
+// borders of adjacent elements collapse by construction instead of requiring neighbor lookups.
+//
+// Horizontal border lines run between (and around) rows: there are row_count + 1 of them, each with
+// one segment per column. Vertical border lines run between (and around) columns: column_count + 1
+// of them, each with one segment per row.
+//
+// Table parts must be applied in order of decreasing precedence — cells, rows, row groups, columns,
+// column groups, and lastly the table — with parts of equal precedence applied leftmost/topmost
+// first. A candidate border only replaces the current winner of a segment when it is strictly more
+// specific (steps 1-3 of the border conflict resolution algorithm), so ties resolve towards the
+// earlier-applied part, which implements step 4 without tracking element kinds or coordinates.
 pub(crate) struct CollapsedBorderGrid {
     horizontal_lines: Vec<Vec<FfiBorderDataWithElementKind>>,
     vertical_lines: Vec<Vec<FfiBorderDataWithElementKind>>,
@@ -128,6 +157,8 @@ impl CollapsedBorderGrid {
         column_start: usize,
         column_end: usize,
     ) {
+        // Segments strictly inside a spanning cell are not borders of any element; mark them as hidden
+        // so that borders of rows and columns crossing the span cannot win there.
         let hidden = FfiBorderDataWithElementKind {
             border_data: FfiBorderData {
                 color: 0,
@@ -157,6 +188,8 @@ impl CollapsedBorderGrid {
         own: ElementBorders,
     ) -> FfiBordersData {
         let harvest = |winner: FfiBorderDataWithElementKind, own_border: FfiBorderData| {
+            // A winner whose style is 'none' means every border meeting at this edge is 'none'; fall
+            // back to the cell's own (invisible) border so the stored winner matches the cell.
             if winner.border_data.line_style == LINE_STYLE_NONE {
                 FfiBorderDataWithElementKind {
                     border_data: own_border,

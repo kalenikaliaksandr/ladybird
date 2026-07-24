@@ -14,7 +14,9 @@ pub(crate) struct Column {
     pub(crate) used_inline_size: CssPixels,
     pub(crate) has_intrinsic_percentage: bool,
     pub(crate) intrinsic_percentage: f64,
+    // Store whether the column is constrained: https://www.w3.org/TR/css-tables-3/#constrainedness
     pub(crate) is_constrained: bool,
+    // Store whether the column has originating cells, defined in https://www.w3.org/TR/css-tables-3/#terminology.
     pub(crate) has_originating_cells: bool,
 }
 
@@ -114,11 +116,15 @@ fn distribute_by_percentage(columns: &mut [Column], excess: CssPixels, filter: i
 }
 
 fn distribute_excess_fixed(columns: &mut [Column], excess: CssPixels) {
+    // Implements the fixed mode for https://www.w3.org/TR/css-tables-3/#distributing-width-to-columns.
+
+    // If any columns have no specified inline size, distribute the excess inline size equally to them.
     if distribute_equally(columns, excess, |column| {
         !column.is_constrained && !column.has_intrinsic_percentage
     }) {
         return;
     }
+    // Otherwise, distribute proportionally among columns with non-zero length sizes from the base assignment.
     if distribute_proportionally(
         columns,
         excess,
@@ -127,15 +133,18 @@ fn distribute_excess_fixed(columns: &mut [Column], excess: CssPixels) {
     ) {
         return;
     }
+    // Otherwise, distribute proportionally among columns with non-zero percentage sizes from the base assignment.
     if distribute_by_percentage(columns, excess, |column| column.intrinsic_percentage > 0.0) {
         return;
     }
+    // Otherwise, distribute the excess inline size equally to the zero-sized columns.
     distribute_equally(columns, excess, |column| {
         column.used_inline_size == CssPixels::default()
     });
 }
 
 fn distribute_excess(columns: &mut [Column], available: CssPixels, fixed: bool) {
+    // Implements https://www.w3.org/TR/css-tables-3/#distributing-width-to-columns
     let used = total_used(columns);
     if used >= available {
         return;
@@ -149,6 +158,9 @@ fn distribute_excess(columns: &mut [Column], available: CssPixels, fixed: bool) 
         return;
     }
 
+    // 1. If there are non-constrained columns that have originating cells with intrinsic percentage width of 0% and with nonzero
+    //    max-content width (aka the columns allowed to grow by this rule), the distributed widths of the columns allowed to grow
+    //    by this rule are increased in proportion to max-content width so the total increase adds to the excess width.
     if distribute_proportionally(
         columns,
         excess,
@@ -165,6 +177,9 @@ fn distribute_excess(columns: &mut [Column], available: CssPixels, fixed: bool) 
     if excess == CssPixels::default() {
         return;
     }
+    // 2. Otherwise, if there are non-constrained columns that have originating cells with intrinsic percentage width of 0% (aka the columns
+    //    allowed to grow by this rule, which thanks to the previous rule must have zero max-content width), the distributed widths of the
+    //    columns allowed to grow by this rule are increased by equal amounts so the total increase adds to the excess width.
     if distribute_equally(columns, excess, |column| {
         !column.is_constrained && column.has_originating_cells && column.intrinsic_percentage == 0.0
     }) {
@@ -173,6 +188,9 @@ fn distribute_excess(columns: &mut [Column], available: CssPixels, fixed: bool) 
     if excess == CssPixels::default() {
         return;
     }
+    // 3. Otherwise, if there are constrained columns with intrinsic percentage width of 0% and with nonzero max-content width
+    //    (aka the columns allowed to grow by this rule, which, due to other rules, must have originating cells), the distributed widths of the
+    //    columns allowed to grow by this rule are increased in proportion to max-content width so the total increase adds to the excess width.
     if distribute_proportionally(
         columns,
         excess,
@@ -184,30 +202,46 @@ fn distribute_excess(columns: &mut [Column], available: CssPixels, fixed: bool) 
     if excess == CssPixels::default() {
         return;
     }
+    // 4. Otherwise, if there are columns with intrinsic percentage width greater than 0% (aka the columns allowed to grow by this rule,
+    //    which, due to other rules, must have originating cells), the distributed widths of the columns allowed to grow by this rule are
+    //    increased in proportion to intrinsic percentage width so the total increase adds to the excess width.
     if distribute_by_percentage(columns, excess, |column| column.intrinsic_percentage > 0.0) {
         excess = available - total_used(columns);
     }
     if excess == CssPixels::default() {
         return;
     }
+    // 5. Otherwise, if there is any such column, the distributed widths of all columns that have originating cells are increased by equal amounts
+    //    so the total increase adds to the excess width.
     if distribute_equally(columns, excess, |column| column.has_originating_cells) {
         excess = available - total_used(columns);
     }
     if excess == CssPixels::default() {
         return;
     }
+    // 6. Otherwise, the distributed widths of all columns are increased by equal amounts so the total increase adds to the excess width.
     distribute_equally(columns, excess, |_| true);
 }
 
 pub(crate) fn distribute_inline_size(columns: &mut [Column], available: CssPixels, fixed: bool) {
+    // Implements https://www.w3.org/TR/css-tables-3/#width-distribution-algorithm
+
     let mut candidates = vec![CssPixels::default(); columns.len()];
+    // 1. The min-content sizing guess assigns every column its min-content inline size.
     for (index, column) in columns.iter_mut().enumerate() {
+        // In fixed mode, the min-content width of percent-columns and auto-columns is considered to be zero:
+        // https://www.w3.org/TR/css-tables-3/#width-distribution-in-fixed-mode
         if fixed && !column.is_constrained {
             continue;
         }
         column.used_inline_size = column.min_size;
         candidates[index] = column.min_size;
     }
+    // 2. The min-content-percentage sizing-guess is the set of column width assignments where:
+    //    - each percent-column is assigned the larger of:
+    //      - its intrinsic percentage width times the assignable width and
+    //      - its min-content width.
+    //    - all other columns are assigned their min-content width.
     for (candidate, column) in candidates.iter_mut().zip(columns.iter()) {
         if column.has_intrinsic_percentage {
             *candidate = column.min_size.max(CssPixels::nearest_value_for(
@@ -215,12 +249,20 @@ pub(crate) fn distribute_inline_size(columns: &mut [Column], available: CssPixel
             ));
         }
     }
+    // If the assignable inline size is no larger than the max-content sizing guess, use the linear combination
+    // of the consecutive sizing guesses whose sums bound the available inline size.
     if available < total_candidates(&candidates) {
         assign_linear_combination(columns, &candidates, available);
         return;
     }
     commit_candidates(columns, &candidates);
 
+    // 3. The min-content-specified sizing-guess is the set of column width assignments where:
+    //    - each percent-column is assigned the larger of:
+    //      - its intrinsic percentage width times the assignable width and
+    //      - its min-content width
+    //    - any other column that is constrained is assigned its max-content width
+    //    - all other columns are assigned their min-content width.
     for (candidate, column) in candidates.iter_mut().zip(columns.iter()) {
         if column.is_constrained {
             *candidate = column.max_size;
@@ -232,6 +274,11 @@ pub(crate) fn distribute_inline_size(columns: &mut [Column], available: CssPixel
     }
     commit_candidates(columns, &candidates);
 
+    // 4. The max-content sizing-guess is the set of column width assignments where:
+    //    - each percent-column is assigned the larger of:
+    //      - its intrinsic percentage width times the assignable width and
+    //      - its min-content width
+    //    - all other columns are assigned their max-content width.
     for (candidate, column) in candidates.iter_mut().zip(columns.iter()) {
         if !column.has_intrinsic_percentage {
             *candidate = column.max_size;
@@ -242,6 +289,7 @@ pub(crate) fn distribute_inline_size(columns: &mut [Column], available: CssPixel
         return;
     }
     commit_candidates(columns, &candidates);
+    // Otherwise, start from the max-content sizing guess and distribute the excess inline size to the columns.
     distribute_excess(columns, available, fixed);
 }
 

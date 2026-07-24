@@ -190,6 +190,7 @@ impl Track {
     }
 
     pub(crate) fn from_definition(definition: TrackDefinition) -> Self {
+        // NOTE: repeat() is expected to be expanded beforehand.
         let min_sizing = TrackSizingFunction::from_ffi(definition.min);
         let max_sizing = TrackSizingFunction::from_ffi(definition.max);
         Self {
@@ -244,6 +245,9 @@ fn fixed_size_value(value: CssPixels) -> FfiSizeValue {
 }
 
 pub(crate) fn initialize_track_sizes(tracks: &mut [Track], available: AvailableSize) -> bool {
+    // https://www.w3.org/TR/css-grid-2/#algo-init
+    // 12.4. Initialize Track Sizes
+    // Initialize each track’s base size and growth limit.
     let mut has_flexible_tracks = false;
     for track in tracks {
         track.base_size_frozen = false;
@@ -258,6 +262,8 @@ pub(crate) fn initialize_track_sizes(tracks: &mut [Track], available: AvailableS
         if !available.is_definite()
             && matches!(track.max_sizing, TrackSizingFunction::FitContent(value) if value.contains_percentage)
         {
+            // Normalize fit-content tracks with unresolvable percentage arguments to max-content,
+            // since the percentage cannot be resolved against an indefinite available size.
             track.max_sizing = TrackSizingFunction::MaxContent;
         }
 
@@ -283,6 +289,8 @@ pub(crate) fn initialize_track_sizes(tracks: &mut [Track], available: AvailableS
         track.max_is_intrinsic = track.max_sizing.is_intrinsic(available);
         track.max_is_max_content = track.max_sizing.is_max_content();
         if track.growth_limit.is_some_and(|limit| limit < track.base_size) {
+            // In all cases, if the growth limit is less than the base size, increase the growth limit to match
+            // the base size.
             track.growth_limit = Some(track.base_size);
         }
     }
@@ -292,8 +300,10 @@ pub(crate) fn initialize_track_sizes(tracks: &mut [Track], available: AvailableS
 /// The "find the size of an fr" sub-algorithm, preserving the C++ operation
 /// order and its conversion of every flex factor through `CSSPixels`.
 pub(crate) fn find_fr_size(tracks: &[Track], space_to_fill: CssPixels) -> PixelFraction {
+    // https://www.w3.org/TR/css-grid-2/#algo-find-fr-size
     let mut inflexible = vec![false; tracks.len()];
     loop {
+        // 1. Let leftover space be the space to fill minus the base sizes of the non-flexible grid tracks.
         let mut leftover_space = space_to_fill;
         for (index, track) in tracks.iter().enumerate() {
             if inflexible[index] || track.flex_factor.is_none() {
@@ -301,6 +311,8 @@ pub(crate) fn find_fr_size(tracks: &[Track], space_to_fill: CssPixels) -> PixelF
             }
         }
 
+        // 2. Let flex factor sum be the sum of the flex factors of the flexible tracks.
+        //    If this value is less than 1, set it to 1 instead.
         let mut flex_factor_sum = CssPixels::default();
         for (index, track) in tracks.iter().enumerate() {
             if inflexible[index] {
@@ -313,8 +325,11 @@ pub(crate) fn find_fr_size(tracks: &[Track], space_to_fill: CssPixels) -> PixelF
         if flex_factor_sum < CssPixels::from_integer(1) {
             flex_factor_sum = CssPixels::from_integer(1);
         }
+        // 3. Let the hypothetical fr size be the leftover space divided by the flex factor sum.
         let hypothetical_fr_size = PixelFraction::new(leftover_space, flex_factor_sum);
 
+        // 4. If the product of the hypothetical fr size and a flexible track’s flex factor is less than the track’s
+        //    base size, restart this algorithm treating all such tracks as inflexible.
         let mut restart = false;
         for (index, track) in tracks.iter().enumerate() {
             if inflexible[index] {
@@ -330,6 +345,7 @@ pub(crate) fn find_fr_size(tracks: &[Track], space_to_fill: CssPixels) -> PixelF
             }
         }
         if !restart {
+            // 5. Return the hypothetical fr size.
             return hypothetical_fr_size;
         }
     }
@@ -337,6 +353,8 @@ pub(crate) fn find_fr_size(tracks: &[Track], space_to_fill: CssPixels) -> PixelF
 
 pub(crate) fn expand_flexible_tracks(tracks: &mut [Track], space_to_fill: CssPixels) {
     let flex_fraction = find_fr_size(tracks, space_to_fill);
+    // For each flexible track, if the product of the used flex fraction and the track’s flex factor is greater than
+    // the track’s base size, set its base size to that product.
     for track in tracks {
         let Some(factor) = track.flex_factor else {
             continue;

@@ -116,6 +116,8 @@ pub(crate) fn content_start_offset(
     tracks_and_gaps_size: CssPixels,
 ) -> CssPixels {
     let free_space = container_size - tracks_and_gaps_size;
+    // CSS Align's automatic overflow alignment is unsafe for grid content
+    // alignment, so preserve negative free space here.
     match alignment {
         Alignment::Center => free_space / 2,
         Alignment::SpaceAround | Alignment::SpaceEvenly => CssPixels::default().max(free_space) / 2,
@@ -170,6 +172,11 @@ pub(crate) fn align_item(
         margin_end: used_margin_end,
         size: original_size,
     };
+    // https://drafts.csswg.org/css-grid/#auto-margins
+    // Auto margins in either axis absorb positive free space prior to alignment via the box alignment
+    // properties, thereby disabling the effects of any self-alignment properties in that axis.
+    // Overflowing grid items resolve their auto margins to zero and overflow as specified by their box
+    // alignment properties.
     let margin_space = containing_block_size - result.size - margin_box_start - margin_box_end;
     let absorbed = CssPixels::default().max(margin_space);
     if margin_start_is_auto && margin_end_is_auto {
@@ -183,6 +190,7 @@ pub(crate) fn align_item(
         result.size += margin_space;
     }
 
+    // If auto margins absorbed positive free space, alignment properties have no effect in this dimension.
     if (margin_start_is_auto || margin_end_is_auto) && margin_space > CssPixels::default() {
         return result;
     }

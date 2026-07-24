@@ -110,6 +110,10 @@ fn auto_breadth() -> FfiGridTrackBreadth {
 fn definition_for(entry: &FfiGridTrackEntry, auto_fit: bool, auto_repeat: bool) -> TrackDefinition {
     match entry.kind {
         kind if kind == FfiGridTrackEntryKind::TrackSize as u8 => {
+            // https://drafts.csswg.org/css-grid-2/#algo-terms
+            // min track sizing function:
+            // If the track was sized with a minmax() function, this is the first argument to that function.
+            // If the track was sized with a <flex> value or fit-content() function, auto. Otherwise, the track’s sizing function.
             let min = if matches!(
                 entry.size.kind,
                 kind if kind == FfiGridTrackBreadthKind::Flex as u8
@@ -191,6 +195,11 @@ pub(crate) fn expand_standalone(
     if list.is_subgrid {
         // This matches the C++ fallback for a subgrid declaration without a
         // usable parent grid.
+        // https://drafts.csswg.org/css-grid-2/#subgrid-listing
+        // If there is no parent grid, or if the grid container is otherwise
+        // forced to establish an independent formatting context, the used value
+        // is the initial value, grid-template-rows/none, and the grid container
+        // is not a subgrid.
         return ExpandedTrackList {
             lines: vec![Vec::new()],
             tracks: Vec::new(),
@@ -258,6 +267,11 @@ fn expand_subgrid_names(
                 let repeat_count = match entry.repeat_type {
                     REPEAT_FIXED => entry.repeat_count,
                     REPEAT_AUTO_FILL => {
+                        // https://drafts.csswg.org/css-grid-2/#auto-repeat
+                        // On a subgridded axis, the auto-fill keyword is only valid once per
+                        // <line-name-list>, and repeats enough times for the name list to match the
+                        // subgrid's specified grid span, falling back to 0 if the span is already
+                        // fulfilled.
                         let per_repeat = count_subgrid_line_name_lists(source, entry.repeat_list);
                         let remaining = entries[position + 1..]
                             .iter()
@@ -300,7 +314,15 @@ pub(crate) fn expand_subgrid(
     track_count: usize,
     inherited_lines: &[Vec<LineName>],
 ) -> ExpandedTrackList {
+    // https://drafts.csswg.org/css-grid-2/#subgrid-span
+    // The number of explicit tracks in the subgrid in a subgridded dimension always corresponds
+    // to the number of grid tracks that it spans in its parent grid.
     let mut lines = vec![Vec::new(); track_count.saturating_add(1)];
+    // https://drafts.csswg.org/css-grid-2/#subgrid-line-name-inheritance
+    // Since subgrids can be placed before their contents are placed, the subgridded lines
+    // automatically receive the explicitly-assigned line names specified on the corresponding
+    // lines of the parent grid. These names are in addition to any line names specified locally
+    // on the subgrid.
     for (line, inherited) in lines.iter_mut().zip(inherited_lines) {
         line.extend(inherited.iter().filter(|name| !name.implicit).map(|name| LineName {
             name_index: name.name_index,
@@ -325,6 +347,12 @@ pub(crate) fn add_template_area_lines(
     areas: &[FfiGridArea],
     names: &[usize],
 ) {
+    // https://www.w3.org/TR/css-grid-2/#implicitly-assigned-line-name
+    // 7.3.2. Implicitly-Assigned Line Names
+    // The grid-template-areas property generates implicitly-assigned line names from the named grid areas in the
+    // template. For each named grid area foo, four implicitly-assigned line names are created: two named foo-start,
+    // naming the row-start and column-start lines of the named grid area, and two named foo-end, naming the row-end
+    // and column-end lines of the named grid area.
     let max_column = areas.iter().map(|area| area.column_end).max().unwrap_or_default();
     let max_row = areas.iter().map(|area| area.row_end).max().unwrap_or_default();
     columns.resize_with(columns.len().max(max_column.saturating_add(1)), Vec::new);
@@ -359,6 +387,9 @@ pub(crate) fn add_template_area_lines(
 }
 
 pub(crate) fn nth_named_line(lines: &[Vec<LineName>], name_raw: usize, nth_line: i32) -> Option<i32> {
+    // FIXME: If not enough lines with the name exist, all implicit grid lines on the side
+    // of the explicit grid corresponding to the search direction are assumed to have that name for the purpose of counting this span.
+    // Source: https://drafts.csswg.org/css-grid/#line-placement
     let mut remaining = if nth_line < 0 {
         lines.len().wrapping_add_signed(nth_line as isize)
     } else {
@@ -370,6 +401,8 @@ pub(crate) fn nth_named_line(lines: &[Vec<LineName>], name_raw: usize, nth_line:
                 continue;
             }
             if remaining == 0 {
+                // https://drafts.csswg.org/css-grid/#line-placement
+                // Contributes the nth grid line to the grid item’s placement.
                 return Some(line_index as i32);
             }
             remaining = remaining.wrapping_sub(1);

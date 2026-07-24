@@ -8,6 +8,10 @@ use super::facts::{FfiGridPlacement, FfiGridPlacementKind};
 use super::template::{LineName, nth_named_line};
 use std::collections::HashSet;
 
+// https://drafts.csswg.org/css-grid/#overlarge-grids
+// Since memory is limited, UAs may clamp the possible size of the implicit grid to be within a UA-defined limit
+// (which should accommodate lines in the range [-10000, 10000]), dropping all lines outside that limit. If a grid item
+// is placed outside this limit, its grid area must be clamped to within this limited grid.
 const MAX_GRID_LINE_NUMBER: i32 = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,12 +77,16 @@ pub(crate) fn resolve_placement_position(
         result.end = occupation_track_count as i32 + result.end + 2;
     }
 
+    // FIXME: If a name is given as a <custom-ident>, only lines with that name are counted. If not enough lines with
+    //        that name exist, all implicit grid lines on the side of the explicit grid corresponding to the search
+    //        direction are assumed to have that name for the purpose of counting this span.
     if is_span(placement_end) {
         result.span = clamped_span(placement_end);
     }
     if is_span(placement_start) {
         result.span = clamped_span(placement_start);
         result.start = result.end - result.span as i32;
+        // FIXME: Remove me once have implemented spans overflowing into negative indexes, e.g., grid-row: span 2 / 1
         // Preserve the C++ workaround for spans that would overflow into
         // negative implicit tracks.
         result.start = result.start.max(0);
@@ -129,6 +137,8 @@ pub(crate) fn resolve_placement_position(
         }
     }
 
+    // If the placement contains two spans, remove the one contributed by the end grid-placement
+    // property.
     if is_span(placement_start) && is_span(placement_end) {
         result.span = clamped_span(placement_start);
     }
@@ -149,6 +159,15 @@ pub(crate) fn resolve_placement_span(
     if !(is_positioned(placement_start) && is_positioned(placement_end))
         && let Some(span) = automatic_subgrid_span
     {
+        // https://drafts.csswg.org/css-grid-2/#grid-placement
+        // Otherwise, its grid span is automatic: if it is subgridded in
+        // that axis, its grid span is determined from its line-name-list;
+        // otherwise its grid span is 1.
+        //
+        // https://drafts.csswg.org/css-grid-2/#subgrid-span
+        // If it has an automatic grid span, then its used grid span is
+        // taken from the number of explicit tracks specified for that axis
+        // by its grid-template-* properties, floored at one.
         return span.max(1);
     }
     1
@@ -255,6 +274,7 @@ impl OccupationGrid {
     ) {
         match flow {
             AutoFlowAxis::Row => {
+                // Row-flow: columns are the inner (minor) axis, rows are the outer (major) axis.
                 while *row <= self.max_row_index {
                     while *column <= self.max_column_index {
                         let minor_axis_fits = *column + column_span as i32 - 1 <= self.max_column_index;
@@ -268,6 +288,7 @@ impl OccupationGrid {
                 }
             }
             AutoFlowAxis::Column => {
+                // Column-flow: rows are the inner (minor) axis, columns are the outer (major) axis.
                 while *column <= self.max_column_index {
                     while *row <= self.max_row_index {
                         let minor_axis_fits = *row + row_span as i32 - 1 <= self.max_row_index;
@@ -309,6 +330,15 @@ pub(crate) fn place_items_with_grid(
     flow: AutoFlowAxis,
     dense: bool,
 ) -> PlacementResult {
+    // https://drafts.csswg.org/css-grid/#overview-placement
+    // 2.2. Placing Items
+    // The contents of the grid container are organized into individual grid items (analogous to
+    // flex items), which are then assigned to predefined areas in the grid. They can be explicitly
+    // placed using coordinates through the grid-placement properties or implicitly placed into
+    // empty areas using auto-placement.
+    //
+    // https://drafts.csswg.org/css-grid/#auto-placement-algo
+    // 8.5. Grid Item Placement Algorithm
     let mut ordered_indices = (0..items.len()).collect::<Vec<_>>();
     ordered_indices.sort_by_key(|index| (items[*index].order, *index));
 
@@ -316,7 +346,10 @@ pub(crate) fn place_items_with_grid(
     let mut grid = OccupationGrid::new(explicit_column_count, explicit_row_count);
     let mut output = Vec::with_capacity(items.len());
 
+    // FIXME: 0. Generate anonymous grid items
+
     // 1. Position items that are definite in both axes.
+    // 1. Position anything that's not auto-positioned.
     for &index in &ordered_indices {
         let item = items[index];
         if let (Some(row), Some(column)) = (item.row.start, item.column.start) {
@@ -326,6 +359,7 @@ pub(crate) fn place_items_with_grid(
     }
 
     // 2. Position items locked to a row.
+    // 2. Process the items locked to a given row.
     for &index in &ordered_indices {
         if !remaining[index] {
             continue;
@@ -355,6 +389,22 @@ pub(crate) fn place_items_with_grid(
     }
 
     // 3. Make the implicit grid wide enough for every auto-column span.
+    // 3. Determine the columns in the implicit grid.
+    // NOTE: "implicit grid" here is the same as the m_occupation_grid
+
+    // 3.1. Start with the columns from the explicit grid.
+    // NOTE: Done in step 1.
+
+    // 3.2. Among all the items with a definite column position (explicitly positioned items, items
+    // positioned in the previous step, and items not yet positioned but with a definite column) add
+    // columns to the beginning and end of the implicit grid as necessary to accommodate those items.
+    // NOTE: "Explicitly positioned items" and "items positioned in the previous step" done in step 1
+    // and 2, respectively. Adding columns for "items not yet positioned but with a definite column"
+    // will be done in step 4.
+
+    // 3.3. If the largest column span among all the items without a definite column position is larger
+    // than the width of the implicit grid, add columns to the end of the implicit grid to accommodate
+    // that column span.
     for &index in &ordered_indices {
         if !remaining[index] {
             continue;
@@ -366,6 +416,9 @@ pub(crate) fn place_items_with_grid(
     }
 
     // 4. Position the remaining items in order-modified document order.
+    // 4. Position the remaining grid items.
+    // For each grid item that hasn't been positioned by the previous steps, in order-modified document
+    // order:
     let mut cursor_column = 0;
     let mut cursor_row = 0;
     for &index in &ordered_indices {
@@ -374,21 +427,41 @@ pub(crate) fn place_items_with_grid(
         }
         let item = items[index];
         if let Some(column) = item.column.start {
+            // 4.1.1 / 4.2.1: Item with definite column position.
             if dense {
+                // Dense: reset row cursor to start of implicit grid.
                 cursor_row = grid.min_row_index;
             } else if column < cursor_column {
+                // Sparse: if column moved backward, bump row.
                 cursor_row += 1;
             }
             cursor_column = column;
+            // https://drafts.csswg.org/css-grid-2/#auto-placement-algo
+            // Increment the auto-placement cursor's row position until a value is found
+            // where the grid item does not overlap any occupied grid cells (creating
+            // new rows in the implicit grid as necessary).
+            //
+            // https://drafts.csswg.org/css-grid-2/#subgrid-implicit
+            // The subgrid does not have any implicit grid tracks in the subgridded
+            // dimension(s). Hypothetical implicit grid lines are used to resolve
+            // placement as usual when the explicit grid does not have enough lines;
+            // however each grid item's grid area is clamped to the subgrid's explicit
+            // grid.
             while grid.is_area_occupied(cursor_column, cursor_row, item.column.span, item.row.span) {
                 cursor_row += 1;
             }
             record(&mut grid, &mut output, item, cursor_row, cursor_column);
         } else {
+            // 4.1.2 / 4.2.2: Item with auto position in both axes.
             if dense {
+                // Dense: reset cursor to start of implicit grid.
                 cursor_column = grid.min_column_index;
                 cursor_row = grid.min_row_index;
             }
+            // 4.1.2.1. Increment the column position of the auto-placement cursor until either this item's grid
+            // area does not overlap any occupied grid cells, or the cursor's column position, plus the item's
+            // column span, overflow the number of columns in the implicit grid, as determined earlier in this
+            // algorithm.
             grid.find_unoccupied_grid_area(
                 flow,
                 &mut cursor_column,
@@ -396,8 +469,15 @@ pub(crate) fn place_items_with_grid(
                 item.column.span,
                 item.row.span,
             );
+            // 4.1.2.2. If a non-overlapping position was found in the previous step, set the item's row-start
+            // and column-start lines to the cursor's position. Otherwise, increment the auto-placement cursor's
+            // row position (creating new rows in the implicit grid as necessary), set its column position to the
+            // start-most column line in the implicit grid, and return to the previous step.
             let column = cursor_column;
             let row = cursor_row;
+            // NB: The cursor's major-axis position must stay at the item's start line, so that subsequent items
+            //     keep packing into the same row (or column, for column flow) before moving on. Only advance the
+            //     minor-axis position past the item.
             match flow {
                 AutoFlowAxis::Row => cursor_column += item.column.span as i32,
                 AutoFlowAxis::Column => cursor_row += item.row.span as i32,
@@ -418,6 +498,7 @@ pub(crate) fn place_items_with_grid(
         item.row -= grid.min_row_index;
         item.column -= grid.min_column_index;
     }
+    // NOTE: When final implicit grid sizes are known, we can offset their positions so leftmost grid track has 0 index.
     PlacementResult {
         items: output,
         column_count,

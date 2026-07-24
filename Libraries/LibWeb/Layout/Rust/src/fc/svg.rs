@@ -274,6 +274,7 @@ struct ViewBoxTransform {
     scale_factor_y: f64,
 }
 
+// https://svgwg.org/svg2-draft/coords.html#PreserveAspectRatioAttribute
 fn scale_and_align_viewbox_content(
     align: u8,
     meet_or_slice: u8,
@@ -284,6 +285,8 @@ fn scale_and_align_viewbox_content(
     has_definite_inline_size: bool,
 ) -> ViewBoxTransform {
     if align == PRESERVE_ASPECT_RATIO_NONE {
+        // Do not force uniform scaling. Scale the graphic content of the given element non-uniformly
+        // if necessary such that the element's bounding box exactly matches the SVG viewport rectangle.
         return ViewBoxTransform {
             scale_factor_x: viewbox_scale_x,
             scale_factor_y: viewbox_scale_y,
@@ -292,7 +295,15 @@ fn scale_and_align_viewbox_content(
     }
 
     let scale = match meet_or_slice {
+        // meet (the default) - Scale the graphic such that:
+        // - aspect ratio is preserved
+        // - the entire ‘viewBox’ is visible within the SVG viewport
+        // - the ‘viewBox’ is scaled up as much as possible, while still meeting the other criteria
         MEET_OR_SLICE_MEET => viewbox_scale_x.min(viewbox_scale_y),
+        // slice - Scale the graphic such that:
+        // aspect ratio is preserved
+        // the entire SVG viewport is covered by the ‘viewBox’
+        // the ‘viewBox’ is scaled down as much as possible, while still meeting the other criteria
         MEET_OR_SLICE_SLICE => viewbox_scale_x.max(viewbox_scale_y),
         _ => panic!("invalid preserveAspectRatio meet-or-slice value"),
     };
@@ -302,17 +313,21 @@ fn scale_and_align_viewbox_content(
         ..Default::default()
     };
 
+    // Handle X alignment:
     if has_definite_inline_size {
         match align {
+            // Align the <min-x> of the element's ‘viewBox’ with the smallest X value of the SVG viewport.
             PRESERVE_ASPECT_RATIO_X_MIN_Y_MIN
             | PRESERVE_ASPECT_RATIO_X_MIN_Y_MID
             | PRESERVE_ASPECT_RATIO_X_MIN_Y_MAX => {}
+            // Align the midpoint X value of the element's ‘viewBox’ with the midpoint X value of the SVG viewport.
             PRESERVE_ASPECT_RATIO_X_MID_Y_MIN
             | PRESERVE_ASPECT_RATIO_X_MID_Y_MID
             | PRESERVE_ASPECT_RATIO_X_MID_Y_MAX => {
                 result.offset.x =
                     (content_size.0 - CssPixels::nearest_value_for(view_box.width * result.scale_factor_x)) / 2;
             }
+            // Align the <min-x>+<width> of the element's ‘viewBox’ with the maximum X value of the SVG viewport.
             PRESERVE_ASPECT_RATIO_X_MAX_Y_MIN
             | PRESERVE_ASPECT_RATIO_X_MAX_Y_MID
             | PRESERVE_ASPECT_RATIO_X_MAX_Y_MAX => {
@@ -326,15 +341,18 @@ fn scale_and_align_viewbox_content(
     // algorithm being ported.
     if has_definite_inline_size {
         match align {
+            // Align the <min-y> of the element's ‘viewBox’ with the smallest Y value of the SVG viewport.
             PRESERVE_ASPECT_RATIO_X_MIN_Y_MIN
             | PRESERVE_ASPECT_RATIO_X_MID_Y_MIN
             | PRESERVE_ASPECT_RATIO_X_MAX_Y_MIN => {}
+            // Align the midpoint Y value of the element's ‘viewBox’ with the midpoint Y value of the SVG viewport.
             PRESERVE_ASPECT_RATIO_X_MIN_Y_MID
             | PRESERVE_ASPECT_RATIO_X_MID_Y_MID
             | PRESERVE_ASPECT_RATIO_X_MAX_Y_MID => {
                 result.offset.y =
                     (content_size.1 - CssPixels::nearest_value_for(view_box.height * result.scale_factor_y)) / 2;
             }
+            // Align the <min-y>+<height> of the element's ‘viewBox’ with the maximum Y value of the SVG viewport.
             PRESERVE_ASPECT_RATIO_X_MIN_Y_MAX
             | PRESERVE_ASPECT_RATIO_X_MID_Y_MAX
             | PRESERVE_ASPECT_RATIO_X_MAX_Y_MAX => {
@@ -444,6 +462,8 @@ impl SvgFormattingContext {
 
     fn create_used_values(&self, node: *mut c_void) -> *mut UsedValuesCore {
         // SVG descendants deliberately carry no percentage basis.
+        // SVG layout resolves percentages against the SVG viewport, not a CSS containing
+        // block, so boxes inside the SVG subtree carry no percentage basis.
         let used = unsafe {
             (self.callbacks.create_used_values)(
                 self.callbacks.context,
@@ -505,12 +525,17 @@ impl SvgFormattingContext {
     }
 
     pub(super) fn run(&mut self, input: FfiLayoutInput) {
+        // NOTE: SVG doesn't have a "formatting context" in the spec, but this is the most
+        //       obvious way to drive SVG layout in our engine at the moment.
         let facts = self.svg_facts(self.box_);
         let used_pointer = self.used_values(self.box_);
         // SAFETY: The state owns the used-values core for the full pass.
         let used = unsafe { &mut *used_pointer };
 
         if facts.is_document_element && !facts.document_is_decoded_svg && !used.has_content_offset {
+            // Overwrite the content width/height with the styled node width/height (from <svg width height ...>)
+            //
+            // NOTE: If a height had not been provided by the svg element, it was set to the height of the container
             let style = self.style_facts(self.box_);
             if style.width.is_length() {
                 used.set_content_inline_size(style.width.to_px(CssPixels::default()));
@@ -518,16 +543,22 @@ impl SvgFormattingContext {
             if style.height.is_length() {
                 used.set_content_block_size(style.height.to_px(CssPixels::default()));
             }
+            // FIXME: In SVG 2, length can also be a percentage. We'll need to support that.
         }
 
+        // NOTE: We consider all SVG root elements to have definite size in both axes.
+        //       I'm not sure if this is good or bad, but our viewport transform logic depends on it.
         used.has_definite_inline_size = true;
         used.has_definite_block_size = true;
 
         let mut active_view_box = facts.has_active_view_box.then_some(facts.active_view_box);
+        // https://svgwg.org/svg2-draft/coords.html#ViewBoxAttribute
         if let Some(view_box) = active_view_box {
             if view_box.width < 0.0 || view_box.height < 0.0 {
+                // A negative value for <width> or <height> is an error and invalidates the ‘viewBox’ attribute.
                 active_view_box = None;
             } else if view_box.width == 0.0 || view_box.height == 0.0 {
+                // A value of zero disables rendering of the element.
                 return;
             }
         }
@@ -550,6 +581,8 @@ impl SvgFormattingContext {
 
         self.current_viewbox_transform = self.parent_viewbox_transform;
         if let Some(view_box) = active_view_box {
+            // FIXME: This should allow just one of width or height to be specified.
+            // E.g. We should be able to layout <svg width="100%"> where height is unspecified/auto.
             let scale_width = if used.has_definite_inline_size() {
                 used.content_inline_size.to_double() / view_box.width
             } else {
@@ -560,6 +593,8 @@ impl SvgFormattingContext {
             } else {
                 1.0
             };
+            // The initial value for preserveAspectRatio is xMidYMid meet.
+            // This allows mask and clipPath elements to be scaled in the x and y directions independently to match the target size.
             let transform = scale_and_align_viewbox_content(
                 facts.preserve_aspect_ratio_align,
                 facts.preserve_aspect_ratio_meet_or_slice,
@@ -579,6 +614,9 @@ impl SvgFormattingContext {
                 .translated(-view_box.min_x as f32, -view_box.min_y as f32);
         }
 
+        // NOTE: Calculate viewport dimensions BEFORE scaling the content by m_parent_viewbox_transform.
+        // For userSpaceOnUse clips (which have no viewBox), we need the unscaled content dimensions,
+        // not the final pixel dimensions. Otherwise, nested clips compound the scale incorrectly.
         self.viewport_width = active_view_box.map_or_else(
             || {
                 if used.has_definite_inline_size() {
@@ -701,6 +739,7 @@ impl SvgFormattingContext {
             };
             assert!(laid_out);
 
+            // Masks and clips may use this offset for objectBoundingBox units.
             self.place_child(child, transformed_rect.x, transformed_rect.y);
             if let Some(mask) = self.first_child_matching(child, |facts| facts.is_mask_box) {
                 self.layout_mask_or_clip(mask);
@@ -719,11 +758,15 @@ impl SvgFormattingContext {
     }
 
     fn layout_nested_viewport(&mut self, viewport: *mut c_void, parent_svg_transform: FfiAffineTransform) {
+        // Layout for a nested SVG viewport.
+        // https://svgwg.org/svg2-draft/coords.html#EstablishingANewSVGViewport.
         let used_pointer = self.create_used_values(viewport);
         let style = self.style_facts(viewport);
         let facts = self.svg_facts(viewport);
         let nested_viewport_x = style.x.to_px(self.viewport_width);
         let nested_viewport_y = style.y.to_px(self.viewport_height);
+        // The value auto for width and height on the ‘svg’ element is treated as 100%.
+        // https://svgwg.org/svg2-draft/geometry.html#Sizing
         let nested_viewport_width = if style.width.is_auto() {
             self.viewport_width
         } else {
@@ -740,6 +783,9 @@ impl SvgFormattingContext {
             .is_svg_svg_box
             && self.computed_transforms(viewport).is_none()
         {
+            // https://svgwg.org/svg2-draft/coords.html#EstablishingANewSVGViewport
+            // Including an svg element inside SVG content creates a new SVG viewport into which all contained graphics are
+            // drawn; this implicitly establishes both a new viewport coordinate system and a new user coordinate system.
             let mut svg_transform = parent_svg_transform;
             svg_transform.multiply(facts.element_transform);
             self.set_computed_transforms(
@@ -759,6 +805,7 @@ impl SvgFormattingContext {
         let mut content_block_size = nested_viewport_height;
         let mut parent_viewbox_transform = self.current_viewbox_transform;
         if facts.is_svg_svg_element && facts.has_own_view_box {
+            // FIXME: Avoid converting SVG box to floats.
             let mapped_rect = self.current_viewbox_transform.map_rect(FfiFloatRect {
                 x: nested_viewport_x.raw_value() as f32 / 64.0,
                 y: nested_viewport_y.raw_value() as f32 / 64.0,
@@ -845,11 +892,19 @@ impl SvgFormattingContext {
             },
         );
 
+        // https://svgwg.org/svg2-draft/struct.html#GroupsOverview
+        // container element
+        // An element which can have graphics elements and other container elements as child elements.
+        // Specifically: ‘a’, ‘clipPath’, ‘defs’, ‘g’, ‘marker’, ‘mask’, ‘pattern’, ‘svg’, ‘switch’ and ‘symbol’.
         if facts.is_container_element {
+            // https://svgwg.org/svg2-draft/struct.html#Groups
+            // 5.2. Grouping: the ‘g’ element
+            // The ‘g’ element is a container element for grouping together related graphics elements.
             self.layout_container_element(graphics_box, input, svg_transform);
         } else if facts.is_image_box {
             self.layout_image_element(graphics_box);
         } else {
+            // Assume this is a path-like element.
             self.layout_path_like_element(graphics_box, input);
         }
 
@@ -899,6 +954,7 @@ impl SvgFormattingContext {
 
         if facts.is_text_box {
             self.current_text_position = result.text_position_for_children;
+            // <text> and <tspan> elements can contain more text elements.
             let mut child = self.first_child(graphics_box);
             while !child.is_null() {
                 let next = self.next_sibling(child);
@@ -916,6 +972,7 @@ impl SvgFormattingContext {
         };
         let mut transformed_bounding_box =
             float_rect_to_css_pixels(to_css_pixels_transform.map_rect(result.bounding_box));
+        // Stroke increases the path's size by stroke_width/2 per side.
         let stroke_width = css_pixels_from_f32(facts.visible_stroke_width * self.current_viewbox_transform.x_scale());
         transformed_bounding_box.inflate(stroke_width, stroke_width);
 
@@ -964,6 +1021,7 @@ impl SvgFormattingContext {
     fn layout_mask_or_clip(&mut self, resource: *mut c_void) {
         let facts = self.svg_facts(resource);
         assert!(facts.is_mask_box || facts.is_clip_box || facts.is_pattern_box);
+        // FIXME: Somehow limit <clipPath> contents to: shape elements, <text>, and <use>.
         let used_pointer = self.create_used_values(resource);
         let mut parent_viewbox_transform = self.current_viewbox_transform;
 
@@ -1007,6 +1065,7 @@ impl SvgFormattingContext {
             let used = unsafe { &mut *used_pointer };
             used.set_content_inline_size(parent_used.content_inline_size);
             used.set_content_block_size(parent_used.content_block_size);
+            // https://svgwg.org/svg2-draft/pservers.html#PatternElementPatternContentUnitsAttribute
             parent_viewbox_transform = FfiAffineTransform::default().translated(
                 parent_used.content_offset.x.raw_value() as f32 / 64.0,
                 parent_used.content_offset.y.raw_value() as f32 / 64.0,
@@ -1026,6 +1085,7 @@ impl SvgFormattingContext {
         let used = unsafe { &mut *used_pointer };
         used.has_definite_inline_size = true;
         used.has_definite_block_size = true;
+        // Pretend masks/clips are a viewport so we can scale the contents depending on the `contentUnits`.
         let mut nested_context = Self::new_nested(
             self.state,
             resource,
@@ -1080,6 +1140,7 @@ impl SvgFormattingContext {
         while !child.is_null() {
             let next = self.next_sibling(child);
             let facts = self.svg_facts(child);
+            // Masks/clips/patterns do not change the bounding box of their parents.
             if state_mut(self.state).box_facts(&self.callbacks, child).is_box
                 && !facts.is_mask_box
                 && !facts.is_clip_box
