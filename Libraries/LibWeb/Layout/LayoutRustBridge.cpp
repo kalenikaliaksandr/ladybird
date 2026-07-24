@@ -22,6 +22,7 @@
 #include <LibWeb/HTML/HTMLTableCellElement.h>
 #include <LibWeb/HTML/HTMLTableColElement.h>
 #include <LibWeb/Layout/BlockFormattingContext.h>
+#include <LibWeb/Layout/FlexLayoutData.h>
 #include <LibWeb/Layout/LayoutRustBridge.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/FormattingContext.h>
@@ -228,6 +229,8 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
     RustFFI::rust_layout_ffi_note_box_facts_build();
     auto const* box = as_if<Box>(node);
     auto natural_size = box ? box->natural_size() : CSS::SizeWithAspectRatio {};
+    auto auto_content_size = box ? box->auto_content_box_size() : CSS::SizeWithAspectRatio {};
+    auto preferred_aspect_ratio = box ? box->preferred_aspect_ratio() : Optional<CSSPixelFraction> {};
     auto display = node.display();
     auto const* dom_node = node.dom_node();
 
@@ -251,6 +254,17 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
         .natural_height = natural_size.height.value_or(0).raw_value(),
         .has_definite_natural_aspect_ratio = natural_size.has_aspect_ratio(),
         .natural_aspect_ratio = natural_size.aspect_ratio.has_value() ? natural_size.aspect_ratio->to_double() : 0,
+        .has_auto_content_width = auto_content_size.has_width(),
+        .auto_content_width = auto_content_size.width.value_or(0).raw_value(),
+        .has_auto_content_height = auto_content_size.has_height(),
+        .auto_content_height = auto_content_size.height.value_or(0).raw_value(),
+        .has_auto_content_aspect_ratio = auto_content_size.has_aspect_ratio(),
+        .auto_content_aspect_ratio_numerator = auto_content_size.aspect_ratio.has_value() ? auto_content_size.aspect_ratio->numerator().raw_value() : 0,
+        .auto_content_aspect_ratio_denominator = auto_content_size.aspect_ratio.has_value() ? auto_content_size.aspect_ratio->denominator().raw_value() : 0,
+        .has_preferred_aspect_ratio = preferred_aspect_ratio.has_value(),
+        .preferred_aspect_ratio_numerator = preferred_aspect_ratio.has_value() ? preferred_aspect_ratio->numerator().raw_value() : 0,
+        .preferred_aspect_ratio_denominator = preferred_aspect_ratio.has_value() ? preferred_aspect_ratio->denominator().raw_value() : 0,
+        .is_scroll_container = node.is_scroll_container(),
         .layout_index = node.layout_index(),
         .display = encode_display(display),
         .is_svg_box = node.is_svg_box(),
@@ -448,6 +462,25 @@ static CSS::BorderData from_ffi_border_data(RustFFI::FfiBorderData const& border
     };
 }
 
+static StaticPositionRect from_ffi_static_position_rect(RustFFI::FfiStaticPositionRect const& rect)
+{
+    return {
+        .rect = {
+            .offset = {
+                .inline_offset = CSSPixels::from_raw(rect.rect.offset.inline_offset),
+                .block_offset = CSSPixels::from_raw(rect.rect.offset.block_offset),
+            },
+            .size = {
+                .inline_size = CSSPixels::from_raw(rect.rect.size.inline_size),
+                .block_size = CSSPixels::from_raw(rect.rect.size.block_size),
+            },
+        },
+        .inline_alignment = static_cast<StaticPositionRect::Alignment>(rect.inline_alignment),
+        .block_alignment = static_cast<StaticPositionRect::Alignment>(rect.block_alignment),
+        .alignment_derives_from_own_computed_values = rect.alignment_derives_from_own_computed_values,
+    };
+}
+
 RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
 {
     static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::Cell) == 0);
@@ -458,6 +491,21 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
     static_assert(to_underlying(Painting::Paintable::ConflictingElementKind::Table) == 5);
     static_assert(to_underlying(FormattingContext::BaselineSet::First) == 0);
     static_assert(to_underlying(FormattingContext::BaselineSet::Last) == 1);
+    static_assert(to_underlying(CSS::FlexDirection::Row) == 0);
+    static_assert(to_underlying(CSS::FlexDirection::RowReverse) == 1);
+    static_assert(to_underlying(CSS::FlexDirection::Column) == 2);
+    static_assert(to_underlying(CSS::FlexDirection::ColumnReverse) == 3);
+    static_assert(to_underlying(CSS::FlexWrap::Nowrap) == 0);
+    static_assert(to_underlying(CSS::FlexWrap::Wrap) == 1);
+    static_assert(to_underlying(CSS::FlexWrap::WrapReverse) == 2);
+    static_assert(to_underlying(FlexLayoutGrowthState::Growing) == 0);
+    static_assert(to_underlying(FlexLayoutGrowthState::Shrinking) == 1);
+    static_assert(to_underlying(FlexLayoutClampState::Unclamped) == 0);
+    static_assert(to_underlying(FlexLayoutClampState::ClampedToMin) == 1);
+    static_assert(to_underlying(FlexLayoutClampState::ClampedToMax) == 2);
+    static_assert(to_underlying(StaticPositionRect::Alignment::Start) == 0);
+    static_assert(to_underlying(StaticPositionRect::Alignment::Center) == 1);
+    static_assert(to_underlying(StaticPositionRect::Alignment::End) == 2);
 
     return {
         .context = this,
@@ -703,6 +751,183 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
                 child_box.computed_values().width(),
                 from_ffi_constraints(constraints))
                 .raw_value();
+        },
+        .constraints_for_child_context = [](void* context, void* box, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto const& used_values = bridge.m_formatting_context.m_state.get(*static_cast<Box const*>(box));
+            return to_ffi_constraints(FormattingContext::constraints_for_child_context(used_values, from_ffi_constraints(constraints)));
+        },
+        .can_skip_is_anonymous_text_run = [](void* context, void* box) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            return bridge.m_formatting_context.can_skip_is_anonymous_text_run(*static_cast<Box*>(box));
+        },
+        .set_flex_item = [](void*, void* box, bool is_flex_item) {
+            static_cast<Box*>(box)->set_flex_item(is_flex_item);
+        },
+        .calculate_fit_content_size = [](void* context, void* box, RustFFI::FfiFlexAxis axis, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto const& child_box = *static_cast<Box const*>(box);
+            auto space = AvailableSpace {
+                from_ffi_available_size(available_space.inline_size),
+                from_ffi_available_size(available_space.block_size),
+            };
+            if (axis == RustFFI::FfiFlexAxis::Inline)
+                return bridge.m_formatting_context.calculate_fit_content_inline_size(child_box, space, from_ffi_constraints(constraints)).raw_value();
+            return bridge.m_formatting_context.calculate_fit_content_block_size(child_box, space, from_ffi_constraints(constraints)).raw_value();
+        },
+        .calculate_inner_size_for_property = [](void* context, void* box, RustFFI::FfiFlexAxis axis, RustFFI::FfiFlexSizeProperty property, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto const& child_box = *static_cast<Box const*>(box);
+            auto const& values = child_box.computed_values();
+            CSS::Size const* size = nullptr;
+            switch (property) {
+            case RustFFI::FfiFlexSizeProperty::Width:
+                size = &values.width();
+                break;
+            case RustFFI::FfiFlexSizeProperty::Height:
+                size = &values.height();
+                break;
+            case RustFFI::FfiFlexSizeProperty::MinWidth:
+                size = &values.min_width();
+                break;
+            case RustFFI::FfiFlexSizeProperty::MinHeight:
+                size = &values.min_height();
+                break;
+            case RustFFI::FfiFlexSizeProperty::MaxWidth:
+                size = &values.max_width();
+                break;
+            case RustFFI::FfiFlexSizeProperty::MaxHeight:
+                size = &values.max_height();
+                break;
+            case RustFFI::FfiFlexSizeProperty::FlexBasis:
+                size = values.flex_basis().get_pointer<CSS::Size>();
+                break;
+            }
+            VERIFY(size);
+            auto space = AvailableSpace {
+                from_ffi_available_size(available_space.inline_size),
+                from_ffi_available_size(available_space.block_size),
+            };
+            auto converted_constraints = from_ffi_constraints(constraints);
+            if (axis == RustFFI::FfiFlexAxis::Inline)
+                return bridge.m_formatting_context.calculate_inner_inline_size(child_box, space.inline_size, *size, converted_constraints).raw_value();
+            return bridge.m_formatting_context.calculate_inner_block_size(child_box, space, *size, converted_constraints).raw_value();
+        },
+        .should_treat_size_as_auto = [](void* context, void* box, RustFFI::FfiFlexAxis axis, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            auto const& child_box = *static_cast<Box const*>(box);
+            auto space = AvailableSpace {
+                from_ffi_available_size(available_space.inline_size),
+                from_ffi_available_size(available_space.block_size),
+            };
+            if (axis == RustFFI::FfiFlexAxis::Inline)
+                return bridge.m_formatting_context.should_treat_inline_size_as_auto(child_box, space);
+            return bridge.m_formatting_context.should_treat_block_size_as_auto(child_box, space, from_ffi_constraints(constraints));
+        },
+        .should_treat_max_block_size_as_none = [](void* context, void* box, RustFFI::AvailableSize available_size, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            return bridge.m_formatting_context.should_treat_max_block_size_as_none(
+                *static_cast<Box const*>(box),
+                from_ffi_available_size(available_size),
+                from_ffi_constraints(constraints));
+        },
+        .compute_table_box_block_size_inside_wrapper = [](void* context, void* box, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            return bridge.m_formatting_context.compute_table_box_block_size_inside_table_wrapper(
+                *static_cast<Box const*>(box),
+                {
+                    from_ffi_available_size(available_space.inline_size),
+                    from_ffi_available_size(available_space.block_size),
+                },
+                from_ffi_constraints(constraints))
+                .raw_value();
+        },
+        .register_contained_abspos_child = [](void* context, void* child, RustFFI::FfiStaticPositionRect rect) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            bridge.m_formatting_context.register_contained_abspos_child(
+                *static_cast<Box const*>(child),
+                from_ffi_static_position_rect(rect));
+        },
+        .compute_inset = [](void* context, void* box, i32 inline_size, i32 block_size) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            bridge.m_formatting_context.compute_inset(
+                *static_cast<Box const*>(box),
+                { CSSPixels::from_raw(inline_size), CSSPixels::from_raw(block_size) });
+        },
+        .set_flex_layout_data = [](void* context, void* box, RustFFI::FfiFlexLayoutData const* ffi_data) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
+            VERIFY(ffi_data);
+            auto data = make<FlexLayoutData>();
+            data->align_content = static_cast<CSS::AlignContent>(ffi_data->align_content);
+            data->align_items = static_cast<CSS::AlignItems>(ffi_data->align_items);
+            data->flex_direction = static_cast<CSS::FlexDirection>(ffi_data->flex_direction);
+            data->flex_wrap = static_cast<CSS::FlexWrap>(ffi_data->flex_wrap);
+            data->justify_content = static_cast<CSS::JustifyContent>(ffi_data->justify_content);
+
+            auto axis_direction = [](u8 direction) -> String {
+                switch (direction) {
+                case 0:
+                    return "horizontal-lr"_string;
+                case 1:
+                    return "horizontal-rl"_string;
+                case 2:
+                    return "vertical-tb"_string;
+                case 3:
+                    return "vertical-bt"_string;
+                default:
+                    VERIFY_NOT_REACHED();
+                }
+            };
+            auto main_axis_direction = axis_direction(ffi_data->main_axis_direction);
+            auto cross_axis_direction = axis_direction(ffi_data->cross_axis_direction);
+            bool main_axis_is_horizontal = ffi_data->main_axis_direction <= 1;
+
+            for (size_t line_index = 0; line_index < ffi_data->line_count; ++line_index) {
+                auto const& ffi_line = ffi_data->lines[line_index];
+                FlexLayoutLine line;
+                line.growth_state = static_cast<FlexLayoutGrowthState>(ffi_line.growth_state);
+                line.cross_start = CSSPixels::from_raw(ffi_line.cross_start);
+                line.cross_size = CSSPixels::from_raw(ffi_line.cross_size);
+                for (size_t item_index = 0; item_index < ffi_line.item_count; ++item_index) {
+                    auto const& ffi_item = ffi_line.items[item_index];
+                    auto const& item_box = *static_cast<Box const*>(ffi_item.node);
+                    auto const& values = item_box.computed_values();
+                    auto const& flex_basis = values.flex_basis();
+                    auto const& main_size = main_axis_is_horizontal ? values.width() : values.height();
+                    auto const& main_min_size = main_axis_is_horizontal ? values.min_width() : values.min_height();
+                    auto const& main_max_size = main_axis_is_horizontal ? values.max_width() : values.max_height();
+
+                    FlexLayoutItem item;
+                    if (auto* dom_node = item_box.dom_node())
+                        item.node_id = dom_node->unique_id();
+                    item.main_axis_direction = main_axis_direction;
+                    item.cross_axis_direction = cross_axis_direction;
+                    item.rect = {
+                        CSSPixels::from_raw(ffi_item.rect.x),
+                        CSSPixels::from_raw(ffi_item.rect.y),
+                        CSSPixels::from_raw(ffi_item.rect.width),
+                        CSSPixels::from_raw(ffi_item.rect.height),
+                    };
+                    item.main_base_size = CSSPixels::from_raw(ffi_item.main_base_size);
+                    item.main_delta_size = CSSPixels::from_raw(ffi_item.main_delta_size);
+                    item.main_min_size = CSSPixels::from_raw(ffi_item.main_min_size);
+                    item.main_max_size = CSSPixels::from_raw(ffi_item.main_max_size);
+                    item.cross_min_size = CSSPixels::from_raw(ffi_item.cross_min_size);
+                    item.cross_max_size = CSSPixels::from_raw(ffi_item.cross_max_size);
+                    item.clamp_state = static_cast<FlexLayoutClampState>(ffi_item.clamp_state);
+                    item.flex_basis = flex_basis.has<CSS::FlexBasisContent>()
+                        ? "content"_string
+                        : MUST(String::formatted("{}", flex_basis.get<CSS::Size>()));
+                    item.main_size_property = MUST(String::formatted("{}", main_size));
+                    item.main_min_size_property = MUST(String::formatted("{}", main_min_size));
+                    item.main_max_size_property = MUST(String::formatted("{}", main_max_size));
+                    item.flex_grow = ffi_item.flex_grow;
+                    item.flex_shrink = ffi_item.flex_shrink;
+                    line.items.append(move(item));
+                }
+                data->lines.append(move(line));
+            }
+            bridge.m_formatting_context.m_state.get_mutable(*static_cast<Box const*>(box)).set_flex_layout_data(move(data));
         },
     };
 }

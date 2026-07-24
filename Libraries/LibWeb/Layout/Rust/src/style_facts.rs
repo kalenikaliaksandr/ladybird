@@ -120,6 +120,13 @@ impl FfiSizeValue {
         self.kind() == FfiSizeKind::None_
     }
 
+    pub(crate) fn is_intrinsic_sizing_constraint(self) -> bool {
+        matches!(
+            self.kind(),
+            FfiSizeKind::MinContent | FfiSizeKind::MaxContent | FfiSizeKind::FitContent
+        )
+    }
+
     pub(crate) fn to_px(self, reference: CssPixels) -> CssPixels {
         match self.kind() {
             FfiSizeKind::Px => self.px,

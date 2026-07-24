@@ -30,6 +30,7 @@ RustFormattingContext::RustFormattingContext(Type type, LayoutMode layout_mode, 
         const_cast<Box*>(&box),
         to_underlying(type),
         to_underlying(layout_mode),
+        state.should_collect_devtools_layout_data(),
         &callbacks);
     VERIFY(m_rust_context);
 }
@@ -59,21 +60,9 @@ CSSPixels RustFormattingContext::automatic_content_block_size() const
 
 void RustFormattingContext::parent_context_did_dimension_child_root_box()
 {
+    RustFFI::rust_layout_fc_parent_did_dimension(m_rust_context);
     if (m_layout_mode != LayoutMode::Normal)
         return;
-
-    context_box().for_each_in_subtree_of_type<Box const>([&](Layout::Box const& box) {
-        if (box.is_absolutely_positioned()) {
-            // Keep the table context's existing zero-static-position behavior
-            // until absolute positioning itself moves to Rust.
-            register_contained_abspos_child(box, {});
-        }
-
-        if (formatting_context_type_created_by_box(box).has_value())
-            return TraversalDecision::SkipChildrenAndContinue;
-        return TraversalDecision::Continue;
-    });
-
     layout_absolutely_positioned_children();
 }
 

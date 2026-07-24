@@ -56,11 +56,42 @@ impl AvailableSize {
         }
     }
 
+    pub(crate) fn is_definite(self) -> bool {
+        self.type_ == AvailableSizeType::Definite
+    }
+
+    pub(crate) fn is_indefinite(self) -> bool {
+        self.type_ == AvailableSizeType::Indefinite
+    }
+
+    pub(crate) fn is_min_content(self) -> bool {
+        self.type_ == AvailableSizeType::MinContent
+    }
+
+    pub(crate) fn is_max_content(self) -> bool {
+        self.type_ == AvailableSizeType::MaxContent
+    }
+
+    pub(crate) fn is_intrinsic_sizing_constraint(self) -> bool {
+        matches!(
+            self.type_,
+            AvailableSizeType::MinContent | AvailableSizeType::MaxContent
+        )
+    }
+
+    pub(crate) fn to_px_or_zero(self) -> CssPixels {
+        if self.is_definite() {
+            self.value
+        } else {
+            CssPixels::default()
+        }
+    }
+
     fn less_than(self, other: Self) -> bool {
         self.value < other.value
     }
 
-    fn pixels_greater_than(self, pixels: CssPixels) -> bool {
+    pub(crate) fn pixels_greater_than(self, pixels: CssPixels) -> bool {
         match self.type_ {
             AvailableSizeType::MaxContent | AvailableSizeType::Indefinite => false,
             AvailableSizeType::MinContent => true,
@@ -68,7 +99,7 @@ impl AvailableSize {
         }
     }
 
-    fn pixels_less_than(self, pixels: CssPixels) -> bool {
+    pub(crate) fn pixels_less_than(self, pixels: CssPixels) -> bool {
         match self.type_ {
             AvailableSizeType::MaxContent | AvailableSizeType::Indefinite => true,
             AvailableSizeType::MinContent => false,
@@ -76,7 +107,7 @@ impl AvailableSize {
         }
     }
 
-    fn less_than_pixels(self, pixels: CssPixels) -> bool {
+    pub(crate) fn less_than_pixels(self, pixels: CssPixels) -> bool {
         match self.type_ {
             AvailableSizeType::MinContent => true,
             AvailableSizeType::MaxContent | AvailableSizeType::Indefinite => false,

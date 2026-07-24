@@ -146,6 +146,14 @@ impl UsedValuesCore {
         }
     }
 
+    pub(crate) fn has_definite_inline_size(&self) -> bool {
+        self.has_definite_inline_size && self.inline_size_constraint == FfiSizeConstraint::None
+    }
+
+    pub(crate) fn has_definite_block_size(&self) -> bool {
+        self.has_definite_block_size && self.block_size_constraint == FfiSizeConstraint::None
+    }
+
     pub(crate) fn set_content_inline_size(&mut self, value: CssPixels) {
         self.content_inline_size = Self::clamp_dimension(value.max(CssPixels::default()));
         self.has_definite_inline_size = true;

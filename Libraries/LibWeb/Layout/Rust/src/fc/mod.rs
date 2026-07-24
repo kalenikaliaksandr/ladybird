@@ -11,11 +11,12 @@ use crate::css_pixels::CssPixels;
 use crate::display::FfiDisplay;
 use crate::ffi_stats::{FfiOp, bump};
 use crate::geometry::{AvailableSize, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput, LogicalOffset};
-use crate::layout_state::state_mut;
+use crate::layout_state::{FfiStaticPositionAlignment, FfiStaticPositionRect, state_mut};
 use crate::style_facts::FfiStyleFacts;
 use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
 use std::ffi::c_void;
 
+mod flex;
 mod table;
 
 const NO_FORMATTING_CONTEXT: u8 = u8::MAX;
@@ -93,6 +94,74 @@ pub struct FfiCaptionLayoutResult {
     pub pending_table_block_offset: CssPixels,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FfiFlexAxis {
+    Inline,
+    Block,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FfiFlexSizeProperty {
+    Width,
+    Height,
+    MinWidth,
+    MinHeight,
+    MaxWidth,
+    MaxHeight,
+    FlexBasis,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiFlexLayoutItemRect {
+    pub x: CssPixels,
+    pub y: CssPixels,
+    pub width: CssPixels,
+    pub height: CssPixels,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct FfiFlexLayoutItem {
+    pub node: *mut c_void,
+    pub rect: FfiFlexLayoutItemRect,
+    pub main_base_size: CssPixels,
+    pub main_delta_size: CssPixels,
+    pub main_min_size: CssPixels,
+    pub main_max_size: CssPixels,
+    pub cross_min_size: CssPixels,
+    pub cross_max_size: CssPixels,
+    pub clamp_state: u8,
+    pub flex_grow: f64,
+    pub flex_shrink: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct FfiFlexLayoutLine {
+    pub growth_state: u8,
+    pub cross_start: CssPixels,
+    pub cross_size: CssPixels,
+    pub items: *const FfiFlexLayoutItem,
+    pub item_count: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct FfiFlexLayoutData {
+    pub align_content: u8,
+    pub align_items: u8,
+    pub flex_direction: u8,
+    pub flex_wrap: u8,
+    pub justify_content: u8,
+    pub main_axis_direction: u8,
+    pub cross_axis_direction: u8,
+    pub lines: *const FfiFlexLayoutLine,
+    pub line_count: usize,
+}
+
 pub type FfiBuildStyleFactsCallback = unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiStyleFacts;
 pub type FfiBuildBoxFactsCallback = unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiLayoutBoxFacts;
 pub type FfiBuildTableBoxFactsCallback = unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiTableBoxFacts;
@@ -146,6 +215,39 @@ pub struct FfiLayoutFcCallbacks {
         unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSize, FfiContainingBlockConstraints) -> bool,
     pub calculate_inner_inline_size:
         unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSize, FfiContainingBlockConstraints) -> CssPixels,
+    pub constraints_for_child_context:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, FfiContainingBlockConstraints) -> FfiContainingBlockConstraints,
+    pub can_skip_is_anonymous_text_run: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
+    pub set_flex_item: unsafe extern "C" fn(*mut c_void, *mut c_void, bool),
+    pub calculate_fit_content_size: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        FfiFlexAxis,
+        AvailableSpace,
+        FfiContainingBlockConstraints,
+    ) -> CssPixels,
+    pub calculate_inner_size_for_property: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        FfiFlexAxis,
+        FfiFlexSizeProperty,
+        AvailableSpace,
+        FfiContainingBlockConstraints,
+    ) -> CssPixels,
+    pub should_treat_size_as_auto: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        FfiFlexAxis,
+        AvailableSpace,
+        FfiContainingBlockConstraints,
+    ) -> bool,
+    pub should_treat_max_block_size_as_none:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSize, FfiContainingBlockConstraints) -> bool,
+    pub compute_table_box_block_size_inside_wrapper:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSpace, FfiContainingBlockConstraints) -> CssPixels,
+    pub register_contained_abspos_child: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiStaticPositionRect),
+    pub compute_inset: unsafe extern "C" fn(*mut c_void, *mut c_void, CssPixels, CssPixels),
+    pub set_flex_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const FfiFlexLayoutData),
 }
 
 struct FormattingContextInstance {
@@ -154,6 +256,7 @@ struct FormattingContextInstance {
     fc_type: u8,
     layout_mode: u8,
     callbacks: FfiLayoutFcCallbacks,
+    should_collect_devtools_layout_data: bool,
     automatic_content_inline_size: CssPixels,
     automatic_content_block_size: CssPixels,
     pending_table_box_content_offset_in_wrapper: LogicalOffset,
@@ -221,7 +324,13 @@ fn formatting_context_type_created_by_box(facts: FfiLayoutBoxFacts) -> Option<Ff
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_layout_owns_fc_type(fc_type: u8) -> bool {
-    abort_on_panic(|| fc_type == FfiFormattingContextType::Table as u8)
+    abort_on_panic(|| {
+        matches!(
+            fc_type,
+            type_ if type_ == FfiFormattingContextType::Flex as u8
+                || type_ == FfiFormattingContextType::Table as u8
+        )
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -240,6 +349,7 @@ pub extern "C" fn rust_layout_fc_create(
     box_: *mut c_void,
     fc_type: u8,
     layout_mode: u8,
+    should_collect_devtools_layout_data: bool,
     callbacks: *const FfiLayoutFcCallbacks,
 ) -> *mut c_void {
     abort_on_panic(|| {
@@ -257,12 +367,73 @@ pub extern "C" fn rust_layout_fc_create(
             fc_type,
             layout_mode,
             callbacks,
+            should_collect_devtools_layout_data,
             automatic_content_inline_size: CssPixels::default(),
             automatic_content_block_size: CssPixels::default(),
             pending_table_box_content_offset_in_wrapper: LogicalOffset::default(),
         }))
         .cast()
     })
+}
+
+fn navigate(
+    instance: &FormattingContextInstance,
+    callback: crate::box_facts::FfiLayoutNavCallback,
+    node: *mut c_void,
+) -> *mut c_void {
+    bump(FfiOp::NavigationCallback);
+    // SAFETY: Navigation is synchronous and the host owns every node.
+    unsafe { callback(instance.callbacks.navigation.context, node) }
+}
+
+fn register_table_abspos_descendants(instance: &mut FormattingContextInstance, parent: *mut c_void) {
+    let mut child = navigate(instance, instance.callbacks.navigation.first_child, parent);
+    while !child.is_null() {
+        let next = navigate(instance, instance.callbacks.navigation.next_sibling, child);
+        let facts = state_mut(instance.state).box_facts(&instance.callbacks, child);
+        if facts.is_box {
+            if facts.is_absolutely_positioned {
+                // SAFETY: Registration is synchronous and the host owns the child.
+                unsafe {
+                    (instance.callbacks.register_contained_abspos_child)(
+                        instance.callbacks.context,
+                        child,
+                        FfiStaticPositionRect {
+                            rect: Default::default(),
+                            inline_alignment: FfiStaticPositionAlignment::Start,
+                            block_alignment: FfiStaticPositionAlignment::Start,
+                            alignment_derives_from_own_computed_values: false,
+                        },
+                    );
+                }
+            }
+            if formatting_context_type_created_by_box(facts).is_none() {
+                register_table_abspos_descendants(instance, child);
+            }
+        } else {
+            register_table_abspos_descendants(instance, child);
+        }
+        child = next;
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_fc_parent_did_dimension(fc: *mut c_void) {
+    abort_on_panic(|| {
+        let instance = instance_mut(fc);
+        if instance.layout_mode != 0 {
+            return;
+        }
+        match instance.fc_type {
+            type_ if type_ == FfiFormattingContextType::Table as u8 => {
+                register_table_abspos_descendants(instance, instance.box_);
+            }
+            type_ if type_ == FfiFormattingContextType::Flex as u8 => {
+                flex::parent_did_dimension(instance);
+            }
+            _ => panic!("no Rust parent-dimension implementation for this formatting context"),
+        }
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -286,6 +457,9 @@ pub extern "C" fn rust_layout_fc_run(fc: *mut c_void, _input: FfiLayoutInput) {
         match instance.fc_type {
             type_ if type_ == FfiFormattingContextType::Table as u8 => {
                 table::run(instance, _input);
+            }
+            type_ if type_ == FfiFormattingContextType::Flex as u8 => {
+                flex::run(instance, _input);
             }
             _ => panic!("no Rust implementation for this formatting context"),
         }
@@ -434,11 +608,11 @@ mod tests {
     }
 
     #[test]
-    fn rust_owns_only_table_formatting_contexts() {
+    fn rust_owns_flex_and_table_formatting_contexts() {
         for type_ in 0..=u8::MAX {
             assert_eq!(
                 rust_layout_owns_fc_type(type_),
-                type_ == FfiFormattingContextType::Table as u8
+                type_ == FfiFormattingContextType::Flex as u8 || type_ == FfiFormattingContextType::Table as u8
             );
         }
     }
