@@ -169,6 +169,28 @@ pub mod direction {
     pub const RTL: u8 = 1;
 }
 
+pub mod clear {
+    pub const NONE: u8 = 0;
+    pub const LEFT: u8 = 1;
+    pub const RIGHT: u8 = 2;
+    pub const BOTH: u8 = 3;
+    pub const INLINE_START: u8 = 4;
+    pub const INLINE_END: u8 = 5;
+}
+
+pub mod float {
+    pub const NONE: u8 = 0;
+    pub const LEFT: u8 = 1;
+    pub const RIGHT: u8 = 2;
+    pub const INLINE_START: u8 = 3;
+    pub const INLINE_END: u8 = 4;
+}
+
+pub mod list_style_position {
+    pub const INSIDE: u8 = 0;
+    pub const OUTSIDE: u8 = 1;
+}
+
 pub mod white_space_collapse {
     pub const COLLAPSE: u8 = 0;
     pub const DISCARD: u8 = 1;

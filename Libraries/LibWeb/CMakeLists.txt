@@ -807,7 +807,6 @@ set(SOURCES
     Layout/AudioBox.cpp
     Layout/AvailableSpace.cpp
     Layout/BlockContainer.cpp
-    Layout/BlockFormattingContext.cpp
     Layout/Box.cpp
     Layout/BreakNode.cpp
     Layout/CanvasBox.cpp

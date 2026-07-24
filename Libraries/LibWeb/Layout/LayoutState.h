@@ -270,14 +270,6 @@ struct LayoutState {
             }
         }
 
-        void set_lowest_floating_descendant_bottom_margin_edge(Optional<CSSPixels> bottom_margin_edge) { ensure_rare_data().lowest_floating_descendant_bottom_margin_edge = bottom_margin_edge; }
-        Optional<CSSPixels> lowest_floating_descendant_bottom_margin_edge() const
-        {
-            if (!m_cpp_extension.rare)
-                return {};
-            return m_cpp_extension.rare->lowest_floating_descendant_bottom_margin_edge;
-        }
-
         void set_override_borders_data(Painting::Paintable::BordersDataWithElementKind const& override_borders_data)
         {
             m_core->uses_collapsing_borders_model = true;
@@ -384,7 +376,6 @@ struct LayoutState {
         struct RareData {
             AK_ALLOC_WITH_KMALLOC_PARTITION(HeapPartition::Layout);
 
-            Optional<CSSPixels> lowest_floating_descendant_bottom_margin_edge;
             Optional<Painting::Paintable::TableCellCoordinates> table_cell_coordinates;
             Optional<Gfx::Path> computed_svg_path;
             OwnPtr<GridLayoutData> grid_layout_data;

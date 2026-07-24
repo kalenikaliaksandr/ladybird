@@ -782,8 +782,8 @@ mod grid {
 
 use super::sizing::SizingContext;
 use super::{
-    FfiBorderData, FfiCaptionLayoutResult, FfiChildLayoutResult, FfiFormattingContextType, FfiLayoutFcCallbacks,
-    FfiMeasuredCellContent, FormattingContextInstance,
+    FfiBorderData, FfiChildLayoutResult, FfiFormattingContextType, FfiLayoutFcCallbacks, FfiMeasuredCellContent,
+    FormattingContextInstance, block, block_context_for_fc,
 };
 use crate::box_facts::FfiLayoutBoxFacts;
 use crate::css_pixels::CssPixels;
@@ -835,6 +835,7 @@ enum TrackAxis {
 struct TableFormattingContext {
     state: *mut c_void,
     table_box: Node,
+    parent_rust_fc: *mut c_void,
     layout_mode: u8,
     callbacks: FfiLayoutFcCallbacks,
     table_constraints: FfiContainingBlockConstraints,
@@ -878,6 +879,7 @@ impl TableFormattingContext {
         Self {
             state: instance.state,
             table_box: instance.box_,
+            parent_rust_fc: instance.parent_rust_fc,
             layout_mode: instance.layout_mode,
             callbacks: instance.callbacks,
             table_constraints: FfiContainingBlockConstraints::default(),
@@ -885,7 +887,10 @@ impl TableFormattingContext {
             available_space: AvailableSpace::default(),
             table_block_size: CssPixels::default(),
             automatic_content_block_size: CssPixels::default(),
-            pending_table_offset: instance.pending_table_box_content_offset_in_wrapper,
+            pending_table_offset: block_context_for_fc(instance.parent_rust_fc)
+                .map_or_else(crate::geometry::LogicalOffset::default, |parent| {
+                    parent.pending_table_box_content_offset_in_wrapper()
+                }),
             min_border_box_block_size_from_flex_item: None,
             needs_fixed_mode_row_measurement: false,
             cells: Vec::new(),
@@ -2013,6 +2018,7 @@ impl TableFormattingContext {
                     has_table_grid_min_border_box_block_size: false,
                     table_grid_min_border_box_block_size: CssPixels::default(),
                 },
+                false,
                 &raw mut result,
             )
         };
@@ -2524,23 +2530,29 @@ impl TableFormattingContext {
             }
             // Captions live inside the table wrapper, so their quirks percentage height basis derives
             // from the wrapper, not from anything the table box inherited.
-            let mut result = FfiCaptionLayoutResult::default();
-            bump(FfiOp::CaptionLayoutCallback);
             // The caption boxes are principal block-level boxes that retain their own content, padding, margin, and border areas,
             // and are rendered as normal block boxes inside the table wrapper box, as described in https://www.w3.org/TR/CSS22/tables.html#model
-            // SAFETY: The host executes the generic caption child layout and
-            // copies the scalar result.
-            let laid_out = unsafe {
-                (self.callbacks.layout_table_caption)(
-                    self.callbacks.context,
+            let result = if let Some(parent) = block_context_for_fc(self.parent_rust_fc) {
+                parent.layout_table_caption(self.table_box, caption, phase, available, self.participant_constraints)
+            } else {
+                // Measurement-only table contexts may have no parent handle.
+                // Use the same BFC algorithms without attaching a persistent
+                // formatting-context instance.
+                block::BlockFormattingContext::new(
+                    self.state,
+                    self.table_box,
+                    std::ptr::null_mut(),
+                    self.layout_mode,
+                    self.callbacks,
+                )
+                .layout_table_caption(
+                    self.table_box,
                     caption,
                     phase,
                     available,
                     self.participant_constraints,
-                    &raw mut result,
                 )
             };
-            assert!(laid_out);
             if phase == CAPTION_SIDE_TOP {
                 self.pending_table_offset.block_offset = result.pending_table_block_offset;
             }
@@ -2660,7 +2672,9 @@ pub(crate) fn run(instance: &mut FormattingContextInstance, input: FfiLayoutInpu
     // SAFETY: The table used-values entry outlives the FC.
     instance.automatic_content_inline_size = unsafe { (*used).content_inline_size };
     instance.automatic_content_block_size = table.automatic_content_block_size;
-    instance.pending_table_box_content_offset_in_wrapper = table.pending_table_offset;
+    if let Some(parent) = block_context_for_fc(instance.parent_rust_fc) {
+        parent.set_pending_table_box_content_offset_in_wrapper(table.pending_table_offset);
+    }
 }
 
 pub(crate) fn run_until_inline_size_calculation(
@@ -2673,5 +2687,7 @@ pub(crate) fn run_until_inline_size_calculation(
     let used = table.used_values(table.table_box);
     // SAFETY: The table used-values entry outlives the FC.
     instance.automatic_content_inline_size = unsafe { (*used).content_inline_size };
-    instance.pending_table_box_content_offset_in_wrapper = table.pending_table_offset;
+    if let Some(parent) = block_context_for_fc(instance.parent_rust_fc) {
+        parent.set_pending_table_box_content_offset_in_wrapper(table.pending_table_offset);
+    }
 }

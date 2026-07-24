@@ -44,14 +44,16 @@
 #include <LibWeb/HTML/HTMLTableCellElement.h>
 #include <LibWeb/HTML/HTMLTableColElement.h>
 #include <LibWeb/HTML/FormAssociatedElement.h>
-#include <LibWeb/Layout/BlockFormattingContext.h>
 #include <LibWeb/Layout/DominantBaseline.h>
+#include <LibWeb/Layout/FieldSetBox.h>
 #include <LibWeb/Layout/FlexLayoutData.h>
 #include <LibWeb/Layout/GridLayoutData.h>
 #include <LibWeb/Layout/LayoutRustBridge.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/FormattingContext.h>
 #include <LibWeb/Layout/InlineNode.h>
+#include <LibWeb/Layout/ListItemBox.h>
+#include <LibWeb/Layout/ListItemMarkerBox.h>
 #include <LibWeb/Layout/Node.h>
 #include <LibWeb/Layout/SVGClipBox.h>
 #include <LibWeb/Layout/SVGGeometryBox.h>
@@ -842,6 +844,38 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
     auto preferred_aspect_ratio = box ? box->preferred_aspect_ratio() : Optional<CSSPixelFraction> {};
     auto display = node.display();
     auto const* dom_node = node.dom_node();
+    auto const* fieldset_box = as_if<FieldSetBox>(node);
+    auto const* list_item_box = as_if<ListItemBox>(node);
+    auto const* marker = as_if<ListItemMarkerBox>(node);
+    bool has_css_marker_content = false;
+    if (list_item_box && dom_node) {
+        if (auto const* element = as_if<DOM::Element>(dom_node)) {
+            if (auto const computed_values = element->computed_values(CSS::PseudoElement::Marker))
+                has_css_marker_content = computed_values->content().has_value();
+        }
+    }
+    CSSPixels marker_content_inline_size = 0;
+    CSSPixels marker_content_block_size = 0;
+    CSSPixels marker_distance = 0;
+    if (marker) {
+        auto marker_text = marker->text();
+        if (auto const* list_style_image = marker->list_style_image()) {
+            marker_content_inline_size = list_style_image->natural_width(marker->document()).value_or(0);
+            marker_content_block_size = list_style_image->natural_height(marker->document()).value_or(0);
+        } else {
+            auto marker_size = marker->relative_size();
+            marker_content_block_size = marker_size;
+            auto const& marker_font = marker->first_available_font();
+            if (marker_text.has_value()) {
+                // FIXME: Use per-code-point fonts to measure text.
+                marker_content_inline_size = CSSPixels::nearest_value_for(marker_font.width(marker_text.value()));
+            } else {
+                marker_content_inline_size = marker_size;
+            }
+        }
+        if (!marker_text.has_value())
+            marker_distance = CSSPixels::nearest_value_for(.5f * marker->first_available_font().pixel_size());
+    }
     Optional<CSS::SizeWithAspectRatio> default_preferred_size;
     if (box && box->computed_values().appearance() == CSS::Appearance::None) {
         if (auto const* input = as_if<HTML::HTMLInputElement>(dom_node)) {
@@ -880,6 +914,7 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
         .is_list_item_marker_box = node.is_list_item_marker_box(),
         .is_list_item_box = node.is_list_item_box(),
         .is_svg_mask_box = node.is_svg_mask_box(),
+        .is_svg_clip_box = node.is_svg_clip_box(),
         .is_replaced_element = node.is_replaced_element(),
         .display_before_box_type_transformation_is_block_outside = node.display_before_box_type_transformation().is_block_outside(),
         .inline_axis_is_reverse = node.computed_values().inline_axis_is_reverse(),
@@ -889,6 +924,18 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
         .can_have_children = node.can_have_children(),
         .has_replaced_element_table_display_adjustment = node.has_replaced_element_table_display_adjustment(),
         .creates_block_formatting_context = box && FormattingContext::creates_block_formatting_context(*box),
+        .is_grid_item = node.is_grid_item(),
+        .is_editing_host = dom_node && dom_node->is_element() && static_cast<DOM::Element const&>(*dom_node).is_editing_host(),
+        .uses_button_layout = dom_node && is<HTML::HTMLElement>(*dom_node) && static_cast<HTML::HTMLElement const&>(*dom_node).uses_button_layout(),
+        .may_reuse_precreated_used_values = false,
+        .is_fieldset_box = fieldset_box != nullptr,
+        .rendered_legend = fieldset_box && fieldset_box->rendered_legend() ? const_cast<LegendBox*>(fieldset_box->rendered_legend().ptr()) : nullptr,
+        .list_item_marker = list_item_box && list_item_box->marker() ? const_cast<ListItemMarkerBox*>(list_item_box->marker()) : nullptr,
+        .has_css_marker_content = has_css_marker_content,
+        .marker_content_inline_size = marker_content_inline_size.raw_value(),
+        .marker_content_block_size = marker_content_block_size.raw_value(),
+        .marker_distance = marker_distance.raw_value(),
+        .marker_list_style_position = static_cast<u8>(marker ? to_underlying(marker->list_style_position()) : 0),
         .has_definite_natural_width = natural_size.has_width(),
         .natural_width = natural_size.width.value_or(0).raw_value(),
         .has_definite_natural_height = natural_size.has_height(),
@@ -1344,11 +1391,19 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
         .build_style_facts = [](void*, void* node) {
             return build_style_facts(*static_cast<NodeWithStyle const*>(node));
         },
-        .build_box_facts = [](void*, void* node) {
+        .build_box_facts = [](void* context, void* node) {
+            auto& bridge = *static_cast<LayoutRustBridge*>(context);
             auto const& layout_node = *static_cast<Node const*>(node);
             auto const* node_with_style = as_if<NodeWithStyle>(layout_node);
-            if (node_with_style)
-                return build_layout_box_facts(*node_with_style);
+            if (node_with_style) {
+                auto facts = build_layout_box_facts(*node_with_style);
+                auto const* document_element = node_with_style->document().document_element();
+                facts.may_reuse_precreated_used_values = !bridge.m_formatting_context.m_state.has_subtree_root()
+                    && document_element && document_element->unsafe_layout_node()
+                    && node_with_style->is_inclusive_ancestor_of(*document_element->unsafe_layout_node())
+                    && bridge.m_formatting_context.m_state.try_get(*node_with_style);
+                return facts;
+            }
             RustFFI::FfiLayoutBoxFacts facts {};
             facts.is_text_node = layout_node.is_text_node();
             facts.is_break_node = layout_node.is_break_node();
@@ -1753,13 +1808,21 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             }
             box.set_default_scroll_shift(static_cast<Box*>(anchor)->make_weak_ptr(), horizontal, vertical);
         },
-        .layout_inside_child = [](void* context, void* child, u8 mode, RustFFI::FfiLayoutInput input, RustFFI::FfiChildLayoutResult* out) {
+        .layout_inside_child = [](void* context, void* child, u8 mode, RustFFI::FfiLayoutInput input, bool force_independent_context_run, RustFFI::FfiChildLayoutResult* out) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             auto const& child_box = *static_cast<Box const*>(child);
             VERIFY(!bridge.m_child_contexts.contains(&child_box));
-            auto child_context = bridge.m_formatting_context.layout_inside(child_box, layout_mode_from_ffi(mode), from_ffi(input));
+            auto child_context = force_independent_context_run
+                ? FormattingContext::create_independent_formatting_context_if_needed(
+                      bridge.m_formatting_context.m_state,
+                      layout_mode_from_ffi(mode),
+                      child_box,
+                      &bridge.m_formatting_context)
+                : bridge.m_formatting_context.layout_inside(child_box, layout_mode_from_ffi(mode), from_ffi(input));
             if (!child_context)
                 return false;
+            if (force_independent_context_run)
+                child_context->run(from_ffi(input));
             *out = {
                 .automatic_content_inline_size = child_context->automatic_content_inline_size().raw_value(),
                 .automatic_content_block_size = child_context->automatic_content_block_size().raw_value(),
@@ -1778,22 +1841,6 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             auto child_context = bridge.m_child_contexts.take(static_cast<Box const*>(child));
             VERIFY(child_context.has_value());
-        },
-        .calculate_min_content_inline_size = [](void* context, void* box, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            return bridge.m_formatting_context.calculate_min_content_inline_size(*static_cast<Box const*>(box), from_ffi_constraints(constraints)).raw_value();
-        },
-        .calculate_max_content_inline_size = [](void* context, void* box, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            return bridge.m_formatting_context.calculate_max_content_inline_size(*static_cast<Box const*>(box), from_ffi_constraints(constraints)).raw_value();
-        },
-        .calculate_min_content_block_size = [](void* context, void* box, i32 inline_size, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            return bridge.m_formatting_context.calculate_min_content_block_size(*static_cast<Box const*>(box), CSSPixels::from_raw(inline_size), from_ffi_constraints(constraints)).raw_value();
-        },
-        .calculate_max_content_block_size = [](void* context, void* box, i32 inline_size, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            return bridge.m_formatting_context.calculate_max_content_block_size(*static_cast<Box const*>(box), CSSPixels::from_raw(inline_size), from_ffi_constraints(constraints)).raw_value();
         },
         .set_table_cell_coordinates = [](void* context, void* node, size_t row_index, size_t column_index, size_t row_span, size_t column_span) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
@@ -1840,63 +1887,6 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
         .layout_absolutely_positioned_children = [](void* context, void* node) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             bridge.m_formatting_context.layout_absolutely_positioned_children(*static_cast<Box const*>(node));
-        },
-        .layout_table_caption = [](void* context, void* child, u8 phase, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints, RustFFI::FfiCaptionLayoutResult* out) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto& formatting_context = bridge.m_formatting_context;
-            auto const& child_box = *static_cast<Box const*>(child);
-            auto caption_available_space = AvailableSpace {
-                from_ffi_available_size(available_space.inline_size),
-                from_ffi_available_size(available_space.block_size),
-            };
-            auto caption_constraints = from_ffi_constraints(constraints);
-            auto caption_phase = static_cast<CSS::CaptionSide>(phase);
-            bool caption_was_placed = false;
-
-            if (auto caption_context = FormattingContext::create_independent_formatting_context_if_needed(
-                    formatting_context.m_state, formatting_context.m_layout_mode, child_box, &formatting_context)) {
-                auto inner_available_space = caption_available_space;
-                auto* block_context = as_if<BlockFormattingContext>(caption_context.ptr());
-                LogicalOffset caption_offset;
-                if (block_context) {
-                    auto available_inline_size = caption_available_space.inline_size.to_px_or_zero();
-                    block_context->resolve_vertical_box_model_metrics(child_box, available_inline_size);
-                    CSSPixelPoint caption_position_in_block_context {};
-                    block_context->compute_inline_size(child_box, caption_available_space, caption_constraints, caption_position_in_block_context);
-                    inner_available_space = formatting_context.m_state.get(child_box).available_inner_space_or_constraints_from(caption_available_space);
-
-                    auto const& caption_state = formatting_context.m_state.get(child_box);
-                    caption_offset = { caption_state.border_box_left(), 0 };
-                    if (caption_phase == CSS::CaptionSide::Bottom)
-                        caption_offset.block_offset = formatting_context.m_state.get(formatting_context.context_box()).margin_box_block_size() + caption_state.margin_box_top();
-                }
-
-                caption_context->run(LayoutInput { inner_available_space, caption_constraints });
-                if (block_context) {
-                    auto& caption_state = formatting_context.m_state.get_mutable(child_box);
-                    if (formatting_context.should_treat_block_size_as_auto(child_box, caption_available_space, caption_constraints)) {
-                        auto content_block_size = child_box.has_size_containment() ? 0 : caption_context->automatic_content_block_size();
-                        caption_state.set_content_block_size(content_block_size);
-                    }
-                    formatting_context.place_child(child_box, { caption_offset.inline_offset, caption_offset.block_offset });
-                    caption_was_placed = true;
-                }
-            }
-
-            auto const& caption_state = formatting_context.m_state.get(child_box);
-            if (caption_phase == CSS::CaptionSide::Bottom && !caption_was_placed) {
-                formatting_context.place_child(child_box, {
-                                                              caption_state.border_box_left(),
-                                                              formatting_context.m_state.get(formatting_context.context_box()).margin_box_block_size() + caption_state.margin_box_top(),
-                                                          });
-            }
-            *out = {
-                .margin_box_block_size = caption_state.margin_box_block_size().raw_value(),
-                .pending_table_block_offset = caption_phase == CSS::CaptionSide::Top
-                    ? (caption_state.content_block_size() + caption_state.margin_box_bottom()).raw_value()
-                    : 0,
-            };
-            return true;
         },
         .measure_table_cell_content = [](void* context, void* child, u8 mode, RustFFI::UsedValuesCore const*, RustFFI::AvailableSpace inner_available_space, RustFFI::FfiMeasuredCellContent* out) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
@@ -1955,28 +1945,6 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             };
             return true;
         },
-        .should_treat_max_inline_size_as_none = [](void* context, void* box, RustFFI::AvailableSize available_size, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            return bridge.m_formatting_context.should_treat_max_inline_size_as_none(
-                *static_cast<Box const*>(box),
-                from_ffi_available_size(available_size),
-                from_ffi_constraints(constraints));
-        },
-        .calculate_inner_inline_size = [](void* context, void* box, RustFFI::AvailableSize available_size, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto const& child_box = *static_cast<Box const*>(box);
-            return bridge.m_formatting_context.calculate_inner_inline_size(
-                child_box,
-                from_ffi_available_size(available_size),
-                child_box.computed_values().width(),
-                from_ffi_constraints(constraints))
-                .raw_value();
-        },
-        .constraints_for_child_context = [](void* context, void* box, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto const& used_values = bridge.m_formatting_context.m_state.get(*static_cast<Box const*>(box));
-            return to_ffi_constraints(FormattingContext::constraints_for_child_context(used_values, from_ffi_constraints(constraints)));
-        },
         .can_skip_is_anonymous_text_run = [](void* context, void* box) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             return bridge.m_formatting_context.can_skip_is_anonymous_text_run(*static_cast<Box*>(box));
@@ -1986,73 +1954,6 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
         },
         .set_grid_item = [](void*, void* box, bool is_grid_item) {
             static_cast<Box*>(box)->set_grid_item(is_grid_item);
-        },
-        .calculate_fit_content_size = [](void* context, void* box, RustFFI::FfiFlexAxis axis, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto const& child_box = *static_cast<Box const*>(box);
-            auto space = AvailableSpace {
-                from_ffi_available_size(available_space.inline_size),
-                from_ffi_available_size(available_space.block_size),
-            };
-            if (axis == RustFFI::FfiFlexAxis::Inline)
-                return bridge.m_formatting_context.calculate_fit_content_inline_size(child_box, space, from_ffi_constraints(constraints)).raw_value();
-            return bridge.m_formatting_context.calculate_fit_content_block_size(child_box, space, from_ffi_constraints(constraints)).raw_value();
-        },
-        .calculate_inner_size_for_property = [](void* context, void* box, RustFFI::FfiFlexAxis axis, RustFFI::FfiFlexSizeProperty property, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto const& child_box = *static_cast<Box const*>(box);
-            auto const& values = child_box.computed_values();
-            CSS::Size const* size = nullptr;
-            switch (property) {
-            case RustFFI::FfiFlexSizeProperty::Width:
-                size = &values.width();
-                break;
-            case RustFFI::FfiFlexSizeProperty::Height:
-                size = &values.height();
-                break;
-            case RustFFI::FfiFlexSizeProperty::MinWidth:
-                size = &values.min_width();
-                break;
-            case RustFFI::FfiFlexSizeProperty::MinHeight:
-                size = &values.min_height();
-                break;
-            case RustFFI::FfiFlexSizeProperty::MaxWidth:
-                size = &values.max_width();
-                break;
-            case RustFFI::FfiFlexSizeProperty::MaxHeight:
-                size = &values.max_height();
-                break;
-            case RustFFI::FfiFlexSizeProperty::FlexBasis:
-                size = values.flex_basis().get_pointer<CSS::Size>();
-                break;
-            }
-            VERIFY(size);
-            auto space = AvailableSpace {
-                from_ffi_available_size(available_space.inline_size),
-                from_ffi_available_size(available_space.block_size),
-            };
-            auto converted_constraints = from_ffi_constraints(constraints);
-            if (axis == RustFFI::FfiFlexAxis::Inline)
-                return bridge.m_formatting_context.calculate_inner_inline_size(child_box, space.inline_size, *size, converted_constraints).raw_value();
-            return bridge.m_formatting_context.calculate_inner_block_size(child_box, space, *size, converted_constraints).raw_value();
-        },
-        .should_treat_size_as_auto = [](void* context, void* box, RustFFI::FfiFlexAxis axis, RustFFI::AvailableSpace available_space, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            auto const& child_box = *static_cast<Box const*>(box);
-            auto space = AvailableSpace {
-                from_ffi_available_size(available_space.inline_size),
-                from_ffi_available_size(available_space.block_size),
-            };
-            if (axis == RustFFI::FfiFlexAxis::Inline)
-                return bridge.m_formatting_context.should_treat_inline_size_as_auto(child_box, space);
-            return bridge.m_formatting_context.should_treat_block_size_as_auto(child_box, space, from_ffi_constraints(constraints));
-        },
-        .should_treat_max_block_size_as_none = [](void* context, void* box, RustFFI::AvailableSize available_size, RustFFI::FfiContainingBlockConstraints constraints) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            return bridge.m_formatting_context.should_treat_max_block_size_as_none(
-                *static_cast<Box const*>(box),
-                from_ffi_available_size(available_size),
-                from_ffi_constraints(constraints));
         },
         .create_measurement_state = [](void*, void* box, RustFFI::FfiContainingBlockConstraints constraints) {
             auto converted_constraints = from_ffi_constraints(constraints);
@@ -2074,13 +1975,13 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             VERIFY(measurement_state->is_for_measurement());
             delete measurement_state;
         },
-        .run_measurement_context = [](void* context, void* state, void* box, RustFFI::FfiLayoutInput input) {
+        .run_measurement_context = [](void* context, void* state, void* box, u8 layout_mode, RustFFI::FfiLayoutInput input) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             auto& measurement_state = *static_cast<LayoutState*>(state);
             VERIFY(measurement_state.is_for_measurement());
             auto measuring_context = FormattingContext::create_independent_formatting_context(
                 measurement_state,
-                LayoutMode::IntrinsicSizing,
+                layout_mode_from_ffi(layout_mode),
                 *static_cast<Box const*>(box),
                 &bridge.m_formatting_context);
             measuring_context->run(from_ffi(input));
@@ -2195,12 +2096,6 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
                     from_ffi_available_size(available_space.block_size),
                 },
                 from_ffi_constraints(constraints));
-        },
-        .automatic_block_size_for_abspos_bfc_root = [](void* context, void* box) {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            return bridge.m_formatting_context.compute_automatic_block_size_for_block_formatting_context_root(
-                *static_cast<Box const*>(box))
-                .raw_value();
         },
         .set_flex_layout_data = [](void* context, void* box, RustFFI::FfiFlexLayoutData const* ffi_data) {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);

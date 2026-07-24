@@ -459,7 +459,7 @@ impl LineBuilder {
             // vertical writing modes, matching the old implementation.
             candidate += self.line(line_index).physical_vertical_extent();
         }
-        candidate.max(self.context().block_axis_float_clearance)
+        candidate.max(self.context().block_axis_float_clearance())
     }
 
     fn should_break(&mut self, next_item_inline_size: CssPixels) -> bool {

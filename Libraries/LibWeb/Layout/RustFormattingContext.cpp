@@ -70,23 +70,6 @@ void RustFormattingContext::replay_absolutely_positioned_element(Box& box)
     RustFFI::rust_layout_fc_replay_abspos(m_rust_context, &box);
 }
 
-void RustFormattingContext::set_pending_table_box_content_offset_in_wrapper(LogicalOffset offset)
-{
-    RustFFI::rust_layout_fc_set_table_box_content_offset_in_wrapper(m_rust_context, {
-                                                                                       .inline_offset = offset.inline_offset.raw_value(),
-                                                                                       .block_offset = offset.block_offset.raw_value(),
-                                                                                   });
-}
-
-LogicalOffset RustFormattingContext::pending_table_box_content_offset_in_wrapper() const
-{
-    auto offset = RustFFI::rust_layout_fc_table_box_content_offset_in_wrapper(m_rust_context);
-    return {
-        CSSPixels::from_raw(offset.inline_offset),
-        CSSPixels::from_raw(offset.block_offset),
-    };
-}
-
 void RustFormattingContext::run_until_table_inline_size_calculation(LayoutInput const& input, bool skip_row_measurement)
 {
     RustFFI::rust_layout_fc_run_until_table_inline_size_calculation(

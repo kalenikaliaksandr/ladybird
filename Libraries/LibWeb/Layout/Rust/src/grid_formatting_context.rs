@@ -1815,6 +1815,7 @@ mod runtime {
                     if !skip {
                         // SAFETY: The host mutates one flag on the live box.
                         unsafe { (self.callbacks.set_grid_item)(self.callbacks.context, child, true) };
+                        state_mut(self.state).set_box_is_grid_item(&self.callbacks, child, true);
                         let child_grid = self.grid_facts_copy(child);
                         let source = child_grid.source();
                         let column_subgrid_span = child_grid
@@ -3617,6 +3618,7 @@ mod runtime {
                         item.box_,
                         LAYOUT_MODE_NORMAL,
                         input,
+                        false,
                         &raw mut result,
                     )
                 };

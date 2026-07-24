@@ -734,6 +734,7 @@ impl SvgFormattingContext {
                     child,
                     self.layout_mode,
                     child_input,
+                    false,
                     &raw mut result,
                 )
             };

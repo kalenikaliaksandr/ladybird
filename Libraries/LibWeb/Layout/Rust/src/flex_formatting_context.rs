@@ -2445,6 +2445,7 @@ impl FlexFormattingContext {
                 node,
                 LAYOUT_MODE_NORMAL,
                 input,
+                false,
                 &raw mut result,
             )
         };

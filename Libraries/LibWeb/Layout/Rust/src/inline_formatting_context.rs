@@ -14,8 +14,11 @@ use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
 use crate::{
     ffi_stats::FfiOp,
     ffi_stats::bump,
-    formatting_context::{FfiChildLayoutResult, FfiLayoutFcCallbacks, sizing::SizingContext},
+    formatting_context::{
+        FfiChildLayoutResult, FfiLayoutFcCallbacks, block::BlockFormattingContext, sizing::SizingContext,
+    },
 };
+use std::cell::Cell;
 use std::ffi::c_void;
 
 pub(crate) mod ellipsis {
@@ -585,23 +588,23 @@ pub(crate) struct InlineFormattingContext {
     pub(crate) layout_mode: u8,
     pub(crate) input: FfiLayoutInput,
     pub(crate) callbacks: FfiLayoutFcCallbacks,
-    pub(crate) parent: FfiParentBfcCallbacks,
+    parent: *const BlockFormattingContext,
     pub(crate) containing_used_values: *mut UsedValuesCore,
     pub(crate) line_data: *mut LineData,
     pub(crate) fragmented_inlines_in_pre_order: Vec<Node>,
     pub(crate) automatic_content_inline_size: CssPixels,
     pub(crate) automatic_content_block_size: CssPixels,
-    pub(crate) block_axis_float_clearance: CssPixels,
+    block_axis_float_clearance: Cell<CssPixels>,
 }
 
 impl InlineFormattingContext {
-    pub(crate) fn new(
+    pub(crate) fn new_with_rust_parent(
         state: *mut c_void,
         containing_block: Node,
         layout_mode: u8,
         input: FfiLayoutInput,
         callbacks: FfiLayoutFcCallbacks,
-        parent: FfiParentBfcCallbacks,
+        parent: &BlockFormattingContext,
     ) -> Self {
         let containing_facts = state_mut(state).box_facts(&callbacks, containing_block);
         assert!(containing_facts.has_layout_index);
@@ -619,8 +622,16 @@ impl InlineFormattingContext {
             fragmented_inlines_in_pre_order: Vec::new(),
             automatic_content_inline_size: CssPixels::default(),
             automatic_content_block_size: CssPixels::default(),
-            block_axis_float_clearance: CssPixels::default(),
+            block_axis_float_clearance: Cell::new(CssPixels::default()),
         }
+    }
+
+    pub(crate) fn block_axis_float_clearance(&self) -> CssPixels {
+        self.block_axis_float_clearance.get()
+    }
+
+    pub(crate) fn set_block_axis_float_clearance(&self, clearance: CssPixels) {
+        self.block_axis_float_clearance.set(clearance);
     }
 
     pub(crate) fn style(&self, node: Node) -> FfiStyleFacts {
@@ -746,9 +757,8 @@ impl InlineFormattingContext {
     }
 
     pub(crate) fn parent_commit_pending_margin_before_inline_content(&self) -> CssPixels {
-        bump(FfiOp::ParentBfcCommitMarginCallback);
-        // SAFETY: The parent BFC host is live for this inline run.
-        unsafe { (self.parent.commit_pending_margin_before_inline_content)(self.parent.context) }
+        // SAFETY: The parent BFC owns this bounded inline run.
+        unsafe { (*self.parent).commit_pending_margin_before_inline_content() }
     }
 
     pub(crate) fn intrusion_by_floats_into_containing_block(
@@ -757,15 +767,9 @@ impl InlineFormattingContext {
         block_end: CssPixels,
     ) -> FfiSpaceUsedByFloats {
         assert!(self.input.has_content_box_position_in_bfc_root);
-        bump(FfiOp::ParentBfcPendingMarginAdjustmentCallback);
-        // SAFETY: The parent BFC host and containing block are live.
+        // SAFETY: The parent BFC owns this bounded inline run.
         let adjustment = unsafe {
-            (self
-                .parent
-                .block_offset_adjustment_from_pending_ancestor_block_start_margins)(
-                self.parent.context,
-                self.containing_block,
-            )
+            (*self.parent).block_offset_adjustment_from_pending_ancestor_block_start_margins(self.containing_block)
         };
         let rect = FfiCssPixelRect {
             x: self.input.content_box_position_in_bfc_root.x,
@@ -773,9 +777,8 @@ impl InlineFormattingContext {
             width: self.containing_used().content_inline_size,
             height: self.containing_used().content_block_size,
         };
-        bump(FfiOp::ParentBfcIntrusionCallback);
-        // SAFETY: The parent BFC reads its float state synchronously.
-        unsafe { (self.parent.intrusion_by_floats_into_rect)(self.parent.context, rect, block_start, block_end) }
+        // SAFETY: The parent BFC owns this bounded inline run.
+        unsafe { (*self.parent).intrusion_by_floats_into_rect(rect, block_start, block_end) }
     }
 
     pub(crate) fn leftmost_inline_offset_at(&self, block_offset: CssPixels, line_block_size: CssPixels) -> CssPixels {
@@ -813,45 +816,34 @@ impl InlineFormattingContext {
 
     pub(crate) fn next_float_band_block_start_after(&self, block_offset: CssPixels) -> Option<CssPixels> {
         assert!(self.input.has_content_box_position_in_bfc_root);
-        bump(FfiOp::ParentBfcPendingMarginAdjustmentCallback);
-        // SAFETY: The BFC host is live for the run.
+        // SAFETY: The parent BFC owns this bounded inline run.
         let adjustment = unsafe {
-            (self
-                .parent
-                .block_offset_adjustment_from_pending_ancestor_block_start_margins)(
-                self.parent.context,
-                self.containing_block,
-            )
+            (*self.parent).block_offset_adjustment_from_pending_ancestor_block_start_margins(self.containing_block)
         };
         let containing_block_offset_in_root = self.input.content_box_position_in_bfc_root.y + adjustment;
-        let mut next = CssPixels::default();
-        bump(FfiOp::ParentBfcNextFloatBandCallback);
-        // SAFETY: `next` is a valid optional out pointer.
-        let has_next = unsafe {
-            (self.parent.next_float_band_block_start_after)(
-                self.parent.context,
-                containing_block_offset_in_root + block_offset,
-                &raw mut next,
-            )
-        };
-        has_next.then_some(next - containing_block_offset_in_root)
+        // SAFETY: The parent BFC owns this bounded inline run.
+        let next =
+            unsafe { (*self.parent).next_float_band_block_start_after(containing_block_offset_in_root + block_offset) };
+        next.map(|next| next - containing_block_offset_in_root)
     }
 
     fn parent_resolve_used_block_size(&self, node: Node, treated_as_auto: bool, available_space: AvailableSpace) {
-        bump(FfiOp::ParentBfcResolveBlockSizeCallback);
-        let callback = if treated_as_auto {
-            self.parent.resolve_used_block_size_if_treated_as_auto
-        } else {
-            self.parent.resolve_used_block_size_if_not_treated_as_auto
-        };
-        // SAFETY: The host BFC and shared used-values entry are live.
+        // SAFETY: The parent BFC owns this bounded inline run.
         unsafe {
-            callback(
-                self.parent.context,
-                node,
-                available_space,
-                self.input.containing_block_constraints,
-            );
+            if treated_as_auto {
+                (*self.parent).resolve_used_block_size_if_treated_as_auto(
+                    node,
+                    available_space,
+                    self.input.containing_block_constraints,
+                    None,
+                );
+            } else {
+                (*self.parent).resolve_used_block_size_if_not_treated_as_auto(
+                    node,
+                    available_space,
+                    self.input.containing_block_constraints,
+                );
+            }
         }
     }
 
@@ -873,6 +865,7 @@ impl InlineFormattingContext {
                     has_table_grid_min_border_box_block_size: false,
                     table_grid_min_border_box_block_size: CssPixels::default(),
                 },
+                false,
                 &raw mut result,
             )
         }
@@ -909,14 +902,11 @@ impl InlineFormattingContext {
 
         let facts = self.facts(node);
         if facts.is_list_item_marker_box {
-            bump(FfiOp::ParentBfcDimensionMarkerCallback);
-            // SAFETY: Marker dimensioning mutates this live used-values entry.
-            unsafe {
-                (self.parent.dimension_list_item_marker)(self.parent.context, node);
-            }
-            bump(FfiOp::ParentBfcMarkerDistanceCallback);
-            // SAFETY: The marker and its list item are live.
-            let distance = unsafe { (self.parent.distance_between_marker_and_list_item)(self.parent.context, node) };
+            // SAFETY: The parent BFC owns this bounded inline run.
+            let distance = unsafe {
+                (*self.parent).dimension_list_item_marker(node);
+                (*self.parent).distance_between_marker_and_list_item(node)
+            };
             let used = self.used_mut(node);
             if style.direction == crate::css_enums::direction::LTR {
                 used.margin_right += distance;
@@ -1033,24 +1023,14 @@ impl InlineFormattingContext {
     }
 
     fn clear_floating_boxes(&self, node: Node) -> bool {
-        bump(FfiOp::ParentBfcClearFloatsCallback);
-        // SAFETY: The host synchronously accesses this raw IFC instance only
-        // through the clearance exports.
-        unsafe {
-            (self.parent.clear_floating_boxes)(
-                self.parent.context,
-                node,
-                self as *const Self as *mut c_void,
-                self.input.content_box_position_in_bfc_root,
-            )
-        }
+        // SAFETY: The parent BFC owns this bounded inline run.
+        unsafe { (*self.parent).clear_floating_boxes(node, Some(self), self.input.content_box_position_in_bfc_root) }
     }
 
     fn reset_parent_margin_state(&self) {
-        bump(FfiOp::ParentBfcResetMarginCallback);
-        // SAFETY: The parent BFC is live for the run.
+        // SAFETY: The parent BFC owns this bounded inline run.
         unsafe {
-            (self.parent.reset_margin_state)(self.parent.context);
+            (*self.parent).reset_margin_state();
         }
     }
 
@@ -1114,7 +1094,7 @@ impl InlineFormattingContext {
                 iterator::ItemType::ForcedBreak => {
                     line_builder.break_line(line_builder::ForcedBreak::Yes, None);
                     if !item.node.is_null() && self.clear_floating_boxes(item.node) {
-                        line_builder.did_introduce_clearance(self.block_axis_float_clearance);
+                        line_builder.did_introduce_clearance(self.block_axis_float_clearance.get());
                         self.reset_parent_margin_state();
                     }
                 }
@@ -1144,15 +1124,13 @@ impl InlineFormattingContext {
                     leading_border += item.border_start;
                     leading_padding += item.padding_start;
                     line_builder.finish_current_line_before_block_level_box();
-                    bump(FfiOp::ParentBfcInterruptingBlockCallback);
-                    // SAFETY: The raw line-builder instance supports the
-                    // bounded re-entrant exports used by this callback.
+                    // SAFETY: The parent BFC owns this bounded inline run.
                     unsafe {
-                        (self.parent.layout_interrupting_block_inside_inline_context)(
-                            self.parent.context,
+                        (*self.parent).layout_interrupting_block_inside_inline_context(
                             item.node,
+                            self.containing_block,
                             self.input,
-                            line_builder_pointer,
+                            line_builder_pointer.cast(),
                         );
                     }
                 }
@@ -1176,16 +1154,14 @@ impl InlineFormattingContext {
                     line_builder.set_unbreakable_run_inline_size_interrupted_by_float(
                         iterator.next_non_whitespace_sequence_inline_size(),
                     );
-                    bump(FfiOp::ParentBfcLayoutFloatCallback);
-                    // SAFETY: The callback may re-enter only through the raw
-                    // builder and IFC exports; no Rust borrow crosses it.
+                    // SAFETY: The parent BFC owns this bounded inline run.
                     unsafe {
-                        (self.parent.layout_floating_box)(
-                            self.parent.context,
+                        (*self.parent).layout_floating_box(
                             item.node,
+                            self.containing_block,
                             self.input,
                             CssPixels::default(),
-                            line_builder_pointer,
+                            Some(line_builder_pointer.cast()),
                         );
                     }
                 }
@@ -1345,12 +1321,9 @@ impl InlineFormattingContext {
                 .iter()
                 .fold(CssPixels::default(), |sum, line| sum + line.physical_vertical_extent())
         };
-        bump(FfiOp::ParentBfcGreatestInlineSizeCallback);
-        // SAFETY: The BFC reads the completed line store through summary
-        // exports and includes its own float state.
-        self.automatic_content_inline_size = unsafe {
-            (self.parent.greatest_child_inline_size_including_floats)(self.parent.context, self.containing_block)
-        };
+        // SAFETY: The parent BFC owns this bounded inline run.
+        self.automatic_content_inline_size =
+            unsafe { (*self.parent).greatest_child_inline_size_including_floats(self.containing_block) };
         bump(FfiOp::ComputeBaselinesCallback);
         // SAFETY: The host baseline helper reads the completed line store.
         unsafe {
@@ -1408,37 +1381,6 @@ pub struct FfiCssPixelRect {
 pub struct FfiSpaceUsedByFloats {
     pub left: CssPixels,
     pub right: CssPixels,
-}
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub struct FfiParentBfcCallbacks {
-    pub context: *mut c_void,
-    pub intrusion_by_floats_into_rect:
-        unsafe extern "C" fn(*mut c_void, FfiCssPixelRect, CssPixels, CssPixels) -> FfiSpaceUsedByFloats,
-    pub next_float_band_block_start_after: unsafe extern "C" fn(*mut c_void, CssPixels, *mut CssPixels) -> bool,
-    pub block_offset_adjustment_from_pending_ancestor_block_start_margins:
-        unsafe extern "C" fn(*mut c_void, *mut c_void) -> CssPixels,
-    pub greatest_child_inline_size_including_floats: unsafe extern "C" fn(*mut c_void, *mut c_void) -> CssPixels,
-    pub clear_floating_boxes: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, FfiCssPixelPoint) -> bool,
-    pub reset_margin_state: unsafe extern "C" fn(*mut c_void),
-    pub commit_pending_margin_before_inline_content: unsafe extern "C" fn(*mut c_void) -> CssPixels,
-    pub layout_interrupting_block_inside_inline_context:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, FfiLayoutInput, *mut c_void),
-    pub layout_floating_box: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiLayoutInput, CssPixels, *mut c_void),
-    pub resolve_used_block_size_if_not_treated_as_auto:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSpace, FfiContainingBlockConstraints),
-    pub resolve_used_block_size_if_treated_as_auto:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSpace, FfiContainingBlockConstraints),
-    pub dimension_list_item_marker: unsafe extern "C" fn(*mut c_void, *mut c_void),
-    pub distance_between_marker_and_list_item: unsafe extern "C" fn(*mut c_void, *mut c_void) -> CssPixels,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-pub struct FfiInlineLayoutResult {
-    pub automatic_content_inline_size: CssPixels,
-    pub automatic_content_block_size: CssPixels,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1505,7 +1447,7 @@ pub struct FfiLineSinkCallbacks {
     pub emit_inline_box_piece: unsafe extern "C" fn(*mut c_void, FfiInlineBoxPiece),
 }
 
-fn line_physical_horizontal_extent(line: &line_box::LineBoxData) -> CssPixels {
+pub(crate) fn line_physical_horizontal_extent(line: &line_box::LineBoxData) -> CssPixels {
     if line.has_block_level_box || line.writing_mode == crate::css_enums::writing_mode::HORIZONTAL_TB {
         return line.inline_length;
     }
@@ -1555,133 +1497,6 @@ fn line_rect(line: &line_box::LineBoxData, content_inline_size: CssPixels) -> Ff
         width: right - left,
         height: bottom - top,
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_run_inline_formatting_context(
-    state: *mut c_void,
-    containing_block: Node,
-    layout_mode: u8,
-    input: FfiLayoutInput,
-    callbacks: *const FfiLayoutFcCallbacks,
-    parent: *const FfiParentBfcCallbacks,
-    out: *mut FfiInlineLayoutResult,
-) -> bool {
-    abort_on_panic(|| {
-        assert!(!state.is_null());
-        assert!(!containing_block.is_null());
-        assert!(!callbacks.is_null());
-        assert!(!parent.is_null());
-        assert!(!out.is_null());
-        // SAFETY: Both callback tables are live and copied before callbacks.
-        let callbacks = unsafe { *callbacks };
-        let parent = unsafe { *parent };
-        let fact_build_counts = crate::ffi_stats::fact_build_counts();
-        let mut context = Box::new(InlineFormattingContext::new(
-            state,
-            containing_block,
-            layout_mode,
-            input,
-            callbacks,
-            parent,
-        ));
-        // Root facts, including the non-anonymous style owner consulted by an
-        // anonymous wrapper, are IFC setup overhead rather than facts for a
-        // visited descendant. Keep the pre-flip fact-build counter semantics
-        // while retaining those entries in the shared per-pass caches.
-        context.style(containing_block);
-        if context.facts(containing_block).is_anonymous {
-            // SAFETY: The host returns the live percentage/style owner.
-            let non_anonymous = unsafe {
-                (context.callbacks.non_anonymous_containing_block)(context.callbacks.context, containing_block)
-            };
-            if !non_anonymous.is_null() {
-                context.style(non_anonymous);
-            }
-        }
-        crate::ffi_stats::exclude_inline_root_fact_builds(fact_build_counts);
-        context.run();
-        // SAFETY: `out` is a valid caller-owned result slot.
-        unsafe {
-            out.write(FfiInlineLayoutResult {
-                automatic_content_inline_size: context.automatic_content_inline_size,
-                automatic_content_block_size: context.automatic_content_block_size,
-            });
-        }
-        true
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_line_builder_current_block_offset(line_builder: *mut c_void) -> CssPixels {
-    abort_on_panic(|| {
-        assert!(!line_builder.is_null());
-        // SAFETY: The pointer is live only during its parent callback.
-        unsafe { (*line_builder.cast::<line_builder::LineBuilder>()).current_block_offset() }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_line_builder_append_block_level_box(
-    line_builder: *mut c_void,
-    box_: *mut c_void,
-    block_end: CssPixels,
-    block_end_margin: CssPixels,
-) {
-    abort_on_panic(|| {
-        assert!(!line_builder.is_null());
-        // SAFETY: The parent callback has exclusive logical access.
-        unsafe {
-            (*line_builder.cast::<line_builder::LineBuilder>()).append_block_level_box(
-                box_,
-                block_end,
-                block_end_margin,
-            );
-        }
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_line_builder_ceiling_for_float(
-    line_builder: *mut c_void,
-    box_: *mut c_void,
-) -> CssPixels {
-    abort_on_panic(|| {
-        assert!(!line_builder.is_null());
-        // SAFETY: The pointer is live only during the float callback.
-        unsafe { (*line_builder.cast::<line_builder::LineBuilder>()).ceiling_for_float_to_be_inserted_here(box_) }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_line_builder_recalculate_available_space(line_builder: *mut c_void) {
-    abort_on_panic(|| {
-        assert!(!line_builder.is_null());
-        // SAFETY: The pointer is live only during the float callback.
-        unsafe {
-            (*line_builder.cast::<line_builder::LineBuilder>()).recalculate_available_space();
-        }
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_inline_fc_block_axis_float_clearance(inline_fc: *mut c_void) -> CssPixels {
-    abort_on_panic(|| {
-        assert!(!inline_fc.is_null());
-        // SAFETY: The IFC is live for its parent callback.
-        unsafe { (*inline_fc.cast::<InlineFormattingContext>()).block_axis_float_clearance }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_inline_fc_set_block_axis_float_clearance(inline_fc: *mut c_void, clearance: CssPixels) {
-    abort_on_panic(|| {
-        assert!(!inline_fc.is_null());
-        // SAFETY: The IFC is live for its parent callback.
-        unsafe {
-            (*inline_fc.cast::<InlineFormattingContext>()).block_axis_float_clearance = clearance;
-        }
-    });
 }
 
 #[unsafe(no_mangle)]

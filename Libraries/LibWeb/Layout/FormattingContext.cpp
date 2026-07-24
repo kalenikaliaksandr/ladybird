@@ -11,14 +11,11 @@
 #include <LibWeb/DOM/AbstractElement.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
-#include <LibWeb/DOM/ShadowRoot.h>
 #include <LibWeb/Dump.h>
 #include <LibWeb/HTML/HTMLElement.h>
 #include <LibWeb/HTML/HTMLInputElement.h>
-#include <LibWeb/Layout/BlockFormattingContext.h>
 #include <LibWeb/Layout/Box.h>
 #include <LibWeb/Layout/FormattingContext.h>
-#include <LibWeb/Layout/ListItemMarkerBox.h>
 #include <LibWeb/Layout/ReplacedBox.h>
 #include <LibWeb/Layout/ReplacedWithChildrenFormattingContext.h>
 #include <LibWeb/Layout/RustFormattingContext.h>
@@ -252,44 +249,6 @@ void FormattingContext::place_child(Box const& child, CSSPixelPoint content_offs
     m_state.get_mutable(child).place(content_offset);
 }
 
-void FormattingContext::dimension_list_item_marker(ListItemMarkerBox const& marker)
-{
-    auto& marker_state = m_state.get_mutable(marker);
-
-    if (auto const* list_style_image = marker.list_style_image()) {
-        marker_state.set_content_inline_size(list_style_image->natural_width(marker.document()).value_or(0));
-        marker_state.set_content_block_size(list_style_image->natural_height(marker.document()).value_or(0));
-        return;
-    }
-
-    auto marker_size = marker.relative_size();
-    marker_state.set_content_block_size(marker_size);
-
-    auto const& marker_font = marker.first_available_font();
-    if (auto marker_text = marker.text(); marker_text.has_value()) {
-        // FIXME: Use per-code-point fonts to measure text.
-        auto text_inline_size = marker_font.width(marker_text.value());
-        marker_state.set_content_inline_size(CSSPixels::nearest_value_for(text_inline_size));
-    } else {
-        marker_state.set_content_inline_size(marker_size);
-    }
-}
-
-CSSPixels FormattingContext::distance_between_marker_and_list_item(ListItemMarkerBox const& marker)
-{
-    if (marker.text().has_value())
-        return 0;
-    return CSSPixels::nearest_value_for(.5f * marker.first_available_font().pixel_size());
-}
-
-bool FormattingContext::computed_block_size_establishes_definite_containing_block_size(CSS::Size const& computed_block_size)
-{
-    // A resolved used block size is not always a definite containing block size.
-    // Intrinsic sizing keywords like fit-content still depend on child layout,
-    // so percentage-sized descendants must continue to treat it as indefinite.
-    return !computed_block_size.is_intrinsic_sizing_constraint();
-}
-
 // https://developer.mozilla.org/en-US/docs/Web/Guide/CSS/Block_formatting_context
 bool FormattingContext::creates_block_formatting_context(Box const& box)
 {
@@ -510,7 +469,7 @@ OwnPtr<FormattingContext> FormattingContext::create_independent_formatting_conte
 
     switch (type.value()) {
     case Type::Block:
-        return make<BlockFormattingContext>(state, layout_mode, as<BlockContainer>(child_box), parent);
+        VERIFY_NOT_REACHED();
     case Type::SVG:
         VERIFY_NOT_REACHED();
     case Type::Flex:
@@ -539,8 +498,8 @@ NonnullOwnPtr<FormattingContext> FormattingContext::create_independent_formattin
     if (auto context = create_independent_formatting_context_if_needed(state, layout_mode, child_box, parent))
         return context.release_nonnull();
 
-    if (auto child_block_container = as_if<BlockContainer>(child_box))
-        return make<BlockFormattingContext>(state, layout_mode, *child_block_container, nullptr);
+    if (is<BlockContainer>(child_box))
+        return make<RustFormattingContext>(Type::Block, layout_mode, state, child_box, nullptr);
 
     // HACK: Instead of crashing in scenarios that assume the formatting context can be created, create a dummy formatting context that does nothing.
     dbgln("FIXME: An independent formatting context was requested from a Box that does not have a formatting context type. A dummy formatting context will be created instead.");
@@ -582,34 +541,6 @@ OwnPtr<FormattingContext> FormattingContext::layout_inside(Box const& child_box,
         run(layout_input);
 
     return independent_formatting_context;
-}
-
-CSSPixels FormattingContext::greatest_child_inline_size(Box const& box) const
-{
-    CSSPixels max_inline_size = 0;
-    if (box.children_are_inline()) {
-        auto line_count = m_state.rust_line_count(box);
-        for (size_t line_index = 0; line_index < line_count; ++line_index) {
-            auto summary = m_state.rust_line_summary(box, line_index);
-            VERIFY(summary.has_value());
-            max_inline_size = max(max_inline_size, CSSPixels::from_raw(summary->physical_horizontal_extent));
-        }
-    } else {
-        box.for_each_child_of_type<Box>([&](Box const& child) {
-            if (!child.is_absolutely_positioned())
-                max_inline_size = max(max_inline_size, m_state.get(child).margin_box_inline_size());
-            return IterationDecision::Continue;
-        });
-    }
-    return max_inline_size;
-}
-
-FormattingContext::ShrinkToFitInlineSizeResult FormattingContext::calculate_shrink_to_fit_inline_sizes(Box const& box, ContainingBlockConstraints const& containing_block_constraints)
-{
-    return {
-        .preferred_inline_size = calculate_max_content_inline_size(box, containing_block_constraints),
-        .preferred_minimum_inline_size = calculate_min_content_inline_size(box, containing_block_constraints),
-    };
 }
 
 LogicalSize FormattingContext::solve_replaced_size_constraint(CSSPixels input_inline_size, CSSPixels input_block_size, Box const& box, AvailableSpace const& available_space, ContainingBlockConstraints const& containing_block_constraints) const
@@ -654,70 +585,6 @@ LogicalSize FormattingContext::solve_replaced_size_constraint(CSSPixels input_in
         return { min(content_inline_size_from_aspect_ratio(box, box_state, min_block_size), max_inline_size), min_block_size };
 
     return { input_inline_size, input_block_size };
-}
-
-// https://www.w3.org/TR/CSS22/visudet.html#root-height
-CSSPixels FormattingContext::compute_automatic_block_size_for_block_formatting_context_root(Box const& root) const
-{
-    // 10.6.7 'Auto' heights for block formatting context roots
-    Optional<CSSPixels> top;
-    Optional<CSSPixels> bottom;
-
-    if (root.children_are_inline()) {
-        // If it only has inline-level children, the block size is the distance between
-        // the top content edge and the bottom of the bottommost line box.
-        top = 0;
-        auto line_count = m_state.rust_line_count(root);
-        if (line_count > 0) {
-            auto last_line = m_state.rust_line_summary(root, line_count - 1);
-            VERIFY(last_line.has_value());
-            bottom = CSSPixels::from_raw(last_line->physical_vertical_end);
-            // A trailing interrupting block's bottom margin cannot collapse out of a BFC root,
-            // so it contributes to the root's automatic block size. The line box bottom excludes it.
-            if (last_line->has_block_level_box)
-                bottom = max(CSSPixels(0), bottom.value() + CSSPixels::from_raw(last_line->block_level_box_block_end_margin));
-        }
-    } else {
-        // If it has block-level children, the block size is the distance between
-        // the top margin-edge of the topmost block-level child box
-        // and the bottom margin-edge of the bottommost block-level child box.
-
-        // NOTE: The top margin edge of the topmost block-level child box is the same as the top content edge of the root box.
-        top = 0;
-
-        root.for_each_child_of_type<Box>([&](Layout::Box& child_box) {
-            // Absolutely positioned children are ignored,
-            // and relatively positioned boxes are considered without their offset.
-            // Note that the child box may be an anonymous block box.
-            if (child_box.is_absolutely_positioned())
-                return IterationDecision::Continue;
-
-            if (child_box.is_floating())
-                return IterationDecision::Continue;
-
-            // Children that have not been laid out yet contribute nothing to the automatic block size.
-            auto const* child_box_state = m_state.try_get(child_box);
-            if (!child_box_state)
-                return IterationDecision::Continue;
-
-            CSSPixels child_box_bottom = child_box_state->content_logical_offset().block_offset + child_box_state->content_block_size() + child_box_state->margin_box_bottom();
-
-            if (!bottom.has_value() || child_box_bottom > bottom.value())
-                bottom = child_box_bottom;
-
-            return IterationDecision::Continue;
-        });
-    }
-
-    // In addition, if the element has any floating descendants
-    // whose bottom margin edge is below the element's bottom content edge,
-    // then the block size is increased to include those edges.
-    if (auto lowest_float_bottom_margin_edge = m_state.get(root).lowest_floating_descendant_bottom_margin_edge(); lowest_float_bottom_margin_edge.has_value()) {
-        if (!bottom.has_value() || *lowest_float_bottom_margin_edge > bottom.value())
-            bottom = lowest_float_bottom_margin_edge;
-    }
-
-    return max(CSSPixels(0.0f), bottom.value_or(0) - top.value_or(0));
 }
 
 CSSPixels FormattingContext::measure_automatic_content_block_size(Box const& box, AvailableSpace const& inner_available_space, ContainingBlockConstraints const& containing_block_constraints)
@@ -2005,57 +1872,6 @@ CSSPixelRect FormattingContext::content_box_rect(LayoutState::UsedValues const& 
     return CSSPixelRect { used_values.content_offset(), used_values.content_size() };
 }
 
-CSSPixelRect FormattingContext::content_box_rect_in_ancestor_coordinate_space(LayoutState::UsedValues const& used_values, Box const& ancestor_box) const
-{
-    CSSPixelRect rect = { { 0, 0 }, used_values.content_size() };
-    for (auto const* current = &used_values; current;) {
-        if (&current->node() == &ancestor_box)
-            return rect;
-        rect.translate_by(current->content_offset());
-        auto const* containing_block = current->node().containing_block();
-        if (!containing_block)
-            break;
-        current = &m_state.get(*containing_block);
-    }
-    // If we get here, ancestor_box was not a containing block ancestor of `box`!
-    VERIFY_NOT_REACHED();
-}
-
-bool FormattingContext::box_is_sized_as_replaced_element(Box const& box, AvailableSpace const& available_space, ContainingBlockConstraints const& containing_block_constraints) const
-{
-    if (box.has_replaced_element_table_display_adjustment())
-        return true;
-
-    // When a box has a preferred aspect ratio, its automatic sizes are calculated the same as for a
-    // replaced element with a natural aspect ratio and no natural size in that axis, see e.g. CSS2 §10
-    // and CSS Flexible Box Model Level 1 §9.2.
-    // https://drafts.csswg.org/css-sizing-4/#aspect-ratio-automatic
-    if (box.is_replaced_box() && box.has_auto_content_box_size())
-        return true;
-
-    if (box.has_preferred_aspect_ratio() || box.has_auto_content_box_size()) {
-        // From CSS2:
-        // If height and width both have computed values of auto and the element has an intrinsic ratio but no intrinsic height or width,
-        // then the used value of width is undefined in CSS 2.
-        // However, it is suggested that, if the containing block’s width does not itself depend on the replaced element’s width,
-        // then the used value of width is calculated from the constraint equation used for block-level, non-replaced elements in normal flow.
-
-        // AD-HOC: If box has preferred aspect ratio but width and height are not specified, then we should
-        //         size it as a normal box to match other browsers.
-
-        auto auto_size = box.auto_content_box_size();
-        if (should_treat_inline_size_as_auto(box, available_space)
-            && should_treat_block_size_as_auto(box, available_space, containing_block_constraints)
-            && !auto_size.has_width()
-            && !auto_size.has_height()) {
-            return false;
-        }
-        return true;
-    }
-
-    return false;
-}
-
 bool FormattingContext::should_treat_max_inline_size_as_none(Box const& box, AvailableSize const& available_inline_size, ContainingBlockConstraints const& containing_block_constraints) const
 {
     auto const& max_inline_size = box.computed_values().max_width();
@@ -2141,13 +1957,6 @@ FormattingContext::CyclicPercentageIntrinsicContribution FormattingContext::cycl
     }
 
     return CyclicPercentageIntrinsicContribution::NotCyclic;
-}
-
-CSSPixels FormattingContext::gap_to_px(Variant<CSS::LengthPercentage, CSS::NormalGap> const& gap, CSSPixels reference_value) const
-{
-    return gap.visit(
-        [](CSS::NormalGap) { return CSSPixels(0); },
-        [&](auto const& gap) { return gap.to_px(reference_value); });
 }
 
 }

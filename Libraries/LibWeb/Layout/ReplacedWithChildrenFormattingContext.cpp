@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibWeb/Layout/BlockFormattingContext.h>
 #include <LibWeb/Layout/ReplacedWithChildrenFormattingContext.h>
 
 namespace Web::Layout {
@@ -48,7 +47,7 @@ void ReplacedWithChildrenFormattingContext::run(LayoutInput const& layout_input)
     auto& wrapper_state = m_state.create(*wrapper, wrapper_constraints.percentage_basis_inline_size, wrapper_constraints.percentage_basis_block_size);
     wrapper_state.set_content_inline_size(content_inline_size);
 
-    auto bfc = make<BlockFormattingContext>(m_state, m_layout_mode, *wrapper, this);
+    auto bfc = create_independent_formatting_context(m_state, m_layout_mode, *wrapper, this);
     bfc->run(LayoutInput { child_available_space, wrapper_constraints });
 
     m_automatic_content_inline_size = content_inline_size;

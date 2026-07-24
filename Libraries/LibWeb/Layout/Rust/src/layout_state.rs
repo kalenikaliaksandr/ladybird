@@ -14,7 +14,7 @@ use crate::formatting_context::{FfiLayoutFcCallbacks, FfiTableBoxFacts};
 use crate::geometry::LogicalRect;
 use crate::style_facts::FfiStyleFacts;
 use crate::used_values::UsedValuesCore;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr::null_mut;
@@ -257,7 +257,14 @@ pub(crate) struct LayoutState {
     grid_facts: PagedStore<GridStyleFacts>,
     text_facts: HashMap<usize, TextNodeFacts>,
     line_data: PagedStore<LineData>,
+    block_rare_data: PagedStore<BlockRareData>,
     layout_indices_by_node: HashMap<usize, u32>,
+    bfc_root_fact_builds_excluded: HashSet<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BlockRareData {
+    pub(crate) lowest_floating_descendant_bottom_margin_edge: Option<crate::css_pixels::CssPixels>,
 }
 
 #[derive(Default)]
@@ -315,6 +322,26 @@ impl LayoutState {
             }
         }
         self.build_box_facts(callbacks, node)
+    }
+
+    pub(crate) fn set_box_is_grid_item(
+        &mut self,
+        callbacks: &FfiLayoutFcCallbacks,
+        node: *mut c_void,
+        is_grid_item: bool,
+    ) {
+        let index = self.layout_index(callbacks, node);
+        let facts = self.box_facts.get(index);
+        assert!(!facts.is_null());
+        // SAFETY: The cached facts entry is uniquely owned by this layout state
+        // and remains stable for its lifetime.
+        unsafe {
+            (*facts).is_grid_item = is_grid_item;
+        }
+    }
+
+    pub(crate) fn mark_bfc_root_fact_builds_excluded(&mut self, layout_index: u32) -> bool {
+        self.bfc_root_fact_builds_excluded.insert(layout_index)
     }
 
     pub(crate) fn style_facts(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> FfiStyleFacts {
@@ -444,6 +471,27 @@ impl LayoutState {
             // SAFETY: The entry is uniquely accessed through this state.
             Some(unsafe { &mut *data })
         }
+    }
+
+    pub(crate) fn block_rare_data(&self, layout_index: u32) -> Option<&BlockRareData> {
+        let data = self.block_rare_data.get(layout_index);
+        if data.is_null() {
+            None
+        } else {
+            // SAFETY: Non-null store entries remain valid for the state.
+            Some(unsafe { &*data })
+        }
+    }
+
+    pub(crate) fn block_rare_data_mut(&mut self, layout_index: u32) -> &mut BlockRareData {
+        let data = self.block_rare_data.get(layout_index);
+        let data = if data.is_null() {
+            self.block_rare_data.allocate(layout_index, BlockRareData::default())
+        } else {
+            data
+        };
+        // SAFETY: The entry is uniquely accessed through this mutable state.
+        unsafe { &mut *data }
     }
 
     pub(crate) fn used_values_by_index(&self, layout_index: u32) -> Option<&UsedValuesCore> {

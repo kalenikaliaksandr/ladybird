@@ -8,7 +8,7 @@ use crate::abort_on_panic;
 use crate::box_facts::{FfiLayoutBoxFacts, FfiLayoutNavCallbacks};
 use crate::css_pixels::CssPixels;
 use crate::ffi_stats::{FfiOp, bump};
-use crate::geometry::{AvailableSize, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput, LogicalOffset};
+use crate::geometry::{AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput};
 use crate::layout_state::{FfiStaticPositionAlignment, FfiStaticPositionRect, state_mut};
 use crate::style_facts::FfiStyleFacts;
 use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
@@ -21,6 +21,7 @@ pub(crate) mod abspos {
      * SPDX-License-Identifier: BSD-2-Clause
      */
 
+    use super::block;
     use super::grid::GridFormattingContext;
     use super::sizing::{Node, SizingContext};
     use super::{FfiChildLayoutResult, FfiFlexAxis, FfiFormattingContextType, FfiLayoutFcCallbacks};
@@ -1698,12 +1699,11 @@ pub(crate) mod abspos {
                 if pass == BlockSizePass::BeforeInsideLayout {
                     return None;
                 }
-                bump(FfiOp::AbsposAutomaticBlockSizeCallback);
-                // SAFETY: The callback reads the live C++ line/rare data that has
-                // no Rust representation yet.
-                return Some(unsafe {
-                    (self.callbacks.automatic_block_size_for_abspos_bfc_root)(self.callbacks.context, node)
-                });
+                return Some(block::automatic_block_size_for_bfc_root(
+                    self.state,
+                    self.callbacks,
+                    node,
+                ));
             }
             let inner = self
                 .used(node)
@@ -2182,6 +2182,7 @@ pub(crate) mod abspos {
                         has_table_grid_min_border_box_block_size: false,
                         table_grid_min_border_box_block_size: CssPixels::default(),
                     },
+                    false,
                     &raw mut child_result,
                 )
             };
@@ -2544,6 +2545,8 @@ pub(crate) mod abspos {
     }
 }
 
+#[path = "block_formatting_context.rs"]
+pub(crate) mod block;
 #[path = "flex_formatting_context.rs"]
 pub(crate) mod flex;
 #[path = "grid_formatting_context.rs"]
@@ -2574,6 +2577,7 @@ pub(crate) mod sizing {
     pub(crate) type Node = *mut c_void;
 
     const BOX_SIZING_BORDER_BOX: u8 = 0;
+    const LAYOUT_MODE_INTRINSIC_SIZING: u8 = 1;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) enum CyclicPercentageIntrinsicContribution {
@@ -2637,11 +2641,26 @@ pub(crate) mod sizing {
         }
 
         fn run(&self, node: Node, input: FfiLayoutInput) -> super::FfiChildLayoutResult {
+            self.run_with_layout_mode(node, LAYOUT_MODE_INTRINSIC_SIZING, input)
+        }
+
+        fn run_with_layout_mode(
+            &self,
+            node: Node,
+            layout_mode: u8,
+            input: FfiLayoutInput,
+        ) -> super::FfiChildLayoutResult {
             bump(FfiOp::MeasurementContextRunCallback);
             // SAFETY: The C++ measurement wrapper, node, and input remain live
             // for this synchronous dispatcher call.
             unsafe {
-                (self.callbacks.run_measurement_context)(self.callbacks.context, self.handles.cpp_state, node, input)
+                (self.callbacks.run_measurement_context)(
+                    self.callbacks.context,
+                    self.handles.cpp_state,
+                    node,
+                    layout_mode,
+                    input,
+                )
             }
         }
     }
@@ -4170,6 +4189,30 @@ pub(crate) mod sizing {
             value
         }
 
+        pub(crate) fn measure_automatic_content_block_size(
+            &self,
+            node: Node,
+            layout_mode: u8,
+            inner_available_space: AvailableSpace,
+            constraints: FfiContainingBlockConstraints,
+        ) -> CssPixels {
+            let measurement = MeasurementState::create(self.callbacks, node, constraints);
+            measurement
+                .run_with_layout_mode(
+                    node,
+                    layout_mode,
+                    FfiLayoutInput {
+                        available_space: inner_available_space,
+                        containing_block_constraints: constraints,
+                        has_content_box_position_in_bfc_root: false,
+                        content_box_position_in_bfc_root: Default::default(),
+                        has_table_grid_min_border_box_block_size: false,
+                        table_grid_min_border_box_block_size: CssPixels::default(),
+                    },
+                )
+                .automatic_content_block_size
+        }
+
         pub(crate) fn calculate_fit_content_size(
             &self,
             node: Node,
@@ -4474,13 +4517,6 @@ pub struct FfiMeasuredCellContent {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
-pub struct FfiCaptionLayoutResult {
-    pub margin_box_block_size: CssPixels,
-    pub pending_table_block_offset: CssPixels,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
 pub struct FfiMeasurementState {
     pub cpp_state: *mut c_void,
     pub rust_state: *mut c_void,
@@ -4642,31 +4678,15 @@ pub struct FfiLayoutFcCallbacks {
     pub set_resolved_anchor_insets: unsafe extern "C" fn(*mut c_void, *mut c_void, abspos::FfiResolvedAnchorInsets),
     pub set_default_scroll_shift: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, bool, bool),
     pub layout_inside_child:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, u8, FfiLayoutInput, *mut FfiChildLayoutResult) -> bool,
+        unsafe extern "C" fn(*mut c_void, *mut c_void, u8, FfiLayoutInput, bool, *mut FfiChildLayoutResult) -> bool,
     pub parent_did_dimension_child_root_box: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub discard_child_context: unsafe extern "C" fn(*mut c_void, *mut c_void),
-    pub calculate_min_content_inline_size:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, FfiContainingBlockConstraints) -> CssPixels,
-    pub calculate_max_content_inline_size:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, FfiContainingBlockConstraints) -> CssPixels,
-    pub calculate_min_content_block_size:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, CssPixels, FfiContainingBlockConstraints) -> CssPixels,
-    pub calculate_max_content_block_size:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, CssPixels, FfiContainingBlockConstraints) -> CssPixels,
     pub set_table_cell_coordinates: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, usize, usize, usize),
     pub set_override_borders_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const FfiBordersData),
     pub place_child: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiCssPixelPoint),
     pub box_baseline: unsafe extern "C" fn(*mut c_void, *mut c_void, u8) -> CssPixels,
     pub compute_and_store_baselines: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub layout_absolutely_positioned_children: unsafe extern "C" fn(*mut c_void, *mut c_void),
-    pub layout_table_caption: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        u8,
-        AvailableSpace,
-        FfiContainingBlockConstraints,
-        *mut FfiCaptionLayoutResult,
-    ) -> bool,
     pub measure_table_cell_content: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -4675,44 +4695,14 @@ pub struct FfiLayoutFcCallbacks {
         AvailableSpace,
         *mut FfiMeasuredCellContent,
     ) -> bool,
-    pub should_treat_max_inline_size_as_none:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSize, FfiContainingBlockConstraints) -> bool,
-    pub calculate_inner_inline_size:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSize, FfiContainingBlockConstraints) -> CssPixels,
-    pub constraints_for_child_context:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, FfiContainingBlockConstraints) -> FfiContainingBlockConstraints,
     pub can_skip_is_anonymous_text_run: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
     pub set_flex_item: unsafe extern "C" fn(*mut c_void, *mut c_void, bool),
     pub set_grid_item: unsafe extern "C" fn(*mut c_void, *mut c_void, bool),
-    pub calculate_fit_content_size: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        FfiFlexAxis,
-        AvailableSpace,
-        FfiContainingBlockConstraints,
-    ) -> CssPixels,
-    pub calculate_inner_size_for_property: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        FfiFlexAxis,
-        FfiFlexSizeProperty,
-        AvailableSpace,
-        FfiContainingBlockConstraints,
-    ) -> CssPixels,
-    pub should_treat_size_as_auto: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        FfiFlexAxis,
-        AvailableSpace,
-        FfiContainingBlockConstraints,
-    ) -> bool,
-    pub should_treat_max_block_size_as_none:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSize, FfiContainingBlockConstraints) -> bool,
     pub create_measurement_state:
         unsafe extern "C" fn(*mut c_void, *mut c_void, FfiContainingBlockConstraints) -> FfiMeasurementState,
     pub destroy_measurement_state: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub run_measurement_context:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, FfiLayoutInput) -> FfiChildLayoutResult,
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, u8, FfiLayoutInput) -> FfiChildLayoutResult,
     pub intrinsic_size_cache_get: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -4737,7 +4727,6 @@ pub struct FfiLayoutFcCallbacks {
     pub compute_inset: unsafe extern "C" fn(*mut c_void, *mut c_void, CssPixels, CssPixels),
     pub make_button_content_box_definite:
         unsafe extern "C" fn(*mut c_void, *mut c_void, AvailableSpace, FfiContainingBlockConstraints),
-    pub automatic_block_size_for_abspos_bfc_root: unsafe extern "C" fn(*mut c_void, *mut c_void) -> CssPixels,
     pub set_flex_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const FfiFlexLayoutData),
     pub set_grid_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const grid::facts::FfiGridLayoutData),
     pub set_used_grid_template_tracks: unsafe extern "C" fn(
@@ -4755,12 +4744,12 @@ pub(crate) struct FormattingContextInstance {
     fc_type: u8,
     layout_mode: u8,
     callbacks: FfiLayoutFcCallbacks,
+    block_context: Option<Box<block::BlockFormattingContext>>,
     grid_context: Option<Box<grid::GridFormattingContext>>,
     svg_context: Option<Box<svg::SvgFormattingContext>>,
     should_collect_devtools_layout_data: bool,
     automatic_content_inline_size: CssPixels,
     automatic_content_block_size: CssPixels,
-    pending_table_box_content_offset_in_wrapper: LogicalOffset,
 }
 
 fn instance_mut(fc: *mut c_void) -> &'static mut FormattingContextInstance {
@@ -4768,6 +4757,24 @@ fn instance_mut(fc: *mut c_void) -> &'static mut FormattingContextInstance {
     // SAFETY: FC pointers are created below, owned by one C++ shim, and
     // returned for destruction exactly once.
     unsafe { &mut *fc.cast::<FormattingContextInstance>() }
+}
+
+pub(crate) fn instance_ref(fc: *mut c_void) -> &'static FormattingContextInstance {
+    assert!(!fc.is_null());
+    // SAFETY: Formatting-context handles remain live until their single
+    // matching destroy call.
+    unsafe { &*fc.cast::<FormattingContextInstance>() }
+}
+
+pub(crate) fn block_context_for_fc(fc: *mut c_void) -> Option<&'static block::BlockFormattingContext> {
+    if fc.is_null() {
+        return None;
+    }
+    let instance = instance_ref(fc);
+    if instance.fc_type != FfiFormattingContextType::Block as u8 {
+        return None;
+    }
+    instance.block_context.as_deref()
 }
 
 pub(crate) fn formatting_context_type_created_by_box(facts: FfiLayoutBoxFacts) -> Option<FfiFormattingContextType> {
@@ -4828,7 +4835,8 @@ pub extern "C" fn rust_layout_owns_fc_type(fc_type: u8) -> bool {
     abort_on_panic(|| {
         matches!(
             fc_type,
-            type_ if type_ == FfiFormattingContextType::Flex as u8
+            type_ if type_ == FfiFormattingContextType::Block as u8
+                || type_ == FfiFormattingContextType::Flex as u8
                 || type_ == FfiFormattingContextType::Table as u8
                 || type_ == FfiFormattingContextType::Grid as u8
                 || type_ == FfiFormattingContextType::Svg as u8
@@ -4865,7 +4873,25 @@ pub extern "C" fn rust_layout_fc_create(
         // SAFETY: C++ passes a live callback table and Rust copies it before
         // returning across the boundary.
         let callbacks = unsafe { *callbacks };
-        let _ = state_mut(state).box_facts(&callbacks, box_);
+        let root_facts = state_mut(state).box_facts(&callbacks, box_);
+        if fc_type == FfiFormattingContextType::Block as u8
+            && state_mut(state).mark_bfc_root_fact_builds_excluded(root_facts.layout_index)
+        {
+            let _ = state_mut(state).style_facts(&callbacks, box_);
+            // Root setup is BFC implementation overhead rather than a newly
+            // visited box. Preserve the pre-flip counter semantics while
+            // retaining both facts in the shared per-pass caches.
+            crate::ffi_stats::exclude_bfc_root_fact_builds();
+        }
+        let block_context = (fc_type == FfiFormattingContextType::Block as u8).then(|| {
+            Box::new(block::BlockFormattingContext::new(
+                state,
+                box_,
+                parent_rust_fc,
+                layout_mode,
+                callbacks,
+            ))
+        });
         let grid_context = (fc_type == FfiFormattingContextType::Grid as u8).then(|| {
             Box::new(grid::GridFormattingContext::new(
                 state,
@@ -4885,12 +4911,12 @@ pub extern "C" fn rust_layout_fc_create(
             fc_type,
             layout_mode,
             callbacks,
+            block_context,
             grid_context,
             svg_context,
             should_collect_devtools_layout_data,
             automatic_content_inline_size: CssPixels::default(),
             automatic_content_block_size: CssPixels::default(),
-            pending_table_box_content_offset_in_wrapper: LogicalOffset::default(),
         }))
         .cast()
     })
@@ -4940,6 +4966,20 @@ fn register_table_abspos_descendants(instance: &mut FormattingContextInstance, p
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_layout_fc_parent_did_dimension(fc: *mut c_void) {
     abort_on_panic(|| {
+        if instance_ref(fc).fc_type == FfiFormattingContextType::Block as u8 {
+            let context = instance_ref(fc).block_context.as_deref().unwrap();
+            context.parent_context_did_dimension_child_root_box();
+            let instance = instance_mut(fc);
+            // The table formatting context handles cell abspos layout after vertical alignment.
+            // SAFETY: This reads the live context box's display.
+            let is_table_cell =
+                unsafe { (instance.callbacks.is_table_cell)(instance.callbacks.context, instance.box_) };
+            if !is_table_cell {
+                let box_ = instance.box_;
+                abspos::layout_children_for_instance(instance, box_);
+            }
+            return;
+        }
         let instance = instance_mut(fc);
         if instance.layout_mode != 0 {
             return;
@@ -4981,6 +5021,31 @@ pub extern "C" fn rust_layout_fc_destroy(fc: *mut c_void) {
     abort_on_panic(|| {
         bump(FfiOp::FcDestroy);
         assert!(!fc.is_null());
+        if instance_ref(fc).fc_type == FfiFormattingContextType::Block as u8
+            && !instance_ref(fc)
+                .block_context
+                .as_deref()
+                .unwrap()
+                .was_notified_after_parent_dimensioned_root()
+        {
+            // HACK: The parent formatting context never notified us after assigning dimensions to our root box.
+            //       Pretend that it did anyway, to make sure absolutely positioned children get laid out.
+            // FIXME: Get rid of this hack once parent contexts behave properly.
+            instance_ref(fc)
+                .block_context
+                .as_deref()
+                .unwrap()
+                .parent_context_did_dimension_child_root_box();
+            let instance = instance_mut(fc);
+            // The table formatting context handles cell abspos layout after vertical alignment.
+            // SAFETY: This reads the live context box's display.
+            let is_table_cell =
+                unsafe { (instance.callbacks.is_table_cell)(instance.callbacks.context, instance.box_) };
+            if !is_table_cell {
+                let box_ = instance.box_;
+                abspos::layout_children_for_instance(instance, box_);
+            }
+        }
         // SAFETY: Ownership is transferred back from the C++ shim exactly
         // once for a pointer returned by rust_layout_fc_create.
         unsafe {
@@ -4993,6 +5058,16 @@ pub extern "C" fn rust_layout_fc_destroy(fc: *mut c_void) {
 pub extern "C" fn rust_layout_fc_run(fc: *mut c_void, _input: FfiLayoutInput) {
     abort_on_panic(|| {
         bump(FfiOp::FcRun);
+        if instance_ref(fc).fc_type == FfiFormattingContextType::Block as u8 {
+            let context = instance_ref(fc).block_context.as_deref().unwrap();
+            context.run(_input);
+            let automatic_content_inline_size = context.automatic_content_inline_size();
+            let automatic_content_block_size = context.automatic_content_block_size();
+            let instance = instance_mut(fc);
+            instance.automatic_content_inline_size = automatic_content_inline_size;
+            instance.automatic_content_block_size = automatic_content_block_size;
+            return;
+        }
         let instance = instance_mut(fc);
         match instance.fc_type {
             type_ if type_ == FfiFormattingContextType::Table as u8 => {
@@ -5035,18 +5110,6 @@ pub extern "C" fn rust_layout_fc_automatic_content_block_size(fc: *mut c_void) -
         bump(FfiOp::FcAutomaticBlockSize);
         instance_mut(fc).automatic_content_block_size.raw_value()
     })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_fc_set_table_box_content_offset_in_wrapper(fc: *mut c_void, offset: LogicalOffset) {
-    abort_on_panic(|| {
-        instance_mut(fc).pending_table_box_content_offset_in_wrapper = offset;
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_fc_table_box_content_offset_in_wrapper(fc: *mut c_void) -> LogicalOffset {
-    abort_on_panic(|| instance_mut(fc).pending_table_box_content_offset_in_wrapper)
 }
 
 #[unsafe(no_mangle)]

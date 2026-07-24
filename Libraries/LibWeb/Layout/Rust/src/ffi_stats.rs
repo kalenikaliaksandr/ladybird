@@ -43,7 +43,6 @@ define_ffi_ops! {
     AbsposAnchorFallbackCallback => "absposAnchorFallbackCallbacks",
     AbsposSetResolvedInsetsCallback => "absposSetResolvedInsetsCallbacks",
     AbsposSetScrollShiftCallback => "absposSetScrollShiftCallbacks",
-    AbsposAutomaticBlockSizeCallback => "absposAutomaticBlockSizeCallbacks",
     AbsposButtonDefiniteCallback => "absposButtonDefiniteCallbacks",
     StyleFactsBuild => "styleFactsBuildEntries",
     CalcHandleRetain => "calcHandleRetainEntries",
@@ -68,18 +67,6 @@ define_ffi_ops! {
     FontMetricsCallback => "fontMetricsCallbacks",
     FontGlyphWidthCallback => "fontGlyphWidthCallbacks",
     FontGlyphIdCallback => "fontGlyphIdCallbacks",
-    ParentBfcIntrusionCallback => "parentBfcIntrusionCallbacks",
-    ParentBfcNextFloatBandCallback => "parentBfcNextFloatBandCallbacks",
-    ParentBfcPendingMarginAdjustmentCallback => "parentBfcPendingMarginAdjustmentCallbacks",
-    ParentBfcGreatestInlineSizeCallback => "parentBfcGreatestInlineSizeCallbacks",
-    ParentBfcClearFloatsCallback => "parentBfcClearFloatsCallbacks",
-    ParentBfcResetMarginCallback => "parentBfcResetMarginCallbacks",
-    ParentBfcCommitMarginCallback => "parentBfcCommitMarginCallbacks",
-    ParentBfcInterruptingBlockCallback => "parentBfcInterruptingBlockCallbacks",
-    ParentBfcLayoutFloatCallback => "parentBfcLayoutFloatCallbacks",
-    ParentBfcResolveBlockSizeCallback => "parentBfcResolveBlockSizeCallbacks",
-    ParentBfcDimensionMarkerCallback => "parentBfcDimensionMarkerCallbacks",
-    ParentBfcMarkerDistanceCallback => "parentBfcMarkerDistanceCallbacks",
     LineDrain => "lineDrainEntries",
     FcCreate => "fcCreateEntries",
     FcDestroy => "fcDestroyEntries",
@@ -93,20 +80,13 @@ define_ffi_ops! {
     LayoutInsideCallback => "layoutInsideCallbacks",
     ParentDidDimensionCallback => "parentDidDimensionCallbacks",
     DiscardChildContextCallback => "discardChildContextCallbacks",
-    IntrinsicMinInlineCallback => "intrinsicMinInlineCallbacks",
-    IntrinsicMaxInlineCallback => "intrinsicMaxInlineCallbacks",
-    IntrinsicMinBlockCallback => "intrinsicMinBlockCallbacks",
-    IntrinsicMaxBlockCallback => "intrinsicMaxBlockCallbacks",
     SetTableCellCoordinatesCallback => "setTableCellCoordinatesCallbacks",
     SetOverrideBordersCallback => "setOverrideBordersCallbacks",
     PlaceChildCallback => "placeChildCallbacks",
     BoxBaselineCallback => "boxBaselineCallbacks",
     ComputeBaselinesCallback => "computeBaselinesCallbacks",
     LayoutAbsposChildrenCallback => "layoutAbsposChildrenCallbacks",
-    CaptionLayoutCallback => "captionLayoutCallbacks",
     CellMeasurementCallback => "cellMeasurementCallbacks",
-    ShouldTreatMaxInlineAsNoneCallback => "shouldTreatMaxInlineAsNoneCallbacks",
-    CalculateInnerInlineSizeCallback => "calculateInnerInlineSizeCallbacks",
     MeasurementStateCreateCallback => "measurementStateCreateCallbacks",
     MeasurementStateDestroyCallback => "measurementStateDestroyCallbacks",
     MeasurementContextRunCallback => "measurementContextRunCallbacks",
@@ -133,10 +113,18 @@ pub(crate) fn fact_build_counts() -> (u64, u64) {
     )
 }
 
-pub(crate) fn exclude_inline_root_fact_builds(before: (u64, u64)) {
+pub(crate) fn exclude_root_fact_builds(before: (u64, u64)) {
     let after = fact_build_counts();
     COUNTERS[FfiOp::StyleFactsBuild as usize].fetch_sub(after.0 - before.0, Ordering::Relaxed);
     COUNTERS[FfiOp::BoxFactsBuild as usize].fetch_sub(after.1 - before.1, Ordering::Relaxed);
+}
+
+pub(crate) fn exclude_bfc_root_fact_builds() {
+    let decrement_if_nonzero = |counter: &AtomicU64| {
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_sub(1));
+    };
+    decrement_if_nonzero(&COUNTERS[FfiOp::StyleFactsBuild as usize]);
+    decrement_if_nonzero(&COUNTERS[FfiOp::BoxFactsBuild as usize]);
 }
 
 #[unsafe(no_mangle)]
