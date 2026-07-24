@@ -151,7 +151,7 @@ void BlockFormattingContext::run(LayoutInput const& layout_input)
                 continue;
             if (margins_collapse_through(*child_box, m_state))
                 continue;
-            m_state.get_mutable(*child_box).margin_bottom = m_margin_state.current_collapsed_margin();
+            m_state.get_mutable(*child_box).set_margin_bottom(m_margin_state.current_collapsed_margin());
             break;
         }
 
@@ -173,7 +173,7 @@ void BlockFormattingContext::parent_context_did_dimension_child_root_box()
         } else {
             // Right-side floats: offset_from_edge is from right edge (float_containing_block_inline_size) to the left content edge of floating_box.
             auto float_containing_block_inline_size = [&] {
-                switch (floating_box->used_values.inline_size_constraint) {
+                switch (floating_box->used_values.inline_size_constraint()) {
                 case SizeConstraint::MinContent:
                     return CSSPixels(0);
                 case SizeConstraint::MaxContent:
@@ -265,17 +265,17 @@ void BlockFormattingContext::compute_inline_size(Box const& box, AvailableSpace 
     auto const padding_right = computed_values.padding().right().resolved_or_auto(available_inline_size);
 
     auto& box_state = m_state.get_mutable(box);
-    box_state.margin_left = margin_left.to_px_or_zero();
-    box_state.margin_right = margin_right.to_px_or_zero();
-    box_state.border_left = computed_values.border_left().width;
-    box_state.border_right = computed_values.border_right().width;
-    box_state.padding_left = padding_left.to_px_or_zero();
-    box_state.padding_right = padding_right.to_px_or_zero();
+    box_state.set_margin_left(margin_left.to_px_or_zero());
+    box_state.set_margin_right(margin_right.to_px_or_zero());
+    box_state.set_border_left(computed_values.border_left().width);
+    box_state.set_border_right(computed_values.border_right().width);
+    box_state.set_padding_left(padding_left.to_px_or_zero());
+    box_state.set_padding_right(padding_right.to_px_or_zero());
 
     // NOTE: If we are calculating the min-content or max-content inline size of this box,
     //       and the inline size should be treated as auto, then we can simply return here,
     //       as the preferred inline size and min/max constraints are irrelevant for intrinsic sizing.
-    if (box_state.inline_size_constraint != SizeConstraint::None)
+    if (box_state.inline_size_constraint() != SizeConstraint::None)
         return;
 
     auto const remaining_inline_size = remaining_available_space.inline_size.to_px_or_zero();
@@ -389,8 +389,8 @@ void BlockFormattingContext::compute_inline_size(Box const& box, AvailableSpace 
     if (!box_is_sized_as_replaced_element(box, available_space, containing_block_constraints) && !used_inline_size.is_auto())
         box_state.set_content_inline_size(used_inline_size.to_px_or_zero());
 
-    box_state.margin_left = margin_left.to_px_or_zero();
-    box_state.margin_right = margin_right.to_px_or_zero();
+    box_state.set_margin_left(margin_left.to_px_or_zero());
+    box_state.set_margin_right(margin_right.to_px_or_zero());
 }
 
 size_t BlockFormattingContext::band_index_at(CSSPixels block_offset) const
@@ -604,12 +604,12 @@ CSSPixels BlockFormattingContext::margin_box_left_of_float_in_root(FloatingBox c
 CSSPixels BlockFormattingContext::border_box_left_of_box_avoiding_floats(Box const& box, LayoutState::UsedValues const& box_state, SpaceUsedByFloats const& space_used_by_floats) const
 {
     if (box.computed_values().margin().left().is_auto())
-        return space_used_by_floats.left + box_state.margin_left;
-    if (box_state.margin_left >= 0)
-        return max(space_used_by_floats.left, box_state.margin_left);
+        return space_used_by_floats.left + box_state.margin_left();
+    if (box_state.margin_left() >= 0)
+        return max(space_used_by_floats.left, box_state.margin_left());
     if (space_used_by_floats.left > 0 || space_used_by_floats.right > 0)
         return space_used_by_floats.left;
-    return space_used_by_floats.left + box_state.margin_left;
+    return space_used_by_floats.left + box_state.margin_left();
 }
 
 CSSPixels BlockFormattingContext::avoid_float_intrusions(Box const& box, AvailableSpace const& available_space, ContainingBlockConstraints const& containing_block_constraints, CSSPixels content_block_offset, CSSPixelRect const& containing_block_rect_in_root)
@@ -675,12 +675,12 @@ void BlockFormattingContext::compute_inline_size_for_floating_box(Box const& box
     auto margin_right = computed_values.margin().right().to_px_or_zero(containing_block_inline_size);
 
     auto& box_state = m_state.get_mutable(box);
-    box_state.padding_left = computed_values.padding().left().to_px_or_zero(containing_block_inline_size);
-    box_state.padding_right = computed_values.padding().right().to_px_or_zero(containing_block_inline_size);
-    box_state.margin_left = margin_left;
-    box_state.margin_right = margin_right;
-    box_state.border_left = computed_values.border_left().width;
-    box_state.border_right = computed_values.border_right().width;
+    box_state.set_padding_left(computed_values.padding().left().to_px_or_zero(containing_block_inline_size));
+    box_state.set_padding_right(computed_values.padding().right().to_px_or_zero(containing_block_inline_size));
+    box_state.set_margin_left(margin_left);
+    box_state.set_margin_right(margin_right);
+    box_state.set_border_left(computed_values.border_left().width);
+    box_state.set_border_right(computed_values.border_right().width);
 
     auto compute_inline_size = [&](CSS::LengthOrAuto inline_size) {
         // If 'width' is computed as 'auto', the used value is the "shrink-to-fit" width.
@@ -690,8 +690,8 @@ void BlockFormattingContext::compute_inline_size_for_floating_box(Box const& box
                 // block minus the used values of 'margin-left', 'border-left-width', 'padding-left',
                 // 'padding-right', 'border-right-width', 'margin-right', and the widths of any relevant scroll bars.
                 auto available_inline_size = available_space.inline_size.to_px_or_zero()
-                    - margin_left - computed_values.border_left().width - box_state.padding_left
-                    - box_state.padding_right - computed_values.border_right().width - margin_right;
+                    - margin_left - computed_values.border_left().width - box_state.padding_left()
+                    - box_state.padding_right() - computed_values.border_right().width - margin_right;
                 // Then the shrink-to-fit inline size is:
                 // min(max(preferred minimum inline size, available inline size), preferred inline size).
                 auto preferred_inline_size = calculate_max_content_inline_size(box, containing_block_constraints);
@@ -758,12 +758,12 @@ void BlockFormattingContext::compute_inline_size_for_block_level_replaced_elemen
     auto const padding_right = computed_values.padding().right().to_px_or_zero(containing_block_inline_size);
 
     auto& box_state = m_state.get_mutable(box);
-    box_state.margin_left = margin_left;
-    box_state.margin_right = margin_right;
-    box_state.border_left = computed_values.border_left().width;
-    box_state.border_right = computed_values.border_right().width;
-    box_state.padding_left = padding_left;
-    box_state.padding_right = padding_right;
+    box_state.set_margin_left(margin_left);
+    box_state.set_margin_right(margin_right);
+    box_state.set_border_left(computed_values.border_left().width);
+    box_state.set_border_right(computed_values.border_right().width);
+    box_state.set_padding_left(padding_left);
+    box_state.set_padding_right(padding_right);
 
     auto inline_size = compute_inline_size_for_replaced_element(box, available_space, containing_block_constraints);
     box_state.set_content_inline_size(inline_size);
@@ -836,7 +836,7 @@ void BlockFormattingContext::resolve_used_block_size_if_treated_as_auto(Box cons
         // 1. Let margins be sum of the used values of the margin-left and margin-right properties of element
         //    if element has a vertical writing mode, otherwise let margins be the sum of the used values of
         //    the margin-top and margin-bottom properties of element.
-        auto margins = box_state.margin_top + box_state.margin_bottom;
+        auto margins = box_state.margin_top() + box_state.margin_bottom();
 
         // 2. Let size be the size of the initial containing block in the block flow direction minus margins.
         auto size = containing_block_constraints.percentage_basis_block_size.value_or(0) - margins;
@@ -867,7 +867,7 @@ void BlockFormattingContext::resolve_used_block_size_if_treated_as_auto(Box cons
             // 1. Let margins be sum of the used values of the margin-left and margin-right properties of element
             //    if element has a vertical writing mode, otherwise let margins be the sum of the used values of
             //    the margin-top and margin-bottom properties of element.
-            auto margins = box_state.margin_top + box_state.margin_bottom;
+            auto margins = box_state.margin_top() + box_state.margin_bottom();
 
             // 2. Let size be the size of element's parent element's content box in the block flow direction minus margins.
             auto size = containing_block_constraints.percentage_basis_block_size.value_or(0) - margins;
@@ -901,7 +901,7 @@ void BlockFormattingContext::layout_inline_children(BlockContainer const& block_
         //       Applying them here would bake the box's own min/max-width into its measured intrinsic
         //       size, and the border-box adjustment would consume border/padding that measurement
         //       state does not have.
-        if (block_container_state.inline_size_constraint == SizeConstraint::None) {
+        if (block_container_state.inline_size_constraint() == SizeConstraint::None) {
             // https://www.w3.org/TR/css-sizing-3/#sizing-values
             // Percentages are resolved against the appropriate inline or block size of the containing block.
             auto containing_block_inline_size = layout_input.containing_block_constraints.percentage_basis_inline_size.value_or(0);
@@ -966,11 +966,11 @@ CSSPixels BlockFormattingContext::compute_automatic_block_size_for_block_level_e
     // The element's block size is the distance from its block-start content edge to the first applicable edge below.
 
     // 1. the bottom edge of the last line box, if the box establishes a inline formatting context with one or more lines
-    if (box.children_are_inline() && !box_state.line_boxes.is_empty()) {
-        auto block_size = box_state.line_boxes.last().physical_vertical_end();
-        if (box_state.line_boxes.last().has_block_level_box()) {
+    if (box.children_are_inline() && !box_state.line_boxes().is_empty()) {
+        auto block_size = box_state.line_boxes().last().physical_vertical_end();
+        if (box_state.line_boxes().last().has_block_level_box()) {
             auto margin_bottom = m_margin_state.current_collapsed_margin();
-            if (box_state.padding_bottom == 0 && box_state.border_bottom == 0) {
+            if (box_state.padding_bottom() == 0 && box_state.border_bottom() == 0) {
                 m_margin_state.set_box_last_in_flow_child_margin_bottom_collapsed(true);
                 margin_bottom = 0;
             }
@@ -1001,7 +1001,7 @@ CSSPixels BlockFormattingContext::compute_automatic_block_size_for_block_level_e
                 continue;
 
             auto margin_bottom = m_margin_state.current_collapsed_margin();
-            if (box_state.padding_bottom == 0 && box_state.border_bottom == 0) {
+            if (box_state.padding_bottom() == 0 && box_state.border_bottom() == 0) {
                 m_margin_state.set_box_last_in_flow_child_margin_bottom_collapsed(true);
                 margin_bottom = 0;
             }
@@ -1100,7 +1100,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
         return;
     }
 
-    m_margin_state.add_margin(box_state.margin_top);
+    m_margin_state.add_margin(box_state.margin_top());
     auto introduce_clearance = clear_floating_boxes(box, {}, containing_block_position_in_root);
     if (introduce_clearance == DidIntroduceClearance::Yes)
         m_margin_state.reset();
@@ -1132,7 +1132,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     }
 
     auto box_opens_top_margin_group = !independent_formatting_context
-        && box_state.border_top == 0 && box_state.padding_top == 0
+        && box_state.border_top() == 0 && box_state.padding_top() == 0
         && !m_margin_state.has_open_top_margin_group();
 
     auto const* fieldset_box = as_if<FieldSetBox>(block_container);
@@ -1248,15 +1248,15 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
             pending_position = CSSPixelPoint { pending_logical_offset.inline_offset, pending_logical_offset.block_offset };
         }
         if (is<TableWrapper>(block_container) && box.display().is_table_inside()) {
-            box_state.margin_left = max(box_state.margin_left, 0);
-            box_state.margin_right = max(box_state.margin_right, 0);
+            box_state.set_margin_left(max(box_state.margin_left(), 0));
+            box_state.set_margin_right(max(box_state.margin_right(), 0));
         }
         if (is<TableWrapper>(box) && !box.is_grid_item())
             box_state.set_content_inline_size(independent_formatting_context->automatic_content_inline_size());
     } else {
         // This box participates in the current block container's flow.
         auto space_available_for_children = box.is_anonymous() ? available_space : box_state.available_inner_space_or_constraints_from(available_space);
-        if (box_state.border_top > 0 || box_state.padding_top > 0) {
+        if (box_state.border_top() > 0 || box_state.padding_top() > 0) {
             // margin-top of block container can't collapse with its children if it has non-zero border or padding.
             m_margin_state.reset();
         } else if (box_opens_top_margin_group) {
@@ -1308,7 +1308,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
     }
     m_margin_state.set_box_last_in_flow_child_margin_bottom_collapsed(false);
 
-    m_margin_state.add_margin(box_state.margin_bottom);
+    m_margin_state.add_margin(box_state.margin_bottom());
     m_margin_state.update_open_top_margin_group();
 
     compute_inset(box, content_box_rect(block_container_state).size());
@@ -1352,7 +1352,7 @@ void BlockFormattingContext::layout_block_level_children(BlockContainer const& b
             //       The min-content size of a box in each axis is the size it would have if it was a float given an
             //       auto size in that axis (and no minimum or maximum size in that axis) and if its containing block
             //       was zero-sized in that axis.
-            if (block_container_state.inline_size_constraint == SizeConstraint::None) {
+            if (block_container_state.inline_size_constraint() == SizeConstraint::None) {
                 if (!should_treat_max_inline_size_as_none(block_container, available_space.inline_size, layout_input.containing_block_constraints)) {
                     auto max_inline_size = calculate_inner_inline_size(block_container, available_space.inline_size,
                         computed_values.max_width(), layout_input.containing_block_constraints);
@@ -1400,8 +1400,8 @@ void BlockFormattingContext::layout_fieldset_with_rendered_legend(FieldSetBox co
     // The space allocated for the element's border on the block-start side is expected to be the element's
     // 'border-block-start-width' or the rendered legend's margin box size in the fieldset's block-flow direction,
     // whichever is greater.
-    auto effective_border = max(fieldset_state.border_top, legend_state.margin_box_block_size());
-    auto extra_top = effective_border - fieldset_state.border_top;
+    auto effective_border = max(fieldset_state.border_top(), legend_state.margin_box_block_size());
+    auto extra_top = effective_border - fieldset_state.border_top();
 
     // Lay out non-legend children below the legend accommodation.
     m_margin_state.reset();
@@ -1420,7 +1420,7 @@ void BlockFormattingContext::layout_fieldset_with_rendered_legend(FieldSetBox co
     if (m_layout_mode == LayoutMode::IntrinsicSizing && !fieldset_state.has_definite_inline_size()) {
         auto inline_size = greatest_child_inline_size(fieldset_box);
         auto const& computed_values = fieldset_box.computed_values();
-        if (fieldset_state.inline_size_constraint == SizeConstraint::None) {
+        if (fieldset_state.inline_size_constraint() == SizeConstraint::None) {
             if (!should_treat_max_inline_size_as_none(fieldset_box, available_space.inline_size, layout_input.containing_block_constraints)) {
                 auto max_inline_size = calculate_inner_inline_size(fieldset_box, available_space.inline_size, computed_values.max_width(), layout_input.containing_block_constraints);
                 inline_size = min(inline_size, max_inline_size);
@@ -1438,7 +1438,7 @@ void BlockFormattingContext::layout_fieldset_with_rendered_legend(FieldSetBox co
     // the border on the block-start side of the fieldset element.
     // FIXME: Take writing modes into consideration.
     auto legend_border_box_centering_offset = (effective_border - legend_state.border_box_block_size()) / 2;
-    auto fieldset_border_box_block_start_in_content = -(fieldset_state.border_top + fieldset_state.padding_top);
+    auto fieldset_border_box_block_start_in_content = -(fieldset_state.border_top() + fieldset_state.padding_top());
     auto legend_content_block_offset = fieldset_border_box_block_start_in_content + legend_border_box_centering_offset + legend_state.border_box_top();
     if (auto legend_flow_position = m_pending_legend_flow_position; legend_flow_position.has_value()) {
         m_pending_legend_flow_position = {};
@@ -1454,12 +1454,12 @@ void BlockFormattingContext::resolve_vertical_box_model_metrics(Box const& box, 
     auto& box_state = m_state.get_mutable(box);
     auto const& computed_values = box.computed_values();
 
-    box_state.margin_top = computed_values.margin().top().to_px_or_zero(containing_block_inline_size);
-    box_state.margin_bottom = computed_values.margin().bottom().to_px_or_zero(containing_block_inline_size);
-    box_state.border_top = computed_values.border_top().width;
-    box_state.border_bottom = computed_values.border_bottom().width;
-    box_state.padding_top = computed_values.padding().top().to_px_or_zero(containing_block_inline_size);
-    box_state.padding_bottom = computed_values.padding().bottom().to_px_or_zero(containing_block_inline_size);
+    box_state.set_margin_top(computed_values.margin().top().to_px_or_zero(containing_block_inline_size));
+    box_state.set_margin_bottom(computed_values.margin().bottom().to_px_or_zero(containing_block_inline_size));
+    box_state.set_border_top(computed_values.border_top().width);
+    box_state.set_border_bottom(computed_values.border_bottom().width);
+    box_state.set_padding_top(computed_values.padding().top().to_px_or_zero(containing_block_inline_size));
+    box_state.set_padding_bottom(computed_values.padding().bottom().to_px_or_zero(containing_block_inline_size));
 }
 
 void BlockFormattingContext::resolve_horizontal_box_model_metrics(Box const& box, CSSPixels containing_block_inline_size)
@@ -1467,12 +1467,12 @@ void BlockFormattingContext::resolve_horizontal_box_model_metrics(Box const& box
     auto& box_state = m_state.get_mutable(box);
     auto const& computed_values = box.computed_values();
 
-    box_state.margin_left = computed_values.margin().left().to_px_or_zero(containing_block_inline_size);
-    box_state.margin_right = computed_values.margin().right().to_px_or_zero(containing_block_inline_size);
-    box_state.border_left = computed_values.border_left().width;
-    box_state.border_right = computed_values.border_right().width;
-    box_state.padding_left = computed_values.padding().left().to_px_or_zero(containing_block_inline_size);
-    box_state.padding_right = computed_values.padding().right().to_px_or_zero(containing_block_inline_size);
+    box_state.set_margin_left(computed_values.margin().left().to_px_or_zero(containing_block_inline_size));
+    box_state.set_margin_right(computed_values.margin().right().to_px_or_zero(containing_block_inline_size));
+    box_state.set_border_left(computed_values.border_left().width);
+    box_state.set_border_right(computed_values.border_right().width);
+    box_state.set_padding_left(computed_values.padding().left().to_px_or_zero(containing_block_inline_size));
+    box_state.set_padding_right(computed_values.padding().right().to_px_or_zero(containing_block_inline_size));
 }
 
 BlockFormattingContext::DidIntroduceClearance BlockFormattingContext::clear_floating_boxes(NodeWithStyle const& child_box, Optional<InlineFormattingContext&> inline_formatting_context, CSSPixelPoint containing_block_position_in_root)
@@ -1524,7 +1524,7 @@ CSSPixels BlockFormattingContext::compute_normal_flow_inline_offset(Box const& c
         available_inline_size_within_containing_block -= space_used_by_floats.left + space_used_by_floats.right;
 
         // Subtracting the left margin here because it is applied again when the margin box offset is added below.
-        inline_offset = border_box_left_of_box_avoiding_floats(child_box, box_state, space_used_by_floats) - box_state.margin_left;
+        inline_offset = border_box_left_of_box_avoiding_floats(child_box, box_state, space_used_by_floats) - box_state.margin_left();
     }
 
     if (child_box.containing_block()->computed_values().text_align() == CSS::TextAlign::LibwebCenter) {
@@ -1713,7 +1713,7 @@ CSSPixels BlockFormattingContext::greatest_child_inline_size_including_floats(Bo
     }
 
     if (box.children_are_inline()) {
-        for (auto const& line_box : m_state.get(as<BlockContainer>(box)).line_boxes) {
+        for (auto const& line_box : m_state.get(as<BlockContainer>(box)).line_boxes()) {
             auto inline_size_here = line_box_physical_horizontal_extent(box, line_box);
             auto line_block_start = line_box.physical_vertical_end() - line_box.physical_vertical_extent();
             auto line_block_end = line_box.physical_vertical_end();

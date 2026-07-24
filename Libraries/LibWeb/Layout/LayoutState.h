@@ -14,6 +14,7 @@
 #include <LibGfx/Point.h>
 #include <LibWeb/Layout/AbsposLayoutInputs.h>
 #include <LibWeb/Layout/Box.h>
+#include <LibWeb/Layout/LayoutRustFFI.h>
 #include <LibWeb/Layout/LineBox.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/SVGGraphicsPaintable.h>
@@ -28,6 +29,7 @@ enum class SizeConstraint {
 
 class AvailableSize;
 class AvailableSpace;
+struct RustLayoutState;
 
 // Sparse, index-based container using two-level page tables.
 // Layout state is throwaway — rebuilt on every layout pass — so a
@@ -70,7 +72,8 @@ public:
         return page->entries[index & PageMask];
     }
 
-    T& allocate(u32 index)
+    template<typename... Args>
+    T& allocate(u32 index, Args&&... args)
     {
         auto page_index = index >> PageBits;
         if (page_index >= m_pages.size())
@@ -80,7 +83,7 @@ public:
             page = make<Page>();
         auto& entry = page->entries[index & PageMask];
         VERIFY(!entry);
-        entry = m_allocator.allocate();
+        entry = m_allocator.allocate(forward<Args>(args)...);
         VERIFY(entry);
         return *entry;
     }
@@ -108,13 +111,19 @@ private:
 struct LayoutState {
     AK_ALLOC_WITH_KMALLOC_PARTITION(HeapPartition::Layout);
 
-    struct UsedValues {
-        NodeWithStyle const& node() const { return *m_node; }
-        NodeWithStyle& node() { return const_cast<NodeWithStyle&>(*m_node); }
+    struct WEB_API UsedValues {
+        explicit UsedValues(RustFFI::UsedValuesCore& core)
+            : m_core(&core)
+        {
+        }
+        ~UsedValues();
+
+        NodeWithStyle const& node() const { return *static_cast<NodeWithStyle const*>(m_core->node); }
+        NodeWithStyle& node() { return *static_cast<NodeWithStyle*>(m_core->node); }
         void set_node(NodeWithStyle const&, Optional<CSSPixels> percentage_basis_inline_size = {}, Optional<CSSPixels> percentage_basis_block_size = {});
 
-        CSSPixels content_inline_size() const { return m_content_inline_size; }
-        CSSPixels content_block_size() const { return m_content_block_size; }
+        CSSPixels content_inline_size() const { return CSSPixels::from_raw(m_core->content_inline_size); }
+        CSSPixels content_block_size() const { return CSSPixels::from_raw(m_core->content_block_size); }
         void set_content_inline_size(CSSPixels);
         void set_content_block_size(CSSPixels);
 
@@ -123,11 +132,11 @@ struct LayoutState {
         void set_indefinite_content_inline_size();
         void set_indefinite_content_block_size();
 
-        void set_has_definite_inline_size(bool has_definite_inline_size) { m_has_definite_inline_size = has_definite_inline_size; }
-        void set_has_definite_block_size(bool has_definite_block_size) { m_has_definite_block_size = has_definite_block_size; }
+        void set_has_definite_inline_size(bool has_definite_inline_size) { m_core->has_definite_inline_size = has_definite_inline_size; }
+        void set_has_definite_block_size(bool has_definite_block_size) { m_core->has_definite_block_size = has_definite_block_size; }
 
-        bool has_definite_inline_size() const { return m_has_definite_inline_size && inline_size_constraint == SizeConstraint::None; }
-        bool has_definite_block_size() const { return m_has_definite_block_size && block_size_constraint == SizeConstraint::None; }
+        bool has_definite_inline_size() const { return m_core->has_definite_inline_size && inline_size_constraint() == SizeConstraint::None; }
+        bool has_definite_block_size() const { return m_core->has_definite_block_size && block_size_constraint() == SizeConstraint::None; }
 
         // Returns the available space for content inside this layout box.
         // If the space in an axis is indefinite, and the outer space is an intrinsic sizing constraint,
@@ -135,153 +144,218 @@ struct LayoutState {
         AvailableSpace available_inner_space_or_constraints_from(AvailableSpace const& outer_space) const;
 
         void materialize_from_paintable(Painting::Paintable const&);
-        bool is_materialized_from_paintable() const { return m_materialized_from_paintable; }
+        bool is_materialized_from_paintable() const { return m_core->materialized_from_paintable; }
 
-        CSSPixelPoint content_offset() const { return m_content_offset.value_or({}); }
+        CSSPixelPoint content_offset() const
+        {
+            if (!m_core->has_content_offset)
+                return {};
+            return { CSSPixels::from_raw(m_core->content_offset.x), CSSPixels::from_raw(m_core->content_offset.y) };
+        }
         LogicalOffset content_logical_offset() const
         {
             auto offset = content_offset();
             return { offset.x(), offset.y() };
         }
 
-        bool is_placed() const { return m_content_offset.has_value(); }
+        bool is_placed() const { return m_core->has_content_offset; }
 
-        SizeConstraint inline_size_constraint { SizeConstraint::None };
-        SizeConstraint block_size_constraint { SizeConstraint::None };
+        SizeConstraint inline_size_constraint() const { return static_cast<SizeConstraint>(m_core->inline_size_constraint); }
+        void set_inline_size_constraint(SizeConstraint constraint) { m_core->inline_size_constraint = static_cast<RustFFI::FfiSizeConstraint>(constraint); }
+        SizeConstraint block_size_constraint() const { return static_cast<SizeConstraint>(m_core->block_size_constraint); }
+        void set_block_size_constraint(SizeConstraint constraint) { m_core->block_size_constraint = static_cast<RustFFI::FfiSizeConstraint>(constraint); }
 
-        CSSPixels margin_left { 0 };
-        CSSPixels margin_right { 0 };
-        CSSPixels margin_top { 0 };
-        CSSPixels margin_bottom { 0 };
+        CSSPixels margin_left() const { return CSSPixels::from_raw(m_core->margin_left); }
+        void set_margin_left(CSSPixels value) { m_core->margin_left = value.raw_value(); }
+        CSSPixels margin_right() const { return CSSPixels::from_raw(m_core->margin_right); }
+        void set_margin_right(CSSPixels value) { m_core->margin_right = value.raw_value(); }
+        CSSPixels margin_top() const { return CSSPixels::from_raw(m_core->margin_top); }
+        void set_margin_top(CSSPixels value) { m_core->margin_top = value.raw_value(); }
+        CSSPixels margin_bottom() const { return CSSPixels::from_raw(m_core->margin_bottom); }
+        void set_margin_bottom(CSSPixels value) { m_core->margin_bottom = value.raw_value(); }
 
-        CSSPixels border_left { 0 };
-        CSSPixels border_right { 0 };
-        CSSPixels border_top { 0 };
-        CSSPixels border_bottom { 0 };
+        CSSPixels border_left() const { return CSSPixels::from_raw(m_core->border_left); }
+        void set_border_left(CSSPixels value) { m_core->border_left = value.raw_value(); }
+        CSSPixels border_right() const { return CSSPixels::from_raw(m_core->border_right); }
+        void set_border_right(CSSPixels value) { m_core->border_right = value.raw_value(); }
+        CSSPixels border_top() const { return CSSPixels::from_raw(m_core->border_top); }
+        void set_border_top(CSSPixels value) { m_core->border_top = value.raw_value(); }
+        CSSPixels border_bottom() const { return CSSPixels::from_raw(m_core->border_bottom); }
+        void set_border_bottom(CSSPixels value) { m_core->border_bottom = value.raw_value(); }
 
-        CSSPixels padding_left { 0 };
-        CSSPixels padding_right { 0 };
-        CSSPixels padding_top { 0 };
-        CSSPixels padding_bottom { 0 };
+        CSSPixels padding_left() const { return CSSPixels::from_raw(m_core->padding_left); }
+        void set_padding_left(CSSPixels value) { m_core->padding_left = value.raw_value(); }
+        CSSPixels padding_right() const { return CSSPixels::from_raw(m_core->padding_right); }
+        void set_padding_right(CSSPixels value) { m_core->padding_right = value.raw_value(); }
+        CSSPixels padding_top() const { return CSSPixels::from_raw(m_core->padding_top); }
+        void set_padding_top(CSSPixels value) { m_core->padding_top = value.raw_value(); }
+        CSSPixels padding_bottom() const { return CSSPixels::from_raw(m_core->padding_bottom); }
+        void set_padding_bottom(CSSPixels value) { m_core->padding_bottom = value.raw_value(); }
 
-        CSSPixels inset_left { 0 };
-        CSSPixels inset_right { 0 };
-        CSSPixels inset_top { 0 };
-        CSSPixels inset_bottom { 0 };
+        CSSPixels inset_left() const { return CSSPixels::from_raw(m_core->inset_left); }
+        void set_inset_left(CSSPixels value) { m_core->inset_left = value.raw_value(); }
+        CSSPixels inset_right() const { return CSSPixels::from_raw(m_core->inset_right); }
+        void set_inset_right(CSSPixels value) { m_core->inset_right = value.raw_value(); }
+        CSSPixels inset_top() const { return CSSPixels::from_raw(m_core->inset_top); }
+        void set_inset_top(CSSPixels value) { m_core->inset_top = value.raw_value(); }
+        CSSPixels inset_bottom() const { return CSSPixels::from_raw(m_core->inset_bottom); }
+        void set_inset_bottom(CSSPixels value) { m_core->inset_bottom = value.raw_value(); }
 
-        Vector<LineBox> line_boxes;
+        Vector<LineBox>& line_boxes() { return m_cpp_extension.line_boxes; }
+        Vector<LineBox> const& line_boxes() const { return m_cpp_extension.line_boxes; }
 
-        Vector<Painting::InlineBoxPiece> inline_box_pieces;
+        Vector<Painting::InlineBoxPiece>& inline_box_pieces() { return m_cpp_extension.inline_box_pieces; }
+        Vector<Painting::InlineBoxPiece> const& inline_box_pieces() const { return m_cpp_extension.inline_box_pieces; }
 
         // Baselines of this box's in-flow content, relative to the box's content-box top edge.
         // Populated eagerly by the formatting context that lays out this box's children.
         // An empty Optional means the box has no baseline set (https://drafts.csswg.org/css-align-3/#baseline-export);
         // consumers synthesize a baseline from the margin box instead.
-        Optional<CSSPixels> first_baseline;
-        Optional<CSSPixels> last_baseline;
+        Optional<CSSPixels> first_baseline() const
+        {
+            if (!m_core->has_first_baseline)
+                return {};
+            return CSSPixels::from_raw(m_core->first_baseline);
+        }
+        void set_first_baseline(Optional<CSSPixels> baseline)
+        {
+            m_core->has_first_baseline = baseline.has_value();
+            m_core->first_baseline = baseline.value_or(0).raw_value();
+        }
+        Optional<CSSPixels> last_baseline() const
+        {
+            if (!m_core->has_last_baseline)
+                return {};
+            return CSSPixels::from_raw(m_core->last_baseline);
+        }
+        void set_last_baseline(Optional<CSSPixels> baseline)
+        {
+            m_core->has_last_baseline = baseline.has_value();
+            m_core->last_baseline = baseline.value_or(0).raw_value();
+        }
 
-        CSSPixels margin_box_left() const { return margin_left + border_left_collapsed() + padding_left; }
-        CSSPixels margin_box_right() const { return margin_right + border_right_collapsed() + padding_right; }
-        CSSPixels margin_box_top() const { return margin_top + border_top_collapsed() + padding_top; }
-        CSSPixels margin_box_bottom() const { return margin_bottom + border_bottom_collapsed() + padding_bottom; }
+        CSSPixels margin_box_left() const { return margin_left() + border_left_collapsed() + padding_left(); }
+        CSSPixels margin_box_right() const { return margin_right() + border_right_collapsed() + padding_right(); }
+        CSSPixels margin_box_top() const { return margin_top() + border_top_collapsed() + padding_top(); }
+        CSSPixels margin_box_bottom() const { return margin_bottom() + border_bottom_collapsed() + padding_bottom(); }
 
         CSSPixels margin_box_inline_size() const { return margin_box_left() + content_inline_size() + margin_box_right(); }
         CSSPixels margin_box_block_size() const { return margin_box_top() + content_block_size() + margin_box_bottom(); }
 
-        CSSPixels border_box_left() const { return border_left_collapsed() + padding_left; }
-        CSSPixels border_box_right() const { return border_right_collapsed() + padding_right; }
-        CSSPixels border_box_top() const { return border_top_collapsed() + padding_top; }
-        CSSPixels border_box_bottom() const { return border_bottom_collapsed() + padding_bottom; }
+        CSSPixels border_box_left() const { return border_left_collapsed() + padding_left(); }
+        CSSPixels border_box_right() const { return border_right_collapsed() + padding_right(); }
+        CSSPixels border_box_top() const { return border_top_collapsed() + padding_top(); }
+        CSSPixels border_box_bottom() const { return border_bottom_collapsed() + padding_bottom(); }
 
         CSSPixels border_box_inline_size() const { return border_box_left() + content_inline_size() + border_box_right(); }
         CSSPixels border_box_block_size() const { return border_box_top() + content_block_size() + border_box_bottom(); }
 
-        CSSPixels padding_box_inline_size() const { return padding_left + content_inline_size() + padding_right; }
-        CSSPixels padding_box_block_size() const { return padding_top + content_block_size() + padding_bottom; }
+        CSSPixels padding_box_inline_size() const { return padding_left() + content_inline_size() + padding_right(); }
+        CSSPixels padding_box_block_size() const { return padding_top() + content_block_size() + padding_bottom(); }
 
-        Optional<LineBoxFragmentCoordinate> containing_line_box_fragment;
+        Optional<LineBoxFragmentCoordinate> containing_line_box_fragment() const
+        {
+            if (!m_core->has_containing_line_box_fragment)
+                return {};
+            return LineBoxFragmentCoordinate {
+                .line_box_index = m_core->containing_line_box_fragment.line_box_index,
+                .fragment_index = m_core->containing_line_box_fragment.fragment_index,
+            };
+        }
+        void set_containing_line_box_fragment(Optional<LineBoxFragmentCoordinate> coordinate)
+        {
+            m_core->has_containing_line_box_fragment = coordinate.has_value();
+            if (coordinate.has_value()) {
+                m_core->containing_line_box_fragment = {
+                    .line_box_index = coordinate->line_box_index,
+                    .fragment_index = coordinate->fragment_index,
+                };
+            } else {
+                m_core->containing_line_box_fragment = {};
+            }
+        }
 
         void set_lowest_floating_descendant_bottom_margin_edge(Optional<CSSPixels> bottom_margin_edge) { ensure_rare_data().lowest_floating_descendant_bottom_margin_edge = bottom_margin_edge; }
         Optional<CSSPixels> lowest_floating_descendant_bottom_margin_edge() const
         {
-            if (!m_rare)
+            if (!m_cpp_extension.rare)
                 return {};
-            return m_rare->lowest_floating_descendant_bottom_margin_edge;
+            return m_cpp_extension.rare->lowest_floating_descendant_bottom_margin_edge;
         }
 
         void set_override_borders_data(Painting::Paintable::BordersDataWithElementKind const& override_borders_data) { ensure_rare_data().override_borders_data = override_borders_data; }
         Optional<Painting::Paintable::BordersDataWithElementKind> const& override_borders_data() const
         {
             static Optional<Painting::Paintable::BordersDataWithElementKind> const empty;
-            return m_rare ? m_rare->override_borders_data : empty;
+            return m_cpp_extension.rare ? m_cpp_extension.rare->override_borders_data : empty;
         }
 
         void set_table_cell_coordinates(Painting::Paintable::TableCellCoordinates const& table_cell_coordinates) { ensure_rare_data().table_cell_coordinates = table_cell_coordinates; }
         Optional<Painting::Paintable::TableCellCoordinates> const& table_cell_coordinates() const
         {
             static Optional<Painting::Paintable::TableCellCoordinates> const empty;
-            return m_rare ? m_rare->table_cell_coordinates : empty;
+            return m_cpp_extension.rare ? m_cpp_extension.rare->table_cell_coordinates : empty;
         }
 
         void set_computed_svg_path(Gfx::Path const& svg_path) { ensure_rare_data().computed_svg_path = svg_path; }
         Gfx::Path* computed_svg_path()
         {
-            if (!m_rare || !m_rare->computed_svg_path.has_value())
+            if (!m_cpp_extension.rare || !m_cpp_extension.rare->computed_svg_path.has_value())
                 return nullptr;
-            return &*m_rare->computed_svg_path;
+            return &*m_cpp_extension.rare->computed_svg_path;
         }
 
         void set_computed_svg_transforms(Painting::SVGGraphicsPaintable::ComputedTransforms const& computed_transforms) { ensure_rare_data().computed_svg_transforms = computed_transforms; }
         Optional<Painting::SVGGraphicsPaintable::ComputedTransforms> const& computed_svg_transforms() const
         {
             static Optional<Painting::SVGGraphicsPaintable::ComputedTransforms> const empty;
-            return m_rare ? m_rare->computed_svg_transforms : empty;
+            return m_cpp_extension.rare ? m_cpp_extension.rare->computed_svg_transforms : empty;
         }
 
         void set_grid_layout_data(OwnPtr<GridLayoutData> grid_layout_data) { ensure_rare_data().grid_layout_data = move(grid_layout_data); }
         GridLayoutData const* grid_layout_data() const
         {
-            return m_rare ? m_rare->grid_layout_data.ptr() : nullptr;
+            return m_cpp_extension.rare ? m_cpp_extension.rare->grid_layout_data.ptr() : nullptr;
         }
         OwnPtr<GridLayoutData> take_grid_layout_data()
         {
-            if (!m_rare)
+            if (!m_cpp_extension.rare)
                 return {};
-            return move(m_rare->grid_layout_data);
+            return move(m_cpp_extension.rare->grid_layout_data);
         }
 
         void set_grid_template_columns(RefPtr<CSS::GridTrackSizeListStyleValue const> used_values_for_grid_template_columns) { ensure_rare_data().grid_template_columns = move(used_values_for_grid_template_columns); }
         RefPtr<CSS::GridTrackSizeListStyleValue const> const& grid_template_columns() const
         {
             static auto const& empty = *new RefPtr<CSS::GridTrackSizeListStyleValue const>;
-            return m_rare ? m_rare->grid_template_columns : empty;
+            return m_cpp_extension.rare ? m_cpp_extension.rare->grid_template_columns : empty;
         }
 
         void set_grid_template_rows(RefPtr<CSS::GridTrackSizeListStyleValue const> used_values_for_grid_template_rows) { ensure_rare_data().grid_template_rows = move(used_values_for_grid_template_rows); }
         RefPtr<CSS::GridTrackSizeListStyleValue const> const& grid_template_rows() const
         {
             static auto const& empty = *new RefPtr<CSS::GridTrackSizeListStyleValue const>;
-            return m_rare ? m_rare->grid_template_rows : empty;
+            return m_cpp_extension.rare ? m_cpp_extension.rare->grid_template_rows : empty;
         }
 
         void set_flex_layout_data(OwnPtr<FlexLayoutData> flex_layout_data) { ensure_rare_data().flex_layout_data = move(flex_layout_data); }
         FlexLayoutData const* flex_layout_data() const
         {
-            return m_rare ? m_rare->flex_layout_data.ptr() : nullptr;
+            return m_cpp_extension.rare ? m_cpp_extension.rare->flex_layout_data.ptr() : nullptr;
         }
         OwnPtr<FlexLayoutData> take_flex_layout_data()
         {
-            if (!m_rare)
+            if (!m_cpp_extension.rare)
                 return {};
-            return move(m_rare->flex_layout_data);
+            return move(m_cpp_extension.rare->flex_layout_data);
         }
 
         void set_abspos_layout_inputs(AbsposLayoutInputs abspos_layout_inputs) { ensure_rare_data().abspos_layout_inputs = move(abspos_layout_inputs); }
         AbsposLayoutInputs const* abspos_layout_inputs() const
         {
-            if (!m_rare || !m_rare->abspos_layout_inputs.has_value())
+            if (!m_cpp_extension.rare || !m_cpp_extension.rare->abspos_layout_inputs.has_value())
                 return nullptr;
-            return &*m_rare->abspos_layout_inputs;
+            return &*m_cpp_extension.rare->abspos_layout_inputs;
         }
 
     private:
@@ -290,19 +364,23 @@ struct LayoutState {
 
         void place(CSSPixelPoint content_offset)
         {
-            VERIFY(!m_content_offset.has_value());
-            m_content_offset = content_offset;
+            VERIFY(!m_core->has_content_offset);
+            m_core->has_content_offset = true;
+            m_core->content_offset = {
+                .x = content_offset.x().raw_value(),
+                .y = content_offset.y().raw_value(),
+            };
         }
 
         AvailableSize available_inline_size_inside() const;
         AvailableSize available_block_size_inside() const;
 
-        bool use_collapsing_borders_model() const { return m_rare && m_rare->override_borders_data.has_value(); }
+        bool use_collapsing_borders_model() const { return m_cpp_extension.rare && m_cpp_extension.rare->override_borders_data.has_value(); }
         // Implement the collapsing border model https://www.w3.org/TR/CSS22/tables.html#collapsing-borders.
-        CSSPixels border_left_collapsed() const { return use_collapsing_borders_model() ? round(border_left / 2) : border_left; }
-        CSSPixels border_right_collapsed() const { return use_collapsing_borders_model() ? round(border_right / 2) : border_right; }
-        CSSPixels border_top_collapsed() const { return use_collapsing_borders_model() ? round(border_top / 2) : border_top; }
-        CSSPixels border_bottom_collapsed() const { return use_collapsing_borders_model() ? round(border_bottom / 2) : border_bottom; }
+        CSSPixels border_left_collapsed() const { return use_collapsing_borders_model() ? round(border_left() / 2) : border_left(); }
+        CSSPixels border_right_collapsed() const { return use_collapsing_borders_model() ? round(border_right() / 2) : border_right(); }
+        CSSPixels border_top_collapsed() const { return use_collapsing_borders_model() ? round(border_top() / 2) : border_top(); }
+        CSSPixels border_bottom_collapsed() const { return use_collapsing_borders_model() ? round(border_bottom() / 2) : border_bottom(); }
 
         struct RareData {
             AK_ALLOC_WITH_KMALLOC_PARTITION(HeapPartition::Layout);
@@ -319,25 +397,25 @@ struct LayoutState {
             Optional<AbsposLayoutInputs> abspos_layout_inputs;
         };
 
+        struct CppUsedValuesExtension {
+            Vector<LineBox> line_boxes;
+            Vector<Painting::InlineBoxPiece> inline_box_pieces;
+            OwnPtr<RareData> rare;
+        };
+
         RareData& ensure_rare_data()
         {
-            if (!m_rare)
-                m_rare = make<RareData>();
-            return *m_rare;
+            if (!m_cpp_extension.rare)
+                m_cpp_extension.rare = make<RareData>();
+            return *m_cpp_extension.rare;
         }
 
-        Layout::NodeWithStyle const* m_node { nullptr };
-
-        CSSPixels m_content_inline_size { 0 };
-        CSSPixels m_content_block_size { 0 };
-
-        bool m_has_definite_inline_size { false };
-        bool m_has_definite_block_size { false };
-        bool m_materialized_from_paintable { false };
-
-        Optional<CSSPixelPoint> m_content_offset;
-
-        OwnPtr<RareData> m_rare;
+        RustFFI::UsedValuesCore* m_core { nullptr };
+        CppUsedValuesExtension m_cpp_extension;
+        // UniformBumpAllocator's chunk walk assumes that each completed chunk
+        // contains an integral number of entries. Keep this cache entry at 80
+        // bytes so a 4 KiB layout chunk has no trailing partial entry.
+        u8 m_allocator_padding[16] {};
     };
 
     enum class Purpose : u8 {
@@ -345,7 +423,7 @@ struct LayoutState {
         Measurement, // Throwaway state; only scalar measurements are read back, nothing is committed.
     };
 
-    LayoutState() = default;
+    LayoutState();
     LayoutState(NodeWithStyle const& subtree_root, Purpose);
     ~LayoutState();
 
@@ -389,12 +467,12 @@ private:
     RefPtr<Painting::Paintable> commit_used_values_to_paintable(UsedValues&);
     void resolve_relative_positions_and_assign_inline_box_geometry();
 
+    RustLayoutState* m_rust_state { nullptr };
     PagedStore<UsedValues> m_used_values_store;
     Layout::NodeWithStyle const* m_subtree_root { nullptr };
 
     Purpose m_purpose { Purpose::Commit };
     bool m_should_collect_devtools_layout_data { false };
-    HashMap<Box const*, Vector<ContainedAbsposChild>> m_contained_abspos_children;
 };
 
 inline CSSPixels clamp_to_max_dimension_value(CSSPixels value)

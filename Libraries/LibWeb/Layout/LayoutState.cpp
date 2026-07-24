@@ -24,15 +24,33 @@
 
 namespace Web::Layout {
 
-LayoutState::LayoutState(NodeWithStyle const& subtree_root, Purpose purpose)
-    : m_subtree_root(&subtree_root)
-    , m_purpose(purpose)
+extern "C" u32 ladybird_layout_box_layout_index(void* box_pointer);
+
+extern "C" u32 ladybird_layout_box_layout_index(void* box_pointer)
 {
+    VERIFY(box_pointer);
+    return static_cast<Box const*>(box_pointer)->layout_index();
+}
+
+LayoutState::LayoutState()
+    : m_rust_state(reinterpret_cast<RustLayoutState*>(RustFFI::rust_layout_state_create()))
+{
+    VERIFY(m_rust_state);
+}
+
+LayoutState::LayoutState(NodeWithStyle const& subtree_root, Purpose purpose)
+    : LayoutState()
+{
+    m_subtree_root = &subtree_root;
+    m_purpose = purpose;
 }
 
 LayoutState::~LayoutState()
 {
+    RustFFI::rust_layout_state_destroy(m_rust_state);
 }
+
+LayoutState::UsedValues::~UsedValues() = default;
 
 static CSSPixelRect united_fragment_rect_for_line_box(LineBox const& line_box)
 {
@@ -65,6 +83,7 @@ static CSSPixelRect rect_for_line_box(LineBox const& line_box, CSSPixels contain
 
 void LayoutState::ensure_capacity(u32 node_count)
 {
+    RustFFI::rust_layout_state_ensure_capacity(m_rust_state, node_count);
     m_used_values_store.ensure_capacity(node_count);
 }
 
@@ -98,13 +117,17 @@ LayoutState::UsedValues& LayoutState::create(NodeWithStyle const& node, Optional
 
     VERIFY(!m_subtree_root || m_subtree_root == &node || m_subtree_root->is_inclusive_ancestor_of(node));
 
-    auto& used_values = m_used_values_store.allocate(index);
+    auto* core = RustFFI::rust_layout_state_create_used_values(m_rust_state, index);
+    VERIFY(core);
+    auto& used_values = m_used_values_store.allocate(index, *core);
     used_values.set_node(node, percentage_basis_inline_size, percentage_basis_block_size);
 
     if (auto const* list_item_box = as_if<ListItemBox>(node); list_item_box && list_item_box->marker()) {
         auto const& marker = *list_item_box->marker();
         if (!m_used_values_store.get(marker.layout_index())) {
-            auto& marker_used_values = m_used_values_store.allocate(marker.layout_index());
+            auto* marker_core = RustFFI::rust_layout_state_create_used_values(m_rust_state, marker.layout_index());
+            VERIFY(marker_core);
+            auto& marker_used_values = m_used_values_store.allocate(marker.layout_index(), *marker_core);
             marker_used_values.set_node(marker,
                 used_values.has_definite_inline_size() ? Optional<CSSPixels> { used_values.content_inline_size() } : Optional<CSSPixels> {},
                 used_values.has_definite_block_size() ? Optional<CSSPixels> { used_values.content_block_size() } : Optional<CSSPixels> {});
@@ -121,8 +144,10 @@ LayoutState::UsedValues& LayoutState::populate_from_paintable(NodeWithStyle cons
 
     // NOTE: We skip set_node() here since it performs size resolution that requires percentage bases,
     //       and materialize_from_paintable() overwrites all computed sizes immediately after.
-    auto& used_values = m_used_values_store.allocate(index);
-    used_values.m_node = &node;
+    auto* core = RustFFI::rust_layout_state_create_used_values(m_rust_state, index);
+    VERIFY(core);
+    auto& used_values = m_used_values_store.allocate(index, *core);
+    used_values.m_core->node = const_cast<NodeWithStyle*>(&node);
     used_values.materialize_from_paintable(paintable);
     return used_values;
 }
@@ -262,10 +287,10 @@ void LayoutState::commit(Box& root, Painting::Paintable& paintable_to_replace)
 
 static void transfer_box_model_metrics(Painting::BoxModelMetrics& box_model, LayoutState::UsedValues const& used_values)
 {
-    box_model.inset = { used_values.inset_top, used_values.inset_right, used_values.inset_bottom, used_values.inset_left };
-    box_model.padding = { used_values.padding_top, used_values.padding_right, used_values.padding_bottom, used_values.padding_left };
-    box_model.border = { used_values.border_top, used_values.border_right, used_values.border_bottom, used_values.border_left };
-    box_model.margin = { used_values.margin_top, used_values.margin_right, used_values.margin_bottom, used_values.margin_left };
+    box_model.inset = { used_values.inset_top(), used_values.inset_right(), used_values.inset_bottom(), used_values.inset_left() };
+    box_model.padding = { used_values.padding_top(), used_values.padding_right(), used_values.padding_bottom(), used_values.padding_left() };
+    box_model.border = { used_values.border_top(), used_values.border_right(), used_values.border_bottom(), used_values.border_left() };
+    box_model.margin = { used_values.margin_top(), used_values.margin_right(), used_values.margin_bottom(), used_values.margin_left() };
 }
 
 static RefPtr<Painting::Paintable> reset_and_reuse_or_create_paintable(Node& node)
@@ -305,7 +330,7 @@ RefPtr<Painting::Paintable> LayoutState::commit_used_values_to_paintable(UsedVal
         paintable->set_table_cell_coordinates(used_values.table_cell_coordinates().value());
 
     if (auto* paintable_with_lines = as_if<Painting::PaintableWithLines>(*paintable)) {
-        auto& line_boxes = used_values.line_boxes;
+        auto& line_boxes = used_values.line_boxes();
         Vector<Painting::LineRecord> lines;
         lines.ensure_capacity(line_boxes.size());
         for (size_t line_index = 0; line_index < line_boxes.size(); ++line_index) {
@@ -324,7 +349,7 @@ RefPtr<Painting::Paintable> LayoutState::commit_used_values_to_paintable(UsedVal
             });
         }
         paintable_with_lines->set_lines(move(lines));
-        paintable_with_lines->set_inline_box_pieces(move(used_values.inline_box_pieces));
+        paintable_with_lines->set_inline_box_pieces(move(used_values.inline_box_pieces()));
 
         // Piece fragment ranges were counted against the same skip-fully-truncated
         // fragment stream during inline layout; a divergence would let piece
@@ -366,23 +391,24 @@ RefPtr<Painting::Paintable> LayoutState::commit_used_values_to_paintable(UsedVal
     // inlines are not meaningful; their geometry is assigned from pieces once relative
     // positions are resolved.
     if (node.is_box() && !node.is_fragmented_inline() && !used_values.is_materialized_from_paintable()) {
-        if (used_values.containing_line_box_fragment.has_value()) {
+        auto containing_line_box_fragment = used_values.containing_line_box_fragment();
+        if (containing_line_box_fragment.has_value()) {
             // We know that `node` is an atomic inline because `containing_line_box_fragment` refers to the
             // line box fragment in the parent block container that contains it. The fragment has the final
             // offset for the atomic inline, but line box post-processing may remove fragments after the
             // coordinate was recorded, in which case the content offset stands.
-            auto const& containing_line_box_fragment = used_values.containing_line_box_fragment.value();
+            auto const& coordinate = containing_line_box_fragment.value();
             auto const& containing_block_used_values = get(*node.containing_block());
-            if (containing_line_box_fragment.line_box_index < containing_block_used_values.line_boxes.size()) {
-                auto const& line_box = containing_block_used_values.line_boxes[containing_line_box_fragment.line_box_index];
-                paintable->set_containing_line_box_index(containing_line_box_fragment.line_box_index);
-                if (containing_line_box_fragment.fragment_index < line_box.fragments().size())
-                    offset = line_box.fragments()[containing_line_box_fragment.fragment_index].offset();
+            if (coordinate.line_box_index < containing_block_used_values.line_boxes().size()) {
+                auto const& line_box = containing_block_used_values.line_boxes()[coordinate.line_box_index];
+                paintable->set_containing_line_box_index(coordinate.line_box_index);
+                if (coordinate.fragment_index < line_box.fragments().size())
+                    offset = line_box.fragments()[coordinate.fragment_index].offset();
             }
         }
 
         if (node.computed_values().position() == CSS::Positioning::Relative && is<NodeWithStyleAndBoxModelMetrics>(node))
-            offset.translate_by(used_values.inset_left, used_values.inset_top);
+            offset.translate_by(used_values.inset_left(), used_values.inset_top());
     }
     paintable->set_offset(offset);
 
@@ -444,7 +470,7 @@ void LayoutState::commit_used_values_and_build_paint_tree(Box& root, RefPtr<Pain
 
 void LayoutState::UsedValues::set_node(NodeWithStyle const& node, Optional<CSSPixels> percentage_basis_inline_size, Optional<CSSPixels> percentage_basis_block_size)
 {
-    m_node = &node;
+    m_core->node = const_cast<NodeWithStyle*>(&node);
 
     // NOTE: In the code below, we decide if `node` has definite inline and/or block size.
     //       This attempts to cover all the *general* cases where CSS considers sizes to be definite.
@@ -511,12 +537,12 @@ void LayoutState::UsedValues::set_node(NodeWithStyle const& node, Optional<CSSPi
                     CSSPixels available_inline_size = containing_block_size_for_axis(LogicalAxis::Inline);
                     resolved_definite_size = clamp_to_max_dimension_value(
                         available_inline_size
-                        - margin_left
-                        - margin_right
-                        - padding_left
-                        - padding_right
-                        - border_left
-                        - border_right);
+                        - margin_left()
+                        - margin_right()
+                        - padding_left()
+                        - padding_right()
+                        - border_left()
+                        - border_right());
                     return true;
                 }
                 return false;
@@ -550,56 +576,66 @@ void LayoutState::UsedValues::set_node(NodeWithStyle const& node, Optional<CSSPi
     CSSPixels max_block_size = 0;
     bool has_definite_max_block_size = is_definite_size(computed_values.max_height(), max_block_size, LogicalAxis::Block);
 
-    m_has_definite_inline_size = is_definite_size(computed_values.width(), m_content_inline_size, LogicalAxis::Inline);
-    m_has_definite_block_size = is_definite_size(computed_values.height(), m_content_block_size, LogicalAxis::Block);
+    auto content_inline_size = this->content_inline_size();
+    auto content_block_size = this->content_block_size();
+    m_core->has_definite_inline_size = is_definite_size(computed_values.width(), content_inline_size, LogicalAxis::Inline);
+    m_core->has_definite_block_size = is_definite_size(computed_values.height(), content_block_size, LogicalAxis::Block);
 
-    if (m_has_definite_inline_size) {
+    if (m_core->has_definite_inline_size) {
         if (has_definite_min_inline_size)
-            m_content_inline_size = clamp_to_max_dimension_value(max(min_inline_size, m_content_inline_size));
+            content_inline_size = clamp_to_max_dimension_value(max(min_inline_size, content_inline_size));
         if (has_definite_max_inline_size)
-            m_content_inline_size = clamp_to_max_dimension_value(min(max_inline_size, m_content_inline_size));
+            content_inline_size = clamp_to_max_dimension_value(min(max_inline_size, content_inline_size));
     }
 
-    if (m_has_definite_block_size) {
+    if (m_core->has_definite_block_size) {
         if (has_definite_min_block_size)
-            m_content_block_size = clamp_to_max_dimension_value(max(min_block_size, m_content_block_size));
+            content_block_size = clamp_to_max_dimension_value(max(min_block_size, content_block_size));
         if (has_definite_max_block_size)
-            m_content_block_size = clamp_to_max_dimension_value(min(max_block_size, m_content_block_size));
+            content_block_size = clamp_to_max_dimension_value(min(max_block_size, content_block_size));
     }
+
+    m_core->content_inline_size = content_inline_size.raw_value();
+    m_core->content_block_size = content_block_size.raw_value();
 }
 
 void LayoutState::UsedValues::materialize_from_paintable(Painting::Paintable const& paintable)
 {
-    m_materialized_from_paintable = true;
+    m_core->materialized_from_paintable = true;
 
     auto const& box_model = paintable.box_model();
 
     set_content_inline_size(paintable.content_width());
     set_content_block_size(paintable.content_height());
-    m_has_definite_inline_size = true;
-    m_has_definite_block_size = true;
+    m_core->has_definite_inline_size = true;
+    m_core->has_definite_block_size = true;
 
-    m_content_offset = paintable.offset();
+    auto offset = paintable.offset();
+    m_core->has_content_offset = true;
+    m_core->content_offset = {
+        .x = offset.x().raw_value(),
+        .y = offset.y().raw_value(),
+    };
 
-    margin_left = box_model.margin.left;
-    margin_right = box_model.margin.right;
-    margin_top = box_model.margin.top;
-    margin_bottom = box_model.margin.bottom;
+    set_margin_left(box_model.margin.left);
+    set_margin_right(box_model.margin.right);
+    set_margin_top(box_model.margin.top);
+    set_margin_bottom(box_model.margin.bottom);
 
-    padding_left = box_model.padding.left;
-    padding_right = box_model.padding.right;
-    padding_top = box_model.padding.top;
-    padding_bottom = box_model.padding.bottom;
+    set_padding_left(box_model.padding.left);
+    set_padding_right(box_model.padding.right);
+    set_padding_top(box_model.padding.top);
+    set_padding_bottom(box_model.padding.bottom);
 
-    border_left = box_model.border.left;
-    border_right = box_model.border.right;
-    border_top = box_model.border.top;
-    border_bottom = box_model.border.bottom;
+    set_border_left(box_model.border.left);
+    set_border_right(box_model.border.right);
+    set_border_top(box_model.border.top);
+    set_border_bottom(box_model.border.bottom);
 
-    inset_left = box_model.inset.left;
-    inset_right = box_model.inset.right;
-    inset_top = box_model.inset.top;
-    inset_bottom = box_model.inset.bottom;
+    set_inset_left(box_model.inset.left);
+    set_inset_right(box_model.inset.right);
+    set_inset_top(box_model.inset.top);
+    set_inset_bottom(box_model.inset.bottom);
 
     if (auto const* svg_graphics_paintable = as_if<Painting::SVGGraphicsPaintable>(paintable))
         set_computed_svg_transforms(svg_graphics_paintable->computed_transforms());
@@ -614,13 +650,13 @@ void LayoutState::UsedValues::set_content_inline_size(CSSPixels inline_size)
     VERIFY(!is_placed());
     if (inline_size < 0) {
         // Negative inline sizes are not allowed in CSS. We have a bug somewhere! Clamp to 0 to avoid doing too much damage.
-        dbgln_if(LIBWEB_CSS_DEBUG, "FIXME: Layout calculated a negative inline size for {}: {}", m_node->debug_description(), inline_size);
+        dbgln_if(LIBWEB_CSS_DEBUG, "FIXME: Layout calculated a negative inline size for {}: {}", node().debug_description(), inline_size);
         inline_size = 0;
     }
-    m_content_inline_size = clamp_to_max_dimension_value(inline_size);
+    m_core->content_inline_size = clamp_to_max_dimension_value(inline_size).raw_value();
     // FIXME: We should not do this! Definiteness of inline sizes should be determined early,
     //        and not changed later (except for some special cases in flex layout..)
-    m_has_definite_inline_size = true;
+    m_core->has_definite_inline_size = true;
 }
 
 void LayoutState::UsedValues::set_content_block_size(CSSPixels block_size)
@@ -628,31 +664,31 @@ void LayoutState::UsedValues::set_content_block_size(CSSPixels block_size)
     VERIFY(!is_placed());
     if (block_size < 0) {
         // Negative block sizes are not allowed in CSS. We have a bug somewhere! Clamp to 0 to avoid doing too much damage.
-        dbgln_if(LIBWEB_CSS_DEBUG, "FIXME: Layout calculated a negative block size for {}: {}", m_node->debug_description(), block_size);
+        dbgln_if(LIBWEB_CSS_DEBUG, "FIXME: Layout calculated a negative block size for {}: {}", node().debug_description(), block_size);
         block_size = 0;
     }
-    m_content_block_size = clamp_to_max_dimension_value(block_size);
+    m_core->content_block_size = clamp_to_max_dimension_value(block_size).raw_value();
 }
 
 AvailableSize LayoutState::UsedValues::available_inline_size_inside() const
 {
-    if (inline_size_constraint == SizeConstraint::MinContent)
+    if (inline_size_constraint() == SizeConstraint::MinContent)
         return AvailableSize::make_min_content();
-    if (inline_size_constraint == SizeConstraint::MaxContent)
+    if (inline_size_constraint() == SizeConstraint::MaxContent)
         return AvailableSize::make_max_content();
     if (has_definite_inline_size())
-        return AvailableSize::make_definite(m_content_inline_size);
+        return AvailableSize::make_definite(content_inline_size());
     return AvailableSize::make_indefinite();
 }
 
 AvailableSize LayoutState::UsedValues::available_block_size_inside() const
 {
-    if (block_size_constraint == SizeConstraint::MinContent)
+    if (block_size_constraint() == SizeConstraint::MinContent)
         return AvailableSize::make_min_content();
-    if (block_size_constraint == SizeConstraint::MaxContent)
+    if (block_size_constraint() == SizeConstraint::MaxContent)
         return AvailableSize::make_max_content();
     if (has_definite_block_size())
-        return AvailableSize::make_definite(m_content_block_size);
+        return AvailableSize::make_definite(content_block_size());
     return AvailableSize::make_indefinite();
 }
 
@@ -670,37 +706,96 @@ AvailableSpace LayoutState::UsedValues::available_inner_space_or_constraints_fro
 
 void LayoutState::UsedValues::set_indefinite_content_inline_size()
 {
-    m_has_definite_inline_size = false;
+    m_core->has_definite_inline_size = false;
 }
 
 void LayoutState::UsedValues::set_indefinite_content_block_size()
 {
-    m_has_definite_block_size = false;
+    m_core->has_definite_block_size = false;
+}
+
+static RustFFI::FfiStaticPositionAlignment to_ffi_static_position_alignment(StaticPositionRect::Alignment alignment)
+{
+    switch (alignment) {
+    case StaticPositionRect::Alignment::Start:
+        return RustFFI::FfiStaticPositionAlignment::Start;
+    case StaticPositionRect::Alignment::Center:
+        return RustFFI::FfiStaticPositionAlignment::Center;
+    case StaticPositionRect::Alignment::End:
+        return RustFFI::FfiStaticPositionAlignment::End;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+static StaticPositionRect::Alignment from_ffi_static_position_alignment(RustFFI::FfiStaticPositionAlignment alignment)
+{
+    switch (alignment) {
+    case RustFFI::FfiStaticPositionAlignment::Start:
+        return StaticPositionRect::Alignment::Start;
+    case RustFFI::FfiStaticPositionAlignment::Center:
+        return StaticPositionRect::Alignment::Center;
+    case RustFFI::FfiStaticPositionAlignment::End:
+        return StaticPositionRect::Alignment::End;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+static RustFFI::FfiStaticPositionRect to_ffi_static_position_rect(StaticPositionRect const& rect)
+{
+    return {
+        .rect = {
+            .offset = {
+                .inline_offset = rect.rect.offset.inline_offset.raw_value(),
+                .block_offset = rect.rect.offset.block_offset.raw_value(),
+            },
+            .size = {
+                .inline_size = rect.rect.size.inline_size.raw_value(),
+                .block_size = rect.rect.size.block_size.raw_value(),
+            },
+        },
+        .inline_alignment = to_ffi_static_position_alignment(rect.inline_alignment),
+        .block_alignment = to_ffi_static_position_alignment(rect.block_alignment),
+        .alignment_derives_from_own_computed_values = rect.alignment_derives_from_own_computed_values,
+    };
+}
+
+static StaticPositionRect from_ffi_static_position_rect(RustFFI::FfiStaticPositionRect const& rect)
+{
+    return {
+        .rect = {
+            .offset = {
+                .inline_offset = CSSPixels::from_raw(rect.rect.offset.inline_offset),
+                .block_offset = CSSPixels::from_raw(rect.rect.offset.block_offset),
+            },
+            .size = {
+                .inline_size = CSSPixels::from_raw(rect.rect.size.inline_size),
+                .block_size = CSSPixels::from_raw(rect.rect.size.block_size),
+            },
+        },
+        .inline_alignment = from_ffi_static_position_alignment(rect.inline_alignment),
+        .block_alignment = from_ffi_static_position_alignment(rect.block_alignment),
+        .alignment_derives_from_own_computed_values = rect.alignment_derives_from_own_computed_values,
+    };
 }
 
 void LayoutState::register_contained_abspos_child(Box const& target, Box const& child, StaticPositionRect const& static_position_rect)
 {
-    auto& children = m_contained_abspos_children.ensure(&target);
-    // Entries are inserted in layout index order so consumption follows document order.
-    size_t insertion_index = children.size();
-    for (size_t i = 0; i < children.size(); ++i) {
-        // Every box is laid out at most once per state, so it can only be registered once.
-        VERIFY(children[i].box != &child);
-        if (insertion_index == children.size() && child.layout_index() < children[i].box->layout_index())
-            insertion_index = i;
-    }
-    children.insert(insertion_index, { &child, static_position_rect });
+    RustFFI::rust_layout_register_contained_abspos_child(
+        m_rust_state,
+        const_cast<Box*>(&target),
+        const_cast<Box*>(&child),
+        to_ffi_static_position_rect(static_position_rect));
 }
 
 Optional<LayoutState::ContainedAbsposChild> LayoutState::take_next_contained_abspos_child(Box const& target)
 {
-    auto it = m_contained_abspos_children.find(&target);
-    if (it == m_contained_abspos_children.end())
+    RustFFI::FfiContainedAbsposChild child;
+    if (!RustFFI::rust_layout_take_next_contained_abspos_child(m_rust_state, const_cast<Box*>(&target), &child))
         return {};
-    auto child = it->value.take_first();
-    if (it->value.is_empty())
-        m_contained_abspos_children.remove(it);
-    return child;
+    return ContainedAbsposChild {
+        .box = static_cast<Box const*>(child.child_box),
+        .static_position_rect = from_ffi_static_position_rect(child.static_position_rect),
+    };
 }
 
 }

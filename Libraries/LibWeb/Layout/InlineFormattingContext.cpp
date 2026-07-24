@@ -83,7 +83,7 @@ void InlineFormattingContext::run(LayoutInput const& layout_input)
     generate_line_boxes();
     compute_inline_box_pieces();
 
-    auto const& line_boxes = m_containing_block_used_values.line_boxes;
+    auto const& line_boxes = m_containing_block_used_values.line_boxes();
     CSSPixels content_block_size = 0;
     if (any_of(line_boxes, [](auto& line_box) { return line_box.has_block_level_box(); })) {
         content_block_size = line_boxes.last().physical_vertical_end();
@@ -107,8 +107,8 @@ void InlineFormattingContext::compute_inline_box_pieces()
     if (m_layout_mode != LayoutMode::Normal || m_state.is_for_measurement())
         return;
 
-    auto const& line_boxes = m_containing_block_used_values.line_boxes;
-    auto& pieces = m_containing_block_used_values.inline_box_pieces;
+    auto const& line_boxes = m_containing_block_used_values.line_boxes();
+    auto& pieces = m_containing_block_used_values.inline_box_pieces();
     pieces.clear_with_capacity();
 
     bool inline_axis_is_horizontal = containing_block().computed_values().writing_mode() == CSS::WritingMode::HorizontalTb;
@@ -314,15 +314,15 @@ void InlineFormattingContext::compute_inline_box_pieces()
                 border_padding_high = used_values->border_box_right();
                 border_padding_block_low = used_values->border_box_top();
                 border_padding_block_high = used_values->border_box_bottom();
-                margin_low = used_values->margin_left;
-                margin_high = used_values->margin_right;
+                margin_low = used_values->margin_left();
+                margin_high = used_values->margin_right();
             } else {
                 border_padding_low = used_values->border_box_top();
                 border_padding_high = used_values->border_box_bottom();
                 border_padding_block_low = used_values->border_box_left();
                 border_padding_block_high = used_values->border_box_right();
-                margin_low = used_values->margin_top;
-                margin_high = used_values->margin_bottom;
+                margin_low = used_values->margin_top();
+                margin_high = used_values->margin_bottom();
             }
         }
 
@@ -420,29 +420,29 @@ void InlineFormattingContext::dimension_box_on_line(Box const& box, LayoutMode l
     auto& box_state = m_state.get_mutable(box);
     auto const& computed_values = box.computed_values();
 
-    box_state.margin_left = computed_values.margin().left().to_px_or_zero(containing_block_inline_size);
-    box_state.border_left = computed_values.border_left().width;
-    box_state.padding_left = computed_values.padding().left().to_px_or_zero(containing_block_inline_size);
+    box_state.set_margin_left(computed_values.margin().left().to_px_or_zero(containing_block_inline_size));
+    box_state.set_border_left(computed_values.border_left().width);
+    box_state.set_padding_left(computed_values.padding().left().to_px_or_zero(containing_block_inline_size));
 
-    box_state.margin_right = computed_values.margin().right().to_px_or_zero(containing_block_inline_size);
-    box_state.border_right = computed_values.border_right().width;
-    box_state.padding_right = computed_values.padding().right().to_px_or_zero(containing_block_inline_size);
+    box_state.set_margin_right(computed_values.margin().right().to_px_or_zero(containing_block_inline_size));
+    box_state.set_border_right(computed_values.border_right().width);
+    box_state.set_padding_right(computed_values.padding().right().to_px_or_zero(containing_block_inline_size));
 
-    box_state.margin_top = computed_values.margin().top().to_px_or_zero(containing_block_inline_size);
-    box_state.border_top = computed_values.border_top().width;
-    box_state.padding_top = computed_values.padding().top().to_px_or_zero(containing_block_inline_size);
+    box_state.set_margin_top(computed_values.margin().top().to_px_or_zero(containing_block_inline_size));
+    box_state.set_border_top(computed_values.border_top().width);
+    box_state.set_padding_top(computed_values.padding().top().to_px_or_zero(containing_block_inline_size));
 
-    box_state.padding_bottom = computed_values.padding().bottom().to_px_or_zero(containing_block_inline_size);
-    box_state.border_bottom = computed_values.border_bottom().width;
-    box_state.margin_bottom = computed_values.margin().bottom().to_px_or_zero(containing_block_inline_size);
+    box_state.set_padding_bottom(computed_values.padding().bottom().to_px_or_zero(containing_block_inline_size));
+    box_state.set_border_bottom(computed_values.border_bottom().width);
+    box_state.set_margin_bottom(computed_values.margin().bottom().to_px_or_zero(containing_block_inline_size));
 
     if (auto const* marker = as_if<ListItemMarkerBox>(box)) {
         dimension_list_item_marker(*marker);
         auto marker_distance = distance_between_marker_and_list_item(*marker);
         if (computed_values.direction() == CSS::Direction::Ltr)
-            box_state.margin_right += marker_distance;
+            box_state.set_margin_right(box_state.margin_right() + marker_distance);
         else
-            box_state.margin_left += marker_distance;
+            box_state.set_margin_left(box_state.margin_left() + marker_distance);
         return;
     }
 
@@ -479,12 +479,12 @@ void InlineFormattingContext::dimension_box_on_line(Box const& box, LayoutMode l
     if (should_treat_inline_size_as_auto(box, *m_available_space)) {
         if (m_available_space->inline_size.is_definite()) {
             auto available_inline_size = m_available_space->inline_size.to_px_or_zero()
-                - box_state.margin_left
-                - box_state.border_left
-                - box_state.padding_left
-                - box_state.padding_right
-                - box_state.border_right
-                - box_state.margin_right;
+                - box_state.margin_left()
+                - box_state.border_left()
+                - box_state.padding_left()
+                - box_state.padding_right()
+                - box_state.border_right()
+                - box_state.margin_right();
 
             auto preferred_inline_size = calculate_max_content_inline_size(box, box_constraints);
             if (preferred_inline_size <= available_inline_size) {
@@ -693,7 +693,7 @@ void InlineFormattingContext::apply_text_overflow_ellipsis(Vector<LineBox>& line
 
 void InlineFormattingContext::generate_line_boxes()
 {
-    auto& line_boxes = m_containing_block_used_values.line_boxes;
+    auto& line_boxes = m_containing_block_used_values.line_boxes();
     line_boxes.clear_with_capacity();
 
     auto direction = m_context_box.computed_values().direction();

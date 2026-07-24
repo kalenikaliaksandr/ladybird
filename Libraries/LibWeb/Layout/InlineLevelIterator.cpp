@@ -107,25 +107,25 @@ void InlineLevelIterator::enter_node_with_box_model_metrics(Layout::NodeWithStyl
 
     auto containing_block_inline_size = m_layout_input.containing_block_constraints.percentage_basis_inline_size.value_or(0);
 
-    used_values.margin_top = computed_values.margin().top().to_px_or_zero(containing_block_inline_size);
-    used_values.margin_bottom = computed_values.margin().bottom().to_px_or_zero(containing_block_inline_size);
+    used_values.set_margin_top(computed_values.margin().top().to_px_or_zero(containing_block_inline_size));
+    used_values.set_margin_bottom(computed_values.margin().bottom().to_px_or_zero(containing_block_inline_size));
 
-    used_values.margin_left = computed_values.margin().left().to_px_or_zero(containing_block_inline_size);
-    used_values.border_left = computed_values.border_left().width;
-    used_values.padding_left = computed_values.padding().left().to_px_or_zero(containing_block_inline_size);
+    used_values.set_margin_left(computed_values.margin().left().to_px_or_zero(containing_block_inline_size));
+    used_values.set_border_left(computed_values.border_left().width);
+    used_values.set_padding_left(computed_values.padding().left().to_px_or_zero(containing_block_inline_size));
 
-    used_values.margin_right = computed_values.margin().right().to_px_or_zero(containing_block_inline_size);
-    used_values.border_right = computed_values.border_right().width;
-    used_values.padding_right = computed_values.padding().right().to_px_or_zero(containing_block_inline_size);
+    used_values.set_margin_right(computed_values.margin().right().to_px_or_zero(containing_block_inline_size));
+    used_values.set_border_right(computed_values.border_right().width);
+    used_values.set_padding_right(computed_values.padding().right().to_px_or_zero(containing_block_inline_size));
 
-    used_values.border_top = computed_values.border_top().width;
-    used_values.border_bottom = computed_values.border_bottom().width;
-    used_values.padding_bottom = computed_values.padding().bottom().to_px_or_zero(containing_block_inline_size);
-    used_values.padding_top = computed_values.padding().top().to_px_or_zero(containing_block_inline_size);
+    used_values.set_border_top(computed_values.border_top().width);
+    used_values.set_border_bottom(computed_values.border_bottom().width);
+    used_values.set_padding_bottom(computed_values.padding().bottom().to_px_or_zero(containing_block_inline_size));
+    used_values.set_padding_top(computed_values.padding().top().to_px_or_zero(containing_block_inline_size));
 
-    m_extra_leading_metrics->margin += used_values.margin_left;
-    m_extra_leading_metrics->border += used_values.border_left;
-    m_extra_leading_metrics->padding += used_values.padding_left;
+    m_extra_leading_metrics->margin += used_values.margin_left();
+    m_extra_leading_metrics->border += used_values.border_left();
+    m_extra_leading_metrics->padding += used_values.padding_left();
 
     // Now's our chance to resolve the inset properties for this node.
     m_inline_formatting_context.compute_inset(node, m_inline_formatting_context.content_box_rect(m_containing_block_used_values).size());
@@ -141,9 +141,9 @@ void InlineLevelIterator::exit_node_with_box_model_metrics()
     auto& node = *m_box_model_node_stack.last();
     auto& used_values = m_layout_state.get_mutable(node);
 
-    m_extra_trailing_metrics->margin += used_values.margin_right;
-    m_extra_trailing_metrics->border += used_values.border_right;
-    m_extra_trailing_metrics->padding += used_values.padding_right;
+    m_extra_trailing_metrics->margin += used_values.margin_right();
+    m_extra_trailing_metrics->border += used_values.border_right();
+    m_extra_trailing_metrics->padding += used_values.padding_right();
 
     m_box_model_node_stack.take_last();
 }
@@ -491,12 +491,12 @@ Optional<InlineLevelIterator::Item> InlineLevelIterator::generate_next_item()
         .offset_in_node = 0,
         .length_in_node = 0,
         .inline_size = box_state.content_inline_size(),
-        .padding_start = box_state.padding_left,
-        .padding_end = box_state.padding_right,
-        .border_start = box_state.border_left,
-        .border_end = box_state.border_right,
-        .margin_start = box_state.margin_left,
-        .margin_end = box_state.margin_right,
+        .padding_start = box_state.padding_left(),
+        .padding_end = box_state.padding_right(),
+        .border_start = box_state.border_left(),
+        .border_end = box_state.border_right(),
+        .margin_start = box_state.margin_left(),
+        .margin_end = box_state.margin_right(),
     };
     add_extra_box_model_metrics_to_item(item, true, true);
     skip_to_next();

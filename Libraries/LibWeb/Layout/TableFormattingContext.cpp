@@ -144,10 +144,10 @@ void TableFormattingContext::compute_cell_measures(RowMeasurement row_measuremen
         auto const& cell_state = m_state.get(cell.box);
         auto use_collapsing_borders_model = cell_state.override_borders_data().has_value();
         // Implement the collapsing border model https://www.w3.org/TR/CSS22/tables.html#collapsing-borders.
-        CSSPixels border_block_start = use_collapsing_borders_model ? round(cell_state.border_top / 2) : computed_values.border_top().width;
-        CSSPixels border_block_end = use_collapsing_borders_model ? round(cell_state.border_bottom / 2) : computed_values.border_bottom().width;
-        CSSPixels border_inline_start = use_collapsing_borders_model ? round(cell_state.border_left / 2) : computed_values.border_left().width;
-        CSSPixels border_inline_end = use_collapsing_borders_model ? round(cell_state.border_right / 2) : computed_values.border_right().width;
+        CSSPixels border_block_start = use_collapsing_borders_model ? round(cell_state.border_top() / 2) : computed_values.border_top().width;
+        CSSPixels border_block_end = use_collapsing_borders_model ? round(cell_state.border_bottom() / 2) : computed_values.border_bottom().width;
+        CSSPixels border_inline_start = use_collapsing_borders_model ? round(cell_state.border_left() / 2) : computed_values.border_left().width;
+        CSSPixels border_inline_end = use_collapsing_borders_model ? round(cell_state.border_right() / 2) : computed_values.border_right().width;
 
         auto cell_intrinsic_inline_size_offsets = padding_inline_start + padding_inline_end + border_inline_start + border_inline_end;
 
@@ -984,8 +984,8 @@ Optional<TableFormattingContext::MeasuredCellContent> TableFormattingContext::me
 {
     if (m_layout_mode == LayoutMode::IntrinsicSizing
         && !cell_box.is_inline()
-        && cell_used_values.inline_size_constraint == SizeConstraint::None
-        && cell_used_values.block_size_constraint == SizeConstraint::None
+        && cell_used_values.inline_size_constraint() == SizeConstraint::None
+        && cell_used_values.block_size_constraint() == SizeConstraint::None
         && cell_used_values.has_definite_inline_size()
         && cell_used_values.has_definite_block_size()) {
         return {};
@@ -998,27 +998,27 @@ Optional<TableFormattingContext::MeasuredCellContent> TableFormattingContext::me
 
     // The table formatting context owns the cell's outer geometry. Seed the inputs
     // needed to lay out its contents without copying placement or layout outputs.
-    throwaway_cell_used_values.inline_size_constraint = cell_used_values.inline_size_constraint;
-    throwaway_cell_used_values.block_size_constraint = cell_used_values.block_size_constraint;
+    throwaway_cell_used_values.set_inline_size_constraint(cell_used_values.inline_size_constraint());
+    throwaway_cell_used_values.set_block_size_constraint(cell_used_values.block_size_constraint());
     throwaway_cell_used_values.set_content_inline_size(cell_used_values.content_inline_size());
     throwaway_cell_used_values.set_content_block_size(cell_used_values.content_block_size());
     throwaway_cell_used_values.set_has_definite_inline_size(cell_used_values.has_definite_inline_size());
     throwaway_cell_used_values.set_has_definite_block_size(cell_used_values.has_definite_block_size());
 
-    throwaway_cell_used_values.margin_left = cell_used_values.margin_left;
-    throwaway_cell_used_values.margin_right = cell_used_values.margin_right;
-    throwaway_cell_used_values.margin_top = cell_used_values.margin_top;
-    throwaway_cell_used_values.margin_bottom = cell_used_values.margin_bottom;
+    throwaway_cell_used_values.set_margin_left(cell_used_values.margin_left());
+    throwaway_cell_used_values.set_margin_right(cell_used_values.margin_right());
+    throwaway_cell_used_values.set_margin_top(cell_used_values.margin_top());
+    throwaway_cell_used_values.set_margin_bottom(cell_used_values.margin_bottom());
 
-    throwaway_cell_used_values.border_left = cell_used_values.border_left;
-    throwaway_cell_used_values.border_right = cell_used_values.border_right;
-    throwaway_cell_used_values.border_top = cell_used_values.border_top;
-    throwaway_cell_used_values.border_bottom = cell_used_values.border_bottom;
+    throwaway_cell_used_values.set_border_left(cell_used_values.border_left());
+    throwaway_cell_used_values.set_border_right(cell_used_values.border_right());
+    throwaway_cell_used_values.set_border_top(cell_used_values.border_top());
+    throwaway_cell_used_values.set_border_bottom(cell_used_values.border_bottom());
 
-    throwaway_cell_used_values.padding_left = cell_used_values.padding_left;
-    throwaway_cell_used_values.padding_right = cell_used_values.padding_right;
-    throwaway_cell_used_values.padding_top = cell_used_values.padding_top;
-    throwaway_cell_used_values.padding_bottom = cell_used_values.padding_bottom;
+    throwaway_cell_used_values.set_padding_left(cell_used_values.padding_left());
+    throwaway_cell_used_values.set_padding_right(cell_used_values.padding_right());
+    throwaway_cell_used_values.set_padding_top(cell_used_values.padding_top());
+    throwaway_cell_used_values.set_padding_bottom(cell_used_values.padding_bottom());
 
     if (auto const& override_borders_data = cell_used_values.override_borders_data(); override_borders_data.has_value())
         throwaway_cell_used_values.set_override_borders_data(override_borders_data.value());
@@ -1064,16 +1064,16 @@ void TableFormattingContext::compute_table_block_size()
         auto containing_block_inline_size = m_participant_constraints.percentage_basis_inline_size.value_or(0);
         auto containing_block_block_size = m_participant_constraints.percentage_basis_block_size.value_or(0);
 
-        cell_state.padding_top = cell.box.computed_values().padding().top().to_px_or_zero(containing_block_inline_size);
-        cell_state.padding_bottom = cell.box.computed_values().padding().bottom().to_px_or_zero(containing_block_inline_size);
-        cell_state.padding_left = cell.box.computed_values().padding().left().to_px_or_zero(containing_block_inline_size);
-        cell_state.padding_right = cell.box.computed_values().padding().right().to_px_or_zero(containing_block_inline_size);
+        cell_state.set_padding_top(cell.box.computed_values().padding().top().to_px_or_zero(containing_block_inline_size));
+        cell_state.set_padding_bottom(cell.box.computed_values().padding().bottom().to_px_or_zero(containing_block_inline_size));
+        cell_state.set_padding_left(cell.box.computed_values().padding().left().to_px_or_zero(containing_block_inline_size));
+        cell_state.set_padding_right(cell.box.computed_values().padding().right().to_px_or_zero(containing_block_inline_size));
 
         if (table_box().computed_values().border_collapse() == CSS::BorderCollapse::Separate) {
-            cell_state.border_top = cell.box.computed_values().border_top().width;
-            cell_state.border_bottom = cell.box.computed_values().border_bottom().width;
-            cell_state.border_left = cell.box.computed_values().border_left().width;
-            cell_state.border_right = cell.box.computed_values().border_right().width;
+            cell_state.set_border_top(cell.box.computed_values().border_top().width);
+            cell_state.set_border_bottom(cell.box.computed_values().border_bottom().width);
+            cell_state.set_border_left(cell.box.computed_values().border_left().width);
+            cell_state.set_border_right(cell.box.computed_values().border_right().width);
         }
 
         if (!row.is_collapsed) {
@@ -1299,7 +1299,7 @@ void TableFormattingContext::position_row_boxes()
     auto const& table_state = m_state.get(table_box());
 
     CSSPixels row_block_offset = m_pending_table_box_content_offset_in_wrapper.block_offset + border_spacing_block();
-    CSSPixels row_inline_offset = table_state.border_left + table_state.padding_left + border_spacing_inline();
+    CSSPixels row_inline_offset = table_state.border_left() + table_state.padding_left() + border_spacing_inline();
     for (size_t row_index = 0; row_index < m_rows.size(); row_index++) {
         auto& row = m_rows[row_index];
         auto& row_state = m_state.get_mutable(row.box);
@@ -1318,7 +1318,7 @@ void TableFormattingContext::position_row_boxes()
     }
 
     CSSPixels row_group_block_offset = m_pending_table_box_content_offset_in_wrapper.block_offset + border_spacing_block();
-    CSSPixels row_group_inline_offset = table_state.border_left + table_state.padding_left + border_spacing_inline();
+    CSSPixels row_group_inline_offset = table_state.border_left() + table_state.padding_left() + border_spacing_inline();
     TableGrid::for_each_child_box_matching(table_box(), TableGrid::is_table_row_group, [&](auto& row_group_box) {
         CSSPixels row_group_block_size = 0;
         CSSPixels row_group_inline_size = 0;
@@ -1342,7 +1342,7 @@ void TableFormattingContext::position_row_boxes()
         row_group_block_offset += row_group_block_size + (num_rows > 0 ? border_spacing_block() : 0);
     });
 
-    auto total_content_block_size = max(row_block_offset, row_group_block_offset) - m_pending_table_box_content_offset_in_wrapper.block_offset - table_state.padding_top;
+    auto total_content_block_size = max(row_block_offset, row_group_block_offset) - m_pending_table_box_content_offset_in_wrapper.block_offset - table_state.padding_top();
     m_table_block_size = max(total_content_block_size, m_table_block_size);
 }
 
@@ -1380,24 +1380,24 @@ void TableFormattingContext::position_cell_boxes()
         // https://drafts.csswg.org/css2/#height-layout
         // In the context of tables, values for vertical-align have the following meanings:
         if (cell_is_anonymous_wrapper_for_flex_or_grid(cell)) {
-            cell_state.padding_bottom += row_content_block_size - cell_state.border_box_block_size();
+            cell_state.set_padding_bottom(cell_state.padding_bottom() + row_content_block_size - cell_state.border_box_block_size());
         } else if (vertical_align.has<CSS::VerticalAlign>()) {
             switch (vertical_align.get<CSS::VerticalAlign>()) {
             // The center of the cell is aligned with the center of the rows it spans.
             case CSS::VerticalAlign::Middle: {
                 auto const block_size_difference = row_content_block_size - cell_state.border_box_block_size();
-                cell_state.padding_top += block_size_difference / 2;
-                cell_state.padding_bottom += block_size_difference / 2;
+                cell_state.set_padding_top(cell_state.padding_top() + block_size_difference / 2);
+                cell_state.set_padding_bottom(cell_state.padding_bottom() + block_size_difference / 2);
                 break;
             }
             // The top of the cell box is aligned with the top of the first row it spans.
             case CSS::VerticalAlign::Top: {
-                cell_state.padding_bottom += row_content_block_size - cell_state.border_box_block_size();
+                cell_state.set_padding_bottom(cell_state.padding_bottom() + row_content_block_size - cell_state.border_box_block_size());
                 break;
             }
             // The bottom of the cell box is aligned with the bottom of the last row it spans.
             case CSS::VerticalAlign::Bottom: {
-                cell_state.padding_top += row_content_block_size - cell_state.border_box_block_size();
+                cell_state.set_padding_top(cell_state.padding_top() + row_content_block_size - cell_state.border_box_block_size());
                 break;
             }
             // These values do not apply to cells; the cell is aligned at the baseline instead.
@@ -1407,8 +1407,8 @@ void TableFormattingContext::position_cell_boxes()
             case CSS::VerticalAlign::TextTop:
             // The baseline of the cell is put at the same height as the baseline of the first of the rows it spans.
             case CSS::VerticalAlign::Baseline: {
-                cell_state.padding_top += m_rows[cell.row_index].baseline - cell.baseline;
-                cell_state.padding_bottom += row_content_block_size - cell_state.border_box_block_size();
+                cell_state.set_padding_top(cell_state.padding_top() + m_rows[cell.row_index].baseline - cell.baseline);
+                cell_state.set_padding_bottom(cell_state.padding_bottom() + row_content_block_size - cell_state.border_box_block_size());
                 break;
             }
             default:
@@ -1679,10 +1679,10 @@ void TableFormattingContext::border_conflict_resolution()
 
         auto& cell_state = m_state.get_mutable(cell.box);
         cell_state.set_table_cell_coordinates(table_cell_coordinates(cell));
-        cell_state.border_top = override_borders_data.top.border_data.width;
-        cell_state.border_right = override_borders_data.right.border_data.width;
-        cell_state.border_bottom = override_borders_data.bottom.border_data.width;
-        cell_state.border_left = override_borders_data.left.border_data.width;
+        cell_state.set_border_top(override_borders_data.top.border_data.width);
+        cell_state.set_border_right(override_borders_data.right.border_data.width);
+        cell_state.set_border_bottom(override_borders_data.bottom.border_data.width);
+        cell_state.set_border_left(override_borders_data.left.border_data.width);
         cell_state.set_override_borders_data(override_borders_data);
     }
 }
@@ -1871,7 +1871,7 @@ void TableFormattingContext::run(LayoutInput const& layout_input)
     // Table captions are positioned between the table margins and its borders (outside the grid box borders) as described in
     // https://www.w3.org/TR/css-tables-3/#bounding-box-assignment
     // A visual representation of this model can be found at https://www.w3.org/TR/css-tables-3/images/table_container.png
-    m_state.get_mutable(table_box()).margin_bottom += captions_block_size;
+    m_state.get_mutable(table_box()).set_margin_bottom(m_state.get_mutable(table_box()).margin_bottom() + captions_block_size);
 
     // Derive baselines for the table internals bottom-up (rows, then row groups, then the table box)
     // now that all offsets are final, so the table exports its baseline to outside consumers

@@ -39,7 +39,7 @@ void LineBuilder::break_line(ForcedBreak forced_break, Optional<CSSPixels> next_
     size_t break_count = 0;
     bool floats_intrude_at_current_block_offset = false;
     do {
-        m_containing_block_used_values.line_boxes.append(LineBox(m_direction, m_writing_mode));
+        m_containing_block_used_values.line_boxes().append(LineBox(m_direction, m_writing_mode));
         begin_new_line(true, break_count == 0, forced_break);
         break_count++;
         auto current_line_block_size = max(m_max_block_size_on_current_line, m_context.containing_block().computed_values().line_height());
@@ -54,8 +54,8 @@ void LineBuilder::begin_new_line(bool advance_block_offset, bool is_first_break_
     if (advance_block_offset) {
         if (is_first_break_in_sequence) {
             // First break is simple, just go to the start of the next line.
-            if (m_should_advance_to_last_line_box_block_end && m_containing_block_used_values.line_boxes.size() > 1)
-                m_current_block_offset = m_containing_block_used_values.line_boxes[m_containing_block_used_values.line_boxes.size() - 2].physical_vertical_end();
+            if (m_should_advance_to_last_line_box_block_end && m_containing_block_used_values.line_boxes().size() > 1)
+                m_current_block_offset = m_containing_block_used_values.line_boxes()[m_containing_block_used_values.line_boxes().size() - 2].physical_vertical_end();
             else
                 m_current_block_offset += max(m_max_block_size_on_current_line, m_context.containing_block().computed_values().line_height());
         } else {
@@ -74,7 +74,7 @@ void LineBuilder::begin_new_line(bool advance_block_offset, bool is_first_break_
     m_last_line_needs_update = true;
     m_should_advance_to_last_line_box_block_end = false;
 
-    bool should_indent = m_containing_block_used_values.line_boxes.size() <= 1
+    bool should_indent = m_containing_block_used_values.line_boxes().size() <= 1
         || (m_text_indent_each_line && forced_break == ForcedBreak::Yes);
 
     if (m_text_indent_hanging)
@@ -87,7 +87,7 @@ void LineBuilder::begin_new_line(bool advance_block_offset, bool is_first_break_
 
 LineBox& LineBuilder::ensure_last_line_box()
 {
-    auto& line_boxes = m_containing_block_used_values.line_boxes;
+    auto& line_boxes = m_containing_block_used_values.line_boxes();
     if (line_boxes.is_empty())
         line_boxes.append(LineBox(m_direction, m_writing_mode));
     return line_boxes.last();
@@ -103,16 +103,16 @@ void LineBuilder::append_box(Box const& box, CSSPixels leading_size, CSSPixels t
         box_state.content_inline_size(), box_state.content_block_size(), box_state.border_box_top(), box_state.border_box_bottom());
     m_max_block_size_on_current_line = max(m_max_block_size_on_current_line, box_state.margin_box_block_size());
 
-    box_state.containing_line_box_fragment = {};
+    box_state.set_containing_line_box_fragment({});
 
     // https://drafts.csswg.org/css-display/#atomic-inline
     // Inline-level boxes that are not inline boxes are called atomic inline-level boxes because they
     // participate in their inline formatting context as a single opaque box.
     if (box.is_atomic_inline()) {
-        box_state.containing_line_box_fragment = LineBoxFragmentCoordinate {
-            .line_box_index = m_containing_block_used_values.line_boxes.size() - 1,
+        box_state.set_containing_line_box_fragment(LineBoxFragmentCoordinate {
+            .line_box_index = m_containing_block_used_values.line_boxes().size() - 1,
             .fragment_index = line_box.fragments().size() - 1,
-        };
+        });
     }
 }
 
@@ -161,7 +161,7 @@ void LineBuilder::commit_pending_margin_before_float()
 
 void LineBuilder::finish_current_line_before_block_level_box()
 {
-    auto& line_boxes = m_containing_block_used_values.line_boxes;
+    auto& line_boxes = m_containing_block_used_values.line_boxes();
     if (line_boxes.is_empty() || line_boxes.last().is_empty())
         return;
 
@@ -203,10 +203,10 @@ void LineBuilder::append_block_level_box(Box const& box, CSSPixels block_end, CS
     // The interrupting block also ends the inline flow after itself; any content that follows starts on a fresh line.
     line_box.m_has_forced_break = true;
 
-    box_state.containing_line_box_fragment = LineBoxFragmentCoordinate {
-        .line_box_index = m_containing_block_used_values.line_boxes.size() - 1,
+    box_state.set_containing_line_box_fragment(LineBoxFragmentCoordinate {
+        .line_box_index = m_containing_block_used_values.line_boxes().size() - 1,
         .fragment_index = 0,
-    };
+    });
 
     // Static position markers recorded on this line will never go through update_last_line(), so anchor them
     // at the flow position the interrupting block starts at.
@@ -219,7 +219,7 @@ void LineBuilder::append_block_level_box(Box const& box, CSSPixels block_end, CS
     m_last_line_needs_update = false;
     m_should_advance_to_last_line_box_block_end = false;
 
-    m_containing_block_used_values.line_boxes.append(LineBox(m_direction, m_writing_mode));
+    m_containing_block_used_values.line_boxes().append(LineBox(m_direction, m_writing_mode));
     begin_new_line(false);
 }
 
@@ -255,7 +255,7 @@ bool LineBuilder::should_break(CSSPixels next_item_inline_size)
     if (m_available_inline_size_for_current_line.is_max_content())
         return false;
 
-    auto const& line_boxes = m_containing_block_used_values.line_boxes;
+    auto const& line_boxes = m_containing_block_used_values.line_boxes();
     if (line_boxes.is_empty() || line_boxes.last().is_empty()) {
         // If we don't have a single line box yet *and* there are no floats intruding
         // into this line box, we don't need to break before inserting anything.
@@ -273,7 +273,7 @@ void LineBuilder::update_last_line()
         return;
     m_last_line_needs_update = false;
 
-    auto& line_boxes = m_containing_block_used_values.line_boxes;
+    auto& line_boxes = m_containing_block_used_values.line_boxes();
     if (line_boxes.is_empty())
         return;
 
@@ -552,7 +552,7 @@ void LineBuilder::update_last_line()
 void LineBuilder::remove_last_line_if_empty()
 {
     // If there is an empty line box at the block end, remove it instead of giving it block size.
-    auto& line_boxes = m_containing_block_used_values.line_boxes;
+    auto& line_boxes = m_containing_block_used_values.line_boxes();
     if (!line_boxes.is_empty() && line_boxes.last().is_empty()) {
         line_boxes.take_last();
         m_last_line_needs_update = false;
@@ -563,8 +563,8 @@ void LineBuilder::recalculate_available_space()
 {
     auto current_line_block_size = max(m_max_block_size_on_current_line, m_context.containing_block().computed_values().line_height());
     m_available_inline_size_for_current_line = m_context.available_space_for_line(m_current_block_offset, current_line_block_size);
-    if (!m_containing_block_used_values.line_boxes.is_empty())
-        m_containing_block_used_values.line_boxes.last().m_original_available_inline_size = m_available_inline_size_for_current_line;
+    if (!m_containing_block_used_values.line_boxes().is_empty())
+        m_containing_block_used_values.line_boxes().last().m_original_available_inline_size = m_available_inline_size_for_current_line;
 }
 
 void LineBuilder::did_introduce_clearance(CSSPixels clearance)
@@ -575,7 +575,7 @@ void LineBuilder::did_introduce_clearance(CSSPixels clearance)
 
     // Increase the block end of the previous line box so it matches the clearance, because the element's block size is
     // first determined by the block end of the last line box (after trimming empty/whitespace boxes).
-    auto& line_boxes = m_containing_block_used_values.line_boxes;
+    auto& line_boxes = m_containing_block_used_values.line_boxes();
     if (line_boxes.size() > 1) {
         auto& previous_line_box = line_boxes[line_boxes.size() - 2];
         previous_line_box.m_block_end = clearance;
@@ -589,7 +589,7 @@ void LineBuilder::set_trailing_whitespace_on_previous_line()
 {
     // When a line breaks at whitespace, that whitespace is not added to any line. For text
     // selection purposes, we record this on the last fragment of the previous line.
-    auto& line_boxes = m_containing_block_used_values.line_boxes;
+    auto& line_boxes = m_containing_block_used_values.line_boxes();
     if (line_boxes.size() < 2)
         return;
 

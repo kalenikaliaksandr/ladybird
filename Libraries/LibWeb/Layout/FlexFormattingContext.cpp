@@ -352,10 +352,10 @@ void FlexFormattingContext::populate_specified_margins(FlexItem& item, CSS::Flex
     // Percentages on flex item box-model metrics resolve against the flex container's inline size.
     auto containing_block_inline_size = m_item_percentage_bases.percentage_basis_inline_size.value_or(0);
 
-    item.used_values.padding_left = item.box.computed_values().padding().left().to_px_or_zero(containing_block_inline_size);
-    item.used_values.padding_right = item.box.computed_values().padding().right().to_px_or_zero(containing_block_inline_size);
-    item.used_values.padding_top = item.box.computed_values().padding().top().to_px_or_zero(containing_block_inline_size);
-    item.used_values.padding_bottom = item.box.computed_values().padding().bottom().to_px_or_zero(containing_block_inline_size);
+    item.used_values.set_padding_left(item.box.computed_values().padding().left().to_px_or_zero(containing_block_inline_size));
+    item.used_values.set_padding_right(item.box.computed_values().padding().right().to_px_or_zero(containing_block_inline_size));
+    item.used_values.set_padding_top(item.box.computed_values().padding().top().to_px_or_zero(containing_block_inline_size));
+    item.used_values.set_padding_bottom(item.box.computed_values().padding().bottom().to_px_or_zero(containing_block_inline_size));
 
     if (main_axis_is_horizontal()) {
         item.borders.main_before = item.box.computed_values().border_left().width;
@@ -383,10 +383,10 @@ void FlexFormattingContext::populate_specified_margins(FlexItem& item, CSS::Flex
         item.borders.cross_before = item.box.computed_values().border_left().width;
         item.borders.cross_after = item.box.computed_values().border_right().width;
 
-        item.padding.main_before = item.used_values.padding_top;
-        item.padding.main_after = item.used_values.padding_bottom;
-        item.padding.cross_before = item.used_values.padding_left;
-        item.padding.cross_after = item.used_values.padding_right;
+        item.padding.main_before = item.used_values.padding_top();
+        item.padding.main_after = item.used_values.padding_bottom();
+        item.padding.cross_before = item.used_values.padding_left();
+        item.padding.cross_after = item.used_values.padding_right();
 
         item.margins.main_before = item.box.computed_values().margin().top().to_px_or_zero(containing_block_inline_size);
         item.margins.main_after = item.box.computed_values().margin().bottom().to_px_or_zero(containing_block_inline_size);
@@ -601,18 +601,18 @@ void FlexFormattingContext::set_main_axis_first_margin(FlexItem& item, CSSPixels
 {
     item.margins.main_before = margin;
     if (main_axis_is_horizontal())
-        item.used_values.margin_left = margin;
+        item.used_values.set_margin_left(margin);
     else
-        item.used_values.margin_top = margin;
+        item.used_values.set_margin_top(margin);
 }
 
 void FlexFormattingContext::set_main_axis_second_margin(FlexItem& item, CSSPixels margin)
 {
     item.margins.main_after = margin;
     if (main_axis_is_horizontal())
-        item.used_values.margin_right = margin;
+        item.used_values.set_margin_right(margin);
     else
-        item.used_values.margin_bottom = margin;
+        item.used_values.set_margin_bottom(margin);
 }
 
 // https://drafts.csswg.org/css-flexbox-1/#algo-available
@@ -1970,15 +1970,15 @@ void FlexFormattingContext::copy_dimensions_from_flex_items_to_boxes()
     for (auto& item : m_flex_items) {
         auto const& box = item.box;
 
-        item.used_values.margin_left = box.computed_values().margin().left().to_px_or_zero(m_flex_container_state.content_inline_size());
-        item.used_values.margin_right = box.computed_values().margin().right().to_px_or_zero(m_flex_container_state.content_inline_size());
-        item.used_values.margin_top = box.computed_values().margin().top().to_px_or_zero(m_flex_container_state.content_inline_size());
-        item.used_values.margin_bottom = box.computed_values().margin().bottom().to_px_or_zero(m_flex_container_state.content_inline_size());
+        item.used_values.set_margin_left(box.computed_values().margin().left().to_px_or_zero(m_flex_container_state.content_inline_size()));
+        item.used_values.set_margin_right(box.computed_values().margin().right().to_px_or_zero(m_flex_container_state.content_inline_size()));
+        item.used_values.set_margin_top(box.computed_values().margin().top().to_px_or_zero(m_flex_container_state.content_inline_size()));
+        item.used_values.set_margin_bottom(box.computed_values().margin().bottom().to_px_or_zero(m_flex_container_state.content_inline_size()));
 
-        item.used_values.border_left = box.computed_values().border_left().width;
-        item.used_values.border_right = box.computed_values().border_right().width;
-        item.used_values.border_top = box.computed_values().border_top().width;
-        item.used_values.border_bottom = box.computed_values().border_bottom().width;
+        item.used_values.set_border_left(box.computed_values().border_left().width);
+        item.used_values.set_border_right(box.computed_values().border_right().width);
+        item.used_values.set_border_top(box.computed_values().border_top().width);
+        item.used_values.set_border_bottom(box.computed_values().border_bottom().width);
 
         set_main_size(item, item.main_size.value());
         set_cross_size(item, item.cross_size.value());

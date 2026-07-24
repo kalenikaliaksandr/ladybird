@@ -117,15 +117,15 @@ struct GridItem {
     CSSPixels used_margin_start(GridDimension dimension) const
     {
         if (dimension == GridDimension::Column)
-            return used_values.margin_left + subgrid_extra_margins.left;
-        return used_values.margin_top + subgrid_extra_margins.top;
+            return used_values.margin_left() + subgrid_extra_margins.left;
+        return used_values.margin_top() + subgrid_extra_margins.top;
     }
 
     CSSPixels used_margin_end(GridDimension dimension) const
     {
         if (dimension == GridDimension::Column)
-            return used_values.margin_right + subgrid_extra_margins.right;
-        return used_values.margin_bottom + subgrid_extra_margins.bottom;
+            return used_values.margin_right() + subgrid_extra_margins.right;
+        return used_values.margin_bottom() + subgrid_extra_margins.bottom;
     }
 
     AvailableSpace available_space() const

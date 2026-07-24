@@ -531,16 +531,16 @@ void GridFormattingContext::apply_subgrid_gap_extra_margins(GridItem& item, Grid
 
     if (item_start > 0) {
         if (dimension == GridDimension::Column)
-            item.used_values.margin_left += extra_margin;
+            item.used_values.set_margin_left(item.used_values.margin_left() + extra_margin);
         else
-            item.used_values.margin_top += extra_margin;
+            item.used_values.set_margin_top(item.used_values.margin_top() + extra_margin);
     }
 
     if (item_end < static_cast<int>(track_count)) {
         if (dimension == GridDimension::Column)
-            item.used_values.margin_right += extra_margin;
+            item.used_values.set_margin_right(item.used_values.margin_right() + extra_margin);
         else
-            item.used_values.margin_bottom += extra_margin;
+            item.used_values.set_margin_bottom(item.used_values.margin_bottom() + extra_margin);
     }
 }
 
@@ -2425,12 +2425,12 @@ void GridFormattingContext::resolve_grid_item_sizes(GridDimension dimension)
         }
 
         if (dimension == GridDimension::Column) {
-            item.used_values.margin_left = used_alignment.margin_start;
-            item.used_values.margin_right = used_alignment.margin_end;
+            item.used_values.set_margin_left(used_alignment.margin_start);
+            item.used_values.set_margin_right(used_alignment.margin_end);
             item.used_values.set_content_inline_size(used_alignment.size);
         } else {
-            item.used_values.margin_top = used_alignment.margin_start;
-            item.used_values.margin_bottom = used_alignment.margin_end;
+            item.used_values.set_margin_top(used_alignment.margin_start);
+            item.used_values.set_margin_bottom(used_alignment.margin_end);
             item.used_values.set_content_block_size(used_alignment.size);
         }
     }
@@ -2656,25 +2656,25 @@ void GridFormattingContext::resolve_items_box_metrics(GridDimension dimension)
 
         CSSPixels containing_block_inline_size = containing_block_size_for_item(item, GridDimension::Column);
         if (dimension == GridDimension::Column) {
-            item.used_values.padding_right = computed_values.padding().right().to_px_or_zero(containing_block_inline_size);
-            item.used_values.padding_left = computed_values.padding().left().to_px_or_zero(containing_block_inline_size);
+            item.used_values.set_padding_right(computed_values.padding().right().to_px_or_zero(containing_block_inline_size));
+            item.used_values.set_padding_left(computed_values.padding().left().to_px_or_zero(containing_block_inline_size));
 
-            item.used_values.margin_right = computed_values.margin().right().to_px_or_zero(containing_block_inline_size);
-            item.used_values.margin_left = computed_values.margin().left().to_px_or_zero(containing_block_inline_size);
+            item.used_values.set_margin_right(computed_values.margin().right().to_px_or_zero(containing_block_inline_size));
+            item.used_values.set_margin_left(computed_values.margin().left().to_px_or_zero(containing_block_inline_size));
 
-            item.used_values.border_right = computed_values.border_right().width;
-            item.used_values.border_left = computed_values.border_left().width;
+            item.used_values.set_border_right(computed_values.border_right().width);
+            item.used_values.set_border_left(computed_values.border_left().width);
 
             apply_subgrid_gap_extra_margins(item, dimension, m_available_space->inline_size);
         } else {
-            item.used_values.padding_top = computed_values.padding().top().to_px_or_zero(containing_block_inline_size);
-            item.used_values.padding_bottom = computed_values.padding().bottom().to_px_or_zero(containing_block_inline_size);
+            item.used_values.set_padding_top(computed_values.padding().top().to_px_or_zero(containing_block_inline_size));
+            item.used_values.set_padding_bottom(computed_values.padding().bottom().to_px_or_zero(containing_block_inline_size));
 
-            item.used_values.margin_top = computed_values.margin().top().to_px_or_zero(containing_block_inline_size);
-            item.used_values.margin_bottom = computed_values.margin().bottom().to_px_or_zero(containing_block_inline_size);
+            item.used_values.set_margin_top(computed_values.margin().top().to_px_or_zero(containing_block_inline_size));
+            item.used_values.set_margin_bottom(computed_values.margin().bottom().to_px_or_zero(containing_block_inline_size));
 
-            item.used_values.border_top = computed_values.border_top().width;
-            item.used_values.border_bottom = computed_values.border_bottom().width;
+            item.used_values.set_border_top(computed_values.border_top().width);
+            item.used_values.set_border_bottom(computed_values.border_bottom().width);
 
             apply_subgrid_gap_extra_margins(item, dimension, m_available_space->block_size);
         }
@@ -2771,7 +2771,7 @@ LogicalRect GridFormattingContext::get_grid_area(GridItem const& grid_item) cons
         for (auto const& row_track : tracks_and_gaps) {
             offset += row_track.base_size;
         }
-        CSSPixels size = dimension == GridDimension::Column ? m_grid_container_used_values.padding_right : m_grid_container_used_values.padding_bottom;
+        CSSPixels size = dimension == GridDimension::Column ? m_grid_container_used_values.padding_right() : m_grid_container_used_values.padding_bottom();
         if (dimension == GridDimension::Column) {
             area.offset.inline_offset = offset;
             area.size.inline_size = size;
@@ -2799,10 +2799,10 @@ LogicalRect GridFormattingContext::get_grid_area(GridItem const& grid_item) cons
             for (auto const& row_track : m_grid_rows_and_gaps)
                 block_size += row_track.base_size;
         }
-        block_size += m_grid_container_used_values.padding_top + m_grid_container_used_values.padding_bottom;
+        block_size += m_grid_container_used_values.padding_top() + m_grid_container_used_values.padding_bottom();
 
         area.size.block_size = block_size;
-        area.offset.block_offset = -m_grid_container_used_values.padding_top;
+        area.offset.block_offset = -m_grid_container_used_values.padding_top();
     }
 
     if (grid_item.column.has_value()) {
@@ -2819,10 +2819,10 @@ LogicalRect GridFormattingContext::get_grid_area(GridItem const& grid_item) cons
             for (auto const& col_track : m_grid_columns_and_gaps)
                 inline_size += col_track.base_size;
         }
-        inline_size += m_grid_container_used_values.padding_left + m_grid_container_used_values.padding_right;
+        inline_size += m_grid_container_used_values.padding_left() + m_grid_container_used_values.padding_right();
 
         area.size.inline_size = inline_size;
-        area.offset.inline_offset = -m_grid_container_used_values.padding_left;
+        area.offset.inline_offset = -m_grid_container_used_values.padding_left();
     }
 
     return area;
@@ -3059,8 +3059,8 @@ AbsposContainingBlockInfo GridFormattingContext::resolve_abspos_containing_block
 
         auto augmented_grid_padding_edge = [&](GridDimension dimension, bool is_start_line) {
             auto const& available_size = dimension == GridDimension::Column ? m_available_space->inline_size : m_available_space->block_size;
-            auto padding_start = dimension == GridDimension::Column ? m_grid_container_used_values.padding_left : m_grid_container_used_values.padding_top;
-            auto padding_end = dimension == GridDimension::Column ? m_grid_container_used_values.padding_right : m_grid_container_used_values.padding_bottom;
+            auto padding_start = dimension == GridDimension::Column ? m_grid_container_used_values.padding_left() : m_grid_container_used_values.padding_top();
+            auto padding_end = dimension == GridDimension::Column ? m_grid_container_used_values.padding_right() : m_grid_container_used_values.padding_bottom();
             auto const& tracks_and_gaps = dimension == GridDimension::Column ? m_grid_columns_and_gaps : m_grid_rows_and_gaps;
 
             if (is_start_line)
@@ -3604,8 +3604,8 @@ void GridFormattingContext::resolve_table_wrapper_grid_item_inline_size(GridItem
         table_wrapper_inline_size = max(table_wrapper_inline_size, calculate_inner_inline_size(item.box, available_space.inline_size, item.minimum_size(GridDimension::Column), grid_area_constraints_for_item(item)));
 
     auto const& computed_values = item.box.computed_values();
-    item.used_values.margin_left = computed_values.margin().left().to_px_or_zero(table_wrapper_containing_block_inline_size);
-    item.used_values.margin_right = computed_values.margin().right().to_px_or_zero(table_wrapper_containing_block_inline_size);
+    item.used_values.set_margin_left(computed_values.margin().left().to_px_or_zero(table_wrapper_containing_block_inline_size));
+    item.used_values.set_margin_right(computed_values.margin().right().to_px_or_zero(table_wrapper_containing_block_inline_size));
 
     auto margin_start = item.used_margin_start(GridDimension::Column);
     auto margin_end = item.used_margin_end(GridDimension::Column);
@@ -3643,8 +3643,8 @@ void GridFormattingContext::resolve_table_wrapper_grid_item_inline_size(GridItem
         }
     }
 
-    item.used_values.margin_left = margin_start;
-    item.used_values.margin_right = margin_end;
+    item.used_values.set_margin_left(margin_start);
+    item.used_values.set_margin_right(margin_end);
     item.used_values.set_content_inline_size(table_wrapper_inline_size);
 }
 
