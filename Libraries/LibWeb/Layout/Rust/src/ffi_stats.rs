@@ -38,6 +38,9 @@ define_ffi_ops! {
     GridFactsBuild => "gridFactsBuildEntries",
     GridNameRetain => "gridNameRetainEntries",
     GridNameRelease => "gridNameReleaseEntries",
+    SvgFactsBuild => "svgFactsBuildEntries",
+    SvgPathRetain => "svgPathRetainEntries",
+    SvgPathRelease => "svgPathReleaseEntries",
     FcCreate => "fcCreateEntries",
     FcDestroy => "fcDestroyEntries",
     FcRun => "fcRunEntries",
@@ -121,6 +124,21 @@ pub extern "C" fn rust_layout_ffi_note_grid_name_retain() {
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_layout_ffi_note_grid_name_release() {
     abort_on_panic(|| bump(FfiOp::GridNameRelease));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_svg_facts_build() {
+    abort_on_panic(|| bump(FfiOp::SvgFactsBuild));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_svg_path_retain() {
+    abort_on_panic(|| bump(FfiOp::SvgPathRetain));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_ffi_note_svg_path_release() {
+    abort_on_panic(|| bump(FfiOp::SvgPathRelease));
 }
 
 #[unsafe(no_mangle)]

@@ -19,6 +19,7 @@ use std::ffi::c_void;
 mod flex;
 pub(crate) mod grid;
 mod sizing;
+mod svg;
 mod table;
 
 const NO_FORMATTING_CONTEXT: u8 = u8::MAX;
@@ -208,6 +209,16 @@ pub struct FfiLayoutFcCallbacks {
     pub build_table_box_facts: FfiBuildTableBoxFactsCallback,
     pub build_grid_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> grid::facts::FfiGridStyleFacts,
     pub release_grid_facts_snapshot: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    pub build_svg_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> svg::FfiSvgElementFacts,
+    pub get_computed_svg_transforms:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut svg::FfiSvgComputedTransforms) -> bool,
+    pub set_computed_svg_transforms: unsafe extern "C" fn(*mut c_void, *mut c_void, svg::FfiSvgComputedTransforms),
+    pub compute_svg_path:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, svg::FfiSvgPathRequest) -> svg::FfiSvgPathResult,
+    pub release_svg_path: unsafe extern "C" fn(*mut c_void, *const c_void),
+    pub set_computed_svg_path: unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_void),
+    pub svg_image_bounding_box:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, CssPixels, CssPixels) -> svg::FfiFloatRect,
     pub create_used_values:
         unsafe extern "C" fn(*mut c_void, *mut c_void, bool, CssPixels, bool, CssPixels) -> *mut UsedValuesCore,
     pub get_used_values: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut UsedValuesCore,
@@ -323,6 +334,7 @@ struct FormattingContextInstance {
     layout_mode: u8,
     callbacks: FfiLayoutFcCallbacks,
     grid_context: Option<Box<grid::GridFormattingContext>>,
+    svg_context: Option<Box<svg::SvgFormattingContext>>,
     should_collect_devtools_layout_data: bool,
     automatic_content_inline_size: CssPixels,
     automatic_content_block_size: CssPixels,
@@ -397,6 +409,7 @@ pub extern "C" fn rust_layout_owns_fc_type(fc_type: u8) -> bool {
             type_ if type_ == FfiFormattingContextType::Flex as u8
                 || type_ == FfiFormattingContextType::Table as u8
                 || type_ == FfiFormattingContextType::Grid as u8
+                || type_ == FfiFormattingContextType::Svg as u8
         )
     })
 }
@@ -440,6 +453,8 @@ pub extern "C" fn rust_layout_fc_create(
                 should_collect_devtools_layout_data,
             ))
         });
+        let svg_context = (fc_type == FfiFormattingContextType::Svg as u8)
+            .then(|| Box::new(svg::SvgFormattingContext::new(state, box_, layout_mode, callbacks)));
         Box::into_raw(Box::new(FormattingContextInstance {
             state,
             box_,
@@ -448,6 +463,7 @@ pub extern "C" fn rust_layout_fc_create(
             layout_mode,
             callbacks,
             grid_context,
+            svg_context,
             should_collect_devtools_layout_data,
             automatic_content_inline_size: CssPixels::default(),
             automatic_content_block_size: CssPixels::default(),
@@ -515,6 +531,7 @@ pub extern "C" fn rust_layout_fc_parent_did_dimension(fc: *mut c_void) {
             type_ if type_ == FfiFormattingContextType::Grid as u8 => {
                 instance.grid_context.as_ref().unwrap().parent_did_dimension();
             }
+            type_ if type_ == FfiFormattingContextType::Svg as u8 => {}
             _ => panic!("no Rust parent-dimension implementation for this formatting context"),
         }
     });
@@ -577,6 +594,9 @@ pub extern "C" fn rust_layout_fc_run(fc: *mut c_void, _input: FfiLayoutInput) {
                 };
                 instance.automatic_content_inline_size = inline_size;
                 instance.automatic_content_block_size = block_size;
+            }
+            type_ if type_ == FfiFormattingContextType::Svg as u8 => {
+                svg::run(instance, _input);
             }
             _ => panic!("no Rust implementation for this formatting context"),
         }
@@ -725,13 +745,14 @@ mod tests {
     }
 
     #[test]
-    fn rust_owns_flex_table_and_grid_formatting_contexts() {
+    fn rust_owns_flex_table_grid_and_svg_formatting_contexts() {
         for type_ in 0..=u8::MAX {
             assert_eq!(
                 rust_layout_owns_fc_type(type_),
                 type_ == FfiFormattingContextType::Flex as u8
                     || type_ == FfiFormattingContextType::Table as u8
                     || type_ == FfiFormattingContextType::Grid as u8
+                    || type_ == FfiFormattingContextType::Svg as u8
             );
         }
     }
