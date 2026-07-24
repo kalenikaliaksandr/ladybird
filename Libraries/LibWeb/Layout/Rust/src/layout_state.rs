@@ -184,6 +184,45 @@ pub struct FfiStaticPositionRect {
     pub alignment_derives_from_own_computed_values: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[allow(dead_code)]
+pub enum FfiAbsposAxisMode {
+    StaticPosition,
+    InsetFromRect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FfiAbsposAlignment {
+    Baseline,
+    Center,
+    End,
+    Normal,
+    Safe,
+    SelfEnd,
+    SelfStart,
+    SpaceAround,
+    SpaceBetween,
+    SpaceEvenly,
+    Start,
+    Stretch,
+    Unsafe,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiAbsposContainingBlockInfo {
+    pub rect: LogicalRect,
+    pub inline_axis_mode: FfiAbsposAxisMode,
+    pub block_axis_mode: FfiAbsposAxisMode,
+    pub has_inline_alignment: bool,
+    pub inline_alignment: FfiAbsposAlignment,
+    pub has_block_alignment: bool,
+    pub block_alignment: FfiAbsposAlignment,
+    pub derives_from_own_computed_values: bool,
+}
+
 #[derive(Clone, Copy)]
 struct ContainedAbsposChild {
     child_box: *mut c_void,

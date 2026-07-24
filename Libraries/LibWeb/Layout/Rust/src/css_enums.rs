@@ -84,6 +84,42 @@ pub mod align_self {
     pub const UNSAFE: u8 = 12;
 }
 
+pub mod justify_items {
+    pub const BASELINE: u8 = 0;
+    pub const CENTER: u8 = 1;
+    pub const END: u8 = 2;
+    pub const FLEX_END: u8 = 3;
+    pub const FLEX_START: u8 = 4;
+    pub const LEGACY: u8 = 5;
+    pub const NORMAL: u8 = 6;
+    pub const SAFE: u8 = 7;
+    pub const SELF_END: u8 = 8;
+    pub const SELF_START: u8 = 9;
+    pub const START: u8 = 10;
+    pub const STRETCH: u8 = 11;
+    pub const UNSAFE: u8 = 12;
+    pub const LEFT: u8 = 13;
+    pub const RIGHT: u8 = 14;
+}
+
+pub mod justify_self {
+    pub const AUTO: u8 = 0;
+    pub const BASELINE: u8 = 1;
+    pub const CENTER: u8 = 2;
+    pub const END: u8 = 3;
+    pub const FLEX_END: u8 = 4;
+    pub const FLEX_START: u8 = 5;
+    pub const NORMAL: u8 = 6;
+    pub const SAFE: u8 = 7;
+    pub const SELF_END: u8 = 8;
+    pub const SELF_START: u8 = 9;
+    pub const START: u8 = 10;
+    pub const STRETCH: u8 = 11;
+    pub const UNSAFE: u8 = 12;
+    pub const LEFT: u8 = 13;
+    pub const RIGHT: u8 = 14;
+}
+
 pub mod flex_direction {
     pub const ROW: u8 = 0;
     pub const ROW_REVERSE: u8 = 1;

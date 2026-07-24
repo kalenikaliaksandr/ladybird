@@ -27,6 +27,8 @@ public:
     virtual void run_until_table_inline_size_calculation(LayoutInput const&, bool skip_row_measurement) override;
 
 private:
+    virtual AbsposContainingBlockInfo resolve_abspos_containing_block_info(Box const&) override;
+
     LayoutRustBridge m_bridge;
     void* m_rust_context { nullptr };
 };

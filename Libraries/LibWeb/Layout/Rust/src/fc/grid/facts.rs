@@ -287,6 +287,10 @@ impl GridStyleFacts {
     pub(crate) fn name_raw(&self, index: u32) -> usize {
         self.names[index as usize].raw
     }
+
+    pub(crate) fn name_count(&self) -> usize {
+        self.names.len()
+    }
 }
 
 impl Drop for GridStyleFacts {

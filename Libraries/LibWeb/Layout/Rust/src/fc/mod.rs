@@ -11,7 +11,7 @@ use crate::css_pixels::CssPixels;
 use crate::display::FfiDisplay;
 use crate::ffi_stats::{FfiOp, bump};
 use crate::geometry::{AvailableSize, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput, LogicalOffset};
-use crate::layout_state::{FfiStaticPositionAlignment, FfiStaticPositionRect, state_mut};
+use crate::layout_state::{FfiAbsposContainingBlockInfo, FfiStaticPositionAlignment, FfiStaticPositionRect, state_mut};
 use crate::style_facts::FfiStyleFacts;
 use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
 use std::ffi::c_void;
@@ -322,6 +322,7 @@ struct FormattingContextInstance {
     fc_type: u8,
     layout_mode: u8,
     callbacks: FfiLayoutFcCallbacks,
+    grid_context: Option<Box<grid::GridFormattingContext>>,
     should_collect_devtools_layout_data: bool,
     automatic_content_inline_size: CssPixels,
     automatic_content_block_size: CssPixels,
@@ -395,6 +396,7 @@ pub extern "C" fn rust_layout_owns_fc_type(fc_type: u8) -> bool {
             fc_type,
             type_ if type_ == FfiFormattingContextType::Flex as u8
                 || type_ == FfiFormattingContextType::Table as u8
+                || type_ == FfiFormattingContextType::Grid as u8
         )
     })
 }
@@ -428,6 +430,16 @@ pub extern "C" fn rust_layout_fc_create(
         // returning across the boundary.
         let callbacks = unsafe { *callbacks };
         let _ = state_mut(state).box_facts(&callbacks, box_);
+        let grid_context = (fc_type == FfiFormattingContextType::Grid as u8).then(|| {
+            Box::new(grid::GridFormattingContext::new(
+                state,
+                box_,
+                parent_rust_fc,
+                layout_mode,
+                callbacks,
+                should_collect_devtools_layout_data,
+            ))
+        });
         Box::into_raw(Box::new(FormattingContextInstance {
             state,
             box_,
@@ -435,6 +447,7 @@ pub extern "C" fn rust_layout_fc_create(
             fc_type,
             layout_mode,
             callbacks,
+            grid_context,
             should_collect_devtools_layout_data,
             automatic_content_inline_size: CssPixels::default(),
             automatic_content_block_size: CssPixels::default(),
@@ -499,8 +512,32 @@ pub extern "C" fn rust_layout_fc_parent_did_dimension(fc: *mut c_void) {
             type_ if type_ == FfiFormattingContextType::Flex as u8 => {
                 flex::parent_did_dimension(instance);
             }
+            type_ if type_ == FfiFormattingContextType::Grid as u8 => {
+                instance.grid_context.as_ref().unwrap().parent_did_dimension();
+            }
             _ => panic!("no Rust parent-dimension implementation for this formatting context"),
         }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_layout_fc_resolve_abspos_containing_block_info(
+    fc: *mut c_void,
+    box_: *mut c_void,
+    out: *mut FfiAbsposContainingBlockInfo,
+) {
+    abort_on_panic(|| {
+        assert!(!box_.is_null());
+        assert!(!out.is_null());
+        let instance = instance_mut(fc);
+        assert_eq!(instance.fc_type, FfiFormattingContextType::Grid as u8);
+        let info = instance
+            .grid_context
+            .as_ref()
+            .unwrap()
+            .abspos_containing_block_info(box_);
+        // SAFETY: C++ supplies writable storage for one POD result.
+        unsafe { out.write(info) };
     });
 }
 
@@ -528,6 +565,18 @@ pub extern "C" fn rust_layout_fc_run(fc: *mut c_void, _input: FfiLayoutInput) {
             }
             type_ if type_ == FfiFormattingContextType::Flex as u8 => {
                 flex::run(instance, _input);
+            }
+            type_ if type_ == FfiFormattingContextType::Grid as u8 => {
+                let (inline_size, block_size) = {
+                    let context = instance.grid_context.as_mut().unwrap();
+                    context.run(_input);
+                    (
+                        context.automatic_content_inline_size(),
+                        context.automatic_content_block_size(),
+                    )
+                };
+                instance.automatic_content_inline_size = inline_size;
+                instance.automatic_content_block_size = block_size;
             }
             _ => panic!("no Rust implementation for this formatting context"),
         }
@@ -676,11 +725,13 @@ mod tests {
     }
 
     #[test]
-    fn rust_owns_flex_and_table_formatting_contexts() {
+    fn rust_owns_flex_table_and_grid_formatting_contexts() {
         for type_ in 0..=u8::MAX {
             assert_eq!(
                 rust_layout_owns_fc_type(type_),
-                type_ == FfiFormattingContextType::Flex as u8 || type_ == FfiFormattingContextType::Table as u8
+                type_ == FfiFormattingContextType::Flex as u8
+                    || type_ == FfiFormattingContextType::Table as u8
+                    || type_ == FfiFormattingContextType::Grid as u8
             );
         }
     }
