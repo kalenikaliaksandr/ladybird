@@ -1349,7 +1349,7 @@ import_rust_crate(
     MANIFEST_PATH Layout/Rust/Cargo.toml
     CRATE_NAME libweb_layout_rust
     ${layout_rust_features}
-    FFI_HEADERS Layout/TreeBuilderRustFFI.h
+    FFI_HEADERS Layout/TreeBuilderRustFFI.h Layout/LayoutRustFFI.h
 )
 
 set(css_rust_features "")
@@ -1401,6 +1401,7 @@ if(NOT BUILD_SHARED_LIBS)
     # re-merges the fresh Rust objects.
     set_property(SOURCE CSS/Parser/RustTokenizer.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_css_rust_lib})
     set_property(SOURCE HTML/Parser/HTMLEncodingDetection.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_rust_lib})
+    set_property(SOURCE Layout/LayoutState.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_layout_rust_lib})
     set_property(SOURCE Layout/TreeBuilder.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_layout_rust_lib})
     set_property(SOURCE Loader/ContentBlocker.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_content_blocker_rust_lib})
 endif()
