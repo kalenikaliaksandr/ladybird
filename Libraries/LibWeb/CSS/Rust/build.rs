@@ -630,6 +630,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             manifest_dir.join("src/style_compute.rs"),
             manifest_dir.join("src/display.rs"),
             manifest_dir.join("src/css_pixels.rs"),
+            manifest_dir.join("src/css_pixels_ffi.rs"),
             manifest_dir.join("src/cascaded_properties.rs"),
             manifest_dir.join("src/custom_properties.rs"),
         ],

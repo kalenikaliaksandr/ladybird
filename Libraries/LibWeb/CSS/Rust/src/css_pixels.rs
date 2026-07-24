@@ -22,7 +22,8 @@ pub const RADIX_MASK: i32 = FIXED_POINT_DENOMINATOR - 1;
 pub const MAX_INTEGER_VALUE: i32 = i32::MAX >> FRACTIONAL_BITS;
 pub const MIN_INTEGER_VALUE: i32 = i32::MIN >> FRACTIONAL_BITS;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[repr(transparent)]
 pub struct CssPixels(i32);
 
 impl std::ops::Mul for CssPixels {
@@ -148,27 +149,4 @@ mod tests {
         let minus_ten = CssPixels::from_integer(-10);
         assert_eq!(minus_ten.div_as_fraction(three).raw_value(), -213);
     }
-}
-
-/// FFI hooks for the C++ parity test.
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_css_pixels_multiply(left_raw: i32, right_raw: i32) -> i32 {
-    (CssPixels::from_raw(left_raw) * CssPixels::from_raw(right_raw)).raw_value()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_css_pixels_divide_as_fraction(numerator_raw: i32, denominator_raw: i32) -> i32 {
-    CssPixels::from_raw(numerator_raw)
-        .div_as_fraction(CssPixels::from_raw(denominator_raw))
-        .raw_value()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_css_pixels_nearest_value_for(value: f64) -> i32 {
-    CssPixels::nearest_value_for(value).raw_value()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_css_pixels_scaled(raw: i32, factor: f64) -> i32 {
-    CssPixels::from_raw(raw).scaled(factor).raw_value()
 }
