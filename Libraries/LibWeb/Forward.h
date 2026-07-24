@@ -969,7 +969,6 @@ namespace Web::Layout {
 
 class AudioBox;
 class BlockContainer;
-class BlockFormattingContext;
 class Box;
 class ButtonBox;
 class CheckBox;
