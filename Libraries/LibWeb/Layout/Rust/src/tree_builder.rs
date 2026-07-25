@@ -14,21 +14,21 @@ use std::ffi::c_void;
 type LayoutNode = NodeSlotId;
 
 #[derive(Default)]
-struct TreeBuilderState {
-    ancestor_stack: Vec<LayoutNode>,
-    quote_nesting_level: u32,
+pub(crate) struct TreeBuilderState {
+    pub(crate) ancestor_stack: Vec<LayoutNode>,
+    pub(crate) quote_nesting_level: u32,
 }
 
 #[derive(Default)]
-struct TreeBuilderContext {
-    has_svg_root: bool,
-    layout_top_layer: bool,
+pub(crate) struct TreeBuilderContext {
+    pub(crate) has_svg_root: bool,
+    pub(crate) layout_top_layer: bool,
     layout_svg_mask_or_clip_path: bool,
     layout_svg_pattern: bool,
 }
 
 impl TreeBuilderState {
-    fn current_parent(&self) -> LayoutNode {
+    pub(crate) fn current_parent(&self) -> LayoutNode {
         *self
             .ancestor_stack
             .last()
@@ -207,7 +207,7 @@ pub enum FfiElementLayoutKind {
     Normal,
 }
 
-fn element_layout_kind(
+pub(crate) fn element_layout_kind(
     facts: FfiElementLayoutFacts,
     layout_svg_mask_or_clip_path: bool,
     layout_svg_pattern: bool,
@@ -230,34 +230,34 @@ fn element_layout_kind(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TopLayerEntryDecision {
+pub(crate) enum TopLayerEntryDecision {
     Continue,
     Skip,
     SkipAndRequestZoneRebuild,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SvgEntryDecision {
+pub(crate) enum SvgEntryDecision {
     Continue,
     EnterSvgRoot,
     Skip,
 }
 
 #[derive(Clone, Copy)]
-struct PrincipalNodeEntryDecision {
-    should_create_layout_node: bool,
-    top_layer: TopLayerEntryDecision,
-    svg: SvgEntryDecision,
+pub(crate) struct PrincipalNodeEntryDecision {
+    pub(crate) should_create_layout_node: bool,
+    pub(crate) top_layer: TopLayerEntryDecision,
+    pub(crate) svg: SvgEntryDecision,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PrincipalBoxGenerationDecision {
+pub(crate) enum PrincipalBoxGenerationDecision {
     Suppress,
     DisplayContents,
     PrincipalBox,
 }
 
-fn principal_box_generation_decision(
+pub(crate) fn principal_box_generation_decision(
     is_element: bool,
     display_is_none: bool,
     display_is_contents: bool,
@@ -273,7 +273,7 @@ fn principal_box_generation_decision(
     })
 }
 
-fn display_contents_text_needs_style_wrapper(
+pub(crate) fn display_contents_text_needs_style_wrapper(
     has_style_parent: bool,
     parent_display_is_contents: bool,
     text_is_ascii_whitespace: bool,
@@ -443,16 +443,16 @@ pub enum FfiPrincipalBoxPlacement {
 }
 
 #[derive(Clone, Copy)]
-struct PrincipalBoxPlacementDecision {
-    placement: FfiPrincipalBoxPlacement,
+pub(crate) struct PrincipalBoxPlacementDecision {
+    pub(crate) placement: FfiPrincipalBoxPlacement,
     may_replace_existing_layout_node: bool,
-    start_rebuild_root: bool,
-    mark_update_escaped_rebuild_roots: bool,
-    create_backdrop: bool,
-    clear_layout_top_layer_for_descendants: bool,
+    pub(crate) start_rebuild_root: bool,
+    pub(crate) mark_update_escaped_rebuild_roots: bool,
+    pub(crate) create_backdrop: bool,
+    pub(crate) clear_layout_top_layer_for_descendants: bool,
 }
 
-fn principal_box_placement_decision(
+pub(crate) fn principal_box_placement_decision(
     facts: FfiPrincipalBoxPlacementFacts,
     layout_node_is_svg_box: bool,
     layout_top_layer: bool,
@@ -492,7 +492,7 @@ fn principal_box_placement_decision(
     })
 }
 
-fn principal_node_entry_decision(
+pub(crate) fn principal_node_entry_decision(
     facts: FfiPrincipalNodeEntryFacts,
     context: &TreeBuilderContext,
 ) -> PrincipalNodeEntryDecision {
@@ -1591,7 +1591,7 @@ pub struct FfiPseudoTreeBuilderCallbacks {
     pub create_content_item: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiPseudoElement, usize) -> NodeSlotId,
 }
 
-fn pseudo_element_decision(facts: FfiPseudoElementFacts) -> FfiPseudoElementDecision {
+pub(crate) fn pseudo_element_decision(facts: FfiPseudoElementFacts) -> FfiPseudoElementDecision {
     abort_on_panic(|| {
         if !facts.has_style {
             return FfiPseudoElementDecision::None;
@@ -1773,7 +1773,7 @@ fn create_pseudo_element_with_frame(
     layout_node
 }
 
-fn adjusted_table_display_for_replaced_element(
+pub(crate) fn adjusted_table_display_for_replaced_element(
     is_table_inside: bool,
     is_block_outside: bool,
     is_internal_table: bool,
@@ -2375,8 +2375,8 @@ fn insert_node_into_inline_or_block_ancestor(
     }
 }
 
-struct FirstLetterTextHost<'a> {
-    callbacks: &'a FfiFirstLetterTextCallbacks,
+pub(crate) struct FirstLetterTextHost<'a> {
+    pub(crate) callbacks: &'a FfiFirstLetterTextCallbacks,
 }
 
 impl FirstLetterTextHost<'_> {
@@ -2406,7 +2406,10 @@ fn code_unit_length_for_code_point(code_point: u32) -> usize {
 }
 
 // https://drafts.csswg.org/css-pseudo-4/#first-letter-pattern
-fn find_first_letter_in_text(host: &FirstLetterTextHost<'_>, preserves_segment_breaks: bool) -> FfiFirstLetterTarget {
+pub(crate) fn find_first_letter_in_text(
+    host: &FirstLetterTextHost<'_>,
+    preserves_segment_breaks: bool,
+) -> FfiFirstLetterTarget {
     // NB: Matches the first-letter text pattern: (P (Zs|P)*)? (L|N|S) ((Zs|P-(Ps|Pd))* (P-(Ps|Pd))?)?
 
     let code_units = host.code_unit_length();
@@ -3132,322 +3135,4 @@ fn fixup_tables(host: &TreeBuilderHost<'_>, root: LayoutNode) {
     generate_missing_child_wrappers(host, root);
     let table_roots = generate_missing_parents(host, root);
     missing_cells_fixup(host, &table_roots);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        FfiComputedContentType, FfiElementLayoutFacts, FfiElementLayoutKind, FfiFirstLetterCodePointFacts,
-        FfiFirstLetterTextCallbacks, FfiPrincipalBoxPlacement, FfiPrincipalBoxPlacementFacts,
-        FfiPrincipalNodeEntryFacts, FfiPseudoElement, FfiPseudoElementDecision, FfiPseudoElementFacts,
-        FfiReplacedElementDisplayAdjustment, FirstLetterTextHost, PrincipalBoxGenerationDecision, SvgEntryDecision,
-        TopLayerEntryDecision, TreeBuilderContext, adjusted_table_display_for_replaced_element,
-        display_contents_text_needs_style_wrapper, element_layout_kind, find_first_letter_in_text,
-        principal_box_generation_decision, principal_box_placement_decision, principal_node_entry_decision,
-        pseudo_element_decision,
-    };
-    use crate::node_data::NodeSlotId;
-    use std::ffi::c_void;
-
-    unsafe extern "C" fn text_length(context: *mut c_void) -> usize {
-        // SAFETY: Test callers pass a valid `Vec<u16>` as the callback context.
-        unsafe { (&*context.cast::<Vec<u16>>()).len() }
-    }
-
-    unsafe extern "C" fn code_point_at(context: *mut c_void, index: usize) -> u32 {
-        // SAFETY: Test callers pass a valid `Vec<u16>` and an in-bounds index.
-        unsafe { (&*context.cast::<Vec<u16>>())[index] as u32 }
-    }
-
-    unsafe extern "C" fn next_grapheme_boundary(_: *mut c_void, index: usize) -> usize {
-        index + 1
-    }
-
-    unsafe extern "C" fn code_point_facts(_: *mut c_void, code_point: u32) -> FfiFirstLetterCodePointFacts {
-        FfiFirstLetterCodePointFacts {
-            is_space_separator: code_point == b' ' as u32,
-            is_punctuation: matches!(code_point, 0x21 | 0x22 | 0x27..=0x2f | 0x3a | 0x3b | 0x3f | 0x40),
-            is_letter: matches!(code_point, 0x41..=0x5a | 0x61..=0x7a),
-            is_number: matches!(code_point, 0x30..=0x39),
-            is_symbol: matches!(code_point, 0x24 | 0x2b | 0x3c..=0x3e | 0x5e | 0x60 | 0x7c | 0x7e),
-            is_open_punctuation: matches!(code_point, 0x28 | 0x5b | 0x7b),
-            is_dash_punctuation: code_point == 0x2d,
-        }
-    }
-
-    fn first_letter_target(text: &str, preserves_segment_breaks: bool) -> super::FfiFirstLetterTarget {
-        let mut text = text.encode_utf16().collect::<Vec<_>>();
-        let callbacks = FfiFirstLetterTextCallbacks {
-            context: (&raw mut text).cast(),
-            code_unit_length: text_length,
-            code_point_at,
-            next_grapheme_boundary,
-            code_point_facts,
-        };
-        find_first_letter_in_text(&FirstLetterTextHost { callbacks: &callbacks }, preserves_segment_breaks)
-    }
-
-    #[test]
-    fn replaced_table_display_adjustments() {
-        assert_eq!(
-            adjusted_table_display_for_replaced_element(true, true, false, false),
-            FfiReplacedElementDisplayAdjustment::Block
-        );
-        assert_eq!(
-            adjusted_table_display_for_replaced_element(true, false, false, false),
-            FfiReplacedElementDisplayAdjustment::Inline
-        );
-        assert_eq!(
-            adjusted_table_display_for_replaced_element(false, false, true, false),
-            FfiReplacedElementDisplayAdjustment::Inline
-        );
-        assert_eq!(
-            adjusted_table_display_for_replaced_element(false, false, false, true),
-            FfiReplacedElementDisplayAdjustment::Inline
-        );
-        assert_eq!(
-            adjusted_table_display_for_replaced_element(false, false, false, false),
-            FfiReplacedElementDisplayAdjustment::None
-        );
-    }
-
-    #[test]
-    fn first_letter_text_pattern() {
-        let target = first_letter_target("  Hello", false);
-        assert!(target.found);
-        assert_eq!((target.letter_start, target.letter_end), (2, 3));
-
-        let target = first_letter_target("\") A", false);
-        assert!(target.found);
-        assert_eq!((target.letter_start, target.letter_end), (0, 4));
-
-        let target = first_letter_target("H!ello", false);
-        assert!(target.found);
-        assert_eq!((target.letter_start, target.letter_end), (0, 2));
-
-        let target = first_letter_target("H-ello", false);
-        assert!(target.found);
-        assert_eq!((target.letter_start, target.letter_end), (0, 1));
-
-        assert!(!first_letter_target("\nHello", true).found);
-    }
-
-    #[test]
-    fn tree_builder_state_tracks_ancestors_and_quotes() {
-        let mut state = super::TreeBuilderState::default();
-        let parent = NodeSlotId { index: 42 };
-        state.ancestor_stack.push(parent);
-        assert_eq!(state.ancestor_stack.len(), 1);
-        assert_eq!(state.current_parent(), parent);
-        assert_eq!(state.ancestor_stack[0], parent);
-
-        state.quote_nesting_level = 3;
-        assert_eq!(state.quote_nesting_level, 3);
-
-        assert!(state.ancestor_stack.pop().is_some());
-        assert_eq!(state.ancestor_stack.len(), 0);
-    }
-
-    #[test]
-    fn pseudo_element_box_generation_decisions() {
-        let decide = |pseudo_element,
-                      content_type,
-                      display_is_none,
-                      display_is_contents,
-                      display_is_list_item,
-                      has_content_replacement,
-                      originating_layout_node_is_list_item,
-                      normal_marker_has_content| {
-            pseudo_element_decision(FfiPseudoElementFacts {
-                has_style: true,
-                pseudo_element,
-                content_type,
-                display_is_none,
-                display_is_contents,
-                display_is_list_item,
-                has_content_replacement,
-                originating_layout_node_is_list_item,
-                normal_marker_has_content,
-            })
-        };
-
-        assert_eq!(
-            decide(
-                FfiPseudoElement::Before,
-                FfiComputedContentType::Normal,
-                false,
-                false,
-                false,
-                false,
-                false,
-                false
-            ),
-            FfiPseudoElementDecision::None
-        );
-        assert_eq!(
-            decide(
-                FfiPseudoElement::Marker,
-                FfiComputedContentType::Normal,
-                false,
-                false,
-                false,
-                false,
-                true,
-                true
-            ),
-            FfiPseudoElementDecision::NormalMarker
-        );
-        assert_eq!(
-            decide(
-                FfiPseudoElement::Other,
-                FfiComputedContentType::List,
-                false,
-                false,
-                false,
-                true,
-                false,
-                false
-            ),
-            FfiPseudoElementDecision::ContentReplacement
-        );
-        assert_eq!(
-            decide(
-                FfiPseudoElement::Other,
-                FfiComputedContentType::List,
-                false,
-                true,
-                false,
-                true,
-                false,
-                false
-            ),
-            FfiPseudoElementDecision::Contents
-        );
-        assert_eq!(
-            decide(
-                FfiPseudoElement::Other,
-                FfiComputedContentType::List,
-                false,
-                false,
-                true,
-                true,
-                false,
-                false
-            ),
-            FfiPseudoElementDecision::Box
-        );
-    }
-
-    #[test]
-    fn principal_node_entry_decisions() {
-        let mut facts = FfiPrincipalNodeEntryFacts {
-            must_create_subtree: false,
-            needs_layout_tree_update: false,
-            document_needs_full_layout_tree_update: false,
-            is_document: false,
-            has_layout_node: true,
-            is_element: true,
-            is_text: false,
-            rendered_in_top_layer: false,
-            layout_node_is_attached: true,
-            is_svg_container: false,
-            requires_svg_container: false,
-        };
-        let mut context = TreeBuilderContext::default();
-        let decision = principal_node_entry_decision(facts, &context);
-        assert!(!decision.should_create_layout_node);
-        assert_eq!(decision.top_layer, TopLayerEntryDecision::Continue);
-        assert_eq!(decision.svg, SvgEntryDecision::Continue);
-
-        facts.rendered_in_top_layer = true;
-        facts.layout_node_is_attached = false;
-        let decision = principal_node_entry_decision(facts, &context);
-        assert_eq!(decision.top_layer, TopLayerEntryDecision::SkipAndRequestZoneRebuild);
-
-        facts.rendered_in_top_layer = false;
-        facts.requires_svg_container = true;
-        let decision = principal_node_entry_decision(facts, &context);
-        assert_eq!(decision.svg, SvgEntryDecision::Skip);
-
-        facts.must_create_subtree = true;
-        facts.is_svg_container = true;
-        context.has_svg_root = false;
-        let decision = principal_node_entry_decision(facts, &context);
-        assert!(decision.should_create_layout_node);
-        assert_eq!(decision.svg, SvgEntryDecision::EnterSvgRoot);
-    }
-
-    #[test]
-    fn specialized_element_layout_kinds() {
-        let mut facts = FfiElementLayoutFacts {
-            has_content_replacement: false,
-            is_svg_mask_element: false,
-            is_svg_clip_path_element: false,
-            is_svg_pattern_element: false,
-        };
-        assert_eq!(element_layout_kind(facts, false, false), FfiElementLayoutKind::Normal);
-
-        facts.has_content_replacement = true;
-        assert_eq!(
-            element_layout_kind(facts, false, false),
-            FfiElementLayoutKind::ContentReplacement
-        );
-        facts.has_content_replacement = false;
-        facts.is_svg_mask_element = true;
-        assert_eq!(element_layout_kind(facts, true, false), FfiElementLayoutKind::SvgMask);
-
-        facts.is_svg_mask_element = false;
-        facts.is_svg_pattern_element = true;
-        assert_eq!(
-            element_layout_kind(facts, false, true),
-            FfiElementLayoutKind::SvgPattern
-        );
-    }
-
-    #[test]
-    fn principal_box_generation_and_placement_decisions() {
-        assert_eq!(
-            principal_box_generation_decision(true, true, false),
-            PrincipalBoxGenerationDecision::Suppress
-        );
-        assert_eq!(
-            principal_box_generation_decision(true, false, true),
-            PrincipalBoxGenerationDecision::DisplayContents
-        );
-        assert_eq!(
-            principal_box_generation_decision(false, false, false),
-            PrincipalBoxGenerationDecision::PrincipalBox
-        );
-
-        let mut facts = FfiPrincipalBoxPlacementFacts {
-            must_create_subtree: false,
-            should_create_layout_node: true,
-            has_old_layout_node: true,
-            old_layout_node_is_attached: true,
-            old_and_new_layout_nodes_are_same: false,
-            has_current_rebuild_root: false,
-            is_document: false,
-            is_element: true,
-            rendered_in_top_layer: true,
-        };
-        let decision = principal_box_placement_decision(facts, false, true);
-        assert_eq!(decision.placement, FfiPrincipalBoxPlacement::ReplaceExisting);
-        assert!(decision.start_rebuild_root);
-        assert!(decision.create_backdrop);
-        assert!(decision.clear_layout_top_layer_for_descendants);
-
-        facts.has_old_layout_node = false;
-        facts.old_layout_node_is_attached = false;
-        let decision = principal_box_placement_decision(facts, true, true);
-        assert_eq!(decision.placement, FfiPrincipalBoxPlacement::AppendSvg);
-        assert!(decision.mark_update_escaped_rebuild_roots);
-    }
-
-    #[test]
-    fn display_contents_text_style_wrapper_decisions() {
-        assert!(!display_contents_text_needs_style_wrapper(false, true, false, false));
-        assert!(display_contents_text_needs_style_wrapper(true, true, false, true));
-        assert!(!display_contents_text_needs_style_wrapper(true, true, true, true));
-        assert!(display_contents_text_needs_style_wrapper(true, true, true, false));
-    }
 }

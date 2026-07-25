@@ -72,15 +72,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     layout_config.export.exclude.push("rust_calc_resolve".to_string());
     layout_config
         .export
+        .exclude
+        .push("rust_calc_root_from_calculated".to_string());
+    layout_config
+        .export
+        .exclude
+        .push("rust_calc_external_resolutions".to_string());
+    layout_config
+        .export
+        .exclude
+        .push("rust_calc_external_resolutions_release".to_string());
+    layout_config
+        .export
         .rename
         .insert("CssPixels".to_string(), "int32_t".to_string());
-    layout_config.export.include = vec![];
+    layout_config.export.include = vec!["FfiSizeKind".to_string()];
     generate_ffi_header(
         layout_config,
         &[
             manifest_dir.join("src/used_values.rs"),
             manifest_dir.join("src/geometry.rs"),
             manifest_dir.join("src/ffi_stats.rs"),
+            manifest_dir.join("src/style_facts.rs"),
+            manifest_dir.join("src/box_facts.rs"),
+            manifest_dir.join("../../CSS/Rust/src/display.rs"),
         ],
         &out_dir,
         &ffi_out_dir,
