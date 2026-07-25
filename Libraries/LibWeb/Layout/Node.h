@@ -118,11 +118,16 @@ public:
         set_flag(RustFFI::NodeFlag::NeedsOwnGeometryUpdate, false);
     }
 
-    bool is_generated_for_pseudo_element() const { return m_generated_for.has_value(); }
-    Optional<CSS::PseudoElement> generated_for_pseudo_element() const { return m_generated_for; }
-    bool is_generated_for_before_pseudo_element() const { return m_generated_for == CSS::PseudoElement::Before; }
-    bool is_generated_for_after_pseudo_element() const { return m_generated_for == CSS::PseudoElement::After; }
-    bool is_generated_for_backdrop_pseudo_element() const { return m_generated_for == CSS::PseudoElement::Backdrop; }
+    bool is_generated_for_pseudo_element() const { return m_data->generated_for != 0; }
+    Optional<CSS::PseudoElement> generated_for_pseudo_element() const
+    {
+        if (!is_generated_for_pseudo_element())
+            return {};
+        return static_cast<CSS::PseudoElement>(m_data->generated_for - 1);
+    }
+    bool is_generated_for_before_pseudo_element() const { return m_data->generated_for == encode_generated_for(CSS::PseudoElement::Before); }
+    bool is_generated_for_after_pseudo_element() const { return m_data->generated_for == encode_generated_for(CSS::PseudoElement::After); }
+    bool is_generated_for_backdrop_pseudo_element() const { return m_data->generated_for == encode_generated_for(CSS::PseudoElement::Backdrop); }
     void set_generated_for(CSS::PseudoElement type, DOM::Element&);
 
     RefPtr<Painting::Paintable> paintable() { return m_paintable; }
@@ -262,8 +267,8 @@ public:
     bool children_are_inline() const { return has_flag(RustFFI::NodeFlag::ChildrenAreInline); }
     void set_children_are_inline(bool value) { set_flag(RustFFI::NodeFlag::ChildrenAreInline, value); }
 
-    u32 initial_quote_nesting_level() const { return m_initial_quote_nesting_level; }
-    void set_initial_quote_nesting_level(u32 value) { m_initial_quote_nesting_level = value; }
+    u32 initial_quote_nesting_level() const { return m_data->initial_quote_nesting_level; }
+    void set_initial_quote_nesting_level(u32 value) { m_data->initial_quote_nesting_level = value; }
 
     // https://drafts.csswg.org/css-ui/#propdef-user-select
     CSS::UserSelect user_select_used_value() const;
@@ -295,6 +300,12 @@ protected:
 private:
     friend class NodeWithStyle;
 
+    static constexpr u8 encode_generated_for(CSS::PseudoElement pseudo_element)
+    {
+        static_assert(static_cast<u8>(CSS::PseudoElement::UnknownWebKit) < 0xff);
+        return static_cast<u8>(pseudo_element) + 1;
+    }
+
     // A DOM mutation can disconnect a node before the next layout-tree update. Keep the DOM node alive until this
     // layout node is destroyed so detach hooks never observe a collected image provider or other element state.
     GC::Root<DOM::Node> m_dom_node;
@@ -319,9 +330,6 @@ private:
 
     GC::Weak<DOM::Element> m_pseudo_element_generator;
 
-    Optional<CSS::PseudoElement> m_generated_for;
-
-    u32 m_initial_quote_nesting_level { 0 };
 };
 
 class WEB_API NodeWithStyle : public Node {

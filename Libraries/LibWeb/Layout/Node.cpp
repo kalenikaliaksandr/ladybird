@@ -1062,21 +1062,21 @@ DOM::Node* Node::dom_node()
 
 DOM::Element const* Node::pseudo_element_generator() const
 {
-    VERIFY(m_generated_for.has_value());
+    VERIFY(is_generated_for_pseudo_element());
     VERIFY(m_pseudo_element_generator);
     return m_pseudo_element_generator.ptr();
 }
 
 DOM::Element* Node::pseudo_element_generator()
 {
-    VERIFY(m_generated_for.has_value());
+    VERIFY(is_generated_for_pseudo_element());
     VERIFY(m_pseudo_element_generator);
     return m_pseudo_element_generator.ptr();
 }
 
 void Node::set_generated_for(CSS::PseudoElement type, DOM::Element& element)
 {
-    m_generated_for = type;
+    m_data->generated_for = encode_generated_for(type);
     m_pseudo_element_generator = element;
 }
 
