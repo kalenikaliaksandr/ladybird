@@ -5,11 +5,89 @@
  */
 
 use crate::abort_on_panic;
+use crate::css_pixels::CssPixels;
 use crate::node_data::{MAX_NODE_SLOT_COUNT, NodeData, NodeSlotId};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::c_void;
+use std::hash::{Hash, Hasher};
 use std::thread;
 
 pub(crate) const SLOTS_PER_CHUNK: usize = 256;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct IntrinsicSizeCacheKey {
+    pub(crate) measured_at_inline_size: Option<CssPixels>,
+    pub(crate) percentage_basis_inline_size: Option<CssPixels>,
+    pub(crate) percentage_basis_block_size: Option<CssPixels>,
+    pub(crate) quirks_mode_percentage_basis_block_size: Option<CssPixels>,
+}
+
+impl Hash for IntrinsicSizeCacheKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        fn hash_optional<H: Hasher>(value: Option<CssPixels>, state: &mut H) {
+            match value {
+                Some(value) => {
+                    true.hash(state);
+                    value.raw_value().hash(state);
+                }
+                None => false.hash(state),
+            }
+        }
+
+        hash_optional(self.measured_at_inline_size, state);
+        hash_optional(self.percentage_basis_inline_size, state);
+        hash_optional(self.percentage_basis_block_size, state);
+        hash_optional(self.quirks_mode_percentage_basis_block_size, state);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum IntrinsicSizeCacheKind {
+    MinContentInline,
+    MaxContentInline,
+    MinContentBlock,
+    MaxContentBlock,
+}
+
+#[derive(Default)]
+#[allow(dead_code)]
+struct IntrinsicSizeMaps {
+    min_content_inline_size: HashMap<IntrinsicSizeCacheKey, CssPixels>,
+    max_content_inline_size: HashMap<IntrinsicSizeCacheKey, CssPixels>,
+    min_content_block_size: HashMap<IntrinsicSizeCacheKey, CssPixels>,
+    max_content_block_size: HashMap<IntrinsicSizeCacheKey, CssPixels>,
+}
+
+#[allow(dead_code)]
+impl IntrinsicSizeMaps {
+    fn values(&self, kind: IntrinsicSizeCacheKind) -> &HashMap<IntrinsicSizeCacheKey, CssPixels> {
+        match kind {
+            IntrinsicSizeCacheKind::MinContentInline => &self.min_content_inline_size,
+            IntrinsicSizeCacheKind::MaxContentInline => &self.max_content_inline_size,
+            IntrinsicSizeCacheKind::MinContentBlock => &self.min_content_block_size,
+            IntrinsicSizeCacheKind::MaxContentBlock => &self.max_content_block_size,
+        }
+    }
+
+    fn values_mut(&mut self, kind: IntrinsicSizeCacheKind) -> &mut HashMap<IntrinsicSizeCacheKey, CssPixels> {
+        match kind {
+            IntrinsicSizeCacheKind::MinContentInline => &mut self.min_content_inline_size,
+            IntrinsicSizeCacheKind::MaxContentInline => &mut self.max_content_inline_size,
+            IntrinsicSizeCacheKind::MinContentBlock => &mut self.min_content_block_size,
+            IntrinsicSizeCacheKind::MaxContentBlock => &mut self.max_content_block_size,
+        }
+    }
+}
+
+#[derive(Default)]
+#[allow(dead_code)]
+struct IntrinsicSizeCacheSlot {
+    generation: u8,
+    epoch: u16,
+    sizes: Option<Box<IntrinsicSizeMaps>>,
+}
 
 // NodeData is sized to one cache line; the aligned chunk keeps every densely-strided slot
 // line-aligned, and per-slot bookkeeping lives in a parallel array so it stays that way.
@@ -37,12 +115,21 @@ struct SlotMetadata {
     occupied: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ChunkAddress {
+    start: usize,
+    chunk_index: usize,
+}
+
 pub(crate) struct LayoutNodeArena {
     chunks: Vec<Box<Chunk>>,
+    chunks_by_address: Vec<ChunkAddress>,
     slot_metadata: Vec<SlotMetadata>,
     free_list: Vec<u32>,
     next_index: u32,
     live_count: u32,
+    #[allow(dead_code)]
+    intrinsic_size_caches: RefCell<Vec<IntrinsicSizeCacheSlot>>,
     owner_thread: thread::ThreadId,
 }
 
@@ -50,10 +137,12 @@ impl LayoutNodeArena {
     pub(crate) fn new() -> Self {
         Self {
             chunks: Vec::new(),
+            chunks_by_address: Vec::new(),
             slot_metadata: Vec::new(),
             free_list: Vec::new(),
             next_index: 0,
             live_count: 0,
+            intrinsic_size_caches: RefCell::new(Vec::new()),
             owner_thread: thread::current().id(),
         }
     }
@@ -76,7 +165,13 @@ impl LayoutNodeArena {
                 "layout node arena exhausted its 24-bit slot index space"
             );
             if (index as usize).is_multiple_of(SLOTS_PER_CHUNK) {
-                self.chunks.push(new_chunk());
+                let chunk = new_chunk();
+                let start = (&raw const chunk.slots) as usize;
+                let chunk_index = self.chunks.len();
+                let insertion_index = self.chunks_by_address.partition_point(|address| address.start < start);
+                self.chunks_by_address
+                    .insert(insertion_index, ChunkAddress { start, chunk_index });
+                self.chunks.push(chunk);
             }
             self.slot_metadata.push(SlotMetadata::default());
             self.next_index = self
@@ -127,6 +222,10 @@ impl LayoutNodeArena {
         );
         metadata.occupied = false;
         let should_reuse = metadata.generation != u8::MAX;
+
+        if let Some(slot) = self.intrinsic_size_caches.get_mut().get_mut(index as usize) {
+            *slot = IntrinsicSizeCacheSlot::default();
+        }
         *self.data_mut(index) = NodeData::default();
 
         self.live_count = self
@@ -157,6 +256,109 @@ impl LayoutNodeArena {
         data
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn data_or_null(&self, id: NodeSlotId) -> *mut NodeData {
+        if id.is_invalid() {
+            return std::ptr::null_mut();
+        }
+        self.data(id)
+    }
+
+    #[allow(dead_code)]
+    fn slot_for_data(&self, data: *const NodeData) -> (u32, SlotMetadata) {
+        assert!(!data.is_null(), "layout node arena data pointer is null");
+        let data_address = data as usize;
+        let slot_size = size_of::<NodeData>();
+
+        let address_index = self
+            .chunks_by_address
+            .partition_point(|address| address.start <= data_address);
+        assert_ne!(
+            address_index, 0,
+            "layout node data pointer does not belong to this arena"
+        );
+        let address = self.chunks_by_address[address_index - 1];
+        let chunk_end = address.start + size_of::<[NodeData; SLOTS_PER_CHUNK]>();
+        assert!(
+            data_address < chunk_end,
+            "layout node data pointer does not belong to this arena"
+        );
+
+        let offset = data_address - address.start;
+        assert_eq!(offset % slot_size, 0, "unaligned layout node arena data pointer");
+        let index = address.chunk_index * SLOTS_PER_CHUNK + offset / slot_size;
+        let index = u32::try_from(index).expect("layout node arena slot index overflowed");
+        let metadata = *self.metadata(index);
+        assert!(metadata.occupied, "layout node arena cache access for an unused slot");
+        // SAFETY: The range and alignment checks established that data points
+        // to the indexed NodeData slot.
+        let generation = unsafe { (&raw const (*data).slot_generation).read() };
+        assert_eq!(
+            generation, metadata.generation,
+            "layout node arena cache access used a stale slot"
+        );
+        (index, metadata)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn intrinsic_size_cache_get(
+        &self,
+        data: &NodeData,
+        kind: IntrinsicSizeCacheKind,
+        key: IntrinsicSizeCacheKey,
+    ) -> Option<CssPixels> {
+        if data.intrinsic_cache_epoch == u16::MAX {
+            return None;
+        }
+
+        let (index, metadata) = self.slot_for_data(std::ptr::from_ref(data));
+        let caches = self.intrinsic_size_caches.borrow();
+        let slot = caches.get(index as usize)?;
+        if slot.generation != metadata.generation || slot.epoch != data.intrinsic_cache_epoch {
+            return None;
+        }
+        slot.sizes.as_ref()?.values(kind).get(&key).copied()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn intrinsic_size_cache_put(
+        &self,
+        data: &NodeData,
+        kind: IntrinsicSizeCacheKind,
+        key: IntrinsicSizeCacheKey,
+        value: CssPixels,
+    ) {
+        if data.intrinsic_cache_epoch == u16::MAX {
+            return;
+        }
+
+        let (index, metadata) = self.slot_for_data(std::ptr::from_ref(data));
+        let mut caches = self.intrinsic_size_caches.borrow_mut();
+        if caches.len() <= index as usize {
+            caches.resize_with(index as usize + 1, IntrinsicSizeCacheSlot::default);
+        }
+        let slot = &mut caches[index as usize];
+        if slot.generation != metadata.generation || slot.epoch != data.intrinsic_cache_epoch {
+            *slot = IntrinsicSizeCacheSlot {
+                generation: metadata.generation,
+                epoch: data.intrinsic_cache_epoch,
+                sizes: Some(Box::default()),
+            };
+        }
+        slot.sizes
+            .get_or_insert_with(Box::default)
+            .values_mut(kind)
+            .insert(key, value);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) unsafe fn from_handle<'a>(arena: *mut c_void) -> &'a Self {
+        assert!(!arena.is_null(), "layout node arena handle is null");
+        // SAFETY: Layout passes borrow the document's arena synchronously,
+        // and the document keeps it alive for the duration of the pass.
+        unsafe { &*arena.cast::<Self>() }
+    }
+
     fn data_mut(&mut self, index: u32) -> &mut NodeData {
         let index = index as usize;
         let chunk = self
@@ -166,7 +368,6 @@ impl LayoutNodeArena {
         &mut chunk.slots[index % SLOTS_PER_CHUNK]
     }
 
-    #[allow(dead_code)]
     fn metadata(&self, index: u32) -> &SlotMetadata {
         self.slot_metadata
             .get(index as usize)

@@ -114,6 +114,9 @@ pub enum NodeFlag {
     CompensatesForHorizontalScroll = 1 << 10,
     CompensatesForVerticalScroll = 1 << 11,
     IsReplacedElement = 1 << 12,
+    HasSavedAbsposLayoutInputs = 1 << 13,
+    SavedAbsposCbDerivesFromOwnComputedValues = 1 << 14,
+    SavedAbsposAlignmentDerivesFromOwnComputedValues = 1 << 15,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +159,7 @@ pub struct NodeData {
     pub inline_containing_block: NodeSlotId,
     pub kind: NodeKind,
     pub generated_for: u8,
+    pub intrinsic_cache_epoch: u16,
     pub flags: u32,
     pub initial_quote_nesting_level: u32,
     pub layout_index: u32,
@@ -179,6 +183,7 @@ impl Default for NodeData {
             inline_containing_block: NodeSlotId::INVALID,
             kind: NodeKind::Unset,
             generated_for: 0,
+            intrinsic_cache_epoch: 0,
             flags: 0,
             initial_quote_nesting_level: 0,
             layout_index: 0,
