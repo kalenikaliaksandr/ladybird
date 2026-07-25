@@ -23,7 +23,45 @@ impl NodeSlotId {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum NodeKind {
-    Unset,
+    Unset = 0,
+    AudioBox = 1,
+    BlockContainer = 2,
+    Box = 3,
+    BreakNode = 4,
+    CanvasBox = 5,
+    CheckBox = 6,
+    FieldSetBox = 7,
+    GeneratedTextNode = 8,
+    ImageBox = 9,
+    InlineNode = 10,
+    LegendBox = 11,
+    ListItemBox = 12,
+    ListItemMarkerBox = 13,
+    NavigableContainerViewport = 14,
+    Node = 15,
+    NodeWithStyle = 16,
+    NodeWithStyleAndBoxModelMetrics = 17,
+    RadioButton = 18,
+    RangeInputBox = 19,
+    ReplacedBox = 20,
+    SVGBox = 21,
+    SVGClipBox = 22,
+    SVGForeignObjectBox = 23,
+    SVGGeometryBox = 24,
+    SVGGraphicsBox = 25,
+    SVGImageBox = 26,
+    SVGMaskBox = 27,
+    SVGPatternBox = 28,
+    SVGSVGBox = 29,
+    SVGTextBox = 30,
+    SVGTextPathBox = 31,
+    TableWrapper = 32,
+    TextAreaBox = 33,
+    TextInputBox = 34,
+    TextNode = 35,
+    TextSliceNode = 36,
+    VideoBox = 37,
+    Viewport = 38,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,5 +115,16 @@ impl Default for NodeData {
             layout_index: 0,
             style: std::ptr::null(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NodeData, NodeKind};
+
+    #[test]
+    fn node_kind_has_a_stable_default_and_byte_width() {
+        assert_eq!(std::mem::size_of::<NodeKind>(), 1);
+        assert_eq!(NodeData::default().kind, NodeKind::Unset);
     }
 }

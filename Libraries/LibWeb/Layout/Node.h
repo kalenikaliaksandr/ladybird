@@ -45,6 +45,10 @@ static_assert(offsetof(RustFFI::NodeData, initial_quote_nesting_level) == 36);
 static_assert(offsetof(RustFFI::NodeData, layout_index) == 40);
 static_assert(offsetof(RustFFI::NodeData, style) == 48);
 
+static_assert(sizeof(RustFFI::NodeKind) == sizeof(u8));
+static_assert(static_cast<u8>(RustFFI::NodeKind::Unset) == 0);
+static_assert(static_cast<u8>(RustFFI::NodeKind::Viewport) == 38);
+
 static_assert(sizeof(RustFFI::NodeFlag) == sizeof(u32));
 static_assert(static_cast<u32>(RustFFI::NodeFlag::Anonymous) == 1 << 0);
 static_assert(static_cast<u32>(RustFFI::NodeFlag::HasStyle) == 1 << 1);
@@ -59,13 +63,20 @@ static_assert(static_cast<u32>(RustFFI::NodeFlag::AbsposDescendantEscapes) == 1 
 static_assert(static_cast<u32>(RustFFI::NodeFlag::CompensatesForHorizontalScroll) == 1 << 10);
 static_assert(static_cast<u32>(RustFFI::NodeFlag::CompensatesForVerticalScroll) == 1 << 11);
 
+class NodeKindSetter;
+
+#define LAYOUT_NODE_KIND(class_) \
+private:                         \
+    [[no_unique_address]] NodeKindSetter m_node_kind_setter { *this, RustFFI::NodeKind::class_ }
+
 #define LAYOUT_NODE(class_, base_class)            \
 public:                                            \
     using Base = base_class;                       \
     virtual StringView class_name() const override \
     {                                              \
         return #class_##sv;                        \
-    }
+    }                                              \
+    LAYOUT_NODE_KIND(class_)
 
 class InlineNode;
 
@@ -325,6 +336,7 @@ protected:
 
 private:
     friend class NodeWithStyle;
+    friend class NodeKindSetter;
     friend class RefCountedTreeNode<Node>;
 
     static constexpr u8 encode_generated_for(CSS::PseudoElement pseudo_element)
@@ -334,6 +346,7 @@ private:
     }
 
     static RustFFI::NodeSlotId slot_id(Node const*);
+    void set_node_kind(RustFFI::NodeKind kind) { m_data->kind = kind; }
     void synchronize_topology();
 
     // A DOM mutation can disconnect a node before the next layout-tree update. Keep the DOM node alive until this
@@ -351,6 +364,14 @@ private:
     InlineNode const* m_inline_containing_block_if_applicable { nullptr };
 
     GC::Weak<DOM::Element> m_pseudo_element_generator;
+};
+
+class NodeKindSetter {
+public:
+    NodeKindSetter(Node& node, RustFFI::NodeKind kind)
+    {
+        node.set_node_kind(kind);
+    }
 };
 
 class WEB_API NodeWithStyle : public Node {

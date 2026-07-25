@@ -57,6 +57,7 @@ Node::Node(DOM::Document& document, DOM::Node* node, AttachToDOMNode attach_to_d
     : NodeArenaAllocation(document)
     , m_dom_node(node ? *node : document)
 {
+    set_node_kind(RustFFI::NodeKind::Node);
     set_flag(RustFFI::NodeFlag::Anonymous, node == nullptr);
 
     if (node && attach_to_dom_node == AttachToDOMNode::Yes)
@@ -85,6 +86,7 @@ void Node::synchronize_topology()
 
 void Node::append_child(NonnullRefPtr<Node> node)
 {
+    VERIFY(node->m_data->kind != RustFFI::NodeKind::Unset);
     auto previous_sibling = Base::last_child();
     Base::append_child(node);
 
@@ -96,6 +98,7 @@ void Node::append_child(NonnullRefPtr<Node> node)
 
 void Node::prepend_child(NonnullRefPtr<Node> node)
 {
+    VERIFY(node->m_data->kind != RustFFI::NodeKind::Unset);
     auto next_sibling = Base::first_child();
     Base::prepend_child(node);
 
@@ -107,6 +110,7 @@ void Node::prepend_child(NonnullRefPtr<Node> node)
 
 void Node::insert_before(NonnullRefPtr<Node> node, Node* child)
 {
+    VERIFY(node->m_data->kind != RustFFI::NodeKind::Unset);
     auto previous_sibling = child ? child->previous_sibling() : Base::last_child();
     Base::insert_before(node, child);
 
@@ -139,6 +143,7 @@ void Node::remove_child(Node& node)
 
 void Node::replace_child(NonnullRefPtr<Node> new_child, Node& old_child)
 {
+    VERIFY(new_child->m_data->kind != RustFFI::NodeKind::Unset);
     auto previous_sibling = old_child.previous_sibling();
     auto next_sibling = old_child.next_sibling();
     Base::replace_child(new_child, old_child);
