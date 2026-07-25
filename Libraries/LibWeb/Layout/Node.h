@@ -297,6 +297,9 @@ protected:
             m_data->flags &= ~static_cast<u32>(flag);
     }
 
+    RustFFI::NodeData& node_data() { return *m_data; }
+    RustFFI::NodeData const& node_data() const { return *m_data; }
+
 private:
     friend class NodeWithStyle;
 
@@ -434,8 +437,8 @@ public:
     void set_content(CSS::ContentData const&);
     void set_overflow(CSS::Overflow overflow_x, CSS::Overflow overflow_y);
 
-    u32 layout_index() const { return m_layout_index; }
-    void set_layout_index(u32 index) { m_layout_index = index; }
+    u32 layout_index() const { return node_data().layout_index; }
+    void set_layout_index(u32 index) { node_data().layout_index = index; }
 
 protected:
     NodeWithStyle(DOM::Document&, DOM::Node*, NonnullRefPtr<CSS::ComputedValues const>);
@@ -451,7 +454,6 @@ private:
 
     NonnullRefPtr<CSS::ComputedValues const> m_computed_values;
     Vector<NonnullOwnPtr<ImageObserver>> m_image_observers;
-    u32 m_layout_index { 0 };
 };
 
 template<>

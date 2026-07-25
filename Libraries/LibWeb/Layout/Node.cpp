@@ -599,8 +599,8 @@ bool NodeWithStyle::is_sticky_position() const
 NodeWithStyle::NodeWithStyle(DOM::Document& document, DOM::Node* node, NonnullRefPtr<CSS::ComputedValues const> computed_values)
     : Node(document, node)
     , m_computed_values(move(computed_values))
-    , m_layout_index(document.allocate_layout_node_index())
 {
+    node_data().layout_index = document.allocate_layout_node_index();
     set_flag(RustFFI::NodeFlag::HasStyle, true);
     set_flag(RustFFI::NodeFlag::IsBody, node && node == document.body());
 }
