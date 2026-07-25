@@ -84,6 +84,18 @@ void Node::synchronize_topology()
     m_data->next_sibling = slot_id(Base::next_sibling_ptr());
 }
 
+void Node::set_containing_block(Box* containing_block)
+{
+    m_containing_block = containing_block;
+    m_data->containing_block = slot_id(containing_block);
+}
+
+void Node::set_inline_containing_block(InlineNode const* containing_block)
+{
+    m_inline_containing_block_if_applicable = containing_block;
+    m_data->inline_containing_block = slot_id(containing_block);
+}
+
 void Node::append_child(NonnullRefPtr<Node> node)
 {
     VERIFY(node->m_data->kind != RustFFI::NodeKind::Unset);
@@ -388,10 +400,10 @@ static Box* nearest_ancestor_capable_of_forming_a_containing_block(Node& node)
 void Node::recompute_containing_block(Badge<DOM::Document>)
 {
     // Reset the inline containing block - we'll set it below if applicable.
-    m_inline_containing_block_if_applicable = nullptr;
+    set_inline_containing_block(nullptr);
 
     if (is<TextNode>(*this)) {
-        m_containing_block = nearest_ancestor_capable_of_forming_a_containing_block(*this);
+        set_containing_block(nearest_ancestor_capable_of_forming_a_containing_block(*this));
         return;
     }
 
@@ -402,7 +414,7 @@ void Node::recompute_containing_block(Badge<DOM::Document>)
         auto* ancestor = parent();
         while (ancestor && !ancestor->establishes_an_absolute_positioning_containing_block())
             ancestor = ancestor->parent();
-        m_containing_block = static_cast<Box*>(ancestor);
+        set_containing_block(static_cast<Box*>(ancestor));
 
         // FIXME: Containing block handling for absolutely positioned elements needs architectural improvements.
         //
@@ -460,7 +472,7 @@ void Node::recompute_containing_block(Badge<DOM::Document>)
                     || computed_values.filter().has_filters() || will_change.has_property(CSS::PropertyID::Filter)
                     || computed_values.backdrop_filter().has_filters() || will_change.has_property(CSS::PropertyID::BackdropFilter);
                 if (inline_establishes_cb) {
-                    m_inline_containing_block_if_applicable = &as<InlineNode>(*layout_node);
+                    set_inline_containing_block(&as<InlineNode>(*layout_node));
                     break;
                 }
             }
@@ -487,11 +499,11 @@ void Node::recompute_containing_block(Badge<DOM::Document>)
             //   page. (They are fixed with respect to the page box only, and are not affected by being seen through a
             //   viewport; as in the case of print preview, for example.)
         }
-        m_containing_block = static_cast<Box*>(ancestor);
+        set_containing_block(static_cast<Box*>(ancestor));
         return;
     }
 
-    m_containing_block = nearest_ancestor_capable_of_forming_a_containing_block(*this);
+    set_containing_block(nearest_ancestor_capable_of_forming_a_containing_block(*this));
 }
 
 // returns containing block this node would have had if its position was static

@@ -346,6 +346,8 @@ private:
     }
 
     static RustFFI::NodeSlotId slot_id(Node const*);
+    void set_containing_block(Box*);
+    void set_inline_containing_block(InlineNode const*);
     void set_node_kind(RustFFI::NodeKind kind) { m_data->kind = kind; }
     void synchronize_topology();
 
