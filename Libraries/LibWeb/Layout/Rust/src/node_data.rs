@@ -26,6 +26,23 @@ pub enum NodeKind {
     Unset,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum NodeFlag {
+    Anonymous = 1 << 0,
+    HasStyle = 1 << 1,
+    ChildrenAreInline = 1 << 2,
+    IsFlexItem = 1 << 3,
+    IsGridItem = 1 << 4,
+    HasBeenWrappedInTableWrapper = 1 << 5,
+    IsBody = 1 << 6,
+    NeedsLayoutUpdate = 1 << 7,
+    NeedsOwnGeometryUpdate = 1 << 8,
+    AbsposDescendantEscapes = 1 << 9,
+    CompensatesForHorizontalScroll = 1 << 10,
+    CompensatesForVerticalScroll = 1 << 11,
+}
+
 #[repr(C)]
 pub struct NodeData {
     pub parent: NodeSlotId,

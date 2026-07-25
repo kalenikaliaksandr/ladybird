@@ -42,12 +42,12 @@ namespace Web::Layout {
 Node::Node(DOM::Document& document, DOM::Node* node, AttachToDOMNode attach_to_dom_node)
     : m_dom_node(node ? *node : document)
     , m_arena(document.layout_node_arena())
-    , m_anonymous(node == nullptr)
 {
     auto allocation = m_arena->allocate();
     m_slot = allocation.slot;
     m_data = allocation.data;
     m_slot_generation = allocation.generation;
+    set_flag(RustFFI::NodeFlag::Anonymous, node == nullptr);
 
     if (node && attach_to_dom_node == AttachToDOMNode::Yes)
         node->set_layout_node({}, *this);
@@ -601,8 +601,8 @@ NodeWithStyle::NodeWithStyle(DOM::Document& document, DOM::Node* node, NonnullRe
     , m_computed_values(move(computed_values))
     , m_layout_index(document.allocate_layout_node_index())
 {
-    m_has_style = true;
-    m_is_body = node && node == document.body();
+    set_flag(RustFFI::NodeFlag::HasStyle, true);
+    set_flag(RustFFI::NodeFlag::IsBody, node && node == document.body());
 }
 
 NodeWithStyle::ImageObserver::ImageObserver(NodeWithStyle& owner, NonnullRefPtr<CSS::ImageStyleValue const> image)
@@ -1044,14 +1044,9 @@ RefPtr<Painting::Paintable> Node::create_paintable() const
     return nullptr;
 }
 
-bool Node::is_anonymous() const
-{
-    return m_anonymous;
-}
-
 DOM::Node const* Node::dom_node() const
 {
-    if (m_anonymous)
+    if (is_anonymous())
         return nullptr;
     VERIFY(m_dom_node);
     return m_dom_node.ptr();
@@ -1059,7 +1054,7 @@ DOM::Node const* Node::dom_node() const
 
 DOM::Node* Node::dom_node()
 {
-    if (m_anonymous)
+    if (is_anonymous())
         return nullptr;
     VERIFY(m_dom_node);
     return m_dom_node.ptr();
@@ -1302,7 +1297,7 @@ bool NodeWithStyleAndBoxModelMetrics::is_inline_flow_interrupting_block() const
 
 void Node::set_needs_layout_update(DOM::SetNeedsLayoutReason reason, LayoutUpdatePropagation propagation)
 {
-    if (m_needs_layout_update && propagation == LayoutUpdatePropagation::ThroughAncestors) {
+    if (needs_layout_update() && propagation == LayoutUpdatePropagation::ThroughAncestors) {
         // A dirty node normally implies dirty ancestors, but the walk that marked a partial
         // relayout boundary stopped there and left its ancestors clean, so a through-ancestors
         // invalidation arriving on the boundary itself must still walk and mark them.
@@ -1311,7 +1306,7 @@ void Node::set_needs_layout_update(DOM::SetNeedsLayoutReason reason, LayoutUpdat
             return;
     }
 
-    if (!m_needs_layout_update) {
+    if (!needs_layout_update()) {
         if constexpr (UPDATE_LAYOUT_DEBUG) {
             // NOTE: We check some conditions here to avoid debug spam in documents that don't do layout.
             auto navigable = this->navigable();
@@ -1319,7 +1314,7 @@ void Node::set_needs_layout_update(DOM::SetNeedsLayoutReason reason, LayoutUpdat
                 dbgln_if(UPDATE_LAYOUT_DEBUG, "NEED LAYOUT {}", DOM::to_string(reason));
         }
 
-        m_needs_layout_update = true;
+        set_flag(RustFFI::NodeFlag::NeedsLayoutUpdate, true);
     }
 
     if (auto* box = as_if<Box>(this))
@@ -1329,7 +1324,7 @@ void Node::set_needs_layout_update(DOM::SetNeedsLayoutReason reason, LayoutUpdat
     // NOTE: if this node generated an anonymous parent, all ancestors are indiscriminately marked below.
     for_each_child_of_type<Box>([&](Box& child) {
         if (child.is_anonymous() && !is<TableWrapper>(child)) {
-            child.m_needs_layout_update = true;
+            child.set_flag(RustFFI::NodeFlag::NeedsLayoutUpdate, true);
             child.reset_cached_intrinsic_sizes();
         }
         return IterationDecision::Continue;
@@ -1341,9 +1336,9 @@ void Node::set_needs_layout_update(DOM::SetNeedsLayoutReason reason, LayoutUpdat
     }
 
     for (auto* ancestor = parent(); ancestor; ancestor = ancestor->parent()) {
-        if (ancestor->m_needs_layout_update)
+        if (ancestor->needs_layout_update())
             break;
-        ancestor->m_needs_layout_update = true;
+        ancestor->set_flag(RustFFI::NodeFlag::NeedsLayoutUpdate, true);
         if (auto* box = as_if<Box>(ancestor); box && box->is_partial_relayout_boundary()) {
             document().partial_relayout_invalidation().record_boundary(*box);
             break;

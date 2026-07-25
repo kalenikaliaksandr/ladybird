@@ -45,6 +45,20 @@ static_assert(offsetof(RustFFI::NodeData, initial_quote_nesting_level) == 36);
 static_assert(offsetof(RustFFI::NodeData, layout_index) == 40);
 static_assert(offsetof(RustFFI::NodeData, style) == 48);
 
+static_assert(sizeof(RustFFI::NodeFlag) == sizeof(u32));
+static_assert(static_cast<u32>(RustFFI::NodeFlag::Anonymous) == 1 << 0);
+static_assert(static_cast<u32>(RustFFI::NodeFlag::HasStyle) == 1 << 1);
+static_assert(static_cast<u32>(RustFFI::NodeFlag::ChildrenAreInline) == 1 << 2);
+static_assert(static_cast<u32>(RustFFI::NodeFlag::IsFlexItem) == 1 << 3);
+static_assert(static_cast<u32>(RustFFI::NodeFlag::IsGridItem) == 1 << 4);
+static_assert(static_cast<u32>(RustFFI::NodeFlag::HasBeenWrappedInTableWrapper) == 1 << 5);
+static_assert(static_cast<u32>(RustFFI::NodeFlag::IsBody) == 1 << 6);
+static_assert(static_cast<u32>(RustFFI::NodeFlag::NeedsLayoutUpdate) == 1 << 7);
+static_assert(static_cast<u32>(RustFFI::NodeFlag::NeedsOwnGeometryUpdate) == 1 << 8);
+static_assert(static_cast<u32>(RustFFI::NodeFlag::AbsposDescendantEscapes) == 1 << 9);
+static_assert(static_cast<u32>(RustFFI::NodeFlag::CompensatesForHorizontalScroll) == 1 << 10);
+static_assert(static_cast<u32>(RustFFI::NodeFlag::CompensatesForVerticalScroll) == 1 << 11);
+
 #define LAYOUT_NODE(class_, base_class)            \
 public:                                            \
     using Base = base_class;                       \
@@ -84,24 +98,24 @@ public:
     virtual ~Node();
     virtual StringView class_name() const { return "Node"sv; }
 
-    bool is_anonymous() const;
+    bool is_anonymous() const { return has_flag(RustFFI::NodeFlag::Anonymous); }
     DOM::Node const* dom_node() const;
     DOM::Node* dom_node();
 
     DOM::Element const* pseudo_element_generator() const;
     DOM::Element* pseudo_element_generator();
 
-    bool needs_layout_update() const { return m_needs_layout_update; }
+    bool needs_layout_update() const { return has_flag(RustFFI::NodeFlag::NeedsLayoutUpdate); }
 
     // Set when a style change altered geometry-determining properties of this node itself, so
     // a partial relayout must re-resolve its own size and position instead of reusing them.
-    bool needs_own_geometry_update() const { return m_needs_own_geometry_update; }
-    void set_needs_own_geometry_update() { m_needs_own_geometry_update = true; }
+    bool needs_own_geometry_update() const { return has_flag(RustFFI::NodeFlag::NeedsOwnGeometryUpdate); }
+    void set_needs_own_geometry_update() { set_flag(RustFFI::NodeFlag::NeedsOwnGeometryUpdate, true); }
     void set_needs_layout_update(DOM::SetNeedsLayoutReason, LayoutUpdatePropagation = LayoutUpdatePropagation::ThroughAncestors);
     void reset_needs_layout_update()
     {
-        m_needs_layout_update = false;
-        m_needs_own_geometry_update = false;
+        set_flag(RustFFI::NodeFlag::NeedsLayoutUpdate, false);
+        set_flag(RustFFI::NodeFlag::NeedsOwnGeometryUpdate, false);
     }
 
     bool is_generated_for_pseudo_element() const { return m_generated_for.has_value(); }
@@ -138,7 +152,7 @@ public:
 
     String debug_description() const;
 
-    bool has_style() const { return m_has_style; }
+    bool has_style() const { return has_flag(RustFFI::NodeFlag::HasStyle); }
     bool has_style_or_parent_with_style() const;
 
     virtual bool can_have_children() const { return true; }
@@ -192,11 +206,11 @@ public:
     template<typename T>
     bool fast_is() const = delete;
 
-    bool is_flex_item() const { return m_is_flex_item; }
-    void set_flex_item(bool b) { m_is_flex_item = b; }
+    bool is_flex_item() const { return has_flag(RustFFI::NodeFlag::IsFlexItem); }
+    void set_flex_item(bool value) { set_flag(RustFFI::NodeFlag::IsFlexItem, value); }
 
-    bool is_grid_item() const { return m_is_grid_item; }
-    void set_grid_item(bool b) { m_is_grid_item = b; }
+    bool is_grid_item() const { return has_flag(RustFFI::NodeFlag::IsGridItem); }
+    void set_grid_item(bool value) { set_flag(RustFFI::NodeFlag::IsGridItem, value); }
 
     bool vertical_align_applies() const
     {
@@ -245,8 +259,8 @@ public:
     void removed_from(Node&) { }
     void children_changed() { }
 
-    bool children_are_inline() const { return m_children_are_inline; }
-    void set_children_are_inline(bool value) { m_children_are_inline = value; }
+    bool children_are_inline() const { return has_flag(RustFFI::NodeFlag::ChildrenAreInline); }
+    void set_children_are_inline(bool value) { set_flag(RustFFI::NodeFlag::ChildrenAreInline, value); }
 
     u32 initial_quote_nesting_level() const { return m_initial_quote_nesting_level; }
     void set_initial_quote_nesting_level(u32 value) { m_initial_quote_nesting_level = value; }
@@ -254,8 +268,8 @@ public:
     // https://drafts.csswg.org/css-ui/#propdef-user-select
     CSS::UserSelect user_select_used_value() const;
 
-    [[nodiscard]] bool has_been_wrapped_in_table_wrapper() const { return m_has_been_wrapped_in_table_wrapper; }
-    void set_has_been_wrapped_in_table_wrapper(bool value) { m_has_been_wrapped_in_table_wrapper = value; }
+    [[nodiscard]] bool has_been_wrapped_in_table_wrapper() const { return has_flag(RustFFI::NodeFlag::HasBeenWrappedInTableWrapper); }
+    void set_has_been_wrapped_in_table_wrapper(bool value) { set_flag(RustFFI::NodeFlag::HasBeenWrappedInTableWrapper, value); }
 
     enum class AttachToDOMNode {
         No,
@@ -264,6 +278,19 @@ public:
 
 protected:
     Node(DOM::Document&, DOM::Node*, AttachToDOMNode = AttachToDOMNode::Yes);
+
+    bool has_flag(RustFFI::NodeFlag flag) const
+    {
+        return (m_data->flags & static_cast<u32>(flag)) != 0;
+    }
+
+    void set_flag(RustFFI::NodeFlag flag, bool value)
+    {
+        if (value)
+            m_data->flags |= static_cast<u32>(flag);
+        else
+            m_data->flags &= ~static_cast<u32>(flag);
+    }
 
 private:
     friend class NodeWithStyle;
@@ -291,19 +318,6 @@ private:
     InlineNode const* m_inline_containing_block_if_applicable { nullptr };
 
     GC::Weak<DOM::Element> m_pseudo_element_generator;
-
-    bool m_anonymous { false };
-    bool m_has_style { false };
-    bool m_children_are_inline { false };
-
-    bool m_is_flex_item { false };
-    bool m_is_grid_item { false };
-
-    bool m_has_been_wrapped_in_table_wrapper { false };
-    bool m_is_body { false };
-
-    bool m_needs_layout_update { false };
-    bool m_needs_own_geometry_update { false };
 
     Optional<CSS::PseudoElement> m_generated_for;
 
@@ -403,7 +417,7 @@ public:
 
     void transfer_table_box_computed_values_to_wrapper_computed_values(CSS::ComputedValues::Builder& wrapper_computed_values);
 
-    bool is_body() const { return m_is_body; }
+    bool is_body() const { return has_flag(RustFFI::NodeFlag::IsBody); }
     bool is_scroll_container() const;
 
     void set_computed_values(NonnullRefPtr<CSS::ComputedValues const>);
@@ -456,13 +470,13 @@ inline bool Node::fast_is<NodeWithStyleAndBoxModelMetrics>() const { return is_n
 
 inline bool Node::has_style_or_parent_with_style() const
 {
-    return m_has_style || (parent() != nullptr && parent()->has_style_or_parent_with_style());
+    return has_style() || (parent() != nullptr && parent()->has_style_or_parent_with_style());
 }
 
 inline Gfx::Font const& Node::first_available_font() const
 {
     VERIFY(has_style_or_parent_with_style());
-    if (m_has_style)
+    if (has_style())
         return static_cast<NodeWithStyle const*>(this)->first_available_font();
     return parent()->first_available_font();
 }

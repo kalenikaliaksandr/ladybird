@@ -87,18 +87,18 @@ public:
     // Whether an absolutely or fixed positioned descendant of this box has its containing
     // block outside this box's subtree, so the descendant's layout escapes the subtree.
     // Re-derived whenever containing block pointers are recomputed.
-    bool abspos_descendant_escapes() const { return m_abspos_descendant_escapes; }
-    void set_abspos_descendant_escapes(bool value) { m_abspos_descendant_escapes = value; }
+    bool abspos_descendant_escapes() const { return has_flag(RustFFI::NodeFlag::AbsposDescendantEscapes); }
+    void set_abspos_descendant_escapes(bool value) { set_flag(RustFFI::NodeFlag::AbsposDescendantEscapes, value); }
 
     void set_default_scroll_shift(WeakPtr<Node> anchor, bool compensates_for_horizontal_scroll, bool compensates_for_vertical_scroll)
     {
         m_default_scroll_shift_anchor = move(anchor);
-        m_compensates_for_horizontal_scroll = compensates_for_horizontal_scroll;
-        m_compensates_for_vertical_scroll = compensates_for_vertical_scroll;
+        set_flag(RustFFI::NodeFlag::CompensatesForHorizontalScroll, compensates_for_horizontal_scroll);
+        set_flag(RustFFI::NodeFlag::CompensatesForVerticalScroll, compensates_for_vertical_scroll);
     }
     Node* default_scroll_shift_anchor() const { return m_default_scroll_shift_anchor.ptr(); }
-    bool compensates_for_horizontal_scroll() const { return m_compensates_for_horizontal_scroll; }
-    bool compensates_for_vertical_scroll() const { return m_compensates_for_vertical_scroll; }
+    bool compensates_for_horizontal_scroll() const { return has_flag(RustFFI::NodeFlag::CompensatesForHorizontalScroll); }
+    bool compensates_for_vertical_scroll() const { return has_flag(RustFFI::NodeFlag::CompensatesForVerticalScroll); }
 
     IntrinsicSizes& cached_intrinsic_sizes() const
     {
@@ -119,9 +119,6 @@ private:
     OwnPtr<AbsposLayoutInputs> m_saved_abspos_layout_inputs;
 
     WeakPtr<Node> m_default_scroll_shift_anchor;
-    bool m_compensates_for_horizontal_scroll { false };
-    bool m_compensates_for_vertical_scroll { false };
-    bool m_abspos_descendant_escapes { false };
 
     OwnPtr<IntrinsicSizes> mutable m_cached_intrinsic_sizes;
 };
