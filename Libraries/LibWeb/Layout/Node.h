@@ -20,11 +20,30 @@
 #include <LibWeb/CSS/StyleValues/ImageStyleValue.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/Layout/TreeBuilderRustFFI.h>
 #include <LibWeb/Painting/DisplayListRecordingContext.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/RefCountedTreeNode.h>
 
 namespace Web::Layout {
+
+static_assert(sizeof(RustFFI::NodeSlotId) == sizeof(u32));
+static_assert(offsetof(RustFFI::NodeSlotId, index) == 0);
+
+static_assert(sizeof(RustFFI::NodeData) == 56);
+static_assert(offsetof(RustFFI::NodeData, parent) == 0);
+static_assert(offsetof(RustFFI::NodeData, first_child) == 4);
+static_assert(offsetof(RustFFI::NodeData, last_child) == 8);
+static_assert(offsetof(RustFFI::NodeData, previous_sibling) == 12);
+static_assert(offsetof(RustFFI::NodeData, next_sibling) == 16);
+static_assert(offsetof(RustFFI::NodeData, containing_block) == 20);
+static_assert(offsetof(RustFFI::NodeData, inline_containing_block) == 24);
+static_assert(offsetof(RustFFI::NodeData, kind) == 28);
+static_assert(offsetof(RustFFI::NodeData, generated_for) == 29);
+static_assert(offsetof(RustFFI::NodeData, flags) == 32);
+static_assert(offsetof(RustFFI::NodeData, initial_quote_nesting_level) == 36);
+static_assert(offsetof(RustFFI::NodeData, layout_index) == 40);
+static_assert(offsetof(RustFFI::NodeData, style) == 48);
 
 #define LAYOUT_NODE(class_, base_class)            \
 public:                                            \
