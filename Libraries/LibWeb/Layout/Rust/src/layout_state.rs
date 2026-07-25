@@ -4,24 +4,22 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-use crate::abort_on_panic;
 use crate::box_facts::FfiLayoutBoxFacts;
 use crate::ffi_stats::{FfiOp, bump};
 use crate::formatting_context::grid::facts::GridStyleFacts;
 use crate::formatting_context::inline::iterator::text::TextNodeFacts;
-use crate::formatting_context::inline::{line_box::LineBoxData, pieces::InlineBoxPieceData};
-use crate::formatting_context::{FfiLayoutFcCallbacks, FfiTableBoxFacts};
-use crate::geometry::LogicalRect;
+use crate::formatting_context::inline::{
+    FfiCommittedFragment, FfiInlineBoxPiece, FfiLineRecord, FfiLineSinkCallbacks, line_box::LineBoxData,
+    pieces::InlineBoxPieceData, push_line_data,
+};
+use crate::formatting_context::{FfiBordersData, FfiLayoutFcCallbacks, FfiTableBoxFacts};
+use crate::geometry::{FfiContainingBlockConstraints, LogicalRect};
 use crate::style_facts::FfiStyleFacts;
 use crate::used_values::UsedValuesCore;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr::null_mut;
-
-unsafe extern "C" {
-    fn ladybird_layout_box_layout_index(box_pointer: *mut c_void) -> u32;
-}
 
 const PAGE_BITS: usize = 4;
 const PAGE_SIZE: usize = 1 << PAGE_BITS;
@@ -232,6 +230,159 @@ pub struct FfiAbsposLayoutInputs {
     pub containing_block_info: FfiAbsposContainingBlockInfo,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiTableCellCoordinates {
+    pub row_index: usize,
+    pub column_index: usize,
+    pub row_span: usize,
+    pub column_span: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiCommittedBoxMetrics {
+    pub content_inline_size: crate::css_pixels::CssPixels,
+    pub content_block_size: crate::css_pixels::CssPixels,
+    pub margin_left: crate::css_pixels::CssPixels,
+    pub margin_right: crate::css_pixels::CssPixels,
+    pub margin_top: crate::css_pixels::CssPixels,
+    pub margin_bottom: crate::css_pixels::CssPixels,
+    pub border_left: crate::css_pixels::CssPixels,
+    pub border_right: crate::css_pixels::CssPixels,
+    pub border_top: crate::css_pixels::CssPixels,
+    pub border_bottom: crate::css_pixels::CssPixels,
+    pub padding_left: crate::css_pixels::CssPixels,
+    pub padding_right: crate::css_pixels::CssPixels,
+    pub padding_top: crate::css_pixels::CssPixels,
+    pub padding_bottom: crate::css_pixels::CssPixels,
+    pub inset_left: crate::css_pixels::CssPixels,
+    pub inset_right: crate::css_pixels::CssPixels,
+    pub inset_top: crate::css_pixels::CssPixels,
+    pub inset_bottom: crate::css_pixels::CssPixels,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiCommittedOffset {
+    pub offset: crate::used_values::FfiCssPixelPoint,
+    pub inset_left: crate::css_pixels::CssPixels,
+    pub inset_top: crate::css_pixels::CssPixels,
+    pub materialized_from_paintable: bool,
+    pub has_containing_line_box_fragment: bool,
+    pub containing_line_box_index: usize,
+    pub line_fragment_lookup: u8,
+    pub line_fragment_offset: crate::used_values::FfiCssPixelPoint,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiCommitNodeResult {
+    pub paintable: *mut c_void,
+    pub paintable_for_children: *mut c_void,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiCommitPosition {
+    pub parent_paintable: *mut c_void,
+    pub insert_before_paintable: *mut c_void,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct FfiPaintableGeometry {
+    pub content_inline_size: crate::css_pixels::CssPixels,
+    pub content_block_size: crate::css_pixels::CssPixels,
+    pub content_offset: crate::used_values::FfiCssPixelPoint,
+    pub margin_left: crate::css_pixels::CssPixels,
+    pub margin_right: crate::css_pixels::CssPixels,
+    pub margin_top: crate::css_pixels::CssPixels,
+    pub margin_bottom: crate::css_pixels::CssPixels,
+    pub border_left: crate::css_pixels::CssPixels,
+    pub border_right: crate::css_pixels::CssPixels,
+    pub border_top: crate::css_pixels::CssPixels,
+    pub border_bottom: crate::css_pixels::CssPixels,
+    pub padding_left: crate::css_pixels::CssPixels,
+    pub padding_right: crate::css_pixels::CssPixels,
+    pub padding_top: crate::css_pixels::CssPixels,
+    pub padding_bottom: crate::css_pixels::CssPixels,
+    pub inset_left: crate::css_pixels::CssPixels,
+    pub inset_right: crate::css_pixels::CssPixels,
+    pub inset_top: crate::css_pixels::CssPixels,
+    pub inset_bottom: crate::css_pixels::CssPixels,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct FfiCommitSink {
+    pub context: *mut c_void,
+    pub begin_commit: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> FfiCommitPosition,
+    pub finish_commit: unsafe extern "C" fn(*mut c_void),
+    pub prepare_node: unsafe extern "C" fn(*mut c_void, *mut c_void, bool, bool, FfiAbsposLayoutInputs) -> *mut c_void,
+    pub set_box_metrics: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiCommittedBoxMetrics),
+    pub set_override_borders: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiBordersData),
+    pub set_table_cell_coordinates: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiTableCellCoordinates),
+    pub begin_line_data: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
+    pub begin_line: unsafe extern "C" fn(*mut c_void, FfiLineRecord),
+    pub emit_fragment: unsafe extern "C" fn(*mut c_void, FfiCommittedFragment),
+    pub emit_inline_box_piece: unsafe extern "C" fn(*mut c_void, FfiInlineBoxPiece),
+    pub finish_line_data: unsafe extern "C" fn(*mut c_void),
+    pub set_computed_svg_transforms:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, crate::formatting_context::svg::FfiSvgComputedTransforms),
+    pub set_computed_svg_path: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void),
+    pub set_grid_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void),
+    pub set_flex_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void),
+    pub set_used_grid_tracks: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void),
+    pub set_offset: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, FfiCommittedOffset),
+    pub finish_node:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void, *mut c_void) -> FfiCommitNodeResult,
+    pub resolve_relative_positions: unsafe extern "C" fn(*mut c_void, *mut c_void),
+}
+
+pub(crate) type ReleaseRetainedLayoutHandle = unsafe extern "C" fn(*mut c_void, *mut c_void);
+
+pub(crate) struct RetainedLayoutHandle {
+    handle: *mut c_void,
+    callback_context: *mut c_void,
+    release: ReleaseRetainedLayoutHandle,
+}
+
+impl RetainedLayoutHandle {
+    pub(crate) fn new(
+        handle: *mut c_void,
+        callback_context: *mut c_void,
+        release: ReleaseRetainedLayoutHandle,
+    ) -> Self {
+        assert!(!handle.is_null());
+        Self {
+            handle,
+            callback_context,
+            release,
+        }
+    }
+
+    pub(crate) fn take(&mut self) -> *mut c_void {
+        let handle = self.handle;
+        self.handle = null_mut();
+        handle
+    }
+}
+
+impl Drop for RetainedLayoutHandle {
+    fn drop(&mut self) {
+        if self.handle.is_null() {
+            return;
+        }
+        // SAFETY: Each retained layout handle is returned with one ownership
+        // unit by its creating callback and is either transferred to the
+        // commit sink or released exactly once with the paired callback.
+        unsafe {
+            (self.release)(self.callback_context, self.handle);
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ContainedAbsposChild {
     child_box: *mut c_void,
@@ -241,12 +392,11 @@ struct ContainedAbsposChild {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
-pub struct FfiContainedAbsposChild {
+pub(crate) struct FfiContainedAbsposChild {
     pub child_box: *mut c_void,
     pub static_position_rect: FfiStaticPositionRect,
 }
 
-#[derive(Default)]
 #[allow(dead_code)]
 pub(crate) struct LayoutState {
     used_values: PagedStore<UsedValuesCore>,
@@ -258,8 +408,23 @@ pub(crate) struct LayoutState {
     text_facts: HashMap<usize, TextNodeFacts>,
     line_data: PagedStore<LineData>,
     block_rare_data: PagedStore<BlockRareData>,
+    used_values_rare_data: PagedStore<UsedValuesRareData>,
     layout_indices_by_node: HashMap<usize, u32>,
     bfc_root_fact_builds_excluded: HashSet<u32>,
+    purpose: LayoutStatePurpose,
+    may_reuse_precreated_used_values: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LayoutStatePurpose {
+    Commit,
+    Measurement,
+}
+
+impl Default for LayoutState {
+    fn default() -> Self {
+        Self::new(LayoutStatePurpose::Commit)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -274,6 +439,18 @@ pub(crate) struct LineData {
     pub(crate) inline_box_pieces: Vec<InlineBoxPieceData>,
 }
 
+#[derive(Default)]
+pub(crate) struct UsedValuesRareData {
+    pub(crate) table_cell_coordinates: Option<FfiTableCellCoordinates>,
+    pub(crate) computed_svg_path: Option<RetainedLayoutHandle>,
+    pub(crate) computed_svg_transforms: Option<crate::formatting_context::svg::FfiSvgComputedTransforms>,
+    pub(crate) grid_layout_data: Option<RetainedLayoutHandle>,
+    pub(crate) flex_layout_data: Option<RetainedLayoutHandle>,
+    pub(crate) used_grid_tracks: Option<RetainedLayoutHandle>,
+    pub(crate) override_borders_data: Option<FfiBordersData>,
+    pub(crate) abspos_layout_inputs: Option<FfiAbsposLayoutInputs>,
+}
+
 impl Drop for LayoutState {
     fn drop(&mut self) {
         self.style_facts.for_each(|facts| facts.release_calc_handles());
@@ -282,6 +459,38 @@ impl Drop for LayoutState {
 
 #[allow(dead_code)]
 impl LayoutState {
+    pub(crate) fn new(purpose: LayoutStatePurpose) -> Self {
+        Self {
+            used_values: PagedStore::default(),
+            contained_abspos_children: HashMap::new(),
+            style_facts: PagedStore::default(),
+            box_facts: PagedStore::default(),
+            table_facts: PagedStore::default(),
+            grid_facts: PagedStore::default(),
+            text_facts: HashMap::new(),
+            line_data: PagedStore::default(),
+            block_rare_data: PagedStore::default(),
+            used_values_rare_data: PagedStore::default(),
+            layout_indices_by_node: HashMap::new(),
+            bfc_root_fact_builds_excluded: HashSet::new(),
+            purpose,
+            may_reuse_precreated_used_values: false,
+        }
+    }
+
+    pub(crate) fn is_measurement(&self) -> bool {
+        self.purpose == LayoutStatePurpose::Measurement
+    }
+
+    pub(crate) fn allow_precreated_used_values_reuse(&mut self) {
+        assert!(!self.is_measurement());
+        self.may_reuse_precreated_used_values = true;
+    }
+
+    pub(crate) fn ensure_capacity(&mut self, count: u32) {
+        self.used_values.ensure_capacity(count);
+    }
+
     fn layout_index(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> u32 {
         if let Some(index) = self.layout_indices_by_node.get(&(node as usize)) {
             return *index;
@@ -318,10 +527,261 @@ impl LayoutState {
             if !facts.is_null() {
                 bump(FfiOp::BoxFactsCacheHit);
                 // SAFETY: Non-null store entries remain valid for the state.
-                return unsafe { *facts };
+                let mut facts = unsafe { *facts };
+                facts.may_reuse_precreated_used_values =
+                    self.may_reuse_precreated_used_values && !self.used_values.get(*index).is_null();
+                return facts;
             }
         }
-        self.build_box_facts(callbacks, node)
+        let mut facts = self.build_box_facts(callbacks, node);
+        facts.may_reuse_precreated_used_values = facts.has_layout_index
+            && self.may_reuse_precreated_used_values
+            && !self.used_values.get(facts.layout_index).is_null();
+        facts
+    }
+
+    pub(crate) fn create_used_values(
+        &mut self,
+        callbacks: &FfiLayoutFcCallbacks,
+        node: *mut c_void,
+        constraints: FfiContainingBlockConstraints,
+    ) -> *mut UsedValuesCore {
+        assert!(!node.is_null());
+        let facts = self.box_facts(callbacks, node);
+        assert!(facts.has_layout_index);
+        assert!(self.used_values.get(facts.layout_index).is_null());
+
+        let style = self.style_facts(callbacks, node);
+        let percentage_basis_inline_size = constraints
+            .has_percentage_basis_inline_size
+            .then_some(constraints.percentage_basis_inline_size);
+        let percentage_basis_block_size = constraints
+            .has_percentage_basis_block_size
+            .then_some(constraints.percentage_basis_block_size);
+
+        // NOTE: In the code below, we decide if `node` has definite inline
+        // and/or block size. This attempts to cover all the *general* cases
+        // where CSS considers sizes to be definite. If `node` has definite
+        // values for min/max-width or min/max-height and a definite preferred
+        // size in the same axis, we clamp the preferred size here as well.
+        //
+        // There are additional cases where CSS considers values to be
+        // definite. We model all of those by considering sizes definite once
+        // they are assigned through set_content_inline_size() or
+        // set_content_block_size().
+        let mut used = UsedValuesCore {
+            node,
+            ..UsedValuesCore::default()
+        };
+
+        #[derive(Clone, Copy)]
+        enum Axis {
+            Inline,
+            Block,
+        }
+
+        let containing_block_size_for_axis = |axis: Axis| match axis {
+            Axis::Inline => percentage_basis_inline_size.unwrap_or_default(),
+            Axis::Block => percentage_basis_block_size.unwrap_or_default(),
+        };
+        let containing_block_has_definite_size = |axis: Axis| match axis {
+            Axis::Inline => percentage_basis_inline_size.is_some(),
+            Axis::Block => percentage_basis_block_size.is_some(),
+        };
+
+        let adjust_for_box_sizing =
+            |unadjusted: crate::css_pixels::CssPixels, computed_size: crate::style_facts::FfiSizeValue, axis: Axis| {
+                const BOX_SIZING_CONTENT_BOX: u8 = 1;
+                // box-sizing: content-box and automatic sizes need no
+                // adjustment.
+                if style.box_sizing == BOX_SIZING_CONTENT_BOX || computed_size.is_auto() {
+                    return unadjusted;
+                }
+
+                // box-sizing: border-box subtracts the relevant border and
+                // padding. Block-axis padding percentages also resolve against
+                // the containing block's inline size.
+                let inline_basis = percentage_basis_inline_size.unwrap_or_default();
+                let border_and_padding = match axis {
+                    Axis::Inline => {
+                        style.border_left_width
+                            + style.padding_left.to_px(inline_basis)
+                            + style.border_right_width
+                            + style.padding_right.to_px(inline_basis)
+                    }
+                    Axis::Block => {
+                        style.border_top_width
+                            + style.padding_top.to_px(inline_basis)
+                            + style.border_bottom_width
+                            + style.padding_bottom.to_px(inline_basis)
+                    }
+                };
+                unadjusted - border_and_padding
+            };
+
+        let parent = unsafe { (callbacks.navigation.parent)(callbacks.navigation.context, node) };
+        let parent_facts = (!parent.is_null()).then(|| self.box_facts(callbacks, parent));
+        let is_definite_size = |size: crate::style_facts::FfiSizeValue,
+                                axis: Axis|
+         -> Option<crate::css_pixels::CssPixels> {
+            // A definite size can be determined without performing
+            // layout: a length, an initial-containing-block size, or a
+            // percentage/formula resolved solely against definite sizes.
+            if size.is_auto() {
+                // The inline size of a non-flex-item block is definite when
+                // it is auto and its containing block has a definite inline
+                // size. This is the stretch-fit case from css-sizing-3.
+                // Replaced boxes remain content-based until layout.
+                if matches!(axis, Axis::Inline)
+                    && !facts.is_replaced_box
+                    && !facts.is_floating
+                    && !facts.is_absolutely_positioned
+                    && facts.display.is_block_outside()
+                    && parent_facts.is_some_and(|parent| {
+                        !parent.is_floating && (parent.display.is_flow_root_inside() || parent.display.is_flow_inside())
+                    })
+                    && containing_block_has_definite_size(Axis::Inline)
+                {
+                    let available = containing_block_size_for_axis(Axis::Inline);
+                    return Some(UsedValuesCore::clamp_dimension(
+                        available
+                            - used.margin_left
+                            - used.margin_right
+                            - used.padding_left
+                            - used.padding_right
+                            - used.border_left
+                            - used.border_right,
+                    ));
+                }
+                return None;
+            }
+
+            if !size.is_length_percentage() {
+                return None;
+            }
+            if size.contains_percentage && !containing_block_has_definite_size(axis) {
+                return None;
+            }
+            let basis = if size.contains_percentage {
+                containing_block_size_for_axis(axis)
+            } else {
+                crate::css_pixels::CssPixels::default()
+            };
+            Some(UsedValuesCore::clamp_dimension(adjust_for_box_sizing(
+                size.to_px(basis),
+                size,
+                axis,
+            )))
+        };
+
+        let min_inline_size = is_definite_size(style.min_width, Axis::Inline);
+        let max_inline_size = is_definite_size(style.max_width, Axis::Inline);
+        let min_block_size = is_definite_size(style.min_height, Axis::Block);
+        let max_block_size = is_definite_size(style.max_height, Axis::Block);
+        let mut content_inline_size = is_definite_size(style.width, Axis::Inline);
+        let mut content_block_size = is_definite_size(style.height, Axis::Block);
+
+        used.has_definite_inline_size = content_inline_size.is_some();
+        used.has_definite_block_size = content_block_size.is_some();
+        if let Some(size) = content_inline_size.as_mut() {
+            if let Some(minimum) = min_inline_size {
+                *size = UsedValuesCore::clamp_dimension((*size).max(minimum));
+            }
+            if let Some(maximum) = max_inline_size {
+                *size = UsedValuesCore::clamp_dimension((*size).min(maximum));
+            }
+        }
+        if let Some(size) = content_block_size.as_mut() {
+            if let Some(minimum) = min_block_size {
+                *size = UsedValuesCore::clamp_dimension((*size).max(minimum));
+            }
+            if let Some(maximum) = max_block_size {
+                *size = UsedValuesCore::clamp_dimension((*size).min(maximum));
+            }
+        }
+        used.content_inline_size = content_inline_size.unwrap_or_default();
+        used.content_block_size = content_block_size.unwrap_or_default();
+
+        bump(FfiOp::UsedValuesCreate);
+        let used = self.used_values.allocate(facts.layout_index, used);
+
+        if facts.is_list_item_box && !facts.list_item_marker.is_null() {
+            let marker_facts = self.box_facts(callbacks, facts.list_item_marker);
+            assert!(marker_facts.has_layout_index);
+            if self.used_values.get(marker_facts.layout_index).is_null() {
+                // List markers inherit only bases that were already definite
+                // when their list item entry was created.
+                let used_ref = unsafe { &*used };
+                let marker_constraints = FfiContainingBlockConstraints {
+                    has_percentage_basis_inline_size: used_ref.has_definite_inline_size(),
+                    percentage_basis_inline_size: used_ref.content_inline_size,
+                    has_percentage_basis_block_size: used_ref.has_definite_block_size(),
+                    percentage_basis_block_size: used_ref.content_block_size,
+                    ..FfiContainingBlockConstraints::default()
+                };
+                self.create_used_values(callbacks, facts.list_item_marker, marker_constraints);
+            }
+        }
+
+        used
+    }
+
+    pub(crate) fn populate_from_paintable(
+        &mut self,
+        callbacks: &FfiLayoutFcCallbacks,
+        node: *mut c_void,
+        paintable: *mut c_void,
+    ) -> Option<*mut UsedValuesCore> {
+        let facts = self.box_facts(callbacks, node);
+        assert!(facts.has_layout_index);
+        assert!(self.used_values.get(facts.layout_index).is_null());
+
+        let mut geometry = FfiPaintableGeometry::default();
+        let found =
+            unsafe { (callbacks.read_paintable_geometry)(callbacks.context, node, paintable, &raw mut geometry) };
+        if !found {
+            return None;
+        }
+
+        // Skip normal node initialization: resolving computed sizes requires
+        // percentage bases, and every resulting geometry field is replaced by
+        // the previous paintable's committed value immediately.
+        let mut used = UsedValuesCore {
+            node,
+            materialized_from_paintable: true,
+            ..UsedValuesCore::default()
+        };
+        used.set_content_inline_size(geometry.content_inline_size);
+        used.set_content_block_size(geometry.content_block_size);
+        used.has_definite_inline_size = true;
+        used.has_definite_block_size = true;
+        used.has_content_offset = true;
+        used.content_offset = geometry.content_offset;
+        used.margin_left = geometry.margin_left;
+        used.margin_right = geometry.margin_right;
+        used.margin_top = geometry.margin_top;
+        used.margin_bottom = geometry.margin_bottom;
+        used.border_left = geometry.border_left;
+        used.border_right = geometry.border_right;
+        used.border_top = geometry.border_top;
+        used.border_bottom = geometry.border_bottom;
+        used.padding_left = geometry.padding_left;
+        used.padding_right = geometry.padding_right;
+        used.padding_top = geometry.padding_top;
+        used.padding_bottom = geometry.padding_bottom;
+        used.inset_left = geometry.inset_left;
+        used.inset_right = geometry.inset_right;
+        used.inset_top = geometry.inset_top;
+        used.inset_bottom = geometry.inset_bottom;
+
+        bump(FfiOp::UsedValuesCreate);
+        Some(self.used_values.allocate(facts.layout_index, used))
+    }
+
+    pub(crate) fn used_value_nodes(&self) -> Vec<*mut c_void> {
+        let mut nodes = Vec::new();
+        self.used_values.for_each(|used| nodes.push(used.node));
+        nodes
     }
 
     pub(crate) fn set_box_is_grid_item(
@@ -512,6 +972,37 @@ impl LayoutState {
         unsafe { &mut *data }
     }
 
+    pub(crate) fn used_values_rare_data(&self, layout_index: u32) -> Option<&UsedValuesRareData> {
+        let data = self.used_values_rare_data.get(layout_index);
+        if data.is_null() {
+            None
+        } else {
+            // SAFETY: Non-null store entries remain valid for the state.
+            Some(unsafe { &*data })
+        }
+    }
+
+    pub(crate) fn used_values_rare_data_mut(&mut self, layout_index: u32) -> &mut UsedValuesRareData {
+        let data = self.used_values_rare_data.get(layout_index);
+        let data = if data.is_null() {
+            self.used_values_rare_data
+                .allocate(layout_index, UsedValuesRareData::default())
+        } else {
+            data
+        };
+        // SAFETY: The entry is uniquely accessed through this mutable state.
+        unsafe { &mut *data }
+    }
+
+    pub(crate) fn used_values_rare_data_for_node_mut(
+        &mut self,
+        callbacks: &FfiLayoutFcCallbacks,
+        node: *mut c_void,
+    ) -> &mut UsedValuesRareData {
+        let index = self.layout_index(callbacks, node);
+        self.used_values_rare_data_mut(index)
+    }
+
     pub(crate) fn used_values_by_index(&self, layout_index: u32) -> Option<&UsedValuesCore> {
         let used = self.used_values.get(layout_index);
         if used.is_null() {
@@ -576,98 +1067,276 @@ impl LayoutState {
             static_position_rect: child.static_position_rect,
         })
     }
+
+    fn used_values_indices_by_node(&self) -> HashMap<usize, u32> {
+        let mut indices = HashMap::new();
+        self.used_values.for_each_indexed(|index, used| {
+            assert!(!used.node.is_null());
+            indices.insert(used.node as usize, index);
+        });
+        indices
+    }
+
+    fn line_fragment_lookup(
+        &self,
+        indices: &HashMap<usize, u32>,
+        callbacks: &FfiLayoutFcCallbacks,
+        used: &UsedValuesCore,
+    ) -> (u8, crate::used_values::FfiCssPixelPoint) {
+        if !used.has_containing_line_box_fragment {
+            return (0, crate::used_values::FfiCssPixelPoint::default());
+        }
+        // SAFETY: Commit traverses the still-live C++ layout tree
+        // synchronously with the pass callback table.
+        let containing_block =
+            unsafe { (callbacks.navigation.containing_block)(callbacks.navigation.context, used.node) };
+        assert!(!containing_block.is_null());
+        let Some(layout_index) = indices.get(&(containing_block as usize)) else {
+            return (0, crate::used_values::FfiCssPixelPoint::default());
+        };
+        let Some(line) = self
+            .line_data(*layout_index)
+            .and_then(|data| data.line_boxes.get(used.containing_line_box_fragment.line_box_index))
+        else {
+            return (0, crate::used_values::FfiCssPixelPoint::default());
+        };
+        let Some(fragment) = line.fragments.get(used.containing_line_box_fragment.fragment_index) else {
+            return (1, crate::used_values::FfiCssPixelPoint::default());
+        };
+        let (x, y) = fragment.offset();
+        (2, crate::used_values::FfiCssPixelPoint { x, y })
+    }
+
+    fn commit_subtree(
+        &mut self,
+        node: *mut c_void,
+        parent_paintable: *mut c_void,
+        insert_before_paintable: *mut c_void,
+        indices: &HashMap<usize, u32>,
+        callbacks: &FfiLayoutFcCallbacks,
+        sink: &FfiCommitSink,
+    ) {
+        let layout_index = indices.get(&(node as usize)).copied();
+        let used = layout_index.and_then(|index| self.used_values_by_index(index));
+        let abspos_layout_inputs = layout_index
+            .and_then(|index| self.used_values_rare_data(index))
+            .and_then(|rare| rare.abspos_layout_inputs);
+        // SAFETY: The C++ sink owns paintables and copies every plain-data
+        // input synchronously.
+        let paintable = unsafe {
+            (sink.prepare_node)(
+                sink.context,
+                node,
+                used.is_some(),
+                abspos_layout_inputs.is_some(),
+                abspos_layout_inputs.unwrap_or(FfiAbsposLayoutInputs {
+                    static_position_rect: FfiStaticPositionRect {
+                        rect: LogicalRect::default(),
+                        inline_alignment: FfiStaticPositionAlignment::Start,
+                        block_alignment: FfiStaticPositionAlignment::Start,
+                        alignment_derives_from_own_computed_values: false,
+                    },
+                    containing_block_info: FfiAbsposContainingBlockInfo {
+                        rect: LogicalRect::default(),
+                        inline_axis_mode: FfiAbsposAxisMode::StaticPosition,
+                        block_axis_mode: FfiAbsposAxisMode::StaticPosition,
+                        has_inline_alignment: false,
+                        inline_alignment: FfiAbsposAlignment::Normal,
+                        has_block_alignment: false,
+                        block_alignment: FfiAbsposAlignment::Normal,
+                        derives_from_own_computed_values: false,
+                    },
+                }),
+            )
+        };
+
+        if let (Some(layout_index), Some(used)) = (layout_index, used)
+            && !paintable.is_null()
+        {
+            // SAFETY: Every callback below copies its plain-data argument or
+            // consumes one retained handle synchronously.
+            unsafe {
+                (sink.set_box_metrics)(
+                    sink.context,
+                    paintable,
+                    FfiCommittedBoxMetrics {
+                        content_inline_size: used.content_inline_size,
+                        content_block_size: used.content_block_size,
+                        margin_left: used.margin_left,
+                        margin_right: used.margin_right,
+                        margin_top: used.margin_top,
+                        margin_bottom: used.margin_bottom,
+                        border_left: used.border_left,
+                        border_right: used.border_right,
+                        border_top: used.border_top,
+                        border_bottom: used.border_bottom,
+                        padding_left: used.padding_left,
+                        padding_right: used.padding_right,
+                        padding_top: used.padding_top,
+                        padding_bottom: used.padding_bottom,
+                        inset_left: used.inset_left,
+                        inset_right: used.inset_right,
+                        inset_top: used.inset_top,
+                        inset_bottom: used.inset_bottom,
+                    },
+                );
+            }
+
+            let (line_fragment_lookup, line_fragment_offset) = self.line_fragment_lookup(indices, callbacks, used);
+            let committed_offset = FfiCommittedOffset {
+                offset: used.content_offset,
+                inset_left: used.inset_left,
+                inset_top: used.inset_top,
+                materialized_from_paintable: used.materialized_from_paintable,
+                has_containing_line_box_fragment: used.has_containing_line_box_fragment,
+                containing_line_box_index: used.containing_line_box_fragment.line_box_index,
+                line_fragment_lookup,
+                line_fragment_offset,
+            };
+
+            if let Some(rare) = self.used_values_rare_data_mut_if_present(layout_index) {
+                unsafe {
+                    if let Some(borders) = rare.override_borders_data {
+                        (sink.set_override_borders)(sink.context, paintable, borders);
+                    }
+                    if let Some(coordinates) = rare.table_cell_coordinates {
+                        (sink.set_table_cell_coordinates)(sink.context, paintable, coordinates);
+                    }
+                }
+            }
+
+            let has_line_data = self.line_data(layout_index).is_some();
+            if has_line_data {
+                // SAFETY: The sink keeps one line accumulator live between
+                // begin_line_data() and finish_line_data().
+                let accepts_lines = unsafe { (sink.begin_line_data)(sink.context, paintable) };
+                if accepts_lines {
+                    let line_sink = FfiLineSinkCallbacks {
+                        context: sink.context,
+                        begin_line: sink.begin_line,
+                        emit_fragment: sink.emit_fragment,
+                        emit_inline_box_piece: sink.emit_inline_box_piece,
+                    };
+                    assert!(push_line_data(self, layout_index, line_sink));
+                    unsafe {
+                        (sink.finish_line_data)(sink.context);
+                    }
+                }
+            }
+
+            if let Some(rare) = self.used_values_rare_data_mut_if_present(layout_index) {
+                unsafe {
+                    if let Some(transforms) = rare.computed_svg_transforms {
+                        (sink.set_computed_svg_transforms)(sink.context, paintable, transforms);
+                    }
+                    if let Some(path) = rare.computed_svg_path.as_mut() {
+                        (sink.set_computed_svg_path)(sink.context, paintable, path.take());
+                    }
+                    if let Some(data) = rare.grid_layout_data.as_mut() {
+                        (sink.set_grid_layout_data)(sink.context, paintable, data.take());
+                    }
+                    if let Some(data) = rare.flex_layout_data.as_mut() {
+                        (sink.set_flex_layout_data)(sink.context, paintable, data.take());
+                    }
+                    if let Some(tracks) = rare.used_grid_tracks.as_mut() {
+                        (sink.set_used_grid_tracks)(sink.context, paintable, tracks.take());
+                    }
+                }
+            }
+            unsafe {
+                (sink.set_offset)(sink.context, node, paintable, committed_offset);
+            }
+        }
+
+        // SAFETY: Wiring uses only live layout and paintable pointers for this
+        // synchronous commit.
+        let result =
+            unsafe { (sink.finish_node)(sink.context, node, paintable, parent_paintable, insert_before_paintable) };
+        assert_eq!(result.paintable, paintable);
+
+        // SAFETY: Navigation callbacks return layout-tree pointers that remain
+        // live for this whole commit.
+        let mut child = unsafe { (callbacks.navigation.first_child)(callbacks.navigation.context, node) };
+        while !child.is_null() {
+            let next = unsafe { (callbacks.navigation.next_sibling)(callbacks.navigation.context, child) };
+            self.commit_subtree(
+                child,
+                result.paintable_for_children,
+                null_mut(),
+                indices,
+                callbacks,
+                sink,
+            );
+            child = next;
+        }
+    }
+
+    pub(crate) fn commit_at(
+        &mut self,
+        root: *mut c_void,
+        parent_paintable: *mut c_void,
+        insert_before_paintable: *mut c_void,
+        callbacks: &FfiLayoutFcCallbacks,
+        sink: &FfiCommitSink,
+    ) {
+        let indices = self.used_values_indices_by_node();
+        self.commit_subtree(
+            root,
+            parent_paintable,
+            insert_before_paintable,
+            &indices,
+            callbacks,
+            sink,
+        );
+
+        // Relative inline ancestor offsets require the complete paint tree.
+        // Keep the pass paintable-only on the C++ side, but preserve the used
+        // values store's original page/index iteration order.
+        self.used_values.for_each(|used| unsafe {
+            (sink.resolve_relative_positions)(sink.context, used.node);
+        });
+    }
+
+    pub(crate) fn commit_replacing(
+        &mut self,
+        root: *mut c_void,
+        paintable_to_replace: *mut c_void,
+        callbacks: &FfiLayoutFcCallbacks,
+        sink: &FfiCommitSink,
+    ) {
+        // SAFETY: The sink retains the replaced paintable, detaches it, and
+        // returns borrowed insertion pointers that stay live until
+        // finish_commit().
+        let position = unsafe { (sink.begin_commit)(sink.context, root, paintable_to_replace) };
+        self.commit_at(
+            root,
+            position.parent_paintable,
+            position.insert_before_paintable,
+            callbacks,
+            sink,
+        );
+        unsafe {
+            (sink.finish_commit)(sink.context);
+        }
+    }
+}
+
+impl LayoutState {
+    fn used_values_rare_data_mut_if_present(&mut self, layout_index: u32) -> Option<&mut UsedValuesRareData> {
+        let data = self.used_values_rare_data.get(layout_index);
+        if data.is_null() {
+            None
+        } else {
+            // SAFETY: The entry is uniquely accessed through this state.
+            Some(unsafe { &mut *data })
+        }
+    }
 }
 
 pub(crate) fn state_mut(state: *mut c_void) -> &'static mut LayoutState {
     assert!(!state.is_null());
-    // SAFETY: State pointers are created by rust_layout_state_create, remain
-    // exclusively owned by the C++ LayoutState wrapper, and are destroyed
-    // only after the final call using them.
+    // SAFETY: Every handle points to a Rust LayoutState owned by the active
+    // entry or a nested measurement. Formatting contexts borrow it only
+    // during that owner's synchronous lifetime.
     unsafe { &mut *state.cast::<LayoutState>() }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_state_create() -> *mut c_void {
-    abort_on_panic(|| {
-        bump(FfiOp::StateCreate);
-        Box::into_raw(Box::new(LayoutState::default())).cast()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_state_destroy(state: *mut c_void) {
-    abort_on_panic(|| {
-        bump(FfiOp::StateDestroy);
-        assert!(!state.is_null());
-        // SAFETY: The pointer was returned by rust_layout_state_create and
-        // ownership is transferred back exactly once by the C++ destructor.
-        unsafe {
-            drop(Box::from_raw(state.cast::<LayoutState>()));
-        }
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_state_ensure_capacity(state: *mut c_void, count: u32) {
-    abort_on_panic(|| {
-        bump(FfiOp::StateEnsureCapacity);
-        state_mut(state).used_values.ensure_capacity(count);
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_state_create_used_values(state: *mut c_void, index: u32) -> *mut UsedValuesCore {
-    abort_on_panic(|| {
-        bump(FfiOp::UsedValuesCreate);
-        state_mut(state).used_values.allocate(index, UsedValuesCore::default())
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_state_get_used_values(state: *mut c_void, index: u32) -> *mut UsedValuesCore {
-    abort_on_panic(|| {
-        bump(FfiOp::UsedValuesGet);
-        state_mut(state).used_values.get(index)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_register_contained_abspos_child(
-    state: *mut c_void,
-    target_box: *mut c_void,
-    child_box: *mut c_void,
-    static_position_rect: FfiStaticPositionRect,
-) {
-    abort_on_panic(|| {
-        bump(FfiOp::AbsposRegister);
-        let state = state_mut(state);
-        assert!(!child_box.is_null());
-        bump(FfiOp::AbsposLayoutIndexCallback);
-        // SAFETY: The pointer is supplied by the C++ caller and remains a
-        // live Layout::Box for the duration of this synchronous callback.
-        let child_layout_index = unsafe { ladybird_layout_box_layout_index(child_box) };
-        state.register_contained_abspos_child(target_box, child_box, child_layout_index, static_position_rect);
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_take_next_contained_abspos_child(
-    state: *mut c_void,
-    target_box: *mut c_void,
-    out: *mut FfiContainedAbsposChild,
-) -> bool {
-    abort_on_panic(|| {
-        bump(FfiOp::AbsposTake);
-        assert!(!out.is_null());
-        let state = state_mut(state);
-        let Some(child) = state.take_next_contained_abspos_child(target_box) else {
-            return false;
-        };
-        // SAFETY: C++ supplies a valid writable out pointer whenever it calls
-        // this function. It is written only on the true return path.
-        unsafe {
-            out.write(child);
-        }
-        true
-    })
 }

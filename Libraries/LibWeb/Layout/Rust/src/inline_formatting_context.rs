@@ -692,18 +692,7 @@ impl InlineFormattingContext {
         node: Node,
         constraints: FfiContainingBlockConstraints,
     ) -> *mut UsedValuesCore {
-        bump(FfiOp::UsedValuesCreateCallback);
-        // SAFETY: The host creates one state entry for this node.
-        let pointer = unsafe {
-            (self.callbacks.create_used_values)(
-                self.callbacks.context,
-                node,
-                constraints.has_percentage_basis_inline_size,
-                constraints.percentage_basis_inline_size,
-                constraints.has_percentage_basis_block_size,
-                constraints.percentage_basis_block_size,
-            )
-        };
+        let pointer = state_mut(self.state).create_used_values(&self.callbacks, node, constraints);
         assert!(!pointer.is_null());
         pointer
     }
@@ -1309,8 +1298,7 @@ impl InlineFormattingContext {
         if self.layout_mode != 0 {
             return;
         }
-        // SAFETY: The callback only reads the state purpose.
-        if unsafe { (self.callbacks.is_measurement_state)(self.callbacks.context) } {
+        if state_mut(self.state).is_measurement() {
             return;
         }
         let pieces = pieces::compute(self);
@@ -1355,24 +1343,6 @@ pub struct FfiCssPixelRect {
 pub struct FfiSpaceUsedByFloats {
     pub left: CssPixels,
     pub right: CssPixels,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-pub struct FfiLineSummary {
-    pub inline_length: CssPixels,
-    pub block_length: CssPixels,
-    pub block_end: CssPixels,
-    pub baseline: CssPixels,
-    pub block_level_box_block_end_margin: CssPixels,
-    pub physical_vertical_end: CssPixels,
-    pub physical_vertical_extent: CssPixels,
-    pub physical_horizontal_extent: CssPixels,
-    pub is_empty: bool,
-    pub has_break: bool,
-    pub has_forced_break: bool,
-    pub has_block_level_box: bool,
-    pub fragment_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1473,203 +1443,102 @@ fn line_rect(line: &line_box::LineBoxData, content_inline_size: CssPixels) -> Ff
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_uv_line_count(state: *mut c_void, layout_index: u32) -> usize {
-    abort_on_panic(|| {
-        assert!(!state.is_null());
-        state_mut(state)
-            .line_data(layout_index)
-            .map_or(0, |data| data.line_boxes.len())
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_uv_line_summary(
-    state: *mut c_void,
+pub(crate) fn push_line_data(
+    state: &mut crate::layout_state::LayoutState,
     layout_index: u32,
-    line_index: usize,
-    out: *mut FfiLineSummary,
+    sink: FfiLineSinkCallbacks,
 ) -> bool {
-    abort_on_panic(|| {
-        assert!(!state.is_null());
-        assert!(!out.is_null());
-        let Some(line) = state_mut(state)
-            .line_data(layout_index)
-            .and_then(|data| data.line_boxes.get(line_index))
-        else {
-            return false;
-        };
-        let summary = FfiLineSummary {
-            inline_length: line.inline_length,
-            block_length: line.block_length,
-            block_end: line.block_end,
-            baseline: line.baseline,
-            block_level_box_block_end_margin: line.block_level_box_block_end_margin,
-            physical_vertical_end: line.physical_vertical_end(),
-            physical_vertical_extent: line.physical_vertical_extent(),
-            physical_horizontal_extent: line_physical_horizontal_extent(line),
-            is_empty: line.is_empty(),
-            has_break: line.has_break,
-            has_forced_break: line.has_forced_break,
-            has_block_level_box: line.has_block_level_box,
-            fragment_count: line.fragments.len(),
-        };
-        // SAFETY: `out` is caller-owned and writable.
+    let content_inline_size = state
+        .used_values_by_index(layout_index)
+        .map_or(CssPixels::default(), |used| used.content_inline_size);
+    let Some(data) = state.line_data_mut_if_present(layout_index) else {
+        return false;
+    };
+    for line in &mut data.line_boxes {
+        let committed_fragment_count = line
+            .fragments
+            .iter()
+            .filter(|fragment| !fragment.is_fully_truncated)
+            .count() as u32;
+        // SAFETY: Sink callbacks consume each POD record synchronously.
         unsafe {
-            out.write(summary);
+            (sink.begin_line)(
+                sink.context,
+                FfiLineRecord {
+                    rect: line_rect(line, content_inline_size),
+                    committed_fragment_count,
+                },
+            );
         }
-        true
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_uv_line_first_fragment_node(
-    state: *mut c_void,
-    layout_index: u32,
-    line_index: usize,
-) -> Node {
-    abort_on_panic(|| {
-        assert!(!state.is_null());
-        state_mut(state)
-            .line_data(layout_index)
-            .and_then(|data| data.line_boxes.get(line_index))
-            .and_then(|line| line.fragments.first())
-            .map_or(std::ptr::null_mut(), |fragment| fragment.layout_node)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_uv_drain_lines(
-    state: *mut c_void,
-    layout_index: u32,
-    sink: *const FfiLineSinkCallbacks,
-) -> bool {
-    abort_on_panic(|| {
-        assert!(!state.is_null());
-        assert!(!sink.is_null());
-        // SAFETY: The callback table remains live for this synchronous drain.
-        let sink = unsafe { *sink };
-        let content_inline_size = state_mut(state)
-            .used_values_by_index(layout_index)
-            .map_or(CssPixels::default(), |used| used.content_inline_size);
-        let Some(data) = state_mut(state).line_data_mut_if_present(layout_index) else {
-            return false;
-        };
-        for line in &mut data.line_boxes {
-            let committed_fragment_count = line
-                .fragments
-                .iter()
-                .filter(|fragment| !fragment.is_fully_truncated)
-                .count() as u32;
-            // SAFETY: Sink callbacks consume each POD record synchronously.
-            unsafe {
-                (sink.begin_line)(
-                    sink.context,
-                    FfiLineRecord {
-                        rect: line_rect(line, content_inline_size),
-                        committed_fragment_count,
-                    },
-                );
+        for fragment in &mut line.fragments {
+            if fragment.is_fully_truncated {
+                continue;
             }
-            for fragment in &mut line.fragments {
-                if fragment.is_fully_truncated {
-                    continue;
-                }
-                let (x, y) = fragment.offset();
-                let (width, height) = fragment.size();
-                let glyphs = fragment
-                    .glyphs
-                    .as_mut()
-                    .map(|glyph_data| std::mem::take(&mut glyph_data.glyphs));
-                let (glyph_pointer, glyph_count, glyph_font, glyph_text_type, glyph_run_width) =
-                    if let (Some(glyphs), Some(glyph_data)) = (glyphs.as_ref(), fragment.glyphs.as_ref()) {
-                        (
-                            glyphs.as_ptr(),
-                            glyphs.len(),
-                            glyph_data.font,
-                            glyph_data.text_type,
-                            glyph_data.width,
-                        )
-                    } else {
-                        (std::ptr::null(), 0, std::ptr::null(), 0, 0.0)
-                    };
-                // SAFETY: Glyph storage stays live through this callback.
-                unsafe {
-                    (sink.emit_fragment)(
-                        sink.context,
-                        FfiCommittedFragment {
-                            layout_node: fragment.layout_node,
-                            offset: FfiCssPixelPoint { x, y },
-                            size: FfiCssPixelPoint { x: width, y: height },
-                            start: fragment.start,
-                            length_in_code_units: fragment.length_in_code_units,
-                            baseline: fragment.baseline,
-                            writing_mode: fragment.writing_mode,
-                            has_trailing_whitespace: fragment.has_trailing_whitespace,
-                            has_glyph_run: glyphs.is_some(),
-                            glyphs: glyph_pointer,
-                            glyph_count,
-                            glyph_font,
-                            glyph_text_type,
-                            glyph_run_width,
-                        },
-                    );
-                }
-            }
-        }
-        for piece in &data.inline_box_pieces {
-            // SAFETY: The sink copies the POD piece synchronously.
+            let (x, y) = fragment.offset();
+            let (width, height) = fragment.size();
+            let glyphs = fragment
+                .glyphs
+                .as_mut()
+                .map(|glyph_data| std::mem::take(&mut glyph_data.glyphs));
+            let (glyph_pointer, glyph_count, glyph_font, glyph_text_type, glyph_run_width) =
+                if let (Some(glyphs), Some(glyph_data)) = (glyphs.as_ref(), fragment.glyphs.as_ref()) {
+                    (
+                        glyphs.as_ptr(),
+                        glyphs.len(),
+                        glyph_data.font,
+                        glyph_data.text_type,
+                        glyph_data.width,
+                    )
+                } else {
+                    (std::ptr::null(), 0, std::ptr::null(), 0, 0.0)
+                };
+            // SAFETY: Glyph storage stays live through this callback.
             unsafe {
-                (sink.emit_inline_box_piece)(
+                (sink.emit_fragment)(
                     sink.context,
-                    FfiInlineBoxPiece {
-                        node: piece.node,
-                        first_fragment_index: piece.first_fragment_index,
-                        fragment_count: piece.fragment_count,
-                        border_box_rect: FfiCssPixelRect {
-                            x: piece.border_box_rect.x,
-                            y: piece.border_box_rect.y,
-                            width: piece.border_box_rect.width,
-                            height: piece.border_box_rect.height,
-                        },
-                        present_edges: piece.present_edges,
-                        is_geometry_only_placeholder: piece.is_geometry_only_placeholder,
+                    FfiCommittedFragment {
+                        layout_node: fragment.layout_node,
+                        offset: FfiCssPixelPoint { x, y },
+                        size: FfiCssPixelPoint { x: width, y: height },
+                        start: fragment.start,
+                        length_in_code_units: fragment.length_in_code_units,
+                        baseline: fragment.baseline,
+                        writing_mode: fragment.writing_mode,
+                        has_trailing_whitespace: fragment.has_trailing_whitespace,
+                        has_glyph_run: glyphs.is_some(),
+                        glyphs: glyph_pointer,
+                        glyph_count,
+                        glyph_font,
+                        glyph_text_type,
+                        glyph_run_width,
                     },
                 );
             }
         }
-        bump(FfiOp::LineDrain);
-        true
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_uv_lookup_line_fragment_offset(
-    state: *mut c_void,
-    layout_index: u32,
-    line_index: usize,
-    fragment_index: usize,
-    out: *mut FfiCssPixelPoint,
-) -> u8 {
-    abort_on_panic(|| {
-        assert!(!state.is_null());
-        let Some(line) = state_mut(state)
-            .line_data(layout_index)
-            .and_then(|data| data.line_boxes.get(line_index))
-        else {
-            return 0;
-        };
-        let Some(fragment) = line.fragments.get(fragment_index) else {
-            return 1;
-        };
-        assert!(!out.is_null());
-        let (x, y) = fragment.offset();
-        // SAFETY: Status 2 requires a writable output slot.
+    }
+    for piece in &data.inline_box_pieces {
+        // SAFETY: The sink copies the POD piece synchronously.
         unsafe {
-            out.write(FfiCssPixelPoint { x, y });
+            (sink.emit_inline_box_piece)(
+                sink.context,
+                FfiInlineBoxPiece {
+                    node: piece.node,
+                    first_fragment_index: piece.first_fragment_index,
+                    fragment_count: piece.fragment_count,
+                    border_box_rect: FfiCssPixelRect {
+                        x: piece.border_box_rect.x,
+                        y: piece.border_box_rect.y,
+                        width: piece.border_box_rect.width,
+                        height: piece.border_box_rect.height,
+                    },
+                    present_edges: piece.present_edges,
+                    is_geometry_only_placeholder: piece.is_geometry_only_placeholder,
+                },
+            );
         }
-        2
-    })
+    }
+    bump(FfiOp::LineDrain);
+    true
 }
 
 #[unsafe(no_mangle)]

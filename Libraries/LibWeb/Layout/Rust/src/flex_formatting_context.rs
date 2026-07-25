@@ -222,7 +222,7 @@ struct FlexFormattingContext {
 impl FlexFormattingContext {
     fn new(instance: &FormattingContextInstance) -> Self {
         assert_eq!(instance.fc_type, FfiFormattingContextType::Flex as u8);
-        let flex_container_state = Self::get_used_values_from_callbacks(&instance.callbacks, instance.box_);
+        let flex_container_state = state_mut(instance.state).used_values(&instance.callbacks, instance.box_);
         let flex_direction = state_mut(instance.state)
             .style_facts(&instance.callbacks, instance.box_)
             .flex_direction;
@@ -242,13 +242,6 @@ impl FlexFormattingContext {
             layout_input: None,
             item_percentage_bases: FfiContainingBlockConstraints::default(),
         }
-    }
-
-    fn get_used_values_from_callbacks(callbacks: &FfiLayoutFcCallbacks, node: Node) -> *mut UsedValuesCore {
-        // SAFETY: The callback returns state-owned storage.
-        let result = unsafe { (callbacks.get_used_values)(callbacks.context, node) };
-        assert!(!result.is_null());
-        result
     }
 
     fn item_used(&self, index: usize) -> &UsedValuesCore {
@@ -290,17 +283,7 @@ impl FlexFormattingContext {
 
     fn create_used_values(&self, node: Node) -> *mut UsedValuesCore {
         let constraints = self.item_percentage_bases;
-        // SAFETY: The host creates one state entry for this flex item.
-        let result = unsafe {
-            (self.callbacks.create_used_values)(
-                self.callbacks.context,
-                node,
-                constraints.has_percentage_basis_inline_size,
-                constraints.percentage_basis_inline_size,
-                constraints.has_percentage_basis_block_size,
-                constraints.percentage_basis_block_size,
-            )
-        };
+        let result = state_mut(self.state).create_used_values(&self.callbacks, node, constraints);
         assert!(!result.is_null());
         result
     }
@@ -2648,10 +2631,16 @@ impl FlexFormattingContext {
             lines: lines.as_ptr(),
             line_count: lines.len(),
         };
-        // SAFETY: All pointed-to vectors stay alive for this synchronous copy.
-        unsafe {
-            (self.callbacks.set_flex_layout_data)(self.callbacks.context, self.flex_container, &raw const data);
-        }
+        // SAFETY: All pointed-to vectors stay alive while the callback creates
+        // one retained C++ payload for the Rust layout state.
+        let handle = unsafe { (self.callbacks.create_flex_layout_data)(self.callbacks.context, &raw const data) };
+        state_mut(self.state)
+            .used_values_rare_data_for_node_mut(&self.callbacks, self.flex_container)
+            .flex_layout_data = Some(crate::layout_state::RetainedLayoutHandle::new(
+            handle,
+            self.callbacks.context,
+            self.callbacks.release_flex_layout_data,
+        ));
     }
 
     // https://drafts.csswg.org/css-sizing-4/#aspect-ratio-automatic

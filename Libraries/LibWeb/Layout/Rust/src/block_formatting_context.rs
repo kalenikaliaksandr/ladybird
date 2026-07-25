@@ -284,18 +284,7 @@ impl BlockFormattingContext {
     }
 
     fn create_used_values(&self, node: Node, constraints: FfiContainingBlockConstraints) -> *mut UsedValuesCore {
-        bump(FfiOp::UsedValuesCreateCallback);
-        // SAFETY: The host creates one shared state entry for this node.
-        let pointer = unsafe {
-            (self.callbacks.create_used_values)(
-                self.callbacks.context,
-                node,
-                constraints.has_percentage_basis_inline_size,
-                constraints.percentage_basis_inline_size,
-                constraints.has_percentage_basis_block_size,
-                constraints.percentage_basis_block_size,
-            )
-        };
+        let pointer = state_mut(self.state).create_used_values(&self.callbacks, node, constraints);
         assert!(!pointer.is_null());
         pointer
     }

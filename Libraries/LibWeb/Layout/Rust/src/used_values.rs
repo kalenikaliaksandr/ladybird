@@ -13,7 +13,7 @@ use std::ffi::c_void;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
-pub enum FfiSizeConstraint {
+pub(crate) enum FfiSizeConstraint {
     #[default]
     None,
     MinContent,
@@ -38,19 +38,15 @@ impl Default for FfiCssPixelPoint {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
-pub struct FfiLineBoxFragmentCoordinate {
+pub(crate) struct FfiLineBoxFragmentCoordinate {
     pub line_box_index: usize,
     pub fragment_index: usize,
 }
 
-/// The plain-data portion of LayoutState::UsedValues.
-///
-/// Rust owns these allocations. C++ caches pointers to them and reads or writes
-/// the fields directly, so ordinary used-value access does not cross the FFI
-/// boundary.
+/// The per-box geometry stored in a Rust-owned layout pass.
 #[derive(Debug)]
 #[repr(C)]
-pub struct UsedValuesCore {
+pub(crate) struct UsedValuesCore {
     pub node: *mut c_void,
 
     pub content_inline_size: CssPixels,
@@ -140,7 +136,7 @@ impl Default for UsedValuesCore {
 impl UsedValuesCore {
     const MAX_DIMENSION_RAW: i32 = 17_895_700 * 64;
 
-    fn clamp_dimension(value: CssPixels) -> CssPixels {
+    pub(crate) fn clamp_dimension(value: CssPixels) -> CssPixels {
         if value.raw_value() == i32::MAX || value.raw_value() == i32::MIN {
             CssPixels::from_raw(Self::MAX_DIMENSION_RAW)
         } else {

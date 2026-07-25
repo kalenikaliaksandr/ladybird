@@ -366,26 +366,6 @@ pub(crate) fn scale_and_align_viewbox_content(
     result
 }
 
-struct SvgPathHandle {
-    handle: *mut c_void,
-    callback_context: *mut c_void,
-    release: unsafe extern "C" fn(*mut c_void, *const c_void),
-}
-
-impl Drop for SvgPathHandle {
-    fn drop(&mut self) {
-        if self.handle.is_null() {
-            return;
-        }
-        // SAFETY: The C++ geometry callback returns one owned handle, and
-        // this guard releases it exactly once before the synchronous layout
-        // operation returns.
-        unsafe {
-            (self.release)(self.callback_context, self.handle);
-        }
-    }
-}
-
 pub(super) struct SvgFormattingContext {
     state: *mut c_void,
     box_: *mut c_void,
@@ -481,33 +461,36 @@ impl SvgFormattingContext {
         // SVG descendants deliberately carry no percentage basis.
         // SVG layout resolves percentages against the SVG viewport, not a CSS containing
         // block, so boxes inside the SVG subtree carry no percentage basis.
-        let used = unsafe {
-            (self.callbacks.create_used_values)(
-                self.callbacks.context,
-                node,
-                false,
-                CssPixels::default(),
-                false,
-                CssPixels::default(),
-            )
-        };
+        let used = state_mut(self.state).create_used_values(
+            &self.callbacks,
+            node,
+            crate::geometry::FfiContainingBlockConstraints::default(),
+        );
         assert!(!used.is_null());
         used
     }
 
     fn computed_transforms(&self, node: *mut c_void) -> Option<FfiSvgComputedTransforms> {
+        let index = state_mut(self.state).box_facts(&self.callbacks, node).layout_index;
+        if let Some(transforms) = state_mut(self.state)
+            .used_values_rare_data(index)
+            .and_then(|data| data.computed_svg_transforms)
+        {
+            return Some(transforms);
+        }
         let mut transforms = FfiSvgComputedTransforms::default();
-        // SAFETY: `transforms` is writable POD storage for one result.
-        let has_transforms =
-            unsafe { (self.callbacks.get_computed_svg_transforms)(self.callbacks.context, node, &raw mut transforms) };
+        // SAFETY: `transforms` is writable POD storage and the callback reads
+        // only paintable geometry retained by the C++ layout node.
+        let has_transforms = unsafe {
+            (self.callbacks.read_paintable_svg_transforms)(self.callbacks.context, node, &raw mut transforms)
+        };
         has_transforms.then_some(transforms)
     }
 
     fn set_computed_transforms(&self, node: *mut c_void, transforms: FfiSvgComputedTransforms) {
-        // SAFETY: The callback copies the POD transforms into C++ rare data.
-        unsafe {
-            (self.callbacks.set_computed_svg_transforms)(self.callbacks.context, node, transforms);
-        }
+        state_mut(self.state)
+            .used_values_rare_data_for_node_mut(&self.callbacks, node)
+            .computed_svg_transforms = Some(transforms);
     }
 
     fn place_child(&self, node: *mut c_void, x: CssPixels, y: CssPixels) {
@@ -949,11 +932,6 @@ impl SvgFormattingContext {
             )
         };
         assert!(!result.path_handle.is_null());
-        let path_handle = SvgPathHandle {
-            handle: result.path_handle,
-            callback_context: self.callbacks.context,
-            release: self.callbacks.release_svg_path,
-        };
 
         if facts.is_text_box {
             self.current_text_position = result.text_position_for_children;
@@ -987,11 +965,13 @@ impl SvgFormattingContext {
         self.place_child(graphics_box, transformed_bounding_box.x, transformed_bounding_box.y);
         used.has_definite_inline_size = true;
         used.has_definite_block_size = true;
-        // SAFETY: The callback copies the path into C++ rare data before the
-        // guard releases the retained handle.
-        unsafe {
-            (self.callbacks.set_computed_svg_path)(self.callbacks.context, graphics_box, path_handle.handle);
-        }
+        state_mut(self.state)
+            .used_values_rare_data_for_node_mut(&self.callbacks, graphics_box)
+            .computed_svg_path = Some(crate::layout_state::RetainedLayoutHandle::new(
+            result.path_handle,
+            self.callbacks.context,
+            self.callbacks.release_svg_path,
+        ));
     }
 
     fn layout_image_element(&self, image_box: *mut c_void) {

@@ -8,10 +8,12 @@ use crate::abort_on_panic;
 use crate::box_facts::{FfiLayoutBoxFacts, FfiLayoutNavCallbacks};
 use crate::css_pixels::CssPixels;
 use crate::ffi_stats::{FfiOp, bump};
-use crate::geometry::{FfiContainingBlockConstraints, FfiLayoutInput};
-use crate::layout_state::{FfiStaticPositionAlignment, FfiStaticPositionRect, state_mut};
+use crate::geometry::{AvailableSize, AvailableSpace, FfiLayoutInput};
+use crate::layout_state::{
+    FfiCommitSink, FfiStaticPositionAlignment, FfiStaticPositionRect, LayoutState, LayoutStatePurpose, state_mut,
+};
 use crate::style_facts::FfiStyleFacts;
-use crate::used_values::{FfiCssPixelPoint, FfiSizeConstraint, UsedValuesCore};
+use crate::used_values::{FfiCssPixelPoint, FfiSizeConstraint};
 use std::collections::HashMap;
 use std::ffi::c_void;
 
@@ -846,11 +848,20 @@ pub(crate) mod abspos {
     impl AbsposEngine {
         fn anchor_lookup(&self, positioned_box: Node, anchor_name: usize) -> Option<Node> {
             let mut anchor_box = std::ptr::null_mut();
+            let eligible_anchor_boxes = state_mut(self.state).used_value_nodes();
             bump(FfiOp::AbsposAnchorLookupCallback);
             // SAFETY: The name handle is retained by either the style snapshot or
-            // the live anchor() shell, and the out pointer is stack-local.
+            // the live anchor() shell. The eligible-node slice and out pointer
+            // are borrowed only for this synchronous lookup.
             let found = unsafe {
-                (self.callbacks.anchor_lookup)(self.callbacks.context, positioned_box, anchor_name, &raw mut anchor_box)
+                (self.callbacks.anchor_lookup)(
+                    self.callbacks.context,
+                    positioned_box,
+                    anchor_name,
+                    eligible_anchor_boxes.as_ptr(),
+                    eligible_anchor_boxes.len(),
+                    &raw mut anchor_box,
+                )
             };
             if found {
                 assert!(!anchor_box.is_null());
@@ -2240,15 +2251,12 @@ pub(crate) mod abspos {
                 },
             );
 
-            // SAFETY: The callback only reads the LayoutState purpose.
-            let is_measurement = unsafe { (self.callbacks.is_measurement_state)(self.callbacks.context) };
+            let is_measurement = state_mut(self.state).is_measurement();
             if self.layout_mode == LAYOUT_MODE_NORMAL && !is_measurement {
                 bump(FfiOp::AbsposSavedInputsSetCallback);
-                // SAFETY: The callback copies the POD inputs into the C++
-                // extension owned by this state entry.
-                unsafe {
-                    (self.callbacks.set_abspos_layout_inputs)(self.callbacks.context, node, inputs);
-                }
+                state_mut(self.state)
+                    .used_values_rare_data_for_node_mut(&self.callbacks, node)
+                    .abspos_layout_inputs = Some(inputs);
             }
 
             if has_independent_context {
@@ -2261,8 +2269,7 @@ pub(crate) mod abspos {
             if self.layout_mode != LAYOUT_MODE_NORMAL {
                 return;
             }
-            // SAFETY: The callback only reads the LayoutState purpose.
-            if unsafe { (self.callbacks.is_measurement_state)(self.callbacks.context) } {
+            if state_mut(self.state).is_measurement() {
                 return;
             }
             loop {
@@ -2272,19 +2279,11 @@ pub(crate) mod abspos {
                 };
                 let child_box = child.child_box;
                 if self.try_used_pointer(child_box).is_null() {
-                    bump(FfiOp::UsedValuesCreateCallback);
-                    // SAFETY: The callback creates one stable entry for this live
-                    // box in the shared state.
-                    let created = unsafe {
-                        (self.callbacks.create_used_values)(
-                            self.callbacks.context,
-                            child_box,
-                            false,
-                            CssPixels::default(),
-                            false,
-                            CssPixels::default(),
-                        )
-                    };
+                    let created = state_mut(self.state).create_used_values(
+                        &self.callbacks,
+                        child_box,
+                        FfiContainingBlockConstraints::default(),
+                    );
                     assert!(!created.is_null());
                 }
                 self.resolve_anchor_insets(child_box);
@@ -2328,19 +2327,13 @@ pub(crate) mod abspos {
                 inputs.containing_block_info.inline_axis_mode = inline;
                 inputs.containing_block_info.block_axis_mode = block;
             }
-            bump(FfiOp::UsedValuesCreateCallback);
-            // SAFETY: Partial relayout uses a fresh state and creates the replay
-            // root exactly once.
-            let created = unsafe {
-                (self.callbacks.create_used_values)(
-                    self.callbacks.context,
-                    node,
-                    false,
-                    CssPixels::default(),
-                    false,
-                    CssPixels::default(),
-                )
-            };
+            // Partial relayout uses a fresh state and creates the replay root
+            // exactly once.
+            let created = state_mut(self.state).create_used_values(
+                &self.callbacks,
+                node,
+                FfiContainingBlockConstraints::default(),
+            );
             assert!(!created.is_null());
             self.layout_element(node, inputs);
         }
@@ -2507,13 +2500,12 @@ pub(crate) mod sizing {
 
     use super::{
         FfiFlexAxis, FfiFlexSizeProperty, FfiIntrinsicSizeCacheKey, FfiIntrinsicSizeCacheKind, FfiLayoutFcCallbacks,
-        FfiMeasurementState,
     };
     use crate::box_facts::FfiLayoutBoxFacts;
     use crate::css_pixels::CssPixels;
     use crate::ffi_stats::{FfiOp, bump};
     use crate::geometry::{AvailableSize, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput};
-    use crate::layout_state::state_mut;
+    use crate::layout_state::{LayoutState, LayoutStatePurpose, state_mut};
     use crate::style_facts::{FfiSizeValue, FfiStyleFacts};
     use crate::used_values::{FfiSizeConstraint, UsedValuesCore};
     use std::ffi::c_void;
@@ -2569,9 +2561,9 @@ pub(crate) mod sizing {
     }
 
     pub(crate) struct MeasurementState {
-        owner_callbacks: FfiLayoutFcCallbacks,
+        state: Box<LayoutState>,
         callbacks: FfiLayoutFcCallbacks,
-        handles: FfiMeasurementState,
+        root: Node,
     }
 
     impl MeasurementState {
@@ -2580,27 +2572,20 @@ pub(crate) mod sizing {
             node: Node,
             constraints: FfiContainingBlockConstraints,
         ) -> Self {
-            bump(FfiOp::MeasurementStateCreateCallback);
-            // SAFETY: The callback synchronously allocates a measurement-only C++
-            // wrapper and returns its paired Rust state and root core.
-            let handles = unsafe { (callbacks.create_measurement_state)(callbacks.context, node, constraints) };
-            assert!(!handles.cpp_state.is_null());
-            assert!(!handles.rust_state.is_null());
-            assert!(!handles.root_used_values.is_null());
-            assert!(!handles.callbacks.is_null());
-            // SAFETY: The measurement host stores this callback table for its
-            // whole lifetime, which is owned by `handles.cpp_state`.
-            let measurement_callbacks = unsafe { *handles.callbacks.cast::<FfiLayoutFcCallbacks>() };
+            let mut state = Box::new(LayoutState::new(LayoutStatePurpose::Measurement));
+            let root = state.create_used_values(&callbacks, node, constraints);
+            assert!(!root.is_null());
             Self {
-                owner_callbacks: callbacks,
-                callbacks: measurement_callbacks,
-                handles,
+                state,
+                callbacks,
+                root: node,
             }
         }
 
         pub(crate) fn root_used_mut(&mut self) -> &mut UsedValuesCore {
-            // SAFETY: The measurement state owns the root entry until Drop.
-            unsafe { &mut *self.handles.root_used_values }
+            let root = self.state.used_values(&self.callbacks, self.root);
+            // SAFETY: The measurement state uniquely owns the root entry.
+            unsafe { &mut *root }
         }
 
         fn run(&self, node: Node, input: FfiLayoutInput) -> super::FfiChildLayoutResult {
@@ -2613,9 +2598,10 @@ pub(crate) mod sizing {
             layout_mode: u8,
             input: FfiLayoutInput,
         ) -> super::FfiChildLayoutResult {
-            let fc_type = super::independent_formatting_context_type(self.handles.rust_state, node, &self.callbacks);
+            let rust_state = self.rust_state();
+            let fc_type = super::independent_formatting_context_type(rust_state, node, &self.callbacks);
             let mut context = super::create_formatting_context(
-                self.handles.rust_state,
+                rust_state,
                 node,
                 std::ptr::null_mut(),
                 fc_type as u8,
@@ -2631,21 +2617,15 @@ pub(crate) mod sizing {
         }
 
         pub(crate) fn rust_state(&self) -> *mut c_void {
-            self.handles.rust_state
+            std::ptr::from_ref(&*self.state).cast_mut().cast()
         }
 
         pub(crate) fn callbacks(&self) -> &FfiLayoutFcCallbacks {
             &self.callbacks
         }
-    }
 
-    impl Drop for MeasurementState {
-        fn drop(&mut self) {
-            bump(FfiOp::MeasurementStateDestroyCallback);
-            // SAFETY: Ownership of the C++ wrapper is returned exactly once.
-            unsafe {
-                (self.owner_callbacks.destroy_measurement_state)(self.owner_callbacks.context, self.handles.cpp_state);
-            }
+        pub(crate) fn state_mut(&mut self) -> &mut LayoutState {
+            &mut self.state
         }
     }
 
@@ -4298,22 +4278,14 @@ pub(crate) mod sizing {
         }
 
         fn create_measurement_used_values(
-            measurement: &MeasurementState,
+            measurement: &mut MeasurementState,
             node: Node,
             constraints: FfiContainingBlockConstraints,
         ) -> *mut UsedValuesCore {
-            // SAFETY: The measurement host owns the node and allocates a paired
-            // C++ wrapper/Rust core entry synchronously.
-            let used = unsafe {
-                (measurement.callbacks().create_used_values)(
-                    measurement.callbacks().context,
-                    node,
-                    constraints.has_percentage_basis_inline_size,
-                    constraints.percentage_basis_inline_size,
-                    constraints.has_percentage_basis_block_size,
-                    constraints.percentage_basis_block_size,
-                )
-            };
+            let callbacks = *measurement.callbacks();
+            let used = measurement
+                .state_mut()
+                .create_used_values(&callbacks, node, constraints);
             assert!(!used.is_null());
             used
         }
@@ -4342,13 +4314,13 @@ pub(crate) mod sizing {
             let available_inline_size = containing_block_inline_size - margin_left - margin_right;
             let table_box = self.table_box_inside_wrapper(wrapper);
 
-            let measurement = MeasurementState::create(self.callbacks, wrapper, table_wrapper_constraints);
+            let mut measurement = MeasurementState::create(self.callbacks, wrapper, table_wrapper_constraints);
 
             // The table wrapper is invisible to percentage resolution, so the table box gets the
             // wrapper's constraints unchanged. Callers measuring a table wrapper for grid alignment
             // pass the grid-area inline size as the wrapper's percentage basis.
             let table_constraints = table_wrapper_constraints;
-            let table_used = Self::create_measurement_used_values(&measurement, table_box, table_constraints);
+            let table_used = Self::create_measurement_used_values(&mut measurement, table_box, table_constraints);
             let table_style = self.style(table_box);
             // SAFETY: This is the newly allocated table entry.
             unsafe {
@@ -5042,15 +5014,6 @@ struct MeasuredCellContent {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
-pub struct FfiMeasurementState {
-    pub cpp_state: *mut c_void,
-    pub rust_state: *mut c_void,
-    pub root_used_values: *mut UsedValuesCore,
-    pub callbacks: *const c_void,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
 pub struct FfiIntrinsicSizeCacheKey {
     pub has_measured_at_inline_size: bool,
     pub measured_at_inline_size: CssPixels,
@@ -5181,36 +5144,30 @@ pub struct FfiLayoutFcCallbacks {
     pub build_grid_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> grid::facts::FfiGridStyleFacts,
     pub release_grid_facts_snapshot: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub build_svg_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> svg::FfiSvgElementFacts,
-    pub get_computed_svg_transforms:
+    pub read_paintable_geometry: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        *mut crate::layout_state::FfiPaintableGeometry,
+    ) -> bool,
+    pub read_paintable_svg_transforms:
         unsafe extern "C" fn(*mut c_void, *mut c_void, *mut svg::FfiSvgComputedTransforms) -> bool,
-    pub set_computed_svg_transforms: unsafe extern "C" fn(*mut c_void, *mut c_void, svg::FfiSvgComputedTransforms),
     pub compute_svg_path:
         unsafe extern "C" fn(*mut c_void, *mut c_void, svg::FfiSvgPathRequest) -> svg::FfiSvgPathResult,
-    pub release_svg_path: unsafe extern "C" fn(*mut c_void, *const c_void),
-    pub set_computed_svg_path: unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_void),
+    pub release_svg_path: crate::layout_state::ReleaseRetainedLayoutHandle,
     pub svg_image_bounding_box:
         unsafe extern "C" fn(*mut c_void, *mut c_void, CssPixels, CssPixels) -> svg::FfiFloatRect,
-    pub create_used_values:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, bool, CssPixels, bool, CssPixels) -> *mut UsedValuesCore,
-    pub get_used_values: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut UsedValuesCore,
-    pub is_measurement_state: unsafe extern "C" fn(*mut c_void) -> bool,
-    pub set_abspos_layout_inputs:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, crate::layout_state::FfiAbsposLayoutInputs),
     pub get_saved_abspos_layout_inputs:
         unsafe extern "C" fn(*mut c_void, *mut c_void, *mut crate::layout_state::FfiAbsposLayoutInputs) -> bool,
-    pub anchor_lookup: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, *mut *mut c_void) -> bool,
+    pub anchor_lookup:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, usize, *const *mut c_void, usize, *mut *mut c_void) -> bool,
     pub build_anchor_function_facts: unsafe extern "C" fn(*mut c_void, *const c_void) -> abspos::FfiAnchorFunctionFacts,
     pub anchor_function_fallback: unsafe extern "C" fn(*mut c_void, *const c_void) -> abspos::FfiAnchorFallbackFacts,
     pub set_resolved_anchor_insets: unsafe extern "C" fn(*mut c_void, *mut c_void, abspos::FfiResolvedAnchorInsets),
     pub set_default_scroll_shift: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, bool, bool),
-    pub set_table_cell_coordinates: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, usize, usize, usize),
-    pub set_override_borders_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const FfiBordersData),
     pub can_skip_is_anonymous_text_run: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
     pub set_flex_item: unsafe extern "C" fn(*mut c_void, *mut c_void, bool),
     pub set_grid_item: unsafe extern "C" fn(*mut c_void, *mut c_void, bool),
-    pub create_measurement_state:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, FfiContainingBlockConstraints) -> FfiMeasurementState,
-    pub destroy_measurement_state: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub intrinsic_size_cache_get: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -5220,14 +5177,17 @@ pub struct FfiLayoutFcCallbacks {
     ) -> bool,
     pub intrinsic_size_cache_put:
         unsafe extern "C" fn(*mut c_void, *mut c_void, FfiIntrinsicSizeCacheKind, FfiIntrinsicSizeCacheKey, CssPixels),
-    pub set_flex_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const FfiFlexLayoutData),
-    pub set_grid_layout_data: unsafe extern "C" fn(*mut c_void, *mut c_void, *const grid::facts::FfiGridLayoutData),
-    pub set_used_grid_template_tracks: unsafe extern "C" fn(
-        *mut c_void,
+    pub create_flex_layout_data: unsafe extern "C" fn(*mut c_void, *const FfiFlexLayoutData) -> *mut c_void,
+    pub release_flex_layout_data: crate::layout_state::ReleaseRetainedLayoutHandle,
+    pub create_grid_layout_data:
+        unsafe extern "C" fn(*mut c_void, *const grid::facts::FfiGridLayoutData) -> *mut c_void,
+    pub release_grid_layout_data: crate::layout_state::ReleaseRetainedLayoutHandle,
+    pub create_used_grid_tracks: unsafe extern "C" fn(
         *mut c_void,
         *const grid::facts::FfiUsedGridTrackList,
         *const grid::facts::FfiUsedGridTrackList,
-    ),
+    ) -> *mut c_void,
+    pub release_used_grid_tracks: crate::layout_state::ReleaseRetainedLayoutHandle,
 }
 
 pub(crate) struct FormattingContextInstance {
@@ -5662,21 +5622,79 @@ fn independent_formatting_context_type(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_layout_run_root_layout(
-    state: *mut c_void,
     root: *mut c_void,
-    input: FfiLayoutInput,
+    viewport_inline_size_raw: i32,
+    viewport_block_size_raw: i32,
+    node_count: u32,
     should_collect_devtools_layout_data: bool,
     callbacks: *const FfiLayoutFcCallbacks,
+    sink: *const FfiCommitSink,
 ) {
     abort_on_panic(|| {
+        assert!(!root.is_null());
         assert!(!callbacks.is_null());
-        // SAFETY: The standalone C++ pass host keeps the callback table live
-        // for this synchronous entry.
+        assert!(!sink.is_null());
+        // SAFETY: The C++ pass host keeps both callback tables live for this
+        // synchronous entry.
         let callbacks = unsafe { *callbacks };
-        let fc_type = independent_formatting_context_type(state, root, &callbacks);
+        let sink = unsafe { &*sink };
+        let viewport_inline_size = CssPixels::from_raw(viewport_inline_size_raw);
+        let viewport_block_size = CssPixels::from_raw(viewport_block_size_raw);
+
+        bump(FfiOp::StateCreate);
+        let mut state = LayoutState::new(LayoutStatePurpose::Commit);
+        state.ensure_capacity(node_count);
+        let root_constraints = crate::geometry::FfiContainingBlockConstraints {
+            has_percentage_basis_inline_size: true,
+            percentage_basis_inline_size: viewport_inline_size,
+            has_percentage_basis_block_size: true,
+            percentage_basis_block_size: viewport_block_size,
+            ..crate::geometry::FfiContainingBlockConstraints::default()
+        };
+        let viewport_used = state.create_used_values(&callbacks, root, root_constraints);
+        unsafe {
+            (*viewport_used).set_content_inline_size(viewport_inline_size);
+            (*viewport_used).set_content_block_size(viewport_block_size);
+        }
+
+        let mut root_for_layout = root;
+        bump(FfiOp::NavigationCallback);
+        let initial_containing_block =
+            unsafe { (callbacks.navigation.first_child)(callbacks.navigation.context, root) };
+        let has_initial_containing_block = !initial_containing_block.is_null();
+        if !initial_containing_block.is_null() {
+            let icb_used = state.create_used_values(&callbacks, initial_containing_block, root_constraints);
+            unsafe {
+                (*icb_used).set_content_inline_size(viewport_inline_size);
+            }
+            let icb_facts = state.box_facts(&callbacks, initial_containing_block);
+            if icb_facts.is_svg_svg_box {
+                // Standalone SVG documents use the viewport size for the root
+                // SVG container and enter SVG layout directly.
+                unsafe {
+                    (*icb_used).set_content_block_size((*viewport_used).content_block_size);
+                }
+                root_for_layout = initial_containing_block;
+            }
+        }
+        state.allow_precreated_used_values_reuse();
+
+        let input = FfiLayoutInput {
+            available_space: AvailableSpace {
+                inline_size: AvailableSize::definite(viewport_inline_size),
+                block_size: AvailableSize::definite(viewport_block_size),
+            },
+            containing_block_constraints: crate::geometry::FfiContainingBlockConstraints::default(),
+            has_content_box_position_in_bfc_root: false,
+            content_box_position_in_bfc_root: FfiCssPixelPoint::default(),
+            has_table_grid_min_border_box_block_size: false,
+            table_grid_min_border_box_block_size: CssPixels::default(),
+        };
+        let state_handle = std::ptr::from_mut(&mut state).cast();
+        let fc_type = independent_formatting_context_type(state_handle, root_for_layout, &callbacks);
         let mut context = create_formatting_context(
-            state,
-            root,
+            state_handle,
+            root_for_layout,
             std::ptr::null_mut(),
             fc_type as u8,
             0,
@@ -5684,32 +5702,68 @@ pub extern "C" fn rust_layout_run_root_layout(
             callbacks,
         );
         run_formatting_context(&mut context, input);
+        drop(context);
+        if has_initial_containing_block {
+            crate::ffi_stats::exclude_pass_seed_fact_builds();
+        }
+        state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink);
+        bump(FfiOp::StateDestroy);
     });
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_layout_compute_subtree_layout(
-    state: *mut c_void,
     root: *mut c_void,
-    input: FfiLayoutInput,
-    should_collect_devtools_layout_data: bool,
+    viewport: *mut c_void,
+    paintable_to_replace: *mut c_void,
     callbacks: *const FfiLayoutFcCallbacks,
+    sink: *const FfiCommitSink,
 ) {
     abort_on_panic(|| {
+        assert!(!root.is_null());
+        assert!(!paintable_to_replace.is_null());
         assert!(!callbacks.is_null());
-        // SAFETY: The standalone C++ pass host keeps the callback table live
-        // for this synchronous entry.
+        assert!(!sink.is_null());
+        // SAFETY: The C++ pass host keeps both callback tables live for this
+        // synchronous entry.
         let callbacks = unsafe { *callbacks };
-        let facts = state_mut(state).box_facts(&callbacks, root);
+        let sink = unsafe { &*sink };
+
+        bump(FfiOp::StateCreate);
+        let mut state = LayoutState::new(LayoutStatePurpose::Commit);
+        let root_used = state
+            .populate_from_paintable(&callbacks, root, paintable_to_replace)
+            .expect("partial relayout root must have committed geometry");
+        if !viewport.is_null() && viewport != root {
+            let _ = state.populate_from_paintable(&callbacks, viewport, std::ptr::null_mut());
+        }
+        let input = unsafe {
+            FfiLayoutInput {
+                available_space: AvailableSpace {
+                    inline_size: AvailableSize::definite((*root_used).content_inline_size),
+                    block_size: AvailableSize::definite((*root_used).content_block_size),
+                },
+                // The subtree root has definite sizes in both axes, so boxes
+                // below it do not need inherited percentage constraints.
+                containing_block_constraints: crate::geometry::FfiContainingBlockConstraints::default(),
+                has_content_box_position_in_bfc_root: false,
+                content_box_position_in_bfc_root: FfiCssPixelPoint::default(),
+                has_table_grid_min_border_box_block_size: false,
+                table_grid_min_border_box_block_size: CssPixels::default(),
+            }
+        };
+
+        let state_handle = std::ptr::from_mut(&mut state).cast();
+        let facts = state.box_facts(&callbacks, root);
         let fc_type = formatting_context_type_created_by_box(facts)
             .expect("partial relayout root must establish an independent formatting context");
         let mut context = create_formatting_context(
-            state,
+            state_handle,
             root,
             std::ptr::null_mut(),
             fc_type as u8,
             0,
-            should_collect_devtools_layout_data,
+            false,
             callbacks,
         );
         run_formatting_context(&mut context, input);
@@ -5717,27 +5771,38 @@ pub extern "C" fn rust_layout_compute_subtree_layout(
         // Lay out the subtree root's own absolutely positioned children, like the parent formatting
         // context would do after dimensioning the root box during a full layout.
         parent_did_dimension(&mut context);
+        drop(context);
+        state.commit_replacing(root, paintable_to_replace, &callbacks, sink);
+        bump(FfiOp::StateDestroy);
     });
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_layout_replay_saved_abspos_layout(
-    state: *mut c_void,
     box_: *mut c_void,
+    paintable_to_replace: *mut c_void,
     callbacks: *const FfiLayoutFcCallbacks,
+    sink: *const FfiCommitSink,
 ) {
     abort_on_panic(|| {
+        assert!(!box_.is_null());
+        assert!(!paintable_to_replace.is_null());
         assert!(!callbacks.is_null());
-        // SAFETY: The standalone C++ pass host keeps the callback table live
-        // for this synchronous entry.
+        assert!(!sink.is_null());
+        // SAFETY: The C++ pass host keeps both callback tables live for this
+        // synchronous entry.
         let callbacks = unsafe { *callbacks };
+        let sink = unsafe { &*sink };
+        bump(FfiOp::StateCreate);
+        let mut state = LayoutState::new(LayoutStatePurpose::Commit);
+        let state_handle = std::ptr::from_mut(&mut state).cast();
         bump(FfiOp::NavigationCallback);
         // SAFETY: The target box and its containing block remain live for the
         // partial-relayout pass.
         let containing_block = unsafe { (callbacks.navigation.containing_block)(callbacks.navigation.context, box_) };
         assert!(!containing_block.is_null());
         let mut context = create_formatting_context(
-            state,
+            state_handle,
             containing_block,
             std::ptr::null_mut(),
             FfiFormattingContextType::AbsposReplay as u8,
@@ -5746,5 +5811,8 @@ pub extern "C" fn rust_layout_replay_saved_abspos_layout(
             callbacks,
         );
         abspos::replay_for_instance(&mut context, box_);
+        drop(context);
+        state.commit_replacing(box_, paintable_to_replace, &callbacks, sink);
+        bump(FfiOp::StateDestroy);
     });
 }

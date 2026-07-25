@@ -742,7 +742,7 @@ public:
     [[nodiscard]] bool needs_full_layout_tree_update() const { return m_needs_full_layout_tree_update; }
     void set_needs_full_layout_tree_update(bool b) { m_needs_full_layout_tree_update = b; }
 
-    // Layout indices key the per-pass used values store in LayoutState. Every layout node gets
+    // Layout indices key the Rust-owned per-pass used-values store. Every layout node gets
     // one at construction; a full layout pass renumbers the whole tree densely and resets the
     // counter past the dense range.
     [[nodiscard]] u32 allocate_layout_node_index() { return m_next_layout_node_index++; }

@@ -6,7 +6,9 @@
 
 #pragma once
 
+#include <AK/OwnPtr.h>
 #include <AK/Optional.h>
+#include <AK/RefPtr.h>
 #include <AK/Variant.h>
 #include <LibWeb/CSS/Enums.h>
 #include <LibWeb/CSS/PercentageOr.h>
@@ -24,31 +26,32 @@ class Size;
 
 namespace Web::Layout {
 
-struct LayoutInput;
-
 class LayoutRustBridge {
 public:
-    LayoutRustBridge(LayoutState&, LayoutMode);
+    explicit LayoutRustBridge(LayoutMode);
     ~LayoutRustBridge();
 
-    [[nodiscard]] RustFFI::FfiLayoutNavCallbacks navigation_callbacks();
-    [[nodiscard]] RustFFI::FfiLayoutFcCallbacks formatting_context_callbacks();
-
-    void run_root_layout(Box&, LayoutInput const&);
-    void compute_subtree_layout(Box&, LayoutInput const&);
-    void replay_saved_abspos_layout(Box&);
-
-    [[nodiscard]] static RustFFI::FfiLayoutInput to_ffi(LayoutInput const&);
+    void run_root_layout(Box& viewport, CSSPixels viewport_inline_size, CSSPixels viewport_block_size, u32 node_count, bool should_collect_devtools_layout_data);
+    void compute_subtree_layout(Box&, Painting::Paintable& paintable_to_replace);
+    void replay_saved_abspos_layout(Box&, Painting::Paintable& paintable_to_replace);
 
 private:
+    [[nodiscard]] RustFFI::FfiLayoutNavCallbacks navigation_callbacks();
+    [[nodiscard]] RustFFI::FfiLayoutFcCallbacks formatting_context_callbacks();
     [[nodiscard]] Node const* parent(Node const&) const;
     [[nodiscard]] Node const* first_child(Node const&) const;
     [[nodiscard]] Node const* next_sibling(Node const&) const;
     [[nodiscard]] Node const* previous_sibling(Node const&) const;
     [[nodiscard]] Box const* containing_block(Node const&) const;
+    [[nodiscard]] RustFFI::FfiCommitSink commit_sink();
 
-    LayoutState& m_state;
+    struct LineCommitContext;
     LayoutMode m_layout_mode;
+    Box const* m_commit_root { nullptr };
+    OwnPtr<LineCommitContext> m_line_commit_context;
+    RefPtr<Painting::Paintable> m_replaced_paintable;
+    RefPtr<Painting::Paintable> m_commit_parent_paintable;
+    RefPtr<Painting::Paintable> m_commit_insert_before_paintable;
 };
 
 struct StyleVerticalAlignFacts {

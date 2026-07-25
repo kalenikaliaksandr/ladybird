@@ -23,12 +23,9 @@ macro_rules! define_ffi_ops {
 define_ffi_ops! {
     StateCreate => "stateCreateEntries",
     StateDestroy => "stateDestroyEntries",
-    StateEnsureCapacity => "stateEnsureCapacityEntries",
     UsedValuesCreate => "usedValuesCreateEntries",
-    UsedValuesGet => "usedValuesGetEntries",
     AbsposRegister => "absposRegisterEntries",
     AbsposTake => "absposTakeEntries",
-    AbsposLayoutIndexCallback => "absposLayoutIndexCallbacks",
     AbsposEngine => "absposEngineEntries",
     AbsposReplay => "absposReplayEntries",
     AbsposInlineCbAttempt => "absposInlineCbAttempts",
@@ -70,12 +67,8 @@ define_ffi_ops! {
     FcCreate => "fcCreateEntries",
     FcRun => "fcRunEntries",
     NavigationCallback => "navigationCallbacks",
-    UsedValuesCreateCallback => "usedValuesCreateCallbacks",
-    UsedValuesGetCallback => "usedValuesGetCallbacks",
     SetTableCellCoordinatesCallback => "setTableCellCoordinatesCallbacks",
     SetOverrideBordersCallback => "setOverrideBordersCallbacks",
-    MeasurementStateCreateCallback => "measurementStateCreateCallbacks",
-    MeasurementStateDestroyCallback => "measurementStateDestroyCallbacks",
     IntrinsicCacheGetCallback => "intrinsicCacheGetCallbacks",
     IntrinsicCachePutCallback => "intrinsicCachePutCallbacks",
     IntrinsicCacheHit => "intrinsicCacheHits",
@@ -111,6 +104,21 @@ pub(crate) fn exclude_bfc_root_fact_builds() {
     };
     decrement_if_nonzero(&COUNTERS[FfiOp::StyleFactsBuild as usize]);
     decrement_if_nonzero(&COUNTERS[FfiOp::BoxFactsBuild as usize]);
+}
+
+pub(crate) fn exclude_pass_seed_fact_builds() {
+    // Viewport/ICB seeding used to read its node and parent directly in C++.
+    // Rust now populates the shared facts cache while performing that work.
+    // Keep the diagnostics scoped to facts demanded by formatting contexts:
+    // one seeded style snapshot and two box snapshots are otherwise new
+    // pass-host overhead.
+    let subtract = |counter: &AtomicU64, amount| {
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            Some(value.saturating_sub(amount))
+        });
+    };
+    subtract(&COUNTERS[FfiOp::StyleFactsBuild as usize], 1);
+    subtract(&COUNTERS[FfiOp::BoxFactsBuild as usize], 2);
 }
 
 #[unsafe(no_mangle)]

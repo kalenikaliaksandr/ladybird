@@ -93,7 +93,7 @@ impl FfiSizeValue {
         if !self.calc.is_null() {
             // SAFETY: Every non-null handle in a style snapshot was retained
             // by LayoutRustBridge and is released exactly once when the
-            // per-pass LayoutState cache is dropped.
+            // per-pass Rust layout state is dropped.
             unsafe {
                 ladybird_layout_release_calc_handle(self.calc);
             }

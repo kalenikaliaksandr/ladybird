@@ -1241,9 +1241,7 @@ mod runtime {
             callbacks: FfiLayoutFcCallbacks,
             should_collect_devtools_layout_data: bool,
         ) -> Self {
-            // SAFETY: C++ owns stable used-values storage for the formatting
-            // context root for the lifetime of this Rust context.
-            let container_used_values = unsafe { (callbacks.get_used_values)(callbacks.context, grid_container) };
+            let container_used_values = state_mut(state).used_values(&callbacks, grid_container);
             assert!(!container_used_values.is_null());
             Self {
                 state,
@@ -1747,23 +1745,17 @@ mod runtime {
 
         fn create_item_used_values(&self, node: Node) -> *mut UsedValuesCore {
             // Intrinsic subgrid contribution contexts revisit descendants that
-            // already have pass-local used values. This mirrors C++ get_mutable()
-            // instead of attempting to allocate the same LayoutState entry twice.
-            // SAFETY: Both callbacks synchronously access the live layout state.
-            let existing = unsafe { (self.callbacks.get_used_values)(self.callbacks.context, node) };
+            // already have pass-local used values instead of allocating the same
+            // state entry twice.
+            let existing = state_mut(self.state).try_used_values(&self.callbacks, node);
             if !existing.is_null() {
                 return existing;
             }
-            let used = unsafe {
-                (self.callbacks.create_used_values)(
-                    self.callbacks.context,
-                    node,
-                    false,
-                    CssPixels::default(),
-                    false,
-                    CssPixels::default(),
-                )
-            };
+            let used = state_mut(self.state).create_used_values(
+                &self.callbacks,
+                node,
+                FfiContainingBlockConstraints::default(),
+            );
             assert!(!used.is_null());
             used
         }
@@ -3698,17 +3690,19 @@ mod runtime {
             let (_row_names, _row_lines, _row_sizes, rows) =
                 self.used_track_list_storage(Axis::Row, self.is_subgridded(Axis::Row, facts));
             // getComputedStyle() needs to return the resolved values of grid-template-columns and grid-template-rows
-            // so they need to be saved in the state, and then assigned to paintables in LayoutState::commit()
-            // SAFETY: Every pointer in both lists remains live for this
-            // synchronous callback.
-            unsafe {
-                (self.callbacks.set_used_grid_template_tracks)(
-                    self.callbacks.context,
-                    self.grid_container,
-                    &raw const columns,
-                    &raw const rows,
-                );
-            }
+            // so they need to be saved in the state, and then assigned to paintables by the Rust commit walk.
+            // SAFETY: Every pointer in both lists remains live while the
+            // callback creates one retained C++ payload for the Rust state.
+            let handle = unsafe {
+                (self.callbacks.create_used_grid_tracks)(self.callbacks.context, &raw const columns, &raw const rows)
+            };
+            state_mut(self.state)
+                .used_values_rare_data_for_node_mut(&self.callbacks, self.grid_container)
+                .used_grid_tracks = Some(crate::layout_state::RetainedLayoutHandle::new(
+                handle,
+                self.callbacks.context,
+                self.callbacks.release_used_grid_tracks,
+            ));
         }
 
         fn save_devtools_data(&self, facts: &GridFactsCopy) {
@@ -3835,11 +3829,16 @@ mod runtime {
                 fragments: &raw const fragment,
                 fragment_count: 1,
             };
-            // SAFETY: The nested stack/vector storage remains live throughout the
-            // synchronous deep-copy callback.
-            unsafe {
-                (self.callbacks.set_grid_layout_data)(self.callbacks.context, self.grid_container, &raw const data);
-            }
+            // SAFETY: The nested stack/vector storage remains live while the
+            // callback creates one retained C++ payload for the Rust state.
+            let handle = unsafe { (self.callbacks.create_grid_layout_data)(self.callbacks.context, &raw const data) };
+            state_mut(self.state)
+                .used_values_rare_data_for_node_mut(&self.callbacks, self.grid_container)
+                .grid_layout_data = Some(crate::layout_state::RetainedLayoutHandle::new(
+                handle,
+                self.callbacks.context,
+                self.callbacks.release_grid_layout_data,
+            ));
         }
 
         pub(crate) fn run(&mut self, input: FfiLayoutInput) {

@@ -46,7 +46,7 @@ enum class LayoutMode {
     Normal,
 
     // Intrinsic size determination.
-    // Boxes honor min-content and max-content constraints (set via LayoutState::UsedValues::{width,height}_constraint)
+    // Boxes honor min-content and max-content constraints stored in the Rust used-values core
     // by considering their containing block to be 0-sized or infinitely large in the relevant axis.
     // https://drafts.csswg.org/css-sizing-3/#intrinsic-sizing
     IntrinsicSizing,

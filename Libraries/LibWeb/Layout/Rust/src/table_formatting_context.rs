@@ -930,43 +930,27 @@ impl TableFormattingContext {
     }
 
     fn used_values(&self, node: Node) -> *mut UsedValuesCore {
-        bump(FfiOp::UsedValuesGetCallback);
-        // SAFETY: The callback returns state-owned storage.
-        let result = unsafe { (self.callbacks.get_used_values)(self.callbacks.context, node) };
+        let result = state_mut(self.state).used_values(&self.callbacks, node);
         assert!(!result.is_null());
         result
     }
 
     fn create_used_values(&self, node: Node, constraints: FfiContainingBlockConstraints) -> *mut UsedValuesCore {
-        bump(FfiOp::UsedValuesCreateCallback);
-        // SAFETY: The host creates one state entry for this participant.
-        let result = unsafe {
-            (self.callbacks.create_used_values)(
-                self.callbacks.context,
-                node,
-                constraints.has_percentage_basis_inline_size,
-                constraints.percentage_basis_inline_size,
-                constraints.has_percentage_basis_block_size,
-                constraints.percentage_basis_block_size,
-            )
-        };
+        let result = state_mut(self.state).create_used_values(&self.callbacks, node, constraints);
         assert!(!result.is_null());
         result
     }
 
     fn set_cell_coordinates(&self, cell: Cell) {
         bump(FfiOp::SetTableCellCoordinatesCallback);
-        // SAFETY: The cell and state live for the current pass.
-        unsafe {
-            (self.callbacks.set_table_cell_coordinates)(
-                self.callbacks.context,
-                cell.box_,
-                cell.row_index,
-                cell.column_index,
-                cell.row_span,
-                cell.column_span,
-            );
-        }
+        state_mut(self.state)
+            .used_values_rare_data_for_node_mut(&self.callbacks, cell.box_)
+            .table_cell_coordinates = Some(crate::layout_state::FfiTableCellCoordinates {
+            row_index: cell.row_index,
+            column_index: cell.column_index,
+            row_span: cell.row_span,
+            column_span: cell.column_span,
+        });
     }
 
     fn place_child(&self, node: Node, x: CssPixels, y: CssPixels) {
@@ -1112,12 +1096,12 @@ impl TableFormattingContext {
                 (*used).border_right = resolved.right.border_data.width;
                 (*used).border_bottom = resolved.bottom.border_data.width;
                 (*used).border_left = resolved.left.border_data.width;
+                (*used).uses_collapsing_borders_model = true;
             }
             bump(FfiOp::SetOverrideBordersCallback);
-            // SAFETY: The host copies the POD border data synchronously.
-            unsafe {
-                (self.callbacks.set_override_borders_data)(self.callbacks.context, cell.box_, &raw const resolved);
-            }
+            state_mut(self.state)
+                .used_values_rare_data_for_node_mut(&self.callbacks, cell.box_)
+                .override_borders_data = Some(resolved);
         }
     }
 

@@ -72,18 +72,7 @@ pub(super) fn run(instance: &mut FormattingContextInstance, layout_input: FfiLay
 
     let wrapper_constraints = SizingContext::new(instance.state, instance.callbacks)
         .constraints_for_child_context(instance.box_, layout_input.containing_block_constraints);
-    // SAFETY: The callback creates one stable used-values entry owned by the
-    // pass state.
-    let wrapper_state = unsafe {
-        (instance.callbacks.create_used_values)(
-            instance.callbacks.context,
-            wrapper,
-            wrapper_constraints.has_percentage_basis_inline_size,
-            wrapper_constraints.percentage_basis_inline_size,
-            wrapper_constraints.has_percentage_basis_block_size,
-            wrapper_constraints.percentage_basis_block_size,
-        )
-    };
+    let wrapper_state = state_mut(instance.state).create_used_values(&instance.callbacks, wrapper, wrapper_constraints);
     assert!(!wrapper_state.is_null());
     // SAFETY: The newly created entry is uniquely initialized here.
     let wrapper_state = unsafe { &mut *wrapper_state };

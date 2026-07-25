@@ -33,7 +33,6 @@ set(TEST_SOURCES
     TestLayoutGridFactsParity.cpp
     TestLayoutInlineParity.cpp
     TestLayoutStyleFactsParity.cpp
-    TestLayoutUsedValuesParity.cpp
     TestNumericTypeParity.cpp
     TestStylePropertyMetadataParity.cpp
     TestStyleStructRef.cpp
