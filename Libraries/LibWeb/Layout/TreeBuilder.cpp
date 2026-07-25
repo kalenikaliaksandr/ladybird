@@ -13,6 +13,7 @@
 #include <AK/Optional.h>
 #include <AK/OwnPtr.h>
 #include <AK/Utf16String.h>
+#include <LibCore/Environment.h>
 #include <LibGfx/DecodedImageFrame.h>
 #include <LibUnicode/CharacterTypes.h>
 #include <LibUnicode/Segmenter.h>
@@ -54,6 +55,16 @@
 #include <LibWeb/SVG/SVGSwitchElement.h>
 
 namespace Web::Layout {
+
+static bool verify_layout_node_arena_enabled()
+{
+#if !defined(NDEBUG) || defined(ENABLE_LAYOUT_NODE_ARENA_VERIFICATION)
+    return true;
+#else
+    static bool enabled = Core::Environment::has("LADYBIRD_VERIFY_LAYOUT_NODE_ARENA"sv);
+    return enabled;
+#endif
+}
 
 class LayoutTreeBuildBridge {
 public:
@@ -1211,6 +1222,8 @@ LayoutTreeBuildResult LayoutTreeBuildBridge::build(DOM::Node& dom_node)
 {
     auto callbacks = make_ffi_dom_tree_builder_callbacks();
     m_layout_root = static_cast<Layout::Node*>(RustFFI::rust_build_layout_tree(&callbacks, &dom_node));
+    if (m_layout_root && verify_layout_node_arena_enabled())
+        m_layout_root->verify_arena_data();
     return {
         .root = move(m_layout_root),
         .rebuilt_subtree_roots = move(m_rebuilt_subtree_roots),

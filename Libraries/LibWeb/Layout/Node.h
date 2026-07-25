@@ -335,6 +335,7 @@ protected:
     RustFFI::NodeData const& node_data() const { return *m_data; }
 
 private:
+    friend class LayoutTreeBuildBridge;
     friend class NodeWithStyle;
     friend class NodeKindSetter;
     friend class RefCountedTreeNode<Node>;
@@ -350,6 +351,7 @@ private:
     void set_inline_containing_block(InlineNode const*);
     void set_node_kind(RustFFI::NodeKind kind) { m_data->kind = kind; }
     void synchronize_topology();
+    void verify_arena_data() const;
 
     // A DOM mutation can disconnect a node before the next layout-tree update. Keep the DOM node alive until this
     // layout node is destroyed so detach hooks never observe a collected image provider or other element state.

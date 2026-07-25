@@ -84,6 +84,33 @@ void Node::synchronize_topology()
     m_data->next_sibling = slot_id(Base::next_sibling_ptr());
 }
 
+void Node::verify_arena_data() const
+{
+    for_each_in_inclusive_subtree([](Node const& node) {
+        auto verify_slot = [](RustFFI::NodeSlotId actual, Node const* expected) {
+            VERIFY(actual.index == slot_id(expected).index);
+        };
+
+        VERIFY(node.m_data);
+        VERIFY(node.m_slot.index != RustFFI::INVALID_NODE_SLOT_INDEX);
+        VERIFY(node.m_data->kind != RustFFI::NodeKind::Unset);
+        verify_slot(node.m_data->parent, node.parent_ptr());
+        verify_slot(node.m_data->first_child, node.first_child_ptr());
+        verify_slot(node.m_data->last_child, node.last_child_ptr());
+        verify_slot(node.m_data->previous_sibling, node.previous_sibling_ptr());
+        verify_slot(node.m_data->next_sibling, node.next_sibling_ptr());
+        verify_slot(node.m_data->containing_block, node.m_containing_block);
+        verify_slot(node.m_data->inline_containing_block, node.m_inline_containing_block_if_applicable);
+
+        if (node.has_style())
+            VERIFY(node.m_data->style == &static_cast<NodeWithStyle const&>(node).computed_values());
+        else
+            VERIFY(node.m_data->style == nullptr);
+
+        return TraversalDecision::Continue;
+    });
+}
+
 void Node::set_containing_block(Box* containing_block)
 {
     m_containing_block = containing_block;

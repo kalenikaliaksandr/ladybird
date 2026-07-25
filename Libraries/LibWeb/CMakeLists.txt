@@ -1318,6 +1318,10 @@ set(GENERATED_SOURCES
 ladybird_lib(LibWeb web EXPLICIT_SYMBOL_EXPORT)
 add_dependencies(LibWeb generate_GLFunctions.cpp)
 
+if (ENABLE_ADDRESS_SANITIZER OR ENABLE_MEMORY_SANITIZER OR ENABLE_UNDEFINED_SANITIZER)
+    target_compile_definitions(LibWeb PRIVATE ENABLE_LAYOUT_NODE_ARENA_VERIFICATION)
+endif()
+
 target_link_libraries(LibWeb PRIVATE LibCore LibCompress LibCrypto LibJS LibHTTP LibGfx LibIPC LibRegex LibSyntax LibTextCodec LibUnicode LibMedia LibWasm LibXML LibURL LibTLS LibRequests LibGC LibSync LibThreading skia SDL3::SDL3 LibXml2::LibXml2)
 
 # LibWeb still includes ANGLE's GLES headers for WebGL constants and types, but
