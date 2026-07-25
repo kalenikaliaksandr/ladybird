@@ -23,6 +23,7 @@
 #include <LibWeb/Layout/ImageBox.h>
 #include <LibWeb/Layout/InlineNode.h>
 #include <LibWeb/Layout/Node.h>
+#include <LibWeb/Layout/NodeArena.h>
 #include <LibWeb/Layout/TableWrapper.h>
 #include <LibWeb/Layout/TextNode.h>
 #include <LibWeb/Layout/Viewport.h>
@@ -40,8 +41,14 @@ namespace Web::Layout {
 
 Node::Node(DOM::Document& document, DOM::Node* node, AttachToDOMNode attach_to_dom_node)
     : m_dom_node(node ? *node : document)
+    , m_arena(document.layout_node_arena())
     , m_anonymous(node == nullptr)
 {
+    auto allocation = m_arena->allocate();
+    m_slot = allocation.slot;
+    m_data = allocation.data;
+    m_slot_generation = allocation.generation;
+
     if (node && attach_to_dom_node == AttachToDOMNode::Yes)
         node->set_layout_node({}, *this);
 }
@@ -50,6 +57,7 @@ Node::~Node()
 {
     if (m_paintable)
         m_paintable->detach_from_layout_node({});
+    m_arena->free(m_slot, m_slot_generation);
 }
 
 static void invalidate_paint_caches(Node& node)

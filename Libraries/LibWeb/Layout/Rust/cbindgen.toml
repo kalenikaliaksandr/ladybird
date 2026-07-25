@@ -20,7 +20,7 @@ parse_deps = false
 all_features = false
 
 [export]
-include = ["NodeData", "NodeKind", "NodeSlotId"]
+include = ["NodeAllocation", "NodeData", "NodeKind", "NodeSlotId"]
 
 [export.mangle]
 rename_types = "PascalCase"

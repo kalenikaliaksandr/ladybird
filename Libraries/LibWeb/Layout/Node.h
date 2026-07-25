@@ -273,6 +273,14 @@ private:
     GC::Root<DOM::Node> m_dom_node;
     RefPtr<Painting::Paintable> m_paintable;
 
+    // The slot is returned to the arena that allocated it, which m_arena keeps alive: an adopted DOM node
+    // can change documents before its stale layout node is destroyed, and old nodes can outlive document
+    // teardown entirely.
+    NonnullRefPtr<NodeArena> m_arena;
+    RustFFI::NodeSlotId m_slot {};
+    RustFFI::NodeData* m_data { nullptr };
+    u32 m_slot_generation { 0 };
+
     Box* m_containing_block { nullptr };
 
     // For absolutely positioned elements, if there's an inline element (like a <span> with

@@ -188,6 +188,7 @@
 #include <LibWeb/Infra/Strings.h>
 #include <LibWeb/IntersectionObserver/IntersectionObserver.h>
 #include <LibWeb/Layout/BlockFormattingContext.h>
+#include <LibWeb/Layout/NodeArena.h>
 #include <LibWeb/Layout/SVGFormattingContext.h>
 #include <LibWeb/Layout/SVGSVGBox.h>
 #include <LibWeb/Layout/ScrollableOverflow.h>
@@ -572,6 +573,7 @@ Document::Document(JS::Realm& realm, URL::URL const& url)
     , m_style_computer(realm.heap().allocate<CSS::StyleComputer>(*this))
     , m_font_computer(realm.heap().allocate<CSS::FontComputer>(*this))
     , m_url(url)
+    , m_layout_node_arena(make_ref_counted<Layout::NodeArena>())
     , m_fonts(CSS::FontFaceSet::create(realm))
     , m_editing_host_manager(EditingHostManager::create(realm, *this))
     , m_dynamic_view_transition_style_sheet(parse_css_stylesheet(CSS::Parser::ParsingParams(realm), ""sv, {}))
@@ -618,6 +620,11 @@ Document::Document(JS::Realm& realm, URL::URL const& url)
 }
 
 Document::~Document() = default;
+
+Layout::NodeArena& Document::layout_node_arena()
+{
+    return *m_layout_node_arena;
+}
 
 void Document::set_temporary_document_for_fragment_parsing(Badge<HTML::HTMLParser>)
 {
