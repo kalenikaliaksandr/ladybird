@@ -39,14 +39,24 @@
 
 namespace Web::Layout {
 
-Node::Node(DOM::Document& document, DOM::Node* node, AttachToDOMNode attach_to_dom_node)
-    : m_dom_node(node ? *node : document)
-    , m_arena(document.layout_node_arena())
+NodeArenaAllocation::NodeArenaAllocation(DOM::Document& document)
+    : m_arena(document.layout_node_arena())
 {
     auto allocation = m_arena->allocate();
     m_slot = allocation.slot;
     m_data = allocation.data;
     m_slot_generation = allocation.generation;
+}
+
+NodeArenaAllocation::~NodeArenaAllocation()
+{
+    m_arena->free(m_slot, m_slot_generation);
+}
+
+Node::Node(DOM::Document& document, DOM::Node* node, AttachToDOMNode attach_to_dom_node)
+    : NodeArenaAllocation(document)
+    , m_dom_node(node ? *node : document)
+{
     set_flag(RustFFI::NodeFlag::Anonymous, node == nullptr);
 
     if (node && attach_to_dom_node == AttachToDOMNode::Yes)
@@ -57,7 +67,89 @@ Node::~Node()
 {
     if (m_paintable)
         m_paintable->detach_from_layout_node({});
-    m_arena->free(m_slot, m_slot_generation);
+}
+
+RustFFI::NodeSlotId Node::slot_id(Node const* node)
+{
+    return node ? node->m_slot : RustFFI::NodeSlotId_INVALID;
+}
+
+void Node::synchronize_topology()
+{
+    m_data->parent = slot_id(Base::parent_ptr());
+    m_data->first_child = slot_id(Base::first_child_ptr());
+    m_data->last_child = slot_id(Base::last_child_ptr());
+    m_data->previous_sibling = slot_id(Base::previous_sibling_ptr());
+    m_data->next_sibling = slot_id(Base::next_sibling_ptr());
+}
+
+void Node::append_child(NonnullRefPtr<Node> node)
+{
+    auto previous_sibling = Base::last_child();
+    Base::append_child(node);
+
+    synchronize_topology();
+    node->synchronize_topology();
+    if (previous_sibling)
+        previous_sibling->synchronize_topology();
+}
+
+void Node::prepend_child(NonnullRefPtr<Node> node)
+{
+    auto next_sibling = Base::first_child();
+    Base::prepend_child(node);
+
+    synchronize_topology();
+    node->synchronize_topology();
+    if (next_sibling)
+        next_sibling->synchronize_topology();
+}
+
+void Node::insert_before(NonnullRefPtr<Node> node, Node* child)
+{
+    auto previous_sibling = child ? child->previous_sibling() : Base::last_child();
+    Base::insert_before(node, child);
+
+    synchronize_topology();
+    node->synchronize_topology();
+    if (previous_sibling)
+        previous_sibling->synchronize_topology();
+    if (child)
+        child->synchronize_topology();
+}
+
+void Node::insert_before(NonnullRefPtr<Node> node, Node& child)
+{
+    insert_before(move(node), &child);
+}
+
+void Node::remove_child(Node& node)
+{
+    auto previous_sibling = node.previous_sibling();
+    auto next_sibling = node.next_sibling();
+    Base::remove_child(node);
+
+    synchronize_topology();
+    node.synchronize_topology();
+    if (previous_sibling)
+        previous_sibling->synchronize_topology();
+    if (next_sibling)
+        next_sibling->synchronize_topology();
+}
+
+void Node::replace_child(NonnullRefPtr<Node> new_child, Node& old_child)
+{
+    auto previous_sibling = old_child.previous_sibling();
+    auto next_sibling = old_child.next_sibling();
+    Base::replace_child(new_child, old_child);
+
+    synchronize_topology();
+    new_child->synchronize_topology();
+    old_child.synchronize_topology();
+    if (previous_sibling)
+        previous_sibling->synchronize_topology();
+    if (next_sibling)
+        next_sibling->synchronize_topology();
 }
 
 static void invalidate_paint_caches(Node& node)

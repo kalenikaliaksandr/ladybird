@@ -582,6 +582,8 @@ public:
             child->m_next_sibling.clear();
             child->m_previous_sibling.clear();
             child->m_parent.clear();
+            if constexpr (requires { child->synchronize_topology(); })
+                child->synchronize_topology();
         }
         m_last_child.clear();
     }

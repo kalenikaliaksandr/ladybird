@@ -85,9 +85,25 @@ enum class LayoutMode {
     IntrinsicSizing,
 };
 
+class NodeArenaAllocation {
+protected:
+    explicit NodeArenaAllocation(DOM::Document&);
+    ~NodeArenaAllocation();
+
+    // The slot is returned to the arena that allocated it, which m_arena keeps alive: an adopted DOM node
+    // can change documents before its stale layout node is destroyed, and old nodes can outlive document
+    // teardown entirely. A base declared before RefCountedTreeNode releases the slot only after
+    // RefCountedTreeNode has detached and synchronized any surviving children during base-class destruction.
+    NonnullRefPtr<NodeArena> m_arena;
+    RustFFI::NodeSlotId m_slot {};
+    RustFFI::NodeData* m_data { nullptr };
+    u32 m_slot_generation { 0 };
+};
+
 class WEB_API Node
     : public RefCounted<Node>
     , public Weakable<Node>
+    , private NodeArenaAllocation
     , public RefCountedTreeNode<Node> {
 
 public:
@@ -97,6 +113,13 @@ public:
 
     virtual ~Node();
     virtual StringView class_name() const { return "Node"sv; }
+
+    void append_child(NonnullRefPtr<Node>);
+    void prepend_child(NonnullRefPtr<Node>);
+    void insert_before(NonnullRefPtr<Node>, Node*);
+    void insert_before(NonnullRefPtr<Node>, Node&);
+    void remove_child(Node&);
+    void replace_child(NonnullRefPtr<Node>, Node&);
 
     bool is_anonymous() const { return has_flag(RustFFI::NodeFlag::Anonymous); }
     DOM::Node const* dom_node() const;
@@ -302,6 +325,7 @@ protected:
 
 private:
     friend class NodeWithStyle;
+    friend class RefCountedTreeNode<Node>;
 
     static constexpr u8 encode_generated_for(CSS::PseudoElement pseudo_element)
     {
@@ -309,18 +333,13 @@ private:
         return static_cast<u8>(pseudo_element) + 1;
     }
 
+    static RustFFI::NodeSlotId slot_id(Node const*);
+    void synchronize_topology();
+
     // A DOM mutation can disconnect a node before the next layout-tree update. Keep the DOM node alive until this
     // layout node is destroyed so detach hooks never observe a collected image provider or other element state.
     GC::Root<DOM::Node> m_dom_node;
     RefPtr<Painting::Paintable> m_paintable;
-
-    // The slot is returned to the arena that allocated it, which m_arena keeps alive: an adopted DOM node
-    // can change documents before its stale layout node is destroyed, and old nodes can outlive document
-    // teardown entirely.
-    NonnullRefPtr<NodeArena> m_arena;
-    RustFFI::NodeSlotId m_slot {};
-    RustFFI::NodeData* m_data { nullptr };
-    u32 m_slot_generation { 0 };
 
     Box* m_containing_block { nullptr };
 
@@ -332,7 +351,6 @@ private:
     InlineNode const* m_inline_containing_block_if_applicable { nullptr };
 
     GC::Weak<DOM::Element> m_pseudo_element_generator;
-
 };
 
 class WEB_API NodeWithStyle : public Node {
