@@ -1406,6 +1406,7 @@ if(NOT BUILD_SHARED_LIBS)
     # re-merges the fresh Rust objects.
     set_property(SOURCE CSS/Parser/RustTokenizer.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_css_rust_lib})
     set_property(SOURCE HTML/Parser/HTMLEncodingDetection.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_rust_lib})
+    set_property(SOURCE Layout/LayoutRustBridge.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_layout_rust_lib})
     set_property(SOURCE Layout/TreeBuilder.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_layout_rust_lib})
     set_property(SOURCE Loader/ContentBlocker.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_content_blocker_rust_lib})
 endif()

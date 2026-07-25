@@ -53,6 +53,8 @@
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/Internals/InternalGamepad.h>
 #include <LibWeb/Internals/Internals.h>
+#include <LibWeb/Layout/TreeBuilderRustFFI.h>
+#include <LibWeb/Layout/LayoutRustFFI.h>
 #include <LibWeb/Layout/Viewport.h>
 #include <LibWeb/Loader/ContentBlocker.h>
 #include <LibWeb/Loader/ResourceLoader.h>
@@ -991,6 +993,26 @@ JS::Object* Internals::style_ffi_counters()
 void Internals::reset_style_ffi_counters()
 {
     CSS::StyleValueFFI::rust_style_ffi_counters_reset();
+}
+
+JS::Object* Internals::layout_ffi_counters()
+{
+    auto object = JS::Object::create(realm(), nullptr);
+    auto const counter_count = Layout::RustFFI::rust_layout_ffi_counter_count();
+    for (size_t index = 0; index < counter_count; ++index) {
+        auto const* name = reinterpret_cast<char const*>(Layout::RustFFI::rust_layout_ffi_counter_name(index));
+        auto const value = Layout::RustFFI::rust_layout_ffi_counter_value(index);
+        object->define_direct_property(
+            Utf16FlyString::from_utf8(StringView { name, strlen(name) }),
+            JS::Value(static_cast<double>(value)),
+            JS::default_attributes);
+    }
+    return object;
+}
+
+void Internals::reset_layout_ffi_counters()
+{
+    Layout::RustFFI::rust_layout_ffi_counters_reset();
 }
 
 JS::Object* Internals::style_group_sharing_info(DOM::Element& element)

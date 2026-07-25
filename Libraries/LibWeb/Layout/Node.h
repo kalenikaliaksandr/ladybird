@@ -115,6 +115,7 @@ public:
     virtual StringView class_name() const { return "Node"sv; }
 
     static RustFFI::NodeSlotId slot_id(Node const*);
+    static size_t node_data_displacement(Node const&);
     void* arena_handle() const;
 
     bool is_anonymous() const { return has_flag(RustFFI::NodeFlag::Anonymous); }
