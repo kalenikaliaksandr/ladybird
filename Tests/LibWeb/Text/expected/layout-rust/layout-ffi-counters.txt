@@ -1,0 +1,3 @@
+has counters: true
+all non-negative: true
+all zero after reset: true

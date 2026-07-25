@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<style>
+    canvas {
+        display: block;
+    }
+</style>
+<canvas id="canvas" width="0" height="75"></canvas>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        canvas.offsetHeight;
+        internals.resetLayoutFfiCounters();
+        canvas.style.marginLeft = "1px";
+        println(`canvas height: ${canvas.offsetHeight}`);
+        const counters = internals.layoutFfiCounters();
+        println(`formatting contexts created: ${counters["ops.fcCreateEntries"]}`);
+        println(`formatting contexts run: ${counters["ops.fcRunEntries"]}`);
+    });
+</script>

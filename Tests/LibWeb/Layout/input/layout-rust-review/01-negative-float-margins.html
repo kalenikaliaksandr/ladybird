@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<style>
+    .case {
+        width: 240px;
+        margin-bottom: 20px;
+        font: 16px SerenitySans;
+        line-height: 20px;
+    }
+
+    .float {
+        float: left;
+        width: 100px;
+        height: 60px;
+        background: #acf;
+    }
+
+    .negative-top {
+        margin-top: -40px;
+    }
+
+    .negative-right {
+        margin-right: -60px;
+    }
+
+    .avoid-float {
+        overflow: hidden;
+        width: 70px;
+        height: 20px;
+        background: #fca;
+    }
+
+    .clear {
+        clear: left;
+        width: 20px;
+        height: 10px;
+        background: #fca;
+    }
+</style>
+<div class="case">
+    Text before the float occupies two lines and is overlapped by its negative
+    top margin.
+    <div class="float negative-top"></div>
+    Text after the float remains outside the full content-height exclusion.
+    <div class="clear"></div>
+</div>
+<div class="case">
+    <div class="float negative-right"></div>
+    <div class="avoid-float"></div>
+    <div class="clear"></div>
+</div>

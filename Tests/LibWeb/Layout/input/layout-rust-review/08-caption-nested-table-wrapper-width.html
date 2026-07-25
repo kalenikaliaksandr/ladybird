@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<style>
+    #outer {
+        float: left;
+        border-spacing: 0;
+    }
+
+    #outer > caption {
+        padding: 0;
+    }
+
+    #outer > tbody > tr > td {
+        width: 260px;
+        height: 20px;
+        padding: 0;
+    }
+
+    #nested {
+        width: 40px;
+        border-spacing: 0;
+    }
+</style>
+<table id="outer">
+    <caption id="caption"></caption>
+    <tr><td></td></tr>
+</table>
+<script>
+    const nested = document.createElement("table");
+    nested.id = "nested";
+    nested.innerHTML = "<tr><td>n</td></tr>";
+    document.querySelector("#caption").appendChild(nested);
+</script>

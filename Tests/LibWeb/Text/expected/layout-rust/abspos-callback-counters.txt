@@ -1,0 +1,13 @@
+position: 68,48
+inline size: 15.703125,18
+exact inline size: 32.125,24
+engine entered: true
+anchor resolved: true
+anchor facts callback: true
+anchor lookup callback: true
+anchor handles balanced: true
+registered and consumed: true
+inline CB attempt: true
+inline CB normal fragment: true
+inline CB atomic fragment: true
+inline CB success: true

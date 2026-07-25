@@ -89,16 +89,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     layout_config
         .includes
         .push("LibWeb/Layout/TreeBuilderRustFFI.h".to_string());
-    layout_config.export.include = vec!["FfiSizeKind".to_string()];
+    layout_config.export.include = vec![
+        "FfiGridTrackEntryKind".to_string(),
+        "FfiGridTrackBreadthKind".to_string(),
+        "FfiGridPlacementKind".to_string(),
+        "FfiFormattingContextType".to_string(),
+        "FfiSizeKind".to_string(),
+    ];
     generate_ffi_header(
         layout_config,
         &[
             manifest_dir.join("src/used_values.rs"),
+            manifest_dir.join("src/layout_state.rs"),
             manifest_dir.join("src/geometry.rs"),
             manifest_dir.join("src/ffi_stats.rs"),
             manifest_dir.join("src/style_facts.rs"),
             manifest_dir.join("src/box_facts.rs"),
             manifest_dir.join("../../CSS/Rust/src/display.rs"),
+            manifest_dir.join("src/formatting_context.rs"),
+            manifest_dir.join("src/flex_formatting_context.rs"),
+            manifest_dir.join("src/grid_formatting_context.rs"),
+            manifest_dir.join("src/svg_formatting_context.rs"),
+            manifest_dir.join("src/table_formatting_context.rs"),
+            manifest_dir.join("src/inline_formatting_context.rs"),
+            manifest_dir.join("src/inline_level_iterator.rs"),
+            manifest_dir.join("src/line_builder.rs"),
+            manifest_dir.join("src/line_box.rs"),
+            manifest_dir.join("src/line_box_fragment.rs"),
         ],
         &out_dir,
         &ffi_out_dir,

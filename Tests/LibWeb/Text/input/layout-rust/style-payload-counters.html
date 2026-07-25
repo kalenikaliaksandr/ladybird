@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<style>
+    table { border-collapse: collapse; width: 240px; }
+    td { border: 1px solid; }
+</style>
+<table id="table">
+    <tr><td>A</td><td>B</td></tr>
+    <tr><td colspan="2">C</td></tr>
+</table>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        table.offsetWidth;
+        internals.resetLayoutFfiCounters();
+        table.style.width = "241px";
+        table.offsetWidth;
+
+        const counters = internals.layoutFfiCounters();
+        println(`style schema registrations: ${counters["crossings.styleSchemaRegistrations"]}`);
+        println(`style payload fetches: ${counters["crossings.stylePayloadFetches"]}`);
+        const residualBatchDecodes = counters["crossings.styleResidualBatchDecodes"];
+        println(`style residual batch decodes: ${residualBatchDecodes}`);
+        println(`residual batches do not exceed payload fetches: ${residualBatchDecodes <= counters["crossings.stylePayloadFetches"]}`);
+    });
+</script>

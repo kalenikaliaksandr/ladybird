@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<style>
+    #grid {
+        display: grid;
+        grid-template-columns: min-content;
+        grid-template-rows: min-content;
+    }
+
+    table {
+        border-spacing: 0;
+    }
+
+    caption {
+        height: 70px;
+        padding: 0;
+    }
+
+    td {
+        width: 140px;
+        height: 20px;
+        padding: 0;
+    }
+</style>
+<div id="grid">
+    <table>
+        <caption id="caption">caption</caption>
+        <tr><td></td></tr>
+    </table>
+</div>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        grid.offsetHeight;
+        internals.resetLayoutFfiCounters();
+        caption.style.height = "71px";
+        println(`grid height: ${grid.offsetHeight}`);
+        const counters = internals.layoutFfiCounters();
+        println(`formatting contexts created: ${counters["ops.fcCreateEntries"]}`);
+        println(`formatting contexts run: ${counters["ops.fcRunEntries"]}`);
+    });
+</script>

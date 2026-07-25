@@ -5580,6 +5580,7 @@ pub extern "C" fn rust_layout_run_root_layout(
             ..crate::geometry::ContainingBlockConstraints::default()
         };
         let viewport_used = state.create_used_values(&callbacks, root, root_constraints);
+        state.record_precreated_used_values(&callbacks, root);
         viewport_used.set_content_inline_size(viewport_inline_size);
         viewport_used.set_content_block_size(viewport_block_size);
 
@@ -5587,6 +5588,7 @@ pub extern "C" fn rust_layout_run_root_layout(
         let has_initial_containing_block = !document_element_layout_node.is_null();
         if has_initial_containing_block {
             let icb_used = state.create_used_values(&callbacks, document_element_layout_node, root_constraints);
+            state.record_precreated_used_values(&callbacks, document_element_layout_node);
             icb_used.set_content_inline_size(viewport_inline_size);
         }
 

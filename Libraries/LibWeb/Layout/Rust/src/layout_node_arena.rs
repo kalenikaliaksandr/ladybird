@@ -5,8 +5,10 @@
  */
 
 use crate::abort_on_panic;
+use crate::box_facts::kind_is_box;
 use crate::css_pixels::CssPixels;
-use crate::node_data::{MAX_NODE_SLOT_COUNT, NodeData, NodeSlotId};
+use crate::layout_state::AbsposLayoutInputs;
+use crate::node_data::{MAX_NODE_SLOT_COUNT, NodeData, NodeFlag, NodeSlotId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -43,7 +45,6 @@ impl Hash for IntrinsicSizeCacheKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum IntrinsicSizeCacheKind {
     MinContentInline,
     MaxContentInline,
@@ -52,7 +53,6 @@ pub(crate) enum IntrinsicSizeCacheKind {
 }
 
 #[derive(Default)]
-#[allow(dead_code)]
 struct IntrinsicSizeMaps {
     min_content_inline_size: HashMap<IntrinsicSizeCacheKey, CssPixels>,
     max_content_inline_size: HashMap<IntrinsicSizeCacheKey, CssPixels>,
@@ -60,7 +60,6 @@ struct IntrinsicSizeMaps {
     max_content_block_size: HashMap<IntrinsicSizeCacheKey, CssPixels>,
 }
 
-#[allow(dead_code)]
 impl IntrinsicSizeMaps {
     fn values(&self, kind: IntrinsicSizeCacheKind) -> &HashMap<IntrinsicSizeCacheKey, CssPixels> {
         match kind {
@@ -82,11 +81,16 @@ impl IntrinsicSizeMaps {
 }
 
 #[derive(Default)]
-#[allow(dead_code)]
 struct IntrinsicSizeCacheSlot {
     generation: u8,
     epoch: u16,
     sizes: Option<Box<IntrinsicSizeMaps>>,
+}
+
+#[derive(Default)]
+struct SavedAbsposLayoutInputsSlot {
+    generation: u8,
+    inputs: Option<Box<AbsposLayoutInputs>>,
 }
 
 // NodeData is sized to one cache line; the aligned chunk keeps every densely-strided slot
@@ -128,8 +132,8 @@ pub(crate) struct LayoutNodeArena {
     free_list: Vec<u32>,
     next_index: u32,
     live_count: u32,
-    #[allow(dead_code)]
     intrinsic_size_caches: RefCell<Vec<IntrinsicSizeCacheSlot>>,
+    saved_abspos_layout_inputs: RefCell<Vec<SavedAbsposLayoutInputsSlot>>,
     owner_thread: thread::ThreadId,
 }
 
@@ -143,6 +147,7 @@ impl LayoutNodeArena {
             next_index: 0,
             live_count: 0,
             intrinsic_size_caches: RefCell::new(Vec::new()),
+            saved_abspos_layout_inputs: RefCell::new(Vec::new()),
             owner_thread: thread::current().id(),
         }
     }
@@ -226,6 +231,9 @@ impl LayoutNodeArena {
         if let Some(slot) = self.intrinsic_size_caches.get_mut().get_mut(index as usize) {
             *slot = IntrinsicSizeCacheSlot::default();
         }
+        if let Some(slot) = self.saved_abspos_layout_inputs.get_mut().get_mut(index as usize) {
+            *slot = SavedAbsposLayoutInputsSlot::default();
+        }
         *self.data_mut(index) = NodeData::default();
 
         self.live_count = self
@@ -256,7 +264,6 @@ impl LayoutNodeArena {
         data
     }
 
-    #[allow(dead_code)]
     pub(crate) fn data_or_null(&self, id: NodeSlotId) -> *mut NodeData {
         if id.is_invalid() {
             return std::ptr::null_mut();
@@ -264,7 +271,6 @@ impl LayoutNodeArena {
         self.data(id)
     }
 
-    #[allow(dead_code)]
     fn slot_for_data(&self, data: *const NodeData) -> (u32, SlotMetadata) {
         assert!(!data.is_null(), "layout node arena data pointer is null");
         let data_address = data as usize;
@@ -300,7 +306,6 @@ impl LayoutNodeArena {
         (index, metadata)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn intrinsic_size_cache_get(
         &self,
         data: &NodeData,
@@ -320,7 +325,6 @@ impl LayoutNodeArena {
         slot.sizes.as_ref()?.values(kind).get(&key).copied()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn intrinsic_size_cache_put(
         &self,
         data: &NodeData,
@@ -351,7 +355,95 @@ impl LayoutNodeArena {
             .insert(key, value);
     }
 
-    #[allow(dead_code)]
+    pub(crate) fn saved_abspos_layout_inputs(&self, data: *const NodeData) -> Option<AbsposLayoutInputs> {
+        let (index, metadata) = self.slot_for_data(data);
+        let slots = self.saved_abspos_layout_inputs.borrow();
+        let inputs = slots
+            .get(index as usize)
+            .filter(|slot| slot.generation == metadata.generation)
+            .and_then(|slot| slot.inputs.as_deref().copied());
+
+        // SAFETY: slot_for_data() established that data points to a live slot
+        // in this arena.
+        let flags = unsafe { (&raw const (*data).flags).read() };
+        assert_eq!(
+            flags & NodeFlag::HasSavedAbsposLayoutInputs as u32 != 0,
+            inputs.is_some(),
+            "saved abspos input presence flag disagrees with the arena side table"
+        );
+        assert_eq!(
+            flags & NodeFlag::SavedAbsposCbDerivesFromOwnComputedValues as u32 != 0,
+            inputs.is_some_and(|inputs| inputs.containing_block_info.derives_from_own_computed_values),
+            "saved abspos containing-block flag disagrees with the arena side table"
+        );
+        assert_eq!(
+            flags & NodeFlag::SavedAbsposAlignmentDerivesFromOwnComputedValues as u32 != 0,
+            inputs.is_some_and(|inputs| { inputs.static_position_rect.alignment_derives_from_own_computed_values }),
+            "saved abspos alignment flag disagrees with the arena side table"
+        );
+        inputs
+    }
+
+    pub(crate) fn set_saved_abspos_layout_inputs(&self, data: *mut NodeData, inputs: Option<AbsposLayoutInputs>) {
+        let (index, metadata) = self.slot_for_data(data);
+        let mut slots = self.saved_abspos_layout_inputs.borrow_mut();
+        if slots.len() <= index as usize {
+            slots.resize_with(index as usize + 1, SavedAbsposLayoutInputsSlot::default);
+        }
+        let slot = &mut slots[index as usize];
+        if slot.generation != metadata.generation {
+            *slot = SavedAbsposLayoutInputsSlot {
+                generation: metadata.generation,
+                inputs: inputs.map(Box::new),
+            };
+        } else if let Some(inputs) = inputs {
+            if let Some(saved_inputs) = &mut slot.inputs {
+                **saved_inputs = inputs;
+            } else {
+                slot.inputs = Some(Box::new(inputs));
+            }
+        } else {
+            slot.inputs = None;
+        }
+        drop(slots);
+
+        let saved_abspos_flags = NodeFlag::HasSavedAbsposLayoutInputs as u32
+            | NodeFlag::SavedAbsposCbDerivesFromOwnComputedValues as u32
+            | NodeFlag::SavedAbsposAlignmentDerivesFromOwnComputedValues as u32;
+        // SAFETY: slot_for_data() established that data points to a live slot
+        // in this arena, and layout/tree building serialize mutation on the
+        // arena's owner thread.
+        unsafe {
+            let flags = &raw mut (*data).flags;
+            let mut value = flags.read() & !saved_abspos_flags;
+            if let Some(inputs) = inputs {
+                value |= NodeFlag::HasSavedAbsposLayoutInputs as u32;
+                if inputs.containing_block_info.derives_from_own_computed_values {
+                    value |= NodeFlag::SavedAbsposCbDerivesFromOwnComputedValues as u32;
+                }
+                if inputs.static_position_rect.alignment_derives_from_own_computed_values {
+                    value |= NodeFlag::SavedAbsposAlignmentDerivesFromOwnComputedValues as u32;
+                }
+            }
+            flags.write(value);
+        }
+    }
+
+    pub(crate) fn transfer_saved_abspos_layout_inputs(&self, old: NodeSlotId, new: NodeSlotId) {
+        self.assert_owner_thread();
+        assert_ne!(old, new, "cannot transfer saved abspos inputs to the same arena slot");
+
+        let old_data = self.data(old);
+        let new_data = self.data(new);
+        // SAFETY: data() returns pointers to live slots.
+        if !unsafe { kind_is_box((*old_data).kind) && kind_is_box((*new_data).kind) } {
+            return;
+        }
+        if let Some(inputs) = self.saved_abspos_layout_inputs(old_data) {
+            self.set_saved_abspos_layout_inputs(new_data, Some(inputs));
+        }
+    }
+
     pub(crate) unsafe fn from_handle<'a>(arena: *mut c_void) -> &'a Self {
         assert!(!arena.is_null(), "layout node arena handle is null");
         // SAFETY: Layout passes borrow the document's arena synchronously,
@@ -423,5 +515,19 @@ pub unsafe extern "C" fn layout_arena_free(arena: *mut c_void, id: NodeSlotId, g
         // SAFETY: The C++ wrapper keeps the arena alive for this call and
         // serializes all access on the document thread.
         unsafe { &mut *arena.cast::<LayoutNodeArena>() }.free(id, generation);
+    });
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_transfer_saved_abspos_layout_inputs(
+    arena: *mut c_void,
+    old: NodeSlotId,
+    new: NodeSlotId,
+) {
+    abort_on_panic(|| {
+        assert!(!arena.is_null(), "layout node arena handle is null");
+        // SAFETY: Both slots belong to this live arena for the duration of
+        // the synchronous replacement callback.
+        unsafe { &*arena.cast::<LayoutNodeArena>() }.transfer_saved_abspos_layout_inputs(old, new);
     });
 }

@@ -1,0 +1,5 @@
+style facts built: 14
+box facts built: 16
+table facts built: 14
+style cache reused: true
+at most one style build per visited box: true

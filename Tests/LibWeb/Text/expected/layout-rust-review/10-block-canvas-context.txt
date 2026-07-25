@@ -1,0 +1,3 @@
+canvas height: 75
+formatting contexts created: 3
+formatting contexts run: 3

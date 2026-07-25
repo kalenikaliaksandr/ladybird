@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    internals.resetLayoutFfiCounters();
+</script>
+<style>
+    #containing-block {
+        position: relative;
+        width: 200px;
+        height: 200px;
+    }
+    #anchor {
+        position: absolute;
+        anchor-name: --anchor;
+        left: 40px;
+        top: 30px;
+        width: 20px;
+        height: 10px;
+    }
+    #positioned {
+        position: absolute;
+        position-anchor: --anchor;
+        left: anchor(right, 3px);
+        top: anchor(bottom, 4px);
+        width: 5px;
+        height: 5px;
+    }
+    #inline-host {
+        position: relative;
+    }
+    #atomic-inline {
+        display: inline-block;
+        width: 6px;
+        height: 10px;
+    }
+    #inline-positioned {
+        position: absolute;
+        inset: 0;
+    }
+    #absolute-outer {
+        position: absolute;
+        top: 220px;
+        width: 400px;
+        height: 400px;
+        font: 20px SerenitySans;
+        line-height: 20px;
+    }
+    #exact-case {
+        margin: 20px;
+    }
+    #exact-host {
+        position: relative;
+    }
+    #exact-atomic {
+        display: inline-block;
+        width: 6px;
+        height: 10px;
+        padding: 2px 4px;
+        border: 3px solid black;
+    }
+    #exact-overlay {
+        position: absolute;
+        inset: 0;
+    }
+</style>
+<div id="containing-block">
+    <div id="anchor"></div>
+    <div id="positioned"></div>
+    <div><span id="inline-host">x<span id="atomic-inline"></span><span id="inline-positioned"></span></span></div>
+</div>
+<div id="absolute-outer"><div id="exact-case"><span id="exact-host">x<span id="exact-atomic"></span><span id="exact-overlay"></span></span></div></div>
+<script>
+    test(() => {
+        const rect = document.getElementById("positioned").getBoundingClientRect();
+        const inlineRect = document.getElementById("inline-positioned").getBoundingClientRect();
+        const exactRect = document.getElementById("exact-overlay").getBoundingClientRect();
+        const counters = internals.layoutFfiCounters();
+        println(`position: ${rect.x},${rect.y}`);
+        println(`inline size: ${inlineRect.width},${inlineRect.height}`);
+        println(`exact inline size: ${exactRect.width},${exactRect.height}`);
+        println(`engine entered: ${counters["ops.absposEngineEntries"] > 0}`);
+        println(`anchor resolved: ${counters["ops.absposAnchorResolveEntries"] > 0}`);
+        println(`anchor facts callback: ${counters["crossings.absposAnchorFactsCallbacks"] > 0}`);
+        println(`anchor lookup callback: ${counters["crossings.absposAnchorLookupCallbacks"] > 0}`);
+        println(`anchor handles balanced: ${counters["crossings.anchorNameRetainEntries"] === counters["crossings.anchorNameReleaseEntries"]}`);
+        println(`registered and consumed: ${counters["ops.absposRegisterEntries"] > 0 && counters["ops.absposTakeEntries"] > 0}`);
+        println(`inline CB attempt: ${counters["ops.absposInlineCbAttempts"] > 0}`);
+        println(`inline CB normal fragment: ${counters["ops.absposInlineCbNormalFragments"] > 0}`);
+        println(`inline CB atomic fragment: ${counters["ops.absposInlineCbAtomicFragments"] > 0}`);
+        println(`inline CB success: ${counters["ops.absposInlineCbSuccesses"] > 0}`);
+    });
+</script>

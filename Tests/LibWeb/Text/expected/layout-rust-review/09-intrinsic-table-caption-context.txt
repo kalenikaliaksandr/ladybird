@@ -1,0 +1,3 @@
+grid height: 162
+formatting contexts created: 26
+formatting contexts run: 24

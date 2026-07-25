@@ -8,28 +8,24 @@
 #[path = "../../../../RustAllocator.rs"]
 mod rust_allocator;
 
-#[allow(dead_code)]
 mod box_facts;
 #[allow(dead_code)]
 mod css_enums;
-#[allow(dead_code)]
 mod css_pixels;
 #[path = "../../../CSS/Rust/src/display.rs"]
 #[allow(dead_code)]
 mod display;
-
-#[allow(dead_code)]
-mod ffi_stats;
-#[allow(dead_code)]
-mod geometry;
 mod layout_node_arena;
 pub mod node_data;
-#[allow(dead_code)]
+
+mod ffi_stats;
+mod formatting_context;
+mod geometry;
+mod layout_state;
 mod style_facts;
 #[cfg(test)]
 mod tests;
 mod tree_builder;
-#[allow(dead_code)]
 mod used_values;
 
 use std::panic::AssertUnwindSafe;

@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        const counters = internals.layoutFfiCounters();
+        const keys = Object.keys(counters);
+        println(`has counters: ${keys.length > 0}`);
+        println(`all non-negative: ${keys.every(key => counters[key] >= 0)}`);
+
+        internals.resetLayoutFfiCounters();
+        const afterReset = internals.layoutFfiCounters();
+        println(`all zero after reset: ${keys.every(key => afterReset[key] === 0)}`);
+    });
+</script>

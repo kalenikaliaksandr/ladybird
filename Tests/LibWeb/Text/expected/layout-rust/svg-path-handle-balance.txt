@@ -1,0 +1,4 @@
+path handle retains: 1
+path handle releases: 1
+path handles retained: true
+path handles balanced: true

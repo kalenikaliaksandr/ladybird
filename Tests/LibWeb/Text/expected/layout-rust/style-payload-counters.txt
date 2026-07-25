@@ -1,0 +1,4 @@
+style schema registrations: 0
+style payload fetches: 16
+style residual batch decodes: 12
+residual batches do not exceed payload fetches: true
