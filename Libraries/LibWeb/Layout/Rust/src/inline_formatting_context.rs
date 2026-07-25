@@ -212,7 +212,7 @@ pub(crate) mod pieces {
         pieces.sort_by_key(|piece| (piece.line_index, piece.depth, piece.discovery_index));
     }
 
-    #[derive(Clone, Debug)]
+    #[derive(Debug)]
     struct PerLine {
         line_index: usize,
         has_contributions: bool,
@@ -243,7 +243,7 @@ pub(crate) mod pieces {
         }
     }
 
-    #[derive(Clone, Debug)]
+    #[derive(Debug)]
     struct PerNode {
         node: Node,
         parent_index: Option<usize>,
@@ -402,15 +402,25 @@ pub(crate) mod pieces {
         });
 
         for node_index in deepest_first {
-            let snapshot = per_nodes[node_index].clone();
-            let pointer = context.try_used_pointer(snapshot.node);
+            let (node, parent_index, depth, first_line_with_content, last_line_with_content, lines) = {
+                let per_node = &mut per_nodes[node_index];
+                (
+                    per_node.node,
+                    per_node.parent_index,
+                    per_node.depth,
+                    per_node.first_line_with_content,
+                    per_node.last_line_with_content,
+                    std::mem::take(&mut per_node.lines),
+                )
+            };
+            let pointer = context.try_used_pointer(node);
             let used = if pointer.is_null() {
                 None
             } else {
                 // SAFETY: The stable entry is read only.
                 Some(unsafe { &*pointer })
             };
-            let reversed = context.facts(snapshot.node).inline_axis_is_reverse;
+            let reversed = context.facts(node).inline_axis_is_reverse;
             let (
                 border_padding_low,
                 border_padding_high,
@@ -449,12 +459,12 @@ pub(crate) mod pieces {
                 )
             };
 
-            for line in snapshot.lines {
+            for line in lines {
                 if !line.has_contributions {
                     if let Some(position) = line.interrupting_block_position {
                         staged.push(StagedPiece {
                             piece: InlineBoxPieceData {
-                                node: snapshot.node,
+                                node,
                                 first_fragment_index: line.first_fragment_index.unwrap_or(0),
                                 fragment_count: line.fragment_count,
                                 border_box_rect: CssPixelRect {
@@ -466,14 +476,14 @@ pub(crate) mod pieces {
                                 is_geometry_only_placeholder: true,
                             },
                             line_index: line.line_index as u32,
-                            depth: snapshot.depth,
+                            depth,
                             discovery_index: node_index,
                         });
                     }
                     continue;
                 }
-                let first = snapshot.first_line_with_content == Some(line.line_index);
-                let last = snapshot.last_line_with_content == Some(line.line_index);
+                let first = first_line_with_content == Some(line.line_index);
+                let last = last_line_with_content == Some(line.line_index);
                 let has_low_edge = if reversed { last } else { first };
                 let has_high_edge = if reversed { first } else { last };
                 let content_block_start = line
@@ -483,7 +493,7 @@ pub(crate) mod pieces {
                 let content_block_length = if line.first_direct_fragment_block_start.is_some() {
                     line.max_direct_fragment_block_length
                 } else {
-                    context.style(snapshot.node).line_height
+                    context.style(node).line_height
                 };
                 let border_inline_start = line.contributions_inline_start
                     - if has_low_edge {
@@ -516,7 +526,7 @@ pub(crate) mod pieces {
                 };
                 staged.push(StagedPiece {
                     piece: InlineBoxPieceData {
-                        node: snapshot.node,
+                        node,
                         first_fragment_index: line.first_fragment_index.unwrap_or(0),
                         fragment_count: line.fragment_count,
                         border_box_rect: rect,
@@ -524,10 +534,10 @@ pub(crate) mod pieces {
                         is_geometry_only_placeholder: false,
                     },
                     line_index: line.line_index as u32,
-                    depth: snapshot.depth,
+                    depth,
                     discovery_index: node_index,
                 });
-                if let Some(parent_index) = snapshot.parent_index {
+                if let Some(parent_index) = parent_index {
                     let parent_line = ensure_line(&mut per_nodes[parent_index], line.line_index);
                     note_contribution(
                         parent_line,
@@ -697,22 +707,22 @@ impl InlineFormattingContext {
         pointer
     }
 
-    pub(crate) fn navigate(&self, callback: crate::box_facts::FfiLayoutNavCallback, node: Node) -> Node {
-        bump(FfiOp::NavigationCallback);
-        // SAFETY: Navigation is synchronous and the host owns the nodes.
-        unsafe { callback(self.callbacks.navigation.context, node) }
-    }
-
     pub(crate) fn parent_node(&self, node: Node) -> Node {
-        self.navigate(self.callbacks.navigation.parent, node)
+        self.callbacks
+            .navigation
+            .navigate(self.callbacks.navigation.parent, node)
     }
 
     pub(crate) fn first_child(&self, node: Node) -> Node {
-        self.navigate(self.callbacks.navigation.first_child, node)
+        self.callbacks
+            .navigation
+            .navigate(self.callbacks.navigation.first_child, node)
     }
 
     pub(crate) fn next_sibling(&self, node: Node) -> Node {
-        self.navigate(self.callbacks.navigation.next_sibling, node)
+        self.callbacks
+            .navigation
+            .navigate(self.callbacks.navigation.next_sibling, node)
     }
 
     pub(crate) fn nearest_fragmented_inline_ancestor(&self, node: Node) -> Node {
@@ -1035,8 +1045,7 @@ impl InlineFormattingContext {
         let mut leading_padding = CssPixels::default();
         let mut absolute_boxes = Vec::new();
 
-        while let Some(item_ref) = iterator.next() {
-            let mut item = item_ref.clone();
+        while let Some(mut item) = iterator.next() {
             let line_starts_with_whitespace = self
                 .line_data()
                 .line_boxes
@@ -1248,12 +1257,7 @@ impl InlineFormattingContext {
                             } else {
                                 marker.offset().1
                             };
-                            let inline_size =
-                                if self.input.containing_block_constraints.has_percentage_basis_inline_size {
-                                    self.input.containing_block_constraints.percentage_basis_inline_size
-                                } else {
-                                    CssPixels::default()
-                                };
+                            let inline_size = self.input.containing_block_constraints.inline_basis();
                             static_position.rect.offset.inline_offset = CssPixels::default();
                             static_position.rect.offset.block_offset = block_position;
                             static_position.rect.size.inline_size = inline_size;

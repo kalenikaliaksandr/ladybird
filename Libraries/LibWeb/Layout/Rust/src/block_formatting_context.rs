@@ -13,7 +13,7 @@ use super::{
     formatting_context_type_created_by_box,
 };
 use crate::box_facts::FfiLayoutBoxFacts;
-use crate::css_enums::{clear, direction, float, list_style_position, text_align};
+use crate::css_enums::{clear, direction, float, layout_mode, list_style_position, text_align};
 use crate::css_pixels::CssPixels;
 use crate::ffi_stats::{FfiOp, bump};
 use crate::geometry::{
@@ -27,9 +27,6 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 
 pub(crate) type Node = *mut c_void;
-
-const LAYOUT_MODE_NORMAL: u8 = 0;
-const LAYOUT_MODE_INTRINSIC_SIZING: u8 = 1;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct CssPixelRect {
@@ -211,7 +208,6 @@ pub(crate) struct CaptionLayoutResult {
 pub(crate) struct BlockFormattingContext {
     state: *mut c_void,
     root: Node,
-    parent_rust_fc: *mut c_void,
     rust_context_handle: *mut c_void,
     layout_mode: u8,
     callbacks: FfiLayoutFcCallbacks,
@@ -230,7 +226,7 @@ impl BlockFormattingContext {
     pub(crate) fn new(
         state: *mut c_void,
         root: Node,
-        parent_rust_fc: *mut c_void,
+        _parent_rust_fc: *mut c_void,
         rust_context_handle: *mut c_void,
         layout_mode: u8,
         callbacks: FfiLayoutFcCallbacks,
@@ -238,7 +234,6 @@ impl BlockFormattingContext {
         Self {
             state,
             root,
-            parent_rust_fc,
             rust_context_handle,
             layout_mode,
             callbacks,
@@ -289,26 +284,22 @@ impl BlockFormattingContext {
         pointer
     }
 
-    fn navigate(&self, callback: crate::box_facts::FfiLayoutNavCallback, node: Node) -> Node {
-        bump(FfiOp::NavigationCallback);
-        // SAFETY: Navigation is synchronous and the host owns the nodes.
-        unsafe { callback(self.callbacks.navigation.context, node) }
-    }
-
     fn first_child(&self, node: Node) -> Node {
-        self.navigate(self.callbacks.navigation.first_child, node)
+        self.callbacks
+            .navigation
+            .navigate(self.callbacks.navigation.first_child, node)
     }
 
     fn next_sibling(&self, node: Node) -> Node {
-        self.navigate(self.callbacks.navigation.next_sibling, node)
-    }
-
-    fn previous_sibling(&self, node: Node) -> Node {
-        self.navigate(self.callbacks.navigation.previous_sibling, node)
+        self.callbacks
+            .navigation
+            .navigate(self.callbacks.navigation.next_sibling, node)
     }
 
     fn containing_block(&self, node: Node) -> Node {
-        self.navigate(self.callbacks.navigation.containing_block, node)
+        self.callbacks
+            .navigation
+            .navigate(self.callbacks.navigation.containing_block, node)
     }
 
     fn children(&self, node: Node) -> Vec<Node> {
@@ -882,11 +873,7 @@ impl BlockFormattingContext {
             let used = self.used(node);
             let margins = used.margin_top + used.margin_bottom;
             // 2. Let size be the size of the initial containing block in the block flow direction minus margins.
-            let size = if constraints.has_percentage_basis_block_size {
-                constraints.percentage_basis_block_size
-            } else {
-                CssPixels::default()
-            } - margins;
+            let size = constraints.block_basis() - margins;
             // 3. Return the bigger value of size and the normal border box size the element would have
             //    according to the CSS specification.
             block_size = block_size.max(size);
@@ -912,11 +899,7 @@ impl BlockFormattingContext {
                 let used = self.used(node);
                 let margins = used.margin_top + used.margin_bottom;
                 // 2. Let size be the size of element's parent element's content box in the block flow direction minus margins.
-                let size = if constraints.has_percentage_basis_block_size {
-                    constraints.percentage_basis_block_size
-                } else {
-                    CssPixels::default()
-                } - margins;
+                let size = constraints.block_basis() - margins;
                 // 3. Return the bigger value of size and the normal border box size the element would have
                 //    according to the CSS specification.
                 block_size = block_size.max(size);
@@ -1144,8 +1127,8 @@ impl BlockFormattingContext {
         *self.bands.borrow_mut() = vec![FloatBand::default()];
         self.lowest_left_margin_edge.set(CssPixels::default());
         self.lowest_right_margin_edge.set(CssPixels::default());
-        let floats = self.floats.borrow().clone();
-        for floating_box in floats {
+        let floats = self.floats.borrow();
+        for &floating_box in floats.iter() {
             self.add_float_to_bands(
                 floating_box,
                 floating_box.containing_block_rect_in_root_coordinate_space,
@@ -1363,10 +1346,6 @@ impl BlockFormattingContext {
         self.margin_state.borrow_mut().reset();
     }
 
-    pub(crate) fn current_collapsed_margin(&self) -> CssPixels {
-        self.margin_state.borrow().current_collapsed_margin()
-    }
-
     pub(crate) fn clear_floating_boxes(
         &self,
         node: Node,
@@ -1535,7 +1514,7 @@ impl BlockFormattingContext {
         // Inline-level boxes can contribute a baseline to their parent line box, so they still need their contents
         // laid out even when their own intrinsic size is already definite.
         if !force_independent_context_run
-            && self.layout_mode == LAYOUT_MODE_INTRINSIC_SIZING
+            && self.layout_mode == layout_mode::INTRINSIC_SIZING
             && !facts.is_inline
             && used.inline_size_constraint == FfiSizeConstraint::None
             && used.block_size_constraint == FfiSizeConstraint::None
@@ -1589,7 +1568,7 @@ impl BlockFormattingContext {
         let facts = self.facts(node);
 
         if facts.is_absolutely_positioned {
-            if self.layout_mode == LAYOUT_MODE_NORMAL {
+            if self.layout_mode == layout_mode::NORMAL {
                 // NB: An originally-inline absolutely positioned box never reaches this path; the tree
                 //     builder keeps out-of-flow boxes in inline context, where static position markers
                 //     pin them at their exact flow position.
@@ -2039,7 +2018,7 @@ impl BlockFormattingContext {
         }
         self.block_offset_of_current_block_container.set(saved);
 
-        if self.layout_mode == LAYOUT_MODE_INTRINSIC_SIZING && !self.used(block_container).has_definite_inline_size() {
+        if self.layout_mode == layout_mode::INTRINSIC_SIZING && !self.used(block_container).has_definite_inline_size() {
             let mut inline_size = self.greatest_child_inline_size_including_floats(block_container);
             let style = self.style(block_container);
             // NOTE: Min and max constraints are not applied to a box that is being sized as intrinsic because
@@ -2127,7 +2106,7 @@ impl BlockFormattingContext {
             self.block_offset_of_current_block_container.set(saved);
         }
 
-        if self.layout_mode == LAYOUT_MODE_INTRINSIC_SIZING && !self.used(fieldset).has_definite_inline_size() {
+        if self.layout_mode == layout_mode::INTRINSIC_SIZING && !self.used(fieldset).has_definite_inline_size() {
             let mut inline_size = self.greatest_child_inline_size_including_floats(fieldset);
             let style = self.style(fieldset);
             if self.used(fieldset).inline_size_constraint == FfiSizeConstraint::None {
@@ -2280,8 +2259,8 @@ impl BlockFormattingContext {
 
     pub(crate) fn parent_context_did_dimension_child_root_box(&self) {
         self.was_notified_after_parent_dimensioned_my_root_box.set(true);
-        let floats = self.floats.borrow().clone();
-        for floating_box in floats {
+        let floats = self.floats.borrow();
+        for &floating_box in floats.iter() {
             // SAFETY: Float records retain stable state-owned used-values pointers.
             let used = unsafe { &*floating_box.used_values };
             let content_block_offset = floating_box.top_margin_edge + used.margin_top + used.border_box_top(false);
@@ -2409,10 +2388,6 @@ impl BlockFormattingContext {
             self.finish_inside_layout(caption);
         }
         result
-    }
-
-    pub(crate) fn parent_rust_fc(&self) -> *mut c_void {
-        self.parent_rust_fc
     }
 
     pub(crate) fn rust_context_handle(&self) -> *mut c_void {
@@ -2665,11 +2640,7 @@ impl BlockFormattingContext {
             if self.used(block_container).inline_size_constraint == FfiSizeConstraint::None {
                 // https://www.w3.org/TR/css-sizing-3/#sizing-values
                 // Percentages are resolved against the appropriate inline or block size of the containing block.
-                let containing_inline_size = if input.containing_block_constraints.has_percentage_basis_inline_size {
-                    input.containing_block_constraints.percentage_basis_inline_size
-                } else {
-                    CssPixels::default()
-                };
+                let containing_inline_size = input.containing_block_constraints.inline_basis();
                 let available_inline_size = AvailableSize::definite(containing_inline_size);
                 let sizing = self.sizing();
                 let style = self.style(block_container);

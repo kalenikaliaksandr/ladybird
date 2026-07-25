@@ -4,11 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-// Enum variants and repr(C) fields are consumed directly by C++ through the
-// generated header even when Rust does not construct each one yet.
-#![allow(dead_code)]
-
-use crate::css_pixels::CssPixels;
+use crate::css_pixels::{CssPixels, clamp_to_max_dimension_value};
 use std::ffi::c_void;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -134,16 +130,6 @@ impl Default for UsedValuesCore {
 }
 
 impl UsedValuesCore {
-    const MAX_DIMENSION_RAW: i32 = 17_895_700 * 64;
-
-    pub(crate) fn clamp_dimension(value: CssPixels) -> CssPixels {
-        if value.raw_value() == i32::MAX || value.raw_value() == i32::MIN {
-            CssPixels::from_raw(Self::MAX_DIMENSION_RAW)
-        } else {
-            value
-        }
-    }
-
     pub(crate) fn has_definite_inline_size(&self) -> bool {
         self.has_definite_inline_size && self.inline_size_constraint == FfiSizeConstraint::None
     }
@@ -153,12 +139,12 @@ impl UsedValuesCore {
     }
 
     pub(crate) fn set_content_inline_size(&mut self, value: CssPixels) {
-        self.content_inline_size = Self::clamp_dimension(value.max(CssPixels::default()));
+        self.content_inline_size = clamp_to_max_dimension_value(value.max(CssPixels::default()));
         self.has_definite_inline_size = true;
     }
 
     pub(crate) fn set_content_block_size(&mut self, value: CssPixels) {
-        self.content_block_size = Self::clamp_dimension(value.max(CssPixels::default()));
+        self.content_block_size = clamp_to_max_dimension_value(value.max(CssPixels::default()));
     }
 
     fn rounded_half_border(value: CssPixels) -> CssPixels {

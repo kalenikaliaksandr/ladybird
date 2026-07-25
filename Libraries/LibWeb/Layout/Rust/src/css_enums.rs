@@ -9,6 +9,20 @@
 // dependency, so keep the subset used by the shared display source here.
 // LayoutRustBridge.cpp pins every value against the generated C++ enums.
 
+pub mod layout_mode {
+    pub const NORMAL: u8 = 0;
+    pub const INTRINSIC_SIZING: u8 = 1;
+}
+
+pub mod box_sizing {
+    pub const BORDER_BOX: u8 = 0;
+    pub const CONTENT_BOX: u8 = 1;
+}
+
+pub mod position {
+    pub const RELATIVE: u8 = 2;
+}
+
 pub mod display_box {
     pub const CONTENTS: u8 = 0;
     pub const NONE: u8 = 1;

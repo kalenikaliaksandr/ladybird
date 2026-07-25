@@ -6,7 +6,6 @@ struct FakeNode {
     parent: *mut FakeNode,
     first_child: *mut FakeNode,
     next_sibling: *mut FakeNode,
-    previous_sibling: *mut FakeNode,
     containing_block: *mut FakeNode,
 }
 
@@ -22,29 +21,23 @@ unsafe extern "C" fn next_sibling(_: *mut c_void, node: *mut c_void) -> *mut c_v
     unsafe { (*node.cast::<FakeNode>()).next_sibling.cast() }
 }
 
-unsafe extern "C" fn previous_sibling(_: *mut c_void, node: *mut c_void) -> *mut c_void {
-    unsafe { (*node.cast::<FakeNode>()).previous_sibling.cast() }
-}
-
 unsafe extern "C" fn containing_block(_: *mut c_void, node: *mut c_void) -> *mut c_void {
     unsafe { (*node.cast::<FakeNode>()).containing_block.cast() }
 }
 
 #[test]
-fn navigation_vtable_exposes_exactly_the_five_links() {
+fn navigation_vtable_exposes_exactly_the_four_links() {
     let callbacks = FfiLayoutNavCallbacks {
         context: std::ptr::null_mut(),
         parent,
         first_child,
         next_sibling,
-        previous_sibling,
         containing_block,
     };
     let mut relative = FakeNode {
         parent: std::ptr::null_mut(),
         first_child: std::ptr::null_mut(),
         next_sibling: std::ptr::null_mut(),
-        previous_sibling: std::ptr::null_mut(),
         containing_block: std::ptr::null_mut(),
     };
     let relative_pointer = (&raw mut relative).cast::<c_void>();
@@ -52,7 +45,6 @@ fn navigation_vtable_exposes_exactly_the_five_links() {
         parent: relative_pointer.cast(),
         first_child: relative_pointer.cast(),
         next_sibling: relative_pointer.cast(),
-        previous_sibling: relative_pointer.cast(),
         containing_block: relative_pointer.cast(),
     };
     let node_pointer = (&raw mut node).cast::<c_void>();
@@ -61,7 +53,6 @@ fn navigation_vtable_exposes_exactly_the_five_links() {
         callbacks.parent,
         callbacks.first_child,
         callbacks.next_sibling,
-        callbacks.previous_sibling,
         callbacks.containing_block,
     ] {
         assert_eq!(unsafe { callback(callbacks.context, node_pointer) }, relative_pointer);

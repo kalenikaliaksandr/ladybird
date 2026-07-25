@@ -41,7 +41,6 @@ private:
     [[nodiscard]] Node const* parent(Node const&) const;
     [[nodiscard]] Node const* first_child(Node const&) const;
     [[nodiscard]] Node const* next_sibling(Node const&) const;
-    [[nodiscard]] Node const* previous_sibling(Node const&) const;
     [[nodiscard]] Box const* containing_block(Node const&) const;
     [[nodiscard]] RustFFI::FfiCommitSink commit_sink();
 

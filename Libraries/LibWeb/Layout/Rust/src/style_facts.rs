@@ -10,7 +10,7 @@ use crate::display::FfiDisplay;
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
-pub const STYLE_GROUP_COUNT: usize = 23;
+pub const STYLE_GROUP_COUNT: usize = 22;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -178,20 +178,7 @@ fn truncated_css_pixels(value: f64) -> CssPixels {
 
 fn resolve_calc(calc: *const c_void, percentage_basis: CssPixels) -> CssPixels {
     assert!(!calc.is_null());
-    // Pinned to C++ LengthUnit::Px; LayoutRustBridge.cpp static-asserts it.
-    const LENGTH_UNIT_PX: u8 = 29;
-    let context = CssFfiCalcResolutionContext {
-        basis_kind: 3,
-        basis_value: percentage_basis.to_double(),
-        basis_unit: LENGTH_UNIT_PX,
-        length_resolution_context: std::ptr::null(),
-        callback_context: std::ptr::null_mut(),
-        resolve_non_math_function: no_non_math_function,
-        resolve_channel_keyword: no_channel_keyword,
-        random_base_value: no_random_base_value,
-        absolutize_random_sharing: no_absolutized_random_sharing,
-        resolve_length: no_fallback_length,
-    };
+    let context = px_calc_resolution_context(percentage_basis);
     // SAFETY: The handle is retained by this state and the context contains
     // the same no-host-callback setup used by the Phase B parity hook.
     let result = unsafe { rust_calc_resolve(calc, &raw const context, true) };
@@ -203,6 +190,8 @@ fn resolve_calc(calc: *const c_void, percentage_basis: CssPixels) -> CssPixels {
 /// offset and are decoded by C++ on first use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
+// NB: Some variants are only constructed by C++ through the FFI.
+#[allow(dead_code)]
 pub enum FfiStyleField {
     Width,
     Height,
@@ -263,8 +252,6 @@ pub enum FfiStyleField {
     JustifySelf,
     RowGap,
     ColumnGap,
-    AspectRatio,
-    Appearance,
     BorderCollapse,
     BorderSpacingHorizontal,
     BorderSpacingVertical,
@@ -273,30 +260,16 @@ pub enum FfiStyleField {
     ColumnWidth,
     ColumnCount,
     Containment,
-    ContainerType,
-    ContentVisibility,
     Visibility,
-    WordBreak,
-    ZIndex,
-    FontVariantEmoji,
     LetterSpacing,
     WordSpacing,
     UnicodeBidi,
-    TextTransform,
     TextIndent,
     TabSize,
     GridAutoFlowRow,
     GridAutoFlowDense,
     X,
     Y,
-    UserSelect,
-    Opacity,
-    Isolation,
-    MixBlendMode,
-    TransformStyle,
-    Perspective,
-    ListStylePosition,
-    TextDecorationStyle,
     Count,
 }
 
@@ -307,7 +280,6 @@ pub enum FfiStyleFieldEncoding {
     U8,
     Bool,
     I32,
-    F32,
     F64,
     CssPixels,
 }
@@ -363,7 +335,7 @@ pub unsafe extern "C" fn rust_layout_register_style_schema(entries: *const FfiSt
             let width = match entry.encoding {
                 FfiStyleFieldEncoding::Lazy => 0,
                 FfiStyleFieldEncoding::U8 | FfiStyleFieldEncoding::Bool => 1,
-                FfiStyleFieldEncoding::I32 | FfiStyleFieldEncoding::F32 | FfiStyleFieldEncoding::CssPixels => 4,
+                FfiStyleFieldEncoding::I32 | FfiStyleFieldEncoding::CssPixels => 4,
                 FfiStyleFieldEncoding::F64 => 8,
             };
             assert!(entry.offset as usize + width <= entry.group_size as usize);
@@ -398,7 +370,6 @@ pub struct FfiDecodedStyleValue {
     pub f32_value: f32,
     pub f32_value_2: f32,
     pub f32_value_3: f32,
-    pub f32_value_4: f32,
     /// A transferred Utf16FlyString reference, when non-zero.
     pub retained_name: usize,
 }
@@ -418,7 +389,6 @@ impl Default for FfiDecodedStyleValue {
             f32_value: 0.0,
             f32_value_2: 0.0,
             f32_value_3: 0.0,
-            f32_value_4: 0.0,
             retained_name: 0,
         }
     }
@@ -457,10 +427,6 @@ impl StyleReader {
 
     pub(crate) fn i32(self, field: FfiStyleField) -> i32 {
         unsafe { (self.address(field, FfiStyleFieldEncoding::I32) as *const i32).read_unaligned() }
-    }
-
-    pub(crate) fn f32(self, field: FfiStyleField) -> f32 {
-        unsafe { (self.address(field, FfiStyleFieldEncoding::F32) as *const f32).read_unaligned() }
     }
 
     pub(crate) fn f64(self, field: FfiStyleField) -> f64 {
@@ -582,29 +548,17 @@ pub(crate) struct StyleValues {
     pub justify_content: u8,
     pub justify_items: u8,
     pub justify_self: u8,
-    pub appearance: u8,
     pub border_collapse: u8,
     pub border_spacing_horizontal: CssPixels,
     pub border_spacing_vertical: CssPixels,
     pub caption_side: u8,
     pub table_layout: u8,
-    pub content_visibility: u8,
     pub visibility: u8,
-    pub word_break: u8,
-    pub font_variant_emoji: u8,
     pub letter_spacing: CssPixels,
     pub word_spacing: CssPixels,
     pub unicode_bidi: u8,
-    pub text_transform: u8,
     pub grid_auto_flow_row: bool,
     pub grid_auto_flow_dense: bool,
-    pub user_select: u8,
-    pub opacity: f64,
-    pub isolation: u8,
-    pub mix_blend_mode: u8,
-    pub transform_style: u8,
-    pub list_style_position: u8,
-    pub text_decoration_style: u8,
     vertical_align_override: u16,
 }
 
@@ -657,29 +611,17 @@ impl StyleValues {
             justify_content: reader.u8(FfiStyleField::JustifyContent),
             justify_items: reader.u8(FfiStyleField::JustifyItems),
             justify_self: reader.u8(FfiStyleField::JustifySelf),
-            appearance: reader.u8(FfiStyleField::Appearance),
             border_collapse: reader.u8(FfiStyleField::BorderCollapse),
             border_spacing_horizontal: reader.css_pixels(FfiStyleField::BorderSpacingHorizontal),
             border_spacing_vertical: reader.css_pixels(FfiStyleField::BorderSpacingVertical),
             caption_side: reader.u8(FfiStyleField::CaptionSide),
             table_layout: reader.u8(FfiStyleField::TableLayout),
-            content_visibility: reader.u8(FfiStyleField::ContentVisibility),
             visibility: reader.u8(FfiStyleField::Visibility),
-            word_break: reader.u8(FfiStyleField::WordBreak),
-            font_variant_emoji: reader.u8(FfiStyleField::FontVariantEmoji),
             letter_spacing: reader.css_pixels(FfiStyleField::LetterSpacing),
             word_spacing: reader.css_pixels(FfiStyleField::WordSpacing),
             unicode_bidi: reader.u8(FfiStyleField::UnicodeBidi),
-            text_transform: reader.u8(FfiStyleField::TextTransform),
             grid_auto_flow_row: reader.bool(FfiStyleField::GridAutoFlowRow),
             grid_auto_flow_dense: reader.bool(FfiStyleField::GridAutoFlowDense),
-            user_select: reader.u8(FfiStyleField::UserSelect),
-            opacity: reader.f32(FfiStyleField::Opacity) as f64,
-            isolation: reader.u8(FfiStyleField::Isolation),
-            mix_blend_mode: reader.u8(FfiStyleField::MixBlendMode),
-            transform_style: reader.u8(FfiStyleField::TransformStyle),
-            list_style_position: reader.u8(FfiStyleField::ListStylePosition),
-            text_decoration_style: reader.u8(FfiStyleField::TextDecorationStyle),
             vertical_align_override: u16::MAX,
         }
     }
@@ -733,10 +675,6 @@ impl StyleValues {
         self.decoded(FfiStyleField::Font).f32_value_3
     }
 
-    pub(crate) fn font_pixel_size(self) -> f32 {
-        self.decoded(FfiStyleField::Font).f32_value_4
-    }
-
     pub(crate) fn box_sizing_for_aspect_ratio(self) -> u8 {
         self.decoded(FfiStyleField::BoxSizingForAspectRatio).u8_value
     }
@@ -749,22 +687,6 @@ impl StyleValues {
         self.decoded(FfiStyleField::FlexBasis).size
     }
 
-    pub(crate) fn has_aspect_ratio(self) -> bool {
-        self.decoded(FfiStyleField::AspectRatio).has_value
-    }
-
-    pub(crate) fn aspect_ratio_width(self) -> f64 {
-        self.decoded(FfiStyleField::AspectRatio).f64_value
-    }
-
-    pub(crate) fn aspect_ratio_height(self) -> f64 {
-        self.decoded(FfiStyleField::AspectRatio).f64_value_2
-    }
-
-    pub(crate) fn aspect_ratio_is_degenerate(self) -> bool {
-        self.decoded(FfiStyleField::AspectRatio).bool_value
-    }
-
     pub(crate) fn has_column_count(self) -> bool {
         self.decoded(FfiStyleField::ColumnCount).has_value
     }
@@ -775,18 +697,6 @@ impl StyleValues {
 
     pub(crate) fn containment_bits(self) -> u8 {
         self.decoded(FfiStyleField::Containment).u8_value
-    }
-
-    pub(crate) fn container_type_bits(self) -> u8 {
-        self.decoded(FfiStyleField::ContainerType).u8_value
-    }
-
-    pub(crate) fn has_z_index(self) -> bool {
-        self.decoded(FfiStyleField::ZIndex).has_value
-    }
-
-    pub(crate) fn z_index(self) -> i32 {
-        self.decoded(FfiStyleField::ZIndex).i32_value
     }
 
     pub(crate) fn text_indent_each_line(self) -> bool {
@@ -807,14 +717,6 @@ impl StyleValues {
 
     pub(crate) fn tab_size_number(self) -> f64 {
         self.decoded(FfiStyleField::TabSize).f64_value
-    }
-
-    pub(crate) fn has_perspective(self) -> bool {
-        self.decoded(FfiStyleField::Perspective).has_value
-    }
-
-    pub(crate) fn perspective(self) -> CssPixels {
-        self.decoded(FfiStyleField::Perspective).css_pixels_value
     }
 }
 
@@ -858,50 +760,50 @@ size_accessors! {
 #[cfg(not(test))]
 unsafe extern "C" {
     fn ladybird_layout_release_calc_handle(handle: *const c_void);
-    fn ladybird_layout_release_anchor_name_handle(raw: usize);
+    pub(crate) fn ladybird_layout_release_anchor_name_handle(raw: usize);
 }
 
 #[cfg(test)]
 unsafe fn ladybird_layout_release_calc_handle(_handle: *const c_void) {}
 #[cfg(test)]
-unsafe fn ladybird_layout_release_anchor_name_handle(_raw: usize) {}
+pub(crate) unsafe fn ladybird_layout_release_anchor_name_handle(_raw: usize) {}
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct CssFfiNumericType {
-    has_exponent: [bool; 7],
-    exponents: [i32; 7],
-    has_percent_hint: bool,
-    percent_hint: u8,
-    valid: bool,
+pub(crate) struct CssFfiNumericType {
+    pub(crate) has_exponent: [bool; 7],
+    pub(crate) exponents: [i32; 7],
+    pub(crate) has_percent_hint: bool,
+    pub(crate) percent_hint: u8,
+    pub(crate) valid: bool,
 }
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct CssFfiResolvedCalc {
-    resolved: bool,
-    value: f64,
-    numeric_type: CssFfiNumericType,
+pub(crate) struct CssFfiResolvedCalc {
+    pub(crate) resolved: bool,
+    pub(crate) value: f64,
+    pub(crate) numeric_type: CssFfiNumericType,
 }
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct CssFfiCalcResolutionContext {
-    basis_kind: u8,
-    basis_value: f64,
-    basis_unit: u8,
-    length_resolution_context: *const c_void,
-    callback_context: *mut c_void,
-    resolve_non_math_function: unsafe extern "C" fn(*mut c_void, *const c_void) -> *const c_void,
-    resolve_channel_keyword: unsafe extern "C" fn(*mut c_void, u8, *mut f64) -> bool,
-    random_base_value: unsafe extern "C" fn(*mut c_void, *const c_void, *mut f64) -> bool,
-    absolutize_random_sharing: unsafe extern "C" fn(*mut c_void, *const c_void) -> *const c_void,
-    resolve_length: unsafe extern "C" fn(*mut c_void, f64, u8, *mut f64) -> bool,
+pub(crate) struct CssFfiCalcResolutionContext {
+    pub(crate) basis_kind: u8,
+    pub(crate) basis_value: f64,
+    pub(crate) basis_unit: u8,
+    pub(crate) length_resolution_context: *const c_void,
+    pub(crate) callback_context: *mut c_void,
+    pub(crate) resolve_non_math_function: unsafe extern "C" fn(*mut c_void, *const c_void) -> *const c_void,
+    pub(crate) resolve_channel_keyword: unsafe extern "C" fn(*mut c_void, u8, *mut f64) -> bool,
+    pub(crate) random_base_value: unsafe extern "C" fn(*mut c_void, *const c_void, *mut f64) -> bool,
+    pub(crate) absolutize_random_sharing: unsafe extern "C" fn(*mut c_void, *const c_void) -> *const c_void,
+    pub(crate) resolve_length: unsafe extern "C" fn(*mut c_void, f64, u8, *mut f64) -> bool,
 }
 
 #[cfg(not(test))]
 unsafe extern "C" {
-    fn rust_calc_resolve(
+    pub(crate) fn rust_calc_resolve(
         calculated: *const c_void,
         context: *const CssFfiCalcResolutionContext,
         apply_censoring_and_clamping: bool,
@@ -909,32 +811,72 @@ unsafe extern "C" {
 }
 
 #[cfg(test)]
-unsafe fn rust_calc_resolve(
+pub(crate) unsafe fn rust_calc_resolve(
     _calculated: *const c_void,
     _context: *const CssFfiCalcResolutionContext,
     _apply_censoring_and_clamping: bool,
 ) -> CssFfiResolvedCalc {
-    unreachable!("the CSS static library is not linked into layout Rust unit tests")
+    CssFfiResolvedCalc {
+        resolved: false,
+        value: 0.0,
+        numeric_type: CssFfiNumericType {
+            has_exponent: [false; 7],
+            exponents: [0; 7],
+            has_percent_hint: false,
+            percent_hint: 0,
+            valid: false,
+        },
+    }
 }
 
-unsafe extern "C" fn no_non_math_function(_context: *mut c_void, _value: *const c_void) -> *const c_void {
+pub(crate) unsafe extern "C" fn no_non_math_function(_context: *mut c_void, _value: *const c_void) -> *const c_void {
     std::ptr::null()
 }
 
-unsafe extern "C" fn no_channel_keyword(_context: *mut c_void, _channel: u8, _out: *mut f64) -> bool {
+pub(crate) unsafe extern "C" fn no_channel_keyword(_context: *mut c_void, _channel: u8, _out: *mut f64) -> bool {
     false
 }
 
-unsafe extern "C" fn no_random_base_value(_context: *mut c_void, _value: *const c_void, _out: *mut f64) -> bool {
+pub(crate) unsafe extern "C" fn no_random_base_value(
+    _context: *mut c_void,
+    _value: *const c_void,
+    _out: *mut f64,
+) -> bool {
     false
 }
 
-unsafe extern "C" fn no_absolutized_random_sharing(_context: *mut c_void, _value: *const c_void) -> *const c_void {
+pub(crate) unsafe extern "C" fn no_absolutized_random_sharing(
+    _context: *mut c_void,
+    _value: *const c_void,
+) -> *const c_void {
     std::ptr::null()
 }
 
-unsafe extern "C" fn no_fallback_length(_context: *mut c_void, _value: f64, _unit: u8, _out: *mut f64) -> bool {
+pub(crate) unsafe extern "C" fn no_fallback_length(
+    _context: *mut c_void,
+    _value: f64,
+    _unit: u8,
+    _out: *mut f64,
+) -> bool {
     false
+}
+
+// Pinned to C++ LengthUnit::Px; LayoutRustBridge.cpp static-asserts it.
+pub(crate) const LENGTH_UNIT_PX: u8 = 29;
+
+pub(crate) fn px_calc_resolution_context(percentage_basis: CssPixels) -> CssFfiCalcResolutionContext {
+    CssFfiCalcResolutionContext {
+        basis_kind: 3,
+        basis_value: percentage_basis.to_double(),
+        basis_unit: LENGTH_UNIT_PX,
+        length_resolution_context: std::ptr::null(),
+        callback_context: std::ptr::null_mut(),
+        resolve_non_math_function: no_non_math_function,
+        resolve_channel_keyword: no_channel_keyword,
+        random_base_value: no_random_base_value,
+        absolutize_random_sharing: no_absolutized_random_sharing,
+        resolve_length: no_fallback_length,
+    }
 }
 
 /// Resolves a snapshot calc handle through the CSS crate's existing

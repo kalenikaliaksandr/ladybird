@@ -209,6 +209,18 @@ pub struct FfiLayoutNavCallbacks {
     pub parent: FfiLayoutNavCallback,
     pub first_child: FfiLayoutNavCallback,
     pub next_sibling: FfiLayoutNavCallback,
-    pub previous_sibling: FfiLayoutNavCallback,
     pub containing_block: FfiLayoutNavCallback,
+}
+
+impl FfiLayoutNavCallbacks {
+    pub(crate) fn navigate(&self, callback: FfiLayoutNavCallback, node: *mut c_void) -> *mut c_void {
+        crate::ffi_stats::bump(crate::ffi_stats::FfiOp::NavigationCallback);
+        // SAFETY: Navigation is synchronous and the host owns every node.
+        unsafe { callback(self.context, node) }
+    }
+
+    pub(crate) fn navigate_without_counter(&self, callback: FfiLayoutNavCallback, node: *mut c_void) -> *mut c_void {
+        // SAFETY: Navigation is synchronous and the host owns every node.
+        unsafe { callback(self.context, node) }
+    }
 }

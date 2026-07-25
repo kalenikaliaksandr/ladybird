@@ -5,9 +5,9 @@
  */
 
 use super::fragment::{FragmentBuildFacts, GlyphData, LineBoxFragmentData};
-use crate::css_enums::{white_space_collapse, writing_mode};
+use crate::css_enums::white_space_collapse;
 use crate::css_pixels::CssPixels;
-use crate::geometry::AvailableSize;
+use crate::geometry::{AvailableSize, to_physical};
 use std::ffi::c_void;
 
 pub(crate) trait LineBoxTextProvider {
@@ -26,11 +26,7 @@ pub(crate) struct StaticPositionMarker {
 
 impl StaticPositionMarker {
     pub(crate) fn offset(self) -> (CssPixels, CssPixels) {
-        if self.writing_mode != writing_mode::HORIZONTAL_TB {
-            (self.block_offset, self.inline_offset)
-        } else {
-            (self.inline_offset, self.block_offset)
-        }
+        to_physical(self.writing_mode, self.inline_offset, self.block_offset)
     }
 }
 
@@ -71,27 +67,15 @@ impl LineBoxData {
     }
 
     pub(crate) fn physical_horizontal_extent(&self) -> CssPixels {
-        if self.writing_mode != writing_mode::HORIZONTAL_TB {
-            self.block_length
-        } else {
-            self.inline_length
-        }
+        to_physical(self.writing_mode, self.inline_length, self.block_length).0
     }
 
     pub(crate) fn physical_vertical_extent(&self) -> CssPixels {
-        if self.writing_mode != writing_mode::HORIZONTAL_TB {
-            self.inline_length
-        } else {
-            self.block_length
-        }
+        to_physical(self.writing_mode, self.inline_length, self.block_length).1
     }
 
     pub(crate) fn physical_vertical_end(&self) -> CssPixels {
-        if self.writing_mode != writing_mode::HORIZONTAL_TB {
-            self.inline_length
-        } else {
-            self.block_end
-        }
+        to_physical(self.writing_mode, self.inline_length, self.block_end).1
     }
 
     #[allow(clippy::too_many_arguments)]

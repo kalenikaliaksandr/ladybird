@@ -5,10 +5,27 @@
  */
 
 #[path = "../../../CSS/Rust/src/css_pixels.rs"]
-#[allow(dead_code)]
 mod shared;
 
 pub use shared::*;
+
+const MAX_DIMENSION_RAW: i32 = 17_895_700 * 64;
+
+pub(crate) fn max_dimension_value() -> CssPixels {
+    CssPixels::from_raw(MAX_DIMENSION_RAW)
+}
+
+pub(crate) fn clamp_to_max_dimension_value(value: CssPixels) -> CssPixels {
+    if matches!(value.raw_value(), i32::MIN | i32::MAX) {
+        max_dimension_value()
+    } else {
+        value
+    }
+}
+
+pub(crate) fn css_clamp(value: CssPixels, min: CssPixels, max: CssPixels) -> CssPixels {
+    min.max(value.min(max))
+}
 
 impl std::ops::Add for CssPixels {
     type Output = Self;

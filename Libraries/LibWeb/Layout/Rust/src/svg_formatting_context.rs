@@ -428,19 +428,21 @@ impl SvgFormattingContext {
     }
 
     fn first_child(&self, node: *mut c_void) -> *mut c_void {
-        // SAFETY: SVG traversal is synchronous and all layout nodes remain
-        // owned by the C++ layout tree for the pass.
-        unsafe { (self.callbacks.navigation.first_child)(self.callbacks.navigation.context, node) }
+        self.callbacks
+            .navigation
+            .navigate_without_counter(self.callbacks.navigation.first_child, node)
     }
 
     fn next_sibling(&self, node: *mut c_void) -> *mut c_void {
-        // SAFETY: See first_child().
-        unsafe { (self.callbacks.navigation.next_sibling)(self.callbacks.navigation.context, node) }
+        self.callbacks
+            .navigation
+            .navigate_without_counter(self.callbacks.navigation.next_sibling, node)
     }
 
     fn parent(&self, node: *mut c_void) -> *mut c_void {
-        // SAFETY: See first_child().
-        unsafe { (self.callbacks.navigation.parent)(self.callbacks.navigation.context, node) }
+        self.callbacks
+            .navigation
+            .navigate_without_counter(self.callbacks.navigation.parent, node)
     }
 
     fn svg_facts(&self, node: *mut c_void) -> FfiSvgElementFacts {

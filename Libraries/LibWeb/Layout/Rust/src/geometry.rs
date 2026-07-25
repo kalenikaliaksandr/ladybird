@@ -4,12 +4,26 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-// The layout-input mirrors are intentionally dormant until later port phases.
-#![allow(dead_code)]
-
 use crate::abort_on_panic;
+use crate::css_enums::writing_mode;
 use crate::css_pixels::CssPixels;
 use crate::used_values::FfiCssPixelPoint;
+
+pub(crate) fn to_physical<T>(writing_mode: u8, inline: T, block: T) -> (T, T) {
+    if writing_mode == writing_mode::HORIZONTAL_TB {
+        (inline, block)
+    } else {
+        (block, inline)
+    }
+}
+
+pub(crate) fn to_logical<T>(writing_mode: u8, horizontal: T, vertical: T) -> (T, T) {
+    if writing_mode == writing_mode::HORIZONTAL_TB {
+        (horizontal, vertical)
+    } else {
+        (vertical, horizontal)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -162,6 +176,24 @@ pub struct FfiContainingBlockConstraints {
     pub percentage_basis_block_size: CssPixels,
     pub has_quirks_mode_percentage_basis_block_size: bool,
     pub quirks_mode_percentage_basis_block_size: CssPixels,
+}
+
+impl FfiContainingBlockConstraints {
+    pub(crate) fn inline_basis(self) -> CssPixels {
+        if self.has_percentage_basis_inline_size {
+            self.percentage_basis_inline_size
+        } else {
+            CssPixels::default()
+        }
+    }
+
+    pub(crate) fn block_basis(self) -> CssPixels {
+        if self.has_percentage_basis_block_size {
+            self.percentage_basis_block_size
+        } else {
+            CssPixels::default()
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -5,6 +5,8 @@
  */
 
 use crate::box_facts::FfiLayoutBoxFacts;
+use crate::css_enums::box_sizing;
+use crate::css_pixels::clamp_to_max_dimension_value;
 use crate::ffi_stats::{FfiOp, bump};
 use crate::formatting_context::grid::facts::GridStyleFacts;
 use crate::formatting_context::inline::iterator::text::TextNodeFacts;
@@ -18,6 +20,7 @@ use crate::style_facts::{FfiStyleField, LazyStyleCache, StyleValues};
 use crate::used_values::UsedValuesCore;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::mem::MaybeUninit;
 use std::ptr::null_mut;
 
@@ -25,6 +28,29 @@ const PAGE_BITS: usize = 4;
 const PAGE_SIZE: usize = 1 << PAGE_BITS;
 const PAGE_MASK: usize = PAGE_SIZE - 1;
 const BUMP_ARENA_CHUNK_SIZE: usize = 4 * 1024;
+
+#[derive(Default)]
+struct PointerHasher(u64);
+
+impl Hasher for PointerHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut value = 0u64;
+        for &byte in bytes {
+            value = value.wrapping_shl(8) | u64::from(byte);
+        }
+        self.0 = value.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.0 = (value as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+type PointerMap<V> = HashMap<usize, V, BuildHasherDefault<PointerHasher>>;
 
 struct ArenaChunk<T> {
     entries: Box<[MaybeUninit<T>]>,
@@ -141,7 +167,6 @@ impl<T> PagedStore<T> {
         *entry
     }
 
-    #[allow(dead_code)]
     fn for_each_indexed(&self, mut callback: impl FnMut(u32, &T)) {
         for (page_index, page) in self.pages.iter().enumerate() {
             let Some(page) = page else {
@@ -160,13 +185,11 @@ impl<T> PagedStore<T> {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn for_each(&self, mut callback: impl FnMut(&T)) {
         self.for_each_indexed(|_, value| callback(value));
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FfiStaticPositionAlignment {
@@ -186,7 +209,6 @@ pub struct FfiStaticPositionRect {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
-#[allow(dead_code)]
 pub enum FfiAbsposAxisMode {
     StaticPosition,
     InsetFromRect,
@@ -271,8 +293,17 @@ pub struct FfiCommittedOffset {
     pub materialized_from_paintable: bool,
     pub has_containing_line_box_fragment: bool,
     pub containing_line_box_index: usize,
-    pub line_fragment_lookup: u8,
+    pub line_fragment_lookup: FfiLineFragmentLookup,
     pub line_fragment_offset: crate::used_values::FfiCssPixelPoint,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FfiLineFragmentLookup {
+    #[default]
+    NotFound = 0,
+    LineOnly = 1,
+    Found = 2,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -397,19 +428,18 @@ pub(crate) struct FfiContainedAbsposChild {
     pub static_position_rect: FfiStaticPositionRect,
 }
 
-#[allow(dead_code)]
 pub(crate) struct LayoutState {
     used_values: PagedStore<UsedValuesCore>,
-    contained_abspos_children: HashMap<usize, Vec<ContainedAbsposChild>>,
+    contained_abspos_children: PointerMap<Vec<ContainedAbsposChild>>,
     lazy_style_values: PagedStore<LazyStyleCache>,
     box_facts: PagedStore<FfiLayoutBoxFacts>,
     table_facts: PagedStore<FfiTableBoxFacts>,
     grid_facts: PagedStore<GridStyleFacts>,
-    text_facts: HashMap<usize, TextNodeFacts>,
+    text_facts: PointerMap<TextNodeFacts>,
     line_data: PagedStore<LineData>,
     block_rare_data: PagedStore<BlockRareData>,
     used_values_rare_data: PagedStore<UsedValuesRareData>,
-    layout_indices_by_node: HashMap<usize, u32>,
+    layout_indices_by_node: PointerMap<u32>,
     bfc_root_fact_builds_excluded: HashSet<u32>,
     purpose: LayoutStatePurpose,
     may_reuse_precreated_used_values: bool,
@@ -433,7 +463,6 @@ pub(crate) struct BlockRareData {
 }
 
 #[derive(Default)]
-#[allow(dead_code)]
 pub(crate) struct LineData {
     pub(crate) line_boxes: Vec<LineBoxData>,
     pub(crate) inline_box_pieces: Vec<InlineBoxPieceData>,
@@ -451,21 +480,20 @@ pub(crate) struct UsedValuesRareData {
     pub(crate) abspos_layout_inputs: Option<FfiAbsposLayoutInputs>,
 }
 
-#[allow(dead_code)]
 impl LayoutState {
     pub(crate) fn new(purpose: LayoutStatePurpose) -> Self {
         Self {
             used_values: PagedStore::default(),
-            contained_abspos_children: HashMap::new(),
+            contained_abspos_children: PointerMap::default(),
             lazy_style_values: PagedStore::default(),
             box_facts: PagedStore::default(),
             table_facts: PagedStore::default(),
             grid_facts: PagedStore::default(),
-            text_facts: HashMap::new(),
+            text_facts: PointerMap::default(),
             line_data: PagedStore::default(),
             block_rare_data: PagedStore::default(),
             used_values_rare_data: PagedStore::default(),
-            layout_indices_by_node: HashMap::new(),
+            layout_indices_by_node: PointerMap::default(),
             bfc_root_fact_builds_excluded: HashSet::new(),
             purpose,
             may_reuse_precreated_used_values: false,
@@ -585,10 +613,9 @@ impl LayoutState {
 
         let adjust_for_box_sizing =
             |unadjusted: crate::css_pixels::CssPixels, computed_size: crate::style_facts::FfiSizeValue, axis: Axis| {
-                const BOX_SIZING_CONTENT_BOX: u8 = 1;
                 // box-sizing: content-box and automatic sizes need no
                 // adjustment.
-                if style.box_sizing == BOX_SIZING_CONTENT_BOX || computed_size.is_auto() {
+                if style.box_sizing == box_sizing::CONTENT_BOX || computed_size.is_auto() {
                     return unadjusted;
                 }
 
@@ -637,7 +664,7 @@ impl LayoutState {
                     && containing_block_has_definite_size(Axis::Inline)
                 {
                     let available = containing_block_size_for_axis(Axis::Inline);
-                    return Some(UsedValuesCore::clamp_dimension(
+                    return Some(clamp_to_max_dimension_value(
                         available
                             - used.margin_left
                             - used.margin_right
@@ -661,7 +688,7 @@ impl LayoutState {
             } else {
                 crate::css_pixels::CssPixels::default()
             };
-            Some(UsedValuesCore::clamp_dimension(adjust_for_box_sizing(
+            Some(clamp_to_max_dimension_value(adjust_for_box_sizing(
                 size.to_px(basis),
                 size,
                 axis,
@@ -679,18 +706,18 @@ impl LayoutState {
         used.has_definite_block_size = content_block_size.is_some();
         if let Some(size) = content_inline_size.as_mut() {
             if let Some(minimum) = min_inline_size {
-                *size = UsedValuesCore::clamp_dimension((*size).max(minimum));
+                *size = clamp_to_max_dimension_value((*size).max(minimum));
             }
             if let Some(maximum) = max_inline_size {
-                *size = UsedValuesCore::clamp_dimension((*size).min(maximum));
+                *size = clamp_to_max_dimension_value((*size).min(maximum));
             }
         }
         if let Some(size) = content_block_size.as_mut() {
             if let Some(minimum) = min_block_size {
-                *size = UsedValuesCore::clamp_dimension((*size).max(minimum));
+                *size = clamp_to_max_dimension_value((*size).max(minimum));
             }
             if let Some(maximum) = max_block_size {
-                *size = UsedValuesCore::clamp_dimension((*size).min(maximum));
+                *size = clamp_to_max_dimension_value((*size).min(maximum));
             }
         }
         used.content_inline_size = content_inline_size.unwrap_or_default();
@@ -1067,23 +1094,17 @@ impl LayoutState {
         })
     }
 
-    fn used_values_indices_by_node(&self) -> HashMap<usize, u32> {
-        let mut indices = HashMap::new();
-        self.used_values.for_each_indexed(|index, used| {
-            assert!(!used.node.is_null());
-            indices.insert(used.node as usize, index);
-        });
-        indices
-    }
-
     fn line_fragment_lookup(
         &self,
-        indices: &HashMap<usize, u32>,
+        indices: &PointerMap<u32>,
         callbacks: &FfiLayoutFcCallbacks,
         used: &UsedValuesCore,
-    ) -> (u8, crate::used_values::FfiCssPixelPoint) {
+    ) -> (FfiLineFragmentLookup, crate::used_values::FfiCssPixelPoint) {
         if !used.has_containing_line_box_fragment {
-            return (0, crate::used_values::FfiCssPixelPoint::default());
+            return (
+                FfiLineFragmentLookup::NotFound,
+                crate::used_values::FfiCssPixelPoint::default(),
+            );
         }
         // SAFETY: Commit traverses the still-live C++ layout tree
         // synchronously with the pass callback table.
@@ -1091,19 +1112,31 @@ impl LayoutState {
             unsafe { (callbacks.navigation.containing_block)(callbacks.navigation.context, used.node) };
         assert!(!containing_block.is_null());
         let Some(layout_index) = indices.get(&(containing_block as usize)) else {
-            return (0, crate::used_values::FfiCssPixelPoint::default());
+            return (
+                FfiLineFragmentLookup::NotFound,
+                crate::used_values::FfiCssPixelPoint::default(),
+            );
         };
         let Some(line) = self
             .line_data(*layout_index)
             .and_then(|data| data.line_boxes.get(used.containing_line_box_fragment.line_box_index))
         else {
-            return (0, crate::used_values::FfiCssPixelPoint::default());
+            return (
+                FfiLineFragmentLookup::NotFound,
+                crate::used_values::FfiCssPixelPoint::default(),
+            );
         };
         let Some(fragment) = line.fragments.get(used.containing_line_box_fragment.fragment_index) else {
-            return (1, crate::used_values::FfiCssPixelPoint::default());
+            return (
+                FfiLineFragmentLookup::LineOnly,
+                crate::used_values::FfiCssPixelPoint::default(),
+            );
         };
         let (x, y) = fragment.offset();
-        (2, crate::used_values::FfiCssPixelPoint { x, y })
+        (
+            FfiLineFragmentLookup::Found,
+            crate::used_values::FfiCssPixelPoint { x, y },
+        )
     }
 
     fn commit_subtree(
@@ -1111,7 +1144,7 @@ impl LayoutState {
         node: *mut c_void,
         parent_paintable: *mut c_void,
         insert_before_paintable: *mut c_void,
-        indices: &HashMap<usize, u32>,
+        indices: &PointerMap<u32>,
         callbacks: &FfiLayoutFcCallbacks,
         sink: &FfiCommitSink,
     ) {
@@ -1278,7 +1311,7 @@ impl LayoutState {
         callbacks: &FfiLayoutFcCallbacks,
         sink: &FfiCommitSink,
     ) {
-        let indices = self.used_values_indices_by_node();
+        let indices = std::mem::take(&mut self.layout_indices_by_node);
         self.commit_subtree(
             root,
             parent_paintable,
@@ -1287,6 +1320,7 @@ impl LayoutState {
             callbacks,
             sink,
         );
+        self.layout_indices_by_node = indices;
 
         // Relative inline ancestor offsets require the complete paint tree.
         // Keep the pass paintable-only on the C++ side, but preserve the used

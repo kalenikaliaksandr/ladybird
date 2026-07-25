@@ -786,7 +786,8 @@ use super::{
     MeasuredCellContent, block, block_context_for_fc,
 };
 use crate::box_facts::FfiLayoutBoxFacts;
-use crate::css_pixels::CssPixels;
+use crate::css_enums::{box_sizing, layout_mode, vertical_align};
+use crate::css_pixels::{CssPixels, css_clamp, max_dimension_value};
 use crate::ffi_stats::{FfiOp, bump};
 use crate::geometry::{
     AvailableSize, AvailableSizeType, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput,
@@ -803,21 +804,10 @@ use std::ffi::c_void;
 
 pub(crate) type Node = *mut c_void;
 
-const LAYOUT_MODE_NORMAL: u8 = 0;
-const LAYOUT_MODE_INTRINSIC_SIZING: u8 = 1;
-const BOX_SIZING_BORDER_BOX: u8 = 0;
 const BORDER_COLLAPSE_SEPARATE: u8 = 0;
 const CAPTION_SIDE_TOP: u8 = 0;
 const CAPTION_SIDE_BOTTOM: u8 = 1;
 const TABLE_LAYOUT_FIXED: u8 = 1;
-const VERTICAL_ALIGN_BASELINE: u8 = 0;
-const VERTICAL_ALIGN_BOTTOM: u8 = 1;
-const VERTICAL_ALIGN_MIDDLE: u8 = 2;
-const VERTICAL_ALIGN_SUB: u8 = 3;
-const VERTICAL_ALIGN_SUPER: u8 = 4;
-const VERTICAL_ALIGN_TEXT_BOTTOM: u8 = 5;
-const VERTICAL_ALIGN_TEXT_TOP: u8 = 6;
-const VERTICAL_ALIGN_TOP: u8 = 7;
 
 pub(crate) trait TableTree {
     fn first_child(&mut self, node: Node) -> Node;
@@ -855,11 +845,15 @@ struct TableFormattingContext {
 
 impl TableTree for TableFormattingContext {
     fn first_child(&mut self, node: Node) -> Node {
-        self.navigate(self.callbacks.navigation.first_child, node)
+        self.callbacks
+            .navigation
+            .navigate(self.callbacks.navigation.first_child, node)
     }
 
     fn next_sibling(&mut self, node: Node) -> Node {
-        self.navigate(self.callbacks.navigation.next_sibling, node)
+        self.callbacks
+            .navigation
+            .navigate(self.callbacks.navigation.next_sibling, node)
     }
 
     fn box_facts(&mut self, node: Node) -> FfiLayoutBoxFacts {
@@ -902,18 +896,14 @@ impl TableFormattingContext {
         }
     }
 
-    fn navigate(&self, callback: crate::box_facts::FfiLayoutNavCallback, node: Node) -> Node {
-        bump(FfiOp::NavigationCallback);
-        // SAFETY: Navigation is synchronous and the host owns every node.
-        unsafe { callback(self.callbacks.navigation.context, node) }
-    }
-
     fn sizing(&self) -> SizingContext {
         SizingContext::new(self.state, self.callbacks)
     }
 
     fn parent(&self, node: Node) -> Node {
-        self.navigate(self.callbacks.navigation.parent, node)
+        self.callbacks
+            .navigation
+            .navigate(self.callbacks.navigation.parent, node)
     }
 
     fn matching_children(&mut self, parent: Node, predicate: impl Fn(FfiLayoutBoxFacts) -> bool) -> Vec<Node> {
@@ -1008,7 +998,8 @@ impl TableFormattingContext {
 
     fn border_conflict_resolution(&mut self) {
         if self.style_facts(self.table_box).border_collapse == BORDER_COLLAPSE_SEPARATE {
-            for cell in self.cells.clone() {
+            for cell_index in 0..self.cells.len() {
+                let cell = self.cells[cell_index];
                 self.set_cell_coordinates(cell);
             }
             return;
@@ -1083,7 +1074,8 @@ impl TableFormattingContext {
         let table_borders = self.element_borders(self.table_box);
         grid.apply_borders(table_borders, 0, row_count, 0, column_count, ELEMENT_TABLE);
 
-        for cell in self.cells.clone() {
+        for cell_index in 0..self.cells.len() {
+            let cell = self.cells[cell_index];
             let own = self.element_borders(cell.box_);
             let row_end = cell.row_index + cell.row_span;
             let column_end = cell.column_index + cell.column_span;
@@ -1188,8 +1180,8 @@ impl TableFormattingContext {
 
     fn compute_cell_measures(&mut self, include_rows: bool) {
         // Implements https://www.w3.org/TR/css-tables-3/#computing-cell-measures.
-        let inline_basis = inline_basis(self.table_constraints);
-        let block_basis = block_basis(self.table_constraints);
+        let inline_basis = self.table_constraints.inline_basis();
+        let block_basis = self.table_constraints.block_basis();
         self.compute_constrainedness();
         let fixed = self.use_fixed_mode_layout();
         let collapsed = self.style_facts(self.table_box).border_collapse != BORDER_COLLAPSE_SEPARATE;
@@ -1233,7 +1225,7 @@ impl TableFormattingContext {
             } else {
                 CssPixels::from_raw(i32::MAX)
             };
-            if style.box_sizing == BOX_SIZING_BORDER_BOX {
+            if style.box_sizing == box_sizing::BORDER_BOX {
                 min_inline -= inline_offsets;
                 inline_size -= inline_offsets;
                 max_inline -= inline_offsets;
@@ -1299,7 +1291,7 @@ impl TableFormattingContext {
                 // AD-HOC: The formula defined by the spec doesn't respect max-width. We use a different formula that
                 //         matches the behavior that is expected by WPT and is implemented by other browsers.
                 // FIXME: Open a spec issue about this.
-                min_inline.max(max_inline.min(inline_size.max(min_content_inline))) + inline_offsets
+                css_clamp(inline_size.max(min_content_inline), min_inline, max_inline) + inline_offsets
             } else {
                 // The outer max-content width of a table-cell in a non-constrained column is
                 // max(min-width, width, min-content width, min(max-width, max-content width)) adjusted by the cell intrinsic offsets.
@@ -1310,7 +1302,7 @@ impl TableFormattingContext {
     }
 
     fn initialize_row_content_sizes(&mut self) {
-        let basis = block_basis(self.table_constraints);
+        let basis = self.table_constraints.block_basis();
         for row_index in 0..self.rows.len() {
             let style = self.style_facts(self.rows[row_index].box_);
             let min_size = style.min_height().to_px(basis);
@@ -1328,7 +1320,7 @@ impl TableFormattingContext {
     }
 
     fn compute_outer_content_sizes(&mut self) {
-        let basis = inline_basis(self.table_constraints);
+        let basis = self.table_constraints.inline_basis();
         let mut column_index = 0usize;
         for group in self.matching_children(self.table_box, |facts| facts.is_table_column_group) {
             for column in self.matching_children(group, |facts| facts.is_table_column) {
@@ -1578,7 +1570,7 @@ impl TableFormattingContext {
 
     fn initialize_table_measures(&mut self, axis: TrackAxis) {
         if axis == TrackAxis::Row {
-            let basis = block_basis(self.table_constraints);
+            let basis = self.table_constraints.block_basis();
             for cell_index in 0..self.cells.len() {
                 let cell = self.cells[cell_index];
                 if cell.row_span == 1 {
@@ -1727,7 +1719,7 @@ impl TableFormattingContext {
     fn compute_capmin(&mut self) -> CssPixels {
         // The caption width minimum (CAPMIN) is the largest of the table captions min-content contribution:
         // https://drafts.csswg.org/css-tables-3/#computing-the-table-width
-        let basis = inline_basis(self.table_constraints);
+        let basis = self.table_constraints.inline_basis();
         let mut capmin = CssPixels::default();
         for caption in self.matching_children(self.table_box, |facts| facts.is_table_caption) {
             let style = self.style_facts(caption);
@@ -1781,7 +1773,7 @@ impl TableFormattingContext {
         // CSS Sizing says box-sizing:border-box applies length/percentage width/min-width/max-width constraints to
         // the border box. The table inline-size algorithm compares content inline sizes, so convert them before comparing.
         let mut resolved = constraint.to_px(basis);
-        if self.style_facts(self.table_box).box_sizing == BOX_SIZING_BORDER_BOX {
+        if self.style_facts(self.table_box).box_sizing == box_sizing::BORDER_BOX {
             let used = self.used_values(self.table_box);
             // SAFETY: Table state is live and is not a collapsed cell.
             unsafe {
@@ -1803,7 +1795,7 @@ impl TableFormattingContext {
         let available_inline = self.available_space.inline_size;
         // Percentages on 'width' and 'height' on the table are relative to the table wrapper box's containing block,
         // not the table wrapper box itself.
-        let basis = inline_basis(self.table_constraints);
+        let basis = self.table_constraints.inline_basis();
         // Compute undistributable space due to border spacing: https://www.w3.org/TR/css-tables-3/#computing-undistributable-space.
         let spacing = (self.columns.len() + 1) * self.border_spacing_inline();
         // The row/column-grid inline-size minimum (GRIDMIN) is the sum of the min-content inline size
@@ -1837,7 +1829,7 @@ impl TableFormattingContext {
             let mut value = match available_inline.type_ {
                 AvailableSizeType::MinContent => grid_min,
                 AvailableSizeType::MaxContent => grid_max,
-                AvailableSizeType::Definite if self.layout_mode == LAYOUT_MODE_NORMAL => {
+                AvailableSizeType::Definite if self.layout_mode == layout_mode::NORMAL => {
                     available_inline.value.max(used_min)
                 }
                 AvailableSizeType::Definite => grid_max.min(available_inline.value).max(used_min),
@@ -2019,7 +2011,7 @@ impl TableFormattingContext {
         // SAFETY: The caller passes the live cell entry.
         let used = unsafe { &*used };
         let facts = state_mut(self.state).box_facts(&self.callbacks, cell.box_);
-        if self.layout_mode == LAYOUT_MODE_INTRINSIC_SIZING
+        if self.layout_mode == layout_mode::INTRINSIC_SIZING
             && !facts.is_inline
             && used.inline_size_constraint == FfiSizeConstraint::None
             && used.block_size_constraint == FfiSizeConstraint::None
@@ -2096,8 +2088,8 @@ impl TableFormattingContext {
                     .max(style.height().to_px(CssPixels::default()));
             }
         }
-        let inline_basis = inline_basis(self.participant_constraints);
-        let participant_block_basis = block_basis(self.participant_constraints);
+        let inline_basis = self.participant_constraints.inline_basis();
+        let participant_block_basis = self.participant_constraints.block_basis();
         let collapsed = self.style_facts(self.table_box).border_collapse != BORDER_COLLAPSE_SEPARATE;
         let inline_spacing = self.border_spacing_inline();
         // First pass of cells layout:
@@ -2219,8 +2211,8 @@ impl TableFormattingContext {
         if !table_style.height().is_auto() {
             // If the table has a `height` property other than auto, it is treated as a minimum block size for the
             // table grid, and will eventually be distributed to the rows if their collective minimum block size is smaller.
-            let mut specified = table_style.height().to_px(block_basis(self.table_constraints));
-            if table_style.box_sizing == BOX_SIZING_BORDER_BOX {
+            let mut specified = table_style.height().to_px(self.table_constraints.block_basis());
+            if table_style.box_sizing == box_sizing::BORDER_BOX {
                 let used = self.used_values(self.table_box);
                 // SAFETY: Read-only table geometry.
                 unsafe {
@@ -2497,25 +2489,25 @@ impl TableFormattingContext {
                     // https://drafts.csswg.org/css2/#height-layout
                     // In the context of tables, values for vertical-align have the following meanings:
                     match style.vertical_align_keyword() {
-                        VERTICAL_ALIGN_MIDDLE => {
+                        vertical_align::MIDDLE => {
                             // The center of the cell is aligned with the center of the rows it spans.
                             let difference = row_size - (*used).border_box_block_size(collapsed);
                             (*used).padding_top += difference / 2;
                             (*used).padding_bottom += difference / 2;
                         }
-                        VERTICAL_ALIGN_TOP => {
+                        vertical_align::TOP => {
                             // The top of the cell box is aligned with the top of the first row it spans.
                             (*used).padding_bottom += row_size - (*used).border_box_block_size(collapsed);
                         }
-                        VERTICAL_ALIGN_BOTTOM => {
+                        vertical_align::BOTTOM => {
                             // The bottom of the cell box is aligned with the bottom of the last row it spans.
                             (*used).padding_top += row_size - (*used).border_box_block_size(collapsed);
                         }
-                        VERTICAL_ALIGN_SUB
-                        | VERTICAL_ALIGN_SUPER
-                        | VERTICAL_ALIGN_TEXT_BOTTOM
-                        | VERTICAL_ALIGN_TEXT_TOP
-                        | VERTICAL_ALIGN_BASELINE => {
+                        vertical_align::SUB
+                        | vertical_align::SUPER
+                        | vertical_align::TEXT_BOTTOM
+                        | vertical_align::TEXT_TOP
+                        | vertical_align::BASELINE => {
                             // These values do not apply to cells; the cell is aligned at the baseline instead.
 
                             // The baseline of the cell is put at the same height as the baseline of the first of the rows it spans.
@@ -2603,9 +2595,8 @@ impl TableFormattingContext {
         let table_used = self.used_values(self.table_box);
         // SAFETY: Read-only table geometry.
         let table_border_inline = unsafe { (*table_used).border_box_inline_size(false) };
-        let max_dimension = CssPixels::from_raw(17_895_700 * 64);
         let caption_available = AvailableSpace {
-            inline_size: AvailableSize::definite(table_border_inline.min(max_dimension)),
+            inline_size: AvailableSize::definite(table_border_inline.min(max_dimension_value())),
             block_size: self.available_space.block_size,
         };
         let mut captions = self.run_caption_layout(CAPTION_SIDE_TOP, caption_available);
@@ -2662,22 +2653,6 @@ impl TableFormattingContext {
         }
         self.compute_and_store_baselines(self.table_box);
         self.automatic_content_block_size = self.table_block_size;
-    }
-}
-
-fn inline_basis(constraints: FfiContainingBlockConstraints) -> CssPixels {
-    if constraints.has_percentage_basis_inline_size {
-        constraints.percentage_basis_inline_size
-    } else {
-        CssPixels::default()
-    }
-}
-
-fn block_basis(constraints: FfiContainingBlockConstraints) -> CssPixels {
-    if constraints.has_percentage_basis_block_size {
-        constraints.percentage_basis_block_size
-    } else {
-        CssPixels::default()
     }
 }
 

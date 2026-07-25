@@ -107,7 +107,6 @@ static constexpr size_t style_field_encoding_width(RustFFI::FfiStyleFieldEncodin
     case RustFFI::FfiStyleFieldEncoding::Bool:
         return 1;
     case RustFFI::FfiStyleFieldEncoding::I32:
-    case RustFFI::FfiStyleFieldEncoding::F32:
     case RustFFI::FfiStyleFieldEncoding::CssPixels:
         return 4;
     case RustFFI::FfiStyleFieldEncoding::F64:
@@ -118,7 +117,15 @@ static constexpr size_t style_field_encoding_width(RustFFI::FfiStyleFieldEncodin
     VERIFY_NOT_REACHED();
 }
 
-static_assert(to_underlying(CSS::StyleGroupIndex::Count) == RustFFI::STYLE_GROUP_COUNT);
+static_assert(to_underlying(CSS::StyleGroupIndex::Count) - 1 == RustFFI::STYLE_GROUP_COUNT);
+
+static constexpr size_t layout_style_group_index(size_t index)
+{
+    VERIFY(index != to_underlying(CSS::StyleGroupIndex::EffectsValues));
+    if (index > to_underlying(CSS::StyleGroupIndex::EffectsValues))
+        --index;
+    return index;
+}
 
 #define LIBWEB_LAYOUT_DIRECT_STYLE_FIELDS(F)                                                                                                                \
     F(BorderTopWidth, CSS::ComputedValues::BorderValues, border_top.width, offsetof(CSS::ComputedValues::BorderValues, border_top) + offsetof(CSS::BorderData, width), CssPixels) \
@@ -155,29 +162,17 @@ static_assert(to_underlying(CSS::StyleGroupIndex::Count) == RustFFI::STYLE_GROUP
     F(JustifyContent, CSS::ComputedValues::AlignmentValues, justify_content, offsetof(CSS::ComputedValues::AlignmentValues, justify_content), U8)                \
     F(JustifyItems, CSS::ComputedValues::AlignmentValues, justify_items, offsetof(CSS::ComputedValues::AlignmentValues, justify_items), U8)                      \
     F(JustifySelf, CSS::ComputedValues::AlignmentValues, justify_self, offsetof(CSS::ComputedValues::AlignmentValues, justify_self), U8)                         \
-    F(Appearance, CSS::ComputedValues::MiscResetValues, appearance, offsetof(CSS::ComputedValues::MiscResetValues, appearance), U8)                              \
     F(BorderCollapse, CSS::ComputedValues::InheritedTableValues, border_collapse, offsetof(CSS::ComputedValues::InheritedTableValues, border_collapse), U8)       \
     F(BorderSpacingHorizontal, CSS::ComputedValues::InheritedTableValues, border_spacing_horizontal, offsetof(CSS::ComputedValues::InheritedTableValues, border_spacing_horizontal), CssPixels) \
     F(BorderSpacingVertical, CSS::ComputedValues::InheritedTableValues, border_spacing_vertical, offsetof(CSS::ComputedValues::InheritedTableValues, border_spacing_vertical), CssPixels) \
     F(CaptionSide, CSS::ComputedValues::InheritedTableValues, caption_side, offsetof(CSS::ComputedValues::InheritedTableValues, caption_side), U8)                \
     F(TableLayout, CSS::ComputedValues::MiscResetValues, table_layout, offsetof(CSS::ComputedValues::MiscResetValues, table_layout), U8)                          \
-    F(ContentVisibility, CSS::ComputedValues::InheritedBoxValues, content_visibility, offsetof(CSS::ComputedValues::InheritedBoxValues, content_visibility), U8)  \
     F(Visibility, CSS::ComputedValues::InheritedBoxValues, visibility, offsetof(CSS::ComputedValues::InheritedBoxValues, visibility), U8)                         \
-    F(WordBreak, CSS::ComputedValues::InheritedTextValues, word_break, offsetof(CSS::ComputedValues::InheritedTextValues, word_break), U8)                        \
-    F(FontVariantEmoji, CSS::ComputedValues::FontValues, font_variant_emoji, offsetof(CSS::ComputedValues::FontValues, font_variant_emoji), U8)                   \
     F(LetterSpacing, CSS::ComputedValues::InheritedTextValues, letter_spacing, offsetof(CSS::ComputedValues::InheritedTextValues, letter_spacing), CssPixels)     \
     F(WordSpacing, CSS::ComputedValues::InheritedTextValues, word_spacing, offsetof(CSS::ComputedValues::InheritedTextValues, word_spacing), CssPixels)           \
     F(UnicodeBidi, CSS::ComputedValues::TextResetValues, unicode_bidi, offsetof(CSS::ComputedValues::TextResetValues, unicode_bidi), U8)                          \
-    F(TextTransform, CSS::ComputedValues::InheritedTextValues, text_transform, offsetof(CSS::ComputedValues::InheritedTextValues, text_transform), U8)            \
     F(GridAutoFlowRow, CSS::ComputedValues::GridValues, grid_auto_flow.row, offsetof(CSS::ComputedValues::GridValues, grid_auto_flow) + offsetof(CSS::GridAutoFlow, row), Bool) \
-    F(GridAutoFlowDense, CSS::ComputedValues::GridValues, grid_auto_flow.dense, offsetof(CSS::ComputedValues::GridValues, grid_auto_flow) + offsetof(CSS::GridAutoFlow, dense), Bool) \
-    F(UserSelect, CSS::ComputedValues::MiscResetValues, user_select, offsetof(CSS::ComputedValues::MiscResetValues, user_select), U8)                            \
-    F(Opacity, CSS::ComputedValues::EffectsValues, opacity, offsetof(CSS::ComputedValues::EffectsValues, opacity), F32)                                           \
-    F(Isolation, CSS::ComputedValues::EffectsValues, isolation, offsetof(CSS::ComputedValues::EffectsValues, isolation), U8)                                     \
-    F(MixBlendMode, CSS::ComputedValues::EffectsValues, mix_blend_mode, offsetof(CSS::ComputedValues::EffectsValues, mix_blend_mode), U8)                         \
-    F(TransformStyle, CSS::ComputedValues::TransformValues, transform_style, offsetof(CSS::ComputedValues::TransformValues, transform_style), U8)                \
-    F(ListStylePosition, CSS::ComputedValues::InheritedListValues, list_style_position, offsetof(CSS::ComputedValues::InheritedListValues, list_style_position), U8) \
-    F(TextDecorationStyle, CSS::ComputedValues::TextResetValues, text_decoration_style, offsetof(CSS::ComputedValues::TextResetValues, text_decoration_style), U8)
+    F(GridAutoFlowDense, CSS::ComputedValues::GridValues, grid_auto_flow.dense, offsetof(CSS::ComputedValues::GridValues, grid_auto_flow) + offsetof(CSS::GridAutoFlow, dense), Bool)
 
 #define LIBWEB_LAYOUT_LAZY_STYLE_FIELDS(F)                                  \
     F(Width, CSS::ComputedValues::SizingValues)                             \
@@ -205,17 +200,13 @@ static_assert(to_underlying(CSS::StyleGroupIndex::Count) == RustFFI::STYLE_GROUP
     F(FlexBasis, CSS::ComputedValues::AlignmentValues)                      \
     F(RowGap, CSS::ComputedValues::AlignmentValues)                         \
     F(ColumnGap, CSS::ComputedValues::AlignmentValues)                      \
-    F(AspectRatio, CSS::ComputedValues::BoxValues)                          \
     F(ColumnWidth, CSS::ComputedValues::MiscResetValues)                    \
     F(ColumnCount, CSS::ComputedValues::MiscResetValues)                    \
     F(Containment, CSS::ComputedValues::BoxValues)                          \
-    F(ContainerType, CSS::ComputedValues::BoxValues)                        \
-    F(ZIndex, CSS::ComputedValues::BoxValues)                               \
     F(TextIndent, CSS::ComputedValues::InheritedTextValues)                 \
     F(TabSize, CSS::ComputedValues::InheritedTextValues)                    \
     F(X, CSS::ComputedValues::SVGResetValues)                               \
-    F(Y, CSS::ComputedValues::SVGResetValues)                               \
-    F(Perspective, CSS::ComputedValues::TransformValues)
+    F(Y, CSS::ComputedValues::SVGResetValues)
 
 #define LIBWEB_PIN_DIRECT_STYLE_FIELD(field, group, member, offset, encoding)                       \
     static_assert(sizeof(decltype(((group*)nullptr)->member)) == style_field_encoding_width(RustFFI::FfiStyleFieldEncoding::encoding)); \
@@ -228,11 +219,11 @@ static void register_style_schema()
     static bool const registered = [] {
         static constexpr RustFFI::FfiStyleFieldSchema schema[] = {
 #define LIBWEB_DIRECT_STYLE_SCHEMA_ENTRY(field, group, member, offset, encoding) \
-    { RustFFI::FfiStyleField::field, group::style_group_index, offset, sizeof(group), RustFFI::FfiStyleFieldEncoding::encoding },
+    { RustFFI::FfiStyleField::field, layout_style_group_index(group::style_group_index), offset, sizeof(group), RustFFI::FfiStyleFieldEncoding::encoding },
             LIBWEB_LAYOUT_DIRECT_STYLE_FIELDS(LIBWEB_DIRECT_STYLE_SCHEMA_ENTRY)
 #undef LIBWEB_DIRECT_STYLE_SCHEMA_ENTRY
 #define LIBWEB_LAZY_STYLE_SCHEMA_ENTRY(field, group) \
-    { RustFFI::FfiStyleField::field, group::style_group_index, 0, sizeof(group), RustFFI::FfiStyleFieldEncoding::Lazy },
+    { RustFFI::FfiStyleField::field, layout_style_group_index(group::style_group_index), 0, sizeof(group), RustFFI::FfiStyleFieldEncoding::Lazy },
             LIBWEB_LAYOUT_LAZY_STYLE_FIELDS(LIBWEB_LAZY_STYLE_SCHEMA_ENTRY)
 #undef LIBWEB_LAZY_STYLE_SCHEMA_ENTRY
         };
@@ -246,8 +237,11 @@ static void register_style_schema()
 static RustFFI::FfiStylePayloads style_payloads(CSS::ComputedValues const& values)
 {
     RustFFI::FfiStylePayloads payloads {};
-    for (size_t index = 0; index < RustFFI::STYLE_GROUP_COUNT; ++index)
-        payloads.groups[index] = values.style_group_payload(static_cast<CSS::StyleGroupIndex>(index));
+    for (size_t index = 0; index < to_underlying(CSS::StyleGroupIndex::Count); ++index) {
+        if (index == to_underlying(CSS::StyleGroupIndex::EffectsValues))
+            continue;
+        payloads.groups[layout_style_group_index(index)] = values.style_group_payload(static_cast<CSS::StyleGroupIndex>(index));
+    }
     RustFFI::rust_layout_ffi_note_style_payload_fetch();
     return payloads;
 }
@@ -549,8 +543,6 @@ static RustFFI::FfiGridStyleFacts build_grid_style_facts(NodeWithStyle const& no
         .auto_rows = auto_rows,
         .areas = owner->areas.data(),
         .area_count = owner->areas.size(),
-        .area_row_count = template_areas.row_count,
-        .area_column_count = template_areas.column_count,
         .column_start = column_start,
         .column_end = column_end,
         .row_start = row_start,
@@ -1605,8 +1597,7 @@ RustFFI::FfiCommitSink LayoutRustBridge::commit_sink()
                 Vector<Gfx::DrawGlyph> glyphs;
                 glyphs.ensure_capacity(fragment.glyph_count);
                 auto const* draw_glyphs = reinterpret_cast<Gfx::DrawGlyph const*>(fragment.glyphs);
-                for (size_t index = 0; index < fragment.glyph_count; ++index)
-                    glyphs.unchecked_append(draw_glyphs[index]);
+                glyphs.unchecked_append(draw_glyphs, fragment.glyph_count);
                 glyph_run = adopt_ref(*new Gfx::GlyphRun(
                     move(glyphs),
                     *static_cast<Gfx::Font const*>(fragment.glyph_font),
@@ -1715,9 +1706,9 @@ RustFFI::FfiCommitSink LayoutRustBridge::commit_sink()
                     // line box fragment in the parent block container that contains it. The fragment has the final
                     // offset for the atomic inline, but line box post-processing may remove fragments after the
                     // coordinate was recorded, in which case the content offset stands.
-                    if (committed.line_fragment_lookup >= 1) {
+                    if (committed.line_fragment_lookup != RustFFI::FfiLineFragmentLookup::NotFound) {
                         paintable.set_containing_line_box_index(committed.containing_line_box_index);
-                        if (committed.line_fragment_lookup == 2) {
+                        if (committed.line_fragment_lookup == RustFFI::FfiLineFragmentLookup::Found) {
                             offset = {
                                 CSSPixels::from_raw(committed.line_fragment_offset.x),
                                 CSSPixels::from_raw(committed.line_fragment_offset.y),
@@ -1829,10 +1820,6 @@ RustFFI::FfiLayoutNavCallbacks LayoutRustBridge::navigation_callbacks()
         .next_sibling = [](void* context, void* node) -> void* {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
             return const_cast<Node*>(bridge.next_sibling(*static_cast<Node const*>(node)));
-        },
-        .previous_sibling = [](void* context, void* node) -> void* {
-            auto& bridge = *static_cast<LayoutRustBridge*>(context);
-            return const_cast<Node*>(bridge.previous_sibling(*static_cast<Node const*>(node)));
         },
         .containing_block = [](void* context, void* node) -> void* {
             auto& bridge = *static_cast<LayoutRustBridge*>(context);
@@ -2070,6 +2057,13 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
     static_assert(to_underlying(CSS::Positioning::Relative) == 2);
     static_assert(to_underlying(CSS::Direction::Ltr) == 0);
     static_assert(to_underlying(CSS::WritingMode::HorizontalTb) == 0);
+    static_assert(to_underlying(CSS::BoxSizing::BorderBox) == 0);
+    static_assert(to_underlying(CSS::BoxSizing::ContentBox) == 1);
+    static_assert(to_underlying(LayoutMode::Normal) == 0);
+    static_assert(to_underlying(LayoutMode::IntrinsicSizing) == 1);
+    static_assert(to_underlying(RustFFI::FfiLineFragmentLookup::NotFound) == 0);
+    static_assert(to_underlying(RustFFI::FfiLineFragmentLookup::LineOnly) == 1);
+    static_assert(to_underlying(RustFFI::FfiLineFragmentLookup::Found) == 2);
     static_assert(to_underlying(StaticPositionRect::Alignment::Start) == to_underlying(RustFFI::FfiStaticPositionAlignment::Start));
     static_assert(to_underlying(StaticPositionRect::Alignment::Center) == to_underlying(RustFFI::FfiStaticPositionAlignment::Center));
     static_assert(to_underlying(StaticPositionRect::Alignment::End) == to_underlying(RustFFI::FfiStaticPositionAlignment::End));
@@ -2108,6 +2102,8 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
     static_assert(to_underlying(Gfx::GlyphRun::TextType::Rtl) == 4);
     static_assert(sizeof(RustFFI::FfiDrawGlyph) == sizeof(Gfx::DrawGlyph));
     static_assert(alignof(RustFFI::FfiDrawGlyph) == alignof(Gfx::DrawGlyph));
+    static_assert(IsTriviallyCopyable<RustFFI::FfiDrawGlyph>);
+    static_assert(IsTriviallyCopyable<Gfx::DrawGlyph>);
     static_assert(sizeof(Gfx::FloatPoint) == 2 * sizeof(float));
     static_assert(offsetof(RustFFI::FfiDrawGlyph, x) == offsetof(Gfx::DrawGlyph, position));
     static_assert(offsetof(RustFFI::FfiDrawGlyph, y) == offsetof(Gfx::DrawGlyph, position) + sizeof(float));
@@ -2264,20 +2260,6 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             --s_outstanding_shaped_run_handles;
             RustFFI::rust_layout_ffi_note_shaped_run_release();
             static_cast<Gfx::GlyphRun*>(retained)->unref();
-        },
-        .font_metrics = [](void*, void const* font_pointer, RustFFI::FfiFontPixelMetrics* out) {
-            VERIFY(font_pointer);
-            VERIFY(out);
-            RustFFI::rust_layout_ffi_note_font_metrics_callback();
-            auto const& font = *static_cast<Gfx::Font const*>(font_pointer);
-            auto const& metrics = font.pixel_metrics();
-            *out = {
-                .x_height = metrics.x_height,
-                .advance_of_ascii_zero = metrics.advance_of_ascii_zero,
-                .ascent = metrics.ascent,
-                .descent = metrics.descent,
-                .pixel_size = font.pixel_size(),
-            };
         },
         .font_glyph_width = [](void*, void const* font_pointer, u32 code_point) {
             VERIFY(font_pointer);
@@ -2812,11 +2794,6 @@ Node const* LayoutRustBridge::next_sibling(Node const& node) const
     return node.next_sibling();
 }
 
-Node const* LayoutRustBridge::previous_sibling(Node const& node) const
-{
-    return node.previous_sibling();
-}
-
 Box const* LayoutRustBridge::containing_block(Node const& node) const
 {
     return node.containing_block();
@@ -2957,7 +2934,6 @@ static RustFFI::FfiDecodedStyleValue decode_style_field(void const* payload, Rus
         result.f32_value = metrics.ascent;
         result.f32_value_2 = metrics.descent;
         result.f32_value_3 = metrics.x_height;
-        result.f32_value_4 = font.pixel_size();
         return result;
     }
     case RustFFI::FfiStyleField::BoxSizingForAspectRatio: {
@@ -2984,14 +2960,6 @@ static RustFFI::FfiDecodedStyleValue decode_style_field(void const* payload, Rus
             [](CSS::NormalGap const&) { return size_value_with_kind(RustFFI::FfiSizeKind::Auto); });
         return result;
     }
-    case RustFFI::FfiStyleField::AspectRatio: {
-        auto const& value = static_cast<CSS::ComputedValues::BoxValues const*>(payload)->aspect_ratio.preferred_ratio;
-        result.has_value = value.has_value();
-        result.f64_value = value.has_value() ? value->numerator() : 0;
-        result.f64_value_2 = value.has_value() ? value->denominator() : 0;
-        result.bool_value = value.has_value() && value->is_degenerate();
-        return result;
-    }
     case RustFFI::FfiStyleField::ColumnWidth: {
         auto const& value = static_cast<CSS::ComputedValues::MiscResetValues const*>(payload)->column_width;
         result.size = build_style_size_value(value);
@@ -3012,19 +2980,6 @@ static RustFFI::FfiDecodedStyleValue decode_style_field(void const* payload, Rus
             | static_cast<u8>(value.paint_containment) << 4);
         return result;
     }
-    case RustFFI::FfiStyleField::ContainerType: {
-        auto const value = static_cast<CSS::ComputedValues::BoxValues const*>(payload)->container_type;
-        result.u8_value = static_cast<u8>(static_cast<u8>(value.is_size_container)
-            | static_cast<u8>(value.is_inline_size_container) << 1
-            | static_cast<u8>(value.is_scroll_state_container) << 2);
-        return result;
-    }
-    case RustFFI::FfiStyleField::ZIndex: {
-        auto const value = static_cast<CSS::ComputedValues::BoxValues const*>(payload)->z_index;
-        result.has_value = value.has_value();
-        result.i32_value = value.value_or(0);
-        return result;
-    }
     case RustFFI::FfiStyleField::TextIndent: {
         auto const& value = static_cast<CSS::ComputedValues::InheritedTextValues const*>(payload)->text_indent;
         result.size = build_style_size_value(value.length_percentage);
@@ -3043,12 +2998,6 @@ static RustFFI::FfiDecodedStyleValue decode_style_field(void const* payload, Rus
     case RustFFI::FfiStyleField::Y: {
         auto const& values = *static_cast<CSS::ComputedValues::SVGResetValues const*>(payload);
         result.size = build_style_size_value(field == RustFFI::FfiStyleField::X ? values.x : values.y);
-        return result;
-    }
-    case RustFFI::FfiStyleField::Perspective: {
-        auto const value = static_cast<CSS::ComputedValues::TransformValues const*>(payload)->perspective;
-        result.has_value = value.has_value();
-        result.css_pixels_value = value.value_or(0).raw_value();
         return result;
     }
     default:
@@ -3246,8 +3195,6 @@ extern "C" WEB_API Web::Layout::RustFFI::FfiGridStyleFacts ladybird_layout_test_
         .auto_rows = empty_list,
         .areas = owner->areas.data(),
         .area_count = owner->areas.size(),
-        .area_row_count = 3,
-        .area_column_count = 4,
         .column_start = column_start,
         .column_end = column_end,
         .row_start = Layout::build_grid_placement(CSS::GridTrackPlacement::make_auto(), *owner),

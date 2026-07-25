@@ -9,7 +9,7 @@ use super::line_box::LineBoxData;
 use super::{InlineFormattingContext, Node};
 use crate::css_enums::{direction, text_align, vertical_align, writing_mode};
 use crate::css_pixels::CssPixels;
-use crate::geometry::AvailableSize;
+use crate::geometry::{AvailableSize, to_logical};
 use crate::style_facts::StyleValues;
 use crate::used_values::FfiLineBoxFragmentCoordinate;
 
@@ -26,6 +26,18 @@ struct VerticalAlignMetrics {
     effective_box_block_start_offset: CssPixels,
     effective_box_block_end_offset: CssPixels,
     line_height: CssPixels,
+}
+
+#[derive(Clone, Copy)]
+struct FragmentAlignmentSnapshot {
+    style_source: Node,
+    layout_node: Node,
+    baseline: CssPixels,
+    block_size: CssPixels,
+    border_box_block_start: CssPixels,
+    is_atomic_inline: bool,
+    inline_offset: CssPixels,
+    block_offset: CssPixels,
 }
 
 pub(crate) struct LineBuilder {
@@ -355,33 +367,16 @@ impl LineBuilder {
     pub(crate) fn append_block_level_box(&mut self, node: Node, block_end: CssPixels, block_end_margin: CssPixels) {
         let used = self.context().used(node);
         assert!(used.has_content_offset);
-        let horizontal = self.writing_mode == writing_mode::HORIZONTAL_TB;
-        let inline_offset = if horizontal {
-            used.content_offset.x
-        } else {
-            used.content_offset.y
-        };
-        let block_offset = if horizontal {
-            used.content_offset.y
-        } else {
-            used.content_offset.x
-        };
-        let inline_length = if horizontal {
-            used.content_inline_size
-        } else {
-            used.content_block_size
-        };
-        let block_length = if horizontal {
-            used.content_block_size
-        } else {
-            used.content_inline_size
-        };
+        let (inline_offset, block_offset) = to_logical(self.writing_mode, used.content_offset.x, used.content_offset.y);
+        let (inline_length, block_length) =
+            to_logical(self.writing_mode, used.content_inline_size, used.content_block_size);
         let border_start = used.border_box_top(false);
-        let line_inline_length = if horizontal {
-            used.margin_box_inline_size(false)
-        } else {
-            used.margin_box_block_size(false)
-        };
+        let line_inline_length = to_logical(
+            self.writing_mode,
+            used.margin_box_inline_size(false),
+            used.margin_box_block_size(false),
+        )
+        .0;
         let line_index = self.ensure_last_line_index();
         assert!(self.line(line_index).fragments.is_empty());
         let fragment = LineBoxFragmentData::new(
@@ -624,11 +619,23 @@ impl LineBuilder {
         let mut latest = strut_end;
 
         for fragment_index in 0..fragment_count {
-            let snapshot = self.line(line_index).fragments[fragment_index].clone();
+            let mut snapshot = {
+                let fragment = &self.line(line_index).fragments[fragment_index];
+                FragmentAlignmentSnapshot {
+                    style_source: fragment.style_source,
+                    layout_node: fragment.layout_node,
+                    baseline: fragment.baseline,
+                    block_size: fragment.physical_vertical_extent(),
+                    border_box_block_start: fragment.border_box_block_start,
+                    is_atomic_inline: fragment.is_atomic_inline,
+                    inline_offset: fragment.inline_offset,
+                    block_offset: fragment.block_offset,
+                }
+            };
             let style = self.context().style(snapshot.style_source);
             let mut metrics = VerticalAlignMetrics {
                 baseline: snapshot.baseline,
-                block_size: snapshot.physical_vertical_extent(),
+                block_size: snapshot.block_size,
                 effective_box_block_start_offset: snapshot.border_box_block_start,
                 // Intentional old quirk: start is reused as end.
                 effective_box_block_end_offset: snapshot.border_box_block_start,
@@ -681,14 +688,14 @@ impl LineBuilder {
                 let fragment = &mut self.line_mut(line_index).fragments[fragment_index];
                 fragment.inline_offset = new_inline_offset;
                 fragment.block_offset = new_block_offset.floor() + block_offset;
+                snapshot.block_offset = fragment.block_offset;
             }
 
-            let fragment = self.line(line_index).fragments[fragment_index].clone();
-            let (inline_box_start, mut inline_box_end) = if fragment.is_atomic_inline {
-                let used = self.context().used(fragment.layout_node);
+            let (inline_box_start, mut inline_box_end) = if snapshot.is_atomic_inline {
+                let used = self.context().used(snapshot.layout_node);
                 (
-                    fragment.block_offset - (used.margin_top + used.border_box_top(false)),
-                    fragment.block_offset
+                    snapshot.block_offset - (used.margin_top + used.border_box_top(false)),
+                    snapshot.block_offset
                         + used.content_block_size
                         + used.margin_bottom
                         + used.border_box_bottom(false),
@@ -697,11 +704,11 @@ impl LineBuilder {
                 let typographic = CssPixels::nearest_value_for_f32(style.font_ascent() + style.font_descent());
                 let half_leading = (style.line_height - typographic) / 2;
                 (
-                    fragment.block_offset + fragment.baseline
+                    snapshot.block_offset + snapshot.baseline
                         - CssPixels::nearest_value_for_f32(style.font_ascent())
                         - half_leading,
-                    fragment.block_offset
-                        + fragment.baseline
+                    snapshot.block_offset
+                        + snapshot.baseline
                         + CssPixels::nearest_value_for_f32(style.font_descent())
                         + half_leading,
                 )
@@ -712,7 +719,7 @@ impl LineBuilder {
             earliest = earliest.min(inline_box_start);
             latest = latest.max(inline_box_end);
 
-            if self.context().facts(fragment.layout_node).is_text_node
+            if self.context().facts(snapshot.layout_node).is_text_node
                 && self.writing_mode == writing_mode::HORIZONTAL_TB
             {
                 let font_box_size = Self::normal_line_height(style);

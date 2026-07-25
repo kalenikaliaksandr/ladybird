@@ -217,11 +217,7 @@ impl InlineLevelIterator {
         };
         assert!(!used_pointer.is_null());
         let style = self.context().style(node);
-        let basis = if constraints.has_percentage_basis_inline_size {
-            constraints.percentage_basis_inline_size
-        } else {
-            CssPixels::default()
-        };
+        let basis = constraints.inline_basis();
         // SAFETY: This is the state-owned entry for `node`.
         let used = unsafe { &mut *used_pointer };
         used.margin_top = style.margin_top().to_px(basis);
@@ -631,13 +627,16 @@ impl InlineLevelIterator {
         Some(item)
     }
 
-    pub(crate) fn next(&mut self) -> Option<&Item> {
+    pub(crate) fn next(&mut self) -> Option<Item> {
         let index = self.next_item_index;
         if index >= self.items.len() {
             return None;
         }
         self.next_item_index += 1;
-        Some(&self.items[index])
+        Some(std::mem::replace(
+            &mut self.items[index],
+            Item::new(ItemType::ForcedBreak, std::ptr::null_mut()),
+        ))
     }
 
     pub(crate) fn next_non_whitespace_sequence_inline_size(&self) -> CssPixels {
@@ -767,16 +766,6 @@ pub(crate) mod text {
         pub glyph_count: usize,
         pub width: f32,
         pub retained: *mut c_void,
-    }
-
-    #[derive(Clone, Copy, Debug, Default, PartialEq)]
-    #[repr(C)]
-    pub struct FfiFontPixelMetrics {
-        pub x_height: f32,
-        pub advance_of_ascii_zero: f32,
-        pub ascent: f32,
-        pub descent: f32,
-        pub pixel_size: f32,
     }
 
     pub(crate) struct TextNodeFacts {

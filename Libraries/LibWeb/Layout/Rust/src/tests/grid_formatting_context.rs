@@ -80,6 +80,16 @@ mod placement {
     use crate::formatting_context::grid::placement::*;
     use crate::formatting_context::grid::template::LineName;
 
+    fn place_items(
+        items: &[PlacementInput],
+        explicit_column_count: usize,
+        explicit_row_count: usize,
+        flow: AutoFlowAxis,
+        dense: bool,
+    ) -> Vec<PlacedItem> {
+        place_items_with_grid(items, explicit_column_count, explicit_row_count, flow, dense).items
+    }
+
     fn auto(id: usize, column_span: usize) -> PlacementInput {
         PlacementInput {
             id,
@@ -245,6 +255,40 @@ mod sizing {
         CssPixels::from_integer(value)
     }
 
+    fn flexible_track(base_size: CssPixels, flex_factor: f64) -> Track {
+        Track {
+            min_sizing: TrackSizingFunction::Auto,
+            max_sizing: TrackSizingFunction::Flex(flex_factor),
+            base_size,
+            growth_limit: None,
+            flex_factor: Some(flex_factor),
+            max_is_intrinsic: false,
+            max_is_max_content: false,
+            base_size_frozen: false,
+            growth_limit_frozen: false,
+            infinitely_growable: false,
+            planned_increase: CssPixels::default(),
+            item_incurred_increase: CssPixels::default(),
+            is_gap: false,
+            is_auto_fit: false,
+            is_auto_repeat: false,
+            is_collapsed: false,
+        }
+    }
+
+    fn apply_base_size_increases(tracks: &mut [Track], planned_increases: &[CssPixels]) {
+        assert_eq!(tracks.len(), planned_increases.len());
+        for (track, increase) in tracks.iter_mut().zip(planned_increases) {
+            track.base_size += *increase;
+            if track
+                .growth_limit
+                .is_some_and(|growth_limit| growth_limit < track.base_size)
+            {
+                track.growth_limit = Some(track.base_size);
+            }
+        }
+    }
+
     #[test]
     fn spanning_item_distributes_in_span_order_and_grows_past_limits() {
         let mut tracks = [
@@ -349,7 +393,7 @@ mod sizing {
 
     #[test]
     fn indefinite_fr_fraction_uses_spanning_item_max_content() {
-        let mut tracks = [Track::flexible(px(0), 1.0), Track::flexible(px(0), 2.0)];
+        let mut tracks = [flexible_track(px(0), 1.0), flexible_track(px(0), 2.0)];
         let item = ItemContribution {
             spanned_tracks: vec![0, 1],
             span: 2,
@@ -562,12 +606,33 @@ mod tracks {
         CssPixels::from_integer(value)
     }
 
+    fn flexible_track(base_size: CssPixels, flex_factor: f64) -> Track {
+        Track {
+            min_sizing: TrackSizingFunction::Auto,
+            max_sizing: TrackSizingFunction::Flex(flex_factor),
+            base_size,
+            growth_limit: None,
+            flex_factor: Some(flex_factor),
+            max_is_intrinsic: false,
+            max_is_max_content: false,
+            base_size_frozen: false,
+            growth_limit_frozen: false,
+            infinitely_growable: false,
+            planned_increase: CssPixels::default(),
+            item_incurred_increase: CssPixels::default(),
+            is_gap: false,
+            is_auto_fit: false,
+            is_auto_repeat: false,
+            is_collapsed: false,
+        }
+    }
+
     #[test]
     fn fr_distribution_respects_fixed_tracks_and_factor_ratios() {
         let mut tracks = [
             Track::fixed(px(100)),
-            Track::flexible(px(0), 1.0),
-            Track::flexible(px(0), 2.0),
+            flexible_track(px(0), 1.0),
+            flexible_track(px(0), 2.0),
         ];
         expand_flexible_tracks(&mut tracks, px(400));
         assert_eq!(tracks[0].base_size, px(100));
@@ -579,8 +644,8 @@ mod tracks {
     fn fr_distribution_restarts_with_base_size_violations_inflexible() {
         let mut tracks = [
             Track::fixed(px(100)),
-            Track::flexible(px(150), 1.0),
-            Track::flexible(px(0), 2.0),
+            flexible_track(px(150), 1.0),
+            flexible_track(px(0), 2.0),
         ];
         expand_flexible_tracks(&mut tracks, px(400));
         assert_eq!(tracks[1].base_size, px(150));
@@ -589,7 +654,7 @@ mod tracks {
 
     #[test]
     fn sub_one_flex_sum_leaves_the_remaining_fraction_unfilled() {
-        let mut tracks = [Track::flexible(px(0), 0.5)];
+        let mut tracks = [flexible_track(px(0), 0.5)];
         expand_flexible_tracks(&mut tracks, px(100));
         assert_eq!(tracks[0].base_size, px(50));
     }

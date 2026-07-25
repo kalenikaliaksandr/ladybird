@@ -35,7 +35,6 @@ fn registered_schema_reads_synthetic_payloads() {
         byte: u8,
         boolean: bool,
         integer: i32,
-        float: f32,
         double: f64,
         pixels: i32,
     }
@@ -67,11 +66,6 @@ fn registered_schema_reads_synthetic_payloads() {
             FfiStyleFieldEncoding::I32,
         ),
         (
-            FfiStyleField::Opacity,
-            std::mem::offset_of!(SyntheticPayload, float),
-            FfiStyleFieldEncoding::F32,
-        ),
-        (
             FfiStyleField::FlexGrow,
             std::mem::offset_of!(SyntheticPayload, double),
             FfiStyleFieldEncoding::F64,
@@ -94,7 +88,6 @@ fn registered_schema_reads_synthetic_payloads() {
         byte: 17,
         boolean: true,
         integer: -123,
-        float: 0.625,
         double: 2.5,
         pixels: -65,
     };
@@ -105,7 +98,6 @@ fn registered_schema_reads_synthetic_payloads() {
     assert_eq!(reader.u8(FfiStyleField::Position), 17);
     assert!(reader.bool(FfiStyleField::GridAutoFlowRow));
     assert_eq!(reader.i32(FfiStyleField::Order), -123);
-    assert_eq!(reader.f32(FfiStyleField::Opacity), 0.625);
     assert_eq!(reader.f64(FfiStyleField::FlexGrow), 2.5);
     assert_eq!(reader.css_pixels(FfiStyleField::FontSize).raw_value(), -65);
 }

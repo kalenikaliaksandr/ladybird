@@ -6,6 +6,7 @@
 
 use crate::abort_on_panic;
 use crate::box_facts::{FfiLayoutBoxFacts, FfiLayoutNavCallbacks};
+use crate::css_enums::layout_mode;
 use crate::css_pixels::CssPixels;
 use crate::ffi_stats::{FfiOp, bump};
 use crate::geometry::{AvailableSize, AvailableSpace, FfiLayoutInput};
@@ -27,7 +28,8 @@ pub(crate) mod abspos {
     use super::grid::GridFormattingContext;
     use super::sizing::{Node, SizingContext};
     use super::{FfiFlexAxis, FfiFormattingContextType, FfiLayoutFcCallbacks};
-    use crate::css_pixels::CssPixels;
+    use crate::css_enums::{direction, layout_mode, position, writing_mode};
+    use crate::css_pixels::{CssPixels, clamp_to_max_dimension_value};
     use crate::ffi_stats::{FfiOp, bump};
     use crate::geometry::{
         AvailableSize, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput, LogicalOffset, LogicalRect,
@@ -37,19 +39,19 @@ pub(crate) mod abspos {
         FfiAbsposAlignment, FfiAbsposAxisMode, FfiAbsposContainingBlockInfo, FfiAbsposLayoutInputs,
         FfiStaticPositionAlignment, FfiStaticPositionRect, state_mut,
     };
-    use crate::style_facts::{FfiSizeValue, StyleValues};
+    use crate::style_facts::{
+        FfiSizeValue, LENGTH_UNIT_PX, StyleValues, ladybird_layout_release_anchor_name_handle,
+        px_calc_resolution_context, rust_calc_resolve,
+    };
     use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
     use std::ffi::c_void;
 
-    const LAYOUT_MODE_NORMAL: u8 = 0;
-    const POSITION_RELATIVE: u8 = 2;
-    const DIRECTION_LTR: u8 = 0;
-    const WRITING_MODE_HORIZONTAL_TB: u8 = 0;
-    const LENGTH_UNIT_PX: u8 = 29;
     const CALC_NUMERIC_KIND_LENGTH: u8 = 4;
 
     #[derive(Clone, Copy, Debug, PartialEq)]
     #[repr(u8)]
+    // NB: Some variants are only constructed by C++ through the FFI.
+    #[allow(dead_code)]
     pub enum FfiAnchorSideKind {
         Invalid,
         Top,
@@ -77,6 +79,8 @@ pub(crate) mod abspos {
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     #[repr(u8)]
+    // NB: Some variants are only constructed by C++ through the FFI.
+    #[allow(dead_code)]
     pub enum FfiAnchorFallbackKind {
         None,
         Px,
@@ -213,14 +217,6 @@ pub(crate) mod abspos {
         }
     }
 
-    fn clamp_to_max_dimension_value(value: CssPixels) -> CssPixels {
-        if matches!(value.raw_value(), i32::MIN | i32::MAX) {
-            CssPixels::from_integer(17_895_700)
-        } else {
-            value
-        }
-    }
-
     fn axis_modes(style: StyleValues) -> (FfiAbsposAxisMode, FfiAbsposAxisMode) {
         (
             if style.inset_left().is_auto() && style.inset_right().is_auto() {
@@ -331,27 +327,28 @@ pub(crate) mod abspos {
             unsafe { &mut *used }
         }
 
-        fn navigate(&self, callback: crate::box_facts::FfiLayoutNavCallback, node: Node) -> Node {
-            bump(FfiOp::NavigationCallback);
-            // SAFETY: Navigation is synchronous and all layout nodes remain live
-            // throughout the layout pass.
-            unsafe { callback(self.callbacks.navigation.context, node) }
-        }
-
         fn parent(&self, node: Node) -> Node {
-            self.navigate(self.callbacks.navigation.parent, node)
+            self.callbacks
+                .navigation
+                .navigate(self.callbacks.navigation.parent, node)
         }
 
         fn first_child(&self, node: Node) -> Node {
-            self.navigate(self.callbacks.navigation.first_child, node)
+            self.callbacks
+                .navigation
+                .navigate(self.callbacks.navigation.first_child, node)
         }
 
         fn next_sibling(&self, node: Node) -> Node {
-            self.navigate(self.callbacks.navigation.next_sibling, node)
+            self.callbacks
+                .navigation
+                .navigate(self.callbacks.navigation.next_sibling, node)
         }
 
         fn containing_block(&self, node: Node) -> Node {
-            self.navigate(self.callbacks.navigation.containing_block, node)
+            self.callbacks
+                .navigation
+                .navigate(self.callbacks.navigation.containing_block, node)
         }
 
         fn static_position_containing_block(&self, node: Node) -> Node {
@@ -464,7 +461,7 @@ pub(crate) mod abspos {
             // SAFETY: A non-null pointer is a stable state entry.
             let child_used = unsafe { &*child_used };
             let collapsed = child_used.uses_collapsing_borders_model;
-            let is_horizontal = fragment.writing_mode == WRITING_MODE_HORIZONTAL_TB;
+            let is_horizontal = fragment.writing_mode == writing_mode::HORIZONTAL_TB;
             let inline_axis_border_box_start = fragment.inline_offset
                 - if is_horizontal {
                     child_used.border_box_left(collapsed)
@@ -730,94 +727,14 @@ pub(crate) mod abspos {
         *destination = Some(destination.map_or(rect, |existing| existing.union(rect)));
     }
 
-    #[derive(Clone, Copy)]
-    #[repr(C)]
-    struct CssFfiNumericType {
-        has_exponent: [bool; 7],
-        exponents: [i32; 7],
-        has_percent_hint: bool,
-        percent_hint: u8,
-        valid: bool,
-    }
-
-    #[derive(Clone, Copy)]
-    #[repr(C)]
-    struct CssFfiResolvedCalc {
-        resolved: bool,
-        value: f64,
-        numeric_type: CssFfiNumericType,
-    }
-
-    #[derive(Clone, Copy)]
-    #[repr(C)]
-    struct CssFfiCalcResolutionContext {
-        basis_kind: u8,
-        basis_value: f64,
-        basis_unit: u8,
-        length_resolution_context: *const c_void,
-        callback_context: *mut c_void,
-        resolve_non_math_function: unsafe extern "C" fn(*mut c_void, *const c_void) -> *const c_void,
-        resolve_channel_keyword: unsafe extern "C" fn(*mut c_void, u8, *mut f64) -> bool,
-        random_base_value: unsafe extern "C" fn(*mut c_void, *const c_void, *mut f64) -> bool,
-        absolutize_random_sharing: unsafe extern "C" fn(*mut c_void, *const c_void) -> *const c_void,
-        resolve_length: unsafe extern "C" fn(*mut c_void, f64, u8, *mut f64) -> bool,
-    }
-
     #[cfg(not(test))]
     unsafe extern "C" {
-        fn rust_calc_resolve(
-            calculated: *const c_void,
-            context: *const CssFfiCalcResolutionContext,
-            apply_censoring_and_clamping: bool,
-        ) -> CssFfiResolvedCalc;
         fn rust_calc_node_create_numeric_dimension(kind: u8, value: f64, unit: u8) -> *const c_void;
-        fn ladybird_layout_release_anchor_name_handle(raw: usize);
-    }
-
-    #[cfg(test)]
-    unsafe fn rust_calc_resolve(
-        _calculated: *const c_void,
-        _context: *const CssFfiCalcResolutionContext,
-        _apply_censoring_and_clamping: bool,
-    ) -> CssFfiResolvedCalc {
-        CssFfiResolvedCalc {
-            resolved: false,
-            value: 0.0,
-            numeric_type: CssFfiNumericType {
-                has_exponent: [false; 7],
-                exponents: [0; 7],
-                has_percent_hint: false,
-                percent_hint: 0,
-                valid: false,
-            },
-        }
     }
 
     #[cfg(test)]
     unsafe fn rust_calc_node_create_numeric_dimension(_kind: u8, _value: f64, _unit: u8) -> *const c_void {
         std::ptr::null()
-    }
-
-    #[cfg(test)]
-    unsafe fn ladybird_layout_release_anchor_name_handle(_raw: usize) {}
-
-    unsafe extern "C" fn no_channel_keyword(_context: *mut c_void, _channel: u8, _out: *mut f64) -> bool {
-        false
-    }
-
-    unsafe extern "C" fn no_random_base_value(_context: *mut c_void, _sharing: *const c_void, _out: *mut f64) -> bool {
-        false
-    }
-
-    unsafe extern "C" fn no_absolutized_random_sharing(
-        _context: *mut c_void,
-        _sharing: *const c_void,
-    ) -> *const c_void {
-        std::ptr::null()
-    }
-
-    unsafe extern "C" fn no_fallback_length(_context: *mut c_void, _value: f64, _unit: u8, _out: *mut f64) -> bool {
-        false
     }
 
     struct AnchorResolutionState {
@@ -918,7 +835,7 @@ pub(crate) mod abspos {
                 FfiAnchorSideKind::Start | FfiAnchorSideKind::End => {
                     let is_start = facts.side_kind == FfiAnchorSideKind::Start;
                     if is_horizontal_axis {
-                        let use_left = (containing_block_direction == DIRECTION_LTR) == is_start;
+                        let use_left = (containing_block_direction == direction::LTR) == is_start;
                         Some(if use_left { rect.left() } else { rect.right() })
                     } else {
                         Some(if is_start { rect.top() } else { rect.bottom() })
@@ -927,7 +844,7 @@ pub(crate) mod abspos {
                 FfiAnchorSideKind::SelfStart | FfiAnchorSideKind::SelfEnd => {
                     let is_start = facts.side_kind == FfiAnchorSideKind::SelfStart;
                     if is_horizontal_axis {
-                        let use_left = (box_direction == DIRECTION_LTR) == is_start;
+                        let use_left = (box_direction == direction::LTR) == is_start;
                         Some(if use_left { rect.left() } else { rect.right() })
                     } else {
                         Some(if is_start { rect.top() } else { rect.bottom() })
@@ -951,7 +868,7 @@ pub(crate) mod abspos {
                 }
                 FfiAnchorSideKind::Percentage => {
                     if is_horizontal_axis {
-                        let (start, end) = if containing_block_direction == DIRECTION_LTR {
+                        let (start, end) = if containing_block_direction == direction::LTR {
                             (rect.left(), rect.right())
                         } else {
                             (rect.right(), rect.left())
@@ -1005,18 +922,9 @@ pub(crate) mod abspos {
                 containing_block_extent: axis.containing_block_extent,
                 resolution_state,
             };
-            let context = CssFfiCalcResolutionContext {
-                basis_kind: 3,
-                basis_value: axis.containing_block_extent.to_double(),
-                basis_unit: LENGTH_UNIT_PX,
-                length_resolution_context: std::ptr::null(),
-                callback_context: (&raw mut callback_context).cast(),
-                resolve_non_math_function: resolve_anchor_non_math_function,
-                resolve_channel_keyword: no_channel_keyword,
-                random_base_value: no_random_base_value,
-                absolutize_random_sharing: no_absolutized_random_sharing,
-                resolve_length: no_fallback_length,
-            };
+            let mut context = px_calc_resolution_context(axis.containing_block_extent);
+            context.callback_context = (&raw mut callback_context).cast();
+            context.resolve_non_math_function = resolve_anchor_non_math_function;
             // SAFETY: The calculated handle is retained by the style cache and
             // all callback state remains live for this synchronous resolution.
             let result = unsafe { rust_calc_resolve(value.calc, &raw const context, true) };
@@ -1245,18 +1153,9 @@ pub(crate) mod abspos {
             FfiAnchorFallbackKind::Calculated => {
                 assert!(!fallback.value.is_null());
                 let mut nested_context = *context;
-                let ffi_context = CssFfiCalcResolutionContext {
-                    basis_kind: 3,
-                    basis_value: context.containing_block_extent.to_double(),
-                    basis_unit: LENGTH_UNIT_PX,
-                    length_resolution_context: std::ptr::null(),
-                    callback_context: (&raw mut nested_context).cast(),
-                    resolve_non_math_function: resolve_anchor_non_math_function,
-                    resolve_channel_keyword: no_channel_keyword,
-                    random_base_value: no_random_base_value,
-                    absolutize_random_sharing: no_absolutized_random_sharing,
-                    resolve_length: no_fallback_length,
-                };
+                let mut ffi_context = px_calc_resolution_context(context.containing_block_extent);
+                ffi_context.callback_context = (&raw mut nested_context).cast();
+                ffi_context.resolve_non_math_function = resolve_anchor_non_math_function;
                 let resolved = unsafe { rust_calc_resolve(fallback.value, &raw const ffi_context, true) };
                 if !resolved.resolved {
                     return std::ptr::null();
@@ -2165,7 +2064,7 @@ pub(crate) mod abspos {
             let has_independent_context = super::layout_inside_child(
                 self.rust_context_handle,
                 node,
-                LAYOUT_MODE_NORMAL,
+                layout_mode::NORMAL,
                 FfiLayoutInput {
                     available_space: inner_available_space,
                     containing_block_constraints: constraints,
@@ -2259,7 +2158,7 @@ pub(crate) mod abspos {
             );
 
             let is_measurement = state_mut(self.state).is_measurement();
-            if self.layout_mode == LAYOUT_MODE_NORMAL && !is_measurement {
+            if self.layout_mode == layout_mode::NORMAL && !is_measurement {
                 bump(FfiOp::AbsposSavedInputsSetCallback);
                 state_mut(self.state)
                     .used_values_rare_data_for_node_mut(&self.callbacks, node)
@@ -2273,7 +2172,7 @@ pub(crate) mod abspos {
 
         pub(crate) fn layout_children(&self, box_: Node) {
             bump(FfiOp::AbsposEngine);
-            if self.layout_mode != LAYOUT_MODE_NORMAL {
+            if self.layout_mode != layout_mode::NORMAL {
                 return;
             }
             if state_mut(self.state).is_measurement() {
@@ -2362,7 +2261,7 @@ pub(crate) mod abspos {
                 self.resolve_anchor_insets(node);
             }
             let style = self.style(node);
-            if style.position != POSITION_RELATIVE {
+            if style.position != position::RELATIVE {
                 return;
             }
 
@@ -2415,7 +2314,7 @@ pub(crate) mod abspos {
     }
 
     pub(super) fn layout_children_for_instance(instance: &mut super::FormattingContextInstance, box_: Node) {
-        if instance.layout_mode != LAYOUT_MODE_NORMAL {
+        if instance.layout_mode != layout_mode::NORMAL {
             return;
         }
         let grid_context = instance
@@ -2512,7 +2411,8 @@ pub(crate) mod sizing {
         FfiFlexAxis, FfiFlexSizeProperty, FfiIntrinsicSizeCacheKey, FfiIntrinsicSizeCacheKind, FfiLayoutFcCallbacks,
     };
     use crate::box_facts::FfiLayoutBoxFacts;
-    use crate::css_pixels::CssPixels;
+    use crate::css_enums::{box_sizing, layout_mode};
+    use crate::css_pixels::{CssPixels, clamp_to_max_dimension_value};
     use crate::ffi_stats::{FfiOp, bump};
     use crate::geometry::{AvailableSize, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput};
     use crate::layout_state::{LayoutState, LayoutStatePurpose, state_mut};
@@ -2521,9 +2421,6 @@ pub(crate) mod sizing {
     use std::ffi::c_void;
 
     pub(crate) type Node = *mut c_void;
-
-    const BOX_SIZING_BORDER_BOX: u8 = 0;
-    const LAYOUT_MODE_INTRINSIC_SIZING: u8 = 1;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) enum CyclicPercentageIntrinsicContribution {
@@ -2542,6 +2439,13 @@ pub(crate) mod sizing {
     pub(crate) struct PixelFraction {
         pub(crate) numerator: CssPixels,
         pub(crate) denominator: CssPixels,
+    }
+
+    pub(crate) fn preferred_aspect_ratio(facts: FfiLayoutBoxFacts) -> Option<PixelFraction> {
+        facts.has_preferred_aspect_ratio.then_some(PixelFraction {
+            numerator: facts.preferred_aspect_ratio_numerator,
+            denominator: facts.preferred_aspect_ratio_denominator,
+        })
     }
 
     #[derive(Clone, Copy, Debug, Default)]
@@ -2599,7 +2503,7 @@ pub(crate) mod sizing {
         }
 
         fn run(&self, node: Node, input: FfiLayoutInput) -> super::FfiChildLayoutResult {
-            self.run_with_layout_mode(node, LAYOUT_MODE_INTRINSIC_SIZING, input)
+            self.run_with_layout_mode(node, layout_mode::INTRINSIC_SIZING, input)
         }
 
         pub(crate) fn run_with_layout_mode(
@@ -2655,16 +2559,17 @@ pub(crate) mod sizing {
         }
     }
 
-    fn clamp_to_max_dimension_value(value: CssPixels) -> CssPixels {
-        if matches!(value.raw_value(), i32::MIN | i32::MAX) {
-            CssPixels::from_integer(17_895_700)
-        } else {
-            value
-        }
-    }
-
     impl PixelFraction {
-        fn multiply(self, value: CssPixels) -> CssPixels {
+        pub(crate) fn new(numerator: CssPixels, denominator: CssPixels) -> Self {
+            assert_ne!(denominator, CssPixels::default());
+            Self { numerator, denominator }
+        }
+
+        pub(crate) fn zero() -> Self {
+            Self::new(CssPixels::default(), CssPixels::from_integer(1))
+        }
+
+        pub(crate) fn multiply(self, value: CssPixels) -> CssPixels {
             if self.denominator == CssPixels::default() {
                 return CssPixels::default();
             }
@@ -2674,7 +2579,7 @@ pub(crate) mod sizing {
             )
         }
 
-        fn divide(self, value: CssPixels) -> CssPixels {
+        pub(crate) fn divide(self, value: CssPixels) -> CssPixels {
             if self.numerator == CssPixels::default() {
                 return CssPixels::default();
             }
@@ -2682,6 +2587,12 @@ pub(crate) mod sizing {
             CssPixels::from_raw(
                 (wide / self.numerator.raw_value() as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
             )
+        }
+
+        pub(crate) fn max(self, other: Self) -> Self {
+            let left = self.numerator.raw_value() as i64 * other.denominator.raw_value() as i64;
+            let right = other.numerator.raw_value() as i64 * self.denominator.raw_value() as i64;
+            if left >= right { self } else { other }
         }
     }
 
@@ -2807,35 +2718,29 @@ pub(crate) mod sizing {
         }
 
         fn parent(&self, node: Node) -> Node {
-            bump(FfiOp::NavigationCallback);
-            // SAFETY: Navigation is synchronous and the host owns the node tree.
-            unsafe { (self.callbacks.navigation.parent)(self.callbacks.navigation.context, node) }
+            self.callbacks
+                .navigation
+                .navigate(self.callbacks.navigation.parent, node)
         }
 
         fn first_child(&self, node: Node) -> Node {
-            bump(FfiOp::NavigationCallback);
-            // SAFETY: Navigation is synchronous and the host owns the node tree.
-            unsafe { (self.callbacks.navigation.first_child)(self.callbacks.navigation.context, node) }
+            self.callbacks
+                .navigation
+                .navigate(self.callbacks.navigation.first_child, node)
         }
 
         fn next_sibling(&self, node: Node) -> Node {
-            bump(FfiOp::NavigationCallback);
-            // SAFETY: Navigation is synchronous and the host owns the node tree.
-            unsafe { (self.callbacks.navigation.next_sibling)(self.callbacks.navigation.context, node) }
+            self.callbacks
+                .navigation
+                .navigate(self.callbacks.navigation.next_sibling, node)
         }
 
         fn has_children(&self, node: Node) -> bool {
-            bump(FfiOp::NavigationCallback);
-            // SAFETY: Navigation is synchronous and the host owns the node tree.
-            !unsafe { (self.callbacks.navigation.first_child)(self.callbacks.navigation.context, node) }.is_null()
-        }
-
-        fn preferred_aspect_ratio(&self, node: Node) -> Option<PixelFraction> {
-            let facts = self.facts(node);
-            facts.has_preferred_aspect_ratio.then_some(PixelFraction {
-                numerator: facts.preferred_aspect_ratio_numerator,
-                denominator: facts.preferred_aspect_ratio_denominator,
-            })
+            !self
+                .callbacks
+                .navigation
+                .navigate(self.callbacks.navigation.first_child, node)
+                .is_null()
         }
 
         fn content_block_size_from_aspect_ratio(&self, node: Node, content_inline_size: CssPixels) -> CssPixels {
@@ -2843,8 +2748,8 @@ pub(crate) mod sizing {
             let used = self.used(node);
             content_block_size_from_aspect_ratio_values(
                 content_inline_size,
-                self.preferred_aspect_ratio(node).unwrap(),
-                style.box_sizing_for_aspect_ratio() == BOX_SIZING_BORDER_BOX,
+                preferred_aspect_ratio(self.facts(node)).unwrap(),
+                style.box_sizing_for_aspect_ratio() == box_sizing::BORDER_BOX,
                 style.border_left_width + used.padding_left,
                 style.border_right_width + used.padding_right,
                 style.border_top_width + used.padding_top,
@@ -2857,8 +2762,8 @@ pub(crate) mod sizing {
             let used = self.used(node);
             content_inline_size_from_aspect_ratio_values(
                 content_block_size,
-                self.preferred_aspect_ratio(node).unwrap(),
-                style.box_sizing_for_aspect_ratio() == BOX_SIZING_BORDER_BOX,
+                preferred_aspect_ratio(self.facts(node)).unwrap(),
+                style.box_sizing_for_aspect_ratio() == box_sizing::BORDER_BOX,
                 style.border_left_width + used.padding_left,
                 style.border_right_width + used.padding_right,
                 style.border_top_width + used.padding_top,
@@ -4127,7 +4032,7 @@ pub(crate) mod sizing {
             inline_size: CssPixels,
             constraints: FfiContainingBlockConstraints,
         ) -> CssPixels {
-            if let Some(ratio) = self.preferred_aspect_ratio(node) {
+            if let Some(ratio) = preferred_aspect_ratio(self.facts(node)) {
                 return ratio.divide(inline_size);
             }
             let auto_size = self.auto_content_size(node);
@@ -4268,23 +4173,40 @@ pub(crate) mod sizing {
             used.has_definite_block_size = true;
         }
 
-        fn table_box_inside_wrapper(&self, wrapper: Node) -> Node {
-            fn find(context: &SizingContext, parent: Node) -> Option<Node> {
-                let mut child = context.first_child(parent);
+        fn table_box_inside_wrapper_impl(&self, wrapper: Node, count_navigation: bool) -> Node {
+            fn find(context: &SizingContext, parent: Node, count_navigation: bool) -> Option<Node> {
+                let navigation = context.callbacks.navigation;
+                let mut child = if count_navigation {
+                    context.first_child(parent)
+                } else {
+                    navigation.navigate_without_counter(navigation.first_child, parent)
+                };
                 while !child.is_null() {
                     let facts = context.facts(child);
                     if facts.is_box && facts.display.is_table_inside() {
                         return Some(child);
                     }
-                    if let Some(table) = find(context, child) {
+                    if let Some(table) = find(context, child, count_navigation) {
                         return Some(table);
                     }
-                    child = context.next_sibling(child);
+                    child = if count_navigation {
+                        context.next_sibling(child)
+                    } else {
+                        navigation.navigate_without_counter(navigation.next_sibling, child)
+                    };
                 }
                 None
             }
 
-            find(self, wrapper).expect("table wrapper must contain a table box")
+            find(self, wrapper, count_navigation).expect("table wrapper must contain a table box")
+        }
+
+        pub(crate) fn table_box_inside_wrapper(&self, wrapper: Node) -> Node {
+            self.table_box_inside_wrapper_impl(wrapper, true)
+        }
+
+        pub(crate) fn table_box_inside_wrapper_without_counter(&self, wrapper: Node) -> Node {
+            self.table_box_inside_wrapper_impl(wrapper, false)
         }
 
         fn create_measurement_used_values(
@@ -4345,7 +4267,7 @@ pub(crate) mod sizing {
                 table_box,
                 std::ptr::null_mut(),
                 super::FfiFormattingContextType::Table as u8,
-                LAYOUT_MODE_INTRINSIC_SIZING,
+                layout_mode::INTRINSIC_SIZING,
                 false,
                 *measurement.callbacks(),
             );
@@ -4403,7 +4325,7 @@ pub(crate) mod sizing {
             let measurement = MeasurementState::create(self.callbacks, wrapper, table_wrapper_constraints);
             measurement.run_with_layout_mode(
                 wrapper,
-                LAYOUT_MODE_INTRINSIC_SIZING,
+                layout_mode::INTRINSIC_SIZING,
                 FfiLayoutInput {
                     available_space: self
                         .used(wrapper)
@@ -4516,7 +4438,7 @@ pub(crate) mod sizing {
             }
             let value = preferred_size.to_px(basis);
             let style = self.style(node);
-            if style.box_sizing == BOX_SIZING_BORDER_BOX {
+            if style.box_sizing == box_sizing::BORDER_BOX {
                 let used = self.used(node);
                 return subtract_border_box_adjustment(
                     value,
@@ -4587,13 +4509,13 @@ pub(crate) mod sizing {
                     } else {
                         CssPixels::default()
                     };
-                } else if constraints.has_percentage_basis_block_size {
-                    basis = constraints.percentage_basis_block_size;
+                } else {
+                    basis = constraints.block_basis();
                 }
             }
             let value = preferred_size.to_px(basis);
             let style = self.style(node);
-            if style.box_sizing == BOX_SIZING_BORDER_BOX {
+            if style.box_sizing == box_sizing::BORDER_BOX {
                 let used = self.used(node);
                 return subtract_border_box_adjustment(
                     value,
@@ -4669,16 +4591,6 @@ pub(crate) enum BaselineSet {
     Last,
 }
 
-fn navigate_for_baseline(
-    callbacks: &FfiLayoutFcCallbacks,
-    callback: crate::box_facts::FfiLayoutNavCallback,
-    node: *mut c_void,
-) -> *mut c_void {
-    bump(FfiOp::NavigationCallback);
-    // SAFETY: Navigation is synchronous and the host owns every node.
-    unsafe { callback(callbacks.navigation.context, node) }
-}
-
 pub(crate) fn place_child(
     state: *mut c_void,
     callbacks: &FfiLayoutFcCallbacks,
@@ -4701,12 +4613,16 @@ pub(crate) fn register_contained_abspos_child(
     child: *mut c_void,
     static_position_rect: FfiStaticPositionRect,
 ) {
-    let mut target = navigate_for_baseline(callbacks, callbacks.navigation.containing_block, child);
+    let mut target = callbacks
+        .navigation
+        .navigate(callbacks.navigation.containing_block, child);
     if target.is_null() {
         return;
     }
     loop {
-        let containing_block = navigate_for_baseline(callbacks, callbacks.navigation.containing_block, target);
+        let containing_block = callbacks
+            .navigation
+            .navigate(callbacks.navigation.containing_block, target);
         let facts = state_mut(state).box_facts(callbacks, target);
         if containing_block.is_null() || formatting_context_type_created_by_box(facts).is_some() {
             break;
@@ -4740,7 +4656,9 @@ pub(crate) fn box_baseline(
             }
             crate::css_enums::vertical_align::MIDDLE => {
                 // Middle: Align the vertical midpoint of the box with the baseline of the parent box plus half the x-height of the parent.
-                let containing_block = navigate_for_baseline(callbacks, callbacks.navigation.containing_block, box_);
+                let containing_block = callbacks
+                    .navigation
+                    .navigate(callbacks.navigation.containing_block, box_);
                 assert!(!containing_block.is_null());
                 let containing_style = state_mut(state).style_facts(callbacks, containing_block);
                 return used.margin_box_block_size(collapsed) / 2
@@ -4756,7 +4674,9 @@ pub(crate) fn box_baseline(
             }
             crate::css_enums::vertical_align::TEXT_BOTTOM => {
                 // TextBottom: Align the bottom of the box with the bottom of the parent's content area (see 10.6.1).
-                let containing_block = navigate_for_baseline(callbacks, callbacks.navigation.containing_block, box_);
+                let containing_block = callbacks
+                    .navigation
+                    .navigate(callbacks.navigation.containing_block, box_);
                 assert!(!containing_block.is_null());
                 let containing_style = state_mut(state).style_facts(callbacks, containing_block);
                 return used.margin_box_block_size(collapsed)
@@ -4892,7 +4812,12 @@ pub(crate) fn compute_and_store_baselines(
         return;
     }
 
-    if navigate_for_baseline(callbacks, callbacks.navigation.first_child, box_).is_null() || facts.children_are_inline {
+    if callbacks
+        .navigation
+        .navigate(callbacks.navigation.first_child, box_)
+        .is_null()
+        || facts.children_are_inline
+    {
         return;
     }
 
@@ -4907,10 +4832,10 @@ pub(crate) fn compute_and_store_baselines(
     //        row-major grid order.
     let baseline_from_children = |baseline_set: BaselineSet| -> Option<CssPixels> {
         let mut children = Vec::new();
-        let mut child = navigate_for_baseline(callbacks, callbacks.navigation.first_child, box_);
+        let mut child = callbacks.navigation.navigate(callbacks.navigation.first_child, box_);
         while !child.is_null() {
             children.push(child);
-            child = navigate_for_baseline(callbacks, callbacks.navigation.next_sibling, child);
+            child = callbacks.navigation.navigate(callbacks.navigation.next_sibling, child);
         }
         if baseline_set == BaselineSet::Last {
             children.reverse();
@@ -4959,6 +4884,8 @@ const NO_FORMATTING_CONTEXT: u8 = u8::MAX;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
+// NB: Some variants are only constructed by C++ through the FFI.
+#[allow(dead_code)]
 pub enum FfiFormattingContextType {
     Block,
     Inline,
@@ -5145,8 +5072,6 @@ pub struct FfiLayoutFcCallbacks {
         inline::iterator::text::FfiShapeRequest,
     ) -> inline::iterator::text::FfiShapedRunView,
     pub release_shaped_run: unsafe extern "C" fn(*mut c_void, *mut c_void),
-    pub font_metrics:
-        unsafe extern "C" fn(*mut c_void, *const c_void, *mut inline::iterator::text::FfiFontPixelMetrics),
     pub font_glyph_width: unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> f32,
     pub font_glyph_id: unsafe extern "C" fn(*mut c_void, *const c_void, u32) -> u32,
     pub build_table_box_facts: FfiBuildTableBoxFactsCallback,
@@ -5375,20 +5300,16 @@ fn create_formatting_context(
     instance
 }
 
-fn navigate(
-    instance: &FormattingContextInstance,
-    callback: crate::box_facts::FfiLayoutNavCallback,
-    node: *mut c_void,
-) -> *mut c_void {
-    bump(FfiOp::NavigationCallback);
-    // SAFETY: Navigation is synchronous and the host owns every node.
-    unsafe { callback(instance.callbacks.navigation.context, node) }
-}
-
 fn register_table_abspos_descendants(instance: &mut FormattingContextInstance, parent: *mut c_void) {
-    let mut child = navigate(instance, instance.callbacks.navigation.first_child, parent);
+    let mut child = instance
+        .callbacks
+        .navigation
+        .navigate(instance.callbacks.navigation.first_child, parent);
     while !child.is_null() {
-        let next = navigate(instance, instance.callbacks.navigation.next_sibling, child);
+        let next = instance
+            .callbacks
+            .navigation
+            .navigate(instance.callbacks.navigation.next_sibling, child);
         let facts = state_mut(instance.state).box_facts(&instance.callbacks, child);
         if facts.is_box {
             if facts.is_absolutely_positioned {
@@ -5427,7 +5348,7 @@ fn parent_did_dimension(instance: &mut FormattingContextInstance) {
         }
         return;
     }
-    if instance.layout_mode != 0 {
+    if instance.layout_mode != layout_mode::NORMAL {
         return;
     }
     match instance.fc_type {
@@ -5548,7 +5469,7 @@ pub(crate) fn layout_inside_child(
     let facts = state_mut(parent.state).box_facts(&parent.callbacks, child);
     let used = state_mut(parent.state).try_used_values(&parent.callbacks, child);
     if !force_independent_context_run
-        && layout_mode == 1
+        && layout_mode == crate::css_enums::layout_mode::INTRINSIC_SIZING
         && !facts.is_inline
         && !used.is_null()
         // SAFETY: Non-null used-values entries are stable for the pass.
@@ -5706,7 +5627,7 @@ pub extern "C" fn rust_layout_run_root_layout(
             root_for_layout,
             std::ptr::null_mut(),
             fc_type as u8,
-            0,
+            layout_mode::NORMAL,
             should_collect_devtools_layout_data,
             callbacks,
         );
@@ -5771,7 +5692,7 @@ pub extern "C" fn rust_layout_compute_subtree_layout(
             root,
             std::ptr::null_mut(),
             fc_type as u8,
-            0,
+            layout_mode::NORMAL,
             false,
             callbacks,
         );
@@ -5815,7 +5736,7 @@ pub extern "C" fn rust_layout_replay_saved_abspos_layout(
             containing_block,
             std::ptr::null_mut(),
             FfiFormattingContextType::AbsposReplay as u8,
-            0,
+            layout_mode::NORMAL,
             false,
             callbacks,
         );

@@ -5,8 +5,9 @@
  */
 
 use super::iterator::text::FfiDrawGlyph;
-use crate::css_enums::{direction, writing_mode};
+use crate::css_enums::direction;
 use crate::css_pixels::CssPixels;
+use crate::geometry::to_physical;
 use std::ffi::c_void;
 
 pub(crate) const GLYPH_TEXT_TYPE_COMMON: u8 = 0;
@@ -116,35 +117,19 @@ impl LineBoxFragmentData {
     }
 
     pub(crate) fn offset(&self) -> (CssPixels, CssPixels) {
-        if self.writing_mode != writing_mode::HORIZONTAL_TB {
-            (self.block_offset, self.inline_offset)
-        } else {
-            (self.inline_offset, self.block_offset)
-        }
+        to_physical(self.writing_mode, self.inline_offset, self.block_offset)
     }
 
     pub(crate) fn size(&self) -> (CssPixels, CssPixels) {
-        if self.writing_mode != writing_mode::HORIZONTAL_TB {
-            (self.block_length, self.inline_length)
-        } else {
-            (self.inline_length, self.block_length)
-        }
+        to_physical(self.writing_mode, self.inline_length, self.block_length)
     }
 
     pub(crate) fn physical_horizontal_extent(&self) -> CssPixels {
-        if self.writing_mode != writing_mode::HORIZONTAL_TB {
-            self.block_length
-        } else {
-            self.inline_length
-        }
+        to_physical(self.writing_mode, self.inline_length, self.block_length).0
     }
 
     pub(crate) fn physical_vertical_extent(&self) -> CssPixels {
-        if self.writing_mode != writing_mode::HORIZONTAL_TB {
-            self.inline_length
-        } else {
-            self.block_length
-        }
+        to_physical(self.writing_mode, self.inline_length, self.block_length).1
     }
 
     pub(crate) fn text(&self) -> &[u16] {

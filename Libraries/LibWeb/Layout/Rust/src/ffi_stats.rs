@@ -65,7 +65,6 @@ define_ffi_ops! {
     DocumentCursorProbeCallback => "documentCursorProbeCallbacks",
     ShapeTextCallback => "shapeTextCallbacks",
     ShapedRunRelease => "shapedRunReleaseEntries",
-    FontMetricsCallback => "fontMetricsCallbacks",
     FontGlyphWidthCallback => "fontGlyphWidthCallbacks",
     FontGlyphIdCallback => "fontGlyphIdCallbacks",
     LineDrain => "lineDrainEntries",
@@ -223,11 +222,6 @@ pub extern "C" fn rust_layout_ffi_note_shape_text_callback() {
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_layout_ffi_note_shaped_run_release() {
     abort_on_panic(|| bump(FfiOp::ShapedRunRelease));
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_ffi_note_font_metrics_callback() {
-    abort_on_panic(|| bump(FfiOp::FontMetricsCallback));
 }
 
 #[unsafe(no_mangle)]

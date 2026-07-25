@@ -8,7 +8,6 @@
 #[path = "../../../../RustAllocator.rs"]
 mod rust_allocator;
 
-#[allow(dead_code)]
 mod box_facts;
 #[allow(dead_code)]
 mod css_enums;
@@ -18,11 +17,9 @@ mod css_pixels;
 mod display;
 
 mod ffi_stats;
-#[allow(dead_code)]
 mod formatting_context;
 mod geometry;
 mod layout_state;
-#[allow(dead_code)]
 mod style_facts;
 #[cfg(test)]
 mod tests;
