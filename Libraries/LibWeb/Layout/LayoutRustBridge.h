@@ -65,14 +65,12 @@ struct StyleVerticalAlignFacts {
 [[nodiscard]] RustFFI::FfiSizeValue build_style_size_value(CSS::LengthPercentageOrAuto const&);
 [[nodiscard]] StyleVerticalAlignFacts build_style_vertical_align_value(Variant<CSS::VerticalAlign, CSS::LengthPercentage> const&);
 
-[[nodiscard]] RustFFI::FfiStyleFacts build_style_facts(NodeWithStyle const&);
 [[nodiscard]] RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const&);
 [[nodiscard]] RustFFI::FfiTableBoxFacts build_table_box_facts(NodeWithStyle const&);
 [[nodiscard]] Optional<RustFFI::FfiFormattingContextType> formatting_context_type_created_by_box(Box const&);
 [[nodiscard]] StringView formatting_context_type_name(RustFFI::FfiFormattingContextType);
 [[nodiscard]] bool box_inset_properties_contain_anchor_functions(Box const&);
 [[nodiscard]] bool can_replay_saved_abspos_layout_inputs_after_style_change(Box const&);
-void release_style_facts(RustFFI::FfiStyleFacts const&);
 void verify_style_calc_handles_balanced();
 
 }
@@ -82,7 +80,8 @@ void verify_style_calc_handles_balanced();
 extern "C" WEB_API void ladybird_layout_release_calc_handle(void const*);
 // Releases one name-table reference transferred by FfiGridStyleFacts.
 extern "C" WEB_API void ladybird_layout_release_grid_name_handle(size_t);
-// Releases one position-anchor name reference transferred by FfiStyleFacts.
+// Releases one position-anchor name reference transferred by a lazy style
+// field decode.
 extern "C" WEB_API void ladybird_layout_release_anchor_name_handle(size_t);
 
 extern "C" WEB_API Web::Layout::RustFFI::FfiSizeValue ladybird_layout_test_build_size_value(u8 kind, i32 px_raw, double fraction);

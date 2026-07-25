@@ -792,7 +792,7 @@ use crate::geometry::{
     AvailableSize, AvailableSizeType, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput,
 };
 use crate::layout_state::state_mut;
-use crate::style_facts::{FfiSizeValue, FfiStyleFacts};
+use crate::style_facts::{FfiSizeValue, StyleValues};
 use crate::used_values::{FfiCssPixelPoint, FfiSizeConstraint, UsedValuesCore};
 use borders::{
     CollapsedBorderGrid, ELEMENT_CELL, ELEMENT_COLUMN, ELEMENT_ROW, ELEMENT_ROW_GROUP, ELEMENT_TABLE, ElementBorders,
@@ -823,7 +823,7 @@ pub(crate) trait TableTree {
     fn first_child(&mut self, node: Node) -> Node;
     fn next_sibling(&mut self, node: Node) -> Node;
     fn box_facts(&mut self, node: Node) -> FfiLayoutBoxFacts;
-    fn style_facts(&mut self, node: Node) -> FfiStyleFacts;
+    fn style_facts(&mut self, node: Node) -> StyleValues;
     fn table_facts(&mut self, node: Node) -> super::FfiTableBoxFacts;
 }
 
@@ -866,7 +866,7 @@ impl TableTree for TableFormattingContext {
         state_mut(self.state).box_facts(&self.callbacks, node)
     }
 
-    fn style_facts(&mut self, node: Node) -> FfiStyleFacts {
+    fn style_facts(&mut self, node: Node) -> StyleValues {
         state_mut(self.state).style_facts(&self.callbacks, node)
     }
 
@@ -1129,10 +1129,10 @@ impl TableFormattingContext {
         // those values, or if the computed value of the table-layout property is auto, then the table-root is said to be laid out in auto mode.
         let style = self.style_facts(self.table_box);
         style.table_layout == TABLE_LAYOUT_FIXED
-            && (style.width.is_length()
-                || style.width.is_percentage()
-                || style.width.is_min_content()
-                || style.width.is_fit_content())
+            && (style.width().is_length()
+                || style.width().is_percentage()
+                || style.width().is_min_content()
+                || style.width().is_fit_content())
     }
 
     fn compute_constrainedness(&mut self) {
@@ -1142,7 +1142,7 @@ impl TableFormattingContext {
         let mut column_index = 0usize;
         for group in self.matching_children(self.table_box, |facts| facts.is_table_column_group) {
             for column in self.matching_children(group, |facts| facts.is_table_column) {
-                if self.style_facts(column).width.is_length() {
+                if self.style_facts(column).width().is_length() {
                     self.columns[column_index].is_constrained = true;
                 }
                 column_index += self.table_facts(column).raw_column_span as usize;
@@ -1150,17 +1150,17 @@ impl TableFormattingContext {
         }
         for row_index in 0..self.rows.len() {
             let row_box = self.rows[row_index].box_;
-            if self.style_facts(row_box).height.is_length() {
+            if self.style_facts(row_box).height().is_length() {
                 self.rows[row_index].is_constrained = true;
             }
         }
         for cell_index in 0..self.cells.len() {
             let cell = self.cells[cell_index];
             let style = self.style_facts(cell.box_);
-            if style.width.is_length() {
+            if style.width().is_length() {
                 self.columns[cell.column_index].is_constrained = true;
             }
-            if style.height.is_length() {
+            if style.height().is_length() {
                 self.rows[cell.row_index].is_constrained = true;
             }
         }
@@ -1197,10 +1197,10 @@ impl TableFormattingContext {
         for cell_index in 0..self.cells.len() {
             let cell = self.cells[cell_index];
             let style = self.style_facts(cell.box_);
-            let padding_block_start = style.padding_top.to_px(block_basis);
-            let padding_block_end = style.padding_bottom.to_px(block_basis);
-            let padding_inline_start = style.padding_left.to_px(inline_basis);
-            let padding_inline_end = style.padding_right.to_px(inline_basis);
+            let padding_block_start = style.padding_top().to_px(block_basis);
+            let padding_block_end = style.padding_bottom().to_px(block_basis);
+            let padding_inline_start = style.padding_left().to_px(inline_basis);
+            let padding_inline_end = style.padding_right().to_px(inline_basis);
             let used = self.used_values(cell.box_);
             // Implement the collapsing border model https://www.w3.org/TR/CSS22/tables.html#collapsing-borders.
             let (border_block_start, border_block_end, border_inline_start, border_inline_end) = if collapsed {
@@ -1222,14 +1222,14 @@ impl TableFormattingContext {
                 )
             };
             let inline_offsets = padding_inline_start + padding_inline_end + border_inline_start + border_inline_end;
-            let mut min_inline = style.min_width.to_px(inline_basis);
-            let mut inline_size = if style.width.is_length() {
-                style.width.to_px(inline_basis)
+            let mut min_inline = style.min_width().to_px(inline_basis);
+            let mut inline_size = if style.width().is_length() {
+                style.width().to_px(inline_basis)
             } else {
                 CssPixels::default()
             };
-            let mut max_inline = if style.max_width.is_length() {
-                style.max_width.to_px(inline_basis)
+            let mut max_inline = if style.max_width().is_length() {
+                style.max_width().to_px(inline_basis)
             } else {
                 CssPixels::from_raw(i32::MAX)
             };
@@ -1244,7 +1244,7 @@ impl TableFormattingContext {
             // of cells is considered zero unless they are directly specified as a length-percentage, in which case they are
             // resolved based on the table width (if it is definite, otherwise use 0).
             let (min_content_inline, max_content_inline) = if fixed {
-                if style.width.is_length_percentage() {
+                if style.width().is_length_percentage() {
                     (inline_size, inline_size)
                 } else {
                     (CssPixels::default(), CssPixels::default())
@@ -1261,20 +1261,20 @@ impl TableFormattingContext {
             if include_rows {
                 let min_content_block = self.calculate_min_content_block_size(cell.box_, max_content_inline);
                 let max_content_block = self.calculate_max_content_block_size(cell.box_, min_content_inline);
-                let min_block = style.min_height.to_px(block_basis);
+                let min_block = style.min_height().to_px(block_basis);
                 let block_offsets = padding_block_start + padding_block_end + border_block_start + border_block_end;
                 // The outer min-content block size of a table cell is its minimum block size adjusted by the cell intrinsic offsets.
                 self.cells[cell_index].outer_min_block_size = min_block.max(min_content_block) + block_offsets;
                 // The tables specification isn't explicit on how to use the height and max-height CSS properties in the outer max-content formulas.
                 // However, during this early phase we don't have enough information to resolve percentage sizes yet and the formulas for outer sizes
                 // in the specification give enough clues to pick defaults in a way that makes sense.
-                let block_size = if style.height.is_length() {
-                    style.height.to_px(block_basis)
+                let block_size = if style.height().is_length() {
+                    style.height().to_px(block_basis)
                 } else {
                     CssPixels::default()
                 };
-                let max_block = if style.max_height.is_length() {
-                    style.max_height.to_px(block_basis)
+                let max_block = if style.max_height().is_length() {
+                    style.max_height().to_px(block_basis)
                 } else {
                     CssPixels::from_raw(i32::MAX)
                 };
@@ -1313,13 +1313,13 @@ impl TableFormattingContext {
         let basis = block_basis(self.table_constraints);
         for row_index in 0..self.rows.len() {
             let style = self.style_facts(self.rows[row_index].box_);
-            let min_size = style.min_height.to_px(basis);
-            let max_size = if style.max_height.is_length() {
-                style.max_height.to_px(basis)
+            let min_size = style.min_height().to_px(basis);
+            let max_size = if style.max_height().is_length() {
+                style.max_height().to_px(basis)
             } else {
                 CssPixels::from_raw(i32::MAX)
             };
-            let size = style.height.to_px(basis);
+            let size = style.height().to_px(basis);
             // The outer min-content block size of a table row or row group is max(min-block-size, block-size).
             self.rows[row_index].min_size = min_size.max(size);
             // The outer max-content block size is max(min-block-size, min(max-block-size, block-size)).
@@ -1333,13 +1333,13 @@ impl TableFormattingContext {
         for group in self.matching_children(self.table_box, |facts| facts.is_table_column_group) {
             for column in self.matching_children(group, |facts| facts.is_table_column) {
                 let style = self.style_facts(column);
-                let min_size = style.min_width.to_px(basis);
-                let max_size = if style.max_width.is_length() {
-                    style.max_width.to_px(basis)
+                let min_size = style.min_width().to_px(basis);
+                let max_size = if style.max_width().is_length() {
+                    style.max_width().to_px(basis)
                 } else {
                     CssPixels::from_raw(i32::MAX)
                 };
-                let size = style.width.to_px(basis);
+                let size = style.width().to_px(basis);
                 // The outer min-content inline size of a table-column or table-column-group is max(min-width, width).
                 self.columns[column_index].min_size = min_size.max(size);
                 // The outer max-content inline size of a table-column or table-column-group is max(min-width, min(max-width, width)).
@@ -1436,11 +1436,11 @@ impl TableFormattingContext {
         }
     }
 
-    fn cell_percentage(style: FfiStyleFacts, axis: TrackAxis) -> f64 {
+    fn cell_percentage(style: StyleValues, axis: TrackAxis) -> f64 {
         // Definition of percentage contribution: https://www.w3.org/TR/css-tables-3/#percentage-contribution
         let (size, max_size) = match axis {
-            TrackAxis::Row => (style.height, style.max_height),
-            TrackAxis::Column => (style.width, style.max_width),
+            TrackAxis::Row => (style.height(), style.max_height()),
+            TrackAxis::Column => (style.width(), style.max_width()),
         };
         let maximum = if max_size.is_percentage() {
             max_size.fraction * 100.0
@@ -1461,7 +1461,7 @@ impl TableFormattingContext {
                 let style = self.style_facts(self.rows[index].box_);
                 // Definition of percentage contribution: https://www.w3.org/TR/css-tables-3/#percentage-contribution
                 self.rows[index].has_intrinsic_percentage =
-                    style.max_height.is_percentage() || style.height.is_percentage();
+                    style.max_height().is_percentage() || style.height().is_percentage();
                 self.rows[index].intrinsic_percentage = Self::cell_percentage(style, axis);
             }
         } else {
@@ -1471,7 +1471,7 @@ impl TableFormattingContext {
                     let style = self.style_facts(column);
                     // Definition of percentage contribution: https://www.w3.org/TR/css-tables-3/#percentage-contribution
                     self.columns[column_index].has_intrinsic_percentage =
-                        style.max_width.is_percentage() || style.width.is_percentage();
+                        style.max_width().is_percentage() || style.width().is_percentage();
                     self.columns[column_index].intrinsic_percentage = Self::cell_percentage(style, axis);
                     column_index += self.table_facts(column).raw_column_span as usize;
                 }
@@ -1482,8 +1482,8 @@ impl TableFormattingContext {
             let cell = self.cells[cell_index];
             let style = self.style_facts(cell.box_);
             let size = match axis {
-                TrackAxis::Row => style.height,
-                TrackAxis::Column => style.width,
+                TrackAxis::Row => style.height(),
+                TrackAxis::Column => style.width(),
             };
             if !size.is_percentage() {
                 continue;
@@ -1582,7 +1582,7 @@ impl TableFormattingContext {
             for cell_index in 0..self.cells.len() {
                 let cell = self.cells[cell_index];
                 if cell.row_span == 1 {
-                    let specified = self.style_facts(cell.box_).height.to_px(basis);
+                    let specified = self.style_facts(cell.box_).height().to_px(basis);
                     // https://www.w3.org/TR/css-tables-3/#row-layout makes specified cell height part of the initialization formula for row table measures:
                     // This is done by running the same algorithm as the column measurement, with the span=1 value being initialized (for min-content) with
                     // the largest of the resulting height of the previous row layout, the height specified on the corresponding table-row (if any), and
@@ -1733,15 +1733,15 @@ impl TableFormattingContext {
             let style = self.style_facts(caption);
             let outer = |inner: CssPixels| {
                 inner
-                    + style.margin_left.to_px(basis)
+                    + style.margin_left().to_px(basis)
                     + style.border_left_width
-                    + style.padding_left.to_px(basis)
-                    + style.padding_right.to_px(basis)
+                    + style.padding_left().to_px(basis)
+                    + style.padding_right().to_px(basis)
                     + style.border_right_width
-                    + style.margin_right.to_px(basis)
+                    + style.margin_right().to_px(basis)
             };
             let mut contribution = outer(self.calculate_min_content_inline_size(caption));
-            if !style.width.is_auto() && !style.width.contains_percentage {
+            if !style.width().is_auto() && !style.width().contains_percentage {
                 let preferred = self.sizing().calculate_inner_inline_width(
                     caption,
                     AvailableSize::definite(basis),
@@ -1823,11 +1823,11 @@ impl TableFormattingContext {
         let capmin = self.compute_capmin();
         // The used minimum inline size of a table is the greater of the resolved min-width, CAPMIN, and GRIDMIN.
         let mut used_min = grid_min.max(capmin);
-        if !table_style.min_width.is_auto() {
-            used_min = used_min.max(self.resolve_inline_constraint(table_style.min_width, grid_min, grid_max, basis));
+        if !table_style.min_width().is_auto() {
+            used_min = used_min.max(self.resolve_inline_constraint(table_style.min_width(), grid_min, grid_max, basis));
         }
-        let width_is_auto_or_indefinite_percentage = table_style.width.is_auto()
-            || (table_style.width.contains_percentage && !self.table_constraints.has_percentage_basis_inline_size);
+        let width_is_auto_or_indefinite_percentage = table_style.width().is_auto()
+            || (table_style.width().contains_percentage && !self.table_constraints.has_percentage_basis_inline_size);
         let mut used = if width_is_auto_or_indefinite_percentage {
             // If the table-root has 'width: auto', the used inline size is the greater of
             // min(GRIDMAX, the table’s containing block inline size), the used minimum inline size of the table.
@@ -1852,7 +1852,7 @@ impl TableFormattingContext {
                 // 'width: auto', a percentage represents a constraint on the column's inline size, which a UA should try to satisfy.
                 for cell_index in 0..self.cells.len() {
                     let cell = self.cells[cell_index];
-                    let cell_width = self.style_facts(cell.box_).width;
+                    let cell_width = self.style_facts(cell.box_).width();
                     if cell_width.is_percentage() {
                         let mut adjusted = spacing;
                         let percentage = cell_width.fraction * 100.0;
@@ -1870,21 +1870,21 @@ impl TableFormattingContext {
                 }
             }
             value
-        } else if table_style.width.is_max_content() {
+        } else if table_style.width().is_max_content() {
             grid_max
         } else {
             // If the table-root’s width property has a computed value (resolving to the table inline size) other than auto,
             // the used inline size is the greater of the resolved table inline size and the used minimum inline size.
             let mut value = self
-                .resolve_inline_constraint(table_style.width, grid_min, grid_max, basis)
+                .resolve_inline_constraint(table_style.width(), grid_min, grid_max, basis)
                 .max(used_min);
             if !self.should_treat_max_inline_size_as_none(available_inline) {
-                value = value.min(self.resolve_inline_constraint(table_style.max_width, grid_min, grid_max, basis));
+                value = value.min(self.resolve_inline_constraint(table_style.max_width(), grid_min, grid_max, basis));
             }
             value
         };
         if !self.should_treat_max_inline_size_as_none(available_inline) {
-            used = used.min(self.resolve_inline_constraint(table_style.max_width, grid_min, grid_max, basis));
+            used = used.min(self.resolve_inline_constraint(table_style.max_width(), grid_min, grid_max, basis));
         }
         used = used.max(used_min);
         let table_used = self.used_values(self.table_box);
@@ -1900,7 +1900,7 @@ impl TableFormattingContext {
                 return false;
             }
             let style = self.style_facts(self.rows[row_index].box_);
-            if !style.height.is_auto() || !style.min_height.is_auto() || !style.max_height.is_none() {
+            if !style.height().is_auto() || !style.min_height().is_auto() || !style.max_height().is_none() {
                 return false;
             }
         }
@@ -1910,7 +1910,7 @@ impl TableFormattingContext {
                 return false;
             }
             let style = self.style_facts(cell.box_);
-            if !style.height.is_auto() || !style.min_height.is_auto() || !style.max_height.is_none() {
+            if !style.height().is_auto() || !style.min_height().is_auto() || !style.max_height().is_none() {
                 return false;
             }
         }
@@ -1933,7 +1933,7 @@ impl TableFormattingContext {
         // resolve against those. Percentage block sizes of participants only resolve once the table
         // itself has a non-auto block size.
         self.table_constraints = input.containing_block_constraints;
-        let table_height_auto = self.style_facts(self.table_box).height.is_auto();
+        let table_height_auto = self.style_facts(self.table_box).height().is_auto();
         self.participant_constraints = FfiContainingBlockConstraints {
             has_percentage_basis_inline_size: self.table_constraints.has_percentage_basis_inline_size,
             percentage_basis_inline_size: self.table_constraints.percentage_basis_inline_size,
@@ -2089,11 +2089,11 @@ impl TableFormattingContext {
                 continue;
             }
             let style = self.style_facts(self.rows[row_index].box_);
-            if style.height.is_length() {
+            if style.height().is_length() {
                 // NOTE: A <length> block size resolves without a percentage basis.
                 self.rows[row_index].base_block_size = self.rows[row_index]
                     .base_block_size
-                    .max(style.height.to_px(CssPixels::default()));
+                    .max(style.height().to_px(CssPixels::default()));
             }
         }
         let inline_basis = inline_basis(self.participant_constraints);
@@ -2110,18 +2110,18 @@ impl TableFormattingContext {
             let used = self.used_values(cell.box_);
             // SAFETY: Unique cell entry; no callback occurs while borrowed.
             unsafe {
-                (*used).padding_top = style.padding_top.to_px(inline_basis);
-                (*used).padding_bottom = style.padding_bottom.to_px(inline_basis);
-                (*used).padding_left = style.padding_left.to_px(inline_basis);
-                (*used).padding_right = style.padding_right.to_px(inline_basis);
+                (*used).padding_top = style.padding_top().to_px(inline_basis);
+                (*used).padding_bottom = style.padding_bottom().to_px(inline_basis);
+                (*used).padding_left = style.padding_left().to_px(inline_basis);
+                (*used).padding_right = style.padding_right().to_px(inline_basis);
                 if !collapsed {
                     (*used).border_top = style.border_top_width;
                     (*used).border_bottom = style.border_bottom_width;
                     (*used).border_left = style.border_left_width;
                     (*used).border_right = style.border_right_width;
                 }
-                if !self.rows[cell.row_index].is_collapsed && style.height.is_length() {
-                    let cell_size = style.height.to_px(participant_block_basis);
+                if !self.rows[cell.row_index].is_collapsed && style.height().is_length() {
+                    let cell_size = style.height().to_px(participant_block_basis);
                     (*used).set_content_block_size(
                         cell_size - (*used).border_box_top(collapsed) - (*used).border_box_bottom(collapsed),
                     );
@@ -2143,7 +2143,7 @@ impl TableFormattingContext {
             // SAFETY: Read-only access to the live cell entry.
             let inner = unsafe { (*used).available_inner_space_or_constraints_from(outer_space) };
             let mut measured_baseline = None;
-            if style.height.is_percentage() {
+            if style.height().is_percentage() {
                 // This cell's final inside layout happens in the second pass below; measure its
                 // content in a throwaway state instead of laying out the committing state twice.
                 if let Some(measured) = self.measure_cell(cell, used, inner) {
@@ -2161,7 +2161,7 @@ impl TableFormattingContext {
                 self.finish_child_layout(cell.box_);
             }
             if self.needs_fixed_mode_row_measurement {
-                let min_size = style.min_height.to_px(participant_block_basis);
+                let min_size = style.min_height().to_px(participant_block_basis);
                 // SAFETY: Read-only geometry calculation.
                 let offsets = unsafe { (*used).border_box_top(collapsed) + (*used).border_box_bottom(collapsed) };
                 // SAFETY: Read-only geometry calculation.
@@ -2216,10 +2216,10 @@ impl TableFormattingContext {
             self.table_block_size = self.table_block_size.max(content_min);
         }
         let table_style = self.style_facts(self.table_box);
-        if !table_style.height.is_auto() {
+        if !table_style.height().is_auto() {
             // If the table has a `height` property other than auto, it is treated as a minimum block size for the
             // table grid, and will eventually be distributed to the rows if their collective minimum block size is smaller.
-            let mut specified = table_style.height.to_px(block_basis(self.table_constraints));
+            let mut specified = table_style.height().to_px(block_basis(self.table_constraints));
             if table_style.box_sizing == BOX_SIZING_BORDER_BOX {
                 let used = self.used_values(self.table_box);
                 // SAFETY: Read-only table geometry.
@@ -2248,8 +2248,8 @@ impl TableFormattingContext {
                 continue;
             }
             let style = self.style_facts(self.rows[row_index].box_);
-            if style.height.is_percentage() {
-                let used = style.height.to_px(self.table_block_size);
+            if style.height().is_percentage() {
+                let used = style.height().to_px(self.table_block_size);
                 self.rows[row_index].reference_block_size = self.rows[row_index].reference_block_size.max(used);
             }
         }
@@ -2258,10 +2258,10 @@ impl TableFormattingContext {
         for cell_index in 0..self.cells.len() {
             let cell = self.cells[cell_index];
             let style = self.style_facts(cell.box_);
-            if !style.height.is_percentage() {
+            if !style.height().is_percentage() {
                 continue;
             }
-            let cell_size = style.height.to_px(self.table_block_size);
+            let cell_size = style.height().to_px(self.table_block_size);
             let used = self.used_values(cell.box_);
             // SAFETY: Unique cell geometry.
             unsafe {
@@ -2311,7 +2311,7 @@ impl TableFormattingContext {
         }
         let auto_rows = (0..self.rows.len())
             .filter(|index| {
-                !self.rows[*index].is_collapsed && self.style_facts(self.rows[*index].box_).height.is_auto()
+                !self.rows[*index].is_collapsed && self.style_facts(self.rows[*index].box_).height().is_auto()
             })
             .collect::<Vec<_>>();
         if self.table_block_size <= sum {
@@ -2491,12 +2491,12 @@ impl TableFormattingContext {
             unsafe {
                 if anonymous_wrapper {
                     (*used).padding_bottom += row_size - (*used).border_box_block_size(collapsed);
-                } else if style.vertical_align_is_keyword {
+                } else if style.vertical_align_is_keyword() {
                     // The following image shows various alignment lines of a row:
                     // https://www.w3.org/TR/css-tables-3/images/cell-align-explainer.png
                     // https://drafts.csswg.org/css2/#height-layout
                     // In the context of tables, values for vertical-align have the following meanings:
-                    match style.vertical_align_keyword {
+                    match style.vertical_align_keyword() {
                         VERTICAL_ALIGN_MIDDLE => {
                             // The center of the cell is aligned with the center of the rows it spans.
                             let difference = row_size - (*used).border_box_block_size(collapsed);

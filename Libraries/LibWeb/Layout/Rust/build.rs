@@ -126,7 +126,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         "FfiFormattingContextType".to_string(),
         "FfiSizeKind".to_string(),
         "FfiSizeValue".to_string(),
-        "FfiStyleFacts".to_string(),
+        "FfiStyleField".to_string(),
+        "FfiStyleFieldEncoding".to_string(),
+        "FfiStyleFieldSchema".to_string(),
+        "FfiStylePayloads".to_string(),
+        "FfiDecodedStyleValue".to_string(),
     ];
     generate_ffi_header(
         layout_config,

@@ -14,7 +14,7 @@ use crate::formatting_context::inline::{
 };
 use crate::formatting_context::{FfiBordersData, FfiLayoutFcCallbacks, FfiTableBoxFacts};
 use crate::geometry::{FfiContainingBlockConstraints, LogicalRect};
-use crate::style_facts::FfiStyleFacts;
+use crate::style_facts::{FfiStyleField, LazyStyleCache, StyleValues};
 use crate::used_values::UsedValuesCore;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
@@ -401,7 +401,7 @@ pub(crate) struct FfiContainedAbsposChild {
 pub(crate) struct LayoutState {
     used_values: PagedStore<UsedValuesCore>,
     contained_abspos_children: HashMap<usize, Vec<ContainedAbsposChild>>,
-    style_facts: PagedStore<FfiStyleFacts>,
+    lazy_style_values: PagedStore<LazyStyleCache>,
     box_facts: PagedStore<FfiLayoutBoxFacts>,
     table_facts: PagedStore<FfiTableBoxFacts>,
     grid_facts: PagedStore<GridStyleFacts>,
@@ -451,19 +451,13 @@ pub(crate) struct UsedValuesRareData {
     pub(crate) abspos_layout_inputs: Option<FfiAbsposLayoutInputs>,
 }
 
-impl Drop for LayoutState {
-    fn drop(&mut self) {
-        self.style_facts.for_each(|facts| facts.release_calc_handles());
-    }
-}
-
 #[allow(dead_code)]
 impl LayoutState {
     pub(crate) fn new(purpose: LayoutStatePurpose) -> Self {
         Self {
             used_values: PagedStore::default(),
             contained_abspos_children: HashMap::new(),
-            style_facts: PagedStore::default(),
+            lazy_style_values: PagedStore::default(),
             box_facts: PagedStore::default(),
             table_facts: PagedStore::default(),
             grid_facts: PagedStore::default(),
@@ -605,15 +599,15 @@ impl LayoutState {
                 let border_and_padding = match axis {
                     Axis::Inline => {
                         style.border_left_width
-                            + style.padding_left.to_px(inline_basis)
+                            + style.padding_left().to_px(inline_basis)
                             + style.border_right_width
-                            + style.padding_right.to_px(inline_basis)
+                            + style.padding_right().to_px(inline_basis)
                     }
                     Axis::Block => {
                         style.border_top_width
-                            + style.padding_top.to_px(inline_basis)
+                            + style.padding_top().to_px(inline_basis)
                             + style.border_bottom_width
-                            + style.padding_bottom.to_px(inline_basis)
+                            + style.padding_bottom().to_px(inline_basis)
                     }
                 };
                 unadjusted - border_and_padding
@@ -674,12 +668,12 @@ impl LayoutState {
             )))
         };
 
-        let min_inline_size = is_definite_size(style.min_width, Axis::Inline);
-        let max_inline_size = is_definite_size(style.max_width, Axis::Inline);
-        let min_block_size = is_definite_size(style.min_height, Axis::Block);
-        let max_block_size = is_definite_size(style.max_height, Axis::Block);
-        let mut content_inline_size = is_definite_size(style.width, Axis::Inline);
-        let mut content_block_size = is_definite_size(style.height, Axis::Block);
+        let min_inline_size = is_definite_size(style.min_width(), Axis::Inline);
+        let max_inline_size = is_definite_size(style.max_width(), Axis::Inline);
+        let min_block_size = is_definite_size(style.min_height(), Axis::Block);
+        let max_block_size = is_definite_size(style.max_height(), Axis::Block);
+        let mut content_inline_size = is_definite_size(style.width(), Axis::Inline);
+        let mut content_block_size = is_definite_size(style.height(), Axis::Block);
 
         used.has_definite_inline_size = content_inline_size.is_some();
         used.has_definite_block_size = content_block_size.is_some();
@@ -822,18 +816,24 @@ impl LayoutState {
         self.bfc_root_fact_builds_excluded.insert(layout_index)
     }
 
-    pub(crate) fn style_facts(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> FfiStyleFacts {
-        let index = self.layout_index(callbacks, node);
-        let facts = self.style_facts.get(index);
-        if !facts.is_null() {
-            bump(FfiOp::StyleFactsCacheHit);
-            // SAFETY: Non-null store entries remain valid for the state.
-            return unsafe { *facts };
+    pub(crate) fn style_facts(&mut self, callbacks: &FfiLayoutFcCallbacks, node: *mut c_void) -> StyleValues {
+        let facts = self.box_facts(callbacks, node);
+        assert!(facts.has_layout_index);
+        let index = facts.layout_index;
+        let mut cache = self.lazy_style_values.get(index);
+        if cache.is_null() {
+            bump(FfiOp::StyleViewCreate);
+            cache = self.lazy_style_values.allocate(index, LazyStyleCache::new());
+        } else {
+            bump(FfiOp::StyleViewCacheHit);
         }
-        // SAFETY: See build_box_facts().
-        let facts = unsafe { (callbacks.build_style_facts)(callbacks.context, node) };
-        self.style_facts.allocate(index, facts);
-        facts
+        StyleValues::new(
+            facts.style_payloads,
+            facts.display,
+            cache,
+            callbacks.context,
+            callbacks.decode_style_field,
+        )
     }
 
     pub(crate) fn replace_resolved_anchor_insets(
@@ -843,31 +843,30 @@ impl LayoutState {
         resolved: crate::formatting_context::abspos::FfiResolvedAnchorInsets,
     ) {
         let index = self.layout_index(callbacks, node);
-        let facts = self.style_facts.get(index);
-        assert!(!facts.is_null());
-        // SAFETY: The style-facts entry is stable and layout mutates it
+        let cache = self.lazy_style_values.get(index);
+        assert!(!cache.is_null());
+        // SAFETY: The lazy-style entry is stable and layout mutates it
         // serially when anchor functions become plain used-value insets.
-        let facts = unsafe { &mut *facts };
-        let replace =
-            |slot: &mut crate::style_facts::FfiSizeValue, is_auto: bool, value: crate::css_pixels::CssPixels| {
-                slot.release_calc_handle();
-                *slot = if is_auto {
-                    crate::style_facts::FfiSizeValue::auto_value()
-                } else {
-                    crate::style_facts::FfiSizeValue::px_value(value)
-                };
+        let cache = unsafe { &mut *cache };
+        let mut replace = |field: FfiStyleField, is_auto: bool, value: crate::css_pixels::CssPixels| {
+            let value = if is_auto {
+                crate::style_facts::FfiSizeValue::auto_value()
+            } else {
+                crate::style_facts::FfiSizeValue::px_value(value)
             };
+            cache.replace_size(field, value);
+        };
         if resolved.resolves_top {
-            replace(&mut facts.inset_top, resolved.top_is_auto, resolved.top);
+            replace(FfiStyleField::InsetTop, resolved.top_is_auto, resolved.top);
         }
         if resolved.resolves_right {
-            replace(&mut facts.inset_right, resolved.right_is_auto, resolved.right);
+            replace(FfiStyleField::InsetRight, resolved.right_is_auto, resolved.right);
         }
         if resolved.resolves_bottom {
-            replace(&mut facts.inset_bottom, resolved.bottom_is_auto, resolved.bottom);
+            replace(FfiStyleField::InsetBottom, resolved.bottom_is_auto, resolved.bottom);
         }
         if resolved.resolves_left {
-            replace(&mut facts.inset_left, resolved.left_is_auto, resolved.left);
+            replace(FfiStyleField::InsetLeft, resolved.left_is_auto, resolved.left);
         }
     }
 

@@ -1106,7 +1106,7 @@ mod runtime {
         FfiAbsposAlignment, FfiAbsposAxisMode, FfiAbsposContainingBlockInfo, FfiStaticPositionAlignment,
         FfiStaticPositionRect, state_mut,
     };
-    use crate::style_facts::{FfiSizeValue, FfiStyleFacts};
+    use crate::style_facts::{FfiSizeValue, StyleValues};
     use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
     use std::ffi::c_void;
 
@@ -1311,7 +1311,7 @@ mod runtime {
             unsafe { &mut *item.used_values }
         }
 
-        fn style(&self, node: Node) -> FfiStyleFacts {
+        fn style(&self, node: Node) -> StyleValues {
             state_mut(self.state).style_facts(&self.callbacks, node)
         }
 
@@ -1386,9 +1386,9 @@ mod runtime {
         fn axis_gap_value(&self, axis: Axis) -> FfiSizeValue {
             let style = self.style(self.grid_container);
             if axis.is_column() {
-                style.column_gap
+                style.column_gap()
             } else {
-                style.row_gap
+                style.row_gap()
             }
         }
 
@@ -2218,24 +2218,28 @@ mod runtime {
 
         fn preferred_size(&self, item: GridItem, axis: Axis) -> FfiSizeValue {
             let style = self.style(item.box_);
-            if axis.is_column() { style.width } else { style.height }
+            if axis.is_column() {
+                style.width()
+            } else {
+                style.height()
+            }
         }
 
         fn minimum_size(&self, item: GridItem, axis: Axis) -> FfiSizeValue {
             let style = self.style(item.box_);
             if axis.is_column() {
-                style.min_width
+                style.min_width()
             } else {
-                style.min_height
+                style.min_height()
             }
         }
 
         fn maximum_size(&self, item: GridItem, axis: Axis) -> FfiSizeValue {
             let style = self.style(item.box_);
             if axis.is_column() {
-                style.max_width
+                style.max_width()
             } else {
-                style.max_height
+                style.max_height()
             }
         }
 
@@ -2639,7 +2643,7 @@ mod runtime {
                     self.layout_input.unwrap().containing_block_constraints,
                 )
             } else {
-                !computed_values.max_height.is_auto()
+                !computed_values.max_height().is_auto()
             };
 
             if should_treat_grid_container_maximum_size_as_none {
@@ -2865,10 +2869,10 @@ mod runtime {
                 let track_count = self.axis_tracks(axis).len() as i32;
                 let used = self.used_mut(item);
                 if axis.is_column() {
-                    used.padding_left = style.padding_left.to_px(inline_basis);
-                    used.padding_right = style.padding_right.to_px(inline_basis);
-                    used.margin_left = style.margin_left.to_px(inline_basis);
-                    used.margin_right = style.margin_right.to_px(inline_basis);
+                    used.padding_left = style.padding_left().to_px(inline_basis);
+                    used.padding_right = style.padding_right().to_px(inline_basis);
+                    used.margin_left = style.margin_left().to_px(inline_basis);
+                    used.margin_right = style.margin_right().to_px(inline_basis);
                     used.border_left = style.border_left_width;
                     used.border_right = style.border_right_width;
                     if item_start > 0 {
@@ -2878,10 +2882,10 @@ mod runtime {
                         used.margin_right += extra_margin;
                     }
                 } else {
-                    used.padding_top = style.padding_top.to_px(inline_basis);
-                    used.padding_bottom = style.padding_bottom.to_px(inline_basis);
-                    used.margin_top = style.margin_top.to_px(inline_basis);
-                    used.margin_bottom = style.margin_bottom.to_px(inline_basis);
+                    used.padding_top = style.padding_top().to_px(inline_basis);
+                    used.padding_bottom = style.padding_bottom().to_px(inline_basis);
+                    used.margin_top = style.margin_top().to_px(inline_basis);
+                    used.margin_bottom = style.margin_bottom().to_px(inline_basis);
                     used.border_top = style.border_top_width;
                     used.border_bottom = style.border_bottom_width;
                     if item_start > 0 {
@@ -2948,12 +2952,12 @@ mod runtime {
             let table_box = self.table_box_inside_wrapper(item.box_);
             let table_style = self.style(table_box);
             let wrapper_style = self.style(item.box_);
-            if !wrapper_style.width.contains_percentage
-                && !wrapper_style.min_width.contains_percentage
-                && !wrapper_style.max_width.contains_percentage
-                && !table_style.width.contains_percentage
-                && !table_style.min_width.contains_percentage
-                && !table_style.max_width.contains_percentage
+            if !wrapper_style.width().contains_percentage
+                && !wrapper_style.min_width().contains_percentage
+                && !wrapper_style.max_width().contains_percentage
+                && !table_style.width().contains_percentage
+                && !table_style.min_width().contains_percentage
+                && !table_style.max_width().contains_percentage
             {
                 return containing;
             }
@@ -3012,14 +3016,14 @@ mod runtime {
             let table_style = self.style(table_box);
             let sizing = self.sizing();
             let current_used = self.used(item);
-            let base_margin_start = wrapper_style.margin_left.to_px(containing_for_wrapper);
-            let base_margin_end = wrapper_style.margin_right.to_px(containing_for_wrapper);
+            let base_margin_start = wrapper_style.margin_left().to_px(containing_for_wrapper);
+            let base_margin_end = wrapper_style.margin_right().to_px(containing_for_wrapper);
             let margin_box_start =
                 self.item_margin_box_start(item, Axis::Column) - current_used.margin_left + base_margin_start;
             let margin_box_end =
                 self.item_margin_box_end(item, Axis::Column) - current_used.margin_right + base_margin_end;
 
-            if !wrapper_style.width.is_auto() {
+            if !wrapper_style.width().is_auto() {
                 wrapper_size = wrapper_size.max(sizing.calculate_inner_size_for_property(
                     item.box_,
                     FfiFlexAxis::Inline,
@@ -3028,15 +3032,15 @@ mod runtime {
                     self.grid_area_constraints(item),
                 ));
             }
-            if table_style.width.is_auto() {
+            if table_style.width().is_auto() {
                 wrapper_size = wrapper_size.max(sizing.calculate_min_content_inline_size(item.box_, constraints));
             }
 
             let alignment = self.item_alignment(item, Axis::Column);
-            if table_style.width.is_auto()
+            if table_style.width().is_auto()
                 && matches!(alignment, Alignment::Normal | Alignment::Stretch)
-                && !wrapper_style.margin_left.is_auto()
-                && !wrapper_style.margin_right.is_auto()
+                && !wrapper_style.margin_left().is_auto()
+                && !wrapper_style.margin_right().is_auto()
             {
                 // Stretching the wrapper also stretches the auto-width table inside it, so the stretched inline size has to
                 // respect the max-width of both the wrapper and the table box.
@@ -3052,12 +3056,12 @@ mod runtime {
                     ));
                 }
                 if !sizing.should_treat_max_inline_size_as_none(table_box, available.inline_size, area_constraints) {
-                    if table_style.max_width.is_length_percentage() {
-                        let mut table_max = table_style.max_width.to_px(containing_for_wrapper);
+                    if table_style.max_width().is_length_percentage() {
+                        let mut table_max = table_style.max_width().to_px(containing_for_wrapper);
                         if table_style.box_sizing != BOX_SIZING_BORDER_BOX {
                             table_max += table_style.border_left_width
-                                + table_style.padding_left.to_px(containing_for_wrapper)
-                                + table_style.padding_right.to_px(containing_for_wrapper)
+                                + table_style.padding_left().to_px(containing_for_wrapper)
+                                + table_style.padding_right().to_px(containing_for_wrapper)
                                 + table_style.border_right_width;
                         }
                         stretched = stretched.min(table_max);
@@ -3078,7 +3082,7 @@ mod runtime {
                     area_constraints,
                 ));
             }
-            if !wrapper_style.min_width.is_auto() {
+            if !wrapper_style.min_width().is_auto() {
                 wrapper_size = wrapper_size.max(sizing.calculate_inner_size_for_property(
                     item.box_,
                     FfiFlexAxis::Inline,
@@ -3097,8 +3101,8 @@ mod runtime {
                 margin_box_end,
                 base_margin_start + item.extra_margin_left,
                 base_margin_end + item.extra_margin_right,
-                wrapper_style.margin_left.is_auto(),
-                wrapper_style.margin_right.is_auto(),
+                wrapper_style.margin_left().is_auto(),
+                wrapper_style.margin_right().is_auto(),
                 alignment,
             )
         }
@@ -3121,7 +3125,11 @@ mod runtime {
                     constraints.percentage_basis_block_size = containing;
                 }
                 let style = self.style(item.box_);
-                let preferred = if axis.is_column() { style.width } else { style.height };
+                let preferred = if axis.is_column() {
+                    style.width()
+                } else {
+                    style.height()
+                };
                 let alignment = self.item_alignment(item, axis);
                 let facts = self.facts(item.box_);
                 let has_natural = if axis.is_column() {
@@ -3175,9 +3183,9 @@ mod runtime {
                 } else if preferred.is_auto()
                     && matches!(alignment, Alignment::Stretch | Alignment::Normal)
                     && !(if axis.is_column() {
-                        style.margin_left.is_auto() || style.margin_right.is_auto()
+                        style.margin_left().is_auto() || style.margin_right().is_auto()
                     } else {
-                        style.margin_top.is_auto() || style.margin_bottom.is_auto()
+                        style.margin_top().is_auto() || style.margin_bottom().is_auto()
                     })
                 {
                     // OPTIMIZATION: For auto-sized items with stretch/normal alignment and no auto margins, the item stretches
@@ -3221,15 +3229,15 @@ mod runtime {
                     (
                         used.margin_left + item.extra_margin_left,
                         used.margin_right + item.extra_margin_right,
-                        style.margin_left.is_auto(),
-                        style.margin_right.is_auto(),
+                        style.margin_left().is_auto(),
+                        style.margin_right().is_auto(),
                     )
                 } else {
                     (
                         used.margin_top + item.extra_margin_top,
                         used.margin_bottom + item.extra_margin_bottom,
-                        style.margin_top.is_auto(),
-                        style.margin_bottom.is_auto(),
+                        style.margin_top().is_auto(),
+                        style.margin_bottom().is_auto(),
                     )
                 };
                 let resolve_alignment = |size, size_is_auto| {
@@ -3277,9 +3285,9 @@ mod runtime {
                     }
                 }
                 let minimum = if axis.is_column() {
-                    style.min_width
+                    style.min_width()
                 } else {
-                    style.min_height
+                    style.min_height()
                 };
                 if !minimum.is_auto() {
                     let minimum = self.sizing().calculate_inner_size_for_property(
@@ -3327,7 +3335,7 @@ mod runtime {
             }
             if self.use_row_alignment_container_size {
                 let style = self.style(self.grid_container);
-                if !style.min_height.is_auto() {
+                if !style.min_height().is_auto() {
                     return self
                         .row_alignment_container_size
                         .max(self.container_used().content_block_size);
@@ -3370,7 +3378,7 @@ mod runtime {
             let constraints = self.layout_input.unwrap().containing_block_constraints;
             let style = self.style(self.grid_container);
             let sizing = self.sizing();
-            if !style.max_height.is_auto()
+            if !style.max_height().is_auto()
                 && !sizing.should_treat_max_block_size_as_none(self.grid_container, available.block_size, constraints)
             {
                 block_size = block_size.min(sizing.calculate_inner_size_for_property(
@@ -3381,7 +3389,7 @@ mod runtime {
                     constraints,
                 ));
             }
-            if !style.min_height.is_auto() {
+            if !style.min_height().is_auto() {
                 block_size = block_size.max(sizing.calculate_inner_size_for_property(
                     self.grid_container,
                     FfiFlexAxis::Block,

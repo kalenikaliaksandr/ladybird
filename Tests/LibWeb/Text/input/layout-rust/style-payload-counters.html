@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<style>
+    table { border-collapse: collapse; width: 240px; }
+    td { border: 1px solid; }
+</style>
+<table id="table">
+    <tr><td>A</td><td>B</td></tr>
+    <tr><td colspan="2">C</td></tr>
+</table>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        table.offsetWidth;
+        internals.resetLayoutFfiCounters();
+        table.style.width = "241px";
+        table.offsetWidth;
+
+        const counters = internals.layoutFfiCounters();
+        println(`style schema registrations: ${counters.styleSchemaRegistrations}`);
+        println(`style payload fetches: ${counters.stylePayloadFetches}`);
+        println(`style lazy decodes: ${counters.styleLazyDecodes}`);
+    });
+</script>

@@ -6,6 +6,7 @@
 
 use crate::css_pixels::CssPixels;
 use crate::display::FfiDisplay;
+use crate::style_facts::FfiStylePayloads;
 use std::ffi::c_void;
 
 #[derive(Clone, Copy)]
@@ -83,6 +84,7 @@ pub struct FfiLayoutBoxFacts {
 
     pub has_layout_index: bool,
     pub layout_index: u32,
+    pub style_payloads: FfiStylePayloads,
     pub display: FfiDisplay,
     pub is_svg_box: bool,
     pub is_svg_svg_box: bool,
@@ -175,6 +177,7 @@ impl Default for FfiLayoutBoxFacts {
             is_scroll_container: false,
             has_layout_index: false,
             layout_index: 0,
+            style_payloads: FfiStylePayloads::default(),
             display: FfiDisplay::block(),
             is_svg_box: false,
             is_svg_svg_box: false,

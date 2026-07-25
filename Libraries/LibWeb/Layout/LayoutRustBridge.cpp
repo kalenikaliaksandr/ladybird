@@ -100,6 +100,160 @@ struct UsedGridTracksCommitData {
     RefPtr<CSS::GridTrackSizeListStyleValue const> rows;
 };
 
+static constexpr size_t style_field_encoding_width(RustFFI::FfiStyleFieldEncoding encoding)
+{
+    switch (encoding) {
+    case RustFFI::FfiStyleFieldEncoding::U8:
+    case RustFFI::FfiStyleFieldEncoding::Bool:
+        return 1;
+    case RustFFI::FfiStyleFieldEncoding::I32:
+    case RustFFI::FfiStyleFieldEncoding::F32:
+    case RustFFI::FfiStyleFieldEncoding::CssPixels:
+        return 4;
+    case RustFFI::FfiStyleFieldEncoding::F64:
+        return 8;
+    case RustFFI::FfiStyleFieldEncoding::Lazy:
+        return 0;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+static_assert(to_underlying(CSS::StyleGroupIndex::Count) == RustFFI::STYLE_GROUP_COUNT);
+
+#define LIBWEB_LAYOUT_DIRECT_STYLE_FIELDS(F)                                                                                                                \
+    F(BorderTopWidth, CSS::ComputedValues::BorderValues, border_top.width, offsetof(CSS::ComputedValues::BorderValues, border_top) + offsetof(CSS::BorderData, width), CssPixels) \
+    F(BorderRightWidth, CSS::ComputedValues::BorderValues, border_right.width, offsetof(CSS::ComputedValues::BorderValues, border_right) + offsetof(CSS::BorderData, width), CssPixels) \
+    F(BorderBottomWidth, CSS::ComputedValues::BorderValues, border_bottom.width, offsetof(CSS::ComputedValues::BorderValues, border_bottom) + offsetof(CSS::BorderData, width), CssPixels) \
+    F(BorderLeftWidth, CSS::ComputedValues::BorderValues, border_left.width, offsetof(CSS::ComputedValues::BorderValues, border_left) + offsetof(CSS::BorderData, width), CssPixels) \
+    F(BorderTopStyle, CSS::ComputedValues::BorderValues, border_top.line_style, offsetof(CSS::ComputedValues::BorderValues, border_top) + offsetof(CSS::BorderData, line_style), U8) \
+    F(BorderRightStyle, CSS::ComputedValues::BorderValues, border_right.line_style, offsetof(CSS::ComputedValues::BorderValues, border_right) + offsetof(CSS::BorderData, line_style), U8) \
+    F(BorderBottomStyle, CSS::ComputedValues::BorderValues, border_bottom.line_style, offsetof(CSS::ComputedValues::BorderValues, border_bottom) + offsetof(CSS::BorderData, line_style), U8) \
+    F(BorderLeftStyle, CSS::ComputedValues::BorderValues, border_left.line_style, offsetof(CSS::ComputedValues::BorderValues, border_left) + offsetof(CSS::BorderData, line_style), U8) \
+    F(Position, CSS::ComputedValues::BoxValues, position, offsetof(CSS::ComputedValues::BoxValues, position), U8)                                                   \
+    F(Float, CSS::ComputedValues::BoxValues, float_, offsetof(CSS::ComputedValues::BoxValues, float_), U8)                                                        \
+    F(Clear, CSS::ComputedValues::BoxValues, clear, offsetof(CSS::ComputedValues::BoxValues, clear), U8)                                                          \
+    F(WritingMode, CSS::ComputedValues::InheritedBoxValues, writing_mode, offsetof(CSS::ComputedValues::InheritedBoxValues, writing_mode), U8)                    \
+    F(Direction, CSS::ComputedValues::InheritedBoxValues, direction, offsetof(CSS::ComputedValues::InheritedBoxValues, direction), U8)                            \
+    F(TextAlign, CSS::ComputedValues::InheritedTextValues, text_align, offsetof(CSS::ComputedValues::InheritedTextValues, text_align), U8)                        \
+    F(TextJustify, CSS::ComputedValues::InheritedTextValues, text_justify, offsetof(CSS::ComputedValues::InheritedTextValues, text_justify), U8)                   \
+    F(WhiteSpaceCollapse, CSS::ComputedValues::InheritedTextValues, white_space_collapse, offsetof(CSS::ComputedValues::InheritedTextValues, white_space_collapse), U8) \
+    F(TextWrapMode, CSS::ComputedValues::InheritedTextValues, text_wrap_mode, offsetof(CSS::ComputedValues::InheritedTextValues, text_wrap_mode), U8)             \
+    F(LineHeight, CSS::ComputedValues::FontValues, line_height.used_value, offsetof(CSS::ComputedValues::FontValues, line_height) + offsetof(CSS::LineHeightData, used_value), CssPixels) \
+    F(FontSize, CSS::ComputedValues::FontValues, font_size, offsetof(CSS::ComputedValues::FontValues, font_size), CssPixels)                                      \
+    F(BoxSizing, CSS::ComputedValues::BoxValues, box_sizing, offsetof(CSS::ComputedValues::BoxValues, box_sizing), U8)                                           \
+    F(OverflowX, CSS::ComputedValues::BoxValues, overflow_x, offsetof(CSS::ComputedValues::BoxValues, overflow_x), U8)                                           \
+    F(OverflowY, CSS::ComputedValues::BoxValues, overflow_y, offsetof(CSS::ComputedValues::BoxValues, overflow_y), U8)                                           \
+    F(TextOverflow, CSS::ComputedValues::TextResetValues, text_overflow, offsetof(CSS::ComputedValues::TextResetValues, text_overflow), U8)                      \
+    F(FlexDirection, CSS::ComputedValues::AlignmentValues, flex_direction, offsetof(CSS::ComputedValues::AlignmentValues, flex_direction), U8)                   \
+    F(FlexWrap, CSS::ComputedValues::AlignmentValues, flex_wrap, offsetof(CSS::ComputedValues::AlignmentValues, flex_wrap), U8)                                  \
+    F(FlexGrow, CSS::ComputedValues::AlignmentValues, flex_grow, offsetof(CSS::ComputedValues::AlignmentValues, flex_grow), F64)                                 \
+    F(FlexShrink, CSS::ComputedValues::AlignmentValues, flex_shrink, offsetof(CSS::ComputedValues::AlignmentValues, flex_shrink), F64)                            \
+    F(Order, CSS::ComputedValues::AlignmentValues, order, offsetof(CSS::ComputedValues::AlignmentValues, order), I32)                                            \
+    F(AlignItems, CSS::ComputedValues::AlignmentValues, align_items, offsetof(CSS::ComputedValues::AlignmentValues, align_items), U8)                            \
+    F(AlignSelf, CSS::ComputedValues::AlignmentValues, align_self, offsetof(CSS::ComputedValues::AlignmentValues, align_self), U8)                               \
+    F(AlignContent, CSS::ComputedValues::AlignmentValues, align_content, offsetof(CSS::ComputedValues::AlignmentValues, align_content), U8)                      \
+    F(JustifyContent, CSS::ComputedValues::AlignmentValues, justify_content, offsetof(CSS::ComputedValues::AlignmentValues, justify_content), U8)                \
+    F(JustifyItems, CSS::ComputedValues::AlignmentValues, justify_items, offsetof(CSS::ComputedValues::AlignmentValues, justify_items), U8)                      \
+    F(JustifySelf, CSS::ComputedValues::AlignmentValues, justify_self, offsetof(CSS::ComputedValues::AlignmentValues, justify_self), U8)                         \
+    F(Appearance, CSS::ComputedValues::MiscResetValues, appearance, offsetof(CSS::ComputedValues::MiscResetValues, appearance), U8)                              \
+    F(BorderCollapse, CSS::ComputedValues::InheritedTableValues, border_collapse, offsetof(CSS::ComputedValues::InheritedTableValues, border_collapse), U8)       \
+    F(BorderSpacingHorizontal, CSS::ComputedValues::InheritedTableValues, border_spacing_horizontal, offsetof(CSS::ComputedValues::InheritedTableValues, border_spacing_horizontal), CssPixels) \
+    F(BorderSpacingVertical, CSS::ComputedValues::InheritedTableValues, border_spacing_vertical, offsetof(CSS::ComputedValues::InheritedTableValues, border_spacing_vertical), CssPixels) \
+    F(CaptionSide, CSS::ComputedValues::InheritedTableValues, caption_side, offsetof(CSS::ComputedValues::InheritedTableValues, caption_side), U8)                \
+    F(TableLayout, CSS::ComputedValues::MiscResetValues, table_layout, offsetof(CSS::ComputedValues::MiscResetValues, table_layout), U8)                          \
+    F(ContentVisibility, CSS::ComputedValues::InheritedBoxValues, content_visibility, offsetof(CSS::ComputedValues::InheritedBoxValues, content_visibility), U8)  \
+    F(Visibility, CSS::ComputedValues::InheritedBoxValues, visibility, offsetof(CSS::ComputedValues::InheritedBoxValues, visibility), U8)                         \
+    F(WordBreak, CSS::ComputedValues::InheritedTextValues, word_break, offsetof(CSS::ComputedValues::InheritedTextValues, word_break), U8)                        \
+    F(FontVariantEmoji, CSS::ComputedValues::FontValues, font_variant_emoji, offsetof(CSS::ComputedValues::FontValues, font_variant_emoji), U8)                   \
+    F(LetterSpacing, CSS::ComputedValues::InheritedTextValues, letter_spacing, offsetof(CSS::ComputedValues::InheritedTextValues, letter_spacing), CssPixels)     \
+    F(WordSpacing, CSS::ComputedValues::InheritedTextValues, word_spacing, offsetof(CSS::ComputedValues::InheritedTextValues, word_spacing), CssPixels)           \
+    F(UnicodeBidi, CSS::ComputedValues::TextResetValues, unicode_bidi, offsetof(CSS::ComputedValues::TextResetValues, unicode_bidi), U8)                          \
+    F(TextTransform, CSS::ComputedValues::InheritedTextValues, text_transform, offsetof(CSS::ComputedValues::InheritedTextValues, text_transform), U8)            \
+    F(GridAutoFlowRow, CSS::ComputedValues::GridValues, grid_auto_flow.row, offsetof(CSS::ComputedValues::GridValues, grid_auto_flow) + offsetof(CSS::GridAutoFlow, row), Bool) \
+    F(GridAutoFlowDense, CSS::ComputedValues::GridValues, grid_auto_flow.dense, offsetof(CSS::ComputedValues::GridValues, grid_auto_flow) + offsetof(CSS::GridAutoFlow, dense), Bool) \
+    F(UserSelect, CSS::ComputedValues::MiscResetValues, user_select, offsetof(CSS::ComputedValues::MiscResetValues, user_select), U8)                            \
+    F(Opacity, CSS::ComputedValues::EffectsValues, opacity, offsetof(CSS::ComputedValues::EffectsValues, opacity), F32)                                           \
+    F(Isolation, CSS::ComputedValues::EffectsValues, isolation, offsetof(CSS::ComputedValues::EffectsValues, isolation), U8)                                     \
+    F(MixBlendMode, CSS::ComputedValues::EffectsValues, mix_blend_mode, offsetof(CSS::ComputedValues::EffectsValues, mix_blend_mode), U8)                         \
+    F(TransformStyle, CSS::ComputedValues::TransformValues, transform_style, offsetof(CSS::ComputedValues::TransformValues, transform_style), U8)                \
+    F(ListStylePosition, CSS::ComputedValues::InheritedListValues, list_style_position, offsetof(CSS::ComputedValues::InheritedListValues, list_style_position), U8) \
+    F(TextDecorationStyle, CSS::ComputedValues::TextResetValues, text_decoration_style, offsetof(CSS::ComputedValues::TextResetValues, text_decoration_style), U8)
+
+#define LIBWEB_LAYOUT_LAZY_STYLE_FIELDS(F)                                  \
+    F(Width, CSS::ComputedValues::SizingValues)                             \
+    F(Height, CSS::ComputedValues::SizingValues)                            \
+    F(MinWidth, CSS::ComputedValues::SizingValues)                          \
+    F(MinHeight, CSS::ComputedValues::SizingValues)                         \
+    F(MaxWidth, CSS::ComputedValues::SizingValues)                          \
+    F(MaxHeight, CSS::ComputedValues::SizingValues)                         \
+    F(MarginTop, CSS::ComputedValues::SurroundValues)                       \
+    F(MarginRight, CSS::ComputedValues::SurroundValues)                     \
+    F(MarginBottom, CSS::ComputedValues::SurroundValues)                    \
+    F(MarginLeft, CSS::ComputedValues::SurroundValues)                      \
+    F(PaddingTop, CSS::ComputedValues::SurroundValues)                      \
+    F(PaddingRight, CSS::ComputedValues::SurroundValues)                    \
+    F(PaddingBottom, CSS::ComputedValues::SurroundValues)                   \
+    F(PaddingLeft, CSS::ComputedValues::SurroundValues)                     \
+    F(InsetTop, CSS::ComputedValues::SurroundValues)                        \
+    F(InsetRight, CSS::ComputedValues::SurroundValues)                      \
+    F(InsetBottom, CSS::ComputedValues::SurroundValues)                     \
+    F(InsetLeft, CSS::ComputedValues::SurroundValues)                       \
+    F(PositionAnchor, CSS::ComputedValues::AnchorValues)                    \
+    F(VerticalAlign, CSS::ComputedValues::BoxValues)                        \
+    F(Font, CSS::ComputedValues::FontValues)                                \
+    F(BoxSizingForAspectRatio, CSS::ComputedValues::BoxValues)              \
+    F(FlexBasis, CSS::ComputedValues::AlignmentValues)                      \
+    F(RowGap, CSS::ComputedValues::AlignmentValues)                         \
+    F(ColumnGap, CSS::ComputedValues::AlignmentValues)                      \
+    F(AspectRatio, CSS::ComputedValues::BoxValues)                          \
+    F(ColumnWidth, CSS::ComputedValues::MiscResetValues)                    \
+    F(ColumnCount, CSS::ComputedValues::MiscResetValues)                    \
+    F(Containment, CSS::ComputedValues::BoxValues)                          \
+    F(ContainerType, CSS::ComputedValues::BoxValues)                        \
+    F(ZIndex, CSS::ComputedValues::BoxValues)                               \
+    F(TextIndent, CSS::ComputedValues::InheritedTextValues)                 \
+    F(TabSize, CSS::ComputedValues::InheritedTextValues)                    \
+    F(X, CSS::ComputedValues::SVGResetValues)                               \
+    F(Y, CSS::ComputedValues::SVGResetValues)                               \
+    F(Perspective, CSS::ComputedValues::TransformValues)
+
+#define LIBWEB_PIN_DIRECT_STYLE_FIELD(field, group, member, offset, encoding)                       \
+    static_assert(sizeof(decltype(((group*)nullptr)->member)) == style_field_encoding_width(RustFFI::FfiStyleFieldEncoding::encoding)); \
+    static_assert(offset + sizeof(decltype(((group*)nullptr)->member)) <= sizeof(group));
+LIBWEB_LAYOUT_DIRECT_STYLE_FIELDS(LIBWEB_PIN_DIRECT_STYLE_FIELD)
+#undef LIBWEB_PIN_DIRECT_STYLE_FIELD
+
+static void register_style_schema()
+{
+    static bool const registered = [] {
+        static constexpr RustFFI::FfiStyleFieldSchema schema[] = {
+#define LIBWEB_DIRECT_STYLE_SCHEMA_ENTRY(field, group, member, offset, encoding) \
+    { RustFFI::FfiStyleField::field, group::style_group_index, offset, sizeof(group), RustFFI::FfiStyleFieldEncoding::encoding },
+            LIBWEB_LAYOUT_DIRECT_STYLE_FIELDS(LIBWEB_DIRECT_STYLE_SCHEMA_ENTRY)
+#undef LIBWEB_DIRECT_STYLE_SCHEMA_ENTRY
+#define LIBWEB_LAZY_STYLE_SCHEMA_ENTRY(field, group) \
+    { RustFFI::FfiStyleField::field, group::style_group_index, 0, sizeof(group), RustFFI::FfiStyleFieldEncoding::Lazy },
+            LIBWEB_LAYOUT_LAZY_STYLE_FIELDS(LIBWEB_LAZY_STYLE_SCHEMA_ENTRY)
+#undef LIBWEB_LAZY_STYLE_SCHEMA_ENTRY
+        };
+        static_assert(array_size(schema) == to_underlying(RustFFI::FfiStyleField::Count));
+        RustFFI::rust_layout_register_style_schema(schema, array_size(schema));
+        return true;
+    }();
+    (void)registered;
+}
+
+static RustFFI::FfiStylePayloads style_payloads(CSS::ComputedValues const& values)
+{
+    RustFFI::FfiStylePayloads payloads {};
+    for (size_t index = 0; index < RustFFI::STYLE_GROUP_COUNT; ++index)
+        payloads.groups[index] = values.style_group_payload(static_cast<CSS::StyleGroupIndex>(index));
+    RustFFI::rust_layout_ffi_note_style_payload_fetch();
+    return payloads;
+}
+
+static RustFFI::FfiDecodedStyleValue decode_style_field(void const*, RustFFI::FfiStyleField);
+
 static bool is_empty_editable_text_node(TextNode const& text_node)
 {
     if (!text_node.text_for_rendering().is_empty())
@@ -961,6 +1115,7 @@ static bool creates_block_formatting_context(Box const& box)
 RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
 {
     RustFFI::rust_layout_ffi_note_box_facts_build();
+    auto payloads = style_payloads(node.computed_values());
     auto const* box = as_if<Box>(node);
     auto natural_size = box ? box->natural_size() : CSS::SizeWithAspectRatio {};
     auto auto_content_size = box ? box->auto_content_box_size() : CSS::SizeWithAspectRatio {};
@@ -1087,6 +1242,7 @@ RustFFI::FfiLayoutBoxFacts build_layout_box_facts(NodeWithStyle const& node)
         .is_scroll_container = node.is_scroll_container(),
         .has_layout_index = true,
         .layout_index = node.layout_index(),
+        .style_payloads = payloads,
         .display = encode_display(display),
         .is_svg_box = node.is_svg_box(),
         .is_svg_svg_box = node.is_svg_svg_box(),
@@ -1189,6 +1345,7 @@ RustFFI::FfiTableBoxFacts build_table_box_facts(NodeWithStyle const& node)
 LayoutRustBridge::LayoutRustBridge(LayoutMode layout_mode)
     : m_layout_mode(layout_mode)
 {
+    register_style_schema();
 }
 
 LayoutRustBridge::~LayoutRustBridge() = default;
@@ -1989,8 +2146,8 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             auto const* box = as_if<Box>(styled_node);
             return box && box_inset_properties_contain_anchor_functions(*box);
         },
-        .build_style_facts = [](void*, void* node) {
-            return build_style_facts(*static_cast<NodeWithStyle const*>(node));
+        .decode_style_field = [](void*, void const* payload, RustFFI::FfiStyleField field) {
+            return decode_style_field(payload, field);
         },
         .build_box_facts = [](void*, void* node) {
             auto const& layout_node = *static_cast<Node const*>(node);
@@ -2665,36 +2822,12 @@ Box const* LayoutRustBridge::containing_block(Node const& node) const
     return node.containing_block();
 }
 
-RustFFI::FfiStyleFacts build_style_facts(NodeWithStyle const& node)
+static RustFFI::FfiDecodedStyleValue decode_style_field(void const* payload, RustFFI::FfiStyleField field)
 {
-    RustFFI::rust_layout_ffi_note_style_facts_build();
-    auto const& values = node.computed_values();
+    VERIFY(payload);
+    RustFFI::FfiDecodedStyleValue result {};
 
-    auto vertical_align = build_style_vertical_align_value(values.vertical_align());
-
-    auto flex_basis_is_content = values.flex_basis().has<CSS::FlexBasisContent>();
-    auto flex_basis = flex_basis_is_content
-        ? size_value_with_kind(RustFFI::FfiSizeKind::Auto)
-        : build_style_size_value(values.flex_basis().get<CSS::Size>());
-
-    auto row_gap = values.row_gap().visit(
-        [](CSS::LengthPercentage const& gap) { return build_style_size_value(gap); },
-        [](CSS::NormalGap const&) { return size_value_with_kind(RustFFI::FfiSizeKind::Auto); });
-    auto column_gap = values.column_gap().visit(
-        [](CSS::LengthPercentage const& gap) { return build_style_size_value(gap); },
-        [](CSS::NormalGap const&) { return size_value_with_kind(RustFFI::FfiSizeKind::Auto); });
-
-    auto aspect_ratio = values.aspect_ratio().preferred_ratio;
-    auto column_count = values.column_count();
-    auto containment = values.contain();
-    auto container_type = values.container_type();
-    auto text_indent = values.text_indent();
-    auto tab_size = values.tab_size();
-    auto grid_auto_flow = values.grid_auto_flow();
-    auto const& first_available_font = node.first_available_font();
-    auto const& first_available_font_metrics = first_available_font.pixel_metrics();
-    auto build_inset = [&](CSS::PropertyID property_id, CSS::LengthPercentageOrAuto const& inset) {
-        auto anchor_inset = values.anchor_inset(property_id);
+    auto decode_inset = [&](CSS::PropertyID property_id, CSS::LengthPercentageOrAuto const& inset, RefPtr<CSS::StyleValue const> const& anchor_inset) {
         if (!anchor_inset)
             return build_style_size_value(inset);
 
@@ -2710,132 +2843,217 @@ RustFFI::FfiStyleFacts build_style_facts(NodeWithStyle const& node)
         return retain_calculated(*calculated, false);
     };
 
-    return {
-        .width = build_style_size_value(values.width()),
-        .height = build_style_size_value(values.height()),
-        .min_width = build_style_size_value(values.min_width()),
-        .min_height = build_style_size_value(values.min_height()),
-        .max_width = build_style_size_value(values.max_width()),
-        .max_height = build_style_size_value(values.max_height()),
-        .margin_top = build_style_size_value(values.margin().top()),
-        .margin_right = build_style_size_value(values.margin().right()),
-        .margin_bottom = build_style_size_value(values.margin().bottom()),
-        .margin_left = build_style_size_value(values.margin().left()),
-        .padding_top = build_style_size_value(values.padding().top()),
-        .padding_right = build_style_size_value(values.padding().right()),
-        .padding_bottom = build_style_size_value(values.padding().bottom()),
-        .padding_left = build_style_size_value(values.padding().left()),
-        .inset_top = build_inset(CSS::PropertyID::Top, values.inset().top()),
-        .inset_right = build_inset(CSS::PropertyID::Right, values.inset().right()),
-        .inset_bottom = build_inset(CSS::PropertyID::Bottom, values.inset().bottom()),
-        .inset_left = build_inset(CSS::PropertyID::Left, values.inset().left()),
-        .has_position_anchor = values.position_anchor().has_value(),
-        .position_anchor_name = [&] {
-            if (!values.position_anchor().has_value())
-                return static_cast<size_t>(0);
+    switch (field) {
+    case RustFFI::FfiStyleField::Width:
+    case RustFFI::FfiStyleField::Height:
+    case RustFFI::FfiStyleField::MinWidth:
+    case RustFFI::FfiStyleField::MinHeight:
+    case RustFFI::FfiStyleField::MaxWidth:
+    case RustFFI::FfiStyleField::MaxHeight: {
+        auto const& values = *static_cast<CSS::ComputedValues::SizingValues const*>(payload);
+        switch (field) {
+        case RustFFI::FfiStyleField::Width:
+            result.size = build_style_size_value(values.width);
+            break;
+        case RustFFI::FfiStyleField::Height:
+            result.size = build_style_size_value(values.height);
+            break;
+        case RustFFI::FfiStyleField::MinWidth:
+            result.size = build_style_size_value(values.min_width);
+            break;
+        case RustFFI::FfiStyleField::MinHeight:
+            result.size = build_style_size_value(values.min_height);
+            break;
+        case RustFFI::FfiStyleField::MaxWidth:
+            result.size = build_style_size_value(values.max_width);
+            break;
+        case RustFFI::FfiStyleField::MaxHeight:
+            result.size = build_style_size_value(values.max_height);
+            break;
+        default:
+            VERIFY_NOT_REACHED();
+        }
+        return result;
+    }
+    case RustFFI::FfiStyleField::MarginTop:
+    case RustFFI::FfiStyleField::MarginRight:
+    case RustFFI::FfiStyleField::MarginBottom:
+    case RustFFI::FfiStyleField::MarginLeft:
+    case RustFFI::FfiStyleField::PaddingTop:
+    case RustFFI::FfiStyleField::PaddingRight:
+    case RustFFI::FfiStyleField::PaddingBottom:
+    case RustFFI::FfiStyleField::PaddingLeft:
+    case RustFFI::FfiStyleField::InsetTop:
+    case RustFFI::FfiStyleField::InsetRight:
+    case RustFFI::FfiStyleField::InsetBottom:
+    case RustFFI::FfiStyleField::InsetLeft: {
+        auto const& values = *static_cast<CSS::ComputedValues::SurroundValues const*>(payload);
+        switch (field) {
+        case RustFFI::FfiStyleField::MarginTop:
+            result.size = build_style_size_value(values.margin.top());
+            break;
+        case RustFFI::FfiStyleField::MarginRight:
+            result.size = build_style_size_value(values.margin.right());
+            break;
+        case RustFFI::FfiStyleField::MarginBottom:
+            result.size = build_style_size_value(values.margin.bottom());
+            break;
+        case RustFFI::FfiStyleField::MarginLeft:
+            result.size = build_style_size_value(values.margin.left());
+            break;
+        case RustFFI::FfiStyleField::PaddingTop:
+            result.size = build_style_size_value(values.padding.top());
+            break;
+        case RustFFI::FfiStyleField::PaddingRight:
+            result.size = build_style_size_value(values.padding.right());
+            break;
+        case RustFFI::FfiStyleField::PaddingBottom:
+            result.size = build_style_size_value(values.padding.bottom());
+            break;
+        case RustFFI::FfiStyleField::PaddingLeft:
+            result.size = build_style_size_value(values.padding.left());
+            break;
+        case RustFFI::FfiStyleField::InsetTop:
+            result.size = decode_inset(CSS::PropertyID::Top, values.inset.top(), values.top_anchor_inset);
+            break;
+        case RustFFI::FfiStyleField::InsetRight:
+            result.size = decode_inset(CSS::PropertyID::Right, values.inset.right(), values.right_anchor_inset);
+            break;
+        case RustFFI::FfiStyleField::InsetBottom:
+            result.size = decode_inset(CSS::PropertyID::Bottom, values.inset.bottom(), values.bottom_anchor_inset);
+            break;
+        case RustFFI::FfiStyleField::InsetLeft:
+            result.size = decode_inset(CSS::PropertyID::Left, values.inset.left(), values.left_anchor_inset);
+            break;
+        default:
+            VERIFY_NOT_REACHED();
+        }
+        return result;
+    }
+    case RustFFI::FfiStyleField::PositionAnchor: {
+        auto const& value = static_cast<CSS::ComputedValues::AnchorValues const*>(payload)->position_anchor;
+        result.has_value = value.name.has_value();
+        if (value.name.has_value()) {
             ++s_outstanding_anchor_name_handles;
             RustFFI::rust_layout_ffi_note_anchor_name_retain();
-            return values.position_anchor()->to_raw_leaked();
-        }(),
-        .border_top_width = values.border_top().width.raw_value(),
-        .border_right_width = values.border_right().width.raw_value(),
-        .border_bottom_width = values.border_bottom().width.raw_value(),
-        .border_left_width = values.border_left().width.raw_value(),
-        .border_top_style = to_underlying(values.border_top().line_style),
-        .border_right_style = to_underlying(values.border_right().line_style),
-        .border_bottom_style = to_underlying(values.border_bottom().line_style),
-        .border_left_style = to_underlying(values.border_left().line_style),
-        .display = encode_display(values.display()),
-        .position = to_underlying(values.position()),
-        .float_ = to_underlying(values.float_()),
-        .clear = to_underlying(values.clear()),
-        .writing_mode = to_underlying(values.writing_mode()),
-        .direction = to_underlying(values.direction()),
-        .text_align = to_underlying(values.text_align()),
-        .text_justify = to_underlying(values.text_justify()),
-        .white_space_collapse = to_underlying(values.white_space_collapse()),
-        .text_wrap_mode = to_underlying(values.text_wrap_mode()),
-        .vertical_align_is_keyword = vertical_align.is_keyword,
-        .vertical_align_keyword = vertical_align.keyword,
-        .vertical_align_value = vertical_align.value,
-        .line_height = values.line_height().raw_value(),
-        .font_size = values.font_size().raw_value(),
-        .first_available_font = &first_available_font,
-        .font_ascent = first_available_font_metrics.ascent,
-        .font_descent = first_available_font_metrics.descent,
-        .font_x_height = first_available_font_metrics.x_height,
-        .font_pixel_size = first_available_font.pixel_size(),
-        .box_sizing = to_underlying(values.box_sizing()),
-        .box_sizing_for_aspect_ratio = to_underlying(values.box_sizing_for_aspect_ratio()),
-        .overflow_x = to_underlying(values.overflow_x()),
-        .overflow_y = to_underlying(values.overflow_y()),
-        .text_overflow = to_underlying(values.text_overflow()),
-        .flex_direction = to_underlying(values.flex_direction()),
-        .flex_wrap = to_underlying(values.flex_wrap()),
-        .flex_grow = values.flex_grow(),
-        .flex_shrink = values.flex_shrink(),
-        .flex_basis_is_content = flex_basis_is_content,
-        .flex_basis = flex_basis,
-        .order = values.order(),
-        .align_items = to_underlying(values.align_items()),
-        .align_self = to_underlying(values.align_self()),
-        .align_content = to_underlying(values.align_content()),
-        .justify_content = to_underlying(values.justify_content()),
-        .justify_items = to_underlying(values.justify_items()),
-        .justify_self = to_underlying(values.justify_self()),
-        .row_gap = row_gap,
-        .column_gap = column_gap,
-        .has_aspect_ratio = aspect_ratio.has_value(),
-        .aspect_ratio_width = aspect_ratio.has_value() ? aspect_ratio->numerator() : 0,
-        .aspect_ratio_height = aspect_ratio.has_value() ? aspect_ratio->denominator() : 0,
-        .aspect_ratio_is_degenerate = aspect_ratio.has_value() && aspect_ratio->is_degenerate(),
-        .appearance = to_underlying(values.appearance()),
-        .border_collapse = to_underlying(values.border_collapse()),
-        .border_spacing_horizontal = values.border_spacing_horizontal().raw_value(),
-        .border_spacing_vertical = values.border_spacing_vertical().raw_value(),
-        .caption_side = to_underlying(values.caption_side()),
-        .table_layout = to_underlying(values.table_layout()),
-        .column_width = build_style_size_value(values.column_width()),
-        .has_column_count = !column_count.is_auto(),
-        .column_count = column_count.is_auto() ? 0 : column_count.value(),
-        .containment_bits = static_cast<u8>(static_cast<u8>(containment.size_containment)
-            | static_cast<u8>(containment.inline_size_containment) << 1
-            | static_cast<u8>(containment.layout_containment) << 2
-            | static_cast<u8>(containment.style_containment) << 3
-            | static_cast<u8>(containment.paint_containment) << 4),
-        .container_type_bits = static_cast<u8>(static_cast<u8>(container_type.is_size_container)
-            | static_cast<u8>(container_type.is_inline_size_container) << 1
-            | static_cast<u8>(container_type.is_scroll_state_container) << 2),
-        .content_visibility = to_underlying(values.content_visibility()),
-        .visibility = to_underlying(values.visibility()),
-        .word_break = to_underlying(values.word_break()),
-        .has_z_index = values.z_index().has_value(),
-        .z_index = values.z_index().value_or(0),
-        .font_variant_emoji = to_underlying(values.font_variant_emoji()),
-        .letter_spacing = values.letter_spacing().raw_value(),
-        .word_spacing = values.word_spacing().raw_value(),
-        .unicode_bidi = to_underlying(values.unicode_bidi()),
-        .text_transform = to_underlying(values.text_transform()),
-        .text_indent = build_style_size_value(text_indent.length_percentage),
-        .text_indent_each_line = text_indent.each_line,
-        .text_indent_hanging = text_indent.hanging,
-        .tab_size_is_number = tab_size.has<double>(),
-        .tab_size = tab_size.has<CSSPixels>() ? tab_size.get<CSSPixels>().raw_value() : 0,
-        .tab_size_number = tab_size.has<double>() ? tab_size.get<double>() : 0,
-        .grid_auto_flow_row = grid_auto_flow.row,
-        .grid_auto_flow_dense = grid_auto_flow.dense,
-        .x = build_style_size_value(values.x()),
-        .y = build_style_size_value(values.y()),
-        .user_select = to_underlying(values.user_select()),
-        .opacity = values.opacity(),
-        .isolation = to_underlying(values.isolation()),
-        .mix_blend_mode = to_underlying(values.mix_blend_mode()),
-        .transform_style = to_underlying(values.transform_style()),
-        .has_perspective = values.perspective().has_value(),
-        .perspective = values.perspective().value_or(0).raw_value(),
-        .list_style_position = to_underlying(values.list_style_position()),
-        .text_decoration_style = to_underlying(values.text_decoration_style()),
-    };
+            result.retained_name = value.name->to_raw_leaked();
+        }
+        return result;
+    }
+    case RustFFI::FfiStyleField::VerticalAlign: {
+        auto const& value = static_cast<CSS::ComputedValues::BoxValues const*>(payload)->vertical_align;
+        auto decoded = build_style_vertical_align_value(value);
+        result.has_value = decoded.is_keyword;
+        result.u8_value = decoded.keyword;
+        result.size = decoded.value;
+        return result;
+    }
+    case RustFFI::FfiStyleField::Font: {
+        auto const& values = *static_cast<CSS::ComputedValues::FontValues const*>(payload);
+        VERIFY(values.font_list);
+        auto const& font = values.font_list->font_for_code_point(' ');
+        auto const& metrics = font.pixel_metrics();
+        result.pointer = &font;
+        result.f32_value = metrics.ascent;
+        result.f32_value_2 = metrics.descent;
+        result.f32_value_3 = metrics.x_height;
+        result.f32_value_4 = font.pixel_size();
+        return result;
+    }
+    case RustFFI::FfiStyleField::BoxSizingForAspectRatio: {
+        auto const& values = *static_cast<CSS::ComputedValues::BoxValues const*>(payload);
+        result.u8_value = to_underlying(values.aspect_ratio.use_natural_aspect_ratio_if_available
+                ? CSS::BoxSizing::ContentBox
+                : values.box_sizing);
+        return result;
+    }
+    case RustFFI::FfiStyleField::FlexBasis: {
+        auto const& value = static_cast<CSS::ComputedValues::AlignmentValues const*>(payload)->flex_basis;
+        result.has_value = value.has<CSS::FlexBasisContent>();
+        result.size = result.has_value
+            ? size_value_with_kind(RustFFI::FfiSizeKind::Auto)
+            : build_style_size_value(value.get<CSS::Size>());
+        return result;
+    }
+    case RustFFI::FfiStyleField::RowGap:
+    case RustFFI::FfiStyleField::ColumnGap: {
+        auto const& values = *static_cast<CSS::ComputedValues::AlignmentValues const*>(payload);
+        auto const& value = field == RustFFI::FfiStyleField::RowGap ? values.row_gap : values.column_gap;
+        result.size = value.visit(
+            [](CSS::LengthPercentage const& gap) { return build_style_size_value(gap); },
+            [](CSS::NormalGap const&) { return size_value_with_kind(RustFFI::FfiSizeKind::Auto); });
+        return result;
+    }
+    case RustFFI::FfiStyleField::AspectRatio: {
+        auto const& value = static_cast<CSS::ComputedValues::BoxValues const*>(payload)->aspect_ratio.preferred_ratio;
+        result.has_value = value.has_value();
+        result.f64_value = value.has_value() ? value->numerator() : 0;
+        result.f64_value_2 = value.has_value() ? value->denominator() : 0;
+        result.bool_value = value.has_value() && value->is_degenerate();
+        return result;
+    }
+    case RustFFI::FfiStyleField::ColumnWidth: {
+        auto const& value = static_cast<CSS::ComputedValues::MiscResetValues const*>(payload)->column_width;
+        result.size = build_style_size_value(value);
+        return result;
+    }
+    case RustFFI::FfiStyleField::ColumnCount: {
+        auto const value = static_cast<CSS::ComputedValues::MiscResetValues const*>(payload)->column_count;
+        result.has_value = !value.is_auto();
+        result.i32_value = value.is_auto() ? 0 : value.value();
+        return result;
+    }
+    case RustFFI::FfiStyleField::Containment: {
+        auto const value = static_cast<CSS::ComputedValues::BoxValues const*>(payload)->contain;
+        result.u8_value = static_cast<u8>(static_cast<u8>(value.size_containment)
+            | static_cast<u8>(value.inline_size_containment) << 1
+            | static_cast<u8>(value.layout_containment) << 2
+            | static_cast<u8>(value.style_containment) << 3
+            | static_cast<u8>(value.paint_containment) << 4);
+        return result;
+    }
+    case RustFFI::FfiStyleField::ContainerType: {
+        auto const value = static_cast<CSS::ComputedValues::BoxValues const*>(payload)->container_type;
+        result.u8_value = static_cast<u8>(static_cast<u8>(value.is_size_container)
+            | static_cast<u8>(value.is_inline_size_container) << 1
+            | static_cast<u8>(value.is_scroll_state_container) << 2);
+        return result;
+    }
+    case RustFFI::FfiStyleField::ZIndex: {
+        auto const value = static_cast<CSS::ComputedValues::BoxValues const*>(payload)->z_index;
+        result.has_value = value.has_value();
+        result.i32_value = value.value_or(0);
+        return result;
+    }
+    case RustFFI::FfiStyleField::TextIndent: {
+        auto const& value = static_cast<CSS::ComputedValues::InheritedTextValues const*>(payload)->text_indent;
+        result.size = build_style_size_value(value.length_percentage);
+        result.has_value = value.each_line;
+        result.bool_value = value.hanging;
+        return result;
+    }
+    case RustFFI::FfiStyleField::TabSize: {
+        auto const& value = static_cast<CSS::ComputedValues::InheritedTextValues const*>(payload)->tab_size;
+        result.has_value = value.has<double>();
+        result.css_pixels_value = value.has<CSSPixels>() ? value.get<CSSPixels>().raw_value() : 0;
+        result.f64_value = value.has<double>() ? value.get<double>() : 0;
+        return result;
+    }
+    case RustFFI::FfiStyleField::X:
+    case RustFFI::FfiStyleField::Y: {
+        auto const& values = *static_cast<CSS::ComputedValues::SVGResetValues const*>(payload);
+        result.size = build_style_size_value(field == RustFFI::FfiStyleField::X ? values.x : values.y);
+        return result;
+    }
+    case RustFFI::FfiStyleField::Perspective: {
+        auto const value = static_cast<CSS::ComputedValues::TransformValues const*>(payload)->perspective;
+        result.has_value = value.has_value();
+        result.css_pixels_value = value.value_or(0).raw_value();
+        return result;
+    }
+    default:
+        VERIFY_NOT_REACHED();
+    }
 }
 
 static void release_calc_handle(void const* handle)
@@ -2862,41 +3080,6 @@ void verify_style_calc_handles_balanced()
     VERIFY(s_outstanding_anchor_name_handles.load() == 0);
     VERIFY(s_outstanding_svg_path_handles.load() == 0);
     VERIFY(s_outstanding_shaped_run_handles.load() == 0);
-}
-
-void release_style_facts(RustFFI::FfiStyleFacts const& facts)
-{
-    auto release = [](RustFFI::FfiSizeValue const& value) {
-        ladybird_layout_release_calc_handle(value.calc);
-    };
-    release(facts.width);
-    release(facts.height);
-    release(facts.min_width);
-    release(facts.min_height);
-    release(facts.max_width);
-    release(facts.max_height);
-    release(facts.margin_top);
-    release(facts.margin_right);
-    release(facts.margin_bottom);
-    release(facts.margin_left);
-    release(facts.padding_top);
-    release(facts.padding_right);
-    release(facts.padding_bottom);
-    release(facts.padding_left);
-    release(facts.inset_top);
-    release(facts.inset_right);
-    release(facts.inset_bottom);
-    release(facts.inset_left);
-    release(facts.vertical_align_value);
-    release(facts.flex_basis);
-    release(facts.row_gap);
-    release(facts.column_gap);
-    release(facts.column_width);
-    release(facts.text_indent);
-    release(facts.x);
-    release(facts.y);
-    if (facts.has_position_anchor)
-        ladybird_layout_release_anchor_name_handle(facts.position_anchor_name);
 }
 
 }

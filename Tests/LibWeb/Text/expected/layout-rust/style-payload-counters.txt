@@ -1,0 +1,3 @@
+style schema registrations: 0
+style payload fetches: 16
+style lazy decodes: 231

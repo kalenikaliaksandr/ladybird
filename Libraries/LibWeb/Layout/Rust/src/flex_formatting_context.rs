@@ -16,7 +16,7 @@ use crate::css_enums::{
 use crate::css_pixels::CssPixels;
 use crate::geometry::{AvailableSize, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput};
 use crate::layout_state::{FfiStaticPositionAlignment, FfiStaticPositionRect, state_mut};
-use crate::style_facts::{FfiSizeKind, FfiSizeValue, FfiStyleFacts};
+use crate::style_facts::{FfiSizeKind, FfiSizeValue, StyleValues};
 use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -264,7 +264,7 @@ impl FlexFormattingContext {
         unsafe { &mut *self.flex_container_state }
     }
 
-    fn style(&self, node: Node) -> FfiStyleFacts {
+    fn style(&self, node: Node) -> StyleValues {
         state_mut(self.state).style_facts(&self.callbacks, node)
     }
 
@@ -514,54 +514,54 @@ impl FlexFormattingContext {
     fn computed_main_size(&self, node: Node) -> (FfiSizeValue, FfiFlexSizeProperty) {
         let style = self.style(node);
         if self.main_axis_is_horizontal() {
-            (style.width, FfiFlexSizeProperty::Width)
+            (style.width(), FfiFlexSizeProperty::Width)
         } else {
-            (style.height, FfiFlexSizeProperty::Height)
+            (style.height(), FfiFlexSizeProperty::Height)
         }
     }
 
     fn computed_main_min_size(&self, node: Node) -> (FfiSizeValue, FfiFlexSizeProperty) {
         let style = self.style(node);
         if self.main_axis_is_horizontal() {
-            (style.min_width, FfiFlexSizeProperty::MinWidth)
+            (style.min_width(), FfiFlexSizeProperty::MinWidth)
         } else {
-            (style.min_height, FfiFlexSizeProperty::MinHeight)
+            (style.min_height(), FfiFlexSizeProperty::MinHeight)
         }
     }
 
     fn computed_main_max_size(&self, node: Node) -> (FfiSizeValue, FfiFlexSizeProperty) {
         let style = self.style(node);
         if self.main_axis_is_horizontal() {
-            (style.max_width, FfiFlexSizeProperty::MaxWidth)
+            (style.max_width(), FfiFlexSizeProperty::MaxWidth)
         } else {
-            (style.max_height, FfiFlexSizeProperty::MaxHeight)
+            (style.max_height(), FfiFlexSizeProperty::MaxHeight)
         }
     }
 
     fn computed_cross_size(&self, node: Node) -> (FfiSizeValue, FfiFlexSizeProperty) {
         let style = self.style(node);
         if self.cross_axis_is_horizontal() {
-            (style.width, FfiFlexSizeProperty::Width)
+            (style.width(), FfiFlexSizeProperty::Width)
         } else {
-            (style.height, FfiFlexSizeProperty::Height)
+            (style.height(), FfiFlexSizeProperty::Height)
         }
     }
 
     fn computed_cross_min_size(&self, node: Node) -> (FfiSizeValue, FfiFlexSizeProperty) {
         let style = self.style(node);
         if self.cross_axis_is_horizontal() {
-            (style.min_width, FfiFlexSizeProperty::MinWidth)
+            (style.min_width(), FfiFlexSizeProperty::MinWidth)
         } else {
-            (style.min_height, FfiFlexSizeProperty::MinHeight)
+            (style.min_height(), FfiFlexSizeProperty::MinHeight)
         }
     }
 
     fn computed_cross_max_size(&self, node: Node) -> (FfiSizeValue, FfiFlexSizeProperty) {
         let style = self.style(node);
         if self.cross_axis_is_horizontal() {
-            (style.max_width, FfiFlexSizeProperty::MaxWidth)
+            (style.max_width(), FfiFlexSizeProperty::MaxWidth)
         } else {
-            (style.max_height, FfiFlexSizeProperty::MaxHeight)
+            (style.max_height(), FfiFlexSizeProperty::MaxHeight)
         }
     }
 
@@ -766,10 +766,10 @@ impl FlexFormattingContext {
         } else {
             CssPixels::default()
         };
-        let padding_left = style.padding_left.to_px(basis);
-        let padding_right = style.padding_right.to_px(basis);
-        let padding_top = style.padding_top.to_px(basis);
-        let padding_bottom = style.padding_bottom.to_px(basis);
+        let padding_left = style.padding_left().to_px(basis);
+        let padding_right = style.padding_right().to_px(basis);
+        let padding_top = style.padding_top().to_px(basis);
+        let padding_bottom = style.padding_bottom().to_px(basis);
         {
             let used = self.item_used_mut(index);
             used.padding_left = padding_left;
@@ -789,14 +789,14 @@ impl FlexFormattingContext {
             item.padding.main_after = padding_right;
             item.padding.cross_before = padding_top;
             item.padding.cross_after = padding_bottom;
-            item.margins.main_before = style.margin_left.to_px(basis);
-            item.margins.main_after = style.margin_right.to_px(basis);
-            item.margins.cross_before = style.margin_top.to_px(basis);
-            item.margins.cross_after = style.margin_bottom.to_px(basis);
-            item.margins.main_before_is_auto = style.margin_left.is_auto();
-            item.margins.main_after_is_auto = style.margin_right.is_auto();
-            item.margins.cross_before_is_auto = style.margin_top.is_auto();
-            item.margins.cross_after_is_auto = style.margin_bottom.is_auto();
+            item.margins.main_before = style.margin_left().to_px(basis);
+            item.margins.main_after = style.margin_right().to_px(basis);
+            item.margins.cross_before = style.margin_top().to_px(basis);
+            item.margins.cross_after = style.margin_bottom().to_px(basis);
+            item.margins.main_before_is_auto = style.margin_left().is_auto();
+            item.margins.main_after_is_auto = style.margin_right().is_auto();
+            item.margins.cross_before_is_auto = style.margin_top().is_auto();
+            item.margins.cross_after_is_auto = style.margin_bottom().is_auto();
         } else {
             item.borders.main_before = style.border_top_width;
             item.borders.main_after = style.border_bottom_width;
@@ -806,14 +806,14 @@ impl FlexFormattingContext {
             item.padding.main_after = padding_bottom;
             item.padding.cross_before = padding_left;
             item.padding.cross_after = padding_right;
-            item.margins.main_before = style.margin_top.to_px(basis);
-            item.margins.main_after = style.margin_bottom.to_px(basis);
-            item.margins.cross_before = style.margin_left.to_px(basis);
-            item.margins.cross_after = style.margin_right.to_px(basis);
-            item.margins.main_before_is_auto = style.margin_top.is_auto();
-            item.margins.main_after_is_auto = style.margin_bottom.is_auto();
-            item.margins.cross_before_is_auto = style.margin_left.is_auto();
-            item.margins.cross_after_is_auto = style.margin_right.is_auto();
+            item.margins.main_before = style.margin_top().to_px(basis);
+            item.margins.main_after = style.margin_bottom().to_px(basis);
+            item.margins.cross_before = style.margin_left().to_px(basis);
+            item.margins.cross_after = style.margin_right().to_px(basis);
+            item.margins.main_before_is_auto = style.margin_top().is_auto();
+            item.margins.main_after_is_auto = style.margin_bottom().is_auto();
+            item.margins.cross_before_is_auto = style.margin_left().is_auto();
+            item.margins.cross_after_is_auto = style.margin_right().is_auto();
         }
     }
 
@@ -859,10 +859,10 @@ impl FlexFormattingContext {
     fn used_flex_basis_for_item(&self, index: usize) -> UsedFlexBasis {
         let node = self.flex_items[index].box_;
         let style = self.style(node);
-        if style.flex_basis_is_content {
+        if style.flex_basis_is_content() {
             return UsedFlexBasis::Content;
         }
-        let mut value = style.flex_basis;
+        let mut value = style.flex_basis();
         let mut property = FfiFlexSizeProperty::FlexBasis;
         if value.is_auto() {
             // https://drafts.csswg.org/css-flexbox-1/#valdef-flex-basis-auto
@@ -956,7 +956,7 @@ impl FlexFormattingContext {
         // We can resolve percentage min/max-width if the available inline size is definite.
         let can_resolve_percentages = self.available_space_for_items.unwrap().space.inline_size.is_definite();
         let min_inline_size =
-            if !style.min_width.is_auto() && (!style.min_width.contains_percentage || can_resolve_percentages) {
+            if !style.min_width().is_auto() && (!style.min_width().contains_percentage || can_resolve_percentages) {
                 self.resolve_inner_inline_size(index, FfiFlexSizeProperty::MinWidth)
             } else {
                 CssPixels::default()
@@ -965,22 +965,23 @@ impl FlexFormattingContext {
             node,
             FfiFlexAxis::Inline,
             self.available_space_for_items.unwrap().space.inline_size,
-        ) && (!style.max_width.contains_percentage || can_resolve_percentages)
+        ) && (!style.max_width().contains_percentage || can_resolve_percentages)
         {
             self.resolve_inner_inline_size(index, FfiFlexSizeProperty::MaxWidth)
         } else {
             CssPixels::from_raw(i32::MAX)
         };
 
-        let inline_size = if self.should_treat_size_as_auto(node, FfiFlexAxis::Inline) || style.width.is_fit_content() {
+        let inline_size = if self.should_treat_size_as_auto(node, FfiFlexAxis::Inline) || style.width().is_fit_content()
+        {
             self.calculate_fit_content_size(
                 index,
                 FfiFlexAxis::Inline,
                 self.available_space_for_items.unwrap().space,
             )
-        } else if style.width.is_min_content() {
+        } else if style.width().is_min_content() {
             self.calculate_min_content_inline_size(index)
-        } else if style.width.is_max_content() {
+        } else if style.width().is_max_content() {
             self.calculate_max_content_inline_size(index)
         } else {
             CssPixels::default()
@@ -1282,9 +1283,9 @@ impl FlexFormattingContext {
     fn main_gap(&self) -> CssPixels {
         let style = self.style(self.flex_container);
         let gap = if self.is_row_layout() {
-            style.column_gap
+            style.column_gap()
         } else {
-            style.row_gap
+            style.row_gap()
         };
         gap.to_px(self.inner_main_size_used(self.container_used()))
     }
@@ -1292,9 +1293,9 @@ impl FlexFormattingContext {
     fn cross_gap(&self) -> CssPixels {
         let style = self.style(self.flex_container);
         let gap = if self.is_row_layout() {
-            style.row_gap
+            style.row_gap()
         } else {
-            style.column_gap
+            style.column_gap()
         };
         gap.to_px(self.inner_cross_size_used(self.container_used()))
     }
@@ -2366,10 +2367,10 @@ impl FlexFormattingContext {
             let style = self.style(self.flex_items[index].box_);
             {
                 let used = self.item_used_mut(index);
-                used.margin_left = style.margin_left.to_px(reference);
-                used.margin_right = style.margin_right.to_px(reference);
-                used.margin_top = style.margin_top.to_px(reference);
-                used.margin_bottom = style.margin_bottom.to_px(reference);
+                used.margin_left = style.margin_left().to_px(reference);
+                used.margin_right = style.margin_right().to_px(reference);
+                used.margin_top = style.margin_top().to_px(reference);
+                used.margin_bottom = style.margin_bottom().to_px(reference);
                 used.border_left = style.border_left_width;
                 used.border_right = style.border_right_width;
                 used.border_top = style.border_top_width;

@@ -8,6 +8,9 @@ use crate::abort_on_panic;
 use crate::css_pixels::CssPixels;
 use crate::display::FfiDisplay;
 use std::ffi::c_void;
+use std::sync::OnceLock;
+
+pub const STYLE_GROUP_COUNT: usize = 23;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -196,35 +199,355 @@ fn resolve_calc(calc: *const c_void, percentage_basis: CssPixels) -> CssPixels {
     CssPixels::nearest_value_for(result.value)
 }
 
-/// Snapshot of computed values consumed by layout formatting contexts.
-///
-/// Enum-valued fields contain the corresponding C++ CSS enum's underlying
-/// `u8` value. `display` reuses the CSS crate's `FfiDisplay` source.
+/// Every computed-value field layout can read. Complex entries have no byte
+/// offset and are decoded by C++ on first use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FfiStyleField {
+    Width,
+    Height,
+    MinWidth,
+    MinHeight,
+    MaxWidth,
+    MaxHeight,
+    MarginTop,
+    MarginRight,
+    MarginBottom,
+    MarginLeft,
+    PaddingTop,
+    PaddingRight,
+    PaddingBottom,
+    PaddingLeft,
+    InsetTop,
+    InsetRight,
+    InsetBottom,
+    InsetLeft,
+    PositionAnchor,
+    BorderTopWidth,
+    BorderRightWidth,
+    BorderBottomWidth,
+    BorderLeftWidth,
+    BorderTopStyle,
+    BorderRightStyle,
+    BorderBottomStyle,
+    BorderLeftStyle,
+    Position,
+    Float,
+    Clear,
+    WritingMode,
+    Direction,
+    TextAlign,
+    TextJustify,
+    WhiteSpaceCollapse,
+    TextWrapMode,
+    VerticalAlign,
+    LineHeight,
+    FontSize,
+    Font,
+    BoxSizing,
+    BoxSizingForAspectRatio,
+    OverflowX,
+    OverflowY,
+    TextOverflow,
+    FlexDirection,
+    FlexWrap,
+    FlexGrow,
+    FlexShrink,
+    FlexBasis,
+    Order,
+    AlignItems,
+    AlignSelf,
+    AlignContent,
+    JustifyContent,
+    JustifyItems,
+    JustifySelf,
+    RowGap,
+    ColumnGap,
+    AspectRatio,
+    Appearance,
+    BorderCollapse,
+    BorderSpacingHorizontal,
+    BorderSpacingVertical,
+    CaptionSide,
+    TableLayout,
+    ColumnWidth,
+    ColumnCount,
+    Containment,
+    ContainerType,
+    ContentVisibility,
+    Visibility,
+    WordBreak,
+    ZIndex,
+    FontVariantEmoji,
+    LetterSpacing,
+    WordSpacing,
+    UnicodeBidi,
+    TextTransform,
+    TextIndent,
+    TabSize,
+    GridAutoFlowRow,
+    GridAutoFlowDense,
+    X,
+    Y,
+    UserSelect,
+    Opacity,
+    Isolation,
+    MixBlendMode,
+    TransformStyle,
+    Perspective,
+    ListStylePosition,
+    TextDecorationStyle,
+    Count,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FfiStyleFieldEncoding {
+    Lazy,
+    U8,
+    Bool,
+    I32,
+    F32,
+    F64,
+    CssPixels,
+}
+
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct FfiStyleFacts {
-    pub width: FfiSizeValue,
-    pub height: FfiSizeValue,
-    pub min_width: FfiSizeValue,
-    pub min_height: FfiSizeValue,
-    pub max_width: FfiSizeValue,
-    pub max_height: FfiSizeValue,
+pub struct FfiStyleFieldSchema {
+    pub field: FfiStyleField,
+    pub group_index: u8,
+    pub offset: u32,
+    pub group_size: u32,
+    pub encoding: FfiStyleFieldEncoding,
+}
 
-    pub margin_top: FfiSizeValue,
-    pub margin_right: FfiSizeValue,
-    pub margin_bottom: FfiSizeValue,
-    pub margin_left: FfiSizeValue,
-    pub padding_top: FfiSizeValue,
-    pub padding_right: FfiSizeValue,
-    pub padding_bottom: FfiSizeValue,
-    pub padding_left: FfiSizeValue,
-    pub inset_top: FfiSizeValue,
-    pub inset_right: FfiSizeValue,
-    pub inset_bottom: FfiSizeValue,
-    pub inset_left: FfiSizeValue,
-    pub has_position_anchor: bool,
-    pub position_anchor_name: usize,
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct FfiStylePayloads {
+    /// Borrowed pointers to every `ComputedValues` group payload. A
+    /// `NodeWithStyle` keeps its immutable `ComputedValues` alive, and style
+    /// replacement cannot run during the synchronous layout pass, so these
+    /// pointers remain valid until the pass returns to C++.
+    pub groups: [*const c_void; STYLE_GROUP_COUNT],
+}
 
+impl Default for FfiStylePayloads {
+    fn default() -> Self {
+        Self {
+            groups: [std::ptr::null(); STYLE_GROUP_COUNT],
+        }
+    }
+}
+
+pub(crate) const STYLE_FIELD_COUNT: usize = FfiStyleField::Count as usize;
+
+struct StyleSchema([Option<FfiStyleFieldSchema>; STYLE_FIELD_COUNT]);
+
+// SAFETY: Schema entries contain only immutable integers and enum values.
+unsafe impl Send for StyleSchema {}
+unsafe impl Sync for StyleSchema {}
+
+static STYLE_SCHEMA: OnceLock<StyleSchema> = OnceLock::new();
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_layout_register_style_schema(entries: *const FfiStyleFieldSchema, count: usize) {
+    abort_on_panic(|| {
+        let entries = unsafe { std::slice::from_raw_parts(entries, count) };
+        let mut schema = [None; STYLE_FIELD_COUNT];
+        for entry in entries {
+            let index = entry.field as usize;
+            assert!(index < STYLE_FIELD_COUNT);
+            assert!((entry.group_index as usize) < STYLE_GROUP_COUNT);
+            assert!(schema[index].is_none(), "duplicate style schema field");
+            let width = match entry.encoding {
+                FfiStyleFieldEncoding::Lazy => 0,
+                FfiStyleFieldEncoding::U8 | FfiStyleFieldEncoding::Bool => 1,
+                FfiStyleFieldEncoding::I32 | FfiStyleFieldEncoding::F32 | FfiStyleFieldEncoding::CssPixels => 4,
+                FfiStyleFieldEncoding::F64 => 8,
+            };
+            assert!(entry.offset as usize + width <= entry.group_size as usize);
+            schema[index] = Some(*entry);
+        }
+        assert!(schema.iter().all(Option::is_some));
+        assert!(
+            STYLE_SCHEMA.set(StyleSchema(schema)).is_ok(),
+            "style schema registered twice"
+        );
+        crate::ffi_stats::bump(crate::ffi_stats::FfiOp::StyleSchemaRegistration);
+    });
+}
+
+fn schema_for(field: FfiStyleField) -> FfiStyleFieldSchema {
+    STYLE_SCHEMA.get().expect("style schema used before registration").0[field as usize]
+        .expect("missing style schema field")
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct FfiDecodedStyleValue {
+    pub size: FfiSizeValue,
+    pub has_value: bool,
+    pub bool_value: bool,
+    pub u8_value: u8,
+    pub i32_value: i32,
+    pub css_pixels_value: CssPixels,
+    pub f64_value: f64,
+    pub f64_value_2: f64,
+    pub pointer: *const c_void,
+    pub f32_value: f32,
+    pub f32_value_2: f32,
+    pub f32_value_3: f32,
+    pub f32_value_4: f32,
+    /// A transferred Utf16FlyString reference, when non-zero.
+    pub retained_name: usize,
+}
+
+impl Default for FfiDecodedStyleValue {
+    fn default() -> Self {
+        Self {
+            size: FfiSizeValue::auto_value(),
+            has_value: false,
+            bool_value: false,
+            u8_value: 0,
+            i32_value: 0,
+            css_pixels_value: CssPixels::default(),
+            f64_value: 0.0,
+            f64_value_2: 0.0,
+            pointer: std::ptr::null(),
+            f32_value: 0.0,
+            f32_value_2: 0.0,
+            f32_value_3: 0.0,
+            f32_value_4: 0.0,
+            retained_name: 0,
+        }
+    }
+}
+
+pub type FfiDecodeStyleFieldCallback =
+    unsafe extern "C" fn(*mut c_void, *const c_void, FfiStyleField) -> FfiDecodedStyleValue;
+
+#[derive(Clone, Copy)]
+pub(crate) struct StyleReader {
+    payloads: FfiStylePayloads,
+}
+
+impl StyleReader {
+    pub(crate) fn new(payloads: FfiStylePayloads) -> Self {
+        Self { payloads }
+    }
+
+    fn address(self, field: FfiStyleField, encoding: FfiStyleFieldEncoding) -> *const u8 {
+        let schema = schema_for(field);
+        assert_eq!(schema.encoding, encoding);
+        let payload = self.payloads.groups[schema.group_index as usize];
+        assert!(!payload.is_null());
+        unsafe { (payload as *const u8).add(schema.offset as usize) }
+    }
+
+    pub(crate) fn u8(self, field: FfiStyleField) -> u8 {
+        unsafe { self.address(field, FfiStyleFieldEncoding::U8).read_unaligned() }
+    }
+
+    pub(crate) fn bool(self, field: FfiStyleField) -> bool {
+        let value = unsafe { self.address(field, FfiStyleFieldEncoding::Bool).read_unaligned() };
+        assert!(value <= 1);
+        value != 0
+    }
+
+    pub(crate) fn i32(self, field: FfiStyleField) -> i32 {
+        unsafe { (self.address(field, FfiStyleFieldEncoding::I32) as *const i32).read_unaligned() }
+    }
+
+    pub(crate) fn f32(self, field: FfiStyleField) -> f32 {
+        unsafe { (self.address(field, FfiStyleFieldEncoding::F32) as *const f32).read_unaligned() }
+    }
+
+    pub(crate) fn f64(self, field: FfiStyleField) -> f64 {
+        unsafe { (self.address(field, FfiStyleFieldEncoding::F64) as *const f64).read_unaligned() }
+    }
+
+    pub(crate) fn css_pixels(self, field: FfiStyleField) -> CssPixels {
+        let raw = unsafe { (self.address(field, FfiStyleFieldEncoding::CssPixels) as *const i32).read_unaligned() };
+        CssPixels::from_raw(raw)
+    }
+
+    fn payload(self, field: FfiStyleField) -> *const c_void {
+        let schema = schema_for(field);
+        assert_eq!(schema.encoding, FfiStyleFieldEncoding::Lazy);
+        let payload = self.payloads.groups[schema.group_index as usize];
+        assert!(!payload.is_null());
+        payload
+    }
+}
+
+pub(crate) struct LazyStyleCache {
+    values: Vec<(FfiStyleField, FfiDecodedStyleValue)>,
+}
+
+impl LazyStyleCache {
+    pub(crate) fn new() -> Self {
+        Self { values: Vec::new() }
+    }
+
+    fn decode(
+        &mut self,
+        reader: StyleReader,
+        context: *mut c_void,
+        callback: FfiDecodeStyleFieldCallback,
+        field: FfiStyleField,
+    ) -> FfiDecodedStyleValue {
+        if let Some((_, value)) = self.values.iter().find(|(cached, _)| *cached == field) {
+            return *value;
+        }
+        crate::ffi_stats::bump(crate::ffi_stats::FfiOp::StyleLazyDecode);
+        let value = unsafe { callback(context, reader.payload(field), field) };
+        self.values.push((field, value));
+        value
+    }
+
+    pub(crate) fn replace_size(&mut self, field: FfiStyleField, value: FfiSizeValue) {
+        if let Some((_, decoded)) = self.values.iter_mut().find(|(cached, _)| *cached == field) {
+            decoded.size.release_calc_handle();
+            decoded.size = value;
+            return;
+        }
+        self.values.push((
+            field,
+            FfiDecodedStyleValue {
+                size: value,
+                ..FfiDecodedStyleValue::default()
+            },
+        ));
+    }
+}
+
+impl Drop for LazyStyleCache {
+    fn drop(&mut self) {
+        for (_, value) in &self.values {
+            value.size.release_calc_handle();
+            if value.retained_name != 0 {
+                unsafe {
+                    ladybird_layout_release_anchor_name_handle(value.retained_name);
+                }
+            }
+        }
+    }
+}
+
+/// A Rust-only view over a node's immutable computed-value group payloads.
+///
+/// Plain fields below are copied directly from the payload bytes using the
+/// registered C++ schema. Methods decode complex C++ values on first use and
+/// read the per-node Rust cache thereafter.
+#[derive(Clone, Copy)]
+pub(crate) struct StyleValues {
+    reader: StyleReader,
+    cache: *mut LazyStyleCache,
+    callback_context: *mut c_void,
+    decode_callback: FfiDecodeStyleFieldCallback,
+
+    pub display: FfiDisplay,
     pub border_top_width: CssPixels,
     pub border_right_width: CssPixels,
     pub border_bottom_width: CssPixels,
@@ -233,8 +556,6 @@ pub struct FfiStyleFacts {
     pub border_right_style: u8,
     pub border_bottom_style: u8,
     pub border_left_style: u8,
-
-    pub display: FfiDisplay,
     pub position: u8,
     pub float_: u8,
     pub clear: u8,
@@ -244,20 +565,9 @@ pub struct FfiStyleFacts {
     pub text_justify: u8,
     pub white_space_collapse: u8,
     pub text_wrap_mode: u8,
-
-    pub vertical_align_is_keyword: bool,
-    pub vertical_align_keyword: u8,
-    pub vertical_align_value: FfiSizeValue,
     pub line_height: CssPixels,
     pub font_size: CssPixels,
-    pub first_available_font: *const c_void,
-    pub font_ascent: f32,
-    pub font_descent: f32,
-    pub font_x_height: f32,
-    pub font_pixel_size: f32,
-
     pub box_sizing: u8,
-    pub box_sizing_for_aspect_ratio: u8,
     pub overflow_x: u8,
     pub overflow_y: u8,
     pub text_overflow: u8,
@@ -265,8 +575,6 @@ pub struct FfiStyleFacts {
     pub flex_wrap: u8,
     pub flex_grow: f64,
     pub flex_shrink: f64,
-    pub flex_basis_is_content: bool,
-    pub flex_basis: FfiSizeValue,
     pub order: i32,
     pub align_items: u8,
     pub align_self: u8,
@@ -274,97 +582,277 @@ pub struct FfiStyleFacts {
     pub justify_content: u8,
     pub justify_items: u8,
     pub justify_self: u8,
-    pub row_gap: FfiSizeValue,
-    pub column_gap: FfiSizeValue,
-
-    pub has_aspect_ratio: bool,
-    pub aspect_ratio_width: f64,
-    pub aspect_ratio_height: f64,
-    pub aspect_ratio_is_degenerate: bool,
-
     pub appearance: u8,
     pub border_collapse: u8,
     pub border_spacing_horizontal: CssPixels,
     pub border_spacing_vertical: CssPixels,
     pub caption_side: u8,
     pub table_layout: u8,
-    pub column_width: FfiSizeValue,
-    pub has_column_count: bool,
-    pub column_count: i32,
-    pub containment_bits: u8,
-    pub container_type_bits: u8,
     pub content_visibility: u8,
     pub visibility: u8,
     pub word_break: u8,
-    pub has_z_index: bool,
-    pub z_index: i32,
-
     pub font_variant_emoji: u8,
     pub letter_spacing: CssPixels,
     pub word_spacing: CssPixels,
     pub unicode_bidi: u8,
     pub text_transform: u8,
-    pub text_indent: FfiSizeValue,
-    pub text_indent_each_line: bool,
-    pub text_indent_hanging: bool,
-    pub tab_size_is_number: bool,
-    pub tab_size: CssPixels,
-    pub tab_size_number: f64,
     pub grid_auto_flow_row: bool,
     pub grid_auto_flow_dense: bool,
-    pub x: FfiSizeValue,
-    pub y: FfiSizeValue,
     pub user_select: u8,
     pub opacity: f64,
     pub isolation: u8,
     pub mix_blend_mode: u8,
     pub transform_style: u8,
-    pub has_perspective: bool,
-    pub perspective: CssPixels,
     pub list_style_position: u8,
     pub text_decoration_style: u8,
+    vertical_align_override: u16,
 }
 
-impl FfiStyleFacts {
-    pub(crate) fn release_calc_handles(self) {
-        for value in [
-            self.width,
-            self.height,
-            self.min_width,
-            self.min_height,
-            self.max_width,
-            self.max_height,
-            self.margin_top,
-            self.margin_right,
-            self.margin_bottom,
-            self.margin_left,
-            self.padding_top,
-            self.padding_right,
-            self.padding_bottom,
-            self.padding_left,
-            self.inset_top,
-            self.inset_right,
-            self.inset_bottom,
-            self.inset_left,
-            self.vertical_align_value,
-            self.flex_basis,
-            self.row_gap,
-            self.column_gap,
-            self.column_width,
-            self.text_indent,
-            self.x,
-            self.y,
-        ] {
-            value.release_calc_handle();
-        }
-        if self.has_position_anchor {
-            // SAFETY: The C++ snapshot builder leaked exactly one reference
-            // for this raw fly-string handle.
-            unsafe {
-                ladybird_layout_release_anchor_name_handle(self.position_anchor_name);
-            }
+impl StyleValues {
+    pub(crate) fn new(
+        payloads: FfiStylePayloads,
+        display: FfiDisplay,
+        cache: *mut LazyStyleCache,
+        callback_context: *mut c_void,
+        decode_callback: FfiDecodeStyleFieldCallback,
+    ) -> Self {
+        let reader = StyleReader::new(payloads);
+        Self {
+            reader,
+            cache,
+            callback_context,
+            decode_callback,
+            display,
+            border_top_width: reader.css_pixels(FfiStyleField::BorderTopWidth),
+            border_right_width: reader.css_pixels(FfiStyleField::BorderRightWidth),
+            border_bottom_width: reader.css_pixels(FfiStyleField::BorderBottomWidth),
+            border_left_width: reader.css_pixels(FfiStyleField::BorderLeftWidth),
+            border_top_style: reader.u8(FfiStyleField::BorderTopStyle),
+            border_right_style: reader.u8(FfiStyleField::BorderRightStyle),
+            border_bottom_style: reader.u8(FfiStyleField::BorderBottomStyle),
+            border_left_style: reader.u8(FfiStyleField::BorderLeftStyle),
+            position: reader.u8(FfiStyleField::Position),
+            float_: reader.u8(FfiStyleField::Float),
+            clear: reader.u8(FfiStyleField::Clear),
+            writing_mode: reader.u8(FfiStyleField::WritingMode),
+            direction: reader.u8(FfiStyleField::Direction),
+            text_align: reader.u8(FfiStyleField::TextAlign),
+            text_justify: reader.u8(FfiStyleField::TextJustify),
+            white_space_collapse: reader.u8(FfiStyleField::WhiteSpaceCollapse),
+            text_wrap_mode: reader.u8(FfiStyleField::TextWrapMode),
+            line_height: reader.css_pixels(FfiStyleField::LineHeight),
+            font_size: reader.css_pixels(FfiStyleField::FontSize),
+            box_sizing: reader.u8(FfiStyleField::BoxSizing),
+            overflow_x: reader.u8(FfiStyleField::OverflowX),
+            overflow_y: reader.u8(FfiStyleField::OverflowY),
+            text_overflow: reader.u8(FfiStyleField::TextOverflow),
+            flex_direction: reader.u8(FfiStyleField::FlexDirection),
+            flex_wrap: reader.u8(FfiStyleField::FlexWrap),
+            flex_grow: reader.f64(FfiStyleField::FlexGrow),
+            flex_shrink: reader.f64(FfiStyleField::FlexShrink),
+            order: reader.i32(FfiStyleField::Order),
+            align_items: reader.u8(FfiStyleField::AlignItems),
+            align_self: reader.u8(FfiStyleField::AlignSelf),
+            align_content: reader.u8(FfiStyleField::AlignContent),
+            justify_content: reader.u8(FfiStyleField::JustifyContent),
+            justify_items: reader.u8(FfiStyleField::JustifyItems),
+            justify_self: reader.u8(FfiStyleField::JustifySelf),
+            appearance: reader.u8(FfiStyleField::Appearance),
+            border_collapse: reader.u8(FfiStyleField::BorderCollapse),
+            border_spacing_horizontal: reader.css_pixels(FfiStyleField::BorderSpacingHorizontal),
+            border_spacing_vertical: reader.css_pixels(FfiStyleField::BorderSpacingVertical),
+            caption_side: reader.u8(FfiStyleField::CaptionSide),
+            table_layout: reader.u8(FfiStyleField::TableLayout),
+            content_visibility: reader.u8(FfiStyleField::ContentVisibility),
+            visibility: reader.u8(FfiStyleField::Visibility),
+            word_break: reader.u8(FfiStyleField::WordBreak),
+            font_variant_emoji: reader.u8(FfiStyleField::FontVariantEmoji),
+            letter_spacing: reader.css_pixels(FfiStyleField::LetterSpacing),
+            word_spacing: reader.css_pixels(FfiStyleField::WordSpacing),
+            unicode_bidi: reader.u8(FfiStyleField::UnicodeBidi),
+            text_transform: reader.u8(FfiStyleField::TextTransform),
+            grid_auto_flow_row: reader.bool(FfiStyleField::GridAutoFlowRow),
+            grid_auto_flow_dense: reader.bool(FfiStyleField::GridAutoFlowDense),
+            user_select: reader.u8(FfiStyleField::UserSelect),
+            opacity: reader.f32(FfiStyleField::Opacity) as f64,
+            isolation: reader.u8(FfiStyleField::Isolation),
+            mix_blend_mode: reader.u8(FfiStyleField::MixBlendMode),
+            transform_style: reader.u8(FfiStyleField::TransformStyle),
+            list_style_position: reader.u8(FfiStyleField::ListStylePosition),
+            text_decoration_style: reader.u8(FfiStyleField::TextDecorationStyle),
+            vertical_align_override: u16::MAX,
         }
     }
+
+    fn decoded(self, field: FfiStyleField) -> FfiDecodedStyleValue {
+        unsafe { &mut *self.cache }.decode(self.reader, self.callback_context, self.decode_callback, field)
+    }
+
+    pub(crate) fn with_vertical_align_keyword(mut self, keyword: u8) -> Self {
+        self.vertical_align_override = keyword as u16;
+        self
+    }
+
+    pub(crate) fn vertical_align_is_keyword(self) -> bool {
+        self.vertical_align_override != u16::MAX || self.decoded(FfiStyleField::VerticalAlign).has_value
+    }
+
+    pub(crate) fn vertical_align_keyword(self) -> u8 {
+        if self.vertical_align_override != u16::MAX {
+            self.vertical_align_override as u8
+        } else {
+            self.decoded(FfiStyleField::VerticalAlign).u8_value
+        }
+    }
+
+    pub(crate) fn vertical_align_value(self) -> FfiSizeValue {
+        self.decoded(FfiStyleField::VerticalAlign).size
+    }
+
+    pub(crate) fn has_position_anchor(self) -> bool {
+        self.decoded(FfiStyleField::PositionAnchor).has_value
+    }
+
+    pub(crate) fn position_anchor_name(self) -> usize {
+        self.decoded(FfiStyleField::PositionAnchor).retained_name
+    }
+
+    pub(crate) fn first_available_font(self) -> *const c_void {
+        self.decoded(FfiStyleField::Font).pointer
+    }
+
+    pub(crate) fn font_ascent(self) -> f32 {
+        self.decoded(FfiStyleField::Font).f32_value
+    }
+
+    pub(crate) fn font_descent(self) -> f32 {
+        self.decoded(FfiStyleField::Font).f32_value_2
+    }
+
+    pub(crate) fn font_x_height(self) -> f32 {
+        self.decoded(FfiStyleField::Font).f32_value_3
+    }
+
+    pub(crate) fn font_pixel_size(self) -> f32 {
+        self.decoded(FfiStyleField::Font).f32_value_4
+    }
+
+    pub(crate) fn box_sizing_for_aspect_ratio(self) -> u8 {
+        self.decoded(FfiStyleField::BoxSizingForAspectRatio).u8_value
+    }
+
+    pub(crate) fn flex_basis_is_content(self) -> bool {
+        self.decoded(FfiStyleField::FlexBasis).has_value
+    }
+
+    pub(crate) fn flex_basis(self) -> FfiSizeValue {
+        self.decoded(FfiStyleField::FlexBasis).size
+    }
+
+    pub(crate) fn has_aspect_ratio(self) -> bool {
+        self.decoded(FfiStyleField::AspectRatio).has_value
+    }
+
+    pub(crate) fn aspect_ratio_width(self) -> f64 {
+        self.decoded(FfiStyleField::AspectRatio).f64_value
+    }
+
+    pub(crate) fn aspect_ratio_height(self) -> f64 {
+        self.decoded(FfiStyleField::AspectRatio).f64_value_2
+    }
+
+    pub(crate) fn aspect_ratio_is_degenerate(self) -> bool {
+        self.decoded(FfiStyleField::AspectRatio).bool_value
+    }
+
+    pub(crate) fn has_column_count(self) -> bool {
+        self.decoded(FfiStyleField::ColumnCount).has_value
+    }
+
+    pub(crate) fn column_count(self) -> i32 {
+        self.decoded(FfiStyleField::ColumnCount).i32_value
+    }
+
+    pub(crate) fn containment_bits(self) -> u8 {
+        self.decoded(FfiStyleField::Containment).u8_value
+    }
+
+    pub(crate) fn container_type_bits(self) -> u8 {
+        self.decoded(FfiStyleField::ContainerType).u8_value
+    }
+
+    pub(crate) fn has_z_index(self) -> bool {
+        self.decoded(FfiStyleField::ZIndex).has_value
+    }
+
+    pub(crate) fn z_index(self) -> i32 {
+        self.decoded(FfiStyleField::ZIndex).i32_value
+    }
+
+    pub(crate) fn text_indent_each_line(self) -> bool {
+        self.decoded(FfiStyleField::TextIndent).has_value
+    }
+
+    pub(crate) fn text_indent_hanging(self) -> bool {
+        self.decoded(FfiStyleField::TextIndent).bool_value
+    }
+
+    pub(crate) fn tab_size_is_number(self) -> bool {
+        self.decoded(FfiStyleField::TabSize).has_value
+    }
+
+    pub(crate) fn tab_size(self) -> CssPixels {
+        self.decoded(FfiStyleField::TabSize).css_pixels_value
+    }
+
+    pub(crate) fn tab_size_number(self) -> f64 {
+        self.decoded(FfiStyleField::TabSize).f64_value
+    }
+
+    pub(crate) fn has_perspective(self) -> bool {
+        self.decoded(FfiStyleField::Perspective).has_value
+    }
+
+    pub(crate) fn perspective(self) -> CssPixels {
+        self.decoded(FfiStyleField::Perspective).css_pixels_value
+    }
+}
+
+macro_rules! size_accessors {
+    ($($name:ident => $field:ident,)+) => {
+        impl StyleValues {
+            $(pub(crate) fn $name(self) -> FfiSizeValue {
+                self.decoded(FfiStyleField::$field).size
+            })+
+        }
+    };
+}
+
+size_accessors! {
+    width => Width,
+    height => Height,
+    min_width => MinWidth,
+    min_height => MinHeight,
+    max_width => MaxWidth,
+    max_height => MaxHeight,
+    margin_top => MarginTop,
+    margin_right => MarginRight,
+    margin_bottom => MarginBottom,
+    margin_left => MarginLeft,
+    padding_top => PaddingTop,
+    padding_right => PaddingRight,
+    padding_bottom => PaddingBottom,
+    padding_left => PaddingLeft,
+    inset_top => InsetTop,
+    inset_right => InsetRight,
+    inset_bottom => InsetBottom,
+    inset_left => InsetLeft,
+    row_gap => RowGap,
+    column_gap => ColumnGap,
+    column_width => ColumnWidth,
+    text_indent => TextIndent,
+    x => X,
+    y => Y,
 }
 
 #[cfg(not(test))]

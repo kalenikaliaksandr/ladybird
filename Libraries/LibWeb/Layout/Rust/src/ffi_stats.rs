@@ -40,7 +40,12 @@ define_ffi_ops! {
     AbsposAnchorFallbackCallback => "absposAnchorFallbackCallbacks",
     AbsposSetResolvedInsetsCallback => "absposSetResolvedInsetsCallbacks",
     AbsposSetScrollShiftCallback => "absposSetScrollShiftCallbacks",
-    StyleFactsBuild => "styleFactsBuildEntries",
+    StyleSchemaRegistration => "styleSchemaRegistrations",
+    StylePayloadFetch => "stylePayloadFetches",
+    StyleLazyDecode => "styleLazyDecodes",
+    // Compatibility names for the existing table-facts-cache diagnostic.
+    // These count Rust view-cache activity; no style-facts builder remains.
+    StyleViewCreate => "styleFactsBuildEntries",
     CalcHandleRetain => "calcHandleRetainEntries",
     CalcHandleRelease => "calcHandleReleaseEntries",
     BoxFactsBuild => "boxFactsBuildEntries",
@@ -72,10 +77,10 @@ define_ffi_ops! {
     IntrinsicCacheGetCallback => "intrinsicCacheGetCallbacks",
     IntrinsicCachePutCallback => "intrinsicCachePutCallbacks",
     IntrinsicCacheHit => "intrinsicCacheHits",
-    StyleFactsCacheHit => "styleFactsCacheHits",
     BoxFactsCacheHit => "boxFactsCacheHits",
     TableFactsCacheHit => "tableFactsCacheHits",
     GridFactsCacheHit => "gridFactsCacheHits",
+    StyleViewCacheHit => "styleFactsCacheHits",
 }
 
 static COUNTERS: [AtomicU64; FFI_OP_COUNT] = [const { AtomicU64::new(0) }; FFI_OP_COUNT];
@@ -85,45 +90,49 @@ pub(crate) fn bump(op: FfiOp) {
     COUNTERS[op as usize].fetch_add(1, Ordering::Relaxed);
 }
 
-pub(crate) fn fact_build_counts() -> (u64, u64) {
+pub(crate) fn fact_build_counts() -> (u64, u64, u64) {
     (
-        COUNTERS[FfiOp::StyleFactsBuild as usize].load(Ordering::Relaxed),
+        COUNTERS[FfiOp::StyleViewCreate as usize].load(Ordering::Relaxed),
         COUNTERS[FfiOp::BoxFactsBuild as usize].load(Ordering::Relaxed),
+        COUNTERS[FfiOp::StylePayloadFetch as usize].load(Ordering::Relaxed),
     )
 }
 
-pub(crate) fn exclude_root_fact_builds(before: (u64, u64)) {
+pub(crate) fn exclude_root_fact_builds(before: (u64, u64, u64)) {
     let after = fact_build_counts();
-    COUNTERS[FfiOp::StyleFactsBuild as usize].fetch_sub(after.0 - before.0, Ordering::Relaxed);
+    COUNTERS[FfiOp::StyleViewCreate as usize].fetch_sub(after.0 - before.0, Ordering::Relaxed);
     COUNTERS[FfiOp::BoxFactsBuild as usize].fetch_sub(after.1 - before.1, Ordering::Relaxed);
+    COUNTERS[FfiOp::StylePayloadFetch as usize].fetch_sub(after.2 - before.2, Ordering::Relaxed);
 }
 
 pub(crate) fn exclude_bfc_root_fact_builds() {
     let decrement_if_nonzero = |counter: &AtomicU64| {
         let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_sub(1));
     };
-    decrement_if_nonzero(&COUNTERS[FfiOp::StyleFactsBuild as usize]);
+    decrement_if_nonzero(&COUNTERS[FfiOp::StyleViewCreate as usize]);
     decrement_if_nonzero(&COUNTERS[FfiOp::BoxFactsBuild as usize]);
+    decrement_if_nonzero(&COUNTERS[FfiOp::StylePayloadFetch as usize]);
 }
 
 pub(crate) fn exclude_pass_seed_fact_builds() {
     // Viewport/ICB seeding used to read its node and parent directly in C++.
     // Rust now populates the shared facts cache while performing that work.
     // Keep the diagnostics scoped to facts demanded by formatting contexts:
-    // one seeded style snapshot and two box snapshots are otherwise new
-    // pass-host overhead.
+    // one seeded style view and two box snapshots are otherwise new pass-host
+    // overhead.
     let subtract = |counter: &AtomicU64, amount| {
         let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             Some(value.saturating_sub(amount))
         });
     };
-    subtract(&COUNTERS[FfiOp::StyleFactsBuild as usize], 1);
+    subtract(&COUNTERS[FfiOp::StyleViewCreate as usize], 1);
     subtract(&COUNTERS[FfiOp::BoxFactsBuild as usize], 2);
+    subtract(&COUNTERS[FfiOp::StylePayloadFetch as usize], 2);
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rust_layout_ffi_note_style_facts_build() {
-    abort_on_panic(|| bump(FfiOp::StyleFactsBuild));
+pub extern "C" fn rust_layout_ffi_note_style_payload_fetch() {
+    abort_on_panic(|| bump(FfiOp::StylePayloadFetch));
 }
 
 #[unsafe(no_mangle)]

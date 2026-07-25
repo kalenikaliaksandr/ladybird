@@ -7,7 +7,7 @@
 use crate::css_pixels::CssPixels;
 use crate::geometry::{AvailableSize, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput};
 use crate::layout_state::state_mut;
-use crate::style_facts::FfiStyleFacts;
+use crate::style_facts::StyleValues;
 use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
 use std::ffi::c_void;
 
@@ -449,7 +449,7 @@ impl SvgFormattingContext {
         unsafe { (self.callbacks.build_svg_facts)(self.callbacks.context, node) }
     }
 
-    fn style_facts(&self, node: *mut c_void) -> FfiStyleFacts {
+    fn style_facts(&self, node: *mut c_void) -> StyleValues {
         state_mut(self.state).style_facts(&self.callbacks, node)
     }
 
@@ -533,11 +533,11 @@ impl SvgFormattingContext {
             //
             // NOTE: If a height had not been provided by the svg element, it was set to the height of the container
             let style = self.style_facts(self.box_);
-            if style.width.is_length() {
-                used.set_content_inline_size(style.width.to_px(CssPixels::default()));
+            if style.width().is_length() {
+                used.set_content_inline_size(style.width().to_px(CssPixels::default()));
             }
-            if style.height.is_length() {
-                used.set_content_block_size(style.height.to_px(CssPixels::default()));
+            if style.height().is_length() {
+                used.set_content_block_size(style.height().to_px(CssPixels::default()));
             }
             // FIXME: In SVG 2, length can also be a percentage. We'll need to support that.
         }
@@ -676,10 +676,10 @@ impl SvgFormattingContext {
             let style = self.style_facts(child);
             let available_space = self.available_space.unwrap();
             let rect = CssPixelRect {
-                x: style.x.to_px(available_space.inline_size.to_px_or_zero()),
-                y: style.y.to_px(available_space.block_size.to_px_or_zero()),
-                width: style.width.to_px(available_space.inline_size.to_px_or_zero()),
-                height: style.height.to_px(available_space.block_size.to_px_or_zero()),
+                x: style.x().to_px(available_space.inline_size.to_px_or_zero()),
+                y: style.y().to_px(available_space.block_size.to_px_or_zero()),
+                width: style.width().to_px(available_space.inline_size.to_px_or_zero()),
+                height: style.height().to_px(available_space.block_size.to_px_or_zero()),
             };
 
             let mut svg_transform = parent_svg_transform;
@@ -748,19 +748,19 @@ impl SvgFormattingContext {
         let used_pointer = self.create_used_values(viewport);
         let style = self.style_facts(viewport);
         let facts = self.svg_facts(viewport);
-        let nested_viewport_x = style.x.to_px(self.viewport_width);
-        let nested_viewport_y = style.y.to_px(self.viewport_height);
+        let nested_viewport_x = style.x().to_px(self.viewport_width);
+        let nested_viewport_y = style.y().to_px(self.viewport_height);
         // The value auto for width and height on the ‘svg’ element is treated as 100%.
         // https://svgwg.org/svg2-draft/geometry.html#Sizing
-        let nested_viewport_width = if style.width.is_auto() {
+        let nested_viewport_width = if style.width().is_auto() {
             self.viewport_width
         } else {
-            style.width.to_px(self.viewport_width)
+            style.width().to_px(self.viewport_width)
         };
-        let nested_viewport_height = if style.height.is_auto() {
+        let nested_viewport_height = if style.height().is_auto() {
             self.viewport_height
         } else {
-            style.height.to_px(self.viewport_height)
+            style.height().to_px(self.viewport_height)
         };
 
         if state_mut(self.state)

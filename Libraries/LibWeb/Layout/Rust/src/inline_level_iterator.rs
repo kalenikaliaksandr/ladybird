@@ -224,18 +224,18 @@ impl InlineLevelIterator {
         };
         // SAFETY: This is the state-owned entry for `node`.
         let used = unsafe { &mut *used_pointer };
-        used.margin_top = style.margin_top.to_px(basis);
-        used.margin_bottom = style.margin_bottom.to_px(basis);
-        used.margin_left = style.margin_left.to_px(basis);
+        used.margin_top = style.margin_top().to_px(basis);
+        used.margin_bottom = style.margin_bottom().to_px(basis);
+        used.margin_left = style.margin_left().to_px(basis);
         used.border_left = style.border_left_width;
-        used.padding_left = style.padding_left.to_px(basis);
-        used.margin_right = style.margin_right.to_px(basis);
+        used.padding_left = style.padding_left().to_px(basis);
+        used.margin_right = style.margin_right().to_px(basis);
         used.border_right = style.border_right_width;
-        used.padding_right = style.padding_right.to_px(basis);
+        used.padding_right = style.padding_right().to_px(basis);
         used.border_top = style.border_top_width;
         used.border_bottom = style.border_bottom_width;
-        used.padding_bottom = style.padding_bottom.to_px(basis);
-        used.padding_top = style.padding_top.to_px(basis);
+        used.padding_bottom = style.padding_bottom().to_px(basis);
+        used.padding_top = style.padding_top().to_px(basis);
 
         let leading = self.extra_leading_metrics.get_or_insert_default();
         leading.margin += used.margin_left;
@@ -458,7 +458,7 @@ impl InlineLevelIterator {
             FfiTextChunk {
                 start: 0,
                 length: 0,
-                font: parent_style.first_available_font,
+                font: parent_style.first_available_font(),
                 has_breaking_newline: false,
                 has_breaking_tab: false,
                 is_all_whitespace: true,
@@ -496,7 +496,7 @@ impl InlineLevelIterator {
         let mut shaped_start = chunk.start;
         let mut shaped_length = chunk.length;
         if chunk.has_breaking_tab {
-            let tab_inline_size = if style.tab_size_is_number {
+            let tab_inline_size = if style.tab_size_is_number() {
                 let space = unsafe {
                     (self.context().callbacks.font_glyph_width)(
                         self.context().callbacks.context,
@@ -505,12 +505,12 @@ impl InlineLevelIterator {
                     )
                 };
                 CssPixels::nearest_value_for(
-                    style.tab_size_number
+                    style.tab_size_number()
                         * (space + style.word_spacing.to_double() as f32 + style.letter_spacing.to_double() as f32)
                             as f64,
                 )
             } else {
-                style.tab_size
+                style.tab_size()
             };
             let accumulated = self.accumulated_inline_size_for_tabs;
             let mut tab_stop_distance = if accumulated > CssPixels::default() {

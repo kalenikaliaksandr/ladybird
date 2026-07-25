@@ -10,7 +10,7 @@ use super::{InlineFormattingContext, Node};
 use crate::css_enums::{direction, text_align, vertical_align, writing_mode};
 use crate::css_pixels::CssPixels;
 use crate::geometry::AvailableSize;
-use crate::style_facts::FfiStyleFacts;
+use crate::style_facts::StyleValues;
 use crate::used_values::FfiLineBoxFragmentCoordinate;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,9 +57,9 @@ impl LineBuilder {
             current_block_offset: CssPixels::default(),
             max_block_size_on_current_line: CssPixels::default(),
             unbreakable_run_inline_size_interrupted_by_float: CssPixels::default(),
-            text_indent: style.text_indent.to_px(containing_inline_size),
-            text_indent_hanging: style.text_indent_hanging,
-            text_indent_each_line: style.text_indent_each_line,
+            text_indent: style.text_indent().to_px(containing_inline_size),
+            text_indent_hanging: style.text_indent_hanging(),
+            text_indent_each_line: style.text_indent_each_line(),
             direction: style.direction,
             writing_mode: style.writing_mode,
             last_line_needs_update: false,
@@ -100,7 +100,7 @@ impl LineBuilder {
         &mut self.context().line_data_mut().line_boxes[index]
     }
 
-    fn containing_style(&self) -> FfiStyleFacts {
+    fn containing_style(&self) -> StyleValues {
         self.context().style(self.context().containing_block)
     }
 
@@ -131,7 +131,7 @@ impl LineBuilder {
             is_atomic_inline: facts.is_atomic_inline,
             white_space_collapse: style.white_space_collapse,
             letter_spacing: style.letter_spacing,
-            first_available_font: style.first_available_font,
+            first_available_font: style.first_available_font(),
             text_utf16,
             text_length_in_code_units: text_length,
             style_block_axis_is_reverse: matches!(
@@ -481,33 +481,33 @@ impl LineBuilder {
             .pixels_greater_than(current_inline_size + next_item_inline_size)
     }
 
-    fn baseline_for_style(style: FfiStyleFacts, line_height: CssPixels) -> CssPixels {
-        let typographic = CssPixels::nearest_value_for_f32(style.font_ascent + style.font_descent);
-        CssPixels::nearest_value_for_f32(style.font_ascent) + (line_height - typographic) / 2
+    fn baseline_for_style(style: StyleValues, line_height: CssPixels) -> CssPixels {
+        let typographic = CssPixels::nearest_value_for_f32(style.font_ascent() + style.font_descent());
+        CssPixels::nearest_value_for_f32(style.font_ascent()) + (line_height - typographic) / 2
     }
 
-    fn normal_line_height(style: FfiStyleFacts) -> CssPixels {
-        let ascent = style.font_ascent.round_ties_even() as i64;
-        let descent = style.font_descent.round_ties_even() as i64;
+    fn normal_line_height(style: StyleValues) -> CssPixels {
+        let ascent = style.font_ascent().round_ties_even() as i64;
+        let descent = style.font_descent().round_ties_even() as i64;
         CssPixels::from_integer(ascent.saturating_add(descent))
     }
 
     fn block_offset_for_alignment(
         &self,
-        style: FfiStyleFacts,
+        style: StyleValues,
         metrics: VerticalAlignMetrics,
         line_box_baseline: CssPixels,
     ) -> CssPixels {
         let alphabetic =
             self.current_block_offset + line_box_baseline - metrics.baseline + metrics.effective_box_block_start_offset;
-        if !style.vertical_align_is_keyword {
-            return alphabetic - style.vertical_align_value.to_px(metrics.line_height);
+        if !style.vertical_align_is_keyword() {
+            return alphabetic - style.vertical_align_value().to_px(metrics.line_height);
         }
-        match style.vertical_align_keyword {
+        match style.vertical_align_keyword() {
             vertical_align::BASELINE => alphabetic,
             vertical_align::TOP => self.current_block_offset + metrics.effective_box_block_start_offset,
             vertical_align::MIDDLE => {
-                let x_height = CssPixels::nearest_value_for_f32(self.containing_style().font_x_height);
+                let x_height = CssPixels::nearest_value_for_f32(self.containing_style().font_x_height());
                 self.current_block_offset
                     + line_box_baseline
                     + (metrics.effective_box_block_start_offset
@@ -598,17 +598,17 @@ impl LineBuilder {
                 )
             };
             self.line_mut(line_index).fragments[fragment_index].baseline = fragment_baseline;
-            let adjusted_baseline = if style.vertical_align_is_keyword {
+            let adjusted_baseline = if style.vertical_align_is_keyword() {
                 fragment_baseline
             } else {
-                fragment_baseline + style.vertical_align_value.to_px(style.line_height)
+                fragment_baseline + style.vertical_align_value().to_px(style.line_height)
             };
             if adjusted_baseline > line_box_baseline {
                 if !self.context().facts(node).is_text_node {
                     should_align_strut |= style.display.is_inline_outside()
                         && style.display.is_flex_inside()
-                        && style.vertical_align_is_keyword
-                        && style.vertical_align_keyword == vertical_align::BASELINE;
+                        && style.vertical_align_is_keyword()
+                        && style.vertical_align_keyword() == vertical_align::BASELINE;
                 }
                 line_box_baseline = adjusted_baseline;
             }
@@ -641,9 +641,9 @@ impl LineBuilder {
             }
             let new_inline_offset = inline_offset + snapshot.inline_offset;
             let mut new_block_offset = self.block_offset_for_alignment(style, metrics, line_box_baseline);
-            let own_alignment_is_line_relative = style.vertical_align_is_keyword
+            let own_alignment_is_line_relative = style.vertical_align_is_keyword()
                 && matches!(
-                    style.vertical_align_keyword,
+                    style.vertical_align_keyword(),
                     vertical_align::TOP | vertical_align::BOTTOM
                 );
             let containing_block = self.context().containing_block;
@@ -658,22 +658,20 @@ impl LineBuilder {
                 && ancestor != containing_block
             {
                 let ancestor_style = self.context().style(ancestor);
-                if ancestor_style.vertical_align_is_keyword {
-                    if ancestor_style.vertical_align_keyword == vertical_align::BASELINE {
+                if ancestor_style.vertical_align_is_keyword() {
+                    if ancestor_style.vertical_align_keyword() == vertical_align::BASELINE {
                         ancestor = self.context().parent_node(ancestor);
                         continue;
                     }
                     if matches!(
-                        ancestor_style.vertical_align_keyword,
+                        ancestor_style.vertical_align_keyword(),
                         vertical_align::TOP | vertical_align::BOTTOM
                     ) {
                         break;
                     }
                 }
                 let ancestor_metrics = self.inline_box_alignment_metrics(ancestor);
-                let mut baseline_style = ancestor_style;
-                baseline_style.vertical_align_is_keyword = true;
-                baseline_style.vertical_align_keyword = vertical_align::BASELINE;
+                let baseline_style = ancestor_style.with_vertical_align_keyword(vertical_align::BASELINE);
                 new_block_offset +=
                     self.block_offset_for_alignment(ancestor_style, ancestor_metrics, line_box_baseline)
                         - self.block_offset_for_alignment(baseline_style, ancestor_metrics, line_box_baseline);
@@ -696,20 +694,20 @@ impl LineBuilder {
                         + used.border_box_bottom(false),
                 )
             } else {
-                let typographic = CssPixels::nearest_value_for_f32(style.font_ascent + style.font_descent);
+                let typographic = CssPixels::nearest_value_for_f32(style.font_ascent() + style.font_descent());
                 let half_leading = (style.line_height - typographic) / 2;
                 (
                     fragment.block_offset + fragment.baseline
-                        - CssPixels::nearest_value_for_f32(style.font_ascent)
+                        - CssPixels::nearest_value_for_f32(style.font_ascent())
                         - half_leading,
                     fragment.block_offset
                         + fragment.baseline
-                        + CssPixels::nearest_value_for_f32(style.font_descent)
+                        + CssPixels::nearest_value_for_f32(style.font_descent())
                         + half_leading,
                 )
             };
-            if !style.vertical_align_is_keyword {
-                inline_box_end += style.vertical_align_value.to_px(style.line_height);
+            if !style.vertical_align_is_keyword() {
+                inline_box_end += style.vertical_align_value().to_px(style.line_height);
             }
             earliest = earliest.min(inline_box_start);
             latest = latest.max(inline_box_end);

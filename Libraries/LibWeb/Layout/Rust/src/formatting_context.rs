@@ -12,7 +12,6 @@ use crate::geometry::{AvailableSize, AvailableSpace, FfiLayoutInput};
 use crate::layout_state::{
     FfiCommitSink, FfiStaticPositionAlignment, FfiStaticPositionRect, LayoutState, LayoutStatePurpose, state_mut,
 };
-use crate::style_facts::FfiStyleFacts;
 use crate::used_values::{FfiCssPixelPoint, FfiSizeConstraint};
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -38,7 +37,7 @@ pub(crate) mod abspos {
         FfiAbsposAlignment, FfiAbsposAxisMode, FfiAbsposContainingBlockInfo, FfiAbsposLayoutInputs,
         FfiStaticPositionAlignment, FfiStaticPositionRect, state_mut,
     };
-    use crate::style_facts::{FfiSizeValue, FfiStyleFacts};
+    use crate::style_facts::{FfiSizeValue, StyleValues};
     use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
     use std::ffi::c_void;
 
@@ -222,14 +221,14 @@ pub(crate) mod abspos {
         }
     }
 
-    fn axis_modes(style: FfiStyleFacts) -> (FfiAbsposAxisMode, FfiAbsposAxisMode) {
+    fn axis_modes(style: StyleValues) -> (FfiAbsposAxisMode, FfiAbsposAxisMode) {
         (
-            if style.inset_left.is_auto() && style.inset_right.is_auto() {
+            if style.inset_left().is_auto() && style.inset_right().is_auto() {
                 FfiAbsposAxisMode::StaticPosition
             } else {
                 FfiAbsposAxisMode::InsetFromRect
             },
-            if style.inset_top.is_auto() && style.inset_bottom.is_auto() {
+            if style.inset_top().is_auto() && style.inset_bottom().is_auto() {
                 FfiAbsposAxisMode::StaticPosition
             } else {
                 FfiAbsposAxisMode::InsetFromRect
@@ -298,7 +297,7 @@ pub(crate) mod abspos {
             SizingContext::new(self.state, self.callbacks)
         }
 
-        fn style(&self, node: Node) -> FfiStyleFacts {
+        fn style(&self, node: Node) -> StyleValues {
             state_mut(self.state).style_facts(&self.callbacks, node)
         }
 
@@ -1040,10 +1039,10 @@ pub(crate) mod abspos {
             }
 
             let style = self.style(node);
-            let top_contains_anchor = style.inset_top.contains_anchor_function;
-            let right_contains_anchor = style.inset_right.contains_anchor_function;
-            let bottom_contains_anchor = style.inset_bottom.contains_anchor_function;
-            let left_contains_anchor = style.inset_left.contains_anchor_function;
+            let top_contains_anchor = style.inset_top().contains_anchor_function;
+            let right_contains_anchor = style.inset_right().contains_anchor_function;
+            let bottom_contains_anchor = style.inset_bottom().contains_anchor_function;
+            let left_contains_anchor = style.inset_left().contains_anchor_function;
             if !top_contains_anchor && !right_contains_anchor && !bottom_contains_anchor && !left_contains_anchor {
                 return;
             }
@@ -1053,8 +1052,8 @@ pub(crate) mod abspos {
                 return;
             }
             let containing_block_state = self.used(containing_block);
-            let default_anchor_box = if style.has_position_anchor {
-                self.anchor_lookup(node, style.position_anchor_name)
+            let default_anchor_box = if style.has_position_anchor() {
+                self.anchor_lookup(node, style.position_anchor_name())
                     .unwrap_or(std::ptr::null_mut())
             } else {
                 std::ptr::null_mut()
@@ -1068,7 +1067,7 @@ pub(crate) mod abspos {
 
             if top_contains_anchor {
                 let value = self.resolve_anchor_value(
-                    style.inset_top,
+                    style.inset_top(),
                     node,
                     containing_block,
                     AnchorValueAxis {
@@ -1086,7 +1085,7 @@ pub(crate) mod abspos {
             }
             if right_contains_anchor {
                 let value = self.resolve_anchor_value(
-                    style.inset_right,
+                    style.inset_right(),
                     node,
                     containing_block,
                     AnchorValueAxis {
@@ -1104,7 +1103,7 @@ pub(crate) mod abspos {
             }
             if bottom_contains_anchor {
                 let value = self.resolve_anchor_value(
-                    style.inset_bottom,
+                    style.inset_bottom(),
                     node,
                     containing_block,
                     AnchorValueAxis {
@@ -1122,7 +1121,7 @@ pub(crate) mod abspos {
             }
             if left_contains_anchor {
                 let value = self.resolve_anchor_value(
-                    style.inset_left,
+                    style.inset_left(),
                     node,
                     containing_block,
                     AnchorValueAxis {
@@ -1177,8 +1176,8 @@ pub(crate) mod abspos {
         let style = engine.style(context.positioned_box);
         let anchor_name = if facts.has_anchor_name {
             Some(facts.anchor_name)
-        } else if style.has_position_anchor {
-            Some(style.position_anchor_name)
+        } else if style.has_position_anchor() {
+            Some(style.position_anchor_name())
         } else {
             None
         };
@@ -1415,12 +1414,12 @@ pub(crate) mod abspos {
             let border_right = style.border_right_width;
             let padding_left = used.padding_left;
             let padding_right = used.padding_right;
-            let computed_left = style.inset_left;
-            let computed_right = style.inset_right;
-            let mut left = style.inset_left.to_px(containing_block_inline_size);
-            let mut right = style.inset_right.to_px(containing_block_inline_size);
-            let mut margin_left = resolve_or_auto(style.margin_left, containing_block_inline_size);
-            let mut margin_right = resolve_or_auto(style.margin_right, containing_block_inline_size);
+            let computed_left = style.inset_left();
+            let computed_right = style.inset_right();
+            let mut left = style.inset_left().to_px(containing_block_inline_size);
+            let mut right = style.inset_right().to_px(containing_block_inline_size);
+            let mut margin_left = resolve_or_auto(style.margin_left(), containing_block_inline_size);
+            let mut margin_right = resolve_or_auto(style.margin_right(), containing_block_inline_size);
             let mut inline_size = input_inline_size;
 
             let solve_for_left = |inline_size: AutoPx, margin_left: AutoPx, margin_right: AutoPx, right: CssPixels| {
@@ -1555,10 +1554,10 @@ pub(crate) mod abspos {
                     None,
                     super::sizing::TableWrapperInlineSizeMode::ClampToAvailableInlineSize,
                 ))
-            } else if style.width.is_auto() {
+            } else if style.width().is_auto() {
                 None
             } else {
-                Some(sizing.calculate_inner_inline_size(node, available_space.inline_size, style.width, constraints))
+                Some(sizing.calculate_inner_inline_size(node, available_space.inline_size, style.width(), constraints))
             };
             let (mut used_inline_size, mut left, mut right, mut margin_left, mut margin_right) = self
                 .solve_non_replaced_inline_once(
@@ -1571,8 +1570,12 @@ pub(crate) mod abspos {
                 );
 
             if !sizing.should_treat_max_inline_size_as_none(node, available_space.inline_size, constraints) {
-                let max_inline_size =
-                    sizing.calculate_inner_inline_size(node, available_space.inline_size, style.max_width, constraints);
+                let max_inline_size = sizing.calculate_inner_inline_size(
+                    node,
+                    available_space.inline_size,
+                    style.max_width(),
+                    constraints,
+                );
                 if auto_px_value(used_inline_size) > max_inline_size {
                     (used_inline_size, left, right, margin_left, margin_right) = self.solve_non_replaced_inline_once(
                         node,
@@ -1584,9 +1587,13 @@ pub(crate) mod abspos {
                     );
                 }
             }
-            if !style.min_width.is_auto() {
-                let min_inline_size =
-                    sizing.calculate_inner_inline_size(node, available_space.inline_size, style.min_width, constraints);
+            if !style.min_width().is_auto() {
+                let min_inline_size = sizing.calculate_inner_inline_size(
+                    node,
+                    available_space.inline_size,
+                    style.min_width(),
+                    constraints,
+                );
                 if auto_px_value(used_inline_size) < min_inline_size {
                     (used_inline_size, left, right, margin_left, margin_right) = self.solve_non_replaced_inline_once(
                         node,
@@ -1627,10 +1634,10 @@ pub(crate) mod abspos {
                 - style.border_right_width;
             let solution = solve_replaced_axis(
                 available,
-                resolve_or_auto(style.inset_left, containing_block_inline_size),
-                resolve_or_auto(style.inset_right, containing_block_inline_size),
-                resolve_or_auto(style.margin_left, containing_block_inline_size),
-                resolve_or_auto(style.margin_right, containing_block_inline_size),
+                resolve_or_auto(style.inset_left(), containing_block_inline_size),
+                resolve_or_auto(style.inset_right(), containing_block_inline_size),
+                resolve_or_auto(style.margin_left(), containing_block_inline_size),
+                resolve_or_auto(style.margin_right(), containing_block_inline_size),
                 self.static_offset(node, static_position_rect).inline_offset,
                 ReplacedAxisBehavior {
                     clear_auto_margins_if_start_is_auto: true,
@@ -1681,14 +1688,14 @@ pub(crate) mod abspos {
             let style = self.style(node);
             let sizing = self.sizing();
             let mut constrained = unconstrained;
-            if !style.max_height.is_none() {
-                let maximum = sizing.calculate_inner_block_size(node, available_space, style.max_height, constraints);
+            if !style.max_height().is_none() {
+                let maximum = sizing.calculate_inner_block_size(node, available_space, style.max_height(), constraints);
                 if maximum < auto_px_value(constrained) {
                     constrained = Some(maximum);
                 }
             }
-            if !style.min_height.is_auto() {
-                let minimum = sizing.calculate_inner_block_size(node, available_space, style.min_height, constraints);
+            if !style.min_height().is_auto() {
+                let minimum = sizing.calculate_inner_block_size(node, available_space, style.min_height(), constraints);
                 if minimum > auto_px_value(constrained) {
                     constrained = Some(minimum);
                 }
@@ -1734,10 +1741,10 @@ pub(crate) mod abspos {
             let style = self.style(node);
             let containing_block_inline_size = available_space.inline_size.to_px_or_zero();
             let containing_block_block_size = available_space.block_size.to_px_or_zero();
-            let mut margin_top = resolve_or_auto(style.margin_top, containing_block_inline_size);
-            let mut margin_bottom = resolve_or_auto(style.margin_bottom, containing_block_inline_size);
-            let mut top = resolve_or_auto(style.inset_top, containing_block_block_size);
-            let mut bottom = resolve_or_auto(style.inset_bottom, containing_block_block_size);
+            let mut margin_top = resolve_or_auto(style.margin_top(), containing_block_inline_size);
+            let mut margin_bottom = resolve_or_auto(style.margin_bottom(), containing_block_inline_size);
+            let mut top = resolve_or_auto(style.inset_top(), containing_block_block_size);
+            let mut bottom = resolve_or_auto(style.inset_bottom(), containing_block_block_size);
             let used = self.used(node);
             let padding_top = used.padding_top;
             let padding_bottom = used.padding_bottom;
@@ -1942,18 +1949,18 @@ pub(crate) mod abspos {
                 Some(self.sizing().calculate_inner_block_size(
                     node,
                     intrinsic_available_space,
-                    style.height,
+                    style.height(),
                     constraints,
                 ))
             };
             let (mut used_block_size, mut top, mut bottom, mut margin_top, mut margin_bottom) = self
                 .solve_non_replaced_block_once(node, available_space, constraints, static_position_rect, pass, initial);
 
-            if used_block_size.is_some() && !style.max_height.is_none() {
+            if used_block_size.is_some() && !style.max_height().is_none() {
                 let max_block_size = self.sizing().calculate_inner_block_size(
                     node,
                     intrinsic_available_space,
-                    style.max_height,
+                    style.max_height(),
                     constraints,
                 );
                 if auto_px_value(used_block_size) > max_block_size {
@@ -1967,11 +1974,11 @@ pub(crate) mod abspos {
                     );
                 }
             }
-            if used_block_size.is_some() && !style.min_height.is_auto() {
+            if used_block_size.is_some() && !style.min_height().is_auto() {
                 let min_block_size = self.sizing().calculate_inner_block_size(
                     node,
                     intrinsic_available_space,
-                    style.min_height,
+                    style.min_height(),
                     constraints,
                 );
                 if auto_px_value(used_block_size) < min_block_size {
@@ -1994,10 +2001,10 @@ pub(crate) mod abspos {
             let containing_block_block_size = available_space.block_size.to_px_or_zero();
             let used = self.used_mut(node);
             used.set_content_block_size(auto_px_value(used_block_size));
-            if style.height.is_auto() && pass == BlockSizePass::BeforeInsideLayout {
+            if style.height().is_auto() && pass == BlockSizePass::BeforeInsideLayout {
                 return;
             }
-            if !style.height.is_intrinsic_sizing_constraint() {
+            if !style.height().is_intrinsic_sizing_constraint() {
                 used.has_definite_block_size = true;
             }
             used.inset_top = auto_px_value(top);
@@ -2033,10 +2040,10 @@ pub(crate) mod abspos {
             // this matches the C++ condition, which tests only the end inset.
             let solution = solve_replaced_axis(
                 available,
-                resolve_or_auto(style.inset_top, containing_block_block_size),
-                resolve_or_auto(style.inset_bottom, containing_block_block_size),
-                resolve_or_auto(style.margin_top, containing_block_block_size),
-                resolve_or_auto(style.margin_bottom, containing_block_block_size),
+                resolve_or_auto(style.inset_top(), containing_block_block_size),
+                resolve_or_auto(style.inset_bottom(), containing_block_block_size),
+                resolve_or_auto(style.margin_top(), containing_block_block_size),
+                resolve_or_auto(style.margin_bottom(), containing_block_block_size),
                 self.static_offset(node, static_position_rect).block_offset,
                 ReplacedAxisBehavior {
                     clear_auto_margins_if_start_is_auto: false,
@@ -2046,10 +2053,10 @@ pub(crate) mod abspos {
 
             let used = self.used_mut(node);
             used.set_content_block_size(block_size);
-            if style.height.is_auto() && pass == BlockSizePass::BeforeInsideLayout {
+            if style.height().is_auto() && pass == BlockSizePass::BeforeInsideLayout {
                 return;
             }
-            if !style.height.is_intrinsic_sizing_constraint() {
+            if !style.height().is_intrinsic_sizing_constraint() {
                 used.has_definite_block_size = true;
             }
             used.inset_top = solution.start;
@@ -2109,10 +2116,10 @@ pub(crate) mod abspos {
                 used.border_right = style.border_right_width;
                 used.border_top = style.border_top_width;
                 used.border_bottom = style.border_bottom_width;
-                used.padding_left = style.padding_left.to_px(containing_block_size.inline_size);
-                used.padding_right = style.padding_right.to_px(containing_block_size.inline_size);
-                used.padding_top = style.padding_top.to_px(containing_block_size.inline_size);
-                used.padding_bottom = style.padding_bottom.to_px(containing_block_size.inline_size);
+                used.padding_left = style.padding_left().to_px(containing_block_size.inline_size);
+                used.padding_right = style.padding_right().to_px(containing_block_size.inline_size);
+                used.padding_top = style.padding_top().to_px(containing_block_size.inline_size);
+                used.padding_bottom = style.padding_bottom().to_px(containing_block_size.inline_size);
             }
 
             self.compute_inline_size(node, available_space, constraints, inputs.static_position_rect);
@@ -2126,23 +2133,23 @@ pub(crate) mod abspos {
 
             {
                 let used = self.used_mut(node);
-                if !style.inset_left.is_auto() && !style.inset_right.is_auto() {
+                if !style.inset_left().is_auto() && !style.inset_right().is_auto() {
                     used.has_definite_inline_size = true;
                 }
-                if !style.inset_top.is_auto()
-                    && !style.inset_bottom.is_auto()
-                    && (style.height.is_auto() || !style.height.is_intrinsic_sizing_constraint())
+                if !style.inset_top().is_auto()
+                    && !style.inset_bottom().is_auto()
+                    && (style.height().is_auto() || !style.height().is_intrinsic_sizing_constraint())
                 {
                     used.has_definite_block_size = true;
                 }
             }
             if !self.facts(node).creates_block_formatting_context {
-                let block_size_resolved_from_aspect_ratio = style.height.is_auto()
+                let block_size_resolved_from_aspect_ratio = style.height().is_auto()
                     && self.facts(node).has_preferred_aspect_ratio
                     && self.used(node).has_definite_inline_size();
                 let used = self.used_mut(node);
                 used.has_definite_inline_size = true;
-                if (!style.height.is_auto() && !style.height.is_intrinsic_sizing_constraint())
+                if (!style.height().is_auto() && !style.height().is_intrinsic_sizing_constraint())
                     || block_size_resolved_from_aspect_ratio
                 {
                     used.has_definite_block_size = true;
@@ -2171,7 +2178,7 @@ pub(crate) mod abspos {
             )
             .is_some();
 
-            if style.height.is_auto() {
+            if style.height().is_auto() {
                 self.compute_block_size(
                     node,
                     available_space,
@@ -2185,8 +2192,8 @@ pub(crate) mod abspos {
                 let used = self.used_mut(node);
                 let collapsed = used.uses_collapsing_borders_model;
                 if inputs.containing_block_info.has_inline_alignment
-                    && style.inset_left.is_auto()
-                    && style.inset_right.is_auto()
+                    && style.inset_left().is_auto()
+                    && style.inset_right().is_auto()
                 {
                     let available = containing_block_size.inline_size - used.margin_box_inline_size(collapsed);
                     match inputs.containing_block_info.inline_alignment {
@@ -2204,8 +2211,8 @@ pub(crate) mod abspos {
                     }
                 }
                 if inputs.containing_block_info.has_block_alignment
-                    && style.inset_top.is_auto()
-                    && style.inset_bottom.is_auto()
+                    && style.inset_top().is_auto()
+                    && style.inset_bottom().is_auto()
                 {
                     let available = containing_block_size.block_size - used.margin_box_block_size(collapsed);
                     match inputs.containing_block_info.block_alignment {
@@ -2347,10 +2354,10 @@ pub(crate) mod abspos {
                 return;
             }
             let initial_style = self.style(node);
-            if initial_style.inset_top.contains_anchor_function
-                || initial_style.inset_right.contains_anchor_function
-                || initial_style.inset_bottom.contains_anchor_function
-                || initial_style.inset_left.contains_anchor_function
+            if initial_style.inset_top().contains_anchor_function
+                || initial_style.inset_right().contains_anchor_function
+                || initial_style.inset_bottom().contains_anchor_function
+                || initial_style.inset_left().contains_anchor_function
             {
                 self.resolve_anchor_insets(node);
             }
@@ -2370,8 +2377,11 @@ pub(crate) mod abspos {
                     (resolved_first, -resolved_first)
                 }
             };
-            let (left, right) =
-                resolve_opposing(style.inset_left, style.inset_right, containing_block_size.inline_size);
+            let (left, right) = resolve_opposing(
+                style.inset_left(),
+                style.inset_right(),
+                containing_block_size.inline_size,
+            );
 
             let treat_percentage_as_auto = |value: FfiSizeValue| {
                 if !value.contains_percentage {
@@ -2392,8 +2402,8 @@ pub(crate) mod abspos {
                 }
             };
             let (top, bottom) = resolve_opposing(
-                treat_percentage_as_auto(style.inset_top),
-                treat_percentage_as_auto(style.inset_bottom),
+                treat_percentage_as_auto(style.inset_top()),
+                treat_percentage_as_auto(style.inset_bottom()),
                 containing_block_size.block_size,
             );
             let used = self.used_mut(node);
@@ -2506,7 +2516,7 @@ pub(crate) mod sizing {
     use crate::ffi_stats::{FfiOp, bump};
     use crate::geometry::{AvailableSize, AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput};
     use crate::layout_state::{LayoutState, LayoutStatePurpose, state_mut};
-    use crate::style_facts::{FfiSizeValue, FfiStyleFacts};
+    use crate::style_facts::{FfiSizeValue, StyleValues};
     use crate::used_values::{FfiSizeConstraint, UsedValuesCore};
     use std::ffi::c_void;
 
@@ -2776,7 +2786,7 @@ pub(crate) mod sizing {
             state_mut(self.state).box_facts(&self.callbacks, node)
         }
 
-        fn style(&self, node: Node) -> FfiStyleFacts {
+        fn style(&self, node: Node) -> StyleValues {
             state_mut(self.state).style_facts(&self.callbacks, node)
         }
 
@@ -2834,7 +2844,7 @@ pub(crate) mod sizing {
             content_block_size_from_aspect_ratio_values(
                 content_inline_size,
                 self.preferred_aspect_ratio(node).unwrap(),
-                style.box_sizing_for_aspect_ratio == BOX_SIZING_BORDER_BOX,
+                style.box_sizing_for_aspect_ratio() == BOX_SIZING_BORDER_BOX,
                 style.border_left_width + used.padding_left,
                 style.border_right_width + used.padding_right,
                 style.border_top_width + used.padding_top,
@@ -2848,7 +2858,7 @@ pub(crate) mod sizing {
             content_inline_size_from_aspect_ratio_values(
                 content_block_size,
                 self.preferred_aspect_ratio(node).unwrap(),
-                style.box_sizing_for_aspect_ratio == BOX_SIZING_BORDER_BOX,
+                style.box_sizing_for_aspect_ratio() == BOX_SIZING_BORDER_BOX,
                 style.border_left_width + used.padding_left,
                 style.border_right_width + used.padding_right,
                 style.border_top_width + used.padding_top,
@@ -2968,8 +2978,8 @@ pub(crate) mod sizing {
                     } else {
                         self.content_block_size_from_aspect_ratio(node, inline_size)
                     })
-                } else if style.min_width.is_length_percentage() && !style.min_width.contains_percentage {
-                    let inline_size = style.min_width.to_px(CssPixels::default());
+                } else if style.min_width().is_length_percentage() && !style.min_width().contains_percentage {
+                    let inline_size = style.min_width().to_px(CssPixels::default());
                     Some(if is_inline_axis {
                         inline_size
                     } else {
@@ -2984,8 +2994,8 @@ pub(crate) mod sizing {
                     } else {
                         block_size
                     })
-                } else if style.min_height.is_length_percentage() && !style.min_height.contains_percentage {
-                    let block_size = style.min_height.to_px(CssPixels::default());
+                } else if style.min_height().is_length_percentage() && !style.min_height().contains_percentage {
+                    let block_size = style.min_height().to_px(CssPixels::default());
                     Some(if is_inline_axis {
                         self.content_inline_size_from_aspect_ratio(node, block_size)
                     } else {
@@ -3017,9 +3027,9 @@ pub(crate) mod sizing {
             // For both the min-content size and max-content size:
             // If the box has a <length> as its computed minimum size (min-width/min-height) in that dimension, use that size.
             let min_size = if is_inline_axis {
-                self.style(node).min_width
+                self.style(node).min_width()
             } else {
-                self.style(node).min_height
+                self.style(node).min_height()
             };
             if min_size.is_length_percentage() && !min_size.contains_percentage {
                 return Some(min_size.to_px(CssPixels::default()));
@@ -3044,7 +3054,7 @@ pub(crate) mod sizing {
             let computed_block_size = if self.should_treat_block_size_as_auto(node, available_space, constraints) {
                 FfiSizeValue::auto_value()
             } else {
-                style.height
+                style.height()
             };
             let used_inline_size = if computed_inline_size.is_auto() {
                 computed_inline_size.to_px(available_space.inline_size.to_px_or_zero())
@@ -3092,7 +3102,7 @@ pub(crate) mod sizing {
                 }
                 match cyclic_percentage_intrinsic_contribution(
                     self.facts(node).is_replaced_box,
-                    style.width.contains_percentage,
+                    style.width().contains_percentage,
                     available_space.inline_size,
                     CyclicPercentageSizeProperty::PreferredOrMaxSize,
                 ) {
@@ -3165,28 +3175,28 @@ pub(crate) mod sizing {
             // 10.4 Minimum and maximum widths: 'min-width' and 'max-width'
             // https://www.w3.org/TR/CSS22/visudet.html#min-max-widths
             let style = self.style(node);
-            let min_inline = if style.min_width.is_auto() {
+            let min_inline = if style.min_width().is_auto() {
                 CssPixels::default()
             } else {
-                self.calculate_inner_inline_size(node, available_space.inline_size, style.min_width, constraints)
+                self.calculate_inner_inline_size(node, available_space.inline_size, style.min_width(), constraints)
             };
             let specified_max_inline =
                 if self.should_treat_max_inline_size_as_none(node, available_space.inline_size, constraints) {
                     input_inline_size
                 } else {
-                    self.calculate_inner_inline_size(node, available_space.inline_size, style.max_width, constraints)
+                    self.calculate_inner_inline_size(node, available_space.inline_size, style.max_width(), constraints)
                 };
             let max_inline = min_inline.max(specified_max_inline);
-            let min_block = if style.min_height.is_auto() {
+            let min_block = if style.min_height().is_auto() {
                 CssPixels::default()
             } else {
-                self.calculate_inner_block_size(node, available_space, style.min_height, constraints)
+                self.calculate_inner_block_size(node, available_space, style.min_height(), constraints)
             };
             let specified_max_block =
                 if self.should_treat_max_block_size_as_none(node, available_space.block_size, constraints) {
                     input_block_size
                 } else {
-                    self.calculate_inner_block_size(node, available_space, style.max_height, constraints)
+                    self.calculate_inner_block_size(node, available_space, style.max_height(), constraints)
                 };
             let max_block = min_block.max(specified_max_block);
 
@@ -3273,12 +3283,12 @@ pub(crate) mod sizing {
             let computed_inline = if self.should_treat_inline_size_as_auto(node, available_space) {
                 FfiSizeValue::auto_value()
             } else {
-                style.width
+                style.width()
             };
             let computed_block = if self.should_treat_block_size_as_auto(node, available_space, constraints) {
                 FfiSizeValue::auto_value()
             } else {
-                style.height
+                style.height()
             };
             // 1. The tentative used width is calculated (without 'min-width' and 'max-width')
             let mut used =
@@ -3294,11 +3304,11 @@ pub(crate) mod sizing {
             //    but this time using the computed value of 'max-width' as the computed value for 'width'.
             if !self.should_treat_max_inline_size_as_none(node, available_space.inline_size, constraints) {
                 let max =
-                    self.calculate_inner_inline_size(node, available_space.inline_size, style.max_width, constraints);
+                    self.calculate_inner_inline_size(node, available_space.inline_size, style.max_width(), constraints);
                 if used > max {
                     used = self.tentative_inline_size_for_replaced_element(
                         node,
-                        style.max_width,
+                        style.max_width(),
                         available_space,
                         constraints,
                     );
@@ -3306,13 +3316,13 @@ pub(crate) mod sizing {
             }
             // 3. If the resulting width is smaller than 'min-width', the rules above are applied again,
             //    but this time using the value of 'min-width' as the computed value for 'width'.
-            if !style.min_width.is_auto() {
+            if !style.min_width().is_auto() {
                 let min =
-                    self.calculate_inner_inline_size(node, available_space.inline_size, style.min_width, constraints);
+                    self.calculate_inner_inline_size(node, available_space.inline_size, style.min_width(), constraints);
                 if used < min {
                     used = self.tentative_inline_size_for_replaced_element(
                         node,
-                        style.min_width,
+                        style.min_width(),
                         available_space,
                         constraints,
                     );
@@ -3335,12 +3345,12 @@ pub(crate) mod sizing {
             let computed_inline = if self.should_treat_inline_size_as_auto(node, available_space) {
                 FfiSizeValue::auto_value()
             } else {
-                style.width
+                style.width()
             };
             let computed_block = if self.should_treat_block_size_as_auto(node, available_space, constraints) {
                 FfiSizeValue::auto_value()
             } else {
-                style.height
+                style.height()
             };
             // 1. The tentative used height is calculated (without 'min-height' and 'max-height')
             let mut used =
@@ -3368,11 +3378,11 @@ pub(crate) mod sizing {
             // 2. If this tentative height is greater than 'max-height', the rules above are applied again,
             //    but this time using the value of 'max-height' as the computed value for 'height'.
             if !self.should_treat_max_block_size_as_none(node, available_space.block_size, constraints) {
-                let max = self.calculate_inner_block_size(node, available_space, style.max_height, constraints);
+                let max = self.calculate_inner_block_size(node, available_space, style.max_height(), constraints);
                 if used > max {
                     used = self.tentative_block_size_for_replaced_element(
                         node,
-                        style.max_height,
+                        style.max_height(),
                         available_space,
                         constraints,
                     );
@@ -3380,12 +3390,12 @@ pub(crate) mod sizing {
             }
             // 3. If the resulting height is smaller than 'min-height', the rules above are applied again,
             //    but this time using the value of 'min-height' as the computed value for 'height'.
-            if !style.min_height.is_auto() {
-                let min = self.calculate_inner_block_size(node, available_space, style.min_height, constraints);
+            if !style.min_height().is_auto() {
+                let min = self.calculate_inner_block_size(node, available_space, style.min_height(), constraints);
                 if used < min {
                     used = self.tentative_block_size_for_replaced_element(
                         node,
-                        style.min_height,
+                        style.min_height(),
                         available_space,
                         constraints,
                     );
@@ -3489,7 +3499,7 @@ pub(crate) mod sizing {
             //       inherited from their own containing block through to their children.
             let (has_quirks_block, quirks_block) = if facts.is_viewport
                 || facts.is_table_cell
-                || !style.height.is_auto()
+                || !style.height().is_auto()
                 || facts.is_absolutely_positioned
                 || !facts.is_block_container
                 || facts.is_table_wrapper
@@ -3514,7 +3524,7 @@ pub(crate) mod sizing {
 
         pub(crate) fn should_treat_inline_size_as_auto(&self, node: Node, available_space: AvailableSpace) -> bool {
             let style = self.style(node);
-            let size = style.width;
+            let size = style.width();
             if size.is_auto() {
                 return true;
             }
@@ -3556,7 +3566,7 @@ pub(crate) mod sizing {
             constraints: FfiContainingBlockConstraints,
         ) -> bool {
             let style = self.style(node);
-            let size = style.height;
+            let size = style.height();
             let facts = self.facts(node);
             if size.is_auto() {
                 if self.used(node).has_definite_inline_size() && facts.has_preferred_aspect_ratio {
@@ -3624,7 +3634,7 @@ pub(crate) mod sizing {
             available: AvailableSize,
             constraints: FfiContainingBlockConstraints,
         ) -> bool {
-            let size = self.style(node).max_width;
+            let size = self.style(node).max_width();
             if size.is_none() || (available.is_max_content() && size.is_max_content()) {
                 return true;
             }
@@ -3659,7 +3669,7 @@ pub(crate) mod sizing {
             // If the height of the containing block is not specified explicitly (i.e., it depends on content height),
             // and this element is not absolutely positioned, the percentage value is treated as '0' (for 'min-height')
             // or 'none' (for 'max-height').
-            let size = self.style(node).max_height;
+            let size = self.style(node).max_height();
             if size.is_none() {
                 return true;
             }
@@ -3757,9 +3767,9 @@ pub(crate) mod sizing {
             // "'width' has a computed value of 'auto', 'height' has some other computed value, and the element does have an intrinsic ratio"
             if !facts.is_replaced_box
                 || !facts.has_preferred_aspect_ratio
-                || !style.width.is_auto()
-                || style.height.is_auto()
-                || style.height.is_intrinsic_sizing_constraint()
+                || !style.width().is_auto()
+                || style.height().is_auto()
+                || style.height().is_intrinsic_sizing_constraint()
             {
                 return None;
             }
@@ -3788,7 +3798,7 @@ pub(crate) mod sizing {
         ) -> CssPixels {
             let facts = self.facts(node);
             let style = self.style(node);
-            if facts.is_replaced_box && (style.width.contains_percentage || style.max_width.contains_percentage) {
+            if facts.is_replaced_box && (style.width().contains_percentage || style.max_width().contains_percentage) {
                 // https://www.w3.org/TR/css-sizing-3/#replaced-percentage-min-contribution
                 // NOTE: If the box is replaced, a cyclic percentage in the value of any max size property or
                 //       preferred size property (width/max-width/height/max-height), is resolved against zero
@@ -3797,7 +3807,7 @@ pub(crate) mod sizing {
                 //        floored by any <length-percentage> minimum size from the opposite axis—resolving any
                 //        such percentage against zero—transferred through the preferred aspect ratio.
                 // Note: The min-content contribution is, as always, also floored by the minimum size in its own axis.
-                if !style.min_width.is_length_percentage() {
+                if !style.min_width().is_length_percentage() {
                     return CssPixels::default();
                 }
                 let mut zero_constraints = constraints;
@@ -3806,7 +3816,7 @@ pub(crate) mod sizing {
                 return self.calculate_inner_inline_size(
                     node,
                     AvailableSize::min_content(),
-                    style.min_width,
+                    style.min_width(),
                     zero_constraints,
                 );
             }
@@ -3965,9 +3975,9 @@ pub(crate) mod sizing {
             };
 
             let definite_minimum_inline_size =
-                resolve_destination_inline_size(style.min_width, CyclicPercentageSizeProperty::MinSize);
+                resolve_destination_inline_size(style.min_width(), CyclicPercentageSizeProperty::MinSize);
             let definite_minimum_block_size =
-                resolve_block_size(style.min_height, CyclicPercentageSizeProperty::MinSize);
+                resolve_block_size(style.min_height(), CyclicPercentageSizeProperty::MinSize);
             let replaced_constraints = ReplacedMaxContentSizeConstraints {
                 definite_size_in_ratio_determining_axis: definite_block_size,
                 minimum_inline_size: definite_minimum_inline_size,
@@ -3982,7 +3992,7 @@ pub(crate) mod sizing {
                 if definite_block_size.is_none()
                     && facts.has_preferred_aspect_ratio
                     && let Some(definite_maximum_block_size) =
-                        resolve_block_size(style.max_height, CyclicPercentageSizeProperty::PreferredOrMaxSize)
+                        resolve_block_size(style.max_height(), CyclicPercentageSizeProperty::PreferredOrMaxSize)
                 {
                     // https://drafts.csswg.org/css-sizing-4/#aspect-ratio-size-transfers
                     // First, any definite minimum size is converted and transferred from the origin to destination axis.
@@ -3991,13 +4001,13 @@ pub(crate) mod sizing {
                         .map(|value| self.content_inline_size_from_aspect_ratio(node, value));
                     if let Some(value) = transferred_minimum {
                         transferred_minimum = resolve_destination_inline_size(
-                            style.width,
+                            style.width(),
                             CyclicPercentageSizeProperty::PreferredOrMaxSize,
                         )
                         .map_or(Some(value), |resolved| Some(value.min(resolved)));
                         let value = transferred_minimum.unwrap();
                         transferred_minimum = resolve_destination_inline_size(
-                            style.max_width,
+                            style.max_width(),
                             CyclicPercentageSizeProperty::PreferredOrMaxSize,
                         )
                         .map_or(Some(value), |resolved| Some(value.min(resolved)));
@@ -4009,12 +4019,12 @@ pub(crate) mod sizing {
                     let mut transferred_maximum =
                         self.content_inline_size_from_aspect_ratio(node, definite_maximum_block_size);
                     if let Some(resolved) =
-                        resolve_destination_inline_size(style.width, CyclicPercentageSizeProperty::PreferredOrMaxSize)
+                        resolve_destination_inline_size(style.width(), CyclicPercentageSizeProperty::PreferredOrMaxSize)
                     {
                         transferred_maximum = transferred_maximum.max(resolved);
                     }
                     if let Some(resolved) =
-                        resolve_destination_inline_size(style.min_width, CyclicPercentageSizeProperty::MinSize)
+                        resolve_destination_inline_size(style.min_width(), CyclicPercentageSizeProperty::MinSize)
                     {
                         transferred_maximum = transferred_maximum.max(resolved);
                     }
@@ -4209,7 +4219,7 @@ pub(crate) mod sizing {
             }
             // With auto height and no min-height the content box already exactly wraps the content, so there is
             // no extra space to center within and no need to force a definite content box.
-            if style.height.is_auto() && style.min_height.is_auto() {
+            if style.height().is_auto() && style.min_height().is_auto() {
                 return;
             }
             if self.used(node).has_definite_block_size() {
@@ -4227,23 +4237,23 @@ pub(crate) mod sizing {
             let mut used_block_size = if self.should_treat_block_size_as_auto(node, available_space, constraints) {
                 natural
             } else {
-                self.calculate_inner_block_size(node, available_space, style.height, constraints)
+                self.calculate_inner_block_size(node, available_space, style.height(), constraints)
             };
             if !self.should_treat_max_block_size_as_none(node, available_space.block_size, constraints)
-                && !style.max_height.is_auto()
+                && !style.max_height().is_auto()
             {
                 used_block_size = used_block_size.min(self.calculate_inner_block_size(
                     node,
                     available_space,
-                    style.max_height,
+                    style.max_height(),
                     constraints,
                 ));
             }
-            if !style.min_height.is_auto() {
+            if !style.min_height().is_auto() {
                 used_block_size = used_block_size.max(self.calculate_inner_block_size(
                     node,
                     available_space,
-                    style.min_height,
+                    style.min_height(),
                     constraints,
                 ));
             }
@@ -4307,8 +4317,8 @@ pub(crate) mod sizing {
                 .unwrap_or_else(|| available_space.inline_size.to_px_or_zero());
 
             // If 'margin-left', or 'margin-right' are computed as 'auto', their used value is '0'.
-            let margin_left = style.margin_left.to_px(containing_block_inline_size);
-            let margin_right = style.margin_right.to_px(containing_block_inline_size);
+            let margin_left = style.margin_left().to_px(containing_block_inline_size);
+            let margin_right = style.margin_right().to_px(containing_block_inline_size);
 
             // table-wrapper can't have borders or paddings but it might have margin taken from table-root.
             let available_inline_size = containing_block_inline_size - margin_left - margin_right;
@@ -4326,8 +4336,8 @@ pub(crate) mod sizing {
             unsafe {
                 (*table_used).border_left = table_style.border_left_width;
                 (*table_used).border_right = table_style.border_right_width;
-                (*table_used).padding_left = table_style.padding_left.to_px(containing_block_inline_size);
-                (*table_used).padding_right = table_style.padding_right.to_px(containing_block_inline_size);
+                (*table_used).padding_left = table_style.padding_left().to_px(containing_block_inline_size);
+                (*table_used).padding_right = table_style.padding_right().to_px(containing_block_inline_size);
             }
 
             let mut context = super::create_formatting_context(
@@ -4357,7 +4367,7 @@ pub(crate) mod sizing {
             // SAFETY: The table entry remains live for the measurement host's lifetime.
             let table_used_inline_size = unsafe { (*table_used).border_box_inline_size(false) };
             if table_wrapper_inline_size_mode == TableWrapperInlineSizeMode::UseTableUsedInlineSizeIfNotAuto
-                && !table_style.width.is_auto()
+                && !table_style.width().is_auto()
             {
                 return table_used_inline_size;
             }
@@ -4383,8 +4393,8 @@ pub(crate) mod sizing {
             let containing_block_block_size = available_space.block_size.to_px_or_zero();
 
             // If 'margin-top', or 'margin-bottom' are computed as 'auto', their used value is '0'.
-            let margin_top = style.margin_top.to_px(containing_block_inline_size);
-            let margin_bottom = style.margin_bottom.to_px(containing_block_inline_size);
+            let margin_top = style.margin_top().to_px(containing_block_inline_size);
+            let margin_bottom = style.margin_bottom().to_px(containing_block_inline_size);
 
             // table-wrapper can't have borders or paddings but it might have margin taken from table-root.
             let available_block_size = containing_block_block_size - margin_top - margin_bottom;
@@ -4606,13 +4616,13 @@ pub(crate) mod sizing {
         ) -> CssPixels {
             let style = self.style(node);
             let size = match property {
-                FfiFlexSizeProperty::Width => style.width,
-                FfiFlexSizeProperty::Height => style.height,
-                FfiFlexSizeProperty::MinWidth => style.min_width,
-                FfiFlexSizeProperty::MinHeight => style.min_height,
-                FfiFlexSizeProperty::MaxWidth => style.max_width,
-                FfiFlexSizeProperty::MaxHeight => style.max_height,
-                FfiFlexSizeProperty::FlexBasis => style.flex_basis,
+                FfiFlexSizeProperty::Width => style.width(),
+                FfiFlexSizeProperty::Height => style.height(),
+                FfiFlexSizeProperty::MinWidth => style.min_width(),
+                FfiFlexSizeProperty::MinHeight => style.min_height(),
+                FfiFlexSizeProperty::MaxWidth => style.max_width(),
+                FfiFlexSizeProperty::MaxHeight => style.max_height(),
+                FfiFlexSizeProperty::FlexBasis => style.flex_basis(),
             };
             match axis {
                 FfiFlexAxis::Inline => {
@@ -4628,7 +4638,7 @@ pub(crate) mod sizing {
             available: AvailableSize,
             constraints: FfiContainingBlockConstraints,
         ) -> CssPixels {
-            self.calculate_inner_inline_size(node, available, self.style(node).width, constraints)
+            self.calculate_inner_inline_size(node, available, self.style(node).width(), constraints)
         }
 
         pub(crate) fn should_treat_size_as_auto(
@@ -4722,8 +4732,8 @@ pub(crate) fn box_baseline(
     let collapsed = used.uses_collapsing_borders_model;
 
     // https://drafts.csswg.org/css2/#propdef-vertical-align
-    if facts.vertical_align_applies && style.vertical_align_is_keyword {
-        match style.vertical_align_keyword {
+    if facts.vertical_align_applies && style.vertical_align_is_keyword() {
+        match style.vertical_align_keyword() {
             crate::css_enums::vertical_align::TOP => {
                 // Top: Align the top of the aligned subtree with the top of the line box.
                 return used.border_box_top(collapsed);
@@ -4734,7 +4744,7 @@ pub(crate) fn box_baseline(
                 assert!(!containing_block.is_null());
                 let containing_style = state_mut(state).style_facts(callbacks, containing_block);
                 return used.margin_box_block_size(collapsed) / 2
-                    + CssPixels::nearest_value_for_f32(containing_style.font_x_height / 2.0);
+                    + CssPixels::nearest_value_for_f32(containing_style.font_x_height() / 2.0);
             }
             crate::css_enums::vertical_align::BOTTOM => {
                 // Bottom: Align the bottom of the aligned subtree with the bottom of the line box.
@@ -4750,7 +4760,7 @@ pub(crate) fn box_baseline(
                 assert!(!containing_block.is_null());
                 let containing_style = state_mut(state).style_facts(callbacks, containing_block);
                 return used.margin_box_block_size(collapsed)
-                    - CssPixels::nearest_value_for_f32(containing_style.font_descent);
+                    - CssPixels::nearest_value_for_f32(containing_style.font_descent());
             }
             _ => {}
         }
@@ -5102,7 +5112,6 @@ pub struct FfiFlexLayoutData {
     pub line_count: usize,
 }
 
-pub type FfiBuildStyleFactsCallback = unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiStyleFacts;
 pub type FfiBuildBoxFactsCallback = unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiLayoutBoxFacts;
 pub type FfiBuildTableBoxFactsCallback = unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiTableBoxFacts;
 
@@ -5118,7 +5127,7 @@ pub struct FfiLayoutFcCallbacks {
     pub dom_node_is_inclusive_ancestor: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool,
     pub is_table_cell: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
     pub needs_inset_resolution: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
-    pub build_style_facts: FfiBuildStyleFactsCallback,
+    pub decode_style_field: crate::style_facts::FfiDecodeStyleFieldCallback,
     pub build_box_facts: FfiBuildBoxFactsCallback,
     pub build_text_facts: unsafe extern "C" fn(
         *mut c_void,

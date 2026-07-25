@@ -21,7 +21,7 @@ use crate::geometry::{
     LogicalSize,
 };
 use crate::layout_state::{FfiStaticPositionAlignment, FfiStaticPositionRect, state_mut};
-use crate::style_facts::FfiStyleFacts;
+use crate::style_facts::StyleValues;
 use crate::used_values::{FfiCssPixelPoint, FfiSizeConstraint, UsedValuesCore};
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -258,7 +258,7 @@ impl BlockFormattingContext {
         state_mut(self.state).box_facts(&self.callbacks, node)
     }
 
-    fn style(&self, node: Node) -> FfiStyleFacts {
+    fn style(&self, node: Node) -> StyleValues {
         state_mut(self.state).style_facts(&self.callbacks, node)
     }
 
@@ -394,12 +394,12 @@ impl BlockFormattingContext {
     fn resolve_vertical_box_model_metrics(&self, node: Node, containing_block_inline_size: CssPixels) {
         let style = self.style(node);
         let used = self.used_mut(node);
-        used.margin_top = style.margin_top.to_px(containing_block_inline_size);
-        used.margin_bottom = style.margin_bottom.to_px(containing_block_inline_size);
+        used.margin_top = style.margin_top().to_px(containing_block_inline_size);
+        used.margin_bottom = style.margin_bottom().to_px(containing_block_inline_size);
         used.border_top = style.border_top_width;
         used.border_bottom = style.border_bottom_width;
-        used.padding_top = style.padding_top.to_px(containing_block_inline_size);
-        used.padding_bottom = style.padding_bottom.to_px(containing_block_inline_size);
+        used.padding_top = style.padding_top().to_px(containing_block_inline_size);
+        used.padding_bottom = style.padding_bottom().to_px(containing_block_inline_size);
     }
 
     fn box_should_avoid_floats_because_it_establishes_fc(&self, node: Node) -> bool {
@@ -455,8 +455,8 @@ impl BlockFormattingContext {
                 // Negative margins do not create additional space next to a float. Reduce the space available for
                 // resolving an automatic inline size by any negative margins, so that the resulting border box is no
                 // larger than the space next to the float in the inline axis.
-                let margin_left = style.margin_left.to_px(available_inline_size);
-                let margin_right = style.margin_right.to_px(available_inline_size);
+                let margin_left = style.margin_left().to_px(available_inline_size);
+                let margin_right = style.margin_right().to_px(available_inline_size);
                 let negative_margin_sum =
                     margin_left.min(CssPixels::default()) + margin_right.min(CssPixels::default());
                 remaining_inline_size = (remaining_inline_size + negative_margin_sum).max(CssPixels::default());
@@ -487,12 +487,12 @@ impl BlockFormattingContext {
         }
 
         let available_inline_size = available_space.inline_size.to_px_or_zero();
-        let mut margin_left_is_auto = style.margin_left.is_auto();
-        let mut margin_right_is_auto = style.margin_right.is_auto();
-        let mut margin_left = style.margin_left.to_px(available_inline_size);
-        let mut margin_right = style.margin_right.to_px(available_inline_size);
-        let padding_left = style.padding_left.to_px(available_inline_size);
-        let padding_right = style.padding_right.to_px(available_inline_size);
+        let mut margin_left_is_auto = style.margin_left().is_auto();
+        let mut margin_right_is_auto = style.margin_right().is_auto();
+        let mut margin_left = style.margin_left().to_px(available_inline_size);
+        let mut margin_right = style.margin_right().to_px(available_inline_size);
+        let padding_left = style.padding_left().to_px(available_inline_size);
+        let padding_right = style.padding_right().to_px(available_inline_size);
         {
             let used = self.used_mut(node);
             used.margin_left = margin_left;
@@ -517,10 +517,10 @@ impl BlockFormattingContext {
                        margin_left_is_auto: &mut bool,
                        margin_right_is_auto: &mut bool|
          -> Option<CssPixels> {
-            *margin_left = style.margin_left.to_px(available_inline_size);
-            *margin_right = style.margin_right.to_px(available_inline_size);
-            *margin_left_is_auto = style.margin_left.is_auto();
-            *margin_right_is_auto = style.margin_right.is_auto();
+            *margin_left = style.margin_left().to_px(available_inline_size);
+            *margin_right = style.margin_right().to_px(available_inline_size);
+            *margin_left_is_auto = style.margin_left().is_auto();
+            *margin_right_is_auto = style.margin_right().is_auto();
             let mut inline_size = input;
             let mut total = style.border_left_width
                 + style.border_right_width
@@ -612,14 +612,14 @@ impl BlockFormattingContext {
                 None,
                 super::sizing::TableWrapperInlineSizeMode::ClampToAvailableInlineSize,
             ))
-        } else if facts.uses_button_layout && style.width.is_auto() {
+        } else if facts.uses_button_layout && style.width().is_auto() {
             // https://html.spec.whatwg.org/multipage/rendering.html#button-layout
             // If the computed value of 'inline-size' is 'auto', then the used value is the fit-content inline size.
             Some(sizing.calculate_fit_content_size(node, super::FfiFlexAxis::Inline, available_space, constraints))
         } else if sizing.should_treat_inline_size_as_auto(node, available_space) {
             None
         } else {
-            Some(sizing.calculate_inner_inline_size(node, available_space.inline_size, style.width, constraints))
+            Some(sizing.calculate_inner_inline_size(node, available_space.inline_size, style.width(), constraints))
         };
 
         // 1. The tentative used width is calculated (without 'min-width' and 'max-width')
@@ -635,7 +635,7 @@ impl BlockFormattingContext {
         //    but this time using the computed value of 'max-width' as the computed value for 'width'.
         if !sizing.should_treat_max_inline_size_as_none(node, available_space.inline_size, constraints) {
             let max_inline_size =
-                sizing.calculate_inner_inline_size(node, available_space.inline_size, style.max_width, constraints);
+                sizing.calculate_inner_inline_size(node, available_space.inline_size, style.max_width(), constraints);
             if used_inline_size.unwrap_or_default() > max_inline_size {
                 used_inline_size = compute(
                     Some(max_inline_size),
@@ -649,11 +649,11 @@ impl BlockFormattingContext {
 
         // 3. If the resulting width is smaller than 'min-width', the rules above are applied again,
         //    but this time using the value of 'min-width' as the computed value for 'width'.
-        if !style.min_width.is_auto()
+        if !style.min_width().is_auto()
             && let Some(value) = used_inline_size
         {
             let min_inline_size =
-                sizing.calculate_inner_inline_size(node, available_space.inline_size, style.min_width, constraints);
+                sizing.calculate_inner_inline_size(node, available_space.inline_size, style.min_width(), constraints);
             if value < min_inline_size {
                 used_inline_size = compute(
                     Some(min_inline_size),
@@ -684,12 +684,12 @@ impl BlockFormattingContext {
         let containing_block_inline_size = available_space.inline_size.to_px_or_zero();
 
         // If 'margin-left', or 'margin-right' are computed as 'auto', their used value is '0'.
-        let margin_left = style.margin_left.to_px(containing_block_inline_size);
-        let margin_right = style.margin_right.to_px(containing_block_inline_size);
+        let margin_left = style.margin_left().to_px(containing_block_inline_size);
+        let margin_right = style.margin_right().to_px(containing_block_inline_size);
         {
             let used = self.used_mut(node);
-            used.padding_left = style.padding_left.to_px(containing_block_inline_size);
-            used.padding_right = style.padding_right.to_px(containing_block_inline_size);
+            used.padding_left = style.padding_left().to_px(containing_block_inline_size);
+            used.padding_right = style.padding_right().to_px(containing_block_inline_size);
             used.margin_left = margin_left;
             used.margin_right = margin_right;
             used.border_left = style.border_left_width;
@@ -736,7 +736,7 @@ impl BlockFormattingContext {
         let input = if sizing.should_treat_inline_size_as_auto(node, available_space) {
             None
         } else {
-            Some(sizing.calculate_inner_inline_size(node, available_space.inline_size, style.width, constraints))
+            Some(sizing.calculate_inner_inline_size(node, available_space.inline_size, style.width(), constraints))
         };
         // 1. The tentative used width is calculated (without 'min-width' and 'max-width')
         let mut inline_size = compute(input);
@@ -744,16 +744,16 @@ impl BlockFormattingContext {
         //    but this time using the computed value of 'max-width' as the computed value for 'width'.
         if !sizing.should_treat_max_inline_size_as_none(node, available_space.inline_size, constraints) {
             let maximum =
-                sizing.calculate_inner_inline_size(node, available_space.inline_size, style.max_width, constraints);
+                sizing.calculate_inner_inline_size(node, available_space.inline_size, style.max_width(), constraints);
             if inline_size > maximum {
                 inline_size = compute(Some(maximum));
             }
         }
         // 3. If the resulting width is smaller than 'min-width', the rules above are applied again,
         //    but this time using the value of 'min-width' as the computed value for 'width'.
-        if !style.min_width.is_auto() {
+        if !style.min_width().is_auto() {
             let minimum =
-                sizing.calculate_inner_inline_size(node, available_space.inline_size, style.min_width, constraints);
+                sizing.calculate_inner_inline_size(node, available_space.inline_size, style.min_width(), constraints);
             if inline_size < minimum {
                 inline_size = compute(Some(minimum));
             }
@@ -775,12 +775,12 @@ impl BlockFormattingContext {
         // non-replaced block-level elements are applied to determine the margins.
         // If 'margin-left', or 'margin-right' are computed as 'auto', their used value is '0'.
         let used = self.used_mut(node);
-        used.margin_left = style.margin_left.to_px(containing_block_inline_size);
-        used.margin_right = style.margin_right.to_px(containing_block_inline_size);
+        used.margin_left = style.margin_left().to_px(containing_block_inline_size);
+        used.margin_right = style.margin_right().to_px(containing_block_inline_size);
         used.border_left = style.border_left_width;
         used.border_right = style.border_right_width;
-        used.padding_left = style.padding_left.to_px(containing_block_inline_size);
-        used.padding_right = style.padding_right.to_px(containing_block_inline_size);
+        used.padding_left = style.padding_left().to_px(containing_block_inline_size);
+        used.padding_right = style.padding_right().to_px(containing_block_inline_size);
         let inline_size = self
             .sizing()
             .compute_inline_size_for_replaced_element(node, available_space, constraints);
@@ -798,23 +798,31 @@ impl BlockFormattingContext {
             return;
         }
         let style = self.style(node);
-        let mut block_size = sizing.calculate_inner_block_size(node, available_space, style.height, constraints);
+        let mut block_size = sizing.calculate_inner_block_size(node, available_space, style.height(), constraints);
         if !sizing.should_treat_max_block_size_as_none(node, available_space.block_size, constraints)
-            && !style.max_height.is_auto()
+            && !style.max_height().is_auto()
         {
-            block_size =
-                block_size.min(sizing.calculate_inner_block_size(node, available_space, style.max_height, constraints));
+            block_size = block_size.min(sizing.calculate_inner_block_size(
+                node,
+                available_space,
+                style.max_height(),
+                constraints,
+            ));
         }
-        if !style.min_height.is_auto() {
-            block_size =
-                block_size.max(sizing.calculate_inner_block_size(node, available_space, style.min_height, constraints));
+        if !style.min_height().is_auto() {
+            block_size = block_size.max(sizing.calculate_inner_block_size(
+                node,
+                available_space,
+                style.min_height(),
+                constraints,
+            ));
         }
         let used = self.used_mut(node);
         used.set_content_block_size(block_size);
         // A resolved used block size is not always a definite containing block size.
         // Intrinsic sizing keywords like fit-content still depend on child layout,
         // so percentage-sized descendants must continue to treat it as indefinite.
-        if !style.height.is_intrinsic_sizing_constraint() {
+        if !style.height().is_intrinsic_sizing_constraint() {
             used.has_definite_block_size = true;
         }
     }
@@ -845,17 +853,25 @@ impl BlockFormattingContext {
             })
         };
         if !sizing.should_treat_max_block_size_as_none(node, available_space.block_size, constraints)
-            && !style.max_height.is_auto()
+            && !style.max_height().is_auto()
         {
-            block_size =
-                block_size.min(sizing.calculate_inner_block_size(node, available_space, style.max_height, constraints));
+            block_size = block_size.min(sizing.calculate_inner_block_size(
+                node,
+                available_space,
+                style.max_height(),
+                constraints,
+            ));
         }
-        if !style.min_height.is_auto() {
-            block_size =
-                block_size.max(sizing.calculate_inner_block_size(node, available_space, style.min_height, constraints));
+        if !style.min_height().is_auto() {
+            block_size = block_size.max(sizing.calculate_inner_block_size(
+                node,
+                available_space,
+                style.min_height(),
+                constraints,
+            ));
         }
 
-        if facts.document_in_quirks_mode && facts.is_html_html_element && style.height.is_auto() {
+        if facts.document_in_quirks_mode && facts.is_html_html_element && style.height().is_auto() {
             // 3.6. The html element fills the viewport quirk
             // https://quirks.spec.whatwg.org/#the-html-element-fills-the-viewport-quirk
             // FIXME: Handle vertical writing mode.
@@ -878,7 +894,7 @@ impl BlockFormattingContext {
             self.used_mut(node).has_definite_block_size = true;
         }
 
-        if facts.document_in_quirks_mode && facts.is_html_body_element && style.height.is_auto() {
+        if facts.document_in_quirks_mode && facts.is_html_body_element && style.height().is_auto() {
             // 3.7. The body element fills the html element quirk
             // https://quirks.spec.whatwg.org/#the-body-element-fills-the-html-element-quirk
             // FIXME: Handle vertical writing mode.
@@ -1198,7 +1214,7 @@ impl BlockFormattingContext {
         used: &UsedValuesCore,
         space_used_by_floats: FfiSpaceUsedByFloats,
     ) -> CssPixels {
-        if self.style(node).margin_left.is_auto() {
+        if self.style(node).margin_left().is_auto() {
             return space_used_by_floats.left + used.margin_left;
         }
         if used.margin_left >= CssPixels::default() {
@@ -1645,7 +1661,7 @@ impl BlockFormattingContext {
 
         let style = self.style(node);
         let box_is_html_element_in_quirks_mode =
-            facts.document_in_quirks_mode && facts.is_html_html_element && style.height.is_auto();
+            facts.document_in_quirks_mode && facts.is_html_html_element && style.height().is_auto();
 
         // NOTE: In quirks mode, the html element's block size matches the viewport so it can be treated as definite.
         if self.used(node).has_definite_block_size() || box_is_html_element_in_quirks_mode {
@@ -1758,7 +1774,7 @@ impl BlockFormattingContext {
             || facts.is_table_caption;
         // https://quirks.spec.whatwg.org/#the-percentage-height-calculation-quirk
         if facts.document_in_quirks_mode
-            && style.height.is_percentage()
+            && style.height().is_percentage()
             && !is_table_box
             && !facts.is_in_user_agent_shadow_tree
         {
@@ -1825,7 +1841,7 @@ impl BlockFormattingContext {
             let mut measured_content_block_size = None;
             let sizing = self.sizing();
             if sizing.should_treat_block_size_as_auto(node, available_space, input.containing_block_constraints)
-                && !style.min_height.is_auto()
+                && !style.min_height().is_auto()
             {
                 let content_block_size = sizing.measure_automatic_content_block_size(
                     node,
@@ -1837,7 +1853,7 @@ impl BlockFormattingContext {
                 let min_block_size = sizing.calculate_inner_block_size(
                     node,
                     available_space,
-                    style.min_height,
+                    style.min_height(),
                     input.containing_block_constraints,
                 );
                 if content_block_size < min_block_size {
@@ -2041,15 +2057,15 @@ impl BlockFormattingContext {
                     inline_size = inline_size.min(sizing.calculate_inner_inline_size(
                         block_container,
                         available_space.inline_size,
-                        style.max_width,
+                        style.max_width(),
                         input.containing_block_constraints,
                     ));
                 }
-                if !style.min_width.is_auto() {
+                if !style.min_width().is_auto() {
                     inline_size = inline_size.max(sizing.calculate_inner_inline_size(
                         block_container,
                         available_space.inline_size,
-                        style.min_width,
+                        style.min_width(),
                         input.containing_block_constraints,
                     ));
                 }
@@ -2079,7 +2095,7 @@ impl BlockFormattingContext {
         }
 
         // If the computed value of 'inline-size' is 'auto', then the used value is the fit-content inline size.
-        if self.style(legend).width.is_auto() {
+        if self.style(legend).width().is_auto() {
             let inline_size = self.sizing().calculate_fit_content_size(
                 legend,
                 FfiFlexAxis::Inline,
@@ -2124,15 +2140,15 @@ impl BlockFormattingContext {
                     inline_size = inline_size.min(sizing.calculate_inner_inline_size(
                         fieldset,
                         available_space.inline_size,
-                        style.max_width,
+                        style.max_width(),
                         input.containing_block_constraints,
                     ));
                 }
-                if !style.min_width.is_auto() {
+                if !style.min_width().is_auto() {
                     inline_size = inline_size.max(sizing.calculate_inner_inline_size(
                         fieldset,
                         available_space.inline_size,
-                        style.min_width,
+                        style.min_width(),
                         input.containing_block_constraints,
                     ));
                 }
@@ -2174,22 +2190,22 @@ impl BlockFormattingContext {
     fn determine_used_value_for_column_count(&self, used_inline_size: CssPixels) -> Option<i32> {
         let style = self.style(self.root);
         // (01) if ((column-width = auto) and (column-count = auto)) then
-        if style.column_width.is_auto() && !style.has_column_count {
+        if style.column_width().is_auto() && !style.has_column_count() {
             // (02) exit; /* not a multicol container */
             return None;
         }
         // (03) if column-width = auto then
-        if style.column_width.is_auto() {
+        if style.column_width().is_auto() {
             // (04) N := column-count
-            return Some(style.column_count);
+            return Some(style.column_count());
         }
-        let column_gap = if style.column_gap.is_auto() {
+        let column_gap = if style.column_gap().is_auto() {
             style.font_size
         } else {
-            style.column_gap.to_px(used_inline_size)
+            style.column_gap().to_px(used_inline_size)
         };
         let column_width = style
-            .column_width
+            .column_width()
             .to_px(used_inline_size)
             .max(CssPixels::from_integer(1));
         let denominator = column_width + column_gap;
@@ -2198,8 +2214,8 @@ impl BlockFormattingContext {
         } else {
             1
         };
-        if style.has_column_count {
-            Some(style.column_count.min(available_count))
+        if style.has_column_count() {
+            Some(style.column_count().min(available_count))
         } else {
             Some(available_count)
         }
@@ -2211,10 +2227,10 @@ impl BlockFormattingContext {
         let root_inline_size = self.used(self.root).content_inline_size;
         if let Some(column_count) = self.determine_used_value_for_column_count(root_inline_size) {
             let style = self.style(self.root);
-            let column_gap = if style.column_gap.is_auto() {
+            let column_gap = if style.column_gap().is_auto() {
                 style.font_size
             } else {
-                style.column_gap.to_px(root_inline_size)
+                style.column_gap().to_px(root_inline_size)
             };
             // FIXME: Do multi-column layout.
             let _column_width =
@@ -2352,7 +2368,7 @@ impl BlockFormattingContext {
                     .sizing()
                     .should_treat_block_size_as_auto(caption, available_space, constraints)
                 {
-                    let content_block_size = if self.style(caption).containment_bits & 1 != 0 {
+                    let content_block_size = if self.style(caption).containment_bits() & 1 != 0 {
                         CssPixels::default()
                     } else {
                         child_result.automatic_content_block_size
@@ -2665,23 +2681,25 @@ impl BlockFormattingContext {
                     let maximum = sizing.calculate_inner_inline_size(
                         block_container,
                         available_inline_size,
-                        style.max_width,
+                        style.max_width(),
                         input.containing_block_constraints,
                     );
                     used_inline_size = used_inline_size.min(maximum);
                 }
-                let min_is_auto = style.min_width.is_auto()
-                    || (style.min_width.is_fit_content()
+                let min_is_auto = style.min_width().is_auto()
+                    || (style.min_width().is_fit_content()
                         && available_space_for_children
                             .inline_size
                             .is_intrinsic_sizing_constraint())
-                    || (style.min_width.is_max_content() && available_space_for_children.inline_size.is_max_content())
-                    || (style.min_width.is_min_content() && available_space_for_children.inline_size.is_min_content());
+                    || (style.min_width().is_max_content()
+                        && available_space_for_children.inline_size.is_max_content())
+                    || (style.min_width().is_min_content()
+                        && available_space_for_children.inline_size.is_min_content());
                 if !min_is_auto {
                     let minimum = sizing.calculate_inner_inline_size(
                         block_container,
                         available_inline_size,
-                        style.min_width,
+                        style.min_width(),
                         input.containing_block_constraints,
                     );
                     used_inline_size = used_inline_size.max(minimum);

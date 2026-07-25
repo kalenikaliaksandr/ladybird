@@ -9,7 +9,7 @@ use crate::box_facts::FfiLayoutBoxFacts;
 use crate::css_pixels::CssPixels;
 use crate::geometry::{AvailableSpace, FfiContainingBlockConstraints, FfiLayoutInput};
 use crate::layout_state::{FfiStaticPositionAlignment, FfiStaticPositionRect, LineData, state_mut};
-use crate::style_facts::FfiStyleFacts;
+use crate::style_facts::StyleValues;
 use crate::used_values::{FfiCssPixelPoint, UsedValuesCore};
 use crate::{
     ffi_stats::FfiOp,
@@ -637,7 +637,7 @@ impl InlineFormattingContext {
         self.block_axis_float_clearance.set(clearance);
     }
 
-    pub(crate) fn style(&self, node: Node) -> FfiStyleFacts {
+    pub(crate) fn style(&self, node: Node) -> StyleValues {
         state_mut(self.state).style_facts(&self.callbacks, node)
     }
 
@@ -868,18 +868,18 @@ impl InlineFormattingContext {
         let style = self.style(node);
         {
             let used = self.used_mut(node);
-            used.margin_left = style.margin_left.to_px(containing_inline_size);
+            used.margin_left = style.margin_left().to_px(containing_inline_size);
             used.border_left = style.border_left_width;
-            used.padding_left = style.padding_left.to_px(containing_inline_size);
-            used.margin_right = style.margin_right.to_px(containing_inline_size);
+            used.padding_left = style.padding_left().to_px(containing_inline_size);
+            used.margin_right = style.margin_right().to_px(containing_inline_size);
             used.border_right = style.border_right_width;
-            used.padding_right = style.padding_right.to_px(containing_inline_size);
-            used.margin_top = style.margin_top.to_px(containing_inline_size);
+            used.padding_right = style.padding_right().to_px(containing_inline_size);
+            used.margin_top = style.margin_top().to_px(containing_inline_size);
             used.border_top = style.border_top_width;
-            used.padding_top = style.padding_top.to_px(containing_inline_size);
-            used.padding_bottom = style.padding_bottom.to_px(containing_inline_size);
+            used.padding_top = style.padding_top().to_px(containing_inline_size);
+            used.padding_bottom = style.padding_bottom().to_px(containing_inline_size);
             used.border_bottom = style.border_bottom_width;
-            used.margin_bottom = style.margin_bottom.to_px(containing_inline_size);
+            used.margin_bottom = style.margin_bottom().to_px(containing_inline_size);
         }
 
         let facts = self.facts(node);
@@ -905,7 +905,7 @@ impl InlineFormattingContext {
             let block_size = sizing.compute_block_size_for_replaced_element(node, available_space, constraints);
             self.used_mut(node).set_content_block_size(block_size);
             let block_size_is_automatic =
-                style.height.is_auto() || sizing.should_treat_block_size_as_auto(node, available_space, constraints);
+                style.height().is_auto() || sizing.should_treat_block_size_as_auto(node, available_space, constraints);
             if self.used(node).has_definite_inline_size() && facts.has_preferred_aspect_ratio && block_size_is_automatic
             {
                 self.used_mut(node).has_definite_block_size = true;
@@ -947,10 +947,10 @@ impl InlineFormattingContext {
             } else {
                 sizing.calculate_max_content_inline_size(node, constraints)
             }
-        } else if style.width.contains_percentage && !available_space.inline_size.is_definite() {
+        } else if style.width().contains_percentage && !available_space.inline_size.is_definite() {
             CssPixels::default()
         } else {
-            sizing.calculate_inner_inline_size(node, available_space.inline_size, style.width, constraints)
+            sizing.calculate_inner_inline_size(node, available_space.inline_size, style.width(), constraints)
         };
 
         let mut inline_size = unconstrained_inline_size;
@@ -958,15 +958,15 @@ impl InlineFormattingContext {
             inline_size = inline_size.min(sizing.calculate_inner_inline_size(
                 node,
                 available_space.inline_size,
-                style.max_width,
+                style.max_width(),
                 constraints,
             ));
         }
-        if !style.min_width.is_auto() {
+        if !style.min_width().is_auto() {
             inline_size = inline_size.max(sizing.calculate_inner_inline_size(
                 node,
                 available_space.inline_size,
-                style.min_width,
+                style.min_width(),
                 constraints,
             ));
         }
