@@ -601,8 +601,10 @@ NodeWithStyle::NodeWithStyle(DOM::Document& document, DOM::Node* node, NonnullRe
     , m_computed_values(move(computed_values))
 {
     node_data().layout_index = document.allocate_layout_node_index();
+    node_data().style = m_computed_values.ptr();
     set_flag(RustFFI::NodeFlag::HasStyle, true);
     set_flag(RustFFI::NodeFlag::IsBody, node && node == document.body());
+    VERIFY(node_data().style);
 }
 
 NodeWithStyle::ImageObserver::ImageObserver(NodeWithStyle& owner, NonnullRefPtr<CSS::ImageStyleValue const> image)
@@ -675,7 +677,7 @@ namespace Web::Layout {
 
 void NodeWithStyle::apply_style(NonnullRefPtr<CSS::ComputedValues const> computed_values)
 {
-    m_computed_values = move(computed_values);
+    set_computed_values(move(computed_values));
 
     propagate_style_to_anonymous_wrappers();
 
@@ -908,6 +910,8 @@ NonnullRefPtr<NodeWithStyle> NodeWithStyle::create_anonymous_wrapper() const
 void NodeWithStyle::set_computed_values(NonnullRefPtr<CSS::ComputedValues const> computed_values)
 {
     m_computed_values = move(computed_values);
+    node_data().style = m_computed_values.ptr();
+    VERIFY(!has_style() || node_data().style);
 }
 
 void NodeWithStyle::set_display(CSS::Display display)
