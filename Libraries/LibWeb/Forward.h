@@ -979,6 +979,7 @@ class Label;
 class LegendBox;
 class ListItemBox;
 class ListItemMarkerBox;
+class LayoutRustBridge;
 class Node;
 class NodeWithStyle;
 class NodeWithStyleAndBoxModelMetrics;
@@ -993,8 +994,6 @@ class VideoBox;
 class Viewport;
 
 enum class LayoutMode;
-
-struct LayoutState;
 
 }
 
