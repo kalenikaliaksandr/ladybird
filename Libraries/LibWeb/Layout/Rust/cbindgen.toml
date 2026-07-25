@@ -21,6 +21,10 @@ all_features = false
 
 [export]
 include = ["FfiNodeKindFacts", "FfiTableDisplay", "NodeAllocation", "NodeData", "NodeDisplayFlag", "NodeFlag", "NodeKind", "NodeSlotId"]
+exclude = [
+    "rust_calc_node_create_numeric_dimension",
+    "rust_calc_resolve",
+]
 
 [export.mangle]
 rename_types = "PascalCase"

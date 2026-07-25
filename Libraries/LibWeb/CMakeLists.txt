@@ -1354,7 +1354,7 @@ import_rust_crate(
     MANIFEST_PATH Layout/Rust/Cargo.toml
     CRATE_NAME libweb_layout_rust
     ${layout_rust_features}
-    FFI_HEADERS Layout/TreeBuilderRustFFI.h
+    FFI_HEADERS Layout/TreeBuilderRustFFI.h Layout/LayoutRustFFI.h
 )
 
 set(css_rust_features "")

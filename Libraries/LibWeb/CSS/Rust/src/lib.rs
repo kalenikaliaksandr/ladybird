@@ -16,6 +16,7 @@ pub mod color_interpolation;
 pub mod computed_values;
 pub mod css_enums;
 pub mod css_pixels;
+mod css_pixels_ffi;
 mod css_tokenizer;
 pub mod custom_properties;
 pub mod display;

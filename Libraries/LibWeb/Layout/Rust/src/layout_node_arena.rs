@@ -9,12 +9,12 @@ use crate::node_data::{MAX_NODE_SLOT_COUNT, NodeData, NodeSlotId};
 use std::ffi::c_void;
 use std::thread;
 
-const SLOTS_PER_CHUNK: usize = 256;
+pub(crate) const SLOTS_PER_CHUNK: usize = 256;
 
 // NodeData is sized to one cache line; the aligned chunk keeps every densely-strided slot
 // line-aligned, and per-slot bookkeeping lives in a parallel array so it stays that way.
 #[repr(align(64))]
-struct Chunk {
+pub(crate) struct Chunk {
     slots: [NodeData; SLOTS_PER_CHUNK],
 }
 
@@ -47,7 +47,7 @@ pub(crate) struct LayoutNodeArena {
 }
 
 impl LayoutNodeArena {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             chunks: Vec::new(),
             slot_metadata: Vec::new(),
@@ -64,7 +64,7 @@ impl LayoutNodeArena {
 
     // Freshly created chunks are default-initialized and free() resets slots on release, so
     // allocate() always hands out clean NodeData without writing it again.
-    fn allocate(&mut self) -> NodeAllocation {
+    pub(crate) fn allocate(&mut self) -> NodeAllocation {
         self.assert_owner_thread();
 
         let index = if let Some(index) = self.free_list.pop() {
@@ -108,7 +108,7 @@ impl LayoutNodeArena {
         }
     }
 
-    fn free(&mut self, id: NodeSlotId, generation: u32) {
+    pub(crate) fn free(&mut self, id: NodeSlotId, generation: u32) {
         self.assert_owner_thread();
 
         assert!(!id.is_invalid(), "invalid layout node arena slot ID");
@@ -223,67 +223,4 @@ pub unsafe extern "C" fn layout_arena_free(arena: *mut c_void, id: NodeSlotId, g
         // serializes all access on the document thread.
         unsafe { &mut *arena.cast::<LayoutNodeArena>() }.free(id, generation);
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Chunk, LayoutNodeArena, SLOTS_PER_CHUNK};
-
-    #[test]
-    fn node_data_addresses_remain_stable_when_chunks_are_added() {
-        let mut arena = LayoutNodeArena::new();
-        let first = arena.allocate();
-        let first_data = first.data;
-
-        let mut allocations = Vec::new();
-        for _ in 0..SLOTS_PER_CHUNK * 2 {
-            allocations.push(arena.allocate());
-        }
-
-        assert_eq!(first_data, arena.data(first.slot));
-        // SAFETY: The first allocation is still live, and the comparison above
-        // confirms that its pointer still addresses the arena slot.
-        unsafe {
-            (*first_data).layout_index = 42;
-            assert_eq!((*arena.data(first.slot)).layout_index, 42);
-        }
-        arena.free(first.slot, first.generation);
-        for allocation in allocations {
-            arena.free(allocation.slot, allocation.generation);
-        }
-    }
-
-    #[test]
-    fn node_data_slots_are_cache_line_aligned() {
-        assert_eq!(align_of::<Chunk>() % 64, 0);
-        let mut arena = LayoutNodeArena::new();
-        let allocation = arena.allocate();
-        assert_eq!(allocation.data as usize % 64, 0);
-        arena.free(allocation.slot, allocation.generation);
-    }
-
-    #[test]
-    fn freed_slots_are_reused_with_a_new_generation() {
-        let mut arena = LayoutNodeArena::new();
-        let first = arena.allocate();
-        arena.free(first.slot, first.generation);
-
-        let second = arena.allocate();
-        assert_eq!(second.slot.slot_index(), first.slot.slot_index());
-        assert_ne!(second.slot, first.slot);
-        assert_ne!(second.generation, first.generation);
-        arena.free(second.slot, second.generation);
-    }
-
-    #[test]
-    fn stale_slot_ids_do_not_resolve_to_a_new_occupant() {
-        let mut arena = LayoutNodeArena::new();
-        let first = arena.allocate();
-        arena.free(first.slot, first.generation);
-        let second = arena.allocate();
-
-        let stale_read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| arena.data(first.slot)));
-        assert!(stale_read.is_err());
-        arena.free(second.slot, second.generation);
-    }
 }

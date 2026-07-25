@@ -8,9 +8,19 @@
 #[path = "../../../../RustAllocator.rs"]
 mod rust_allocator;
 
+#[allow(dead_code)]
+mod css_enums;
+#[allow(dead_code)]
+mod css_pixels;
+#[allow(dead_code)]
+mod ffi_stats;
+#[allow(dead_code)]
+mod geometry;
 mod layout_node_arena;
 pub mod node_data;
 mod tree_builder;
+#[allow(dead_code)]
+mod used_values;
 
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
