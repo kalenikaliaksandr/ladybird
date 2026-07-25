@@ -25,10 +25,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let builder = cbindgen::Builder::new().with_config(config).with_crate(&manifest_dir);
 
     builder.generate().map_or_else(
-        |error| match error {
-            cbindgen::Error::ParseSyntaxError { .. } => {}
-            other => panic!("{other:?}"),
-        },
+        |error| panic!("{error}"),
         |bindings| {
             let output_header = out_dir.join(header);
             std::fs::create_dir_all(output_header.parent().unwrap()).unwrap();

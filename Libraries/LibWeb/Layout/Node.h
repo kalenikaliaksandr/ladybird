@@ -46,6 +46,7 @@ static_assert(offsetof(RustFFI::NodeData, layout_index) == 40);
 static_assert(offsetof(RustFFI::NodeData, table_display) == 44);
 static_assert(offsetof(RustFFI::NodeData, table_display_before) == 45);
 static_assert(offsetof(RustFFI::NodeData, display_bits) == 46);
+static_assert(offsetof(RustFFI::NodeData, slot_generation) == 47);
 static_assert(offsetof(RustFFI::NodeData, style) == 48);
 static_assert(offsetof(RustFFI::NodeData, shell) == 56);
 
