@@ -30,6 +30,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::abort_on_panic;
+pub use crate::display::computed_value_types::*;
 
 /// Reference count value marking an intentionally leaked payload.
 pub const STYLE_GROUP_STATIC_REFCOUNT: usize = usize::MAX;
@@ -48,28 +49,6 @@ pub struct InheritedBoxValues {
     pub writing_mode: u8,
     pub content_visibility: u8,
     pub image_rendering: u8,
-}
-
-/// The computed forms accepted by width and height sizing properties.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ComputedSizeKind {
-    Auto,
-    Calculated,
-    Length,
-    Percentage,
-    MinContent,
-    MaxContent,
-    FitContent,
-    None,
-}
-
-/// A computed sizing value. Scalar and calculated values retain their
-/// immutable Rust style-value identity. Fit-content retains only its argument,
-/// and keyword-only forms leave the handle empty.
-#[repr(C)]
-pub struct ComputedStyleValueHandle {
-    pub pointer: *const c_void,
 }
 
 impl ComputedStyleValueHandle {
@@ -121,12 +100,6 @@ impl PartialEq for ComputedStyleValueHandle {
     }
 }
 
-#[repr(C)]
-pub struct ComputedSize {
-    pub kind: ComputedSizeKind,
-    pub value: ComputedStyleValueHandle,
-}
-
 impl Clone for ComputedSize {
     fn clone(&self) -> Self {
         Self {
@@ -142,105 +115,81 @@ impl PartialEq for ComputedSize {
     }
 }
 
-/// Layout of the six computed sizing properties.
-#[repr(C)]
-#[derive(Clone, PartialEq)]
-pub struct SizingValues {
-    pub width: ComputedSize,
-    pub min_width: ComputedSize,
-    pub max_width: ComputedSize,
-    pub height: ComputedSize,
-    pub min_height: ComputedSize,
-    pub max_height: ComputedSize,
+macro_rules! impl_computed_payload_clone_and_eq {
+    ($type:ty { $($field:ident),+ $(,)? }) => {
+        impl Clone for $type {
+            fn clone(&self) -> Self {
+                Self {
+                    $($field: self.$field.clone(),)+
+                }
+            }
+        }
+
+        impl PartialEq for $type {
+            fn eq(&self, other: &Self) -> bool {
+                true $(&& self.$field == other.$field)+
+            }
+        }
+    };
 }
 
-/// A computed flex-basis value. Content uses the flag; every other form uses
-/// the same computed-size representation as width and height.
-#[repr(C)]
-#[derive(Clone, PartialEq)]
-pub struct ComputedFlexBasis {
-    pub is_content: bool,
-    pub size: ComputedSize,
-}
-
-/// A computed row-gap or column-gap value. Normal uses the flag; every other
-/// form retains its immutable length-percentage identity.
-#[repr(C)]
-#[derive(Clone, PartialEq)]
-pub struct ComputedGap {
-    pub is_normal: bool,
-    pub value: ComputedStyleValueHandle,
-}
-
-/// Layout of the computed flexbox and box-alignment properties.
-#[repr(C)]
-#[derive(Clone, PartialEq)]
-pub struct AlignmentValues {
-    pub flex_direction: u8,
-    pub flex_wrap: u8,
-    pub flex_basis: ComputedFlexBasis,
-    pub flex_grow: f64,
-    pub flex_shrink: f64,
-    pub order: i32,
-    pub align_content: u8,
-    pub align_items: u8,
-    pub align_self: u8,
-    pub justify_content: u8,
-    pub justify_items: u8,
-    pub justify_self: u8,
-    pub column_gap: ComputedGap,
-    pub row_gap: ComputedGap,
-}
-
-/// A computed length-percentage-or-auto value.
-#[repr(C)]
-#[derive(Clone, PartialEq)]
-pub struct ComputedLengthPercentageOrAuto {
-    pub is_auto: bool,
-    pub value: ComputedStyleValueHandle,
-}
-
-/// Four physical computed length-percentage-or-auto sides.
-#[repr(C)]
-#[derive(Clone, PartialEq)]
-pub struct ComputedLengthBox {
-    pub top: ComputedLengthPercentageOrAuto,
-    pub right: ComputedLengthPercentageOrAuto,
-    pub bottom: ComputedLengthPercentageOrAuto,
-    pub left: ComputedLengthPercentageOrAuto,
-}
-
-/// Layout of the computed inset, margin, and padding properties.
-#[repr(C)]
-#[derive(Clone, PartialEq)]
-pub struct SurroundValues {
-    pub inset: ComputedLengthBox,
-    pub top_anchor_inset: ComputedStyleValueHandle,
-    pub right_anchor_inset: ComputedStyleValueHandle,
-    pub bottom_anchor_inset: ComputedStyleValueHandle,
-    pub left_anchor_inset: ComputedStyleValueHandle,
-    pub margin: ComputedLengthBox,
-    pub padding: ComputedLengthBox,
-}
-
-/// Layout of the non-inherited SVG geometry and painting properties.
-#[repr(C)]
-#[derive(Clone, PartialEq)]
-pub struct SVGResetValues {
-    pub cx: ComputedStyleValueHandle,
-    pub cy: ComputedStyleValueHandle,
-    pub r: ComputedStyleValueHandle,
-    pub rx: ComputedLengthPercentageOrAuto,
-    pub ry: ComputedLengthPercentageOrAuto,
-    pub x: ComputedStyleValueHandle,
-    pub y: ComputedStyleValueHandle,
-    pub stop_color: u32,
-    pub stop_opacity: f32,
-    pub flood_color: u32,
-    pub flood_opacity: f32,
-    pub vector_effect: u8,
-    pub shape_rendering: u8,
-}
+impl_computed_payload_clone_and_eq!(SizingValues {
+    width,
+    min_width,
+    max_width,
+    height,
+    min_height,
+    max_height,
+});
+impl_computed_payload_clone_and_eq!(ComputedFlexBasis { is_content, size });
+impl_computed_payload_clone_and_eq!(ComputedGap { is_normal, value });
+impl_computed_payload_clone_and_eq!(AlignmentValues {
+    flex_direction,
+    flex_wrap,
+    flex_basis,
+    flex_grow,
+    flex_shrink,
+    order,
+    align_content,
+    align_items,
+    align_self,
+    justify_content,
+    justify_items,
+    justify_self,
+    column_gap,
+    row_gap,
+});
+impl_computed_payload_clone_and_eq!(ComputedLengthPercentageOrAuto { is_auto, value });
+impl_computed_payload_clone_and_eq!(ComputedLengthBox {
+    top,
+    right,
+    bottom,
+    left,
+});
+impl_computed_payload_clone_and_eq!(SurroundValues {
+    inset,
+    top_anchor_inset,
+    right_anchor_inset,
+    bottom_anchor_inset,
+    left_anchor_inset,
+    margin,
+    padding,
+});
+impl_computed_payload_clone_and_eq!(SVGResetValues {
+    cx,
+    cy,
+    r,
+    rx,
+    ry,
+    x,
+    y,
+    stop_color,
+    stop_opacity,
+    flood_color,
+    flood_opacity,
+    vector_effect,
+    shape_rendering,
+});
 
 /// Selects the language that owns a style group's payload lifecycle.
 #[repr(u8)]
