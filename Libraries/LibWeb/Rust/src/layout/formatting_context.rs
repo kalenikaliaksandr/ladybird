@@ -1291,9 +1291,6 @@ fn register_table_abspos_descendants(frame: &mut FcFrame, parent: Node) {
 }
 
 fn complete_formatting_context_after_root_box_has_used_size(instance: &mut FormattingContextInstance) {
-    if let FcImpl::Block(context) = &instance.implementation {
-        context.parent_context_did_dimension_child_root_box();
-    }
     let registered_abspos_children_could_never_be_laid_out =
         instance.layout_mode != LayoutMode::Normal || instance.frame.state.is_measurement();
     if registered_abspos_children_could_never_be_laid_out {
@@ -1319,17 +1316,6 @@ fn complete_formatting_context_after_root_box_has_used_size(instance: &mut Forma
         layout_contained_abspos_children(&mut instance.frame);
     } else {
         instance.frame.state.enqueue_for_abspos_layout_pass(box_);
-    }
-}
-
-impl Drop for FormattingContextInstance<'_> {
-    fn drop(&mut self) {
-        if let FcImpl::Block(context) = &self.implementation {
-            debug_assert!(
-                context.was_notified_after_parent_dimensioned_root(),
-                "block formatting context dropped without being completed"
-            );
-        }
     }
 }
 
@@ -1530,6 +1516,7 @@ fn run_formatting_context<'pass>(
                 context.run(frame, body_input);
                 frame.automatic_content_inline_size = context.automatic_content_inline_size();
                 frame.automatic_content_block_size = context.automatic_content_block_size();
+                context.place_floats_after_run();
             }
             FcImpl::Flex(context) => {
                 context.run(frame, body_input);

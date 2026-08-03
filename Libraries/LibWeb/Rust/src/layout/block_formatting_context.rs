@@ -194,7 +194,6 @@ pub(crate) struct BlockFormattingContext<'pass> {
     bands: RefCell<Vec<FloatBand>>,
     lowest_left_margin_edge: Cell<CssPixels>,
     lowest_right_margin_edge: Cell<CssPixels>,
-    was_notified_after_parent_dimensioned_my_root_box: Cell<bool>,
 }
 
 impl<'pass> BlockFormattingContext<'pass> {
@@ -211,7 +210,6 @@ impl<'pass> BlockFormattingContext<'pass> {
             bands: RefCell::new(vec![FloatBand::default()]),
             lowest_left_margin_edge: Cell::new(CssPixels::default()),
             lowest_right_margin_edge: Cell::new(CssPixels::default()),
-            was_notified_after_parent_dimensioned_my_root_box: Cell::new(false),
         }
     }
 
@@ -2117,8 +2115,13 @@ impl<'pass> BlockFormattingContext<'pass> {
         }
     }
 
-    pub(crate) fn parent_context_did_dimension_child_root_box(&self) {
-        self.was_notified_after_parent_dimensioned_my_root_box.set(true);
+    // Converts every recorded float's edge-relative placement into a placed
+    // content offset. Runs once per formatting-context instance at the end of
+    // its run: inline sizes are final by then in normal mode, and intrinsic
+    // sizing keeps the min-content/max-content sentinels. Placement must also
+    // happen for measurement runs, whose automatic sizes derive from placed
+    // floats.
+    pub(crate) fn place_floats_after_run(&self) {
         let floats = self.floats.borrow();
         for &floating_box in floats.iter() {
             // SAFETY: Float records retain stable state-owned used-values pointers.
@@ -2146,10 +2149,6 @@ impl<'pass> BlockFormattingContext<'pass> {
                 },
             );
         }
-    }
-
-    pub(crate) fn was_notified_after_parent_dimensioned_root(&self) -> bool {
-        self.was_notified_after_parent_dimensioned_my_root_box.get()
     }
 
     pub(crate) fn layout_table_caption(
