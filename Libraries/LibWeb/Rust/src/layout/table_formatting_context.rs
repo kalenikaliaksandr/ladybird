@@ -832,7 +832,7 @@ impl<'pass> TableFormattingContext<'pass> {
         self.callbacks.arena().raw_table_column_span(column) as usize
     }
 
-    fn new(frame: &FcFrame<'pass>, pending_table_offset: Option<crate::layout::LogicalOffset>) -> Self {
+    fn new(frame: &FcFrame<'pass>) -> Self {
         Self {
             state: frame.state,
             table_box: frame.box_,
@@ -843,8 +843,8 @@ impl<'pass> TableFormattingContext<'pass> {
             available_space: AvailableSpace::default(),
             table_block_size: CssPixels::default(),
             automatic_content_block_size: CssPixels::default(),
-            pending_table_offset: pending_table_offset.unwrap_or_default(),
-            should_publish_pending_table_offset: pending_table_offset.is_some(),
+            pending_table_offset: crate::layout::LogicalOffset::default(),
+            should_publish_pending_table_offset: false,
             min_border_box_block_size_from_flex_item: None,
             needs_fixed_mode_row_measurement: false,
             cells: Vec::new(),
@@ -1919,6 +1919,7 @@ impl<'pass> TableFormattingContext<'pass> {
             containing_block_constraints: ContainingBlockConstraints::default(),
             content_box_position_in_bfc_root: None,
             table_grid_min_border_box_block_size: None,
+            table_box_content_offset_in_wrapper: None,
         };
         match crate::layout::layout_inside_child(frame, None, None, cell.box_, self.layout_mode, layout_input, false) {
             crate::layout::ChildLayoutOutcome::Skipped => None,
@@ -1996,6 +1997,7 @@ impl<'pass> TableFormattingContext<'pass> {
                 containing_block_constraints: ContainingBlockConstraints::default(),
                 content_box_position_in_bfc_root: None,
                 table_grid_min_border_box_block_size: None,
+                table_box_content_offset_in_wrapper: None,
             },
         );
         measurement
@@ -2487,6 +2489,8 @@ impl<'pass> TableFormattingContext<'pass> {
     fn run(&mut self, frame: &mut FcFrame<'pass>, parent: Option<&BlockFormattingContext<'pass>>, input: LayoutInput) {
         self.available_space = input.available_space;
         self.min_border_box_block_size_from_flex_item = input.table_grid_min_border_box_block_size;
+        self.pending_table_offset = input.table_box_content_offset_in_wrapper.unwrap_or_default();
+        self.should_publish_pending_table_offset = input.table_box_content_offset_in_wrapper.is_some();
         self.run_until_inline_size_calculation(input, false);
         if matches!(
             self.available_space.inline_size,

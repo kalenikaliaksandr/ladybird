@@ -189,7 +189,6 @@ pub(crate) struct BlockFormattingContext<'pass> {
     callbacks: FfiLayoutFcCallbacks,
     block_offset_of_current_block_container: Cell<Option<CssPixels>>,
     pending_legend_flow_position: Cell<Option<LogicalOffset>>,
-    pending_table_box_content_offset_in_wrapper: Cell<Option<LogicalOffset>>,
     margin_state: RefCell<BlockMarginState>,
     floats: RefCell<Vec<FloatingBox<'pass>>>,
     bands: RefCell<Vec<FloatBand>>,
@@ -207,7 +206,6 @@ impl<'pass> BlockFormattingContext<'pass> {
             callbacks,
             block_offset_of_current_block_container: Cell::new(None),
             pending_legend_flow_position: Cell::new(None),
-            pending_table_box_content_offset_in_wrapper: Cell::new(None),
             margin_state: RefCell::new(BlockMarginState::default()),
             floats: RefCell::new(Vec::new()),
             bands: RefCell::new(vec![FloatBand::default()]),
@@ -1544,6 +1542,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 .constraints_for_child_context(containing_block, containing_input.containing_block_constraints),
             content_box_position_in_bfc_root: containing_input.content_box_position_in_bfc_root,
             table_grid_min_border_box_block_size: None,
+            table_box_content_offset_in_wrapper: None,
         }
     }
 
@@ -1718,17 +1717,17 @@ impl<'pass> BlockFormattingContext<'pass> {
 
         let is_table_formatting_context = independent_type == Some(FfiFormattingContextType::Table);
         let mut pending_position = None;
+        let mut table_box_content_offset_in_wrapper = None;
         if box_is_positioned_by_fieldset_layout {
             self.pending_legend_flow_position.set(Some(LogicalOffset {
                 inline_offset: content_inline_offset,
                 block_offset: content_block_offset,
             }));
         } else if is_table_formatting_context {
-            self.pending_table_box_content_offset_in_wrapper
-                .set(Some(LogicalOffset {
-                    inline_offset: content_inline_offset,
-                    block_offset: content_block_offset,
-                }));
+            table_box_content_offset_in_wrapper = Some(LogicalOffset {
+                inline_offset: content_inline_offset,
+                block_offset: content_block_offset,
+            });
         } else if !box_opens_top_margin_group {
             pending_position = Some(FfiCssPixelPoint {
                 x: content_inline_offset,
@@ -1842,15 +1841,21 @@ impl<'pass> BlockFormattingContext<'pass> {
                 } else {
                     None
                 },
+                table_box_content_offset_in_wrapper,
             };
             let child_layout = self.layout_inside(frame, node, inside_layout_input, true);
-            if is_table_formatting_context {
-                let pending = self
-                    .take_pending_table_box_content_offset_in_wrapper()
-                    .expect("table layout did not publish its wrapper content offset");
+            if let Some(stashed_offset) = table_box_content_offset_in_wrapper {
+                // Intrinsic sizing may skip the inside layout entirely when both
+                // sizes are already definite; the wrapper offset then echoes the
+                // stashed input value, matching the untouched-Cell behavior this
+                // result-based channel replaced.
+                let block_offset = child_layout
+                    .as_ref()
+                    .and_then(|child_layout| child_layout.result().table_block_offset_in_wrapper)
+                    .unwrap_or(stashed_offset.block_offset);
                 pending_position = Some(FfiCssPixelPoint {
-                    x: pending.inline_offset,
-                    y: pending.block_offset,
+                    x: stashed_offset.inline_offset,
+                    y: block_offset,
                 });
             }
             if container_facts.is_table_wrapper() && style.display().is_table_inside() {
@@ -2294,14 +2299,6 @@ impl<'pass> BlockFormattingContext<'pass> {
         self.was_notified_after_parent_dimensioned_my_root_box.get()
     }
 
-    pub(crate) fn take_pending_table_box_content_offset_in_wrapper(&self) -> Option<LogicalOffset> {
-        self.pending_table_box_content_offset_in_wrapper.take()
-    }
-
-    pub(crate) fn set_pending_table_box_content_offset_in_wrapper(&self, offset: LogicalOffset) {
-        self.pending_table_box_content_offset_in_wrapper.set(Some(offset));
-    }
-
     pub(crate) fn layout_table_caption(
         &self,
         frame: &mut FcFrame<'pass>,
@@ -2341,6 +2338,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                     containing_block_constraints: constraints,
                     content_box_position_in_bfc_root: None,
                     table_grid_min_border_box_block_size: None,
+                    table_box_content_offset_in_wrapper: None,
                 },
                 true,
             );
@@ -2481,6 +2479,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 containing_block_constraints: input.containing_block_constraints,
                 content_box_position_in_bfc_root: None,
                 table_grid_min_border_box_block_size: None,
+                table_box_content_offset_in_wrapper: None,
             },
             false,
         );

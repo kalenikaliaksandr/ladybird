@@ -2359,6 +2359,7 @@ impl<'pass> FlexFormattingContext<'pass> {
             containing_block_constraints: self.item_containing_block_constraints(),
             content_box_position_in_bfc_root: None,
             table_grid_min_border_box_block_size: None,
+            table_box_content_offset_in_wrapper: None,
         };
         // https://drafts.csswg.org/css-flexbox-1/#flex-items
         // In the case of flex items with display: table, the table wrapper box becomes the flex item,

@@ -119,4 +119,10 @@ pub(crate) struct LayoutInput {
     pub(crate) containing_block_constraints: ContainingBlockConstraints,
     pub(crate) content_box_position_in_bfc_root: Option<FfiCssPixelPoint>,
     pub(crate) table_grid_min_border_box_block_size: Option<CssPixels>,
+    // The table box's content-box offset within its anonymous wrapper, in the
+    // wrapper's coordinate space. Set only by the block parent launching a
+    // table formatting context; the table run bases its row and row-group
+    // placement on it and reports the caption-adjusted offset back through
+    // ChildLayoutResult.
+    pub(crate) table_box_content_offset_in_wrapper: Option<LogicalOffset>,
 }

@@ -2579,6 +2579,7 @@ impl<'pass> GridFormattingContext<'pass> {
             containing_block_constraints: self.track_sizing_constraints(),
             content_box_position_in_bfc_root: None,
             table_grid_min_border_box_block_size: None,
+            table_box_content_offset_in_wrapper: None,
         };
         context.reset_for_run(input);
         let grid_style = context.grid_style(context.grid_container);
@@ -3378,6 +3379,7 @@ impl<'pass> GridFormattingContext<'pass> {
                 },
                 content_box_position_in_bfc_root: None,
                 table_grid_min_border_box_block_size: None,
+                table_box_content_offset_in_wrapper: None,
             };
             let child_layout = match crate::layout::layout_inside_child(
                 frame,

@@ -282,6 +282,7 @@ impl MeasurementState {
         crate::layout::ChildLayoutResult {
             automatic_content_inline_size: context.automatic_content_inline_size,
             automatic_content_block_size: context.automatic_content_block_size,
+            table_block_offset_in_wrapper: context.table_block_offset_in_wrapper,
         }
     }
 
@@ -729,6 +730,7 @@ pub struct FfiBordersData {
 pub(crate) struct ChildLayoutResult {
     pub automatic_content_inline_size: CssPixels,
     pub automatic_content_block_size: CssPixels,
+    pub table_block_offset_in_wrapper: Option<CssPixels>,
 }
 
 pub(crate) struct PendingChildLayout<'pass> {
@@ -740,6 +742,7 @@ impl PendingChildLayout<'_> {
         ChildLayoutResult {
             automatic_content_inline_size: self.context.automatic_content_inline_size,
             automatic_content_block_size: self.context.automatic_content_block_size,
+            table_block_offset_in_wrapper: self.context.table_block_offset_in_wrapper,
         }
     }
 
@@ -1062,6 +1065,7 @@ pub(crate) struct FcFrame<'pass> {
     pub(crate) should_collect_devtools_layout_data: bool,
     pub(crate) automatic_content_inline_size: CssPixels,
     pub(crate) automatic_content_block_size: CssPixels,
+    pub(crate) table_block_offset_in_wrapper: Option<CssPixels>,
 }
 
 impl<'pass> FcFrame<'pass> {
@@ -1080,13 +1084,13 @@ impl<'pass> FcFrame<'pass> {
             should_collect_devtools_layout_data,
             automatic_content_inline_size: CssPixels::default(),
             automatic_content_block_size: CssPixels::default(),
+            table_block_offset_in_wrapper: None,
         }
     }
 }
 
 #[derive(Clone, Copy, Default)]
 struct FcParents<'parent, 'pass> {
-    block: Option<&'parent BlockFormattingContext<'pass>>,
     grid: Option<&'parent GridFormattingContext<'pass>>,
 }
 
@@ -1245,12 +1249,7 @@ fn create_formatting_context<'pass>(
             callbacks,
             should_collect_devtools_layout_data,
         ))),
-        FfiFormattingContextType::Table => {
-            let pending_table_offset = parents
-                .block
-                .and_then(|parent| parent.take_pending_table_box_content_offset_in_wrapper());
-            FcImpl::Table(Box::new(TableFormattingContext::new(&frame, pending_table_offset)))
-        }
+        FfiFormattingContextType::Table => FcImpl::Table(Box::new(TableFormattingContext::new(&frame))),
         FfiFormattingContextType::Svg => {
             FcImpl::Svg(Box::new(SvgFormattingContext::new(state, box_, layout_mode, callbacks)))
         }
@@ -1360,11 +1359,9 @@ fn run_formatting_context<'pass>(
             context.run(frame, parent_block, input);
             frame.automatic_content_inline_size = context.automatic_content_inline_size();
             frame.automatic_content_block_size = context.automatic_content_block_size;
-            if context.should_publish_pending_table_offset
-                && let Some(parent) = parent_block
-            {
-                parent.set_pending_table_box_content_offset_in_wrapper(context.pending_table_offset);
-            }
+            frame.table_block_offset_in_wrapper = context
+                .should_publish_pending_table_offset
+                .then_some(context.pending_table_offset.block_offset);
         }
         FcImpl::Svg(context) => {
             context.run(frame, input);
@@ -1419,10 +1416,7 @@ pub(crate) fn layout_inside_child<'pass>(
     let mut context = create_formatting_context(
         frame.state,
         child,
-        FcParents {
-            block: parent_block,
-            grid: parent_grid,
-        },
+        FcParents { grid: parent_grid },
         fc_type,
         layout_mode,
         frame.should_collect_devtools_layout_data,
@@ -1507,6 +1501,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             containing_block_constraints: crate::layout::ContainingBlockConstraints::default(),
             content_box_position_in_bfc_root: None,
             table_grid_min_border_box_block_size: None,
+            table_box_content_offset_in_wrapper: None,
         };
         let state_ref = &state;
         let fc_type = independent_formatting_context_type(state_ref, root_for_layout, &callbacks);
@@ -1565,6 +1560,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
             containing_block_constraints: crate::layout::ContainingBlockConstraints::default(),
             content_box_position_in_bfc_root: None,
             table_grid_min_border_box_block_size: None,
+            table_box_content_offset_in_wrapper: None,
         };
 
         let state_ref = &state;

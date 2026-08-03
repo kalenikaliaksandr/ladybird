@@ -1708,6 +1708,7 @@ impl<'pass> AbsposEngine<'pass> {
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
                 table_grid_min_border_box_block_size: None,
+                table_box_content_offset_in_wrapper: None,
             },
             false,
         ) {
