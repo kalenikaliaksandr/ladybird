@@ -58,7 +58,10 @@ fn run(frame: &mut FcFrame, layout_input: LayoutInput) {
             available_space: child_available_space,
             containing_block_constraints: wrapper_constraints,
             content_box_position_in_bfc_root: None,
-            sizing: RootSizingDirectives::default(),
+            sizing: RootSizingDirectives {
+                adopt_automatic_content_block_size: true,
+                ..RootSizingDirectives::default()
+            },
             participation: FcParticipation::Item,
         },
         None,
@@ -66,8 +69,6 @@ fn run(frame: &mut FcFrame, layout_input: LayoutInput) {
 
     frame.automatic_content_inline_size = content_inline_size;
     frame.automatic_content_block_size = bfc.automatic_content_block_size;
-
-    wrapper_state.set_content_block_size(frame.automatic_content_block_size);
 
     crate::layout::place_child(frame.state, &frame.callbacks, wrapper, FfiCssPixelPoint::default());
 

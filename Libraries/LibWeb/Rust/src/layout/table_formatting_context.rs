@@ -1913,12 +1913,16 @@ impl<'pass> TableFormattingContext<'pass> {
         parent: Option<&BlockFormattingContext<'pass>>,
         cell: TableCell,
         input: AvailableSpace,
+        adopt_automatic_content_block_size: bool,
     ) -> Option<PendingChildLayout<'pass>> {
         let layout_input = LayoutInput {
             available_space: input,
             containing_block_constraints: ContainingBlockConstraints::default(),
             content_box_position_in_bfc_root: None,
-            sizing: RootSizingDirectives::default(),
+            sizing: RootSizingDirectives {
+                adopt_automatic_content_block_size,
+                ..RootSizingDirectives::default()
+            },
             participation: FcParticipation::Item,
         };
         match crate::layout::layout_inside_child(frame, None, None, cell.box_, self.layout_mode, layout_input, false) {
@@ -2079,8 +2083,7 @@ impl<'pass> TableFormattingContext<'pass> {
                     used.set_content_block_size(measured.content_block_size);
                     measured_baseline = Some(measured.first_baseline);
                 }
-            } else if let Some(child_layout) = self.layout_inside_cell(frame, parent, cell, inner) {
-                used.set_content_block_size(child_layout.result().automatic_content_block_size);
+            } else if let Some(child_layout) = self.layout_inside_cell(frame, parent, cell, inner, true) {
                 child_layout.finish();
             }
             if self.needs_fixed_mode_row_measurement {
@@ -2194,7 +2197,7 @@ impl<'pass> TableFormattingContext<'pass> {
             let inner = used.available_inner_space_or_constraints_from(self.available_space);
             // The first pass only measured this cell in a throwaway state; this is its one and
             // only inside layout in the committing state.
-            if let Some(child_layout) = self.layout_inside_cell(frame, parent, cell, inner) {
+            if let Some(child_layout) = self.layout_inside_cell(frame, parent, cell, inner, false) {
                 child_layout.finish();
             }
             let baseline = self.box_baseline(cell.box_);

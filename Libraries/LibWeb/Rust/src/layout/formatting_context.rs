@@ -1339,6 +1339,17 @@ impl Drop for FormattingContextInstance<'_> {
 // (whoever runs a formatting context creates its root's used values).
 fn apply_root_sizing_directives(frame: &FcFrame, input: &LayoutInput) {
     let directives = input.sizing;
+    if cfg!(debug_assertions)
+        && matches!(input.participation, FcParticipation::Item)
+        && frame.layout_mode == LayoutMode::Normal
+        && !frame.state.is_measurement()
+    {
+        let used = frame.state.try_used_values(&frame.callbacks, frame.box_);
+        debug_assert!(
+            used.is_some_and(|used| used.has_definite_inline_size.get()),
+            "container-internal run root must arrive with a container-assigned inline size"
+        );
+    }
     if directives.forced_content_inline_size.is_none() && directives.forced_content_block_size.is_none() {
         return;
     }
@@ -1413,6 +1424,14 @@ fn run_formatting_context<'pass>(
             run(frame, input);
         }
         FcImpl::InternalReplaced | FcImpl::InternalDummy => {}
+    }
+    if input.sizing.adopt_automatic_content_block_size {
+        debug_assert!(
+            matches!(input.participation, FcParticipation::Item),
+            "adopting the automatic content block size is a container-internal directive"
+        );
+        let used = frame.state.used_values(&frame.callbacks, frame.box_);
+        used.set_content_block_size(frame.automatic_content_block_size);
     }
     debug_assert_root_sizes_are_final_after_run(frame, &input);
 }

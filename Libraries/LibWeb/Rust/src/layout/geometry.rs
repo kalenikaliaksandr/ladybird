@@ -130,6 +130,12 @@ pub(crate) struct RootSizingDirectives {
     // placement on it and reports the caption-adjusted offset back through
     // ChildLayoutResult.
     pub(crate) table_box_content_offset_in_wrapper: Option<LogicalOffset>,
+    // The container wants the run root's content block size adopted verbatim
+    // from the run's automatic content block size — no min/max clamping and
+    // no quirks. Requested for container-internal roots whose block size the
+    // container derives from content (auto-height table cells, the anonymous
+    // wrapper of replaced-with-children boxes).
+    pub(crate) adopt_automatic_content_block_size: bool,
 }
 
 // How the root box of a formatting context run participates in its parent's
