@@ -2333,17 +2333,12 @@ impl<'pass> BlockFormattingContext<'pass> {
         )
     }
 
-    pub(crate) fn layout_floating_box(
-        &self,
-        frame: &mut FcFrame<'pass>,
-        node: Node,
-        block_container: Node,
-        input: LayoutInput,
-        block_offset: CssPixels,
-        mut line_builder: Option<&mut LineBuilder<'_, '_, '_>>,
-    ) {
+    // Run-prelude sizing for a floating root, delegated from the run because
+    // shrink-to-fit inline sizing consults this block context's float bands
+    // and pending-margin adjustments.
+    pub(crate) fn dimension_float_root(&self, node: Node, input: &LayoutInput) {
         let available_space = input.available_space;
-        assert!(self.facts(node).is_floating());
+        let block_container = self.containing_block(node);
         let block_container_inline_size = self.used(block_container).content_inline_size.get();
         self.resolve_vertical_box_model_metrics(node, block_container_inline_size);
         let containing_block_rect = self.containing_block_rect(
@@ -2366,8 +2361,7 @@ impl<'pass> BlockFormattingContext<'pass> {
             },
         );
         self.resolve_used_block_size_if_not_treated_as_auto(node, available_space, input.containing_block_constraints);
-        let facts = self.facts(node);
-        if facts.has_auto_content_box_size() || self.style(node).display().is_flex_inside() {
+        if self.facts(node).has_auto_content_box_size() || self.style(node).display().is_flex_inside() {
             self.resolve_used_block_size_if_treated_as_auto(
                 node,
                 available_space,
@@ -2375,36 +2369,71 @@ impl<'pass> BlockFormattingContext<'pass> {
                 None,
             );
         }
-        let inner = self
-            .used(node)
-            .available_inner_space_or_constraints_from(available_space);
+    }
+
+    // Run-epilogue finalization for a floating root. `run_automatic_sizes` is
+    // the run's (inline, block) automatic content sizes, or None when the
+    // inside layout was skipped.
+    pub(crate) fn finalize_float_root(
+        &self,
+        node: Node,
+        input: &LayoutInput,
+        run_automatic_sizes: Option<(CssPixels, CssPixels)>,
+    ) {
+        // A floating table wrapper shrink-to-fits from cached intrinsic sizes, which may not match
+        // the inline size table layout just produced; the wrapper has the same inline size as the table grid box.
+        if self.facts(node).is_table_wrapper()
+            && let Some((automatic_content_inline_size, _)) = run_automatic_sizes
+        {
+            self.used_mut(node).set_content_inline_size(automatic_content_inline_size);
+        }
+        self.resolve_used_block_size_if_treated_as_auto(
+            node,
+            input.available_space,
+            input.containing_block_constraints,
+            run_automatic_sizes.map(|(_, automatic_content_block_size)| automatic_content_block_size),
+        );
+    }
+
+    pub(crate) fn layout_floating_box(
+        &self,
+        frame: &mut FcFrame<'pass>,
+        node: Node,
+        block_container: Node,
+        input: LayoutInput,
+        block_offset: CssPixels,
+        mut line_builder: Option<&mut LineBuilder<'_, '_, '_>>,
+    ) {
+        let available_space = input.available_space;
+        assert!(self.facts(node).is_floating());
+        debug_assert_eq!(self.containing_block(node), block_container);
         let child_layout = self.layout_inside(
             frame,
             node,
             LayoutInput {
-                available_space: inner,
+                available_space,
                 containing_block_constraints: input.containing_block_constraints,
-                content_box_position_in_bfc_root: None,
+                content_box_position_in_bfc_root: input.content_box_position_in_bfc_root,
                 sizing: RootSizingDirectives::default(),
                 participation: FcParticipation::Float,
             },
             false,
         );
-        // A floating table wrapper shrink-to-fits from cached intrinsic sizes, which may not match
-        // the inline size table layout just produced; the wrapper has the same inline size as the table grid box.
-        if facts.is_table_wrapper()
-            && let Some(child_layout) = child_layout.as_ref()
-        {
-            self.used_mut(node)
-                .set_content_inline_size(child_layout.result().automatic_content_inline_size);
+        if child_layout.is_none() {
+            // A skipped inside layout never runs the prelude or epilogue; size
+            // and finalize the float here exactly as the run would have.
+            self.dimension_float_root(node, &input);
+            self.finalize_float_root(node, &input, None);
         }
-        self.resolve_used_block_size_if_treated_as_auto(
-            node,
-            available_space,
-            input.containing_block_constraints,
-            child_layout
-                .as_ref()
-                .map(|child_layout| child_layout.result().automatic_content_block_size),
+        let containing_block_rect = self.containing_block_rect(
+            block_container,
+            input
+                .content_box_position_in_bfc_root
+                .expect("float layout requires its containing block position in the BFC root"),
+        );
+        let containing_block_rect_now = containing_block_rect.translated(
+            CssPixels::default(),
+            self.block_offset_adjustment_from_pending_ancestor_block_start_margins(block_container),
         );
 
         // Next, float to the left and/or right

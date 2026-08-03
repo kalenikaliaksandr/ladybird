@@ -1369,9 +1369,18 @@ pub(crate) fn independent_root_automatic_block_size(
 // receive the root's inner space, the rest pass through unchanged. Forced
 // sizes mark their axis definite; the root's used values must already exist
 // (whoever runs a formatting context creates its root's used values).
-fn apply_root_sizing_directives(frame: &FcFrame, input: &LayoutInput) -> LayoutInput {
+fn apply_root_sizing_directives(
+    frame: &FcFrame,
+    input: &LayoutInput,
+    parent_block: Option<&BlockFormattingContext>,
+) -> LayoutInput {
     let directives = input.sizing;
     match input.participation {
+        FcParticipation::Float => {
+            let parent = parent_block.expect("a floating run requires an enclosing block formatting context");
+            parent.dimension_float_root(frame.box_, input);
+            return body_input_with_inner_available_space(frame, input);
+        }
         FcParticipation::Atomic => {
             let sizing = SizingContext::new(frame.state, frame.callbacks);
             sizing.dimension_atomic_root(
@@ -1458,7 +1467,7 @@ fn run_formatting_context<'pass>(
     parent_block: Option<&BlockFormattingContext<'pass>>,
 ) {
     let FormattingContextInstance { frame, implementation } = instance;
-    let body_input = apply_root_sizing_directives(frame, &input);
+    let body_input = apply_root_sizing_directives(frame, &input, parent_block);
 
     // An atomic root measured earlier under the same intrinsic constraints
     // replays its cached measurement instead of formatting the same
@@ -1511,6 +1520,14 @@ fn run_formatting_context<'pass>(
     }
 
     match input.participation {
+        FcParticipation::Float => {
+            let parent = parent_block.expect("a floating run requires an enclosing block formatting context");
+            parent.finalize_float_root(
+                frame.box_,
+                &input,
+                Some((frame.automatic_content_inline_size, frame.automatic_content_block_size)),
+            );
+        }
         FcParticipation::Atomic => {
             finalize_atomic_root_block_size(frame, &input, cached_atomic_block_size, parent_block);
         }
