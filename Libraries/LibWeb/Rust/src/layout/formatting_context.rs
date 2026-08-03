@@ -1333,12 +1333,55 @@ impl Drop for FormattingContextInstance<'_> {
     }
 }
 
+// Run prelude: adopt the parent-authoritative sizing directives onto the run
+// root's used values before the formatting context body executes. Forced
+// sizes mark their axis definite; the root's used values must already exist
+// (whoever runs a formatting context creates its root's used values).
+fn apply_root_sizing_directives(frame: &FcFrame, input: &LayoutInput) {
+    let directives = input.sizing;
+    if directives.forced_content_inline_size.is_none() && directives.forced_content_block_size.is_none() {
+        return;
+    }
+    debug_assert!(
+        matches!(input.participation, FcParticipation::Root),
+        "forced content sizes are only expected on entry-root runs"
+    );
+    let used = frame.state.used_values(&frame.callbacks, frame.box_);
+    if let Some(inline_size) = directives.forced_content_inline_size {
+        used.set_content_inline_size(inline_size);
+    }
+    if let Some(block_size) = directives.forced_content_block_size {
+        used.set_content_block_size(block_size);
+        used.has_definite_block_size.set(true);
+    }
+}
+
+// Seam check while the child-sizes-self migration is in progress: any run
+// whose input carried forced sizes must leave its root's used sizes final in
+// both axes (definite unless an intrinsic-sizing constraint is active).
+fn debug_assert_root_sizes_are_final_after_run(frame: &FcFrame, input: &LayoutInput) {
+    if cfg!(debug_assertions)
+        && (input.sizing.forced_content_inline_size.is_some() || input.sizing.forced_content_block_size.is_some())
+    {
+        let used = frame.state.used_values(&frame.callbacks, frame.box_);
+        debug_assert!(
+            used.has_definite_inline_size.get() || used.inline_size_constraint.get() != SizeConstraint::None,
+            "formatting context run left its root's inline size unresolved"
+        );
+        debug_assert!(
+            used.has_definite_block_size.get() || used.block_size_constraint.get() != SizeConstraint::None,
+            "formatting context run left its root's block size unresolved"
+        );
+    }
+}
+
 fn run_formatting_context<'pass>(
     instance: &mut FormattingContextInstance<'pass>,
     input: LayoutInput,
     parent_block: Option<&BlockFormattingContext<'pass>>,
 ) {
     let FormattingContextInstance { frame, implementation } = instance;
+    apply_root_sizing_directives(frame, &input);
     match implementation {
         FcImpl::Block(context) => {
             context.run(frame, input);
@@ -1371,6 +1414,7 @@ fn run_formatting_context<'pass>(
         }
         FcImpl::InternalReplaced | FcImpl::InternalDummy => {}
     }
+    debug_assert_root_sizes_are_final_after_run(frame, &input);
 }
 
 pub(crate) fn layout_inside_child<'pass>(
@@ -1476,33 +1520,30 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             ..crate::layout::ContainingBlockConstraints::default()
         };
         let viewport_used = state.create_used_values(&callbacks, root, root_constraints);
-        viewport_used.set_content_inline_size(viewport_inline_size);
-        viewport_used.set_content_block_size(viewport_block_size);
 
         let mut root_for_layout = root;
         let first_child = callbacks.first_child(root);
         if !first_child.is_invalid() && state.node_facts(&callbacks, first_child).is_svg_svg_box() {
             // Standalone SVG documents use the viewport size for the root
-            // SVG container and enter SVG layout directly. The SVG root is a
-            // replaced box, so creation derives no stretch-fit size from the
-            // viewport constraints; force both axes to the viewport size here,
-            // where this entry point acts as the runner of the SVG root's
-            // formatting context.
-            let svg_root_used = state.create_used_values(&callbacks, first_child, root_constraints);
-            svg_root_used.set_content_inline_size(viewport_inline_size);
-            svg_root_used.set_content_block_size(viewport_block_size);
+            // SVG container and enter SVG layout directly, so the viewport is
+            // not the run root and receives its sizes here. The SVG root is a
+            // replaced box whose creation derives no stretch-fit size from
+            // the viewport constraints; the run prelude adopts the viewport
+            // size through the forced directives below.
+            viewport_used.set_content_inline_size(viewport_inline_size);
+            viewport_used.set_content_block_size(viewport_block_size);
+            state.create_used_values(&callbacks, first_child, root_constraints);
             root_for_layout = first_child;
         }
-        let input = LayoutInput {
-            available_space: AvailableSpace {
+        let input = LayoutInput::new(
+            AvailableSpace {
                 inline_size: AvailableSize::definite(viewport_inline_size),
                 block_size: AvailableSize::definite(viewport_block_size),
             },
-            containing_block_constraints: crate::layout::ContainingBlockConstraints::default(),
-            content_box_position_in_bfc_root: None,
-            table_grid_min_border_box_block_size: None,
-            table_box_content_offset_in_wrapper: None,
-        };
+            crate::layout::ContainingBlockConstraints::default(),
+            FcParticipation::Root,
+        )
+        .with_forced_sizes(Some(viewport_inline_size), Some(viewport_block_size));
         let state_ref = &state;
         let fc_type = independent_formatting_context_type(state_ref, root_for_layout, &callbacks);
         let mut context = create_formatting_context(
@@ -1530,6 +1571,8 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
     root: NodeSlotId,
     viewport: NodeSlotId,
     paintable_to_replace: *mut c_void,
+    viewport_inline_size_raw: i32,
+    viewport_block_size_raw: i32,
     callbacks: *const FfiLayoutFcCallbacks,
     sink: *const FfiCommitSink,
 ) {
@@ -1548,20 +1591,31 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
             .populate_from_paintable(&callbacks, root, paintable_to_replace)
             .expect("partial relayout root must have committed geometry");
         if !viewport.is_invalid() && viewport != root {
-            let _ = state.populate_from_paintable(&callbacks, viewport, std::ptr::null_mut());
+            // The viewport only serves as the containing block of fixed-position
+            // descendants during this pass; a partial relayout is only valid
+            // while the viewport geometry is unchanged, so the caller-supplied
+            // viewport size matches the committed one.
+            let viewport_inline_size = CssPixels::from_raw(viewport_inline_size_raw);
+            let viewport_block_size = CssPixels::from_raw(viewport_block_size_raw);
+            let viewport_constraints = crate::layout::ContainingBlockConstraints {
+                percentage_basis_inline_size: Some(viewport_inline_size),
+                percentage_basis_block_size: Some(viewport_block_size),
+                ..crate::layout::ContainingBlockConstraints::default()
+            };
+            let viewport_used = state.create_used_values(&callbacks, viewport, viewport_constraints);
+            viewport_used.set_content_inline_size(viewport_inline_size);
+            viewport_used.set_content_block_size(viewport_block_size);
         }
-        let input = LayoutInput {
-            available_space: AvailableSpace {
+        let input = LayoutInput::new(
+            AvailableSpace {
                 inline_size: AvailableSize::definite(root_used.content_inline_size.get()),
                 block_size: AvailableSize::definite(root_used.content_block_size.get()),
             },
             // The subtree root has definite sizes in both axes, so boxes
             // below it do not need inherited percentage constraints.
-            containing_block_constraints: crate::layout::ContainingBlockConstraints::default(),
-            content_box_position_in_bfc_root: None,
-            table_grid_min_border_box_block_size: None,
-            table_box_content_offset_in_wrapper: None,
-        };
+            crate::layout::ContainingBlockConstraints::default(),
+            FcParticipation::Root,
+        );
 
         let state_ref = &state;
         let facts = state.node_facts(&callbacks, root);

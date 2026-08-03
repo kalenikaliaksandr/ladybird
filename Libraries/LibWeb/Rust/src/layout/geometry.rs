@@ -113,16 +113,80 @@ impl ContainingBlockConstraints {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct LayoutInput {
-    pub(crate) available_space: AvailableSpace,
-    pub(crate) containing_block_constraints: ContainingBlockConstraints,
-    pub(crate) content_box_position_in_bfc_root: Option<FfiCssPixelPoint>,
-    pub(crate) table_grid_min_border_box_block_size: Option<CssPixels>,
+// Parent-authoritative sizing directives for the root box of a formatting
+// context run. A forced content size is adopted verbatim by the run prelude
+// and marks the axis definite; resolution steps for that axis are skipped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RootSizingDirectives {
+    pub(crate) forced_content_inline_size: Option<CssPixels>,
+    pub(crate) forced_content_block_size: Option<CssPixels>,
+    // Minimum border-box block size a flex container imposes on a stretched
+    // table-wrapper item; relayed by the wrapper's block formatting context
+    // into the table run.
+    pub(crate) forced_min_border_box_block_size: Option<CssPixels>,
     // The table box's content-box offset within its anonymous wrapper, in the
     // wrapper's coordinate space. Set only by the block parent launching a
     // table formatting context; the table run bases its row and row-group
     // placement on it and reports the caption-adjusted offset back through
     // ChildLayoutResult.
     pub(crate) table_box_content_offset_in_wrapper: Option<LogicalOffset>,
+}
+
+// How the root box of a formatting context run participates in its parent's
+// layout. This decides which sizing rules the run prelude applies to the
+// root; it is stated explicitly by the parent building the input rather than
+// derived from node facts, because the same box kind can participate
+// differently depending on tree position (a table wrapper is an `Item` as a
+// flex item but `BlockLevel` in a block flow).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FcParticipation {
+    // In-flow block-level box in a block formatting context.
+    BlockLevel,
+    // Floating box; sized shrink-to-fit by its block parent.
+    Float,
+    // Atomic inline-level box in an inline formatting context.
+    Atomic,
+    // Absolutely positioned box sized by the abspos engine.
+    OutOfFlow,
+    // Flex item, grid item, table participant, or other container-internal
+    // box whose used values the container creates and sizes itself.
+    Item,
+    // FFI entry or measurement root; sized by forced directives, previously
+    // committed geometry, or the measurement constraints.
+    Root,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LayoutInput {
+    pub(crate) available_space: AvailableSpace,
+    pub(crate) containing_block_constraints: ContainingBlockConstraints,
+    pub(crate) content_box_position_in_bfc_root: Option<FfiCssPixelPoint>,
+    pub(crate) sizing: RootSizingDirectives,
+    pub(crate) participation: FcParticipation,
+}
+
+impl LayoutInput {
+    pub(crate) fn new(
+        available_space: AvailableSpace,
+        containing_block_constraints: ContainingBlockConstraints,
+        participation: FcParticipation,
+    ) -> Self {
+        Self {
+            available_space,
+            containing_block_constraints,
+            content_box_position_in_bfc_root: None,
+            sizing: RootSizingDirectives::default(),
+            participation,
+        }
+    }
+
+    pub(crate) fn with_forced_sizes(
+        mut self,
+        forced_content_inline_size: Option<CssPixels>,
+        forced_content_block_size: Option<CssPixels>,
+    ) -> Self {
+        self.sizing.forced_content_inline_size = forced_content_inline_size;
+        self.sizing.forced_content_block_size = forced_content_block_size;
+        self
+    }
 }

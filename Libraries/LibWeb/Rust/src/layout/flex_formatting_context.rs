@@ -2358,8 +2358,8 @@ impl<'pass> FlexFormattingContext<'pass> {
                 .available_inner_space_or_constraints_from(self.available_space_for_items.unwrap().space),
             containing_block_constraints: self.item_containing_block_constraints(),
             content_box_position_in_bfc_root: None,
-            table_grid_min_border_box_block_size: None,
-            table_box_content_offset_in_wrapper: None,
+            sizing: RootSizingDirectives::default(),
+            participation: FcParticipation::Item,
         };
         // https://drafts.csswg.org/css-flexbox-1/#flex-items
         // In the case of flex items with display: table, the table wrapper box becomes the flex item,
@@ -2382,7 +2382,7 @@ impl<'pass> FlexFormattingContext<'pass> {
             );
             let extra = (self.flex_items[index].cross_size.unwrap() - self.flex_items[index].hypothetical_cross_size)
                 .max(CssPixels::default());
-            input.table_grid_min_border_box_block_size = Some(intrinsic_size + extra);
+            input.sizing.forced_min_border_box_block_size = Some(intrinsic_size + extra);
         }
 
         match crate::layout::layout_inside_child(frame, None, None, node, LayoutMode::Normal, input, false) {

@@ -1918,8 +1918,8 @@ impl<'pass> TableFormattingContext<'pass> {
             available_space: input,
             containing_block_constraints: ContainingBlockConstraints::default(),
             content_box_position_in_bfc_root: None,
-            table_grid_min_border_box_block_size: None,
-            table_box_content_offset_in_wrapper: None,
+            sizing: RootSizingDirectives::default(),
+            participation: FcParticipation::Item,
         };
         match crate::layout::layout_inside_child(frame, None, None, cell.box_, self.layout_mode, layout_input, false) {
             crate::layout::ChildLayoutOutcome::Skipped => None,
@@ -1996,8 +1996,8 @@ impl<'pass> TableFormattingContext<'pass> {
                 available_space: inner,
                 containing_block_constraints: ContainingBlockConstraints::default(),
                 content_box_position_in_bfc_root: None,
-                table_grid_min_border_box_block_size: None,
-                table_box_content_offset_in_wrapper: None,
+                sizing: RootSizingDirectives::default(),
+                participation: FcParticipation::Item,
             },
         );
         measurement
@@ -2488,9 +2488,9 @@ impl<'pass> TableFormattingContext<'pass> {
 
     fn run(&mut self, frame: &mut FcFrame<'pass>, parent: Option<&BlockFormattingContext<'pass>>, input: LayoutInput) {
         self.available_space = input.available_space;
-        self.min_border_box_block_size_from_flex_item = input.table_grid_min_border_box_block_size;
-        self.pending_table_offset = input.table_box_content_offset_in_wrapper.unwrap_or_default();
-        self.should_publish_pending_table_offset = input.table_box_content_offset_in_wrapper.is_some();
+        self.min_border_box_block_size_from_flex_item = input.sizing.forced_min_border_box_block_size;
+        self.pending_table_offset = input.sizing.table_box_content_offset_in_wrapper.unwrap_or_default();
+        self.should_publish_pending_table_offset = input.sizing.table_box_content_offset_in_wrapper.is_some();
         self.run_until_inline_size_calculation(input, false);
         if matches!(
             self.available_space.inline_size,

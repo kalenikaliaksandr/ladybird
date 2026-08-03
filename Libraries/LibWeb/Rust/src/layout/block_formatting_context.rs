@@ -1541,8 +1541,8 @@ impl<'pass> BlockFormattingContext<'pass> {
                 .sizing()
                 .constraints_for_child_context(containing_block, containing_input.containing_block_constraints),
             content_box_position_in_bfc_root: containing_input.content_box_position_in_bfc_root,
-            table_grid_min_border_box_block_size: None,
-            table_box_content_offset_in_wrapper: None,
+            sizing: RootSizingDirectives::default(),
+            participation: FcParticipation::BlockLevel,
         }
     }
 
@@ -1836,12 +1836,16 @@ impl<'pass> BlockFormattingContext<'pass> {
                 available_space: inner_available_space,
                 containing_block_constraints: input.containing_block_constraints,
                 content_box_position_in_bfc_root: None,
-                table_grid_min_border_box_block_size: if is_table_formatting_context {
-                    input.table_grid_min_border_box_block_size
-                } else {
-                    None
+                sizing: RootSizingDirectives {
+                    forced_min_border_box_block_size: if is_table_formatting_context {
+                        input.sizing.forced_min_border_box_block_size
+                    } else {
+                        None
+                    },
+                    table_box_content_offset_in_wrapper,
+                    ..RootSizingDirectives::default()
                 },
-                table_box_content_offset_in_wrapper,
+                participation: FcParticipation::BlockLevel,
             };
             let child_layout = self.layout_inside(frame, node, inside_layout_input, true);
             if let Some(stashed_offset) = table_box_content_offset_in_wrapper {
@@ -2337,8 +2341,8 @@ impl<'pass> BlockFormattingContext<'pass> {
                     available_space: inner_available_space,
                     containing_block_constraints: constraints,
                     content_box_position_in_bfc_root: None,
-                    table_grid_min_border_box_block_size: None,
-                    table_box_content_offset_in_wrapper: None,
+                    sizing: RootSizingDirectives::default(),
+                    participation: FcParticipation::BlockLevel,
                 },
                 true,
             );
@@ -2478,8 +2482,8 @@ impl<'pass> BlockFormattingContext<'pass> {
                 available_space: inner,
                 containing_block_constraints: input.containing_block_constraints,
                 content_box_position_in_bfc_root: None,
-                table_grid_min_border_box_block_size: None,
-                table_box_content_offset_in_wrapper: None,
+                sizing: RootSizingDirectives::default(),
+                participation: FcParticipation::Float,
             },
             false,
         );

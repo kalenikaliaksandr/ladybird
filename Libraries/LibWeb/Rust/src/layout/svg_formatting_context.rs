@@ -710,8 +710,8 @@ impl<'pass> SvgFormattingContext<'pass> {
                     ..Default::default()
                 },
                 content_box_position_in_bfc_root: None,
-                table_grid_min_border_box_block_size: None,
-                table_box_content_offset_in_wrapper: None,
+                sizing: RootSizingDirectives::default(),
+                participation: FcParticipation::Item,
             };
             let child_layout =
                 match crate::layout::layout_inside_child(frame, None, None, child, self.layout_mode, child_input, true) {
@@ -827,8 +827,8 @@ impl<'pass> SvgFormattingContext<'pass> {
                     ..Default::default()
                 },
                 content_box_position_in_bfc_root: None,
-                table_grid_min_border_box_block_size: None,
-                table_box_content_offset_in_wrapper: None,
+                sizing: RootSizingDirectives::default(),
+                participation: FcParticipation::Item,
             },
         );
         self.set_svg_viewport_size(
@@ -1085,8 +1085,8 @@ impl<'pass> SvgFormattingContext<'pass> {
                     ..Default::default()
                 },
                 content_box_position_in_bfc_root: None,
-                table_grid_min_border_box_block_size: None,
-                table_box_content_offset_in_wrapper: None,
+                sizing: RootSizingDirectives::default(),
+                participation: FcParticipation::Item,
             },
         );
 

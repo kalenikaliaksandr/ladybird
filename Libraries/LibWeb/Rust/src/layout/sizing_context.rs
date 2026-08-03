@@ -1148,8 +1148,8 @@ impl<'pass> SizingContext<'pass> {
                 },
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
-                table_grid_min_border_box_block_size: None,
-                table_box_content_offset_in_wrapper: None,
+                sizing: RootSizingDirectives::default(),
+                participation: FcParticipation::Root,
             },
         );
         result.automatic_content_inline_size = clamp_to_max_dimension_value(result.automatic_content_inline_size);
@@ -1349,8 +1349,8 @@ impl<'pass> SizingContext<'pass> {
                 },
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
-                table_grid_min_border_box_block_size: None,
-                table_box_content_offset_in_wrapper: None,
+                sizing: RootSizingDirectives::default(),
+                participation: FcParticipation::Root,
             },
         );
         result.automatic_content_inline_size = clamp_to_max_dimension_value(result.automatic_content_inline_size);
@@ -1405,8 +1405,8 @@ impl<'pass> SizingContext<'pass> {
                 },
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
-                table_grid_min_border_box_block_size: None,
-                table_box_content_offset_in_wrapper: None,
+                sizing: RootSizingDirectives::default(),
+                participation: FcParticipation::Root,
             },
         );
         let value = clamp_to_max_dimension_value(result.automatic_content_block_size);
@@ -1458,8 +1458,8 @@ impl<'pass> SizingContext<'pass> {
                 },
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
-                table_grid_min_border_box_block_size: None,
-                table_box_content_offset_in_wrapper: None,
+                sizing: RootSizingDirectives::default(),
+                participation: FcParticipation::Root,
             },
         );
         let value = clamp_to_max_dimension_value(result.automatic_content_block_size);
@@ -1483,8 +1483,8 @@ impl<'pass> SizingContext<'pass> {
                     available_space: inner_available_space,
                     containing_block_constraints: constraints,
                     content_box_position_in_bfc_root: None,
-                    table_grid_min_border_box_block_size: None,
-                    table_box_content_offset_in_wrapper: None,
+                    sizing: RootSizingDirectives::default(),
+                    participation: FcParticipation::Root,
                 },
             )
             .automatic_content_block_size
@@ -1649,8 +1649,8 @@ impl<'pass> SizingContext<'pass> {
                 available_space: table_available,
                 containing_block_constraints: table_constraints,
                 content_box_position_in_bfc_root: None,
-                table_grid_min_border_box_block_size: None,
-                table_box_content_offset_in_wrapper: None,
+                sizing: RootSizingDirectives::default(),
+                participation: FcParticipation::Root,
             },
             true,
         );
@@ -1701,8 +1701,8 @@ impl<'pass> SizingContext<'pass> {
                     .available_inner_space_or_constraints_from(available_space),
                 containing_block_constraints: table_wrapper_constraints,
                 content_box_position_in_bfc_root: None,
-                table_grid_min_border_box_block_size: None,
-                table_box_content_offset_in_wrapper: None,
+                sizing: RootSizingDirectives::default(),
+                participation: FcParticipation::Root,
             },
         );
 
