@@ -575,7 +575,7 @@ LayoutRustBridge::LayoutRustBridge() = default;
 
 LayoutRustBridge::~LayoutRustBridge() = default;
 
-void LayoutRustBridge::run_root_layout(Box& viewport, NodeWithStyleAndBoxModelMetrics* document_element_layout_node, CSSPixels viewport_inline_size, CSSPixels viewport_block_size, bool should_collect_devtools_layout_data)
+void LayoutRustBridge::run_root_layout(Box& viewport, CSSPixels viewport_inline_size, CSSPixels viewport_block_size, bool should_collect_devtools_layout_data)
 {
     VERIFY(!m_commit_root);
     m_commit_root = &viewport;
@@ -591,7 +591,6 @@ void LayoutRustBridge::run_root_layout(Box& viewport, NodeWithStyleAndBoxModelMe
         ActiveLayoutPassScope active_pass;
         RustFFI::rust_layout_run_root_layout(
             Node::slot_id(&viewport),
-            Node::slot_id(document_element_layout_node),
             viewport_inline_size.raw_value(),
             viewport_block_size.raw_value(),
             should_collect_devtools_layout_data,

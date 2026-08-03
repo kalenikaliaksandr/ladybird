@@ -1588,15 +1588,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         }
 
         let block_container_inline_size = self.used(block_container).content_inline_size.get();
-        if self.try_used_pointer(node).is_some() {
-            assert!(
-                self.state
-                    .may_reuse_precreated_used_values(self.callbacks.slot_index(node)),
-                "block layout visited a box whose used values were already created"
-            );
-        } else {
-            self.create_used_values(node, input.containing_block_constraints);
-        }
+        self.create_used_values(node, input.containing_block_constraints);
 
         self.resolve_vertical_box_model_metrics(node, block_container_inline_size);
         assert_eq!(self.containing_block(node), block_container);

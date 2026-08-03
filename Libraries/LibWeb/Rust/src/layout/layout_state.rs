@@ -808,7 +808,6 @@ pub(crate) struct LayoutState {
     line_data: PagedStore<RefCell<LineData>>,
     block_rare_data: PagedStore<RefCell<BlockRareData>>,
     used_values_rare_data: PagedStore<RefCell<UsedValuesRareData>>,
-    precreated_used_value_slots: RefCell<HashSet<u32>>,
     purpose: LayoutStatePurpose,
 }
 
@@ -861,20 +860,12 @@ impl LayoutState {
             line_data: PagedStore::default(),
             block_rare_data: PagedStore::default(),
             used_values_rare_data: PagedStore::default(),
-            precreated_used_value_slots: RefCell::new(HashSet::new()),
             purpose,
         }
     }
 
     pub(crate) fn is_measurement(&self) -> bool {
         self.purpose == LayoutStatePurpose::Measurement
-    }
-
-    pub(crate) fn record_precreated_used_values(&self, callbacks: &FfiLayoutFcCallbacks, node: Node) {
-        assert!(!self.is_measurement());
-        let slot_index = callbacks.slot_index(node);
-        assert!(self.used_values.get(slot_index).is_some());
-        assert!(self.precreated_used_value_slots.borrow_mut().insert(slot_index));
     }
 
     #[inline]
@@ -888,10 +879,6 @@ impl LayoutState {
             callbacks,
             node,
         }
-    }
-
-    pub(crate) fn may_reuse_precreated_used_values(&self, slot_index: u32) -> bool {
-        self.precreated_used_value_slots.borrow().contains(&slot_index)
     }
 
     pub(crate) fn create_used_values(

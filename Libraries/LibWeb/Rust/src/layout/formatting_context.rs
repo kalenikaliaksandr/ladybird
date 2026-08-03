@@ -1458,7 +1458,6 @@ fn independent_formatting_context_type(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_layout_run_root_layout(
     root: NodeSlotId,
-    document_element_layout_node: NodeSlotId,
     viewport_inline_size_raw: i32,
     viewport_block_size_raw: i32,
     should_collect_devtools_layout_data: bool,
@@ -1483,24 +1482,21 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             ..crate::layout::ContainingBlockConstraints::default()
         };
         let viewport_used = state.create_used_values(&callbacks, root, root_constraints);
-        state.record_precreated_used_values(&callbacks, root);
         viewport_used.set_content_inline_size(viewport_inline_size);
         viewport_used.set_content_block_size(viewport_block_size);
 
         let mut root_for_layout = root;
-        let has_initial_containing_block = !document_element_layout_node.is_invalid();
-        if has_initial_containing_block {
-            let icb_used = state.create_used_values(&callbacks, document_element_layout_node, root_constraints);
-            state.record_precreated_used_values(&callbacks, document_element_layout_node);
-            icb_used.set_content_inline_size(viewport_inline_size);
-        }
-
         let first_child = callbacks.first_child(root);
         if !first_child.is_invalid() && state.node_facts(&callbacks, first_child).is_svg_svg_box() {
             // Standalone SVG documents use the viewport size for the root
-            // SVG container and enter SVG layout directly.
-            let svg_root_used = state.used_values(&callbacks, first_child);
-            svg_root_used.set_content_block_size(viewport_used.content_block_size.get());
+            // SVG container and enter SVG layout directly. The SVG root is a
+            // replaced box, so creation derives no stretch-fit size from the
+            // viewport constraints; force both axes to the viewport size here,
+            // where this entry point acts as the runner of the SVG root's
+            // formatting context.
+            let svg_root_used = state.create_used_values(&callbacks, first_child, root_constraints);
+            svg_root_used.set_content_inline_size(viewport_inline_size);
+            svg_root_used.set_content_block_size(viewport_block_size);
             root_for_layout = first_child;
         }
         let input = LayoutInput {
