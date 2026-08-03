@@ -20,6 +20,13 @@ pub use libweb_html_tokenizer as html_tokenizer;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 
+// The unit-test binary links no C++ objects, so the C++-defined symbols that
+// survive dead-stripping need test stubs. No test exercises a real retained
+// font cascade list, so releasing one is a no-op here.
+#[cfg(test)]
+#[unsafe(no_mangle)]
+extern "C" fn ladybird_gfx_font_cascade_list_unref(_list: *const std::ffi::c_void) {}
+
 fn abort_on_panic<F: FnOnce() -> R, R>(f: F) -> R {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(result) => result,
