@@ -52,7 +52,7 @@ pub(crate) struct AbsposEngine<'pass> {
 }
 
 impl<'pass> AbsposEngine<'pass> {
-    fn new(state: &'pass LayoutState, callbacks: FfiLayoutFcCallbacks) -> Self {
+    pub(crate) fn new(state: &'pass LayoutState, callbacks: FfiLayoutFcCallbacks) -> Self {
         Self { state, callbacks }
     }
 
@@ -1625,21 +1625,17 @@ impl AbsposEngine<'_> {
 }
 
 impl<'pass> AbsposEngine<'pass> {
-    fn layout_element(&self, frame: &mut crate::layout::FcFrame<'pass>, node: Node, inputs: AbsposLayoutInputs) {
-        assert!(!self.facts(node).is_svg_box());
-        let containing_block_size = LogicalSize {
-            inline_size: clamp_to_max_dimension_value(inputs.containing_block_info.rect.size.inline_size),
-            block_size: clamp_to_max_dimension_value(inputs.containing_block_info.rect.size.block_size),
-        };
-        let available_space = AvailableSpace {
-            inline_size: AvailableSize::definite(containing_block_size.inline_size),
-            block_size: AvailableSize::definite(containing_block_size.block_size),
-        };
-        let constraints = ContainingBlockConstraints {
-            percentage_basis_inline_size: Some(containing_block_size.inline_size),
-            percentage_basis_block_size: Some(containing_block_size.block_size),
-            quirks_mode_percentage_basis_block_size: None,
-        };
+    // Run-prelude sizing for an absolutely positioned root: box-model
+    // metrics, the inset-aware inline solve, the pre-inside-layout block
+    // pass, and the definiteness overrides insets and aspect ratios provide.
+    pub(crate) fn dimension_out_of_flow_root(
+        &self,
+        node: Node,
+        available_space: AvailableSpace,
+        constraints: ContainingBlockConstraints,
+        inputs: AbsposLayoutInputs,
+    ) {
+        let containing_block_inline_size = available_space.inline_size.to_px_or_zero();
         let style = self.style(node);
         {
             let used = self.used_mut(node);
@@ -1648,13 +1644,13 @@ impl<'pass> AbsposEngine<'pass> {
             used.border_top.set(style.border_top_width());
             used.border_bottom.set(style.border_bottom_width());
             used.padding_left
-                .set(style.padding_left().to_px(containing_block_size.inline_size));
+                .set(style.padding_left().to_px(containing_block_inline_size));
             used.padding_right
-                .set(style.padding_right().to_px(containing_block_size.inline_size));
+                .set(style.padding_right().to_px(containing_block_inline_size));
             used.padding_top
-                .set(style.padding_top().to_px(containing_block_size.inline_size));
+                .set(style.padding_top().to_px(containing_block_inline_size));
             used.padding_bottom
-                .set(style.padding_bottom().to_px(containing_block_size.inline_size));
+                .set(style.padding_bottom().to_px(containing_block_inline_size));
         }
 
         self.compute_inline_size(node, available_space, constraints, inputs.static_position_rect);
@@ -1693,35 +1689,23 @@ impl<'pass> AbsposEngine<'pass> {
 
         self.sizing()
             .make_button_content_box_definite(node, LayoutMode::Normal, available_space, constraints, None);
+    }
 
-        let inner_available_space = self
-            .used(node)
-            .available_inner_space_or_constraints_from(available_space);
-        let child_layout = match crate::layout::layout_inside_child(
-            frame,
-            None,
-            None,
-            node,
-            LayoutMode::Normal,
-            LayoutInput {
-                available_space: inner_available_space,
-                containing_block_constraints: constraints,
-                content_box_position_in_bfc_root: None,
-                sizing: RootSizingDirectives::default(),
-                participation: FcParticipation::OutOfFlow,
-            },
-            false,
-        ) {
-            crate::layout::ChildLayoutOutcome::Created(child_layout) => Some(child_layout),
-            crate::layout::ChildLayoutOutcome::Skipped => None,
-            // Absolutely positioned boxes with children establish an
-            // independent formatting context, so they cannot remain in
-            // the currently running context.
-            crate::layout::ChildLayoutOutcome::ReenterCurrent => {
-                unreachable!("abspos child with contents did not establish a formatting context")
-            }
+    // Run-epilogue finalization for an absolutely positioned root: the
+    // post-inside-layout block pass for automatic heights, and the alignment
+    // fallback that distributes leftover space into auto insets.
+    pub(crate) fn finalize_out_of_flow_root_after_inside_layout(
+        &self,
+        node: Node,
+        available_space: AvailableSpace,
+        constraints: ContainingBlockConstraints,
+        inputs: AbsposLayoutInputs,
+    ) {
+        let containing_block_size = LogicalSize {
+            inline_size: available_space.inline_size.to_px_or_zero(),
+            block_size: available_space.block_size.to_px_or_zero(),
         };
-
+        let style = self.style(node);
         if style.height().is_auto() {
             self.compute_block_size(
                 node,
@@ -1774,6 +1758,48 @@ impl<'pass> AbsposEngine<'pass> {
                 }
             }
         }
+    }
+
+    fn layout_element(&self, frame: &mut crate::layout::FcFrame<'pass>, node: Node, inputs: AbsposLayoutInputs) {
+        assert!(!self.facts(node).is_svg_box());
+        let containing_block_size = LogicalSize {
+            inline_size: clamp_to_max_dimension_value(inputs.containing_block_info.rect.size.inline_size),
+            block_size: clamp_to_max_dimension_value(inputs.containing_block_info.rect.size.block_size),
+        };
+        let available_space = AvailableSpace {
+            inline_size: AvailableSize::definite(containing_block_size.inline_size),
+            block_size: AvailableSize::definite(containing_block_size.block_size),
+        };
+        let constraints = ContainingBlockConstraints {
+            percentage_basis_inline_size: Some(containing_block_size.inline_size),
+            percentage_basis_block_size: Some(containing_block_size.block_size),
+            quirks_mode_percentage_basis_block_size: None,
+        };
+
+        let child_layout = match crate::layout::layout_inside_child(
+            frame,
+            None,
+            None,
+            node,
+            LayoutMode::Normal,
+            LayoutInput::new(available_space, constraints, FcParticipation::OutOfFlow(inputs)),
+            false,
+        ) {
+            crate::layout::ChildLayoutOutcome::Created(child_layout) => Some(child_layout),
+            crate::layout::ChildLayoutOutcome::Skipped => {
+                // A skipped inside layout never runs the prelude or epilogue;
+                // the root must still be sized and finalized here.
+                self.dimension_out_of_flow_root(node, available_space, constraints, inputs);
+                self.finalize_out_of_flow_root_after_inside_layout(node, available_space, constraints, inputs);
+                None
+            }
+            // Absolutely positioned boxes with children establish an
+            // independent formatting context, so they cannot remain in
+            // the currently running context.
+            crate::layout::ChildLayoutOutcome::ReenterCurrent => {
+                unreachable!("abspos child with contents did not establish a formatting context")
+            }
+        };
 
         let static_offset = self.static_offset(node, inputs.static_position_rect);
         let used = self.used(node);

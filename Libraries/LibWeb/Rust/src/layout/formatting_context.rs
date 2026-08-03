@@ -1371,21 +1371,27 @@ pub(crate) fn independent_root_automatic_block_size(
 // (whoever runs a formatting context creates its root's used values).
 fn apply_root_sizing_directives(frame: &FcFrame, input: &LayoutInput) -> LayoutInput {
     let directives = input.sizing;
-    if matches!(input.participation, FcParticipation::Atomic) {
-        let sizing = SizingContext::new(frame.state, frame.callbacks);
-        sizing.dimension_atomic_root(
-            frame.box_,
-            input.available_space,
-            input.containing_block_constraints,
-            frame.layout_mode,
-        );
-        let inner_available_space = frame
-            .state
-            .used_values(&frame.callbacks, frame.box_)
-            .available_inner_space_or_constraints_from(input.available_space);
-        let mut body_input = *input;
-        body_input.available_space = inner_available_space;
-        return body_input;
+    match input.participation {
+        FcParticipation::Atomic => {
+            let sizing = SizingContext::new(frame.state, frame.callbacks);
+            sizing.dimension_atomic_root(
+                frame.box_,
+                input.available_space,
+                input.containing_block_constraints,
+                frame.layout_mode,
+            );
+            return body_input_with_inner_available_space(frame, input);
+        }
+        FcParticipation::OutOfFlow(abspos_inputs) => {
+            AbsposEngine::new(frame.state, frame.callbacks).dimension_out_of_flow_root(
+                frame.box_,
+                input.available_space,
+                input.containing_block_constraints,
+                abspos_inputs,
+            );
+            return body_input_with_inner_available_space(frame, input);
+        }
+        _ => {}
     }
     if cfg!(debug_assertions)
         && matches!(input.participation, FcParticipation::Item)
@@ -1413,6 +1419,18 @@ fn apply_root_sizing_directives(frame: &FcFrame, input: &LayoutInput) -> LayoutI
         }
     }
     *input
+}
+
+// The input a flipped run's body executes with: the root's inner space,
+// derived after the prelude sized the root.
+fn body_input_with_inner_available_space(frame: &FcFrame, input: &LayoutInput) -> LayoutInput {
+    let inner_available_space = frame
+        .state
+        .used_values(&frame.callbacks, frame.box_)
+        .available_inner_space_or_constraints_from(input.available_space);
+    let mut body_input = *input;
+    body_input.available_space = inner_available_space;
+    body_input
 }
 
 // Seam check while the child-sizes-self migration is in progress: any run
@@ -1492,8 +1510,19 @@ fn run_formatting_context<'pass>(
         }
     }
 
-    if matches!(input.participation, FcParticipation::Atomic) {
-        finalize_atomic_root_block_size(frame, &input, cached_atomic_block_size, parent_block);
+    match input.participation {
+        FcParticipation::Atomic => {
+            finalize_atomic_root_block_size(frame, &input, cached_atomic_block_size, parent_block);
+        }
+        FcParticipation::OutOfFlow(abspos_inputs) => {
+            AbsposEngine::new(frame.state, frame.callbacks).finalize_out_of_flow_root_after_inside_layout(
+                frame.box_,
+                input.available_space,
+                input.containing_block_constraints,
+                abspos_inputs,
+            );
+        }
+        _ => {}
     }
     if input.sizing.adopt_automatic_content_block_size {
         debug_assert!(

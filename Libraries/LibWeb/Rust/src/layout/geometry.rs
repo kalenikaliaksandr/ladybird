@@ -152,8 +152,10 @@ pub(crate) enum FcParticipation {
     Float,
     // Atomic inline-level box in an inline formatting context.
     Atomic,
-    // Absolutely positioned box sized by the abspos engine.
-    OutOfFlow,
+    // Absolutely positioned box; the payload carries the containing-block and
+    // static-position information the inset-aware solvers in the abspos
+    // engine need, which the run prelude and epilogue dispatch to.
+    OutOfFlow(AbsposLayoutInputs),
     // Flex item, grid item, table participant, or other container-internal
     // box whose used values the container creates and sizes itself.
     Item,
