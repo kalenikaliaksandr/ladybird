@@ -1333,12 +1333,60 @@ impl Drop for FormattingContextInstance<'_> {
     }
 }
 
+// The automatic content block size of a box that establishes an independent
+// formatting context. This is the independent-root slice of the same-FC
+// automatic computation in the block formatting context: independent roots
+// never touch the enclosing margin-collapse state.
+pub(crate) fn independent_root_automatic_block_size(
+    state: &LayoutState,
+    callbacks: &FfiLayoutFcCallbacks,
+    node: Node,
+    available_inner_space: AvailableSpace,
+    constraints: ContainingBlockConstraints,
+) -> CssPixels {
+    let facts = state.node_facts(callbacks, node);
+    if facts.creates_block_formatting_context() {
+        return automatic_block_size_for_bfc_root(state, *callbacks, node);
+    }
+    let style = state.style_facts(callbacks, node);
+    if style.display().is_flex_inside() || style.display().is_grid_inside() || style.display().is_table_inside() {
+        // The automatic block size of a flex, grid, or table container is its
+        // max-content size.
+        return SizingContext::new(state, *callbacks).calculate_max_content_block_size(
+            node,
+            available_inner_space.inline_size.to_px_or_zero(),
+            constraints,
+        );
+    }
+    debug_assert!(false, "independent formatting context root of unexpected kind");
+    CssPixels::default()
+}
+
 // Run prelude: adopt the parent-authoritative sizing directives onto the run
-// root's used values before the formatting context body executes. Forced
+// root's used values before the formatting context body executes, and for
+// participations that have been flipped to child-side sizing, dimension the
+// root here. Returns the input the body runs with: flipped participations
+// receive the root's inner space, the rest pass through unchanged. Forced
 // sizes mark their axis definite; the root's used values must already exist
 // (whoever runs a formatting context creates its root's used values).
-fn apply_root_sizing_directives(frame: &FcFrame, input: &LayoutInput) {
+fn apply_root_sizing_directives(frame: &FcFrame, input: &LayoutInput) -> LayoutInput {
     let directives = input.sizing;
+    if matches!(input.participation, FcParticipation::Atomic) {
+        let sizing = SizingContext::new(frame.state, frame.callbacks);
+        sizing.dimension_atomic_root(
+            frame.box_,
+            input.available_space,
+            input.containing_block_constraints,
+            frame.layout_mode,
+        );
+        let inner_available_space = frame
+            .state
+            .used_values(&frame.callbacks, frame.box_)
+            .available_inner_space_or_constraints_from(input.available_space);
+        let mut body_input = *input;
+        body_input.available_space = inner_available_space;
+        return body_input;
+    }
     if cfg!(debug_assertions)
         && matches!(input.participation, FcParticipation::Item)
         && frame.layout_mode == LayoutMode::Normal
@@ -1350,21 +1398,21 @@ fn apply_root_sizing_directives(frame: &FcFrame, input: &LayoutInput) {
             "container-internal run root must arrive with a container-assigned inline size"
         );
     }
-    if directives.forced_content_inline_size.is_none() && directives.forced_content_block_size.is_none() {
-        return;
+    if directives.forced_content_inline_size.is_some() || directives.forced_content_block_size.is_some() {
+        debug_assert!(
+            matches!(input.participation, FcParticipation::Root),
+            "forced content sizes are only expected on entry-root runs"
+        );
+        let used = frame.state.used_values(&frame.callbacks, frame.box_);
+        if let Some(inline_size) = directives.forced_content_inline_size {
+            used.set_content_inline_size(inline_size);
+        }
+        if let Some(block_size) = directives.forced_content_block_size {
+            used.set_content_block_size(block_size);
+            used.has_definite_block_size.set(true);
+        }
     }
-    debug_assert!(
-        matches!(input.participation, FcParticipation::Root),
-        "forced content sizes are only expected on entry-root runs"
-    );
-    let used = frame.state.used_values(&frame.callbacks, frame.box_);
-    if let Some(inline_size) = directives.forced_content_inline_size {
-        used.set_content_inline_size(inline_size);
-    }
-    if let Some(block_size) = directives.forced_content_block_size {
-        used.set_content_block_size(block_size);
-        used.has_definite_block_size.set(true);
-    }
+    *input
 }
 
 // Seam check while the child-sizes-self migration is in progress: any run
@@ -1392,38 +1440,60 @@ fn run_formatting_context<'pass>(
     parent_block: Option<&BlockFormattingContext<'pass>>,
 ) {
     let FormattingContextInstance { frame, implementation } = instance;
-    apply_root_sizing_directives(frame, &input);
-    match implementation {
-        FcImpl::Block(context) => {
-            context.run(frame, input);
-            frame.automatic_content_inline_size = context.automatic_content_inline_size();
-            frame.automatic_content_block_size = context.automatic_content_block_size();
+    let body_input = apply_root_sizing_directives(frame, &input);
+
+    // An atomic root measured earlier under the same intrinsic constraints
+    // replays its cached measurement instead of formatting the same
+    // descendants again; the cache is only consulted on measurement states.
+    let cached_atomic_block_size = if matches!(input.participation, FcParticipation::Atomic) {
+        SizingContext::new(frame.state, frame.callbacks).apply_cached_intrinsic_inline_measurement(
+            frame.box_,
+            input.available_space.inline_size,
+            body_input.available_space.block_size,
+            input.containing_block_constraints,
+        )
+    } else {
+        None
+    };
+    if let Some(cached_block_size) = cached_atomic_block_size {
+        frame.automatic_content_block_size = cached_block_size;
+    } else {
+        match implementation {
+            FcImpl::Block(context) => {
+                context.run(frame, body_input);
+                frame.automatic_content_inline_size = context.automatic_content_inline_size();
+                frame.automatic_content_block_size = context.automatic_content_block_size();
+            }
+            FcImpl::Flex(context) => {
+                context.run(frame, body_input);
+                frame.automatic_content_inline_size = context.automatic_content_inline_size();
+                frame.automatic_content_block_size = context.automatic_content_block_size();
+            }
+            FcImpl::Grid(context) => {
+                context.run(frame, body_input);
+                frame.automatic_content_inline_size = context.automatic_content_inline_size();
+                frame.automatic_content_block_size = context.automatic_content_block_size();
+            }
+            FcImpl::Table(context) => {
+                context.run(frame, parent_block, body_input);
+                frame.automatic_content_inline_size = context.automatic_content_inline_size();
+                frame.automatic_content_block_size = context.automatic_content_block_size;
+                frame.table_block_offset_in_wrapper = context
+                    .should_publish_pending_table_offset
+                    .then_some(context.pending_table_offset.block_offset);
+            }
+            FcImpl::Svg(context) => {
+                context.run(frame, body_input);
+            }
+            FcImpl::ReplacedWithChildren => {
+                run(frame, body_input);
+            }
+            FcImpl::InternalReplaced | FcImpl::InternalDummy => {}
         }
-        FcImpl::Flex(context) => {
-            context.run(frame, input);
-            frame.automatic_content_inline_size = context.automatic_content_inline_size();
-            frame.automatic_content_block_size = context.automatic_content_block_size();
-        }
-        FcImpl::Grid(context) => {
-            context.run(frame, input);
-            frame.automatic_content_inline_size = context.automatic_content_inline_size();
-            frame.automatic_content_block_size = context.automatic_content_block_size();
-        }
-        FcImpl::Table(context) => {
-            context.run(frame, parent_block, input);
-            frame.automatic_content_inline_size = context.automatic_content_inline_size();
-            frame.automatic_content_block_size = context.automatic_content_block_size;
-            frame.table_block_offset_in_wrapper = context
-                .should_publish_pending_table_offset
-                .then_some(context.pending_table_offset.block_offset);
-        }
-        FcImpl::Svg(context) => {
-            context.run(frame, input);
-        }
-        FcImpl::ReplacedWithChildren => {
-            run(frame, input);
-        }
-        FcImpl::InternalReplaced | FcImpl::InternalDummy => {}
+    }
+
+    if matches!(input.participation, FcParticipation::Atomic) {
+        finalize_atomic_root_block_size(frame, &input, cached_atomic_block_size, parent_block);
     }
     if input.sizing.adopt_automatic_content_block_size {
         debug_assert!(
@@ -1434,6 +1504,53 @@ fn run_formatting_context<'pass>(
         used.set_content_block_size(frame.automatic_content_block_size);
     }
     debug_assert_root_sizes_are_final_after_run(frame, &input);
+}
+
+// Run epilogue for atomic inline-level roots: the final block-size
+// resolution, against the parent's available space exactly as the inline
+// formatting context performed it. Replaced roots resolved their block size
+// entirely in the prelude — re-running the generic clamps here would apply
+// min/max-height differently from the replaced-element solver. The automatic
+// fallback goes through the enclosing block context when one exists: boxes
+// that only run a block context through the independent-type fallback (math,
+// media elements with shadow controls) resolve their automatic height via
+// the generic child walk, which consults that context's margin-collapse
+// state.
+fn finalize_atomic_root_block_size(
+    frame: &FcFrame,
+    input: &LayoutInput,
+    cached_block_size: Option<CssPixels>,
+    parent_block: Option<&BlockFormattingContext>,
+) {
+    let node = frame.box_;
+    let available_space = input.available_space;
+    let constraints = input.containing_block_constraints;
+    let sizing = SizingContext::new(frame.state, frame.callbacks);
+    if sizing.box_is_sized_as_replaced_element(node, available_space, constraints) {
+        return;
+    }
+    if sizing.should_treat_block_size_as_auto(node, available_space, constraints) {
+        sizing.resolve_used_block_size_if_treated_as_auto(node, available_space, constraints, cached_block_size, || {
+            let available_inner_space = frame
+                .state
+                .used_values(&frame.callbacks, node)
+                .available_inner_space_or_constraints_from(available_space);
+            match parent_block {
+                Some(parent) => {
+                    parent.compute_automatic_block_size_for_block_level_element(node, available_inner_space, constraints)
+                }
+                None => independent_root_automatic_block_size(
+                    frame.state,
+                    &frame.callbacks,
+                    node,
+                    available_inner_space,
+                    constraints,
+                ),
+            }
+        });
+    } else {
+        sizing.resolve_used_block_size_if_not_treated_as_auto(node, available_space, constraints);
+    }
 }
 
 pub(crate) fn layout_inside_child<'pass>(

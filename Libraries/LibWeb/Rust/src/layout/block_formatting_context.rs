@@ -756,38 +756,8 @@ impl<'pass> BlockFormattingContext<'pass> {
         available_space: AvailableSpace,
         constraints: ContainingBlockConstraints,
     ) {
-        let sizing = self.sizing();
-        if sizing.should_treat_block_size_as_auto(node, available_space, constraints) {
-            return;
-        }
-        let style = self.style(node);
-        let mut block_size = sizing.calculate_inner_block_size(node, available_space, style.height(), constraints);
-        if !sizing.should_treat_max_block_size_as_none(node, available_space.block_size, constraints)
-            && !style.max_height().is_auto()
-        {
-            block_size = block_size.min(sizing.calculate_inner_block_size(
-                node,
-                available_space,
-                style.max_height(),
-                constraints,
-            ));
-        }
-        if !style.min_height().is_auto() {
-            block_size = block_size.max(sizing.calculate_inner_block_size(
-                node,
-                available_space,
-                style.min_height(),
-                constraints,
-            ));
-        }
-        let used = self.used_mut(node);
-        used.set_content_block_size(block_size);
-        // A resolved used block size is not always a definite containing block size.
-        // Intrinsic sizing keywords like fit-content still depend on child layout,
-        // so percentage-sized descendants must continue to treat it as indefinite.
-        if !style.height().is_intrinsic_sizing_constraint() {
-            used.has_definite_block_size.set(true);
-        }
+        self.sizing()
+            .resolve_used_block_size_if_not_treated_as_auto(node, available_space, constraints);
     }
 
     pub(crate) fn resolve_used_block_size_if_treated_as_auto(
@@ -797,87 +767,20 @@ impl<'pass> BlockFormattingContext<'pass> {
         constraints: ContainingBlockConstraints,
         child_automatic_block_size: Option<CssPixels>,
     ) {
-        let sizing = self.sizing();
-        if !sizing.should_treat_block_size_as_auto(node, available_space, constraints) {
-            return;
-        }
-        let style = self.style(node);
-        let facts = self.facts(node);
-        let mut block_size = if sizing.box_is_sized_as_replaced_element(node, available_space, constraints) {
-            sizing.compute_block_size_for_replaced_element(node, available_space, constraints)
-        } else {
-            child_automatic_block_size.unwrap_or_else(|| {
+        self.sizing().resolve_used_block_size_if_treated_as_auto(
+            node,
+            available_space,
+            constraints,
+            child_automatic_block_size,
+            || {
                 self.compute_automatic_block_size_for_block_level_element(
                     node,
                     self.used(node)
                         .available_inner_space_or_constraints_from(available_space),
                     constraints,
                 )
-            })
-        };
-        if !sizing.should_treat_max_block_size_as_none(node, available_space.block_size, constraints)
-            && !style.max_height().is_auto()
-        {
-            block_size = block_size.min(sizing.calculate_inner_block_size(
-                node,
-                available_space,
-                style.max_height(),
-                constraints,
-            ));
-        }
-        if !style.min_height().is_auto() {
-            block_size = block_size.max(sizing.calculate_inner_block_size(
-                node,
-                available_space,
-                style.min_height(),
-                constraints,
-            ));
-        }
-
-        if facts.document_in_quirks_mode() && facts.is_html_html_element() && style.height().is_auto() {
-            // 3.6. The html element fills the viewport quirk
-            // https://quirks.spec.whatwg.org/#the-html-element-fills-the-viewport-quirk
-            // FIXME: Handle vertical writing mode.
-
-            // 1. Let margins be sum of the used values of the margin-left and margin-right properties of element
-            //    if element has a vertical writing mode, otherwise let margins be the sum of the used values of
-            //    the margin-top and margin-bottom properties of element.
-            let used = self.used(node);
-            let margins = used.margin_top.get() + used.margin_bottom.get();
-            // 2. Let size be the size of the initial containing block in the block flow direction minus margins.
-            let size = constraints.block_basis() - margins;
-            // 3. Return the bigger value of size and the normal border box size the element would have
-            //    according to the CSS specification.
-            block_size = block_size.max(size);
-            // NOTE: The block size of the root element when affected by this quirk is considered to be definite.
-            self.used_mut(node).has_definite_block_size.set(true);
-        }
-
-        if facts.document_in_quirks_mode() && facts.is_html_body_element() && style.height().is_auto() {
-            // 3.7. The body element fills the html element quirk
-            // https://quirks.spec.whatwg.org/#the-body-element-fills-the-html-element-quirk
-            // FIXME: Handle vertical writing mode.
-
-            // The element body must additionally meet the following conditions:
-            // - The computed value of the 'position' property of element is neither 'absolute' nor 'fixed'.
-            // - The computed value of the 'float' property of element is 'none'.
-            // - Element is not an inline-level element.
-            // - Element is not a multi-column spanning element.
-            // NON-STANDARD: We don't check column-span since no browser actually excludes it.
-            if !facts.is_absolutely_positioned() && !facts.is_floating() && !facts.is_inline() {
-                // 1. Let margins be sum of the used values of the margin-left and margin-right properties of element
-                //    if element has a vertical writing mode, otherwise let margins be the sum of the used values of
-                //    the margin-top and margin-bottom properties of element.
-                let used = self.used(node);
-                let margins = used.margin_top.get() + used.margin_bottom.get();
-                // 2. Let size be the size of element's parent element's content box in the block flow direction minus margins.
-                let size = constraints.block_basis() - margins;
-                // 3. Return the bigger value of size and the normal border box size the element would have
-                //    according to the CSS specification.
-                block_size = block_size.max(size);
-            }
-        }
-        self.used_mut(node).set_content_block_size(block_size);
+            },
+        );
     }
 
     fn band_index_at(&self, block_offset: CssPixels) -> usize {
@@ -2670,7 +2573,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         }
     }
 
-    fn compute_automatic_block_size_for_block_level_element(
+    pub(crate) fn compute_automatic_block_size_for_block_level_element(
         &self,
         node: Node,
         available_space: AvailableSpace,

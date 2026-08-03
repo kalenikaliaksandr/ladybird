@@ -728,29 +728,6 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         next.map(|next| next - containing_block_offset_in_root)
     }
 
-    fn parent_resolve_used_block_size(
-        &self,
-        node: Node,
-        treated_as_auto: bool,
-        available_space: AvailableSpace,
-        child_automatic_block_size: Option<CssPixels>,
-    ) {
-        if treated_as_auto {
-            self.parent.resolve_used_block_size_if_treated_as_auto(
-                node,
-                available_space,
-                self.input.containing_block_constraints,
-                child_automatic_block_size,
-            );
-        } else {
-            self.parent.resolve_used_block_size_if_not_treated_as_auto(
-                node,
-                available_space,
-                self.input.containing_block_constraints,
-            );
-        }
-    }
-
     fn layout_inside(&mut self, node: Node, available_space: AvailableSpace) -> Option<PendingChildLayout<'pass>> {
         let input = LayoutInput {
             available_space,
@@ -779,32 +756,32 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
 
     pub(crate) fn dimension_box_on_line(&mut self, node: Node) {
         let available_space = self.input.available_space;
-        let constraints = self.input.containing_block_constraints;
-        let containing_inline_size = available_space.inline_size.to_px_or_zero();
         let style = self.style(node);
-        {
-            let used = self.used_mut(node);
-            used.margin_left.set(style.margin_left().to_px(containing_inline_size));
-            used.border_left.set(style.border_left_width());
-            used.padding_left
-                .set(style.padding_left().to_px(containing_inline_size));
-            used.margin_right
-                .set(style.margin_right().to_px(containing_inline_size));
-            used.border_right.set(style.border_right_width());
-            used.padding_right
-                .set(style.padding_right().to_px(containing_inline_size));
-            used.margin_top.set(style.margin_top().to_px(containing_inline_size));
-            used.border_top.set(style.border_top_width());
-            used.padding_top.set(style.padding_top().to_px(containing_inline_size));
-            used.padding_bottom
-                .set(style.padding_bottom().to_px(containing_inline_size));
-            used.border_bottom.set(style.border_bottom_width());
-            used.margin_bottom
-                .set(style.margin_bottom().to_px(containing_inline_size));
-        }
-
         let facts = self.facts(node);
         if facts.is_list_item_marker_box() {
+            // Markers never establish a formatting context; resolve their box
+            // model here and let the marker-specific dimensioning finish them.
+            let containing_inline_size = available_space.inline_size.to_px_or_zero();
+            {
+                let used = self.used_mut(node);
+                used.margin_left.set(style.margin_left().to_px(containing_inline_size));
+                used.border_left.set(style.border_left_width());
+                used.padding_left
+                    .set(style.padding_left().to_px(containing_inline_size));
+                used.margin_right
+                    .set(style.margin_right().to_px(containing_inline_size));
+                used.border_right.set(style.border_right_width());
+                used.padding_right
+                    .set(style.padding_right().to_px(containing_inline_size));
+                used.margin_top.set(style.margin_top().to_px(containing_inline_size));
+                used.border_top.set(style.border_top_width());
+                used.padding_top.set(style.padding_top().to_px(containing_inline_size));
+                used.padding_bottom
+                    .set(style.padding_bottom().to_px(containing_inline_size));
+                used.border_bottom.set(style.border_bottom_width());
+                used.margin_bottom
+                    .set(style.margin_bottom().to_px(containing_inline_size));
+            }
             self.parent.dimension_list_item_marker(node);
             let distance = self.parent.distance_between_marker_and_list_item(node);
             let used = self.used_mut(node);
@@ -812,27 +789,6 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
                 used.margin_right.set(used.margin_right.get() + distance);
             } else {
                 used.margin_left.set(used.margin_left.get() + distance);
-            }
-            return;
-        }
-
-        let sizing = SizingContext::new(self.state, self.callbacks);
-        if sizing.box_is_sized_as_replaced_element(node, available_space, constraints) {
-            let inline_size = sizing.compute_inline_size_for_replaced_element(node, available_space, constraints);
-            self.used_mut(node).set_content_inline_size(inline_size);
-            let block_size = sizing.compute_block_size_for_replaced_element(node, available_space, constraints);
-            self.used_mut(node).set_content_block_size(block_size);
-            let block_size_is_automatic =
-                style.height().is_auto() || sizing.should_treat_block_size_as_auto(node, available_space, constraints);
-            if self.used(node).has_definite_inline_size() && facts.has_preferred_aspect_ratio() && block_size_is_automatic
-            {
-                self.used_mut(node).has_definite_block_size.set(true);
-            }
-            let inner = self
-                .used(node)
-                .available_inner_space_or_constraints_from(available_space);
-            if let Some(child_layout) = self.layout_inside(node, inner) {
-                child_layout.finish();
             }
             return;
         }
@@ -850,89 +806,16 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
             return;
         }
 
-        let unconstrained_inline_size = if sizing.should_treat_inline_size_as_auto(node, available_space) {
-            if matches!(available_space.inline_size, AvailableSize::Definite(_)) {
-                let used = self.used(node);
-                let available = available_space.inline_size.to_px_or_zero()
-                    - used.margin_left.get()
-                    - used.border_left.get()
-                    - used.padding_left.get()
-                    - used.padding_right.get()
-                    - used.border_right.get()
-                    - used.margin_right.get();
-                let preferred = sizing.calculate_max_content_inline_size(node, constraints);
-                if preferred <= available {
-                    preferred
-                } else {
-                    sizing
-                        .calculate_min_content_inline_size(node, constraints)
-                        .max(available)
-                        .min(preferred)
-                }
-            } else if available_space.inline_size == AvailableSize::MinContent {
-                sizing.calculate_min_content_inline_size(node, constraints)
-            } else {
-                sizing.calculate_max_content_inline_size(node, constraints)
-            }
-        } else if style.width().contains_percentage() && !matches!(available_space.inline_size, AvailableSize::Definite(_)) {
-            CssPixels::default()
-        } else {
-            sizing.calculate_inner_inline_size(node, available_space.inline_size, style.width(), constraints)
-        };
-
-        let mut inline_size = unconstrained_inline_size;
-        if !sizing.should_treat_max_inline_size_as_none(node, available_space.inline_size, constraints) {
-            inline_size = inline_size.min(sizing.calculate_inner_inline_size(
-                node,
-                available_space.inline_size,
-                style.max_width(),
-                constraints,
-            ));
-        }
-        if !style.min_width().is_auto() {
-            inline_size = inline_size.max(sizing.calculate_inner_inline_size(
-                node,
-                available_space.inline_size,
-                style.min_width(),
-                constraints,
-            ));
-        }
-        self.used_mut(node).set_content_inline_size(inline_size);
-
-        let inline_definite_space = AvailableSpace {
-            inline_size: crate::layout::AvailableSize::definite(inline_size),
-            block_size: crate::layout::AvailableSize::Indefinite,
-        };
-        self.parent_resolve_used_block_size(node, false, inline_definite_space, None);
-        if style.display().is_flex_inside() {
-            self.parent_resolve_used_block_size(node, true, inline_definite_space, None);
-        }
-        sizing.make_button_content_box_definite(node, self.layout_mode, available_space, constraints, None);
-        let inner_before_cached_measurement = self
-            .used(node)
-            .available_inner_space_or_constraints_from(available_space);
-        let cached_automatic_block_size = sizing.apply_cached_intrinsic_inline_measurement(
-            node,
-            available_space.inline_size,
-            inner_before_cached_measurement.block_size,
-            constraints,
-        );
-        let inner = self
-            .used(node)
-            .available_inner_space_or_constraints_from(available_space);
-        let child_layout = if cached_automatic_block_size.is_some() {
-            None
-        } else {
-            self.layout_inside(node, inner)
-        };
-        if sizing.should_treat_block_size_as_auto(node, available_space, constraints) {
-            self.parent_resolve_used_block_size(node, true, available_space, cached_automatic_block_size);
-        } else {
-            self.parent_resolve_used_block_size(node, false, available_space, None);
-        }
-        if let Some(child_layout) = child_layout {
+        // The run prelude resolves the atomic root's box model and sizes; this
+        // parent only launches the run against its own available space.
+        if let Some(child_layout) = self.layout_inside(node, available_space) {
             child_layout.finish();
         }
+        debug_assert!(
+            self.used(node).has_definite_inline_size.get()
+                || self.used(node).inline_size_constraint.get() != SizeConstraint::None,
+            "atomic inline-level run left its root's inline size unresolved"
+        );
     }
 
     fn clear_floating_boxes(&self, node: Node) -> bool {
