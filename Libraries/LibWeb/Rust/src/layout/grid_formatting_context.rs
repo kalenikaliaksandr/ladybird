@@ -3381,7 +3381,7 @@ impl<'pass> GridFormattingContext<'pass> {
                 sizing: RootSizingDirectives::default(),
                 participation: FcParticipation::Item,
             };
-            let child_layout = match crate::layout::layout_inside_child(
+            match crate::layout::layout_inside_child(
                 frame,
                 None,
                 Some(self),
@@ -3390,12 +3390,10 @@ impl<'pass> GridFormattingContext<'pass> {
                 input,
                 false,
             ) {
-                crate::layout::ChildLayoutOutcome::Created(child_layout) => Some(child_layout),
+                crate::layout::ChildLayoutOutcome::Created(_) | crate::layout::ChildLayoutOutcome::Skipped => {}
                 crate::layout::ChildLayoutOutcome::ReenterCurrent => {
                     self.run(frame, input);
-                    None
                 }
-                crate::layout::ChildLayoutOutcome::Skipped => None,
             };
             let offset = FfiCssPixelPoint {
                 x: area.offset.inline_offset + self.item_margin_box_start(item, Axis::Column),
@@ -3409,9 +3407,6 @@ impl<'pass> GridFormattingContext<'pass> {
                 area.size.inline_size,
                 area.size.block_size,
             );
-            if let Some(child_layout) = child_layout {
-                child_layout.finish();
-            }
         }
         crate::layout::compute_and_store_baselines(self.state, &self.callbacks, self.grid_container, false);
     }

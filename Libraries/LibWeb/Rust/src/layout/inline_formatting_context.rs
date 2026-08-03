@@ -728,7 +728,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         next.map(|next| next - containing_block_offset_in_root)
     }
 
-    fn layout_inside(&mut self, node: Node, available_space: AvailableSpace) -> Option<PendingChildLayout<'pass>> {
+    fn layout_inside(&mut self, node: Node, available_space: AvailableSpace) -> Option<ChildLayoutResult> {
         let input = LayoutInput {
             available_space,
             containing_block_constraints: self.input.containing_block_constraints,
@@ -808,9 +808,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
 
         // The run prelude resolves the atomic root's box model and sizes; this
         // parent only launches the run against its own available space.
-        if let Some(child_layout) = self.layout_inside(node, available_space) {
-            child_layout.finish();
-        }
+        let _ = self.layout_inside(node, available_space);
         debug_assert!(
             self.used(node).has_definite_inline_size.get()
                 || self.used(node).inline_size_constraint.get() != SizeConstraint::None,

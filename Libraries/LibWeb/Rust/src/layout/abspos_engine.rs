@@ -1776,7 +1776,7 @@ impl<'pass> AbsposEngine<'pass> {
             quirks_mode_percentage_basis_block_size: None,
         };
 
-        let child_layout = match crate::layout::layout_inside_child(
+        match crate::layout::layout_inside_child(
             frame,
             None,
             None,
@@ -1785,13 +1785,12 @@ impl<'pass> AbsposEngine<'pass> {
             LayoutInput::new(available_space, constraints, FcParticipation::OutOfFlow(inputs)),
             false,
         ) {
-            crate::layout::ChildLayoutOutcome::Created(child_layout) => Some(child_layout),
+            crate::layout::ChildLayoutOutcome::Created(_) => {}
             crate::layout::ChildLayoutOutcome::Skipped => {
                 // A skipped inside layout never runs the prelude or epilogue;
                 // the root must still be sized and finalized here.
                 self.dimension_out_of_flow_root(node, available_space, constraints, inputs);
                 self.finalize_out_of_flow_root_after_inside_layout(node, available_space, constraints, inputs);
-                None
             }
             // Absolutely positioned boxes with children establish an
             // independent formatting context, so they cannot remain in
@@ -1835,9 +1834,6 @@ impl<'pass> AbsposEngine<'pass> {
                 .abspos_layout_inputs = Some(inputs);
         }
 
-        if let Some(child_layout) = child_layout {
-            child_layout.finish();
-        }
     }
 
     pub(crate) fn layout_children(&self, frame: &mut crate::layout::FcFrame<'pass>) {

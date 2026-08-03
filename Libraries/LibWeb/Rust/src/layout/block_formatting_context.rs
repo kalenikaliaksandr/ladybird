@@ -1381,7 +1381,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         node: Node,
         input: LayoutInput,
         force_independent_context_run: bool,
-    ) -> Option<PendingChildLayout<'pass>> {
+    ) -> Option<ChildLayoutResult> {
         let used = self.used(node);
         let facts = self.facts(node);
         // OPTIMIZATION: If we're doing intrinsic sizing and `child_box` has definite size in both axes,
@@ -1709,7 +1709,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 // result-based channel replaced.
                 let block_offset = child_layout
                     .as_ref()
-                    .and_then(|child_layout| child_layout.result().table_block_offset_in_wrapper)
+                    .and_then(|child_layout| child_layout.table_block_offset_in_wrapper)
                     .unwrap_or(stashed_offset.block_offset);
                 pending_position = Some(FfiCssPixelPoint {
                     x: stashed_offset.inline_offset,
@@ -1835,10 +1835,6 @@ impl<'pass> BlockFormattingContext<'pass> {
         let used = self.used(node);
         *bottom_of_lowest_margin_box = (*bottom_of_lowest_margin_box)
             .max(used.content_offset.get().y + used.content_block_size.get() + used.margin_box_bottom(false));
-
-        if let Some(child_layout) = child_layout {
-            child_layout.finish();
-        }
     }
 
     fn layout_block_level_children(
@@ -2161,7 +2157,6 @@ impl<'pass> BlockFormattingContext<'pass> {
         constraints: ContainingBlockConstraints,
     ) -> CaptionLayoutResult {
         let mut caption_was_placed = false;
-        let mut child_layout = None;
         if formatting_context_type_created_by_box(self.facts(caption)).is_some() {
             let mut inner_available_space = available_space;
             let is_block_context =
@@ -2182,7 +2177,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 }
             }
 
-            child_layout = self.layout_inside(
+            let child_layout = self.layout_inside(
                 frame,
                 caption,
                 LayoutInput {
@@ -2208,7 +2203,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                     let content_block_size = if self.style(caption).has_size_containment() {
                         CssPixels::default()
                     } else {
-                        child_layout.result().automatic_content_block_size
+                        child_layout.automatic_content_block_size
                     };
                     self.used_mut(caption).set_content_block_size(content_block_size);
                 }
@@ -2234,18 +2229,14 @@ impl<'pass> BlockFormattingContext<'pass> {
                 },
             );
         }
-        let result = CaptionLayoutResult {
+        CaptionLayoutResult {
             margin_box_block_size: self.used(caption).margin_box_block_size(false),
             pending_table_block_offset: if phase == CaptionPhase::Top {
                 self.used(caption).content_block_size.get() + self.used(caption).margin_box_bottom(false)
             } else {
                 CssPixels::default()
             },
-        };
-        if let Some(child_layout) = child_layout {
-            child_layout.finish();
         }
-        result
     }
 
     pub(crate) fn layout_interrupting_block_inside_inline_context(
@@ -2396,9 +2387,6 @@ impl<'pass> BlockFormattingContext<'pass> {
             None
         };
         let Some(side) = side else {
-            if let Some(child_layout) = child_layout {
-                child_layout.finish();
-            }
             return;
         };
         let mut margin_box_ceiling = if let Some(line_builder) = line_builder.as_deref_mut() {
@@ -2474,9 +2462,6 @@ impl<'pass> BlockFormattingContext<'pass> {
                 block_size: block_container_used.content_block_size.get(),
             },
         );
-        if let Some(child_layout) = child_layout {
-            child_layout.finish();
-        }
     }
 
     fn layout_inline_children(

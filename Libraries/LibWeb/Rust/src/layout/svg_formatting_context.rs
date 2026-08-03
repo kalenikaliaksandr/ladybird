@@ -713,13 +713,12 @@ impl<'pass> SvgFormattingContext<'pass> {
                 sizing: RootSizingDirectives::default(),
                 participation: FcParticipation::Item,
             };
-            let child_layout =
-                match crate::layout::layout_inside_child(frame, None, None, child, self.layout_mode, child_input, true) {
-                    crate::layout::ChildLayoutOutcome::Created(child_layout) => child_layout,
-                    crate::layout::ChildLayoutOutcome::Skipped | crate::layout::ChildLayoutOutcome::ReenterCurrent => {
-                        panic!("SVG foreign object did not create an independent formatting context")
-                    }
-                };
+            match crate::layout::layout_inside_child(frame, None, None, child, self.layout_mode, child_input, true) {
+                crate::layout::ChildLayoutOutcome::Created(_) => {}
+                crate::layout::ChildLayoutOutcome::Skipped | crate::layout::ChildLayoutOutcome::ReenterCurrent => {
+                    panic!("SVG foreign object did not create an independent formatting context")
+                }
+            };
 
             // Masks and clips may use this offset for objectBoundingBox units.
             self.place_child(child, transformed_rect.x, transformed_rect.y);
@@ -729,7 +728,6 @@ impl<'pass> SvgFormattingContext<'pass> {
             if let Some(clip) = self.first_child_of_kind(child, NodeKind::SVGClipBox) {
                 self.layout_mask_or_clip(frame, clip);
             }
-            child_layout.finish();
         } else if kind_is_svg_graphics_box(kind) {
             self.layout_graphics_element(frame, child, input, parent_svg_transform);
         }

@@ -2386,7 +2386,7 @@ impl<'pass> FlexFormattingContext<'pass> {
         }
 
         match crate::layout::layout_inside_child(frame, None, None, node, LayoutMode::Normal, input, false) {
-            crate::layout::ChildLayoutOutcome::Created(child_layout) => child_layout.finish(),
+            crate::layout::ChildLayoutOutcome::Created(_) => {}
             crate::layout::ChildLayoutOutcome::ReenterCurrent => self.run(frame, input),
             crate::layout::ChildLayoutOutcome::Skipped => {}
         }

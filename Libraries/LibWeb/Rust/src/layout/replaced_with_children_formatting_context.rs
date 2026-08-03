@@ -71,6 +71,4 @@ fn run(frame: &mut FcFrame, layout_input: LayoutInput) {
     frame.automatic_content_block_size = bfc.automatic_content_block_size;
 
     crate::layout::place_child(frame.state, &frame.callbacks, wrapper, FfiCssPixelPoint::default());
-
-    crate::layout::complete_formatting_context_after_root_box_has_used_size(&mut bfc);
 }

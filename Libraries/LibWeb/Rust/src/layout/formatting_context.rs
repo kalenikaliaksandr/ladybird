@@ -278,7 +278,6 @@ impl MeasurementState {
             self.callbacks,
         );
         crate::layout::run_formatting_context(&mut context, input, None);
-        complete_formatting_context_after_root_box_has_used_size(&mut context);
         crate::layout::ChildLayoutResult {
             automatic_content_inline_size: context.automatic_content_inline_size,
             automatic_content_block_size: context.automatic_content_block_size,
@@ -733,27 +732,9 @@ pub(crate) struct ChildLayoutResult {
     pub table_block_offset_in_wrapper: Option<CssPixels>,
 }
 
-pub(crate) struct PendingChildLayout<'pass> {
-    context: Box<FormattingContextInstance<'pass>>,
-}
-
-impl PendingChildLayout<'_> {
-    pub(crate) fn result(&self) -> ChildLayoutResult {
-        ChildLayoutResult {
-            automatic_content_inline_size: self.context.automatic_content_inline_size,
-            automatic_content_block_size: self.context.automatic_content_block_size,
-            table_block_offset_in_wrapper: self.context.table_block_offset_in_wrapper,
-        }
-    }
-
-    pub(crate) fn finish(mut self) {
-        complete_formatting_context_after_root_box_has_used_size(&mut self.context);
-    }
-}
-
-pub(crate) enum ChildLayoutOutcome<'pass> {
+pub(crate) enum ChildLayoutOutcome {
     Skipped,
-    Created(PendingChildLayout<'pass>),
+    Created(ChildLayoutResult),
     ReenterCurrent,
 }
 
@@ -1290,34 +1271,6 @@ fn register_table_abspos_descendants(frame: &mut FcFrame, parent: Node) {
     }
 }
 
-fn complete_formatting_context_after_root_box_has_used_size(instance: &mut FormattingContextInstance) {
-    let registered_abspos_children_could_never_be_laid_out =
-        instance.layout_mode != LayoutMode::Normal || instance.frame.state.is_measurement();
-    if registered_abspos_children_could_never_be_laid_out {
-        return;
-    }
-    match &instance.implementation {
-        FcImpl::Block(_) => {}
-        FcImpl::Table(_) => {
-            let box_ = instance.frame.box_;
-            register_table_abspos_descendants(&mut instance.frame, box_);
-        }
-        FcImpl::Flex(context) => {
-            context.parent_did_dimension();
-        }
-        FcImpl::Grid(context) => {
-            context.parent_did_dimension();
-        }
-        FcImpl::Svg(_) | FcImpl::ReplacedWithChildren => {}
-        FcImpl::InternalReplaced | FcImpl::InternalDummy => return,
-    }
-    let box_ = instance.box_;
-    if instance.frame.state.abspos_layout_pass_is_active() {
-        layout_contained_abspos_children(&mut instance.frame);
-    } else {
-        instance.frame.state.enqueue_for_abspos_layout_pass(box_);
-    }
-}
 
 // The automatic content block size of a box that establishes an independent
 // formatting context. This is the independent-root slice of the same-FC
@@ -1610,6 +1563,36 @@ fn run_formatting_context<'pass>(
         used.set_content_block_size(frame.automatic_content_block_size);
     }
     debug_assert_root_sizes_are_final_after_run(frame, &input);
+
+    // Register the run's absolutely positioned descendants and hand the box
+    // to the abspos layout pass. Registration reads the root's final content
+    // sizes, which the epilogue above finalized.
+    let registered_abspos_children_could_never_be_laid_out =
+        frame.layout_mode != LayoutMode::Normal || frame.state.is_measurement();
+    if registered_abspos_children_could_never_be_laid_out {
+        return;
+    }
+    match implementation {
+        FcImpl::Block(_) => {}
+        FcImpl::Table(_) => {
+            let box_ = frame.box_;
+            register_table_abspos_descendants(frame, box_);
+        }
+        FcImpl::Flex(context) => {
+            context.parent_did_dimension();
+        }
+        FcImpl::Grid(context) => {
+            context.parent_did_dimension();
+        }
+        FcImpl::Svg(_) | FcImpl::ReplacedWithChildren => {}
+        FcImpl::InternalReplaced | FcImpl::InternalDummy => return,
+    }
+    let box_ = frame.box_;
+    if frame.state.abspos_layout_pass_is_active() {
+        layout_contained_abspos_children(frame);
+    } else {
+        frame.state.enqueue_for_abspos_layout_pass(box_);
+    }
 }
 
 // Run epilogue for atomic inline-level roots: the final block-size
@@ -1667,7 +1650,7 @@ pub(crate) fn layout_inside_child<'pass>(
     layout_mode: LayoutMode,
     input: LayoutInput,
     force_independent_context_run: bool,
-) -> ChildLayoutOutcome<'pass> {
+) -> ChildLayoutOutcome {
     let facts = frame.state.node_facts(&frame.callbacks, child);
     let used = frame.state.try_used_values(&frame.callbacks, child);
     if !force_independent_context_run
@@ -1709,7 +1692,11 @@ pub(crate) fn layout_inside_child<'pass>(
         frame.callbacks,
     );
     run_formatting_context(&mut context, input, parent_block);
-    ChildLayoutOutcome::Created(PendingChildLayout { context })
+    ChildLayoutOutcome::Created(ChildLayoutResult {
+        automatic_content_inline_size: context.automatic_content_inline_size,
+        automatic_content_block_size: context.automatic_content_block_size,
+        table_block_offset_in_wrapper: context.table_block_offset_in_wrapper,
+    })
 }
 
 fn independent_formatting_context_type(
@@ -1798,7 +1785,6 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             callbacks,
         );
         run_formatting_context(&mut context, input, None);
-        complete_formatting_context_after_root_box_has_used_size(&mut context);
         drop(context);
         run_abspos_layout_pass(state_ref, callbacks, should_collect_devtools_layout_data);
         state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink);
@@ -1874,7 +1860,6 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         );
         run_formatting_context(&mut context, input, None);
 
-        complete_formatting_context_after_root_box_has_used_size(&mut context);
         drop(context);
         run_abspos_layout_pass(state_ref, callbacks, false);
         state.commit_replacing(root, paintable_to_replace, &callbacks, sink);
