@@ -1638,26 +1638,11 @@ impl<'pass> BlockFormattingContext<'pass> {
             });
         }
 
-        let mut available_space_for_block_size_resolution = available_space;
-        let is_table_box = facts.is_table_row()
-            || facts.is_table_row_group()
-            || facts.is_table_header_group()
-            || facts.is_table_footer_group()
-            || facts.is_table_cell()
-            || facts.is_table_caption();
-        // https://quirks.spec.whatwg.org/#the-percentage-height-calculation-quirk
-        if facts.document_in_quirks_mode()
-            && style.height().is_percentage()
-            && !is_table_box
-            && !facts.is_in_user_agent_shadow_tree()
-        {
-            available_space_for_block_size_resolution.block_size = AvailableSize::definite(
-                input
-                    .containing_block_constraints
-                    .quirks_mode_percentage_basis_block_size
-                    .unwrap_or_default(),
-            );
-        }
+        let available_space_for_block_size_resolution = self.sizing().available_space_for_block_size_resolution(
+            node,
+            available_space,
+            input.containing_block_constraints,
+        );
 
         self.resolve_used_block_size_if_not_treated_as_auto(
             node,
@@ -1700,43 +1685,11 @@ impl<'pass> BlockFormattingContext<'pass> {
             // Margins of elements that establish new formatting contexts do not collapse with their in-flow children
             self.margin_state.borrow_mut().reset();
 
-            // This box establishes a new formatting context. Pass control to it.
-            let mut inner_available_space = self
-                .used(node)
-                .available_inner_space_or_constraints_from(available_space);
-            // For boxes with an automatic block size but non-auto min-height, determine whether the content block size is
-            // less than min-height. If so, run layout with min-height as the available block size.
-            let mut measured_content_block_size = None;
-            let sizing = self.sizing();
-            if sizing.should_treat_block_size_as_auto(node, available_space, input.containing_block_constraints)
-                && !style.min_height().is_auto()
-            {
-                let content_block_size = sizing.measure_automatic_content_block_size(
-                    node,
-                    self.layout_mode,
-                    inner_available_space,
-                    input.containing_block_constraints,
-                );
-                measured_content_block_size = Some(content_block_size);
-                let min_block_size = sizing.calculate_inner_block_size(
-                    node,
-                    available_space,
-                    style.min_height(),
-                    input.containing_block_constraints,
-                );
-                if content_block_size < min_block_size {
-                    inner_available_space.block_size = AvailableSize::definite(min_block_size);
-                }
-            }
-            self.sizing().make_button_content_box_definite(
-                node,
-                self.layout_mode,
-                available_space,
-                input.containing_block_constraints,
-                measured_content_block_size,
-            );
+            // This box establishes a new formatting context. Pass control to
+            // it; the run prelude derives the root's inner space, including
+            // the min-height probe for automatic block sizes.
             let inside_layout_input = LayoutInput {
-                available_space: inner_available_space,
+                available_space,
                 containing_block_constraints: input.containing_block_constraints,
                 content_box_position_in_bfc_root: None,
                 sizing: RootSizingDirectives {
@@ -1769,13 +1722,6 @@ impl<'pass> BlockFormattingContext<'pass> {
                 let used = self.used_mut(node);
                 used.margin_left.set(used.margin_left.get().max(CssPixels::default()));
                 used.margin_right.set(used.margin_right.get().max(CssPixels::default()));
-            }
-            if facts.is_table_wrapper()
-                && !facts.is_grid_item()
-                && let Some(child_layout) = child_layout.as_ref()
-            {
-                self.used_mut(node)
-                    .set_content_inline_size(child_layout.result().automatic_content_inline_size);
             }
             child_layout
         } else {
@@ -1837,16 +1783,16 @@ impl<'pass> BlockFormattingContext<'pass> {
             None
         };
 
-        // Tables already set their block size during the independent formatting context run. With multi-line text cells,
-        // using different available space here can produce different line breaks and therefore a different block size.
-        if !style.display().is_table_inside() {
+        // An independent run that actually executed resolved its automatic
+        // block size in its own epilogue; same-flow children and skipped
+        // inside layouts still resolve here. Tables set their block size
+        // during their run in every case.
+        if child_layout.is_none() && !style.display().is_table_inside() {
             self.resolve_used_block_size_if_treated_as_auto(
                 node,
                 available_space_for_block_size_resolution,
                 input.containing_block_constraints,
-                child_layout
-                    .as_ref()
-                    .map(|child_layout| child_layout.result().automatic_content_block_size),
+                None,
             );
         }
 
@@ -2245,7 +2191,11 @@ impl<'pass> BlockFormattingContext<'pass> {
                     containing_block_constraints: constraints,
                     content_box_position_in_bfc_root: None,
                     sizing: RootSizingDirectives::default(),
-                    participation: FcParticipation::BlockLevel,
+                    // Captions are table-driven participants with their own
+                    // post-run sizing (raw automatic size, zero under size
+                    // containment); the generic block-level epilogue must not
+                    // resolve them.
+                    participation: FcParticipation::Item,
                 },
                 true,
             );

@@ -1376,6 +1376,46 @@ fn apply_root_sizing_directives(
 ) -> LayoutInput {
     let directives = input.sizing;
     match input.participation {
+        FcParticipation::BlockLevel => {
+            // The parent resolved the root's box model, inline size, and any
+            // definite or early-automatic block size before launching the run;
+            // the min-height probe and the button content-box fixup are
+            // pre-run root sizing and belong to the run itself.
+            let node = frame.box_;
+            let available_space = input.available_space;
+            let constraints = input.containing_block_constraints;
+            let sizing = SizingContext::new(frame.state, frame.callbacks);
+            let style = frame.state.style_facts(&frame.callbacks, node);
+            let mut inner_available_space = frame
+                .state
+                .used_values(&frame.callbacks, node)
+                .available_inner_space_or_constraints_from(available_space);
+            // For boxes with an automatic block size but non-auto min-height, determine whether the content block size is
+            // less than min-height. If so, run layout with min-height as the available block size.
+            let mut measured_content_block_size = None;
+            if sizing.should_treat_block_size_as_auto(node, available_space, constraints)
+                && !style.min_height().is_auto()
+            {
+                let content_block_size =
+                    sizing.measure_automatic_content_block_size(node, frame.layout_mode, inner_available_space, constraints);
+                measured_content_block_size = Some(content_block_size);
+                let min_block_size =
+                    sizing.calculate_inner_block_size(node, available_space, style.min_height(), constraints);
+                if content_block_size < min_block_size {
+                    inner_available_space.block_size = AvailableSize::definite(min_block_size);
+                }
+            }
+            sizing.make_button_content_box_definite(
+                node,
+                frame.layout_mode,
+                available_space,
+                constraints,
+                measured_content_block_size,
+            );
+            let mut body_input = *input;
+            body_input.available_space = inner_available_space;
+            return body_input;
+        }
         FcParticipation::Float => {
             let parent = parent_block.expect("a floating run requires an enclosing block formatting context");
             parent.dimension_float_root(frame.box_, input);
@@ -1520,6 +1560,39 @@ fn run_formatting_context<'pass>(
     }
 
     match input.participation {
+        FcParticipation::BlockLevel => {
+            let node = frame.box_;
+            let facts = frame.state.node_facts(&frame.callbacks, node);
+            // A table wrapper shrink-to-fits from cached intrinsic sizes,
+            // which may not match the inline size table layout just produced;
+            // the wrapper has the same inline size as the table grid box.
+            if facts.is_table_wrapper() {
+                frame
+                    .state
+                    .used_values(&frame.callbacks, node)
+                    .set_content_inline_size(frame.automatic_content_inline_size);
+            }
+            // Tables set their block size during their own run. With
+            // multi-line text cells, re-deriving it against different
+            // available space can change line breaking.
+            let style = frame.state.style_facts(&frame.callbacks, node);
+            if !style.display().is_table_inside() {
+                let parent =
+                    parent_block.expect("a block-level run requires an enclosing block formatting context");
+                let resolution_space = SizingContext::new(frame.state, frame.callbacks)
+                    .available_space_for_block_size_resolution(
+                        node,
+                        input.available_space,
+                        input.containing_block_constraints,
+                    );
+                parent.resolve_used_block_size_if_treated_as_auto(
+                    node,
+                    resolution_space,
+                    input.containing_block_constraints,
+                    Some(frame.automatic_content_block_size),
+                );
+            }
+        }
         FcParticipation::Float => {
             let parent = parent_block.expect("a floating run requires an enclosing block formatting context");
             parent.finalize_float_root(

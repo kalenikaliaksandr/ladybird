@@ -884,6 +884,35 @@ impl<'pass> SizingContext<'pass> {
             || (size.is_min_content() && available == AvailableSize::MinContent)
     }
 
+    // https://quirks.spec.whatwg.org/#the-percentage-height-calculation-quirk
+    // The available space to resolve a block-level box's block size against:
+    // in quirks mode, percentage heights outside table internals and UA
+    // shadow trees resolve against the quirks percentage basis.
+    pub(crate) fn available_space_for_block_size_resolution(
+        &self,
+        node: Node,
+        available_space: AvailableSpace,
+        constraints: ContainingBlockConstraints,
+    ) -> AvailableSpace {
+        let facts = self.facts(node);
+        let is_table_box = facts.is_table_row()
+            || facts.is_table_row_group()
+            || facts.is_table_header_group()
+            || facts.is_table_footer_group()
+            || facts.is_table_cell()
+            || facts.is_table_caption();
+        let mut resolution_space = available_space;
+        if facts.document_in_quirks_mode()
+            && self.style(node).height().is_percentage()
+            && !is_table_box
+            && !facts.is_in_user_agent_shadow_tree()
+        {
+            resolution_space.block_size =
+                AvailableSize::definite(constraints.quirks_mode_percentage_basis_block_size.unwrap_or_default());
+        }
+        resolution_space
+    }
+
     pub(crate) fn resolve_used_block_size_if_not_treated_as_auto(
         &self,
         node: Node,

@@ -557,9 +557,6 @@ impl<'pass> NodeFacts<'pass> {
         )
     }
 
-    pub(crate) fn is_grid_item(&self) -> bool {
-        crate::layout::has_flag(self.data(), NodeFlag::IsGridItem)
-    }
 
     pub(crate) fn is_editing_host(&self) -> bool {
         crate::layout::has_flag(self.data(), NodeFlag::IsEditingHost)
