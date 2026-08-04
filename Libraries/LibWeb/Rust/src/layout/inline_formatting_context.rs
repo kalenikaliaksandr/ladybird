@@ -1267,9 +1267,17 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         for candidate in inline_containing_block_rect_candidates {
             let target =
                 crate::layout::abspos_registration_target(self.state, &self.callbacks, candidate.box_containing_block);
+            let relative_inset_chain = self.state.accumulated_relative_insets_from_inline_ancestor_chain(
+                &self.callbacks,
+                candidate.inline_containing_block,
+                self.containing_block,
+            );
+            let mut rect = candidate.rect;
+            rect.x += relative_inset_chain.offset_x;
+            rect.y += relative_inset_chain.offset_y;
             self.state.register_hoisted_inline_containing_block_rect(
                 candidate.inline_containing_block,
-                candidate.rect,
+                rect,
                 self.containing_block,
                 target,
             );
