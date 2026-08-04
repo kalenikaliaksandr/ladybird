@@ -142,6 +142,7 @@ pub enum NodeFlag {
     SavedAbsposCbDerivesFromOwnComputedValues = 1 << 20,
     SavedAbsposAlignmentDerivesFromOwnComputedValues = 1 << 21,
     ProducesLineBoxFragmentWhenEmpty = 1 << 22,
+    HasAnchorNames = 1 << 23,
 }
 
 #[repr(C)]
