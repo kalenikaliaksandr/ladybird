@@ -85,7 +85,6 @@ pub struct FfiResolvedAnchorInsets {
     pub left: CssPixels,
 }
 
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PhysicalRect {
     pub(crate) x: CssPixels,
@@ -110,7 +109,6 @@ impl PhysicalRect {
     fn bottom(self) -> CssPixels {
         self.y + self.height
     }
-
 }
 
 fn point_add(left: FfiCssPixelPoint, right: FfiCssPixelPoint) -> FfiCssPixelPoint {
@@ -118,24 +116,6 @@ fn point_add(left: FfiCssPixelPoint, right: FfiCssPixelPoint) -> FfiCssPixelPoin
         x: left.x + right.x,
         y: left.y + right.y,
     }
-}
-
-fn point_sub(left: FfiCssPixelPoint, right: FfiCssPixelPoint) -> FfiCssPixelPoint {
-    FfiCssPixelPoint {
-        x: left.x - right.x,
-        y: left.y - right.y,
-    }
-}
-
-pub(crate) fn translate_static_position_between_chains(
-    mut rect: StaticPositionRect,
-    static_chain_offset: FfiCssPixelPoint,
-    containing_chain_offset: FfiCssPixelPoint,
-) -> StaticPositionRect {
-    let physical_offset = point_sub(static_chain_offset, containing_chain_offset);
-    rect.rect.offset.inline_offset += physical_offset.x;
-    rect.rect.offset.block_offset += physical_offset.y;
-    rect
 }
 
 pub(crate) fn anchor_rect_from_geometry(
@@ -402,6 +382,7 @@ pub(crate) fn place_child(
     assert!(!used.has_content_offset.get());
     used.has_content_offset.set(true);
     used.content_offset.set(offset);
+    state.rebase_hoisted_boxes_for_placed_box(callbacks, node, offset);
 }
 
 pub(crate) fn register_contained_abspos_child(
@@ -409,15 +390,26 @@ pub(crate) fn register_contained_abspos_child(
     callbacks: &FfiLayoutFcCallbacks,
     child: Node,
     static_position_rect: StaticPositionRect,
+    static_position_space_box: Node,
 ) {
-    let mut target = callbacks.containing_block(child);
-    if target.is_invalid() {
+    let containing_block = callbacks.containing_block(child);
+    if containing_block.is_invalid() {
         return;
     }
     let inline_containing_block = callbacks.inline_containing_block(child);
     if !inline_containing_block.is_invalid() {
-        state.note_inline_containing_block(inline_containing_block);
+        state.note_inline_containing_block(inline_containing_block, containing_block);
     }
+    let target = abspos_registration_target(state, callbacks, containing_block);
+    state.register_contained_abspos_child(callbacks, target, child, static_position_rect, static_position_space_box);
+}
+
+pub(crate) fn abspos_registration_target(
+    state: &LayoutState,
+    callbacks: &FfiLayoutFcCallbacks,
+    containing_block: Node,
+) -> Node {
+    let mut target = containing_block;
     loop {
         let containing_block = callbacks.containing_block(target);
         let facts = state.node_facts(callbacks, target);
@@ -428,7 +420,7 @@ pub(crate) fn register_contained_abspos_child(
         }
         target = containing_block;
     }
-    state.register_contained_abspos_child(callbacks, target, child, static_position_rect);
+    target
 }
 
 pub(crate) fn box_baseline(
@@ -1210,6 +1202,7 @@ fn register_table_abspos_descendants(run: &FormattingContextRun, parent: Node) {
                         block_alignment: StaticPositionAlignment::Start,
                         alignment_derives_from_own_computed_values: false,
                     },
+                    run.box_,
                 );
             }
             if formatting_context_type_created_by_box(facts).is_none() {
@@ -1564,12 +1557,7 @@ fn run_formatting_context<'pass>(
         FormattingContextImplementation::Svg(_) | FormattingContextImplementation::ReplacedWithChildren => {}
         FormattingContextImplementation::InternalReplaced | FormattingContextImplementation::InternalDummy => return result,
     }
-    let box_ = run.box_;
-    if run.state.abspos_layout_pass_is_active() {
-        layout_contained_abspos_children(run);
-    } else {
-        run.state.enqueue_for_abspos_layout_pass(box_);
-    }
+    layout_contained_abspos_children(run);
     result
 }
 
@@ -1806,7 +1794,10 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             input,
             None,
         );
-        run_abspos_layout_pass(state_ref, callbacks, should_collect_devtools_layout_data);
+        debug_assert!(
+            state.all_registered_contained_abspos_children_are_laid_out(),
+            "registered abspos children were left without layout"
+        );
         state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink);
     });
 }
@@ -1866,7 +1857,10 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         let fc_type = formatting_context_type_created_by_box(facts)
             .expect("partial relayout root must establish an independent formatting context");
         run_formatting_context(state_ref, root, None, fc_type, LayoutMode::Normal, false, callbacks, input, None);
-        run_abspos_layout_pass(state_ref, callbacks, false);
+        debug_assert!(
+            state.all_registered_contained_abspos_children_are_laid_out(),
+            "registered abspos children were left without layout"
+        );
         state.commit_replacing(root, paintable_to_replace, &callbacks, sink);
     });
 }
@@ -1896,7 +1890,10 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
         assert!(!containing_block.is_invalid());
         let run = crate::layout::FormattingContextRun::new(state_ref, containing_block, LayoutMode::Normal, callbacks, false, false);
         AbsposEngine::new(state_ref, callbacks).replay(&run, box_);
-        run_abspos_layout_pass(state_ref, callbacks, false);
+        debug_assert!(
+            state.all_registered_contained_abspos_children_are_laid_out(),
+            "registered abspos children were left without layout"
+        );
         state.commit_replacing(box_, paintable_to_replace, &callbacks, sink);
     });
 }

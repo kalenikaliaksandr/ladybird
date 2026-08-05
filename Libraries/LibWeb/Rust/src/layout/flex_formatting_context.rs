@@ -3144,6 +3144,7 @@ impl<'pass> FlexFormattingContext<'pass> {
                     &self.callbacks,
                     child,
                     self.calculate_static_position_rect(child),
+                    self.flex_container,
                 );
             }
             child = next;

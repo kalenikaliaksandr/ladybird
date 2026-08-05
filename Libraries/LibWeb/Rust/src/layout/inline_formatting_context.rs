@@ -240,6 +240,7 @@ fn edge_bits(horizontal: bool, low: bool, high: bool) -> u8 {
 
 pub(crate) struct InlineContainingBlockRectCandidate {
     pub(crate) inline_containing_block: Node,
+    pub(crate) box_containing_block: Node,
     pub(crate) rect: PhysicalRect,
 }
 
@@ -447,14 +448,17 @@ pub(crate) fn compute(
             )
         };
 
-        let node_is_inline_containing_block =
-            collect_inline_containing_block_rects && context.state.is_inline_containing_block(node);
+        let node_box_containing_block = if collect_inline_containing_block_rects {
+            context.state.box_containing_block_for_inline_containing_block(node)
+        } else {
+            None
+        };
         let mut corners = FirstAndLastContentLineCorners::default();
 
         for line in lines {
             let Some((contributions_inline_start, contributions_inline_end)) = line.contributions_inline_range else {
                 if let Some(position) = line.interrupting_block_position {
-                    if node_is_inline_containing_block
+                    if node_box_containing_block.is_some()
                         && let Some(extent) = line.interrupting_block_logical_extent
                     {
                         corners.first.get_or_insert(extent);
@@ -535,7 +539,7 @@ pub(crate) fn compute(
                 depth,
                 discovery_index: node_index,
             });
-            if node_is_inline_containing_block {
+            if node_box_containing_block.is_some() {
                 let source = CandidateLineCorners {
                     inline_start: border_inline_start,
                     inline_end: border_inline_end,
@@ -561,7 +565,7 @@ pub(crate) fn compute(
             }
         }
 
-        if node_is_inline_containing_block
+        if let Some(box_containing_block) = node_box_containing_block
             && let Some(rect) = padding_box_rect_spanning_first_and_last_content_lines(
                 &corners,
                 used,
@@ -572,6 +576,7 @@ pub(crate) fn compute(
         {
             inline_containing_block_rect_candidates.push(InlineContainingBlockRectCandidate {
                 inline_containing_block: node,
+                box_containing_block,
                 rect,
             });
         }
@@ -593,9 +598,12 @@ pub(crate) fn compute(
                 ..Default::default()
             }
         };
-        if collect_inline_containing_block_rects && context.state.is_inline_containing_block(node) {
+        if collect_inline_containing_block_rects
+            && let Some(box_containing_block) = context.state.box_containing_block_for_inline_containing_block(node)
+        {
             inline_containing_block_rect_candidates.push(InlineContainingBlockRectCandidate {
                 inline_containing_block: node,
+                box_containing_block,
                 rect: PhysicalRect {
                     x: placeholder_rect.x,
                     y: placeholder_rect.y,
@@ -1204,7 +1212,13 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
                         break 'lines;
                     }
                 }
-                crate::layout::register_contained_abspos_child(self.state, &self.callbacks, box_, static_position);
+                crate::layout::register_contained_abspos_child(
+                    self.state,
+                    &self.callbacks,
+                    box_,
+                    static_position,
+                    self.containing_block,
+                );
             }
         }
         line_builder.remove_last_line_if_empty();
@@ -1251,9 +1265,14 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         let (pieces, inline_containing_block_rect_candidates) = compute(self);
         self.line_data_mut().inline_box_pieces = pieces;
         for candidate in inline_containing_block_rect_candidates {
-            self.state
-                .used_values_rare_data_for_node_mut(&self.callbacks, candidate.inline_containing_block)
-                .inline_containing_block_first_last_rect = Some(candidate.rect);
+            let target =
+                crate::layout::abspos_registration_target(self.state, &self.callbacks, candidate.box_containing_block);
+            self.state.register_hoisted_inline_containing_block_rect(
+                candidate.inline_containing_block,
+                candidate.rect,
+                self.containing_block,
+                target,
+            );
         }
     }
 }

@@ -102,97 +102,33 @@ impl<'pass> AbsposEngine<'pass> {
         self.used_pointer(node)
     }
 
-    fn static_position_containing_block(&self, node: Node) -> Node {
-        self.callbacks.static_position_containing_block(node)
-    }
-
     fn inline_containing_block(&self, node: Node) -> Node {
         self.callbacks.inline_containing_block(node)
     }
 
-    fn non_anonymous_containing_block(&self, node: Node) -> Node {
-        self.callbacks.non_anonymous_containing_block(node)
-    }
-
-    fn node_is_ancestor(&self, ancestor: Node, node: Node) -> bool {
-        self.callbacks.is_ancestor(ancestor, node)
-    }
-
-    fn resolve_static_position_relative_to_containing_block(
+    fn hoisted_inline_containing_block_rect_in_containing_block_space(
         &self,
-        node: Node,
-        static_position_rect: StaticPositionRect,
-    ) -> StaticPositionRect {
-        let static_position_cb = self.static_position_containing_block(node);
-        let actual_containing_block = self.callbacks.containing_block(node);
-        if static_position_cb.is_invalid() || static_position_cb == actual_containing_block {
-            return static_position_rect;
-        }
-
-        let mut merge_point = static_position_cb;
-        while merge_point != actual_containing_block && !self.node_is_ancestor(merge_point, actual_containing_block) {
-            merge_point = self.callbacks.containing_block(merge_point);
-            assert!(!merge_point.is_invalid());
-        }
-
-        let offset_relative_to_merge_point = |descendant: Node| {
-            let mut offset = FfiCssPixelPoint::default();
-            let mut current = descendant;
-            while current != merge_point {
-                let used = self.used(current);
-                offset = point_add(offset, used.content_offset.get());
-                current = self.callbacks.containing_block(current);
-                assert!(!current.is_invalid());
-            }
-            offset
-        };
-        translate_static_position_between_chains(
-            static_position_rect,
-            offset_relative_to_merge_point(static_position_cb),
-            offset_relative_to_merge_point(actual_containing_block),
-        )
-    }
-
-    fn compute_inline_containing_block_rect(
-        &self,
-        inline_node: Node,
-        abspos_containing_block: Node,
+        target: Node,
+        inline_containing_block: Node,
+        containing_block: Node,
     ) -> Option<PhysicalRect> {
-        if self.facts(inline_node).is_anonymous() {
-            return None;
-        }
-        let outer_block = self.non_anonymous_containing_block(inline_node);
-        if outer_block.is_invalid() {
-            return None;
-        }
-
-        let mut rect = self
-            .state
-            .inline_containing_block_first_last_rect(self.callbacks.slot_index(inline_node))?;
-        debug_assert!(
-            self.node_is_ancestor(abspos_containing_block, inline_node),
-            "an inline containing block must live inside its children's box containing block"
-        );
-        let mut ancestor = self.callbacks.containing_block(inline_node);
-        while !ancestor.is_invalid() && ancestor != abspos_containing_block {
-            if let Some(used) = self.try_used_pointer(ancestor) {
-                let content_offset = used.content_offset.get();
-                rect.x += content_offset.x;
-                rect.y += content_offset.y;
-            }
-            ancestor = self.callbacks.containing_block(ancestor);
-        }
+        let record = self.state.hoisted_inline_containing_block_rect(target, inline_containing_block)?;
+        let delta = self.hoisted_space_to_containing_block_delta(record.space_box, containing_block, target);
+        let mut rect = record.rect;
+        rect.x += delta.x;
+        rect.y += delta.y;
         Some(rect)
     }
 
-    fn base_containing_block_info(&self, node: Node) -> AbsposContainingBlockInfo {
+    fn base_containing_block_info(&self, node: Node, target: Node) -> AbsposContainingBlockInfo {
         let style = self.style(node);
         let (inline_axis_mode, block_axis_mode) = axis_modes(style);
         let containing_block = self.callbacks.containing_block(node);
         assert!(!containing_block.is_invalid());
         let inline_containing_block = self.inline_containing_block(node);
         if !inline_containing_block.is_invalid()
-            && let Some(rect) = self.compute_inline_containing_block_rect(inline_containing_block, containing_block)
+            && let Some(rect) =
+                self.hoisted_inline_containing_block_rect_in_containing_block_space(target, inline_containing_block, containing_block)
         {
             return AbsposContainingBlockInfo {
                 rect: LogicalRect {
@@ -238,7 +174,6 @@ impl<'pass> AbsposEngine<'pass> {
     }
 
 }
-
 
 fn calc_node_create_px_dimension(value: f64) -> *const c_void {
     crate::css::calc::rust_calc_node_create_numeric_dimension(
@@ -303,16 +238,12 @@ impl AbsposEngine<'_> {
         NodeSlotId::INVALID
     }
 
+    // Driver exemption: walks the anchor's containing block chain reading
+    // placed geometry other formatting contexts own. Replaced by
+    // result-carried anchor maps in plans/fc-owned-result-trees.md Phase B.
     fn anchor_rect(&self, anchor_box: Node, containing_block: Node) -> PhysicalRect {
-        let anchor_state = self.used(anchor_box);
-        let mut anchor_offset = FfiCssPixelPoint::default();
-        let mut node = anchor_box;
-        while node != containing_block {
-            assert!(!node.is_invalid());
-            anchor_offset = point_add(anchor_offset, self.used(node).content_offset.get());
-            node = self.callbacks.containing_block(node);
-        }
-        anchor_rect_from_geometry(anchor_state, self.used(containing_block), anchor_offset)
+        let anchor_offset = self.offset_in_ancestor_space(anchor_box, containing_block);
+        anchor_rect_from_geometry(self.used(anchor_box), self.used(containing_block), anchor_offset)
     }
 
     fn anchor_side(
@@ -1661,14 +1592,65 @@ impl<'pass> AbsposEngine<'pass> {
             }
             self.resolve_anchor_insets(child_box);
             let inputs = AbsposLayoutInputs {
-                static_position_rect: self
-                    .resolve_static_position_relative_to_containing_block(child_box, child.static_position_rect),
+                static_position_rect: self.hoisted_static_position_in_containing_block_space(run.box_, &child),
                 containing_block_info: child
                     .containing_block_info_override
-                    .unwrap_or_else(|| self.base_containing_block_info(child_box)),
+                    .unwrap_or_else(|| self.base_containing_block_info(child_box, run.box_)),
             };
             self.layout_element(run, child_box, inputs);
         }
+    }
+
+    fn hoisted_static_position_in_containing_block_space(
+        &self,
+        target: Node,
+        child: &PendingAbsposChild,
+    ) -> StaticPositionRect {
+        let actual_containing_block = self.callbacks.containing_block(child.child_box);
+        let delta =
+            self.hoisted_space_to_containing_block_delta(child.static_position_space_box, actual_containing_block, target);
+        let mut static_position_rect = child.static_position_rect;
+        static_position_rect.rect.offset.inline_offset += delta.x;
+        static_position_rect.rect.offset.block_offset += delta.y;
+        static_position_rect
+    }
+
+    /// A pending entry usually reaches its registration target's space before
+    /// consumption, but placement order is not always child-before-parent
+    /// along an entry's chain: a float is placed by its owning block
+    /// formatting context after that context's run body, when the float's
+    /// ancestors already have their offsets, so an entry riding the float
+    /// re-homes into an ancestor's space whose placement rebase already
+    /// fired and strands there. Every box on the stranded segment is placed
+    /// by the time the target's drain consumes the entry, so the remaining
+    /// hops are read from used offsets here instead.
+    fn hoisted_space_to_containing_block_delta(
+        &self,
+        space_box: Node,
+        containing_block: Node,
+        target: Node,
+    ) -> FfiCssPixelPoint {
+        let mut delta = FfiCssPixelPoint::default();
+        if space_box != target {
+            delta = point_add(delta, self.offset_in_ancestor_space(space_box, target));
+        }
+        if containing_block != target {
+            let containing_block_offset = self.offset_in_ancestor_space(containing_block, target);
+            delta.x -= containing_block_offset.x;
+            delta.y -= containing_block_offset.y;
+        }
+        delta
+    }
+
+    fn offset_in_ancestor_space(&self, descendant: Node, ancestor: Node) -> FfiCssPixelPoint {
+        let mut offset = FfiCssPixelPoint::default();
+        let mut current = descendant;
+        while current != ancestor {
+            assert!(!current.is_invalid());
+            offset = point_add(offset, self.used(current).content_offset.get());
+            current = self.callbacks.containing_block(current);
+        }
+        offset
     }
 
     fn replay(&self, run: &crate::layout::FormattingContextRun<'pass>, node: Node) {
@@ -1763,36 +1745,17 @@ impl<'pass> AbsposEngine<'pass> {
     }
 }
 
+/// Lays out every abspos child registered against the box whose run just
+/// completed. Running at each formatting context's completion drains targets
+/// in completion order, deeper containing blocks first and the root last:
+/// the layout order anchor() acceptability assumes for absolutely positioned
+/// anchors. A run completing during a drain belongs to an absolutely
+/// positioned subtree and drains at its own completion point, and entries a
+/// drained subtree registers against the current target — fixed-position
+/// descendants hoisted to the viewport — are reached because the drain pops
+/// until the queue is empty.
 pub(crate) fn layout_contained_abspos_children(run: &crate::layout::FormattingContextRun<'_>) {
     AbsposEngine::new(run.state, run.callbacks).layout_children(run);
-}
-
-/// Lays out every registered abspos child once the in-flow run has finished.
-/// Queues are processed in the order their formatting contexts completed, so
-/// deeper containing blocks come first and the root comes last: the layout
-/// order anchor() acceptability assumes for absolutely positioned anchors.
-/// A formatting context completing during the pass belongs to an absolutely
-/// positioned subtree; its children are laid out at that completion point,
-/// before later boxes of the queue that produced it.
-pub(crate) fn run_abspos_layout_pass(
-    state: &LayoutState,
-    callbacks: FfiLayoutFcCallbacks,
-    should_collect_devtools_layout_data: bool,
-) {
-    state.set_abspos_layout_pass_is_active(true);
-    while let Some(root) = state.pop_from_abspos_layout_pass_queue() {
-        if !state.has_contained_abspos_children(root) {
-            continue;
-        }
-        let run =
-            crate::layout::FormattingContextRun::new(state, root, LayoutMode::Normal, callbacks, should_collect_devtools_layout_data, false);
-        layout_contained_abspos_children(&run);
-    }
-    state.set_abspos_layout_pass_is_active(false);
-    debug_assert!(
-        state.all_registered_contained_abspos_children_are_laid_out(),
-        "registered abspos children were left without layout after the pass"
-    );
 }
 
 pub(crate) fn compute_inset_native(

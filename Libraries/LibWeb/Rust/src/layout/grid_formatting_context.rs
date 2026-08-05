@@ -3742,7 +3742,7 @@ impl<'pass> GridFormattingContext<'pass> {
                     block_alignment: StaticPositionAlignment::Start,
                     alignment_derives_from_own_computed_values: false,
                 };
-                crate::layout::register_contained_abspos_child(self.state, &self.callbacks, child, rect);
+                crate::layout::register_contained_abspos_child(self.state, &self.callbacks, child, rect, self.grid_container);
             }
             child = next;
         }

@@ -311,6 +311,35 @@ pub(crate) struct PendingAbsposChild {
     pub(crate) child_box: Node,
     pub(crate) static_position_rect: StaticPositionRect,
     pub(crate) containing_block_info_override: Option<AbsposContainingBlockInfo>,
+    /// Content box whose space static_position_rect is currently expressed
+    /// in; equal to the registration target once the entry has fully hoisted.
+    pub(crate) static_position_space_box: Node,
+}
+
+/// The containing block rect for absolutely positioned boxes whose containing
+/// block is an inline box: the padding box spanning the inline's first and
+/// last content-line fragments, published by the inline formatting context
+/// that produced those lines and hoisted to the same registration target as
+/// the inline's absolutely positioned children.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HoistedInlineContainingBlockRect {
+    pub(crate) inline_containing_block: Node,
+    pub(crate) rect: PhysicalRect,
+    pub(crate) space_box: Node,
+    pub(crate) target_box: Node,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HoistedPayloadKind {
+    AbsposChild { child_box: Node },
+    InlineContainingBlockRect { record_index: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HoistedBoxLocator {
+    space_box: Node,
+    target_box: Node,
+    kind: HoistedPayloadKind,
 }
 
 /// A pass-scoped lens over one node's facts. Pure classification reads the
@@ -799,16 +828,16 @@ impl<'pass> NodeFacts<'pass> {
 pub(crate) struct LayoutState {
     used_values: PagedStore<UsedValues>,
     contained_abspos_children: PagedStore<RefCell<VecDeque<PendingAbsposChild>>>,
-    abspos_layout_pass_queue_in_completion_order: RefCell<VecDeque<Node>>,
-    abspos_layout_pass_is_active: Cell<bool>,
     anchor_inset_store: AnchorInsetStore,
     replaced_content_facts: PagedStore<crate::layout::FfiReplacedContentFacts>,
     list_item_facts: PagedStore<crate::layout::FfiListItemFacts>,
     line_data: PagedStore<RefCell<LineData>>,
     block_rare_data: PagedStore<RefCell<BlockRareData>>,
     used_values_rare_data: PagedStore<RefCell<UsedValuesRareData>>,
-    inline_containing_blocks: RefCell<HashSet<Node>>,
     anchor_candidate_shells: RefCell<Vec<*mut c_void>>,
+    hoisted_in_flight: RefCell<Vec<HoistedBoxLocator>>,
+    inline_containing_blocks_to_box_containing_blocks: RefCell<HashMap<Node, Node>>,
+    hoisted_inline_containing_block_rects: RefCell<Vec<HoistedInlineContainingBlockRect>>,
     purpose: LayoutStatePurpose,
 }
 
@@ -846,7 +875,6 @@ pub(crate) struct UsedValuesRareData {
     pub(crate) used_grid_tracks: Option<OwnedUsedGridTracks>,
     pub(crate) override_borders_data: Option<FfiBordersData>,
     pub(crate) abspos_layout_inputs: Option<AbsposLayoutInputs>,
-    pub(crate) inline_containing_block_first_last_rect: Option<PhysicalRect>,
 }
 
 impl LayoutState {
@@ -854,16 +882,16 @@ impl LayoutState {
         Self {
             used_values: PagedStore::default(),
             contained_abspos_children: PagedStore::default(),
-            abspos_layout_pass_queue_in_completion_order: RefCell::new(VecDeque::new()),
-            abspos_layout_pass_is_active: Cell::new(false),
             anchor_inset_store: AnchorInsetStore::default(),
             replaced_content_facts: PagedStore::default(),
             list_item_facts: PagedStore::default(),
             line_data: PagedStore::default(),
             block_rare_data: PagedStore::default(),
             used_values_rare_data: PagedStore::default(),
-            inline_containing_blocks: RefCell::new(HashSet::new()),
             anchor_candidate_shells: RefCell::new(Vec::new()),
+            hoisted_in_flight: RefCell::new(Vec::new()),
+            inline_containing_blocks_to_box_containing_blocks: RefCell::new(HashMap::new()),
+            hoisted_inline_containing_block_rects: RefCell::new(Vec::new()),
             purpose,
         }
     }
@@ -1102,22 +1130,6 @@ impl LayoutState {
         Some(used)
     }
 
-    pub(crate) fn note_inline_containing_block(&self, inline_containing_block: Node) {
-        self.inline_containing_blocks.borrow_mut().insert(inline_containing_block);
-    }
-
-    pub(crate) fn has_inline_containing_blocks(&self) -> bool {
-        !self.inline_containing_blocks.borrow().is_empty()
-    }
-
-    pub(crate) fn is_inline_containing_block(&self, node: Node) -> bool {
-        self.inline_containing_blocks.borrow().contains(&node)
-    }
-
-    pub(crate) fn inline_containing_block_first_last_rect(&self, slot_index: u32) -> Option<PhysicalRect> {
-        self.used_values_rare_data(slot_index)?.inline_containing_block_first_last_rect
-    }
-
     fn register_anchor_candidate_if_carries_anchor_names(&self, callbacks: &FfiLayoutFcCallbacks, node: Node) {
         if !self.node_facts(callbacks, node).has_anchor_names() {
             return;
@@ -1328,6 +1340,7 @@ impl LayoutState {
         target_box: Node,
         child_box: Node,
         static_position_rect: StaticPositionRect,
+        static_position_space_box: Node,
     ) {
         let slot_index = target_box.slot_index();
         let children = self.contained_abspos_children.get(slot_index).unwrap_or_else(|| {
@@ -1349,14 +1362,82 @@ impl LayoutState {
                 child_box,
                 static_position_rect,
                 containing_block_info_override: None,
+                static_position_space_box,
             },
         );
+        drop(children);
+        self.track_hoisted_in_flight(static_position_space_box, target_box, HoistedPayloadKind::AbsposChild {
+            child_box,
+        });
     }
 
-    pub(crate) fn has_contained_abspos_children(&self, target_box: Node) -> bool {
-        self.contained_abspos_children
-            .get(target_box.slot_index())
-            .is_some_and(|children| !children.borrow().is_empty())
+    fn track_hoisted_in_flight(&self, space_box: Node, target_box: Node, kind: HoistedPayloadKind) {
+        if space_box != target_box {
+            self.hoisted_in_flight.borrow_mut().push(HoistedBoxLocator {
+                space_box,
+                target_box,
+                kind,
+            });
+        }
+    }
+
+    /// Translates every hoisting payload expressed in the just-placed box's
+    /// content-box space by its new offset and re-homes it to the placed
+    /// box's containing block, until the payload reaches its registration
+    /// target's space. Placement is the moment a box's offset becomes final,
+    /// so rebasing here composes the full chain without ever reading another
+    /// formatting context's state.
+    pub(crate) fn rebase_hoisted_boxes_for_placed_box(
+        &self,
+        callbacks: &FfiLayoutFcCallbacks,
+        placed_box: Node,
+        offset: FfiCssPixelPoint,
+    ) {
+        if self.hoisted_in_flight.borrow().is_empty() {
+            return;
+        }
+        let mut locators = self.hoisted_in_flight.borrow_mut();
+        let mut new_space_box = Node::INVALID;
+        let mut index = 0;
+        while index < locators.len() {
+            if locators[index].space_box != placed_box {
+                index += 1;
+                continue;
+            }
+            if new_space_box.is_invalid() {
+                new_space_box = callbacks.containing_block(placed_box);
+                debug_assert!(!new_space_box.is_invalid());
+            }
+            match locators[index].kind {
+                HoistedPayloadKind::AbsposChild { child_box } => {
+                    let children = self
+                        .contained_abspos_children
+                        .get(locators[index].target_box.slot_index())
+                        .expect("hoisted abspos child must have a registered queue");
+                    let mut children = children.borrow_mut();
+                    let entry = children
+                        .iter_mut()
+                        .find(|entry| entry.child_box == child_box)
+                        .expect("hoisted abspos child must still be pending");
+                    entry.static_position_rect.rect.offset.inline_offset += offset.x;
+                    entry.static_position_rect.rect.offset.block_offset += offset.y;
+                    entry.static_position_space_box = new_space_box;
+                }
+                HoistedPayloadKind::InlineContainingBlockRect { record_index } => {
+                    let mut records = self.hoisted_inline_containing_block_rects.borrow_mut();
+                    let record = &mut records[record_index];
+                    record.rect.x += offset.x;
+                    record.rect.y += offset.y;
+                    record.space_box = new_space_box;
+                }
+            }
+            if new_space_box == locators[index].target_box {
+                locators.swap_remove(index);
+            } else {
+                locators[index].space_box = new_space_box;
+                index += 1;
+            }
+        }
     }
 
     pub(crate) fn all_registered_contained_abspos_children_are_laid_out(&self) -> bool {
@@ -1365,27 +1446,6 @@ impl LayoutState {
             all_laid_out &= children.borrow().is_empty();
         });
         all_laid_out
-    }
-
-    /// Every completed root enqueues even when its queue is still empty:
-    /// fixed-position descendants of abspos subtrees register against the
-    /// viewport only while the pass lays those subtrees out.
-    pub(crate) fn enqueue_for_abspos_layout_pass(&self, target_box: Node) {
-        self.abspos_layout_pass_queue_in_completion_order
-            .borrow_mut()
-            .push_back(target_box);
-    }
-
-    pub(crate) fn pop_from_abspos_layout_pass_queue(&self) -> Option<Node> {
-        self.abspos_layout_pass_queue_in_completion_order.borrow_mut().pop_front()
-    }
-
-    pub(crate) fn abspos_layout_pass_is_active(&self) -> bool {
-        self.abspos_layout_pass_is_active.get()
-    }
-
-    pub(crate) fn set_abspos_layout_pass_is_active(&self, is_active: bool) {
-        self.abspos_layout_pass_is_active.set(is_active);
     }
 
     /// By completion time the grid-area geometry is final and every abspos
@@ -1403,11 +1463,85 @@ impl LayoutState {
         }
     }
 
+    pub(crate) fn note_inline_containing_block(&self, inline_containing_block: Node, box_containing_block: Node) {
+        let previous = self
+            .inline_containing_blocks_to_box_containing_blocks
+            .borrow_mut()
+            .insert(inline_containing_block, box_containing_block);
+        debug_assert!(
+            previous.is_none_or(|previous| previous == box_containing_block),
+            "all abspos children of one inline containing block share one box containing block"
+        );
+    }
+
+    pub(crate) fn has_inline_containing_blocks(&self) -> bool {
+        !self.inline_containing_blocks_to_box_containing_blocks.borrow().is_empty()
+    }
+
+    pub(crate) fn box_containing_block_for_inline_containing_block(&self, inline_containing_block: Node) -> Option<Node> {
+        self.inline_containing_blocks_to_box_containing_blocks
+            .borrow()
+            .get(&inline_containing_block)
+            .copied()
+    }
+
+    pub(crate) fn register_hoisted_inline_containing_block_rect(
+        &self,
+        inline_containing_block: Node,
+        rect: PhysicalRect,
+        space_box: Node,
+        target_box: Node,
+    ) {
+        let mut records = self.hoisted_inline_containing_block_rects.borrow_mut();
+        if cfg!(debug_assertions) {
+            for record in records.iter() {
+                // An inline containing block publishes at most one rect per state.
+                assert!(record.inline_containing_block != inline_containing_block || record.target_box != target_box);
+            }
+        }
+        let record_index = records.len();
+        records.push(HoistedInlineContainingBlockRect {
+            inline_containing_block,
+            rect,
+            space_box,
+            target_box,
+        });
+        drop(records);
+        self.track_hoisted_in_flight(space_box, target_box, HoistedPayloadKind::InlineContainingBlockRect {
+            record_index,
+        });
+    }
+
+    pub(crate) fn hoisted_inline_containing_block_rect(
+        &self,
+        target_box: Node,
+        inline_containing_block: Node,
+    ) -> Option<HoistedInlineContainingBlockRect> {
+        self.hoisted_inline_containing_block_rects
+            .borrow()
+            .iter()
+            .find(|record| {
+                record.target_box == target_box && record.inline_containing_block == inline_containing_block
+            })
+            .copied()
+    }
+
     pub(crate) fn take_next_contained_abspos_child(&self, target_box: Node) -> Option<PendingAbsposChild> {
-        self.contained_abspos_children
+        let child = self
+            .contained_abspos_children
             .get(target_box.slot_index())?
             .borrow_mut()
-            .pop_front()
+            .pop_front()?;
+        if child.static_position_space_box != target_box {
+            let mut locators = self.hoisted_in_flight.borrow_mut();
+            if let Some(index) = locators
+                .iter()
+                .position(|locator| locator.kind == (HoistedPayloadKind::AbsposChild { child_box: child.child_box }))
+            {
+                locators.swap_remove(index);
+            }
+        }
+        Some(child)
     }
 
     /// Accumulates relative-position insets from a chain of inline-flow
