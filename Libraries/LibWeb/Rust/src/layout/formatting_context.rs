@@ -421,7 +421,9 @@ pub(crate) fn register_contained_abspos_child(
     loop {
         let containing_block = callbacks.containing_block(target);
         let facts = state.node_facts(callbacks, target);
-        if containing_block.is_invalid() || formatting_context_type_created_by_box(facts).is_some() {
+        let target_owns_its_final_used_geometry =
+            formatting_context_type_created_by_box(facts).is_some() && !facts.is_table_cell();
+        if containing_block.is_invalid() || target_owns_its_final_used_geometry {
             break;
         }
         target = containing_block;
