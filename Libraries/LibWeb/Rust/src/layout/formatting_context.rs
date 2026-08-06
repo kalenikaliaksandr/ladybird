@@ -404,27 +404,68 @@ pub(crate) fn place_child(
     used.has_content_offset.set(true);
     used.content_offset.set(offset);
     state.record_placement(node, offset);
+    if state.node_facts(callbacks, node).has_anchor_names() {
+        let collapsed = used.uses_collapsing_borders_model.get();
+        state.emit_anchor_rect(callbacks.containing_block(node), crate::layout::AnchorRectEntry {
+            anchor_box: node,
+            border_box_rect: PhysicalRect {
+                x: offset.x - used.border_box_left(collapsed),
+                y: offset.y - used.border_box_top(collapsed),
+                width: used.border_box_inline_size(collapsed),
+                height: used.border_box_block_size(collapsed),
+            },
+        });
+    }
+    state.fold_pending_carry_for_placement(callbacks, node, offset);
 }
 
 pub(crate) fn register_contained_abspos_child(
     state: &LayoutState,
     callbacks: &FfiLayoutFcCallbacks,
+    space_box: Node,
     child: Node,
     static_position_point: StaticPositionPoint,
 ) {
-    let mut target = callbacks.containing_block(child);
-    if target.is_invalid() {
+    let containing_block = callbacks.containing_block(child);
+    if containing_block.is_invalid() {
         return;
     }
+    state.emit_oof_candidate(space_box, crate::layout::OofCandidate {
+        child_box: child,
+        containing_block,
+        inline_containing_block: callbacks.inline_containing_block(child),
+        static_position: static_position_point,
+        containing_block_info: None,
+        inline_cb_rect: None,
+        waits_for_table_box: containing_block_geometry_is_finalized_by_the_table_run(state, callbacks, containing_block),
+    });
+    #[cfg(debug_assertions)]
+    if !state.is_measurement() {
+        state.debug_registered_oof_children.borrow_mut().insert(child);
+    }
+    let mut target = containing_block;
     loop {
-        let containing_block = callbacks.containing_block(target);
+        let next_containing_block = callbacks.containing_block(target);
         let facts = state.node_facts(callbacks, target);
-        if containing_block.is_invalid() || formatting_context_type_created_by_box(facts).is_some() {
+        if next_containing_block.is_invalid() || formatting_context_type_created_by_box(facts).is_some() {
             break;
         }
-        target = containing_block;
+        target = next_containing_block;
     }
     state.register_contained_abspos_child(callbacks, target, child, static_position_point);
+}
+
+fn containing_block_geometry_is_finalized_by_the_table_run(
+    state: &LayoutState,
+    callbacks: &FfiLayoutFcCallbacks,
+    containing_block: Node,
+) -> bool {
+    let facts = state.node_facts(callbacks, containing_block);
+    facts.is_table_cell()
+        || facts.is_table_row()
+        || facts.is_table_row_group()
+        || facts.is_table_header_group()
+        || facts.is_table_footer_group()
 }
 
 pub(crate) fn box_baseline(
@@ -1203,6 +1244,7 @@ fn register_table_abspos_descendants(run: &FormattingContextRun, parent: Node) {
                 register_contained_abspos_child(
                     run.state,
                     &run.callbacks,
+                    run.box_,
                     child,
                     StaticPositionPoint {
                         offset: Default::default(),
@@ -1848,6 +1890,8 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             .pop_recorder_frame()
             .expect("the entry's host recorder frame is active until the pass ends");
         let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
+        #[cfg(debug_assertions)]
+        debug_assert_carry_membership_matches_registrations(&pass_artifacts, state_ref);
         let commit_index = CommitIndex::build(&pass_artifacts, state_ref);
         state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink, &commit_index);
     });
@@ -1916,6 +1960,8 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
             .pop_recorder_frame()
             .expect("the entry's host recorder frame is active until the pass ends");
         let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
+        #[cfg(debug_assertions)]
+        debug_assert_carry_membership_matches_registrations(&pass_artifacts, state_ref);
         let commit_index = CommitIndex::build(&pass_artifacts, state_ref);
         state.commit_replacing(root, paintable_to_replace, &callbacks, sink, &commit_index);
     });
@@ -1952,6 +1998,8 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
             .pop_recorder_frame()
             .expect("the entry's host recorder frame is active until the pass ends");
         let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
+        #[cfg(debug_assertions)]
+        debug_assert_carry_membership_matches_registrations(&pass_artifacts, state_ref);
         let commit_index = CommitIndex::build(&pass_artifacts, state_ref);
         state.commit_replacing(box_, paintable_to_replace, &callbacks, sink, &commit_index);
     });

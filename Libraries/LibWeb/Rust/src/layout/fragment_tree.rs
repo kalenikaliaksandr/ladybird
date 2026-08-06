@@ -66,24 +66,96 @@ pub(crate) struct LayoutResult {
     pub(crate) artifacts: Option<RunArtifacts>,
 }
 
+/// One absolutely positioned box waiting for its containing block: born at
+/// the registration sites with its static position in the producing box's
+/// content space, translated by every placement fold on the way up, and
+/// consumed at the containing block's completion once drains flip over.
+#[derive(Clone, Copy, Debug)]
+#[expect(dead_code)]
+pub(crate) struct OofCandidate {
+    pub(crate) child_box: Node,
+    pub(crate) containing_block: Node,
+    pub(crate) inline_containing_block: Node,
+    pub(crate) static_position: StaticPositionPoint,
+    /// Grid stamps the grid-area geometry at birth; everyone else resolves
+    /// the containing block's padding box at the drain.
+    pub(crate) containing_block_info: Option<AbsposContainingBlockInfo>,
+    /// The first/last-line rect of an inline containing block, stamped by
+    /// the inline formatting context and translated with the candidate.
+    pub(crate) inline_cb_rect: Option<PhysicalRect>,
+    /// True when the containing block is a table cell, row, or row group
+    /// whose used geometry the table run finalizes after their own runs:
+    /// drains below the table box must skip these.
+    pub(crate) waits_for_table_box: bool,
+}
+
+/// Border-box rect of an anchor-name-carrying box in its containing block's
+/// content space, riding results toward every drain that may resolve an
+/// anchor() against it.
+#[derive(Clone, Copy, Debug)]
+#[expect(dead_code)]
+pub(crate) struct AnchorRectEntry {
+    pub(crate) anchor_box: Node,
+    pub(crate) border_box_rect: PhysicalRect,
+}
+
+/// The out-of-flow payloads carried on results: translated at placement
+/// folds, merged upward, consumed at containing-block drains.
+#[derive(Default)]
+pub(crate) struct OofCarry {
+    pub(crate) candidates: Vec<OofCandidate>,
+    pub(crate) anchor_rects: Vec<AnchorRectEntry>,
+}
+
+impl OofCarry {
+    fn is_empty(&self) -> bool {
+        self.candidates.is_empty() && self.anchor_rects.is_empty()
+    }
+
+    fn translate(&mut self, offset: FfiCssPixelPoint) {
+        for candidate in &mut self.candidates {
+            candidate.static_position.offset.inline_offset += offset.x;
+            candidate.static_position.offset.block_offset += offset.y;
+            if let Some(rect) = &mut candidate.inline_cb_rect {
+                rect.x += offset.x;
+                rect.y += offset.y;
+            }
+        }
+        for entry in &mut self.anchor_rects {
+            entry.border_box_rect.x += offset.x;
+            entry.border_box_rect.y += offset.y;
+        }
+    }
+
+    fn merge(&mut self, mut other: OofCarry) {
+        self.candidates.append(&mut other.candidates);
+        self.anchor_rects.append(&mut other.anchor_rects);
+    }
+}
+
 /// What a completed formatting context run hands its invoker: links whose
 /// owner is the run root (nested by the parent when it assembles the root
-/// fragment at its own freeze), and links whose owner froze before the link
-/// existed and must keep travelling upward.
+/// fragment at its own freeze), links whose owner froze before the link
+/// existed and must keep travelling upward, and the out-of-flow carry in
+/// the run root's content space.
 pub(crate) struct RunArtifacts {
     pub(crate) root_links: Vec<FragmentLink>,
     pub(crate) escaped_links: Vec<(Node, FragmentLink)>,
+    pub(crate) carry: OofCarry,
 }
 
 /// Recording scope of one formatting context run: every working record the
-/// run created, every placement it assigned, and the artifacts of the
-/// independent runs it invoked. Frozen into [`RunArtifacts`] when the run
-/// returns.
+/// run created, every placement it assigned, the artifacts of the
+/// independent runs it invoked, and the pending out-of-flow carries keyed
+/// by the box whose content space their payloads are currently expressed
+/// in. Frozen into [`RunArtifacts`] when the run returns.
 pub(crate) struct RecorderFrame {
     root: Node,
     created: Vec<Node>,
     placements: Vec<(Node, FfiCssPixelPoint)>,
+    placed: HashMap<Node, FfiCssPixelPoint>,
     child_artifacts: HashMap<Node, RunArtifacts>,
+    pending_carries: HashMap<Node, OofCarry>,
 }
 
 impl LayoutState {
@@ -95,7 +167,9 @@ impl LayoutState {
             root,
             created: Vec::new(),
             placements: Vec::new(),
+            placed: HashMap::new(),
             child_artifacts: HashMap::new(),
+            pending_carries: HashMap::new(),
         });
     }
 
@@ -124,20 +198,101 @@ impl LayoutState {
         if self.is_measurement() {
             return;
         }
-        if let Some(frame) = self.recorder_frames.borrow_mut().last_mut() {
-            frame.placements.push((node, offset));
-        }
+        let mut frames = self.recorder_frames.borrow_mut();
+        let Some(frame) = frames.last_mut() else {
+            return;
+        };
+        frame.placements.push((node, offset));
+        frame.placed.insert(node, offset);
     }
 
     pub(crate) fn attach_child_artifacts(&self, child_root: Node, artifacts: Option<RunArtifacts>) {
-        let Some(artifacts) = artifacts else {
+        let Some(mut artifacts) = artifacts else {
             return;
         };
         let mut frames = self.recorder_frames.borrow_mut();
         let frame = frames
             .last_mut()
             .expect("a commit-purpose run always has an invoking recorder frame to attach to");
+        let carry = std::mem::take(&mut artifacts.carry);
+        if !carry.is_empty() {
+            frame.pending_carries.entry(child_root).or_default().merge(carry);
+        }
         frame.child_artifacts.insert(child_root, artifacts);
+    }
+
+    /// Emits a freshly discovered out-of-flow payload into the pending carry
+    /// of the box whose content space it is expressed in.
+    pub(crate) fn emit_oof_candidate(&self, space_box: Node, candidate: OofCandidate) {
+        if self.is_measurement() {
+            return;
+        }
+        if let Some(frame) = self.recorder_frames.borrow_mut().last_mut() {
+            frame.pending_carries.entry(space_box).or_default().candidates.push(candidate);
+        }
+    }
+
+    pub(crate) fn emit_anchor_rect(&self, space_box: Node, entry: AnchorRectEntry) {
+        if self.is_measurement() {
+            return;
+        }
+        if let Some(frame) = self.recorder_frames.borrow_mut().last_mut() {
+            frame.pending_carries.entry(space_box).or_default().anchor_rects.push(entry);
+        }
+    }
+
+    /// Stamps grid-area containing block info onto a carry candidate that
+    /// was just emitted into the grid container's pending carry.
+    pub(crate) fn stamp_carry_candidate_containing_block_info(
+        &self,
+        space_box: Node,
+        child_box: Node,
+        info: AbsposContainingBlockInfo,
+    ) {
+        if self.is_measurement() {
+            return;
+        }
+        if let Some(frame) = self.recorder_frames.borrow_mut().last_mut()
+            && let Some(carry) = frame.pending_carries.get_mut(&space_box)
+            && let Some(candidate) = carry.candidates.iter_mut().rev().find(|candidate| candidate.child_box == child_box)
+        {
+            candidate.containing_block_info = Some(info);
+        }
+    }
+
+    /// The single translation moment: when a box's offset becomes final, its
+    /// pending carry moves into its containing block's content space. If that
+    /// containing block was itself already placed (table rows are placed
+    /// before the cells that fold into them), the walk keeps translating
+    /// through every already-placed ancestor in one bounded pass, so a
+    /// payload always rests in a space whose placement is still pending —
+    /// or the frame root's.
+    pub(crate) fn fold_pending_carry_for_placement(
+        &self,
+        callbacks: &FfiLayoutFcCallbacks,
+        node: Node,
+        offset: FfiCssPixelPoint,
+    ) {
+        if self.is_measurement() {
+            return;
+        }
+        let mut frames = self.recorder_frames.borrow_mut();
+        let Some(frame) = frames.last_mut() else {
+            return;
+        };
+        let Some(mut carry) = frame.pending_carries.remove(&node) else {
+            return;
+        };
+        carry.translate(offset);
+        let mut space = callbacks.containing_block(node);
+        while space != frame.root && !space.is_invalid() {
+            let Some(space_offset) = frame.placed.get(&space).copied() else {
+                break;
+            };
+            carry.translate(space_offset);
+            space = callbacks.containing_block(space);
+        }
+        frame.pending_carries.entry(space).or_default().merge(carry);
     }
 }
 
@@ -271,7 +426,9 @@ pub(crate) fn freeze_run_artifacts(
         root,
         created,
         placements,
+        placed: _,
         mut child_artifacts,
+        mut pending_carries,
     } = frame;
 
     let mut placement_offsets = HashMap::<Node, FfiCssPixelPoint>::new();
@@ -288,9 +445,14 @@ pub(crate) fn freeze_run_artifacts(
         links_by_owner.entry(callbacks.containing_block(node)).or_default().push(node);
     }
 
+    let mut carry = pending_carries.remove(&root).unwrap_or_default();
+    for (_, leftover) in pending_carries.drain() {
+        carry.merge(leftover);
+    }
     let mut artifacts = RunArtifacts {
         root_links: Vec::new(),
         escaped_links: Vec::new(),
+        carry,
     };
 
     let mut assembly = FragmentAssembly {
@@ -317,8 +479,23 @@ pub(crate) fn freeze_run_artifacts(
 
     for (_, child) in child_artifacts {
         artifacts.escaped_links.extend(child.escaped_links);
+        artifacts.carry.merge(child.carry);
     }
     artifacts
+}
+
+/// Shadow for the dual-emission stage: every child the queue side registered
+/// must surface exactly once in the entry-level carry, and nothing else may.
+#[cfg(debug_assertions)]
+pub(crate) fn debug_assert_carry_membership_matches_registrations(artifacts: &RunArtifacts, state: &LayoutState) {
+    let mut carried: Vec<Node> = artifacts.carry.candidates.iter().map(|candidate| candidate.child_box).collect();
+    carried.sort_by_key(|node| node.slot_index());
+    let mut registered: Vec<Node> = state.debug_registered_oof_children.borrow().iter().copied().collect();
+    registered.sort_by_key(|node| node.slot_index());
+    assert_eq!(
+        carried, registered,
+        "result-carried out-of-flow candidates diverged from queue registrations"
+    );
 }
 
 struct FragmentAssembly<'freeze, 'pass> {

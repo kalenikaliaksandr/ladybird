@@ -3742,22 +3742,35 @@ impl<'pass> GridFormattingContext<'pass> {
                     block_alignment: StaticPositionAlignment::Start,
                     alignment_derives_from_own_computed_values: false,
                 };
-                crate::layout::register_contained_abspos_child(self.state, &self.callbacks, child, static_position);
+                crate::layout::register_contained_abspos_child(
+                    self.state,
+                    &self.callbacks,
+                    self.grid_container,
+                    child,
+                    static_position,
+                );
+                self.state.stamp_carry_candidate_containing_block_info(
+                    self.grid_container,
+                    child,
+                    self.carry_containing_block_info(child),
+                );
             }
             child = next;
         }
         self.state
-            .override_contained_abspos_child_containing_blocks(self.grid_container, |child| {
-                let mut info = self.abspos_containing_block_info(child);
-                let grid_area_is_childs_static_position =
-                    self.callbacks.static_position_containing_block(child) == self.grid_container;
-                if !grid_area_is_childs_static_position {
-                    let (inline_axis_mode, block_axis_mode) = axis_modes(self.style(child));
-                    info.inline_axis_mode = inline_axis_mode;
-                    info.block_axis_mode = block_axis_mode;
-                }
-                info
-            });
+            .override_contained_abspos_child_containing_blocks(self.grid_container, |child| self.carry_containing_block_info(child));
+    }
+
+    fn carry_containing_block_info(&self, child: Node) -> AbsposContainingBlockInfo {
+        let mut info = self.abspos_containing_block_info(child);
+        let grid_area_is_childs_static_position =
+            self.callbacks.static_position_containing_block(child) == self.grid_container;
+        if !grid_area_is_childs_static_position {
+            let (inline_axis_mode, block_axis_mode) = axis_modes(self.style(child));
+            info.inline_axis_mode = inline_axis_mode;
+            info.block_axis_mode = block_axis_mode;
+        }
+        info
     }
 
     // https://www.w3.org/TR/css-grid-2/#abspos-items

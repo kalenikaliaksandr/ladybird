@@ -1204,7 +1204,13 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
                         break 'lines;
                     }
                 }
-                crate::layout::register_contained_abspos_child(self.state, &self.callbacks, box_, static_position);
+                crate::layout::register_contained_abspos_child(
+                    self.state,
+                    &self.callbacks,
+                    self.containing_block,
+                    box_,
+                    static_position,
+                );
             }
         }
         line_builder.remove_last_line_if_empty();

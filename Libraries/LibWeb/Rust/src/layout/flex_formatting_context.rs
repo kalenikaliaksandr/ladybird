@@ -3144,6 +3144,7 @@ impl<'pass> FlexFormattingContext<'pass> {
                 crate::layout::register_contained_abspos_child(
                     self.state,
                     &self.callbacks,
+                    self.flex_container,
                     child,
                     self.calculate_static_position_point(child),
                 );

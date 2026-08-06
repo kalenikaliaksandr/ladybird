@@ -284,7 +284,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         crate::layout::place_child(self.state, &self.callbacks, node, offset);
     }
 
-    fn register_contained_abspos_child(&self, node: Node, block_offset: CssPixels) {
+    fn register_contained_abspos_child(&self, block_container: Node, node: Node, block_offset: CssPixels) {
         let static_position = StaticPositionPoint {
             offset: LogicalOffset {
                 inline_offset: CssPixels::default(),
@@ -294,7 +294,7 @@ impl<'pass> BlockFormattingContext<'pass> {
             block_alignment: StaticPositionAlignment::Start,
             alignment_derives_from_own_computed_values: false,
         };
-        crate::layout::register_contained_abspos_child(self.state, &self.callbacks, node, static_position);
+        crate::layout::register_contained_abspos_child(self.state, &self.callbacks, block_container, node, static_position);
     }
 
     fn compute_and_store_baselines(&self, node: Node) {
@@ -1525,6 +1525,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 //     builder keeps out-of-flow boxes in inline context, where static position markers
                 //     pin them at their exact flow position.
                 self.register_contained_abspos_child(
+                    block_container,
                     node,
                     self.block_offset_of_current_block_container
                         .get()
