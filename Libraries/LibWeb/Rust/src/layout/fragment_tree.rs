@@ -252,43 +252,6 @@ fn fold_committed_position_into_link(
     }
 }
 
-/// Commit-side twin of accumulated_relative_insets_from_inline_ancestor_chain
-/// resolving inline-ancestor insets through the returned fragments instead of
-/// the working records. Both walks are deleted together when relative
-/// positioning folds into link offsets at freeze.
-pub(crate) fn accumulated_relative_insets_from_commit_index(
-    state: &LayoutState,
-    commit_index: &CommitIndex,
-    callbacks: &FfiLayoutFcCallbacks,
-    first_ancestor: Node,
-    stop_at: Node,
-) -> InlineAncestorChainRelativeOffset {
-    let mut result = InlineAncestorChainRelativeOffset::default();
-    let mut ancestor = first_ancestor;
-    while !ancestor.is_invalid() && ancestor != stop_at {
-        let facts = state.node_facts(callbacks, ancestor);
-        if !facts.has_box_model_metrics() {
-            break;
-        }
-        let display = facts.display();
-        if !display.is_inline_outside() || !display.is_flow_inside() {
-            break;
-        }
-        result.found_fragmented_inline_node |= facts.is_fragmented_inline();
-        if facts.is_relatively_positioned() {
-            // An inline that never went through inline layout this pass has
-            // no fragment; its committed box model is zeroed, so it
-            // contributes no inset.
-            if let Some(entry) = commit_index.entry(ancestor) {
-                result.offset_x += entry.fragment.inset_left;
-                result.offset_y += entry.fragment.inset_top;
-            }
-        }
-        ancestor = callbacks.parent(ancestor);
-    }
-    result
-}
-
 
 
 /// Assembles the frame's records into immutable fragments over the containing

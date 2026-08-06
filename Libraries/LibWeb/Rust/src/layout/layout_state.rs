@@ -1477,7 +1477,7 @@ impl LayoutState {
                         emit_fragment: sink.emit_fragment,
                         emit_inline_box_piece: sink.emit_inline_box_piece,
                     };
-                    assert!(push_line_data(self, commit_index, entry, callbacks, line_sink));
+                    assert!(push_line_data(entry, callbacks, line_sink));
                     unsafe {
                         (sink.finish_line_data)(sink.context);
                     }
