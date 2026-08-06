@@ -1489,9 +1489,12 @@ impl LayoutState {
         insert_before_paintable: *mut c_void,
         callbacks: &FfiLayoutFcCallbacks,
         sink: &FfiCommitSink,
+        commit_index: &CommitIndex,
     ) {
         let slot_index = callbacks.slot_index(node);
         let used = self.used_values_by_slot(slot_index);
+        #[cfg(debug_assertions)]
+        debug_assert_commit_entry_matches_record(commit_index.entry(node), node, used);
         let abspos_layout_inputs = self
             .used_values_rare_data(slot_index)
             .and_then(|rare| rare.abspos_layout_inputs);
@@ -1636,7 +1639,7 @@ impl LayoutState {
         let mut child = callbacks.first_child(node);
         while !child.is_invalid() {
             let next = callbacks.next_sibling(child);
-            self.commit_subtree(child, result.paintable_for_children, null_mut(), callbacks, sink);
+            self.commit_subtree(child, result.paintable_for_children, null_mut(), callbacks, sink, commit_index);
             child = next;
         }
 
@@ -1654,6 +1657,7 @@ impl LayoutState {
         paintable_to_replace: *mut c_void,
         callbacks: &FfiLayoutFcCallbacks,
         sink: &FfiCommitSink,
+        commit_index: &CommitIndex,
     ) {
         // SAFETY: The sink retains the replaced paintable, detaches it, and
         // returns borrowed insertion pointers that stay live until
@@ -1665,6 +1669,7 @@ impl LayoutState {
             position.insert_before_paintable,
             callbacks,
             sink,
+            commit_index,
         );
         unsafe {
             (sink.finish_commit)(sink.context);

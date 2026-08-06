@@ -64,10 +64,11 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
         None,
     );
 
+    run.state.attach_child_artifacts(wrapper, wrapper_layout.artifacts);
     crate::layout::place_child(run.state, &run.callbacks, wrapper, FfiCssPixelPoint::default());
 
     ChildLayoutResult {
         automatic_content_inline_size: content_inline_size,
-        automatic_content_block_size: wrapper_layout.automatic_content_block_size,
+        automatic_content_block_size: wrapper_layout.parent_consumed.automatic_content_block_size,
     }
 }

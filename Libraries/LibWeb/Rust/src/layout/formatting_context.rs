@@ -243,6 +243,7 @@ impl MeasurementState {
             input,
             None,
         )
+        .parent_consumed
     }
 
     pub(crate) fn rust_state(&self) -> &LayoutState {
@@ -1413,9 +1414,9 @@ fn run_formatting_context<'pass>(
     callbacks: FfiLayoutFcCallbacks,
     input: LayoutInput,
     parent_block: Option<&BlockFormattingContext<'pass>>,
-) -> ChildLayoutResult {
+) -> LayoutResult {
     state.push_recorder_frame(box_);
-    let result = run_formatting_context_body(
+    let parent_consumed = run_formatting_context_body(
         state,
         box_,
         parent_grid,
@@ -1426,10 +1427,13 @@ fn run_formatting_context<'pass>(
         input,
         parent_block,
     );
-    if let Some(frame) = state.pop_recorder_frame() {
-        let _artifacts = freeze_run_artifacts(state, &callbacks, frame);
+    let artifacts = state
+        .pop_recorder_frame()
+        .map(|frame| freeze_run_artifacts(state, &callbacks, frame));
+    LayoutResult {
+        parent_consumed,
+        artifacts,
     }
-    result
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -1700,7 +1704,7 @@ pub(crate) fn layout_inside_child<'pass>(
             run.box_,
             run.treat_block_axis_percentage_insets_as_auto_beyond_root,
         );
-    ChildLayoutOutcome::Created(run_formatting_context(
+    let result = run_formatting_context(
         run.state,
         child,
         parent_grid,
@@ -1710,7 +1714,9 @@ pub(crate) fn layout_inside_child<'pass>(
         run.callbacks,
         input,
         parent_block,
-    ))
+    );
+    run.state.attach_child_artifacts(child, result.artifacts);
+    ChildLayoutOutcome::Created(result.parent_consumed)
 }
 
 fn independent_formatting_context_type(
@@ -1798,6 +1804,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         let viewport_block_size = CssPixels::from_raw(viewport_block_size_raw);
 
         let state = LayoutState::new(LayoutStatePurpose::Commit);
+        state.push_recorder_frame(Node::INVALID);
         let root_constraints = crate::layout::ContainingBlockConstraints {
             percentage_basis_inline_size: Some(viewport_inline_size),
             percentage_basis_block_size: Some(viewport_block_size),
@@ -1824,7 +1831,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         .with_forced_sizes(viewport_inline_size, viewport_block_size);
         let state_ref = &state;
         let fc_type = independent_formatting_context_type(state_ref, root_for_layout, &callbacks);
-        run_formatting_context(
+        let root_result = run_formatting_context(
             state_ref,
             root_for_layout,
             None,
@@ -1835,8 +1842,14 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             input,
             None,
         );
+        state.attach_child_artifacts(root_for_layout, root_result.artifacts);
         run_abspos_layout_pass(state_ref, callbacks, should_collect_devtools_layout_data);
-        state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink);
+        let host_frame = state
+            .pop_recorder_frame()
+            .expect("the entry's host recorder frame is active until the pass ends");
+        let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
+        let commit_index = CommitIndex::build(&pass_artifacts);
+        state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink, &commit_index);
     });
 }
 
@@ -1864,6 +1877,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         let sink = unsafe { &*sink };
 
         let state = LayoutState::new(LayoutStatePurpose::Commit);
+        state.push_recorder_frame(Node::INVALID);
         let root_used = state
             .populate_from_paintable(&callbacks, root, paintable_to_replace)
             .expect("partial relayout root must have committed geometry");
@@ -1894,9 +1908,16 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         let facts = state.node_facts(&callbacks, root);
         let fc_type = formatting_context_type_created_by_box(facts)
             .expect("partial relayout root must establish an independent formatting context");
-        run_formatting_context(state_ref, root, None, fc_type, LayoutMode::Normal, false, callbacks, input, None);
+        let root_result =
+            run_formatting_context(state_ref, root, None, fc_type, LayoutMode::Normal, false, callbacks, input, None);
+        state.attach_child_artifacts(root, root_result.artifacts);
         run_abspos_layout_pass(state_ref, callbacks, false);
-        state.commit_replacing(root, paintable_to_replace, &callbacks, sink);
+        let host_frame = state
+            .pop_recorder_frame()
+            .expect("the entry's host recorder frame is active until the pass ends");
+        let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
+        let commit_index = CommitIndex::build(&pass_artifacts);
+        state.commit_replacing(root, paintable_to_replace, &callbacks, sink, &commit_index);
     });
 }
 
@@ -1920,12 +1941,18 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
         let callbacks = unsafe { *callbacks };
         let sink = unsafe { &*sink };
         let state = LayoutState::new(LayoutStatePurpose::Commit);
+        state.push_recorder_frame(Node::INVALID);
         let state_ref = &state;
         let containing_block = callbacks.containing_block(box_);
         assert!(!containing_block.is_invalid());
         let run = crate::layout::FormattingContextRun::new(state_ref, containing_block, LayoutMode::Normal, callbacks, false, false);
         AbsposEngine::new(state_ref, callbacks).replay(&run, box_);
         run_abspos_layout_pass(state_ref, callbacks, false);
-        state.commit_replacing(box_, paintable_to_replace, &callbacks, sink);
+        let host_frame = state
+            .pop_recorder_frame()
+            .expect("the entry's host recorder frame is active until the pass ends");
+        let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
+        let commit_index = CommitIndex::build(&pass_artifacts);
+        state.commit_replacing(box_, paintable_to_replace, &callbacks, sink, &commit_index);
     });
 }

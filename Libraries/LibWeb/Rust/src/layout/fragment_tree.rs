@@ -9,7 +9,7 @@
 /// position of their own: a box's offset lives on the containing block's
 /// [`FragmentLink`], so an entire subtree is reusable regardless of where the
 /// containing block places it.
-#[expect(dead_code)]
+#[cfg_attr(not(debug_assertions), expect(dead_code))]
 pub(crate) struct Fragment {
     pub(crate) node: Node,
     pub(crate) content_inline_size: CssPixels,
@@ -46,6 +46,23 @@ pub(crate) struct FragmentLink {
     pub(crate) relpos_delta: FfiCssPixelPoint,
     pub(crate) containing_line_box_index: Option<usize>,
     pub(crate) fragment: std::rc::Rc<Fragment>,
+}
+
+impl FragmentLink {
+    pub(crate) fn committed_offset(&self) -> FfiCssPixelPoint {
+        FfiCssPixelPoint {
+            x: self.static_offset.x + self.relpos_delta.x,
+            y: self.static_offset.y + self.relpos_delta.y,
+        }
+    }
+}
+
+/// What run_formatting_context returns: the scalar outputs the invoking
+/// formatting context consumes directly, and the frozen artifacts of the run.
+/// Measurement runs freeze nothing and carry no artifacts.
+pub(crate) struct LayoutResult {
+    pub(crate) parent_consumed: ChildLayoutResult,
+    pub(crate) artifacts: Option<RunArtifacts>,
 }
 
 /// What a completed formatting context run hands its invoker: links whose
@@ -110,6 +127,99 @@ impl LayoutState {
             frame.placements.push((node, offset));
         }
     }
+
+    pub(crate) fn attach_child_artifacts(&self, child_root: Node, artifacts: Option<RunArtifacts>) {
+        let Some(artifacts) = artifacts else {
+            return;
+        };
+        let mut frames = self.recorder_frames.borrow_mut();
+        let frame = frames
+            .last_mut()
+            .expect("a commit-purpose run always has an invoking recorder frame to attach to");
+        frame.child_artifacts.insert(child_root, artifacts);
+    }
+}
+
+/// Commit's view of the returned trees: one entry per laid-out box, holding
+/// the fragment and the committed offset from the owning link. Built at the
+/// FFI entry from the entry-level artifacts, where top-level links are the
+/// pass roots (viewport, subtree root) and escaped links are boxes whose
+/// owner fragment froze before they were placed (today only the deferred
+/// abspos pass produces those).
+pub(crate) struct CommitIndex {
+    entries: HashMap<Node, CommitEntry>,
+}
+
+#[cfg_attr(not(debug_assertions), expect(dead_code))]
+pub(crate) struct CommitEntry {
+    pub(crate) fragment: std::rc::Rc<Fragment>,
+    pub(crate) content_offset: FfiCssPixelPoint,
+}
+
+impl CommitIndex {
+    pub(crate) fn build(artifacts: &RunArtifacts) -> Self {
+        let mut index = CommitIndex {
+            entries: HashMap::new(),
+        };
+        for link in &artifacts.root_links {
+            index.insert_link_subtree(link);
+        }
+        for (_, link) in &artifacts.escaped_links {
+            index.insert_link_subtree(link);
+        }
+        index
+    }
+
+    fn insert_link_subtree(&mut self, link: &FragmentLink) {
+        self.entries.insert(link.fragment.node, CommitEntry {
+            fragment: std::rc::Rc::clone(&link.fragment),
+            content_offset: link.committed_offset(),
+        });
+        for child_link in &link.fragment.links {
+            self.insert_link_subtree(child_link);
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), expect(dead_code))]
+    pub(crate) fn entry(&self, node: Node) -> Option<&CommitEntry> {
+        self.entries.get(&node)
+    }
+}
+
+/// The one-commit shadow proving the assembled tree mirrors the working
+/// records: presence, the full field snapshot, and the committed offset all
+/// have to agree before commit switches its reads over.
+#[cfg(debug_assertions)]
+pub(crate) fn debug_assert_commit_entry_matches_record(entry: Option<&CommitEntry>, node: Node, used: Option<&UsedValues>) {
+    let Some(used) = used else {
+        assert!(entry.is_none(), "commit index has an entry for a box without a working record");
+        return;
+    };
+    let entry = entry.expect("every box with a working record is covered by the commit index");
+    let fragment = &*entry.fragment;
+    assert_eq!(fragment.node, node);
+    assert_eq!(entry.content_offset, used.content_offset.get());
+    assert_eq!(fragment.content_inline_size, used.content_inline_size.get());
+    assert_eq!(fragment.content_block_size, used.content_block_size.get());
+    assert_eq!(fragment.margin_left, used.margin_left.get());
+    assert_eq!(fragment.margin_right, used.margin_right.get());
+    assert_eq!(fragment.margin_top, used.margin_top.get());
+    assert_eq!(fragment.margin_bottom, used.margin_bottom.get());
+    assert_eq!(fragment.border_left, used.border_left.get());
+    assert_eq!(fragment.border_right, used.border_right.get());
+    assert_eq!(fragment.border_top, used.border_top.get());
+    assert_eq!(fragment.border_bottom, used.border_bottom.get());
+    assert_eq!(fragment.padding_left, used.padding_left.get());
+    assert_eq!(fragment.padding_right, used.padding_right.get());
+    assert_eq!(fragment.padding_top, used.padding_top.get());
+    assert_eq!(fragment.padding_bottom, used.padding_bottom.get());
+    assert_eq!(fragment.inset_left, used.inset_left.get());
+    assert_eq!(fragment.inset_right, used.inset_right.get());
+    assert_eq!(fragment.inset_top, used.inset_top.get());
+    assert_eq!(fragment.inset_bottom, used.inset_bottom.get());
+    assert_eq!(fragment.materialized_from_paintable, used.materialized_from_paintable.get());
+    assert_eq!(fragment.has_containing_line_box_fragment, used.has_containing_line_box_fragment.get());
+    assert_eq!(fragment.containing_line_box_fragment, used.containing_line_box_fragment.get());
 }
 
 /// Assembles the frame's records into immutable fragments over the containing
