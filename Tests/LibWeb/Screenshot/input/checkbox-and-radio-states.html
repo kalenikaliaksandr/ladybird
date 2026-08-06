@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<meta name="fuzzy" content="maxDifference=0-1;totalPixels=0-1200" />
+<style>
+    div {
+        margin: 4px;
+    }
+
+    .big input {
+        width: 60px;
+        height: 60px;
+    }
+
+    .accent {
+        accent-color: rebeccapurple;
+    }
+</style>
+<div>
+    <input type="checkbox">
+    <input type="checkbox" checked>
+    <input type="checkbox" class="indeterminate">
+    <input type="checkbox" disabled>
+    <input type="checkbox" checked disabled>
+    <input type="checkbox" class="indeterminate" disabled>
+    <input type="radio">
+    <input type="radio" checked>
+    <input type="radio" disabled>
+    <input type="radio" checked disabled>
+</div>
+<div class="accent">
+    <input type="checkbox" checked>
+    <input type="checkbox" class="indeterminate">
+    <input type="radio" checked>
+</div>
+<div class="big">
+    <input type="checkbox">
+    <input type="checkbox" checked>
+    <input type="checkbox" class="indeterminate">
+    <input type="radio">
+    <input type="radio" checked>
+</div>
+<div class="big accent">
+    <input type="checkbox" checked>
+    <input type="radio" checked>
+</div>
+<script>
+    for (const input of document.querySelectorAll(".indeterminate"))
+        input.indeterminate = true;
+</script>

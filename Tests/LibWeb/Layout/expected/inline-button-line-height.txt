@@ -10,7 +10,10 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
           Box <div.radios--main> at [8,8] flex-container(row) flex-item [0+0+0 170 6+0+0] [0+0+0 47 16+0+0] [FFC] children: not-inline
             BlockContainer <(anonymous)> (not painted) [BFC] children: inline
               TextNode <#text> (not painted)
-            RadioButton <input.radios--input> at [15,10] flex-item [0+2+5 0 5+2+0] [0+2+0 0 0+2+0] children: not-inline
+            RadioButton <input.radios--input> at [15,10] flex-item [0+2+5 0 5+2+0] [0+2+0 0 0+2+0] [BFC] children: not-inline
+              Box <div> at [15,10] flex-container(row) [0+0+0 0 0+0+0] [0+0+0 0 0+0+0] [FFC] children: not-inline
+                Box <div> at [15,10] flex-container(row) flex-item [0+1+0 0 0+1+0] [0+1+0 0 0+1+0] [FFC] children: not-inline
+                  BlockContainer <div> at [15,10] flex-item [0+0+0 0 0+0+0] [0+0+0 0 0+0+0] [BFC] children: not-inline
             BlockContainer <(anonymous)> (not painted) [BFC] children: inline
               TextNode <#text> (not painted)
             BlockContainer <label.radios--value-button> at [40,10] flex-item [0+2+16 120 16+2+0] [0+2+0 43 0+2+0] [BFC] children: inline
@@ -24,7 +27,9 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
           Box <div.radios--main> at [8,71] flex-container(row) flex-item [0+0+0 150 6+0+0] [0+0+0 47 16+0+0] [FFC] children: not-inline
             BlockContainer <(anonymous)> (not painted) [BFC] children: inline
               TextNode <#text> (not painted)
-            RadioButton <input.radios--input> at [15,73] flex-item [0+2+5 0 5+2+0] [0+2+0 0 0+2+0] children: not-inline
+            RadioButton <input.radios--input> at [15,73] flex-item [0+2+5 0 5+2+0] [0+2+0 0 0+2+0] [BFC] children: not-inline
+              Box <div> at [15,73] flex-container(row) [0+0+0 0 0+0+0] [0+0+0 0 0+0+0] [FFC] children: not-inline
+                Box <div> at [15,73] flex-container(row) flex-item [0+1+0 0 0+1+0] [0+1+0 0 0+1+0] [FFC] children: not-inline
             BlockContainer <(anonymous)> (not painted) [BFC] children: inline
               TextNode <#text> (not painted)
             BlockContainer <label.radios--value-button> at [40,73] flex-item [0+2+16 100 16+2+0] [0+2+0 43 0+2+0] [BFC] children: inline
@@ -38,7 +43,9 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
           Box <div.radios--main> at [8,134] flex-container(row) flex-item [0+0+0 150 6+0+0] [0+0+0 47 16+0+0] [FFC] children: not-inline
             BlockContainer <(anonymous)> (not painted) [BFC] children: inline
               TextNode <#text> (not painted)
-            RadioButton <input.radios--input> at [15,136] flex-item [0+2+5 0 5+2+0] [0+2+0 0 0+2+0] children: not-inline
+            RadioButton <input.radios--input> at [15,136] flex-item [0+2+5 0 5+2+0] [0+2+0 0 0+2+0] [BFC] children: not-inline
+              Box <div> at [15,136] flex-container(row) [0+0+0 0 0+0+0] [0+0+0 0 0+0+0] [FFC] children: not-inline
+                Box <div> at [15,136] flex-container(row) flex-item [0+1+0 0 0+1+0] [0+1+0 0 0+1+0] [FFC] children: not-inline
             BlockContainer <(anonymous)> (not painted) [BFC] children: inline
               TextNode <#text> (not painted)
             BlockContainer <label.radios--value-button> at [40,136] flex-item [0+2+16 100 16+2+0] [0+2+0 43 0+2+0] [BFC] children: inline
@@ -52,7 +59,9 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
           Box <div.radios--main> at [164,134] flex-container(row) flex-item [0+0+0 130 0+0+0] [0+0+0 47 16+0+0] [FFC] children: not-inline
             BlockContainer <(anonymous)> (not painted) [BFC] children: inline
               TextNode <#text> (not painted)
-            RadioButton <input.radios--input> at [171,136] flex-item [0+2+5 0 5+2+0] [0+2+0 0 0+2+0] children: not-inline
+            RadioButton <input.radios--input> at [171,136] flex-item [0+2+5 0 5+2+0] [0+2+0 0 0+2+0] [BFC] children: not-inline
+              Box <div> at [171,136] flex-container(row) [0+0+0 0 0+0+0] [0+0+0 0 0+0+0] [FFC] children: not-inline
+                Box <div> at [171,136] flex-container(row) flex-item [0+1+0 0 0+1+0] [0+1+0 0 0+1+0] [FFC] children: not-inline
             BlockContainer <(anonymous)> (not painted) [BFC] children: inline
               TextNode <#text> (not painted)
             BlockContainer <label.radios--value-button> at [196,136] flex-item [0+2+16 80 16+2+0] [0+2+0 43 0+2+0] [BFC] children: inline
@@ -134,16 +143,25 @@ ViewportPaintable (Viewport<#document>) [0,0 800x600]
         PaintableWithLines (BlockContainer(anonymous)) [8,8 300x0]
         Paintable (Box<DIV>.radios--container) [8,8 300x189]
           Paintable (Box<DIV>.radios--main) [8,8 176x63]
-            RadioButtonPaintable (RadioButton<INPUT>.radios--input) [8,8 14x4]
+            PaintableWithLines (RadioButton<INPUT>.radios--input) [8,8 14x4]
+              Paintable (Box<DIV>) [15,10 0x0]
+                Paintable (Box<DIV>) [14,9 2x2]
+                  PaintableWithLines (BlockContainer<DIV>) [15,10 0x0]
             PaintableWithLines (BlockContainer<LABEL>.radios--value-button) [22,8 156x47]
           Paintable (Box<DIV>.radios--main) [8,71 156x63]
-            RadioButtonPaintable (RadioButton<INPUT>.radios--input) [8,71 14x4]
+            PaintableWithLines (RadioButton<INPUT>.radios--input) [8,71 14x4]
+              Paintable (Box<DIV>) [15,73 0x0]
+                Paintable (Box<DIV>) [14,72 2x2]
             PaintableWithLines (BlockContainer<LABEL>.radios--value-button) [22,71 136x47]
           Paintable (Box<DIV>.radios--main) [8,134 156x63]
-            RadioButtonPaintable (RadioButton<INPUT>.radios--input) [8,134 14x4]
+            PaintableWithLines (RadioButton<INPUT>.radios--input) [8,134 14x4]
+              Paintable (Box<DIV>) [15,136 0x0]
+                Paintable (Box<DIV>) [14,135 2x2]
             PaintableWithLines (BlockContainer<LABEL>.radios--value-button) [22,134 136x47]
           Paintable (Box<DIV>.radios--main) [164,134 130x63]
-            RadioButtonPaintable (RadioButton<INPUT>.radios--input) [164,134 14x4]
+            PaintableWithLines (RadioButton<INPUT>.radios--input) [164,134 14x4]
+              Paintable (Box<DIV>) [171,136 0x0]
+                Paintable (Box<DIV>) [170,135 2x2]
             PaintableWithLines (BlockContainer<LABEL>.radios--value-button) [178,134 116x47]
         PaintableWithLines (BlockContainer(anonymous)) [8,197 300x154]
           InlinePaintable (InlineNode<A>) [8,199 171x44]

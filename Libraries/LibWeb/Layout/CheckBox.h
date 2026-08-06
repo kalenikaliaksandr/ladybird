@@ -6,21 +6,21 @@
 
 #pragma once
 
-#include <LibWeb/Forward.h>
-#include <LibWeb/Layout/ReplacedBox.h>
+#include <LibWeb/DOM/Element.h>
+#include <LibWeb/Layout/BlockContainer.h>
 
 namespace Web::Layout {
 
-class CheckBox final : public ReplacedBox {
-    LAYOUT_NODE(CheckBox, ReplacedBox);
+class CheckBox final : public BlockContainer {
+    LAYOUT_NODE(CheckBox, BlockContainer);
 
 public:
-    CheckBox(DOM::Document&, HTML::HTMLInputElement&, NonnullRefPtr<CSS::ComputedValues const>);
-    virtual ~CheckBox() override;
+    CheckBox(DOM::Document&, GC::Ptr<DOM::Element>, NonnullRefPtr<CSS::ComputedValues const>);
+
+    virtual ~CheckBox() override = default;
 
 private:
     virtual CSS::SizeWithAspectRatio compute_auto_content_box_size() const override { return { 13, 13, {} }; }
-    virtual RefPtr<Painting::Paintable> create_paintable() const override;
 };
 
 }

@@ -1,0 +1,14 @@
+checkbox: default appearance is auto
+checkbox: default size is 13x13
+checkbox: appearance: none computes to none
+checkbox: appearance: none size is 0x0
+checkbox: explicit appearance: auto computes to auto
+checkbox: explicit appearance: auto restores the default size: true
+radio: default appearance is auto
+radio: default size is 12x12
+radio: appearance: none computes to none
+radio: appearance: none size is 0x0
+radio: explicit appearance: auto computes to auto
+radio: explicit appearance: auto restores the default size: true
+checkbox shadowRoot is null
+checkbox has no children: true

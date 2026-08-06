@@ -39,7 +39,9 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
       TextNode <#text> (not painted)
       BreakNode <br> (not painted)
       TextNode <#text> (not painted)
-      CheckBox <input> at [8,48] inline-block [0+0+0 13 0+0+0] [0+0+0 13 0+0+0] children: not-inline
+      CheckBox <input> at [8,48] inline-block [0+0+0 13 0+0+0] [0+0+0 13 0+0+0] [BFC] children: not-inline
+        Box <div> at [8,48] flex-container(row) [0+0+0 13 0+0+0] [0+0+0 13 0+0+0] [FFC] children: not-inline
+          Box <div> at [9,49] flex-container(row) flex-item [0+1+0 11 0+1+0] [0+1+0 11 0+1+0] [FFC] children: not-inline
       TextNode <#text> (not painted)
       BreakNode <br> (not painted)
       TextNode <#text> (not painted)
@@ -47,7 +49,9 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
       TextNode <#text> (not painted)
       BreakNode <br> (not painted)
       TextNode <#text> (not painted)
-      RadioButton <input> at [8,80] inline-block [0+0+0 12 0+0+0] [0+0+0 12 0+0+0] children: not-inline
+      RadioButton <input> at [8,80] inline-block [0+0+0 12 0+0+0] [0+0+0 12 0+0+0] [BFC] children: not-inline
+        Box <div> at [8,80] flex-container(row) [0+0+0 12 0+0+0] [0+0+0 12 0+0+0] [FFC] children: not-inline
+          Box <div> at [9,81] flex-container(row) flex-item [0+1+0 10 0+1+0] [0+1+0 10 0+1+0] [FFC] children: not-inline
       TextNode <#text> (not painted)
       BreakNode <br> (not painted)
       TextNode <#text> (not painted)
@@ -67,9 +71,13 @@ ViewportPaintable (Viewport<#document>) [0,0 800x600]
         PaintableWithLines (BlockContainer(anonymous)) [13,30 0x16]
           PaintableWithLines (BlockContainer(anonymous)) [13,30 0x16]
             PaintableWithLines (BlockContainer<SPAN>) [13,30 0x16]
-      CheckBoxPaintable (CheckBox<INPUT>) [8,48 13x13]
+      PaintableWithLines (CheckBox<INPUT>) [8,48 13x13]
+        Paintable (Box<DIV>) [8,48 13x13]
+          Paintable (Box<DIV>) [8,48 13x13]
       PaintableWithLines (BlockContainer<INPUT>) [8,76 0x0]
-      RadioButtonPaintable (RadioButton<INPUT>) [8,80 12x12]
+      PaintableWithLines (RadioButton<INPUT>) [8,80 12x12]
+        Paintable (Box<DIV>) [8,80 12x12]
+          Paintable (Box<DIV>) [8,80 12x12]
       PaintableWithLines (BlockContainer<INPUT>) [8,108 0x0]
 
 SC for Viewport<#document> [0,0 800x600] (z-index: auto)

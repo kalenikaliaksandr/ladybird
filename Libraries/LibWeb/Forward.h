@@ -1045,7 +1045,6 @@ class Notification;
 namespace Web::Painting {
 
 class AudioPaintable;
-class CheckBoxPaintable;
 class FieldSetPaintable;
 class MediaPaintable;
 class Paintable;

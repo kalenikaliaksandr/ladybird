@@ -1,4 +1,7 @@
 {
+  "-libweb-control-face": {
+    "implementation": "element-reference"
+  },
   "-moz-meter-bar": {
     "alias-for": "slider-fill"
   },
@@ -48,6 +51,10 @@
     "spec": "https://drafts.csswg.org/css-pseudo-4/#selectordef-before",
     "is-tree-abiding": true,
     "implementation": "synthetic"
+  },
+  "checkmark": {
+    "spec": "https://drafts.csswg.org/css-forms-1/#selectordef-checkmark",
+    "implementation": "element-reference"
   },
   "details-content": {
     "spec": "https://drafts.csswg.org/css-pseudo-4/#selectordef-details-content",

@@ -2068,17 +2068,17 @@ fn kind_facts(kind: NodeKind) -> FfiNodeKindFacts {
         NodeKind::Box | NodeKind::ListItemMarkerBox => BOX,
         NodeKind::AudioBox
         | NodeKind::CanvasBox
-        | NodeKind::CheckBox
         | NodeKind::ImageBox
         | NodeKind::NavigableContainerViewport
-        | NodeKind::RadioButton
         | NodeKind::ReplacedBox
         | NodeKind::SVGSVGBox
         | NodeKind::VideoBox => REPLACED_BOX,
         NodeKind::BlockContainer
+        | NodeKind::CheckBox
         | NodeKind::FieldSetBox
         | NodeKind::LegendBox
         | NodeKind::ListItemBox
+        | NodeKind::RadioButton
         | NodeKind::RangeInputBox
         | NodeKind::SVGForeignObjectBox
         | NodeKind::TableWrapper

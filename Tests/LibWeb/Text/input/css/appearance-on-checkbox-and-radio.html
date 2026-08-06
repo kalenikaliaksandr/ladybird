@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<div id="container">
+    <input id="checkbox" type="checkbox">
+    <input id="radio" type="radio">
+</div>
+<script>
+    test(() => {
+        // The checkbox and radio widgets are drawn from the user-agent style sheet, but `appearance` must still
+        // compute to `auto` and an author's `appearance: none` must leave a bare box behind.
+        for (const id of ["checkbox", "radio"]) {
+            const input = document.getElementById(id);
+            println(`${id}: default appearance is ${getComputedStyle(input).appearance}`);
+
+            const nativeWidth = input.getBoundingClientRect().width;
+            const nativeHeight = input.getBoundingClientRect().height;
+            println(`${id}: default size is ${nativeWidth}x${nativeHeight}`);
+
+            input.style.appearance = "none";
+            println(`${id}: appearance: none computes to ${getComputedStyle(input).appearance}`);
+            println(`${id}: appearance: none size is ${input.getBoundingClientRect().width}x${input.getBoundingClientRect().height}`);
+
+            input.style.appearance = "auto";
+            println(`${id}: explicit appearance: auto computes to ${getComputedStyle(input).appearance}`);
+            const restoredWidth = input.getBoundingClientRect().width;
+            const restoredHeight = input.getBoundingClientRect().height;
+            println(`${id}: explicit appearance: auto restores the default size: ${restoredWidth === nativeWidth && restoredHeight === nativeHeight}`);
+
+            input.style.appearance = "";
+        }
+
+        // The widget lives in a closed user-agent shadow tree, so it must not be reachable from script.
+        println(`checkbox shadowRoot is ${document.getElementById("checkbox").shadowRoot}`);
+        println(`checkbox has no children: ${document.getElementById("checkbox").childNodes.length === 0}`);
+    });
+</script>

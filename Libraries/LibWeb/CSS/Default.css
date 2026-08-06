@@ -158,6 +158,107 @@ progress {
     }
 }
 
+/* Custom <input type=checkbox> and <input type=radio> styles.
+
+   The whole widget lives in the input's user-agent shadow tree, and nothing here may style the input element itself.
+   HTML mandates `appearance: auto` on form controls and that value is observable through getComputedStyle, so no
+   selector can be keyed on it. A UA-origin border, background or glyph on `input[type=checkbox]` would therefore
+   survive an author's `appearance: none` and double-style every custom checkbox on the web. The shadow tree is
+   switched off from HTMLInputElement::update_control_face_element() when the computed appearance is `none` instead.
+
+   The face covers the input's content box and paints nothing: it only carries the widget's state colors, which the
+   painted box inside it picks up with `currentColor` (fill) and `border-color: inherit` (ring). That box is a plain
+   shadow-tree element, because everything that scales with the widget's size needs `cqmin` against the face and
+   container query units never resolve for an element-backed pseudo-element, whose style is computed against its host.
+
+   `--libweb-accent-color` carries the used value of the `accent-color` property into the shadow tree, since a style
+   sheet has no way to reach it. It is absent unless the property was specified. */
+input:is([type=checkbox i], [type=radio i]) {
+    &::-libweb-control-face {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        inline-size: 100%;
+        block-size: 100%;
+        container-type: size;
+        pointer-events: none;
+        color: Canvas;
+        border-color: color-mix(in srgb, CanvasText 42%, Canvas);
+    }
+
+    &:active:enabled::-libweb-control-face {
+        border-color: color-mix(in srgb, CanvasText 29.4%, Canvas);
+    }
+
+    &:disabled::-libweb-control-face {
+        color: color-mix(in srgb, CanvasText 20.58%, Canvas);
+        border-color: color-mix(in srgb, CanvasText 29.4%, Canvas);
+    }
+
+    &::checkmark {
+        display: none;
+    }
+}
+
+input[type=checkbox i] {
+    &:checked:not(:indeterminate)::-libweb-control-face {
+        color: var(--libweb-accent-color, AccentColor);
+        border-color: var(--libweb-accent-color, AccentColor);
+    }
+
+    &:checked:not(:indeterminate):active:enabled::-libweb-control-face {
+        color: color-mix(in srgb, var(--libweb-accent-color, AccentColor) 70%, Canvas);
+        border-color: color-mix(in srgb, var(--libweb-accent-color, AccentColor) 70%, Canvas);
+    }
+
+    &:checked:not(:indeterminate):disabled::-libweb-control-face {
+        color: color-mix(in srgb, CanvasText 29.4%, Canvas);
+        border-color: color-mix(in srgb, CanvasText 29.4%, Canvas);
+    }
+
+    &:checked:not(:indeterminate)::checkmark {
+        display: block;
+        inline-size: 1em;
+        block-size: 1em;
+        background-color: Canvas;
+        clip-path: polygon(72% 14%, 37% 64%, 19% 47%, 8% 58%, 40% 89%, 85% 24%);
+    }
+
+    &:indeterminate::checkmark {
+        display: block;
+        inline-size: 0.6em;
+        block-size: 0.2em;
+        border-radius: 0.05em;
+        background-color: color-mix(in srgb, CanvasText 70%, Canvas);
+    }
+}
+
+input[type=radio i] {
+    &:checked:enabled::-libweb-control-face {
+        border-color: var(--libweb-accent-color, AccentColor);
+    }
+
+    &:checked:active:enabled::-libweb-control-face {
+        border-color: color-mix(in srgb, var(--libweb-accent-color, AccentColor) 70%, Canvas);
+    }
+
+    &:checked::checkmark {
+        display: block;
+        inline-size: 0.5em;
+        block-size: 0.5em;
+        border-radius: 50%;
+        background-color: var(--libweb-accent-color, AccentColor);
+    }
+
+    &:checked:active:enabled::checkmark {
+        background-color: color-mix(in srgb, var(--libweb-accent-color, AccentColor) 70%, Canvas);
+    }
+
+    &:checked:disabled::checkmark {
+        background-color: color-mix(in srgb, CanvasText 29.4%, Canvas);
+    }
+}
+
 /* 15.3.1 Hidden elements
  * https://html.spec.whatwg.org/multipage/rendering.html#hidden-elements
  */

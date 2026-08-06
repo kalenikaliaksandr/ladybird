@@ -122,6 +122,7 @@ void HTMLInputElement::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_slider_runnable_track);
     visitor.visit(m_slider_progress_element);
     visitor.visit(m_slider_thumb);
+    visitor.visit(m_control_face_element);
     visitor.visit(m_resource_request);
 }
 
@@ -131,13 +132,6 @@ void HTMLInputElement::adopted_from(DOM::Document& old_document)
 
     if (m_load_event_delayer.has_value())
         m_load_event_delayer.emplace(document());
-}
-
-void HTMLInputElement::set_being_activated(bool activated)
-{
-    Base::set_being_activated(activated);
-    if (first_is_one_of(type_state(), TypeAttributeState::Checkbox, TypeAttributeState::RadioButton))
-        set_needs_repaint();
 }
 
 RefPtr<Layout::Node> HTMLInputElement::create_layout_node(NonnullRefPtr<CSS::ComputedValues const> style)
@@ -1073,8 +1067,10 @@ void HTMLInputElement::create_shadow_tree_if_needed()
 
     switch (type_state()) {
     case TypeAttributeState::Hidden:
+        break;
     case TypeAttributeState::RadioButton:
     case TypeAttributeState::Checkbox:
+        create_checkbox_or_radio_shadow_tree();
         break;
     case TypeAttributeState::Button:
     case TypeAttributeState::SubmitButton:
@@ -1111,6 +1107,10 @@ void HTMLInputElement::update_shadow_tree()
     case TypeAttributeState::Range:
         update_slider_shadow_tree_elements();
         break;
+    case TypeAttributeState::Checkbox:
+    case TypeAttributeState::RadioButton:
+        update_control_face_element();
+        break;
     case TypeAttributeState::Button:
     case TypeAttributeState::ResetButton:
     case TypeAttributeState::SubmitButton:
@@ -1133,6 +1133,102 @@ void HTMLInputElement::create_button_input_shadow_tree()
     m_text_node = realm().create<DOM::Text>(document(), button_label());
     MUST(text_container->append_child(*m_text_node));
     MUST(shadow_root->append_child(*text_container));
+}
+
+void HTMLInputElement::create_checkbox_or_radio_shadow_tree()
+{
+    auto shadow_root = realm().create<DOM::ShadowRoot>(document(), *this, Bindings::ShadowRootMode::Closed);
+    shadow_root->set_user_agent_internal(true);
+    set_shadow_root(shadow_root);
+
+    // The face covers the input's content box and carries the widget's state-dependent colors, which Default.css
+    // computes from the input's `:checked`, `:indeterminate`, `:disabled` and `:active` state. It paints nothing
+    // itself: `color` is the fill and `border-color` the ring, and the box below picks both up with `currentColor`
+    // and `border-color: inherit`.
+    m_control_face_element = MUST(DOM::create_element(document(), HTML::TagNames::div, Namespace::HTML));
+    MUST(shadow_root->append_child(*m_control_face_element));
+    m_control_face_element->set_associated_shadow_host_pseudo_element(CSS::PseudoElement::LibwebControlFace);
+
+    // The painted box has to be square (or, for a radio button, circular) and centered even when the input box is
+    // not, which needs `min()` over both axes and so `cqmin` against the face. Container query units only resolve
+    // for real elements, never for an element-backed pseudo-element (whose style is computed against its host), so
+    // everything that scales with the widget's size lives on this plain element instead.
+    auto box = MUST(DOM::create_element(document(), HTML::TagNames::div, Namespace::HTML));
+    MUST(m_control_face_element->append_child(box));
+    box->style_for_bindings()->set_declarations_from_text(type_state() == TypeAttributeState::Checkbox
+            ? uR"~~~(
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-sizing: border-box;
+                inline-size: 100cqmin;
+                block-size: 100cqmin;
+                font-size: 100cqmin;
+                border-style: solid;
+                border-width: max(1px, round(down, 10cqmin, 1px));
+                border-color: inherit;
+                border-radius: 20%;
+                background-color: currentColor;
+            )~~~"sv
+            : uR"~~~(
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-sizing: border-box;
+                inline-size: 100cqmin;
+                block-size: 100cqmin;
+                font-size: 100cqmin;
+                border-style: solid;
+                border-width: max(1px, round(up, 100cqmin / 13, 1px));
+                border-color: inherit;
+                border-radius: 50%;
+                background-color: currentColor;
+            )~~~"sv);
+
+    auto checkmark = MUST(DOM::create_element(document(), HTML::TagNames::div, Namespace::HTML));
+    MUST(box->append_child(checkmark));
+    checkmark->set_associated_shadow_host_pseudo_element(CSS::PseudoElement::Checkmark);
+
+    update_control_face_element();
+}
+
+void HTMLInputElement::update_control_face_element()
+{
+    if (!m_control_face_element)
+        return;
+
+    auto computed_values = this->computed_values();
+    if (!computed_values)
+        return;
+
+    auto& style = *m_control_face_element->style_for_bindings();
+
+    // This runs on every style recomputation of the input, so only touch the declaration when something changed;
+    // rewriting it unconditionally would invalidate the shadow tree's style each time.
+    auto update_property = [&](Utf16FlyString const& name, Optional<Utf16String> const& value) {
+        auto current_value = style.get_property_value(name);
+        if (value.has_value()) {
+            if (current_value != *value)
+                MUST(style.set_property(name, *value, {}));
+        } else if (!current_value.is_empty()) {
+            MUST(style.remove_property(name));
+        }
+    };
+
+    // https://drafts.csswg.org/css-ui/#appearance-switching
+    // `appearance: none` has to strip the native look. A selector cannot see the computed appearance, and a UA-origin
+    // rule on the input itself would survive the author's `appearance: none` and double-style every custom checkbox,
+    // so all of the widget lives in the shadow tree and gets switched off from here instead. An inline declaration
+    // outranks the UA-origin pseudo-element rules that style it.
+    auto appearance_is_none = computed_values->appearance() == CSS::Appearance::None;
+    update_property("display"_utf16_fly_string, Utf16String::from_utf16(appearance_is_none ? u"none"sv : u"flex"sv));
+
+    // The used value of `accent-color` is not reachable from a style sheet, so hand it to the shadow tree as a custom
+    // property. The UA rules fall back to the `AccentColor` system color when it is absent.
+    Optional<Utf16String> accent_color;
+    if (auto color = computed_values->accent_color(); color.has_value())
+        accent_color = Utf16String::from_utf8(color->to_string());
+    update_property("--libweb-accent-color"_utf16_fly_string, accent_color);
 }
 
 void HTMLInputElement::create_text_input_shadow_tree()

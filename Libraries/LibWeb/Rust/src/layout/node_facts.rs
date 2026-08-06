@@ -86,7 +86,11 @@ pub(crate) fn node_has_auto_content_box_size(data: &NodeData) -> bool {
     (kind_is_replaced_box(data.kind) && data.kind != NodeKind::AudioBox)
         || matches!(
             data.kind,
-            NodeKind::RangeInputBox | NodeKind::TextAreaBox | NodeKind::TextInputBox
+            NodeKind::CheckBox
+                | NodeKind::RadioButton
+                | NodeKind::RangeInputBox
+                | NodeKind::TextAreaBox
+                | NodeKind::TextInputBox
         )
 }
 
@@ -159,10 +163,12 @@ pub(crate) fn kind_is_block_container(kind: NodeKind) -> bool {
     matches!(
         kind,
         NodeKind::BlockContainer
+            | NodeKind::CheckBox
             | NodeKind::FieldSetBox
             | NodeKind::LegendBox
             | NodeKind::ListItemBox
             | NodeKind::ListItemMarkerBox
+            | NodeKind::RadioButton
             | NodeKind::RangeInputBox
             | NodeKind::SVGForeignObjectBox
             | NodeKind::TableWrapper
@@ -177,10 +183,8 @@ pub(crate) fn kind_is_replaced_box(kind: NodeKind) -> bool {
         kind,
         NodeKind::AudioBox
             | NodeKind::CanvasBox
-            | NodeKind::CheckBox
             | NodeKind::ImageBox
             | NodeKind::NavigableContainerViewport
-            | NodeKind::RadioButton
             | NodeKind::ReplacedBox
             | NodeKind::SVGSVGBox
             | NodeKind::VideoBox

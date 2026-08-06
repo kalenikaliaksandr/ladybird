@@ -67,7 +67,6 @@ public:
 
     virtual RefPtr<Layout::Node> create_layout_node(NonnullRefPtr<CSS::ComputedValues const>) override;
     virtual void adjust_computed_style(CSS::ComputedProperties::Builder&) override;
-    virtual void set_being_activated(bool) override;
 
     enum class TypeAttributeState {
 #define __ENUMERATE_HTML_INPUT_TYPE_ATTRIBUTE(_, state) state,
@@ -319,6 +318,7 @@ private:
     void create_color_input_shadow_tree();
     void create_file_input_shadow_tree();
     void create_range_input_shadow_tree();
+    void create_checkbox_or_radio_shadow_tree();
     WebIDL::ExceptionOr<void> run_input_activation_behavior(DOM::Event const&);
 
     void handle_maxlength_attribute();
@@ -362,6 +362,9 @@ private:
     GC::Ptr<DOM::Element> m_slider_runnable_track;
     GC::Ptr<DOM::Element> m_slider_progress_element;
     GC::Ptr<DOM::Element> m_slider_thumb;
+
+    void update_control_face_element();
+    GC::Ptr<DOM::Element> m_control_face_element;
 
     GC::Ptr<DecodedImageData> image_data() const;
     GC::Ptr<SharedResourceRequest> m_resource_request;

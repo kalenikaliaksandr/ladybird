@@ -40,7 +40,9 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
                         "bang "
                     frag 1 from RadioButton start: 0, length: 0, rect: [262.5,65 12x12] baseline: 12
                     TextNode <#text> (not painted)
-                    RadioButton <input> at [262.5,65] inline-block [0+0+0 12 0+0+0] [0+0+0 12 0+0+0] children: not-inline
+                    RadioButton <input> at [262.5,65] inline-block [0+0+0 12 0+0+0] [0+0+0 12 0+0+0] [BFC] children: not-inline
+                      Box <div> at [262.5,65] flex-container(row) [0+0+0 12 0+0+0] [0+0+0 12 0+0+0] [FFC] children: not-inline
+                        Box <div> at [263.5,66] flex-container(row) flex-item [0+1+0 10 0+1+0] [0+1+0 10 0+1+0] [FFC] children: not-inline
                     TextNode <#text> (not painted)
                   TextNode <#text> (not painted)
                   BlockContainer <p> at [235,84] [0+0+0 139.96875 0+0+0] [0+0+0 19 0+0+0] children: inline
@@ -48,7 +50,9 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
                         "whimper "
                     frag 1 from RadioButton start: 0, length: 0, rect: [280.171875,84 12x12] baseline: 12
                     TextNode <#text> (not painted)
-                    RadioButton <input> at [280.171875,84] inline-block [0+0+0 12 0+0+0] [0+0+0 12 0+0+0] children: not-inline
+                    RadioButton <input> at [280.171875,84] inline-block [0+0+0 12 0+0+0] [0+0+0 12 0+0+0] [BFC] children: not-inline
+                      Box <div> at [280.171875,84] flex-container(row) [0+0+0 12 0+0+0] [0+0+0 12 0+0+0] [FFC] children: not-inline
+                        Box <div> at [281.171875,85] flex-container(row) flex-item [0+1+0 10 0+1+0] [0+1+0 10 0+1+0] [FFC] children: not-inline
                     TextNode <#text> (not painted)
                   TextNode <#text> (not painted)
                 TextNode <#text> (not painted)
@@ -143,9 +147,13 @@ ViewportPaintable (Viewport<#document>) [0,0 800x600]
               PaintableWithLines (BlockContainer(anonymous)) [235,65 139.96875x38]
                 InlinePaintable (InlineNode<FORM>) [235,65 0x0]
                   PaintableWithLines (BlockContainer<P>) [235,65 139.96875x19]
-                    RadioButtonPaintable (RadioButton<INPUT>) [262.5,65 12x12]
+                    PaintableWithLines (RadioButton<INPUT>) [262.5,65 12x12]
+                      Paintable (Box<DIV>) [262.5,65 12x12]
+                        Paintable (Box<DIV>) [262.5,65 12x12]
                   PaintableWithLines (BlockContainer<P>) [235,84 139.96875x19]
-                    RadioButtonPaintable (RadioButton<INPUT>) [280.171875,84 12x12]
+                    PaintableWithLines (RadioButton<INPUT>) [280.171875,84 12x12]
+                      Paintable (Box<DIV>) [280.171875,84 12x12]
+                        Paintable (Box<DIV>) [280.171875,84 12x12]
             PaintableWithLines (BlockContainer<LI>) [394.96875,45 80x120]
             PaintableWithLines (BlockContainer<LI>#baz) [135,175 120x120]
           PaintableWithLines (BlockContainer(anonymous)) [135,45 340x0]

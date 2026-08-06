@@ -6,21 +6,21 @@
 
 #pragma once
 
-#include <LibWeb/Forward.h>
-#include <LibWeb/Layout/ReplacedBox.h>
+#include <LibWeb/DOM/Element.h>
+#include <LibWeb/Layout/BlockContainer.h>
 
 namespace Web::Layout {
 
-class RadioButton final : public ReplacedBox {
-    LAYOUT_NODE(RadioButton, ReplacedBox);
+class RadioButton final : public BlockContainer {
+    LAYOUT_NODE(RadioButton, BlockContainer);
 
 public:
-    RadioButton(DOM::Document&, HTML::HTMLInputElement&, NonnullRefPtr<CSS::ComputedValues const>);
-    virtual ~RadioButton() override;
+    RadioButton(DOM::Document&, GC::Ptr<DOM::Element>, NonnullRefPtr<CSS::ComputedValues const>);
+
+    virtual ~RadioButton() override = default;
 
 private:
-    CSS::SizeWithAspectRatio compute_auto_content_box_size() const override { return { 12, 12, {} }; }
-    virtual RefPtr<Painting::Paintable> create_paintable() const override;
+    virtual CSS::SizeWithAspectRatio compute_auto_content_box_size() const override { return { 12, 12, {} }; }
 };
 
 }
