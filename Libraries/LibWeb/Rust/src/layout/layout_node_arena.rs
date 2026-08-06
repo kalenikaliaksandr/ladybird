@@ -595,7 +595,7 @@ impl LayoutNodeArena {
         );
         assert_eq!(
             flags & NodeFlag::SavedAbsposAlignmentDerivesFromOwnComputedValues as u32 != 0,
-            inputs.is_some_and(|inputs| { inputs.static_position_rect.alignment_derives_from_own_computed_values }),
+            inputs.is_some_and(|inputs| { inputs.static_position_point.alignment_derives_from_own_computed_values }),
             "saved abspos alignment flag disagrees with the arena side table"
         );
         inputs
@@ -638,7 +638,7 @@ impl LayoutNodeArena {
                 if inputs.containing_block_info.derives_from_own_computed_values {
                     value |= NodeFlag::SavedAbsposCbDerivesFromOwnComputedValues as u32;
                 }
-                if inputs.static_position_rect.alignment_derives_from_own_computed_values {
+                if inputs.static_position_point.alignment_derives_from_own_computed_values {
                     value |= NodeFlag::SavedAbsposAlignmentDerivesFromOwnComputedValues as u32;
                 }
             }

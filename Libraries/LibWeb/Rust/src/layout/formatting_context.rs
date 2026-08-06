@@ -128,14 +128,14 @@ fn point_sub(left: FfiCssPixelPoint, right: FfiCssPixelPoint) -> FfiCssPixelPoin
 }
 
 pub(crate) fn translate_static_position_between_chains(
-    mut rect: StaticPositionRect,
+    mut point: StaticPositionPoint,
     static_chain_offset: FfiCssPixelPoint,
     containing_chain_offset: FfiCssPixelPoint,
-) -> StaticPositionRect {
+) -> StaticPositionPoint {
     let physical_offset = point_sub(static_chain_offset, containing_chain_offset);
-    rect.rect.offset.inline_offset += physical_offset.x;
-    rect.rect.offset.block_offset += physical_offset.y;
-    rect
+    point.offset.inline_offset += physical_offset.x;
+    point.offset.block_offset += physical_offset.y;
+    point
 }
 
 pub(crate) fn anchor_rect_from_geometry(
@@ -408,7 +408,7 @@ pub(crate) fn register_contained_abspos_child(
     state: &LayoutState,
     callbacks: &FfiLayoutFcCallbacks,
     child: Node,
-    static_position_rect: StaticPositionRect,
+    static_position_point: StaticPositionPoint,
 ) {
     let mut target = callbacks.containing_block(child);
     if target.is_invalid() {
@@ -426,7 +426,7 @@ pub(crate) fn register_contained_abspos_child(
         }
         target = containing_block;
     }
-    state.register_contained_abspos_child(callbacks, target, child, static_position_rect);
+    state.register_contained_abspos_child(callbacks, target, child, static_position_point);
 }
 
 pub(crate) fn box_baseline(
@@ -1201,8 +1201,8 @@ fn register_table_abspos_descendants(run: &FormattingContextRun, parent: Node) {
                     run.state,
                     &run.callbacks,
                     child,
-                    StaticPositionRect {
-                        rect: Default::default(),
+                    StaticPositionPoint {
+                        offset: Default::default(),
                         inline_alignment: StaticPositionAlignment::Start,
                         block_alignment: StaticPositionAlignment::Start,
                         alignment_derives_from_own_computed_values: false,

@@ -101,8 +101,13 @@ pub(crate) enum StaticPositionAlignment {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct StaticPositionRect {
-    pub(crate) rect: LogicalRect,
+/// The hypothetical static position as a single point plus the alignment
+/// edges it denotes: producers bake the alignment container's extent into
+/// the point (a Center point is the container's midpoint, an End point its
+/// end edge), so consumption only needs the box's own margin-box size to
+/// interpret it.
+pub(crate) struct StaticPositionPoint {
+    pub(crate) offset: LogicalOffset,
     pub(crate) inline_alignment: StaticPositionAlignment,
     pub(crate) block_alignment: StaticPositionAlignment,
     pub(crate) alignment_derives_from_own_computed_values: bool,
@@ -143,7 +148,7 @@ pub(crate) struct AbsposContainingBlockInfo {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AbsposLayoutInputs {
-    pub(crate) static_position_rect: StaticPositionRect,
+    pub(crate) static_position_point: StaticPositionPoint,
     pub(crate) containing_block_info: AbsposContainingBlockInfo,
 }
 
@@ -309,7 +314,7 @@ impl Drop for RetainedLayoutHandle {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PendingAbsposChild {
     pub(crate) child_box: Node,
-    pub(crate) static_position_rect: StaticPositionRect,
+    pub(crate) static_position_point: StaticPositionPoint,
     pub(crate) containing_block_info_override: Option<AbsposContainingBlockInfo>,
 }
 
@@ -1282,7 +1287,7 @@ impl LayoutState {
         callbacks: &FfiLayoutFcCallbacks,
         target_box: Node,
         child_box: Node,
-        static_position_rect: StaticPositionRect,
+        static_position_point: StaticPositionPoint,
     ) {
         let slot_index = target_box.slot_index();
         let children = self.contained_abspos_children.get(slot_index).unwrap_or_else(|| {
@@ -1302,7 +1307,7 @@ impl LayoutState {
             insertion_index,
             PendingAbsposChild {
                 child_box,
-                static_position_rect,
+                static_position_point,
                 containing_block_info_override: None,
             },
         );

@@ -1158,12 +1158,13 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
 
         if self.layout_mode == LayoutMode::Normal {
             for box_ in absolute_boxes {
-                let mut static_position = StaticPositionRect {
-                    rect: Default::default(),
+                let mut static_position = StaticPositionPoint {
+                    offset: Default::default(),
                     inline_alignment: StaticPositionAlignment::Start,
                     block_alignment: StaticPositionAlignment::Start,
                     alignment_derives_from_own_computed_values: false,
                 };
+                let alignment_container_inline_size;
                 'lines: for line in &self.line_data().line_boxes {
                     for marker in &line.static_position_markers {
                         if marker.box_ != box_ {
@@ -1175,17 +1176,18 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
                             } else {
                                 marker.offset().1
                             };
-                            let inline_size = self.input.containing_block_constraints.inline_basis();
-                            static_position.rect.offset.inline_offset = CssPixels::default();
-                            static_position.rect.offset.block_offset = block_position;
-                            static_position.rect.size.inline_size = inline_size;
+                            static_position.offset.inline_offset = CssPixels::default();
+                            static_position.offset.block_offset = block_position;
+                            alignment_container_inline_size = self.input.containing_block_constraints.inline_basis();
                         } else {
                             let (x, y) = marker.offset();
-                            static_position.rect.offset.inline_offset = x;
-                            static_position.rect.offset.block_offset = y;
+                            static_position.offset.inline_offset = x;
+                            static_position.offset.block_offset = y;
+                            alignment_container_inline_size = CssPixels::default();
                         }
                         if containing_style.direction() == direction::RTL {
                             static_position.inline_alignment = StaticPositionAlignment::End;
+                            static_position.offset.inline_offset += alignment_container_inline_size;
                         }
                         break 'lines;
                     }

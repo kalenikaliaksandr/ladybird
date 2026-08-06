@@ -3736,13 +3736,13 @@ impl<'pass> GridFormattingContext<'pass> {
         while !child.is_invalid() {
             let next = self.callbacks.next_sibling(child);
             if self.facts(child).is_absolutely_positioned() {
-                let rect = StaticPositionRect {
-                    rect: LogicalRect::default(),
+                let static_position = StaticPositionPoint {
+                    offset: LogicalOffset::default(),
                     inline_alignment: StaticPositionAlignment::Start,
                     block_alignment: StaticPositionAlignment::Start,
                     alignment_derives_from_own_computed_values: false,
                 };
-                crate::layout::register_contained_abspos_child(self.state, &self.callbacks, child, rect);
+                crate::layout::register_contained_abspos_child(self.state, &self.callbacks, child, static_position);
             }
             child = next;
         }

@@ -285,13 +285,10 @@ impl<'pass> BlockFormattingContext<'pass> {
     }
 
     fn register_contained_abspos_child(&self, node: Node, block_offset: CssPixels) {
-        let static_position = StaticPositionRect {
-            rect: LogicalRect {
-                offset: LogicalOffset {
-                    inline_offset: CssPixels::default(),
-                    block_offset,
-                },
-                size: LogicalSize::default(),
+        let static_position = StaticPositionPoint {
+            offset: LogicalOffset {
+                inline_offset: CssPixels::default(),
+                block_offset,
             },
             inline_alignment: StaticPositionAlignment::Start,
             block_alignment: StaticPositionAlignment::Start,

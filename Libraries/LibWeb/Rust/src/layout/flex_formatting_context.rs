@@ -2407,7 +2407,7 @@ impl<'pass> FlexFormattingContext<'pass> {
     }
 
     // https://drafts.csswg.org/css-flexbox-1/#abspos-items
-    fn calculate_static_position_rect(&self, node: Node) -> StaticPositionRect {
+    fn calculate_static_position_point(&self, node: Node) -> StaticPositionPoint {
         // The cross-axis edges of the static-position rectangle of an absolutely-positioned child
         // of a flex container are the content edges of the flex container.
 
@@ -2485,13 +2485,15 @@ impl<'pass> FlexFormattingContext<'pass> {
             logical_inline_alignment,
             logical_block_alignment,
         );
-        StaticPositionRect {
-            rect: crate::layout::LogicalRect {
-                offset: Default::default(),
-                size: crate::layout::LogicalSize {
-                    inline_size,
-                    block_size,
-                },
+        let alignment_container_point = |alignment: StaticPositionAlignment, extent: CssPixels| match alignment {
+            StaticPositionAlignment::Start => CssPixels::default(),
+            StaticPositionAlignment::Center => extent / 2,
+            StaticPositionAlignment::End => extent,
+        };
+        StaticPositionPoint {
+            offset: crate::layout::LogicalOffset {
+                inline_offset: alignment_container_point(inline_alignment, inline_size),
+                block_offset: alignment_container_point(block_alignment, block_size),
             },
             inline_alignment,
             block_alignment,
@@ -3143,7 +3145,7 @@ impl<'pass> FlexFormattingContext<'pass> {
                     self.state,
                     &self.callbacks,
                     child,
-                    self.calculate_static_position_rect(child),
+                    self.calculate_static_position_point(child),
                 );
             }
             child = next;
