@@ -1018,9 +1018,19 @@ pub(crate) struct FormattingContextRun<'pass> {
     pub(crate) callbacks: FfiLayoutFcCallbacks,
     pub(crate) should_collect_devtools_layout_data: bool,
     pub(crate) treat_block_axis_percentage_insets_as_auto_beyond_root: bool,
+    /// The run root's working record, resolved once at spawn. The parent
+    /// created it before invoking the run; the prelude, body, and epilogue
+    /// negotiate through this handle. Synthetic runs an entry sweeps over a
+    /// seeded root without a record carry None and never read it.
+    pub(crate) root_record: Option<&'pass UsedValues>,
 }
 
 impl<'pass> FormattingContextRun<'pass> {
+    pub(crate) fn root_used_values(&self) -> &'pass UsedValues {
+        self.root_record
+            .expect("a real formatting context run always has the parent-created root record")
+    }
+
     pub(crate) fn new(
         state: &'pass LayoutState,
         box_: Node,
@@ -1030,6 +1040,7 @@ impl<'pass> FormattingContextRun<'pass> {
         treat_block_axis_percentage_insets_as_auto_beyond_root: bool,
     ) -> Self {
         Self {
+            root_record: state.try_used_values(&callbacks, box_),
             state,
             box_,
             layout_mode,
@@ -1478,7 +1489,7 @@ fn run_formatting_context_body<'pass>(
                     automatic_content_block_size: context.automatic_content_block_size(),
                 };
                 store_derived_baselines(
-                    run.state.used_values(&run.callbacks, run.box_),
+                    run.root_used_values(),
                     context.derived_baselines_of_root_box(),
                 );
                 context.place_floats_after_run();
@@ -1487,7 +1498,7 @@ fn run_formatting_context_body<'pass>(
             FormattingContextImplementation::Flex(context) => {
                 context.run(run, body_input);
                 store_derived_baselines(
-                    run.state.used_values(&run.callbacks, run.box_),
+                    run.root_used_values(),
                     context.derived_baselines_of_root_box(),
                 );
                 ChildLayoutResult {
@@ -1498,7 +1509,7 @@ fn run_formatting_context_body<'pass>(
             FormattingContextImplementation::Grid(context) => {
                 context.run(run, body_input);
                 store_derived_baselines(
-                    run.state.used_values(&run.callbacks, run.box_),
+                    run.root_used_values(),
                     context.derived_baselines_of_root_box(),
                 );
                 ChildLayoutResult {
@@ -1509,7 +1520,7 @@ fn run_formatting_context_body<'pass>(
             FormattingContextImplementation::Table(context) => {
                 context.run(run, body_input);
                 store_derived_baselines(
-                    run.state.used_values(&run.callbacks, run.box_),
+                    run.root_used_values(),
                     context.derived_baselines_of_root_box(),
                 );
                 ChildLayoutResult {
