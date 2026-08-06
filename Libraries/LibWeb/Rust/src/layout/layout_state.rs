@@ -150,6 +150,10 @@ pub(crate) struct AbsposContainingBlockInfo {
 pub(crate) struct AbsposLayoutInputs {
     pub(crate) static_position_point: StaticPositionPoint,
     pub(crate) containing_block_info: AbsposContainingBlockInfo,
+    /// anchor() insets resolved at the drain, carried as a declared input of
+    /// the run so a replayed run applies the same resolution instead of
+    /// depending on pass-global override state.
+    pub(crate) resolved_anchor_insets: Option<crate::layout::FfiResolvedAnchorInsets>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

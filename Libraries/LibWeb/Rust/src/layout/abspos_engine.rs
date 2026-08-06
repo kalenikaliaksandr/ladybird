@@ -440,7 +440,7 @@ impl AbsposEngine<'_> {
         result.resolved.then(|| CssPixels::nearest_value_for(result.value))
     }
 
-    fn resolve_anchor_insets(&self, node: Node) {
+    fn resolve_anchor_insets(&self, node: Node) -> Option<crate::layout::FfiResolvedAnchorInsets> {
         // Clear a stale default scroll shift before any early return.
         // SAFETY: The node is live and a null anchor clears the weak target.
         unsafe {
@@ -459,12 +459,12 @@ impl AbsposEngine<'_> {
         let bottom_contains_anchor = style.inset_bottom().contains_anchor_function();
         let left_contains_anchor = style.inset_left().contains_anchor_function();
         if !top_contains_anchor && !right_contains_anchor && !bottom_contains_anchor && !left_contains_anchor {
-            return;
+            return None;
         }
 
         let containing_block = self.callbacks.containing_block(node);
         if containing_block.is_invalid() {
-            return;
+            return None;
         }
         let containing_block_state = self.used(containing_block);
         let default_anchor_box = if style.has_position_anchor() {
@@ -569,6 +569,7 @@ impl AbsposEngine<'_> {
                 );
             }
         }
+        Some(resolved)
     }
 }
 
@@ -1659,13 +1660,14 @@ impl<'pass> AbsposEngine<'pass> {
                 self.state
                     .create_used_values(&self.callbacks, child_box, ContainingBlockConstraints::default());
             }
-            self.resolve_anchor_insets(child_box);
+            let resolved_anchor_insets = self.resolve_anchor_insets(child_box);
             let inputs = AbsposLayoutInputs {
                 static_position_point: self
                     .resolve_static_position_relative_to_containing_block(child_box, child.static_position_point),
                 containing_block_info: child
                     .containing_block_info_override
                     .unwrap_or_else(|| self.base_containing_block_info(child_box)),
+                resolved_anchor_insets,
             };
             self.layout_element(run, child_box, inputs);
         }
@@ -1680,6 +1682,9 @@ impl<'pass> AbsposEngine<'pass> {
             let (inline, block) = axis_modes(self.style(node));
             inputs.containing_block_info.inline_axis_mode = inline;
             inputs.containing_block_info.block_axis_mode = block;
+        }
+        if let Some(resolved) = inputs.resolved_anchor_insets {
+            self.state.replace_resolved_anchor_insets(&self.callbacks, node, resolved);
         }
         // Partial relayout uses a fresh state and creates the replay root
         // exactly once.
