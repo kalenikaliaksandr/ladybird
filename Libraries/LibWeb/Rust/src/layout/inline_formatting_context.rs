@@ -261,9 +261,7 @@ pub(crate) fn compute(
     context: &InlineFormattingContext,
 ) -> (Vec<InlineBoxPieceData>, Vec<InlineContainingBlockRectCandidate>) {
     let horizontal = context.style(context.containing_block).writing_mode() == writing_mode::HORIZONTAL_TB;
-    let collect_inline_containing_block_rects = context.state.has_inline_containing_blocks();
-    let container_inline_axis_is_reverse = collect_inline_containing_block_rects
-        && context.facts(context.containing_block).inline_axis_is_reverse();
+    let container_inline_axis_is_reverse = context.facts(context.containing_block).inline_axis_is_reverse();
     let mut inline_containing_block_rect_candidates = Vec::<InlineContainingBlockRectCandidate>::new();
     let mut per_nodes = Vec::<PerNode>::new();
     let mut node_to_index = HashMap::<Node, usize>::new();
@@ -447,8 +445,10 @@ pub(crate) fn compute(
             )
         };
 
-        let node_is_inline_containing_block =
-            collect_inline_containing_block_rects && context.state.is_inline_containing_block(node);
+        let node_is_inline_containing_block = !context
+            .callbacks
+            .inline_containing_block_box_containing_block(node)
+            .is_invalid();
         let mut corners = FirstAndLastContentLineCorners::default();
 
         for line in lines {
@@ -593,7 +593,11 @@ pub(crate) fn compute(
                 ..Default::default()
             }
         };
-        if collect_inline_containing_block_rects && context.state.is_inline_containing_block(node) {
+        if !context
+            .callbacks
+            .inline_containing_block_box_containing_block(node)
+            .is_invalid()
+        {
             inline_containing_block_rect_candidates.push(InlineContainingBlockRectCandidate {
                 inline_containing_block: node,
                 rect: PhysicalRect {

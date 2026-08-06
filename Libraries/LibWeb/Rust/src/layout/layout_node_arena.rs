@@ -130,6 +130,25 @@ struct SavedAbsposLayoutInputsSlot {
     inputs: Option<Box<AbsposLayoutInputs>>,
 }
 
+/// For an inline box that is some absolutely positioned descendant's
+/// containing block: the box containing block those descendants share.
+/// Stamped by containing-block recomputation alongside the descendants'
+/// own inline containing block assignment, so layout never needs a
+/// pass-scoped registry to answer either question.
+struct InlineContainingBlockBoxContainingBlockSlot {
+    generation: u8,
+    box_containing_block: NodeSlotId,
+}
+
+impl Default for InlineContainingBlockBoxContainingBlockSlot {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            box_containing_block: NodeSlotId::INVALID,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct TextContent {
     pub(crate) text: Vec<u16>,
@@ -207,6 +226,7 @@ pub(crate) struct LayoutNodeArena {
     live_count: u32,
     intrinsic_size_caches: RefCell<Vec<IntrinsicSizeCacheSlot>>,
     saved_abspos_layout_inputs: RefCell<Vec<SavedAbsposLayoutInputsSlot>>,
+    inline_containing_block_box_containing_blocks: RefCell<Vec<InlineContainingBlockBoxContainingBlockSlot>>,
     text_contents: Vec<TextContentSlot>,
     text_chunk_caches: RefCell<Vec<TextChunkCacheSlot>>,
     raw_table_column_spans: HashMap<NodeSlotId, u32>,
@@ -224,6 +244,7 @@ impl LayoutNodeArena {
             live_count: 0,
             intrinsic_size_caches: RefCell::new(Vec::new()),
             saved_abspos_layout_inputs: RefCell::new(Vec::new()),
+            inline_containing_block_box_containing_blocks: RefCell::new(Vec::new()),
             text_contents: Vec::new(),
             text_chunk_caches: RefCell::new(Vec::new()),
             raw_table_column_spans: HashMap::new(),
@@ -572,6 +593,40 @@ impl LayoutNodeArena {
         });
     }
 
+    pub(crate) fn inline_containing_block_box_containing_block(&self, data: *const NodeData) -> NodeSlotId {
+        let (index, metadata) = self.slot_for_data(data);
+        self.inline_containing_block_box_containing_blocks
+            .borrow()
+            .get(index as usize)
+            .filter(|slot| slot.generation == metadata.generation)
+            .map(|slot| slot.box_containing_block)
+            .unwrap_or(NodeSlotId::INVALID)
+    }
+
+    /// Stamps overwrite and are never cleared: a stale stamp on an inline
+    /// that stopped containing absolutely positioned boxes only produces an
+    /// unconsumed rect, while clearing would lose the record whenever a
+    /// partial rebuild re-visits the inline without re-visiting descendants
+    /// that still name it. Within one recompute pass every descendant that
+    /// names one inline shares one box containing block structurally: a
+    /// positioned box between a descendant and the inline would have ended
+    /// that descendant's inline containing block search below the inline.
+    pub(crate) fn set_inline_containing_block_box_containing_block(
+        &self,
+        data: *const NodeData,
+        box_containing_block: NodeSlotId,
+    ) {
+        let (index, metadata) = self.slot_for_data(data);
+        let mut slots = self.inline_containing_block_box_containing_blocks.borrow_mut();
+        if slots.len() <= index as usize {
+            slots.resize_with(index as usize + 1, Default::default);
+        }
+        slots[index as usize] = InlineContainingBlockBoxContainingBlockSlot {
+            generation: metadata.generation,
+            box_containing_block,
+        };
+    }
+
     pub(crate) fn saved_abspos_layout_inputs(&self, data: *const NodeData) -> Option<AbsposLayoutInputs> {
         let (index, metadata) = self.slot_for_data(data);
         let slots = self.saved_abspos_layout_inputs.borrow();
@@ -880,6 +935,22 @@ pub unsafe extern "C" fn layout_arena_set_raw_table_column_span(
         // SAFETY: The C++ wrapper keeps the arena alive for this call and
         // serializes all access on the document thread.
         unsafe { &mut *arena.cast::<LayoutNodeArena>() }.set_raw_table_column_span(id, raw_column_span);
+    });
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_set_inline_containing_block_box_containing_block(
+    arena: *mut c_void,
+    id: NodeSlotId,
+    box_containing_block: NodeSlotId,
+) {
+    abort_on_panic(|| {
+        assert!(!arena.is_null(), "layout node arena handle is null");
+        // SAFETY: The C++ wrapper keeps the arena alive for this call and
+        // serializes all access on the document thread.
+        let arena = unsafe { &*arena.cast::<LayoutNodeArena>() };
+        let data = arena.data(id);
+        arena.set_inline_containing_block_box_containing_block(data, box_containing_block);
     });
 }
 

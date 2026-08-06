@@ -414,10 +414,6 @@ pub(crate) fn register_contained_abspos_child(
     if target.is_invalid() {
         return;
     }
-    let inline_containing_block = callbacks.inline_containing_block(child);
-    if !inline_containing_block.is_invalid() {
-        state.note_inline_containing_block(inline_containing_block);
-    }
     loop {
         let containing_block = callbacks.containing_block(target);
         let facts = state.node_facts(callbacks, target);
@@ -960,6 +956,11 @@ impl FfiLayoutFcCallbacks {
         // SAFETY: node_data_pointer() returns a live arena slot.
         assert!(unsafe { crate::layout::kind_is_box((*data).kind) });
         self.arena().saved_abspos_layout_inputs(data)
+    }
+
+    pub(crate) fn inline_containing_block_box_containing_block(&self, node: Node) -> Node {
+        self.arena()
+            .inline_containing_block_box_containing_block(self.arena().data(node))
     }
 
     pub(crate) fn set_saved_abspos_layout_inputs(&self, node: Node, inputs: Option<crate::layout::AbsposLayoutInputs>) {

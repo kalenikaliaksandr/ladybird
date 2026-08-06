@@ -419,6 +419,7 @@ void Node::recompute_containing_block(Badge<DOM::Document>)
                     || computed_values.backdrop_filter().has_filters() || will_change.has_property(CSS::PropertyID::BackdropFilter);
                 if (inline_establishes_cb) {
                     set_inline_containing_block(&as<InlineNode>(*layout_node));
+                    RustFFI::layout_arena_set_inline_containing_block_box_containing_block(arena_handle(), slot_id(layout_node), slot_id(m_containing_block));
                     break;
                 }
             }
