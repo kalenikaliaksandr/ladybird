@@ -120,23 +120,6 @@ fn point_add(left: FfiCssPixelPoint, right: FfiCssPixelPoint) -> FfiCssPixelPoin
     }
 }
 
-fn point_sub(left: FfiCssPixelPoint, right: FfiCssPixelPoint) -> FfiCssPixelPoint {
-    FfiCssPixelPoint {
-        x: left.x - right.x,
-        y: left.y - right.y,
-    }
-}
-
-pub(crate) fn translate_static_position_between_chains(
-    mut point: StaticPositionPoint,
-    static_chain_offset: FfiCssPixelPoint,
-    containing_chain_offset: FfiCssPixelPoint,
-) -> StaticPositionPoint {
-    let physical_offset = point_sub(static_chain_offset, containing_chain_offset);
-    point.offset.inline_offset += physical_offset.x;
-    point.offset.block_offset += physical_offset.y;
-    point
-}
 
 pub(crate) fn anchor_rect_from_geometry(
     anchor_state: &UsedValues,
@@ -439,30 +422,6 @@ pub(crate) fn register_contained_abspos_child(
         inline_cb_rect: None,
         waits_for_table_box: containing_block_geometry_is_finalized_by_the_table_run(state, callbacks, containing_block),
     });
-    #[cfg(debug_assertions)]
-    if !state.is_measurement() {
-        state.debug_registered_oof_children.borrow_mut().insert(child);
-    }
-    // A table cell establishes a formatting context but does not own its
-    // final used geometry the way other roots do: the table's run still
-    // stretches the cell's block size to the distributed row size and places
-    // it. Registration passes through every table-internal containing block,
-    // so their children drain at the table grid box's tail, where that
-    // geometry is final. Consumption is containing-block-based throughout,
-    // so a target above the containing block only delays the drain.
-    let mut target = containing_block;
-    loop {
-        let next_containing_block = callbacks.containing_block(target);
-        let facts = state.node_facts(callbacks, target);
-        if next_containing_block.is_invalid()
-            || (formatting_context_type_created_by_box(facts).is_some()
-                && !containing_block_geometry_is_finalized_by_the_table_run(state, callbacks, target))
-        {
-            break;
-        }
-        target = next_containing_block;
-    }
-    state.register_contained_abspos_child(callbacks, target, child, static_position_point);
 }
 
 fn containing_block_geometry_is_finalized_by_the_table_run(
@@ -1895,8 +1854,6 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             .pop_recorder_frame()
             .expect("the entry's host recorder frame is active until the pass ends");
         let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
-        #[cfg(debug_assertions)]
-        debug_assert_carry_membership_matches_registrations(&pass_artifacts, state_ref);
         let commit_index = CommitIndex::build(&pass_artifacts, state_ref);
         state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink, &commit_index);
     });
@@ -1965,8 +1922,6 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
             .pop_recorder_frame()
             .expect("the entry's host recorder frame is active until the pass ends");
         let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
-        #[cfg(debug_assertions)]
-        debug_assert_carry_membership_matches_registrations(&pass_artifacts, state_ref);
         let commit_index = CommitIndex::build(&pass_artifacts, state_ref);
         state.commit_replacing(root, paintable_to_replace, &callbacks, sink, &commit_index);
     });
@@ -2003,8 +1958,6 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
             .pop_recorder_frame()
             .expect("the entry's host recorder frame is active until the pass ends");
         let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
-        #[cfg(debug_assertions)]
-        debug_assert_carry_membership_matches_registrations(&pass_artifacts, state_ref);
         let commit_index = CommitIndex::build(&pass_artifacts, state_ref);
         state.commit_replacing(box_, paintable_to_replace, &callbacks, sink, &commit_index);
     });

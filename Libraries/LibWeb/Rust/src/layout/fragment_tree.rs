@@ -71,7 +71,6 @@ pub(crate) struct LayoutResult {
 /// content space, translated by every placement fold on the way up, and
 /// consumed at the containing block's completion once drains flip over.
 #[derive(Clone, Copy, Debug)]
-#[expect(dead_code)]
 pub(crate) struct OofCandidate {
     pub(crate) child_box: Node,
     pub(crate) containing_block: Node,
@@ -241,23 +240,109 @@ impl LayoutState {
         }
     }
 
-    /// Stamps grid-area containing block info onto a carry candidate that
-    /// was just emitted into the grid container's pending carry.
-    pub(crate) fn stamp_carry_candidate_containing_block_info(
+    /// Stamps containing block info onto every pending candidate whose
+    /// containing block is the given box. A grid container does this at its
+    /// run tail, when the grid-area geometry is final, covering absolutely
+    /// positioned descendants at any depth for which it is the containing
+    /// block — not just its tree children.
+    pub(crate) fn stamp_carry_candidates_of_containing_block(
         &self,
-        space_box: Node,
-        child_box: Node,
-        info: AbsposContainingBlockInfo,
+        containing_block: Node,
+        containing_block_info_for_child: impl Fn(Node) -> AbsposContainingBlockInfo,
     ) {
+        if self.is_measurement() {
+            return;
+        }
+        let mut frames = self.recorder_frames.borrow_mut();
+        let Some(frame) = frames.last_mut() else {
+            return;
+        };
+        for carry in frame.pending_carries.values_mut() {
+            for candidate in &mut carry.candidates {
+                if candidate.containing_block == containing_block {
+                    candidate.containing_block_info = Some(containing_block_info_for_child(candidate.child_box));
+                }
+            }
+        }
+    }
+
+    /// Stamps the first/last-line rect computed for an inline containing
+    /// block onto every pending candidate that names it. The rect arrives in
+    /// the same content space the candidates were born in — the inline
+    /// formatting context's containing block — so it translates with them
+    /// from then on.
+    pub(crate) fn stamp_inline_cb_rect_on_carry_candidates(&self, space_box: Node, inline_containing_block: Node, rect: PhysicalRect) {
         if self.is_measurement() {
             return;
         }
         if let Some(frame) = self.recorder_frames.borrow_mut().last_mut()
             && let Some(carry) = frame.pending_carries.get_mut(&space_box)
-            && let Some(candidate) = carry.candidates.iter_mut().rev().find(|candidate| candidate.child_box == child_box)
         {
-            candidate.containing_block_info = Some(info);
+            for candidate in &mut carry.candidates {
+                if candidate.inline_containing_block == inline_containing_block {
+                    candidate.inline_cb_rect = Some(rect);
+                }
+            }
         }
+    }
+
+    /// Takes the next candidate consumable at `host`'s completion, in tree
+    /// order, translated into its containing block's content space. A
+    /// candidate is consumable when its containing block is the host itself
+    /// (unless the table run still finalizes that box's geometry — a cell
+    /// must not drain at its own tail) or a box this frame already placed,
+    /// whose geometry froze at that placement. Everything else keeps riding
+    /// upward. Candidates can rest under a never-placed space key (an FFI
+    /// entry's seeded root); such spaces sit at offset zero in the host, so
+    /// their coordinates already agree.
+    pub(crate) fn take_next_drainable_oof_candidate(
+        &self,
+        callbacks: &FfiLayoutFcCallbacks,
+        host: Node,
+    ) -> Option<OofCandidate> {
+        let mut frames = self.recorder_frames.borrow_mut();
+        let frame = frames.last_mut()?;
+        let mut best: Option<(Node, usize, Node)> = None;
+        for (space, carry) in &frame.pending_carries {
+            for (index, candidate) in carry.candidates.iter().enumerate() {
+                let consumable_at_host = candidate.containing_block == host && !candidate.waits_for_table_box;
+                let consumable_at_placed_box = frame.placed.contains_key(&candidate.containing_block);
+                if !consumable_at_host && !consumable_at_placed_box {
+                    continue;
+                }
+                let is_first = best
+                    .as_ref()
+                    .is_none_or(|(_, _, best_child)| callbacks.is_before(candidate.child_box, *best_child));
+                if is_first {
+                    best = Some((*space, index, candidate.child_box));
+                }
+            }
+        }
+        let (space, index, _) = best?;
+        let mut candidate = frame.pending_carries.get_mut(&space).unwrap().candidates.remove(index);
+        let mut origin = FfiCssPixelPoint::default();
+        let mut ancestor = candidate.containing_block;
+        while ancestor != host && !ancestor.is_invalid() {
+            let Some(offset) = frame.placed.get(&ancestor).copied() else {
+                break;
+            };
+            origin.x += offset.x;
+            origin.y += offset.y;
+            ancestor = callbacks.containing_block(ancestor);
+        }
+        candidate.static_position.offset.inline_offset -= origin.x;
+        candidate.static_position.offset.block_offset -= origin.y;
+        if let Some(rect) = &mut candidate.inline_cb_rect {
+            rect.x -= origin.x;
+            rect.y -= origin.y;
+        }
+        Some(candidate)
+    }
+
+    pub(crate) fn active_frame_pending_oof_candidate_count(&self) -> usize {
+        self.recorder_frames.borrow().last().map_or(0, |frame| {
+            frame.pending_carries.values().map(|carry| carry.candidates.len()).sum()
+        })
     }
 
     /// The single translation moment: when a box's offset becomes final, its
@@ -482,20 +567,6 @@ pub(crate) fn freeze_run_artifacts(
         artifacts.carry.merge(child.carry);
     }
     artifacts
-}
-
-/// Shadow for the dual-emission stage: every child the queue side registered
-/// must surface exactly once in the entry-level carry, and nothing else may.
-#[cfg(debug_assertions)]
-pub(crate) fn debug_assert_carry_membership_matches_registrations(artifacts: &RunArtifacts, state: &LayoutState) {
-    let mut carried: Vec<Node> = artifacts.carry.candidates.iter().map(|candidate| candidate.child_box).collect();
-    carried.sort_by_key(|node| node.slot_index());
-    let mut registered: Vec<Node> = state.debug_registered_oof_children.borrow().iter().copied().collect();
-    registered.sort_by_key(|node| node.slot_index());
-    assert_eq!(
-        carried, registered,
-        "result-carried out-of-flow candidates diverged from queue registrations"
-    );
 }
 
 struct FragmentAssembly<'freeze, 'pass> {

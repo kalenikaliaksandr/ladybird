@@ -1266,9 +1266,11 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
             let mut rect = candidate.rect;
             rect.x += relative_inset_chain.offset_x;
             rect.y += relative_inset_chain.offset_y;
-            self.state
-                .used_values_rare_data_for_node_mut(&self.callbacks, candidate.inline_containing_block)
-                .inline_containing_block_first_last_rect = Some(rect);
+            self.state.stamp_inline_cb_rect_on_carry_candidates(
+                self.containing_block,
+                candidate.inline_containing_block,
+                rect,
+            );
         }
     }
 

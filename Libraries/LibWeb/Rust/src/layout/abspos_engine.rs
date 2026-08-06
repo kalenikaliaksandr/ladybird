@@ -102,97 +102,24 @@ impl<'pass> AbsposEngine<'pass> {
         self.used_pointer(node)
     }
 
-    fn static_position_containing_block(&self, node: Node) -> Node {
-        self.callbacks.static_position_containing_block(node)
-    }
-
-    fn inline_containing_block(&self, node: Node) -> Node {
-        self.callbacks.inline_containing_block(node)
-    }
-
     fn non_anonymous_containing_block(&self, node: Node) -> Node {
         self.callbacks.non_anonymous_containing_block(node)
     }
 
-    fn node_is_ancestor(&self, ancestor: Node, node: Node) -> bool {
-        self.callbacks.is_ancestor(ancestor, node)
-    }
-
-    fn resolve_static_position_relative_to_containing_block(
+    fn base_containing_block_info_for_candidate(
         &self,
-        node: Node,
-        static_position_point: StaticPositionPoint,
-    ) -> StaticPositionPoint {
-        let static_position_cb = self.static_position_containing_block(node);
-        let actual_containing_block = self.callbacks.containing_block(node);
-        if static_position_cb.is_invalid() || static_position_cb == actual_containing_block {
-            return static_position_point;
-        }
-
-        let mut merge_point = static_position_cb;
-        while merge_point != actual_containing_block && !self.node_is_ancestor(merge_point, actual_containing_block) {
-            merge_point = self.callbacks.containing_block(merge_point);
-            assert!(!merge_point.is_invalid());
-        }
-
-        let offset_relative_to_merge_point = |descendant: Node| {
-            let mut offset = FfiCssPixelPoint::default();
-            let mut current = descendant;
-            while current != merge_point {
-                let used = self.used(current);
-                offset = point_add(offset, used.content_offset.get());
-                current = self.callbacks.containing_block(current);
-                assert!(!current.is_invalid());
-            }
-            offset
-        };
-        translate_static_position_between_chains(
-            static_position_point,
-            offset_relative_to_merge_point(static_position_cb),
-            offset_relative_to_merge_point(actual_containing_block),
-        )
-    }
-
-    fn compute_inline_containing_block_rect(
-        &self,
-        inline_node: Node,
-        abspos_containing_block: Node,
-    ) -> Option<PhysicalRect> {
-        if self.facts(inline_node).is_anonymous() {
-            return None;
-        }
-        let outer_block = self.non_anonymous_containing_block(inline_node);
-        if outer_block.is_invalid() {
-            return None;
-        }
-
-        let mut rect = self
-            .state
-            .inline_containing_block_first_last_rect(self.callbacks.slot_index(inline_node))?;
-        debug_assert!(
-            self.node_is_ancestor(abspos_containing_block, inline_node),
-            "an inline containing block must live inside its children's box containing block"
-        );
-        let mut ancestor = self.callbacks.containing_block(inline_node);
-        while !ancestor.is_invalid() && ancestor != abspos_containing_block {
-            if let Some(used) = self.try_used_pointer(ancestor) {
-                let content_offset = used.content_offset.get();
-                rect.x += content_offset.x;
-                rect.y += content_offset.y;
-            }
-            ancestor = self.callbacks.containing_block(ancestor);
-        }
-        Some(rect)
-    }
-
-    fn base_containing_block_info(&self, node: Node) -> AbsposContainingBlockInfo {
+        candidate: &crate::layout::OofCandidate,
+    ) -> AbsposContainingBlockInfo {
+        let node = candidate.child_box;
         let style = self.style(node);
         let (inline_axis_mode, block_axis_mode) = axis_modes(style);
-        let containing_block = self.callbacks.containing_block(node);
+        let containing_block = candidate.containing_block;
         assert!(!containing_block.is_invalid());
-        let inline_containing_block = self.inline_containing_block(node);
+        let inline_containing_block = candidate.inline_containing_block;
         if !inline_containing_block.is_invalid()
-            && let Some(rect) = self.compute_inline_containing_block_rect(inline_containing_block, containing_block)
+            && !self.facts(inline_containing_block).is_anonymous()
+            && !self.non_anonymous_containing_block(inline_containing_block).is_invalid()
+            && let Some(rect) = candidate.inline_cb_rect
         {
             return AbsposContainingBlockInfo {
                 rect: LogicalRect {
@@ -1654,19 +1581,18 @@ impl<'pass> AbsposEngine<'pass> {
 
     pub(crate) fn layout_children(&self, run: &crate::layout::FormattingContextRun<'pass>) {
         debug_assert!(!self.state.is_measurement());
-        while let Some(child) = self.state.take_next_contained_abspos_child(run.box_) {
-            let child_box = child.child_box;
+        while let Some(candidate) = self.state.take_next_drainable_oof_candidate(&self.callbacks, run.box_) {
+            let child_box = candidate.child_box;
             if self.try_used_pointer(child_box).is_none() {
                 self.state
                     .create_used_values(&self.callbacks, child_box, ContainingBlockConstraints::default());
             }
             let resolved_anchor_insets = self.resolve_anchor_insets(child_box);
             let inputs = AbsposLayoutInputs {
-                static_position_point: self
-                    .resolve_static_position_relative_to_containing_block(child_box, child.static_position_point),
-                containing_block_info: child
-                    .containing_block_info_override
-                    .unwrap_or_else(|| self.base_containing_block_info(child_box)),
+                static_position_point: candidate.static_position,
+                containing_block_info: candidate
+                    .containing_block_info
+                    .unwrap_or_else(|| self.base_containing_block_info_for_candidate(&candidate)),
                 resolved_anchor_insets,
             };
             self.layout_element(run, child_box, inputs);
@@ -1786,24 +1712,30 @@ pub(crate) fn drain_remaining_abspos_targets(
     should_collect_devtools_layout_data: bool,
     targets: &[Node],
 ) {
-    while let Some(target) = targets
-        .iter()
-        .copied()
-        .find(|target| !target.is_invalid() && state.has_contained_abspos_children(*target))
-    {
-        let run = crate::layout::FormattingContextRun::new(
-            state,
-            target,
-            LayoutMode::Normal,
-            callbacks,
-            should_collect_devtools_layout_data,
-            false,
-        );
-        layout_contained_abspos_children(&run);
+    loop {
+        let pending_before_sweep = state.active_frame_pending_oof_candidate_count();
+        if pending_before_sweep == 0 {
+            break;
+        }
+        for target in targets.iter().copied().filter(|target| !target.is_invalid()) {
+            let run = crate::layout::FormattingContextRun::new(
+                state,
+                target,
+                LayoutMode::Normal,
+                callbacks,
+                should_collect_devtools_layout_data,
+                false,
+            );
+            layout_contained_abspos_children(&run);
+        }
+        if state.active_frame_pending_oof_candidate_count() == pending_before_sweep {
+            break;
+        }
     }
-    debug_assert!(
-        state.all_registered_contained_abspos_children_are_laid_out(),
-        "registered abspos children were left without layout after the entry sweep"
+    debug_assert_eq!(
+        state.active_frame_pending_oof_candidate_count(),
+        0,
+        "result-carried abspos candidates were left without layout after the entry sweep"
     );
 }
 

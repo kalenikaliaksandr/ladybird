@@ -3749,16 +3749,12 @@ impl<'pass> GridFormattingContext<'pass> {
                     child,
                     static_position,
                 );
-                self.state.stamp_carry_candidate_containing_block_info(
-                    self.grid_container,
-                    child,
-                    self.carry_containing_block_info(child),
-                );
             }
             child = next;
         }
-        self.state
-            .override_contained_abspos_child_containing_blocks(self.grid_container, |child| self.carry_containing_block_info(child));
+        self.state.stamp_carry_candidates_of_containing_block(self.grid_container, |child| {
+            self.carry_containing_block_info(child)
+        });
     }
 
     fn carry_containing_block_info(&self, child: Node) -> AbsposContainingBlockInfo {
