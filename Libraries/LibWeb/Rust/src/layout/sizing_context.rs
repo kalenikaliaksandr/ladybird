@@ -967,11 +967,18 @@ impl<'pass> SizingContext<'pass> {
         }
         let style = self.style(node);
         let facts = self.facts(node);
-        let mut block_size = if self.box_is_sized_as_replaced_element(node, available_space, constraints) {
+        let sized_as_replaced_element = self.box_is_sized_as_replaced_element(node, available_space, constraints);
+        let mut block_size = if sized_as_replaced_element {
             self.compute_block_size_for_replaced_element(node, available_space, constraints)
         } else {
             child_automatic_block_size.unwrap_or_else(automatic_block_size_fallback)
         };
+        // A native control with a default content box size resolves its automatic block size from that size, not from
+        // its contents, so the result is definite and children can resolve percentage block sizes against it. This is
+        // what lets the user-agent shadow tree of a form control fill the control's box.
+        if sized_as_replaced_element && facts.has_auto_content_box_size() {
+            self.used_mut(node).has_definite_block_size.set(true);
+        }
         if !self.should_treat_max_block_size_as_none(node, available_space.block_size, constraints)
             && !style.max_height().is_auto()
         {
@@ -1078,7 +1085,9 @@ impl<'pass> SizingContext<'pass> {
             self.used_mut(node).set_content_block_size(block_size);
             let block_size_is_automatic =
                 style.height().is_auto() || self.should_treat_block_size_as_auto(node, available_space, constraints);
-            if self.used(node).has_definite_inline_size() && facts.has_preferred_aspect_ratio() && block_size_is_automatic
+            if block_size_is_automatic
+                && (facts.has_auto_content_box_size()
+                    || (self.used(node).has_definite_inline_size() && facts.has_preferred_aspect_ratio()))
             {
                 self.used_mut(node).has_definite_block_size.set(true);
             }
