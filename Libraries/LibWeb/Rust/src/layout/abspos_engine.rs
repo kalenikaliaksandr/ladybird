@@ -230,16 +230,14 @@ impl AbsposEngine<'_> {
         NodeSlotId::INVALID
     }
 
-    fn anchor_rect(&self, anchor_box: Node, containing_block: Node) -> PhysicalRect {
-        let anchor_state = self.used(anchor_box);
-        let mut anchor_offset = FfiCssPixelPoint::default();
-        let mut node = anchor_box;
-        while node != containing_block {
-            assert!(!node.is_invalid());
-            anchor_offset = point_add(anchor_offset, self.used(node).content_offset.get());
-            node = self.callbacks.containing_block(node);
-        }
-        anchor_rect_from_geometry(anchor_state, self.used(containing_block), anchor_offset)
+    fn anchor_rect(&self, anchor_box: Node, containing_block: Node) -> Option<PhysicalRect> {
+        let mut rect = self
+            .state
+            .carry_anchor_rect_in_containing_block_space(&self.callbacks, anchor_box, containing_block)?;
+        let containing_block_used = self.used(containing_block);
+        rect.x += containing_block_used.padding_left.get();
+        rect.y += containing_block_used.padding_top.get();
+        Some(rect)
     }
 
     fn anchor_side(
@@ -521,30 +519,29 @@ unsafe extern "C" fn resolve_anchor_non_math_function(context: *mut c_void, shel
     if engine.facts(context.positioned_box).is_absolutely_positioned()
         && let Some(anchor_name) = anchor_name
         && let Some(anchor_box) = engine.anchor_lookup(context.positioned_box, anchor_name)
-    {
-        let rect = engine.anchor_rect(anchor_box, context.containing_block);
-        if let Some(side) = engine.anchor_side(
+        && let Some(rect) = engine.anchor_rect(anchor_box, context.containing_block)
+        && let Some(side) = engine.anchor_side(
             facts,
             rect,
             context.positioned_box,
             context.containing_block,
             context.is_from_end,
             context.is_horizontal_axis,
-        ) {
-            // SAFETY: The state pointer is live and uniquely used by this
-            // synchronous resolver.
-            let resolution_state = unsafe { &mut *context.resolution_state };
-            engine.note_resolved_anchor_function(anchor_box, context.is_horizontal_axis, resolution_state);
-            let inset = if context.is_from_end {
-                context.containing_block_extent - side
-            } else {
-                side
-            };
-            // SAFETY: This CSS crate export transfers one Arc reference to
-            // the external-resolution snapshot, which releases it after
-            // calc resolution.
-            resolved_node = calc_node_create_px_dimension(inset.to_double());
-        }
+        )
+    {
+        // SAFETY: The state pointer is live and uniquely used by this
+        // synchronous resolver.
+        let resolution_state = unsafe { &mut *context.resolution_state };
+        engine.note_resolved_anchor_function(anchor_box, context.is_horizontal_axis, resolution_state);
+        let inset = if context.is_from_end {
+            context.containing_block_extent - side
+        } else {
+            side
+        };
+        // SAFETY: This CSS crate export transfers one Arc reference to
+        // the external-resolution snapshot, which releases it after
+        // calc resolution.
+        resolved_node = calc_node_create_px_dimension(inset.to_double());
     }
     if facts.has_anchor_name {
         // SAFETY: The C++ facts callback transferred one raw fly-string

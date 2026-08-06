@@ -113,27 +113,8 @@ impl PhysicalRect {
 
 }
 
-fn point_add(left: FfiCssPixelPoint, right: FfiCssPixelPoint) -> FfiCssPixelPoint {
-    FfiCssPixelPoint {
-        x: left.x + right.x,
-        y: left.y + right.y,
-    }
-}
 
 
-pub(crate) fn anchor_rect_from_geometry(
-    anchor_state: &UsedValues,
-    containing_block_state: &UsedValues,
-    anchor_offset: FfiCssPixelPoint,
-) -> PhysicalRect {
-    let collapsed = anchor_state.uses_collapsing_borders_model.get();
-    PhysicalRect {
-        x: anchor_offset.x - anchor_state.border_box_left(collapsed) + containing_block_state.padding_left.get(),
-        y: anchor_offset.y - anchor_state.border_box_top(collapsed) + containing_block_state.padding_top.get(),
-        width: anchor_state.border_box_inline_size(collapsed),
-        height: anchor_state.border_box_block_size(collapsed),
-    }
-}
 
 pub(crate) type Node = NodeSlotId;
 

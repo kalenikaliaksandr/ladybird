@@ -92,7 +92,6 @@ pub(crate) struct OofCandidate {
 /// content space, riding results toward every drain that may resolve an
 /// anchor() against it.
 #[derive(Clone, Copy, Debug)]
-#[expect(dead_code)]
 pub(crate) struct AnchorRectEntry {
     pub(crate) anchor_box: Node,
     pub(crate) border_box_rect: PhysicalRect,
@@ -337,6 +336,49 @@ impl LayoutState {
             rect.y -= origin.y;
         }
         Some(candidate)
+    }
+
+    /// Resolves an anchor's border-box rect for a drain: finds the entry the
+    /// carry holds for the anchor box and translates it into the containing
+    /// block's content space via the placed-chain origins of its space key
+    /// and of the containing block. Acceptable anchors always live inside
+    /// the positioned box's containing block subtree, so their entries have
+    /// folded into the active frame by consumption time; an absent entry
+    /// resolves as no anchor and takes the spec fallback.
+    pub(crate) fn carry_anchor_rect_in_containing_block_space(
+        &self,
+        callbacks: &FfiLayoutFcCallbacks,
+        anchor_box: Node,
+        containing_block: Node,
+    ) -> Option<PhysicalRect> {
+        let frames = self.recorder_frames.borrow();
+        let frame = frames.last()?;
+        let (space, entry_rect) = frame.pending_carries.iter().find_map(|(space, carry)| {
+            carry
+                .anchor_rects
+                .iter()
+                .find(|entry| entry.anchor_box == anchor_box)
+                .map(|entry| (*space, entry.border_box_rect))
+        })?;
+        let origin_to_frame_root = |node: Node| {
+            let mut origin = FfiCssPixelPoint::default();
+            let mut ancestor = node;
+            while !ancestor.is_invalid() {
+                let Some(offset) = frame.placed.get(&ancestor).copied() else {
+                    break;
+                };
+                origin.x += offset.x;
+                origin.y += offset.y;
+                ancestor = callbacks.containing_block(ancestor);
+            }
+            origin
+        };
+        let space_origin = origin_to_frame_root(space);
+        let containing_block_origin = origin_to_frame_root(containing_block);
+        let mut rect = entry_rect;
+        rect.x += space_origin.x - containing_block_origin.x;
+        rect.y += space_origin.y - containing_block_origin.y;
+        Some(rect)
     }
 
     pub(crate) fn active_frame_pending_oof_candidate_count(&self) -> usize {
