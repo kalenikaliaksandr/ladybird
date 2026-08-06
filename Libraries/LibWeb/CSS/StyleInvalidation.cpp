@@ -338,6 +338,13 @@ RequiredInvalidationAfterStyleChange compute_property_invalidation(CSS::Property
         return invalidation;
     }
 
+    // NOTE: Form controls pick their layout node type from the computed appearance, so a box built for the native
+    //       widget has to be thrown away when an author switches the control to `appearance: none`, and vice versa.
+    if (property_id == CSS::PropertyID::Appearance) {
+        invalidation.ensure_at_least(InvalidationLevel::RebuildLayoutTree);
+        return invalidation;
+    }
+
     // NOTE: If one of the overflow properties change, we rebuild the entire layout tree.
     //       This ensures that overflow propagation from root/body to viewport happens correctly.
     //       In the future, we can make this invalidation narrower.
