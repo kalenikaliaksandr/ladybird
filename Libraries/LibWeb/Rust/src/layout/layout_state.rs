@@ -919,10 +919,7 @@ impl LayoutState {
         // definite. We model all of those by considering sizes definite once
         // they are assigned through set_content_inline_size() or
         // set_content_block_size().
-        let used = UsedValues {
-            node,
-            ..UsedValues::default()
-        };
+        let used = UsedValues::default();
 
         #[derive(Clone, Copy)]
         enum Axis {
@@ -1076,10 +1073,7 @@ impl LayoutState {
         // Skip normal node initialization: resolving computed sizes requires
         // percentage bases, and every resulting geometry field is replaced by
         // the previous paintable's committed value immediately.
-        let used = UsedValues {
-            node,
-            ..UsedValues::default()
-        };
+        let used = UsedValues::default();
         used.materialized_from_paintable.set(true);
         used.set_content_inline_size(geometry.content_inline_size);
         used.set_content_block_size(geometry.content_block_size);
@@ -1241,10 +1235,6 @@ impl LayoutState {
 
     pub(crate) fn line_data(&self, slot_index: u32) -> Option<Ref<'_, LineData>> {
         self.line_data.get(slot_index).map(RefCell::borrow)
-    }
-
-    pub(crate) fn line_data_mut_if_present(&self, slot_index: u32) -> Option<RefMut<'_, LineData>> {
-        self.line_data.get(slot_index).map(RefCell::borrow_mut)
     }
 
     pub(crate) fn used_values_rare_data(&self, slot_index: u32) -> Option<Ref<'_, UsedValuesRareData>> {
@@ -1416,31 +1406,35 @@ impl LayoutState {
     /// ancestor chain (block-in-inline). Offsets materialized from a previous
     /// layout's paintable already include all of these. Also returns the line
     /// box index to record for atomic inlines whose containing line survived
-    /// line post-processing.
+    /// line post-processing. Every read resolves through the returned trees.
     fn committed_content_offset(
         &self,
+        commit_index: &CommitIndex,
         callbacks: &FfiLayoutFcCallbacks,
         node: Node,
-        used: &UsedValues,
+        entry: &CommitEntry,
     ) -> (crate::layout::FfiCssPixelPoint, Option<usize>) {
-        let mut offset = used.content_offset.get();
+        let fragment = &*entry.fragment;
+        let mut offset = entry.content_offset;
         let mut containing_line_box_index = None;
-        if !used.materialized_from_paintable.get() {
+        if !fragment.materialized_from_paintable {
             let facts = self.node_facts(callbacks, node);
             if facts.is_box() && !facts.is_fragmented_inline() {
-                let (lookup, line_fragment_offset) = self.line_fragment_lookup(callbacks, used);
+                let (lookup, line_fragment_offset) = line_fragment_lookup(commit_index, callbacks, fragment);
                 if lookup != LineFragmentLookup::NotFound {
-                    containing_line_box_index = Some(used.containing_line_box_fragment.get().line_box_index);
+                    containing_line_box_index = Some(fragment.containing_line_box_fragment.line_box_index);
                 }
                 if lookup == LineFragmentLookup::Found {
                     offset = line_fragment_offset;
                 }
                 if facts.is_relatively_positioned() {
-                    offset.x += used.inset_left.get();
-                    offset.y += used.inset_top.get();
+                    offset.x += fragment.inset_left;
+                    offset.y += fragment.inset_top;
                 }
                 if facts.is_in_flow() && facts.display().is_block_outside() {
-                    let chain = self.accumulated_relative_insets_from_inline_ancestor_chain(
+                    let chain = accumulated_relative_insets_from_commit_index(
+                        self,
+                        commit_index,
                         callbacks,
                         callbacks.parent(node),
                         callbacks.containing_block(node),
@@ -1455,33 +1449,6 @@ impl LayoutState {
         (offset, containing_line_box_index)
     }
 
-    fn line_fragment_lookup(
-        &self,
-        callbacks: &FfiLayoutFcCallbacks,
-        used: &UsedValues,
-    ) -> (LineFragmentLookup, crate::layout::FfiCssPixelPoint) {
-        if !used.has_containing_line_box_fragment.get() {
-            return (LineFragmentLookup::NotFound, crate::layout::FfiCssPixelPoint::default());
-        }
-        // SAFETY: Commit traverses the still-live C++ layout tree
-        // synchronously with the pass callback table.
-        let containing_block = callbacks.containing_block(used.node);
-        assert!(!containing_block.is_invalid());
-        let slot_index = callbacks.slot_index(containing_block);
-        let Some(data) = self.line_data(slot_index) else {
-            return (LineFragmentLookup::NotFound, crate::layout::FfiCssPixelPoint::default());
-        };
-        let coordinate = used.containing_line_box_fragment.get();
-        let Some(line) = data.line_boxes.get(coordinate.line_box_index) else {
-            return (LineFragmentLookup::NotFound, crate::layout::FfiCssPixelPoint::default());
-        };
-        let Some(fragment) = line.fragments.get(coordinate.fragment_index) else {
-            return (LineFragmentLookup::LineOnly, crate::layout::FfiCssPixelPoint::default());
-        };
-        let (x, y) = fragment.offset();
-        (LineFragmentLookup::Found, crate::layout::FfiCssPixelPoint { x, y })
-    }
-
     fn commit_subtree(
         &self,
         node: Node,
@@ -1491,26 +1458,25 @@ impl LayoutState {
         sink: &FfiCommitSink,
         commit_index: &CommitIndex,
     ) {
-        let slot_index = callbacks.slot_index(node);
-        let used = self.used_values_by_slot(slot_index);
-        #[cfg(debug_assertions)]
-        debug_assert_commit_entry_matches_record(commit_index.entry(node), node, used);
-        let abspos_layout_inputs = self
-            .used_values_rare_data(slot_index)
-            .and_then(|rare| rare.abspos_layout_inputs);
-        if used.is_some() {
+        let entry = commit_index.entry(node);
+        let abspos_layout_inputs = entry
+            .and_then(|entry| entry.rare.as_ref())
+            .and_then(|rare| rare.borrow().abspos_layout_inputs);
+        if entry.is_some() {
             callbacks.set_saved_abspos_layout_inputs(node, abspos_layout_inputs);
         }
         // SAFETY: The C++ sink owns paintables and copies every plain-data
         // input synchronously.
         let node_shell = callbacks.shell(node);
-        let paintable = unsafe { (sink.prepare_node)(sink.context, node_shell, used.is_some()) };
+        let paintable = unsafe { (sink.prepare_node)(sink.context, node_shell, entry.is_some()) };
 
         let mut has_pending_inline_box_geometry = false;
-        if let Some(used) = used
+        if let Some(entry) = entry
             && !paintable.is_null()
         {
-            let (content_offset, containing_line_box_index) = self.committed_content_offset(callbacks, node, used);
+            let fragment = &*entry.fragment;
+            let (content_offset, containing_line_box_index) =
+                self.committed_content_offset(commit_index, callbacks, node, entry);
             // SAFETY: Every callback below copies its plain-data argument or
             // consumes one retained handle synchronously.
             unsafe {
@@ -1519,24 +1485,24 @@ impl LayoutState {
                     paintable,
                     FfiCommittedBoxMetrics {
                         content_offset,
-                        content_inline_size: used.content_inline_size.get(),
-                        content_block_size: used.content_block_size.get(),
-                        margin_left: used.margin_left.get(),
-                        margin_right: used.margin_right.get(),
-                        margin_top: used.margin_top.get(),
-                        margin_bottom: used.margin_bottom.get(),
-                        border_left: used.border_left.get(),
-                        border_right: used.border_right.get(),
-                        border_top: used.border_top.get(),
-                        border_bottom: used.border_bottom.get(),
-                        padding_left: used.padding_left.get(),
-                        padding_right: used.padding_right.get(),
-                        padding_top: used.padding_top.get(),
-                        padding_bottom: used.padding_bottom.get(),
-                        inset_left: used.inset_left.get(),
-                        inset_right: used.inset_right.get(),
-                        inset_top: used.inset_top.get(),
-                        inset_bottom: used.inset_bottom.get(),
+                        content_inline_size: fragment.content_inline_size,
+                        content_block_size: fragment.content_block_size,
+                        margin_left: fragment.margin_left,
+                        margin_right: fragment.margin_right,
+                        margin_top: fragment.margin_top,
+                        margin_bottom: fragment.margin_bottom,
+                        border_left: fragment.border_left,
+                        border_right: fragment.border_right,
+                        border_top: fragment.border_top,
+                        border_bottom: fragment.border_bottom,
+                        padding_left: fragment.padding_left,
+                        padding_right: fragment.padding_right,
+                        padding_top: fragment.padding_top,
+                        padding_bottom: fragment.padding_bottom,
+                        inset_left: fragment.inset_left,
+                        inset_right: fragment.inset_right,
+                        inset_top: fragment.inset_top,
+                        inset_bottom: fragment.inset_bottom,
                         containing_line_box_index: containing_line_box_index.unwrap_or(0),
                         has_containing_line_box_index: containing_line_box_index.is_some(),
                     },
@@ -1544,7 +1510,8 @@ impl LayoutState {
             }
 
             let (override_borders, table_cell_coordinates) =
-                self.used_values_rare_data(slot_index).map_or((None, None), |rare| {
+                entry.rare.as_ref().map_or((None, None), |rare| {
+                    let rare = rare.borrow();
                     (rare.override_borders_data, rare.table_cell_coordinates)
                 });
             unsafe {
@@ -1556,8 +1523,7 @@ impl LayoutState {
                 }
             }
 
-            let has_line_data = self.line_data(slot_index).is_some();
-            if has_line_data {
+            if let Some(line_data) = &entry.line_data {
                 // SAFETY: The sink keeps one line accumulator live between
                 // begin_line_data() and finish_line_data().
                 let accepts_lines = unsafe { (sink.begin_line_data)(sink.context, paintable) };
@@ -1568,25 +1534,22 @@ impl LayoutState {
                         emit_fragment: sink.emit_fragment,
                         emit_inline_box_piece: sink.emit_inline_box_piece,
                     };
-                    assert!(push_line_data(self, slot_index, callbacks, line_sink));
+                    assert!(push_line_data(self, commit_index, entry, callbacks, line_sink));
                     unsafe {
                         (sink.finish_line_data)(sink.context);
                     }
-                    has_pending_inline_box_geometry = self
-                        .line_data(slot_index)
-                        .is_some_and(|data| !data.inline_box_pieces.is_empty());
+                    has_pending_inline_box_geometry = !line_data.borrow().inline_box_pieces.is_empty();
                 }
             }
 
-            let (transforms, viewport_size, path) = self
-                .used_values_rare_data_mut_if_present(slot_index)
-                .map_or((None, None, None), |mut rare| {
-                    (
-                        rare.computed_svg_transforms,
-                        rare.svg_viewport_size,
-                        rare.computed_svg_path.as_mut().map(RetainedLayoutHandle::take),
-                    )
-                });
+            let (transforms, viewport_size, path) = entry.rare.as_ref().map_or((None, None, None), |rare| {
+                let mut rare = rare.borrow_mut();
+                (
+                    rare.computed_svg_transforms,
+                    rare.svg_viewport_size,
+                    rare.computed_svg_path.as_mut().map(RetainedLayoutHandle::take),
+                )
+            });
             unsafe {
                 if let Some(transforms) = transforms {
                     (sink.set_computed_svg_transforms)(sink.context, paintable, transforms);
@@ -1598,7 +1561,7 @@ impl LayoutState {
                     (sink.set_computed_svg_path)(sink.context, paintable, path);
                 }
             }
-            if let Some(rare) = self.used_values_rare_data(slot_index) {
+            if let Some(rare) = entry.rare.as_ref().map(|rare| rare.borrow()) {
                 if let Some(data) = &rare.grid_layout_data {
                     data.with_ffi_view(|view| {
                         // SAFETY: The Rust-owned nested vectors remain live
@@ -1678,7 +1641,18 @@ impl LayoutState {
 }
 
 impl LayoutState {
-    fn used_values_rare_data_mut_if_present(&self, slot_index: u32) -> Option<RefMut<'_, UsedValuesRareData>> {
-        self.used_values_rare_data.get(slot_index).map(RefCell::borrow_mut)
+    /// Moves a box's line data out of the pass store and into the commit
+    /// index. Runs strictly after the abspos pass, so every layout-time
+    /// reader of the store has already finished.
+    pub(crate) fn take_line_data_for_commit(&self, slot_index: u32) -> Option<LineData> {
+        self.line_data
+            .get(slot_index)
+            .map(|cell| std::mem::take(&mut *cell.borrow_mut()))
+    }
+
+    pub(crate) fn take_rare_data_for_commit(&self, slot_index: u32) -> Option<UsedValuesRareData> {
+        self.used_values_rare_data
+            .get(slot_index)
+            .map(|cell| std::mem::take(&mut *cell.borrow_mut()))
     }
 }

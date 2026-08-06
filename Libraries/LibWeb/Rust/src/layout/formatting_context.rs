@@ -1848,7 +1848,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             .pop_recorder_frame()
             .expect("the entry's host recorder frame is active until the pass ends");
         let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
-        let commit_index = CommitIndex::build(&pass_artifacts);
+        let commit_index = CommitIndex::build(&pass_artifacts, state_ref);
         state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink, &commit_index);
     });
 }
@@ -1916,7 +1916,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
             .pop_recorder_frame()
             .expect("the entry's host recorder frame is active until the pass ends");
         let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
-        let commit_index = CommitIndex::build(&pass_artifacts);
+        let commit_index = CommitIndex::build(&pass_artifacts, state_ref);
         state.commit_replacing(root, paintable_to_replace, &callbacks, sink, &commit_index);
     });
 }
@@ -1952,7 +1952,7 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
             .pop_recorder_frame()
             .expect("the entry's host recorder frame is active until the pass ends");
         let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
-        let commit_index = CommitIndex::build(&pass_artifacts);
+        let commit_index = CommitIndex::build(&pass_artifacts, state_ref);
         state.commit_replacing(box_, paintable_to_replace, &callbacks, sink, &commit_index);
     });
 }

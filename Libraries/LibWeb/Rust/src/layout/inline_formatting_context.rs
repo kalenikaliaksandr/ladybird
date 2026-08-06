@@ -1401,16 +1401,17 @@ fn line_rect(line: &LineBoxData, content_inline_size: CssPixels) -> FfiCssPixelR
 
 pub(crate) fn push_line_data(
     state: &crate::layout::LayoutState,
-    slot_index: u32,
+    commit_index: &crate::layout::CommitIndex,
+    entry: &crate::layout::CommitEntry,
     callbacks: &FfiLayoutFcCallbacks,
     sink: FfiLineSinkCallbacks,
 ) -> bool {
-    let content_inline_size = state
-        .used_values_by_slot(slot_index)
-        .map_or(CssPixels::default(), |used| used.content_inline_size.get());
-    let Some(mut data) = state.line_data_mut_if_present(slot_index) else {
-        return false;
-    };
+    let content_inline_size = entry.fragment.content_inline_size;
+    let mut data = entry
+        .line_data
+        .as_ref()
+        .expect("line emission only runs for entries with harvested line data")
+        .borrow_mut();
     // Fragments and pieces are stored at their static positions; the relative
     // insets contributed by inline-flow ancestor chains are applied here, at
     // emission, so the stored line data never depends on ancestor geometry.
@@ -1419,7 +1420,9 @@ pub(crate) fn push_line_data(
         *accumulated_relative_offset_by_chain_start
             .entry(first_ancestor)
             .or_insert_with(|| {
-                let chain = state.accumulated_relative_insets_from_inline_ancestor_chain(
+                let chain = crate::layout::accumulated_relative_insets_from_commit_index(
+                    state,
+                    commit_index,
                     callbacks,
                     first_ancestor,
                     NodeSlotId::INVALID,

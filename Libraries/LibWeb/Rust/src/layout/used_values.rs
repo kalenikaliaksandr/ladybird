@@ -46,7 +46,6 @@ pub(crate) struct LineBoxFragmentCoordinate {
 /// The per-box geometry stored in a Rust-owned layout pass.
 #[derive(Debug)]
 pub(crate) struct UsedValues {
-    pub node: crate::layout::node_data::NodeSlotId,
 
     pub content_inline_size: Cell<CssPixels>,
     pub content_block_size: Cell<CssPixels>,
@@ -101,7 +100,6 @@ impl Default for UsedValues {
     fn default() -> Self {
         let zero = CssPixels::from_raw(0);
         Self {
-            node: crate::layout::node_data::NodeSlotId::INVALID,
             content_inline_size: Cell::new(zero),
             content_block_size: Cell::new(zero),
             margin_left: Cell::new(zero),

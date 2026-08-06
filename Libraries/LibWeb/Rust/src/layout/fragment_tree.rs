@@ -9,7 +9,6 @@
 /// position of their own: a box's offset lives on the containing block's
 /// [`FragmentLink`], so an entire subtree is reusable regardless of where the
 /// containing block places it.
-#[cfg_attr(not(debug_assertions), expect(dead_code))]
 pub(crate) struct Fragment {
     pub(crate) node: Node,
     pub(crate) content_inline_size: CssPixels,
@@ -141,23 +140,27 @@ impl LayoutState {
 }
 
 /// Commit's view of the returned trees: one entry per laid-out box, holding
-/// the fragment and the committed offset from the owning link. Built at the
-/// FFI entry from the entry-level artifacts, where top-level links are the
-/// pass roots (viewport, subtree root) and escaped links are boxes whose
-/// owner fragment froze before they were placed (today only the deferred
-/// abspos pass produces those).
+/// the fragment, the committed offset from the owning link, and the line and
+/// rare data harvested out of the pass stores once layout has fully finished.
+/// Built at the FFI entry from the entry-level artifacts, where top-level
+/// links are the pass roots (viewport, subtree root) and escaped links are
+/// boxes whose owner fragment froze before they were placed (today only the
+/// deferred abspos pass produces those). Commit consumes the harvested data
+/// by value: line emission takes the glyph runs and the SVG path handle is
+/// transferred exactly once.
 pub(crate) struct CommitIndex {
     entries: HashMap<Node, CommitEntry>,
 }
 
-#[cfg_attr(not(debug_assertions), expect(dead_code))]
 pub(crate) struct CommitEntry {
     pub(crate) fragment: std::rc::Rc<Fragment>,
     pub(crate) content_offset: FfiCssPixelPoint,
+    pub(crate) line_data: Option<RefCell<LineData>>,
+    pub(crate) rare: Option<RefCell<UsedValuesRareData>>,
 }
 
 impl CommitIndex {
-    pub(crate) fn build(artifacts: &RunArtifacts) -> Self {
+    pub(crate) fn build(artifacts: &RunArtifacts, state: &LayoutState) -> Self {
         let mut index = CommitIndex {
             entries: HashMap::new(),
         };
@@ -167,6 +170,11 @@ impl CommitIndex {
         for (_, link) in &artifacts.escaped_links {
             index.insert_link_subtree(link);
         }
+        for (node, entry) in &mut index.entries {
+            let slot_index = node.slot_index();
+            entry.line_data = state.take_line_data_for_commit(slot_index).map(RefCell::new);
+            entry.rare = state.take_rare_data_for_commit(slot_index).map(RefCell::new);
+        }
         index
     }
 
@@ -174,52 +182,84 @@ impl CommitIndex {
         self.entries.insert(link.fragment.node, CommitEntry {
             fragment: std::rc::Rc::clone(&link.fragment),
             content_offset: link.committed_offset(),
+            line_data: None,
+            rare: None,
         });
         for child_link in &link.fragment.links {
             self.insert_link_subtree(child_link);
         }
     }
 
-    #[cfg_attr(not(debug_assertions), expect(dead_code))]
     pub(crate) fn entry(&self, node: Node) -> Option<&CommitEntry> {
         self.entries.get(&node)
     }
 }
 
-/// The one-commit shadow proving the assembled tree mirrors the working
-/// records: presence, the full field snapshot, and the committed offset all
-/// have to agree before commit switches its reads over.
-#[cfg(debug_assertions)]
-pub(crate) fn debug_assert_commit_entry_matches_record(entry: Option<&CommitEntry>, node: Node, used: Option<&UsedValues>) {
-    let Some(used) = used else {
-        assert!(entry.is_none(), "commit index has an entry for a box without a working record");
-        return;
+/// Commit-side twin of accumulated_relative_insets_from_inline_ancestor_chain
+/// resolving inline-ancestor insets through the returned fragments instead of
+/// the working records. Both walks are deleted together when relative
+/// positioning folds into link offsets at freeze.
+pub(crate) fn accumulated_relative_insets_from_commit_index(
+    state: &LayoutState,
+    commit_index: &CommitIndex,
+    callbacks: &FfiLayoutFcCallbacks,
+    first_ancestor: Node,
+    stop_at: Node,
+) -> InlineAncestorChainRelativeOffset {
+    let mut result = InlineAncestorChainRelativeOffset::default();
+    let mut ancestor = first_ancestor;
+    while !ancestor.is_invalid() && ancestor != stop_at {
+        let facts = state.node_facts(callbacks, ancestor);
+        if !facts.has_box_model_metrics() {
+            break;
+        }
+        let display = facts.display();
+        if !display.is_inline_outside() || !display.is_flow_inside() {
+            break;
+        }
+        result.found_fragmented_inline_node |= facts.is_fragmented_inline();
+        if facts.is_relatively_positioned() {
+            // An inline that never went through inline layout this pass has
+            // no fragment; its committed box model is zeroed, so it
+            // contributes no inset.
+            if let Some(entry) = commit_index.entry(ancestor) {
+                result.offset_x += entry.fragment.inset_left;
+                result.offset_y += entry.fragment.inset_top;
+            }
+        }
+        ancestor = callbacks.parent(ancestor);
+    }
+    result
+}
+
+/// Resolves an atomic inline's (or interrupting block's) containing line box
+/// fragment through the container entry's harvested line data.
+pub(crate) fn line_fragment_lookup(
+    commit_index: &CommitIndex,
+    callbacks: &FfiLayoutFcCallbacks,
+    fragment: &Fragment,
+) -> (LineFragmentLookup, FfiCssPixelPoint) {
+    if !fragment.has_containing_line_box_fragment {
+        return (LineFragmentLookup::NotFound, FfiCssPixelPoint::default());
+    }
+    let containing_block = callbacks.containing_block(fragment.node);
+    assert!(!containing_block.is_invalid());
+    let Some(data) = commit_index
+        .entry(containing_block)
+        .and_then(|entry| entry.line_data.as_ref())
+        .map(|line_data| line_data.borrow())
+    else {
+        return (LineFragmentLookup::NotFound, FfiCssPixelPoint::default());
     };
-    let entry = entry.expect("every box with a working record is covered by the commit index");
-    let fragment = &*entry.fragment;
-    assert_eq!(fragment.node, node);
-    assert_eq!(entry.content_offset, used.content_offset.get());
-    assert_eq!(fragment.content_inline_size, used.content_inline_size.get());
-    assert_eq!(fragment.content_block_size, used.content_block_size.get());
-    assert_eq!(fragment.margin_left, used.margin_left.get());
-    assert_eq!(fragment.margin_right, used.margin_right.get());
-    assert_eq!(fragment.margin_top, used.margin_top.get());
-    assert_eq!(fragment.margin_bottom, used.margin_bottom.get());
-    assert_eq!(fragment.border_left, used.border_left.get());
-    assert_eq!(fragment.border_right, used.border_right.get());
-    assert_eq!(fragment.border_top, used.border_top.get());
-    assert_eq!(fragment.border_bottom, used.border_bottom.get());
-    assert_eq!(fragment.padding_left, used.padding_left.get());
-    assert_eq!(fragment.padding_right, used.padding_right.get());
-    assert_eq!(fragment.padding_top, used.padding_top.get());
-    assert_eq!(fragment.padding_bottom, used.padding_bottom.get());
-    assert_eq!(fragment.inset_left, used.inset_left.get());
-    assert_eq!(fragment.inset_right, used.inset_right.get());
-    assert_eq!(fragment.inset_top, used.inset_top.get());
-    assert_eq!(fragment.inset_bottom, used.inset_bottom.get());
-    assert_eq!(fragment.materialized_from_paintable, used.materialized_from_paintable.get());
-    assert_eq!(fragment.has_containing_line_box_fragment, used.has_containing_line_box_fragment.get());
-    assert_eq!(fragment.containing_line_box_fragment, used.containing_line_box_fragment.get());
+    let coordinate = fragment.containing_line_box_fragment;
+    let Some(line) = data.line_boxes.get(coordinate.line_box_index) else {
+        return (LineFragmentLookup::NotFound, FfiCssPixelPoint::default());
+    };
+    let Some(line_fragment) = line.fragments.get(coordinate.fragment_index) else {
+        return (LineFragmentLookup::LineOnly, FfiCssPixelPoint::default());
+    };
+    let (x, y) = line_fragment.offset();
+    (LineFragmentLookup::Found, FfiCssPixelPoint { x, y })
 }
 
 /// Assembles the frame's records into immutable fragments over the containing
