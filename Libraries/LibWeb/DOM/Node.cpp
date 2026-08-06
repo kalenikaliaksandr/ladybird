@@ -3548,7 +3548,10 @@ ErrorOr<Utf16String> Node::name_or_description(NameOrDescription target, Documen
             }
 
             // v. Return the accumulated text if it is not the empty string ("").
-            if (!total_accumulated_text.is_empty())
+            // AD-HOC: Text consisting only of the separator spaces appended above is not a name. A native control
+            //         whose only children are the elements of its user-agent shadow tree has to keep falling through
+            //         to the steps below, so that e.g. a checkbox is still named by its title attribute.
+            if (!total_accumulated_text.view().is_ascii_whitespace())
                 return total_accumulated_text.to_string();
 
             // Important: Each node in the subtree is consulted only once. If text has been collected from a descendant,
