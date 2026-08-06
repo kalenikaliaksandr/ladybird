@@ -66,6 +66,110 @@ pub(crate) struct LayoutResult {
     pub(crate) artifacts: Option<RunArtifacts>,
 }
 
+/// The layout result cache runs in shadow mode: probes classify every
+/// eligible run as a hit or miss and misses store a fingerprint, but the
+/// run always executes and a hit is verified against the fresh outputs —
+/// so a full suite run with the flag set is a semantic proof of the key
+/// and invalidation logic before hits are allowed to skip anything.
+pub(crate) fn layout_result_cache_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("LADYBIRD_LAYOUT_RESULT_CACHE").is_some())
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct LayoutResultCacheStats {
+    pub(crate) hits: u32,
+    pub(crate) misses: u32,
+    pub(crate) bypasses: u32,
+}
+
+pub(crate) enum LayoutResultCacheProbe {
+    Ineligible,
+    Miss,
+    Hit(crate::layout::layout_node_arena::LayoutResultFingerprint),
+}
+
+impl LayoutState {
+    pub(crate) fn probe_layout_result_cache_shadow(
+        &self,
+        callbacks: &FfiLayoutFcCallbacks,
+        box_: Node,
+        input: &LayoutInput,
+        layout_mode: LayoutMode,
+        should_collect_devtools_layout_data: bool,
+    ) -> LayoutResultCacheProbe {
+        if !layout_result_cache_enabled() || self.is_measurement() {
+            return LayoutResultCacheProbe::Ineligible;
+        }
+        let mut stats = self.layout_result_cache_stats.get();
+        if layout_mode != LayoutMode::Normal
+            || should_collect_devtools_layout_data
+            || !matches!(input.participation, ParticipationInParentFormattingContext::BlockLevel)
+        {
+            stats.bypasses += 1;
+            self.layout_result_cache_stats.set(stats);
+            return LayoutResultCacheProbe::Ineligible;
+        }
+        let probe = match callbacks.arena().layout_result_cache_get(callbacks.node_data(box_), input) {
+            Some(fingerprint) => {
+                stats.hits += 1;
+                LayoutResultCacheProbe::Hit(fingerprint)
+            }
+            None => {
+                stats.misses += 1;
+                LayoutResultCacheProbe::Miss
+            }
+        };
+        self.layout_result_cache_stats.set(stats);
+        probe
+    }
+
+    pub(crate) fn finish_layout_result_cache_shadow(
+        &self,
+        callbacks: &FfiLayoutFcCallbacks,
+        box_: Node,
+        input: &LayoutInput,
+        parent_consumed: ChildLayoutResult,
+        artifacts: Option<&RunArtifacts>,
+        probe: LayoutResultCacheProbe,
+    ) {
+        let Some(artifacts) = artifacts else {
+            return;
+        };
+        let fingerprint = crate::layout::layout_node_arena::LayoutResultFingerprint {
+            automatic_content_inline_size: parent_consumed.automatic_content_inline_size,
+            automatic_content_block_size: parent_consumed.automatic_content_block_size,
+            root_link_count: artifacts.root_links.len(),
+            escaped_link_count: artifacts.escaped_links.len(),
+            carried_candidate_count: artifacts.carry.candidates.len(),
+            carried_anchor_rect_count: artifacts.carry.anchor_rects.len(),
+        };
+        match probe {
+            LayoutResultCacheProbe::Ineligible => {}
+            LayoutResultCacheProbe::Miss => {
+                callbacks.arena().layout_result_cache_put(callbacks.node_data(box_), *input, fingerprint);
+            }
+            LayoutResultCacheProbe::Hit(cached) => {
+                assert_eq!(
+                    fingerprint, cached,
+                    "layout result cache shadow diverged: identical inputs reproduced different outputs"
+                );
+            }
+        }
+    }
+
+    pub(crate) fn dump_layout_result_cache_stats_if_enabled(&self) {
+        if !layout_result_cache_enabled() {
+            return;
+        }
+        let stats = self.layout_result_cache_stats.get();
+        eprintln!(
+            "layout-result-cache: hits={} misses={} bypasses={}",
+            stats.hits, stats.misses, stats.bypasses
+        );
+    }
+}
+
 /// One absolutely positioned box waiting for its containing block: born at
 /// the registration sites with its static position in the producing box's
 /// content space, translated by every placement fold on the way up, and

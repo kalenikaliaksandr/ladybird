@@ -205,6 +205,26 @@ fn new_chunk() -> Box<Chunk> {
     }
 }
 
+/// What one layout of an independent block-level root produced, reduced to
+/// the quantities the shadow probe compares: identical inputs must reproduce
+/// these exactly before cache hits are allowed to skip the run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LayoutResultFingerprint {
+    pub(crate) automatic_content_inline_size: CssPixels,
+    pub(crate) automatic_content_block_size: CssPixels,
+    pub(crate) root_link_count: usize,
+    pub(crate) escaped_link_count: usize,
+    pub(crate) carried_candidate_count: usize,
+    pub(crate) carried_anchor_rect_count: usize,
+}
+
+#[derive(Default)]
+struct LayoutResultCacheSlot {
+    generation: u8,
+    epoch: u16,
+    entry: Option<Box<(crate::layout::LayoutInput, LayoutResultFingerprint)>>,
+}
+
 #[derive(Clone, Copy, Default)]
 struct SlotMetadata {
     generation: u8,
@@ -225,6 +245,7 @@ pub(crate) struct LayoutNodeArena {
     next_index: u32,
     live_count: u32,
     intrinsic_size_caches: RefCell<Vec<IntrinsicSizeCacheSlot>>,
+    layout_result_caches: RefCell<Vec<LayoutResultCacheSlot>>,
     saved_abspos_layout_inputs: RefCell<Vec<SavedAbsposLayoutInputsSlot>>,
     inline_containing_block_box_containing_blocks: RefCell<Vec<InlineContainingBlockBoxContainingBlockSlot>>,
     text_contents: Vec<TextContentSlot>,
@@ -243,6 +264,7 @@ impl LayoutNodeArena {
             next_index: 0,
             live_count: 0,
             intrinsic_size_caches: RefCell::new(Vec::new()),
+            layout_result_caches: RefCell::new(Vec::new()),
             saved_abspos_layout_inputs: RefCell::new(Vec::new()),
             inline_containing_block_box_containing_blocks: RefCell::new(Vec::new()),
             text_contents: Vec::new(),
@@ -328,6 +350,9 @@ impl LayoutNodeArena {
         metadata.occupied = false;
         let should_reuse = metadata.generation != u8::MAX;
 
+        if let Some(slot) = self.layout_result_caches.get_mut().get_mut(index as usize) {
+            *slot = LayoutResultCacheSlot::default();
+        }
         if let Some(slot) = self.intrinsic_size_caches.get_mut().get_mut(index as usize) {
             *slot = IntrinsicSizeCacheSlot::default();
         }
@@ -480,6 +505,45 @@ impl LayoutNodeArena {
             other = unsafe { (*self.data(other)).previous_sibling };
         }
         false
+    }
+
+    pub(crate) fn layout_result_cache_get(
+        &self,
+        data: &NodeData,
+        key: &crate::layout::LayoutInput,
+    ) -> Option<LayoutResultFingerprint> {
+        if data.intrinsic_cache_epoch == u16::MAX {
+            return None;
+        }
+        let (index, metadata) = self.slot_for_data(std::ptr::from_ref(data));
+        let caches = self.layout_result_caches.borrow();
+        let slot = caches.get(index as usize)?;
+        if slot.generation != metadata.generation || slot.epoch != data.intrinsic_cache_epoch {
+            return None;
+        }
+        let entry = slot.entry.as_ref()?;
+        (entry.0 == *key).then_some(entry.1)
+    }
+
+    pub(crate) fn layout_result_cache_put(
+        &self,
+        data: &NodeData,
+        key: crate::layout::LayoutInput,
+        fingerprint: LayoutResultFingerprint,
+    ) {
+        if data.intrinsic_cache_epoch == u16::MAX {
+            return;
+        }
+        let (index, metadata) = self.slot_for_data(std::ptr::from_ref(data));
+        let mut caches = self.layout_result_caches.borrow_mut();
+        if caches.len() <= index as usize {
+            caches.resize_with(index as usize + 1, LayoutResultCacheSlot::default);
+        }
+        caches[index as usize] = LayoutResultCacheSlot {
+            generation: metadata.generation,
+            epoch: data.intrinsic_cache_epoch,
+            entry: Some(Box::new((key, fingerprint))),
+        };
     }
 
     pub(crate) fn intrinsic_block_size_cache_get(

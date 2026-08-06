@@ -1695,7 +1695,7 @@ pub(crate) fn layout_contained_abspos_children(run: &crate::layout::FormattingCo
     AbsposEngine::new(run.state, run.callbacks).layout_children(run);
 }
 
-/// Sweeps registration targets that have no formatting context run of their
+/// Sweeps containing blocks that have no formatting context run of their
 /// own — the seeded viewport of a root or subtree entry and the containing
 /// block a replay is rooted at. Every other target drains at its run's own
 /// tail, in completion order: deeper containing blocks first, the root

@@ -1418,6 +1418,8 @@ fn run_formatting_context<'pass>(
     input: LayoutInput,
     parent_block: Option<&BlockFormattingContext<'pass>>,
 ) -> LayoutResult {
+    let cache_probe =
+        state.probe_layout_result_cache_shadow(&callbacks, box_, &input, layout_mode, should_collect_devtools_layout_data);
     state.push_recorder_frame(box_);
     let parent_consumed = run_formatting_context_body(
         state,
@@ -1433,6 +1435,7 @@ fn run_formatting_context<'pass>(
     let artifacts = state
         .pop_recorder_frame()
         .map(|frame| freeze_run_artifacts(state, &callbacks, frame));
+    state.finish_layout_result_cache_shadow(&callbacks, box_, &input, parent_consumed, artifacts.as_ref(), cache_probe);
     LayoutResult {
         parent_consumed,
         artifacts,
@@ -1848,6 +1851,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         let pass_artifacts = freeze_run_artifacts(state_ref, &callbacks, host_frame);
         let commit_index = CommitIndex::build(&pass_artifacts, state_ref);
         state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink, &commit_index);
+        state.dump_layout_result_cache_stats_if_enabled();
     });
 }
 

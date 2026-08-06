@@ -783,6 +783,7 @@ pub(crate) struct LayoutState {
     used_values_rare_data: PagedStore<RefCell<UsedValuesRareData>>,
     anchor_candidate_shells: RefCell<Vec<*mut c_void>>,
     recorder_frames: RefCell<Vec<RecorderFrame>>,
+    layout_result_cache_stats: Cell<LayoutResultCacheStats>,
     purpose: LayoutStatePurpose,
 }
 
@@ -828,6 +829,7 @@ impl LayoutState {
             used_values_rare_data: PagedStore::default(),
             anchor_candidate_shells: RefCell::new(Vec::new()),
             recorder_frames: RefCell::new(Vec::new()),
+            layout_result_cache_stats: Cell::new(LayoutResultCacheStats::default()),
             purpose,
         }
     }
