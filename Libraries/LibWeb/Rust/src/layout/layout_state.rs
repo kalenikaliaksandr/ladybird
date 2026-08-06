@@ -187,14 +187,6 @@ pub struct FfiCommittedBoxMetrics {
     pub has_containing_line_box_index: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum LineFragmentLookup {
-    #[default]
-    NotFound,
-    LineOnly,
-    Found,
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct InlineAncestorChainRelativeOffset {
     pub(crate) offset_x: crate::layout::CssPixels,
@@ -1400,55 +1392,6 @@ impl LayoutState {
         result
     }
 
-    /// Composes the offset the paintable receives: the containing line box
-    /// fragment override for atomic inlines, the box's own relative-position
-    /// inset, and the relative insets accumulated from a fragmented inline
-    /// ancestor chain (block-in-inline). Offsets materialized from a previous
-    /// layout's paintable already include all of these. Also returns the line
-    /// box index to record for atomic inlines whose containing line survived
-    /// line post-processing. Every read resolves through the returned trees.
-    fn committed_content_offset(
-        &self,
-        commit_index: &CommitIndex,
-        callbacks: &FfiLayoutFcCallbacks,
-        node: Node,
-        entry: &CommitEntry,
-    ) -> (crate::layout::FfiCssPixelPoint, Option<usize>) {
-        let fragment = &*entry.fragment;
-        let mut offset = entry.content_offset;
-        let mut containing_line_box_index = None;
-        if !fragment.materialized_from_paintable {
-            let facts = self.node_facts(callbacks, node);
-            if facts.is_box() && !facts.is_fragmented_inline() {
-                let (lookup, line_fragment_offset) = line_fragment_lookup(commit_index, callbacks, fragment);
-                if lookup != LineFragmentLookup::NotFound {
-                    containing_line_box_index = Some(fragment.containing_line_box_fragment.line_box_index);
-                }
-                if lookup == LineFragmentLookup::Found {
-                    offset = line_fragment_offset;
-                }
-                if facts.is_relatively_positioned() {
-                    offset.x += fragment.inset_left;
-                    offset.y += fragment.inset_top;
-                }
-                if facts.is_in_flow() && facts.display().is_block_outside() {
-                    let chain = accumulated_relative_insets_from_commit_index(
-                        self,
-                        commit_index,
-                        callbacks,
-                        callbacks.parent(node),
-                        callbacks.containing_block(node),
-                    );
-                    if chain.found_fragmented_inline_node {
-                        offset.x += chain.offset_x;
-                        offset.y += chain.offset_y;
-                    }
-                }
-            }
-        }
-        (offset, containing_line_box_index)
-    }
-
     fn commit_subtree(
         &self,
         node: Node,
@@ -1475,8 +1418,8 @@ impl LayoutState {
             && !paintable.is_null()
         {
             let fragment = &*entry.fragment;
-            let (content_offset, containing_line_box_index) =
-                self.committed_content_offset(commit_index, callbacks, node, entry);
+            let content_offset = entry.content_offset;
+            let containing_line_box_index = entry.containing_line_box_index;
             // SAFETY: Every callback below copies its plain-data argument or
             // consumes one retained handle synchronously.
             unsafe {

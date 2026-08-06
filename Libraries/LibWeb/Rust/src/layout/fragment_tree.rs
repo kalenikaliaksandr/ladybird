@@ -36,10 +36,12 @@ pub(crate) struct Fragment {
 }
 
 /// The containing block's record of where one of its boxes went: the flow
-/// offset assigned through place_child, the relative-positioning delta folded
-/// in at freeze, and the fragment itself. The committed offset a paintable
-/// receives is `static_offset + relpos_delta`.
-#[expect(dead_code)]
+/// offset assigned through place_child, the relative-positioning delta and
+/// containing-line-box override folded in at freeze, and the fragment
+/// itself. The committed offset a paintable receives is
+/// `static_offset + relpos_delta`; the two stay separate because
+/// out-of-flow propagation translates by flow offsets only, and css-break
+/// applies relative positioning after fragmentation.
 pub(crate) struct FragmentLink {
     pub(crate) static_offset: FfiCssPixelPoint,
     pub(crate) relpos_delta: FfiCssPixelPoint,
@@ -155,6 +157,7 @@ pub(crate) struct CommitIndex {
 pub(crate) struct CommitEntry {
     pub(crate) fragment: std::rc::Rc<Fragment>,
     pub(crate) content_offset: FfiCssPixelPoint,
+    pub(crate) containing_line_box_index: Option<usize>,
     pub(crate) line_data: Option<RefCell<LineData>>,
     pub(crate) rare: Option<RefCell<UsedValuesRareData>>,
 }
@@ -182,6 +185,7 @@ impl CommitIndex {
         self.entries.insert(link.fragment.node, CommitEntry {
             fragment: std::rc::Rc::clone(&link.fragment),
             content_offset: link.committed_offset(),
+            containing_line_box_index: link.containing_line_box_index,
             line_data: None,
             rare: None,
         });
@@ -192,6 +196,59 @@ impl CommitIndex {
 
     pub(crate) fn entry(&self, node: Node) -> Option<&CommitEntry> {
         self.entries.get(&node)
+    }
+}
+
+/// Replicates what commit-time offset composition used to do, once per link
+/// at freeze: resolve the containing-line-box override against the
+/// container's line data (atomic inlines committed at their post-processed
+/// fragment offsets, interrupting blocks at their recorded ones), fold the
+/// box's own relative-position inset, and fold the relative insets of a
+/// fragmented-inline ancestor chain (block-in-inline). Everything read here
+/// is same-run state that is final at freeze; offsets materialized from a
+/// previous paintable already include all of it.
+fn fold_committed_position_into_link(
+    state: &LayoutState,
+    callbacks: &FfiLayoutFcCallbacks,
+    child: Node,
+    link: &mut FragmentLink,
+) {
+    let fragment = &*link.fragment;
+    if fragment.materialized_from_paintable {
+        return;
+    }
+    let facts = state.node_facts(callbacks, child);
+    if !facts.is_box() || facts.is_fragmented_inline() {
+        return;
+    }
+    if fragment.has_containing_line_box_fragment {
+        let containing_block = callbacks.containing_block(child);
+        assert!(!containing_block.is_invalid());
+        let coordinate = fragment.containing_line_box_fragment;
+        if let Some(data) = state.line_data(callbacks.slot_index(containing_block))
+            && let Some(line) = data.line_boxes.get(coordinate.line_box_index)
+        {
+            link.containing_line_box_index = Some(coordinate.line_box_index);
+            if let Some(line_fragment) = line.fragments.get(coordinate.fragment_index) {
+                let (x, y) = line_fragment.offset();
+                link.static_offset = FfiCssPixelPoint { x, y };
+            }
+        }
+    }
+    if facts.is_relatively_positioned() {
+        link.relpos_delta.x += fragment.inset_left;
+        link.relpos_delta.y += fragment.inset_top;
+    }
+    if facts.is_in_flow() && facts.display().is_block_outside() {
+        let chain = state.accumulated_relative_insets_from_inline_ancestor_chain(
+            callbacks,
+            callbacks.parent(child),
+            callbacks.containing_block(child),
+        );
+        if chain.found_fragmented_inline_node {
+            link.relpos_delta.x += chain.offset_x;
+            link.relpos_delta.y += chain.offset_y;
+        }
     }
 }
 
@@ -232,35 +289,7 @@ pub(crate) fn accumulated_relative_insets_from_commit_index(
     result
 }
 
-/// Resolves an atomic inline's (or interrupting block's) containing line box
-/// fragment through the container entry's harvested line data.
-pub(crate) fn line_fragment_lookup(
-    commit_index: &CommitIndex,
-    callbacks: &FfiLayoutFcCallbacks,
-    fragment: &Fragment,
-) -> (LineFragmentLookup, FfiCssPixelPoint) {
-    if !fragment.has_containing_line_box_fragment {
-        return (LineFragmentLookup::NotFound, FfiCssPixelPoint::default());
-    }
-    let containing_block = callbacks.containing_block(fragment.node);
-    assert!(!containing_block.is_invalid());
-    let Some(data) = commit_index
-        .entry(containing_block)
-        .and_then(|entry| entry.line_data.as_ref())
-        .map(|line_data| line_data.borrow())
-    else {
-        return (LineFragmentLookup::NotFound, FfiCssPixelPoint::default());
-    };
-    let coordinate = fragment.containing_line_box_fragment;
-    let Some(line) = data.line_boxes.get(coordinate.line_box_index) else {
-        return (LineFragmentLookup::NotFound, FfiCssPixelPoint::default());
-    };
-    let Some(line_fragment) = line.fragments.get(coordinate.fragment_index) else {
-        return (LineFragmentLookup::LineOnly, FfiCssPixelPoint::default());
-    };
-    let (x, y) = line_fragment.offset();
-    (LineFragmentLookup::Found, FfiCssPixelPoint { x, y })
-}
+
 
 /// Assembles the frame's records into immutable fragments over the containing
 /// block relation. Placements supply link offsets; records the run created
@@ -303,6 +332,7 @@ pub(crate) fn freeze_run_artifacts(
 
     let mut assembly = FragmentAssembly {
         state,
+        callbacks,
         placement_offsets: &placement_offsets,
         links_by_owner: &mut links_by_owner,
         child_artifacts: &mut child_artifacts,
@@ -330,6 +360,7 @@ pub(crate) fn freeze_run_artifacts(
 
 struct FragmentAssembly<'freeze, 'pass> {
     state: &'pass LayoutState,
+    callbacks: &'pass FfiLayoutFcCallbacks,
     placement_offsets: &'freeze HashMap<Node, FfiCssPixelPoint>,
     links_by_owner: &'freeze mut HashMap<Node, Vec<Node>>,
     child_artifacts: &'freeze mut HashMap<Node, RunArtifacts>,
@@ -349,12 +380,14 @@ impl FragmentAssembly<'_, '_> {
                     .content_offset
                     .get()
             });
-            links.push(FragmentLink {
+            let mut link = FragmentLink {
                 static_offset,
                 relpos_delta: FfiCssPixelPoint::default(),
                 containing_line_box_index: None,
                 fragment: self.assemble(child),
-            });
+            };
+            fold_committed_position_into_link(self.state, self.callbacks, child, &mut link);
+            links.push(link);
         }
     }
 
