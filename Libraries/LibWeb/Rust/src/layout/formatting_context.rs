@@ -402,6 +402,7 @@ pub(crate) fn place_child(
     assert!(!used.has_content_offset.get());
     used.has_content_offset.set(true);
     used.content_offset.set(offset);
+    state.record_placement(node, offset);
 }
 
 pub(crate) fn register_contained_abspos_child(
@@ -1403,6 +1404,36 @@ fn body_input_with_inner_available_space(run: &FormattingContextRun, input: &Lay
 
 #[expect(clippy::too_many_arguments)]
 fn run_formatting_context<'pass>(
+    state: &'pass LayoutState,
+    box_: Node,
+    parent_grid: Option<&GridFormattingContext<'pass>>,
+    fc_type: FfiFormattingContextType,
+    layout_mode: LayoutMode,
+    should_collect_devtools_layout_data: bool,
+    callbacks: FfiLayoutFcCallbacks,
+    input: LayoutInput,
+    parent_block: Option<&BlockFormattingContext<'pass>>,
+) -> ChildLayoutResult {
+    state.push_recorder_frame(box_);
+    let result = run_formatting_context_body(
+        state,
+        box_,
+        parent_grid,
+        fc_type,
+        layout_mode,
+        should_collect_devtools_layout_data,
+        callbacks,
+        input,
+        parent_block,
+    );
+    if let Some(frame) = state.pop_recorder_frame() {
+        let _artifacts = freeze_run_artifacts(state, &callbacks, frame);
+    }
+    result
+}
+
+#[expect(clippy::too_many_arguments)]
+fn run_formatting_context_body<'pass>(
     state: &'pass LayoutState,
     box_: Node,
     parent_grid: Option<&GridFormattingContext<'pass>>,

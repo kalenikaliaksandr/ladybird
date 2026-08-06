@@ -35,6 +35,7 @@ include!("table_formatting_context.rs");
 include!("geometry.rs");
 mod layout_node_arena;
 pub mod node_data;
+include!("fragment_tree.rs");
 include!("layout_state.rs");
 include!("style_facts.rs");
 

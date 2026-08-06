@@ -823,6 +823,7 @@ pub(crate) struct LayoutState {
     line_data: PagedStore<RefCell<LineData>>,
     used_values_rare_data: PagedStore<RefCell<UsedValuesRareData>>,
     anchor_candidate_shells: RefCell<Vec<*mut c_void>>,
+    recorder_frames: RefCell<Vec<RecorderFrame>>,
     purpose: LayoutStatePurpose,
 }
 
@@ -871,6 +872,7 @@ impl LayoutState {
             line_data: PagedStore::default(),
             used_values_rare_data: PagedStore::default(),
             anchor_candidate_shells: RefCell::new(Vec::new()),
+            recorder_frames: RefCell::new(Vec::new()),
             purpose,
         }
     }
@@ -1049,6 +1051,7 @@ impl LayoutState {
 
         let used = self.used_values.allocate(slot_index, used);
         self.register_anchor_candidate_if_carries_anchor_names(callbacks, node);
+        self.record_created_used_values(node);
         used
     }
 
@@ -1106,6 +1109,7 @@ impl LayoutState {
 
         let used = self.used_values.allocate(slot_index, used);
         self.register_anchor_candidate_if_carries_anchor_names(callbacks, node);
+        self.record_created_used_values(node);
         Some(used)
     }
 
