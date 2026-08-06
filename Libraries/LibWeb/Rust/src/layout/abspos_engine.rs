@@ -1772,31 +1772,38 @@ pub(crate) fn layout_contained_abspos_children(run: &crate::layout::FormattingCo
     AbsposEngine::new(run.state, run.callbacks).layout_children(run);
 }
 
-/// Lays out every registered abspos child once the in-flow run has finished.
-/// Queues are processed in the order their formatting contexts completed, so
-/// deeper containing blocks come first and the root comes last: the layout
-/// order anchor() acceptability assumes for absolutely positioned anchors.
-/// A formatting context completing during the pass belongs to an absolutely
-/// positioned subtree; its children are laid out at that completion point,
-/// before later boxes of the queue that produced it.
-pub(crate) fn run_abspos_layout_pass(
+/// Sweeps registration targets that have no formatting context run of their
+/// own — the seeded viewport of a root or subtree entry and the containing
+/// block a replay is rooted at. Every other target drains at its run's own
+/// tail, in completion order: deeper containing blocks first, the root
+/// last — the layout order anchor() acceptability assumes. Draining one
+/// target can register against another (fixed-position descendants of
+/// absolutely positioned subtrees target the viewport), so the sweep loops
+/// until every listed target is empty.
+pub(crate) fn drain_remaining_abspos_targets(
     state: &LayoutState,
     callbacks: FfiLayoutFcCallbacks,
     should_collect_devtools_layout_data: bool,
+    targets: &[Node],
 ) {
-    state.set_abspos_layout_pass_is_active(true);
-    while let Some(root) = state.pop_from_abspos_layout_pass_queue() {
-        if !state.has_contained_abspos_children(root) {
-            continue;
-        }
-        let run =
-            crate::layout::FormattingContextRun::new(state, root, LayoutMode::Normal, callbacks, should_collect_devtools_layout_data, false);
+    while let Some(target) = targets
+        .iter()
+        .copied()
+        .find(|target| !target.is_invalid() && state.has_contained_abspos_children(*target))
+    {
+        let run = crate::layout::FormattingContextRun::new(
+            state,
+            target,
+            LayoutMode::Normal,
+            callbacks,
+            should_collect_devtools_layout_data,
+            false,
+        );
         layout_contained_abspos_children(&run);
     }
-    state.set_abspos_layout_pass_is_active(false);
     debug_assert!(
         state.all_registered_contained_abspos_children_are_laid_out(),
-        "registered abspos children were left without layout after the pass"
+        "registered abspos children were left without layout after the entry sweep"
     );
 }
 

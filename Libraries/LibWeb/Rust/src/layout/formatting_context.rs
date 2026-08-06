@@ -443,11 +443,21 @@ pub(crate) fn register_contained_abspos_child(
     if !state.is_measurement() {
         state.debug_registered_oof_children.borrow_mut().insert(child);
     }
+    // A table cell establishes a formatting context but does not own its
+    // final used geometry the way other roots do: the table's run still
+    // stretches the cell's block size to the distributed row size and places
+    // it. Registration passes through every table-internal containing block,
+    // so their children drain at the table grid box's tail, where that
+    // geometry is final. Consumption is containing-block-based throughout,
+    // so a target above the containing block only delays the drain.
     let mut target = containing_block;
     loop {
         let next_containing_block = callbacks.containing_block(target);
         let facts = state.node_facts(callbacks, target);
-        if next_containing_block.is_invalid() || formatting_context_type_created_by_box(facts).is_some() {
+        if next_containing_block.is_invalid()
+            || (formatting_context_type_created_by_box(facts).is_some()
+                && !containing_block_geometry_is_finalized_by_the_table_run(state, callbacks, target))
+        {
             break;
         }
         target = next_containing_block;
@@ -1639,12 +1649,7 @@ fn run_formatting_context_body<'pass>(
         FormattingContextImplementation::Svg(_) | FormattingContextImplementation::ReplacedWithChildren => {}
         FormattingContextImplementation::InternalReplaced | FormattingContextImplementation::InternalDummy => return result,
     }
-    let box_ = run.box_;
-    if run.state.abspos_layout_pass_is_active() {
-        layout_contained_abspos_children(run);
-    } else {
-        run.state.enqueue_for_abspos_layout_pass(box_);
-    }
+    layout_contained_abspos_children(run);
     result
 }
 
@@ -1885,7 +1890,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             None,
         );
         state.attach_child_artifacts(root_for_layout, root_result.artifacts);
-        run_abspos_layout_pass(state_ref, callbacks, should_collect_devtools_layout_data);
+        drain_remaining_abspos_targets(state_ref, callbacks, should_collect_devtools_layout_data, &[root]);
         let host_frame = state
             .pop_recorder_frame()
             .expect("the entry's host recorder frame is active until the pass ends");
@@ -1955,7 +1960,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         let root_result =
             run_formatting_context(state_ref, root, None, fc_type, LayoutMode::Normal, false, callbacks, input, None);
         state.attach_child_artifacts(root, root_result.artifacts);
-        run_abspos_layout_pass(state_ref, callbacks, false);
+        drain_remaining_abspos_targets(state_ref, callbacks, false, &[viewport, root]);
         let host_frame = state
             .pop_recorder_frame()
             .expect("the entry's host recorder frame is active until the pass ends");
@@ -1993,7 +1998,7 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
         assert!(!containing_block.is_invalid());
         let run = crate::layout::FormattingContextRun::new(state_ref, containing_block, LayoutMode::Normal, callbacks, false, false);
         AbsposEngine::new(state_ref, callbacks).replay(&run, box_);
-        run_abspos_layout_pass(state_ref, callbacks, false);
+        drain_remaining_abspos_targets(state_ref, callbacks, false, &[containing_block]);
         let host_frame = state
             .pop_recorder_frame()
             .expect("the entry's host recorder frame is active until the pass ends");
