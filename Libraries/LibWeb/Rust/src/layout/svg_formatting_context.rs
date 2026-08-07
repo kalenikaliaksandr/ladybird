@@ -819,9 +819,6 @@ impl<'pass> SvgFormattingContext<'pass> {
         used.set_content_block_size(content_block_size);
         used.has_definite_inline_size.set(true);
         used.has_definite_block_size.set(true);
-        if facts.has_own_view_box {
-            self.place_child(viewport, content_offset.x, content_offset.y);
-        }
 
         let mut nested_context = Self::new_nested(
             self.state,
@@ -845,6 +842,9 @@ impl<'pass> SvgFormattingContext<'pass> {
                 participation: ParticipationInParentFormattingContext::Item,
             },
         );
+        // The nested run resolves percentages against the viewport chain, so
+        // the viewport's own size record may only change after it returns —
+        // and it must land before the placement seals this box's payloads.
         self.set_svg_viewport_size(
             viewport,
             FfiCssPixelSize {
@@ -852,6 +852,9 @@ impl<'pass> SvgFormattingContext<'pass> {
                 height: nested_viewport_height,
             },
         );
+        if facts.has_own_view_box {
+            self.place_child(viewport, content_offset.x, content_offset.y);
+        }
 
         if !facts.has_own_view_box {
             let mapped_rect = self.current_viewbox_transform.map_rect(FfiFloatRect {
@@ -972,9 +975,6 @@ impl<'pass> SvgFormattingContext<'pass> {
         let used = used_pointer;
         used.set_content_inline_size(transformed_bounding_box.width);
         used.set_content_block_size(transformed_bounding_box.height);
-        self.place_child(graphics_box, transformed_bounding_box.x, transformed_bounding_box.y);
-        used.has_definite_inline_size.set(true);
-        used.has_definite_block_size.set(true);
         self.state
             .used_values_rare_data_for_node_mut(&self.callbacks, graphics_box)
             .computed_svg_path = Some(crate::layout::RetainedLayoutHandle::new(
@@ -982,6 +982,9 @@ impl<'pass> SvgFormattingContext<'pass> {
             self.callbacks.context,
             self.callbacks.release_svg_path,
         ));
+        self.place_child(graphics_box, transformed_bounding_box.x, transformed_bounding_box.y);
+        used.has_definite_inline_size.set(true);
+        used.has_definite_block_size.set(true);
     }
 
     fn layout_image_element(&self, image_box: Node) {
