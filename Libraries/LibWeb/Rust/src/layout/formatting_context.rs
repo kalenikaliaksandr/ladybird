@@ -769,6 +769,7 @@ pub struct FfiBordersData {
 pub(crate) struct ChildLayoutResult {
     pub automatic_content_inline_size: CssPixels,
     pub automatic_content_block_size: CssPixels,
+    pub baselines: DerivedBaselines,
 }
 
 pub(crate) enum ChildLayoutOutcome {
@@ -1493,9 +1494,10 @@ fn run_formatting_context<'pass>(
         None
     };
     let mut implementation = None;
-    let result = if let Some(cached_block_size) = cached_atomic_block_size {
+    let result = if let Some((cached_block_size, cached_baselines)) = cached_atomic_block_size {
         ChildLayoutResult {
             automatic_content_block_size: cached_block_size,
+            baselines: cached_baselines,
             ..ChildLayoutResult::default()
         }
     } else {
@@ -1503,47 +1505,42 @@ fn run_formatting_context<'pass>(
         let result = match &mut context_implementation {
             FormattingContextImplementation::Block(context) => {
                 context.run(run, body_input);
-                let result = ChildLayoutResult {
-                    automatic_content_inline_size: context.automatic_content_inline_size(),
-                    automatic_content_block_size: context.automatic_content_block_size(),
-                };
-                store_derived_baselines(
-                    run.state.used_values(&run.callbacks, run.box_),
-                    context.derived_baselines_of_root_box(),
-                );
-                result
-            }
-            FormattingContextImplementation::Flex(context) => {
-                context.run(run, body_input);
-                store_derived_baselines(
-                    run.state.used_values(&run.callbacks, run.box_),
-                    context.derived_baselines_of_root_box(),
-                );
+                let baselines = context.derived_baselines_of_root_box();
+                store_derived_baselines(run.state.used_values(&run.callbacks, run.box_), baselines);
                 ChildLayoutResult {
                     automatic_content_inline_size: context.automatic_content_inline_size(),
                     automatic_content_block_size: context.automatic_content_block_size(),
+                    baselines,
+                }
+            }
+            FormattingContextImplementation::Flex(context) => {
+                context.run(run, body_input);
+                let baselines = context.derived_baselines_of_root_box();
+                store_derived_baselines(run.state.used_values(&run.callbacks, run.box_), baselines);
+                ChildLayoutResult {
+                    automatic_content_inline_size: context.automatic_content_inline_size(),
+                    automatic_content_block_size: context.automatic_content_block_size(),
+                    baselines,
                 }
             }
             FormattingContextImplementation::Grid(context) => {
                 context.run(run, body_input);
-                store_derived_baselines(
-                    run.state.used_values(&run.callbacks, run.box_),
-                    context.derived_baselines_of_root_box(),
-                );
+                let baselines = context.derived_baselines_of_root_box();
+                store_derived_baselines(run.state.used_values(&run.callbacks, run.box_), baselines);
                 ChildLayoutResult {
                     automatic_content_inline_size: context.automatic_content_inline_size(),
                     automatic_content_block_size: context.automatic_content_block_size(),
+                    baselines,
                 }
             }
             FormattingContextImplementation::Table(context) => {
                 context.run(run, body_input);
-                store_derived_baselines(
-                    run.state.used_values(&run.callbacks, run.box_),
-                    context.derived_baselines_of_root_box(),
-                );
+                let baselines = context.derived_baselines_of_root_box();
+                store_derived_baselines(run.state.used_values(&run.callbacks, run.box_), baselines);
                 ChildLayoutResult {
                     automatic_content_inline_size: context.automatic_content_inline_size(),
                     automatic_content_block_size: context.automatic_content_block_size,
+                    baselines,
                 }
             }
             FormattingContextImplementation::Svg(context) => {
@@ -1576,7 +1573,7 @@ fn run_formatting_context<'pass>(
             finalize_atomic_root_block_size(
                 run,
                 &input,
-                cached_atomic_block_size,
+                cached_atomic_block_size.map(|(block_size, _)| block_size),
                 automatic_content_block_size_of_completed_body_run,
                 parent_block,
             );
