@@ -1924,7 +1924,7 @@ impl<'pass> TableFormattingContext<'pass> {
         input: AvailableSpace,
         adopt_automatic_content_block_size: bool,
         intrinsic_block_padding: Option<(CssPixels, CssPixels)>,
-    ) {
+    ) -> DerivedBaselines {
         let layout_input = LayoutInput {
             available_space: input,
             containing_block_constraints: ContainingBlockConstraints::default(),
@@ -1936,11 +1936,42 @@ impl<'pass> TableFormattingContext<'pass> {
             },
             participation: ParticipationInParentFormattingContext::Item,
         };
-        if let crate::layout::ChildLayoutOutcome::ReenterCurrent =
-            crate::layout::layout_inside_child(run, None, None, cell.box_, self.layout_mode, layout_input, false)
-        {
-            self.run(run, layout_input);
+        let content_baselines_from_cells = |used: &UsedValues| DerivedBaselines {
+            first: used.has_first_baseline.get().then(|| used.first_baseline.get()),
+            last: used.has_last_baseline.get().then(|| used.last_baseline.get()),
+        };
+        match crate::layout::layout_inside_child(run, None, None, cell.box_, self.layout_mode, layout_input, false) {
+            crate::layout::ChildLayoutOutcome::Created(result) => result.baselines,
+            crate::layout::ChildLayoutOutcome::ReenterCurrent => {
+                self.run(run, layout_input);
+                content_baselines_from_cells(self.used_values(cell.box_))
+            }
+            crate::layout::ChildLayoutOutcome::Skipped => content_baselines_from_cells(self.used_values(cell.box_)),
         }
+    }
+
+    fn cell_box_baseline(&self, cell_box: Node, committing_run_baselines: Option<DerivedBaselines>) -> CssPixels {
+        let Some(content_baselines) = committing_run_baselines else {
+            return self.box_baseline(cell_box);
+        };
+        debug_assert_eq!(
+            self.box_baseline(cell_box),
+            crate::layout::box_baseline_with_content_baselines(
+                self.state,
+                &self.callbacks,
+                cell_box,
+                crate::layout::BaselineSet::First,
+                content_baselines,
+            ),
+            "run-returned baselines diverge from the stored cells"
+        );
+        crate::layout::box_baseline_with_content_baselines(
+            self.state,
+            &self.callbacks,
+            cell_box,
+            crate::layout::BaselineSet::First,
+            content_baselines,
+        )
     }
 
     fn box_baseline(&self, node: Node) -> CssPixels {
@@ -1997,13 +2028,30 @@ impl<'pass> TableFormattingContext<'pass> {
                 participation: ParticipationInParentFormattingContext::Item,
             },
         );
-        Some(MeasuredCellContent {
-            content_block_size: result.automatic_content_block_size,
-            first_baseline: crate::layout::box_baseline(
+        debug_assert_eq!(
+            crate::layout::box_baseline(
                 measurement.rust_state(),
                 measurement.callbacks(),
                 cell.box_,
                 crate::layout::BaselineSet::First,
+            ),
+            crate::layout::box_baseline_with_content_baselines(
+                measurement.rust_state(),
+                measurement.callbacks(),
+                cell.box_,
+                crate::layout::BaselineSet::First,
+                result.baselines,
+            ),
+            "run-returned baselines diverge from the stored cells"
+        );
+        Some(MeasuredCellContent {
+            content_block_size: result.automatic_content_block_size,
+            first_baseline: crate::layout::box_baseline_with_content_baselines(
+                measurement.rust_state(),
+                measurement.callbacks(),
+                cell.box_,
+                crate::layout::BaselineSet::First,
+                result.baselines,
             ),
         })
     }
@@ -2072,6 +2120,7 @@ impl<'pass> TableFormattingContext<'pass> {
                 || self.anonymous_cell_wraps_flex_or_grid(cell);
             self.deferred_cell_inside_layouts[cell_index] = defer_inside_layout;
             let mut measured_baseline = None;
+            let mut committing_run_baselines = None;
             if defer_inside_layout {
                 // This cell's final inside layout happens once row heights are final; measure its
                 // content in a throwaway state instead of laying out the committing state twice.
@@ -2080,7 +2129,7 @@ impl<'pass> TableFormattingContext<'pass> {
                     measured_baseline = Some(measured.first_baseline);
                 }
             } else {
-                self.layout_inside_cell(run, cell, inner, true, None);
+                committing_run_baselines = Some(self.layout_inside_cell(run, cell, inner, true, None));
             }
             if self.needs_fixed_mode_row_measurement {
                 let min_size = style.min_height().to_px(participant_block_basis);
@@ -2092,7 +2141,8 @@ impl<'pass> TableFormattingContext<'pass> {
             // https://drafts.csswg.org/css2/#height-layout
             // The baseline of a cell is the baseline of the first in-flow line box in the cell, or the first in-flow
             // table-row in the cell, whichever comes first.
-            let baseline = measured_baseline.unwrap_or_else(|| self.box_baseline(cell.box_));
+            let baseline =
+                measured_baseline.unwrap_or_else(|| self.cell_box_baseline(cell.box_, committing_run_baselines));
             self.cells[cell_index].baseline = baseline;
             // Implements https://www.w3.org/TR/css-tables-3/#computing-the-table-height
 
