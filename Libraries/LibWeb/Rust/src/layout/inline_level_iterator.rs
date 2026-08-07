@@ -187,6 +187,9 @@ impl<'iterator, 'context, 'pass> InlineLevelIteratorGenerator<'iterator, 'contex
         }
         let constraints = self.context().input.containing_block_constraints;
         let used = self.context().create_used_values(node, constraints);
+        if let Some(fragments) = self.context().run.fragments.as_deref() {
+            fragments.note_unplaced_record(node);
+        }
         let style = self.context().style(node);
         let basis = constraints.inline_basis();
         used.margin_top.set(style.margin_top().to_px(basis));

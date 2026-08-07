@@ -1345,11 +1345,10 @@ impl LayoutState {
         }
         self.used_values.for_each_indexed(|slot_index, used| {
             let Some(link) = flattened.get(&slot_index) else {
-                assert!(
-                    !used.has_content_offset.get(),
-                    "fragment shadow: placed record for slot {slot_index} is missing from the fragment tree"
+                panic!(
+                    "fragment shadow: record for slot {slot_index} is missing from the fragment tree (placed: {})",
+                    used.has_content_offset.get()
                 );
-                return;
             };
             let fragment = &link.fragment;
             let expected_offset = point_add(used.content_offset.get(), used.committed_offset_delta.get());

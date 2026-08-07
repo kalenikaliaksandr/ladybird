@@ -276,6 +276,10 @@ pub(crate) struct RunFragmentBuilder {
 struct RunFragmentBuilderInner {
     frames: std::collections::HashMap<u32, FrameState>,
     deposits: std::collections::HashMap<u32, (crate::layout::node_data::NodeSlotId, PendingRunResult)>,
+    /// Records this run creates and never places (inline boxes entered for
+    /// their box-model metrics); swept into orphan links so the tree covers
+    /// the store exactly.
+    unplaced_records: Vec<crate::layout::node_data::NodeSlotId>,
     root_children: Vec<FragmentLink>,
     late_attachments: Vec<FragmentLink>,
 }
@@ -300,6 +304,11 @@ impl RunFragmentBuilder {
             is_entry_accumulator: true,
             inner: std::cell::RefCell::new(RunFragmentBuilderInner::default()),
         }
+    }
+
+    /// Declares a record this run creates without ever placing it.
+    pub(crate) fn note_unplaced_record(&self, node: crate::layout::node_data::NodeSlotId) {
+        self.inner.borrow_mut().unplaced_records.push(node);
     }
 
     /// Parks a child run's returned structure until the parent places the
@@ -393,6 +402,21 @@ impl RunFragmentBuilder {
     /// completed structure. The builder is empty afterwards.
     pub(crate) fn take_pending_result(&self, state: &LayoutState) -> PendingRunResult {
         let mut inner = self.inner.take();
+        let unplaced_records = std::mem::take(&mut inner.unplaced_records);
+        for node in unplaced_records {
+            let slot = node.slot_index();
+            // A frame or deposit under the same slot is swept below and
+            // already carries the record.
+            if inner.frames.contains_key(&slot) || inner.deposits.contains_key(&slot) {
+                continue;
+            }
+            let Some(used) = state.used_values_by_slot(slot) else {
+                debug_assert!(false, "an unplaced record note has no record");
+                continue;
+            };
+            debug_assert!(!used.has_content_offset.get(), "an unplaced record note was placed after all");
+            inner.root_children.push(snapshot_link(node, Vec::new(), used, true, None));
+        }
         let frames = std::mem::take(&mut inner.frames);
         for (slot, frame) in frames {
             let FrameState::Pending { node, children } = frame else {
