@@ -409,7 +409,16 @@ pub(crate) fn place_child(
     used.seal_committed_box_metrics();
     if let Some(fragments) = fragments {
         let containing_block = callbacks.containing_block(node);
-        fragments.absorb_placement(node, (!containing_block.is_invalid()).then_some(containing_block));
+        let containing_block_is_already_placed = !containing_block.is_invalid()
+            && state
+                .used_values_by_slot(containing_block.slot_index())
+                .is_some_and(|containing_block_used| containing_block_used.has_content_offset.get());
+        fragments.absorb_placement(
+            node,
+            (!containing_block.is_invalid()).then_some(containing_block),
+            used,
+            containing_block_is_already_placed,
+        );
     }
 }
 
@@ -1514,8 +1523,13 @@ fn run_formatting_context<'pass>(
         callbacks,
         should_collect_devtools_layout_data,
         input.sizing.treat_block_axis_percentage_insets_as_auto_beyond_root,
-        (layout_mode == LayoutMode::Normal && !state.is_measurement())
-            .then(|| std::rc::Rc::new(RunFragmentBuilder::new(box_))),
+        (layout_mode == LayoutMode::Normal && !state.is_measurement()).then(|| {
+            let root_containing_block = callbacks.containing_block(box_);
+            std::rc::Rc::new(RunFragmentBuilder::new(
+                box_,
+                (!root_containing_block.is_invalid()).then_some(root_containing_block),
+            ))
+        }),
     );
     let run = &run;
     let body_input = apply_root_sizing_directives(run, &input, parent_block);
@@ -1631,7 +1645,11 @@ fn run_formatting_context<'pass>(
         ParticipationInParentFormattingContext::Root => {}
     }
 
-    let take_run_fragments = || run.fragments.as_ref().map(|fragments| fragments.take_pending_result());
+    let take_run_fragments = || {
+        run.fragments
+            .as_ref()
+            .map(|fragments| fragments.take_pending_result(run.state))
+    };
 
     let registered_abspos_children_could_never_be_laid_out =
         run.layout_mode != LayoutMode::Normal || run.state.is_measurement();
@@ -1880,7 +1898,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             ..crate::layout::ContainingBlockConstraints::default()
         };
         let viewport_used = state.create_used_values(&callbacks, root, root_constraints);
-        let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new(root));
+        let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new_entry_accumulator(root));
 
         let mut root_for_layout = root;
         let first_child = callbacks.first_child(root);
@@ -1930,8 +1948,9 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             &[root, root_for_layout],
             &entry_fragments,
         );
-        let pass_fragments = entry_fragments.take_pending_result();
+        let pass_fragments = entry_fragments.take_pending_result(state_ref);
         debug_assert!(pass_fragments.fragment_count() > 0, "the run root always has a fragment");
+        state.shadow_diff_committed_fragments(&pass_fragments);
         state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink);
     });
 }
@@ -1963,7 +1982,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         let root_used = state
             .populate_from_paintable(&callbacks, root, paintable_to_replace)
             .expect("partial relayout root must have committed geometry");
-        let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new(root));
+        let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new_entry_accumulator(root));
         if !viewport.is_invalid() && viewport != root {
             let viewport_inline_size = CssPixels::from_raw(viewport_inline_size_raw);
             let viewport_block_size = CssPixels::from_raw(viewport_block_size_raw);
@@ -1996,9 +2015,13 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         if let Some(pending) = outputs.fragments {
             entry_fragments.deposit_child_run(root, pending);
         }
+        // Materialization is the subtree root's placement, so no place_child
+        // will consume its deposit; absorb it from the sealed record here.
+        entry_fragments.absorb_placement(root, None, root_used, false);
         drain_remaining_abspos_targets(state_ref, callbacks, false, &[viewport, root], &entry_fragments);
-        let pass_fragments = entry_fragments.take_pending_result();
+        let pass_fragments = entry_fragments.take_pending_result(state_ref);
         debug_assert!(pass_fragments.fragment_count() > 0, "the subtree root always has a fragment");
+        state.shadow_diff_committed_fragments(&pass_fragments);
         state.commit_replacing(root, paintable_to_replace, &callbacks, sink);
     });
 }
@@ -2026,7 +2049,7 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
         let state_ref = &state;
         let containing_block = callbacks.containing_block(box_);
         assert!(!containing_block.is_invalid());
-        let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new(containing_block));
+        let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new_entry_accumulator(containing_block));
         let run = crate::layout::FormattingContextRun::new(
             state_ref,
             containing_block,
@@ -2038,8 +2061,9 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
         );
         AbsposEngine::new(state_ref, callbacks).replay(&run, box_);
         drain_remaining_abspos_targets(state_ref, callbacks, false, &[containing_block], &entry_fragments);
-        let pass_fragments = entry_fragments.take_pending_result();
+        let pass_fragments = entry_fragments.take_pending_result(state_ref);
         debug_assert!(pass_fragments.fragment_count() > 0, "the replayed box always has a fragment");
+        state.shadow_diff_committed_fragments(&pass_fragments);
         state.commit_replacing(box_, paintable_to_replace, &callbacks, sink);
     });
 }

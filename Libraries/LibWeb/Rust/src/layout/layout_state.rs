@@ -1303,6 +1303,84 @@ impl LayoutState {
         self.used_values.get(slot_index)
     }
 
+    /// Verifies the returned fragment structure against the store it
+    /// shadows: every record is represented (or provably never placed),
+    /// nothing is fabricated, and every captured field matches the sealed
+    /// cells commit will read. Always on in debug builds; enabled on
+    /// release builds with LADYBIRD_LAYOUT_SHADOW_FRAGMENTS=1.
+    pub(crate) fn shadow_diff_committed_fragments(&self, pending: &crate::layout::PendingRunResult) {
+        if !cfg!(debug_assertions) && !shadow_fragment_diff_enabled() {
+            return;
+        }
+        let mut flattened: std::collections::HashMap<u32, &crate::layout::FragmentLink> = std::collections::HashMap::new();
+        fn flatten<'tree>(
+            links: &'tree [crate::layout::FragmentLink],
+            flattened: &mut std::collections::HashMap<u32, &'tree crate::layout::FragmentLink>,
+        ) {
+            for link in links {
+                assert!(
+                    link.node == link.fragment.node,
+                    "fragment shadow: a link and its fragment disagree about their box"
+                );
+                let previous = flattened.insert(link.node.slot_index(), link);
+                assert!(
+                    previous.is_none(),
+                    "fragment shadow: two fragments claim slot {}",
+                    link.node.slot_index()
+                );
+                flatten(&link.fragment.children, flattened);
+            }
+        }
+        flatten(&pending.root_children, &mut flattened);
+        flatten(&pending.late_attachments, &mut flattened);
+        for slot_index in flattened.keys() {
+            assert!(
+                self.used_values_by_slot(*slot_index).is_some(),
+                "fragment shadow: fragment for slot {slot_index} has no record"
+            );
+        }
+        self.used_values.for_each_indexed(|slot_index, used| {
+            let Some(link) = flattened.get(&slot_index) else {
+                assert!(
+                    !used.has_content_offset.get(),
+                    "fragment shadow: placed record for slot {slot_index} is missing from the fragment tree"
+                );
+                return;
+            };
+            let fragment = &link.fragment;
+            let expected_offset = point_add(used.content_offset.get(), used.committed_offset_delta.get());
+            let check = |name: &str, matches: bool| {
+                assert!(matches, "fragment shadow: {name} diverges from the record for slot {slot_index}");
+            };
+            check("orphan placement", !link.is_unplaced_orphan || !used.has_content_offset.get());
+            check("offset", link.offset == expected_offset);
+            check("inset_left", link.inset_left == used.inset_left.get());
+            check("inset_right", link.inset_right == used.inset_right.get());
+            check("inset_top", link.inset_top == used.inset_top.get());
+            check("inset_bottom", link.inset_bottom == used.inset_bottom.get());
+            check(
+                "content_inline_size",
+                fragment.content_inline_size == used.content_inline_size.get(),
+            );
+            check(
+                "content_block_size",
+                fragment.content_block_size == used.content_block_size.get(),
+            );
+            check("margin_left", fragment.margin_left == used.margin_left.get());
+            check("margin_right", fragment.margin_right == used.margin_right.get());
+            check("margin_top", fragment.margin_top == used.margin_top.get());
+            check("margin_bottom", fragment.margin_bottom == used.margin_bottom.get());
+            check("border_left", fragment.border_left == used.border_left.get());
+            check("border_right", fragment.border_right == used.border_right.get());
+            check("border_top", fragment.border_top == used.border_top.get());
+            check("border_bottom", fragment.border_bottom == used.border_bottom.get());
+            check("padding_left", fragment.padding_left == used.padding_left.get());
+            check("padding_right", fragment.padding_right == used.padding_right.get());
+            check("padding_top", fragment.padding_top == used.padding_top.get());
+            check("padding_bottom", fragment.padding_bottom == used.padding_bottom.get());
+        });
+    }
+
     pub(crate) fn used_values(&self, callbacks: &FfiLayoutFcCallbacks, node: Node) -> &UsedValues {
         self.used_values
             .get(callbacks.slot_index(node))
