@@ -491,7 +491,22 @@ pub(crate) fn box_baseline(
     state: &LayoutState,
     callbacks: &FfiLayoutFcCallbacks,
     box_: Node,
+    baseline_set: BaselineSet,
+) -> CssPixels {
+    let used = state.used_values(callbacks, box_);
+    let content_baselines = DerivedBaselines {
+        first: used.has_first_baseline.get().then(|| used.first_baseline.get()),
+        last: used.has_last_baseline.get().then(|| used.last_baseline.get()),
+    };
+    box_baseline_with_content_baselines(state, callbacks, box_, baseline_set, content_baselines)
+}
+
+pub(crate) fn box_baseline_with_content_baselines(
+    state: &LayoutState,
+    callbacks: &FfiLayoutFcCallbacks,
+    box_: Node,
     mut baseline_set: BaselineSet,
+    content_baselines: DerivedBaselines,
 ) -> CssPixels {
     let facts = state.node_facts(callbacks, box_);
     let style = state.style_facts(callbacks, box_);
@@ -566,9 +581,8 @@ pub(crate) fn box_baseline(
     let input_derives_from_children = facts.is_html_input_element() && !facts.children_are_inline();
 
     let content_baseline = match baseline_set {
-        BaselineSet::First if used.has_first_baseline.get() => Some(used.first_baseline.get()),
-        BaselineSet::Last if used.has_last_baseline.get() => Some(used.last_baseline.get()),
-        _ => None,
+        BaselineSet::First => content_baselines.first,
+        BaselineSet::Last => content_baselines.last,
     };
     if let Some(content_baseline) = content_baseline
         && (derive_baseline_from_content || input_derives_from_children)
