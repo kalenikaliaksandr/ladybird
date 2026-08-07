@@ -66,6 +66,7 @@ struct FlexItem<'pass> {
     padding: DirectionAgnosticMargins,
     is_min_violation: bool,
     is_max_violation: bool,
+    content_baselines: DerivedBaselines,
 }
 
 impl<'pass> FlexItem<'pass> {
@@ -94,6 +95,7 @@ impl<'pass> FlexItem<'pass> {
             padding: DirectionAgnosticMargins::default(),
             is_min_violation: false,
             is_max_violation: false,
+            content_baselines: DerivedBaselines::default(),
         }
     }
 
@@ -2295,8 +2297,26 @@ impl<'pass> FlexFormattingContext<'pass> {
         }
     }
 
-    fn box_baseline(&self, node: Node) -> CssPixels {
-        crate::layout::box_baseline(self.state, &self.callbacks, node, crate::layout::BaselineSet::First)
+    fn item_box_baseline(&self, index: usize) -> CssPixels {
+        let item = &self.flex_items[index];
+        debug_assert_eq!(
+            crate::layout::box_baseline(self.state, &self.callbacks, item.box_, crate::layout::BaselineSet::First),
+            crate::layout::box_baseline_with_content_baselines(
+                self.state,
+                &self.callbacks,
+                item.box_,
+                crate::layout::BaselineSet::First,
+                item.content_baselines,
+            ),
+            "run-returned baselines diverge from the stored cells"
+        );
+        crate::layout::box_baseline_with_content_baselines(
+            self.state,
+            &self.callbacks,
+            item.box_,
+            crate::layout::BaselineSet::First,
+            item.content_baselines,
+        )
     }
 
     // https://drafts.csswg.org/css-flexbox-1/#valdef-align-items-baseline
@@ -2319,13 +2339,13 @@ impl<'pass> FlexFormattingContext<'pass> {
             let mut max_baseline = CssPixels::default();
             for index in self.flex_lines[line_index].items.iter().copied() {
                 if participates(self, index) {
-                    max_baseline = max_baseline.max(self.box_baseline(self.flex_items[index].box_));
+                    max_baseline = max_baseline.max(self.item_box_baseline(index));
                 }
             }
             for item_position in 0..self.flex_lines[line_index].items.len() {
                 let index = self.flex_lines[line_index].items[item_position];
                 if participates(self, index) {
-                    let baseline = self.box_baseline(self.flex_items[index].box_);
+                    let baseline = self.item_box_baseline(index);
                     self.flex_items[index].cross_offset += max_baseline - baseline;
                 }
             }
@@ -2387,11 +2407,19 @@ impl<'pass> FlexFormattingContext<'pass> {
             input.sizing.forced_min_border_box_block_size = Some(intrinsic_size + extra);
         }
 
-        match crate::layout::layout_inside_child(run, None, None, node, LayoutMode::Normal, input, false) {
-            crate::layout::ChildLayoutOutcome::Created(_) => {}
-            crate::layout::ChildLayoutOutcome::ReenterCurrent => self.run(run, input),
-            crate::layout::ChildLayoutOutcome::Skipped => {}
-        }
+        let content_baselines_from_cells = |used: &UsedValues| DerivedBaselines {
+            first: used.has_first_baseline.get().then(|| used.first_baseline.get()),
+            last: used.has_last_baseline.get().then(|| used.last_baseline.get()),
+        };
+        self.flex_items[index].content_baselines =
+            match crate::layout::layout_inside_child(run, None, None, node, LayoutMode::Normal, input, false) {
+                crate::layout::ChildLayoutOutcome::Created(result) => result.baselines,
+                crate::layout::ChildLayoutOutcome::ReenterCurrent => {
+                    self.run(run, input);
+                    content_baselines_from_cells(self.item_used(index))
+                }
+                crate::layout::ChildLayoutOutcome::Skipped => content_baselines_from_cells(self.item_used(index)),
+            };
 
         let container_inline_size = self.container_used().content_inline_size.get();
         let container_block_size = self.container_used().content_block_size.get();
