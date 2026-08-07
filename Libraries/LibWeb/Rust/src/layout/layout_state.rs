@@ -1308,7 +1308,11 @@ impl LayoutState {
     /// nothing is fabricated, and every captured field matches the sealed
     /// cells commit will read. Always on in debug builds; enabled on
     /// release builds with LADYBIRD_LAYOUT_SHADOW_FRAGMENTS=1.
-    pub(crate) fn shadow_diff_committed_fragments(&self, pending: &crate::layout::PendingRunResult) {
+    pub(crate) fn shadow_diff_committed_fragments(
+        &self,
+        callbacks: &FfiLayoutFcCallbacks,
+        pending: &crate::layout::PendingRunResult,
+    ) {
         if !cfg!(debug_assertions) && !shadow_fragment_diff_enabled() {
             return;
         }
@@ -1378,6 +1382,25 @@ impl LayoutState {
             check("padding_right", fragment.padding_right == used.padding_right.get());
             check("padding_top", fragment.padding_top == used.padding_top.get());
             check("padding_bottom", fragment.padding_bottom == used.padding_bottom.get());
+            let expected_line_box_index = if used.materialized_from_paintable.get() {
+                None
+            } else {
+                self.containing_line_box_index(callbacks, used.node, used)
+            };
+            check(
+                "containing_line_box_index",
+                link.containing_line_box_index == expected_line_box_index,
+            );
+            let (expected_line_fingerprint, expected_rare_fingerprint) =
+                crate::layout::used_values_shadow_fingerprints(used);
+            check(
+                "line data fingerprint",
+                fragment.line_data_fingerprint == Some(expected_line_fingerprint),
+            );
+            check(
+                "rare data fingerprint",
+                fragment.rare_data_fingerprint == Some(expected_rare_fingerprint),
+            );
         });
     }
 

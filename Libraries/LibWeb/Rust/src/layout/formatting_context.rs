@@ -418,6 +418,7 @@ pub(crate) fn place_child(
             (!containing_block.is_invalid()).then_some(containing_block),
             used,
             containing_block_is_already_placed,
+            state.containing_line_box_index(callbacks, node, used),
         );
     }
 }
@@ -1950,7 +1951,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         );
         let pass_fragments = entry_fragments.take_pending_result(state_ref);
         debug_assert!(pass_fragments.fragment_count() > 0, "the run root always has a fragment");
-        state.shadow_diff_committed_fragments(&pass_fragments);
+        state.shadow_diff_committed_fragments(&callbacks, &pass_fragments);
         state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink);
     });
 }
@@ -2017,11 +2018,12 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         }
         // Materialization is the subtree root's placement, so no place_child
         // will consume its deposit; absorb it from the sealed record here.
-        entry_fragments.absorb_placement(root, None, root_used, false);
+        // Materialized roots never claim a line index.
+        entry_fragments.absorb_placement(root, None, root_used, false, None);
         drain_remaining_abspos_targets(state_ref, callbacks, false, &[viewport, root], &entry_fragments);
         let pass_fragments = entry_fragments.take_pending_result(state_ref);
         debug_assert!(pass_fragments.fragment_count() > 0, "the subtree root always has a fragment");
-        state.shadow_diff_committed_fragments(&pass_fragments);
+        state.shadow_diff_committed_fragments(&callbacks, &pass_fragments);
         state.commit_replacing(root, paintable_to_replace, &callbacks, sink);
     });
 }
@@ -2063,7 +2065,7 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
         drain_remaining_abspos_targets(state_ref, callbacks, false, &[containing_block], &entry_fragments);
         let pass_fragments = entry_fragments.take_pending_result(state_ref);
         debug_assert!(pass_fragments.fragment_count() > 0, "the replayed box always has a fragment");
-        state.shadow_diff_committed_fragments(&pass_fragments);
+        state.shadow_diff_committed_fragments(&callbacks, &pass_fragments);
         state.commit_replacing(box_, paintable_to_replace, &callbacks, sink);
     });
 }
