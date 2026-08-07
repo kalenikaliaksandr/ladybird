@@ -1,0 +1,8 @@
+1. abspos anchor before abspos target:      target at 10,30 (anchor 10,10)
+2. abspos anchor after abspos target:       target at 88,157 (anchor 10,90)
+3. anchor in sibling cell, CB = cell:       target at 66,215 (anchor 0,160, cb 0,160)
+4. anchor in later cell, CB = table:        target at 0,184 (anchor 0,172, table 0,172)
+5. fixed inside abspos subtree:             target at 80,204 (anchor 30,184)
+6. anchor inside relpos float CB:           target at 50,216 (anchor 50,204, float 40,204)
+7. chain c -> a -> b:                       a at 20,280, b at 50,294 (c 20,264)
+8. percentage/center sides:                 25%/75% at 64,372, center at 48,380 (anchor 16,364)

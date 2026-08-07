@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    body { margin: 0; }
+
+    /* Case 1: abspos anchor earlier in tree order than the abspos box anchored to it. */
+    #t1-cb { position: relative; width: 300px; height: 80px; }
+    #t1-a { position: absolute; left: 10px; top: 10px; width: 40px; height: 20px; anchor-name: --t1; }
+    #t1-b { position: absolute; top: anchor(--t1 bottom, 77px); left: anchor(--t1 left, 88px); width: 10px; height: 10px; }
+
+    /* Case 2: abspos anchor later in tree order than the abspos box anchored to it. */
+    #t2-cb { position: relative; width: 300px; height: 80px; }
+    #t2-b { position: absolute; top: anchor(--t2 bottom, 77px); left: anchor(--t2 left, 88px); width: 10px; height: 10px; }
+    #t2-a { position: absolute; left: 10px; top: 10px; width: 40px; height: 20px; anchor-name: --t2; }
+
+    /* Case 3: anchor in a sibling cell; containing block is the relpos cell holding the target. */
+    #t3-table { border-spacing: 0; }
+    #t3-table td { padding: 0; }
+    #t3-cell-a { position: relative; }
+    #t3-anchor { width: 30px; height: 12px; anchor-name: --t3; }
+    #t3-target { position: absolute; top: anchor(--t3 bottom, 55px); left: anchor(--t3 left, 66px); width: 10px; height: 10px; }
+
+    /* Case 4: containing block is the relpos table; anchor lives in a later cell. */
+    #t4-table { position: relative; border-spacing: 0; }
+    #t4-table td { padding: 0; }
+    #t4-anchor { width: 30px; height: 12px; anchor-name: --t4; }
+    #t4-target { position: absolute; top: anchor(--t4 bottom, 55px); left: anchor(--t4 left, 66px); width: 10px; height: 10px; }
+
+    /* Case 5: fixed-position box inside an abspos subtree, anchored to an in-flow box. */
+    #t5-abs { position: absolute; left: 20px; top: 240px; width: 100px; height: 40px; }
+    #t5-fixed { position: fixed; top: anchor(--t5 bottom, 77px); left: anchor(--t5 right, 88px); width: 10px; height: 10px; }
+    #t5-anchor { width: 50px; height: 20px; margin-left: 30px; anchor-name: --t5; }
+
+    /* Case 6: containing block is a relative-positioned float; anchor is inside it. */
+    #t6-float { float: left; position: relative; width: 120px; height: 60px; margin-left: 40px; }
+    #t6-anchor { width: 30px; height: 12px; margin-left: 10px; anchor-name: --t6; }
+    #t6-target { position: absolute; top: anchor(--t6 bottom, 55px); left: anchor(--t6 left, 66px); width: 10px; height: 10px; }
+    .clear { clear: both; }
+
+    /* Case 7: anchor chain — b anchors to abspos a, a anchors to in-flow c. */
+    #t7-cb { position: relative; width: 300px; height: 100px; }
+    #t7-c { width: 40px; height: 16px; margin-left: 20px; anchor-name: --t7c; }
+    #t7-a { position: absolute; top: anchor(--t7c bottom, 70px); left: anchor(--t7c left, 80px); width: 30px; height: 14px; anchor-name: --t7a; }
+    #t7-b { position: absolute; top: anchor(--t7a bottom, 71px); left: anchor(--t7a right, 81px); width: 10px; height: 10px; }
+
+    /* Case 8: percentage and center anchor() sides. */
+    #t8-cb { position: relative; width: 300px; height: 80px; }
+    #t8-anchor { width: 64px; height: 32px; margin-left: 16px; anchor-name: --t8; }
+    #t8-p25 { position: absolute; top: anchor(--t8 25%, 55px); left: anchor(--t8 75%, 66px); width: 10px; height: 10px; }
+    #t8-center { position: absolute; top: anchor(--t8 center, 55px); left: anchor(--t8 center, 66px); width: 10px; height: 10px; }
+</style>
+<div id="t1-cb">
+    <div id="t1-a"></div>
+    <div id="t1-b"></div>
+</div>
+<div id="t2-cb">
+    <div id="t2-b"></div>
+    <div id="t2-a"></div>
+</div>
+<table id="t3-table">
+    <tr>
+        <td id="t3-cell-a"><div id="t3-target"></div></td>
+        <td id="t3-cell-b"><div id="t3-anchor"></div></td>
+    </tr>
+</table>
+<table id="t4-table">
+    <tr>
+        <td id="t4-cell-a"><div id="t4-target"></div></td>
+        <td id="t4-cell-b"><div id="t4-anchor"></div></td>
+    </tr>
+</table>
+<div id="t5-abs"><div id="t5-fixed"></div></div>
+<div id="t5-anchor"></div>
+<div id="t6-float">
+    <div id="t6-anchor"></div>
+    <div id="t6-target"></div>
+</div>
+<div class="clear"></div>
+<div id="t7-cb">
+    <div id="t7-c"></div>
+    <div id="t7-a"></div>
+    <div id="t7-b"></div>
+</div>
+<div id="t8-cb">
+    <div id="t8-anchor"></div>
+    <div id="t8-p25"></div>
+    <div id="t8-center"></div>
+</div>
+<script>
+    // These pin WHEN anchors become resolvable relative to layout progress. The
+    // deferred abspos pass resolves every anchor() after all in-flow layout;
+    // draining abspos children at containing-block completion resolves them
+    // mid-pass. The two must be observably identical: acceptability confines
+    // anchors to the containing block's subtree, which is fully laid out at
+    // both moments, and abspos-to-abspos references follow the tree-ordered
+    // per-containing-block queue in both schemes.
+    test(() => {
+        const rect = (id) => {
+            const r = document.getElementById(id).getBoundingClientRect();
+            return `${r.left},${r.top}`;
+        };
+        println(`1. abspos anchor before abspos target:      target at ${rect("t1-b")} (anchor ${rect("t1-a")})`);
+        println(`2. abspos anchor after abspos target:       target at ${rect("t2-b")} (anchor ${rect("t2-a")})`);
+        println(`3. anchor in sibling cell, CB = cell:       target at ${rect("t3-target")} (anchor ${rect("t3-anchor")}, cb ${rect("t3-cell-a")})`);
+        println(`4. anchor in later cell, CB = table:        target at ${rect("t4-target")} (anchor ${rect("t4-anchor")}, table ${rect("t4-table")})`);
+        println(`5. fixed inside abspos subtree:             target at ${rect("t5-fixed")} (anchor ${rect("t5-anchor")})`);
+        println(`6. anchor inside relpos float CB:           target at ${rect("t6-target")} (anchor ${rect("t6-anchor")}, float ${rect("t6-float")})`);
+        println(`7. chain c -> a -> b:                       a at ${rect("t7-a")}, b at ${rect("t7-b")} (c ${rect("t7-c")})`);
+        println(`8. percentage/center sides:                 25%/75% at ${rect("t8-p25")}, center at ${rect("t8-center")} (anchor ${rect("t8-anchor")})`);
+    });
+</script>
