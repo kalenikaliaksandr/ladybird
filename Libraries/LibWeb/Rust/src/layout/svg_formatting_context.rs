@@ -391,11 +391,18 @@ struct SvgFormattingContext<'pass> {
     viewport_width: CssPixels,
     viewport_height: CssPixels,
     current_text_position: FfiFloatPoint,
+    fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
 }
 
 impl<'pass> SvgFormattingContext<'pass> {
-    fn new(state: &'pass LayoutState, box_: Node, layout_mode: LayoutMode, callbacks: FfiLayoutFcCallbacks) -> Self {
-        Self::new_nested(state, box_, layout_mode, callbacks, FfiAffineTransform::default(), None)
+    fn new(
+        state: &'pass LayoutState,
+        box_: Node,
+        layout_mode: LayoutMode,
+        callbacks: FfiLayoutFcCallbacks,
+        fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
+    ) -> Self {
+        Self::new_nested(state, box_, layout_mode, callbacks, FfiAffineTransform::default(), None, fragments)
     }
 
     fn new_nested(
@@ -405,6 +412,7 @@ impl<'pass> SvgFormattingContext<'pass> {
         callbacks: FfiLayoutFcCallbacks,
         parent_viewbox_transform: FfiAffineTransform,
         parent_svg_transform: Option<FfiAffineTransform>,
+        fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
     ) -> Self {
         Self {
             state,
@@ -413,6 +421,7 @@ impl<'pass> SvgFormattingContext<'pass> {
             callbacks,
             parent_viewbox_transform,
             parent_svg_transform,
+            fragments,
             available_space: None,
             quirks_mode_percentage_basis_block_size: None,
             current_viewbox_transform: FfiAffineTransform::default(),
@@ -495,7 +504,13 @@ impl<'pass> SvgFormattingContext<'pass> {
     }
 
     fn place_child(&self, node: Node, x: CssPixels, y: CssPixels) {
-        crate::layout::place_child(self.state, &self.callbacks, node, FfiCssPixelPoint { x, y });
+        crate::layout::place_child(
+            self.state,
+            &self.callbacks,
+            node,
+            FfiCssPixelPoint { x, y },
+            self.fragments.as_deref(),
+        );
     }
 
     fn for_each_child(&self, node: Node, mut callback: impl FnMut(Node)) {
@@ -815,6 +830,7 @@ impl<'pass> SvgFormattingContext<'pass> {
             self.callbacks,
             parent_viewbox_transform,
             Some(parent_svg_transform),
+            self.fragments.clone(),
         );
         nested_context.run(
             run,
@@ -1070,6 +1086,7 @@ impl<'pass> SvgFormattingContext<'pass> {
             self.callbacks,
             parent_viewbox_transform,
             Some(FfiAffineTransform::default()),
+            self.fragments.clone(),
         );
         nested_context.run(
             run,

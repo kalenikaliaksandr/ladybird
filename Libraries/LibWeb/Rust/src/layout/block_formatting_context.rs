@@ -196,15 +196,23 @@ pub(crate) struct BlockFormattingContext<'pass> {
     lowest_floating_descendant_bottom_margin_edge: Cell<Option<CssPixels>>,
     derived_baselines_of_root_box: Cell<DerivedBaselines>,
     trailing_collapsed_margin: Cell<Option<(Node, CssPixels)>>,
+    fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
 }
 
 impl<'pass> BlockFormattingContext<'pass> {
-    pub(crate) fn new(state: &'pass LayoutState, root: Node, layout_mode: LayoutMode, callbacks: FfiLayoutFcCallbacks) -> Self {
+    pub(crate) fn new(
+        state: &'pass LayoutState,
+        root: Node,
+        layout_mode: LayoutMode,
+        callbacks: FfiLayoutFcCallbacks,
+        fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
+    ) -> Self {
         Self {
             state,
             root,
             layout_mode,
             callbacks,
+            fragments,
             block_offset_of_current_block_container: Cell::new(None),
             pending_legend_flow_position: Cell::new(None),
             margin_state: RefCell::new(BlockMarginState::default()),
@@ -275,7 +283,7 @@ impl<'pass> BlockFormattingContext<'pass> {
     }
 
     fn place_child(&self, node: Node, offset: FfiCssPixelPoint) {
-        crate::layout::place_child(self.state, &self.callbacks, node, offset);
+        crate::layout::place_child(self.state, &self.callbacks, node, offset, self.fragments.as_deref());
     }
 
     fn register_contained_abspos_child(&self, node: Node, block_offset: CssPixels) {

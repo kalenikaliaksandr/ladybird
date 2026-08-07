@@ -1038,6 +1038,7 @@ pub(crate) struct GridFormattingContext<'pass> {
     layout_mode: LayoutMode,
     callbacks: FfiLayoutFcCallbacks,
     should_collect_devtools_layout_data: bool,
+    fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
     container_used_values: &'pass UsedValues,
     available_space: Option<AvailableSpace>,
     layout_input: Option<LayoutInput>,
@@ -1122,6 +1123,7 @@ impl<'pass> GridFormattingContext<'pass> {
         layout_mode: LayoutMode,
         callbacks: FfiLayoutFcCallbacks,
         should_collect_devtools_layout_data: bool,
+        fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
     ) -> Self {
         let container_used_values = state.used_values(&callbacks, grid_container);
         Self {
@@ -1132,6 +1134,7 @@ impl<'pass> GridFormattingContext<'pass> {
             layout_mode,
             callbacks,
             should_collect_devtools_layout_data,
+            fragments,
             container_used_values,
             available_space: None,
             layout_input: None,
@@ -2615,6 +2618,7 @@ impl<'pass> GridFormattingContext<'pass> {
             LayoutMode::IntrinsicSizing,
             self.callbacks,
             false,
+            None,
         );
         let mut available = self.available_space.unwrap();
         if !axis.is_column() && self.used(subgrid).has_definite_inline_size() {
@@ -3451,7 +3455,7 @@ impl<'pass> GridFormattingContext<'pass> {
                 self.grid_container,
                 run.treat_block_axis_percentage_insets_as_auto_beyond_root,
             );
-            crate::layout::place_child(self.state, &self.callbacks, item.box_, offset);
+            crate::layout::place_child(self.state, &self.callbacks, item.box_, offset, self.fragments.as_deref());
         }
         self.derived_baselines_of_root_box =
             crate::layout::derive_baselines(self.state, &self.callbacks, self.grid_container, false);

@@ -176,6 +176,7 @@ struct FlexFormattingContext<'pass> {
     flex_container: Node,
     layout_mode: LayoutMode,
     callbacks: FfiLayoutFcCallbacks,
+    fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
     should_collect_devtools_layout_data: bool,
     flex_container_state: &'pass UsedValues,
     flex_lines: Vec<FlexLine>,
@@ -197,6 +198,7 @@ impl<'pass> FlexFormattingContext<'pass> {
             flex_container: run.box_,
             layout_mode: run.layout_mode,
             callbacks: run.callbacks,
+            fragments: run.fragments.clone(),
             should_collect_devtools_layout_data: run.should_collect_devtools_layout_data,
             flex_container_state,
             flex_lines: Vec::new(),
@@ -3147,7 +3149,7 @@ impl<'pass> FlexFormattingContext<'pass> {
                         y: item.main_offset,
                     }
                 };
-                crate::layout::place_child(self.state, &self.callbacks, item.box_, offset);
+                crate::layout::place_child(self.state, &self.callbacks, item.box_, offset, self.fragments.as_deref());
             }
             self.derived_baselines_of_root_box =
                 crate::layout::derive_baselines(self.state, &self.callbacks, self.flex_container, true);

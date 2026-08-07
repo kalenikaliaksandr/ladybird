@@ -785,6 +785,7 @@ struct TableFormattingContext<'pass> {
     table_box: Node,
     layout_mode: LayoutMode,
     callbacks: FfiLayoutFcCallbacks,
+    fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
     table_constraints: ContainingBlockConstraints,
     participant_constraints: ContainingBlockConstraints,
     available_space: AvailableSpace,
@@ -847,6 +848,7 @@ impl<'pass> TableFormattingContext<'pass> {
             table_box: run.box_,
             layout_mode: run.layout_mode,
             callbacks: run.callbacks,
+            fragments: run.fragments.clone(),
             table_constraints: ContainingBlockConstraints::default(),
             participant_constraints: ContainingBlockConstraints::default(),
             available_space: AvailableSpace::default(),
@@ -906,7 +908,13 @@ impl<'pass> TableFormattingContext<'pass> {
     }
 
     fn place_child(&self, node: Node, x: CssPixels, y: CssPixels) {
-        crate::layout::place_child(self.state, &self.callbacks, node, FfiCssPixelPoint { x, y });
+        crate::layout::place_child(
+            self.state,
+            &self.callbacks,
+            node,
+            FfiCssPixelPoint { x, y },
+            self.fragments.as_deref(),
+        );
     }
 
     fn border_spacing_inline(&mut self) -> CssPixels {

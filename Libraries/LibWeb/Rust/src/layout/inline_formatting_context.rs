@@ -1141,6 +1141,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
                     &self.callbacks,
                     fragment.layout_node,
                     FfiCssPixelPoint { x, y },
+                    self.run.fragments.as_deref(),
                 );
             }
         }

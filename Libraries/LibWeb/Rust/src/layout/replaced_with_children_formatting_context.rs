@@ -64,11 +64,20 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
         None,
     );
 
-    crate::layout::place_child(run.state, &run.callbacks, wrapper, FfiCssPixelPoint::default());
+    if let (Some(fragments), Some(pending)) = (run.fragments.as_deref(), wrapper_layout.fragments) {
+        fragments.deposit_child_run(wrapper, pending);
+    }
+    crate::layout::place_child(
+        run.state,
+        &run.callbacks,
+        wrapper,
+        FfiCssPixelPoint::default(),
+        run.fragments.as_deref(),
+    );
 
     ChildLayoutResult {
         automatic_content_inline_size: content_inline_size,
-        automatic_content_block_size: wrapper_layout.automatic_content_block_size,
+        automatic_content_block_size: wrapper_layout.result.automatic_content_block_size,
         baselines: DerivedBaselines::default(),
     }
 }

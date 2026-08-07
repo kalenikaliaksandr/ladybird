@@ -220,7 +220,7 @@ impl MeasurementState {
         self.state.used_values(&self.callbacks, self.root)
     }
 
-    fn run(&self, node: Node, input: LayoutInput) -> crate::layout::ChildLayoutResult {
+    fn run(&self, node: Node, input: LayoutInput) -> ChildLayoutResult {
         self.run_with_layout_mode(node, LayoutMode::IntrinsicSizing, input)
     }
 
@@ -243,6 +243,7 @@ impl MeasurementState {
             input,
             None,
         )
+        .result
     }
 
     pub(crate) fn rust_state(&self) -> &LayoutState {
@@ -397,6 +398,7 @@ pub(crate) fn place_child(
     callbacks: &FfiLayoutFcCallbacks,
     node: Node,
     offset: FfiCssPixelPoint,
+    fragments: Option<&RunFragmentBuilder>,
 ) {
     let used = state.used_values(callbacks, node);
     assert!(!used.has_content_offset.get());
@@ -405,6 +407,10 @@ pub(crate) fn place_child(
     used.committed_offset_delta
         .set(committed_offset_delta_at_placement(state, callbacks, node, used));
     used.seal_committed_box_metrics();
+    if let Some(fragments) = fragments {
+        let containing_block = callbacks.containing_block(node);
+        fragments.absorb_placement(node, (!containing_block.is_invalid()).then_some(containing_block));
+    }
 }
 
 fn committed_offset_delta_at_placement(
@@ -786,6 +792,15 @@ pub(crate) struct ChildLayoutResult {
     pub baselines: DerivedBaselines,
 }
 
+/// Everything a completed run hands back: the sizing result consumed by the
+/// participation hooks, and the run root's fragment structure, which the
+/// caller parks until the root is placed. Fragments are None for
+/// measurement and intrinsic-sizing runs.
+pub(crate) struct RunOutputs {
+    pub(crate) result: ChildLayoutResult,
+    pub(crate) fragments: Option<PendingRunResult>,
+}
+
 pub(crate) enum ChildLayoutOutcome {
     Skipped,
     Created(ChildLayoutResult),
@@ -1098,6 +1113,7 @@ pub(crate) struct FormattingContextRun<'pass> {
     pub(crate) callbacks: FfiLayoutFcCallbacks,
     pub(crate) should_collect_devtools_layout_data: bool,
     pub(crate) treat_block_axis_percentage_insets_as_auto_beyond_root: bool,
+    pub(crate) fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
 }
 
 impl<'pass> FormattingContextRun<'pass> {
@@ -1108,6 +1124,7 @@ impl<'pass> FormattingContextRun<'pass> {
         callbacks: FfiLayoutFcCallbacks,
         should_collect_devtools_layout_data: bool,
         treat_block_axis_percentage_insets_as_auto_beyond_root: bool,
+        fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
     ) -> Self {
         Self {
             state,
@@ -1116,6 +1133,7 @@ impl<'pass> FormattingContextRun<'pass> {
             callbacks,
             should_collect_devtools_layout_data,
             treat_block_axis_percentage_insets_as_auto_beyond_root,
+            fragments,
         }
     }
 }
@@ -1240,6 +1258,7 @@ fn create_formatting_context_implementation<'pass>(
             run.box_,
             run.layout_mode,
             run.callbacks,
+            run.fragments.clone(),
         ))),
         FfiFormattingContextType::Flex => FormattingContextImplementation::Flex(Box::new(FlexFormattingContext::new(run))),
         FfiFormattingContextType::Grid => FormattingContextImplementation::Grid(Box::new(GridFormattingContext::new(
@@ -1249,6 +1268,7 @@ fn create_formatting_context_implementation<'pass>(
             run.layout_mode,
             run.callbacks,
             run.should_collect_devtools_layout_data,
+            run.fragments.clone(),
         ))),
         FfiFormattingContextType::Table => FormattingContextImplementation::Table(Box::new(TableFormattingContext::new(run))),
         FfiFormattingContextType::Svg => FormattingContextImplementation::Svg(Box::new(SvgFormattingContext::new(
@@ -1256,6 +1276,7 @@ fn create_formatting_context_implementation<'pass>(
             run.box_,
             run.layout_mode,
             run.callbacks,
+            run.fragments.clone(),
         ))),
         FfiFormattingContextType::ReplacedWithChildren => FormattingContextImplementation::ReplacedWithChildren,
         FfiFormattingContextType::InternalReplaced => FormattingContextImplementation::InternalReplaced,
@@ -1484,7 +1505,7 @@ fn run_formatting_context<'pass>(
     callbacks: FfiLayoutFcCallbacks,
     input: LayoutInput,
     parent_block: Option<&BlockFormattingContext<'pass>>,
-) -> ChildLayoutResult {
+) -> RunOutputs {
     assert!(!box_.is_invalid());
     let run = FormattingContextRun::new(
         state,
@@ -1493,6 +1514,8 @@ fn run_formatting_context<'pass>(
         callbacks,
         should_collect_devtools_layout_data,
         input.sizing.treat_block_axis_percentage_insets_as_auto_beyond_root,
+        (layout_mode == LayoutMode::Normal && !state.is_measurement())
+            .then(|| std::rc::Rc::new(RunFragmentBuilder::new(box_))),
     );
     let run = &run;
     let body_input = apply_root_sizing_directives(run, &input, parent_block);
@@ -1608,10 +1631,15 @@ fn run_formatting_context<'pass>(
         ParticipationInParentFormattingContext::Root => {}
     }
 
+    let take_run_fragments = || run.fragments.as_ref().map(|fragments| fragments.take_pending_result());
+
     let registered_abspos_children_could_never_be_laid_out =
         run.layout_mode != LayoutMode::Normal || run.state.is_measurement();
     if registered_abspos_children_could_never_be_laid_out {
-        return result;
+        return RunOutputs {
+            result,
+            fragments: take_run_fragments(),
+        };
     }
     let implementation = implementation.expect("cached measurement replay only occurs on measurement states");
     match &implementation {
@@ -1627,11 +1655,19 @@ fn run_formatting_context<'pass>(
             context.parent_did_dimension();
         }
         FormattingContextImplementation::Svg(_) | FormattingContextImplementation::ReplacedWithChildren => {}
-        FormattingContextImplementation::InternalReplaced | FormattingContextImplementation::InternalDummy => return result,
+        FormattingContextImplementation::InternalReplaced | FormattingContextImplementation::InternalDummy => {
+            return RunOutputs {
+                result,
+                fragments: take_run_fragments(),
+            };
+        }
     }
     layout_contained_abspos_children(run);
     run.state.used_values(&run.callbacks, run.box_).seal_own_metrics();
-    result
+    RunOutputs {
+        result,
+        fragments: take_run_fragments(),
+    }
 }
 
 fn finalize_atomic_root_block_size(
@@ -1736,7 +1772,7 @@ pub(crate) fn layout_inside_child<'pass>(
             run.box_,
             run.treat_block_axis_percentage_insets_as_auto_beyond_root,
         );
-    ChildLayoutOutcome::Created(run_formatting_context(
+    let outputs = run_formatting_context(
         run.state,
         child,
         parent_grid,
@@ -1746,7 +1782,11 @@ pub(crate) fn layout_inside_child<'pass>(
         run.callbacks,
         input,
         parent_block,
-    ))
+    );
+    if let (Some(fragments), Some(pending)) = (run.fragments.as_deref(), outputs.fragments) {
+        fragments.deposit_child_run(child, pending);
+    }
+    ChildLayoutOutcome::Created(outputs.result)
 }
 
 fn independent_formatting_context_type(
@@ -1840,13 +1880,14 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             ..crate::layout::ContainingBlockConstraints::default()
         };
         let viewport_used = state.create_used_values(&callbacks, root, root_constraints);
+        let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new(root));
 
         let mut root_for_layout = root;
         let first_child = callbacks.first_child(root);
         if !first_child.is_invalid() && state.node_facts(&callbacks, first_child).is_svg_svg_box() {
             viewport_used.set_content_inline_size(viewport_inline_size);
             viewport_used.set_content_block_size(viewport_block_size);
-            place_child(&state, &callbacks, root, FfiCssPixelPoint::default());
+            place_child(&state, &callbacks, root, FfiCssPixelPoint::default(), Some(&entry_fragments));
             state.create_used_values(&callbacks, first_child, root_constraints);
             root_for_layout = first_child;
         }
@@ -1861,7 +1902,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         .with_forced_sizes(viewport_inline_size, viewport_block_size);
         let state_ref = &state;
         let fc_type = independent_formatting_context_type(state_ref, root_for_layout, &callbacks);
-        run_formatting_context(
+        let outputs = run_formatting_context(
             state_ref,
             root_for_layout,
             None,
@@ -1872,13 +1913,25 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             input,
             None,
         );
-        place_child(&state, &callbacks, root_for_layout, FfiCssPixelPoint::default());
+        if let Some(pending) = outputs.fragments {
+            entry_fragments.deposit_child_run(root_for_layout, pending);
+        }
+        place_child(
+            &state,
+            &callbacks,
+            root_for_layout,
+            FfiCssPixelPoint::default(),
+            Some(&entry_fragments),
+        );
         drain_remaining_abspos_targets(
             state_ref,
             callbacks,
             should_collect_devtools_layout_data,
             &[root, root_for_layout],
+            &entry_fragments,
         );
+        let pass_fragments = entry_fragments.take_pending_result();
+        debug_assert!(pass_fragments.fragment_count() > 0, "the run root always has a fragment");
         state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink);
     });
 }
@@ -1910,6 +1963,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         let root_used = state
             .populate_from_paintable(&callbacks, root, paintable_to_replace)
             .expect("partial relayout root must have committed geometry");
+        let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new(root));
         if !viewport.is_invalid() && viewport != root {
             let viewport_inline_size = CssPixels::from_raw(viewport_inline_size_raw);
             let viewport_block_size = CssPixels::from_raw(viewport_block_size_raw);
@@ -1921,7 +1975,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
             let viewport_used = state.create_used_values(&callbacks, viewport, viewport_constraints);
             viewport_used.set_content_inline_size(viewport_inline_size);
             viewport_used.set_content_block_size(viewport_block_size);
-            place_child(&state, &callbacks, viewport, FfiCssPixelPoint::default());
+            place_child(&state, &callbacks, viewport, FfiCssPixelPoint::default(), Some(&entry_fragments));
         }
         let input = LayoutInput::new(
             AvailableSpace {
@@ -1938,8 +1992,13 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         let facts = state.node_facts(&callbacks, root);
         let fc_type = formatting_context_type_created_by_box(facts)
             .expect("partial relayout root must establish an independent formatting context");
-        run_formatting_context(state_ref, root, None, fc_type, LayoutMode::Normal, false, callbacks, input, None);
-        drain_remaining_abspos_targets(state_ref, callbacks, false, &[viewport, root]);
+        let outputs = run_formatting_context(state_ref, root, None, fc_type, LayoutMode::Normal, false, callbacks, input, None);
+        if let Some(pending) = outputs.fragments {
+            entry_fragments.deposit_child_run(root, pending);
+        }
+        drain_remaining_abspos_targets(state_ref, callbacks, false, &[viewport, root], &entry_fragments);
+        let pass_fragments = entry_fragments.take_pending_result();
+        debug_assert!(pass_fragments.fragment_count() > 0, "the subtree root always has a fragment");
         state.commit_replacing(root, paintable_to_replace, &callbacks, sink);
     });
 }
@@ -1967,9 +2026,20 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
         let state_ref = &state;
         let containing_block = callbacks.containing_block(box_);
         assert!(!containing_block.is_invalid());
-        let run = crate::layout::FormattingContextRun::new(state_ref, containing_block, LayoutMode::Normal, callbacks, false, false);
+        let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new(containing_block));
+        let run = crate::layout::FormattingContextRun::new(
+            state_ref,
+            containing_block,
+            LayoutMode::Normal,
+            callbacks,
+            false,
+            false,
+            Some(entry_fragments.clone()),
+        );
         AbsposEngine::new(state_ref, callbacks).replay(&run, box_);
-        drain_remaining_abspos_targets(state_ref, callbacks, false, &[containing_block]);
+        drain_remaining_abspos_targets(state_ref, callbacks, false, &[containing_block], &entry_fragments);
+        let pass_fragments = entry_fragments.take_pending_result();
+        debug_assert!(pass_fragments.fragment_count() > 0, "the replayed box always has a fragment");
         state.commit_replacing(box_, paintable_to_replace, &callbacks, sink);
     });
 }

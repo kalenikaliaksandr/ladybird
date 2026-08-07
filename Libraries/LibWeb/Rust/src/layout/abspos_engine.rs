@@ -1630,6 +1630,7 @@ impl<'pass> AbsposEngine<'pass> {
                 x: used_offset.inline_offset,
                 y: used_offset.block_offset,
             },
+            run.fragments.as_deref(),
         );
 
         let is_measurement = self.state.is_measurement();
@@ -1768,14 +1769,22 @@ pub(crate) fn drain_remaining_abspos_targets(
     callbacks: FfiLayoutFcCallbacks,
     should_collect_devtools_layout_data: bool,
     targets: &[Node],
+    entry_fragments: &std::rc::Rc<crate::layout::RunFragmentBuilder>,
 ) {
     while let Some(target) = targets
         .iter()
         .copied()
         .find(|target| !target.is_invalid() && state.has_contained_abspos_children(*target))
     {
-        let run =
-            crate::layout::FormattingContextRun::new(state, target, LayoutMode::Normal, callbacks, should_collect_devtools_layout_data, false);
+        let run = crate::layout::FormattingContextRun::new(
+            state,
+            target,
+            LayoutMode::Normal,
+            callbacks,
+            should_collect_devtools_layout_data,
+            false,
+            Some(entry_fragments.clone()),
+        );
         layout_contained_abspos_children(&run);
     }
     debug_assert!(
