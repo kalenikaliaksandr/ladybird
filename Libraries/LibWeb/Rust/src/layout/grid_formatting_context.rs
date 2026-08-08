@@ -1063,6 +1063,11 @@ pub(crate) struct GridFormattingContext<'pass> {
     automatic_content_block_size: CssPixels,
     row_alignment_container_size: CssPixels,
     use_row_alignment_container_size: bool,
+    /// The container's own metrics as this run knows them: refreshed at
+    /// run reset and when the parent dimensions the container, with the
+    /// intrinsic self-sizing writes going through. The record copy stays
+    /// until fragments are built from placement inputs.
+    container_metrics: Cell<BoxMetrics>,
 }
 
 #[derive(Clone, Copy)]
@@ -1151,10 +1156,17 @@ impl<'pass> GridFormattingContext<'pass> {
             automatic_content_block_size: CssPixels::default(),
             row_alignment_container_size: CssPixels::default(),
             use_row_alignment_container_size: false,
+            container_metrics: Cell::new(BoxMetrics::default()),
         }
     }
 
+    fn refresh_container_metrics_from_record(&self) {
+        self.container_metrics
+            .set(BoxMetrics::capture_from_record(&self.container_used()));
+    }
+
     fn reset_for_run(&mut self, input: LayoutInput) {
+        self.refresh_container_metrics_from_record();
         self.available_space = Some(input.available_space);
         self.layout_input = Some(input);
         self.column_lines.clear();
@@ -2571,16 +2583,16 @@ impl<'pass> GridFormattingContext<'pass> {
         // subgrids.
         //
         // NB: Scrollbar gutters are not represented in UsedValues yet.
-        let used = self.container_used();
+        let used = self.container_metrics.get();
         let (start, end) = if axis.is_column() {
             (
-                used.margin_left.get() + used.border_left.get() + used.padding_left.get(),
-                used.padding_right.get() + used.border_right.get() + used.margin_right.get(),
+                used.margin.left + used.border.left + used.padding.left,
+                used.padding.right + used.border.right + used.margin.right,
             )
         } else {
             (
-                used.margin_top.get() + used.border_top.get() + used.padding_top.get(),
-                used.padding_bottom.get() + used.border_bottom.get() + used.margin_bottom.get(),
+                used.margin.top + used.border.top + used.padding.top,
+                used.padding.bottom + used.border.bottom + used.margin.bottom,
             )
         };
         if item.position(axis) == 0 {
@@ -2800,12 +2812,12 @@ impl<'pass> GridFormattingContext<'pass> {
             return containing;
         }
 
-        let container = self.container_used();
+        let container = self.container_metrics.get();
         if !container.has_definite_inline_size() {
             return containing;
         }
 
-        let available = AvailableSize::definite(clamp_to_max_dimension_value(container.content_inline_size.get()));
+        let available = AvailableSize::definite(clamp_to_max_dimension_value(container.content_inline_size));
         let tracks = self.axis_tracks(Axis::Column);
         let start = item.position(Axis::Column).max(0) as usize;
         let end = start.saturating_add(item.span(Axis::Column)).min(tracks.len());
@@ -2820,12 +2832,12 @@ impl<'pass> GridFormattingContext<'pass> {
         // CSS Grid breaks cyclic percentage dependencies during intrinsic track sizing. Percentage table width/min/max
         // constraints can contribute to intrinsic column tracks, so do not feed that contribution back into the table
         // wrapper containing block when resolving the final table width or margins.
-        if total <= container.content_inline_size.get() {
+        if total <= container.content_inline_size {
             return containing;
         }
 
         let non_spanned = CssPixels::default().max(total - containing);
-        let non_cyclic = CssPixels::default().max(container.content_inline_size.get() - non_spanned);
+        let non_cyclic = CssPixels::default().max(container.content_inline_size - non_spanned);
         containing.min(non_cyclic)
     }
 
@@ -3164,19 +3176,19 @@ impl<'pass> GridFormattingContext<'pass> {
 
     fn grid_container_alignment_size(&self, axis: Axis) -> CssPixels {
         if axis.is_column() {
-            return self.container_used().content_inline_size.get();
+            return self.container_metrics.get().content_inline_size;
         }
         if self.use_row_alignment_container_size {
             let style = self.style(self.grid_container);
             if !style.min_height().is_auto() {
                 return self
                     .row_alignment_container_size
-                    .max(self.container_used().content_block_size.get());
+                    .max(self.container_metrics.get().content_block_size);
             }
             return self.row_alignment_container_size;
         }
-        if self.container_used().has_definite_block_size() {
-            self.container_used().content_block_size.get()
+        if self.container_metrics.get().has_definite_block_size() {
+            self.container_metrics.get().content_block_size
         } else {
             self.row_alignment_container_size
         }
@@ -3260,14 +3272,14 @@ impl<'pass> GridFormattingContext<'pass> {
 
     fn axis_grid_area(&self, axis: Axis, placement: Option<(i32, usize)>) -> (CssPixels, CssPixels) {
         let padding_start = if axis.is_column() {
-            self.container_used().padding_left.get()
+            self.container_metrics.get().padding.left
         } else {
-            self.container_used().padding_top.get()
+            self.container_metrics.get().padding.top
         };
         let padding_end = if axis.is_column() {
-            self.container_used().padding_right.get()
+            self.container_metrics.get().padding.right
         } else {
-            self.container_used().padding_bottom.get()
+            self.container_metrics.get().padding.bottom
         };
         let Some((position, span)) = placement else {
             let content_size = match self.axis_available(axis) {
@@ -3361,9 +3373,9 @@ impl<'pass> GridFormattingContext<'pass> {
         let augmented_edge = |is_start: bool| {
             if is_start {
                 if axis.is_column() {
-                    -self.container_used().padding_left.get()
+                    -self.container_metrics.get().padding.left
                 } else {
-                    -self.container_used().padding_top.get()
+                    -self.container_metrics.get().padding.top
                 }
             } else {
                 let mut offset = match self.axis_available(axis) {
@@ -3371,9 +3383,9 @@ impl<'pass> GridFormattingContext<'pass> {
                     _ => self.track_sum(axis),
                 };
                 offset += if axis.is_column() {
-                    self.container_used().padding_right.get()
+                    self.container_metrics.get().padding.right
                 } else {
-                    self.container_used().padding_bottom.get()
+                    self.container_metrics.get().padding.bottom
                 };
                 offset
             }
@@ -3717,10 +3729,16 @@ impl<'pass> GridFormattingContext<'pass> {
             if available.inline_size.is_intrinsic_sizing_constraint() {
                 let size = self.track_sum(Axis::Column);
                 self.container_used_mut().set_content_inline_size(size);
+                let mut metrics = self.container_metrics.get();
+                metrics.set_content_inline_size(size);
+                self.container_metrics.set(metrics);
             }
             if available.block_size.is_intrinsic_sizing_constraint() {
                 let size = self.track_sum(Axis::Row);
                 self.container_used_mut().set_content_block_size(size);
+                let mut metrics = self.container_metrics.get();
+                metrics.set_content_block_size(size);
+                self.container_metrics.set(metrics);
             }
             return;
         }
@@ -3735,7 +3753,7 @@ impl<'pass> GridFormattingContext<'pass> {
     }
 
     pub(crate) fn automatic_content_inline_size(&self) -> CssPixels {
-        self.container_used().content_inline_size.get()
+        self.container_metrics.get().content_inline_size
     }
 
     pub(crate) fn automatic_content_block_size(&self) -> CssPixels {
@@ -3746,6 +3764,7 @@ impl<'pass> GridFormattingContext<'pass> {
         if self.layout_mode != LayoutMode::Normal {
             return;
         }
+        self.refresh_container_metrics_from_record();
         let mut child = self.callbacks.first_child(self.grid_container);
         while !child.is_invalid() {
             let next = self.callbacks.next_sibling(child);
