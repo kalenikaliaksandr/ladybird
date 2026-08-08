@@ -1436,9 +1436,7 @@ impl<'pass> SizingContext<'pass> {
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
                 sizing: RootSizingDirectives {
-                    measurement_root: Some(MeasurementRootInputs {
-                        metrics: root_input_metrics,
-                    }),
+                    declared_root_metrics: Some(root_input_metrics),
                     ..RootSizingDirectives::default()
                 },
                 participation: ParticipationInParentFormattingContext::Root,
@@ -1644,9 +1642,7 @@ impl<'pass> SizingContext<'pass> {
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
                 sizing: RootSizingDirectives {
-                    measurement_root: Some(MeasurementRootInputs {
-                        metrics: root_input_metrics,
-                    }),
+                    declared_root_metrics: Some(root_input_metrics),
                     ..RootSizingDirectives::default()
                 },
                 participation: ParticipationInParentFormattingContext::Root,
@@ -1707,9 +1703,7 @@ impl<'pass> SizingContext<'pass> {
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
                 sizing: RootSizingDirectives {
-                    measurement_root: Some(MeasurementRootInputs {
-                        metrics: root_input_metrics,
-                    }),
+                    declared_root_metrics: Some(root_input_metrics),
                     ..RootSizingDirectives::default()
                 },
                 participation: ParticipationInParentFormattingContext::Root,
@@ -1767,9 +1761,7 @@ impl<'pass> SizingContext<'pass> {
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
                 sizing: RootSizingDirectives {
-                    measurement_root: Some(MeasurementRootInputs {
-                        metrics: root_input_metrics,
-                    }),
+                    declared_root_metrics: Some(root_input_metrics),
                     ..RootSizingDirectives::default()
                 },
                 participation: ParticipationInParentFormattingContext::Root,

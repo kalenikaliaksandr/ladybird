@@ -1373,9 +1373,6 @@ fn apply_root_sizing_directives(
     input: &LayoutInput,
     parent_block: Option<&BlockFormattingContext>,
 ) -> LayoutInput {
-    if let Some(measurement_root) = &input.sizing.measurement_root {
-        seed_root_record(&run.records.used_values(run.box_), &measurement_root.metrics);
-    }
     match input.participation {
         ParticipationInParentFormattingContext::BlockLevel => dimension_block_level_root(run, input, parent_block),
         ParticipationInParentFormattingContext::Float => {
@@ -1524,17 +1521,17 @@ fn root_input_probe_enabled() -> bool {
 /// input-purification burn-down adds one kind per conversion until the
 /// list is every kind.
 fn assert_pre_run_root_state_is_input_derived(run: &FormattingContextRun, input: &LayoutInput) {
-    // A run that declares its root state through measurement_root has a
-    // writer-free record by construction, whatever its participation;
-    // drivers not yet converted leave the field unset and stay off the
-    // probe until their conversion. Atomic-inline and absolutely
-    // positioned roots have no parent-side pre-run writers at all: their
-    // geometry derives inside the run prelude, downstream of this check.
+    // A run that declares its root state is held to exactly the declared
+    // value, whatever its participation; spawners not yet converted leave
+    // the field unset and stay off the probe until their conversion.
+    // Atomic-inline and absolutely positioned roots have no parent-side
+    // pre-run writers at all: their geometry derives inside the run
+    // prelude, downstream of this check.
     let converted_kind = matches!(
         input.participation,
         ParticipationInParentFormattingContext::AtomicInline
             | ParticipationInParentFormattingContext::AbsolutelyPositioned(_)
-    ) || input.sizing.measurement_root.is_some();
+    ) || input.sizing.declared_root_metrics.is_some();
     if !converted_kind {
         return;
     }
@@ -1549,13 +1546,14 @@ fn assert_pre_run_root_state_is_input_derived(run: &FormattingContextRun, input:
         ParticipationInParentFormattingContext::AbsolutelyPositioned(_) => ContainingBlockConstraints::default(),
         _ => input.containing_block_constraints,
     };
-    let baseline = run
-        .state
-        .initial_box_metrics_for_node(&run.callbacks, run.box_, baseline_constraints);
+    let expected = input.sizing.declared_root_metrics.unwrap_or_else(|| {
+        run.state
+            .initial_box_metrics_for_node(&run.callbacks, run.box_, baseline_constraints)
+    });
     let actual = BoxMetrics::capture_from_record(&run.records.used_values(run.box_));
     assert!(
-        actual == baseline,
-        "a run root arrived with record state its inputs cannot derive ({:?})\nbaseline: {baseline:?}\nactual: {actual:?}",
+        actual == expected,
+        "a run root arrived with record state its inputs cannot derive ({:?})\nexpected: {expected:?}\nactual: {actual:?}",
         input.participation,
     );
 }
@@ -1601,6 +1599,14 @@ fn run_formatting_context<'pass>(
         }),
     };
     let run = &run;
+    // Declared root state lands before the probe and the cache capture:
+    // whether the spawning side stopped writing the record or still
+    // mirrors the same values into it, the record now equals the
+    // declaration here, which is what both the probe and the cache key
+    // observe.
+    if let Some(declared) = &input.sizing.declared_root_metrics {
+        seed_root_record(&run.records.used_values(run.box_), declared);
+    }
     if root_input_probe_enabled() {
         assert_pre_run_root_state_is_input_derived(run, &input);
     }

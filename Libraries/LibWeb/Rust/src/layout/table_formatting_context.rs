@@ -2030,9 +2030,7 @@ impl<'pass> TableFormattingContext<'pass> {
                 containing_block_constraints: ContainingBlockConstraints::default(),
                 content_box_position_in_bfc_root: None,
                 sizing: RootSizingDirectives {
-                    measurement_root: Some(MeasurementRootInputs {
-                        metrics: cell_measurement_metrics,
-                    }),
+                    declared_root_metrics: Some(cell_measurement_metrics),
                     adopt_automatic_content_block_size,
                     ..RootSizingDirectives::default()
                 },
