@@ -946,6 +946,25 @@ impl LayoutState {
         node: Node,
         constraints: ContainingBlockConstraints,
     ) -> std::rc::Rc<UsedValues> {
+        let metrics = self.initial_box_metrics_for_node(callbacks, node, constraints);
+        let used = UsedValues::default();
+        used.has_definite_inline_size.set(metrics.has_definite_inline_size);
+        used.has_definite_block_size.set(metrics.has_definite_block_size);
+        used.content_inline_size.set(metrics.content_inline_size);
+        used.content_block_size.set(metrics.content_block_size);
+        std::rc::Rc::new(used)
+    }
+
+    /// The style-derived initial state of a box before any layout: the
+    /// definiteness decision and the initially definite sizes. This is the
+    /// baseline every run root starts from; parents layer their inputs on
+    /// top of it.
+    pub(crate) fn initial_box_metrics_for_node(
+        &self,
+        callbacks: &FfiLayoutFcCallbacks,
+        node: Node,
+        constraints: ContainingBlockConstraints,
+    ) -> BoxMetrics {
         assert!(!node.is_invalid());
         let facts = self.node_facts(callbacks, node);
 
@@ -963,7 +982,7 @@ impl LayoutState {
         // definite. We model all of those by considering sizes definite once
         // they are assigned through set_content_inline_size() or
         // set_content_block_size().
-        let used = UsedValues::default();
+        let mut metrics = BoxMetrics::default();
 
         #[derive(Clone, Copy)]
         enum Axis {
@@ -1030,15 +1049,20 @@ impl LayoutState {
                     })
                     && containing_block_has_definite_size(Axis::Inline)
                 {
+                    // The subtracted edges are this box's creation-time
+                    // values, which are always still zero at this point;
+                    // the subtraction shape is preserved verbatim from the
+                    // cell-based derivation, and dropping it is a separate
+                    // decision.
                     let available = containing_block_size_for_axis(Axis::Inline);
                     return Some(clamp_to_max_dimension_value(
                         available
-                            - used.margin_left.get()
-                            - used.margin_right.get()
-                            - used.padding_left.get()
-                            - used.padding_right.get()
-                            - used.border_left.get()
-                            - used.border_right.get(),
+                            - metrics.margin.left
+                            - metrics.margin.right
+                            - metrics.padding.left
+                            - metrics.padding.right
+                            - metrics.border.left
+                            - metrics.border.right,
                     ));
                 }
                 return None;
@@ -1069,8 +1093,8 @@ impl LayoutState {
         let mut content_inline_size = is_definite_size(style.width(), Axis::Inline);
         let mut content_block_size = is_definite_size(style.height(), Axis::Block);
 
-        used.has_definite_inline_size.set(content_inline_size.is_some());
-        used.has_definite_block_size.set(content_block_size.is_some());
+        metrics.has_definite_inline_size = content_inline_size.is_some();
+        metrics.has_definite_block_size = content_block_size.is_some();
         if let Some(size) = content_inline_size.as_mut() {
             if let Some(minimum) = min_inline_size {
                 *size = clamp_to_max_dimension_value((*size).max(minimum));
@@ -1087,10 +1111,10 @@ impl LayoutState {
                 *size = clamp_to_max_dimension_value((*size).min(maximum));
             }
         }
-        used.content_inline_size.set(content_inline_size.unwrap_or_default());
-        used.content_block_size.set(content_block_size.unwrap_or_default());
+        metrics.content_inline_size = content_inline_size.unwrap_or_default();
+        metrics.content_block_size = content_block_size.unwrap_or_default();
 
-        std::rc::Rc::new(used)
+        metrics
     }
 
     pub(crate) fn populate_from_paintable(

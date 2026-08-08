@@ -1509,6 +1509,33 @@ fn size_skipped_independent_root(
     }
 }
 
+fn root_input_probe_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("LADYBIRD_ROOT_INPUT_PROBE").is_some())
+}
+
+/// Asserts that a run root's record arrives in exactly the state its
+/// inputs derive: the style baseline, with nothing layered on top that
+/// LayoutInput does not carry. Participation kinds whose parents still
+/// hand facts through the record are absent from the converted list; the
+/// input-purification burn-down adds one kind per conversion until the
+/// list is every kind.
+fn assert_pre_run_root_state_is_input_derived(run: &FormattingContextRun, input: &LayoutInput) {
+    let converted_kind = matches!(input.participation, ParticipationInParentFormattingContext::AtomicInline);
+    if !converted_kind {
+        return;
+    }
+    let baseline =
+        run.state
+            .initial_box_metrics_for_node(&run.callbacks, run.box_, input.containing_block_constraints);
+    let actual = BoxMetrics::capture_from_record(&run.records.used_values(run.box_));
+    assert!(
+        actual == baseline,
+        "a run root arrived with record state its inputs cannot derive ({:?})\nbaseline: {baseline:?}\nactual: {actual:?}",
+        input.participation,
+    );
+}
+
 fn body_input_with_inner_available_space(run: &FormattingContextRun, input: &LayoutInput) -> LayoutInput {
     let inner_available_space = run
         .records
@@ -1550,6 +1577,9 @@ fn run_formatting_context<'pass>(
         }),
     };
     let run = &run;
+    if root_input_probe_enabled() {
+        assert_pre_run_root_state_is_input_derived(run, &input);
+    }
     let cache_attempt = match FcRunCacheAttempt::probe(run, fc_type, &input) {
         Ok(attempt) => attempt,
         Err(entry) => return replay_run_from_cache(run, &input, parent_block, &entry),

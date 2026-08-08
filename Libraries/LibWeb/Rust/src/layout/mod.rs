@@ -15,6 +15,7 @@ pub(crate) use crate::css::css_pixels::*;
 pub(crate) use crate::css::display::*;
 
 include!("node_facts.rs");
+include!("box_metrics.rs");
 include!("fragment_tree.rs");
 include!("fc_run_cache.rs");
 
