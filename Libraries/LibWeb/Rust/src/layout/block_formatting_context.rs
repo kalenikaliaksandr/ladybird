@@ -2656,6 +2656,17 @@ impl<'pass> BlockFormattingContext<'pass> {
             );
         }
 
+        // A box that completed its own formatting-context run (an atomic
+        // root that is not a block formatting context by the facts
+        // predicate — inline math, replaced boxes with children) already
+        // measured its content: the run result is the automatic content
+        // block size. The walk below would re-derive it from the completed
+        // run's interior boxes and thread this block formatting context's
+        // margin state across an atomic boundary it never crossed.
+        if let Some(automatic_content_block_size) = automatic_content_block_size_of_completed_run {
+            return automatic_content_block_size;
+        }
+
         // https://www.w3.org/TR/CSS22/visudet.html#normal-block
         // 10.6.3 Block-level non-replaced elements in normal flow when 'overflow' computes to 'visible'
 
