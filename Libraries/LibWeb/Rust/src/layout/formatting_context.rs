@@ -529,27 +529,26 @@ pub(crate) fn box_baseline(
     state: &LayoutState,
     callbacks: &FfiLayoutFcCallbacks,
     box_: Node,
+    used: &UsedValues,
     baseline_set: BaselineSet,
 ) -> CssPixels {
-    let used = state.used_values(callbacks, box_);
     let content_baselines = DerivedBaselines {
         first: used.has_first_baseline.get().then(|| used.first_baseline.get()),
         last: used.has_last_baseline.get().then(|| used.last_baseline.get()),
     };
-    box_baseline_with_content_baselines(state, callbacks, box_, baseline_set, content_baselines)
+    box_baseline_with_content_baselines(state, callbacks, box_, used, baseline_set, content_baselines)
 }
 
 pub(crate) fn box_baseline_with_content_baselines(
     state: &LayoutState,
     callbacks: &FfiLayoutFcCallbacks,
     box_: Node,
+    used: &UsedValues,
     mut baseline_set: BaselineSet,
     content_baselines: DerivedBaselines,
 ) -> CssPixels {
     let facts = state.node_facts(callbacks, box_);
     let style = state.style_facts(callbacks, box_);
-    let used_pointer = state.used_values(callbacks, box_);
-    let used = used_pointer;
     let collapsed = used.uses_collapsing_borders_model.get();
 
     // https://drafts.csswg.org/css2/#propdef-vertical-align
@@ -690,7 +689,7 @@ pub(crate) fn derive_baselines(
             let block_child_state = records.used_values(fragment_node);
             let child_offset_from_margin_edge = block_child_state.content_offset.get().y
                 - block_child_state.margin_box_top(block_child_state.uses_collapsing_borders_model.get());
-            child_offset_from_margin_edge + box_baseline(state, callbacks, fragment_node, baseline_set)
+            child_offset_from_margin_edge + box_baseline(state, callbacks, fragment_node, block_child_state, baseline_set)
         };
 
         let mut first_line_index = 0;
@@ -766,7 +765,7 @@ pub(crate) fn derive_baselines(
             }
             let child_offset_from_margin_edge = child_state.content_offset.get().y
                 - child_state.margin_box_top(child_state.uses_collapsing_borders_model.get());
-            return Some(child_offset_from_margin_edge + box_baseline(state, callbacks, child, baseline_set));
+            return Some(child_offset_from_margin_edge + box_baseline(state, callbacks, child, child_state, baseline_set));
         }
         None
     };
@@ -1835,6 +1834,7 @@ pub(crate) fn layout_inside_child<'pass>(
     input.sizing.treat_block_axis_percentage_insets_as_auto_beyond_root =
         treat_block_axis_percentage_insets_as_auto_beyond_anonymous_child_root(
             run.state,
+            &run.records,
             &run.callbacks,
             child,
             run.box_,
@@ -1881,6 +1881,7 @@ fn independent_formatting_context_type(
 
 pub(crate) fn resolve_block_axis_percentage_inset_basis_is_definite(
     state: &LayoutState,
+    records: &RunRecords,
     callbacks: &FfiLayoutFcCallbacks,
     containing_block: Node,
     formatting_context_root: Node,
@@ -1890,7 +1891,7 @@ pub(crate) fn resolve_block_axis_percentage_inset_basis_is_definite(
     while !candidate.is_invalid() {
         let facts = state.node_facts(callbacks, candidate);
         if !facts.is_anonymous() || facts.is_table_cell() {
-            return state.used_values(callbacks, candidate).has_definite_block_size();
+            return records.used_values(candidate).has_definite_block_size();
         }
         if candidate == formatting_context_root {
             return !treat_block_axis_percentage_insets_as_auto_beyond_root;
@@ -1902,6 +1903,7 @@ pub(crate) fn resolve_block_axis_percentage_inset_basis_is_definite(
 
 pub(crate) fn treat_block_axis_percentage_insets_as_auto_beyond_anonymous_child_root(
     state: &LayoutState,
+    records: &RunRecords,
     callbacks: &FfiLayoutFcCallbacks,
     child_root: Node,
     formatting_context_root: Node,
@@ -1913,6 +1915,7 @@ pub(crate) fn treat_block_axis_percentage_insets_as_auto_beyond_anonymous_child_
     }
     !resolve_block_axis_percentage_inset_basis_is_definite(
         state,
+        records,
         callbacks,
         callbacks.containing_block(child_root),
         formatting_context_root,

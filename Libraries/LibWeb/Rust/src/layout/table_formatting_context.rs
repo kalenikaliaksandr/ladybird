@@ -1973,6 +1973,7 @@ impl<'pass> TableFormattingContext<'pass> {
                 self.state,
                 &self.callbacks,
                 cell_box,
+                self.used_values(cell_box),
                 crate::layout::BaselineSet::First,
                 content_baselines,
             ),
@@ -1982,13 +1983,20 @@ impl<'pass> TableFormattingContext<'pass> {
             self.state,
             &self.callbacks,
             cell_box,
+            self.used_values(cell_box),
             crate::layout::BaselineSet::First,
             content_baselines,
         )
     }
 
     fn box_baseline(&self, node: Node) -> CssPixels {
-        crate::layout::box_baseline(self.state, &self.callbacks, node, crate::layout::BaselineSet::First)
+        crate::layout::box_baseline(
+            self.state,
+            &self.callbacks,
+            node,
+            self.used_values(node),
+            crate::layout::BaselineSet::First,
+        )
     }
 
     fn measure_cell(
@@ -2041,17 +2049,20 @@ impl<'pass> TableFormattingContext<'pass> {
                 participation: ParticipationInParentFormattingContext::Item,
             },
         );
+        let measured_cell_used = measurement.rust_state().used_values(measurement.callbacks(), cell.box_);
         debug_assert_eq!(
             crate::layout::box_baseline(
                 measurement.rust_state(),
                 measurement.callbacks(),
                 cell.box_,
+                measured_cell_used,
                 crate::layout::BaselineSet::First,
             ),
             crate::layout::box_baseline_with_content_baselines(
                 measurement.rust_state(),
                 measurement.callbacks(),
                 cell.box_,
+                measured_cell_used,
                 crate::layout::BaselineSet::First,
                 result.baselines,
             ),
@@ -2063,6 +2074,7 @@ impl<'pass> TableFormattingContext<'pass> {
                 measurement.rust_state(),
                 measurement.callbacks(),
                 cell.box_,
+                measured_cell_used,
                 crate::layout::BaselineSet::First,
                 result.baselines,
             ),

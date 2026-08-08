@@ -1732,6 +1732,7 @@ impl<'pass> AbsposEngine<'pass> {
             || style.inset_bottom().contains_percentage())
             && !crate::layout::resolve_block_axis_percentage_inset_basis_is_definite(
                 self.state,
+                &self.records,
                 &self.callbacks,
                 self.callbacks.containing_block(node),
                 formatting_context_root,

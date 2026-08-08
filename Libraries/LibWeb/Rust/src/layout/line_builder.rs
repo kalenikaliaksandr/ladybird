@@ -563,12 +563,14 @@ impl<'builder, 'context, 'pass> LineBuilder<'builder, 'context, 'pass> {
                         self.context().state,
                         &self.context().callbacks,
                         node,
+                        self.context().used(node),
                         crate::layout::BaselineSet::Last,
                     ),
                     crate::layout::box_baseline_with_content_baselines(
                         self.context().state,
                         &self.context().callbacks,
                         node,
+                        self.context().used(node),
                         crate::layout::BaselineSet::Last,
                         content_baselines,
                     ),
@@ -578,6 +580,7 @@ impl<'builder, 'context, 'pass> LineBuilder<'builder, 'context, 'pass> {
                     self.context().state,
                     &self.context().callbacks,
                     node,
+                    self.context().used(node),
                     crate::layout::BaselineSet::Last,
                     content_baselines,
                 )
@@ -586,6 +589,7 @@ impl<'builder, 'context, 'pass> LineBuilder<'builder, 'context, 'pass> {
                     self.context().state,
                     &self.context().callbacks,
                     node,
+                    self.context().used(node),
                     crate::layout::BaselineSet::Last,
                 )
             };

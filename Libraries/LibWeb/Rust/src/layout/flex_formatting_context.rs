@@ -2304,11 +2304,18 @@ impl<'pass> FlexFormattingContext<'pass> {
     fn item_box_baseline(&self, index: usize) -> CssPixels {
         let item = &self.flex_items[index];
         debug_assert_eq!(
-            crate::layout::box_baseline(self.state, &self.callbacks, item.box_, crate::layout::BaselineSet::First),
+            crate::layout::box_baseline(
+                self.state,
+                &self.callbacks,
+                item.box_,
+                item.used_values,
+                crate::layout::BaselineSet::First
+            ),
             crate::layout::box_baseline_with_content_baselines(
                 self.state,
                 &self.callbacks,
                 item.box_,
+                item.used_values,
                 crate::layout::BaselineSet::First,
                 item.content_baselines,
             ),
@@ -2318,6 +2325,7 @@ impl<'pass> FlexFormattingContext<'pass> {
             self.state,
             &self.callbacks,
             item.box_,
+            item.used_values,
             crate::layout::BaselineSet::First,
             item.content_baselines,
         )
