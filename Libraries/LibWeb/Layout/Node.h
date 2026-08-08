@@ -106,6 +106,7 @@ public:
     NodeArena& node_arena() const { return *m_arena; }
 
     bool is_anonymous() const { return has_flag(RustFFI::NodeFlag::Anonymous); }
+    bool insets_use_anchor_functions() const { return has_flag(RustFFI::NodeFlag::InsetsUseAnchorFunctions); }
     DOM::Node const* dom_node() const;
     DOM::Node* dom_node();
 
@@ -114,12 +115,26 @@ public:
 
     bool needs_layout_update() const { return has_flag(RustFFI::NodeFlag::NeedsLayoutUpdate); }
 
-    // Called by the tree mutation primitives on the parent of any structural change. Layout
-    // tree restructuring does not funnel through set_needs_layout_update, but cached
-    // formatting-context runs capture subtree structure, so every ancestor's fragment cache
-    // epoch must advance.
-    void note_structural_change_for_fragment_caches()
+    // The formatting-context run cache (LADYBIRD_FC_RUN_CACHE) validates its entries against
+    // these epochs; with the cache disabled nothing reads them, so the walks no-op.
+    static bool fragment_cache_epochs_enabled();
+
+    void bump_fragment_cache_epoch()
     {
+        if (fragment_cache_epochs_enabled())
+            ++node_data().fragment_cache_epoch;
+    }
+
+    // Any invalidation or restructuring below a node must reach every ancestor's epoch: cached
+    // runs capture subtree structure, and unlike intrinsic-size invalidation there is no
+    // absolutely-positioned or SVG boundary — those descendants' fragments live in ancestor
+    // run trees. Layout tree restructuring in particular never funnels through
+    // set_needs_layout_update (a full pass lays out everything), so the tree mutation
+    // primitives call this on the parent of every structural change.
+    void bump_fragment_cache_epoch_of_self_and_ancestors()
+    {
+        if (!fragment_cache_epochs_enabled())
+            return;
         for (auto* node = this; node; node = node->parent_ptr())
             ++node->node_data().fragment_cache_epoch;
     }

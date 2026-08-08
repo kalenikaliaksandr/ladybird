@@ -1310,19 +1310,12 @@ void Element::apply_computed_pseudo_element_styles_to_layout_nodes_if_needed(CSS
             node_with_style->apply_style(pseudo_element_style.release_nonnull());
             if (invalidation.needs_repaint() && node_with_style->paintable())
                 node_with_style->paintable()->set_needs_repaint();
-            if (invalidation.needs_relayout()) {
-                // The aggregated invalidation marks the originating element's layout node, not
-                // the pseudo-element's own box — which can even live outside the element's box
-                // subtree (::backdrop is a sibling of the dialog's box). Fragment cache epochs
-                // must advance on the box whose style actually changed and on its own ancestor
-                // chain, or cached runs rooted there replay the old style's geometry.
-                if (auto* box = as_if<Layout::Box>(*node_with_style))
-                    box->bump_fragment_cache_epoch();
-                for (auto* ancestor = node_with_style->parent(); ancestor; ancestor = ancestor->parent()) {
-                    if (auto* ancestor_box = as_if<Layout::Box>(ancestor))
-                        ancestor_box->bump_fragment_cache_epoch();
-                }
-            }
+            // The aggregated invalidation marks the originating element's layout node, not the
+            // pseudo-element's own box — which can even live outside the element's box subtree
+            // (::backdrop is a sibling of the dialog's box), so the box whose style actually
+            // changed advances its own epoch chain here.
+            if (invalidation.needs_relayout())
+                node_with_style->bump_fragment_cache_epoch_of_self_and_ancestors();
         }
     });
 }

@@ -1022,55 +1022,6 @@ static CSS::BorderData from_ffi_border_data(RustFFI::FfiBorderData const& border
     };
 }
 
-static Optional<DOM::AbstractElement> abstract_element_for_abspos_box(Box const& box)
-{
-    if (box.is_generated_for_pseudo_element())
-        return DOM::AbstractElement { *box.pseudo_element_generator(), box.generated_for_pseudo_element() };
-    if (auto const* element = as_if<DOM::Element>(box.dom_node()))
-        return DOM::AbstractElement { *element };
-    return {};
-}
-
-static bool style_value_contains_anchor(CSS::StyleValue const& value)
-{
-    if (value.is_anchor())
-        return true;
-    if (value.is_calculated())
-        return value.as_calculated().contains_anchor_function();
-    return false;
-}
-
-bool box_inset_properties_contain_anchor_functions(Box const& box)
-{
-    auto abstract_element = abstract_element_for_abspos_box(box);
-    if (!abstract_element.has_value())
-        return false;
-
-    auto const* computed = abstract_element->computed_values();
-    if (!computed)
-        return false;
-    // A bare anchor function is not stored in the inset length box at all: it lives in the
-    // per-side anchor inset handles the style system keeps next to it.
-    if (computed->anchor_inset(CSS::PropertyID::Top) || computed->anchor_inset(CSS::PropertyID::Right)
-        || computed->anchor_inset(CSS::PropertyID::Bottom) || computed->anchor_inset(CSS::PropertyID::Left))
-        return true;
-    // Anchor functions inside expressions survive to used-value time as calculated values, so
-    // when no inset is calculated (the common case), skip reconstructing the style values.
-    auto const& inset = computed->inset();
-    if (!inset.top().is_calculated() && !inset.right().is_calculated() && !inset.bottom().is_calculated() && !inset.left().is_calculated())
-        return false;
-
-    auto top = computed->computed_style_value(CSS::PropertyID::Top);
-    auto right = computed->computed_style_value(CSS::PropertyID::Right);
-    auto bottom = computed->computed_style_value(CSS::PropertyID::Bottom);
-    auto left = computed->computed_style_value(CSS::PropertyID::Left);
-    VERIFY(top && right && bottom && left);
-    return style_value_contains_anchor(*top)
-        || style_value_contains_anchor(*right)
-        || style_value_contains_anchor(*bottom)
-        || style_value_contains_anchor(*left);
-}
-
 bool can_replay_saved_abspos_layout_inputs_after_style_change(Box const& box)
 {
     if (!box.containing_block())
@@ -1086,6 +1037,15 @@ bool can_replay_saved_abspos_layout_inputs_after_style_change(Box const& box)
         return false;
 
     return true;
+}
+
+static Optional<DOM::AbstractElement> abstract_element_for_abspos_box(Box const& box)
+{
+    if (box.is_generated_for_pseudo_element())
+        return DOM::AbstractElement { *box.pseudo_element_generator(), box.generated_for_pseudo_element() };
+    if (auto const* element = as_if<DOM::Element>(box.dom_node()))
+        return DOM::AbstractElement { *element };
+    return {};
 }
 
 RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
@@ -1158,11 +1118,7 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             auto const& styled_node = *static_cast<NodeWithStyleAndBoxModelMetrics const*>(node);
             if (styled_node.computed_values().position() == CSS::Positioning::Relative)
                 return true;
-            auto const* box = as_if<Box>(styled_node);
-            return box && box_inset_properties_contain_anchor_functions(*box); },
-        .box_inset_properties_contain_anchor_functions = [](void*, void* node) {
-            auto const* box = as_if<Box>(*static_cast<Node const*>(node));
-            return box && box_inset_properties_contain_anchor_functions(*box); },
+            return styled_node.insets_use_anchor_functions(); },
         .report_unexpected_fragmented_inline = [](void*, void* node) {
             auto const& box = *static_cast<Box const*>(node);
             dbgln("FIXME: InlineFormattingContext::dimension_box_on_line got unexpected box in inline context:");
@@ -1272,10 +1228,6 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             VERIFY(node_with_style);
             return compute_svg_path(*node_with_style, request); },
         .release_svg_path = [](void*, void* path_handle) { release_svg_path_handle(path_handle); },
-        // NOTE: Both font callbacks must stay context-free: retained fonts outlive the layout
-        // pass whose callback table retained them, so releases arrive with a null context.
-        .retain_font = [](void*, void const* font) { static_cast<Gfx::Font const*>(font)->ref(); },
-        .release_font = [](void*, void const* font) { static_cast<Gfx::Font const*>(font)->unref(); },
         .svg_image_bounding_box = [](void*, void* node, i32 viewport_width, i32 viewport_height) {
             auto const& image_box = as<SVGImageBox>(*static_cast<Node const*>(node));
             auto bounding_box = image_box.dom_node().bounding_box({

@@ -795,6 +795,12 @@ pub enum FfiFormattingContextType {
     InternalDummy,
 }
 
+impl FfiFormattingContextType {
+    pub(crate) fn is_internal(self) -> bool {
+        matches!(self, Self::InternalReplaced | Self::InternalDummy)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct FfiBorderData {
@@ -988,7 +994,6 @@ pub struct FfiLayoutFcCallbacks {
     pub document_in_quirks_mode: bool,
     pub static_position_containing_block: unsafe extern "C" fn(*mut c_void, *mut c_void) -> NodeSlotId,
     pub needs_inset_resolution: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
-    pub box_inset_properties_contain_anchor_functions: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
     pub report_unexpected_fragmented_inline: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub release_anchor_name_handle: crate::layout::FfiReleaseAnchorNameHandleCallback,
     pub build_replaced_content_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> crate::layout::FfiReplacedContentFacts,
@@ -999,11 +1004,6 @@ pub struct FfiLayoutFcCallbacks {
         unsafe extern "C" fn(*mut c_void, *mut c_void, *mut FfiSvgComputedTransforms) -> bool,
     pub compute_svg_path: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiSvgPathRequest) -> FfiSvgPathResult,
     pub release_svg_path: crate::layout::ReleaseRetainedLayoutHandle,
-    /// Both font callbacks must ignore their context argument: retained
-    /// fonts outlive the layout pass whose callback table retained them,
-    /// so releases arrive with a null context.
-    pub retain_font: unsafe extern "C" fn(*mut c_void, *const c_void),
-    pub release_font: unsafe extern "C" fn(*mut c_void, *const c_void),
     pub svg_image_bounding_box: unsafe extern "C" fn(*mut c_void, *mut c_void, CssPixels, CssPixels) -> FfiFloatRect,
     pub anchor_lookup: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, *const *mut c_void, usize) -> NodeSlotId,
     pub build_anchor_function_facts: unsafe extern "C" fn(*mut c_void, *const c_void) -> FfiAnchorFunctionFacts,
@@ -1165,6 +1165,14 @@ pub(crate) struct FormattingContextRun<'pass> {
 impl<'pass> FormattingContextRun<'pass> {
     pub(crate) fn sizing(&self) -> SizingContext<'pass> {
         SizingContext::new(self.state, self.records.clone(), self.callbacks)
+    }
+
+    pub(crate) fn outputs(&self, result: ChildLayoutResult, fragments: Option<PendingRunResult>) -> RunOutputs {
+        RunOutputs {
+            result,
+            fragments,
+            records: self.records.clone(),
+        }
     }
 }
 
@@ -1542,11 +1550,9 @@ fn run_formatting_context<'pass>(
         }),
     };
     let run = &run;
-    let cache_attempt = match FcRunCacheAttempt::probe(run, fc_type, &input, should_collect_devtools_layout_data) {
-        FcRunCacheAttempt::Hit { entry } => {
-            return replay_run_from_cache(run, &input, parent_block, entry);
-        }
-        attempt => attempt,
+    let cache_attempt = match FcRunCacheAttempt::probe(run, fc_type, &input) {
+        Ok(attempt) => attempt,
+        Err(entry) => return replay_run_from_cache(run, &input, parent_block, &entry),
     };
     let body_input = apply_root_sizing_directives(run, &input, parent_block);
 
@@ -1634,11 +1640,7 @@ fn run_formatting_context<'pass>(
 
     let registered_abspos_children_could_never_be_laid_out = run.fragments.is_none();
     if registered_abspos_children_could_never_be_laid_out {
-        return RunOutputs {
-            result,
-            fragments: take_run_fragments(),
-            records: run.records.clone(),
-        };
+        return run.outputs(result, take_run_fragments());
     }
     let implementation = implementation.expect("cached measurement replay only occurs on measurement states");
     match &implementation {
@@ -1655,30 +1657,14 @@ fn run_formatting_context<'pass>(
         }
         FormattingContextImplementation::Svg(_) | FormattingContextImplementation::ReplacedWithChildren => {}
         FormattingContextImplementation::InternalReplaced | FormattingContextImplementation::InternalDummy => {
-            return RunOutputs {
-                result,
-                fragments: take_run_fragments(),
-                records: run.records.clone(),
-            };
+            return run.outputs(result, take_run_fragments());
         }
     }
     layout_contained_abspos_children(run);
     run.records.used_values(run.box_).seal_own_metrics();
     let fragments = take_run_fragments();
-    cache_attempt.conclude_run(
-        run,
-        fc_type,
-        &input,
-        cached_atomic_block_size,
-        &result,
-        body_end_root_state,
-        fragments.as_ref(),
-    );
-    RunOutputs {
-        result,
-        fragments,
-        records: run.records.clone(),
-    }
+    cache_attempt.conclude_run(run, cached_atomic_block_size, &result, body_end_root_state, fragments.as_ref());
+    run.outputs(result, fragments)
 }
 
 /// The run root's participation in its parent formatting context, applied

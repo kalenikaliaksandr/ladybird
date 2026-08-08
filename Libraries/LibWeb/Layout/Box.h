@@ -83,11 +83,6 @@ public:
             ++epoch;
     }
 
-    void bump_fragment_cache_epoch()
-    {
-        ++node_data().fragment_cache_epoch;
-    }
-
     Box(DOM::Document&, DOM::Node*, NonnullRefPtr<CSS::ComputedValues const>);
 
 protected:

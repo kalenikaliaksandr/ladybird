@@ -21,6 +21,8 @@ unsafe extern "C" {
         forced_presentation: bool,
     ) -> *const c_void;
     fn ladybird_gfx_font_cascade_list_first(list: *const c_void) -> *const c_void;
+    fn ladybird_gfx_font_ref(font: *const c_void);
+    fn ladybird_gfx_font_unref(font: *const c_void);
     fn ladybird_gfx_font_cascade_list_ref(list: *const c_void);
     fn ladybird_gfx_font_cascade_list_unref(list: *const c_void);
     fn ladybird_gfx_emoji_presentation_for_code_point(
@@ -160,6 +162,35 @@ impl<'a> FontCascadeListRef<'a> {
         // SAFETY: The constructor requires the Gfx::FontCascadeList to remain
         // live for this reference's lifetime.
         unsafe { FontRef::from_raw(ladybird_gfx_font_cascade_list_first(self.raw.as_ptr())) }
+    }
+}
+
+/// A strong reference to a single `Gfx::Font`, keeping it alive until dropped.
+pub struct RetainedFont {
+    raw: NonNull<c_void>,
+}
+
+impl RetainedFont {
+    /// # Safety
+    ///
+    /// `raw` must point to a live `Gfx::Font` at the time of the call.
+    pub unsafe fn retain(raw: *const c_void) -> Self {
+        let raw = NonNull::new(raw.cast_mut()).expect("Gfx::Font pointer must not be null");
+        // SAFETY: The caller guarantees the font is live, and ref() keeps it
+        // that way until this reference drops.
+        unsafe { ladybird_gfx_font_ref(raw.as_ptr()) };
+        Self { raw }
+    }
+
+    pub fn as_raw(&self) -> *const c_void {
+        self.raw.as_ptr()
+    }
+}
+
+impl Drop for RetainedFont {
+    fn drop(&mut self) {
+        // SAFETY: retain() took a strong reference on construction.
+        unsafe { ladybird_gfx_font_unref(self.raw.as_ptr()) };
     }
 }
 

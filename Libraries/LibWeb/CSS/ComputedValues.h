@@ -1371,6 +1371,22 @@ public:
     ShapeRendering shape_rendering() const { return static_cast<ShapeRendering>(m_noninherited.svg_reset->shape_rendering); }
 
     LengthBox inset() const { return length_box(m_noninherited.surround->inset); }
+    bool has_anchor_inset(PropertyID property_id) const
+    {
+        switch (property_id) {
+        case PropertyID::Top:
+            return m_noninherited.surround->top_anchor_inset.pointer != nullptr;
+        case PropertyID::Right:
+            return m_noninherited.surround->right_anchor_inset.pointer != nullptr;
+        case PropertyID::Bottom:
+            return m_noninherited.surround->bottom_anchor_inset.pointer != nullptr;
+        case PropertyID::Left:
+            return m_noninherited.surround->left_anchor_inset.pointer != nullptr;
+        default:
+            return false;
+        }
+    }
+    bool inset_properties_contain_anchor_functions() const;
     RefPtr<StyleValue const> anchor_inset(PropertyID property_id) const
     {
         ComputedValuesFFI::ComputedStyleValueHandle const* handle = nullptr;

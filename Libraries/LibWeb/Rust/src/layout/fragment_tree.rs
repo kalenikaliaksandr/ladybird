@@ -43,6 +43,50 @@ pub(crate) struct Fragment {
     pub(crate) children: Vec<FragmentLink>,
 }
 
+impl Fragment {
+    pub(crate) fn carries_svg_path(&self) -> bool {
+        let handle = self.computed_svg_path.take();
+        let carries = handle.is_some();
+        self.computed_svg_path.set(handle);
+        carries
+    }
+
+    /// Field-wise equality for the run-cache shadow oracle, excluding
+    /// children (the oracle recurses through links itself), the move-only
+    /// path handle, and the presence of computed SVG transforms: those back
+    /// a get-or-compute cache, so whether a record held them at snapshot
+    /// depends on what asked during that pass (paint timing), not on layout
+    /// state — values compare only when both passes materialized them.
+    pub(crate) fn shadow_comparable_state_matches(&self, other: &Fragment) -> bool {
+        self.node == other.node
+            && self.content_inline_size == other.content_inline_size
+            && self.content_block_size == other.content_block_size
+            && self.margin_left == other.margin_left
+            && self.margin_right == other.margin_right
+            && self.margin_top == other.margin_top
+            && self.margin_bottom == other.margin_bottom
+            && self.border_left == other.border_left
+            && self.border_right == other.border_right
+            && self.border_top == other.border_top
+            && self.border_bottom == other.border_bottom
+            && self.padding_left == other.padding_left
+            && self.padding_right == other.padding_right
+            && self.padding_top == other.padding_top
+            && self.padding_bottom == other.padding_bottom
+            && self.table_cell_coordinates == other.table_cell_coordinates
+            && self.override_borders_data == other.override_borders_data
+            && self.line_data.is_some() == other.line_data.is_some()
+            && self.grid_layout_data.is_some() == other.grid_layout_data.is_some()
+            && self.flex_layout_data.is_some() == other.flex_layout_data.is_some()
+            && self.used_grid_tracks.is_some() == other.used_grid_tracks.is_some()
+            && match (self.computed_svg_transforms, other.computed_svg_transforms) {
+                (Some(own_transforms), Some(other_transforms)) => own_transforms == other_transforms,
+                _ => true,
+            }
+            && self.svg_viewport_size == other.svg_viewport_size
+    }
+}
+
 /// One placement of a fragment. Everything the parent decides about the
 /// child lives on the link: the emission offset (the placed offset with the
 /// committed delta already folded in) and the inset family.
