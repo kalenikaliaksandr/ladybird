@@ -836,7 +836,6 @@ impl<'pass> NodeFacts<'pass> {
 pub(crate) struct LayoutState {
     used_values: PagedStore<UsedValues>,
     anchor_inset_store: AnchorInsetStore,
-    replaced_content_facts: PagedStore<crate::layout::FfiReplacedContentFacts>,
     purpose: LayoutStatePurpose,
 }
 
@@ -877,7 +876,6 @@ impl LayoutState {
         Self {
             used_values: PagedStore::default(),
             anchor_inset_store: AnchorInsetStore::default(),
-            replaced_content_facts: PagedStore::default(),
             purpose,
         }
     }
@@ -1165,26 +1163,24 @@ impl LayoutState {
         callbacks: &FfiLayoutFcCallbacks,
         node: Node,
     ) -> crate::layout::FfiReplacedContentFacts {
-        let slot_index = callbacks.slot_index(node);
-        if let Some(facts) = self.replaced_content_facts.get(slot_index) {
-            return *facts;
-        }
-        let data = callbacks.node_data(node);
-        // Size containment gives any box an auto content box size of zero, so
-        // size-contained boxes join the replaced kinds in fetching real facts.
-        let size_containment_may_apply = crate::layout::kind_is_box(data.kind) && !data.style.is_null() && {
-            let style = self.style_facts(callbacks, node);
-            style.has_size_containment() || style.is_size_container()
-        };
-        let facts = if crate::layout::node_may_have_replaced_content_facts(data) || size_containment_may_apply {
-            // SAFETY: The callback table and node are supplied by the live C++
-            // formatting-context shim and remain valid for this layout pass.
-            unsafe { (callbacks.build_replaced_content_facts)(callbacks.context, callbacks.shell(node)) }
-        } else {
-            crate::layout::FfiReplacedContentFacts::default()
-        };
-        self.replaced_content_facts.allocate(slot_index, facts);
-        facts
+        callbacks.arena().replaced_content_facts(node, || {
+            let data = callbacks.node_data(node);
+            // Size containment gives any box an auto content box size of zero,
+            // so size-contained boxes join the replaced kinds in fetching real
+            // facts.
+            let size_containment_may_apply = crate::layout::kind_is_box(data.kind) && !data.style.is_null() && {
+                let style = self.style_facts(callbacks, node);
+                style.has_size_containment() || style.is_size_container()
+            };
+            if crate::layout::node_may_have_replaced_content_facts(data) || size_containment_may_apply {
+                // SAFETY: The callback table and node are supplied by the live
+                // C++ formatting-context shim and remain valid for this layout
+                // pass.
+                unsafe { (callbacks.build_replaced_content_facts)(callbacks.context, callbacks.shell(node)) }
+            } else {
+                crate::layout::FfiReplacedContentFacts::default()
+            }
+        })
     }
 
     pub(crate) fn text_chunks(

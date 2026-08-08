@@ -166,6 +166,13 @@ struct TextChunkCacheSlot {
     entry: Option<Box<TextChunkCacheEntry>>,
 }
 
+#[derive(Default)]
+struct ReplacedContentFactsCacheSlot {
+    generation: u8,
+    epoch: u16,
+    facts: Option<crate::layout::FfiReplacedContentFacts>,
+}
+
 // NodeData is sized to one cache line; the aligned chunk keeps every densely-strided slot
 // line-aligned, and per-slot bookkeeping lives in a parallel array so it stays that way.
 #[repr(align(64))]
@@ -209,6 +216,7 @@ pub(crate) struct LayoutNodeArena {
     saved_abspos_layout_inputs: RefCell<Vec<SavedAbsposLayoutInputsSlot>>,
     text_contents: Vec<TextContentSlot>,
     text_chunk_caches: RefCell<Vec<TextChunkCacheSlot>>,
+    replaced_content_facts_caches: RefCell<Vec<ReplacedContentFactsCacheSlot>>,
     raw_table_column_spans: HashMap<NodeSlotId, u32>,
     owner_thread: thread::ThreadId,
 }
@@ -226,6 +234,7 @@ impl LayoutNodeArena {
             saved_abspos_layout_inputs: RefCell::new(Vec::new()),
             text_contents: Vec::new(),
             text_chunk_caches: RefCell::new(Vec::new()),
+            replaced_content_facts_caches: RefCell::new(Vec::new()),
             raw_table_column_spans: HashMap::new(),
             owner_thread: thread::current().id(),
         }
@@ -318,6 +327,9 @@ impl LayoutNodeArena {
         }
         if let Some(slot) = self.text_chunk_caches.get_mut().get_mut(index as usize) {
             *slot = TextChunkCacheSlot::default();
+        }
+        if let Some(slot) = self.replaced_content_facts_caches.get_mut().get_mut(index as usize) {
+            *slot = ReplacedContentFactsCacheSlot::default();
         }
         self.raw_table_column_spans.remove(&id);
         *self.data_mut(index) = NodeData::default();
@@ -755,6 +767,45 @@ impl LayoutNodeArena {
         };
         let entry = slots[index].entry.as_deref().expect("entry was just stored");
         unsafe { std::slice::from_raw_parts(entry.chunks.as_ptr(), entry.chunks.len()) }
+    }
+
+    /// Replaced-content facts are a pure function of the node's content and
+    /// style, and every change to either that can affect layout bumps the
+    /// node's intrinsic cache epoch, so this memo shares the intrinsic
+    /// caches' (generation, epoch) validation and their soundness argument.
+    pub(crate) fn replaced_content_facts(
+        &self,
+        id: NodeSlotId,
+        compute: impl FnOnce() -> crate::layout::FfiReplacedContentFacts,
+    ) -> crate::layout::FfiReplacedContentFacts {
+        // SAFETY: data() generation-checks the slot and returns an
+        // initialized NodeData.
+        let epoch = unsafe { (*self.data(id)).intrinsic_cache_epoch };
+        if epoch == u16::MAX {
+            return compute();
+        }
+        let index = id.slot_index() as usize;
+        {
+            let slots = self.replaced_content_facts_caches.borrow();
+            if let Some(slot) = slots.get(index)
+                && slot.generation == id.generation()
+                && slot.epoch == epoch
+                && let Some(facts) = slot.facts
+            {
+                return facts;
+            }
+        }
+        let facts = compute();
+        let mut slots = self.replaced_content_facts_caches.borrow_mut();
+        if slots.len() <= index {
+            slots.resize_with(index + 1, ReplacedContentFactsCacheSlot::default);
+        }
+        slots[index] = ReplacedContentFactsCacheSlot {
+            generation: id.generation(),
+            epoch,
+            facts: Some(facts),
+        };
+        facts
     }
 
     pub(crate) unsafe fn from_handle<'a>(arena: *mut c_void) -> &'a Self {
