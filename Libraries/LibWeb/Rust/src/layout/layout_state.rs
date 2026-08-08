@@ -811,7 +811,6 @@ impl<'pass> NodeFacts<'pass> {
 pub(crate) struct LayoutState {
     anchor_inset_store: AnchorInsetStore,
     purpose: LayoutStatePurpose,
-    fc_run_cache: FcRunCache,
 }
 
 /// A formatting-context run's record scope: the run registers every record
@@ -921,7 +920,6 @@ impl LayoutState {
         Self {
             anchor_inset_store: AnchorInsetStore::default(),
             purpose,
-            fc_run_cache: FcRunCache::default(),
         }
     }
 

@@ -46,6 +46,7 @@ static_assert(offsetof(RustFFI::NodeData, initial_quote_nesting_level) == 36);
 static_assert(offsetof(RustFFI::NodeData, slot_generation) == 40);
 static_assert(offsetof(RustFFI::NodeData, table_column_span) == 42);
 static_assert(offsetof(RustFFI::NodeData, table_row_span) == 44);
+static_assert(offsetof(RustFFI::NodeData, fragment_cache_epoch) == 46);
 static_assert(offsetof(RustFFI::NodeData, style) == 48);
 static_assert(offsetof(RustFFI::NodeData, shell) == 56);
 
@@ -112,6 +113,16 @@ public:
     DOM::Element* pseudo_element_generator();
 
     bool needs_layout_update() const { return has_flag(RustFFI::NodeFlag::NeedsLayoutUpdate); }
+
+    // Called by the tree mutation primitives on the parent of any structural change. Layout
+    // tree restructuring does not funnel through set_needs_layout_update, but cached
+    // formatting-context runs capture subtree structure, so every ancestor's fragment cache
+    // epoch must advance.
+    void note_structural_change_for_fragment_caches()
+    {
+        for (auto* node = this; node; node = node->parent_ptr())
+            ++node->node_data().fragment_cache_epoch;
+    }
 
     // Set when a style change altered geometry-determining properties of this node itself, so
     // a partial relayout must re-resolve its own size and position instead of reusing them.

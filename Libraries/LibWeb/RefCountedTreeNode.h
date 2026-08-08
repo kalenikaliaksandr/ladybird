@@ -282,6 +282,8 @@ public:
             if (next_sibling)
                 next_sibling->synchronize_topology();
         }
+        if constexpr (requires { node.note_structural_change_for_fragment_caches(); })
+            static_cast<T&>(*this).note_structural_change_for_fragment_caches();
     }
 
     void replace_child(NonnullRefPtr<T> new_child, T& old_child)
@@ -621,6 +623,8 @@ private:
             if (auto* next_sibling = node.next_sibling_ptr())
                 next_sibling->synchronize_topology();
         }
+        if constexpr (requires { node.note_structural_change_for_fragment_caches(); })
+            static_cast<T&>(*this).note_structural_change_for_fragment_caches();
     }
 
     WeakPtr<T> m_parent;

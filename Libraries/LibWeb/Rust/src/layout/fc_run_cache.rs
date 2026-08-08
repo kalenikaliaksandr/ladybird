@@ -27,7 +27,7 @@ fn fc_run_cache_mode_from_environment() -> FcRunCacheMode {
 /// their roots sizes, definiteness, and cell padding through the record
 /// rather than through LayoutInput; at body end it becomes the state a hit
 /// replays into the freshly handed root record.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct UsedValuesCellState {
     content_inline_size: CssPixels,
     content_block_size: CssPixels,
@@ -184,41 +184,162 @@ pub(crate) struct FcRunCacheEntry {
     result: ChildLayoutResult,
     body_end_root_state: CachedRootRecordState,
     pending: PendingRunResult,
+    /// Keeps every font referenced by the cached line data alive: glyph
+    /// runs borrow raw font pointers, and a paint-only style change can
+    /// drop the owning computed values without touching any layout epoch.
+    retained_fonts: RetainedFontSet,
 }
 
-pub(crate) struct FcRunCache {
-    mode: FcRunCacheMode,
-    entries: RefCell<std::collections::HashMap<u32, FcRunCacheEntry>>,
+/// What must still be true for a stored entry to be replayed: the slot
+/// holds the same box (generation), nothing in its subtree was invalidated
+/// (the fragment cache epoch, whose bump walk has no propagation
+/// boundary), and the viewport is unchanged (viewport-relative styles do
+/// not necessarily funnel through per-node invalidation).
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FcRunCacheValidity {
+    slot_generation: u8,
+    fragment_cache_epoch: u16,
+    viewport_generation: u32,
 }
 
-impl Default for FcRunCache {
-    fn default() -> Self {
+impl FcRunCacheValidity {
+    fn capture(run: &FormattingContextRun) -> Self {
+        let data = run.state.node_facts(&run.callbacks, run.box_).data();
         Self {
-            mode: fc_run_cache_mode_from_environment(),
-            entries: RefCell::new(std::collections::HashMap::new()),
+            slot_generation: data.slot_generation,
+            fragment_cache_epoch: data.fragment_cache_epoch,
+            viewport_generation: run.callbacks.arena().fc_run_cache_store().viewport_generation.get(),
         }
     }
 }
 
-impl FcRunCache {
+struct StoredFcRunEntry {
+    validity: FcRunCacheValidity,
+    entry: FcRunCacheEntry,
+}
+
+/// Per-document store of completed run results, one entry per slot,
+/// surviving across layout passes on the node arena.
+#[derive(Default)]
+pub(crate) struct FcRunCacheArenaStore {
+    viewport: Cell<Option<(i32, i32)>>,
+    viewport_generation: Cell<u32>,
+    entries: RefCell<std::collections::HashMap<u32, StoredFcRunEntry>>,
+}
+
+impl FcRunCacheArenaStore {
+    pub(crate) fn note_viewport_size(&self, inline_size_raw: i32, block_size_raw: i32) {
+        if self.viewport.get() != Some((inline_size_raw, block_size_raw)) {
+            self.viewport.set(Some((inline_size_raw, block_size_raw)));
+            self.viewport_generation.set(self.viewport_generation.get().wrapping_add(1));
+        }
+    }
+
+    pub(crate) fn remove_entry(&self, slot: u32) {
+        self.entries.borrow_mut().remove(&slot);
+    }
+
     fn take_matching(
         &self,
         slot: u32,
+        validity: FcRunCacheValidity,
         fc_type: FfiFormattingContextType,
         input: &LayoutInput,
         root_input_cells: &UsedValuesCellState,
     ) -> Option<FcRunCacheEntry> {
         let mut entries = self.entries.borrow_mut();
-        let entry = entries.get(&slot)?;
+        let stored = entries.get(&slot)?;
+        if stored.validity != validity {
+            entries.remove(&slot);
+            return None;
+        }
+        let entry = &stored.entry;
         if entry.fc_type != fc_type || entry.input != *input || entry.root_input_cells != *root_input_cells {
             return None;
         }
-        entries.remove(&slot)
+        entries.remove(&slot).map(|stored| stored.entry)
     }
 
-    fn store(&self, slot: u32, entry: FcRunCacheEntry) {
-        self.entries.borrow_mut().insert(slot, entry);
+    fn store(&self, slot: u32, validity: FcRunCacheValidity, entry: FcRunCacheEntry) {
+        self.entries.borrow_mut().insert(slot, StoredFcRunEntry { validity, entry });
     }
+}
+
+/// The unique fonts a cached tree's line data borrows, each retained
+/// through the FFI for as long as the entry lives. Both font callbacks are
+/// context-free (the retaining pass's callback context does not outlive
+/// the entry), so calls pass a null context.
+struct RetainedFontSet {
+    fonts: Vec<*const c_void>,
+    release_font: unsafe extern "C" fn(*mut c_void, *const c_void),
+}
+
+impl RetainedFontSet {
+    fn retain(callbacks: &FfiLayoutFcCallbacks, fonts: Vec<*const c_void>) -> Self {
+        for &font in &fonts {
+            // SAFETY: every collected font pointer is live during the pass
+            // that produced the line data now being cached.
+            unsafe { (callbacks.retain_font)(std::ptr::null_mut(), font) };
+        }
+        Self {
+            fonts,
+            release_font: callbacks.release_font,
+        }
+    }
+}
+
+impl Drop for RetainedFontSet {
+    fn drop(&mut self) {
+        for &font in &self.fonts {
+            // SAFETY: each font was retained exactly once when this set was
+            // built and is released exactly once here.
+            unsafe { (self.release_font)(std::ptr::null_mut(), font) };
+        }
+    }
+}
+
+fn collect_line_data_fonts(line_data: &LineData, fonts: &mut std::collections::HashSet<*const c_void>) {
+    for line in &line_data.line_boxes {
+        for fragment in &line.fragments {
+            if !fragment.first_available_font.is_null() {
+                fonts.insert(fragment.first_available_font);
+            }
+            if let Some(glyphs) = &fragment.glyphs
+                && !glyphs.font.is_null()
+            {
+                fonts.insert(glyphs.font);
+            }
+        }
+    }
+}
+
+fn fragment_carries_svg_path(fragment: &Fragment) -> bool {
+    let handle = fragment.computed_svg_path.take();
+    let carries = handle.is_some();
+    fragment.computed_svg_path.set(handle);
+    carries
+}
+
+fn collect_fonts_if_tree_is_cacheable(
+    links: &[FragmentLink],
+    fonts: &mut std::collections::HashSet<*const c_void>,
+) -> bool {
+    for link in links {
+        let fragment = &link.fragment;
+        // A deposited SVG subtree can carry path handles even though the
+        // caching run itself never wrote SVG payloads; commit moves them
+        // out, so a tree holding any cannot be re-emitted.
+        if fragment_carries_svg_path(fragment) {
+            return false;
+        }
+        if let Some(line_data) = &fragment.line_data {
+            collect_line_data_fonts(line_data, fonts);
+        }
+        if !collect_fonts_if_tree_is_cacheable(&fragment.children, fonts) {
+            return false;
+        }
+    }
+    true
 }
 
 /// A run's cache interaction, decided at probe time and concluded at the
@@ -241,8 +362,8 @@ impl FcRunCacheAttempt {
         input: &LayoutInput,
         should_collect_devtools_layout_data: bool,
     ) -> Self {
-        let cache = &run.state.fc_run_cache;
-        if cache.mode == FcRunCacheMode::Disabled
+        let mode = fc_run_cache_mode_from_environment();
+        if mode == FcRunCacheMode::Disabled
             || run.fragments.is_none()
             || should_collect_devtools_layout_data
             || matches!(
@@ -256,9 +377,24 @@ impl FcRunCacheAttempt {
         {
             return Self::Bypass;
         }
+        // An anchor()-positioned root reads its resolved insets from the
+        // pass-scoped anchor inset store, an input channel the key cannot
+        // see — and moving or removing the anchor never invalidates the
+        // consumer's own subtree.
+        // SAFETY: the probed box is a live arena slot for this pass.
+        if unsafe {
+            (run.callbacks.box_inset_properties_contain_anchor_functions)(
+                run.callbacks.context,
+                run.callbacks.shell(run.box_),
+            )
+        } {
+            return Self::Bypass;
+        }
         let root_input_cells = UsedValuesCellState::capture(&run.records.used_values(run.box_));
-        match cache.take_matching(run.box_.slot_index(), fc_type, input, &root_input_cells) {
-            Some(entry) => match cache.mode {
+        let validity = FcRunCacheValidity::capture(run);
+        let store = run.callbacks.arena().fc_run_cache_store();
+        match store.take_matching(run.box_.slot_index(), validity, fc_type, input, &root_input_cells) {
+            Some(entry) => match mode {
                 FcRunCacheMode::Enabled => Self::Hit { entry },
                 FcRunCacheMode::Shadow => Self::ShadowHit { entry, root_input_cells },
                 FcRunCacheMode::Disabled => unreachable!(),
@@ -300,6 +436,15 @@ impl FcRunCacheAttempt {
         let (Some(body_end_root_state), Some(pending)) = (body_end_root_state, fragments) else {
             return;
         };
+        let mut fonts = std::collections::HashSet::new();
+        if let Some(line_data) = &body_end_root_state.line_data {
+            collect_line_data_fonts(line_data, &mut fonts);
+        }
+        if !collect_fonts_if_tree_is_cacheable(&pending.root_children, &mut fonts)
+            || !collect_fonts_if_tree_is_cacheable(&pending.late_attachments, &mut fonts)
+        {
+            return;
+        }
         let entry = FcRunCacheEntry {
             fc_type,
             input: *input,
@@ -308,11 +453,15 @@ impl FcRunCacheAttempt {
             result: *result,
             body_end_root_state,
             pending: pending.clone(),
+            retained_fonts: RetainedFontSet::retain(&run.callbacks, fonts.into_iter().collect()),
         };
         if let Some(cached) = shadow_entry {
             verify_cached_entry_against_fresh_run(run.box_, &cached, &entry);
         }
-        run.state.fc_run_cache.store(run.box_.slot_index(), entry);
+        run.callbacks
+            .arena()
+            .fc_run_cache_store()
+            .store(run.box_.slot_index(), FcRunCacheValidity::capture(run), entry);
     }
 }
 
@@ -332,7 +481,10 @@ pub(crate) fn replay_run_from_cache(
     finalize_run_root_participation(run, input, parent_block, &result, entry.atomic_intrinsic_replay);
     root_used.seal_own_metrics();
     let pending = entry.pending.clone();
-    run.state.fc_run_cache.store(run.box_.slot_index(), entry);
+    run.callbacks
+        .arena()
+        .fc_run_cache_store()
+        .store(run.box_.slot_index(), FcRunCacheValidity::capture(run), entry);
     RunOutputs {
         result,
         fragments: Some(pending),
@@ -352,7 +504,15 @@ fn verify_cached_entry_against_fresh_run(root: Node, cached: &FcRunCacheEntry, f
     );
     assert!(
         cached.body_end_root_state.cells == fresh.body_end_root_state.cells,
-        "run cache shadow: body-end root record diverged for slot {root_slot}"
+        "run cache shadow: body-end root record diverged for slot {root_slot}\ncached: {:?}\nfresh: {:?}",
+        cached.body_end_root_state.cells,
+        fresh.body_end_root_state.cells,
+    );
+    let cached_fonts: std::collections::HashSet<_> = cached.retained_fonts.fonts.iter().copied().collect();
+    let fresh_fonts: std::collections::HashSet<_> = fresh.retained_fonts.fonts.iter().copied().collect();
+    assert!(
+        cached_fonts == fresh_fonts,
+        "run cache shadow: referenced fonts diverged for slot {root_slot}"
     );
     assert_line_data_matches(
         root_slot,
@@ -409,12 +569,27 @@ fn assert_rare_data_matches(root_slot: u32, cached: Option<&UsedValuesRareData>,
 }
 
 fn assert_pending_results_match(root_slot: u32, cached: &PendingRunResult, fresh: &PendingRunResult) {
+    // Escapes are collected partly from the frames map sweep, whose order is
+    // not deterministic between runs; consumption sorts registrations into
+    // tree order, so the oracle compares order-insensitively.
+    let sorted_escaped_abspos = |escapes: &[PendingAbsposChild]| {
+        let mut sorted = escapes.to_vec();
+        sorted.sort_by_key(|entry| (entry.child_box.slot_index(), entry.target.slot_index()));
+        sorted
+    };
+    let cached_escapes = sorted_escaped_abspos(&cached.escaped_abspos);
+    let fresh_escapes = sorted_escaped_abspos(&fresh.escaped_abspos);
     assert!(
-        cached.escaped_abspos == fresh.escaped_abspos,
-        "run cache shadow: escaped abspos registrations diverged for slot {root_slot}"
+        cached_escapes == fresh_escapes,
+        "run cache shadow: escaped abspos registrations diverged for slot {root_slot}\ncached: {cached_escapes:#?}\nfresh: {fresh_escapes:#?}"
     );
+    let sorted_candidates = |candidates: &[AnchorCandidate]| {
+        let mut sorted = candidates.to_vec();
+        sorted.sort_by_key(|candidate| (candidate.node.slot_index(), candidate.effective_birth.slot_index()));
+        sorted
+    };
     assert!(
-        cached.escaped_anchor_candidates == fresh.escaped_anchor_candidates,
+        sorted_candidates(&cached.escaped_anchor_candidates) == sorted_candidates(&fresh.escaped_anchor_candidates),
         "run cache shadow: escaped anchor candidates diverged for slot {root_slot}"
     );
     assert_link_lists_match(root_slot, &cached.root_children, &fresh.root_children);
@@ -463,7 +638,14 @@ fn assert_links_match(root_slot: u32, cached: &FragmentLink, fresh: &FragmentLin
         && cached_fragment.grid_layout_data.is_some() == fresh_fragment.grid_layout_data.is_some()
         && cached_fragment.flex_layout_data.is_some() == fresh_fragment.flex_layout_data.is_some()
         && cached_fragment.used_grid_tracks.is_some() == fresh_fragment.used_grid_tracks.is_some()
-        && cached_fragment.computed_svg_transforms == fresh_fragment.computed_svg_transforms
+        // Computed SVG transforms back a get-or-compute cache, so whether a
+        // record held them when its fragment was snapshotted depends on what
+        // asked during that pass (paint timing), not on layout state; the
+        // oracle compares values only when both passes materialized them.
+        && match (cached_fragment.computed_svg_transforms, fresh_fragment.computed_svg_transforms) {
+            (Some(cached_transforms), Some(fresh_transforms)) => cached_transforms == fresh_transforms,
+            _ => true,
+        }
         && cached_fragment.svg_viewport_size == fresh_fragment.svg_viewport_size;
     assert!(
         matches,

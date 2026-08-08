@@ -1049,7 +1049,12 @@ bool box_inset_properties_contain_anchor_functions(Box const& box)
     auto const* computed = abstract_element->computed_values();
     if (!computed)
         return false;
-    // Anchor functions in insets only survive to used-value time inside calculated values, so
+    // A bare anchor function is not stored in the inset length box at all: it lives in the
+    // per-side anchor inset handles the style system keeps next to it.
+    if (computed->anchor_inset(CSS::PropertyID::Top) || computed->anchor_inset(CSS::PropertyID::Right)
+        || computed->anchor_inset(CSS::PropertyID::Bottom) || computed->anchor_inset(CSS::PropertyID::Left))
+        return true;
+    // Anchor functions inside expressions survive to used-value time as calculated values, so
     // when no inset is calculated (the common case), skip reconstructing the style values.
     auto const& inset = computed->inset();
     if (!inset.top().is_calculated() && !inset.right().is_calculated() && !inset.bottom().is_calculated() && !inset.left().is_calculated())
@@ -1154,6 +1159,9 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             if (styled_node.computed_values().position() == CSS::Positioning::Relative)
                 return true;
             auto const* box = as_if<Box>(styled_node);
+            return box && box_inset_properties_contain_anchor_functions(*box); },
+        .box_inset_properties_contain_anchor_functions = [](void*, void* node) {
+            auto const* box = as_if<Box>(*static_cast<Node const*>(node));
             return box && box_inset_properties_contain_anchor_functions(*box); },
         .report_unexpected_fragmented_inline = [](void*, void* node) {
             auto const& box = *static_cast<Box const*>(node);
@@ -1264,6 +1272,10 @@ RustFFI::FfiLayoutFcCallbacks LayoutRustBridge::formatting_context_callbacks()
             VERIFY(node_with_style);
             return compute_svg_path(*node_with_style, request); },
         .release_svg_path = [](void*, void* path_handle) { release_svg_path_handle(path_handle); },
+        // NOTE: Both font callbacks must stay context-free: retained fonts outlive the layout
+        // pass whose callback table retained them, so releases arrive with a null context.
+        .retain_font = [](void*, void const* font) { static_cast<Gfx::Font const*>(font)->ref(); },
+        .release_font = [](void*, void const* font) { static_cast<Gfx::Font const*>(font)->unref(); },
         .svg_image_bounding_box = [](void*, void* node, i32 viewport_width, i32 viewport_height) {
             auto const& image_box = as<SVGImageBox>(*static_cast<Node const*>(node));
             auto bounding_box = image_box.dom_node().bounding_box({

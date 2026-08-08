@@ -988,6 +988,7 @@ pub struct FfiLayoutFcCallbacks {
     pub document_in_quirks_mode: bool,
     pub static_position_containing_block: unsafe extern "C" fn(*mut c_void, *mut c_void) -> NodeSlotId,
     pub needs_inset_resolution: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
+    pub box_inset_properties_contain_anchor_functions: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
     pub report_unexpected_fragmented_inline: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub release_anchor_name_handle: crate::layout::FfiReleaseAnchorNameHandleCallback,
     pub build_replaced_content_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> crate::layout::FfiReplacedContentFacts,
@@ -998,6 +999,11 @@ pub struct FfiLayoutFcCallbacks {
         unsafe extern "C" fn(*mut c_void, *mut c_void, *mut FfiSvgComputedTransforms) -> bool,
     pub compute_svg_path: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiSvgPathRequest) -> FfiSvgPathResult,
     pub release_svg_path: crate::layout::ReleaseRetainedLayoutHandle,
+    /// Both font callbacks must ignore their context argument: retained
+    /// fonts outlive the layout pass whose callback table retained them,
+    /// so releases arrive with a null context.
+    pub retain_font: unsafe extern "C" fn(*mut c_void, *const c_void),
+    pub release_font: unsafe extern "C" fn(*mut c_void, *const c_void),
     pub svg_image_bounding_box: unsafe extern "C" fn(*mut c_void, *mut c_void, CssPixels, CssPixels) -> FfiFloatRect,
     pub anchor_lookup: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, *const *mut c_void, usize) -> NodeSlotId,
     pub build_anchor_function_facts: unsafe extern "C" fn(*mut c_void, *const c_void) -> FfiAnchorFunctionFacts,
@@ -1948,6 +1954,10 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         let sink = unsafe { &*sink };
         let viewport_inline_size = CssPixels::from_raw(viewport_inline_size_raw);
         let viewport_block_size = CssPixels::from_raw(viewport_block_size_raw);
+        callbacks
+            .arena()
+            .fc_run_cache_store()
+            .note_viewport_size(viewport_inline_size_raw, viewport_block_size_raw);
 
         let state = LayoutState::new(LayoutStatePurpose::Commit);
         let root_constraints = crate::layout::ContainingBlockConstraints {

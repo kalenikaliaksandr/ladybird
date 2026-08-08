@@ -218,6 +218,7 @@ pub(crate) struct LayoutNodeArena {
     text_chunk_caches: RefCell<Vec<TextChunkCacheSlot>>,
     replaced_content_facts_caches: RefCell<Vec<ReplacedContentFactsCacheSlot>>,
     raw_table_column_spans: HashMap<NodeSlotId, u32>,
+    fc_run_cache_store: crate::layout::FcRunCacheArenaStore,
     owner_thread: thread::ThreadId,
 }
 
@@ -236,8 +237,13 @@ impl LayoutNodeArena {
             text_chunk_caches: RefCell::new(Vec::new()),
             replaced_content_facts_caches: RefCell::new(Vec::new()),
             raw_table_column_spans: HashMap::new(),
+            fc_run_cache_store: crate::layout::FcRunCacheArenaStore::default(),
             owner_thread: thread::current().id(),
         }
+    }
+
+    pub(crate) fn fc_run_cache_store(&self) -> &crate::layout::FcRunCacheArenaStore {
+        &self.fc_run_cache_store
     }
 
     fn assert_owner_thread(&self) {
@@ -331,6 +337,7 @@ impl LayoutNodeArena {
         if let Some(slot) = self.replaced_content_facts_caches.get_mut().get_mut(index as usize) {
             *slot = ReplacedContentFactsCacheSlot::default();
         }
+        self.fc_run_cache_store.remove_entry(index);
         self.raw_table_column_spans.remove(&id);
         *self.data_mut(index) = NodeData::default();
 

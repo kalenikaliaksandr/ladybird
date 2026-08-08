@@ -124,13 +124,18 @@ static bool image_element_dimensions_may_depend_on_intrinsic_size(Layout::ImageB
 static void reset_intrinsic_size_caches_after_image_data_change(Layout::ImageBox& image_box)
 {
     image_box.reset_cached_intrinsic_sizes();
+    image_box.bump_fragment_cache_epoch();
+    bool passed_intrinsic_reset_boundary = false;
     for (auto* ancestor = image_box.parent(); ancestor; ancestor = ancestor->parent()) {
         auto* box = as_if<Layout::Box>(ancestor);
         if (!box)
             continue;
-        box->reset_cached_intrinsic_sizes();
-        if (box->is_absolutely_positioned() || box->is_svg_svg_box())
-            break;
+        box->bump_fragment_cache_epoch();
+        if (!passed_intrinsic_reset_boundary) {
+            box->reset_cached_intrinsic_sizes();
+            if (box->is_absolutely_positioned() || box->is_svg_svg_box())
+                passed_intrinsic_reset_boundary = true;
+        }
     }
 }
 
