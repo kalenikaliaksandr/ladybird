@@ -1576,7 +1576,7 @@ impl<'pass> AbsposEngine<'pass> {
         assert!(!self.facts(node).is_svg_box());
         let (available_space, constraints) = out_of_flow_root_space(inputs);
 
-        match crate::layout::layout_inside_child(
+        let child_geometry = match crate::layout::layout_inside_child(
             run,
             None,
             None,
@@ -1585,29 +1585,30 @@ impl<'pass> AbsposEngine<'pass> {
             LayoutInput::new(available_space, constraints, ParticipationInParentFormattingContext::AbsolutelyPositioned(inputs)),
             false,
         ) {
-            crate::layout::ChildLayoutOutcome::Created(_) | crate::layout::ChildLayoutOutcome::Skipped(_) => {}
+            crate::layout::ChildLayoutOutcome::Created(result) | crate::layout::ChildLayoutOutcome::Skipped(result) => {
+                result.geometry
+            }
             crate::layout::ChildLayoutOutcome::ReenterCurrent => {
                 unreachable!("abspos child with contents did not establish a formatting context")
             }
-        }
+        };
 
         let static_offset = self.static_offset(node, inputs.static_position_rect);
-        let used = self.used(node);
-        let collapsed = used.uses_collapsing_borders_model.get();
+        let collapsed = child_geometry.uses_collapsing_borders_model;
         let mut used_offset = LogicalOffset {
             inline_offset: if inputs.containing_block_info.inline_axis_mode == AbsposAxisMode::StaticPosition {
                 static_offset.inline_offset
             } else {
-                inputs.containing_block_info.rect.offset.inline_offset + used.inset_left.get()
+                inputs.containing_block_info.rect.offset.inline_offset + child_geometry.inset.left
             },
             block_offset: if inputs.containing_block_info.block_axis_mode == AbsposAxisMode::StaticPosition {
                 static_offset.block_offset
             } else {
-                inputs.containing_block_info.rect.offset.block_offset + used.inset_top.get()
+                inputs.containing_block_info.rect.offset.block_offset + child_geometry.inset.top
             },
         };
-        used_offset.inline_offset += used.margin_left.get() + used.border_box_left(collapsed);
-        used_offset.block_offset += used.margin_top.get() + used.border_box_top(collapsed);
+        used_offset.inline_offset += child_geometry.margin.left + child_geometry.border_box_left(collapsed);
+        used_offset.block_offset += child_geometry.margin.top + child_geometry.border_box_top(collapsed);
         let is_measurement = self.state.is_measurement();
         if !is_measurement {
             self.used(node)

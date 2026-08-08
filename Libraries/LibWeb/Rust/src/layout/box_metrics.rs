@@ -52,6 +52,22 @@ impl BoxMetrics {
         CssPixels::from_raw(rounded)
     }
 
+    pub(crate) fn border_left_collapsed(&self, collapsed: bool) -> CssPixels {
+        if collapsed {
+            Self::rounded_half_border(self.border.left)
+        } else {
+            self.border.left
+        }
+    }
+
+    pub(crate) fn border_right_collapsed(&self, collapsed: bool) -> CssPixels {
+        if collapsed {
+            Self::rounded_half_border(self.border.right)
+        } else {
+            self.border.right
+        }
+    }
+
     pub(crate) fn border_top_collapsed(&self, collapsed: bool) -> CssPixels {
         if collapsed {
             Self::rounded_half_border(self.border.top)
@@ -68,6 +84,14 @@ impl BoxMetrics {
         }
     }
 
+    pub(crate) fn border_box_left(&self, collapsed: bool) -> CssPixels {
+        self.border_left_collapsed(collapsed) + self.padding.left
+    }
+
+    pub(crate) fn border_box_right(&self, collapsed: bool) -> CssPixels {
+        self.border_right_collapsed(collapsed) + self.padding.right
+    }
+
     pub(crate) fn border_box_top(&self, collapsed: bool) -> CssPixels {
         self.border_top_collapsed(collapsed) + self.padding.top
     }
@@ -78,6 +102,22 @@ impl BoxMetrics {
 
     pub(crate) fn border_box_block_size(&self, collapsed: bool) -> CssPixels {
         self.border_box_top(collapsed) + self.content_block_size + self.border_box_bottom(collapsed)
+    }
+
+    pub(crate) fn margin_box_top(&self, collapsed: bool) -> CssPixels {
+        self.margin.top + self.border_box_top(collapsed)
+    }
+
+    pub(crate) fn margin_box_bottom(&self, collapsed: bool) -> CssPixels {
+        self.margin.bottom + self.border_box_bottom(collapsed)
+    }
+
+    pub(crate) fn margin_box_inline_size(&self, collapsed: bool) -> CssPixels {
+        self.margin.left
+            + self.border_box_left(collapsed)
+            + self.content_inline_size
+            + self.border_box_right(collapsed)
+            + self.margin.right
     }
 
     pub(crate) fn set_content_inline_size(&mut self, value: CssPixels) {

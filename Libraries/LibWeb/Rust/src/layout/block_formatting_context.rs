@@ -365,16 +365,16 @@ impl<'pass> BlockFormattingContext<'pass> {
         }
     }
 
-    fn margin_box_rect(used: &UsedValues) -> BlockCssPixelRect {
-        let left = (used.margin_left.get() + used.border_box_left(false)).max(CssPixels::default());
-        let right = (used.margin_right.get() + used.border_box_right(false)).max(CssPixels::default());
-        let top = used.margin_box_top(false).max(CssPixels::default());
-        let bottom = used.margin_box_bottom(false).max(CssPixels::default());
+    fn margin_box_rect(float_geometry: &BoxMetrics) -> BlockCssPixelRect {
+        let left = (float_geometry.margin.left + float_geometry.border_box_left(false)).max(CssPixels::default());
+        let right = (float_geometry.margin.right + float_geometry.border_box_right(false)).max(CssPixels::default());
+        let top = float_geometry.margin_box_top(false).max(CssPixels::default());
+        let bottom = float_geometry.margin_box_bottom(false).max(CssPixels::default());
         BlockCssPixelRect {
             x: -left,
             y: -top,
-            width: left + used.content_inline_size.get() + right,
-            height: top + used.content_block_size.get() + bottom,
+            width: left + float_geometry.content_inline_size + right,
+            height: top + float_geometry.content_block_size + bottom,
         }
     }
 
@@ -954,12 +954,12 @@ impl<'pass> BlockFormattingContext<'pass> {
     fn place_float(
         &self,
         side: FloatSide,
-        used: &UsedValues,
+        float_geometry: &BoxMetrics,
         available_space: AvailableSpace,
         containing_block_rect_in_root: BlockCssPixelRect,
         ceiling_in_root: CssPixels,
     ) -> FloatPlacement {
-        let margin_box_inline_size = used.margin_box_inline_size(false);
+        let margin_box_inline_size = float_geometry.margin_box_inline_size(false);
         let mut candidate_block_start = ceiling_in_root;
         loop {
             let band = self.band_at(candidate_block_start);
@@ -978,12 +978,12 @@ impl<'pass> BlockFormattingContext<'pass> {
                 return FloatPlacement {
                     block_start: candidate_block_start,
                     offset_from_edge: if side == FloatSide::Left {
-                        intrusions.left + used.margin_left.get() + used.border_box_left(false)
+                        intrusions.left + float_geometry.margin.left + float_geometry.border_box_left(false)
                     } else {
                         intrusions.right
-                            + used.content_inline_size.get()
-                            + used.margin_right.get()
-                            + used.border_box_right(false)
+                            + float_geometry.content_inline_size
+                            + float_geometry.margin.right
+                            + float_geometry.border_box_right(false)
                     },
                 };
             }
@@ -991,12 +991,12 @@ impl<'pass> BlockFormattingContext<'pass> {
                 return FloatPlacement {
                     block_start: candidate_block_start,
                     offset_from_edge: if side == FloatSide::Left {
-                        intrusions.left + used.margin_left.get() + used.border_box_left(false)
+                        intrusions.left + float_geometry.margin.left + float_geometry.border_box_left(false)
                     } else {
                         intrusions.right
-                            + used.content_inline_size.get()
-                            + used.margin_right.get()
-                            + used.border_box_right(false)
+                            + float_geometry.content_inline_size
+                            + float_geometry.margin.right
+                            + float_geometry.border_box_right(false)
                     },
                 };
             };
@@ -1460,7 +1460,7 @@ impl<'pass> BlockFormattingContext<'pass> {
             inline_size: crate::layout::AvailableSize::definite(max_content_inline_size),
             block_size: crate::layout::AvailableSize::Indefinite,
         };
-        match crate::layout::layout_inside_child(
+        let marker_layout = match crate::layout::layout_inside_child(
             run,
             None,
             None,
@@ -1479,15 +1479,16 @@ impl<'pass> BlockFormattingContext<'pass> {
             },
             true,
         ) {
-            crate::layout::ChildLayoutOutcome::Created(_) | crate::layout::ChildLayoutOutcome::Skipped(_) => {}
+            crate::layout::ChildLayoutOutcome::Created(result) | crate::layout::ChildLayoutOutcome::Skipped(result) => {
+                result
+            }
             crate::layout::ChildLayoutOutcome::ReenterCurrent => {
                 unreachable!("marker inside layout did not establish a formatting context")
             }
-        }
+        };
 
-        let marker_used = self.used(marker);
-        let marker_block_size = marker_used.content_block_size.get();
-        let marker_inline_size = marker_used.content_inline_size.get();
+        let marker_block_size = marker_layout.geometry.content_block_size;
+        let marker_inline_size = marker_layout.geometry.content_inline_size;
         let list_item_style = self.style(list_item);
         let list_item_used = self.used(list_item);
         let marker_inline_offset = if list_item_style.direction() == direction::LTR {
@@ -1496,9 +1497,9 @@ impl<'pass> BlockFormattingContext<'pass> {
             list_item_used.content_inline_size.get() - inline_space_used_before_list_item_elements_formatted.right
         };
         let marker_block_offset = if let Some(list_item_first_baseline) = list_item_first_baseline
-            && marker_used.has_first_baseline.get()
+            && let Some(marker_first_baseline) = marker_layout.baselines.first
         {
-            list_item_first_baseline - marker_used.first_baseline.get()
+            list_item_first_baseline - marker_first_baseline
         } else {
             round_css_pixels(Self::marker_centered_block_offset(marker_style.line_height(), marker_block_size))
         };
@@ -2429,7 +2430,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         assert!(self.facts(node).is_floating());
         let block_container = self.containing_block(node);
         let declared_float_root_metrics = BoxMetrics::capture_from_record(&self.used(node));
-        let _ = self.layout_inside(
+        let float_layout = self.layout_inside(
             run,
             node,
             LayoutInput {
@@ -2444,6 +2445,9 @@ impl<'pass> BlockFormattingContext<'pass> {
             },
             false,
         );
+        let float_geometry = float_layout
+            .map(|result| result.geometry)
+            .unwrap_or_else(|| BoxMetrics::capture_from_record(&self.used(node)));
         let containing_block_rect = self.containing_block_rect(
             block_container,
             input
@@ -2490,27 +2494,25 @@ impl<'pass> BlockFormattingContext<'pass> {
         }
         let placement = self.place_float(
             side,
-            &self.used(node),
+            &float_geometry,
             available_space,
             containing_block_rect_now,
             ceiling_in_root,
         );
         let content_block_offset = placement.block_start - containing_block_rect_now.y
-            + self.used(node).margin_top.get()
-            + self.used(node).border_box_top(false);
-        let mut margin_box_rect = Self::margin_box_rect(&self.used(node))
+            + float_geometry.margin.top
+            + float_geometry.border_box_top(false);
+        let mut margin_box_rect = Self::margin_box_rect(&float_geometry)
             .translated(CssPixels::default(), content_block_offset)
             .translated(containing_block_rect.x, containing_block_rect.y);
         let floating_box = FloatingBox {
             box_: node,
             side,
             offset_from_edge: placement.offset_from_edge,
-            top_margin_edge: content_block_offset
-                - self.used(node).margin_top.get()
-                - self.used(node).border_box_top(false),
+            top_margin_edge: content_block_offset - float_geometry.margin.top - float_geometry.border_box_top(false),
             bottom_margin_edge: content_block_offset
-                + self.used(node).content_block_size.get()
-                + self.used(node).margin_box_bottom(false),
+                + float_geometry.content_block_size
+                + float_geometry.margin_box_bottom(false),
             margin_box_rect_in_root_coordinate_space: margin_box_rect,
             containing_block_rect_in_root_coordinate_space: containing_block_rect,
             percentage_basis_inline_size: input.containing_block_constraints.percentage_basis_inline_size,
@@ -2543,7 +2545,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         let inline_offset = if side == FloatSide::Left {
             floating_box.offset_from_edge
         } else {
-            let float_containing_block_inline_size = match self.used(node).inline_size_constraint.get() {
+            let float_containing_block_inline_size = match float_geometry.inline_size_constraint {
                 SizeConstraint::MinContent => CssPixels::default(),
                 // Preserve the MaxContent saturation quirk from the C++ fixed-point subtraction.
                 SizeConstraint::MaxContent => CssPixels::from_raw(i32::MAX),
