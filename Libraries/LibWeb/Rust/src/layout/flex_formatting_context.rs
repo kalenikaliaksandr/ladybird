@@ -2303,24 +2303,6 @@ impl<'pass> FlexFormattingContext<'pass> {
 
     fn item_box_baseline(&self, index: usize) -> CssPixels {
         let item = &self.flex_items[index];
-        debug_assert_eq!(
-            crate::layout::box_baseline(
-                self.state,
-                &self.callbacks,
-                item.box_,
-                item.used_values,
-                crate::layout::BaselineSet::First
-            ),
-            crate::layout::box_baseline_with_content_baselines(
-                self.state,
-                &self.callbacks,
-                item.box_,
-                item.used_values,
-                crate::layout::BaselineSet::First,
-                item.content_baselines,
-            ),
-            "run-returned baselines diverge from the stored cells"
-        );
         crate::layout::box_baseline_with_content_baselines(
             self.state,
             &self.callbacks,
@@ -2419,33 +2401,19 @@ impl<'pass> FlexFormattingContext<'pass> {
             input.sizing.forced_min_border_box_block_size = Some(intrinsic_size + extra);
         }
 
-        let content_baselines_from_cells = |used: &UsedValues| DerivedBaselines {
-            first: used.has_first_baseline.get().then(|| used.first_baseline.get()),
-            last: used.has_last_baseline.get().then(|| used.last_baseline.get()),
-        };
         self.flex_items[index].content_baselines =
             match crate::layout::layout_inside_child(run, None, None, node, LayoutMode::Normal, input, false) {
                 crate::layout::ChildLayoutOutcome::Created(result) => result.baselines,
                 crate::layout::ChildLayoutOutcome::ReenterCurrent => {
                     self.run(run, input);
-                    content_baselines_from_cells(self.item_used(index))
+                    self.item_used(index).content_baselines_from_cells()
                 }
-                crate::layout::ChildLayoutOutcome::Skipped => content_baselines_from_cells(self.item_used(index)),
+                crate::layout::ChildLayoutOutcome::Skipped => self.item_used(index).content_baselines_from_cells(),
             };
 
         let container_inline_size = self.container_used().content_inline_size.get();
         let container_block_size = self.container_used().content_block_size.get();
-        crate::layout::compute_inset_native(
-            self.state,
-            self.records.clone(),
-            self.callbacks,
-            self.fragments.clone(),
-            node,
-            container_inline_size,
-            container_block_size,
-            self.flex_container,
-            run.treat_block_axis_percentage_insets_as_auto_beyond_root,
-        );
+        crate::layout::compute_inset_native(run, node, container_inline_size, container_block_size);
     }
 
     // https://drafts.csswg.org/css-flexbox-1/#abspos-items

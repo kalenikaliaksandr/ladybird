@@ -36,7 +36,8 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
         return ChildLayoutResult::default();
     }
 
-    let wrapper_constraints = SizingContext::new(run.state, run.records.clone(), run.callbacks)
+    let wrapper_constraints = run
+        .sizing()
         .constraints_for_child_context(run.box_, layout_input.containing_block_constraints);
     let wrapper_state = run
         .records
@@ -65,10 +66,8 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
         None,
     );
 
-    if let (Some(fragments), Some(pending)) = (run.fragments.as_deref(), wrapper_layout.fragments) {
-        fragments.deposit_child_run(wrapper, pending);
-    }
-    run.records.absorb_completed_child_scope(&wrapper_layout.records);
+    let wrapper_result =
+        crate::layout::adopt_completed_child_run(&run.records, run.fragments.as_deref(), wrapper, wrapper_layout);
     crate::layout::place_child(
         run.state,
         &run.records,
@@ -81,7 +80,7 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
 
     ChildLayoutResult {
         automatic_content_inline_size: content_inline_size,
-        automatic_content_block_size: wrapper_layout.result.automatic_content_block_size,
+        automatic_content_block_size: wrapper_result.automatic_content_block_size,
         baselines: DerivedBaselines::default(),
     }
 }

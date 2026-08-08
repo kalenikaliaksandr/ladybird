@@ -212,6 +212,13 @@ impl UsedValues {
         self.line_data.get_or_init(LineData::default)
     }
 
+    pub(crate) fn content_baselines_from_cells(&self) -> crate::layout::DerivedBaselines {
+        crate::layout::DerivedBaselines {
+            first: self.has_first_baseline.get().then(|| self.first_baseline.get()),
+            last: self.has_last_baseline.get().then(|| self.last_baseline.get()),
+        }
+    }
+
     /// Seals every field that commit emits as part of FfiCommittedBoxMetrics.
     /// Called when the box is placed: after placement, none of these may
     /// change again.

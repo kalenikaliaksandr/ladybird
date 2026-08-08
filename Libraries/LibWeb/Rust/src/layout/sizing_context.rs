@@ -1313,14 +1313,11 @@ impl<'pass> SizingContext<'pass> {
         used.set_content_block_size(measurement.content_block_size);
         used.uses_collapsing_borders_model
             .set(measurement.uses_collapsing_borders_model);
-        used.has_first_baseline.set(measurement.has_first_baseline);
-        used.first_baseline.set(measurement.first_baseline);
-        used.has_last_baseline.set(measurement.has_last_baseline);
-        used.last_baseline.set(measurement.last_baseline);
         let baselines = DerivedBaselines {
             first: measurement.has_first_baseline.then_some(measurement.first_baseline),
             last: measurement.has_last_baseline.then_some(measurement.last_baseline),
         };
+        crate::layout::store_derived_baselines(used, baselines);
         Some((measurement.automatic_content_block_size, baselines))
     }
 
@@ -1419,7 +1416,7 @@ impl<'pass> SizingContext<'pass> {
         }
 
         let measurement = MeasurementState::create(self.callbacks);
-        let root = Self::create_measurement_used_values(&measurement, node, constraints);
+        let root = measurement.create_used_values(node, constraints);
         root.inline_size_constraint.set(SizeConstraint::MinContent);
         root.has_definite_inline_size.set(false);
         let block_size = if root.has_definite_block_size() {
@@ -1621,7 +1618,7 @@ impl<'pass> SizingContext<'pass> {
         }
 
         let measurement = MeasurementState::create(self.callbacks);
-        let root = Self::create_measurement_used_values(&measurement, node, constraints);
+        let root = measurement.create_used_values(node, constraints);
         root.inline_size_constraint.set(SizeConstraint::MaxContent);
         root.has_definite_inline_size.set(false);
         let block_size = if root.has_definite_block_size() {
@@ -1682,7 +1679,7 @@ impl<'pass> SizingContext<'pass> {
         }
 
         let measurement = MeasurementState::create(self.callbacks);
-        let root = Self::create_measurement_used_values(&measurement, node, constraints);
+        let root = measurement.create_used_values(node, constraints);
         root.block_size_constraint.set(SizeConstraint::MinContent);
         root.has_definite_block_size.set(false);
         root.set_content_inline_size(inline_size);
@@ -1736,7 +1733,7 @@ impl<'pass> SizingContext<'pass> {
         }
 
         let measurement = MeasurementState::create(self.callbacks);
-        let root = Self::create_measurement_used_values(&measurement, node, constraints);
+        let root = measurement.create_used_values(node, constraints);
         root.block_size_constraint.set(SizeConstraint::MaxContent);
         root.has_definite_block_size.set(false);
         root.set_content_inline_size(inline_size);
@@ -1767,7 +1764,7 @@ impl<'pass> SizingContext<'pass> {
         constraints: ContainingBlockConstraints,
     ) -> CssPixels {
         let measurement = MeasurementState::create(self.callbacks);
-        let node_used = Self::create_measurement_used_values(&measurement, node, constraints);
+        let node_used = measurement.create_used_values(node, constraints);
         measurement
             .run_with_layout_mode(
                 node,
@@ -1867,17 +1864,6 @@ impl<'pass> SizingContext<'pass> {
         find(self, wrapper).expect("table wrapper must contain a table box")
     }
 
-    fn create_measurement_used_values(
-        measurement: &MeasurementState,
-        node: Node,
-        constraints: ContainingBlockConstraints,
-    ) -> &UsedValues {
-        let callbacks = *measurement.callbacks();
-        measurement
-            .rust_state()
-            .create_used_values(&callbacks, node, constraints)
-    }
-
     // 17.5.2 Table width algorithms: the 'table-layout' property
     // https://www.w3.org/TR/CSS22/tables.html#width-layout
     pub(crate) fn compute_table_box_inline_size_inside_wrapper(
@@ -1908,7 +1894,7 @@ impl<'pass> SizingContext<'pass> {
         // wrapper's constraints unchanged. Callers measuring a table wrapper for grid alignment
         // pass the grid-area inline size as the wrapper's percentage basis.
         let table_constraints = table_wrapper_constraints;
-        let table_used = Self::create_measurement_used_values(&measurement, table_box, table_constraints);
+        let table_used = measurement.create_used_values(table_box, table_constraints);
         let table_style = self.style(table_box);
         table_used.border_left.set(table_style.border_left_width());
         table_used.border_right.set(table_style.border_right_width());
@@ -1919,16 +1905,16 @@ impl<'pass> SizingContext<'pass> {
             .padding_right
             .set(table_style.padding_right().to_px(containing_block_inline_size));
 
-        let table_run = crate::layout::FormattingContextRun::new(
-            measurement.rust_state(),
-            std::rc::Rc::new(RunRecords::new(table_box, table_used)),
-            table_box,
-            LayoutMode::IntrinsicSizing,
-            *measurement.callbacks(),
-            false,
-            false,
-            None,
-        );
+        let table_run = crate::layout::FormattingContextRun {
+            state: measurement.rust_state(),
+            records: std::rc::Rc::new(RunRecords::new(table_box, table_used)),
+            box_: table_box,
+            layout_mode: LayoutMode::IntrinsicSizing,
+            callbacks: *measurement.callbacks(),
+            should_collect_devtools_layout_data: false,
+            treat_block_axis_percentage_insets_as_auto_beyond_root: false,
+            fragments: None,
+        };
         let mut table = TableFormattingContext::new(&table_run);
         let table_available = table_used.available_inner_space_or_constraints_from(available_space);
         table.run_until_inline_size_calculation(
@@ -1972,7 +1958,7 @@ impl<'pass> SizingContext<'pass> {
         let table_box = self.table_box_inside_wrapper(wrapper);
 
         let measurement = MeasurementState::create(self.callbacks);
-        let wrapper_used = Self::create_measurement_used_values(&measurement, wrapper, table_wrapper_constraints);
+        let wrapper_used = measurement.create_used_values(wrapper, table_wrapper_constraints);
         let wrapper_outputs = measurement.run_with_layout_mode(
             wrapper,
             wrapper_used,

@@ -201,21 +201,14 @@ pub(crate) struct BlockFormattingContext<'pass> {
 }
 
 impl<'pass> BlockFormattingContext<'pass> {
-    pub(crate) fn new(
-        state: &'pass LayoutState,
-        records: std::rc::Rc<RunRecords<'pass>>,
-        root: Node,
-        layout_mode: LayoutMode,
-        callbacks: FfiLayoutFcCallbacks,
-        fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
-    ) -> Self {
+    pub(crate) fn new(run: &FormattingContextRun<'pass>) -> Self {
         Self {
-            state,
-            records,
-            root,
-            layout_mode,
-            callbacks,
-            fragments,
+            state: run.state,
+            records: run.records.clone(),
+            root: run.box_,
+            layout_mode: run.layout_mode,
+            callbacks: run.callbacks,
+            fragments: run.fragments.clone(),
             block_offset_of_current_block_container: Cell::new(None),
             pending_legend_flow_position: Cell::new(None),
             margin_state: RefCell::new(BlockMarginState::default()),
@@ -358,17 +351,7 @@ impl<'pass> BlockFormattingContext<'pass> {
     }
 
     fn compute_inset(&self, run: &FormattingContextRun<'pass>, node: Node, containing_block_size: LogicalSize) {
-        crate::layout::compute_inset_native(
-            self.state,
-            self.records.clone(),
-            self.callbacks,
-            self.fragments.clone(),
-            node,
-            containing_block_size.inline_size,
-            containing_block_size.block_size,
-            self.root,
-            run.treat_block_axis_percentage_insets_as_auto_beyond_root,
-        );
+        crate::layout::compute_inset_native(run, node, containing_block_size.inline_size, containing_block_size.block_size);
     }
 
     fn containing_block_rect(&self, node: Node, position: FfiCssPixelPoint) -> BlockCssPixelRect {
@@ -564,18 +547,19 @@ impl<'pass> BlockFormattingContext<'pass> {
         // A rendered legend with a computed inline size of auto uses the
         // fit-content size, resolved here so the legend's children are laid
         // out against the used size rather than a provisional stretch size.
-        let container = self.containing_block(node);
-        if !container.is_invalid()
-            && style.width().is_auto()
-            && self.facts(container).is_fieldset_box()
-            && self.facts(container).rendered_legend() == node
-        {
-            return Some(sizing.calculate_fit_content_size(
-                node,
-                SizingAxis::Inline,
-                remaining_available_space,
-                constraints,
-            ));
+        if style.width().is_auto() {
+            let container = self.containing_block(node);
+            if !container.is_invalid()
+                && self.facts(container).is_fieldset_box()
+                && self.facts(container).rendered_legend() == node
+            {
+                return Some(sizing.calculate_fit_content_size(
+                    node,
+                    SizingAxis::Inline,
+                    remaining_available_space,
+                    constraints,
+                ));
+            }
         }
 
         let remaining_inline_size = remaining_available_space.inline_size.to_px_or_zero();

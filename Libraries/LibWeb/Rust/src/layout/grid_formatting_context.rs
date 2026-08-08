@@ -1117,28 +1117,19 @@ impl ParentGridData {
 }
 
 impl<'pass> GridFormattingContext<'pass> {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        state: &'pass LayoutState,
-        records: std::rc::Rc<RunRecords<'pass>>,
-        grid_container: Node,
-        parent_grid: Option<&GridFormattingContext<'_>>,
-        layout_mode: LayoutMode,
-        callbacks: FfiLayoutFcCallbacks,
-        should_collect_devtools_layout_data: bool,
-        fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
-    ) -> Self {
-        let container_used_values = records.used_values(grid_container);
+    pub(crate) fn new(run: &FormattingContextRun<'pass>, parent_grid: Option<&GridFormattingContext<'_>>) -> Self {
+        let grid_container = run.box_;
+        let container_used_values = run.records.used_values(grid_container);
         Self {
-            state,
-            records,
+            state: run.state,
+            records: run.records.clone(),
             grid_container,
             derived_baselines_of_root_box: DerivedBaselines::default(),
             parent_grid: parent_grid.map(|parent| ParentGridData::for_child_container(parent, grid_container)),
-            layout_mode,
-            callbacks,
-            should_collect_devtools_layout_data,
-            fragments,
+            layout_mode: run.layout_mode,
+            callbacks: run.callbacks,
+            should_collect_devtools_layout_data: run.should_collect_devtools_layout_data,
+            fragments: run.fragments.clone(),
             container_used_values,
             available_space: None,
             layout_input: None,
@@ -2611,23 +2602,21 @@ impl<'pass> GridFormattingContext<'pass> {
     fn subgrid_item_contributions_to_track_sizing(&self, subgrid: GridItem<'pass>, axis: Axis) -> Vec<ItemContribution> {
         let scratch = MeasurementState::create(self.callbacks);
         let live = self.used(subgrid);
-        let scratch_root = scratch
-            .rust_state()
-            .create_used_values(scratch.callbacks(), subgrid.box_, ContainingBlockConstraints::default());
+        let scratch_root = scratch.create_used_values(subgrid.box_, ContainingBlockConstraints::default());
         live.mirror_box_metrics_and_size_constraints_into(scratch_root);
         scratch_root.has_definite_inline_size.set(live.has_definite_inline_size.get());
         scratch_root.has_definite_block_size.set(live.has_definite_block_size.get());
-        let scratch_records = std::rc::Rc::new(RunRecords::new(subgrid.box_, scratch_root));
-        let mut context = GridFormattingContext::new(
-            scratch.rust_state(),
-            scratch_records,
-            subgrid.box_,
-            Some(self),
-            LayoutMode::IntrinsicSizing,
-            self.callbacks,
-            false,
-            None,
-        );
+        let scratch_run = crate::layout::FormattingContextRun {
+            state: scratch.rust_state(),
+            records: std::rc::Rc::new(RunRecords::new(subgrid.box_, scratch_root)),
+            box_: subgrid.box_,
+            layout_mode: LayoutMode::IntrinsicSizing,
+            callbacks: self.callbacks,
+            should_collect_devtools_layout_data: false,
+            treat_block_axis_percentage_insets_as_auto_beyond_root: false,
+            fragments: None,
+        };
+        let mut context = GridFormattingContext::new(&scratch_run, Some(self));
         let mut available = self.available_space.unwrap();
         if !axis.is_column() && self.used(subgrid).has_definite_inline_size() {
             available.inline_size = AvailableSize::definite(self.used(subgrid).content_inline_size.get());
@@ -3454,17 +3443,7 @@ impl<'pass> GridFormattingContext<'pass> {
             };
             // Resolve relative-position insets before placement seals the
             // item's committed metrics.
-            crate::layout::compute_inset_native(
-                self.state,
-                self.records.clone(),
-                self.callbacks,
-                self.fragments.clone(),
-                item.box_,
-                area.size.inline_size,
-                area.size.block_size,
-                self.grid_container,
-                run.treat_block_axis_percentage_insets_as_auto_beyond_root,
-            );
+            crate::layout::compute_inset_native(run, item.box_, area.size.inline_size, area.size.block_size);
             crate::layout::place_child(self.state, &self.records, &self.callbacks, item.box_, offset, self.fragments.as_deref(), None);
         }
         self.derived_baselines_of_root_box =

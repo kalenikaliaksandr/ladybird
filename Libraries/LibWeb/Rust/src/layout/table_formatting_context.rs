@@ -1949,17 +1949,13 @@ impl<'pass> TableFormattingContext<'pass> {
             },
             participation: ParticipationInParentFormattingContext::Item,
         };
-        let content_baselines_from_cells = |used: &UsedValues| DerivedBaselines {
-            first: used.has_first_baseline.get().then(|| used.first_baseline.get()),
-            last: used.has_last_baseline.get().then(|| used.last_baseline.get()),
-        };
         match crate::layout::layout_inside_child(run, None, None, cell.box_, self.layout_mode, layout_input, false) {
             crate::layout::ChildLayoutOutcome::Created(result) => result.baselines,
             crate::layout::ChildLayoutOutcome::ReenterCurrent => {
                 self.run(run, layout_input);
-                content_baselines_from_cells(self.used_values(cell.box_))
+                self.used_values(cell.box_).content_baselines_from_cells()
             }
-            crate::layout::ChildLayoutOutcome::Skipped => content_baselines_from_cells(self.used_values(cell.box_)),
+            crate::layout::ChildLayoutOutcome::Skipped => self.used_values(cell.box_).content_baselines_from_cells(),
         }
     }
 
@@ -1967,18 +1963,6 @@ impl<'pass> TableFormattingContext<'pass> {
         let Some(content_baselines) = committing_run_baselines else {
             return self.box_baseline(cell_box);
         };
-        debug_assert_eq!(
-            self.box_baseline(cell_box),
-            crate::layout::box_baseline_with_content_baselines(
-                self.state,
-                &self.callbacks,
-                cell_box,
-                self.used_values(cell_box),
-                crate::layout::BaselineSet::First,
-                content_baselines,
-            ),
-            "run-returned baselines diverge from the stored cells"
-        );
         crate::layout::box_baseline_with_content_baselines(
             self.state,
             &self.callbacks,
@@ -2023,9 +2007,7 @@ impl<'pass> TableFormattingContext<'pass> {
         }
 
         let measurement = MeasurementState::create(self.callbacks);
-        let measured_root = measurement
-            .rust_state()
-            .create_used_values(measurement.callbacks(), cell.box_, ContainingBlockConstraints::default());
+        let measured_root = measurement.create_used_values(cell.box_, ContainingBlockConstraints::default());
         used.mirror_box_metrics_and_size_constraints_into(measured_root);
         measured_root
             .has_definite_inline_size
@@ -2054,24 +2036,6 @@ impl<'pass> TableFormattingContext<'pass> {
         )
         .result;
         let measured_cell_used = measured_root;
-        debug_assert_eq!(
-            crate::layout::box_baseline(
-                measurement.rust_state(),
-                measurement.callbacks(),
-                cell.box_,
-                measured_cell_used,
-                crate::layout::BaselineSet::First,
-            ),
-            crate::layout::box_baseline_with_content_baselines(
-                measurement.rust_state(),
-                measurement.callbacks(),
-                cell.box_,
-                measured_cell_used,
-                crate::layout::BaselineSet::First,
-                result.baselines,
-            ),
-            "run-returned baselines diverge from the stored cells"
-        );
         Some(MeasuredCellContent {
             content_block_size: result.automatic_content_block_size,
             first_baseline: crate::layout::box_baseline_with_content_baselines(

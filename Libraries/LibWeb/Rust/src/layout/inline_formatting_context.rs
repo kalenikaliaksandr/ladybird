@@ -819,17 +819,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
 
     pub(crate) fn compute_inset(&self, node: Node) {
         let used = self.containing_used();
-        crate::layout::compute_inset_native(
-            self.state,
-            self.run.records.clone(),
-            self.callbacks,
-            self.run.fragments.clone(),
-            node,
-            used.content_inline_size.get(),
-            used.content_block_size.get(),
-            self.run.box_,
-            self.run.treat_block_axis_percentage_insets_as_auto_beyond_root,
-        );
+        crate::layout::compute_inset_native(self.run, node, used.content_inline_size.get(), used.content_block_size.get());
     }
 
     pub(crate) fn parent_commit_pending_margin_before_inline_content(&self) -> CssPixels {
@@ -911,18 +901,14 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
             self.input.containing_block_constraints,
             ParticipationInParentFormattingContext::AtomicInline,
         );
-        let content_baselines_from_cells = |used: &UsedValues| DerivedBaselines {
-            first: used.has_first_baseline.get().then(|| used.first_baseline.get()),
-            last: used.has_last_baseline.get().then(|| used.last_baseline.get()),
-        };
         match crate::layout::layout_inside_child(self.run, Some(self.parent), None, node, self.layout_mode, input, false)
         {
             crate::layout::ChildLayoutOutcome::Created(result) => result.baselines,
             crate::layout::ChildLayoutOutcome::ReenterCurrent => {
                 self.parent.run(self.run, input);
-                content_baselines_from_cells(self.used(node))
+                self.used(node).content_baselines_from_cells()
             }
-            crate::layout::ChildLayoutOutcome::Skipped => content_baselines_from_cells(self.used(node)),
+            crate::layout::ChildLayoutOutcome::Skipped => self.used(node).content_baselines_from_cells(),
         }
     }
 

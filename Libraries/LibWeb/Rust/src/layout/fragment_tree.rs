@@ -47,7 +47,6 @@ pub(crate) struct Fragment {
 /// child lives on the link: the emission offset (the placed offset with the
 /// committed delta already folded in) and the inset family.
 pub(crate) struct FragmentLink {
-    pub(crate) node: crate::layout::node_data::NodeSlotId,
     pub(crate) fragment: Box<Fragment>,
     pub(crate) offset: FfiCssPixelPoint,
     pub(crate) inset_left: CssPixels,
@@ -72,12 +71,86 @@ pub(crate) struct AnchorCandidate {
     pub(crate) effective_birth: crate::layout::node_data::NodeSlotId,
 }
 
-fn translate_pending_abspos_payloads(entry: &mut PendingAbsposChild, offset: FfiCssPixelPoint) {
-    entry.static_position_rect =
-        crate::layout::translate_static_position_between_chains(entry.static_position_rect, offset, FfiCssPixelPoint::default());
+pub(crate) fn translate_pending_abspos_payloads(entry: &mut PendingAbsposChild, offset: FfiCssPixelPoint) {
+    entry.static_position_rect = crate::layout::translate_static_position_rect(entry.static_position_rect, offset);
     if let Some(rect) = &mut entry.inline_containing_block_rect {
         rect.x += offset.x;
         rect.y += offset.y;
+    }
+}
+
+/// A payload born in some box's content space that travels the fragment
+/// structure until its consumer drains it: hops rebase it space by space,
+/// translating it by each folded content offset and renaming its
+/// effective_birth to the box whose space it now sits in.
+trait CarriedPayload {
+    fn effective_birth(&self) -> crate::layout::node_data::NodeSlotId;
+    fn set_effective_birth(&mut self, node: crate::layout::node_data::NodeSlotId);
+    fn translate_by(&mut self, offset: FfiCssPixelPoint);
+}
+
+impl CarriedPayload for PendingAbsposChild {
+    fn effective_birth(&self) -> crate::layout::node_data::NodeSlotId {
+        self.effective_birth
+    }
+    fn set_effective_birth(&mut self, node: crate::layout::node_data::NodeSlotId) {
+        self.effective_birth = node;
+    }
+    fn translate_by(&mut self, offset: FfiCssPixelPoint) {
+        translate_pending_abspos_payloads(self, offset);
+    }
+}
+
+impl CarriedPayload for AnchorCandidate {
+    fn effective_birth(&self) -> crate::layout::node_data::NodeSlotId {
+        self.effective_birth
+    }
+    fn set_effective_birth(&mut self, node: crate::layout::node_data::NodeSlotId) {
+        self.effective_birth = node;
+    }
+    fn translate_by(&mut self, offset: FfiCssPixelPoint) {
+        self.border_box_rect.x += offset.x;
+        self.border_box_rect.y += offset.y;
+    }
+}
+
+fn rebase_rider_into_containing_block_space_if_born_at<Payload: CarriedPayload>(
+    rider: &mut Payload,
+    placed_box: crate::layout::node_data::NodeSlotId,
+    containing_block: Option<crate::layout::node_data::NodeSlotId>,
+    placed_box_content_offset: FfiCssPixelPoint,
+) {
+    if rider.effective_birth() == placed_box
+        && let Some(containing_block) = containing_block
+    {
+        rider.translate_by(placed_box_content_offset);
+        rider.set_effective_birth(containing_block);
+    }
+}
+
+/// Compose while placed: fold offsets read while this run still owns the
+/// records, stopping at the run root, the first unplaced box, or the first
+/// record another run owns (a table wrapper on a cell's chain — parked
+/// there, composed by the owner later).
+fn normalize_escaped_payload_toward_run_root<Payload: CarriedPayload>(
+    payload: &mut Payload,
+    run_root: crate::layout::node_data::NodeSlotId,
+    records: &RunRecords,
+    callbacks: &FfiLayoutFcCallbacks,
+) {
+    while payload.effective_birth() != run_root {
+        let Some(used) = records.used_values_if_owned(payload.effective_birth()) else {
+            break;
+        };
+        if !used.has_content_offset.get() {
+            break;
+        }
+        payload.translate_by(used.content_offset.get());
+        let containing_block = callbacks.containing_block(payload.effective_birth());
+        if containing_block.is_invalid() {
+            break;
+        }
+        payload.set_effective_birth(containing_block);
     }
 }
 
@@ -113,9 +186,8 @@ fn snapshot_link(
         computed_svg_transforms,
         svg_viewport_size,
         computed_svg_path,
-    ) = rare_payloads.unwrap_or((None, None, None, None, None, None, None, None, None));
+    ) = rare_payloads.unwrap_or_default();
     FragmentLink {
-        node,
         fragment: Box::new(Fragment {
             node,
             content_inline_size: used.content_inline_size.get(),
@@ -168,34 +240,25 @@ pub(crate) struct PendingRunResult {
 }
 
 impl PendingRunResult {
-    /// Total fragments in the structure, orphans and late attachments
-    /// included — the presence side of the shadow diff.
-    pub(crate) fn fragment_count(&self) -> usize {
-        fn count(links: &[FragmentLink]) -> usize {
-            links.iter().map(|link| 1 + count(&link.fragment.children)).sum()
-        }
-        count(&self.root_children) + count(&self.late_attachments)
+    pub(crate) fn is_empty(&self) -> bool {
+        self.root_children.is_empty() && self.late_attachments.is_empty()
     }
 }
 
 /// Flattens a pass's fragment structure into the slot-keyed index commit
-/// emits from. The link↔fragment identity and one-fragment-per-slot
-/// invariants are structural, so they hold in every build.
+/// emits from. The one-fragment-per-slot invariant is structural, so it
+/// holds in every build.
 pub(crate) fn fold_commit_index(pending: &PendingRunResult) -> std::collections::HashMap<u32, &FragmentLink> {
     fn flatten<'tree>(
         links: &'tree [FragmentLink],
         flattened: &mut std::collections::HashMap<u32, &'tree FragmentLink>,
     ) {
         for link in links {
-            assert!(
-                link.node == link.fragment.node,
-                "a fragment link and its fragment disagree about their box"
-            );
-            let previous = flattened.insert(link.node.slot_index(), link);
+            let previous = flattened.insert(link.fragment.node.slot_index(), link);
             assert!(
                 previous.is_none(),
                 "two fragments claim slot {}",
-                link.node.slot_index()
+                link.fragment.node.slot_index()
             );
             flatten(&link.fragment.children, flattened);
         }
@@ -206,14 +269,11 @@ pub(crate) fn fold_commit_index(pending: &PendingRunResult) -> std::collections:
     flattened
 }
 
-enum FrameState {
-    Pending {
-        node: crate::layout::node_data::NodeSlotId,
-        children: Vec<FragmentLink>,
-        pending_abspos: Vec<PendingAbsposChild>,
-        anchor_candidates: Vec<AnchorCandidate>,
-    },
-    Consumed,
+struct PendingFrame {
+    node: crate::layout::node_data::NodeSlotId,
+    children: Vec<FragmentLink>,
+    pending_abspos: Vec<PendingAbsposChild>,
+    anchor_candidates: Vec<AnchorCandidate>,
 }
 
 /// Per-run collector of fragment structure. Frames are lazy pending-children
@@ -243,7 +303,11 @@ pub(crate) struct RunFragmentBuilder {
 
 #[derive(Default)]
 struct RunFragmentBuilderInner {
-    frames: std::collections::HashMap<u32, FrameState>,
+    /// Frames of boxes this run has not placed yet; placing a box removes
+    /// its frame, so the map holds only the open containing-block chain.
+    frames: std::collections::HashMap<u32, PendingFrame>,
+    #[cfg(debug_assertions)]
+    placed_slots: std::collections::HashSet<u32>,
     deposits: std::collections::HashMap<u32, (crate::layout::node_data::NodeSlotId, PendingRunResult)>,
     /// Records this run creates and never places (inline boxes entered for
     /// their box-model metrics); swept into orphan links so the tree covers
@@ -255,6 +319,33 @@ struct RunFragmentBuilderInner {
     anchor_candidates_at_root: Vec<AnchorCandidate>,
     root_children: Vec<FragmentLink>,
     late_attachments: Vec<FragmentLink>,
+}
+
+/// Rider enumeration covers open frames and the root pool. Riders escaped
+/// into a parked deposit are invisible until the deposited child's placement
+/// refiles them — every query below runs after the placements it cares
+/// about, which is what makes that blind spot safe.
+impl RunFragmentBuilderInner {
+    fn iter_pending_abspos(&self) -> impl Iterator<Item = &PendingAbsposChild> {
+        self.frames
+            .values()
+            .flat_map(|frame| frame.pending_abspos.iter())
+            .chain(self.pending_abspos_at_root.iter())
+    }
+
+    fn iter_pending_abspos_mut(&mut self) -> impl Iterator<Item = &mut PendingAbsposChild> {
+        self.frames
+            .values_mut()
+            .flat_map(|frame| frame.pending_abspos.iter_mut())
+            .chain(self.pending_abspos_at_root.iter_mut())
+    }
+
+    fn iter_anchor_candidates(&self) -> impl Iterator<Item = &AnchorCandidate> {
+        self.frames
+            .values()
+            .flat_map(|frame| frame.anchor_candidates.iter())
+            .chain(self.anchor_candidates_at_root.iter())
+    }
 }
 
 impl RunFragmentBuilder {
@@ -294,23 +385,24 @@ impl RunFragmentBuilder {
     /// space; it rides frames and results until its target's tail drains it.
     pub(crate) fn register_pending_abspos(&self, birth_box: crate::layout::node_data::NodeSlotId, entry: PendingAbsposChild) {
         let mut inner = self.inner.borrow_mut();
-        if birth_box.slot_index() == self.root_node.slot_index() {
+        #[cfg(debug_assertions)]
+        assert!(
+            !inner.placed_slots.contains(&birth_box.slot_index()),
+            "an abspos registration named an already-placed birth box"
+        );
+        if birth_box == self.root_node {
             inner.pending_abspos_at_root.push(entry);
             return;
         }
         match inner.frames.get_mut(&birth_box.slot_index()) {
-            Some(FrameState::Pending { pending_abspos, .. }) => pending_abspos.push(entry),
-            Some(FrameState::Consumed) => {
-                debug_assert!(false, "an abspos registration named an already-placed birth box");
-                inner.pending_abspos_at_root.push(entry);
-            }
+            Some(frame) => frame.pending_abspos.push(entry),
             None => {
                 if self.is_entry_accumulator {
                     inner.pending_abspos_at_root.push(entry);
                 } else {
                     inner.frames.insert(
                         birth_box.slot_index(),
-                        FrameState::Pending {
+                        PendingFrame {
                             node: birth_box,
                             children: Vec::new(),
                             pending_abspos: vec![entry],
@@ -331,7 +423,7 @@ impl RunFragmentBuilder {
         containing_block_info_for_child: impl Fn(crate::layout::node_data::NodeSlotId) -> AbsposContainingBlockInfo,
     ) {
         for entry in &mut self.inner.borrow_mut().pending_abspos_at_root {
-            if entry.target.slot_index() == target.slot_index() {
+            if entry.target == target {
                 entry.containing_block_info_override = Some(containing_block_info_for_child(entry.child_box));
             }
         }
@@ -340,28 +432,17 @@ impl RunFragmentBuilder {
     /// Whether any registration anywhere in this builder names an inline
     /// containing block — the gate for collecting first/last-line rects.
     pub(crate) fn any_pending_abspos_has_inline_containing_block(&self) -> bool {
-        let inner = self.inner.borrow();
-        let in_frames = inner.frames.values().any(|frame| match frame {
-            FrameState::Pending { pending_abspos, .. } => {
-                pending_abspos.iter().any(|entry| !entry.inline_containing_block.is_invalid())
-            }
-            FrameState::Consumed => false,
-        });
-        in_frames
-            || inner
-                .pending_abspos_at_root
-                .iter()
-                .any(|entry| !entry.inline_containing_block.is_invalid())
+        self.inner
+            .borrow()
+            .iter_pending_abspos()
+            .any(|entry| !entry.inline_containing_block.is_invalid())
     }
 
     pub(crate) fn any_pending_abspos_names_inline_containing_block(&self, inline_box: crate::layout::node_data::NodeSlotId) -> bool {
-        let inner = self.inner.borrow();
-        let matches = |entry: &PendingAbsposChild| entry.inline_containing_block.slot_index() == inline_box.slot_index();
-        let in_frames = inner.frames.values().any(|frame| match frame {
-            FrameState::Pending { pending_abspos, .. } => pending_abspos.iter().any(matches),
-            FrameState::Consumed => false,
-        });
-        in_frames || inner.pending_abspos_at_root.iter().any(matches)
+        self.inner
+            .borrow()
+            .iter_pending_abspos()
+            .any(|entry| entry.inline_containing_block == inline_box)
     }
 
     /// Stamps a produced first/last-line rect onto every registration naming
@@ -374,64 +455,35 @@ impl RunFragmentBuilder {
         rect: PhysicalRect,
         expected_space: crate::layout::node_data::NodeSlotId,
     ) {
-        let mut inner = self.inner.borrow_mut();
-        let stamp = |entry: &mut PendingAbsposChild| {
-            if entry.inline_containing_block.slot_index() == inline_box.slot_index() {
+        for entry in self.inner.borrow_mut().iter_pending_abspos_mut() {
+            if entry.inline_containing_block == inline_box {
                 debug_assert!(
-                    entry.effective_birth.slot_index() == expected_space.slot_index(),
+                    entry.effective_birth == expected_space,
                     "an inline containing block rect met an entry in a different space"
                 );
                 entry.inline_containing_block_rect = Some(rect);
             }
-        };
-        for frame in inner.frames.values_mut() {
-            if let FrameState::Pending { pending_abspos, .. } = frame {
-                for entry in pending_abspos {
-                    stamp(entry);
-                }
-            }
-        }
-        for entry in &mut inner.pending_abspos_at_root {
-            stamp(entry);
         }
     }
 
     /// The shells of every anchor-bearing box placed in this run's subtree
     /// so far, for the C++ name-matching lookup.
     pub(crate) fn anchor_candidate_shells(&self, callbacks: &FfiLayoutFcCallbacks) -> Vec<*mut c_void> {
-        let inner = self.inner.borrow();
-        let mut shells = Vec::new();
-        for frame in inner.frames.values() {
-            if let FrameState::Pending { anchor_candidates, .. } = frame {
-                shells.extend(anchor_candidates.iter().map(|candidate| callbacks.shell(candidate.node)));
-            }
-        }
-        shells.extend(
-            inner
-                .anchor_candidates_at_root
-                .iter()
-                .map(|candidate| callbacks.shell(candidate.node)),
-        );
-        shells
+        self.inner
+            .borrow()
+            .iter_anchor_candidates()
+            .map(|candidate| callbacks.shell(candidate.node))
+            .collect()
     }
 
     pub(crate) fn find_anchor_candidate(
         &self,
         node: crate::layout::node_data::NodeSlotId,
     ) -> Option<(PhysicalRect, crate::layout::node_data::NodeSlotId)> {
-        let inner = self.inner.borrow();
-        let matches = |candidate: &AnchorCandidate| candidate.node.slot_index() == node.slot_index();
-        for frame in inner.frames.values() {
-            if let FrameState::Pending { anchor_candidates, .. } = frame
-                && let Some(candidate) = anchor_candidates.iter().find(|candidate| matches(candidate))
-            {
-                return Some((candidate.border_box_rect, candidate.effective_birth));
-            }
-        }
-        inner
-            .anchor_candidates_at_root
-            .iter()
-            .find(|candidate| matches(candidate))
+        self.inner
+            .borrow()
+            .iter_anchor_candidates()
+            .find(|candidate| candidate.node == node)
             .map(|candidate| (candidate.border_box_rect, candidate.effective_birth))
     }
 
@@ -440,7 +492,7 @@ impl RunFragmentBuilder {
             .borrow()
             .pending_abspos_at_root
             .iter()
-            .any(|entry| entry.target.slot_index() == target.slot_index())
+            .any(|entry| entry.target == target)
     }
 
     /// Takes every registration that has arrived for a target, in document
@@ -451,17 +503,12 @@ impl RunFragmentBuilder {
         callbacks: &FfiLayoutFcCallbacks,
     ) -> Vec<PendingAbsposChild> {
         let mut inner = self.inner.borrow_mut();
-        let mut taken = Vec::new();
-        let mut index = 0;
-        while index < inner.pending_abspos_at_root.len() {
-            if inner.pending_abspos_at_root[index].target.slot_index() == target.slot_index() {
-                taken.push(inner.pending_abspos_at_root.remove(index));
-            } else {
-                index += 1;
-            }
-        }
+        let mut taken: Vec<PendingAbsposChild> = inner
+            .pending_abspos_at_root
+            .extract_if(.., |entry| entry.target == target)
+            .collect();
         taken.sort_by(|left, right| {
-            if left.child_box.slot_index() == right.child_box.slot_index() {
+            if left.child_box == right.child_box {
                 std::cmp::Ordering::Equal
             } else if callbacks.is_before(left.child_box, right.child_box) {
                 std::cmp::Ordering::Less
@@ -501,41 +548,29 @@ impl RunFragmentBuilder {
     ) {
         let mut inner = self.inner.borrow_mut();
         let slot = node.slot_index();
-        let (children, mut carried_late, riding_abspos, riding_anchors) =
-            match inner.frames.insert(slot, FrameState::Consumed) {
-                Some(FrameState::Pending {
-                    children,
-                    pending_abspos,
-                    anchor_candidates,
-                    ..
-                }) => (children, Vec::new(), pending_abspos, anchor_candidates),
-                Some(FrameState::Consumed) => {
-                    debug_assert!(false, "a box was placed twice in one run");
-                    (Vec::new(), Vec::new(), Vec::new(), Vec::new())
-                }
-                None => match inner.deposits.remove(&slot) {
-                    Some((_, pending)) => (
-                        pending.root_children,
-                        pending.late_attachments,
-                        pending.escaped_abspos,
-                        pending.escaped_anchor_candidates,
-                    ),
-                    None => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
-                },
-            };
+        #[cfg(debug_assertions)]
+        assert!(inner.placed_slots.insert(slot), "a box was placed twice in one run");
+        let (children, mut carried_late, riding_abspos, riding_anchors) = match inner.frames.remove(&slot) {
+            Some(frame) => (frame.children, Vec::new(), frame.pending_abspos, frame.anchor_candidates),
+            None => match inner.deposits.remove(&slot) {
+                Some((_, pending)) => (
+                    pending.root_children,
+                    pending.late_attachments,
+                    pending.escaped_abspos,
+                    pending.escaped_anchor_candidates,
+                ),
+                None => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+            },
+        };
         let link = snapshot_link(node, children, used, containing_line_box_index, emission_offset);
         inner.late_attachments.append(&mut carried_late);
         self.attach(&mut inner, link, containing_block, containing_block_is_already_placed);
+        let content_offset = used.content_offset.get();
         for mut entry in riding_abspos {
-            if entry.effective_birth.slot_index() == slot
-                && let Some(containing_block) = containing_block
-            {
-                translate_pending_abspos_payloads(&mut entry, used.content_offset.get());
-                entry.effective_birth = containing_block;
-            }
+            rebase_rider_into_containing_block_space_if_born_at(&mut entry, node, containing_block, content_offset);
             match inner.frames.get_mut(&entry.effective_birth.slot_index()) {
-                Some(FrameState::Pending { pending_abspos, .. }) => pending_abspos.push(entry),
-                _ => inner.pending_abspos_at_root.push(entry),
+                Some(frame) => frame.pending_abspos.push(entry),
+                None => inner.pending_abspos_at_root.push(entry),
             }
         }
         let own_candidate = own_anchor_candidate_border_box_rect.map(|border_box_rect| AnchorCandidate {
@@ -544,16 +579,10 @@ impl RunFragmentBuilder {
             effective_birth: containing_block.unwrap_or(node),
         });
         for mut candidate in riding_anchors.into_iter().chain(own_candidate) {
-            if candidate.effective_birth.slot_index() == slot
-                && let Some(containing_block) = containing_block
-            {
-                candidate.border_box_rect.x += used.content_offset.get().x;
-                candidate.border_box_rect.y += used.content_offset.get().y;
-                candidate.effective_birth = containing_block;
-            }
+            rebase_rider_into_containing_block_space_if_born_at(&mut candidate, node, containing_block, content_offset);
             match inner.frames.get_mut(&candidate.effective_birth.slot_index()) {
-                Some(FrameState::Pending { anchor_candidates, .. }) => anchor_candidates.push(candidate),
-                _ => inner.anchor_candidates_at_root.push(candidate),
+                Some(frame) => frame.anchor_candidates.push(candidate),
+                None => inner.anchor_candidates_at_root.push(candidate),
             }
         }
     }
@@ -569,33 +598,27 @@ impl RunFragmentBuilder {
             inner.root_children.push(link);
             return;
         };
-        if containing_block.slot_index() == self.root_node.slot_index()
-            || Some(containing_block.slot_index()) == self.root_containing_block_slot
-        {
+        if containing_block == self.root_node || Some(containing_block.slot_index()) == self.root_containing_block_slot {
             inner.root_children.push(link);
             return;
         }
-        if let Some(state) = inner.frames.get_mut(&containing_block.slot_index()) {
-            match state {
-                FrameState::Pending { children, .. } => children.push(link),
-                // The containing block's fragment is already sealed (a
-                // drained placement targeting a placed table row) — ride
-                // upward.
-                FrameState::Consumed => inner.late_attachments.push(link),
-            }
+        if let Some(frame) = inner.frames.get_mut(&containing_block.slot_index()) {
+            frame.children.push(link);
             return;
         }
         // A frame may only open for a containing block this run will still
-        // place; a placed containing block's fragment is sealed in whatever
-        // builder placed it (a drain host above a descendant run's table
-        // internals, an entry sweep above the whole pass).
+        // place; a placed containing block's fragment is sealed wherever it
+        // was placed (this run's own past — a drained placement targeting a
+        // placed table row — a drain host above a descendant run's table
+        // internals, an entry sweep above the whole pass), so the link rides
+        // upward instead.
         if self.is_entry_accumulator || containing_block_is_already_placed {
             inner.late_attachments.push(link);
             return;
         }
         inner.frames.insert(
             containing_block.slot_index(),
-            FrameState::Pending {
+            PendingFrame {
                 node: containing_block,
                 children: vec![link],
                 pending_abspos: Vec::new(),
@@ -619,10 +642,7 @@ impl RunFragmentBuilder {
             if inner.frames.contains_key(&slot) || inner.deposits.contains_key(&slot) {
                 continue;
             }
-            let Some(used) = records.used_values_if_owned(node) else {
-                debug_assert!(false, "an unplaced record note has no record");
-                continue;
-            };
+            let used = records.used_values(node);
             debug_assert!(!used.has_content_offset.get(), "an unplaced record note was placed after all");
             inner
                 .root_children
@@ -630,34 +650,19 @@ impl RunFragmentBuilder {
         }
         let frames = std::mem::take(&mut inner.frames);
         for (_, frame) in frames {
-            let FrameState::Pending {
-                node,
-                children,
-                pending_abspos,
-                anchor_candidates,
-            } = frame
-            else {
-                continue;
-            };
-            escaped_abspos.extend(pending_abspos);
-            escaped_anchor_candidates.extend(anchor_candidates);
-            if children.is_empty() {
+            escaped_abspos.extend(frame.pending_abspos);
+            escaped_anchor_candidates.extend(frame.anchor_candidates);
+            if frame.children.is_empty() {
                 continue;
             }
-            let Some(used) = records.used_values_if_owned(node) else {
-                debug_assert!(false, "a pending frame's containing block has no record");
-                continue;
-            };
+            let used = records.used_values(frame.node);
             inner
                 .root_children
-                .push(snapshot_link(node, children, used, None, used.content_offset.get()));
+                .push(snapshot_link(frame.node, frame.children, used, None, used.content_offset.get()));
         }
         let deposits = std::mem::take(&mut inner.deposits);
         for (_, (node, pending)) in deposits {
-            let Some(used) = records.used_values_if_owned(node) else {
-                debug_assert!(false, "a deposited child run's root has no record");
-                continue;
-            };
+            let used = records.used_values(node);
             inner.late_attachments.extend(pending.late_attachments);
             inner
                 .root_children
@@ -665,44 +670,13 @@ impl RunFragmentBuilder {
         }
         for entry in &mut escaped_abspos {
             debug_assert!(
-                entry.target.slot_index() != self.root_node.slot_index(),
+                entry.target != self.root_node,
                 "a registration that arrived for this run's root was left undrained"
             );
-            // Compose while placed: fold offsets read while this run still
-            // owns the records, stopping at the run root, the first unplaced
-            // box, or the first record another run owns (a table wrapper on
-            // a cell's chain — parked there, composed by the owner later).
-            while entry.effective_birth.slot_index() != self.root_node.slot_index() {
-                let Some(used) = records.used_values_if_owned(entry.effective_birth) else {
-                    break;
-                };
-                if !used.has_content_offset.get() {
-                    break;
-                }
-                translate_pending_abspos_payloads(entry, used.content_offset.get());
-                let containing_block = callbacks.containing_block(entry.effective_birth);
-                if containing_block.is_invalid() {
-                    break;
-                }
-                entry.effective_birth = containing_block;
-            }
+            normalize_escaped_payload_toward_run_root(entry, self.root_node, records, callbacks);
         }
         for candidate in &mut escaped_anchor_candidates {
-            while candidate.effective_birth.slot_index() != self.root_node.slot_index() {
-                let Some(used) = records.used_values_if_owned(candidate.effective_birth) else {
-                    break;
-                };
-                if !used.has_content_offset.get() {
-                    break;
-                }
-                candidate.border_box_rect.x += used.content_offset.get().x;
-                candidate.border_box_rect.y += used.content_offset.get().y;
-                let containing_block = callbacks.containing_block(candidate.effective_birth);
-                if containing_block.is_invalid() {
-                    break;
-                }
-                candidate.effective_birth = containing_block;
-            }
+            normalize_escaped_payload_toward_run_root(candidate, self.root_node, records, callbacks);
         }
         if self.saw_svg_payload_write.take() {
             refresh_svg_payloads_from_records(&mut inner.root_children, records);
@@ -726,7 +700,7 @@ fn refresh_svg_payloads_from_records(links: &mut [FragmentLink], records: &RunRe
     for link in links {
         let fragment = &mut *link.fragment;
         if let Some(rare_cell) = records
-            .used_values_if_owned(link.node)
+            .used_values_if_owned(fragment.node)
             .and_then(|used| used.rare_data.get())
         {
             let mut rare = rare_cell.borrow_mut();

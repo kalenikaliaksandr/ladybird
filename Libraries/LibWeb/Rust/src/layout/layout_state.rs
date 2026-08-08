@@ -63,8 +63,6 @@ impl<T> PagedStore<T> {
         assert!(entry_was_vacant, "PagedStore index {index} allocated twice");
         entry.get().unwrap()
     }
-
-
 }
 
 /// Anonymous bump storage for the pass's used-values records. Allocation
@@ -850,6 +848,12 @@ pub(crate) struct LayoutState {
 pub(crate) struct RunRecords<'pass> {
     root: Node,
     map: RefCell<HashMap<u32, &'pass UsedValues>>,
+    /// The adopter this scope was last absorbed into, with the scope's size
+    /// at that moment. A completed child scope is absorbed both before the
+    /// participation epilogues and at the spawn return, into the same
+    /// adopter; the map only ever grows, so an unchanged size proves the
+    /// second copy has nothing new and may be skipped.
+    last_absorption: Cell<(*const (), usize)>,
 }
 
 impl<'pass> RunRecords<'pass> {
@@ -865,6 +869,7 @@ impl<'pass> RunRecords<'pass> {
         Self {
             root,
             map: RefCell::new(HashMap::new()),
+            last_absorption: Cell::new((std::ptr::null(), 0)),
         }
     }
 
@@ -920,7 +925,12 @@ impl<'pass> RunRecords<'pass> {
     /// the participation epilogue and the spawn return is harmless, and the
     /// handed root arrives as the pointer the parent already holds.
     pub(crate) fn absorb_completed_child_scope(&self, child: &RunRecords<'pass>) {
+        let adopter = std::ptr::from_ref(self).cast::<()>();
         let child_map = child.map.borrow();
+        if child.last_absorption.get() == (adopter, child_map.len()) {
+            return;
+        }
+        child.last_absorption.set((adopter, child_map.len()));
         let mut map = self.map.borrow_mut();
         for (&slot, &used) in child_map.iter() {
             match map.entry(slot) {
@@ -950,7 +960,6 @@ impl Default for LayoutState {
         Self::new(LayoutStatePurpose::Commit)
     }
 }
-
 
 #[derive(Default)]
 pub(crate) struct LineData {
@@ -1202,12 +1211,6 @@ impl LayoutState {
         Some(used)
     }
 
-
-
-
-
-
-
     pub(crate) fn set_box_is_grid_item(&self, callbacks: &FfiLayoutFcCallbacks, node: Node, is_grid_item: bool) {
         callbacks.arena().set_node_flag(node, NodeFlag::IsGridItem, is_grid_item);
     }
@@ -1311,7 +1314,6 @@ impl LayoutState {
         })
     }
 
-
     /// Accumulates relative-position insets from a chain of inline-flow
     /// ancestors, starting at first_ancestor and walking up until stop_at or
     /// the first ancestor that is not inline-flow.
@@ -1359,6 +1361,7 @@ impl LayoutState {
         records: &RunRecords,
         callbacks: &FfiLayoutFcCallbacks,
         node: Node,
+        containing_block: Node,
         coordinate: Option<LineBoxFragmentCoordinate>,
         placed_offset: FfiCssPixelPoint,
     ) -> Option<usize> {
@@ -1367,9 +1370,8 @@ impl LayoutState {
         if !facts.is_non_fragmented_box() {
             return None;
         }
-        let containing_block = callbacks.containing_block(node);
         assert!(!containing_block.is_invalid());
-        let data = records.used_values(containing_block).line_data.get().map(RefCell::borrow)?;
+        let data = records.used_values(containing_block).line_data_ref()?;
         let line = data.line_boxes.get(coordinate.line_box_index)?;
         if let Some(fragment) = line.fragments.get(coordinate.fragment_index) {
             let (x, y) = fragment.offset();

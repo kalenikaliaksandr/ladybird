@@ -396,23 +396,16 @@ struct SvgFormattingContext<'pass> {
 }
 
 impl<'pass> SvgFormattingContext<'pass> {
-    fn new(
-        state: &'pass LayoutState,
-        records: std::rc::Rc<RunRecords<'pass>>,
-        box_: Node,
-        layout_mode: LayoutMode,
-        callbacks: FfiLayoutFcCallbacks,
-        fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
-    ) -> Self {
+    fn new(run: &FormattingContextRun<'pass>) -> Self {
         Self::new_nested(
-            state,
-            records,
-            box_,
-            layout_mode,
-            callbacks,
+            run.state,
+            run.records.clone(),
+            run.box_,
+            run.layout_mode,
+            run.callbacks,
             FfiAffineTransform::default(),
             None,
-            fragments,
+            run.fragments.clone(),
         )
     }
 

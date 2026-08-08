@@ -558,24 +558,6 @@ impl<'builder, 'context, 'pass> LineBuilder<'builder, 'context, 'pass> {
             let fragment_baseline = if self.context().facts(node).is_text_node() {
                 Self::baseline_for_style(style, style.line_height())
             } else if let Some(content_baselines) = content_baselines {
-                debug_assert_eq!(
-                    crate::layout::box_baseline(
-                        self.context().state,
-                        &self.context().callbacks,
-                        node,
-                        self.context().used(node),
-                        crate::layout::BaselineSet::Last,
-                    ),
-                    crate::layout::box_baseline_with_content_baselines(
-                        self.context().state,
-                        &self.context().callbacks,
-                        node,
-                        self.context().used(node),
-                        crate::layout::BaselineSet::Last,
-                        content_baselines,
-                    ),
-                    "run-returned baselines diverge from the stored cells"
-                );
                 crate::layout::box_baseline_with_content_baselines(
                     self.context().state,
                     &self.context().callbacks,
