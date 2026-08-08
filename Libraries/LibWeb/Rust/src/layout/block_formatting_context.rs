@@ -1449,6 +1449,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         let marker_used = self.used_mut(marker);
         marker_used.set_content_inline_size(max_content_inline_size);
         marker_used.has_definite_inline_size.set(true);
+        let declared_marker_metrics = BoxMetrics::capture_from_record(&self.used(marker));
         let inner_available_space = crate::layout::AvailableSpace {
             inline_size: crate::layout::AvailableSize::definite(max_content_inline_size),
             block_size: crate::layout::AvailableSize::Indefinite,
@@ -1465,6 +1466,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 content_box_position_in_bfc_root: None,
                 sizing: RootSizingDirectives {
                     adopt_automatic_content_block_size: true,
+                    declared_root_metrics: Some(declared_marker_metrics),
                     ..RootSizingDirectives::default()
                 },
                 participation: ParticipationInParentFormattingContext::Item,
