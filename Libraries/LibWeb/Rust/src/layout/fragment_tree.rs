@@ -9,132 +9,9 @@ pub(crate) fn shadow_fragment_diff_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("LADYBIRD_LAYOUT_SHADOW_FRAGMENTS").is_some_and(|value| value == "1"))
 }
 
-fn capture_shadow_fingerprints() -> bool {
-    cfg!(debug_assertions) || shadow_fragment_diff_enabled()
-}
-
-/// Compact digest of a box's line data, captured when the fragment is
-/// assembled and recomputed by the shadow diff at pass end: an inequality
-/// means the payload mutated after the moment the coming move-into-fragment
-/// stage would have taken it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct LineDataFingerprint {
-    line_count: usize,
-    fragment_count: usize,
-    piece_count: usize,
-    geometry_checksum: i64,
-}
-
-pub(crate) fn line_data_fingerprint(data: &LineData) -> LineDataFingerprint {
-    fn add(checksum: &mut i64, value: CssPixels) {
-        *checksum = checksum.wrapping_add(value.raw_value() as i64);
-    }
-    let mut checksum: i64 = 0;
-    let mut fragment_count = 0usize;
-    for line in &data.line_boxes {
-        fragment_count += line.fragments.len();
-        add(&mut checksum, line.inline_length);
-        add(&mut checksum, line.block_length);
-        add(&mut checksum, line.block_end);
-        add(&mut checksum, line.baseline);
-        for fragment in &line.fragments {
-            add(&mut checksum, fragment.inline_offset);
-            add(&mut checksum, fragment.block_offset);
-            add(&mut checksum, fragment.inline_length);
-            add(&mut checksum, fragment.block_length);
-            add(&mut checksum, fragment.baseline);
-            add(&mut checksum, fragment.relpos_delta.x);
-            add(&mut checksum, fragment.relpos_delta.y);
-            checksum = checksum.wrapping_add(fragment.glyphs.as_ref().map_or(0, |glyphs| glyphs.glyphs.len() as i64));
-        }
-    }
-    for piece in &data.inline_box_pieces {
-        add(&mut checksum, piece.border_box_rect.x);
-        add(&mut checksum, piece.border_box_rect.y);
-        add(&mut checksum, piece.border_box_rect.width);
-        add(&mut checksum, piece.border_box_rect.height);
-        add(&mut checksum, piece.relpos_delta.x);
-        add(&mut checksum, piece.relpos_delta.y);
-    }
-    LineDataFingerprint {
-        line_count: data.line_boxes.len(),
-        fragment_count,
-        piece_count: data.inline_box_pieces.len(),
-        geometry_checksum: checksum,
-    }
-}
-
-/// Digest of the commit-visible rare payloads. The abspos inputs and the
-/// inline containing-block rect are deliberately outside it: both are
-/// legally written after placement and neither belongs to the fragment.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RareDataFingerprint {
-    presence: u8,
-    scalar_checksum: i64,
-}
-
-pub(crate) fn rare_data_fingerprint(rare: &UsedValuesRareData) -> RareDataFingerprint {
-    let mut presence = 0u8;
-    let mut checksum: i64 = 0;
-    let mut mark = |bit: u8, present: bool| {
-        if present {
-            presence |= 1 << bit;
-        }
-    };
-    if let Some(coordinates) = &rare.table_cell_coordinates {
-        mark(0, true);
-        checksum = checksum
-            .wrapping_add(coordinates.row_index as i64)
-            .wrapping_add((coordinates.column_index as i64) << 16)
-            .wrapping_add((coordinates.row_span as i64) << 32)
-            .wrapping_add((coordinates.column_span as i64) << 48);
-    }
-    // The SVG payloads are presence-only: resource subtrees (masks, clips,
-    // gradients, patterns) are laid out once per consumer, rewriting these
-    // fields on records that were placed by the first consumer's pass.
-    // Commit emits the last write; the move-into-fragment stage must
-    // preserve that, so the shadow pins only their existence here.
-    mark(1, rare.computed_svg_path.is_some());
-    mark(2, rare.computed_svg_transforms.is_some());
-    mark(3, rare.svg_viewport_size.is_some());
-    mark(4, rare.grid_layout_data.is_some());
-    mark(5, rare.flex_layout_data.is_some());
-    mark(6, rare.used_grid_tracks.is_some());
-    if let Some(borders) = &rare.override_borders_data {
-        mark(7, true);
-        checksum = checksum
-            .wrapping_add(borders.top.border_data.width.raw_value() as i64)
-            .wrapping_add(borders.right.border_data.width.raw_value() as i64)
-            .wrapping_add(borders.bottom.border_data.width.raw_value() as i64)
-            .wrapping_add(borders.left.border_data.width.raw_value() as i64);
-    }
-    RareDataFingerprint {
-        presence,
-        scalar_checksum: checksum,
-    }
-}
-
-/// An absent lazy cell digests the same as one holding no commit-visible
-/// payloads: writes to the excluded fields (abspos inputs, the inline
-/// containing-block rect) legally initialize the cell after placement.
-pub(crate) fn used_values_shadow_fingerprints(used: &UsedValues) -> (LineDataFingerprint, RareDataFingerprint) {
-    let line = used
-        .line_data
-        .get()
-        .map(|cell| line_data_fingerprint(&cell.borrow()))
-        .unwrap_or_default();
-    let rare = used
-        .rare_data
-        .get()
-        .map(|cell| rare_data_fingerprint(&cell.borrow()))
-        .unwrap_or_default();
-    (line, rare)
-}
-
 /// Immutable result of laying out one box, assembled from the box's sealed
 /// used-values cells at its placement. Line data and rare payloads join in a
 /// later capture stage.
-#[derive(Debug)]
 pub(crate) struct Fragment {
     pub(crate) node: crate::layout::node_data::NodeSlotId,
     pub(crate) content_inline_size: CssPixels,
@@ -151,19 +28,20 @@ pub(crate) struct Fragment {
     pub(crate) padding_right: CssPixels,
     pub(crate) padding_top: CssPixels,
     pub(crate) padding_bottom: CssPixels,
-    /// Shadow-only digests of the payloads a later stage moves onto the
-    /// fragment; None when shadow capture is off or the record has none.
-    pub(crate) line_data_fingerprint: Option<LineDataFingerprint>,
-    pub(crate) rare_data_fingerprint: Option<RareDataFingerprint>,
     pub(crate) table_cell_coordinates: Option<FfiTableCellCoordinates>,
     pub(crate) override_borders_data: Option<FfiBordersData>,
+    /// Moved out of the record when the box is placed; the payload digests
+    /// proved nothing writes them after that moment.
+    pub(crate) line_data: Option<Box<LineData>>,
+    pub(crate) grid_layout_data: Option<OwnedGridLayoutData>,
+    pub(crate) flex_layout_data: Option<OwnedFlexLayoutData>,
+    pub(crate) used_grid_tracks: Option<OwnedUsedGridTracks>,
     pub(crate) children: Vec<FragmentLink>,
 }
 
 /// One placement of a fragment. Everything the parent decides about the
 /// child lives on the link: the emission offset (the placed offset with the
 /// committed delta already folded in) and the inset family.
-#[derive(Debug)]
 pub(crate) struct FragmentLink {
     pub(crate) node: crate::layout::node_data::NodeSlotId,
     pub(crate) fragment: Box<Fragment>,
@@ -187,20 +65,21 @@ fn snapshot_link(
     is_unplaced_orphan: bool,
     containing_line_box_index: Option<usize>,
 ) -> FragmentLink {
-    let (line_data_fingerprint, rare_data_fingerprint) = if capture_shadow_fingerprints() {
-        let (line, rare) = used_values_shadow_fingerprints(used);
-        (Some(line), Some(rare))
-    } else {
-        (None, None)
-    };
-    let (table_cell_coordinates, override_borders_data) = used
+    let line_data = used.line_data.get().map(|cell| Box::new(cell.take()));
+    let (table_cell_coordinates, override_borders_data, grid_layout_data, flex_layout_data, used_grid_tracks) = used
         .rare_data
         .get()
         .map(|cell| {
-            let rare = cell.borrow();
-            (rare.table_cell_coordinates, rare.override_borders_data)
+            let mut rare = cell.borrow_mut();
+            (
+                rare.table_cell_coordinates,
+                rare.override_borders_data,
+                rare.grid_layout_data.take(),
+                rare.flex_layout_data.take(),
+                rare.used_grid_tracks.take(),
+            )
         })
-        .unwrap_or((None, None));
+        .unwrap_or((None, None, None, None, None));
     FragmentLink {
         node,
         fragment: Box::new(Fragment {
@@ -219,10 +98,12 @@ fn snapshot_link(
             padding_right: used.padding_right.get(),
             padding_top: used.padding_top.get(),
             padding_bottom: used.padding_bottom.get(),
-            line_data_fingerprint,
-            rare_data_fingerprint,
             table_cell_coordinates,
             override_borders_data,
+            line_data,
+            grid_layout_data,
+            flex_layout_data,
+            used_grid_tracks,
             children,
         }),
         offset: crate::layout::point_add(used.content_offset.get(), used.committed_offset_delta.get()),
@@ -238,7 +119,7 @@ fn snapshot_link(
 /// What a committing run hands back alongside ChildLayoutResult: the run
 /// root's completed child links plus placements that could not attach to a
 /// still-open frame and must ride upward.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct PendingRunResult {
     pub(crate) root_children: Vec<FragmentLink>,
     pub(crate) late_attachments: Vec<FragmentLink>,

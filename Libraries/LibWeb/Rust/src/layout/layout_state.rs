@@ -1269,13 +1269,6 @@ impl LayoutState {
             .map(RefCell::borrow)
     }
 
-    pub(crate) fn line_data_mut_if_present(&self, slot_index: u32) -> Option<RefMut<'_, LineData>> {
-        self.used_values_by_slot(slot_index)?
-            .line_data
-            .get()
-            .map(RefCell::borrow_mut)
-    }
-
     pub(crate) fn used_values_rare_data(&self, slot_index: u32) -> Option<Ref<'_, UsedValuesRareData>> {
         self.used_values_by_slot(slot_index)?
             .rare_data
@@ -1310,7 +1303,6 @@ impl LayoutState {
     /// release builds with LADYBIRD_LAYOUT_SHADOW_FRAGMENTS=1.
     pub(crate) fn shadow_diff_committed_fragments(
         &self,
-        callbacks: &FfiLayoutFcCallbacks,
         commit_index: &std::collections::HashMap<u32, &crate::layout::FragmentLink>,
     ) {
         if !cfg!(debug_assertions) && !shadow_fragment_diff_enabled() {
@@ -1360,25 +1352,6 @@ impl LayoutState {
             check("padding_right", fragment.padding_right == used.padding_right.get());
             check("padding_top", fragment.padding_top == used.padding_top.get());
             check("padding_bottom", fragment.padding_bottom == used.padding_bottom.get());
-            let expected_line_box_index = if used.materialized_from_paintable.get() {
-                None
-            } else {
-                self.containing_line_box_index(callbacks, used.node, used)
-            };
-            check(
-                "containing_line_box_index",
-                link.containing_line_box_index == expected_line_box_index,
-            );
-            let (expected_line_fingerprint, expected_rare_fingerprint) =
-                crate::layout::used_values_shadow_fingerprints(used);
-            check(
-                "line data fingerprint",
-                fragment.line_data_fingerprint == Some(expected_line_fingerprint),
-            );
-            check(
-                "rare data fingerprint",
-                fragment.rare_data_fingerprint == Some(expected_rare_fingerprint),
-            );
         });
     }
 
@@ -1611,8 +1584,7 @@ impl LayoutState {
                 }
             }
 
-            let has_line_data = self.line_data(slot_index).is_some();
-            if has_line_data {
+            if let Some(line_data) = &fragment.line_data {
                 // SAFETY: The sink keeps one line accumulator live between
                 // begin_line_data() and finish_line_data().
                 let accepts_lines = unsafe { (sink.begin_line_data)(sink.context, paintable) };
@@ -1623,19 +1595,11 @@ impl LayoutState {
                         emit_fragment: sink.emit_fragment,
                         emit_inline_box_piece: sink.emit_inline_box_piece,
                     };
-                    assert!(push_line_data(
-                        self,
-                        slot_index,
-                        fragment.content_inline_size,
-                        callbacks,
-                        line_sink
-                    ));
+                    push_line_data(line_data, fragment.content_inline_size, callbacks, line_sink);
                     unsafe {
                         (sink.finish_line_data)(sink.context);
                     }
-                    has_pending_inline_box_geometry = self
-                        .line_data(slot_index)
-                        .is_some_and(|data| !data.inline_box_pieces.is_empty());
+                    has_pending_inline_box_geometry = !line_data.inline_box_pieces.is_empty();
                 }
             }
 
@@ -1659,28 +1623,26 @@ impl LayoutState {
                     (sink.set_computed_svg_path)(sink.context, paintable, path);
                 }
             }
-            if let Some(rare) = self.used_values_rare_data(slot_index) {
-                if let Some(data) = &rare.grid_layout_data {
-                    data.with_ffi_view(|view| {
-                        // SAFETY: The Rust-owned nested vectors remain live
-                        // while the commit sink copies this borrowed view.
-                        unsafe { (sink.set_grid_layout_data)(sink.context, paintable, view) };
-                    });
-                }
-                if let Some(data) = &rare.flex_layout_data {
-                    data.with_ffi_view(|view| {
-                        // SAFETY: The Rust-owned lines and items remain live
-                        // while the commit sink copies this borrowed view.
-                        unsafe { (sink.set_flex_layout_data)(sink.context, paintable, view) };
-                    });
-                }
-                if let Some(tracks) = &rare.used_grid_tracks {
-                    tracks.with_ffi_views(|columns, rows| {
-                        // SAFETY: Both Rust-owned track lists remain live
-                        // while the commit sink copies these borrowed views.
-                        unsafe { (sink.set_used_grid_tracks)(sink.context, paintable, columns, rows) };
-                    });
-                }
+            if let Some(data) = &fragment.grid_layout_data {
+                data.with_ffi_view(|view| {
+                    // SAFETY: The Rust-owned nested vectors remain live
+                    // while the commit sink copies this borrowed view.
+                    unsafe { (sink.set_grid_layout_data)(sink.context, paintable, view) };
+                });
+            }
+            if let Some(data) = &fragment.flex_layout_data {
+                data.with_ffi_view(|view| {
+                    // SAFETY: The Rust-owned lines and items remain live
+                    // while the commit sink copies this borrowed view.
+                    unsafe { (sink.set_flex_layout_data)(sink.context, paintable, view) };
+                });
+            }
+            if let Some(tracks) = &fragment.used_grid_tracks {
+                tracks.with_ffi_views(|columns, rows| {
+                    // SAFETY: Both Rust-owned track lists remain live
+                    // while the commit sink copies these borrowed views.
+                    unsafe { (sink.set_used_grid_tracks)(sink.context, paintable, columns, rows) };
+                });
             }
         }
 
