@@ -1951,8 +1951,9 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         );
         let pass_fragments = entry_fragments.take_pending_result(state_ref);
         debug_assert!(pass_fragments.fragment_count() > 0, "the run root always has a fragment");
-        state.shadow_diff_committed_fragments(&callbacks, &pass_fragments);
-        state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink);
+        let commit_index = fold_commit_index(&pass_fragments);
+        state.shadow_diff_committed_fragments(&callbacks, &commit_index);
+        state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink, &commit_index);
     });
 }
 
@@ -2023,8 +2024,9 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         drain_remaining_abspos_targets(state_ref, callbacks, false, &[viewport, root], &entry_fragments);
         let pass_fragments = entry_fragments.take_pending_result(state_ref);
         debug_assert!(pass_fragments.fragment_count() > 0, "the subtree root always has a fragment");
-        state.shadow_diff_committed_fragments(&callbacks, &pass_fragments);
-        state.commit_replacing(root, paintable_to_replace, &callbacks, sink);
+        let commit_index = fold_commit_index(&pass_fragments);
+        state.shadow_diff_committed_fragments(&callbacks, &commit_index);
+        state.commit_replacing(root, paintable_to_replace, &callbacks, sink, &commit_index);
     });
 }
 
@@ -2065,7 +2067,8 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
         drain_remaining_abspos_targets(state_ref, callbacks, false, &[containing_block], &entry_fragments);
         let pass_fragments = entry_fragments.take_pending_result(state_ref);
         debug_assert!(pass_fragments.fragment_count() > 0, "the replayed box always has a fragment");
-        state.shadow_diff_committed_fragments(&callbacks, &pass_fragments);
-        state.commit_replacing(box_, paintable_to_replace, &callbacks, sink);
+        let commit_index = fold_commit_index(&pass_fragments);
+        state.shadow_diff_committed_fragments(&callbacks, &commit_index);
+        state.commit_replacing(box_, paintable_to_replace, &callbacks, sink, &commit_index);
     });
 }

@@ -1311,40 +1311,19 @@ impl LayoutState {
     pub(crate) fn shadow_diff_committed_fragments(
         &self,
         callbacks: &FfiLayoutFcCallbacks,
-        pending: &crate::layout::PendingRunResult,
+        commit_index: &std::collections::HashMap<u32, &crate::layout::FragmentLink>,
     ) {
         if !cfg!(debug_assertions) && !shadow_fragment_diff_enabled() {
             return;
         }
-        let mut flattened: std::collections::HashMap<u32, &crate::layout::FragmentLink> = std::collections::HashMap::new();
-        fn flatten<'tree>(
-            links: &'tree [crate::layout::FragmentLink],
-            flattened: &mut std::collections::HashMap<u32, &'tree crate::layout::FragmentLink>,
-        ) {
-            for link in links {
-                assert!(
-                    link.node == link.fragment.node,
-                    "fragment shadow: a link and its fragment disagree about their box"
-                );
-                let previous = flattened.insert(link.node.slot_index(), link);
-                assert!(
-                    previous.is_none(),
-                    "fragment shadow: two fragments claim slot {}",
-                    link.node.slot_index()
-                );
-                flatten(&link.fragment.children, flattened);
-            }
-        }
-        flatten(&pending.root_children, &mut flattened);
-        flatten(&pending.late_attachments, &mut flattened);
-        for slot_index in flattened.keys() {
+        for slot_index in commit_index.keys() {
             assert!(
                 self.used_values_by_slot(*slot_index).is_some(),
                 "fragment shadow: fragment for slot {slot_index} has no record"
             );
         }
         self.used_values.for_each_indexed(|slot_index, used| {
-            let Some(link) = flattened.get(&slot_index) else {
+            let Some(link) = commit_index.get(&slot_index) else {
                 panic!(
                     "fragment shadow: record for slot {slot_index} is missing from the fragment tree (placed: {})",
                     used.has_content_offset.get()
@@ -1571,26 +1550,26 @@ impl LayoutState {
         insert_before_paintable: *mut c_void,
         callbacks: &FfiLayoutFcCallbacks,
         sink: &FfiCommitSink,
+        commit_index: &std::collections::HashMap<u32, &crate::layout::FragmentLink>,
     ) {
         let slot_index = callbacks.slot_index(node);
-        let used = self.used_values_by_slot(slot_index);
+        let entry = commit_index.get(&slot_index).copied();
         let abspos_layout_inputs = self
             .used_values_rare_data(slot_index)
             .and_then(|rare| rare.abspos_layout_inputs);
-        if used.is_some() {
+        if entry.is_some() {
             callbacks.set_saved_abspos_layout_inputs(node, abspos_layout_inputs);
         }
         // SAFETY: The C++ sink owns paintables and copies every plain-data
         // input synchronously.
         let node_shell = callbacks.shell(node);
-        let paintable = unsafe { (sink.prepare_node)(sink.context, node_shell, used.is_some()) };
+        let paintable = unsafe { (sink.prepare_node)(sink.context, node_shell, entry.is_some()) };
 
         let mut has_pending_inline_box_geometry = false;
-        if let Some(used) = used
+        if let Some(link) = entry
             && !paintable.is_null()
         {
-            let content_offset = point_add(used.content_offset.get(), used.committed_offset_delta.get());
-            let containing_line_box_index = self.containing_line_box_index(callbacks, node, used);
+            let fragment = &link.fragment;
             // SAFETY: Every callback below copies its plain-data argument or
             // consumes one retained handle synchronously.
             unsafe {
@@ -1598,40 +1577,36 @@ impl LayoutState {
                     sink.context,
                     paintable,
                     FfiCommittedBoxMetrics {
-                        content_offset,
-                        content_inline_size: used.content_inline_size.get(),
-                        content_block_size: used.content_block_size.get(),
-                        margin_left: used.margin_left.get(),
-                        margin_right: used.margin_right.get(),
-                        margin_top: used.margin_top.get(),
-                        margin_bottom: used.margin_bottom.get(),
-                        border_left: used.border_left.get(),
-                        border_right: used.border_right.get(),
-                        border_top: used.border_top.get(),
-                        border_bottom: used.border_bottom.get(),
-                        padding_left: used.padding_left.get(),
-                        padding_right: used.padding_right.get(),
-                        padding_top: used.padding_top.get(),
-                        padding_bottom: used.padding_bottom.get(),
-                        inset_left: used.inset_left.get(),
-                        inset_right: used.inset_right.get(),
-                        inset_top: used.inset_top.get(),
-                        inset_bottom: used.inset_bottom.get(),
-                        containing_line_box_index: containing_line_box_index.unwrap_or(0),
-                        has_containing_line_box_index: containing_line_box_index.is_some(),
+                        content_offset: link.offset,
+                        content_inline_size: fragment.content_inline_size,
+                        content_block_size: fragment.content_block_size,
+                        margin_left: fragment.margin_left,
+                        margin_right: fragment.margin_right,
+                        margin_top: fragment.margin_top,
+                        margin_bottom: fragment.margin_bottom,
+                        border_left: fragment.border_left,
+                        border_right: fragment.border_right,
+                        border_top: fragment.border_top,
+                        border_bottom: fragment.border_bottom,
+                        padding_left: fragment.padding_left,
+                        padding_right: fragment.padding_right,
+                        padding_top: fragment.padding_top,
+                        padding_bottom: fragment.padding_bottom,
+                        inset_left: link.inset_left,
+                        inset_right: link.inset_right,
+                        inset_top: link.inset_top,
+                        inset_bottom: link.inset_bottom,
+                        containing_line_box_index: link.containing_line_box_index.unwrap_or(0),
+                        has_containing_line_box_index: link.containing_line_box_index.is_some(),
                     },
                 );
             }
 
-            let (override_borders, table_cell_coordinates) =
-                self.used_values_rare_data(slot_index).map_or((None, None), |rare| {
-                    (rare.override_borders_data, rare.table_cell_coordinates)
-                });
             unsafe {
-                if let Some(borders) = override_borders {
+                if let Some(borders) = fragment.override_borders_data {
                     (sink.set_override_borders)(sink.context, paintable, borders);
                 }
-                if let Some(coordinates) = table_cell_coordinates {
+                if let Some(coordinates) = fragment.table_cell_coordinates {
                     (sink.set_table_cell_coordinates)(sink.context, paintable, coordinates);
                 }
             }
@@ -1651,7 +1626,7 @@ impl LayoutState {
                     assert!(push_line_data(
                         self,
                         slot_index,
-                        used.content_inline_size.get(),
+                        fragment.content_inline_size,
                         callbacks,
                         line_sink
                     ));
@@ -1725,7 +1700,14 @@ impl LayoutState {
         let mut child = callbacks.first_child(node);
         while !child.is_invalid() {
             let next = callbacks.next_sibling(child);
-            self.commit_subtree(child, result.paintable_for_children, null_mut(), callbacks, sink);
+            self.commit_subtree(
+                child,
+                result.paintable_for_children,
+                null_mut(),
+                callbacks,
+                sink,
+                commit_index,
+            );
             child = next;
         }
 
@@ -1743,6 +1725,7 @@ impl LayoutState {
         paintable_to_replace: *mut c_void,
         callbacks: &FfiLayoutFcCallbacks,
         sink: &FfiCommitSink,
+        commit_index: &std::collections::HashMap<u32, &crate::layout::FragmentLink>,
     ) {
         // SAFETY: The sink retains the replaced paintable, detaches it, and
         // returns borrowed insertion pointers that stay live until
@@ -1754,6 +1737,7 @@ impl LayoutState {
             position.insert_before_paintable,
             callbacks,
             sink,
+            commit_index,
         );
         unsafe {
             (sink.finish_commit)(sink.context);

@@ -155,6 +155,8 @@ pub(crate) struct Fragment {
     /// fragment; None when shadow capture is off or the record has none.
     pub(crate) line_data_fingerprint: Option<LineDataFingerprint>,
     pub(crate) rare_data_fingerprint: Option<RareDataFingerprint>,
+    pub(crate) table_cell_coordinates: Option<FfiTableCellCoordinates>,
+    pub(crate) override_borders_data: Option<FfiBordersData>,
     pub(crate) children: Vec<FragmentLink>,
 }
 
@@ -191,6 +193,14 @@ fn snapshot_link(
     } else {
         (None, None)
     };
+    let (table_cell_coordinates, override_borders_data) = used
+        .rare_data
+        .get()
+        .map(|cell| {
+            let rare = cell.borrow();
+            (rare.table_cell_coordinates, rare.override_borders_data)
+        })
+        .unwrap_or((None, None));
     FragmentLink {
         node,
         fragment: Box::new(Fragment {
@@ -211,6 +221,8 @@ fn snapshot_link(
             padding_bottom: used.padding_bottom.get(),
             line_data_fingerprint,
             rare_data_fingerprint,
+            table_cell_coordinates,
+            override_borders_data,
             children,
         }),
         offset: crate::layout::point_add(used.content_offset.get(), used.committed_offset_delta.get()),
@@ -241,6 +253,34 @@ impl PendingRunResult {
         }
         count(&self.root_children) + count(&self.late_attachments)
     }
+}
+
+/// Flattens a pass's fragment structure into the slot-keyed index commit
+/// emits from. The link↔fragment identity and one-fragment-per-slot
+/// invariants are structural, so they hold in every build.
+pub(crate) fn fold_commit_index(pending: &PendingRunResult) -> std::collections::HashMap<u32, &FragmentLink> {
+    fn flatten<'tree>(
+        links: &'tree [FragmentLink],
+        flattened: &mut std::collections::HashMap<u32, &'tree FragmentLink>,
+    ) {
+        for link in links {
+            assert!(
+                link.node == link.fragment.node,
+                "a fragment link and its fragment disagree about their box"
+            );
+            let previous = flattened.insert(link.node.slot_index(), link);
+            assert!(
+                previous.is_none(),
+                "two fragments claim slot {}",
+                link.node.slot_index()
+            );
+            flatten(&link.fragment.children, flattened);
+        }
+    }
+    let mut flattened = std::collections::HashMap::new();
+    flatten(&pending.root_children, &mut flattened);
+    flatten(&pending.late_attachments, &mut flattened);
+    flattened
 }
 
 enum FrameState {
