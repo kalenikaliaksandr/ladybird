@@ -1527,15 +1527,31 @@ fn assert_pre_run_root_state_is_input_derived(run: &FormattingContextRun, input:
     // A run that declares its root state through measurement_root has a
     // writer-free record by construction, whatever its participation;
     // drivers not yet converted leave the field unset and stay off the
-    // probe until their conversion.
-    let converted_kind = matches!(input.participation, ParticipationInParentFormattingContext::AtomicInline)
-        || input.sizing.measurement_root.is_some();
+    // probe until their conversion. Atomic-inline and absolutely
+    // positioned roots have no parent-side pre-run writers at all: their
+    // geometry derives inside the run prelude, downstream of this check.
+    let converted_kind = matches!(
+        input.participation,
+        ParticipationInParentFormattingContext::AtomicInline
+            | ParticipationInParentFormattingContext::AbsolutelyPositioned(_)
+    ) || input.sizing.measurement_root.is_some();
     if !converted_kind {
         return;
     }
-    let baseline =
-        run.state
-            .initial_box_metrics_for_node(&run.callbacks, run.box_, input.containing_block_constraints);
+    let baseline_constraints = match input.participation {
+        // Absolutely positioned roots are created at drain registration,
+        // before their solved containing-block basis exists, so their
+        // baseline is the style derivation against an empty basis; the run
+        // prelude re-derives every field from AbsposLayoutInputs. The
+        // creation-time definiteness this leaves on the record is consumed
+        // by the height:auto paths, which is why creating against the run
+        // basis instead would change percentage resolution.
+        ParticipationInParentFormattingContext::AbsolutelyPositioned(_) => ContainingBlockConstraints::default(),
+        _ => input.containing_block_constraints,
+    };
+    let baseline = run
+        .state
+        .initial_box_metrics_for_node(&run.callbacks, run.box_, baseline_constraints);
     let actual = BoxMetrics::capture_from_record(&run.records.used_values(run.box_));
     assert!(
         actual == baseline,
