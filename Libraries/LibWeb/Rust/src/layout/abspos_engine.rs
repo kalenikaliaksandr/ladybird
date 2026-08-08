@@ -95,31 +95,23 @@ impl<'pass> AbsposEngine<'pass> {
     }
 
 
-    fn inline_containing_block(&self, node: Node) -> Node {
-        self.callbacks.inline_containing_block(node)
-    }
 
-    fn non_anonymous_containing_block(&self, node: Node) -> Node {
-        self.callbacks.non_anonymous_containing_block(node)
-    }
 
     fn node_is_ancestor(&self, ancestor: Node, node: Node) -> bool {
         self.callbacks.is_ancestor(ancestor, node)
     }
 
-    fn resolve_static_position_relative_to_containing_block(
-        &self,
-        node: Node,
-        static_position_rect: StaticPositionRect,
-        effective_birth: Node,
-    ) -> StaticPositionRect {
-        let static_position_cb = effective_birth;
+    /// The physical offset translating a payload from effective_birth's
+    /// content space into the actual containing block's: both chains walk to
+    /// their merge point, and the difference of the accumulated offsets is
+    /// the translation. Every record read belongs to the draining run.
+    fn chain_translation_delta(&self, node: Node, effective_birth: Node) -> FfiCssPixelPoint {
         let actual_containing_block = self.callbacks.containing_block(node);
-        if static_position_cb.is_invalid() || static_position_cb == actual_containing_block {
-            return static_position_rect;
+        if effective_birth.is_invalid() || effective_birth == actual_containing_block {
+            return FfiCssPixelPoint::default();
         }
 
-        let mut merge_point = static_position_cb;
+        let mut merge_point = effective_birth;
         while merge_point != actual_containing_block && !self.node_is_ancestor(merge_point, actual_containing_block) {
             merge_point = self.callbacks.containing_block(merge_point);
             assert!(!merge_point.is_invalid());
@@ -136,52 +128,19 @@ impl<'pass> AbsposEngine<'pass> {
             }
             offset
         };
-        translate_static_position_between_chains(
-            static_position_rect,
-            offset_relative_to_merge_point(static_position_cb),
+        point_sub(
+            offset_relative_to_merge_point(effective_birth),
             offset_relative_to_merge_point(actual_containing_block),
         )
     }
 
-    fn compute_inline_containing_block_rect(
-        &self,
-        inline_node: Node,
-        abspos_containing_block: Node,
-    ) -> Option<PhysicalRect> {
-        if self.facts(inline_node).is_anonymous() {
-            return None;
-        }
-        let outer_block = self.non_anonymous_containing_block(inline_node);
-        if outer_block.is_invalid() {
-            return None;
-        }
 
-        let mut rect = self
-            .state
-            .inline_containing_block_first_last_rect(self.callbacks.slot_index(inline_node))?;
-        debug_assert!(
-            self.node_is_ancestor(abspos_containing_block, inline_node),
-            "an inline containing block must live inside its children's box containing block"
-        );
-        let mut ancestor = self.callbacks.containing_block(inline_node);
-        while !ancestor.is_invalid() && ancestor != abspos_containing_block {
-            let content_offset = self.used(ancestor).content_offset.get();
-            rect.x += content_offset.x;
-            rect.y += content_offset.y;
-            ancestor = self.callbacks.containing_block(ancestor);
-        }
-        Some(rect)
-    }
-
-    fn base_containing_block_info(&self, node: Node) -> AbsposContainingBlockInfo {
+    fn base_containing_block_info(&self, node: Node, inline_containing_block_rect: Option<PhysicalRect>) -> AbsposContainingBlockInfo {
         let style = self.style(node);
         let (inline_axis_mode, block_axis_mode) = axis_modes(style);
         let containing_block = self.callbacks.containing_block(node);
         assert!(!containing_block.is_invalid());
-        let inline_containing_block = self.inline_containing_block(node);
-        if !inline_containing_block.is_invalid()
-            && let Some(rect) = self.compute_inline_containing_block_rect(inline_containing_block, containing_block)
-        {
+        if let Some(rect) = inline_containing_block_rect {
             return AbsposContainingBlockInfo {
                 rect: LogicalRect {
                     offset: LogicalOffset {
@@ -1660,15 +1619,22 @@ impl<'pass> AbsposEngine<'pass> {
         self.state
             .create_used_values(&self.callbacks, child_box, ContainingBlockConstraints::default());
         self.resolve_anchor_insets(child_box);
+        let chain_delta = self.chain_translation_delta(child_box, child.effective_birth);
+        let static_position_rect = crate::layout::translate_static_position_between_chains(
+            child.static_position_rect,
+            chain_delta,
+            FfiCssPixelPoint::default(),
+        );
+        let inline_containing_block_rect = child.inline_containing_block_rect.map(|mut rect| {
+            rect.x += chain_delta.x;
+            rect.y += chain_delta.y;
+            rect
+        });
         let inputs = AbsposLayoutInputs {
-            static_position_rect: self.resolve_static_position_relative_to_containing_block(
-                child_box,
-                child.static_position_rect,
-                child.effective_birth,
-            ),
+            static_position_rect,
             containing_block_info: child
                 .containing_block_info_override
-                .unwrap_or_else(|| self.base_containing_block_info(child_box)),
+                .unwrap_or_else(|| self.base_containing_block_info(child_box, inline_containing_block_rect)),
         };
         self.layout_element(run, child_box, inputs);
     }

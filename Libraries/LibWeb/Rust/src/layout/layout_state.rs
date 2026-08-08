@@ -307,6 +307,12 @@ pub(crate) struct PendingAbsposChild {
     pub(crate) effective_birth: Node,
     pub(crate) static_position_rect: StaticPositionRect,
     pub(crate) containing_block_info_override: Option<AbsposContainingBlockInfo>,
+    /// The relative-positioned inline whose first/last-line rect forms this
+    /// child's containing block, when one does; the producing inline run
+    /// stamps the rect while the entry sits in its builder, and it travels
+    /// with the static rect from then on.
+    pub(crate) inline_containing_block: Node,
+    pub(crate) inline_containing_block_rect: Option<PhysicalRect>,
 }
 
 /// A pass-scoped lens over one node's facts. Pure classification reads the
@@ -831,7 +837,6 @@ pub(crate) struct LayoutState {
     used_values: PagedStore<UsedValues>,
     anchor_inset_store: AnchorInsetStore,
     replaced_content_facts: PagedStore<crate::layout::FfiReplacedContentFacts>,
-    inline_containing_blocks: RefCell<HashSet<Node>>,
     anchor_candidate_shells: RefCell<Vec<*mut c_void>>,
     purpose: LayoutStatePurpose,
 }
@@ -866,7 +871,6 @@ pub(crate) struct UsedValuesRareData {
     pub(crate) used_grid_tracks: Option<OwnedUsedGridTracks>,
     pub(crate) override_borders_data: Option<FfiBordersData>,
     pub(crate) abspos_layout_inputs: Option<AbsposLayoutInputs>,
-    pub(crate) inline_containing_block_first_last_rect: Option<PhysicalRect>,
 }
 
 impl LayoutState {
@@ -875,7 +879,6 @@ impl LayoutState {
             used_values: PagedStore::default(),
             anchor_inset_store: AnchorInsetStore::default(),
             replaced_content_facts: PagedStore::default(),
-            inline_containing_blocks: RefCell::new(HashSet::new()),
             anchor_candidate_shells: RefCell::new(Vec::new()),
             purpose,
         }
@@ -1111,21 +1114,9 @@ impl LayoutState {
         Some(used)
     }
 
-    pub(crate) fn note_inline_containing_block(&self, inline_containing_block: Node) {
-        self.inline_containing_blocks.borrow_mut().insert(inline_containing_block);
-    }
 
-    pub(crate) fn has_inline_containing_blocks(&self) -> bool {
-        !self.inline_containing_blocks.borrow().is_empty()
-    }
 
-    pub(crate) fn is_inline_containing_block(&self, node: Node) -> bool {
-        self.inline_containing_blocks.borrow().contains(&node)
-    }
 
-    pub(crate) fn inline_containing_block_first_last_rect(&self, slot_index: u32) -> Option<PhysicalRect> {
-        self.used_values_rare_data(slot_index)?.inline_containing_block_first_last_rect
-    }
 
     fn register_anchor_candidate_if_carries_anchor_names(&self, callbacks: &FfiLayoutFcCallbacks, node: Node) {
         if !self.node_facts(callbacks, node).has_anchor_names() {

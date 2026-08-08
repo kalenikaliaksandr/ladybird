@@ -61,6 +61,15 @@ pub(crate) struct FragmentLink {
     pub(crate) is_unplaced_orphan: bool,
 }
 
+fn translate_pending_abspos_payloads(entry: &mut PendingAbsposChild, offset: FfiCssPixelPoint) {
+    entry.static_position_rect =
+        crate::layout::translate_static_position_between_chains(entry.static_position_rect, offset, FfiCssPixelPoint::default());
+    if let Some(rect) = &mut entry.inline_containing_block_rect {
+        rect.x += offset.x;
+        rect.y += offset.y;
+    }
+}
+
 fn snapshot_link(
     node: crate::layout::node_data::NodeSlotId,
     children: Vec<FragmentLink>,
@@ -292,6 +301,65 @@ impl RunFragmentBuilder {
         }
     }
 
+    /// Whether any registration anywhere in this builder names an inline
+    /// containing block — the gate for collecting first/last-line rects.
+    pub(crate) fn any_pending_abspos_has_inline_containing_block(&self) -> bool {
+        let inner = self.inner.borrow();
+        let in_frames = inner.frames.values().any(|frame| match frame {
+            FrameState::Pending { pending_abspos, .. } => {
+                pending_abspos.iter().any(|entry| !entry.inline_containing_block.is_invalid())
+            }
+            FrameState::Consumed => false,
+        });
+        in_frames
+            || inner
+                .pending_abspos_at_root
+                .iter()
+                .any(|entry| !entry.inline_containing_block.is_invalid())
+    }
+
+    pub(crate) fn any_pending_abspos_names_inline_containing_block(&self, inline_box: crate::layout::node_data::NodeSlotId) -> bool {
+        let inner = self.inner.borrow();
+        let matches = |entry: &PendingAbsposChild| entry.inline_containing_block.slot_index() == inline_box.slot_index();
+        let in_frames = inner.frames.values().any(|frame| match frame {
+            FrameState::Pending { pending_abspos, .. } => pending_abspos.iter().any(matches),
+            FrameState::Consumed => false,
+        });
+        in_frames || inner.pending_abspos_at_root.iter().any(matches)
+    }
+
+    /// Stamps a produced first/last-line rect onto every registration naming
+    /// this inline containing block. The rect is in the producing inline
+    /// run's containing-block space, which is where every such entry's
+    /// effective birth sits when the producing run completes.
+    pub(crate) fn stamp_inline_containing_block_rect(
+        &self,
+        inline_box: crate::layout::node_data::NodeSlotId,
+        rect: PhysicalRect,
+        expected_space: crate::layout::node_data::NodeSlotId,
+    ) {
+        let mut inner = self.inner.borrow_mut();
+        let stamp = |entry: &mut PendingAbsposChild| {
+            if entry.inline_containing_block.slot_index() == inline_box.slot_index() {
+                debug_assert!(
+                    entry.effective_birth.slot_index() == expected_space.slot_index(),
+                    "an inline containing block rect met an entry in a different space"
+                );
+                entry.inline_containing_block_rect = Some(rect);
+            }
+        };
+        for frame in inner.frames.values_mut() {
+            if let FrameState::Pending { pending_abspos, .. } = frame {
+                for entry in pending_abspos {
+                    stamp(entry);
+                }
+            }
+        }
+        for entry in &mut inner.pending_abspos_at_root {
+            stamp(entry);
+        }
+    }
+
     pub(crate) fn has_pending_abspos_for_target(&self, target: crate::layout::node_data::NodeSlotId) -> bool {
         self.inner
             .borrow()
@@ -378,11 +446,7 @@ impl RunFragmentBuilder {
             if entry.effective_birth.slot_index() == slot
                 && let Some(containing_block) = containing_block
             {
-                entry.static_position_rect = crate::layout::translate_static_position_between_chains(
-                    entry.static_position_rect,
-                    used.content_offset.get(),
-                    FfiCssPixelPoint::default(),
-                );
+                translate_pending_abspos_payloads(&mut entry, used.content_offset.get());
                 entry.effective_birth = containing_block;
             }
             match inner.frames.get_mut(&entry.effective_birth.slot_index()) {
@@ -509,11 +573,7 @@ impl RunFragmentBuilder {
                 if !used.has_content_offset.get() {
                     break;
                 }
-                entry.static_position_rect = crate::layout::translate_static_position_between_chains(
-                    entry.static_position_rect,
-                    used.content_offset.get(),
-                    FfiCssPixelPoint::default(),
-                );
+                translate_pending_abspos_payloads(entry, used.content_offset.get());
                 let containing_block = callbacks.containing_block(entry.effective_birth);
                 if containing_block.is_invalid() {
                     break;

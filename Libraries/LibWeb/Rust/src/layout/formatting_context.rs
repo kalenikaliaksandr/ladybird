@@ -473,9 +473,6 @@ pub(crate) fn register_contained_abspos_child(
         return;
     }
     let inline_containing_block = callbacks.inline_containing_block(child);
-    if !inline_containing_block.is_invalid() {
-        state.note_inline_containing_block(inline_containing_block);
-    }
     // Table-internal containing blocks drain at the table grid box's tail
     // even though a cell's used geometry is final when its own run returns
     // (the row-size stretch rides the cell run's input): row- and
@@ -502,6 +499,8 @@ pub(crate) fn register_contained_abspos_child(
             effective_birth: birth_box,
             static_position_rect,
             containing_block_info_override,
+            inline_containing_block,
+            inline_containing_block_rect: None,
         },
     );
 }
