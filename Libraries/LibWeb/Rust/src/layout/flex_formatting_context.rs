@@ -2472,7 +2472,7 @@ impl<'pass> FlexFormattingContext<'pass> {
                     self.run(run, input);
                     self.item_used(index).content_baselines_from_cells()
                 }
-                crate::layout::ChildLayoutOutcome::Skipped => self.item_used(index).content_baselines_from_cells(),
+                crate::layout::ChildLayoutOutcome::Skipped(result) => result.baselines,
             };
 
         let container_inline_size = self.container_used().content_inline_size.get();

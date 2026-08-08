@@ -196,6 +196,7 @@ pub(crate) struct BlockFormattingContext<'pass> {
     lowest_floating_descendant_bottom_margin_edge: Cell<Option<CssPixels>>,
     derived_baselines_of_root_box: Cell<DerivedBaselines>,
     trailing_collapsed_margin: Cell<Option<(Node, CssPixels)>>,
+    table_box_in_wrapper_border_box_block_size: Cell<Option<CssPixels>>,
     fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
 }
 
@@ -218,7 +219,12 @@ impl<'pass> BlockFormattingContext<'pass> {
             lowest_floating_descendant_bottom_margin_edge: Cell::new(None),
             derived_baselines_of_root_box: Cell::new(DerivedBaselines::default()),
             trailing_collapsed_margin: Cell::new(None),
+            table_box_in_wrapper_border_box_block_size: Cell::new(None),
         }
+    }
+
+    pub(crate) fn table_box_in_wrapper_border_box_block_size(&self) -> Option<CssPixels> {
+        self.table_box_in_wrapper_border_box_block_size.get()
     }
 
     fn facts(&self, node: Node) -> NodeFacts<'_> {
@@ -1473,7 +1479,7 @@ impl<'pass> BlockFormattingContext<'pass> {
             },
             true,
         ) {
-            crate::layout::ChildLayoutOutcome::Created(_) | crate::layout::ChildLayoutOutcome::Skipped => {}
+            crate::layout::ChildLayoutOutcome::Created(_) | crate::layout::ChildLayoutOutcome::Skipped(_) => {}
             crate::layout::ChildLayoutOutcome::ReenterCurrent => {
                 unreachable!("marker inside layout did not establish a formatting context")
             }
@@ -1522,7 +1528,7 @@ impl<'pass> BlockFormattingContext<'pass> {
             input,
             force_independent_context_run,
         ) {
-            crate::layout::ChildLayoutOutcome::Skipped => None,
+            crate::layout::ChildLayoutOutcome::Skipped(_) => None,
             crate::layout::ChildLayoutOutcome::Created(child_layout) => Some(child_layout),
             crate::layout::ChildLayoutOutcome::ReenterCurrent => {
                 self.run(run, input);
@@ -1822,7 +1828,18 @@ impl<'pass> BlockFormattingContext<'pass> {
                 },
                 participation: ParticipationInParentFormattingContext::BlockLevel,
             };
-            self.layout_inside(run, node, inside_layout_input, true)
+            let child_layout = self.layout_inside(run, node, inside_layout_input, true);
+            if container_facts.is_table_wrapper()
+                && style.display().is_table_inside()
+                && let Some(child_layout) = &child_layout
+            {
+                self.table_box_in_wrapper_border_box_block_size.set(Some(
+                    child_layout
+                        .geometry
+                        .border_box_block_size(child_layout.geometry.uses_collapsing_borders_model),
+                ));
+            }
+            child_layout
         } else {
             // This box participates in the current block container's flow.
             let space_available_for_children = if facts.is_anonymous() {

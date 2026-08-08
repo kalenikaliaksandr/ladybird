@@ -3449,7 +3449,7 @@ impl<'pass> GridFormattingContext<'pass> {
                 input,
                 false,
             ) {
-                crate::layout::ChildLayoutOutcome::Created(_) | crate::layout::ChildLayoutOutcome::Skipped => {}
+                crate::layout::ChildLayoutOutcome::Created(_) | crate::layout::ChildLayoutOutcome::Skipped(_) => {}
                 crate::layout::ChildLayoutOutcome::ReenterCurrent => {
                     self.run(run, input);
                 }

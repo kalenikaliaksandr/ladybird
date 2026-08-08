@@ -906,7 +906,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
                 self.parent.run(self.run, input);
                 self.used(node).content_baselines_from_cells()
             }
-            crate::layout::ChildLayoutOutcome::Skipped => self.used(node).content_baselines_from_cells(),
+            crate::layout::ChildLayoutOutcome::Skipped(result) => result.baselines,
         }
     }
 

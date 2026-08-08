@@ -1971,7 +1971,6 @@ impl<'pass> SizingContext<'pass> {
 
         // table-wrapper can't have borders or paddings but it might have margin taken from table-root.
         let available_block_size = containing_block_block_size - margin_top - margin_bottom;
-        let table_box = self.table_box_inside_wrapper(wrapper);
 
         let measurement = MeasurementState::create(self.callbacks);
         let wrapper_used = measurement.create_used_values(wrapper, table_wrapper_constraints);
@@ -1990,8 +1989,10 @@ impl<'pass> SizingContext<'pass> {
             },
         );
 
-        let table_used = wrapper_outputs.records.used_values(table_box);
-        let table_used_block_size = table_used.border_box_block_size(table_used.uses_collapsing_borders_model.get());
+        let table_used_block_size = wrapper_outputs
+            .result
+            .table_box_in_wrapper_border_box_block_size
+            .expect("a table wrapper's measurement run lays out the table box inside it");
         if matches!(available_space.block_size, AvailableSize::Definite(_)) {
             table_used_block_size.min(available_block_size)
         } else {

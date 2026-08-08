@@ -748,7 +748,7 @@ impl<'pass> SvgFormattingContext<'pass> {
             };
             match crate::layout::layout_inside_child(run, None, None, child, self.layout_mode, child_input, true) {
                 crate::layout::ChildLayoutOutcome::Created(_) => {}
-                crate::layout::ChildLayoutOutcome::Skipped | crate::layout::ChildLayoutOutcome::ReenterCurrent => {
+                crate::layout::ChildLayoutOutcome::Skipped(_) | crate::layout::ChildLayoutOutcome::ReenterCurrent => {
                     panic!("SVG foreign object did not create an independent formatting context")
                 }
             };

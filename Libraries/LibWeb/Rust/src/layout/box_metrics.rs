@@ -37,6 +37,49 @@ impl BoxMetrics {
         self.has_definite_block_size && self.block_size_constraint == SizeConstraint::None
     }
 
+    fn rounded_half_border(value: CssPixels) -> CssPixels {
+        let value = CssPixels::from_raw(value.raw_value() / 2);
+        let raw = value.raw_value();
+        let rounded = if raw > 0 {
+            (raw.saturating_add(32) & !63).min(i32::MAX & !63)
+        } else if raw < 0 {
+            let adjusted = raw.saturating_sub(32);
+            let floor = adjusted & !63;
+            floor.saturating_add(if adjusted & 63 != 0 { 64 } else { 0 })
+        } else {
+            0
+        };
+        CssPixels::from_raw(rounded)
+    }
+
+    pub(crate) fn border_top_collapsed(&self, collapsed: bool) -> CssPixels {
+        if collapsed {
+            Self::rounded_half_border(self.border.top)
+        } else {
+            self.border.top
+        }
+    }
+
+    pub(crate) fn border_bottom_collapsed(&self, collapsed: bool) -> CssPixels {
+        if collapsed {
+            Self::rounded_half_border(self.border.bottom)
+        } else {
+            self.border.bottom
+        }
+    }
+
+    pub(crate) fn border_box_top(&self, collapsed: bool) -> CssPixels {
+        self.border_top_collapsed(collapsed) + self.padding.top
+    }
+
+    pub(crate) fn border_box_bottom(&self, collapsed: bool) -> CssPixels {
+        self.border_bottom_collapsed(collapsed) + self.padding.bottom
+    }
+
+    pub(crate) fn border_box_block_size(&self, collapsed: bool) -> CssPixels {
+        self.border_box_top(collapsed) + self.content_block_size + self.border_box_bottom(collapsed)
+    }
+
     pub(crate) fn set_content_inline_size(&mut self, value: CssPixels) {
         self.content_inline_size = clamp_to_max_dimension_value(value.max(CssPixels::default()));
         self.has_definite_inline_size = true;

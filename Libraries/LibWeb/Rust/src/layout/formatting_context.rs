@@ -836,6 +836,10 @@ pub(crate) struct ChildLayoutResult {
     /// before this capture, so a stored geometry is always the default
     /// value and every consumer sees the live post-finalize state.
     pub geometry: BoxMetrics,
+    /// Set by a block run whose root is a table wrapper: the border-box
+    /// block size of the table box inside, which the wrapper-measure
+    /// path needs after the run's interior records are gone.
+    pub table_box_in_wrapper_border_box_block_size: Option<CssPixels>,
 }
 
 /// Everything a completed run hands back: the sizing result consumed by the
@@ -845,13 +849,10 @@ pub(crate) struct ChildLayoutResult {
 pub(crate) struct RunOutputs {
     pub(crate) result: ChildLayoutResult,
     pub(crate) fragments: Option<PendingRunResult>,
-    /// The run's completed record scope, absorbed by the spawning scope so
-    /// drain-time consumption can read the finished subtree.
-    pub(crate) records: std::rc::Rc<RunRecords>,
 }
 
 pub(crate) enum ChildLayoutOutcome {
-    Skipped,
+    Skipped(ChildLayoutResult),
     Created(ChildLayoutResult),
     ReenterCurrent,
 }
@@ -1175,11 +1176,7 @@ impl<'pass> FormattingContextRun<'pass> {
 
     pub(crate) fn outputs(&self, mut result: ChildLayoutResult, fragments: Option<PendingRunResult>) -> RunOutputs {
         result.geometry = BoxMetrics::capture_from_record(&self.records.used_values(self.box_));
-        RunOutputs {
-            result,
-            fragments,
-            records: self.records.clone(),
-        }
+        RunOutputs { result, fragments }
     }
 }
 
@@ -1652,6 +1649,7 @@ fn run_formatting_context<'pass>(
                     automatic_content_inline_size: context.automatic_content_inline_size(),
                     automatic_content_block_size: context.automatic_content_block_size(),
                     baselines,
+                    table_box_in_wrapper_border_box_block_size: context.table_box_in_wrapper_border_box_block_size(),
                     ..ChildLayoutResult::default()
                 }
             }
@@ -1841,6 +1839,19 @@ fn finalize_atomic_root_block_size(
     }
 }
 
+/// The result a child reports when its independent run is elided: the
+/// skip-path sizing hooks have already run, so the record holds the
+/// child's final geometry, and the baselines are whatever the record
+/// carries at skip time.
+fn result_of_skipped_child(run: &FormattingContextRun, child: Node) -> ChildLayoutResult {
+    let used = run.records.used_values(child);
+    ChildLayoutResult {
+        baselines: used.content_baselines_from_cells(),
+        geometry: BoxMetrics::capture_from_record(&used),
+        ..ChildLayoutResult::default()
+    }
+}
+
 pub(crate) fn layout_inside_child<'pass>(
     run: &FormattingContextRun<'pass>,
     parent_block: Option<&BlockFormattingContext<'pass>>,
@@ -1861,7 +1872,7 @@ pub(crate) fn layout_inside_child<'pass>(
         && used.has_definite_block_size()
     {
         size_skipped_independent_root(run, parent_block, child, &input);
-        return ChildLayoutOutcome::Skipped;
+        return ChildLayoutOutcome::Skipped(result_of_skipped_child(run, child));
     }
     let creates_replaced_context = matches!(
         formatting_context_type_created_by_box(facts),
@@ -1869,7 +1880,7 @@ pub(crate) fn layout_inside_child<'pass>(
     );
     if !facts.can_have_children() && !creates_replaced_context {
         size_skipped_independent_root(run, parent_block, child, &input);
-        return ChildLayoutOutcome::Skipped;
+        return ChildLayoutOutcome::Skipped(result_of_skipped_child(run, child));
     }
 
     let fc_type = formatting_context_type_created_by_box(facts).or_else(|| {
@@ -1877,7 +1888,7 @@ pub(crate) fn layout_inside_child<'pass>(
     });
     let Some(fc_type) = fc_type else {
         if force_independent_context_run {
-            return ChildLayoutOutcome::Skipped;
+            return ChildLayoutOutcome::Skipped(result_of_skipped_child(run, child));
         }
         return ChildLayoutOutcome::ReenterCurrent;
     };

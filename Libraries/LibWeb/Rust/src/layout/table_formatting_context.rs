@@ -1963,7 +1963,7 @@ impl<'pass> TableFormattingContext<'pass> {
                 self.run(run, layout_input);
                 self.used_values(cell.box_).content_baselines_from_cells()
             }
-            crate::layout::ChildLayoutOutcome::Skipped => self.used_values(cell.box_).content_baselines_from_cells(),
+            crate::layout::ChildLayoutOutcome::Skipped(result) => result.baselines,
         }
     }
 
