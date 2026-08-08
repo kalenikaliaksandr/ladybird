@@ -992,9 +992,8 @@ impl Axis {
 }
 
 #[derive(Clone, Copy)]
-struct GridItem<'pass> {
+struct GridItem {
     box_: Node,
-    used_values: &'pass UsedValues,
     row: i32,
     row_span: usize,
     column: i32,
@@ -1007,7 +1006,7 @@ struct GridItem<'pass> {
     extra_margin_left: CssPixels,
 }
 
-impl GridItem<'_> {
+impl GridItem {
     fn placement(self) -> GridItemPlacement {
         GridItemPlacement {
             row: self.row,
@@ -1040,7 +1039,6 @@ pub(crate) struct GridFormattingContext<'pass> {
     callbacks: FfiLayoutFcCallbacks,
     should_collect_devtools_layout_data: bool,
     fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
-    container_used_values: &'pass UsedValues,
     available_space: Option<AvailableSpace>,
     layout_input: Option<LayoutInput>,
     column_lines: Vec<Vec<LineName>>,
@@ -1049,7 +1047,7 @@ pub(crate) struct GridFormattingContext<'pass> {
     rows: Vec<Track>,
     column_gaps: Vec<Track>,
     row_gaps: Vec<Track>,
-    items: Vec<GridItem<'pass>>,
+    items: Vec<GridItem>,
     explicit_column_line_count: usize,
     explicit_row_line_count: usize,
     explicit_column_start: usize,
@@ -1119,7 +1117,6 @@ impl ParentGridData {
 impl<'pass> GridFormattingContext<'pass> {
     pub(crate) fn new(run: &FormattingContextRun<'pass>, parent_grid: Option<&GridFormattingContext<'_>>) -> Self {
         let grid_container = run.box_;
-        let container_used_values = run.records.used_values(grid_container);
         Self {
             state: run.state,
             records: run.records.clone(),
@@ -1130,7 +1127,6 @@ impl<'pass> GridFormattingContext<'pass> {
             callbacks: run.callbacks,
             should_collect_devtools_layout_data: run.should_collect_devtools_layout_data,
             fragments: run.fragments.clone(),
-            container_used_values,
             available_space: None,
             layout_input: None,
             column_lines: Vec::new(),
@@ -1174,19 +1170,19 @@ impl<'pass> GridFormattingContext<'pass> {
     }
 
     fn container_used(&self) -> &'pass UsedValues {
-        self.container_used_values
+        self.records.used_values(self.grid_container)
     }
 
     fn container_used_mut(&self) -> &'pass UsedValues {
-        self.container_used_values
+        self.container_used()
     }
 
-    fn used<'item>(&self, item: GridItem<'item>) -> &'item UsedValues {
-        item.used_values
+    fn used(&self, item: GridItem) -> &'pass UsedValues {
+        self.records.used_values(item.box_)
     }
 
-    fn used_mut<'item>(&self, item: GridItem<'item>) -> &'item UsedValues {
-        item.used_values
+    fn used_mut(&self, item: GridItem) -> &'pass UsedValues {
+        self.used(item)
     }
 
     fn style(&self, node: Node) -> StyleValues<'pass> {
@@ -1690,10 +1686,9 @@ impl<'pass> GridFormattingContext<'pass> {
                             child_grid_style.names.raws(),
                         ),
                     });
-                    let item_used_values =
-                        self.records
-                            .create_used_values(self.state, &self.callbacks, child, ContainingBlockConstraints::default());
-                    nodes.push((child, item_used_values));
+                    self.records
+                        .create_used_values(self.state, &self.callbacks, child, ContainingBlockConstraints::default());
+                    nodes.push(child);
                 }
             }
             child = next;
@@ -1740,10 +1735,9 @@ impl<'pass> GridFormattingContext<'pass> {
             self.row_lines = lines;
         }
         for placed in result.items {
-            let (box_, used_values) = nodes[placed.id];
+            let box_ = nodes[placed.id];
             self.items.push(GridItem {
                 box_,
-                used_values,
                 row: placed.row,
                 row_span: placed.row_span,
                 column: placed.column,
@@ -2599,7 +2593,7 @@ impl<'pass> GridFormattingContext<'pass> {
         }
     }
 
-    fn subgrid_item_contributions_to_track_sizing(&self, subgrid: GridItem<'pass>, axis: Axis) -> Vec<ItemContribution> {
+    fn subgrid_item_contributions_to_track_sizing(&self, subgrid: GridItem, axis: Axis) -> Vec<ItemContribution> {
         let scratch = MeasurementState::create(self.callbacks);
         let live = self.used(subgrid);
         let scratch_root = scratch.create_used_values(subgrid.box_, ContainingBlockConstraints::default());
@@ -3489,7 +3483,7 @@ impl<'pass> GridFormattingContext<'pass> {
             columns: self.used_track_list_data(Axis::Column, self.is_subgridded(Axis::Column, grid_style)),
             rows: self.used_track_list_data(Axis::Row, self.is_subgridded(Axis::Row, grid_style)),
         };
-        self.container_used_values
+        self.container_used()
             .rare_data_mut()
             .used_grid_tracks = Some(tracks);
     }
@@ -3612,7 +3606,7 @@ impl<'pass> GridFormattingContext<'pass> {
             is_subgrid: self.is_subgridded(Axis::Column, grid_style) || self.is_subgridded(Axis::Row, grid_style),
             fragments: vec![fragment],
         };
-        self.container_used_values
+        self.container_used()
             .rare_data_mut()
             .grid_layout_data = Some(data);
     }

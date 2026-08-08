@@ -42,7 +42,6 @@ enum UsedFlexBasis<'pass> {
 
 struct FlexItem<'pass> {
     box_: Node,
-    used_values: &'pass UsedValues,
     used_flex_basis: UsedFlexBasis<'pass>,
     used_flex_basis_is_definite: bool,
     main_size_was_resolved_from_aspect_ratio: bool,
@@ -69,11 +68,10 @@ struct FlexItem<'pass> {
     content_baselines: DerivedBaselines,
 }
 
-impl<'pass> FlexItem<'pass> {
-    fn new(box_: Node, used_values: &'pass UsedValues) -> Self {
+impl FlexItem<'_> {
+    fn new(box_: Node) -> Self {
         Self {
             box_,
-            used_values,
             used_flex_basis: UsedFlexBasis::Content,
             used_flex_basis_is_definite: false,
             main_size_was_resolved_from_aspect_ratio: false,
@@ -179,7 +177,6 @@ struct FlexFormattingContext<'pass> {
     callbacks: FfiLayoutFcCallbacks,
     fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
     should_collect_devtools_layout_data: bool,
-    flex_container_state: &'pass UsedValues,
     flex_lines: Vec<FlexLine>,
     flex_items: Vec<FlexItem<'pass>>,
     derived_baselines_of_root_box: DerivedBaselines,
@@ -192,7 +189,6 @@ struct FlexFormattingContext<'pass> {
 
 impl<'pass> FlexFormattingContext<'pass> {
     fn new(run: &FormattingContextRun<'pass>) -> Self {
-        let flex_container_state = run.records.used_values(run.box_);
         let flex_direction = run.state.style_facts(&run.callbacks, run.box_).flex_direction();
         Self {
             state: run.state,
@@ -202,7 +198,6 @@ impl<'pass> FlexFormattingContext<'pass> {
             callbacks: run.callbacks,
             fragments: run.fragments.clone(),
             should_collect_devtools_layout_data: run.should_collect_devtools_layout_data,
-            flex_container_state,
             flex_lines: Vec::new(),
             flex_items: Vec::new(),
             derived_baselines_of_root_box: DerivedBaselines::default(),
@@ -215,19 +210,19 @@ impl<'pass> FlexFormattingContext<'pass> {
     }
 
     fn item_used(&self, index: usize) -> &'pass UsedValues {
-        self.flex_items[index].used_values
+        self.records.used_values(self.flex_items[index].box_)
     }
 
     fn item_used_mut(&self, index: usize) -> &'pass UsedValues {
-        self.flex_items[index].used_values
+        self.item_used(index)
     }
 
     fn container_used(&self) -> &'pass UsedValues {
-        self.flex_container_state
+        self.records.used_values(self.flex_container)
     }
 
     fn container_used_mut(&self) -> &'pass UsedValues {
-        self.flex_container_state
+        self.container_used()
     }
 
     fn style(&self, node: Node) -> StyleValues<'pass> {
@@ -803,8 +798,8 @@ impl<'pass> FlexFormattingContext<'pass> {
                 if !skip && !facts.is_absolutely_positioned() {
                     // Flex inhibits floating, so only absolute positioning is out of flow here.
                     self.state.set_box_is_flex_item(&self.callbacks, child, true);
-                    let used = self.create_used_values(child);
-                    let item = FlexItem::new(child, used);
+                    self.create_used_values(child);
+                    let item = FlexItem::new(child);
                     buckets.entry(self.style(child).order()).or_default().push(item);
                 }
             }
@@ -2307,7 +2302,7 @@ impl<'pass> FlexFormattingContext<'pass> {
             self.state,
             &self.callbacks,
             item.box_,
-            item.used_values,
+            self.item_used(index),
             crate::layout::BaselineSet::First,
             item.content_baselines,
         )
@@ -2601,7 +2596,7 @@ impl<'pass> FlexFormattingContext<'pass> {
                 as u8,
             lines,
         };
-        self.flex_container_state.rare_data_mut().flex_layout_data = Some(data);
+        self.container_used().rare_data_mut().flex_layout_data = Some(data);
     }
 
     // https://drafts.csswg.org/css-sizing-4/#aspect-ratio-automatic
