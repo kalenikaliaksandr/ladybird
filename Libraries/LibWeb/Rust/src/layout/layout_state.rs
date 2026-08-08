@@ -822,6 +822,11 @@ pub(crate) struct LayoutState {
 pub(crate) struct RunRecords {
     root: Node,
     map: RefCell<HashMap<u32, std::rc::Rc<UsedValues>>>,
+    /// Every slot placed under this scope. Scope-level on purpose: nested
+    /// SVG contexts share one scope across separate fragment builders, so
+    /// a per-builder set cannot answer placement questions the scope can.
+    /// Grows into the placement ledger as readers move off the records.
+    placed_slots: RefCell<std::collections::HashSet<u32>>,
 }
 
 impl RunRecords {
@@ -837,10 +842,31 @@ impl RunRecords {
         Self {
             root,
             map: RefCell::new(HashMap::new()),
+            placed_slots: RefCell::new(std::collections::HashSet::new()),
         }
     }
 
+    pub(crate) fn note_placement(&self, node: Node) {
+        assert!(
+            self.placed_slots.borrow_mut().insert(node.slot_index()),
+            "slot {} placed twice in the scope rooted at slot {}",
+            node.slot_index(),
+            self.root.slot_index()
+        );
+    }
+
+    pub(crate) fn slot_is_placed_in_scope(&self, node: Node) -> bool {
+        self.placed_slots.borrow().contains(&node.slot_index())
+    }
+
     pub(crate) fn register(&self, node: Node, used: std::rc::Rc<UsedValues>) {
+        // A record can arrive already placed — materialized roots adopt the
+        // previous paintable's committed geometry as their placement — and
+        // the scope's placed set mirrors the placement facts of the records
+        // it holds.
+        if used.has_content_offset.get() {
+            self.placed_slots.borrow_mut().insert(node.slot_index());
+        }
         let previous = self.map.borrow_mut().insert(node.slot_index(), used);
         assert!(
             previous.is_none(),

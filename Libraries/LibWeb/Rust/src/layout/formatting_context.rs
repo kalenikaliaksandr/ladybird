@@ -391,19 +391,25 @@ pub(crate) fn place_child(
     used.has_content_offset.set(true);
     used.content_offset.set(offset);
     used.seal_committed_box_metrics();
+    records.note_placement(node);
     if let Some(fragments) = fragments {
         let containing_block = callbacks.containing_block(node);
         // A containing block this run does not own can never open a frame
         // here — its fragment is sealed in whatever run placed it — so
         // not-owned parks the link exactly like an already-placed owned one.
-        // The placement flag is scope truth, not builder truth: nested SVG
-        // runs share this records scope across separate builders, so one
-        // builder's placed set cannot answer for a containing block placed
-        // under another. Re-sourced when the shared placement ledger exists.
         let containing_block_is_already_placed = !containing_block.is_invalid()
             && records
                 .used_values_if_owned(containing_block)
-                .is_none_or(|containing_block_used| containing_block_used.has_content_offset.get());
+                .is_none_or(|containing_block_used| {
+                    let scope_says_placed = records.slot_is_placed_in_scope(containing_block);
+                    if root_input_probe_enabled() {
+                        assert!(
+                            scope_says_placed == containing_block_used.has_content_offset.get(),
+                            "the scope's placed set diverged from the record's placement flag"
+                        );
+                    }
+                    scope_says_placed
+                });
         let own_anchor_candidate_border_box_rect = state
             .node_facts(callbacks, node)
             .has_anchor_names()
