@@ -53,6 +53,9 @@ pub(crate) struct FragmentLink {
     /// Resolved at placement from the containing block's final line data,
     /// replacing commit's cross-node lookup.
     pub(crate) containing_line_box_index: Option<usize>,
+    /// Carried for commit's transfer into the arena's saved-inputs table;
+    /// written by the abspos engine just before it places the box.
+    pub(crate) abspos_layout_inputs: Option<AbsposLayoutInputs>,
     /// The box had a record but was never placed; emitted at the default
     /// offset, exactly as the store-fed commit does today.
     pub(crate) is_unplaced_orphan: bool,
@@ -66,7 +69,7 @@ fn snapshot_link(
     containing_line_box_index: Option<usize>,
 ) -> FragmentLink {
     let line_data = used.line_data.get().map(|cell| Box::new(cell.take()));
-    let (table_cell_coordinates, override_borders_data, grid_layout_data, flex_layout_data, used_grid_tracks) = used
+    let (table_cell_coordinates, override_borders_data, grid_layout_data, flex_layout_data, used_grid_tracks, abspos_layout_inputs) = used
         .rare_data
         .get()
         .map(|cell| {
@@ -77,9 +80,10 @@ fn snapshot_link(
                 rare.grid_layout_data.take(),
                 rare.flex_layout_data.take(),
                 rare.used_grid_tracks.take(),
+                rare.abspos_layout_inputs,
             )
         })
-        .unwrap_or((None, None, None, None, None));
+        .unwrap_or((None, None, None, None, None, None));
     FragmentLink {
         node,
         fragment: Box::new(Fragment {
@@ -112,6 +116,7 @@ fn snapshot_link(
         inset_top: used.inset_top.get(),
         inset_bottom: used.inset_bottom.get(),
         containing_line_box_index,
+        abspos_layout_inputs,
         is_unplaced_orphan,
     }
 }

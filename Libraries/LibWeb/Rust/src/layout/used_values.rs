@@ -140,7 +140,6 @@ pub(crate) struct UsedValues {
 
     pub has_definite_inline_size: Cell<bool>,
     pub has_definite_block_size: Cell<bool>,
-    pub materialized_from_paintable: Cell<bool>,
     pub uses_collapsing_borders_model: Cell<bool>,
 
     pub inline_size_constraint: Cell<SizeConstraint>,
@@ -194,7 +193,6 @@ impl Default for UsedValues {
             inset_bottom: SealableCell::new(zero),
             has_definite_inline_size: Cell::new(false),
             has_definite_block_size: Cell::new(false),
-            materialized_from_paintable: Cell::new(false),
             uses_collapsing_borders_model: Cell::new(false),
             inline_size_constraint: Cell::new(SizeConstraint::None),
             block_size_constraint: Cell::new(SizeConstraint::None),

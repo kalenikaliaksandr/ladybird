@@ -1088,7 +1088,6 @@ impl LayoutState {
             node,
             ..UsedValues::default()
         };
-        used.materialized_from_paintable.set(true);
         used.set_content_inline_size(geometry.content_inline_size);
         used.set_content_block_size(geometry.content_block_size);
         used.has_definite_inline_size.set(true);
@@ -1471,9 +1470,6 @@ impl LayoutState {
         node: Node,
         used: &UsedValues,
     ) -> Option<usize> {
-        if used.materialized_from_paintable.get() {
-            return None;
-        }
         let facts = self.node_facts(callbacks, node);
         if !facts.is_non_fragmented_box() {
             return None;
@@ -1527,11 +1523,8 @@ impl LayoutState {
     ) {
         let slot_index = callbacks.slot_index(node);
         let entry = commit_index.get(&slot_index).copied();
-        let abspos_layout_inputs = self
-            .used_values_rare_data(slot_index)
-            .and_then(|rare| rare.abspos_layout_inputs);
-        if entry.is_some() {
-            callbacks.set_saved_abspos_layout_inputs(node, abspos_layout_inputs);
+        if let Some(link) = entry {
+            callbacks.set_saved_abspos_layout_inputs(node, link.abspos_layout_inputs);
         }
         // SAFETY: The C++ sink owns paintables and copies every plain-data
         // input synchronously.
