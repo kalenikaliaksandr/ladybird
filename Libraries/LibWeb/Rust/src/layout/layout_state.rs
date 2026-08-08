@@ -839,6 +839,103 @@ pub(crate) struct LayoutState {
     purpose: LayoutStatePurpose,
 }
 
+/// Run-scoped view over the record store: a formatting-context run registers
+/// every record it creates plus the root record its parent handed it, and
+/// every lookup routes through here, so a run can only reach records it
+/// provably owns. Allocation stays in the pass store until the per-run arena
+/// flip deletes it.
+pub(crate) struct RunRecords<'pass> {
+    root: Node,
+    map: RefCell<HashMap<u32, &'pass UsedValues>>,
+}
+
+impl<'pass> RunRecords<'pass> {
+    pub(crate) fn new(root: Node, root_used: &'pass UsedValues) -> Self {
+        let records = Self::new_unrooted(root);
+        records.register(root, root_used);
+        records
+    }
+
+    /// An entry scope starts empty: it creates its own viewport and
+    /// materialized-ancestor records before spawning the root run.
+    pub(crate) fn new_unrooted(root: Node) -> Self {
+        Self {
+            root,
+            map: RefCell::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn register(&self, node: Node, used: &'pass UsedValues) {
+        let previous = self.map.borrow_mut().insert(node.slot_index(), used);
+        assert!(
+            previous.is_none(),
+            "slot {} registered twice in the run rooted at slot {}",
+            node.slot_index(),
+            self.root.slot_index()
+        );
+    }
+
+    pub(crate) fn create_used_values(
+        &self,
+        state: &'pass LayoutState,
+        callbacks: &FfiLayoutFcCallbacks,
+        node: Node,
+        constraints: ContainingBlockConstraints,
+    ) -> &'pass UsedValues {
+        let used = state.create_used_values(callbacks, node, constraints);
+        self.register(node, used);
+        used
+    }
+
+    #[track_caller]
+    pub(crate) fn used_values(&self, node: Node) -> &'pass UsedValues {
+        let caller = std::panic::Location::caller();
+        self.used_values_if_owned(node).unwrap_or_else(|| {
+            panic!(
+                "the run rooted at slot {} does not own the record for slot {} (read at {caller})",
+                self.root.slot_index(),
+                node.slot_index(),
+            )
+        })
+    }
+
+    /// Walks that legally stop at the first record another run owns (escape
+    /// normalization parking at a table wrapper, the SVG payload drain
+    /// probing absorbed child-run subtrees) use this instead of the
+    /// panicking lookup.
+    pub(crate) fn used_values_if_owned(&self, node: Node) -> Option<&'pass UsedValues> {
+        self.map.borrow().get(&node.slot_index()).copied()
+    }
+
+    /// A completed child run's records join the parent scope: participation
+    /// epilogues and drain-time consumption (automatic-size child walks,
+    /// merge-chain walks, containing-block info) legally read the completed
+    /// subtree, which is final from the moment each descendant run returned
+    /// and placed. Ancestor and sibling-in-progress reads remain
+    /// unreachable. Entries are shared, not moved — the child scope keeps
+    /// serving its own tail sweeps — so absorbing the same scope from both
+    /// the participation epilogue and the spawn return is harmless, and the
+    /// handed root arrives as the pointer the parent already holds.
+    pub(crate) fn absorb_completed_child_scope(&self, child: &RunRecords<'pass>) {
+        let child_map = child.map.borrow();
+        let mut map = self.map.borrow_mut();
+        for (&slot, &used) in child_map.iter() {
+            match map.entry(slot) {
+                std::collections::hash_map::Entry::Occupied(existing) => {
+                    assert!(
+                        std::ptr::eq(*existing.get(), used),
+                        "slot {slot} arrived with a different record while absorbing a child scope into the run rooted at slot {}",
+                        self.root.slot_index()
+                    );
+                }
+                std::collections::hash_map::Entry::Vacant(vacancy) => {
+                    vacancy.insert(used);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LayoutStatePurpose {
     Commit,
@@ -1102,7 +1199,7 @@ impl LayoutState {
 
         let used = self.used_values.allocate(slot_index, used);
         if self.node_facts(callbacks, node).is_svg_svg_box() {
-            self.used_values_rare_data_mut(slot_index).svg_viewport_size = Some(geometry.svg_viewport_size);
+            used.rare_data_mut().svg_viewport_size = Some(geometry.svg_viewport_size);
         }
         Some(used)
     }
@@ -1216,43 +1313,6 @@ impl LayoutState {
         })
     }
 
-    pub(crate) fn line_data_cell(&self, slot_index: u32) -> &RefCell<LineData> {
-        self.used_values_by_slot(slot_index)
-            .expect("missing used values")
-            .line_data
-            .get_or_init(LineData::default)
-    }
-
-    pub(crate) fn line_data(&self, slot_index: u32) -> Option<Ref<'_, LineData>> {
-        self.used_values_by_slot(slot_index)?
-            .line_data
-            .get()
-            .map(RefCell::borrow)
-    }
-
-    pub(crate) fn used_values_rare_data(&self, slot_index: u32) -> Option<Ref<'_, UsedValuesRareData>> {
-        self.used_values_by_slot(slot_index)?
-            .rare_data
-            .get()
-            .map(RefCell::borrow)
-    }
-
-    pub(crate) fn used_values_rare_data_mut(&self, slot_index: u32) -> RefMut<'_, UsedValuesRareData> {
-        self.used_values_by_slot(slot_index)
-            .expect("missing used values")
-            .rare_data
-            .get_or_init(UsedValuesRareData::default)
-            .borrow_mut()
-    }
-
-    pub(crate) fn used_values_rare_data_for_node_mut(
-        &self,
-        callbacks: &FfiLayoutFcCallbacks,
-        node: Node,
-    ) -> RefMut<'_, UsedValuesRareData> {
-        self.used_values_rare_data_mut(callbacks.slot_index(node))
-    }
-
     fn used_values_by_slot(&self, slot_index: u32) -> Option<&UsedValues> {
         self.used_values.get(slot_index)
     }
@@ -1325,6 +1385,7 @@ impl LayoutState {
     /// the first ancestor that is not inline-flow.
     pub(crate) fn accumulated_relative_insets_from_inline_ancestor_chain(
         &self,
+        records: &RunRecords,
         callbacks: &FfiLayoutFcCallbacks,
         first_ancestor: Node,
         stop_at: Node,
@@ -1346,7 +1407,7 @@ impl LayoutState {
                 // committed fragment or piece was entered by its inline
                 // formatting context this pass, which created its used values
                 // and resolved its insets.
-                let used = self.used_values(callbacks, ancestor);
+                let used = records.used_values(ancestor);
                 result.offset_x += used.inset_left.get();
                 result.offset_y += used.inset_top.get();
             }
@@ -1363,6 +1424,7 @@ impl LayoutState {
     /// fragment joins the line only after the placement.
     fn resolve_containing_line_box_index(
         &self,
+        records: &RunRecords,
         callbacks: &FfiLayoutFcCallbacks,
         node: Node,
         coordinate: Option<LineBoxFragmentCoordinate>,
@@ -1375,7 +1437,7 @@ impl LayoutState {
         }
         let containing_block = callbacks.containing_block(node);
         assert!(!containing_block.is_invalid());
-        let data = self.line_data(callbacks.slot_index(containing_block))?;
+        let data = records.used_values(containing_block).line_data.get().map(RefCell::borrow)?;
         let line = data.line_boxes.get(coordinate.line_box_index)?;
         if let Some(fragment) = line.fragments.get(coordinate.fragment_index) {
             let (x, y) = fragment.offset();
@@ -1568,11 +1630,3 @@ impl LayoutState {
     }
 }
 
-impl LayoutState {
-    fn used_values_rare_data_mut_if_present(&self, slot_index: u32) -> Option<RefMut<'_, UsedValuesRareData>> {
-        self.used_values_by_slot(slot_index)?
-            .rare_data
-            .get()
-            .map(RefCell::borrow_mut)
-    }
-}

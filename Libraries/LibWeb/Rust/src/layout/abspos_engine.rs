@@ -66,6 +66,7 @@ fn out_of_flow_root_space(inputs: AbsposLayoutInputs) -> (AvailableSpace, Contai
 
 pub(crate) struct AbsposEngine<'pass> {
     state: &'pass LayoutState,
+    records: std::rc::Rc<RunRecords<'pass>>,
     callbacks: FfiLayoutFcCallbacks,
     fragments: Option<std::rc::Rc<crate::layout::RunFragmentBuilder>>,
 }
@@ -73,18 +74,20 @@ pub(crate) struct AbsposEngine<'pass> {
 impl<'pass> AbsposEngine<'pass> {
     pub(crate) fn new(
         state: &'pass LayoutState,
+        records: std::rc::Rc<RunRecords<'pass>>,
         callbacks: FfiLayoutFcCallbacks,
         fragments: Option<std::rc::Rc<crate::layout::RunFragmentBuilder>>,
     ) -> Self {
         Self {
             state,
+            records,
             callbacks,
             fragments,
         }
     }
 
-    fn sizing(&self) -> SizingContext<'_> {
-        SizingContext::new(self.state, self.callbacks)
+    fn sizing(&self) -> SizingContext<'pass> {
+        SizingContext::new(self.state, self.records.clone(), self.callbacks)
     }
 
     fn style(&self, node: Node) -> StyleValues<'pass> {
@@ -95,10 +98,12 @@ impl<'pass> AbsposEngine<'pass> {
         self.state.node_facts(&self.callbacks, node)
     }
 
+    #[track_caller]
     fn used(&self, node: Node) -> &'pass UsedValues {
-        self.state.used_values(&self.callbacks, node)
+        self.records.used_values(node)
     }
 
+    #[track_caller]
     fn used_mut(&self, node: Node) -> &'pass UsedValues {
         self.used(node)
     }
@@ -1601,12 +1606,13 @@ impl<'pass> AbsposEngine<'pass> {
         used_offset.block_offset += used.margin_top.get() + used.border_box_top(collapsed);
         let is_measurement = self.state.is_measurement();
         if !is_measurement {
-            self.state
-                .used_values_rare_data_for_node_mut(&self.callbacks, node)
+            self.used(node)
+                .rare_data_mut()
                 .abspos_layout_inputs = Some(inputs);
         }
         crate::layout::place_child(
             self.state,
+            &self.records,
             &self.callbacks,
             node,
             FfiCssPixelPoint {
@@ -1636,8 +1642,8 @@ impl<'pass> AbsposEngine<'pass> {
 
     fn layout_pending_child(&self, run: &crate::layout::FormattingContextRun<'pass>, child: PendingAbsposChild) {
         let child_box = child.child_box;
-        self.state
-            .create_used_values(&self.callbacks, child_box, ContainingBlockConstraints::default());
+        self.records
+            .create_used_values(self.state, &self.callbacks, child_box, ContainingBlockConstraints::default());
         self.resolve_anchor_insets(child_box);
         let chain_delta = self.chain_translation_delta(child_box, child.effective_birth);
         let static_position_rect = crate::layout::translate_static_position_between_chains(
@@ -1671,8 +1677,8 @@ impl<'pass> AbsposEngine<'pass> {
         }
         // Partial relayout uses a fresh state and creates the replay root
         // exactly once.
-        self.state
-            .create_used_values(&self.callbacks, node, ContainingBlockConstraints::default());
+        self.records
+            .create_used_values(self.state, &self.callbacks, node, ContainingBlockConstraints::default());
         self.layout_element(run, node, inputs);
     }
 
@@ -1752,7 +1758,7 @@ impl<'pass> AbsposEngine<'pass> {
 }
 
 pub(crate) fn layout_contained_abspos_children(run: &crate::layout::FormattingContextRun<'_>) {
-    AbsposEngine::new(run.state, run.callbacks, run.fragments.clone()).layout_children(run);
+    AbsposEngine::new(run.state, run.records.clone(), run.callbacks, run.fragments.clone()).layout_children(run);
 }
 
 /// Sweeps registration targets that have no formatting context run of their
@@ -1763,8 +1769,9 @@ pub(crate) fn layout_contained_abspos_children(run: &crate::layout::FormattingCo
 /// target can register against another (fixed-position descendants of
 /// absolutely positioned subtrees target the viewport), so the sweep loops
 /// until every listed target is empty.
-pub(crate) fn drain_remaining_abspos_targets(
-    state: &LayoutState,
+pub(crate) fn drain_remaining_abspos_targets<'pass>(
+    state: &'pass LayoutState,
+    records: &std::rc::Rc<RunRecords<'pass>>,
     callbacks: FfiLayoutFcCallbacks,
     should_collect_devtools_layout_data: bool,
     targets: &[Node],
@@ -1777,6 +1784,7 @@ pub(crate) fn drain_remaining_abspos_targets(
     {
         let run = crate::layout::FormattingContextRun::new(
             state,
+            records.clone(),
             target,
             LayoutMode::Normal,
             callbacks,
@@ -1789,8 +1797,9 @@ pub(crate) fn drain_remaining_abspos_targets(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn compute_inset_native(
-    state: &LayoutState,
+pub(crate) fn compute_inset_native<'pass>(
+    state: &'pass LayoutState,
+    records: std::rc::Rc<RunRecords<'pass>>,
     callbacks: FfiLayoutFcCallbacks,
     fragments: Option<std::rc::Rc<crate::layout::RunFragmentBuilder>>,
     node: Node,
@@ -1799,7 +1808,7 @@ pub(crate) fn compute_inset_native(
     formatting_context_root: Node,
     treat_block_axis_percentage_insets_as_auto_beyond_root: bool,
 ) {
-    AbsposEngine::new(state, callbacks, fragments).compute_inset(
+    AbsposEngine::new(state, records, callbacks, fragments).compute_inset(
         node,
         LogicalSize {
             inline_size,

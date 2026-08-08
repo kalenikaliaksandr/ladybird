@@ -6,12 +6,21 @@
 
 pub(crate) struct SizingContext<'pass> {
     state: &'pass LayoutState,
+    records: std::rc::Rc<RunRecords<'pass>>,
     callbacks: FfiLayoutFcCallbacks,
 }
 
 impl<'pass> SizingContext<'pass> {
-    pub(crate) fn new(state: &'pass LayoutState, callbacks: FfiLayoutFcCallbacks) -> Self {
-        Self { state, callbacks }
+    pub(crate) fn new(
+        state: &'pass LayoutState,
+        records: std::rc::Rc<RunRecords<'pass>>,
+        callbacks: FfiLayoutFcCallbacks,
+    ) -> Self {
+        Self {
+            state,
+            records,
+            callbacks,
+        }
     }
 
     fn facts(&self, node: Node) -> NodeFacts<'_> {
@@ -22,12 +31,14 @@ impl<'pass> SizingContext<'pass> {
         self.state.style_facts(&self.callbacks, node)
     }
 
+    #[track_caller]
     fn used(&self, node: Node) -> &'pass UsedValues {
-        self.state.used_values(&self.callbacks, node)
+        self.records.used_values(node)
     }
 
+    #[track_caller]
     fn used_mut(&self, node: Node) -> &'pass UsedValues {
-        self.state.used_values(&self.callbacks, node)
+        self.records.used_values(node)
     }
 
     fn parent(&self, node: Node) -> Node {
@@ -1143,6 +1154,7 @@ impl<'pass> SizingContext<'pass> {
             self.resolve_used_block_size_if_treated_as_auto(node, inline_definite_space, constraints, None, || {
                 crate::layout::independent_root_automatic_block_size(
                     self.state,
+                    &self.records,
                     &self.callbacks,
                     node,
                     self.used(node)
@@ -1901,6 +1913,7 @@ impl<'pass> SizingContext<'pass> {
 
         let table_run = crate::layout::FormattingContextRun::new(
             measurement.rust_state(),
+            std::rc::Rc::new(RunRecords::new(table_box, table_used)),
             table_box,
             LayoutMode::IntrinsicSizing,
             *measurement.callbacks(),

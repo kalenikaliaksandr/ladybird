@@ -782,6 +782,7 @@ enum TrackAxis {
 
 struct TableFormattingContext<'pass> {
     state: &'pass LayoutState,
+    records: std::rc::Rc<RunRecords<'pass>>,
     table_box: Node,
     layout_mode: LayoutMode,
     callbacks: FfiLayoutFcCallbacks,
@@ -845,6 +846,7 @@ impl<'pass> TableFormattingContext<'pass> {
     fn new(run: &FormattingContextRun<'pass>) -> Self {
         Self {
             state: run.state,
+            records: run.records.clone(),
             table_box: run.box_,
             layout_mode: run.layout_mode,
             callbacks: run.callbacks,
@@ -867,8 +869,8 @@ impl<'pass> TableFormattingContext<'pass> {
         }
     }
 
-    fn sizing(&self) -> SizingContext<'_> {
-        SizingContext::new(self.state, self.callbacks)
+    fn sizing(&self) -> SizingContext<'pass> {
+        SizingContext::new(self.state, self.records.clone(), self.callbacks)
     }
 
     fn parent(&self, node: Node) -> Node {
@@ -888,17 +890,18 @@ impl<'pass> TableFormattingContext<'pass> {
         children
     }
 
+    #[track_caller]
     fn used_values(&self, node: Node) -> &'pass UsedValues {
-        self.state.used_values(&self.callbacks, node)
+        self.records.used_values(node)
     }
 
     fn create_used_values(&self, node: Node, constraints: ContainingBlockConstraints) -> &'pass UsedValues {
-        self.state.create_used_values(&self.callbacks, node, constraints)
+        self.records.create_used_values(self.state, &self.callbacks, node, constraints)
     }
 
     fn set_cell_coordinates(&self, cell: TableCell) {
-        self.state
-            .used_values_rare_data_for_node_mut(&self.callbacks, cell.box_)
+        self.used_values(cell.box_)
+            .rare_data_mut()
             .table_cell_coordinates = Some(crate::layout::FfiTableCellCoordinates {
             row_index: cell.row_index,
             column_index: cell.column_index,
@@ -910,6 +913,7 @@ impl<'pass> TableFormattingContext<'pass> {
     fn place_child(&self, node: Node, x: CssPixels, y: CssPixels) {
         crate::layout::place_child(
             self.state,
+            &self.records,
             &self.callbacks,
             node,
             FfiCssPixelPoint { x, y },
@@ -1057,8 +1061,8 @@ impl<'pass> TableFormattingContext<'pass> {
             used.border_bottom.set(resolved.bottom.border_data.width);
             used.border_left.set(resolved.left.border_data.width);
             used.uses_collapsing_borders_model.set(true);
-            self.state
-                .used_values_rare_data_for_node_mut(&self.callbacks, cell.box_)
+            self.used_values(cell.box_)
+                .rare_data_mut()
                 .override_borders_data = Some(resolved);
         }
     }
@@ -2522,7 +2526,7 @@ impl<'pass> TableFormattingContext<'pass> {
     }
 
     fn compute_and_store_baselines(&self, node: Node) {
-        let baselines = crate::layout::derive_baselines(self.state, &self.callbacks, node, false);
+        let baselines = crate::layout::derive_baselines(self.state, &self.records, &self.callbacks, node, false);
         if node == self.table_box {
             self.derived_baselines_of_root_box.set(baselines);
         } else {

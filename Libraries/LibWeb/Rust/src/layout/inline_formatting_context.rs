@@ -711,8 +711,8 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         callbacks: FfiLayoutFcCallbacks,
         parent: &'context BlockFormattingContext<'pass>,
     ) -> Self {
-        let containing_used_values = state.used_values(&callbacks, containing_block);
-        let line_data = state.line_data_cell(callbacks.slot_index(containing_block));
+        let containing_used_values = run.records.used_values(containing_block);
+        let line_data = containing_used_values.line_data_cell();
         Self {
             run,
             state,
@@ -766,8 +766,9 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         self.containing_used_values
     }
 
+    #[track_caller]
     pub(crate) fn used(&self, node: Node) -> &'pass UsedValues {
-        self.state.used_values(&self.callbacks, node)
+        self.run.records.used_values(node)
     }
 
     pub(crate) fn create_used_values(
@@ -775,7 +776,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         node: Node,
         constraints: ContainingBlockConstraints,
     ) -> &'pass UsedValues {
-        self.state.create_used_values(&self.callbacks, node, constraints)
+        self.run.records.create_used_values(self.state, &self.callbacks, node, constraints)
     }
 
     pub(crate) fn parent_node(&self, node: Node) -> Node {
@@ -793,6 +794,12 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
     pub(crate) fn nearest_fragmented_inline_ancestor(&self, node: Node) -> Node {
         let mut ancestor = self.parent_node(node);
         while !ancestor.is_invalid() {
+            // The containing block bounds this context's subtree even when it
+            // is itself inline-outside with flow inside (an inline list-item
+            // root): ancestors beyond it belong to the enclosing run.
+            if ancestor == self.containing_block {
+                break;
+            }
             let display = self.style(ancestor).display();
             if !display.is_inline_outside() || !display.is_flow_inside() {
                 break;
@@ -814,6 +821,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         let used = self.containing_used();
         crate::layout::compute_inset_native(
             self.state,
+            self.run.records.clone(),
             self.callbacks,
             self.run.fragments.clone(),
             node,
@@ -1149,6 +1157,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
                 let (x, y) = fragment.offset();
                 crate::layout::place_child(
                     self.state,
+                    &self.run.records,
                     &self.callbacks,
                     fragment.layout_node,
                     FfiCssPixelPoint { x, y },
@@ -1232,12 +1241,12 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         self.automatic_content_inline_size = self
             .parent
             .greatest_child_inline_size_including_floats(self.containing_block);
-        let baselines = crate::layout::derive_baselines(self.state, &self.callbacks, self.containing_block, false);
+        let baselines = crate::layout::derive_baselines(self.state, &self.run.records, &self.callbacks, self.containing_block, false);
         if self.containing_block == self.parent.root_box() {
             self.parent.record_derived_baselines_of_root_box(baselines);
         } else {
             crate::layout::store_derived_baselines(
-                self.state.used_values(&self.callbacks, self.containing_block),
+                self.used(self.containing_block),
                 baselines,
             );
         }
@@ -1248,6 +1257,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         self.line_data_mut().inline_box_pieces = pieces;
         for candidate in inline_containing_block_rect_candidates {
             let relative_inset_chain = self.state.accumulated_relative_insets_from_inline_ancestor_chain(
+                &self.run.records,
                 &self.callbacks,
                 candidate.inline_containing_block,
                 self.containing_block,
@@ -1280,9 +1290,10 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
                 .entry(first_ancestor)
                 .or_insert_with(|| {
                     let chain = self.state.accumulated_relative_insets_from_inline_ancestor_chain(
+                        &self.run.records,
                         &self.callbacks,
                         first_ancestor,
-                        NodeSlotId::INVALID,
+                        self.containing_block,
                     );
                     FfiCssPixelPoint {
                         x: chain.offset_x,

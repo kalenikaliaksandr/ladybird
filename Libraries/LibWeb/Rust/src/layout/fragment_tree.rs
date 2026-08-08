@@ -617,7 +617,7 @@ impl RunFragmentBuilder {
     /// Closes the run: sweeps never-placed frames and deposits into orphan
     /// links snapshotted from their records, and returns the run root's
     /// completed structure. The builder is empty afterwards.
-    pub(crate) fn take_pending_result(&self, state: &LayoutState, callbacks: &FfiLayoutFcCallbacks) -> PendingRunResult {
+    pub(crate) fn take_pending_result(&self, records: &RunRecords, callbacks: &FfiLayoutFcCallbacks) -> PendingRunResult {
         let mut inner = self.inner.take();
         let mut escaped_abspos = std::mem::take(&mut inner.pending_abspos_at_root);
         let mut escaped_anchor_candidates = std::mem::take(&mut inner.anchor_candidates_at_root);
@@ -629,7 +629,7 @@ impl RunFragmentBuilder {
             if inner.frames.contains_key(&slot) || inner.deposits.contains_key(&slot) {
                 continue;
             }
-            let Some(used) = state.used_values_by_slot(slot) else {
+            let Some(used) = records.used_values_if_owned(node) else {
                 debug_assert!(false, "an unplaced record note has no record");
                 continue;
             };
@@ -639,7 +639,7 @@ impl RunFragmentBuilder {
                 .push(snapshot_link(node, Vec::new(), used, true, None, used.content_offset.get()));
         }
         let frames = std::mem::take(&mut inner.frames);
-        for (slot, frame) in frames {
+        for (_, frame) in frames {
             let FrameState::Pending {
                 node,
                 children,
@@ -654,7 +654,7 @@ impl RunFragmentBuilder {
             if children.is_empty() {
                 continue;
             }
-            let Some(used) = state.used_values_by_slot(slot) else {
+            let Some(used) = records.used_values_if_owned(node) else {
                 debug_assert!(false, "a pending frame's containing block has no record");
                 continue;
             };
@@ -663,8 +663,8 @@ impl RunFragmentBuilder {
                 .push(snapshot_link(node, children, used, true, None, used.content_offset.get()));
         }
         let deposits = std::mem::take(&mut inner.deposits);
-        for (slot, (node, pending)) in deposits {
-            let Some(used) = state.used_values_by_slot(slot) else {
+        for (_, (node, pending)) in deposits {
+            let Some(used) = records.used_values_if_owned(node) else {
                 debug_assert!(false, "a deposited child run's root has no record");
                 continue;
             };
@@ -679,11 +679,11 @@ impl RunFragmentBuilder {
                 "a registration that arrived for this run's root was left undrained"
             );
             // Compose while placed: fold offsets read while this run still
-            // owns the records, stopping at the run root or the first
-            // unplaced box (a table wrapper on a cell's chain).
+            // owns the records, stopping at the run root, the first unplaced
+            // box, or the first record another run owns (a table wrapper on
+            // a cell's chain — parked there, composed by the owner later).
             while entry.effective_birth.slot_index() != self.root_node.slot_index() {
-                let Some(used) = state.used_values_by_slot(entry.effective_birth.slot_index()) else {
-                    debug_assert!(false, "an escaping registration's birth box has no record");
+                let Some(used) = records.used_values_if_owned(entry.effective_birth) else {
                     break;
                 };
                 if !used.has_content_offset.get() {
@@ -699,8 +699,7 @@ impl RunFragmentBuilder {
         }
         for candidate in &mut escaped_anchor_candidates {
             while candidate.effective_birth.slot_index() != self.root_node.slot_index() {
-                let Some(used) = state.used_values_by_slot(candidate.effective_birth.slot_index()) else {
-                    debug_assert!(false, "an escaping anchor candidate's birth box has no record");
+                let Some(used) = records.used_values_if_owned(candidate.effective_birth) else {
                     break;
                 };
                 if !used.has_content_offset.get() {
@@ -716,8 +715,8 @@ impl RunFragmentBuilder {
             }
         }
         if self.saw_svg_payload_write.take() {
-            refresh_svg_payloads_from_records(&mut inner.root_children, state);
-            refresh_svg_payloads_from_records(&mut inner.late_attachments, state);
+            refresh_svg_payloads_from_records(&mut inner.root_children, records);
+            refresh_svg_payloads_from_records(&mut inner.late_attachments, records);
         }
         PendingRunResult {
             root_children: inner.root_children,
@@ -733,23 +732,24 @@ impl RunFragmentBuilder {
 /// snapshotted at placement can hold stale copies. Refresh every fragment in
 /// the finished run from its record: the run just completed, so these are the
 /// final values commit must emit.
-fn refresh_svg_payloads_from_records(links: &mut [FragmentLink], state: &LayoutState) {
+fn refresh_svg_payloads_from_records(links: &mut [FragmentLink], records: &RunRecords) {
     for link in links {
         let fragment = &mut *link.fragment;
-        if let Some(rare) = state.used_values_rare_data(link.node.slot_index()) {
+        if let Some(rare_cell) = records
+            .used_values_if_owned(link.node)
+            .and_then(|used| used.rare_data.get())
+        {
+            let mut rare = rare_cell.borrow_mut();
             if rare.computed_svg_transforms.is_some() {
                 fragment.computed_svg_transforms = rare.computed_svg_transforms;
             }
             if rare.svg_viewport_size.is_some() {
                 fragment.svg_viewport_size = rare.svg_viewport_size;
             }
+            if let Some(handle) = rare.computed_svg_path.take() {
+                fragment.computed_svg_path.set(Some(handle));
+            }
         }
-        if let Some(handle) = state
-            .used_values_rare_data_mut_if_present(link.node.slot_index())
-            .and_then(|mut rare| rare.computed_svg_path.take())
-        {
-            fragment.computed_svg_path.set(Some(handle));
-        }
-        refresh_svg_payloads_from_records(&mut fragment.children, state);
+        refresh_svg_payloads_from_records(&mut fragment.children, records);
     }
 }

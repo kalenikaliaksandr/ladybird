@@ -183,6 +183,7 @@ struct FloatPlacement {
 // https://www.w3.org/TR/css-display/#block-formatting-context
 pub(crate) struct BlockFormattingContext<'pass> {
     state: &'pass LayoutState,
+    records: std::rc::Rc<RunRecords<'pass>>,
     root: Node,
     layout_mode: LayoutMode,
     callbacks: FfiLayoutFcCallbacks,
@@ -202,6 +203,7 @@ pub(crate) struct BlockFormattingContext<'pass> {
 impl<'pass> BlockFormattingContext<'pass> {
     pub(crate) fn new(
         state: &'pass LayoutState,
+        records: std::rc::Rc<RunRecords<'pass>>,
         root: Node,
         layout_mode: LayoutMode,
         callbacks: FfiLayoutFcCallbacks,
@@ -209,6 +211,7 @@ impl<'pass> BlockFormattingContext<'pass> {
     ) -> Self {
         Self {
             state,
+            records,
             root,
             layout_mode,
             callbacks,
@@ -234,16 +237,22 @@ impl<'pass> BlockFormattingContext<'pass> {
         self.state.style_facts(&self.callbacks, node)
     }
 
-    fn used(&self, node: Node) -> &'pass UsedValues {
-        self.state.used_values(&self.callbacks, node)
+    pub(crate) fn absorb_completed_child_records(&self, child: &RunRecords<'pass>) {
+        self.records.absorb_completed_child_scope(child);
     }
 
+    #[track_caller]
+    fn used(&self, node: Node) -> &'pass UsedValues {
+        self.records.used_values(node)
+    }
+
+    #[track_caller]
     fn used_mut(&self, node: Node) -> &'pass UsedValues {
         self.used(node)
     }
 
     fn create_used_values(&self, node: Node, constraints: ContainingBlockConstraints) -> &'pass UsedValues {
-        self.state.create_used_values(&self.callbacks, node, constraints)
+        self.records.create_used_values(self.state, &self.callbacks, node, constraints)
     }
 
     fn first_child(&self, node: Node) -> Node {
@@ -278,8 +287,8 @@ impl<'pass> BlockFormattingContext<'pass> {
         ancestor == node || self.is_ancestor_of(ancestor, node)
     }
 
-    fn sizing(&self) -> SizingContext<'_> {
-        SizingContext::new(self.state, self.callbacks)
+    fn sizing(&self) -> SizingContext<'pass> {
+        SizingContext::new(self.state, self.records.clone(), self.callbacks)
     }
 
     fn place_child(&self, node: Node, offset: FfiCssPixelPoint) {
@@ -294,6 +303,7 @@ impl<'pass> BlockFormattingContext<'pass> {
     ) {
         crate::layout::place_child(
             self.state,
+            &self.records,
             &self.callbacks,
             node,
             offset,
@@ -327,7 +337,7 @@ impl<'pass> BlockFormattingContext<'pass> {
     }
 
     fn compute_and_store_baselines(&self, node: Node) {
-        let baselines = crate::layout::derive_baselines(self.state, &self.callbacks, node, false);
+        let baselines = crate::layout::derive_baselines(self.state, &self.records, &self.callbacks, node, false);
         if node == self.root {
             self.record_derived_baselines_of_root_box(baselines);
         } else {
@@ -350,6 +360,7 @@ impl<'pass> BlockFormattingContext<'pass> {
     fn compute_inset(&self, run: &FormattingContextRun<'pass>, node: Node, containing_block_size: LogicalSize) {
         crate::layout::compute_inset_native(
             self.state,
+            self.records.clone(),
             self.callbacks,
             self.fragments.clone(),
             node,
@@ -2652,6 +2663,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         {
             return independent_root_automatic_block_size(
                 self.state,
+                &self.records,
                 &self.callbacks,
                 node,
                 available_space,
@@ -2666,7 +2678,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         // The element's block size is the distance from its block-start content edge to the first applicable edge below.
         // 1. the bottom edge of the last line box, if the box establishes a inline formatting context with one or more lines
         if facts.children_are_inline() {
-            let line_data = self.state.line_data(self.callbacks.slot_index(node));
+            let line_data = self.used(node).line_data_ref();
             if let Some(last_line) = line_data.as_deref().and_then(|data| data.line_boxes.last()) {
                 let mut block_size = last_line.physical_vertical_end();
                 if last_line.has_block_level_box {
@@ -2781,7 +2793,7 @@ impl<'pass> BlockFormattingContext<'pass> {
 
         let facts = self.facts(node);
         if facts.children_are_inline() {
-            if let Some(data) = self.state.line_data(self.callbacks.slot_index(node)) {
+            if let Some(data) = self.used(node).line_data_ref() {
                 for line in &data.line_boxes {
                     let mut inline_size_here = crate::layout::line_physical_horizontal_extent(line);
                     let line_block_start = line.physical_vertical_end() - line.physical_vertical_extent();
@@ -2856,6 +2868,7 @@ impl<'pass> BlockFormattingContext<'pass> {
     pub(crate) fn automatic_content_block_size(&self) -> CssPixels {
         automatic_block_size_for_bfc_root(
             self.state,
+            &self.records,
             self.callbacks,
             self.root,
             self.lowest_floating_descendant_bottom_margin_edge.get(),
@@ -2905,6 +2918,7 @@ pub(crate) fn table_wrapper_flow_children(state: &LayoutState, callbacks: FfiLay
 // https://www.w3.org/TR/CSS22/visudet.html#root-height
 pub(crate) fn automatic_block_size_for_bfc_root(
     state: &LayoutState,
+    records: &RunRecords,
     callbacks: FfiLayoutFcCallbacks,
     root: Node,
     lowest_floating_descendant_bottom_margin_edge: Option<CssPixels>,
@@ -2920,7 +2934,7 @@ pub(crate) fn automatic_block_size_for_bfc_root(
     if facts.children_are_inline() {
         // If it only has inline-level children, the block size is the distance between
         // the top content edge and the bottom of the bottommost line box.
-        let line_data = state.line_data(callbacks.slot_index(root));
+        let line_data = records.used_values(root).line_data_ref();
         if let Some(last_line) = line_data.as_ref().and_then(|data| data.line_boxes.last()) {
             bottom = Some(last_line.physical_vertical_end());
             // A trailing interrupting block's bottom margin cannot collapse out of a BFC root,
@@ -2952,7 +2966,7 @@ pub(crate) fn automatic_block_size_for_bfc_root(
             if !child_facts.is_flow_layout_participant() || child_facts.is_floating() {
                 continue;
             }
-            let child_used = state.used_values(&callbacks, child);
+            let child_used = records.used_values(child);
             // Margins cannot collapse out of a BFC root: below the last real in-flow
             // child, the run's trailing collapsed margin (which folds in any trailing
             // collapse-through siblings) replaces that child's own bottom margin.

@@ -9,7 +9,7 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
     // object size), so both dimensions are definite for its children — shadow content sized to fill
     // (e.g. width/height: 100%) resolves against them.
     let (content_inline_size, root_content_block_size) = {
-        let root_state = run.state.used_values(&run.callbacks, run.box_);
+        let root_state = run.records.used_values(run.box_);
         root_state.has_definite_inline_size.set(true);
         root_state.has_definite_block_size.set(true);
         (
@@ -36,15 +36,16 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
         return ChildLayoutResult::default();
     }
 
-    let wrapper_constraints = SizingContext::new(run.state, run.callbacks)
+    let wrapper_constraints = SizingContext::new(run.state, run.records.clone(), run.callbacks)
         .constraints_for_child_context(run.box_, layout_input.containing_block_constraints);
     let wrapper_state = run
-        .state
-        .create_used_values(&run.callbacks, wrapper, wrapper_constraints);
+        .records
+        .create_used_values(run.state, &run.callbacks, wrapper, wrapper_constraints);
     wrapper_state.set_content_inline_size(content_inline_size);
 
     let wrapper_layout = crate::layout::run_formatting_context(
         run.state,
+        wrapper_state,
         wrapper,
         None,
         FfiFormattingContextType::Block,
@@ -67,8 +68,10 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
     if let (Some(fragments), Some(pending)) = (run.fragments.as_deref(), wrapper_layout.fragments) {
         fragments.deposit_child_run(wrapper, pending);
     }
+    run.records.absorb_completed_child_scope(&wrapper_layout.records);
     crate::layout::place_child(
         run.state,
+        &run.records,
         &run.callbacks,
         wrapper,
         FfiCssPixelPoint::default(),

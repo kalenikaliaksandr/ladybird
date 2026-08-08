@@ -173,6 +173,7 @@ struct AxisAgnosticAvailableSpace {
 
 struct FlexFormattingContext<'pass> {
     state: &'pass LayoutState,
+    records: std::rc::Rc<RunRecords<'pass>>,
     flex_container: Node,
     layout_mode: LayoutMode,
     callbacks: FfiLayoutFcCallbacks,
@@ -191,10 +192,11 @@ struct FlexFormattingContext<'pass> {
 
 impl<'pass> FlexFormattingContext<'pass> {
     fn new(run: &FormattingContextRun<'pass>) -> Self {
-        let flex_container_state = run.state.used_values(&run.callbacks, run.box_);
+        let flex_container_state = run.records.used_values(run.box_);
         let flex_direction = run.state.style_facts(&run.callbacks, run.box_).flex_direction();
         Self {
             state: run.state,
+            records: run.records.clone(),
             flex_container: run.box_,
             layout_mode: run.layout_mode,
             callbacks: run.callbacks,
@@ -236,13 +238,13 @@ impl<'pass> FlexFormattingContext<'pass> {
         self.state.node_facts(&self.callbacks, node)
     }
 
-    fn sizing(&self) -> SizingContext<'_> {
-        SizingContext::new(self.state, self.callbacks)
+    fn sizing(&self) -> SizingContext<'pass> {
+        SizingContext::new(self.state, self.records.clone(), self.callbacks)
     }
 
     fn create_used_values(&self, node: Node) -> &'pass UsedValues {
         let constraints = self.item_percentage_bases;
-        self.state.create_used_values(&self.callbacks, node, constraints)
+        self.records.create_used_values(self.state, &self.callbacks, node, constraints)
     }
 
     fn constraints_for_child_context(
@@ -2427,6 +2429,7 @@ impl<'pass> FlexFormattingContext<'pass> {
         let container_block_size = self.container_used().content_block_size.get();
         crate::layout::compute_inset_native(
             self.state,
+            self.records.clone(),
             self.callbacks,
             self.fragments.clone(),
             node,
@@ -2622,9 +2625,7 @@ impl<'pass> FlexFormattingContext<'pass> {
                 as u8,
             lines,
         };
-        self.state
-            .used_values_rare_data_for_node_mut(&self.callbacks, self.flex_container)
-            .flex_layout_data = Some(data);
+        self.flex_container_state.rare_data_mut().flex_layout_data = Some(data);
     }
 
     // https://drafts.csswg.org/css-sizing-4/#aspect-ratio-automatic
@@ -3150,10 +3151,10 @@ impl<'pass> FlexFormattingContext<'pass> {
                         y: item.main_offset,
                     }
                 };
-                crate::layout::place_child(self.state, &self.callbacks, item.box_, offset, self.fragments.as_deref(), None);
+                crate::layout::place_child(self.state, &self.records, &self.callbacks, item.box_, offset, self.fragments.as_deref(), None);
             }
             self.derived_baselines_of_root_box =
-                crate::layout::derive_baselines(self.state, &self.callbacks, self.flex_container, true);
+                crate::layout::derive_baselines(self.state, &self.records, &self.callbacks, self.flex_container, true);
         }
 
         if self.should_collect_devtools_layout_data {

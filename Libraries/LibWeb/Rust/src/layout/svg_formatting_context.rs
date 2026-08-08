@@ -380,6 +380,7 @@ pub(crate) fn scale_and_align_viewbox_content(
 
 struct SvgFormattingContext<'pass> {
     state: &'pass LayoutState,
+    records: std::rc::Rc<RunRecords<'pass>>,
     box_: Node,
     layout_mode: LayoutMode,
     callbacks: FfiLayoutFcCallbacks,
@@ -397,16 +398,28 @@ struct SvgFormattingContext<'pass> {
 impl<'pass> SvgFormattingContext<'pass> {
     fn new(
         state: &'pass LayoutState,
+        records: std::rc::Rc<RunRecords<'pass>>,
         box_: Node,
         layout_mode: LayoutMode,
         callbacks: FfiLayoutFcCallbacks,
         fragments: Option<std::rc::Rc<RunFragmentBuilder>>,
     ) -> Self {
-        Self::new_nested(state, box_, layout_mode, callbacks, FfiAffineTransform::default(), None, fragments)
+        Self::new_nested(
+            state,
+            records,
+            box_,
+            layout_mode,
+            callbacks,
+            FfiAffineTransform::default(),
+            None,
+            fragments,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_nested(
         state: &'pass LayoutState,
+        records: std::rc::Rc<RunRecords<'pass>>,
         box_: Node,
         layout_mode: LayoutMode,
         callbacks: FfiLayoutFcCallbacks,
@@ -416,6 +429,7 @@ impl<'pass> SvgFormattingContext<'pass> {
     ) -> Self {
         Self {
             state,
+            records,
             box_,
             layout_mode,
             callbacks,
@@ -457,24 +471,25 @@ impl<'pass> SvgFormattingContext<'pass> {
         self.state.style_facts(&self.callbacks, node)
     }
 
+    #[track_caller]
     fn used_values(&self, node: Node) -> &'pass UsedValues {
-        self.state.used_values(&self.callbacks, node)
+        self.records.used_values(node)
     }
 
     fn create_used_values(&self, node: Node) -> &'pass UsedValues {
         // SVG descendants deliberately carry no percentage basis.
         // SVG layout resolves percentages against the SVG viewport, not a CSS containing
         // block, so boxes inside the SVG subtree carry no percentage basis.
-        self.state
-            .create_used_values(&self.callbacks, node, crate::layout::ContainingBlockConstraints::default())
+        self.records
+            .create_used_values(self.state, &self.callbacks, node, crate::layout::ContainingBlockConstraints::default())
     }
 
     fn computed_transforms(&self, node: Node) -> Option<FfiSvgComputedTransforms> {
-        let slot_index = self.callbacks.slot_index(node);
         if let Some(transforms) = self
-            .state
-            .used_values_rare_data(slot_index)
-            .and_then(|data| data.computed_svg_transforms)
+            .used_values(node)
+            .rare_data
+            .get()
+            .and_then(|cell| cell.borrow().computed_svg_transforms)
         {
             return Some(transforms);
         }
@@ -499,21 +514,18 @@ impl<'pass> SvgFormattingContext<'pass> {
 
     fn set_computed_transforms(&self, node: Node, transforms: FfiSvgComputedTransforms) {
         self.note_svg_payload_write();
-        self.state
-            .used_values_rare_data_for_node_mut(&self.callbacks, node)
-            .computed_svg_transforms = Some(transforms);
+        self.used_values(node).rare_data_mut().computed_svg_transforms = Some(transforms);
     }
 
     fn set_svg_viewport_size(&self, node: Node, viewport_size: FfiCssPixelSize) {
         self.note_svg_payload_write();
-        self.state
-            .used_values_rare_data_for_node_mut(&self.callbacks, node)
-            .svg_viewport_size = Some(viewport_size);
+        self.used_values(node).rare_data_mut().svg_viewport_size = Some(viewport_size);
     }
 
     fn place_child(&self, node: Node, x: CssPixels, y: CssPixels) {
         crate::layout::place_child(
             self.state,
+            &self.records,
             &self.callbacks,
             node,
             FfiCssPixelPoint { x, y },
@@ -831,6 +843,7 @@ impl<'pass> SvgFormattingContext<'pass> {
 
         let mut nested_context = Self::new_nested(
             self.state,
+            self.records.clone(),
             viewport,
             self.layout_mode,
             self.callbacks,
@@ -985,9 +998,7 @@ impl<'pass> SvgFormattingContext<'pass> {
         used.set_content_inline_size(transformed_bounding_box.width);
         used.set_content_block_size(transformed_bounding_box.height);
         self.note_svg_payload_write();
-        self.state
-            .used_values_rare_data_for_node_mut(&self.callbacks, graphics_box)
-            .computed_svg_path = Some(crate::layout::RetainedLayoutHandle::new(
+        self.used_values(graphics_box).rare_data_mut().computed_svg_path = Some(crate::layout::RetainedLayoutHandle::new(
             result.path_handle,
             self.callbacks.context,
             self.callbacks.release_svg_path,
@@ -1094,6 +1105,7 @@ impl<'pass> SvgFormattingContext<'pass> {
         // Pretend masks/clips are a viewport so we can scale the contents depending on the `contentUnits`.
         let mut nested_context = Self::new_nested(
             self.state,
+            self.records.clone(),
             resource,
             self.layout_mode,
             self.callbacks,
