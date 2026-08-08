@@ -1624,6 +1624,7 @@ impl<'pass> AbsposEngine<'pass> {
                 x: used_offset.inline_offset,
                 y: used_offset.block_offset,
             },
+            None,
             run.fragments.as_deref(),
             None,
         );
@@ -1694,7 +1695,7 @@ impl<'pass> AbsposEngine<'pass> {
         containing_block_size: LogicalSize,
         formatting_context_root: Node,
         treat_block_axis_percentage_insets_as_auto_beyond_root: bool,
-    ) {
+    ) -> Option<PhysicalEdges> {
         // Most boxes are neither relatively positioned nor carry anchor()
         // insets. Preserve the old C++ fast path without populating the
         // comprehensive Rust facts caches for those boxes.
@@ -1702,7 +1703,7 @@ impl<'pass> AbsposEngine<'pass> {
         if !unsafe {
             (self.callbacks.needs_inset_resolution)(self.callbacks.context, self.callbacks.shell(node))
         } {
-            return;
+            return None;
         }
         let initial_style = self.style(node);
         if initial_style.inset_top().contains_anchor_function()
@@ -1714,7 +1715,7 @@ impl<'pass> AbsposEngine<'pass> {
         }
         let style = self.style(node);
         if style.position() != positioning::RELATIVE {
-            return;
+            return None;
         }
 
         let resolve_opposing = |first: InsetValue, second: InsetValue, basis: CssPixels| {
@@ -1761,6 +1762,12 @@ impl<'pass> AbsposEngine<'pass> {
         used.inset_right.set(right);
         used.inset_top.set(top);
         used.inset_bottom.set(bottom);
+        Some(PhysicalEdges {
+            left,
+            right,
+            top,
+            bottom,
+        })
     }
 }
 
@@ -1808,7 +1815,7 @@ pub(crate) fn compute_inset_native(
     node: Node,
     inline_size: CssPixels,
     block_size: CssPixels,
-) {
+) -> Option<PhysicalEdges> {
     AbsposEngine::for_run(run).compute_inset(
         node,
         LogicalSize {
@@ -1817,5 +1824,5 @@ pub(crate) fn compute_inset_native(
         },
         run.box_,
         run.treat_block_axis_percentage_insets_as_auto_beyond_root,
-    );
+    )
 }

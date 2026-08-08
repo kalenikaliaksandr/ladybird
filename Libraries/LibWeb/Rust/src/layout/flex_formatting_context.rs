@@ -46,6 +46,7 @@ struct FlexItem<'pass> {
     used_flex_basis_is_definite: bool,
     main_size_was_resolved_from_aspect_ratio: bool,
     cross_size_was_resolved_from_aspect_ratio: bool,
+    resolved_relative_insets: Option<PhysicalEdges>,
     flex_base_size: CssPixels,
     hypothetical_main_size: CssPixels,
     hypothetical_cross_size: CssPixels,
@@ -80,6 +81,7 @@ impl FlexItem<'_> {
             used_flex_basis_is_definite: false,
             main_size_was_resolved_from_aspect_ratio: false,
             cross_size_was_resolved_from_aspect_ratio: false,
+            resolved_relative_insets: None,
             flex_base_size: CssPixels::default(),
             hypothetical_main_size: CssPixels::default(),
             hypothetical_cross_size: CssPixels::default(),
@@ -2477,7 +2479,8 @@ impl<'pass> FlexFormattingContext<'pass> {
 
         let container_inline_size = self.container_used().content_inline_size.get();
         let container_block_size = self.container_used().content_block_size.get();
-        crate::layout::compute_inset_native(run, node, container_inline_size, container_block_size);
+        self.flex_items[index].resolved_relative_insets =
+            crate::layout::compute_inset_native(run, node, container_inline_size, container_block_size);
     }
 
     // https://drafts.csswg.org/css-flexbox-1/#abspos-items
@@ -3191,7 +3194,16 @@ impl<'pass> FlexFormattingContext<'pass> {
                         y: item.main_offset,
                     }
                 };
-                crate::layout::place_child(self.state, &self.records, &self.callbacks, item.box_, offset, self.fragments.as_deref(), None);
+                crate::layout::place_child(
+                    self.state,
+                    &self.records,
+                    &self.callbacks,
+                    item.box_,
+                    offset,
+                    item.resolved_relative_insets,
+                    self.fragments.as_deref(),
+                    None,
+                );
             }
             self.derived_baselines_of_root_box =
                 crate::layout::derive_baselines(self.state, &self.records, &self.callbacks, self.flex_container, true);

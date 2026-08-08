@@ -522,6 +522,7 @@ impl<'pass> SvgFormattingContext<'pass> {
             &self.callbacks,
             node,
             FfiCssPixelPoint { x, y },
+            None,
             self.fragments.as_deref(),
             None,
         );

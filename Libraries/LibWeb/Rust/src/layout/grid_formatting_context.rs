@@ -3460,8 +3460,18 @@ impl<'pass> GridFormattingContext<'pass> {
             };
             // Resolve relative-position insets before placement seals the
             // item's committed metrics.
-            crate::layout::compute_inset_native(run, item.box_, area.size.inline_size, area.size.block_size);
-            crate::layout::place_child(self.state, &self.records, &self.callbacks, item.box_, offset, self.fragments.as_deref(), None);
+            let resolved_relative_insets =
+                crate::layout::compute_inset_native(run, item.box_, area.size.inline_size, area.size.block_size);
+            crate::layout::place_child(
+                self.state,
+                &self.records,
+                &self.callbacks,
+                item.box_,
+                offset,
+                resolved_relative_insets,
+                self.fragments.as_deref(),
+                None,
+            );
         }
         self.derived_baselines_of_root_box =
             crate::layout::derive_baselines(self.state, &self.records, &self.callbacks, self.grid_container, false);

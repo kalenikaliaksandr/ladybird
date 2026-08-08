@@ -285,14 +285,15 @@ impl<'pass> BlockFormattingContext<'pass> {
         SizingContext::new(self.state, self.records.clone(), self.callbacks)
     }
 
-    fn place_child(&self, node: Node, offset: FfiCssPixelPoint) {
-        self.place_child_on_line(node, offset, None);
+    fn place_child(&self, node: Node, offset: FfiCssPixelPoint, resolved_relative_insets: Option<PhysicalEdges>) {
+        self.place_child_on_line(node, offset, resolved_relative_insets, None);
     }
 
     fn place_child_on_line(
         &self,
         node: Node,
         offset: FfiCssPixelPoint,
+        resolved_relative_insets: Option<PhysicalEdges>,
         containing_line_box_fragment: Option<LineBoxFragmentCoordinate>,
     ) {
         crate::layout::place_child(
@@ -301,6 +302,7 @@ impl<'pass> BlockFormattingContext<'pass> {
             &self.callbacks,
             node,
             offset,
+            resolved_relative_insets,
             self.fragments.as_deref(),
             containing_line_box_fragment,
         );
@@ -351,8 +353,13 @@ impl<'pass> BlockFormattingContext<'pass> {
         self.derived_baselines_of_root_box.get()
     }
 
-    fn compute_inset(&self, run: &FormattingContextRun<'pass>, node: Node, containing_block_size: LogicalSize) {
-        crate::layout::compute_inset_native(run, node, containing_block_size.inline_size, containing_block_size.block_size);
+    fn compute_inset(
+        &self,
+        run: &FormattingContextRun<'pass>,
+        node: Node,
+        containing_block_size: LogicalSize,
+    ) -> Option<PhysicalEdges> {
+        crate::layout::compute_inset_native(run, node, containing_block_size.inline_size, containing_block_size.block_size)
     }
 
     fn containing_block_rect(&self, node: Node, position: FfiCssPixelPoint) -> BlockCssPixelRect {
@@ -1510,6 +1517,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 x: round_css_pixels(marker_inline_offset),
                 y: marker_block_offset,
             },
+            None,
         );
     }
 
@@ -1929,7 +1937,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         }
 
         let block_container_used = self.used(block_container);
-        self.compute_inset(
+        let resolved_relative_insets = self.compute_inset(
             run,
             node,
             LogicalSize {
@@ -1939,7 +1947,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         );
 
         if let Some(position) = pending_position {
-            self.place_child_on_line(node, position, containing_line_box_fragment);
+            self.place_child_on_line(node, position, resolved_relative_insets, containing_line_box_fragment);
         }
 
         if has_independent_formatting_context || !self.margins_collapse_through(node) {
@@ -2167,6 +2175,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                     x: legend_flow_position.inline_offset,
                     y: legend_content_block_offset,
                 },
+                None,
             );
             self.translate_floats_in_subtree(
                 legend,
@@ -2533,7 +2542,7 @@ impl<'pass> BlockFormattingContext<'pass> {
             line_builder.recalculate_available_space();
         }
         let block_container_used = self.used(block_container);
-        self.compute_inset(
+        let resolved_relative_insets = self.compute_inset(
             run,
             node,
             LogicalSize {
@@ -2559,6 +2568,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 x: inline_offset,
                 y: content_block_offset,
             },
+            resolved_relative_insets,
         );
     }
 

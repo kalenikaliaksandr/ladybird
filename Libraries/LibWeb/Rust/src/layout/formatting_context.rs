@@ -375,12 +375,14 @@ pub(crate) enum BaselineSet {
     Last,
 }
 
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn place_child(
     state: &LayoutState,
     records: &RunRecords,
     callbacks: &FfiLayoutFcCallbacks,
     node: Node,
     offset: FfiCssPixelPoint,
+    resolved_relative_insets: Option<PhysicalEdges>,
     fragments: Option<&RunFragmentBuilder>,
     containing_line_box_fragment: Option<LineBoxFragmentCoordinate>,
 ) {
@@ -418,19 +420,29 @@ pub(crate) fn place_child(
             state.resolve_containing_line_box_index(records, callbacks, node, containing_block, containing_line_box_fragment, offset),
             point_add(
                 offset,
-                committed_offset_delta_at_placement(state, records, callbacks, node, containing_block, &used),
+                committed_offset_delta_at_placement(
+                    state,
+                    records,
+                    callbacks,
+                    node,
+                    containing_block,
+                    resolved_relative_insets,
+                    &used,
+                ),
             ),
             own_anchor_candidate_border_box_rect,
         );
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn committed_offset_delta_at_placement(
     state: &LayoutState,
     records: &RunRecords,
     callbacks: &FfiLayoutFcCallbacks,
     node: Node,
     containing_block: Node,
+    resolved_relative_insets: Option<PhysicalEdges>,
     used: &UsedValues,
 ) -> FfiCssPixelPoint {
     let mut delta = FfiCssPixelPoint::default();
@@ -442,8 +454,25 @@ fn committed_offset_delta_at_placement(
         return delta;
     }
     if facts.is_relatively_positioned() {
-        delta.x += used.inset_left.get();
-        delta.y += used.inset_top.get();
+        // Callers that resolve insets adjacent to placement hand the value
+        // through; the inline path still resolves during line building and
+        // reads the record until its state threads through the line builder.
+        match resolved_relative_insets {
+            Some(insets) => {
+                if root_input_probe_enabled() {
+                    assert!(
+                        insets.left == used.inset_left.get() && insets.top == used.inset_top.get(),
+                        "resolved relative insets diverged from the record at placement"
+                    );
+                }
+                delta.x += insets.left;
+                delta.y += insets.top;
+            }
+            None => {
+                delta.x += used.inset_left.get();
+                delta.y += used.inset_top.get();
+            }
+        }
     }
     if facts.is_in_flow() && facts.display().is_block_outside() {
         let chain = state.accumulated_relative_insets_from_inline_ancestor_chain(
@@ -2038,7 +2067,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         if !first_child.is_invalid() && state.node_facts(&callbacks, first_child).is_svg_svg_box() {
             viewport_used.set_content_inline_size(viewport_inline_size);
             viewport_used.set_content_block_size(viewport_block_size);
-            place_child(&state, &entry_records, &callbacks, root, FfiCssPixelPoint::default(), Some(&entry_fragments), None);
+            place_child(&state, &entry_records, &callbacks, root, FfiCssPixelPoint::default(), None, Some(&entry_fragments), None);
             root_for_layout_used = entry_records.create_used_values(&state, &callbacks, first_child, root_constraints);
             root_for_layout = first_child;
         }
@@ -2072,6 +2101,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             &callbacks,
             root_for_layout,
             FfiCssPixelPoint::default(),
+            None,
             Some(&entry_fragments),
             None,
         );
@@ -2164,6 +2194,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
                 &callbacks,
                 viewport,
                 FfiCssPixelPoint::default(),
+                None,
                 Some(&entry_fragments),
                 None,
             );

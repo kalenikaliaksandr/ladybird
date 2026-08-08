@@ -1145,6 +1145,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
                     &self.callbacks,
                     fragment.layout_node,
                     FfiCssPixelPoint { x, y },
+                    None,
                     self.run.fragments.as_deref(),
                     Some(LineBoxFragmentCoordinate {
                         line_box_index: line_index,
