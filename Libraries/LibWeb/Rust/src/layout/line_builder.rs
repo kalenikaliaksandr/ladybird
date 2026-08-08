@@ -345,23 +345,22 @@ impl<'builder, 'context, 'pass> LineBuilder<'builder, 'context, 'pass> {
         block_end: CssPixels,
         block_end_margin: CssPixels,
     ) {
-        let used = self.context().used(node);
-        assert!(used.has_content_offset.get());
+        let placement = self.context().placement_of_placed_child(node);
         let (inline_offset, block_offset) = to_logical(
             self.writing_mode,
-            used.content_offset.get().x,
-            used.content_offset.get().y,
+            placement.content_offset.x,
+            placement.content_offset.y,
         );
         let (inline_length, block_length) = to_logical(
             self.writing_mode,
-            used.content_inline_size.get(),
-            used.content_block_size.get(),
+            placement.metrics.content_inline_size,
+            placement.metrics.content_block_size,
         );
-        let border_start = used.border_box_top(false);
+        let border_start = placement.metrics.border_box_top(false);
         let line_inline_length = to_logical(
             self.writing_mode,
-            used.margin_box_inline_size(false),
-            used.margin_box_block_size(false),
+            placement.metrics.margin_box_inline_size(false),
+            placement.metrics.margin_box_block_size(false),
         )
         .0;
         let ensured_line_index = self.ensure_last_line_index();

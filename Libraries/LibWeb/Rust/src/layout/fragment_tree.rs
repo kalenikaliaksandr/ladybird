@@ -230,6 +230,18 @@ impl DrainBoxGeometry {
             content_block_size: used.content_block_size.get(),
         }
     }
+
+    pub(crate) fn from_placed_geometry(placement: &crate::layout::PlacedGeometry) -> Self {
+        Self {
+            content_offset: placement.content_offset,
+            padding_left: placement.metrics.padding.left,
+            padding_right: placement.metrics.padding.right,
+            padding_top: placement.metrics.padding.top,
+            padding_bottom: placement.metrics.padding.bottom,
+            content_inline_size: placement.metrics.content_inline_size,
+            content_block_size: placement.metrics.content_block_size,
+        }
+    }
 }
 
 /// Placement-derived geometry for every box a run's coverage has placed,

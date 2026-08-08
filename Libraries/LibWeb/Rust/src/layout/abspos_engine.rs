@@ -93,7 +93,7 @@ impl<'pass> AbsposEngine<'pass> {
         if let Some(index) = self.drain_geometry.borrow().as_ref() {
             return index.geometry_of(node);
         }
-        DrainBoxGeometry::from_used_values(&self.used(node))
+        DrainBoxGeometry::from_placed_geometry(&self.records.placement_or_unplaced_record_state(node))
     }
 
     fn sizing(&self) -> SizingContext<'pass> {

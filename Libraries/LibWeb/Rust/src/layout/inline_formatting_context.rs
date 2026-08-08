@@ -769,6 +769,13 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         self.run.records.used_values(node)
     }
 
+    pub(crate) fn placement_of_placed_child(&self, node: Node) -> crate::layout::PlacedGeometry {
+        self.run
+            .records
+            .placement_of(node)
+            .expect("a block-level line fragment's box is placed before it is appended")
+    }
+
     pub(crate) fn create_used_values(
         &self,
         node: Node,
