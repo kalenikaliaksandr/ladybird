@@ -2008,16 +2008,18 @@ impl<'pass> TableFormattingContext<'pass> {
 
         let measurement = MeasurementState::create(self.callbacks);
         let measured_root = measurement.create_used_values(cell.box_, ContainingBlockConstraints::default());
-        used.mirror_box_metrics_and_size_constraints_into(&measured_root);
-        measured_root
-            .has_definite_inline_size
-            .set(used.has_definite_inline_size());
-        measured_root
-            .has_definite_block_size
-            .set(used.has_definite_block_size());
-        measured_root
-            .uses_collapsing_borders_model
-            .set(used.uses_collapsing_borders_model.get());
+        let live = BoxMetrics::capture_from_record(used);
+        let mut cell_measurement_metrics = BoxMetrics::capture_from_record(&measured_root);
+        cell_measurement_metrics.content_inline_size = live.content_inline_size;
+        cell_measurement_metrics.content_block_size = live.content_block_size;
+        cell_measurement_metrics.margin = live.margin;
+        cell_measurement_metrics.border = live.border;
+        cell_measurement_metrics.padding = live.padding;
+        cell_measurement_metrics.inline_size_constraint = live.inline_size_constraint;
+        cell_measurement_metrics.block_size_constraint = live.block_size_constraint;
+        cell_measurement_metrics.has_definite_inline_size = used.has_definite_inline_size();
+        cell_measurement_metrics.has_definite_block_size = used.has_definite_block_size();
+        cell_measurement_metrics.uses_collapsing_borders_model = live.uses_collapsing_borders_model;
 
         let result = measurement.run_with_layout_mode(
             cell.box_,
@@ -2028,6 +2030,9 @@ impl<'pass> TableFormattingContext<'pass> {
                 containing_block_constraints: ContainingBlockConstraints::default(),
                 content_box_position_in_bfc_root: None,
                 sizing: RootSizingDirectives {
+                    measurement_root: Some(MeasurementRootInputs {
+                        metrics: cell_measurement_metrics,
+                    }),
                     adopt_automatic_content_block_size,
                     ..RootSizingDirectives::default()
                 },

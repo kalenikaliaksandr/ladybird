@@ -2603,9 +2603,18 @@ impl<'pass> GridFormattingContext<'pass> {
         let scratch = MeasurementState::create(self.callbacks);
         let live = self.used(subgrid);
         let scratch_root = scratch.create_used_values(subgrid.box_, ContainingBlockConstraints::default());
-        live.mirror_box_metrics_and_size_constraints_into(&scratch_root);
-        scratch_root.has_definite_inline_size.set(live.has_definite_inline_size.get());
-        scratch_root.has_definite_block_size.set(live.has_definite_block_size.get());
+        let live_metrics = BoxMetrics::capture_from_record(&live);
+        let mut scratch_metrics = BoxMetrics::capture_from_record(&scratch_root);
+        scratch_metrics.content_inline_size = live_metrics.content_inline_size;
+        scratch_metrics.content_block_size = live_metrics.content_block_size;
+        scratch_metrics.margin = live_metrics.margin;
+        scratch_metrics.border = live_metrics.border;
+        scratch_metrics.padding = live_metrics.padding;
+        scratch_metrics.inline_size_constraint = live_metrics.inline_size_constraint;
+        scratch_metrics.block_size_constraint = live_metrics.block_size_constraint;
+        scratch_metrics.has_definite_inline_size = live_metrics.has_definite_inline_size;
+        scratch_metrics.has_definite_block_size = live_metrics.has_definite_block_size;
+        seed_root_record(&scratch_root, &scratch_metrics);
         let scratch_run = crate::layout::FormattingContextRun {
             state: scratch.rust_state(),
             records: std::rc::Rc::new(RunRecords::new(subgrid.box_, scratch_root)),

@@ -1524,16 +1524,12 @@ fn root_input_probe_enabled() -> bool {
 /// input-purification burn-down adds one kind per conversion until the
 /// list is every kind.
 fn assert_pre_run_root_state_is_input_derived(run: &FormattingContextRun, input: &LayoutInput) {
-    let converted_kind = match input.participation {
-        ParticipationInParentFormattingContext::AtomicInline => true,
-        // A measurement root that declares its state through the input has
-        // a writer-free record by construction; drivers not yet converted
-        // leave the field unset and stay off the probe.
-        ParticipationInParentFormattingContext::Root => {
-            run.state.is_measurement() && input.sizing.measurement_root.is_some()
-        }
-        _ => false,
-    };
+    // A run that declares its root state through measurement_root has a
+    // writer-free record by construction, whatever its participation;
+    // drivers not yet converted leave the field unset and stay off the
+    // probe until their conversion.
+    let converted_kind = matches!(input.participation, ParticipationInParentFormattingContext::AtomicInline)
+        || input.sizing.measurement_root.is_some();
     if !converted_kind {
         return;
     }
