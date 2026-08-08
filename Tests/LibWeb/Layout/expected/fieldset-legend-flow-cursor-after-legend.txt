@@ -1,0 +1,52 @@
+Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children: not-inline
+  BlockContainer <html> at [0,0] [0+0+0 800 0+0+0] [0+0+0 126.59375 0+0+0] [BFC] children: not-inline
+    BlockContainer <body> at [8,8] [8+0+0 784 0+0+8] [8+0+0 110.59375 0+0+8] children: not-inline
+      FieldSetBox <fieldset> at [24,15.59375] [2+2+12 752 12+2+2] [0+2+5.59375 75 10+2+0] [BFC] children: not-inline
+        LegendBox <legend> at [26,14] [0+0+2 36.328125 2+0+0] [0+6+0 30 9+0+0] children: inline
+          frag 0 from TextNode start: 0, length: 5, rect: [26,14 36.328125x16] baseline: 12.796875
+              "login"
+          TextNode <#text> (not painted)
+        BlockContainer <(anonymous)> at [24,58.59375] [0+0+0 752 0+0+0] [0+0+0 32 0+0+0] [BFC] children: not-inline
+          BlockContainer <(anonymous)> at [24,58.59375] [0+0+0 752 0+0+0] [0+0+0 0 0+0+0] children: inline
+            TextNode <#text> (not painted)
+          BlockContainer <(anonymous)> at [24,58.59375] [0+0+0 752 0+0+0] [0+0+0 0 0+0+0] children: inline
+            TextNode <#text> (not painted)
+          BlockContainer <div> at [24,58.59375] [0+0+0 752 0+0+0] [0+0+0 16 0+0+0] children: inline
+            frag 0 from TextNode start: 0, length: 30, rect: [24,58.59375 229.140625x16] baseline: 12.796875
+                "first sibling after the legend"
+            TextNode <#text> (not painted)
+          BlockContainer <(anonymous)> at [24,74.59375] [0+0+0 752 0+0+0] [0+0+0 0 0+0+0] children: inline
+            TextNode <#text> (not painted)
+          BlockContainer <div> at [24,74.59375] [0+0+0 752 0+0+0] [0+0+0 16 0+0+0] children: inline
+            frag 0 from TextNode start: 0, length: 14, rect: [24,74.59375 112.125x16] baseline: 12.796875
+                "second sibling"
+            TextNode <#text> (not painted)
+          BlockContainer <(anonymous)> at [24,90.59375] [0+0+0 752 0+0+0] [0+0+0 0 0+0+0] children: inline
+            TextNode <#text> (not painted)
+      BlockContainer <(anonymous)> at [8,102.59375] [0+0+0 784 0+0+0] [0+0+0 0 0+0+0] children: inline
+        TextNode <#text> (not painted)
+      BlockContainer <div> at [8,102.59375] [0+0+0 784 0+0+0] [0+0+0 16 0+0+0] children: inline
+        frag 0 from TextNode start: 0, length: 26, rect: [8,102.59375 206.703125x16] baseline: 12.796875
+            "content after the fieldset"
+        TextNode <#text> (not painted)
+      BlockContainer <(anonymous)> at [8,118.59375] [0+0+0 784 0+0+0] [0+0+0 0 0+0+0] children: inline
+        TextNode <#text> (not painted)
+
+ViewportPaintable (Viewport<#document>) [0,0 800x600]
+  PaintableWithLines (BlockContainer<HTML>) [0,0 800x126.59375]
+    PaintableWithLines (BlockContainer<BODY>) [8,8 784x110.59375]
+      FieldSetPaintable (FieldSetBox<FIELDSET>) [10,8 780x94.59375]
+        PaintableWithLines (LegendBox<LEGEND>) [24,8 40.328125x45]
+        PaintableWithLines (BlockContainer(anonymous)) [24,58.59375 752x32]
+          PaintableWithLines (BlockContainer(anonymous)) [24,58.59375 752x0]
+          PaintableWithLines (BlockContainer(anonymous)) [24,58.59375 752x0]
+          PaintableWithLines (BlockContainer<DIV>) [24,58.59375 752x16]
+          PaintableWithLines (BlockContainer(anonymous)) [24,74.59375 752x0]
+          PaintableWithLines (BlockContainer<DIV>) [24,74.59375 752x16]
+          PaintableWithLines (BlockContainer(anonymous)) [24,90.59375 752x0]
+      PaintableWithLines (BlockContainer(anonymous)) [8,102.59375 784x0]
+      PaintableWithLines (BlockContainer<DIV>) [8,102.59375 784x16]
+      PaintableWithLines (BlockContainer(anonymous)) [8,118.59375 784x0]
+
+SC for Viewport<#document> [0,0 800x600] (z-index: auto)
+ SC for BlockContainer<HTML> [0,0 800x126.59375] (z-index: auto)

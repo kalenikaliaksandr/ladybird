@@ -1956,9 +1956,20 @@ impl<'pass> BlockFormattingContext<'pass> {
                 margin_state.reset();
             }
             drop(margin_state);
-            let used = self.used(node);
+            // A legend routed to fieldset positioning is still unplaced here;
+            // its cursor contribution reads a zero offset with live metrics,
+            // exactly what the unplaced record reports.
+            let placed_or_pending = self.records.placement_of(node).unwrap_or_else(|| {
+                let used = self.used(node);
+                crate::layout::PlacedGeometry {
+                    content_offset: used.content_offset.get(),
+                    metrics: BoxMetrics::capture_from_record(&used),
+                }
+            });
             self.block_offset_of_current_block_container.set(Some(
-                used.content_offset.get().y + used.content_block_size.get() + used.border_box_bottom(false),
+                placed_or_pending.content_offset.y
+                    + placed_or_pending.metrics.content_block_size
+                    + placed_or_pending.metrics.border_box_bottom(false),
             ));
         }
         self.margin_state

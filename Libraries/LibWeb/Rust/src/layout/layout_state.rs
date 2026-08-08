@@ -819,14 +819,23 @@ pub(crate) struct LayoutState {
 /// The scope OWNS its records — when the last scope handle drops at run
 /// completion, the run's interior records die with it; only records shared
 /// onward (the roots parents hand to children) outlive it.
+/// One placement as the scope witnessed it: the offset handed to
+/// place_child and the record's metrics at that moment, immutable from
+/// then on because the seal forbids post-placement metric writes.
+#[derive(Clone, Copy)]
+pub(crate) struct PlacedGeometry {
+    pub(crate) content_offset: FfiCssPixelPoint,
+    pub(crate) metrics: BoxMetrics,
+}
+
 pub(crate) struct RunRecords {
     root: Node,
     map: RefCell<HashMap<u32, std::rc::Rc<UsedValues>>>,
-    /// Every slot placed under this scope. Scope-level on purpose: nested
+    /// Every placement under this scope. Scope-level on purpose: nested
     /// SVG contexts share one scope across separate fragment builders, so
-    /// a per-builder set cannot answer placement questions the scope can.
-    /// Grows into the placement ledger as readers move off the records.
-    placed_slots: RefCell<std::collections::HashSet<u32>>,
+    /// a per-builder structure cannot answer placement questions the scope
+    /// can. Grows into the run workspace as readers move off the records.
+    placements: RefCell<HashMap<u32, PlacedGeometry>>,
 }
 
 impl RunRecords {
@@ -842,13 +851,14 @@ impl RunRecords {
         Self {
             root,
             map: RefCell::new(HashMap::new()),
-            placed_slots: RefCell::new(std::collections::HashSet::new()),
+            placements: RefCell::new(HashMap::new()),
         }
     }
 
-    pub(crate) fn note_placement(&self, node: Node) {
+    pub(crate) fn note_placement(&self, node: Node, geometry: PlacedGeometry) {
+        let previous = self.placements.borrow_mut().insert(node.slot_index(), geometry);
         assert!(
-            self.placed_slots.borrow_mut().insert(node.slot_index()),
+            previous.is_none(),
             "slot {} placed twice in the scope rooted at slot {}",
             node.slot_index(),
             self.root.slot_index()
@@ -856,16 +866,26 @@ impl RunRecords {
     }
 
     pub(crate) fn slot_is_placed_in_scope(&self, node: Node) -> bool {
-        self.placed_slots.borrow().contains(&node.slot_index())
+        self.placements.borrow().contains_key(&node.slot_index())
+    }
+
+    pub(crate) fn placement_of(&self, node: Node) -> Option<PlacedGeometry> {
+        self.placements.borrow().get(&node.slot_index()).copied()
     }
 
     pub(crate) fn register(&self, node: Node, used: std::rc::Rc<UsedValues>) {
         // A record can arrive already placed — materialized roots adopt the
         // previous paintable's committed geometry as their placement — and
-        // the scope's placed set mirrors the placement facts of the records
+        // the scope's placements mirror the placement facts of the records
         // it holds.
         if used.has_content_offset.get() {
-            self.placed_slots.borrow_mut().insert(node.slot_index());
+            self.placements.borrow_mut().insert(
+                node.slot_index(),
+                PlacedGeometry {
+                    content_offset: used.content_offset.get(),
+                    metrics: BoxMetrics::capture_from_record(&used),
+                },
+            );
         }
         let previous = self.map.borrow_mut().insert(node.slot_index(), used);
         assert!(

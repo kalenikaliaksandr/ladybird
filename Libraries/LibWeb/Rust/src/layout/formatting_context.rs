@@ -391,7 +391,13 @@ pub(crate) fn place_child(
     used.has_content_offset.set(true);
     used.content_offset.set(offset);
     used.seal_committed_box_metrics();
-    records.note_placement(node);
+    records.note_placement(
+        node,
+        crate::layout::PlacedGeometry {
+            content_offset: offset,
+            metrics: BoxMetrics::capture_from_record(&used),
+        },
+    );
     if let Some(fragments) = fragments {
         let containing_block = callbacks.containing_block(node);
         // A containing block this run does not own can never open a frame
