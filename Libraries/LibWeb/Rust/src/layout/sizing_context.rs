@@ -6,14 +6,14 @@
 
 pub(crate) struct SizingContext<'pass> {
     state: &'pass LayoutState,
-    records: std::rc::Rc<RunRecords<'pass>>,
+    records: std::rc::Rc<RunRecords>,
     callbacks: FfiLayoutFcCallbacks,
 }
 
 impl<'pass> SizingContext<'pass> {
     pub(crate) fn new(
         state: &'pass LayoutState,
-        records: std::rc::Rc<RunRecords<'pass>>,
+        records: std::rc::Rc<RunRecords>,
         callbacks: FfiLayoutFcCallbacks,
     ) -> Self {
         Self {
@@ -32,12 +32,12 @@ impl<'pass> SizingContext<'pass> {
     }
 
     #[track_caller]
-    fn used(&self, node: Node) -> &'pass UsedValues {
+    fn used(&self, node: Node) -> std::rc::Rc<UsedValues> {
         self.records.used_values(node)
     }
 
     #[track_caller]
-    fn used_mut(&self, node: Node) -> &'pass UsedValues {
+    fn used_mut(&self, node: Node) -> std::rc::Rc<UsedValues> {
         self.records.used_values(node)
     }
 
@@ -1317,7 +1317,7 @@ impl<'pass> SizingContext<'pass> {
             first: measurement.has_first_baseline.then_some(measurement.first_baseline),
             last: measurement.has_last_baseline.then_some(measurement.last_baseline),
         };
-        crate::layout::store_derived_baselines(used, baselines);
+        crate::layout::store_derived_baselines(&used, baselines);
         Some((measurement.automatic_content_block_size, baselines))
     }
 
@@ -1426,7 +1426,7 @@ impl<'pass> SizingContext<'pass> {
         };
         let mut result = measurement.run(
             node,
-            root,
+            root.clone(),
             LayoutInput {
                 available_space: AvailableSpace {
                     inline_size: AvailableSize::MinContent,
@@ -1444,7 +1444,7 @@ impl<'pass> SizingContext<'pass> {
             node,
             IntrinsicSizeCacheKind::MinContentInline,
             key,
-            root,
+            &root,
             result,
             block_size,
         );
@@ -1628,7 +1628,7 @@ impl<'pass> SizingContext<'pass> {
         };
         let mut result = measurement.run(
             node,
-            root,
+            root.clone(),
             LayoutInput {
                 available_space: AvailableSpace {
                     inline_size: AvailableSize::MaxContent,
@@ -1646,7 +1646,7 @@ impl<'pass> SizingContext<'pass> {
             node,
             IntrinsicSizeCacheKind::MaxContentInline,
             key,
-            root,
+            &root,
             result,
             block_size,
         );
@@ -1907,7 +1907,7 @@ impl<'pass> SizingContext<'pass> {
 
         let table_run = crate::layout::FormattingContextRun {
             state: measurement.rust_state(),
-            records: std::rc::Rc::new(RunRecords::new(table_box, table_used, measurement.record_arena())),
+            records: std::rc::Rc::new(RunRecords::new(table_box, table_used.clone())),
             box_: table_box,
             layout_mode: LayoutMode::IntrinsicSizing,
             callbacks: *measurement.callbacks(),

@@ -1031,7 +1031,7 @@ impl GridItem {
 
 pub(crate) struct GridFormattingContext<'pass> {
     state: &'pass LayoutState,
-    records: std::rc::Rc<RunRecords<'pass>>,
+    records: std::rc::Rc<RunRecords>,
     grid_container: Node,
     derived_baselines_of_root_box: DerivedBaselines,
     parent_grid: Option<ParentGridData>,
@@ -1169,19 +1169,19 @@ impl<'pass> GridFormattingContext<'pass> {
         self.use_row_alignment_container_size = false;
     }
 
-    fn container_used(&self) -> &'pass UsedValues {
+    fn container_used(&self) -> std::rc::Rc<UsedValues> {
         self.records.used_values(self.grid_container)
     }
 
-    fn container_used_mut(&self) -> &'pass UsedValues {
+    fn container_used_mut(&self) -> std::rc::Rc<UsedValues> {
         self.container_used()
     }
 
-    fn used(&self, item: GridItem) -> &'pass UsedValues {
+    fn used(&self, item: GridItem) -> std::rc::Rc<UsedValues> {
         self.records.used_values(item.box_)
     }
 
-    fn used_mut(&self, item: GridItem) -> &'pass UsedValues {
+    fn used_mut(&self, item: GridItem) -> std::rc::Rc<UsedValues> {
         self.used(item)
     }
 
@@ -2597,12 +2597,12 @@ impl<'pass> GridFormattingContext<'pass> {
         let scratch = MeasurementState::create(self.callbacks);
         let live = self.used(subgrid);
         let scratch_root = scratch.create_used_values(subgrid.box_, ContainingBlockConstraints::default());
-        live.mirror_box_metrics_and_size_constraints_into(scratch_root);
+        live.mirror_box_metrics_and_size_constraints_into(&scratch_root);
         scratch_root.has_definite_inline_size.set(live.has_definite_inline_size.get());
         scratch_root.has_definite_block_size.set(live.has_definite_block_size.get());
         let scratch_run = crate::layout::FormattingContextRun {
             state: scratch.rust_state(),
-            records: std::rc::Rc::new(RunRecords::new(subgrid.box_, scratch_root, scratch.record_arena())),
+            records: std::rc::Rc::new(RunRecords::new(subgrid.box_, scratch_root)),
             box_: subgrid.box_,
             layout_mode: LayoutMode::IntrinsicSizing,
             callbacks: self.callbacks,

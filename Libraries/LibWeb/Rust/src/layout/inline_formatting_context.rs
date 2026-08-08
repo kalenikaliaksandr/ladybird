@@ -561,7 +561,7 @@ pub(crate) fn compute(
         if node_is_inline_containing_block
             && let Some(rect) = padding_box_rect_spanning_first_and_last_content_lines(
                 &corners,
-                used,
+                &used,
                 horizontal,
                 reversed,
                 container_inline_axis_is_reverse,
@@ -693,8 +693,7 @@ pub(crate) struct InlineFormattingContext<'context, 'pass> {
     pub(crate) input: LayoutInput,
     pub(crate) callbacks: FfiLayoutFcCallbacks,
     parent: &'context BlockFormattingContext<'pass>,
-    pub(crate) containing_used_values: &'pass UsedValues,
-    pub(crate) line_data: &'pass RefCell<LineData>,
+    pub(crate) containing_used_values: std::rc::Rc<UsedValues>,
     pub(crate) fragmented_inlines_in_pre_order: Vec<Node>,
     pub(crate) automatic_content_inline_size: CssPixels,
     pub(crate) automatic_content_block_size: CssPixels,
@@ -712,7 +711,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         parent: &'context BlockFormattingContext<'pass>,
     ) -> Self {
         let containing_used_values = run.records.used_values(containing_block);
-        let line_data = containing_used_values.line_data_cell();
+        containing_used_values.line_data_cell();
         Self {
             run,
             state,
@@ -722,7 +721,6 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
             callbacks,
             parent,
             containing_used_values,
-            line_data,
             fragmented_inlines_in_pre_order: Vec::new(),
             automatic_content_inline_size: CssPixels::default(),
             automatic_content_block_size: CssPixels::default(),
@@ -755,19 +753,19 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
     }
 
     pub(crate) fn line_data(&self) -> Ref<'_, LineData> {
-        self.line_data.borrow()
+        self.containing_used_values.line_data_cell().borrow()
     }
 
     pub(crate) fn line_data_mut(&self) -> RefMut<'_, LineData> {
-        self.line_data.borrow_mut()
+        self.containing_used_values.line_data_cell().borrow_mut()
     }
 
-    pub(crate) fn containing_used(&self) -> &'pass UsedValues {
-        self.containing_used_values
+    pub(crate) fn containing_used(&self) -> std::rc::Rc<UsedValues> {
+        self.containing_used_values.clone()
     }
 
     #[track_caller]
-    pub(crate) fn used(&self, node: Node) -> &'pass UsedValues {
+    pub(crate) fn used(&self, node: Node) -> std::rc::Rc<UsedValues> {
         self.run.records.used_values(node)
     }
 
@@ -775,7 +773,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
         &self,
         node: Node,
         constraints: ContainingBlockConstraints,
-    ) -> &'pass UsedValues {
+    ) -> std::rc::Rc<UsedValues> {
         self.run.records.create_used_values(self.state, &self.callbacks, node, constraints)
     }
 
@@ -1232,7 +1230,7 @@ impl<'context, 'pass> InlineFormattingContext<'context, 'pass> {
             self.parent.record_derived_baselines_of_root_box(baselines);
         } else {
             crate::layout::store_derived_baselines(
-                self.used(self.containing_block),
+                &self.used(self.containing_block),
                 baselines,
             );
         }

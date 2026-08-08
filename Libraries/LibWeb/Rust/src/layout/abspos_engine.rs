@@ -66,7 +66,7 @@ fn out_of_flow_root_space(inputs: AbsposLayoutInputs) -> (AvailableSpace, Contai
 
 pub(crate) struct AbsposEngine<'pass> {
     state: &'pass LayoutState,
-    records: std::rc::Rc<RunRecords<'pass>>,
+    records: std::rc::Rc<RunRecords>,
     callbacks: FfiLayoutFcCallbacks,
     fragments: Option<std::rc::Rc<crate::layout::RunFragmentBuilder>>,
     /// Set while draining pending registrations: geometry of completed
@@ -93,7 +93,7 @@ impl<'pass> AbsposEngine<'pass> {
         if let Some(index) = self.drain_geometry.borrow().as_ref() {
             return index.geometry_of(node);
         }
-        DrainBoxGeometry::from_used_values(self.used(node))
+        DrainBoxGeometry::from_used_values(&self.used(node))
     }
 
     fn sizing(&self) -> SizingContext<'pass> {
@@ -109,12 +109,12 @@ impl<'pass> AbsposEngine<'pass> {
     }
 
     #[track_caller]
-    fn used(&self, node: Node) -> &'pass UsedValues {
+    fn used(&self, node: Node) -> std::rc::Rc<UsedValues> {
         self.records.used_values(node)
     }
 
     #[track_caller]
-    fn used_mut(&self, node: Node) -> &'pass UsedValues {
+    fn used_mut(&self, node: Node) -> std::rc::Rc<UsedValues> {
         self.used(node)
     }
 
@@ -1644,7 +1644,7 @@ impl<'pass> AbsposEngine<'pass> {
             // must see.
             let mut placed_geometry = fragments.drain_geometry_index();
             if let Some(host_root_used) = self.records.used_values_if_owned(run.box_) {
-                placed_geometry.register_host_root(run.box_, host_root_used);
+                placed_geometry.register_host_root(run.box_, &host_root_used);
             }
             *self.drain_geometry.borrow_mut() = Some(placed_geometry);
             for child in batch {
@@ -1775,9 +1775,9 @@ pub(crate) fn layout_contained_abspos_children(run: &crate::layout::FormattingCo
 /// target can register against another (fixed-position descendants of
 /// absolutely positioned subtrees target the viewport), so the sweep loops
 /// until every listed target is empty.
-pub(crate) fn drain_remaining_abspos_targets<'pass>(
-    state: &'pass LayoutState,
-    records: &std::rc::Rc<RunRecords<'pass>>,
+pub(crate) fn drain_remaining_abspos_targets(
+    state: &LayoutState,
+    records: &std::rc::Rc<RunRecords>,
     callbacks: FfiLayoutFcCallbacks,
     should_collect_devtools_layout_data: bool,
     targets: &[Node],

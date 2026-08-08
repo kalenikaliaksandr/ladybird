@@ -46,7 +46,6 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
 
     let wrapper_layout = crate::layout::run_formatting_context(
         run.state,
-        run.records.record_arena(),
         wrapper_state,
         wrapper,
         None,

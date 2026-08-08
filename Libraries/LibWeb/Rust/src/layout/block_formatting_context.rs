@@ -182,7 +182,7 @@ struct FloatPlacement {
 // https://www.w3.org/TR/css-display/#block-formatting-context
 pub(crate) struct BlockFormattingContext<'pass> {
     state: &'pass LayoutState,
-    records: std::rc::Rc<RunRecords<'pass>>,
+    records: std::rc::Rc<RunRecords>,
     root: Node,
     layout_mode: LayoutMode,
     callbacks: FfiLayoutFcCallbacks,
@@ -230,16 +230,16 @@ impl<'pass> BlockFormattingContext<'pass> {
     }
 
     #[track_caller]
-    fn used(&self, node: Node) -> &'pass UsedValues {
+    fn used(&self, node: Node) -> std::rc::Rc<UsedValues> {
         self.records.used_values(node)
     }
 
     #[track_caller]
-    fn used_mut(&self, node: Node) -> &'pass UsedValues {
+    fn used_mut(&self, node: Node) -> std::rc::Rc<UsedValues> {
         self.used(node)
     }
 
-    fn create_used_values(&self, node: Node, constraints: ContainingBlockConstraints) -> &'pass UsedValues {
+    fn create_used_values(&self, node: Node, constraints: ContainingBlockConstraints) -> std::rc::Rc<UsedValues> {
         self.records.create_used_values(self.state, &self.callbacks, node, constraints)
     }
 
@@ -329,7 +329,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         if node == self.root {
             self.record_derived_baselines_of_root_box(baselines);
         } else {
-            crate::layout::store_derived_baselines(self.used(node), baselines);
+            crate::layout::store_derived_baselines(&self.used(node), baselines);
         }
     }
 
@@ -1186,7 +1186,7 @@ impl<'pass> BlockFormattingContext<'pass> {
             };
             let space = self.intrusions_for_band_into_rect(self.band_at(border_box_block_offset_in_root), band_rect);
             let constrained = space.left > CssPixels::default() || space.right > CssPixels::default();
-            let border_box_left = self.border_box_left_of_box_avoiding_floats(node, used, space);
+            let border_box_left = self.border_box_left_of_box_avoiding_floats(node, &used, space);
             let mut must_clear = constrained
                 && border_box_left + candidate_border_box_inline_size
                     > available_space.inline_size.to_px_or_zero() - space.right;
@@ -1376,7 +1376,7 @@ impl<'pass> BlockFormattingContext<'pass> {
             );
             available_inline_size_within_containing_block -= space.left + space.right;
             // Subtracting the left margin here because it is applied again when the margin box offset is added below.
-            inline_offset = self.border_box_left_of_box_avoiding_floats(node, used, space) - used.margin_left.get();
+            inline_offset = self.border_box_left_of_box_avoiding_floats(node, &used, space) - used.margin_left.get();
         }
 
         let containing_block = self.containing_block(node);
@@ -2462,7 +2462,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         }
         let placement = self.place_float(
             side,
-            self.used(node),
+            &self.used(node),
             available_space,
             containing_block_rect_now,
             ceiling_in_root,
@@ -2470,7 +2470,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         let content_block_offset = placement.block_start - containing_block_rect_now.y
             + self.used(node).margin_top.get()
             + self.used(node).border_box_top(false);
-        let mut margin_box_rect = Self::margin_box_rect(self.used(node))
+        let mut margin_box_rect = Self::margin_box_rect(&self.used(node))
             .translated(CssPixels::default(), content_block_offset)
             .translated(containing_block_rect.x, containing_block_rect.y);
         let floating_box = FloatingBox {
@@ -2667,7 +2667,8 @@ impl<'pass> BlockFormattingContext<'pass> {
         // The element's block size is the distance from its block-start content edge to the first applicable edge below.
         // 1. the bottom edge of the last line box, if the box establishes a inline formatting context with one or more lines
         if facts.children_are_inline() {
-            let line_data = self.used(node).line_data_ref();
+            let node_used = self.used(node);
+            let line_data = node_used.line_data_ref();
             if let Some(last_line) = line_data.as_deref().and_then(|data| data.line_boxes.last()) {
                 let mut block_size = last_line.physical_vertical_end();
                 if last_line.has_block_level_box {
@@ -2922,7 +2923,8 @@ pub(crate) fn automatic_block_size_for_bfc_root(
     if facts.children_are_inline() {
         // If it only has inline-level children, the block size is the distance between
         // the top content edge and the bottom of the bottommost line box.
-        let line_data = records.used_values(root).line_data_ref();
+        let root_used = records.used_values(root);
+        let line_data = root_used.line_data_ref();
         if let Some(last_line) = line_data.as_ref().and_then(|data| data.line_boxes.last()) {
             bottom = Some(last_line.physical_vertical_end());
             // A trailing interrupting block's bottom margin cannot collapse out of a BFC root,

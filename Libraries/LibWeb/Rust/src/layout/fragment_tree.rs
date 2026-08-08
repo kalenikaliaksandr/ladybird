@@ -757,7 +757,7 @@ impl RunFragmentBuilder {
             debug_assert!(!used.has_content_offset.get(), "an unplaced record note was placed after all");
             inner
                 .root_children
-                .push(snapshot_link(node, Vec::new(), used, None, used.content_offset.get()));
+                .push(snapshot_link(node, Vec::new(), &used, None, used.content_offset.get()));
         }
         let frames = std::mem::take(&mut inner.frames);
         for (_, frame) in frames {
@@ -769,7 +769,7 @@ impl RunFragmentBuilder {
             let used = records.used_values(frame.node);
             inner
                 .root_children
-                .push(snapshot_link(frame.node, frame.children, used, None, used.content_offset.get()));
+                .push(snapshot_link(frame.node, frame.children, &used, None, used.content_offset.get()));
         }
         let deposits = std::mem::take(&mut inner.deposits);
         for (_, (node, pending)) in deposits {
@@ -777,7 +777,7 @@ impl RunFragmentBuilder {
             inner.late_attachments.extend(pending.late_attachments);
             inner
                 .root_children
-                .push(snapshot_link(node, pending.root_children, used, None, used.content_offset.get()));
+                .push(snapshot_link(node, pending.root_children, &used, None, used.content_offset.get()));
         }
         if !(escaped_abspos.is_empty() && escaped_anchor_candidates.is_empty()) {
             let placed_geometry = placed_geometry
@@ -815,10 +815,8 @@ impl RunFragmentBuilder {
 fn refresh_svg_payloads_from_records(links: &mut [FragmentLink], records: &RunRecords) {
     for link in links {
         let fragment = &mut *link.fragment;
-        if let Some(rare_cell) = records
-            .used_values_if_owned(fragment.node)
-            .and_then(|used| used.rare_data.get())
-        {
+        let owned_record = records.used_values_if_owned(fragment.node);
+        if let Some(rare_cell) = owned_record.as_ref().and_then(|used| used.rare_data.get()) {
             let mut rare = rare_cell.borrow_mut();
             if rare.computed_svg_transforms.is_some() {
                 fragment.computed_svg_transforms = rare.computed_svg_transforms;

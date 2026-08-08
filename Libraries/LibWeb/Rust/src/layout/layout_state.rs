@@ -65,34 +65,6 @@ impl<T> PagedStore<T> {
     }
 }
 
-/// Anonymous bump storage for a pass's used-values records, owned by the
-/// pass entry — the root, subtree, and replay frames, and each
-/// MeasurementState — never by shared state. Allocation hands out stable
-/// references; there is deliberately NO lookup — records are reachable
-/// only through the RunRecords scopes that own them, which is what makes a
-/// formatting-context run's result self-contained.
-pub(crate) struct RecordArena {
-    storage: PagedStore<UsedValues>,
-    allocated: Cell<u32>,
-}
-
-impl Default for RecordArena {
-    fn default() -> Self {
-        Self {
-            storage: PagedStore::default(),
-            allocated: Cell::new(0),
-        }
-    }
-}
-
-impl RecordArena {
-    fn allocate(&self, value: UsedValues) -> &UsedValues {
-        let index = self.allocated.get();
-        self.allocated.set(index + 1);
-        self.storage.allocate(index, value)
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StaticPositionAlignment {
     Start,
@@ -844,35 +816,31 @@ pub(crate) struct LayoutState {
 /// A formatting-context run's record scope: the run registers every record
 /// it creates plus the root record its parent handed it, and every lookup
 /// routes through here, so a run can only reach records it provably owns.
-/// Allocation draws from the pass-entry-owned arena the scope carries.
-pub(crate) struct RunRecords<'pass> {
+/// The scope OWNS its records — when the last scope handle drops at run
+/// completion, the run's interior records die with it; only records shared
+/// onward (the roots parents hand to children) outlive it.
+pub(crate) struct RunRecords {
     root: Node,
-    record_arena: &'pass RecordArena,
-    map: RefCell<HashMap<u32, &'pass UsedValues>>,
+    map: RefCell<HashMap<u32, std::rc::Rc<UsedValues>>>,
 }
 
-impl<'pass> RunRecords<'pass> {
-    pub(crate) fn new(root: Node, root_used: &'pass UsedValues, record_arena: &'pass RecordArena) -> Self {
-        let records = Self::new_unrooted(root, record_arena);
+impl RunRecords {
+    pub(crate) fn new(root: Node, root_used: std::rc::Rc<UsedValues>) -> Self {
+        let records = Self::new_unrooted(root);
         records.register(root, root_used);
         records
     }
 
     /// An entry scope starts empty: it creates its own viewport and
     /// materialized-ancestor records before spawning the root run.
-    pub(crate) fn new_unrooted(root: Node, record_arena: &'pass RecordArena) -> Self {
+    pub(crate) fn new_unrooted(root: Node) -> Self {
         Self {
             root,
-            record_arena,
             map: RefCell::new(HashMap::new()),
         }
     }
 
-    pub(crate) fn record_arena(&self) -> &'pass RecordArena {
-        self.record_arena
-    }
-
-    pub(crate) fn register(&self, node: Node, used: &'pass UsedValues) {
+    pub(crate) fn register(&self, node: Node, used: std::rc::Rc<UsedValues>) {
         let previous = self.map.borrow_mut().insert(node.slot_index(), used);
         assert!(
             previous.is_none(),
@@ -884,18 +852,18 @@ impl<'pass> RunRecords<'pass> {
 
     pub(crate) fn create_used_values(
         &self,
-        state: &'pass LayoutState,
+        state: &LayoutState,
         callbacks: &FfiLayoutFcCallbacks,
         node: Node,
         constraints: ContainingBlockConstraints,
-    ) -> &'pass UsedValues {
-        let used = state.create_used_values(self.record_arena, callbacks, node, constraints);
-        self.register(node, used);
+    ) -> std::rc::Rc<UsedValues> {
+        let used = state.create_used_values(callbacks, node, constraints);
+        self.register(node, used.clone());
         used
     }
 
     #[track_caller]
-    pub(crate) fn used_values(&self, node: Node) -> &'pass UsedValues {
+    pub(crate) fn used_values(&self, node: Node) -> std::rc::Rc<UsedValues> {
         let caller = std::panic::Location::caller();
         self.used_values_if_owned(node).unwrap_or_else(|| {
             panic!(
@@ -911,8 +879,8 @@ impl<'pass> RunRecords<'pass> {
     /// refresh walking deposited child fragments, place_child's
     /// containing-block probe) use this instead of the panicking lookup;
     /// not-owned is a legal answer there, never an error.
-    pub(crate) fn used_values_if_owned(&self, node: Node) -> Option<&'pass UsedValues> {
-        self.map.borrow().get(&node.slot_index()).copied()
+    pub(crate) fn used_values_if_owned(&self, node: Node) -> Option<std::rc::Rc<UsedValues>> {
+        self.map.borrow().get(&node.slot_index()).cloned()
     }
 }
 
@@ -972,13 +940,12 @@ impl LayoutState {
         }
     }
 
-    pub(crate) fn create_used_values<'arena>(
+    pub(crate) fn create_used_values(
         &self,
-        record_arena: &'arena RecordArena,
         callbacks: &FfiLayoutFcCallbacks,
         node: Node,
         constraints: ContainingBlockConstraints,
-    ) -> &'arena UsedValues {
+    ) -> std::rc::Rc<UsedValues> {
         assert!(!node.is_invalid());
         let facts = self.node_facts(callbacks, node);
 
@@ -1123,16 +1090,15 @@ impl LayoutState {
         used.content_inline_size.set(content_inline_size.unwrap_or_default());
         used.content_block_size.set(content_block_size.unwrap_or_default());
 
-        record_arena.allocate(used)
+        std::rc::Rc::new(used)
     }
 
-    pub(crate) fn populate_from_paintable<'arena>(
+    pub(crate) fn populate_from_paintable(
         &self,
-        record_arena: &'arena RecordArena,
         callbacks: &FfiLayoutFcCallbacks,
         node: Node,
         paintable: *mut c_void,
-    ) -> Option<&'arena UsedValues> {
+    ) -> Option<std::rc::Rc<UsedValues>> {
         let mut geometry = FfiPaintableGeometry::default();
         let found =
             unsafe {
@@ -1172,11 +1138,10 @@ impl LayoutState {
         used.has_content_offset.set(true);
         used.seal_committed_box_metrics();
 
-        let used = record_arena.allocate(used);
         if self.node_facts(callbacks, node).is_svg_svg_box() {
             used.rare_data_mut().svg_viewport_size = Some(geometry.svg_viewport_size);
         }
-        Some(used)
+        Some(std::rc::Rc::new(used))
     }
 
     pub(crate) fn set_box_is_grid_item(&self, callbacks: &FfiLayoutFcCallbacks, node: Node, is_grid_item: bool) {
@@ -1339,7 +1304,8 @@ impl LayoutState {
             return None;
         }
         assert!(!containing_block.is_invalid());
-        let data = records.used_values(containing_block).line_data_ref()?;
+        let containing_block_used = records.used_values(containing_block);
+        let data = containing_block_used.line_data_ref()?;
         let line = data.line_boxes.get(coordinate.line_box_index)?;
         if let Some(fragment) = line.fragments.get(coordinate.fragment_index) {
             let (x, y) = fragment.offset();

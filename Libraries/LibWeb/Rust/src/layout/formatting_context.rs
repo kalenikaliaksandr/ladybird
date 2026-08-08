@@ -186,7 +186,6 @@ pub(crate) enum TableWrapperInlineSizeMode {
 /// measured box's record to each run it starts.
 pub(crate) struct MeasurementState {
     state: LayoutState,
-    record_arena: RecordArena,
     callbacks: FfiLayoutFcCallbacks,
 }
 
@@ -194,27 +193,25 @@ impl MeasurementState {
     pub(crate) fn create(callbacks: FfiLayoutFcCallbacks) -> Self {
         Self {
             state: LayoutState::new(LayoutStatePurpose::Measurement),
-            record_arena: RecordArena::default(),
             callbacks,
         }
     }
 
-    fn run(&self, node: Node, node_used: &UsedValues, input: LayoutInput) -> ChildLayoutResult {
+    fn run(&self, node: Node, node_used: std::rc::Rc<UsedValues>, input: LayoutInput) -> ChildLayoutResult {
         self.run_with_layout_mode(node, node_used, LayoutMode::IntrinsicSizing, input).result
     }
 
-    pub(crate) fn run_with_layout_mode<'measurement>(
-        &'measurement self,
+    pub(crate) fn run_with_layout_mode(
+        &self,
         node: Node,
-        node_used: &'measurement UsedValues,
+        node_used: std::rc::Rc<UsedValues>,
         layout_mode: LayoutMode,
         input: LayoutInput,
-    ) -> RunOutputs<'measurement> {
+    ) -> RunOutputs {
         let rust_state = self.rust_state();
         let fc_type = crate::layout::independent_formatting_context_type(rust_state, node, &self.callbacks);
         crate::layout::run_formatting_context(
             rust_state,
-            &self.record_arena,
             node_used,
             node,
             None,
@@ -231,16 +228,12 @@ impl MeasurementState {
         &self.state
     }
 
-    pub(crate) fn record_arena(&self) -> &RecordArena {
-        &self.record_arena
-    }
-
     pub(crate) fn callbacks(&self) -> &FfiLayoutFcCallbacks {
         &self.callbacks
     }
 
-    pub(crate) fn create_used_values(&self, node: Node, constraints: ContainingBlockConstraints) -> &UsedValues {
-        self.state.create_used_values(&self.record_arena, &self.callbacks, node, constraints)
+    pub(crate) fn create_used_values(&self, node: Node, constraints: ContainingBlockConstraints) -> std::rc::Rc<UsedValues> {
+        self.state.create_used_values(&self.callbacks, node, constraints)
     }
 }
 
@@ -420,12 +413,12 @@ pub(crate) fn place_child(
         fragments.absorb_placement(
             node,
             (!containing_block.is_invalid()).then_some(containing_block),
-            used,
+            &used,
             containing_block_is_already_placed,
             state.resolve_containing_line_box_index(records, callbacks, node, containing_block, containing_line_box_fragment, offset),
             point_add(
                 offset,
-                committed_offset_delta_at_placement(state, records, callbacks, node, containing_block, used),
+                committed_offset_delta_at_placement(state, records, callbacks, node, containing_block, &used),
             ),
             own_anchor_candidate_border_box_rect,
         );
@@ -674,7 +667,8 @@ pub(crate) fn derive_baselines(
     inhibits_floating: bool,
 ) -> DerivedBaselines {
     let facts = state.node_facts(callbacks, box_);
-    let own_line_data = records.used_values(box_).line_data_ref();
+    let own_used = records.used_values(box_);
+    let own_line_data = own_used.line_data_ref();
     let line_count = own_line_data.as_ref().map_or(0, |data| data.line_boxes.len());
     if line_count > 0 {
         let baseline_for_line_box = |line_index: usize, baseline_set: BaselineSet| -> CssPixels {
@@ -697,7 +691,7 @@ pub(crate) fn derive_baselines(
             let block_child_state = records.used_values(fragment_node);
             let child_offset_from_margin_edge = block_child_state.content_offset.get().y
                 - block_child_state.margin_box_top(block_child_state.uses_collapsing_borders_model.get());
-            child_offset_from_margin_edge + box_baseline(state, callbacks, fragment_node, block_child_state, baseline_set)
+            child_offset_from_margin_edge + box_baseline(state, callbacks, fragment_node, &block_child_state, baseline_set)
         };
 
         let mut first_line_index = 0;
@@ -773,7 +767,7 @@ pub(crate) fn derive_baselines(
             }
             let child_offset_from_margin_edge = child_state.content_offset.get().y
                 - child_state.margin_box_top(child_state.uses_collapsing_borders_model.get());
-            return Some(child_offset_from_margin_edge + box_baseline(state, callbacks, child, child_state, baseline_set));
+            return Some(child_offset_from_margin_edge + box_baseline(state, callbacks, child, &child_state, baseline_set));
         }
         None
     };
@@ -836,12 +830,12 @@ pub(crate) struct ChildLayoutResult {
 /// participation hooks, and the run root's fragment structure, which the
 /// caller parks until the root is placed. Fragments are None for
 /// measurement and intrinsic-sizing runs.
-pub(crate) struct RunOutputs<'pass> {
+pub(crate) struct RunOutputs {
     pub(crate) result: ChildLayoutResult,
     pub(crate) fragments: Option<PendingRunResult>,
     /// The run's completed record scope, absorbed by the spawning scope so
     /// drain-time consumption can read the finished subtree.
-    pub(crate) records: std::rc::Rc<RunRecords<'pass>>,
+    pub(crate) records: std::rc::Rc<RunRecords>,
 }
 
 pub(crate) enum ChildLayoutOutcome {
@@ -1151,7 +1145,7 @@ impl FfiLayoutFcCallbacks {
 
 pub(crate) struct FormattingContextRun<'pass> {
     pub(crate) state: &'pass LayoutState,
-    pub(crate) records: std::rc::Rc<RunRecords<'pass>>,
+    pub(crate) records: std::rc::Rc<RunRecords>,
     pub(crate) box_: Node,
     pub(crate) layout_mode: LayoutMode,
     pub(crate) callbacks: FfiLayoutFcCallbacks,
@@ -1329,9 +1323,9 @@ fn register_table_abspos_descendants(run: &FormattingContextRun, parent: Node) {
     }
 }
 
-pub(crate) fn independent_root_automatic_block_size<'pass>(
-    state: &'pass LayoutState,
-    records: &std::rc::Rc<RunRecords<'pass>>,
+pub(crate) fn independent_root_automatic_block_size(
+    state: &LayoutState,
+    records: &std::rc::Rc<RunRecords>,
     callbacks: &FfiLayoutFcCallbacks,
     node: Node,
     available_inner_space: AvailableSpace,
@@ -1512,8 +1506,7 @@ fn body_input_with_inner_available_space(run: &FormattingContextRun, input: &Lay
 #[expect(clippy::too_many_arguments)]
 fn run_formatting_context<'pass>(
     state: &'pass LayoutState,
-    record_arena: &'pass RecordArena,
-    root_used: &'pass UsedValues,
+    root_used: std::rc::Rc<UsedValues>,
     box_: Node,
     parent_grid: Option<&GridFormattingContext<'pass>>,
     fc_type: FfiFormattingContextType,
@@ -1522,11 +1515,11 @@ fn run_formatting_context<'pass>(
     callbacks: FfiLayoutFcCallbacks,
     input: LayoutInput,
     parent_block: Option<&BlockFormattingContext<'pass>>,
-) -> RunOutputs<'pass> {
+) -> RunOutputs {
     assert!(!box_.is_invalid());
     let run = FormattingContextRun {
         state,
-        records: std::rc::Rc::new(RunRecords::new(box_, root_used, record_arena)),
+        records: std::rc::Rc::new(RunRecords::new(box_, root_used)),
         box_,
         layout_mode,
         callbacks,
@@ -1566,7 +1559,7 @@ fn run_formatting_context<'pass>(
             FormattingContextImplementation::Block(context) => {
                 context.run(run, body_input);
                 let baselines = context.derived_baselines_of_root_box();
-                store_derived_baselines(run.records.used_values(run.box_), baselines);
+                store_derived_baselines(&run.records.used_values(run.box_), baselines);
                 ChildLayoutResult {
                     automatic_content_inline_size: context.automatic_content_inline_size(),
                     automatic_content_block_size: context.automatic_content_block_size(),
@@ -1576,7 +1569,7 @@ fn run_formatting_context<'pass>(
             FormattingContextImplementation::Flex(context) => {
                 context.run(run, body_input);
                 let baselines = context.derived_baselines_of_root_box();
-                store_derived_baselines(run.records.used_values(run.box_), baselines);
+                store_derived_baselines(&run.records.used_values(run.box_), baselines);
                 ChildLayoutResult {
                     automatic_content_inline_size: context.automatic_content_inline_size(),
                     automatic_content_block_size: context.automatic_content_block_size(),
@@ -1586,7 +1579,7 @@ fn run_formatting_context<'pass>(
             FormattingContextImplementation::Grid(context) => {
                 context.run(run, body_input);
                 let baselines = context.derived_baselines_of_root_box();
-                store_derived_baselines(run.records.used_values(run.box_), baselines);
+                store_derived_baselines(&run.records.used_values(run.box_), baselines);
                 ChildLayoutResult {
                     automatic_content_inline_size: context.automatic_content_inline_size(),
                     automatic_content_block_size: context.automatic_content_block_size(),
@@ -1596,7 +1589,7 @@ fn run_formatting_context<'pass>(
             FormattingContextImplementation::Table(context) => {
                 context.run(run, body_input);
                 let baselines = context.derived_baselines_of_root_box();
-                store_derived_baselines(run.records.used_values(run.box_), baselines);
+                store_derived_baselines(&run.records.used_values(run.box_), baselines);
                 ChildLayoutResult {
                     automatic_content_inline_size: context.automatic_content_inline_size(),
                     automatic_content_block_size: context.automatic_content_block_size,
@@ -1805,7 +1798,6 @@ pub(crate) fn layout_inside_child<'pass>(
         );
     let outputs = run_formatting_context(
         run.state,
-        run.records.record_arena(),
         used,
         child,
         parent_grid,
@@ -1826,7 +1818,7 @@ pub(crate) fn layout_inside_child<'pass>(
 pub(crate) fn deposit_completed_child_run(
     adopting_fragments: Option<&RunFragmentBuilder>,
     child: Node,
-    outputs: RunOutputs<'_>,
+    outputs: RunOutputs,
 ) -> ChildLayoutResult {
     if let (Some(fragments), Some(pending)) = (adopting_fragments, outputs.fragments) {
         fragments.deposit_child_run(child, pending);
@@ -1927,13 +1919,12 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             percentage_basis_block_size: Some(viewport_block_size),
             ..crate::layout::ContainingBlockConstraints::default()
         };
-        let record_arena = RecordArena::default();
-        let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(root, &record_arena));
+        let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(root));
         let viewport_used = entry_records.create_used_values(&state, &callbacks, root, root_constraints);
         let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new_entry_accumulator(root));
 
         let mut root_for_layout = root;
-        let mut root_for_layout_used = viewport_used;
+        let mut root_for_layout_used = viewport_used.clone();
         let first_child = callbacks.first_child(root);
         if !first_child.is_invalid() && state.node_facts(&callbacks, first_child).is_svg_svg_box() {
             viewport_used.set_content_inline_size(viewport_inline_size);
@@ -1955,7 +1946,6 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         let fc_type = independent_formatting_context_type(state_ref, root_for_layout, &callbacks);
         let outputs = run_formatting_context(
             state_ref,
-            &record_arena,
             root_for_layout_used,
             root_for_layout,
             None,
@@ -1993,9 +1983,9 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
 /// The shared tail of every FFI entry: drain the registrations that rode to
 /// the entry accumulator, close it, and commit the pass's fragment structure.
 #[expect(clippy::too_many_arguments)]
-fn drain_and_commit_entry_pass<'pass>(
-    state: &'pass LayoutState,
-    entry_records: &std::rc::Rc<RunRecords<'pass>>,
+fn drain_and_commit_entry_pass(
+    state: &LayoutState,
+    entry_records: &std::rc::Rc<RunRecords>,
     entry_fragments: &std::rc::Rc<RunFragmentBuilder>,
     callbacks: &FfiLayoutFcCallbacks,
     should_collect_devtools_layout_data: bool,
@@ -2042,12 +2032,11 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         let sink = unsafe { &*sink };
 
         let state = LayoutState::new(LayoutStatePurpose::Commit);
-        let record_arena = RecordArena::default();
-        let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(root, &record_arena));
+        let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(root));
         let root_used = state
-            .populate_from_paintable(&record_arena, &callbacks, root, paintable_to_replace)
+            .populate_from_paintable(&callbacks, root, paintable_to_replace)
             .expect("partial relayout root must have committed geometry");
-        entry_records.register(root, root_used);
+        entry_records.register(root, root_used.clone());
         let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new_entry_accumulator(root));
         if !viewport.is_invalid() && viewport != root {
             let viewport_inline_size = CssPixels::from_raw(viewport_inline_size_raw);
@@ -2087,8 +2076,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
             .expect("partial relayout root must establish an independent formatting context");
         let outputs = run_formatting_context(
             state_ref,
-            &record_arena,
-            root_used,
+            root_used.clone(),
             root,
             None,
             fc_type,
@@ -2102,7 +2090,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         // Materialization is the subtree root's placement, so no place_child
         // will consume its deposit; absorb it from the sealed record here.
         // Materialized roots never claim a line index.
-        entry_fragments.absorb_placement(root, None, root_used, false, None, root_used.content_offset.get(), None);
+        entry_fragments.absorb_placement(root, None, &root_used, false, None, root_used.content_offset.get(), None);
         drain_and_commit_entry_pass(
             &state,
             &entry_records,
@@ -2141,8 +2129,7 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
         let containing_block = callbacks.containing_block(box_);
         assert!(!containing_block.is_invalid());
         let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new_entry_accumulator(containing_block));
-        let record_arena = RecordArena::default();
-        let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(containing_block, &record_arena));
+        let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(containing_block));
         let run = crate::layout::FormattingContextRun {
             state: state_ref,
             records: entry_records.clone(),
