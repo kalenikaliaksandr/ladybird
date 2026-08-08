@@ -799,6 +799,10 @@ struct TableFormattingContext<'pass> {
     cell_inside_layout_inputs: Vec<AvailableSpace>,
     cell_pre_layout_content_block_sizes: Vec<CssPixels>,
     deferred_cell_inside_layouts: Vec<bool>,
+    /// The table box's own metrics as this run knows them: captured at run
+    /// entry, with the resolved table inline size writing through. The
+    /// record copy stays until fragments are built from placement inputs.
+    table_box_metrics: Cell<BoxMetrics>,
     columns: Vec<Column>,
     rows: Vec<Row>,
     derived_baselines_of_root_box: Cell<DerivedBaselines>,
@@ -863,6 +867,7 @@ impl<'pass> TableFormattingContext<'pass> {
             cell_inside_layout_inputs: Vec::new(),
             cell_pre_layout_content_block_sizes: Vec::new(),
             deferred_cell_inside_layouts: Vec::new(),
+            table_box_metrics: Cell::new(BoxMetrics::default()),
             columns: Vec::new(),
             rows: Vec::new(),
             derived_baselines_of_root_box: Cell::new(DerivedBaselines::default()),
@@ -1736,6 +1741,10 @@ impl<'pass> TableFormattingContext<'pass> {
         // the border box. The table inline-size algorithm compares content inline sizes, so convert them before comparing.
         let mut resolved = constraint.to_px(basis);
         if self.style_facts(self.table_box).box_sizing() == box_sizing::BORDER_BOX {
+            // Still a record read: the table box's inline borders are not yet
+            // settled when the run-entry metrics capture happens on every
+            // path, so this stays live until the collapse machinery's write
+            // timing moves into the run's own state.
             let used = self.used_values(self.table_box);
             resolved -= used.border_box_left(false) + used.border_box_right(false);
         }
@@ -1839,6 +1848,9 @@ impl<'pass> TableFormattingContext<'pass> {
         used = used.max(used_min);
         let table_used = self.used_values(self.table_box);
         table_used.set_content_inline_size(used);
+        let mut metrics = self.table_box_metrics.get();
+        metrics.set_content_inline_size(used);
+        self.table_box_metrics.set(metrics);
     }
 
     fn can_skip_row_intrinsic_measurement(&mut self) -> bool {
@@ -2184,8 +2196,8 @@ impl<'pass> TableFormattingContext<'pass> {
             .iter()
             .fold(CssPixels::default(), |sum, row| sum + row.base_block_size);
         if let Some(minimum) = self.min_border_box_block_size_from_flex_item {
-            let used = self.used_values(self.table_box);
-            let content_min = minimum - used.border_box_top(false) - used.border_box_bottom(false);
+            let metrics = self.table_box_metrics.get();
+            let content_min = minimum - metrics.border_box_top(false) - metrics.border_box_bottom(false);
             self.table_block_size = self.table_block_size.max(content_min);
         }
         let table_style = self.style_facts(self.table_box);
@@ -2194,8 +2206,8 @@ impl<'pass> TableFormattingContext<'pass> {
             // table grid, and will eventually be distributed to the rows if their collective minimum block size is smaller.
             let mut specified = table_style.height().to_px(self.table_constraints.block_basis());
             if table_style.box_sizing() == box_sizing::BORDER_BOX {
-                let used = self.used_values(self.table_box);
-                specified -= used.border_box_top(false) + used.border_box_bottom(false);
+                let metrics = self.table_box_metrics.get();
+                specified -= metrics.border_box_top(false) + metrics.border_box_bottom(false);
             }
             self.table_block_size = self.table_block_size.max(specified);
         }
@@ -2319,10 +2331,10 @@ impl<'pass> TableFormattingContext<'pass> {
     }
 
     fn position_row_boxes(&mut self) {
-        let table_used = self.used_values(self.table_box);
+        let table_box_metrics = self.table_box_metrics.get();
         let block_spacing = self.border_spacing_block();
         let inline_spacing = self.border_spacing_inline();
-        let inline_offset = table_used.border_left.get() + table_used.padding_left.get() + inline_spacing;
+        let inline_offset = table_box_metrics.border.left + table_box_metrics.padding.left + inline_spacing;
         let mut row_block_offset = self.table_box_content_block_offset_in_wrapper + block_spacing;
         for row_index in 0..self.rows.len() {
             let row = &self.rows[row_index];
@@ -2368,7 +2380,7 @@ impl<'pass> TableFormattingContext<'pass> {
                     block_spacing
                 };
         }
-        let padding_top = table_used.padding_top.get();
+        let padding_top = table_box_metrics.padding.top;
         let total =
             row_block_offset.max(group_block_offset) - self.table_box_content_block_offset_in_wrapper - padding_top;
         self.table_block_size = self.table_block_size.max(total);
@@ -2531,6 +2543,8 @@ impl<'pass> TableFormattingContext<'pass> {
     }
 
     fn run(&mut self, run: &FormattingContextRun<'pass>, input: LayoutInput) {
+        self.table_box_metrics
+            .set(BoxMetrics::capture_from_record(&self.used_values(self.table_box)));
         self.available_space = input.available_space;
         self.min_border_box_block_size_from_flex_item = input.sizing.forced_min_border_box_block_size;
         self.table_box_content_block_offset_in_wrapper =
@@ -2547,6 +2561,7 @@ impl<'pass> TableFormattingContext<'pass> {
         }
 
         let table_used = self.used_values(self.table_box);
+        let table_box_metrics = self.table_box_metrics.get();
         // The total inline-axis border spacing is defined for each table:
         // - For tables laid out in separated-borders mode containing at least one column, the inline-axis component of the computed value of the border-spacing property times one plus the number of columns in the table
         // - Otherwise, 0
@@ -2556,7 +2571,7 @@ impl<'pass> TableFormattingContext<'pass> {
             (self.columns.len() + 1) * self.border_spacing_inline()
         };
         // The assignable table inline size is its used inline size minus the inline-axis border spacing.
-        let assignable = table_used.content_inline_size.get() - total_spacing;
+        let assignable = table_box_metrics.content_inline_size - total_spacing;
         let fixed = self.use_fixed_mode_layout();
         // Distribute the inline size of the table among columns.
         distribute_inline_size(&mut self.columns, assignable, fixed);
@@ -2566,6 +2581,9 @@ impl<'pass> TableFormattingContext<'pass> {
         self.layout_deferred_cells_inside(run);
         self.position_cell_boxes();
         table_used.set_content_block_size(self.table_block_size);
+        let mut metrics = self.table_box_metrics.get();
+        metrics.set_content_block_size(self.table_block_size);
+        self.table_box_metrics.set(metrics);
         // Derive baselines for the table internals bottom-up (rows, then row groups, then the table box)
         // now that all offsets are final, so the table exports its baseline to outside consumers
         // (e.g. an inline-table participating in a line box).
@@ -2584,7 +2602,6 @@ impl<'pass> TableFormattingContext<'pass> {
     }
 
     fn automatic_content_inline_size(&self) -> CssPixels {
-        let used = self.used_values(self.table_box);
-        used.content_inline_size.get()
+        self.table_box_metrics.get().content_inline_size
     }
 }
