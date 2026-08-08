@@ -2428,6 +2428,7 @@ impl<'pass> FlexFormattingContext<'pass> {
         crate::layout::compute_inset_native(
             self.state,
             self.callbacks,
+            self.fragments.clone(),
             node,
             container_inline_size,
             container_block_size,

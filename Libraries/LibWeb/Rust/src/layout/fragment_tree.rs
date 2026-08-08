@@ -61,6 +61,16 @@ pub(crate) struct FragmentLink {
     pub(crate) is_unplaced_orphan: bool,
 }
 
+/// A box carrying anchor names, placed somewhere in this run's subtree: the
+/// shell feeds name matching, and the border-box rect — expressed in
+/// effective_birth's content space and travelling like every other carried
+/// payload — replaces the emission-time chain walk.
+pub(crate) struct AnchorCandidate {
+    pub(crate) node: crate::layout::node_data::NodeSlotId,
+    pub(crate) border_box_rect: PhysicalRect,
+    pub(crate) effective_birth: crate::layout::node_data::NodeSlotId,
+}
+
 fn translate_pending_abspos_payloads(entry: &mut PendingAbsposChild, offset: FfiCssPixelPoint) {
     entry.static_position_rect =
         crate::layout::translate_static_position_between_chains(entry.static_position_rect, offset, FfiCssPixelPoint::default());
@@ -142,6 +152,7 @@ pub(crate) struct PendingRunResult {
     /// finished run, escape-normalized so their rects compose only from
     /// records read while the reading run owned them.
     pub(crate) escaped_abspos: Vec<PendingAbsposChild>,
+    pub(crate) escaped_anchor_candidates: Vec<AnchorCandidate>,
 }
 
 impl PendingRunResult {
@@ -188,6 +199,7 @@ enum FrameState {
         node: crate::layout::node_data::NodeSlotId,
         children: Vec<FragmentLink>,
         pending_abspos: Vec<PendingAbsposChild>,
+        anchor_candidates: Vec<AnchorCandidate>,
     },
     Consumed,
 }
@@ -224,6 +236,7 @@ struct RunFragmentBuilderInner {
     /// Registrations born at the run root, plus riders that arrived here
     /// through hops; drained by target at run tails and entry sweeps.
     pending_abspos_at_root: Vec<PendingAbsposChild>,
+    anchor_candidates_at_root: Vec<AnchorCandidate>,
     root_children: Vec<FragmentLink>,
     late_attachments: Vec<FragmentLink>,
 }
@@ -279,6 +292,7 @@ impl RunFragmentBuilder {
                             node: birth_box,
                             children: Vec::new(),
                             pending_abspos: vec![entry],
+                            anchor_candidates: Vec::new(),
                         },
                     );
                 }
@@ -360,6 +374,45 @@ impl RunFragmentBuilder {
         }
     }
 
+    /// The shells of every anchor-bearing box placed in this run's subtree
+    /// so far, for the C++ name-matching lookup.
+    pub(crate) fn anchor_candidate_shells(&self, callbacks: &FfiLayoutFcCallbacks) -> Vec<*mut c_void> {
+        let inner = self.inner.borrow();
+        let mut shells = Vec::new();
+        for frame in inner.frames.values() {
+            if let FrameState::Pending { anchor_candidates, .. } = frame {
+                shells.extend(anchor_candidates.iter().map(|candidate| callbacks.shell(candidate.node)));
+            }
+        }
+        shells.extend(
+            inner
+                .anchor_candidates_at_root
+                .iter()
+                .map(|candidate| callbacks.shell(candidate.node)),
+        );
+        shells
+    }
+
+    pub(crate) fn find_anchor_candidate(
+        &self,
+        node: crate::layout::node_data::NodeSlotId,
+    ) -> Option<(PhysicalRect, crate::layout::node_data::NodeSlotId)> {
+        let inner = self.inner.borrow();
+        let matches = |candidate: &AnchorCandidate| candidate.node.slot_index() == node.slot_index();
+        for frame in inner.frames.values() {
+            if let FrameState::Pending { anchor_candidates, .. } = frame
+                && let Some(candidate) = anchor_candidates.iter().find(|candidate| matches(candidate))
+            {
+                return Some((candidate.border_box_rect, candidate.effective_birth));
+            }
+        }
+        inner
+            .anchor_candidates_at_root
+            .iter()
+            .find(|candidate| matches(candidate))
+            .map(|candidate| (candidate.border_box_rect, candidate.effective_birth))
+    }
+
     pub(crate) fn has_pending_abspos_for_target(&self, target: crate::layout::node_data::NodeSlotId) -> bool {
         self.inner
             .borrow()
@@ -413,6 +466,7 @@ impl RunFragmentBuilder {
     /// deposit into a Fragment snapshotted from the sealed record, and
     /// attaches it under its containing block's frame. This is the one
     /// moment payloads may join a link.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn absorb_placement(
         &self,
         node: crate::layout::node_data::NodeSlotId,
@@ -421,24 +475,32 @@ impl RunFragmentBuilder {
         containing_block_is_already_placed: bool,
         containing_line_box_index: Option<usize>,
         emission_offset: FfiCssPixelPoint,
+        own_anchor_candidate_border_box_rect: Option<PhysicalRect>,
     ) {
         let mut inner = self.inner.borrow_mut();
         let slot = node.slot_index();
-        let (children, mut carried_late, riding_abspos) = match inner.frames.insert(slot, FrameState::Consumed) {
-            Some(FrameState::Pending {
-                children,
-                pending_abspos,
-                ..
-            }) => (children, Vec::new(), pending_abspos),
-            Some(FrameState::Consumed) => {
-                debug_assert!(false, "a box was placed twice in one run");
-                (Vec::new(), Vec::new(), Vec::new())
-            }
-            None => match inner.deposits.remove(&slot) {
-                Some((_, pending)) => (pending.root_children, pending.late_attachments, pending.escaped_abspos),
-                None => (Vec::new(), Vec::new(), Vec::new()),
-            },
-        };
+        let (children, mut carried_late, riding_abspos, riding_anchors) =
+            match inner.frames.insert(slot, FrameState::Consumed) {
+                Some(FrameState::Pending {
+                    children,
+                    pending_abspos,
+                    anchor_candidates,
+                    ..
+                }) => (children, Vec::new(), pending_abspos, anchor_candidates),
+                Some(FrameState::Consumed) => {
+                    debug_assert!(false, "a box was placed twice in one run");
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+                }
+                None => match inner.deposits.remove(&slot) {
+                    Some((_, pending)) => (
+                        pending.root_children,
+                        pending.late_attachments,
+                        pending.escaped_abspos,
+                        pending.escaped_anchor_candidates,
+                    ),
+                    None => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                },
+            };
         let link = snapshot_link(node, children, used, false, containing_line_box_index, emission_offset);
         inner.late_attachments.append(&mut carried_late);
         self.attach(&mut inner, link, containing_block, containing_block_is_already_placed);
@@ -452,6 +514,24 @@ impl RunFragmentBuilder {
             match inner.frames.get_mut(&entry.effective_birth.slot_index()) {
                 Some(FrameState::Pending { pending_abspos, .. }) => pending_abspos.push(entry),
                 _ => inner.pending_abspos_at_root.push(entry),
+            }
+        }
+        let own_candidate = own_anchor_candidate_border_box_rect.map(|border_box_rect| AnchorCandidate {
+            node,
+            border_box_rect,
+            effective_birth: containing_block.unwrap_or(node),
+        });
+        for mut candidate in riding_anchors.into_iter().chain(own_candidate) {
+            if candidate.effective_birth.slot_index() == slot
+                && let Some(containing_block) = containing_block
+            {
+                candidate.border_box_rect.x += used.content_offset.get().x;
+                candidate.border_box_rect.y += used.content_offset.get().y;
+                candidate.effective_birth = containing_block;
+            }
+            match inner.frames.get_mut(&candidate.effective_birth.slot_index()) {
+                Some(FrameState::Pending { anchor_candidates, .. }) => anchor_candidates.push(candidate),
+                _ => inner.anchor_candidates_at_root.push(candidate),
             }
         }
     }
@@ -497,6 +577,7 @@ impl RunFragmentBuilder {
                 node: containing_block,
                 children: vec![link],
                 pending_abspos: Vec::new(),
+                anchor_candidates: Vec::new(),
             },
         );
     }
@@ -507,6 +588,7 @@ impl RunFragmentBuilder {
     pub(crate) fn take_pending_result(&self, state: &LayoutState, callbacks: &FfiLayoutFcCallbacks) -> PendingRunResult {
         let mut inner = self.inner.take();
         let mut escaped_abspos = std::mem::take(&mut inner.pending_abspos_at_root);
+        let mut escaped_anchor_candidates = std::mem::take(&mut inner.anchor_candidates_at_root);
         let unplaced_records = std::mem::take(&mut inner.unplaced_records);
         for node in unplaced_records {
             let slot = node.slot_index();
@@ -530,11 +612,13 @@ impl RunFragmentBuilder {
                 node,
                 children,
                 pending_abspos,
+                anchor_candidates,
             } = frame
             else {
                 continue;
             };
             escaped_abspos.extend(pending_abspos);
+            escaped_anchor_candidates.extend(anchor_candidates);
             if children.is_empty() {
                 continue;
             }
@@ -581,10 +665,29 @@ impl RunFragmentBuilder {
                 entry.effective_birth = containing_block;
             }
         }
+        for candidate in &mut escaped_anchor_candidates {
+            while candidate.effective_birth.slot_index() != self.root_node.slot_index() {
+                let Some(used) = state.used_values_by_slot(candidate.effective_birth.slot_index()) else {
+                    debug_assert!(false, "an escaping anchor candidate's birth box has no record");
+                    break;
+                };
+                if !used.has_content_offset.get() {
+                    break;
+                }
+                candidate.border_box_rect.x += used.content_offset.get().x;
+                candidate.border_box_rect.y += used.content_offset.get().y;
+                let containing_block = callbacks.containing_block(candidate.effective_birth);
+                if containing_block.is_invalid() {
+                    break;
+                }
+                candidate.effective_birth = containing_block;
+            }
+        }
         PendingRunResult {
             root_children: inner.root_children,
             late_attachments: inner.late_attachments,
             escaped_abspos,
+            escaped_anchor_candidates,
         }
     }
 }

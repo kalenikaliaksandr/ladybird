@@ -67,11 +67,20 @@ fn out_of_flow_root_space(inputs: AbsposLayoutInputs) -> (AvailableSpace, Contai
 pub(crate) struct AbsposEngine<'pass> {
     state: &'pass LayoutState,
     callbacks: FfiLayoutFcCallbacks,
+    fragments: Option<std::rc::Rc<crate::layout::RunFragmentBuilder>>,
 }
 
 impl<'pass> AbsposEngine<'pass> {
-    pub(crate) fn new(state: &'pass LayoutState, callbacks: FfiLayoutFcCallbacks) -> Self {
-        Self { state, callbacks }
+    pub(crate) fn new(
+        state: &'pass LayoutState,
+        callbacks: FfiLayoutFcCallbacks,
+        fragments: Option<std::rc::Rc<crate::layout::RunFragmentBuilder>>,
+    ) -> Self {
+        Self {
+            state,
+            callbacks,
+            fragments,
+        }
     }
 
     fn sizing(&self) -> SizingContext<'_> {
@@ -106,7 +115,10 @@ impl<'pass> AbsposEngine<'pass> {
     /// their merge point, and the difference of the accumulated offsets is
     /// the translation. Every record read belongs to the draining run.
     fn chain_translation_delta(&self, node: Node, effective_birth: Node) -> FfiCssPixelPoint {
-        let actual_containing_block = self.callbacks.containing_block(node);
+        self.chain_translation_delta_to(self.callbacks.containing_block(node), effective_birth)
+    }
+
+    fn chain_translation_delta_to(&self, actual_containing_block: Node, effective_birth: Node) -> FfiCssPixelPoint {
         if effective_birth.is_invalid() || effective_birth == actual_containing_block {
             return FfiCssPixelPoint::default();
         }
@@ -222,11 +234,15 @@ struct AnchorCalcCallbackContext<'pass> {
 
 impl AbsposEngine<'_> {
     fn anchor_lookup(&self, positioned_box: Node, anchor_name: usize) -> Option<Node> {
-        let eligible_anchor_shells = self.state.anchor_candidate_shells();
+        let eligible_anchor_shells = self
+            .fragments
+            .as_deref()
+            .map(|fragments| fragments.anchor_candidate_shells(&self.callbacks))
+            .unwrap_or_default();
         // SAFETY: The name handle is retained by either the style snapshot or
-        // the live anchor() shell. The registry borrow is held only for this
-        // synchronous lookup, and the callback never re-enters layout code
-        // that could register another candidate.
+        // the live anchor() shell. The shell list is a plain snapshot, and
+        // the callback never re-enters layout code that could place another
+        // candidate.
         let anchor_box = unsafe {
             (self.callbacks.anchor_lookup)(
                 self.callbacks.context,
@@ -251,15 +267,19 @@ impl AbsposEngine<'_> {
     }
 
     fn anchor_rect(&self, anchor_box: Node, containing_block: Node) -> PhysicalRect {
-        let anchor_state = self.used(anchor_box);
-        let mut anchor_offset = FfiCssPixelPoint::default();
-        let mut node = anchor_box;
-        while node != containing_block {
-            assert!(!node.is_invalid());
-            anchor_offset = point_add(anchor_offset, self.used(node).content_offset.get());
-            node = self.callbacks.containing_block(node);
-        }
-        anchor_rect_from_geometry(anchor_state, self.used(containing_block), anchor_offset)
+        // The candidate carried its border-box rect here through the same
+        // hops and escapes as every registration payload; one merge-chain
+        // delta lands it in the containing block's content space.
+        let (mut rect, effective_birth) = self
+            .fragments
+            .as_deref()
+            .and_then(|fragments| fragments.find_anchor_candidate(anchor_box))
+            .expect("an accepted anchor is placed in the draining subtree and carried here");
+        let delta = self.chain_translation_delta_to(containing_block, effective_birth);
+        let containing_block_used = self.used(containing_block);
+        rect.x += delta.x + containing_block_used.padding_left.get();
+        rect.y += delta.y + containing_block_used.padding_top.get();
+        rect
     }
 
     fn anchor_side(
@@ -1732,7 +1752,7 @@ impl<'pass> AbsposEngine<'pass> {
 }
 
 pub(crate) fn layout_contained_abspos_children(run: &crate::layout::FormattingContextRun<'_>) {
-    AbsposEngine::new(run.state, run.callbacks).layout_children(run);
+    AbsposEngine::new(run.state, run.callbacks, run.fragments.clone()).layout_children(run);
 }
 
 /// Sweeps registration targets that have no formatting context run of their
@@ -1768,16 +1788,18 @@ pub(crate) fn drain_remaining_abspos_targets(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_inset_native(
     state: &LayoutState,
     callbacks: FfiLayoutFcCallbacks,
+    fragments: Option<std::rc::Rc<crate::layout::RunFragmentBuilder>>,
     node: Node,
     inline_size: CssPixels,
     block_size: CssPixels,
     formatting_context_root: Node,
     treat_block_axis_percentage_insets_as_auto_beyond_root: bool,
 ) {
-    AbsposEngine::new(state, callbacks).compute_inset(
+    AbsposEngine::new(state, callbacks, fragments).compute_inset(
         node,
         LogicalSize {
             inline_size,
