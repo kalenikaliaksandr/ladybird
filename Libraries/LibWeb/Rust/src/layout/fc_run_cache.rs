@@ -40,27 +40,50 @@ fn clone_rare_data_without_resources(rare: &UsedValuesRareData) -> UsedValuesRar
     }
 }
 
+/// The four baseline cells raw: presence bits and payloads separately,
+/// because storing baselines leaves an absent side's payload untouched and
+/// replay must reproduce that state exactly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BaselineCellState {
+    has_first_baseline: bool,
+    first_baseline: CssPixels,
+    has_last_baseline: bool,
+    last_baseline: CssPixels,
+}
+
 /// The run root's record at body end, before the participation finalize
 /// hooks: a hit replays it and re-runs those hooks against the live parent.
 /// Lazy-cell presence is part of the state — commit payloads distinguish an
 /// initialized-but-empty cell from an absent one.
 struct CachedRootRecordState {
-    cells: UsedValuesCellState,
+    metrics: BoxMetrics,
+    baseline_cells: BaselineCellState,
     line_data: Option<LineData>,
     rare_data: Option<UsedValuesRareData>,
 }
 
 impl CachedRootRecordState {
     fn capture(used: &UsedValues) -> Self {
+        debug_assert!(!used.has_content_offset.get(), "a run root is never placed at body end");
         Self {
-            cells: UsedValuesCellState::capture(used),
+            metrics: BoxMetrics::capture_from_record(used),
+            baseline_cells: BaselineCellState {
+                has_first_baseline: used.has_first_baseline.get(),
+                first_baseline: used.first_baseline.get(),
+                has_last_baseline: used.has_last_baseline.get(),
+                last_baseline: used.last_baseline.get(),
+            },
             line_data: used.line_data.get().map(|cell| cell.borrow().clone()),
             rare_data: used.rare_data.get().map(|cell| clone_rare_data_without_resources(&cell.borrow())),
         }
     }
 
     fn replay_into(&self, used: &UsedValues) {
-        self.cells.replay_into(used);
+        seed_root_record(used, &self.metrics);
+        used.has_first_baseline.set(self.baseline_cells.has_first_baseline);
+        used.first_baseline.set(self.baseline_cells.first_baseline);
+        used.has_last_baseline.set(self.baseline_cells.has_last_baseline);
+        used.last_baseline.set(self.baseline_cells.last_baseline);
         if let Some(line_data) = &self.line_data {
             *used.line_data_cell().borrow_mut() = line_data.clone();
         }
@@ -333,10 +356,16 @@ fn verify_cached_entry_against_fresh_run(root_slot: u32, cached: &FcRunCacheEntr
         "run cache shadow: child layout result diverged for slot {root_slot}"
     );
     assert!(
-        cached.body_end_root_state.cells == fresh.body_end_root_state.cells,
-        "run cache shadow: body-end root record diverged for slot {root_slot}\ncached: {:?}\nfresh: {:?}",
-        cached.body_end_root_state.cells,
-        fresh.body_end_root_state.cells,
+        cached.body_end_root_state.metrics == fresh.body_end_root_state.metrics,
+        "run cache shadow: body-end root metrics diverged for slot {root_slot}\ncached: {:?}\nfresh: {:?}",
+        cached.body_end_root_state.metrics,
+        fresh.body_end_root_state.metrics,
+    );
+    assert!(
+        cached.body_end_root_state.baseline_cells == fresh.body_end_root_state.baseline_cells,
+        "run cache shadow: body-end baseline cells diverged for slot {root_slot}\ncached: {:?}\nfresh: {:?}",
+        cached.body_end_root_state.baseline_cells,
+        fresh.body_end_root_state.baseline_cells,
     );
     let cached_fonts: Vec<_> = cached.retained_fonts.iter().map(|font| font.as_raw()).collect();
     let fresh_fonts: Vec<_> = fresh.retained_fonts.iter().map(|font| font.as_raw()).collect();
