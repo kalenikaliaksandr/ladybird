@@ -66,8 +66,7 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
         None,
     );
 
-    let wrapper_result =
-        crate::layout::adopt_completed_child_run(&run.records, run.fragments.as_deref(), wrapper, wrapper_layout);
+    let wrapper_result = crate::layout::deposit_completed_child_run(run.fragments.as_deref(), wrapper, wrapper_layout);
     crate::layout::place_child(
         run.state,
         &run.records,

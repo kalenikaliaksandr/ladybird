@@ -848,12 +848,6 @@ pub(crate) struct LayoutState {
 pub(crate) struct RunRecords<'pass> {
     root: Node,
     map: RefCell<HashMap<u32, &'pass UsedValues>>,
-    /// The adopter this scope was last absorbed into, with the scope's size
-    /// at that moment. A completed child scope is absorbed both before the
-    /// participation epilogues and at the spawn return, into the same
-    /// adopter; the map only ever grows, so an unchanged size proves the
-    /// second copy has nothing new and may be skipped.
-    last_absorption: Cell<(*const (), usize)>,
 }
 
 impl<'pass> RunRecords<'pass> {
@@ -869,7 +863,6 @@ impl<'pass> RunRecords<'pass> {
         Self {
             root,
             map: RefCell::new(HashMap::new()),
-            last_absorption: Cell::new((std::ptr::null(), 0)),
         }
     }
 
@@ -907,45 +900,13 @@ impl<'pass> RunRecords<'pass> {
         })
     }
 
-    /// Walks that legally stop at the first record another run owns (escape
-    /// normalization parking at a table wrapper, the SVG payload drain
-    /// probing absorbed child-run subtrees) use this instead of the
-    /// panicking lookup.
+    /// Probes that legally meet records outside this run's scope (seeding a
+    /// drain host's own root into the placement index, the SVG payload
+    /// refresh walking deposited child fragments, place_child's
+    /// containing-block probe) use this instead of the panicking lookup;
+    /// not-owned is a legal answer there, never an error.
     pub(crate) fn used_values_if_owned(&self, node: Node) -> Option<&'pass UsedValues> {
         self.map.borrow().get(&node.slot_index()).copied()
-    }
-
-    /// A completed child run's records join the parent scope: participation
-    /// epilogues and drain-time consumption (automatic-size child walks,
-    /// merge-chain walks, containing-block info) legally read the completed
-    /// subtree, which is final from the moment each descendant run returned
-    /// and placed. Ancestor and sibling-in-progress reads remain
-    /// unreachable. Entries are shared, not moved — the child scope keeps
-    /// serving its own tail sweeps — so absorbing the same scope from both
-    /// the participation epilogue and the spawn return is harmless, and the
-    /// handed root arrives as the pointer the parent already holds.
-    pub(crate) fn absorb_completed_child_scope(&self, child: &RunRecords<'pass>) {
-        let adopter = std::ptr::from_ref(self).cast::<()>();
-        let child_map = child.map.borrow();
-        if child.last_absorption.get() == (adopter, child_map.len()) {
-            return;
-        }
-        child.last_absorption.set((adopter, child_map.len()));
-        let mut map = self.map.borrow_mut();
-        for (&slot, &used) in child_map.iter() {
-            match map.entry(slot) {
-                std::collections::hash_map::Entry::Occupied(existing) => {
-                    assert!(
-                        std::ptr::eq(*existing.get(), used),
-                        "slot {slot} arrived with a different record while absorbing a child scope into the run rooted at slot {}",
-                        self.root.slot_index()
-                    );
-                }
-                std::collections::hash_map::Entry::Vacant(vacancy) => {
-                    vacancy.insert(used);
-                }
-            }
-        }
     }
 }
 

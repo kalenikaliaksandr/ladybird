@@ -230,10 +230,6 @@ impl<'pass> BlockFormattingContext<'pass> {
         self.state.style_facts(&self.callbacks, node)
     }
 
-    pub(crate) fn absorb_completed_child_records(&self, child: &RunRecords<'pass>) {
-        self.records.absorb_completed_child_scope(child);
-    }
-
     #[track_caller]
     fn used(&self, node: Node) -> &'pass UsedValues {
         self.records.used_values(node)

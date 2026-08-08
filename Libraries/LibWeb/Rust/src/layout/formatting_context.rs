@@ -1606,12 +1606,6 @@ fn run_formatting_context<'pass>(
         result
     };
 
-    // The participation epilogues below hand the finished body to the parent
-    // block, whose walks read this run's children — the completed scope joins
-    // the parent before those reads.
-    if let Some(parent) = parent_block {
-        parent.absorb_completed_child_records(&run.records);
-    }
     match input.participation {
         ParticipationInParentFormattingContext::BlockLevel => {
             finalize_block_level_root(run, &input, parent_block, &result);
@@ -1813,23 +1807,21 @@ pub(crate) fn layout_inside_child<'pass>(
         input,
         parent_block,
     );
-    ChildLayoutOutcome::Created(adopt_completed_child_run(&run.records, run.fragments.as_deref(), child, outputs))
+    ChildLayoutOutcome::Created(deposit_completed_child_run(run.fragments.as_deref(), child, outputs))
 }
 
-/// Adopting a completed child run has two inseparable halves: park the
-/// child's returned structure until the adopter places the child, and fold
-/// the child scope's records into the adopting scope so epilogues and
-/// drains may read the completed subtree.
-pub(crate) fn adopt_completed_child_run<'pass>(
-    adopting_records: &RunRecords<'pass>,
+/// Parks a completed child run's structure for the adopter's placement and
+/// hands back its result. The child's records stay with the child scope:
+/// every post-completion consumer reads run results or the placement
+/// index, so a completed run's interior records are never readable again.
+pub(crate) fn deposit_completed_child_run(
     adopting_fragments: Option<&RunFragmentBuilder>,
     child: Node,
-    outputs: RunOutputs<'pass>,
+    outputs: RunOutputs<'_>,
 ) -> ChildLayoutResult {
     if let (Some(fragments), Some(pending)) = (adopting_fragments, outputs.fragments) {
         fragments.deposit_child_run(child, pending);
     }
-    adopting_records.absorb_completed_child_scope(&outputs.records);
     outputs.result
 }
 
@@ -1963,7 +1955,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             input,
             None,
         );
-        adopt_completed_child_run(&entry_records, Some(&entry_fragments), root_for_layout, outputs);
+        deposit_completed_child_run(Some(&entry_fragments), root_for_layout, outputs);
         place_child(
             &state,
             &entry_records,
@@ -2083,7 +2075,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
             .expect("partial relayout root must establish an independent formatting context");
         let outputs =
             run_formatting_context(state_ref, root_used, root, None, fc_type, LayoutMode::Normal, false, callbacks, input, None);
-        adopt_completed_child_run(&entry_records, Some(&entry_fragments), root, outputs);
+        deposit_completed_child_run(Some(&entry_fragments), root, outputs);
         // Materialization is the subtree root's placement, so no place_child
         // will consume its deposit; absorb it from the sealed record here.
         // Materialized roots never claim a line index.

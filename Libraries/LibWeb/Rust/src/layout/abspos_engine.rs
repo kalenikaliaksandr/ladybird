@@ -442,7 +442,7 @@ impl AbsposEngine<'_> {
         if containing_block.is_invalid() {
             return;
         }
-        let containing_block_state = self.used(containing_block);
+        let containing_block_geometry = self.placed_geometry(containing_block);
         let default_anchor_box = if style.has_position_anchor() {
             self.anchor_lookup(node, style.position_anchor_name())
                 .unwrap_or(NodeSlotId::INVALID)
@@ -464,9 +464,9 @@ impl AbsposEngine<'_> {
                 AnchorValueAxis {
                     is_from_end: false,
                     is_horizontal: false,
-                    containing_block_extent: containing_block_state.content_block_size.get()
-                        + containing_block_state.padding_top.get()
-                        + containing_block_state.padding_bottom.get(),
+                    containing_block_extent: containing_block_geometry.content_block_size
+                        + containing_block_geometry.padding_top
+                        + containing_block_geometry.padding_bottom,
                 },
                 &mut resolution_state,
             );
@@ -482,9 +482,9 @@ impl AbsposEngine<'_> {
                 AnchorValueAxis {
                     is_from_end: true,
                     is_horizontal: true,
-                    containing_block_extent: containing_block_state.content_inline_size.get()
-                        + containing_block_state.padding_left.get()
-                        + containing_block_state.padding_right.get(),
+                    containing_block_extent: containing_block_geometry.content_inline_size
+                        + containing_block_geometry.padding_left
+                        + containing_block_geometry.padding_right,
                 },
                 &mut resolution_state,
             );
@@ -500,9 +500,9 @@ impl AbsposEngine<'_> {
                 AnchorValueAxis {
                     is_from_end: true,
                     is_horizontal: false,
-                    containing_block_extent: containing_block_state.content_block_size.get()
-                        + containing_block_state.padding_top.get()
-                        + containing_block_state.padding_bottom.get(),
+                    containing_block_extent: containing_block_geometry.content_block_size
+                        + containing_block_geometry.padding_top
+                        + containing_block_geometry.padding_bottom,
                 },
                 &mut resolution_state,
             );
@@ -518,9 +518,9 @@ impl AbsposEngine<'_> {
                 AnchorValueAxis {
                     is_from_end: false,
                     is_horizontal: true,
-                    containing_block_extent: containing_block_state.content_inline_size.get()
-                        + containing_block_state.padding_left.get()
-                        + containing_block_state.padding_right.get(),
+                    containing_block_extent: containing_block_geometry.content_inline_size
+                        + containing_block_geometry.padding_left
+                        + containing_block_geometry.padding_right,
                 },
                 &mut resolution_state,
             );
