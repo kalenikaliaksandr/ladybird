@@ -47,7 +47,9 @@ pub(crate) struct Fragment {
 /// child lives on the link: the emission offset (the placed offset with the
 /// committed delta already folded in) and the inset family.
 pub(crate) struct FragmentLink {
-    pub(crate) fragment: Box<Fragment>,
+    /// Shared so a run-cache entry and every placement handed out on its
+    /// hits can carry the same position-independent subtree.
+    pub(crate) fragment: std::rc::Rc<Fragment>,
     pub(crate) offset: FfiCssPixelPoint,
     /// The raw placed content offset, without the committed delta folded
     /// into `offset`. Rider hops and drain-time geometry compose raw
@@ -269,7 +271,7 @@ fn snapshot_link(
         computed_svg_path,
     ) = rare_payloads.unwrap_or_default();
     FragmentLink {
-        fragment: Box::new(Fragment {
+        fragment: std::rc::Rc::new(Fragment {
             node,
             content_inline_size: used.content_inline_size.get(),
             content_block_size: used.content_block_size.get(),
@@ -814,9 +816,16 @@ impl RunFragmentBuilder {
 /// final values commit must emit.
 fn refresh_svg_payloads_from_records(links: &mut [FragmentLink], records: &RunRecords) {
     for link in links {
-        let fragment = &mut *link.fragment;
-        let owned_record = records.used_values_if_owned(fragment.node);
-        if let Some(rare_cell) = owned_record.as_ref().and_then(|used| used.rare_data.get()) {
+        // A fragment whose record this run does not own came in through a
+        // child-run deposit, and so did its whole subtree: nothing below it
+        // can be this run's to refresh, so the walk stops without touching
+        // the possibly shared allocation.
+        let Some(owned_record) = records.used_values_if_owned(link.fragment.node) else {
+            continue;
+        };
+        let fragment = std::rc::Rc::get_mut(&mut link.fragment)
+            .expect("a fragment with an owned record is singly referenced at its run's tail");
+        if let Some(rare_cell) = owned_record.rare_data.get() {
             let mut rare = rare_cell.borrow_mut();
             if rare.computed_svg_transforms.is_some() {
                 fragment.computed_svg_transforms = rare.computed_svg_transforms;
