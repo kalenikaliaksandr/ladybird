@@ -42,6 +42,10 @@ impl BoxMetrics {
         self.has_definite_inline_size = true;
     }
 
+    pub(crate) fn set_content_block_size(&mut self, value: CssPixels) {
+        self.content_block_size = clamp_to_max_dimension_value(value.max(CssPixels::default()));
+    }
+
     pub(crate) fn capture_from_record(used: &UsedValues) -> Self {
         Self {
             content_inline_size: used.content_inline_size.get(),

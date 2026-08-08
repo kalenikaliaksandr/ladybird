@@ -60,6 +60,10 @@ struct FlexItem<'pass> {
     cross_size: Option<CssPixels>,
     main_offset: CssPixels,
     cross_offset: CssPixels,
+    // Mirrors of the record's definiteness bits in main/cross terms, so the
+    // item run's declared root state assembles without reading the record.
+    main_size_is_definite: bool,
+    cross_size_is_definite: bool,
     margins: DirectionAgnosticMargins,
     borders: DirectionAgnosticMargins,
     padding: DirectionAgnosticMargins,
@@ -88,6 +92,8 @@ impl FlexItem<'_> {
             cross_size: None,
             main_offset: CssPixels::default(),
             cross_offset: CssPixels::default(),
+            main_size_is_definite: false,
+            cross_size_is_definite: false,
             margins: DirectionAgnosticMargins::default(),
             borders: DirectionAgnosticMargins::default(),
             padding: DirectionAgnosticMargins::default(),
@@ -430,6 +436,7 @@ impl<'pass> FlexFormattingContext<'pass> {
     }
 
     fn set_has_definite_main_size(&mut self, index: usize) {
+        self.flex_items[index].main_size_is_definite = true;
         if self.main_axis_is_horizontal() {
             self.item_used_mut(index).has_definite_inline_size.set(true);
         } else {
@@ -438,6 +445,7 @@ impl<'pass> FlexFormattingContext<'pass> {
     }
 
     fn set_has_definite_cross_size(&mut self, index: usize) {
+        self.flex_items[index].cross_size_is_definite = true;
         if self.cross_axis_is_horizontal() {
             self.item_used_mut(index).has_definite_inline_size.set(true);
         } else {
@@ -447,6 +455,7 @@ impl<'pass> FlexFormattingContext<'pass> {
 
     fn set_main_size(&mut self, index: usize, size: CssPixels) {
         if self.main_axis_is_horizontal() {
+            self.flex_items[index].main_size_is_definite = true;
             self.item_used_mut(index).set_content_inline_size(size);
         } else {
             self.item_used_mut(index).set_content_block_size(size);
@@ -455,6 +464,7 @@ impl<'pass> FlexFormattingContext<'pass> {
 
     fn set_cross_size(&mut self, index: usize, size: CssPixels) {
         if self.cross_axis_is_horizontal() {
+            self.flex_items[index].cross_size_is_definite = true;
             self.item_used_mut(index).set_content_inline_size(size);
         } else {
             self.item_used_mut(index).set_content_block_size(size);
@@ -799,7 +809,15 @@ impl<'pass> FlexFormattingContext<'pass> {
                     // Flex inhibits floating, so only absolute positioning is out of flow here.
                     self.state.set_box_is_flex_item(&self.callbacks, child, true);
                     self.create_used_values(child);
-                    let item = FlexItem::new(child);
+                    let mut item = FlexItem::new(child);
+                    let creation_baseline = BoxMetrics::capture_from_record(&self.records.used_values(child));
+                    let (main_definite, cross_definite) = if self.main_axis_is_horizontal() {
+                        (creation_baseline.has_definite_inline_size, creation_baseline.has_definite_block_size)
+                    } else {
+                        (creation_baseline.has_definite_block_size, creation_baseline.has_definite_inline_size)
+                    };
+                    item.main_size_is_definite = main_definite;
+                    item.cross_size_is_definite = cross_definite;
                     buckets.entry(self.style(child).order()).or_default().push(item);
                 }
             }
@@ -2361,6 +2379,54 @@ impl<'pass> FlexFormattingContext<'pass> {
         }
     }
 
+    /// The complete pre-run record state of a dimensioned flex item,
+    /// assembled from item state and style exactly as the record flush
+    /// writes it: margins and borders against the container's final inline
+    /// size, padding against the collection-time percentage basis (the
+    /// flush never rewrites it), the main and cross sizes mapped to
+    /// physical axes with the record setters' definiteness semantics, and
+    /// the tracked definiteness for the axis the setters leave alone.
+    fn declared_item_root_metrics(&self, index: usize) -> BoxMetrics {
+        let node = self.flex_items[index].box_;
+        let style = self.style(node);
+        let reference = self.container_used().content_inline_size.get();
+        let padding_basis = self.item_percentage_bases.inline_basis();
+        let item = &self.flex_items[index];
+        let mut metrics = BoxMetrics {
+            margin: PhysicalEdges {
+                left: style.margin_left().to_px(reference),
+                right: style.margin_right().to_px(reference),
+                top: style.margin_top().to_px(reference),
+                bottom: style.margin_bottom().to_px(reference),
+            },
+            border: PhysicalEdges {
+                left: style.border_left_width(),
+                right: style.border_right_width(),
+                top: style.border_top_width(),
+                bottom: style.border_bottom_width(),
+            },
+            padding: PhysicalEdges {
+                left: style.padding_left().to_px(padding_basis),
+                right: style.padding_right().to_px(padding_basis),
+                top: style.padding_top().to_px(padding_basis),
+                bottom: style.padding_bottom().to_px(padding_basis),
+            },
+            ..BoxMetrics::default()
+        };
+        let main_size = item.main_size.unwrap();
+        let cross_size = item.cross_size.unwrap();
+        if self.main_axis_is_horizontal() {
+            metrics.has_definite_block_size = item.cross_size_is_definite;
+            metrics.set_content_inline_size(main_size);
+            metrics.set_content_block_size(cross_size);
+        } else {
+            metrics.has_definite_block_size = item.main_size_is_definite;
+            metrics.set_content_inline_size(cross_size);
+            metrics.set_content_block_size(main_size);
+        }
+        metrics
+    }
+
     fn layout_inside_item(&mut self, run: &FormattingContextRun<'pass>, index: usize) {
         let node = self.flex_items[index].box_;
         let mut input = LayoutInput {
@@ -2369,7 +2435,10 @@ impl<'pass> FlexFormattingContext<'pass> {
                 .available_inner_space_or_constraints_from(self.available_space_for_items.unwrap().space),
             containing_block_constraints: self.item_containing_block_constraints(),
             content_box_position_in_bfc_root: None,
-            sizing: RootSizingDirectives::default(),
+            sizing: RootSizingDirectives {
+                declared_root_metrics: Some(self.declared_item_root_metrics(index)),
+                ..RootSizingDirectives::default()
+            },
             participation: ParticipationInParentFormattingContext::Item,
         };
         // https://drafts.csswg.org/css-flexbox-1/#flex-items
