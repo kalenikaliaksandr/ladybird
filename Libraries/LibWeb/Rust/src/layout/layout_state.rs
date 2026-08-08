@@ -822,10 +822,13 @@ pub(crate) struct LayoutState {
 /// One placement as the scope witnessed it: the offset handed to
 /// place_child and the record's metrics at that moment, immutable from
 /// then on because the seal forbids post-placement metric writes.
+/// Baselines are the exception — table rows and groups derive theirs
+/// after placement, so theirs arrive through update_placed_baselines.
 #[derive(Clone, Copy)]
 pub(crate) struct PlacedGeometry {
     pub(crate) content_offset: FfiCssPixelPoint,
     pub(crate) metrics: BoxMetrics,
+    pub(crate) baselines: DerivedBaselines,
 }
 
 pub(crate) struct RunRecords {
@@ -883,8 +886,15 @@ impl RunRecords {
             PlacedGeometry {
                 content_offset: used.content_offset.get(),
                 metrics: BoxMetrics::capture_from_record(&used),
+                baselines: used.content_baselines_from_cells(),
             }
         })
+    }
+
+    pub(crate) fn update_placed_baselines(&self, node: Node, baselines: DerivedBaselines) {
+        if let Some(placement) = self.placements.borrow_mut().get_mut(&node.slot_index()) {
+            placement.baselines = baselines;
+        }
     }
 
     pub(crate) fn register(&self, node: Node, used: std::rc::Rc<UsedValues>) {
@@ -898,6 +908,7 @@ impl RunRecords {
                 PlacedGeometry {
                     content_offset: used.content_offset.get(),
                     metrics: BoxMetrics::capture_from_record(&used),
+                    baselines: used.content_baselines_from_cells(),
                 },
             );
         }

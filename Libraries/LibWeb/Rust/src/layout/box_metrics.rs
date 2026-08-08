@@ -112,6 +112,10 @@ impl BoxMetrics {
         self.margin.bottom + self.border_box_bottom(collapsed)
     }
 
+    pub(crate) fn margin_box_block_size(&self, collapsed: bool) -> CssPixels {
+        self.margin.top + self.border_box_top(collapsed) + self.content_block_size + self.margin_box_bottom(collapsed)
+    }
+
     pub(crate) fn margin_box_inline_size(&self, collapsed: bool) -> CssPixels {
         self.margin.left
             + self.border_box_left(collapsed)

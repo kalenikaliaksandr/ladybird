@@ -2502,17 +2502,19 @@ impl<'pass> TableFormattingContext<'pass> {
         for cell_index in 0..self.cells.len() {
             let cell = self.cells[cell_index];
             let used = self.used_values(cell.box_);
-            let row_used = self.used_values(self.rows[cell.row_index].box_);
+            let row_placement = self
+                .records
+                .placement_or_unplaced_record_state(self.rows[cell.row_index].box_);
             // Compute cell position as specified by https://www.w3.org/TR/css-tables-3/#bounding-box-assignment:
             // left/top location is the sum of:
             // - for top: the height reserved for top captions (including margins), if any
             // - the padding-left/padding-top and border-left-width/border-top-width of the table
             // FIXME: Account for visibility.
-            let x = row_used.content_offset.get().x
+            let x = row_placement.content_offset.x
                 + used.border_box_left(collapsed)
                 + self.columns[cell.column_index].inline_offset
                 + spacing * cell.column_index;
-            let y = row_used.content_offset.get().y + used.border_box_top(collapsed);
+            let y = row_placement.content_offset.y + used.border_box_top(collapsed);
             self.place_child(cell.box_, x, y);
         }
     }
@@ -2523,6 +2525,8 @@ impl<'pass> TableFormattingContext<'pass> {
             self.derived_baselines_of_root_box.set(baselines);
         } else {
             crate::layout::store_derived_baselines(&self.used_values(node), baselines);
+            // Rows and groups are already placed when their baselines derive.
+            self.records.update_placed_baselines(node, baselines);
         }
     }
 

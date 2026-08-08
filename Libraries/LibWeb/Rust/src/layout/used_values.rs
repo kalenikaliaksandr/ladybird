@@ -366,10 +366,6 @@ impl UsedValues {
         self.margin_bottom.get() + self.border_box_bottom(collapsed)
     }
 
-    pub(crate) fn margin_box_top(&self, collapsed: bool) -> CssPixels {
-        self.margin_top.get() + self.border_box_top(collapsed)
-    }
-
     pub(crate) fn margin_box_inline_size(&self, collapsed: bool) -> CssPixels {
         self.margin_left.get()
             + self.border_box_left(collapsed)

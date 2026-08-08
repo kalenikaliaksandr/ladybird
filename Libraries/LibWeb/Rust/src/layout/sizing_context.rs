@@ -1252,17 +1252,14 @@ impl<'pass> SizingContext<'pass> {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn cache_intrinsic_inline_measurement(
         &self,
         node: Node,
         kind: IntrinsicSizeCacheKind,
         key: IntrinsicSizeCacheKey,
-        measurement_root_used: &UsedValues,
         result: ChildLayoutResult,
         available_block_size: AvailableSize,
     ) {
-        let used = measurement_root_used;
         self.intrinsic_inline_measurement_cache_put(
             node,
             kind,
@@ -1270,14 +1267,14 @@ impl<'pass> SizingContext<'pass> {
             IntrinsicInlineSizeMeasurement {
                 automatic_content_inline_size: result.automatic_content_inline_size,
                 available_block_size,
-                content_inline_size: used.content_inline_size.get(),
-                content_block_size: used.content_block_size.get(),
+                content_inline_size: result.geometry.content_inline_size,
+                content_block_size: result.geometry.content_block_size,
                 automatic_content_block_size: result.automatic_content_block_size,
-                uses_collapsing_borders_model: used.uses_collapsing_borders_model.get(),
-                has_first_baseline: used.has_first_baseline.get(),
-                first_baseline: used.first_baseline.get(),
-                has_last_baseline: used.has_last_baseline.get(),
-                last_baseline: used.last_baseline.get(),
+                uses_collapsing_borders_model: result.geometry.uses_collapsing_borders_model,
+                has_first_baseline: result.baselines.first.is_some(),
+                first_baseline: result.baselines.first.unwrap_or_default(),
+                has_last_baseline: result.baselines.last.is_some(),
+                last_baseline: result.baselines.last.unwrap_or_default(),
             },
         );
     }
@@ -1427,7 +1424,7 @@ impl<'pass> SizingContext<'pass> {
         };
         let mut result = measurement.run(
             node,
-            root.clone(),
+            root,
             LayoutInput {
                 available_space: AvailableSpace {
                     inline_size: AvailableSize::MinContent,
@@ -1444,14 +1441,7 @@ impl<'pass> SizingContext<'pass> {
         );
         result.automatic_content_inline_size = clamp_to_max_dimension_value(result.automatic_content_inline_size);
         let value = result.automatic_content_inline_size;
-        self.cache_intrinsic_inline_measurement(
-            node,
-            IntrinsicSizeCacheKind::MinContentInline,
-            key,
-            &root,
-            result,
-            block_size,
-        );
+        self.cache_intrinsic_inline_measurement(node, IntrinsicSizeCacheKind::MinContentInline, key, result, block_size);
         value
     }
 
@@ -1633,7 +1623,7 @@ impl<'pass> SizingContext<'pass> {
         };
         let mut result = measurement.run(
             node,
-            root.clone(),
+            root,
             LayoutInput {
                 available_space: AvailableSpace {
                     inline_size: AvailableSize::MaxContent,
@@ -1650,14 +1640,7 @@ impl<'pass> SizingContext<'pass> {
         );
         result.automatic_content_inline_size = clamp_to_max_dimension_value(result.automatic_content_inline_size);
         let value = result.automatic_content_inline_size;
-        self.cache_intrinsic_inline_measurement(
-            node,
-            IntrinsicSizeCacheKind::MaxContentInline,
-            key,
-            &root,
-            result,
-            block_size,
-        );
+        self.cache_intrinsic_inline_measurement(node, IntrinsicSizeCacheKind::MaxContentInline, key, result, block_size);
         value
     }
 
