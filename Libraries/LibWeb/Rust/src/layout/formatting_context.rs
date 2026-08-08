@@ -931,6 +931,7 @@ pub struct FfiFlexLayoutData {
     pub line_count: usize,
 }
 
+#[derive(Clone)]
 pub(crate) struct OwnedFlexLayoutLine {
     pub(crate) growth_state: FfiFlexLayoutGrowthState,
     pub(crate) cross_start: CssPixels,
@@ -938,6 +939,7 @@ pub(crate) struct OwnedFlexLayoutLine {
     pub(crate) items: Vec<FfiFlexLayoutItem>,
 }
 
+#[derive(Clone)]
 pub(crate) struct OwnedFlexLayoutData {
     pub(crate) align_content: u8,
     pub(crate) align_items: u8,
@@ -1534,6 +1536,12 @@ fn run_formatting_context<'pass>(
         }),
     };
     let run = &run;
+    let cache_attempt = match FcRunCacheAttempt::probe(run, fc_type, &input, should_collect_devtools_layout_data) {
+        FcRunCacheAttempt::Hit { entry } => {
+            return replay_run_from_cache(run, &input, parent_block, entry);
+        }
+        attempt => attempt,
+    };
     let body_input = apply_root_sizing_directives(run, &input, parent_block);
 
     let cached_atomic_block_size = if matches!(input.participation, ParticipationInParentFormattingContext::AtomicInline) {
@@ -1607,45 +1615,10 @@ fn run_formatting_context<'pass>(
         result
     };
 
-    match input.participation {
-        ParticipationInParentFormattingContext::BlockLevel => {
-            finalize_block_level_root(run, &input, parent_block, &result);
-        }
-        ParticipationInParentFormattingContext::Float => {
-            let parent = parent_block.expect("a floating run requires an enclosing block formatting context");
-            parent.finalize_float_root(
-                run.box_,
-                &input,
-                Some((result.automatic_content_inline_size, result.automatic_content_block_size)),
-            );
-        }
-        ParticipationInParentFormattingContext::AtomicInline => {
-            let automatic_content_block_size_of_completed_body_run = cached_atomic_block_size
-                .is_none()
-                .then_some(result.automatic_content_block_size);
-            finalize_atomic_root_block_size(
-                run,
-                &input,
-                cached_atomic_block_size.map(|(block_size, _)| block_size),
-                automatic_content_block_size_of_completed_body_run,
-                parent_block,
-            );
-        }
-        ParticipationInParentFormattingContext::AbsolutelyPositioned(abspos_inputs) => {
-            AbsposEngine::for_run(run).finalize_out_of_flow_root_after_inside_layout(
-                run.box_,
-                abspos_inputs,
-                Some(result.automatic_content_block_size),
-            );
-        }
-        ParticipationInParentFormattingContext::Item => {
-            if input.sizing.adopt_automatic_content_block_size {
-                let used = run.records.used_values(run.box_);
-                used.set_content_block_size(result.automatic_content_block_size);
-            }
-        }
-        ParticipationInParentFormattingContext::Root => {}
-    }
+    let body_end_root_state = cache_attempt
+        .wants_body_end_root_state(run)
+        .then(|| CachedRootRecordState::capture(&run.records.used_values(run.box_)));
+    finalize_run_root_participation(run, &input, parent_block, &result, cached_atomic_block_size);
 
     let take_run_fragments = || {
         run.fragments
@@ -1685,10 +1658,73 @@ fn run_formatting_context<'pass>(
     }
     layout_contained_abspos_children(run);
     run.records.used_values(run.box_).seal_own_metrics();
+    let fragments = take_run_fragments();
+    cache_attempt.conclude_run(
+        run,
+        fc_type,
+        &input,
+        cached_atomic_block_size,
+        &result,
+        body_end_root_state,
+        fragments.as_ref(),
+    );
     RunOutputs {
         result,
-        fragments: take_run_fragments(),
+        fragments,
         records: run.records.clone(),
+    }
+}
+
+/// The run root's participation in its parent formatting context, applied
+/// after the body has produced the result. Runs on cache hits as well:
+/// these hooks read the live parent (collapsed margins, float bands) and
+/// write the root record, so a replayed run repeats them instead of
+/// caching their effects.
+fn finalize_run_root_participation(
+    run: &FormattingContextRun,
+    input: &LayoutInput,
+    parent_block: Option<&BlockFormattingContext>,
+    result: &ChildLayoutResult,
+    atomic_intrinsic_replay: Option<(CssPixels, DerivedBaselines)>,
+) {
+    match input.participation {
+        ParticipationInParentFormattingContext::BlockLevel => {
+            finalize_block_level_root(run, input, parent_block, result);
+        }
+        ParticipationInParentFormattingContext::Float => {
+            let parent = parent_block.expect("a floating run requires an enclosing block formatting context");
+            parent.finalize_float_root(
+                run.box_,
+                input,
+                Some((result.automatic_content_inline_size, result.automatic_content_block_size)),
+            );
+        }
+        ParticipationInParentFormattingContext::AtomicInline => {
+            let automatic_content_block_size_of_completed_body_run = atomic_intrinsic_replay
+                .is_none()
+                .then_some(result.automatic_content_block_size);
+            finalize_atomic_root_block_size(
+                run,
+                input,
+                atomic_intrinsic_replay.map(|(block_size, _)| block_size),
+                automatic_content_block_size_of_completed_body_run,
+                parent_block,
+            );
+        }
+        ParticipationInParentFormattingContext::AbsolutelyPositioned(abspos_inputs) => {
+            AbsposEngine::for_run(run).finalize_out_of_flow_root_after_inside_layout(
+                run.box_,
+                abspos_inputs,
+                Some(result.automatic_content_block_size),
+            );
+        }
+        ParticipationInParentFormattingContext::Item => {
+            if input.sizing.adopt_automatic_content_block_size {
+                let used = run.records.used_values(run.box_);
+                used.set_content_block_size(result.automatic_content_block_size);
+            }
+        }
+        ParticipationInParentFormattingContext::Root => {}
     }
 }
 

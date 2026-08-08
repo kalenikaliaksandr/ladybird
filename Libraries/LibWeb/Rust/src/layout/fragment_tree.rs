@@ -46,6 +46,7 @@ pub(crate) struct Fragment {
 /// One placement of a fragment. Everything the parent decides about the
 /// child lives on the link: the emission offset (the placed offset with the
 /// committed delta already folded in) and the inset family.
+#[derive(Clone)]
 pub(crate) struct FragmentLink {
     /// Shared so a run-cache entry and every placement handed out on its
     /// hits can carry the same position-independent subtree.
@@ -71,6 +72,7 @@ pub(crate) struct FragmentLink {
 /// shell feeds name matching, and the border-box rect — expressed in
 /// effective_birth's content space and travelling like every other carried
 /// payload — replaces the emission-time chain walk.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AnchorCandidate {
     pub(crate) node: crate::layout::node_data::NodeSlotId,
     pub(crate) border_box_rect: PhysicalRect,
@@ -311,8 +313,9 @@ fn snapshot_link(
 
 /// What a committing run hands back alongside ChildLayoutResult: the run
 /// root's completed child links plus placements that could not attach to a
-/// still-open frame and must ride upward.
-#[derive(Default)]
+/// still-open frame and must ride upward. Clones share the fragments and
+/// copy the link and escape lists — the shape a run-cache hit reissues.
+#[derive(Clone, Default)]
 pub(crate) struct PendingRunResult {
     pub(crate) root_children: Vec<FragmentLink>,
     pub(crate) late_attachments: Vec<FragmentLink>,
@@ -463,6 +466,10 @@ impl RunFragmentBuilder {
 
     pub(crate) fn note_svg_payload_write(&self) {
         self.saw_svg_payload_write.set(true);
+    }
+
+    pub(crate) fn has_svg_payload_writes(&self) -> bool {
+        self.saw_svg_payload_write.get()
     }
 
     /// Registers an absolutely positioned child born in birth_box's content
