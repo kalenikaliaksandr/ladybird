@@ -830,6 +830,12 @@ pub(crate) struct ChildLayoutResult {
     pub automatic_content_inline_size: CssPixels,
     pub automatic_content_block_size: CssPixels,
     pub baselines: DerivedBaselines,
+    /// The run root's final geometry, captured when the outputs are
+    /// assembled — after the participation finalize and the seal, on
+    /// fresh and replayed runs alike. Cache entries store the result
+    /// before this capture, so a stored geometry is always the default
+    /// value and every consumer sees the live post-finalize state.
+    pub geometry: BoxMetrics,
 }
 
 /// Everything a completed run hands back: the sizing result consumed by the
@@ -1167,7 +1173,8 @@ impl<'pass> FormattingContextRun<'pass> {
         SizingContext::new(self.state, self.records.clone(), self.callbacks)
     }
 
-    pub(crate) fn outputs(&self, result: ChildLayoutResult, fragments: Option<PendingRunResult>) -> RunOutputs {
+    pub(crate) fn outputs(&self, mut result: ChildLayoutResult, fragments: Option<PendingRunResult>) -> RunOutputs {
+        result.geometry = BoxMetrics::capture_from_record(&self.records.used_values(self.box_));
         RunOutputs {
             result,
             fragments,
@@ -1645,6 +1652,7 @@ fn run_formatting_context<'pass>(
                     automatic_content_inline_size: context.automatic_content_inline_size(),
                     automatic_content_block_size: context.automatic_content_block_size(),
                     baselines,
+                    ..ChildLayoutResult::default()
                 }
             }
             FormattingContextImplementation::Flex(context) => {
@@ -1655,6 +1663,7 @@ fn run_formatting_context<'pass>(
                     automatic_content_inline_size: context.automatic_content_inline_size(),
                     automatic_content_block_size: context.automatic_content_block_size(),
                     baselines,
+                    ..ChildLayoutResult::default()
                 }
             }
             FormattingContextImplementation::Grid(context) => {
@@ -1665,6 +1674,7 @@ fn run_formatting_context<'pass>(
                     automatic_content_inline_size: context.automatic_content_inline_size(),
                     automatic_content_block_size: context.automatic_content_block_size(),
                     baselines,
+                    ..ChildLayoutResult::default()
                 }
             }
             FormattingContextImplementation::Table(context) => {
@@ -1675,6 +1685,7 @@ fn run_formatting_context<'pass>(
                     automatic_content_inline_size: context.automatic_content_inline_size(),
                     automatic_content_block_size: context.automatic_content_block_size,
                     baselines,
+                    ..ChildLayoutResult::default()
                 }
             }
             FormattingContextImplementation::Svg(context) => {
