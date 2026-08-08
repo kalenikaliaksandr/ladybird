@@ -1840,12 +1840,6 @@ pub(crate) fn layout_inside_child<'pass>(
 ) -> ChildLayoutOutcome {
     let facts = run.state.node_facts(&run.callbacks, child);
     let used = run.records.used_values(child);
-    if let Some((padding_top, padding_bottom)) = input.sizing.table_cell_intrinsic_block_padding {
-        debug_assert!(facts.is_table_cell());
-        debug_assert!(matches!(input.participation, ParticipationInParentFormattingContext::Item));
-        used.padding_top.set(used.padding_top.get() + padding_top);
-        used.padding_bottom.set(used.padding_bottom.get() + padding_bottom);
-    }
     if !force_independent_context_run
         && layout_mode == LayoutMode::IntrinsicSizing
         && !facts.is_inline()

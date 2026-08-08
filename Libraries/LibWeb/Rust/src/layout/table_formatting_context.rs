@@ -1938,13 +1938,21 @@ impl<'pass> TableFormattingContext<'pass> {
         adopt_automatic_content_block_size: bool,
         intrinsic_block_padding: Option<(CssPixels, CssPixels)>,
     ) -> DerivedBaselines {
+        if let Some((padding_top, padding_bottom)) = intrinsic_block_padding {
+            // Applied to the record before the spawn so skipped and re-entered
+            // cell runs observe the same padding as a created run's seed.
+            let used = self.used_values(cell.box_);
+            used.padding_top.set(used.padding_top.get() + padding_top);
+            used.padding_bottom.set(used.padding_bottom.get() + padding_bottom);
+        }
+        let declared_cell_metrics = BoxMetrics::capture_from_record(&self.used_values(cell.box_));
         let layout_input = LayoutInput {
             available_space: input,
             containing_block_constraints: ContainingBlockConstraints::default(),
             content_box_position_in_bfc_root: None,
             sizing: RootSizingDirectives {
                 adopt_automatic_content_block_size,
-                table_cell_intrinsic_block_padding: intrinsic_block_padding,
+                declared_root_metrics: Some(declared_cell_metrics),
                 ..RootSizingDirectives::default()
             },
             participation: ParticipationInParentFormattingContext::Item,
