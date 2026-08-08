@@ -2022,8 +2022,10 @@ impl<'pass> TableFormattingContext<'pass> {
             return None;
         }
 
-        let measurement = MeasurementState::create(self.callbacks, cell.box_, ContainingBlockConstraints::default());
-        let measured_root = measurement.root_used();
+        let measurement = MeasurementState::create(self.callbacks);
+        let measured_root = measurement
+            .rust_state()
+            .create_used_values(measurement.callbacks(), cell.box_, ContainingBlockConstraints::default());
         used.mirror_box_metrics_and_size_constraints_into(measured_root);
         measured_root
             .has_definite_inline_size
@@ -2037,6 +2039,7 @@ impl<'pass> TableFormattingContext<'pass> {
 
         let result = measurement.run_with_layout_mode(
             cell.box_,
+            measured_root,
             self.layout_mode,
             LayoutInput {
                 available_space: inner,
@@ -2048,8 +2051,9 @@ impl<'pass> TableFormattingContext<'pass> {
                 },
                 participation: ParticipationInParentFormattingContext::Item,
             },
-        );
-        let measured_cell_used = measurement.rust_state().used_values(measurement.callbacks(), cell.box_);
+        )
+        .result;
+        let measured_cell_used = measured_root;
         debug_assert_eq!(
             crate::layout::box_baseline(
                 measurement.rust_state(),

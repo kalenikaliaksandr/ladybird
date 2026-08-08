@@ -1252,16 +1252,17 @@ impl<'pass> SizingContext<'pass> {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn cache_intrinsic_inline_measurement(
         &self,
         node: Node,
         kind: IntrinsicSizeCacheKind,
         key: IntrinsicSizeCacheKey,
-        measurement: &MeasurementState,
+        measurement_root_used: &UsedValues,
         result: ChildLayoutResult,
         available_block_size: AvailableSize,
     ) {
-        let used = measurement.root_used();
+        let used = measurement_root_used;
         self.intrinsic_inline_measurement_cache_put(
             node,
             kind,
@@ -1417,8 +1418,8 @@ impl<'pass> SizingContext<'pass> {
             return cached.automatic_content_inline_size;
         }
 
-        let measurement = MeasurementState::create(self.callbacks, node, constraints);
-        let root = measurement.root_used();
+        let measurement = MeasurementState::create(self.callbacks);
+        let root = Self::create_measurement_used_values(&measurement, node, constraints);
         root.inline_size_constraint.set(SizeConstraint::MinContent);
         root.has_definite_inline_size.set(false);
         let block_size = if root.has_definite_block_size() {
@@ -1428,6 +1429,7 @@ impl<'pass> SizingContext<'pass> {
         };
         let mut result = measurement.run(
             node,
+            root,
             LayoutInput {
                 available_space: AvailableSpace {
                     inline_size: AvailableSize::MinContent,
@@ -1445,7 +1447,7 @@ impl<'pass> SizingContext<'pass> {
             node,
             IntrinsicSizeCacheKind::MinContentInline,
             key,
-            &measurement,
+            root,
             result,
             block_size,
         );
@@ -1618,8 +1620,8 @@ impl<'pass> SizingContext<'pass> {
             return cached.automatic_content_inline_size;
         }
 
-        let measurement = MeasurementState::create(self.callbacks, node, constraints);
-        let root = measurement.root_used();
+        let measurement = MeasurementState::create(self.callbacks);
+        let root = Self::create_measurement_used_values(&measurement, node, constraints);
         root.inline_size_constraint.set(SizeConstraint::MaxContent);
         root.has_definite_inline_size.set(false);
         let block_size = if root.has_definite_block_size() {
@@ -1629,6 +1631,7 @@ impl<'pass> SizingContext<'pass> {
         };
         let mut result = measurement.run(
             node,
+            root,
             LayoutInput {
                 available_space: AvailableSpace {
                     inline_size: AvailableSize::MaxContent,
@@ -1646,7 +1649,7 @@ impl<'pass> SizingContext<'pass> {
             node,
             IntrinsicSizeCacheKind::MaxContentInline,
             key,
-            &measurement,
+            root,
             result,
             block_size,
         );
@@ -1678,13 +1681,14 @@ impl<'pass> SizingContext<'pass> {
             return cached;
         }
 
-        let measurement = MeasurementState::create(self.callbacks, node, constraints);
-        let root = measurement.root_used();
+        let measurement = MeasurementState::create(self.callbacks);
+        let root = Self::create_measurement_used_values(&measurement, node, constraints);
         root.block_size_constraint.set(SizeConstraint::MinContent);
         root.has_definite_block_size.set(false);
         root.set_content_inline_size(inline_size);
         let result = measurement.run(
             node,
+            root,
             LayoutInput {
                 available_space: AvailableSpace {
                     inline_size: AvailableSize::definite(inline_size),
@@ -1731,13 +1735,14 @@ impl<'pass> SizingContext<'pass> {
             return cached;
         }
 
-        let measurement = MeasurementState::create(self.callbacks, node, constraints);
-        let root = measurement.root_used();
+        let measurement = MeasurementState::create(self.callbacks);
+        let root = Self::create_measurement_used_values(&measurement, node, constraints);
         root.block_size_constraint.set(SizeConstraint::MaxContent);
         root.has_definite_block_size.set(false);
         root.set_content_inline_size(inline_size);
         let result = measurement.run(
             node,
+            root,
             LayoutInput {
                 available_space: AvailableSpace {
                     inline_size: AvailableSize::definite(inline_size),
@@ -1761,13 +1766,16 @@ impl<'pass> SizingContext<'pass> {
         inner_available_space: AvailableSpace,
         constraints: ContainingBlockConstraints,
     ) -> CssPixels {
-        let measurement = MeasurementState::create(self.callbacks, node, constraints);
+        let measurement = MeasurementState::create(self.callbacks);
+        let node_used = Self::create_measurement_used_values(&measurement, node, constraints);
         measurement
             .run_with_layout_mode(
                 node,
+                node_used,
                 layout_mode,
                 LayoutInput::new(inner_available_space, constraints, ParticipationInParentFormattingContext::Root),
             )
+            .result
             .automatic_content_block_size
     }
 
@@ -1894,7 +1902,7 @@ impl<'pass> SizingContext<'pass> {
         let available_inline_size = containing_block_inline_size - margin_left - margin_right;
         let table_box = self.table_box_inside_wrapper(wrapper);
 
-        let measurement = MeasurementState::create(self.callbacks, wrapper, table_wrapper_constraints);
+        let measurement = MeasurementState::create(self.callbacks);
 
         // The table wrapper is invisible to percentage resolution, so the table box gets the
         // wrapper's constraints unchanged. Callers measuring a table wrapper for grid alignment
@@ -1963,9 +1971,11 @@ impl<'pass> SizingContext<'pass> {
         let available_block_size = containing_block_block_size - margin_top - margin_bottom;
         let table_box = self.table_box_inside_wrapper(wrapper);
 
-        let measurement = MeasurementState::create(self.callbacks, wrapper, table_wrapper_constraints);
-        measurement.run_with_layout_mode(
+        let measurement = MeasurementState::create(self.callbacks);
+        let wrapper_used = Self::create_measurement_used_values(&measurement, wrapper, table_wrapper_constraints);
+        let wrapper_outputs = measurement.run_with_layout_mode(
             wrapper,
+            wrapper_used,
             LayoutMode::IntrinsicSizing,
             LayoutInput {
                 available_space: self
@@ -1978,7 +1988,7 @@ impl<'pass> SizingContext<'pass> {
             },
         );
 
-        let table_used = measurement.rust_state().used_values(measurement.callbacks(), table_box);
+        let table_used = wrapper_outputs.records.used_values(table_box);
         let table_used_block_size = table_used.border_box_block_size(table_used.uses_collapsing_borders_model.get());
         if matches!(available_space.block_size, AvailableSize::Definite(_)) {
             table_used_block_size.min(available_block_size)

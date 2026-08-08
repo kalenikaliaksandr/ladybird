@@ -4,11 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-pub(crate) fn shadow_fragment_diff_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("LADYBIRD_LAYOUT_SHADOW_FRAGMENTS").is_some_and(|value| value == "1"))
-}
-
 /// Immutable result of laying out one box, assembled from the box's sealed
 /// used-values cells at its placement. Line data and rare payloads join in a
 /// later capture stage.
@@ -65,9 +60,6 @@ pub(crate) struct FragmentLink {
     /// Carried for commit's transfer into the arena's saved-inputs table;
     /// written by the abspos engine just before it places the box.
     pub(crate) abspos_layout_inputs: Option<AbsposLayoutInputs>,
-    /// The box had a record but was never placed; emitted at the default
-    /// offset, exactly as the store-fed commit does today.
-    pub(crate) is_unplaced_orphan: bool,
 }
 
 /// A box carrying anchor names, placed somewhere in this run's subtree: the
@@ -93,7 +85,6 @@ fn snapshot_link(
     node: crate::layout::node_data::NodeSlotId,
     children: Vec<FragmentLink>,
     used: &UsedValues,
-    is_unplaced_orphan: bool,
     containing_line_box_index: Option<usize>,
     emission_offset: FfiCssPixelPoint,
 ) -> FragmentLink {
@@ -159,7 +150,6 @@ fn snapshot_link(
         inset_bottom: used.inset_bottom.get(),
         containing_line_box_index,
         abspos_layout_inputs,
-        is_unplaced_orphan,
     }
 }
 
@@ -533,7 +523,7 @@ impl RunFragmentBuilder {
                     None => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
                 },
             };
-        let link = snapshot_link(node, children, used, false, containing_line_box_index, emission_offset);
+        let link = snapshot_link(node, children, used, containing_line_box_index, emission_offset);
         inner.late_attachments.append(&mut carried_late);
         self.attach(&mut inner, link, containing_block, containing_block_is_already_placed);
         for mut entry in riding_abspos {
@@ -636,7 +626,7 @@ impl RunFragmentBuilder {
             debug_assert!(!used.has_content_offset.get(), "an unplaced record note was placed after all");
             inner
                 .root_children
-                .push(snapshot_link(node, Vec::new(), used, true, None, used.content_offset.get()));
+                .push(snapshot_link(node, Vec::new(), used, None, used.content_offset.get()));
         }
         let frames = std::mem::take(&mut inner.frames);
         for (_, frame) in frames {
@@ -660,7 +650,7 @@ impl RunFragmentBuilder {
             };
             inner
                 .root_children
-                .push(snapshot_link(node, children, used, true, None, used.content_offset.get()));
+                .push(snapshot_link(node, children, used, None, used.content_offset.get()));
         }
         let deposits = std::mem::take(&mut inner.deposits);
         for (_, (node, pending)) in deposits {
@@ -671,7 +661,7 @@ impl RunFragmentBuilder {
             inner.late_attachments.extend(pending.late_attachments);
             inner
                 .root_children
-                .push(snapshot_link(node, pending.root_children, used, true, None, used.content_offset.get()));
+                .push(snapshot_link(node, pending.root_children, used, None, used.content_offset.get()));
         }
         for entry in &mut escaped_abspos {
             debug_assert!(

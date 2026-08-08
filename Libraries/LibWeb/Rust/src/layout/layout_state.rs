@@ -64,30 +64,33 @@ impl<T> PagedStore<T> {
         entry.get().unwrap()
     }
 
-    fn for_each_indexed(&self, mut callback: impl FnMut(u32, &T)) {
-        let Some(directory) = self.page_table_directory.get() else {
-            return;
-        };
-        for (directory_index, page_table) in directory.iter().enumerate() {
-            let Some(page_table) = page_table.get() else {
-                continue;
-            };
-            for (page_index, page) in page_table.iter().enumerate() {
-                let Some(page) = page.get() else {
-                    continue;
-                };
-                for (entry_index, entry) in page.iter().enumerate() {
-                    if let Some(entry) = entry.get() {
-                        let index = (directory_index << (PAGE_TABLE_BITS + PAGE_BITS))
-                            | (page_index << PAGE_BITS)
-                            | entry_index;
-                        callback(index as u32, entry);
-                    }
-                }
-            }
+
+}
+
+/// Anonymous bump storage for the pass's used-values records. Allocation
+/// hands out stable references; there is deliberately NO lookup — records
+/// are reachable only through the RunRecords scopes that own them, which is
+/// what makes a formatting-context run's result self-contained.
+pub(crate) struct RecordArena {
+    storage: PagedStore<UsedValues>,
+    allocated: Cell<u32>,
+}
+
+impl Default for RecordArena {
+    fn default() -> Self {
+        Self {
+            storage: PagedStore::default(),
+            allocated: Cell::new(0),
         }
     }
+}
 
+impl RecordArena {
+    fn allocate(&self, value: UsedValues) -> &UsedValues {
+        let index = self.allocated.get();
+        self.allocated.set(index + 1);
+        self.storage.allocate(index, value)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -834,7 +837,7 @@ impl<'pass> NodeFacts<'pass> {
 }
 
 pub(crate) struct LayoutState {
-    used_values: PagedStore<UsedValues>,
+    record_arena: RecordArena,
     anchor_inset_store: AnchorInsetStore,
     purpose: LayoutStatePurpose,
 }
@@ -971,7 +974,7 @@ pub(crate) struct UsedValuesRareData {
 impl LayoutState {
     pub(crate) fn new(purpose: LayoutStatePurpose) -> Self {
         Self {
-            used_values: PagedStore::default(),
+            record_arena: RecordArena::default(),
             anchor_inset_store: AnchorInsetStore::default(),
             purpose,
         }
@@ -1002,8 +1005,6 @@ impl LayoutState {
     ) -> &UsedValues {
         assert!(!node.is_invalid());
         let facts = self.node_facts(callbacks, node);
-        let slot_index = callbacks.slot_index(node);
-        assert!(self.used_values.get(slot_index).is_none());
 
         let style = self.style_facts(callbacks, node);
         let percentage_basis_inline_size = constraints.percentage_basis_inline_size;
@@ -1146,7 +1147,7 @@ impl LayoutState {
         used.content_inline_size.set(content_inline_size.unwrap_or_default());
         used.content_block_size.set(content_block_size.unwrap_or_default());
 
-        self.used_values.allocate(slot_index, used)
+        self.record_arena.allocate(used)
     }
 
     pub(crate) fn populate_from_paintable(
@@ -1155,9 +1156,6 @@ impl LayoutState {
         node: Node,
         paintable: *mut c_void,
     ) -> Option<&UsedValues> {
-        let slot_index = callbacks.slot_index(node);
-        assert!(self.used_values.get(slot_index).is_none());
-
         let mut geometry = FfiPaintableGeometry::default();
         let found =
             unsafe {
@@ -1197,7 +1195,7 @@ impl LayoutState {
         used.has_content_offset.set(true);
         used.seal_committed_box_metrics();
 
-        let used = self.used_values.allocate(slot_index, used);
+        let used = self.record_arena.allocate(used);
         if self.node_facts(callbacks, node).is_svg_svg_box() {
             used.rare_data_mut().svg_viewport_size = Some(geometry.svg_viewport_size);
         }
@@ -1313,72 +1311,6 @@ impl LayoutState {
         })
     }
 
-    fn used_values_by_slot(&self, slot_index: u32) -> Option<&UsedValues> {
-        self.used_values.get(slot_index)
-    }
-
-    /// Verifies the returned fragment structure against the store it
-    /// shadows: every record is represented (or provably never placed),
-    /// nothing is fabricated, and every captured field matches the sealed
-    /// cells commit will read. Always on in debug builds; enabled on
-    /// release builds with LADYBIRD_LAYOUT_SHADOW_FRAGMENTS=1.
-    pub(crate) fn shadow_diff_committed_fragments(
-        &self,
-        commit_index: &std::collections::HashMap<u32, &crate::layout::FragmentLink>,
-    ) {
-        if !cfg!(debug_assertions) && !shadow_fragment_diff_enabled() {
-            return;
-        }
-        for slot_index in commit_index.keys() {
-            assert!(
-                self.used_values_by_slot(*slot_index).is_some(),
-                "fragment shadow: fragment for slot {slot_index} has no record"
-            );
-        }
-        self.used_values.for_each_indexed(|slot_index, used| {
-            let Some(link) = commit_index.get(&slot_index) else {
-                panic!(
-                    "fragment shadow: record for slot {slot_index} is missing from the fragment tree (placed: {})",
-                    used.has_content_offset.get()
-                );
-            };
-            let fragment = &link.fragment;
-            let check = |name: &str, matches: bool| {
-                assert!(matches, "fragment shadow: {name} diverges from the record for slot {slot_index}");
-            };
-            check("orphan placement", !link.is_unplaced_orphan || !used.has_content_offset.get());
-            check("inset_left", link.inset_left == used.inset_left.get());
-            check("inset_right", link.inset_right == used.inset_right.get());
-            check("inset_top", link.inset_top == used.inset_top.get());
-            check("inset_bottom", link.inset_bottom == used.inset_bottom.get());
-            check(
-                "content_inline_size",
-                fragment.content_inline_size == used.content_inline_size.get(),
-            );
-            check(
-                "content_block_size",
-                fragment.content_block_size == used.content_block_size.get(),
-            );
-            check("margin_left", fragment.margin_left == used.margin_left.get());
-            check("margin_right", fragment.margin_right == used.margin_right.get());
-            check("margin_top", fragment.margin_top == used.margin_top.get());
-            check("margin_bottom", fragment.margin_bottom == used.margin_bottom.get());
-            check("border_left", fragment.border_left == used.border_left.get());
-            check("border_right", fragment.border_right == used.border_right.get());
-            check("border_top", fragment.border_top == used.border_top.get());
-            check("border_bottom", fragment.border_bottom == used.border_bottom.get());
-            check("padding_left", fragment.padding_left == used.padding_left.get());
-            check("padding_right", fragment.padding_right == used.padding_right.get());
-            check("padding_top", fragment.padding_top == used.padding_top.get());
-            check("padding_bottom", fragment.padding_bottom == used.padding_bottom.get());
-        });
-    }
-
-    pub(crate) fn used_values(&self, callbacks: &FfiLayoutFcCallbacks, node: Node) -> &UsedValues {
-        self.used_values
-            .get(callbacks.slot_index(node))
-            .expect("missing used values")
-    }
 
     /// Accumulates relative-position insets from a chain of inline-flow
     /// ancestors, starting at first_ancestor and walking up until stop_at or

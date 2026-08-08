@@ -2609,9 +2609,11 @@ impl<'pass> GridFormattingContext<'pass> {
     }
 
     fn subgrid_item_contributions_to_track_sizing(&self, subgrid: GridItem<'pass>, axis: Axis) -> Vec<ItemContribution> {
-        let scratch = MeasurementState::create(self.callbacks, subgrid.box_, ContainingBlockConstraints::default());
+        let scratch = MeasurementState::create(self.callbacks);
         let live = self.used(subgrid);
-        let scratch_root = scratch.root_used();
+        let scratch_root = scratch
+            .rust_state()
+            .create_used_values(scratch.callbacks(), subgrid.box_, ContainingBlockConstraints::default());
         live.mirror_box_metrics_and_size_constraints_into(scratch_root);
         scratch_root.has_definite_inline_size.set(live.has_definite_inline_size.get());
         scratch_root.has_definite_block_size.set(live.has_definite_block_size.get());

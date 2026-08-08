@@ -186,42 +186,39 @@ pub(crate) enum TableWrapperInlineSizeMode {
     UseTableUsedInlineSizeIfNotAuto,
 }
 
+/// A measurement's scope: a fresh measurement-purpose LayoutState whose
+/// records live exactly as long as the measurement. There is no lookup —
+/// the driver holds a reference to every record it creates and hands the
+/// measured box's record to each run it starts.
 pub(crate) struct MeasurementState {
     state: LayoutState,
     callbacks: FfiLayoutFcCallbacks,
-    root: Node,
 }
 
 impl MeasurementState {
-    pub(crate) fn create(callbacks: FfiLayoutFcCallbacks, node: Node, constraints: ContainingBlockConstraints) -> Self {
-        let state = LayoutState::new(LayoutStatePurpose::Measurement);
-        state.create_used_values(&callbacks, node, constraints);
+    pub(crate) fn create(callbacks: FfiLayoutFcCallbacks) -> Self {
         Self {
-            state,
+            state: LayoutState::new(LayoutStatePurpose::Measurement),
             callbacks,
-            root: node,
         }
     }
 
-    pub(crate) fn root_used(&self) -> &UsedValues {
-        self.state.used_values(&self.callbacks, self.root)
+    fn run(&self, node: Node, node_used: &UsedValues, input: LayoutInput) -> ChildLayoutResult {
+        self.run_with_layout_mode(node, node_used, LayoutMode::IntrinsicSizing, input).result
     }
 
-    fn run(&self, node: Node, input: LayoutInput) -> ChildLayoutResult {
-        self.run_with_layout_mode(node, LayoutMode::IntrinsicSizing, input)
-    }
-
-    pub(crate) fn run_with_layout_mode(
-        &self,
+    pub(crate) fn run_with_layout_mode<'measurement>(
+        &'measurement self,
         node: Node,
+        node_used: &'measurement UsedValues,
         layout_mode: LayoutMode,
         input: LayoutInput,
-    ) -> crate::layout::ChildLayoutResult {
+    ) -> RunOutputs<'measurement> {
         let rust_state = self.rust_state();
         let fc_type = crate::layout::independent_formatting_context_type(rust_state, node, &self.callbacks);
         crate::layout::run_formatting_context(
             rust_state,
-            rust_state.used_values(&self.callbacks, node),
+            node_used,
             node,
             None,
             fc_type,
@@ -231,7 +228,6 @@ impl MeasurementState {
             input,
             None,
         )
-        .result
     }
 
     pub(crate) fn rust_state(&self) -> &LayoutState {
@@ -471,8 +467,10 @@ pub(crate) fn register_contained_abspos_child(
     static_position_rect: StaticPositionRect,
     containing_block_info_override: Option<AbsposContainingBlockInfo>,
 ) {
+    // Normal-mode runs on measurement states have no builder: their abspos
+    // registrations are discarded, exactly as the deferred pass discarded
+    // measurement-state registrations before drain-at-completion.
     let Some(fragments) = fragments else {
-        debug_assert!(false, "abspos registration outside a committing run");
         return;
     };
     let mut target = callbacks.containing_block(child);
@@ -1482,9 +1480,8 @@ fn finalize_block_level_root(
     let node = run.box_;
     let facts = run.state.node_facts(&run.callbacks, node);
     if facts.is_table_wrapper() {
-        run
-            .state
-            .used_values(&run.callbacks, node)
+        run.records
+            .used_values(node)
             .set_content_inline_size(body_result.automatic_content_inline_size);
     }
     let style = run.state.style_facts(&run.callbacks, node);
@@ -1532,8 +1529,8 @@ fn size_skipped_independent_root(
 
 fn body_input_with_inner_available_space(run: &FormattingContextRun, input: &LayoutInput) -> LayoutInput {
     let inner_available_space = run
-        .state
-        .used_values(&run.callbacks, run.box_)
+        .records
+        .used_values(run.box_)
         .available_inner_space_or_constraints_from(input.available_space);
     let mut body_input = *input;
     body_input.available_space = inner_available_space;
@@ -1758,8 +1755,8 @@ fn finalize_atomic_root_block_size(
             cached_intrinsic_measurement_block_size,
             || {
                 let available_inner_space = run
-                    .state
-                    .used_values(&run.callbacks, node)
+                    .records
+                    .used_values(node)
                     .available_inner_space_or_constraints_from(available_space);
                 match parent_block {
                     Some(parent) => parent.compute_automatic_block_size_for_block_level_element(
@@ -2013,7 +2010,6 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         let pass_fragments = entry_fragments.take_pending_result(&entry_records, &callbacks);
         debug_assert!(pass_fragments.fragment_count() > 0, "the run root always has a fragment");
         let commit_index = fold_commit_index(&pass_fragments);
-        state.shadow_diff_committed_fragments(&commit_index);
         state.commit_replacing(root, std::ptr::null_mut(), &callbacks, sink, &commit_index);
     });
 }
@@ -2098,7 +2094,6 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         let pass_fragments = entry_fragments.take_pending_result(&entry_records, &callbacks);
         debug_assert!(pass_fragments.fragment_count() > 0, "the subtree root always has a fragment");
         let commit_index = fold_commit_index(&pass_fragments);
-        state.shadow_diff_committed_fragments(&commit_index);
         state.commit_replacing(root, paintable_to_replace, &callbacks, sink, &commit_index);
     });
 }
@@ -2143,7 +2138,6 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
         let pass_fragments = entry_fragments.take_pending_result(&entry_records, &callbacks);
         debug_assert!(pass_fragments.fragment_count() > 0, "the replayed box always has a fragment");
         let commit_index = fold_commit_index(&pass_fragments);
-        state.shadow_diff_committed_fragments(&commit_index);
         state.commit_replacing(box_, paintable_to_replace, &callbacks, sink, &commit_index);
     });
 }
