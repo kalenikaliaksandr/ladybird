@@ -137,6 +137,37 @@ impl BoxMetrics {
         self.content_block_size = clamp_to_max_dimension_value(value.max(CssPixels::default()));
     }
 
+    pub(crate) fn available_inner_space_or_constraints_from(&self, outer: AvailableSpace) -> AvailableSpace {
+        let mut inline_size = match self.inline_size_constraint {
+            SizeConstraint::MinContent => AvailableSize::MinContent,
+            SizeConstraint::MaxContent => AvailableSize::MaxContent,
+            SizeConstraint::None if self.has_definite_inline_size => {
+                AvailableSize::definite(self.content_inline_size)
+            }
+            SizeConstraint::None => AvailableSize::Indefinite,
+        };
+        let mut block_size = match self.block_size_constraint {
+            SizeConstraint::MinContent => AvailableSize::MinContent,
+            SizeConstraint::MaxContent => AvailableSize::MaxContent,
+            SizeConstraint::None if self.has_definite_block_size => AvailableSize::definite(self.content_block_size),
+            SizeConstraint::None => AvailableSize::Indefinite,
+        };
+        if inline_size == AvailableSize::Indefinite
+            && matches!(outer.inline_size, AvailableSize::MinContent | AvailableSize::MaxContent)
+        {
+            inline_size = outer.inline_size;
+        }
+        if block_size == AvailableSize::Indefinite
+            && matches!(outer.block_size, AvailableSize::MinContent | AvailableSize::MaxContent)
+        {
+            block_size = outer.block_size;
+        }
+        AvailableSpace {
+            inline_size,
+            block_size,
+        }
+    }
+
     pub(crate) fn capture_from_record(used: &UsedValues) -> Self {
         Self {
             content_inline_size: used.content_inline_size.get(),

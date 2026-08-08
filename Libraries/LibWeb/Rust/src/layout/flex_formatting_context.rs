@@ -61,10 +61,10 @@ struct FlexItem<'pass> {
     cross_size: Option<CssPixels>,
     main_offset: CssPixels,
     cross_offset: CssPixels,
-    // Mirrors of the record's definiteness bits in main/cross terms, so the
-    // item run's declared root state assembles without reading the record.
-    main_size_is_definite: bool,
-    cross_size_is_definite: bool,
+    // The item's box metrics as this run knows them: seeded from the
+    // creation baseline at collection and maintained beside every record
+    // write, so item queries and the declared root state read no record.
+    metrics: BoxMetrics,
     margins: DirectionAgnosticMargins,
     borders: DirectionAgnosticMargins,
     padding: DirectionAgnosticMargins,
@@ -94,8 +94,7 @@ impl FlexItem<'_> {
             cross_size: None,
             main_offset: CssPixels::default(),
             cross_offset: CssPixels::default(),
-            main_size_is_definite: false,
-            cross_size_is_definite: false,
+            metrics: BoxMetrics::default(),
             margins: DirectionAgnosticMargins::default(),
             borders: DirectionAgnosticMargins::default(),
             padding: DirectionAgnosticMargins::default(),
@@ -400,86 +399,79 @@ impl<'pass> FlexFormattingContext<'pass> {
         }
     }
 
-    fn has_definite_main_size_used(&self, used: &UsedValues) -> bool {
-        if self.main_axis_is_horizontal() {
-            used.has_definite_inline_size()
-        } else {
-            used.has_definite_block_size()
-        }
-    }
-
-    fn has_definite_cross_size_used(&self, used: &UsedValues) -> bool {
-        if self.cross_axis_is_horizontal() {
-            used.has_definite_inline_size()
-        } else {
-            used.has_definite_block_size()
-        }
-    }
-
     fn has_definite_main_size(&self, index: usize) -> bool {
-        self.has_definite_main_size_used(&self.item_used(index))
+        let metrics = &self.flex_items[index].metrics;
+        if self.main_axis_is_horizontal() {
+            metrics.has_definite_inline_size()
+        } else {
+            metrics.has_definite_block_size()
+        }
     }
 
     fn has_definite_cross_size(&self, index: usize) -> bool {
-        self.has_definite_cross_size_used(&self.item_used(index))
-    }
-
-    fn inner_main_size_used(&self, used: &UsedValues) -> CssPixels {
-        if self.main_axis_is_horizontal() {
-            used.content_inline_size.get()
-        } else {
-            used.content_block_size.get()
-        }
-    }
-
-    fn inner_cross_size_used(&self, used: &UsedValues) -> CssPixels {
+        let metrics = &self.flex_items[index].metrics;
         if self.cross_axis_is_horizontal() {
-            used.content_inline_size.get()
+            metrics.has_definite_inline_size()
         } else {
-            used.content_block_size.get()
+            metrics.has_definite_block_size()
         }
     }
+
 
     fn inner_main_size(&self, index: usize) -> CssPixels {
-        self.inner_main_size_used(&self.item_used(index))
+        let metrics = &self.flex_items[index].metrics;
+        if self.main_axis_is_horizontal() {
+            metrics.content_inline_size
+        } else {
+            metrics.content_block_size
+        }
     }
 
     fn inner_cross_size(&self, index: usize) -> CssPixels {
-        self.inner_cross_size_used(&self.item_used(index))
+        let metrics = &self.flex_items[index].metrics;
+        if self.cross_axis_is_horizontal() {
+            metrics.content_inline_size
+        } else {
+            metrics.content_block_size
+        }
     }
 
     fn set_has_definite_main_size(&mut self, index: usize) {
-        self.flex_items[index].main_size_is_definite = true;
         if self.main_axis_is_horizontal() {
+            self.flex_items[index].metrics.has_definite_inline_size = true;
             self.item_used_mut(index).has_definite_inline_size.set(true);
         } else {
+            self.flex_items[index].metrics.has_definite_block_size = true;
             self.item_used_mut(index).has_definite_block_size.set(true);
         }
     }
 
     fn set_has_definite_cross_size(&mut self, index: usize) {
-        self.flex_items[index].cross_size_is_definite = true;
         if self.cross_axis_is_horizontal() {
+            self.flex_items[index].metrics.has_definite_inline_size = true;
             self.item_used_mut(index).has_definite_inline_size.set(true);
         } else {
+            self.flex_items[index].metrics.has_definite_block_size = true;
             self.item_used_mut(index).has_definite_block_size.set(true);
         }
     }
 
     fn set_main_size(&mut self, index: usize, size: CssPixels) {
         if self.main_axis_is_horizontal() {
-            self.flex_items[index].main_size_is_definite = true;
+            self.flex_items[index].metrics.set_content_inline_size(size);
             self.item_used_mut(index).set_content_inline_size(size);
         } else {
+            self.flex_items[index].metrics.set_content_block_size(size);
             self.item_used_mut(index).set_content_block_size(size);
         }
     }
 
     fn set_cross_size(&mut self, index: usize, size: CssPixels) {
         if self.cross_axis_is_horizontal() {
-            self.flex_items[index].cross_size_is_definite = true;
+            self.flex_items[index].metrics.set_content_inline_size(size);
             self.item_used_mut(index).set_content_inline_size(size);
         } else {
+            self.flex_items[index].metrics.set_content_block_size(size);
             self.item_used_mut(index).set_content_block_size(size);
         }
     }
@@ -806,6 +798,12 @@ impl<'pass> FlexFormattingContext<'pass> {
             used.padding_top.set(padding_top);
             used.padding_bottom.set(padding_bottom);
         }
+        self.flex_items[index].metrics.padding = PhysicalEdges {
+            left: padding_left,
+            right: padding_right,
+            top: padding_top,
+            bottom: padding_bottom,
+        };
 
         let main_axis_is_horizontal = self.main_axis_is_horizontal();
         let item = &mut self.flex_items[index];
@@ -867,14 +865,7 @@ impl<'pass> FlexFormattingContext<'pass> {
                     self.state.set_box_is_flex_item(&self.callbacks, child, true);
                     self.create_used_values(child);
                     let mut item = FlexItem::new(child);
-                    let creation_baseline = BoxMetrics::capture_from_record(&self.records.used_values(child));
-                    let (main_definite, cross_definite) = if self.main_axis_is_horizontal() {
-                        (creation_baseline.has_definite_inline_size, creation_baseline.has_definite_block_size)
-                    } else {
-                        (creation_baseline.has_definite_block_size, creation_baseline.has_definite_inline_size)
-                    };
-                    item.main_size_is_definite = main_definite;
-                    item.cross_size_is_definite = cross_definite;
+                    item.metrics = BoxMetrics::capture_from_record(&self.records.used_values(child));
                     buckets.entry(self.style(child).order()).or_default().push(item);
                 }
             }
@@ -1946,8 +1937,10 @@ impl<'pass> FlexFormattingContext<'pass> {
     fn set_main_axis_first_margin(&mut self, index: usize, margin: CssPixels) {
         self.flex_items[index].margins.main_before = margin;
         if self.main_axis_is_horizontal() {
+            self.flex_items[index].metrics.margin.left = margin;
             self.item_used_mut(index).margin_left.set(margin);
         } else {
+            self.flex_items[index].metrics.margin.top = margin;
             self.item_used_mut(index).margin_top.set(margin);
         }
     }
@@ -1955,8 +1948,10 @@ impl<'pass> FlexFormattingContext<'pass> {
     fn set_main_axis_second_margin(&mut self, index: usize, margin: CssPixels) {
         self.flex_items[index].margins.main_after = margin;
         if self.main_axis_is_horizontal() {
+            self.flex_items[index].metrics.margin.right = margin;
             self.item_used_mut(index).margin_right.set(margin);
         } else {
+            self.flex_items[index].metrics.margin.bottom = margin;
             self.item_used_mut(index).margin_bottom.set(margin);
         }
     }
@@ -2420,17 +2415,31 @@ impl<'pass> FlexFormattingContext<'pass> {
         let reference = self.container_metrics.get().content_inline_size;
         for index in 0..self.flex_items.len() {
             let style = self.style(self.flex_items[index].box_);
+            let margin = PhysicalEdges {
+                left: style.margin_left().to_px(reference),
+                right: style.margin_right().to_px(reference),
+                top: style.margin_top().to_px(reference),
+                bottom: style.margin_bottom().to_px(reference),
+            };
+            let border = PhysicalEdges {
+                left: style.border_left_width(),
+                right: style.border_right_width(),
+                top: style.border_top_width(),
+                bottom: style.border_bottom_width(),
+            };
             {
                 let used = self.item_used_mut(index);
-                used.margin_left.set(style.margin_left().to_px(reference));
-                used.margin_right.set(style.margin_right().to_px(reference));
-                used.margin_top.set(style.margin_top().to_px(reference));
-                used.margin_bottom.set(style.margin_bottom().to_px(reference));
-                used.border_left.set(style.border_left_width());
-                used.border_right.set(style.border_right_width());
-                used.border_top.set(style.border_top_width());
-                used.border_bottom.set(style.border_bottom_width());
+                used.margin_left.set(margin.left);
+                used.margin_right.set(margin.right);
+                used.margin_top.set(margin.top);
+                used.margin_bottom.set(margin.bottom);
+                used.border_left.set(border.left);
+                used.border_right.set(border.right);
+                used.border_top.set(border.top);
+                used.border_bottom.set(border.bottom);
             }
+            self.flex_items[index].metrics.margin = margin;
+            self.flex_items[index].metrics.border = border;
             self.set_main_size(index, self.flex_items[index].main_size.unwrap());
             self.set_cross_size(index, self.flex_items[index].cross_size.unwrap());
         }
@@ -2472,12 +2481,11 @@ impl<'pass> FlexFormattingContext<'pass> {
         };
         let main_size = item.main_size.unwrap();
         let cross_size = item.cross_size.unwrap();
+        metrics.has_definite_block_size = item.metrics.has_definite_block_size;
         if self.main_axis_is_horizontal() {
-            metrics.has_definite_block_size = item.cross_size_is_definite;
             metrics.set_content_inline_size(main_size);
             metrics.set_content_block_size(cross_size);
         } else {
-            metrics.has_definite_block_size = item.main_size_is_definite;
             metrics.set_content_inline_size(cross_size);
             metrics.set_content_block_size(main_size);
         }
@@ -2487,8 +2495,8 @@ impl<'pass> FlexFormattingContext<'pass> {
     fn layout_inside_item(&mut self, run: &FormattingContextRun<'pass>, index: usize) {
         let node = self.flex_items[index].box_;
         let mut input = LayoutInput {
-            available_space: self
-                .item_used(index)
+            available_space: self.flex_items[index]
+                .metrics
                 .available_inner_space_or_constraints_from(self.available_space_for_items.unwrap().space),
             containing_block_constraints: self.item_containing_block_constraints(),
             content_box_position_in_bfc_root: None,
