@@ -36,6 +36,15 @@ pub(crate) struct Fragment {
     pub(crate) grid_layout_data: Option<OwnedGridLayoutData>,
     pub(crate) flex_layout_data: Option<OwnedFlexLayoutData>,
     pub(crate) used_grid_tracks: Option<OwnedUsedGridTracks>,
+    /// The SVG payload family is copied at snapshot and refreshed by the
+    /// run-end drain: SVG layout legally rewrites these record fields after
+    /// the owning box was placed, so placement-time capture alone would be
+    /// stale. Transforms and viewport stay readable on the record in-run
+    /// (they back get-or-compute caches); the path handle is write-only and
+    /// moves.
+    pub(crate) computed_svg_transforms: Option<crate::layout::FfiSvgComputedTransforms>,
+    pub(crate) svg_viewport_size: Option<crate::layout::FfiCssPixelSize>,
+    pub(crate) computed_svg_path: Cell<Option<RetainedLayoutHandle>>,
     pub(crate) children: Vec<FragmentLink>,
 }
 
@@ -89,21 +98,31 @@ fn snapshot_link(
     emission_offset: FfiCssPixelPoint,
 ) -> FragmentLink {
     let line_data = used.line_data.get().map(|cell| Box::new(cell.take()));
-    let (table_cell_coordinates, override_borders_data, grid_layout_data, flex_layout_data, used_grid_tracks, abspos_layout_inputs) = used
-        .rare_data
-        .get()
-        .map(|cell| {
-            let mut rare = cell.borrow_mut();
-            (
-                rare.table_cell_coordinates,
-                rare.override_borders_data,
-                rare.grid_layout_data.take(),
-                rare.flex_layout_data.take(),
-                rare.used_grid_tracks.take(),
-                rare.abspos_layout_inputs,
-            )
-        })
-        .unwrap_or((None, None, None, None, None, None));
+    let rare_payloads = used.rare_data.get().map(|cell| {
+        let mut rare = cell.borrow_mut();
+        (
+            rare.table_cell_coordinates,
+            rare.override_borders_data,
+            rare.grid_layout_data.take(),
+            rare.flex_layout_data.take(),
+            rare.used_grid_tracks.take(),
+            rare.abspos_layout_inputs,
+            rare.computed_svg_transforms,
+            rare.svg_viewport_size,
+            rare.computed_svg_path.take(),
+        )
+    });
+    let (
+        table_cell_coordinates,
+        override_borders_data,
+        grid_layout_data,
+        flex_layout_data,
+        used_grid_tracks,
+        abspos_layout_inputs,
+        computed_svg_transforms,
+        svg_viewport_size,
+        computed_svg_path,
+    ) = rare_payloads.unwrap_or((None, None, None, None, None, None, None, None, None));
     FragmentLink {
         node,
         fragment: Box::new(Fragment {
@@ -128,6 +147,9 @@ fn snapshot_link(
             grid_layout_data,
             flex_layout_data,
             used_grid_tracks,
+            computed_svg_transforms,
+            svg_viewport_size,
+            computed_svg_path: Cell::new(computed_svg_path),
             children,
         }),
         offset: emission_offset,
@@ -222,6 +244,10 @@ pub(crate) struct RunFragmentBuilder {
     /// placed by other runs (entry sweeps); those park as late attachments
     /// instead of fabricating frames that can never be placed here.
     is_entry_accumulator: bool,
+    /// Set by SVG layout's payload writes; gates the run-end drain that
+    /// refreshes fragment SVG payloads from records rewritten after their
+    /// box's placement, so non-SVG runs never pay for the walk.
+    saw_svg_payload_write: Cell<bool>,
     inner: std::cell::RefCell<RunFragmentBuilderInner>,
 }
 
@@ -250,6 +276,7 @@ impl RunFragmentBuilder {
             root_node,
             root_containing_block_slot: root_containing_block.map(|node| node.slot_index()),
             is_entry_accumulator: false,
+            saw_svg_payload_write: Cell::new(false),
             inner: std::cell::RefCell::new(RunFragmentBuilderInner::default()),
         }
     }
@@ -259,6 +286,7 @@ impl RunFragmentBuilder {
             root_node,
             root_containing_block_slot: None,
             is_entry_accumulator: true,
+            saw_svg_payload_write: Cell::new(false),
             inner: std::cell::RefCell::new(RunFragmentBuilderInner::default()),
         }
     }
@@ -266,6 +294,10 @@ impl RunFragmentBuilder {
     /// Declares a record this run creates without ever placing it.
     pub(crate) fn note_unplaced_record(&self, node: crate::layout::node_data::NodeSlotId) {
         self.inner.borrow_mut().unplaced_records.push(node);
+    }
+
+    pub(crate) fn note_svg_payload_write(&self) {
+        self.saw_svg_payload_write.set(true);
     }
 
     /// Registers an absolutely positioned child born in birth_box's content
@@ -683,11 +715,41 @@ impl RunFragmentBuilder {
                 candidate.effective_birth = containing_block;
             }
         }
+        if self.saw_svg_payload_write.take() {
+            refresh_svg_payloads_from_records(&mut inner.root_children, state);
+            refresh_svg_payloads_from_records(&mut inner.late_attachments, state);
+        }
         PendingRunResult {
             root_children: inner.root_children,
             late_attachments: inner.late_attachments,
             escaped_abspos,
             escaped_anchor_candidates,
         }
+    }
+}
+
+/// SVG layout rewrites transform/viewport/path record fields after the owning
+/// box was placed (resource content revisited per consumer), so fragments
+/// snapshotted at placement can hold stale copies. Refresh every fragment in
+/// the finished run from its record: the run just completed, so these are the
+/// final values commit must emit.
+fn refresh_svg_payloads_from_records(links: &mut [FragmentLink], state: &LayoutState) {
+    for link in links {
+        let fragment = &mut *link.fragment;
+        if let Some(rare) = state.used_values_rare_data(link.node.slot_index()) {
+            if rare.computed_svg_transforms.is_some() {
+                fragment.computed_svg_transforms = rare.computed_svg_transforms;
+            }
+            if rare.svg_viewport_size.is_some() {
+                fragment.svg_viewport_size = rare.svg_viewport_size;
+            }
+        }
+        if let Some(handle) = state
+            .used_values_rare_data_mut_if_present(link.node.slot_index())
+            .and_then(|mut rare| rare.computed_svg_path.take())
+        {
+            fragment.computed_svg_path.set(Some(handle));
+        }
+        refresh_svg_payloads_from_records(&mut fragment.children, state);
     }
 }

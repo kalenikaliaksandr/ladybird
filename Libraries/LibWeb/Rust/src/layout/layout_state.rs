@@ -1477,24 +1477,15 @@ impl LayoutState {
                 }
             }
 
-            let (transforms, viewport_size, path) = self
-                .used_values_rare_data_mut_if_present(slot_index)
-                .map_or((None, None, None), |mut rare| {
-                    (
-                        rare.computed_svg_transforms,
-                        rare.svg_viewport_size,
-                        rare.computed_svg_path.as_mut().map(RetainedLayoutHandle::take),
-                    )
-                });
             unsafe {
-                if let Some(transforms) = transforms {
+                if let Some(transforms) = fragment.computed_svg_transforms {
                     (sink.set_computed_svg_transforms)(sink.context, paintable, transforms);
                 }
-                if let Some(viewport_size) = viewport_size {
+                if let Some(viewport_size) = fragment.svg_viewport_size {
                     (sink.set_svg_viewport_size)(sink.context, paintable, viewport_size);
                 }
-                if let Some(path) = path {
-                    (sink.set_computed_svg_path)(sink.context, paintable, path);
+                if let Some(mut path) = fragment.computed_svg_path.take() {
+                    (sink.set_computed_svg_path)(sink.context, paintable, path.take());
                 }
             }
             if let Some(data) = &fragment.grid_layout_data {
