@@ -33,6 +33,10 @@ pub(crate) struct BoxMetrics {
 }
 
 impl BoxMetrics {
+    pub(crate) fn has_definite_inline_size(&self) -> bool {
+        self.has_definite_inline_size && self.inline_size_constraint == SizeConstraint::None
+    }
+
     pub(crate) fn has_definite_block_size(&self) -> bool {
         self.has_definite_block_size && self.block_size_constraint == SizeConstraint::None
     }
