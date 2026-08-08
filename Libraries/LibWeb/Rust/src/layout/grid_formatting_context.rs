@@ -3413,10 +3413,15 @@ impl<'pass> GridFormattingContext<'pass> {
                 used.has_definite_inline_size.set(true);
                 used.has_definite_block_size.set(true);
             }
+            // The record state at this point is entirely this container's own
+            // accumulated decision: the metric passes, the wrapper re-resolve,
+            // and the definiteness force above. Declaring it hands the item
+            // run its complete pre-run root state through the input.
+            let declared_item_metrics = BoxMetrics::capture_from_record(&self.used(item));
             let input = LayoutInput {
                 available_space: AvailableSpace {
-                    inline_size: AvailableSize::definite(self.used(item).content_inline_size.get()),
-                    block_size: AvailableSize::definite(self.used(item).content_block_size.get()),
+                    inline_size: AvailableSize::definite(declared_item_metrics.content_inline_size),
+                    block_size: AvailableSize::definite(declared_item_metrics.content_block_size),
                 },
                 containing_block_constraints: {
                     let mut constraints = self.grid_area_constraints(item);
@@ -3429,7 +3434,10 @@ impl<'pass> GridFormattingContext<'pass> {
                     constraints
                 },
                 content_box_position_in_bfc_root: None,
-                sizing: RootSizingDirectives::default(),
+                sizing: RootSizingDirectives {
+                    declared_root_metrics: Some(declared_item_metrics),
+                    ..Default::default()
+                },
                 participation: ParticipationInParentFormattingContext::Item,
             };
             match crate::layout::layout_inside_child(
