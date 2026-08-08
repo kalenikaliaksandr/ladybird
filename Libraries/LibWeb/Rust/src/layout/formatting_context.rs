@@ -396,6 +396,10 @@ pub(crate) fn place_child(
         // A containing block this run does not own can never open a frame
         // here — its fragment is sealed in whatever run placed it — so
         // not-owned parks the link exactly like an already-placed owned one.
+        // The placement flag is scope truth, not builder truth: nested SVG
+        // runs share this records scope across separate builders, so one
+        // builder's placed set cannot answer for a containing block placed
+        // under another. Re-sourced when the shared placement ledger exists.
         let containing_block_is_already_placed = !containing_block.is_invalid()
             && records
                 .used_values_if_owned(containing_block)

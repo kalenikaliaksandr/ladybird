@@ -437,7 +437,6 @@ struct RunFragmentBuilderInner {
     /// Frames of boxes this run has not placed yet; placing a box removes
     /// its frame, so the map holds only the open containing-block chain.
     frames: std::collections::HashMap<u32, PendingFrame>,
-    #[cfg(debug_assertions)]
     placed_slots: std::collections::HashSet<u32>,
     deposits: std::collections::HashMap<u32, (crate::layout::node_data::NodeSlotId, PendingRunResult)>,
     /// Records this run creates and never places (inline boxes entered for
@@ -683,7 +682,6 @@ impl RunFragmentBuilder {
     ) {
         let mut inner = self.inner.borrow_mut();
         let slot = node.slot_index();
-        #[cfg(debug_assertions)]
         assert!(inner.placed_slots.insert(slot), "a box was placed twice in one run");
         let (children, mut carried_late, riding_abspos, riding_anchors) = match inner.frames.remove(&slot) {
             Some(frame) => (frame.children, Vec::new(), frame.pending_abspos, frame.anchor_candidates),
