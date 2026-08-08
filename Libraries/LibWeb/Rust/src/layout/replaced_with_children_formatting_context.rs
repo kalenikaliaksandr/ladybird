@@ -43,6 +43,7 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
         .records
         .create_used_values(run.state, &run.callbacks, wrapper, wrapper_constraints);
     wrapper_state.set_content_inline_size(content_inline_size);
+    let declared_wrapper_metrics = crate::layout::BoxMetrics::capture_from_record(&wrapper_state);
 
     let wrapper_layout = crate::layout::run_formatting_context(
         run.state,
@@ -59,6 +60,7 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
             content_box_position_in_bfc_root: None,
             sizing: RootSizingDirectives {
                 adopt_automatic_content_block_size: true,
+                declared_root_metrics: Some(declared_wrapper_metrics),
                 ..RootSizingDirectives::default()
             },
             participation: ParticipationInParentFormattingContext::Item,

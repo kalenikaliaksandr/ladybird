@@ -728,18 +728,22 @@ impl<'pass> SvgFormattingContext<'pass> {
             let child_used = child_used_pointer;
             child_used.set_content_inline_size(transformed_rect.width);
             child_used.set_content_block_size(transformed_rect.height);
+            let declared_foreign_object_metrics = BoxMetrics::capture_from_record(&child_used);
 
             let child_input = LayoutInput {
                 available_space: AvailableSpace {
-                    inline_size: AvailableSize::definite(child_used.content_inline_size.get()),
-                    block_size: AvailableSize::definite(child_used.content_block_size.get()),
+                    inline_size: AvailableSize::definite(declared_foreign_object_metrics.content_inline_size),
+                    block_size: AvailableSize::definite(declared_foreign_object_metrics.content_block_size),
                 },
                 containing_block_constraints: ContainingBlockConstraints {
                     quirks_mode_percentage_basis_block_size: self.quirks_mode_percentage_basis_block_size,
                     ..Default::default()
                 },
                 content_box_position_in_bfc_root: None,
-                sizing: RootSizingDirectives::default(),
+                sizing: RootSizingDirectives {
+                    declared_root_metrics: Some(declared_foreign_object_metrics),
+                    ..RootSizingDirectives::default()
+                },
                 participation: ParticipationInParentFormattingContext::Item,
             };
             match crate::layout::layout_inside_child(run, None, None, child, self.layout_mode, child_input, true) {
