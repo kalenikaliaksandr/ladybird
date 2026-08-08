@@ -1068,6 +1068,10 @@ pub(crate) struct GridFormattingContext<'pass> {
     /// intrinsic self-sizing writes going through. The record copy stays
     /// until fragments are built from placement inputs.
     container_metrics: Cell<BoxMetrics>,
+    /// Item metrics by slot, seeded lazily from the creation baseline on
+    /// first touch and maintained beside every item record write. Keyed by
+    /// slot because grid items travel as copies without their index.
+    item_metrics: RefCell<HashMap<u32, BoxMetrics>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1157,6 +1161,7 @@ impl<'pass> GridFormattingContext<'pass> {
             row_alignment_container_size: CssPixels::default(),
             use_row_alignment_container_size: false,
             container_metrics: Cell::new(BoxMetrics::default()),
+            item_metrics: RefCell::new(HashMap::new()),
         }
     }
 
@@ -1167,6 +1172,7 @@ impl<'pass> GridFormattingContext<'pass> {
 
     fn reset_for_run(&mut self, input: LayoutInput) {
         self.refresh_container_metrics_from_record();
+        self.item_metrics.borrow_mut().clear();
         self.available_space = Some(input.available_space);
         self.layout_input = Some(input);
         self.column_lines.clear();
@@ -1201,6 +1207,19 @@ impl<'pass> GridFormattingContext<'pass> {
 
     fn used_mut(&self, item: GridItem) -> std::rc::Rc<UsedValues> {
         self.used(item)
+    }
+
+    fn item_metrics_of(&self, item: GridItem) -> BoxMetrics {
+        if let Some(metrics) = self.item_metrics.borrow().get(&item.box_.slot_index()) {
+            return *metrics;
+        }
+        BoxMetrics::capture_from_record(&self.used(item))
+    }
+
+    fn with_item_metrics_mut(&self, item: GridItem, mutate: impl FnOnce(&mut BoxMetrics)) {
+        let mut metrics = self.item_metrics_of(item);
+        mutate(&mut metrics);
+        self.item_metrics.borrow_mut().insert(item.box_.slot_index(), metrics);
     }
 
     fn style(&self, node: Node) -> StyleValues<'pass> {
@@ -2259,9 +2278,9 @@ impl<'pass> GridFormattingContext<'pass> {
         }
 
         let has_definite_preferred_size = if axis.is_column() {
-            self.used(item).has_definite_inline_size()
+            self.item_metrics_of(item).has_definite_inline_size()
         } else {
-            self.used(item).has_definite_block_size()
+            self.item_metrics_of(item).has_definite_block_size()
         };
         if has_definite_preferred_size {
             // FIXME: consider margins, padding and borders because it is outer size.
@@ -2613,9 +2632,8 @@ impl<'pass> GridFormattingContext<'pass> {
 
     fn subgrid_item_contributions_to_track_sizing(&self, subgrid: GridItem, axis: Axis) -> Vec<ItemContribution> {
         let scratch = MeasurementState::create(self.callbacks);
-        let live = self.used(subgrid);
         let scratch_root = scratch.create_used_values(subgrid.box_, ContainingBlockConstraints::default());
-        let live_metrics = BoxMetrics::capture_from_record(&live);
+        let live_metrics = self.item_metrics_of(subgrid);
         let mut scratch_metrics = BoxMetrics::capture_from_record(&scratch_root);
         scratch_metrics.content_inline_size = live_metrics.content_inline_size;
         scratch_metrics.content_block_size = live_metrics.content_block_size;
@@ -2639,8 +2657,8 @@ impl<'pass> GridFormattingContext<'pass> {
         };
         let mut context = GridFormattingContext::new(&scratch_run, Some(self));
         let mut available = self.available_space.unwrap();
-        if !axis.is_column() && self.used(subgrid).has_definite_inline_size() {
-            available.inline_size = AvailableSize::definite(self.used(subgrid).content_inline_size.get());
+        if !axis.is_column() && self.item_metrics_of(subgrid).has_definite_inline_size() {
+            available.inline_size = AvailableSize::definite(self.item_metrics_of(subgrid).content_inline_size);
         }
         let input = LayoutInput::new(available, self.track_sizing_constraints(), ParticipationInParentFormattingContext::Item);
         context.reset_for_run(input);
@@ -2735,33 +2753,62 @@ impl<'pass> GridFormattingContext<'pass> {
             let item_start = item.position(axis);
             let item_end = item_start + item.span(axis) as i32;
             let track_count = self.axis_tracks(axis).len() as i32;
-            let used = self.used_mut(item);
             if axis.is_column() {
-                used.padding_left.set(style.padding_left().to_px(inline_basis));
-                used.padding_right.set(style.padding_right().to_px(inline_basis));
-                used.margin_left.set(style.margin_left().to_px(inline_basis));
-                used.margin_right.set(style.margin_right().to_px(inline_basis));
-                used.border_left.set(style.border_left_width());
-                used.border_right.set(style.border_right_width());
+                let padding_left = style.padding_left().to_px(inline_basis);
+                let padding_right = style.padding_right().to_px(inline_basis);
+                let border_left = style.border_left_width();
+                let border_right = style.border_right_width();
+                let mut margin_left = style.margin_left().to_px(inline_basis);
+                let mut margin_right = style.margin_right().to_px(inline_basis);
                 if item_start > 0 {
-                    used.margin_left.set(used.margin_left.get() + extra_margin);
+                    margin_left += extra_margin;
                 }
                 if item_end < track_count {
-                    used.margin_right.set(used.margin_right.get() + extra_margin);
+                    margin_right += extra_margin;
                 }
+                let used = self.used_mut(item);
+                used.padding_left.set(padding_left);
+                used.padding_right.set(padding_right);
+                used.margin_left.set(margin_left);
+                used.margin_right.set(margin_right);
+                used.border_left.set(border_left);
+                used.border_right.set(border_right);
+                self.with_item_metrics_mut(item, |metrics| {
+                    metrics.padding.left = padding_left;
+                    metrics.padding.right = padding_right;
+                    metrics.margin.left = margin_left;
+                    metrics.margin.right = margin_right;
+                    metrics.border.left = border_left;
+                    metrics.border.right = border_right;
+                });
             } else {
-                used.padding_top.set(style.padding_top().to_px(inline_basis));
-                used.padding_bottom.set(style.padding_bottom().to_px(inline_basis));
-                used.margin_top.set(style.margin_top().to_px(inline_basis));
-                used.margin_bottom.set(style.margin_bottom().to_px(inline_basis));
-                used.border_top.set(style.border_top_width());
-                used.border_bottom.set(style.border_bottom_width());
+                let padding_top = style.padding_top().to_px(inline_basis);
+                let padding_bottom = style.padding_bottom().to_px(inline_basis);
+                let border_top = style.border_top_width();
+                let border_bottom = style.border_bottom_width();
+                let mut margin_top = style.margin_top().to_px(inline_basis);
+                let mut margin_bottom = style.margin_bottom().to_px(inline_basis);
                 if item_start > 0 {
-                    used.margin_top.set(used.margin_top.get() + extra_margin);
+                    margin_top += extra_margin;
                 }
                 if item_end < track_count {
-                    used.margin_bottom.set(used.margin_bottom.get() + extra_margin);
+                    margin_bottom += extra_margin;
                 }
+                let used = self.used_mut(item);
+                used.padding_top.set(padding_top);
+                used.padding_bottom.set(padding_bottom);
+                used.margin_top.set(margin_top);
+                used.margin_bottom.set(margin_bottom);
+                used.border_top.set(border_top);
+                used.border_bottom.set(border_bottom);
+                self.with_item_metrics_mut(item, |metrics| {
+                    metrics.padding.top = padding_top;
+                    metrics.padding.bottom = padding_bottom;
+                    metrics.margin.top = margin_top;
+                    metrics.margin.bottom = margin_bottom;
+                    metrics.border.top = border_top;
+                    metrics.border.bottom = border_bottom;
+                });
             }
         }
     }
@@ -2781,20 +2828,20 @@ impl<'pass> GridFormattingContext<'pass> {
     }
 
     fn item_margin_box_start(&self, item: GridItem, axis: Axis) -> CssPixels {
-        let used = self.used(item);
+        let metrics = self.item_metrics_of(item);
         if axis.is_column() {
-            used.margin_left.get() + used.border_left.get() + used.padding_left.get() + item.extra_margin_left
+            metrics.margin.left + metrics.border.left + metrics.padding.left + item.extra_margin_left
         } else {
-            used.margin_top.get() + used.border_top.get() + used.padding_top.get() + item.extra_margin_top
+            metrics.margin.top + metrics.border.top + metrics.padding.top + item.extra_margin_top
         }
     }
 
     fn item_margin_box_end(&self, item: GridItem, axis: Axis) -> CssPixels {
-        let used = self.used(item);
+        let metrics = self.item_metrics_of(item);
         if axis.is_column() {
-            used.padding_right.get() + used.border_right.get() + used.margin_right.get() + item.extra_margin_right
+            metrics.padding.right + metrics.border.right + metrics.margin.right + item.extra_margin_right
         } else {
-            used.padding_bottom.get() + used.border_bottom.get() + used.margin_bottom.get() + item.extra_margin_bottom
+            metrics.padding.bottom + metrics.border.bottom + metrics.margin.bottom + item.extra_margin_bottom
         }
     }
 
@@ -3000,6 +3047,11 @@ impl<'pass> GridFormattingContext<'pass> {
                 used.margin_left.set(resolved.margin_start);
                 used.margin_right.set(resolved.margin_end);
                 used.set_content_inline_size(resolved.size);
+                self.with_item_metrics_mut(item, |metrics| {
+                    metrics.margin.left = resolved.margin_start;
+                    metrics.margin.right = resolved.margin_end;
+                    metrics.set_content_inline_size(resolved.size);
+                });
                 continue;
             }
 
@@ -3014,7 +3066,7 @@ impl<'pass> GridFormattingContext<'pass> {
             } else if !axis.is_column()
                 && preferred.is_auto()
                 && facts.has_preferred_aspect_ratio()
-                && self.used(item).has_definite_inline_size()
+                && self.item_metrics_of(item).has_definite_inline_size()
             {
                 // NB: When the item has a preferred aspect ratio and a definite width, resolve the
                 //     height through the aspect ratio instead of using fit-content sizing, which would
@@ -3161,10 +3213,20 @@ impl<'pass> GridFormattingContext<'pass> {
                 used.margin_left.set(resolved.margin_start);
                 used.margin_right.set(resolved.margin_end);
                 used.set_content_inline_size(resolved.size);
+                self.with_item_metrics_mut(item, |metrics| {
+                    metrics.margin.left = resolved.margin_start;
+                    metrics.margin.right = resolved.margin_end;
+                    metrics.set_content_inline_size(resolved.size);
+                });
             } else {
                 used.margin_top.set(resolved.margin_start);
                 used.margin_bottom.set(resolved.margin_end);
                 used.set_content_block_size(resolved.size);
+                self.with_item_metrics_mut(item, |metrics| {
+                    metrics.margin.top = resolved.margin_start;
+                    metrics.margin.bottom = resolved.margin_end;
+                    metrics.set_content_block_size(resolved.size);
+                });
             }
         }
     }
@@ -3419,17 +3481,26 @@ impl<'pass> GridFormattingContext<'pass> {
                 used.margin_left.set(resolved.margin_start);
                 used.margin_right.set(resolved.margin_end);
                 used.set_content_inline_size(resolved.size);
+                self.with_item_metrics_mut(item, |metrics| {
+                    metrics.margin.left = resolved.margin_start;
+                    metrics.margin.right = resolved.margin_end;
+                    metrics.set_content_inline_size(resolved.size);
+                });
             }
             {
                 let used = self.used_mut(item);
                 used.has_definite_inline_size.set(true);
                 used.has_definite_block_size.set(true);
+                self.with_item_metrics_mut(item, |metrics| {
+                    metrics.has_definite_inline_size = true;
+                    metrics.has_definite_block_size = true;
+                });
             }
-            // The record state at this point is entirely this container's own
+            // The item state at this point is entirely this container's own
             // accumulated decision: the metric passes, the wrapper re-resolve,
             // and the definiteness force above. Declaring it hands the item
             // run its complete pre-run root state through the input.
-            let declared_item_metrics = BoxMetrics::capture_from_record(&self.used(item));
+            let declared_item_metrics = self.item_metrics_of(item);
             let input = LayoutInput {
                 available_space: AvailableSpace {
                     inline_size: AvailableSize::definite(declared_item_metrics.content_inline_size),
