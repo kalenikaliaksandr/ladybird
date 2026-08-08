@@ -94,9 +94,6 @@ impl<'pass> AbsposEngine<'pass> {
         self.used(node)
     }
 
-    fn static_position_containing_block(&self, node: Node) -> Node {
-        self.callbacks.static_position_containing_block(node)
-    }
 
     fn inline_containing_block(&self, node: Node) -> Node {
         self.callbacks.inline_containing_block(node)
@@ -114,8 +111,9 @@ impl<'pass> AbsposEngine<'pass> {
         &self,
         node: Node,
         static_position_rect: StaticPositionRect,
+        effective_birth: Node,
     ) -> StaticPositionRect {
-        let static_position_cb = self.static_position_containing_block(node);
+        let static_position_cb = effective_birth;
         let actual_containing_block = self.callbacks.containing_block(node);
         if static_position_cb.is_invalid() || static_position_cb == actual_containing_block {
             return static_position_rect;
@@ -1643,20 +1641,36 @@ impl<'pass> AbsposEngine<'pass> {
 
     pub(crate) fn layout_children(&self, run: &crate::layout::FormattingContextRun<'pass>) {
         debug_assert!(!self.state.is_measurement());
-        while let Some(child) = self.state.take_next_contained_abspos_child(run.box_) {
-            let child_box = child.child_box;
-            self.state
-                .create_used_values(&self.callbacks, child_box, ContainingBlockConstraints::default());
-            self.resolve_anchor_insets(child_box);
-            let inputs = AbsposLayoutInputs {
-                static_position_rect: self
-                    .resolve_static_position_relative_to_containing_block(child_box, child.static_position_rect),
-                containing_block_info: child
-                    .containing_block_info_override
-                    .unwrap_or_else(|| self.base_containing_block_info(child_box)),
-            };
-            self.layout_element(run, child_box, inputs);
+        let Some(fragments) = run.fragments.as_deref() else {
+            return;
+        };
+        loop {
+            let batch = fragments.take_pending_abspos_for_target(run.box_, &self.callbacks);
+            if batch.is_empty() {
+                break;
+            }
+            for child in batch {
+                self.layout_pending_child(run, child);
+            }
         }
+    }
+
+    fn layout_pending_child(&self, run: &crate::layout::FormattingContextRun<'pass>, child: PendingAbsposChild) {
+        let child_box = child.child_box;
+        self.state
+            .create_used_values(&self.callbacks, child_box, ContainingBlockConstraints::default());
+        self.resolve_anchor_insets(child_box);
+        let inputs = AbsposLayoutInputs {
+            static_position_rect: self.resolve_static_position_relative_to_containing_block(
+                child_box,
+                child.static_position_rect,
+                child.effective_birth,
+            ),
+            containing_block_info: child
+                .containing_block_info_override
+                .unwrap_or_else(|| self.base_containing_block_info(child_box)),
+        };
+        self.layout_element(run, child_box, inputs);
     }
 
     fn replay(&self, run: &crate::layout::FormattingContextRun<'pass>, node: Node) {
@@ -1773,7 +1787,7 @@ pub(crate) fn drain_remaining_abspos_targets(
     while let Some(target) = targets
         .iter()
         .copied()
-        .find(|target| !target.is_invalid() && state.has_contained_abspos_children(*target))
+        .find(|target| !target.is_invalid() && entry_fragments.has_pending_abspos_for_target(*target))
     {
         let run = crate::layout::FormattingContextRun::new(
             state,
@@ -1786,10 +1800,6 @@ pub(crate) fn drain_remaining_abspos_targets(
         );
         layout_contained_abspos_children(&run);
     }
-    debug_assert!(
-        state.all_registered_contained_abspos_children_are_laid_out(),
-        "registered abspos children were left without layout after the entry sweep"
-    );
 }
 
 pub(crate) fn compute_inset_native(

@@ -129,6 +129,10 @@ fn snapshot_link(
 pub(crate) struct PendingRunResult {
     pub(crate) root_children: Vec<FragmentLink>,
     pub(crate) late_attachments: Vec<FragmentLink>,
+    /// Absolutely positioned registrations whose targets lie outside the
+    /// finished run, escape-normalized so their rects compose only from
+    /// records read while the reading run owned them.
+    pub(crate) escaped_abspos: Vec<PendingAbsposChild>,
 }
 
 impl PendingRunResult {
@@ -174,6 +178,7 @@ enum FrameState {
     Pending {
         node: crate::layout::node_data::NodeSlotId,
         children: Vec<FragmentLink>,
+        pending_abspos: Vec<PendingAbsposChild>,
     },
     Consumed,
 }
@@ -207,6 +212,9 @@ struct RunFragmentBuilderInner {
     /// their box-model metrics); swept into orphan links so the tree covers
     /// the store exactly.
     unplaced_records: Vec<crate::layout::node_data::NodeSlotId>,
+    /// Registrations born at the run root, plus riders that arrived here
+    /// through hops; drained by target at run tails and entry sweeps.
+    pending_abspos_at_root: Vec<PendingAbsposChild>,
     root_children: Vec<FragmentLink>,
     late_attachments: Vec<FragmentLink>,
 }
@@ -238,6 +246,89 @@ impl RunFragmentBuilder {
         self.inner.borrow_mut().unplaced_records.push(node);
     }
 
+    /// Registers an absolutely positioned child born in birth_box's content
+    /// space; it rides frames and results until its target's tail drains it.
+    pub(crate) fn register_pending_abspos(&self, birth_box: crate::layout::node_data::NodeSlotId, entry: PendingAbsposChild) {
+        let mut inner = self.inner.borrow_mut();
+        if birth_box.slot_index() == self.root_node.slot_index() {
+            inner.pending_abspos_at_root.push(entry);
+            return;
+        }
+        match inner.frames.get_mut(&birth_box.slot_index()) {
+            Some(FrameState::Pending { pending_abspos, .. }) => pending_abspos.push(entry),
+            Some(FrameState::Consumed) => {
+                debug_assert!(false, "an abspos registration named an already-placed birth box");
+                inner.pending_abspos_at_root.push(entry);
+            }
+            None => {
+                if self.is_entry_accumulator {
+                    inner.pending_abspos_at_root.push(entry);
+                } else {
+                    inner.frames.insert(
+                        birth_box.slot_index(),
+                        FrameState::Pending {
+                            node: birth_box,
+                            children: Vec::new(),
+                            pending_abspos: vec![entry],
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    /// Rewrites the containing-block info of every registration that has
+    /// arrived for a target; a grid stamps its grid-area geometry onto its
+    /// contained children at completion, while their entries sit here.
+    pub(crate) fn stamp_pending_abspos_containing_blocks_for_target(
+        &self,
+        target: crate::layout::node_data::NodeSlotId,
+        containing_block_info_for_child: impl Fn(crate::layout::node_data::NodeSlotId) -> AbsposContainingBlockInfo,
+    ) {
+        for entry in &mut self.inner.borrow_mut().pending_abspos_at_root {
+            if entry.target.slot_index() == target.slot_index() {
+                entry.containing_block_info_override = Some(containing_block_info_for_child(entry.child_box));
+            }
+        }
+    }
+
+    pub(crate) fn has_pending_abspos_for_target(&self, target: crate::layout::node_data::NodeSlotId) -> bool {
+        self.inner
+            .borrow()
+            .pending_abspos_at_root
+            .iter()
+            .any(|entry| entry.target.slot_index() == target.slot_index())
+    }
+
+    /// Takes every registration that has arrived for a target, in document
+    /// order. Draining can register more, so callers loop until empty.
+    pub(crate) fn take_pending_abspos_for_target(
+        &self,
+        target: crate::layout::node_data::NodeSlotId,
+        callbacks: &FfiLayoutFcCallbacks,
+    ) -> Vec<PendingAbsposChild> {
+        let mut inner = self.inner.borrow_mut();
+        let mut taken = Vec::new();
+        let mut index = 0;
+        while index < inner.pending_abspos_at_root.len() {
+            if inner.pending_abspos_at_root[index].target.slot_index() == target.slot_index() {
+                taken.push(inner.pending_abspos_at_root.remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        taken.sort_by(|left, right| {
+            if left.child_box.slot_index() == right.child_box.slot_index() {
+                std::cmp::Ordering::Equal
+            } else if callbacks.is_before(left.child_box, right.child_box) {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        });
+        taken
+    }
+
     /// Parks a child run's returned structure until the parent places the
     /// child. The gap between a run returning and place_child is where the
     /// parent legally writes the offset family.
@@ -265,20 +356,40 @@ impl RunFragmentBuilder {
     ) {
         let mut inner = self.inner.borrow_mut();
         let slot = node.slot_index();
-        let (children, mut carried_late) = match inner.frames.insert(slot, FrameState::Consumed) {
-            Some(FrameState::Pending { children, .. }) => (children, Vec::new()),
+        let (children, mut carried_late, riding_abspos) = match inner.frames.insert(slot, FrameState::Consumed) {
+            Some(FrameState::Pending {
+                children,
+                pending_abspos,
+                ..
+            }) => (children, Vec::new(), pending_abspos),
             Some(FrameState::Consumed) => {
                 debug_assert!(false, "a box was placed twice in one run");
-                (Vec::new(), Vec::new())
+                (Vec::new(), Vec::new(), Vec::new())
             }
             None => match inner.deposits.remove(&slot) {
-                Some((_, pending)) => (pending.root_children, pending.late_attachments),
-                None => (Vec::new(), Vec::new()),
+                Some((_, pending)) => (pending.root_children, pending.late_attachments, pending.escaped_abspos),
+                None => (Vec::new(), Vec::new(), Vec::new()),
             },
         };
         let link = snapshot_link(node, children, used, false, containing_line_box_index, emission_offset);
         inner.late_attachments.append(&mut carried_late);
         self.attach(&mut inner, link, containing_block, containing_block_is_already_placed);
+        for mut entry in riding_abspos {
+            if entry.effective_birth.slot_index() == slot
+                && let Some(containing_block) = containing_block
+            {
+                entry.static_position_rect = crate::layout::translate_static_position_between_chains(
+                    entry.static_position_rect,
+                    used.content_offset.get(),
+                    FfiCssPixelPoint::default(),
+                );
+                entry.effective_birth = containing_block;
+            }
+            match inner.frames.get_mut(&entry.effective_birth.slot_index()) {
+                Some(FrameState::Pending { pending_abspos, .. }) => pending_abspos.push(entry),
+                _ => inner.pending_abspos_at_root.push(entry),
+            }
+        }
     }
 
     fn attach(
@@ -321,6 +432,7 @@ impl RunFragmentBuilder {
             FrameState::Pending {
                 node: containing_block,
                 children: vec![link],
+                pending_abspos: Vec::new(),
             },
         );
     }
@@ -328,8 +440,9 @@ impl RunFragmentBuilder {
     /// Closes the run: sweeps never-placed frames and deposits into orphan
     /// links snapshotted from their records, and returns the run root's
     /// completed structure. The builder is empty afterwards.
-    pub(crate) fn take_pending_result(&self, state: &LayoutState) -> PendingRunResult {
+    pub(crate) fn take_pending_result(&self, state: &LayoutState, callbacks: &FfiLayoutFcCallbacks) -> PendingRunResult {
         let mut inner = self.inner.take();
+        let mut escaped_abspos = std::mem::take(&mut inner.pending_abspos_at_root);
         let unplaced_records = std::mem::take(&mut inner.unplaced_records);
         for node in unplaced_records {
             let slot = node.slot_index();
@@ -349,9 +462,18 @@ impl RunFragmentBuilder {
         }
         let frames = std::mem::take(&mut inner.frames);
         for (slot, frame) in frames {
-            let FrameState::Pending { node, children } = frame else {
+            let FrameState::Pending {
+                node,
+                children,
+                pending_abspos,
+            } = frame
+            else {
                 continue;
             };
+            escaped_abspos.extend(pending_abspos);
+            if children.is_empty() {
+                continue;
+            }
             let Some(used) = state.used_values_by_slot(slot) else {
                 debug_assert!(false, "a pending frame's containing block has no record");
                 continue;
@@ -371,9 +493,38 @@ impl RunFragmentBuilder {
                 .root_children
                 .push(snapshot_link(node, pending.root_children, used, true, None, used.content_offset.get()));
         }
+        for entry in &mut escaped_abspos {
+            debug_assert!(
+                entry.target.slot_index() != self.root_node.slot_index(),
+                "a registration that arrived for this run's root was left undrained"
+            );
+            // Compose while placed: fold offsets read while this run still
+            // owns the records, stopping at the run root or the first
+            // unplaced box (a table wrapper on a cell's chain).
+            while entry.effective_birth.slot_index() != self.root_node.slot_index() {
+                let Some(used) = state.used_values_by_slot(entry.effective_birth.slot_index()) else {
+                    debug_assert!(false, "an escaping registration's birth box has no record");
+                    break;
+                };
+                if !used.has_content_offset.get() {
+                    break;
+                }
+                entry.static_position_rect = crate::layout::translate_static_position_between_chains(
+                    entry.static_position_rect,
+                    used.content_offset.get(),
+                    FfiCssPixelPoint::default(),
+                );
+                let containing_block = callbacks.containing_block(entry.effective_birth);
+                if containing_block.is_invalid() {
+                    break;
+                }
+                entry.effective_birth = containing_block;
+            }
+        }
         PendingRunResult {
             root_children: inner.root_children,
             late_attachments: inner.late_attachments,
+            escaped_abspos,
         }
     }
 }

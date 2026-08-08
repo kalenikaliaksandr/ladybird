@@ -458,9 +458,16 @@ fn committed_offset_delta_at_placement(
 pub(crate) fn register_contained_abspos_child(
     state: &LayoutState,
     callbacks: &FfiLayoutFcCallbacks,
+    fragments: Option<&RunFragmentBuilder>,
+    birth_box: Node,
     child: Node,
     static_position_rect: StaticPositionRect,
+    containing_block_info_override: Option<AbsposContainingBlockInfo>,
 ) {
+    let Some(fragments) = fragments else {
+        debug_assert!(false, "abspos registration outside a committing run");
+        return;
+    };
     let mut target = callbacks.containing_block(child);
     if target.is_invalid() {
         return;
@@ -487,7 +494,16 @@ pub(crate) fn register_contained_abspos_child(
         }
         target = containing_block;
     }
-    state.register_contained_abspos_child(callbacks, target, child, static_position_rect);
+    fragments.register_pending_abspos(
+        birth_box,
+        PendingAbsposChild {
+            child_box: child,
+            target,
+            effective_birth: birth_box,
+            static_position_rect,
+            containing_block_info_override,
+        },
+    );
 }
 
 fn containing_block_geometry_is_finalized_by_the_table_run(
@@ -1305,6 +1321,8 @@ fn register_table_abspos_descendants(run: &FormattingContextRun, parent: Node) {
                 register_contained_abspos_child(
                     run.state,
                     &run.callbacks,
+                    run.fragments.as_deref(),
+                    run.box_,
                     child,
                     StaticPositionRect {
                         rect: Default::default(),
@@ -1312,6 +1330,7 @@ fn register_table_abspos_descendants(run: &FormattingContextRun, parent: Node) {
                         block_alignment: StaticPositionAlignment::Start,
                         alignment_derives_from_own_computed_values: false,
                     },
+                    None,
                 );
             }
             if formatting_context_type_created_by_box(facts).is_none() {
@@ -1649,7 +1668,7 @@ fn run_formatting_context<'pass>(
     let take_run_fragments = || {
         run.fragments
             .as_ref()
-            .map(|fragments| fragments.take_pending_result(run.state))
+            .map(|fragments| fragments.take_pending_result(run.state, &run.callbacks))
     };
 
     let registered_abspos_children_could_never_be_laid_out =
@@ -1950,7 +1969,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             &[root, root_for_layout],
             &entry_fragments,
         );
-        let pass_fragments = entry_fragments.take_pending_result(state_ref);
+        let pass_fragments = entry_fragments.take_pending_result(state_ref, &callbacks);
         debug_assert!(pass_fragments.fragment_count() > 0, "the run root always has a fragment");
         let commit_index = fold_commit_index(&pass_fragments);
         state.shadow_diff_committed_fragments(&commit_index);
@@ -2023,7 +2042,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         // Materialized roots never claim a line index.
         entry_fragments.absorb_placement(root, None, root_used, false, None, root_used.content_offset.get());
         drain_remaining_abspos_targets(state_ref, callbacks, false, &[viewport, root], &entry_fragments);
-        let pass_fragments = entry_fragments.take_pending_result(state_ref);
+        let pass_fragments = entry_fragments.take_pending_result(state_ref, &callbacks);
         debug_assert!(pass_fragments.fragment_count() > 0, "the subtree root always has a fragment");
         let commit_index = fold_commit_index(&pass_fragments);
         state.shadow_diff_committed_fragments(&commit_index);
@@ -2066,7 +2085,7 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
         );
         AbsposEngine::new(state_ref, callbacks).replay(&run, box_);
         drain_remaining_abspos_targets(state_ref, callbacks, false, &[containing_block], &entry_fragments);
-        let pass_fragments = entry_fragments.take_pending_result(state_ref);
+        let pass_fragments = entry_fragments.take_pending_result(state_ref, &callbacks);
         debug_assert!(pass_fragments.fragment_count() > 0, "the replayed box always has a fragment");
         let commit_index = fold_commit_index(&pass_fragments);
         state.shadow_diff_committed_fragments(&commit_index);
