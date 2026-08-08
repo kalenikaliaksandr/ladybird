@@ -33,6 +33,15 @@ pub(crate) struct BoxMetrics {
 }
 
 impl BoxMetrics {
+    pub(crate) fn has_definite_block_size(&self) -> bool {
+        self.has_definite_block_size && self.block_size_constraint == SizeConstraint::None
+    }
+
+    pub(crate) fn set_content_inline_size(&mut self, value: CssPixels) {
+        self.content_inline_size = clamp_to_max_dimension_value(value.max(CssPixels::default()));
+        self.has_definite_inline_size = true;
+    }
+
     pub(crate) fn capture_from_record(used: &UsedValues) -> Self {
         Self {
             content_inline_size: used.content_inline_size.get(),
@@ -68,4 +77,35 @@ impl BoxMetrics {
             block_size_constraint: used.block_size_constraint.get(),
         }
     }
+}
+
+/// Writes an input-carried metrics value into the handed root record. The
+/// single record writer of the run prelude: parents declare root state
+/// through the input, and this is where it lands, so the record's pre-run
+/// state stays a pure function of the input. Raw cell writes on purpose —
+/// the value already carries its definiteness decisions.
+pub(crate) fn seed_root_record(used: &UsedValues, metrics: &BoxMetrics) {
+    used.content_inline_size.set(metrics.content_inline_size);
+    used.content_block_size.set(metrics.content_block_size);
+    used.margin_left.set(metrics.margin.left);
+    used.margin_right.set(metrics.margin.right);
+    used.margin_top.set(metrics.margin.top);
+    used.margin_bottom.set(metrics.margin.bottom);
+    used.border_left.set(metrics.border.left);
+    used.border_right.set(metrics.border.right);
+    used.border_top.set(metrics.border.top);
+    used.border_bottom.set(metrics.border.bottom);
+    used.padding_left.set(metrics.padding.left);
+    used.padding_right.set(metrics.padding.right);
+    used.padding_top.set(metrics.padding.top);
+    used.padding_bottom.set(metrics.padding.bottom);
+    used.inset_left.set(metrics.inset.left);
+    used.inset_right.set(metrics.inset.right);
+    used.inset_top.set(metrics.inset.top);
+    used.inset_bottom.set(metrics.inset.bottom);
+    used.has_definite_inline_size.set(metrics.has_definite_inline_size);
+    used.has_definite_block_size.set(metrics.has_definite_block_size);
+    used.uses_collapsing_borders_model.set(metrics.uses_collapsing_borders_model);
+    used.inline_size_constraint.set(metrics.inline_size_constraint);
+    used.block_size_constraint.set(metrics.block_size_constraint);
 }

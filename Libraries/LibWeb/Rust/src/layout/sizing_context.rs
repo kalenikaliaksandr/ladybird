@@ -1417,10 +1417,11 @@ impl<'pass> SizingContext<'pass> {
 
         let measurement = MeasurementState::create(self.callbacks);
         let root = measurement.create_used_values(node, constraints);
-        root.inline_size_constraint.set(SizeConstraint::MinContent);
-        root.has_definite_inline_size.set(false);
-        let block_size = if root.has_definite_block_size() {
-            AvailableSize::definite(root.content_block_size.get())
+        let mut root_input_metrics = BoxMetrics::capture_from_record(&root);
+        root_input_metrics.inline_size_constraint = SizeConstraint::MinContent;
+        root_input_metrics.has_definite_inline_size = false;
+        let block_size = if root_input_metrics.has_definite_block_size() {
+            AvailableSize::definite(root_input_metrics.content_block_size)
         } else {
             AvailableSize::Indefinite
         };
@@ -1434,7 +1435,12 @@ impl<'pass> SizingContext<'pass> {
                 },
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
-                sizing: RootSizingDirectives::default(),
+                sizing: RootSizingDirectives {
+                    measurement_root: Some(MeasurementRootInputs {
+                        metrics: root_input_metrics,
+                    }),
+                    ..RootSizingDirectives::default()
+                },
                 participation: ParticipationInParentFormattingContext::Root,
             },
         );
@@ -1619,10 +1625,11 @@ impl<'pass> SizingContext<'pass> {
 
         let measurement = MeasurementState::create(self.callbacks);
         let root = measurement.create_used_values(node, constraints);
-        root.inline_size_constraint.set(SizeConstraint::MaxContent);
-        root.has_definite_inline_size.set(false);
-        let block_size = if root.has_definite_block_size() {
-            AvailableSize::definite(root.content_block_size.get())
+        let mut root_input_metrics = BoxMetrics::capture_from_record(&root);
+        root_input_metrics.inline_size_constraint = SizeConstraint::MaxContent;
+        root_input_metrics.has_definite_inline_size = false;
+        let block_size = if root_input_metrics.has_definite_block_size() {
+            AvailableSize::definite(root_input_metrics.content_block_size)
         } else {
             AvailableSize::Indefinite
         };
@@ -1636,7 +1643,12 @@ impl<'pass> SizingContext<'pass> {
                 },
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
-                sizing: RootSizingDirectives::default(),
+                sizing: RootSizingDirectives {
+                    measurement_root: Some(MeasurementRootInputs {
+                        metrics: root_input_metrics,
+                    }),
+                    ..RootSizingDirectives::default()
+                },
                 participation: ParticipationInParentFormattingContext::Root,
             },
         );
@@ -1680,9 +1692,10 @@ impl<'pass> SizingContext<'pass> {
 
         let measurement = MeasurementState::create(self.callbacks);
         let root = measurement.create_used_values(node, constraints);
-        root.block_size_constraint.set(SizeConstraint::MinContent);
-        root.has_definite_block_size.set(false);
-        root.set_content_inline_size(inline_size);
+        let mut root_input_metrics = BoxMetrics::capture_from_record(&root);
+        root_input_metrics.block_size_constraint = SizeConstraint::MinContent;
+        root_input_metrics.has_definite_block_size = false;
+        root_input_metrics.set_content_inline_size(inline_size);
         let result = measurement.run(
             node,
             root,
@@ -1693,7 +1706,12 @@ impl<'pass> SizingContext<'pass> {
                 },
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
-                sizing: RootSizingDirectives::default(),
+                sizing: RootSizingDirectives {
+                    measurement_root: Some(MeasurementRootInputs {
+                        metrics: root_input_metrics,
+                    }),
+                    ..RootSizingDirectives::default()
+                },
                 participation: ParticipationInParentFormattingContext::Root,
             },
         );
@@ -1734,9 +1752,10 @@ impl<'pass> SizingContext<'pass> {
 
         let measurement = MeasurementState::create(self.callbacks);
         let root = measurement.create_used_values(node, constraints);
-        root.block_size_constraint.set(SizeConstraint::MaxContent);
-        root.has_definite_block_size.set(false);
-        root.set_content_inline_size(inline_size);
+        let mut root_input_metrics = BoxMetrics::capture_from_record(&root);
+        root_input_metrics.block_size_constraint = SizeConstraint::MaxContent;
+        root_input_metrics.has_definite_block_size = false;
+        root_input_metrics.set_content_inline_size(inline_size);
         let result = measurement.run(
             node,
             root,
@@ -1747,7 +1766,12 @@ impl<'pass> SizingContext<'pass> {
                 },
                 containing_block_constraints: constraints,
                 content_box_position_in_bfc_root: None,
-                sizing: RootSizingDirectives::default(),
+                sizing: RootSizingDirectives {
+                    measurement_root: Some(MeasurementRootInputs {
+                        metrics: root_input_metrics,
+                    }),
+                    ..RootSizingDirectives::default()
+                },
                 participation: ParticipationInParentFormattingContext::Root,
             },
         );

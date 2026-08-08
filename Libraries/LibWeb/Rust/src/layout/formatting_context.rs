@@ -1373,6 +1373,9 @@ fn apply_root_sizing_directives(
     input: &LayoutInput,
     parent_block: Option<&BlockFormattingContext>,
 ) -> LayoutInput {
+    if let Some(measurement_root) = &input.sizing.measurement_root {
+        seed_root_record(&run.records.used_values(run.box_), &measurement_root.metrics);
+    }
     match input.participation {
         ParticipationInParentFormattingContext::BlockLevel => dimension_block_level_root(run, input, parent_block),
         ParticipationInParentFormattingContext::Float => {
@@ -1521,7 +1524,16 @@ fn root_input_probe_enabled() -> bool {
 /// input-purification burn-down adds one kind per conversion until the
 /// list is every kind.
 fn assert_pre_run_root_state_is_input_derived(run: &FormattingContextRun, input: &LayoutInput) {
-    let converted_kind = matches!(input.participation, ParticipationInParentFormattingContext::AtomicInline);
+    let converted_kind = match input.participation {
+        ParticipationInParentFormattingContext::AtomicInline => true,
+        // A measurement root that declares its state through the input has
+        // a writer-free record by construction; drivers not yet converted
+        // leave the field unset and stay off the probe.
+        ParticipationInParentFormattingContext::Root => {
+            run.state.is_measurement() && input.sizing.measurement_root.is_some()
+        }
+        _ => false,
+    };
     if !converted_kind {
         return;
     }

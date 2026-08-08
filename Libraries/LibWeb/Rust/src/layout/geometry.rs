@@ -113,8 +113,17 @@ impl ContainingBlockConstraints {
     }
 }
 
+/// The complete root-record state a measurement driver hands its scratch
+/// run, replacing direct writes onto the freshly created record: the style
+/// baseline with the driver's constraint and size decisions applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MeasurementRootInputs {
+    pub(crate) metrics: BoxMetrics,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RootSizingDirectives {
+    pub(crate) measurement_root: Option<MeasurementRootInputs>,
     pub(crate) forced_content_inline_size: Option<CssPixels>,
     pub(crate) forced_content_block_size: Option<CssPixels>,
     pub(crate) forced_min_border_box_block_size: Option<CssPixels>,
