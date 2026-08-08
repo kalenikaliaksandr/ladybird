@@ -1797,6 +1797,12 @@ impl<'pass> BlockFormattingContext<'pass> {
             // Margins of elements that establish new formatting contexts do not collapse with their in-flow children
             self.margin_state.borrow_mut().reset();
 
+            // The complete pre-run root state this prelude accumulated: the
+            // creation baseline, vertical metrics against the live container
+            // inline size, inline edges, and the definite block size when one
+            // resolved above. Declaring it makes the input carry everything
+            // the child run observes on its root record.
+            let declared_block_level_root_metrics = BoxMetrics::capture_from_record(&self.used(node));
             let inside_layout_input = LayoutInput {
                 available_space,
                 containing_block_constraints: input.containing_block_constraints,
@@ -1811,6 +1817,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                         .then_some(content_block_offset),
                     float_avoidance_inline_size,
                     outer_float_intrusion_before_list_item_children: inline_space_used_before_children_formatted,
+                    declared_root_metrics: Some(declared_block_level_root_metrics),
                     ..RootSizingDirectives::default()
                 },
                 participation: ParticipationInParentFormattingContext::BlockLevel,
