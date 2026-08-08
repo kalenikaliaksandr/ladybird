@@ -1511,7 +1511,8 @@ fn size_skipped_independent_root(
 
 fn root_input_probe_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("LADYBIRD_ROOT_INPUT_PROBE").is_some())
+    *ENABLED
+        .get_or_init(|| cfg!(debug_assertions) || std::env::var_os("LADYBIRD_ROOT_INPUT_PROBE").is_some())
 }
 
 /// Asserts that a run root's record arrives in exactly the state its

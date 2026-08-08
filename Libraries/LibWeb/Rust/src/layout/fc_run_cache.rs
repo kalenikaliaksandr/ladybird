@@ -70,11 +70,14 @@ impl CachedRootRecordState {
     }
 }
 
+/// The complete identity of a memoizable run. Input totality is by
+/// construction: every spawned participation kind either declares its
+/// pre-run root state through the input or is probe-proven to arrive
+/// with the pure style baseline, so no raw record capture is needed.
 #[derive(Clone, Copy, PartialEq)]
 struct FcRunCacheKey {
     fc_type: FfiFormattingContextType,
     input: LayoutInput,
-    root_input_cells: UsedValuesCellState,
 }
 
 /// What must still be true for a stored entry to be replayed: the slot
@@ -229,11 +232,7 @@ impl FcRunCacheAttempt {
         if crate::layout::has_flag(data, NodeFlag::InsetsUseAnchorFunctions) {
             return Ok(Self::Bypass);
         }
-        let key = Box::new(FcRunCacheKey {
-            fc_type,
-            input: *input,
-            root_input_cells: UsedValuesCellState::capture(&run.records.used_values(run.box_)),
-        });
+        let key = Box::new(FcRunCacheKey { fc_type, input: *input });
         let store = run.callbacks.arena().fc_run_cache_store();
         match store.matching(run.box_.slot_index(), run_validity(run), &key) {
             Some(entry) if mode == FcRunCacheMode::Shadow => Ok(Self::Store {
