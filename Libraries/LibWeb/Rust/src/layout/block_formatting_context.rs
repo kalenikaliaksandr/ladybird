@@ -1956,16 +1956,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 margin_state.reset();
             }
             drop(margin_state);
-            // A legend routed to fieldset positioning is still unplaced here;
-            // its cursor contribution reads a zero offset with live metrics,
-            // exactly what the unplaced record reports.
-            let placed_or_pending = self.records.placement_of(node).unwrap_or_else(|| {
-                let used = self.used(node);
-                crate::layout::PlacedGeometry {
-                    content_offset: used.content_offset.get(),
-                    metrics: BoxMetrics::capture_from_record(&used),
-                }
-            });
+            let placed_or_pending = self.records.placement_or_unplaced_record_state(node);
             self.block_offset_of_current_block_container.set(Some(
                 placed_or_pending.content_offset.y
                     + placed_or_pending.metrics.content_block_size
@@ -1980,9 +1971,12 @@ impl<'pass> BlockFormattingContext<'pass> {
             .add_margin(self.used(node).margin_bottom.get());
         self.margin_state.borrow_mut().update_open_top_margin_group();
 
-        let used = self.used(node);
-        *bottom_of_lowest_margin_box = (*bottom_of_lowest_margin_box)
-            .max(used.content_offset.get().y + used.content_block_size.get() + used.margin_box_bottom(false));
+        let placed_or_pending = self.records.placement_or_unplaced_record_state(node);
+        *bottom_of_lowest_margin_box = (*bottom_of_lowest_margin_box).max(
+            placed_or_pending.content_offset.y
+                + placed_or_pending.metrics.content_block_size
+                + placed_or_pending.metrics.margin_box_bottom(false),
+        );
     }
 
     fn layout_block_level_children(
@@ -2752,7 +2746,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 if self.margins_collapse_through(child) {
                     continue;
                 }
-                let child_used = self.used(child);
+                let child_placement = self.records.placement_or_unplaced_record_state(child);
                 let mut margin_state = self.margin_state.borrow_mut();
                 let mut margin_bottom = margin_state.current_collapsed_margin();
                 let used = self.used(node);
@@ -2761,9 +2755,9 @@ impl<'pass> BlockFormattingContext<'pass> {
                     margin_state.box_last_in_flow_child_margin_bottom_collapsed = true;
                     margin_bottom = CssPixels::default();
                 }
-                return (child_used.content_offset.get().y
-                    + child_used.content_block_size.get()
-                    + child_used.border_box_bottom(false)
+                return (child_placement.content_offset.y
+                    + child_placement.metrics.content_block_size
+                    + child_placement.metrics.border_box_bottom(false)
                     + margin_bottom)
                     .max(CssPixels::default());
             }
@@ -3007,17 +3001,17 @@ pub(crate) fn automatic_block_size_for_bfc_root(
             if !child_facts.is_flow_layout_participant() || child_facts.is_floating() {
                 continue;
             }
-            let child_used = records.used_values(child);
+            let child_placement = records.placement_or_unplaced_record_state(child);
             // Margins cannot collapse out of a BFC root: below the last real in-flow
             // child, the run's trailing collapsed margin (which folds in any trailing
             // collapse-through siblings) replaces that child's own bottom margin.
             let margin_bottom = match trailing_collapsed_margin {
                 Some((last_real_child, aggregate)) if last_real_child == child => aggregate,
-                _ => child_used.margin_bottom.get(),
+                _ => child_placement.metrics.margin.bottom,
             };
-            let child_bottom = child_used.content_offset.get().y
-                + child_used.content_block_size.get()
-                + child_used.border_box_bottom(false)
+            let child_bottom = child_placement.content_offset.y
+                + child_placement.metrics.content_block_size
+                + child_placement.metrics.border_box_bottom(false)
                 + margin_bottom;
             bottom = Some(bottom.map_or(child_bottom, |value: CssPixels| value.max(child_bottom)));
         }

@@ -873,6 +873,20 @@ impl RunRecords {
         self.placements.borrow().get(&node.slot_index()).copied()
     }
 
+    /// The placement if the scope has one, else the unplaced record's state:
+    /// a zero offset with live metrics. Flow epilogues meet unplaced boxes
+    /// legally — a legend routed to fieldset positioning contributes to its
+    /// container's flow before it is placed.
+    pub(crate) fn placement_or_unplaced_record_state(&self, node: Node) -> PlacedGeometry {
+        self.placement_of(node).unwrap_or_else(|| {
+            let used = self.used_values(node);
+            PlacedGeometry {
+                content_offset: used.content_offset.get(),
+                metrics: BoxMetrics::capture_from_record(&used),
+            }
+        })
+    }
+
     pub(crate) fn register(&self, node: Node, used: std::rc::Rc<UsedValues>) {
         // A record can arrive already placed — materialized roots adopt the
         // previous paintable's committed geometry as their placement — and
