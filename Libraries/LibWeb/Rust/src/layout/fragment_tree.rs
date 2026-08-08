@@ -67,6 +67,7 @@ fn snapshot_link(
     used: &UsedValues,
     is_unplaced_orphan: bool,
     containing_line_box_index: Option<usize>,
+    emission_offset: FfiCssPixelPoint,
 ) -> FragmentLink {
     let line_data = used.line_data.get().map(|cell| Box::new(cell.take()));
     let (table_cell_coordinates, override_borders_data, grid_layout_data, flex_layout_data, used_grid_tracks, abspos_layout_inputs) = used
@@ -110,7 +111,7 @@ fn snapshot_link(
             used_grid_tracks,
             children,
         }),
-        offset: crate::layout::point_add(used.content_offset.get(), used.committed_offset_delta.get()),
+        offset: emission_offset,
         inset_left: used.inset_left.get(),
         inset_right: used.inset_right.get(),
         inset_top: used.inset_top.get(),
@@ -260,6 +261,7 @@ impl RunFragmentBuilder {
         used: &UsedValues,
         containing_block_is_already_placed: bool,
         containing_line_box_index: Option<usize>,
+        emission_offset: FfiCssPixelPoint,
     ) {
         let mut inner = self.inner.borrow_mut();
         let slot = node.slot_index();
@@ -274,7 +276,7 @@ impl RunFragmentBuilder {
                 None => (Vec::new(), Vec::new()),
             },
         };
-        let link = snapshot_link(node, children, used, false, containing_line_box_index);
+        let link = snapshot_link(node, children, used, false, containing_line_box_index, emission_offset);
         inner.late_attachments.append(&mut carried_late);
         self.attach(&mut inner, link, containing_block, containing_block_is_already_placed);
     }
@@ -341,7 +343,9 @@ impl RunFragmentBuilder {
                 continue;
             };
             debug_assert!(!used.has_content_offset.get(), "an unplaced record note was placed after all");
-            inner.root_children.push(snapshot_link(node, Vec::new(), used, true, None));
+            inner
+                .root_children
+                .push(snapshot_link(node, Vec::new(), used, true, None, used.content_offset.get()));
         }
         let frames = std::mem::take(&mut inner.frames);
         for (slot, frame) in frames {
@@ -352,7 +356,9 @@ impl RunFragmentBuilder {
                 debug_assert!(false, "a pending frame's containing block has no record");
                 continue;
             };
-            inner.root_children.push(snapshot_link(node, children, used, true, None));
+            inner
+                .root_children
+                .push(snapshot_link(node, children, used, true, None, used.content_offset.get()));
         }
         let deposits = std::mem::take(&mut inner.deposits);
         for (slot, (node, pending)) in deposits {
@@ -363,7 +369,7 @@ impl RunFragmentBuilder {
             inner.late_attachments.extend(pending.late_attachments);
             inner
                 .root_children
-                .push(snapshot_link(node, pending.root_children, used, true, None));
+                .push(snapshot_link(node, pending.root_children, used, true, None, used.content_offset.get()));
         }
         PendingRunResult {
             root_children: inner.root_children,

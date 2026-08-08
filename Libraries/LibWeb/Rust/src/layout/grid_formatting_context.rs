@@ -3455,7 +3455,7 @@ impl<'pass> GridFormattingContext<'pass> {
                 self.grid_container,
                 run.treat_block_axis_percentage_insets_as_auto_beyond_root,
             );
-            crate::layout::place_child(self.state, &self.callbacks, item.box_, offset, self.fragments.as_deref());
+            crate::layout::place_child(self.state, &self.callbacks, item.box_, offset, self.fragments.as_deref(), None);
         }
         self.derived_baselines_of_root_box =
             crate::layout::derive_baselines(self.state, &self.callbacks, self.grid_container, false);

@@ -182,13 +182,6 @@ pub struct FfiCommittedBoxMetrics {
     pub has_containing_line_box_index: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum LineFragmentLookup {
-    NotFound,
-    LineOnly,
-    Found(crate::layout::FfiCssPixelPoint),
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct InlineAncestorChainRelativeOffset {
     pub(crate) offset_x: crate::layout::CssPixels,
@@ -928,10 +921,7 @@ impl LayoutState {
         // definite. We model all of those by considering sizes definite once
         // they are assigned through set_content_inline_size() or
         // set_content_block_size().
-        let used = UsedValues {
-            node,
-            ..UsedValues::default()
-        };
+        let used = UsedValues::default();
 
         #[derive(Clone, Copy)]
         enum Axis {
@@ -1084,10 +1074,7 @@ impl LayoutState {
         // Skip normal node initialization: resolving computed sizes requires
         // percentage bases, and every resulting geometry field is replaced by
         // the previous paintable's committed value immediately.
-        let used = UsedValues {
-            node,
-            ..UsedValues::default()
-        };
+        let used = UsedValues::default();
         used.set_content_inline_size(geometry.content_inline_size);
         used.set_content_block_size(geometry.content_block_size);
         used.has_definite_inline_size.set(true);
@@ -1321,12 +1308,10 @@ impl LayoutState {
                 );
             };
             let fragment = &link.fragment;
-            let expected_offset = point_add(used.content_offset.get(), used.committed_offset_delta.get());
             let check = |name: &str, matches: bool| {
                 assert!(matches, "fragment shadow: {name} diverges from the record for slot {slot_index}");
             };
             check("orphan placement", !link.is_unplaced_orphan || !used.has_content_offset.get());
-            check("offset", link.offset == expected_offset);
             check("inset_left", link.inset_left == used.inset_left.get());
             check("inset_right", link.inset_right == used.inset_right.get());
             check("inset_top", link.inset_top == used.inset_top.get());
@@ -1464,52 +1449,36 @@ impl LayoutState {
 
     /// The line box index to record for atomic inlines whose containing line
     /// survived line post-processing.
-    fn containing_line_box_index(
+    /// Converts a placement's line coordinate into the committed line box
+    /// index, validated against the containing block's final line data. A
+    /// block placed while interrupting inline content has a coordinate whose
+    /// fragment joins the line only after the placement.
+    fn resolve_containing_line_box_index(
         &self,
         callbacks: &FfiLayoutFcCallbacks,
         node: Node,
-        used: &UsedValues,
+        coordinate: Option<LineBoxFragmentCoordinate>,
+        placed_offset: FfiCssPixelPoint,
     ) -> Option<usize> {
+        let coordinate = coordinate?;
         let facts = self.node_facts(callbacks, node);
         if !facts.is_non_fragmented_box() {
             return None;
         }
-        match self.line_fragment_lookup(callbacks, used) {
-            LineFragmentLookup::NotFound => None,
-            LineFragmentLookup::LineOnly => Some(used.containing_line_box_fragment.get().line_box_index),
-            LineFragmentLookup::Found(line_fragment_offset) => {
-                debug_assert_eq!(
-                    line_fragment_offset,
-                    used.content_offset.get(),
-                    "stored line fragment offset diverged from the placed offset (is_block_outside={})",
-                    facts.display().is_block_outside()
-                );
-                Some(used.containing_line_box_fragment.get().line_box_index)
-            }
-        }
-    }
-
-    fn line_fragment_lookup(&self, callbacks: &FfiLayoutFcCallbacks, used: &UsedValues) -> LineFragmentLookup {
-        if !used.has_containing_line_box_fragment.get() {
-            return LineFragmentLookup::NotFound;
-        }
-        // SAFETY: Commit traverses the still-live C++ layout tree
-        // synchronously with the pass callback table.
-        let containing_block = callbacks.containing_block(used.node);
+        let containing_block = callbacks.containing_block(node);
         assert!(!containing_block.is_invalid());
-        let slot_index = callbacks.slot_index(containing_block);
-        let Some(data) = self.line_data(slot_index) else {
-            return LineFragmentLookup::NotFound;
-        };
-        let coordinate = used.containing_line_box_fragment.get();
-        let Some(line) = data.line_boxes.get(coordinate.line_box_index) else {
-            return LineFragmentLookup::NotFound;
-        };
-        let Some(fragment) = line.fragments.get(coordinate.fragment_index) else {
-            return LineFragmentLookup::LineOnly;
-        };
-        let (x, y) = fragment.offset();
-        LineFragmentLookup::Found(crate::layout::FfiCssPixelPoint { x, y })
+        let data = self.line_data(callbacks.slot_index(containing_block))?;
+        let line = data.line_boxes.get(coordinate.line_box_index)?;
+        if let Some(fragment) = line.fragments.get(coordinate.fragment_index) {
+            let (x, y) = fragment.offset();
+            debug_assert_eq!(
+                crate::layout::FfiCssPixelPoint { x, y },
+                placed_offset,
+                "stored line fragment offset diverged from the placed offset (is_block_outside={})",
+                facts.display().is_block_outside()
+            );
+        }
+        Some(coordinate.line_box_index)
     }
 
     fn commit_subtree(

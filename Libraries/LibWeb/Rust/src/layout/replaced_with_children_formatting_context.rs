@@ -73,6 +73,7 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
         wrapper,
         FfiCssPixelPoint::default(),
         run.fragments.as_deref(),
+        None,
     );
 
     ChildLayoutResult {

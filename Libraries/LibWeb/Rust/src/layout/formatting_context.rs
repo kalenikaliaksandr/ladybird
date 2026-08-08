@@ -399,13 +399,12 @@ pub(crate) fn place_child(
     node: Node,
     offset: FfiCssPixelPoint,
     fragments: Option<&RunFragmentBuilder>,
+    containing_line_box_fragment: Option<LineBoxFragmentCoordinate>,
 ) {
     let used = state.used_values(callbacks, node);
     assert!(!used.has_content_offset.get());
     used.has_content_offset.set(true);
     used.content_offset.set(offset);
-    used.committed_offset_delta
-        .set(committed_offset_delta_at_placement(state, callbacks, node, used));
     used.seal_committed_box_metrics();
     if let Some(fragments) = fragments {
         let containing_block = callbacks.containing_block(node);
@@ -418,7 +417,8 @@ pub(crate) fn place_child(
             (!containing_block.is_invalid()).then_some(containing_block),
             used,
             containing_block_is_already_placed,
-            state.containing_line_box_index(callbacks, node, used),
+            state.resolve_containing_line_box_index(callbacks, node, containing_line_box_fragment, offset),
+            point_add(offset, committed_offset_delta_at_placement(state, callbacks, node, used)),
         );
     }
 }
@@ -1906,7 +1906,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         if !first_child.is_invalid() && state.node_facts(&callbacks, first_child).is_svg_svg_box() {
             viewport_used.set_content_inline_size(viewport_inline_size);
             viewport_used.set_content_block_size(viewport_block_size);
-            place_child(&state, &callbacks, root, FfiCssPixelPoint::default(), Some(&entry_fragments));
+            place_child(&state, &callbacks, root, FfiCssPixelPoint::default(), Some(&entry_fragments), None);
             state.create_used_values(&callbacks, first_child, root_constraints);
             root_for_layout = first_child;
         }
@@ -1941,6 +1941,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             root_for_layout,
             FfiCssPixelPoint::default(),
             Some(&entry_fragments),
+            None,
         );
         drain_remaining_abspos_targets(
             state_ref,
@@ -1996,7 +1997,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
             let viewport_used = state.create_used_values(&callbacks, viewport, viewport_constraints);
             viewport_used.set_content_inline_size(viewport_inline_size);
             viewport_used.set_content_block_size(viewport_block_size);
-            place_child(&state, &callbacks, viewport, FfiCssPixelPoint::default(), Some(&entry_fragments));
+            place_child(&state, &callbacks, viewport, FfiCssPixelPoint::default(), Some(&entry_fragments), None);
         }
         let input = LayoutInput::new(
             AvailableSpace {
@@ -2020,7 +2021,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         // Materialization is the subtree root's placement, so no place_child
         // will consume its deposit; absorb it from the sealed record here.
         // Materialized roots never claim a line index.
-        entry_fragments.absorb_placement(root, None, root_used, false, None);
+        entry_fragments.absorb_placement(root, None, root_used, false, None, root_used.content_offset.get());
         drain_remaining_abspos_targets(state_ref, callbacks, false, &[viewport, root], &entry_fragments);
         let pass_fragments = entry_fragments.take_pending_result(state_ref);
         debug_assert!(pass_fragments.fragment_count() > 0, "the subtree root always has a fragment");

@@ -510,6 +510,7 @@ impl<'pass> SvgFormattingContext<'pass> {
             node,
             FfiCssPixelPoint { x, y },
             self.fragments.as_deref(),
+            None,
         );
     }
 

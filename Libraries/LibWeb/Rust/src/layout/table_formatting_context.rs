@@ -914,6 +914,7 @@ impl<'pass> TableFormattingContext<'pass> {
             node,
             FfiCssPixelPoint { x, y },
             self.fragments.as_deref(),
+            None,
         );
     }
 

@@ -1637,6 +1637,7 @@ impl<'pass> AbsposEngine<'pass> {
                 y: used_offset.block_offset,
             },
             run.fragments.as_deref(),
+            None,
         );
     }
 

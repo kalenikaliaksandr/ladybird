@@ -3149,7 +3149,7 @@ impl<'pass> FlexFormattingContext<'pass> {
                         y: item.main_offset,
                     }
                 };
-                crate::layout::place_child(self.state, &self.callbacks, item.box_, offset, self.fragments.as_deref());
+                crate::layout::place_child(self.state, &self.callbacks, item.box_, offset, self.fragments.as_deref(), None);
             }
             self.derived_baselines_of_root_box =
                 crate::layout::derive_baselines(self.state, &self.callbacks, self.flex_container, true);
