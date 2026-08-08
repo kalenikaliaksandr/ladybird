@@ -69,6 +69,10 @@ pub(crate) struct AbsposEngine<'pass> {
     records: std::rc::Rc<RunRecords<'pass>>,
     callbacks: FfiLayoutFcCallbacks,
     fragments: Option<std::rc::Rc<crate::layout::RunFragmentBuilder>>,
+    /// Set while draining pending registrations: geometry of completed
+    /// placements then comes from the builder's placement index instead of
+    /// completed-subtree records, which are not this run's to read.
+    drain_geometry: RefCell<Option<DrainGeometryIndex>>,
 }
 
 impl<'pass> AbsposEngine<'pass> {
@@ -78,7 +82,18 @@ impl<'pass> AbsposEngine<'pass> {
             records: run.records.clone(),
             callbacks: run.callbacks,
             fragments: run.fragments.clone(),
+            drain_geometry: RefCell::new(None),
         }
+    }
+
+    /// Geometry of an already-placed box. During a drain the placement
+    /// index answers; in-run anchor resolution reads the run's own records.
+    #[track_caller]
+    fn placed_geometry(&self, node: Node) -> DrainBoxGeometry {
+        if let Some(index) = self.drain_geometry.borrow().as_ref() {
+            return index.geometry_of(node);
+        }
+        DrainBoxGeometry::from_used_values(self.used(node))
     }
 
     fn sizing(&self) -> SizingContext<'pass> {
@@ -130,8 +145,7 @@ impl<'pass> AbsposEngine<'pass> {
             let mut offset = FfiCssPixelPoint::default();
             let mut current = descendant;
             while current != merge_point {
-                let used = self.used(current);
-                offset = point_add(offset, used.content_offset.get());
+                offset = point_add(offset, self.placed_geometry(current).content_offset);
                 current = self.callbacks.containing_block(current);
                 assert!(!current.is_invalid());
             }
@@ -168,20 +182,20 @@ impl<'pass> AbsposEngine<'pass> {
             };
         }
 
-        let containing_block_used = self.used(containing_block);
+        let containing_block_geometry = self.placed_geometry(containing_block);
         AbsposContainingBlockInfo {
             rect: LogicalRect {
                 offset: LogicalOffset {
-                    inline_offset: -containing_block_used.padding_left.get(),
-                    block_offset: -containing_block_used.padding_top.get(),
+                    inline_offset: -containing_block_geometry.padding_left,
+                    block_offset: -containing_block_geometry.padding_top,
                 },
                 size: LogicalSize {
-                    inline_size: containing_block_used.content_inline_size.get()
-                        + containing_block_used.padding_left.get()
-                        + containing_block_used.padding_right.get(),
-                    block_size: containing_block_used.content_block_size.get()
-                        + containing_block_used.padding_top.get()
-                        + containing_block_used.padding_bottom.get(),
+                    inline_size: containing_block_geometry.content_inline_size
+                        + containing_block_geometry.padding_left
+                        + containing_block_geometry.padding_right,
+                    block_size: containing_block_geometry.content_block_size
+                        + containing_block_geometry.padding_top
+                        + containing_block_geometry.padding_bottom,
                 },
             },
             inline_axis_mode,
@@ -271,9 +285,9 @@ impl AbsposEngine<'_> {
             .and_then(|fragments| fragments.find_anchor_candidate(anchor_box))
             .expect("an accepted anchor is placed in the draining subtree and carried here");
         let delta = self.chain_translation_delta_to(containing_block, effective_birth);
-        let containing_block_used = self.used(containing_block);
-        rect.x += delta.x + containing_block_used.padding_left.get();
-        rect.y += delta.y + containing_block_used.padding_top.get();
+        let containing_block_geometry = self.placed_geometry(containing_block);
+        rect.x += delta.x + containing_block_geometry.padding_left;
+        rect.y += delta.y + containing_block_geometry.padding_top;
         rect
     }
 
@@ -1625,10 +1639,19 @@ impl<'pass> AbsposEngine<'pass> {
             if batch.is_empty() {
                 break;
             }
+            // Rebuilt per batch: draining places absolutely positioned
+            // subtrees whose interiors the next batch's geometry reads
+            // must see.
+            let mut placed_geometry = fragments.drain_geometry_index();
+            if let Some(host_root_used) = self.records.used_values_if_owned(run.box_) {
+                placed_geometry.register_host_root(run.box_, host_root_used);
+            }
+            *self.drain_geometry.borrow_mut() = Some(placed_geometry);
             for child in batch {
                 self.layout_pending_child(run, child);
             }
         }
+        *self.drain_geometry.borrow_mut() = None;
     }
 
     fn layout_pending_child(&self, run: &crate::layout::FormattingContextRun<'pass>, mut child: PendingAbsposChild) {

@@ -49,6 +49,10 @@ pub(crate) struct Fragment {
 pub(crate) struct FragmentLink {
     pub(crate) fragment: Box<Fragment>,
     pub(crate) offset: FfiCssPixelPoint,
+    /// The raw placed content offset, without the committed delta folded
+    /// into `offset`. Rider hops and drain-time geometry compose raw
+    /// offsets, so the placement index is built from this field.
+    pub(crate) placement_content_offset: FfiCssPixelPoint,
     pub(crate) inset_left: CssPixels,
     pub(crate) inset_right: CssPixels,
     pub(crate) inset_top: CssPixels,
@@ -128,29 +132,106 @@ fn rebase_rider_into_containing_block_space_if_born_at<Payload: CarriedPayload>(
     }
 }
 
-/// Compose while placed: fold offsets read while this run still owns the
-/// records, stopping at the run root, the first unplaced box, or the first
-/// record another run owns (a table wrapper on a cell's chain — parked
-/// there, composed by the owner later).
+/// Compose while placed: fold the offsets of boxes this run's coverage has
+/// placed, stopping at the run root, the first unplaced box, or the first
+/// box placed outside this coverage (a table wrapper on a cell's chain —
+/// parked there, composed by the owner later). Presence in the placement
+/// index is exactly the owned-and-placed condition the record walk used to
+/// test.
 fn normalize_escaped_payload_toward_run_root<Payload: CarriedPayload>(
     payload: &mut Payload,
     run_root: crate::layout::node_data::NodeSlotId,
-    records: &RunRecords,
+    placed_geometry: &DrainGeometryIndex,
     callbacks: &FfiLayoutFcCallbacks,
 ) {
     while payload.effective_birth() != run_root {
-        let Some(used) = records.used_values_if_owned(payload.effective_birth()) else {
+        let Some(content_offset) = placed_geometry.placed_content_offset(payload.effective_birth()) else {
             break;
         };
-        if !used.has_content_offset.get() {
-            break;
-        }
-        payload.translate_by(used.content_offset.get());
+        payload.translate_by(content_offset);
         let containing_block = callbacks.containing_block(payload.effective_birth());
         if containing_block.is_invalid() {
             break;
         }
         payload.set_effective_birth(containing_block);
+    }
+}
+
+/// Geometry a placement recorded for one box: what drain-time walks may
+/// read about completed subtrees without touching their records.
+#[derive(Clone, Copy)]
+pub(crate) struct DrainBoxGeometry {
+    pub(crate) content_offset: FfiCssPixelPoint,
+    pub(crate) padding_left: CssPixels,
+    pub(crate) padding_right: CssPixels,
+    pub(crate) padding_top: CssPixels,
+    pub(crate) padding_bottom: CssPixels,
+    pub(crate) content_inline_size: CssPixels,
+    pub(crate) content_block_size: CssPixels,
+}
+
+impl DrainBoxGeometry {
+    pub(crate) fn from_used_values(used: &UsedValues) -> Self {
+        Self {
+            content_offset: used.content_offset.get(),
+            padding_left: used.padding_left.get(),
+            padding_right: used.padding_right.get(),
+            padding_top: used.padding_top.get(),
+            padding_bottom: used.padding_bottom.get(),
+            content_inline_size: used.content_inline_size.get(),
+            content_block_size: used.content_block_size.get(),
+        }
+    }
+}
+
+/// Placement-derived geometry for every box a run's coverage has placed,
+/// keyed by slot. A slot is present exactly when its box was placed in
+/// this coverage: frame nodes and deposited-but-unplaced roots have no
+/// links, so they are exactly the boxes a composing walk must stop at.
+#[derive(Default)]
+pub(crate) struct DrainGeometryIndex {
+    by_slot: std::collections::HashMap<u32, DrainBoxGeometry>,
+}
+
+impl DrainGeometryIndex {
+    fn collect_links(&mut self, links: &[FragmentLink]) {
+        for link in links {
+            let fragment = &link.fragment;
+            self.by_slot.insert(
+                fragment.node.slot_index(),
+                DrainBoxGeometry {
+                    content_offset: link.placement_content_offset,
+                    padding_left: fragment.padding_left,
+                    padding_right: fragment.padding_right,
+                    padding_top: fragment.padding_top,
+                    padding_bottom: fragment.padding_bottom,
+                    content_inline_size: fragment.content_inline_size,
+                    content_block_size: fragment.content_block_size,
+                },
+            );
+            self.collect_links(&fragment.children);
+        }
+    }
+
+    /// The drain host never places inside its own builder; its geometry
+    /// joins from its own record.
+    pub(crate) fn register_host_root(&mut self, node: crate::layout::node_data::NodeSlotId, used: &UsedValues) {
+        self.by_slot.insert(node.slot_index(), DrainBoxGeometry::from_used_values(used));
+    }
+
+    pub(crate) fn placed_content_offset(&self, node: crate::layout::node_data::NodeSlotId) -> Option<FfiCssPixelPoint> {
+        self.by_slot.get(&node.slot_index()).map(|geometry| geometry.content_offset)
+    }
+
+    #[track_caller]
+    pub(crate) fn geometry_of(&self, node: crate::layout::node_data::NodeSlotId) -> DrainBoxGeometry {
+        let caller = std::panic::Location::caller();
+        self.by_slot.get(&node.slot_index()).copied().unwrap_or_else(|| {
+            panic!(
+                "the draining coverage has no placement for slot {} (read at {caller})",
+                node.slot_index()
+            )
+        })
     }
 }
 
@@ -216,6 +297,7 @@ fn snapshot_link(
             children,
         }),
         offset: emission_offset,
+        placement_content_offset: used.content_offset.get(),
         inset_left: used.inset_left.get(),
         inset_right: used.inset_right.get(),
         inset_top: used.inset_top.get(),
@@ -627,10 +709,39 @@ impl RunFragmentBuilder {
         );
     }
 
+    /// Every box the builder's current structure has placed, with the
+    /// geometry drain-time walks are allowed to read. Built fresh per use:
+    /// draining places more boxes, and the escape index must predate the
+    /// orphan sweeps (a swept orphan was never placed and must stay a stop).
+    pub(crate) fn drain_geometry_index(&self) -> DrainGeometryIndex {
+        let inner = self.inner.borrow();
+        let mut index = DrainGeometryIndex::default();
+        index.collect_links(&inner.root_children);
+        index.collect_links(&inner.late_attachments);
+        for frame in inner.frames.values() {
+            index.collect_links(&frame.children);
+        }
+        for (_, pending) in inner.deposits.values() {
+            index.collect_links(&pending.root_children);
+            index.collect_links(&pending.late_attachments);
+        }
+        index
+    }
+
     /// Closes the run: sweeps never-placed frames and deposits into orphan
     /// links snapshotted from their records, and returns the run root's
     /// completed structure. The builder is empty afterwards.
     pub(crate) fn take_pending_result(&self, records: &RunRecords, callbacks: &FfiLayoutFcCallbacks) -> PendingRunResult {
+        let escape_normalization_needed = {
+            let inner = self.inner.borrow();
+            !inner.pending_abspos_at_root.is_empty()
+                || !inner.anchor_candidates_at_root.is_empty()
+                || inner
+                    .frames
+                    .values()
+                    .any(|frame| !frame.pending_abspos.is_empty() || !frame.anchor_candidates.is_empty())
+        };
+        let placed_geometry = escape_normalization_needed.then(|| self.drain_geometry_index());
         let mut inner = self.inner.take();
         let mut escaped_abspos = std::mem::take(&mut inner.pending_abspos_at_root);
         let mut escaped_anchor_candidates = std::mem::take(&mut inner.anchor_candidates_at_root);
@@ -668,15 +779,20 @@ impl RunFragmentBuilder {
                 .root_children
                 .push(snapshot_link(node, pending.root_children, used, None, used.content_offset.get()));
         }
-        for entry in &mut escaped_abspos {
-            debug_assert!(
-                entry.target != self.root_node,
-                "a registration that arrived for this run's root was left undrained"
-            );
-            normalize_escaped_payload_toward_run_root(entry, self.root_node, records, callbacks);
-        }
-        for candidate in &mut escaped_anchor_candidates {
-            normalize_escaped_payload_toward_run_root(candidate, self.root_node, records, callbacks);
+        if !(escaped_abspos.is_empty() && escaped_anchor_candidates.is_empty()) {
+            let placed_geometry = placed_geometry
+                .as_ref()
+                .expect("the pre-sweep rider peek covers every pool escapes drain from");
+            for entry in &mut escaped_abspos {
+                debug_assert!(
+                    entry.target != self.root_node,
+                    "a registration that arrived for this run's root was left undrained"
+                );
+                normalize_escaped_payload_toward_run_root(entry, self.root_node, placed_geometry, callbacks);
+            }
+            for candidate in &mut escaped_anchor_candidates {
+                normalize_escaped_payload_toward_run_root(candidate, self.root_node, placed_geometry, callbacks);
+            }
         }
         if self.saw_svg_payload_write.take() {
             refresh_svg_payloads_from_records(&mut inner.root_children, records);
