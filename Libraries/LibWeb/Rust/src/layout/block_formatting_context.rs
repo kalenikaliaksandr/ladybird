@@ -2411,6 +2411,7 @@ impl<'pass> BlockFormattingContext<'pass> {
         let available_space = input.available_space;
         assert!(self.facts(node).is_floating());
         let block_container = self.containing_block(node);
+        let declared_float_root_metrics = BoxMetrics::capture_from_record(&self.used(node));
         let _ = self.layout_inside(
             run,
             node,
@@ -2419,6 +2420,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 containing_block_constraints: input.containing_block_constraints,
                 content_box_position_in_bfc_root: input.content_box_position_in_bfc_root,
                 sizing: RootSizingDirectives {
+                    declared_root_metrics: Some(declared_float_root_metrics),
                     ..RootSizingDirectives::default()
                 },
                 participation: ParticipationInParentFormattingContext::Float,
