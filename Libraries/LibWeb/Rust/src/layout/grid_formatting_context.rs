@@ -2608,7 +2608,7 @@ impl<'pass> GridFormattingContext<'pass> {
         scratch_root.has_definite_block_size.set(live.has_definite_block_size.get());
         let scratch_run = crate::layout::FormattingContextRun {
             state: scratch.rust_state(),
-            records: std::rc::Rc::new(RunRecords::new(subgrid.box_, scratch_root)),
+            records: std::rc::Rc::new(RunRecords::new(subgrid.box_, scratch_root, scratch.record_arena())),
             box_: subgrid.box_,
             layout_mode: LayoutMode::IntrinsicSizing,
             callbacks: self.callbacks,

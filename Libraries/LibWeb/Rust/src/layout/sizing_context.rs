@@ -1907,7 +1907,7 @@ impl<'pass> SizingContext<'pass> {
 
         let table_run = crate::layout::FormattingContextRun {
             state: measurement.rust_state(),
-            records: std::rc::Rc::new(RunRecords::new(table_box, table_used)),
+            records: std::rc::Rc::new(RunRecords::new(table_box, table_used, measurement.record_arena())),
             box_: table_box,
             layout_mode: LayoutMode::IntrinsicSizing,
             callbacks: *measurement.callbacks(),

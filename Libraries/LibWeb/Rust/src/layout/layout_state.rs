@@ -65,10 +65,12 @@ impl<T> PagedStore<T> {
     }
 }
 
-/// Anonymous bump storage for the pass's used-values records. Allocation
-/// hands out stable references; there is deliberately NO lookup — records
-/// are reachable only through the RunRecords scopes that own them, which is
-/// what makes a formatting-context run's result self-contained.
+/// Anonymous bump storage for a pass's used-values records, owned by the
+/// pass entry — the root, subtree, and replay frames, and each
+/// MeasurementState — never by shared state. Allocation hands out stable
+/// references; there is deliberately NO lookup — records are reachable
+/// only through the RunRecords scopes that own them, which is what makes a
+/// formatting-context run's result self-contained.
 pub(crate) struct RecordArena {
     storage: PagedStore<UsedValues>,
     allocated: Cell<u32>,
@@ -835,35 +837,39 @@ impl<'pass> NodeFacts<'pass> {
 }
 
 pub(crate) struct LayoutState {
-    record_arena: RecordArena,
     anchor_inset_store: AnchorInsetStore,
     purpose: LayoutStatePurpose,
 }
 
-/// Run-scoped view over the record store: a formatting-context run registers
-/// every record it creates plus the root record its parent handed it, and
-/// every lookup routes through here, so a run can only reach records it
-/// provably owns. Allocation stays in the pass store until the per-run arena
-/// flip deletes it.
+/// A formatting-context run's record scope: the run registers every record
+/// it creates plus the root record its parent handed it, and every lookup
+/// routes through here, so a run can only reach records it provably owns.
+/// Allocation draws from the pass-entry-owned arena the scope carries.
 pub(crate) struct RunRecords<'pass> {
     root: Node,
+    record_arena: &'pass RecordArena,
     map: RefCell<HashMap<u32, &'pass UsedValues>>,
 }
 
 impl<'pass> RunRecords<'pass> {
-    pub(crate) fn new(root: Node, root_used: &'pass UsedValues) -> Self {
-        let records = Self::new_unrooted(root);
+    pub(crate) fn new(root: Node, root_used: &'pass UsedValues, record_arena: &'pass RecordArena) -> Self {
+        let records = Self::new_unrooted(root, record_arena);
         records.register(root, root_used);
         records
     }
 
     /// An entry scope starts empty: it creates its own viewport and
     /// materialized-ancestor records before spawning the root run.
-    pub(crate) fn new_unrooted(root: Node) -> Self {
+    pub(crate) fn new_unrooted(root: Node, record_arena: &'pass RecordArena) -> Self {
         Self {
             root,
+            record_arena,
             map: RefCell::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn record_arena(&self) -> &'pass RecordArena {
+        self.record_arena
     }
 
     pub(crate) fn register(&self, node: Node, used: &'pass UsedValues) {
@@ -883,7 +889,7 @@ impl<'pass> RunRecords<'pass> {
         node: Node,
         constraints: ContainingBlockConstraints,
     ) -> &'pass UsedValues {
-        let used = state.create_used_values(callbacks, node, constraints);
+        let used = state.create_used_values(self.record_arena, callbacks, node, constraints);
         self.register(node, used);
         used
     }
@@ -944,7 +950,6 @@ pub(crate) struct UsedValuesRareData {
 impl LayoutState {
     pub(crate) fn new(purpose: LayoutStatePurpose) -> Self {
         Self {
-            record_arena: RecordArena::default(),
             anchor_inset_store: AnchorInsetStore::default(),
             purpose,
         }
@@ -967,12 +972,13 @@ impl LayoutState {
         }
     }
 
-    pub(crate) fn create_used_values(
+    pub(crate) fn create_used_values<'arena>(
         &self,
+        record_arena: &'arena RecordArena,
         callbacks: &FfiLayoutFcCallbacks,
         node: Node,
         constraints: ContainingBlockConstraints,
-    ) -> &UsedValues {
+    ) -> &'arena UsedValues {
         assert!(!node.is_invalid());
         let facts = self.node_facts(callbacks, node);
 
@@ -1117,15 +1123,16 @@ impl LayoutState {
         used.content_inline_size.set(content_inline_size.unwrap_or_default());
         used.content_block_size.set(content_block_size.unwrap_or_default());
 
-        self.record_arena.allocate(used)
+        record_arena.allocate(used)
     }
 
-    pub(crate) fn populate_from_paintable(
+    pub(crate) fn populate_from_paintable<'arena>(
         &self,
+        record_arena: &'arena RecordArena,
         callbacks: &FfiLayoutFcCallbacks,
         node: Node,
         paintable: *mut c_void,
-    ) -> Option<&UsedValues> {
+    ) -> Option<&'arena UsedValues> {
         let mut geometry = FfiPaintableGeometry::default();
         let found =
             unsafe {
@@ -1165,7 +1172,7 @@ impl LayoutState {
         used.has_content_offset.set(true);
         used.seal_committed_box_metrics();
 
-        let used = self.record_arena.allocate(used);
+        let used = record_arena.allocate(used);
         if self.node_facts(callbacks, node).is_svg_svg_box() {
             used.rare_data_mut().svg_viewport_size = Some(geometry.svg_viewport_size);
         }

@@ -186,6 +186,7 @@ pub(crate) enum TableWrapperInlineSizeMode {
 /// measured box's record to each run it starts.
 pub(crate) struct MeasurementState {
     state: LayoutState,
+    record_arena: RecordArena,
     callbacks: FfiLayoutFcCallbacks,
 }
 
@@ -193,6 +194,7 @@ impl MeasurementState {
     pub(crate) fn create(callbacks: FfiLayoutFcCallbacks) -> Self {
         Self {
             state: LayoutState::new(LayoutStatePurpose::Measurement),
+            record_arena: RecordArena::default(),
             callbacks,
         }
     }
@@ -212,6 +214,7 @@ impl MeasurementState {
         let fc_type = crate::layout::independent_formatting_context_type(rust_state, node, &self.callbacks);
         crate::layout::run_formatting_context(
             rust_state,
+            &self.record_arena,
             node_used,
             node,
             None,
@@ -228,12 +231,16 @@ impl MeasurementState {
         &self.state
     }
 
+    pub(crate) fn record_arena(&self) -> &RecordArena {
+        &self.record_arena
+    }
+
     pub(crate) fn callbacks(&self) -> &FfiLayoutFcCallbacks {
         &self.callbacks
     }
 
     pub(crate) fn create_used_values(&self, node: Node, constraints: ContainingBlockConstraints) -> &UsedValues {
-        self.state.create_used_values(&self.callbacks, node, constraints)
+        self.state.create_used_values(&self.record_arena, &self.callbacks, node, constraints)
     }
 }
 
@@ -1505,6 +1512,7 @@ fn body_input_with_inner_available_space(run: &FormattingContextRun, input: &Lay
 #[expect(clippy::too_many_arguments)]
 fn run_formatting_context<'pass>(
     state: &'pass LayoutState,
+    record_arena: &'pass RecordArena,
     root_used: &'pass UsedValues,
     box_: Node,
     parent_grid: Option<&GridFormattingContext<'pass>>,
@@ -1518,7 +1526,7 @@ fn run_formatting_context<'pass>(
     assert!(!box_.is_invalid());
     let run = FormattingContextRun {
         state,
-        records: std::rc::Rc::new(RunRecords::new(box_, root_used)),
+        records: std::rc::Rc::new(RunRecords::new(box_, root_used, record_arena)),
         box_,
         layout_mode,
         callbacks,
@@ -1797,6 +1805,7 @@ pub(crate) fn layout_inside_child<'pass>(
         );
     let outputs = run_formatting_context(
         run.state,
+        run.records.record_arena(),
         used,
         child,
         parent_grid,
@@ -1918,7 +1927,8 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
             percentage_basis_block_size: Some(viewport_block_size),
             ..crate::layout::ContainingBlockConstraints::default()
         };
-        let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(root));
+        let record_arena = RecordArena::default();
+        let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(root, &record_arena));
         let viewport_used = entry_records.create_used_values(&state, &callbacks, root, root_constraints);
         let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new_entry_accumulator(root));
 
@@ -1945,6 +1955,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         let fc_type = independent_formatting_context_type(state_ref, root_for_layout, &callbacks);
         let outputs = run_formatting_context(
             state_ref,
+            &record_arena,
             root_for_layout_used,
             root_for_layout,
             None,
@@ -2031,9 +2042,10 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         let sink = unsafe { &*sink };
 
         let state = LayoutState::new(LayoutStatePurpose::Commit);
-        let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(root));
+        let record_arena = RecordArena::default();
+        let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(root, &record_arena));
         let root_used = state
-            .populate_from_paintable(&callbacks, root, paintable_to_replace)
+            .populate_from_paintable(&record_arena, &callbacks, root, paintable_to_replace)
             .expect("partial relayout root must have committed geometry");
         entry_records.register(root, root_used);
         let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new_entry_accumulator(root));
@@ -2073,8 +2085,19 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         let facts = state.node_facts(&callbacks, root);
         let fc_type = formatting_context_type_created_by_box(facts)
             .expect("partial relayout root must establish an independent formatting context");
-        let outputs =
-            run_formatting_context(state_ref, root_used, root, None, fc_type, LayoutMode::Normal, false, callbacks, input, None);
+        let outputs = run_formatting_context(
+            state_ref,
+            &record_arena,
+            root_used,
+            root,
+            None,
+            fc_type,
+            LayoutMode::Normal,
+            false,
+            callbacks,
+            input,
+            None,
+        );
         deposit_completed_child_run(Some(&entry_fragments), root, outputs);
         // Materialization is the subtree root's placement, so no place_child
         // will consume its deposit; absorb it from the sealed record here.
@@ -2118,7 +2141,8 @@ pub unsafe extern "C" fn rust_layout_replay_saved_abspos_layout(
         let containing_block = callbacks.containing_block(box_);
         assert!(!containing_block.is_invalid());
         let entry_fragments = std::rc::Rc::new(RunFragmentBuilder::new_entry_accumulator(containing_block));
-        let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(containing_block));
+        let record_arena = RecordArena::default();
+        let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(containing_block, &record_arena));
         let run = crate::layout::FormattingContextRun {
             state: state_ref,
             records: entry_records.clone(),
