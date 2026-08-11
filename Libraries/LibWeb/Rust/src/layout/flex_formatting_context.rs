@@ -601,7 +601,7 @@ impl<'pass> FlexFormattingContext<'pass> {
             property,
             AvailableSpace {
                 inline_size: self.available_space.unwrap().inline_size,
-                block_size: AvailableSize::Indefinite,
+                block_size: BlockAxisAvailableSize::indefinite(),
             },
         )
     }
@@ -615,7 +615,7 @@ impl<'pass> FlexFormattingContext<'pass> {
                     .main_size
                     .map(|size| AvailableSize::definite(clamp_to_max_dimension_value(size)))
                     .unwrap_or(AvailableSize::Indefinite),
-                block_size: AvailableSize::Indefinite,
+                block_size: BlockAxisAvailableSize::indefinite(),
             }
         } else {
             self.available_space.unwrap()
@@ -696,8 +696,11 @@ impl<'pass> FlexFormattingContext<'pass> {
                 self.item_containing_block_constraints(),
             )
         } else {
-            self.sizing()
-                .should_treat_max_block_size_as_none(node, available, self.item_containing_block_constraints())
+            self.sizing().should_treat_max_block_size_as_none(
+                node,
+                BlockAxisAvailableSize::from_axis_generic_available_size(available),
+                self.item_containing_block_constraints(),
+            )
         }
     }
 
@@ -742,12 +745,12 @@ impl<'pass> FlexFormattingContext<'pass> {
         self.available_space_for_items = Some(if self.main_axis_is_horizontal() {
             AxisAgnosticAvailableSpace {
                 main: available_space.inline_size,
-                cross: available_space.block_size,
+                cross: available_space.block_size.axis_generic_value_for_flex_and_grid_axis_erasure(),
                 space: available_space,
             }
         } else {
             AxisAgnosticAvailableSpace {
-                main: available_space.block_size,
+                main: available_space.block_size.axis_generic_value_for_flex_and_grid_axis_erasure(),
                 cross: available_space.inline_size,
                 space: available_space,
             }
@@ -997,7 +1000,7 @@ impl<'pass> FlexFormattingContext<'pass> {
             ),
             SizingAxis::Block => self.sizing().should_treat_max_block_size_as_none(
                 node,
-                available,
+                BlockAxisAvailableSize::from_axis_generic_available_size(available),
                 self.item_containing_block_constraints(),
             ),
         }
@@ -1738,7 +1741,7 @@ impl<'pass> FlexFormattingContext<'pass> {
                         .main_size
                         .map(|size| AvailableSize::definite(clamp_to_max_dimension_value(size)))
                         .unwrap_or(AvailableSize::Indefinite),
-                    block_size: AvailableSize::Indefinite,
+                    block_size: BlockAxisAvailableSize::indefinite(),
                 },
             )
         } else {
@@ -2408,7 +2411,7 @@ impl<'pass> FlexFormattingContext<'pass> {
         // and the table box were the flex item.
         if self.facts(node).is_table_wrapper() && !self.cross_axis_is_horizontal() && self.flex_item_is_stretched(index) {
             let mut intrinsic_space = input.available_space;
-            intrinsic_space.block_size = AvailableSize::Indefinite;
+            intrinsic_space.block_size = BlockAxisAvailableSize::indefinite();
             let intrinsic_size = self.sizing().compute_table_box_block_size_inside_wrapper(
                 node,
                 intrinsic_space,
@@ -2790,7 +2793,7 @@ impl<'pass> FlexFormattingContext<'pass> {
         let real_space_for_items = self.available_space_for_items.unwrap().space;
         self.determine_available_space_for_items(AvailableSpace {
             inline_size: real_space_for_items.inline_size,
-            block_size: AvailableSize::MaxContent,
+            block_size: BlockAxisAvailableSize::max_content(),
         });
         // https://drafts.csswg.org/css-align-3/#gap-percent
         // In Flex Layout: Cyclic percentage sizes resolve against zero in all cases.
@@ -3015,7 +3018,9 @@ impl<'pass> FlexFormattingContext<'pass> {
         //               parent inline formatting context derives the fragment's baseline from them.
         if self.layout_mode == LayoutMode::IntrinsicSizing
             && !available_space.inline_size.is_intrinsic_sizing_constraint()
-            && !available_space.block_size.is_intrinsic_sizing_constraint()
+            && !available_space
+                .block_size
+                .is_intrinsic_sizing_constraint_for_mode_dispatch()
             && !self.facts(self.flex_container).display().is_inline_outside()
         {
             return;
@@ -3178,7 +3183,9 @@ impl<'pass> FlexFormattingContext<'pass> {
         self.align_all_flex_lines();
 
         if available_space.inline_size.is_intrinsic_sizing_constraint()
-            || available_space.block_size.is_intrinsic_sizing_constraint()
+            || available_space
+                .block_size
+                .is_intrinsic_sizing_constraint_for_mode_dispatch()
         {
             // We're computing intrinsic size for the flex container. This happens at the end of run().
             // We're computing intrinsic size for the flex container.

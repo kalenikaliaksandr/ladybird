@@ -1446,7 +1446,7 @@ impl BlockFormattingContext {
         marker_used.has_definite_inline_size.set(true);
         let inner_available_space = crate::layout::AvailableSpace {
             inline_size: crate::layout::AvailableSize::definite(max_content_inline_size),
-            block_size: crate::layout::AvailableSize::Indefinite,
+            block_size: crate::layout::BlockAxisAvailableSize::indefinite(),
         };
         match crate::layout::layout_inside_child(
             run,

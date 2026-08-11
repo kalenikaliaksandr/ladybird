@@ -793,7 +793,7 @@ impl SizingContext {
             match cyclic_percentage_intrinsic_contribution(
                 facts.is_replaced_box(),
                 true,
-                available_space.block_size,
+                available_space.block_size.axis_generic_value_for_mode_dispatch(),
                 CyclicPercentageSizeProperty::PreferredOrMaxSize,
             ) {
                 CyclicPercentageIntrinsicContribution::ResolveAsZero => return false,
@@ -876,7 +876,7 @@ impl SizingContext {
     pub(crate) fn should_treat_max_block_size_as_none(
         &self,
         node: Node,
-        available: AvailableSize,
+        available: BlockAxisAvailableSize,
         constraints: ContainingBlockConstraints,
     ) -> bool {
         // https://www.w3.org/TR/CSS22/visudet.html#min-max-heights
@@ -888,16 +888,16 @@ impl SizingContext {
             return true;
         }
         if size.contains_percentage() {
-            if available == AvailableSize::MinContent {
+            if available.is_min_content_sizing_constraint_for_mode_dispatch() {
                 return false;
             }
             if constraints.percentage_basis_block_size.is_none() {
                 return true;
             }
         }
-        (size.is_fit_content() && available.is_intrinsic_sizing_constraint())
-            || (size.is_max_content() && available == AvailableSize::MaxContent)
-            || (size.is_min_content() && available == AvailableSize::MinContent)
+        (size.is_fit_content() && available.is_intrinsic_sizing_constraint_for_mode_dispatch())
+            || (size.is_max_content() && available.is_max_content_sizing_constraint_for_mode_dispatch())
+            || (size.is_min_content() && available.is_min_content_sizing_constraint_for_mode_dispatch())
     }
 
     // https://quirks.spec.whatwg.org/#the-percentage-height-calculation-quirk
@@ -930,7 +930,7 @@ impl SizingContext {
         }
         let mut resolution_space = available_space;
         resolution_space.block_size =
-            AvailableSize::definite(constraints.quirks_mode_percentage_basis_block_size.unwrap_or_default());
+            BlockAxisAvailableSize::definite(constraints.quirks_mode_percentage_basis_block_size.unwrap_or_default());
         resolution_space
     }
 
@@ -1138,7 +1138,7 @@ impl SizingContext {
 
         let inline_definite_space = AvailableSpace {
             inline_size: AvailableSize::definite(inline_size),
-            block_size: AvailableSize::Indefinite,
+            block_size: BlockAxisAvailableSize::indefinite(),
         };
         self.resolve_used_block_size_if_not_treated_as_auto(node, inline_definite_space, constraints);
         self.make_button_content_box_definite(node, layout_mode, available_space, constraints, None);
@@ -1321,7 +1321,7 @@ impl SizingContext {
             .used(node)
             .available_inner_space_or_constraints_from(AvailableSpace {
                 inline_size: AvailableSize::MaxContent,
-                block_size: AvailableSize::Indefinite,
+                block_size: BlockAxisAvailableSize::indefinite(),
             });
         if self.should_treat_block_size_as_auto(node, available_space, constraints) {
             return None;
@@ -1437,7 +1437,7 @@ impl SizingContext {
         let max_content_available = AvailableSize::MaxContent;
         let intrinsic_available_space = AvailableSpace {
             inline_size: max_content_available,
-            block_size: AvailableSize::Indefinite,
+            block_size: BlockAxisAvailableSize::indefinite(),
         };
         let resolve_destination_inline_size =
             |size: &ComputedSize, property: CyclicPercentageSizeProperty| -> Option<CssPixels> {
@@ -1585,7 +1585,7 @@ impl SizingContext {
             LayoutInput::new(
                 AvailableSpace {
                     inline_size: available_inline_size,
-                    block_size,
+                    block_size: BlockAxisAvailableSize::from_axis_generic_available_size(block_size),
                 },
                 constraints,
                 ParticipationInParentFormattingContext::Root,
@@ -1606,8 +1606,8 @@ impl SizingContext {
         kind: IntrinsicSizeCacheKind,
     ) -> CssPixels {
         let (size_constraint, available_block_size) = match kind {
-            IntrinsicSizeCacheKind::MinContentBlock => (SizeConstraint::MinContent, AvailableSize::MinContent),
-            IntrinsicSizeCacheKind::MaxContentBlock => (SizeConstraint::MaxContent, AvailableSize::MaxContent),
+            IntrinsicSizeCacheKind::MinContentBlock => (SizeConstraint::MinContent, BlockAxisAvailableSize::min_content()),
+            IntrinsicSizeCacheKind::MaxContentBlock => (SizeConstraint::MaxContent, BlockAxisAvailableSize::max_content()),
             _ => unreachable!("block size cache kind must use the block axis"),
         };
         let key = cache_key(Some(inline_size), constraints);
@@ -1883,7 +1883,10 @@ impl SizingContext {
 
         let style = self.style(wrapper);
         let containing_block_inline_size = available_space.inline_size.to_px_or_zero();
-        let containing_block_block_size = available_space.block_size.to_px_or_zero();
+        let containing_block_block_size = available_space
+            .block_size
+            .raw_value_pending_noting_tier_assignment()
+            .to_px_or_zero();
 
         // If 'margin-top', or 'margin-bottom' are computed as 'auto', their used value is '0'.
         let margin_top = style.margin_top().to_px(containing_block_inline_size);
@@ -1913,7 +1916,10 @@ impl SizingContext {
             .result
             .table_box_in_wrapper_border_box_block_size
             .expect("a table wrapper's measurement run lays out the table box inside it");
-        if matches!(available_space.block_size, AvailableSize::Definite(_)) {
+        if matches!(
+            available_space.block_size.raw_value_pending_noting_tier_assignment(),
+            AvailableSize::Definite(_)
+        ) {
             table_used_block_size.min(available_block_size)
         } else {
             table_used_block_size
@@ -1953,8 +1959,14 @@ impl SizingContext {
                 // If the available space in a given axis is definite,
                 // equal to clamp(min-content size, stretch-fit size, max-content size)
                 // (i.e. max(min-content size, min(max-content size, stretch-fit size))).
-                if matches!(available_space.block_size, AvailableSize::Definite(_)) {
-                    let stretch = self.calculate_stretch_fit_block_size(node, available_space.block_size);
+                if matches!(
+                    available_space.block_size.raw_value_pending_noting_tier_assignment(),
+                    AvailableSize::Definite(_)
+                ) {
+                    let stretch = self.calculate_stretch_fit_block_size(
+                        node,
+                        available_space.block_size.raw_value_pending_noting_tier_assignment(),
+                    );
                     let max_content = self.calculate_max_content_block_size(node, inline_size, constraints);
                     if max_content <= stretch {
                         return max_content;
@@ -1964,7 +1976,7 @@ impl SizingContext {
                         .max(stretch);
                 }
                 // When sizing under a min-content constraint, equal to the min-content size.
-                if available_space.block_size == AvailableSize::MinContent {
+                if available_space.block_size.is_min_content_sizing_constraint_for_mode_dispatch() {
                     return self.calculate_min_content_block_size(node, inline_size, constraints);
                 }
                 // Otherwise, equal to the max-content size in that axis.
@@ -1996,7 +2008,7 @@ impl SizingContext {
                 SizingAxis::Inline,
                 AvailableSpace {
                     inline_size: available,
-                    block_size: AvailableSize::Indefinite,
+                    block_size: BlockAxisAvailableSize::indefinite(),
                 },
                 constraints,
             );
@@ -2051,7 +2063,10 @@ impl SizingContext {
             );
         }
 
-        let mut basis = available_space.block_size.to_px_or_zero();
+        let mut basis = available_space
+            .block_size
+            .raw_value_pending_noting_tier_assignment()
+            .to_px_or_zero();
         // NOTE: Percentage heights are resolved against the containing block's used height,
         //       not the available space height. The containing block's height must be definite
         //       for percentage resolution to work (otherwise should_treat_block_size_as_auto
@@ -2059,7 +2074,9 @@ impl SizingContext {
         // NOTE: We only do this when available space height is indefinite. If it's definite,
         //       we trust that the caller has set it up correctly (e.g., grid/flex items get
         //       their cell/area size as available space).
-        if preferred_size.contains_percentage() && available_space.block_size == AvailableSize::Indefinite {
+        if preferred_size.contains_percentage()
+            && available_space.block_size.raw_value_pending_noting_tier_assignment() == AvailableSize::Indefinite
+        {
             // https://quirks.spec.whatwg.org/#the-percentage-height-calculation-quirk
             // NOTE: Flex/grid items resolve percentage heights against their container, not via quirk.
             let facts = self.facts(node);

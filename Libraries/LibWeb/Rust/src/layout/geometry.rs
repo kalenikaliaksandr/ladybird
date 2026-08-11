@@ -62,18 +62,83 @@ impl AvailableSize {
     }
 }
 
+mod block_axis_available_space_funnel {
+    use super::{AvailableSize, CssPixels};
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[repr(transparent)]
+    pub struct BlockAxisAvailableSize(AvailableSize);
+
+    impl BlockAxisAvailableSize {
+        pub fn definite(value: CssPixels) -> Self {
+            Self(AvailableSize::definite(value))
+        }
+
+        pub(crate) fn indefinite() -> Self {
+            Self(AvailableSize::Indefinite)
+        }
+
+        pub(crate) fn min_content() -> Self {
+            Self(AvailableSize::MinContent)
+        }
+
+        pub(crate) fn max_content() -> Self {
+            Self(AvailableSize::MaxContent)
+        }
+
+        pub(crate) fn from_axis_generic_available_size(value: AvailableSize) -> Self {
+            Self(value)
+        }
+
+        pub(crate) fn is_intrinsic_sizing_constraint_for_mode_dispatch(self) -> bool {
+            self.0.is_intrinsic_sizing_constraint()
+        }
+
+        pub(crate) fn is_min_content_sizing_constraint_for_mode_dispatch(self) -> bool {
+            self.0 == AvailableSize::MinContent
+        }
+
+        pub(crate) fn is_max_content_sizing_constraint_for_mode_dispatch(self) -> bool {
+            self.0 == AvailableSize::MaxContent
+        }
+
+        pub(crate) fn axis_generic_value_for_mode_dispatch(self) -> AvailableSize {
+            self.0
+        }
+
+        pub(crate) fn axis_generic_value_for_flex_and_grid_axis_erasure(self) -> AvailableSize {
+            self.0
+        }
+
+        pub(crate) fn value_for_intrinsic_size_cache_key(self) -> AvailableSize {
+            self.0
+        }
+
+        pub(crate) fn definite_value_required_by_out_of_flow_construction(self) -> CssPixels {
+            debug_assert!(matches!(self.0, AvailableSize::Definite(_)));
+            self.0.to_px_or_zero()
+        }
+
+        pub(crate) fn raw_value_pending_noting_tier_assignment(self) -> AvailableSize {
+            self.0
+        }
+    }
+}
+
+pub use block_axis_available_space_funnel::BlockAxisAvailableSize;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct AvailableSpace {
     pub inline_size: AvailableSize,
-    pub block_size: AvailableSize,
+    pub block_size: BlockAxisAvailableSize,
 }
 
 impl Default for AvailableSpace {
     fn default() -> Self {
         Self {
             inline_size: AvailableSize::Indefinite,
-            block_size: AvailableSize::Indefinite,
+            block_size: BlockAxisAvailableSize::indefinite(),
         }
     }
 }

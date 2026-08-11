@@ -2528,10 +2528,11 @@ impl TableFormattingContext {
         if matches!(
             self.available_space.inline_size,
             AvailableSize::MinContent | AvailableSize::MaxContent
-        ) && !matches!(
-            self.available_space.block_size,
-            AvailableSize::MinContent | AvailableSize::MaxContent
-        ) {
+        ) && !self
+            .available_space
+            .block_size
+            .is_intrinsic_sizing_constraint_for_mode_dispatch()
+        {
             return;
         }
 

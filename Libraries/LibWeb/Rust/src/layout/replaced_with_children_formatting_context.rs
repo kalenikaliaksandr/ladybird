@@ -20,7 +20,7 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
 
     let child_available_space = AvailableSpace {
         inline_size: AvailableSize::definite(content_inline_size),
-        block_size: AvailableSize::definite(root_content_block_size),
+        block_size: BlockAxisAvailableSize::definite(root_content_block_size),
     };
 
     // The TreeBuilder wraps shadow DOM children in an anonymous BlockContainer.

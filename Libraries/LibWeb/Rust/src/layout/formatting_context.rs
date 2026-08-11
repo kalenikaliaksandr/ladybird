@@ -1413,7 +1413,7 @@ fn apply_root_sizing_directives(
             let mut body_input = body_input_with_inner_available_space(run, input);
             let inline_definite_space = AvailableSpace {
                 inline_size: AvailableSize::definite(run.records.used_values(run.box_).content_inline_size.get()),
-                block_size: AvailableSize::Indefinite,
+                block_size: BlockAxisAvailableSize::indefinite(),
             };
             let flex_self_resolution_space =
                 flex_self_block_size_resolution_space(run, inline_definite_space, input.containing_block_constraints);
@@ -1475,7 +1475,7 @@ fn dimension_block_level_root(
         measured_content_block_size = Some(content_block_size);
         let min_block_size = sizing.calculate_inner_block_size(node, available_space, style.min_height(), constraints);
         if content_block_size < min_block_size {
-            body_input.available_space.block_size = AvailableSize::definite(min_block_size);
+            body_input.available_space.block_size = BlockAxisAvailableSize::definite(min_block_size);
         }
     }
     sizing.make_button_content_box_definite(
@@ -1592,7 +1592,7 @@ fn run_formatting_context(
         run.sizing().apply_cached_intrinsic_inline_measurement(
             run.box_,
             input.available_space.inline_size,
-            body_input.available_space.block_size,
+            body_input.available_space.block_size.value_for_intrinsic_size_cache_key(),
             input.containing_block_constraints,
         )
     } else {
@@ -2003,7 +2003,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
         let input = LayoutInput::new(
             AvailableSpace {
                 inline_size: AvailableSize::definite(viewport_inline_size),
-                block_size: AvailableSize::definite(viewport_block_size),
+                block_size: BlockAxisAvailableSize::definite(viewport_block_size),
             },
             crate::layout::ContainingBlockConstraints::default(),
             ParticipationInParentFormattingContext::Root,
@@ -2110,7 +2110,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
         let input = LayoutInput::new(
             AvailableSpace {
                 inline_size: AvailableSize::definite(root_used.content_inline_size.get()),
-                block_size: AvailableSize::definite(root_used.content_block_size.get()),
+                block_size: BlockAxisAvailableSize::definite(root_used.content_block_size.get()),
             },
             // The subtree root has definite sizes in both axes, so boxes
             // below it do not need inherited percentage constraints.

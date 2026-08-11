@@ -1250,7 +1250,10 @@ impl GridFormattingContext {
 
     fn axis_available(&self, axis: Axis) -> AvailableSize {
         let space = self.available_space.unwrap();
-        axis.select(space.inline_size, space.block_size)
+        axis.select(
+            space.inline_size,
+            space.block_size.axis_generic_value_for_flex_and_grid_axis_erasure(),
+        )
     }
 
     fn axis_gap_value(&self, axis: Axis) -> &'static ComputedGap {
@@ -1864,7 +1867,10 @@ impl GridFormattingContext {
         self.collapse_auto_fit(Axis::Row);
         let available = self.available_space.unwrap();
         self.initialize_gaps_for_axis(Axis::Column, available.inline_size);
-        self.initialize_gaps_for_axis(Axis::Row, available.block_size);
+        self.initialize_gaps_for_axis(
+            Axis::Row,
+            available.block_size.axis_generic_value_for_flex_and_grid_axis_erasure(),
+        );
     }
 
     fn axis_tracks(&self, axis: Axis) -> &[Track] {
@@ -1979,9 +1985,9 @@ impl GridFormattingContext {
                 AvailableSize::Indefinite
             },
             block_size: if used.block_size_definiteness.is_definite_for_child_constraint_propagation() {
-                AvailableSize::definite(used.content_block_size.get())
+                BlockAxisAvailableSize::definite(used.content_block_size.get())
             } else {
-                AvailableSize::Indefinite
+                BlockAxisAvailableSize::indefinite()
             },
         }
     }
@@ -2119,7 +2125,7 @@ impl GridFormattingContext {
                 inline_size: AvailableSize::definite(clamp_to_max_dimension_value(
                     self.containing_block_size(item, Axis::Column),
                 )),
-                block_size: AvailableSize::definite(clamp_to_max_dimension_value(
+                block_size: BlockAxisAvailableSize::definite(clamp_to_max_dimension_value(
                     self.containing_block_size(item, Axis::Row),
                 )),
             };
@@ -2358,8 +2364,11 @@ impl GridFormattingContext {
             self.sizing()
                 .should_treat_max_inline_size_as_none(self.grid_container, available, constraints)
         } else {
-            self.sizing()
-                .should_treat_max_block_size_as_none(self.grid_container, available, constraints)
+            self.sizing().should_treat_max_block_size_as_none(
+                self.grid_container,
+                BlockAxisAvailableSize::from_axis_generic_available_size(available),
+                constraints,
+            )
         };
         if is_none {
             return None;
@@ -2706,7 +2715,7 @@ impl GridFormattingContext {
         let containing_block = self.containing_block_size(item, Axis::Row);
         let available = AvailableSpace {
             inline_size: AvailableSize::definite(clamp_to_max_dimension_value(containing_for_wrapper)),
-            block_size: AvailableSize::definite(clamp_to_max_dimension_value(containing_block)),
+            block_size: BlockAxisAvailableSize::definite(clamp_to_max_dimension_value(containing_block)),
         };
         let mut constraints = self.container_constraints();
         constraints.percentage_basis_inline_size = Some(containing_for_wrapper);
@@ -2824,7 +2833,7 @@ impl GridFormattingContext {
             let containing_block = self.containing_block_size(item, Axis::Row);
             let available = AvailableSpace {
                 inline_size: AvailableSize::definite(clamp_to_max_dimension_value(containing_inline)),
-                block_size: AvailableSize::definite(clamp_to_max_dimension_value(containing_block)),
+                block_size: BlockAxisAvailableSize::definite(clamp_to_max_dimension_value(containing_block)),
             };
             let mut constraints = self.grid_area_constraints(item);
             if !axis.is_column() {
@@ -3066,7 +3075,7 @@ impl GridFormattingContext {
     }
 
     fn rerun_rows_with_container_block_size(&mut self, block_size: CssPixels) {
-        self.available_space.as_mut().unwrap().block_size = AvailableSize::definite(block_size);
+        self.available_space.as_mut().unwrap().block_size = BlockAxisAvailableSize::definite(block_size);
         self.initialize_gaps_for_axis(Axis::Row, AvailableSize::definite(block_size));
         self.resolve_item_metrics(Axis::Row);
         self.run_track_sizing(Axis::Row);
@@ -3215,7 +3224,7 @@ impl GridFormattingContext {
             let input = LayoutInput {
                 available_space: AvailableSpace {
                     inline_size: AvailableSize::definite(self.used(item).content_inline_size.get()),
-                    block_size: AvailableSize::definite(self.used(item).content_block_size.get()),
+                    block_size: BlockAxisAvailableSize::definite(self.used(item).content_block_size.get()),
                 },
                 containing_block_constraints: {
                     let mut constraints = self.grid_area_constraints(item);
@@ -3414,7 +3423,9 @@ impl GridFormattingContext {
         //               parent inline formatting context derives the fragment's baseline from them.
         if self.layout_mode == LayoutMode::IntrinsicSizing
             && !available.inline_size.is_intrinsic_sizing_constraint()
-            && !available.block_size.is_intrinsic_sizing_constraint()
+            && !available
+                .block_size
+                .is_intrinsic_sizing_constraint_for_mode_dispatch()
             && !self.facts(self.grid_container).display().is_inline_outside()
         {
             return;
@@ -3449,14 +3460,16 @@ impl GridFormattingContext {
         self.row_alignment_container_size = self.automatic_content_block_size;
         self.use_row_alignment_container_size = false;
         let intrinsic_block_size = self.automatic_content_block_size;
-        if self.layout_mode == LayoutMode::Normal && available.block_size == AvailableSize::Indefinite {
+        if self.layout_mode == LayoutMode::Normal
+            && available.block_size.raw_value_pending_noting_tier_assignment() == AvailableSize::Indefinite
+        {
             let resolved_block_size = self.used_container_block_size_for_second_row_layout();
             self.rerun_rows_with_container_block_size(resolved_block_size);
             self.row_alignment_container_size = resolved_block_size;
             self.use_row_alignment_container_size = true;
             self.automatic_content_block_size = intrinsic_block_size;
         } else if self.layout_mode == LayoutMode::Normal
-            && let AvailableSize::Definite(block_size) = available.block_size
+            && let AvailableSize::Definite(block_size) = available.block_size.raw_value_pending_noting_tier_assignment()
             && self.sizing().should_treat_block_size_as_auto(
                 self.grid_container,
                 available,
@@ -3470,7 +3483,9 @@ impl GridFormattingContext {
         self.resolve_track_spacing(Axis::Row);
 
         if available.inline_size.is_intrinsic_sizing_constraint()
-            || available.block_size.is_intrinsic_sizing_constraint()
+            || available
+                .block_size
+                .is_intrinsic_sizing_constraint_for_mode_dispatch()
         {
             // https://www.w3.org/TR/css-grid-1/#intrinsic-sizes
             // The max-content size (min-content size) of a grid container is the sum of the grid container’s track sizes
@@ -3479,7 +3494,10 @@ impl GridFormattingContext {
                 let size = self.track_sum(Axis::Column);
                 self.container_used().set_content_inline_size(size);
             }
-            if available.block_size.is_intrinsic_sizing_constraint() {
+            if available
+                .block_size
+                .is_intrinsic_sizing_constraint_for_mode_dispatch()
+            {
                 let size = self.track_sum(Axis::Row);
                 self.container_used().set_content_block_size(size);
             }

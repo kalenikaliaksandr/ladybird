@@ -711,9 +711,13 @@ impl SvgFormattingContext {
             let available_space = self.available_space.unwrap();
             let rect = SvgCssPixelRect {
                 x: style.x().to_px(available_space.inline_size.to_px_or_zero()),
-                y: style.y().to_px(available_space.block_size.to_px_or_zero()),
+                y: style
+                    .y()
+                    .to_px(available_space.block_size.raw_value_pending_noting_tier_assignment().to_px_or_zero()),
                 width: style.width().to_px(available_space.inline_size.to_px_or_zero()),
-                height: style.height().to_px(available_space.block_size.to_px_or_zero()),
+                height: style
+                    .height()
+                    .to_px(available_space.block_size.raw_value_pending_noting_tier_assignment().to_px_or_zero()),
             };
 
             let mut svg_transform = parent_svg_transform;
@@ -740,7 +744,7 @@ impl SvgFormattingContext {
             let child_input = LayoutInput {
                 available_space: AvailableSpace {
                     inline_size: AvailableSize::definite(child_used.content_inline_size.get()),
-                    block_size: AvailableSize::definite(child_used.content_block_size.get()),
+                    block_size: BlockAxisAvailableSize::definite(child_used.content_block_size.get()),
                 },
                 containing_block_constraints: ContainingBlockConstraints {
                     quirks_mode_percentage_basis_block_size: self.quirks_mode_percentage_basis_block_size,

@@ -511,7 +511,7 @@ impl UsedValues {
             }
             SizeConstraint::None => AvailableSize::Indefinite,
         };
-        let mut block_size = self
+        let derived_block_size = self
             .block_size_definiteness
             .derive_available_block_size_for_child_propagation(self.content_block_size.get());
         if inline_size == AvailableSize::Indefinite
@@ -522,14 +522,13 @@ impl UsedValues {
         {
             inline_size = outer.inline_size;
         }
-        if block_size == AvailableSize::Indefinite
-            && matches!(
-                outer.block_size,
-                AvailableSize::MinContent | AvailableSize::MaxContent
-            )
+        let block_size = if derived_block_size == AvailableSize::Indefinite
+            && outer.block_size.is_intrinsic_sizing_constraint_for_mode_dispatch()
         {
-            block_size = outer.block_size;
-        }
+            outer.block_size
+        } else {
+            crate::layout::BlockAxisAvailableSize::from_axis_generic_available_size(derived_block_size)
+        };
         crate::layout::AvailableSpace {
             inline_size,
             block_size,

@@ -54,7 +54,7 @@ fn out_of_flow_root_space(inputs: AbsposLayoutInputs) -> (AvailableSpace, Contai
     (
         AvailableSpace {
             inline_size: AvailableSize::definite(containing_block_size.inline_size),
-            block_size: AvailableSize::definite(containing_block_size.block_size),
+            block_size: BlockAxisAvailableSize::definite(containing_block_size.block_size),
         },
         ContainingBlockConstraints {
             percentage_basis_inline_size: Some(containing_block_size.inline_size),
@@ -1292,7 +1292,9 @@ impl AbsposEngine {
     ) -> BlockAxisSolution {
         let style = self.style(node).with_resolved_insets(resolved_anchor_insets);
         let containing_block_inline_size = available_space.inline_size.to_px_or_zero();
-        let containing_block_block_size = available_space.block_size.to_px_or_zero();
+        let containing_block_block_size = available_space
+            .block_size
+            .definite_value_required_by_out_of_flow_construction();
         let used = self.used(node);
         let padding_top = used.padding_top.get();
         let padding_bottom = used.padding_bottom.get();
@@ -1485,7 +1487,9 @@ impl AbsposEngine {
         let block_size = self
             .sizing()
             .compute_block_size_for_replaced_element(node, available_space, constraints);
-        let containing_block_block_size = available_space.block_size.to_px_or_zero();
+        let containing_block_block_size = available_space
+            .block_size
+            .definite_value_required_by_out_of_flow_construction();
         let style = self.style(node).with_resolved_insets(resolved_anchor_insets);
         let used = self.used(node);
         let available = containing_block_block_size
@@ -1638,7 +1642,9 @@ impl AbsposEngine {
         let (available_space, constraints) = out_of_flow_root_space(inputs);
         let containing_block_size = LogicalSize {
             inline_size: available_space.inline_size.to_px_or_zero(),
-            block_size: available_space.block_size.to_px_or_zero(),
+            block_size: available_space
+                .block_size
+                .definite_value_required_by_out_of_flow_construction(),
         };
         let resolved = inputs.resolved_anchor_insets.as_ref();
         let style = self.style(node).with_resolved_insets(resolved);
