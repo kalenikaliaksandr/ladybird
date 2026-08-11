@@ -218,6 +218,7 @@ pub(crate) struct LayoutNodeArena {
     text_chunk_caches: RefCell<Vec<TextChunkCacheSlot>>,
     replaced_content_facts: Vec<ReplacedContentFactsSlot>,
     raw_table_column_spans: HashMap<NodeSlotId, u32>,
+    fc_run_cache_store: crate::layout::FcRunCacheArenaStore,
     owner_thread: thread::ThreadId,
 }
 
@@ -236,8 +237,32 @@ impl LayoutNodeArena {
             text_chunk_caches: RefCell::new(Vec::new()),
             replaced_content_facts: Vec::new(),
             raw_table_column_spans: HashMap::new(),
+            fc_run_cache_store: crate::layout::FcRunCacheArenaStore::default(),
             owner_thread: thread::current().id(),
         }
+    }
+
+    pub(crate) fn fc_run_cache_store(&self) -> &crate::layout::FcRunCacheArenaStore {
+        &self.fc_run_cache_store
+    }
+
+    /// Drops entries whose slot, epoch, or viewport stamp no longer match.
+    /// Runs at the end of every full pass so invalidated entries whose box
+    /// never probes again do not accumulate for the document's lifetime.
+    pub(crate) fn sweep_stale_fc_run_cache_entries(&self) {
+        let viewport = self.fc_run_cache_store.viewport_size();
+        self.fc_run_cache_store.retain_entries(|slot, validity| {
+            let Some(metadata) = self.slot_metadata.get(slot as usize) else {
+                return false;
+            };
+            if !metadata.occupied || metadata.generation != validity.slot_generation || viewport != validity.viewport {
+                return false;
+            }
+            let id = NodeSlotId::new(slot, metadata.generation);
+            // SAFETY: The slot is occupied at the matching generation, so the
+            // pointer addresses a live NodeData.
+            unsafe { (*self.data(id)).fragment_cache_epoch == validity.fragment_cache_epoch }
+        });
     }
 
     fn assert_owner_thread(&self) {
@@ -331,6 +356,7 @@ impl LayoutNodeArena {
         if let Some(slot) = self.replaced_content_facts.get_mut(index as usize) {
             *slot = ReplacedContentFactsSlot::default();
         }
+        self.fc_run_cache_store.remove_entry(index);
         self.raw_table_column_spans.remove(&id);
         *self.data_mut(index) = NodeData::default();
 
@@ -883,6 +909,11 @@ pub unsafe extern "C" fn layout_arena_free(arena: *mut c_void, id: NodeSlotId, g
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn layout_fc_run_cache_epochs_enabled() -> bool {
+    crate::layout::fc_run_cache_mode_from_environment() != crate::layout::FcRunCacheMode::Disabled
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn layout_arena_set_text_content(
     arena: *mut c_void,
     id: NodeSlotId,
@@ -932,6 +963,22 @@ pub unsafe extern "C" fn layout_arena_set_replaced_content_facts(
         // serializes all access on the document thread.
         unsafe { &mut *arena.cast::<LayoutNodeArena>() }.set_replaced_content_facts(id, facts)
     })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_note_viewport_size(
+    arena: *mut c_void,
+    viewport_inline_size_raw: i32,
+    viewport_block_size_raw: i32,
+) {
+    abort_on_panic(|| {
+        assert!(!arena.is_null(), "layout node arena handle is null");
+        // SAFETY: The C++ wrapper keeps the arena alive for this call and
+        // serializes all access on the document thread.
+        unsafe { &*arena.cast::<LayoutNodeArena>() }
+            .fc_run_cache_store()
+            .note_viewport_size(viewport_inline_size_raw, viewport_block_size_raw);
+    });
 }
 
 #[unsafe(no_mangle)]
