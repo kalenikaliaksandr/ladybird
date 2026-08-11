@@ -152,6 +152,12 @@ mod block_size_definiteness_funnel {
             is_definite
         }
 
+        pub(crate) fn note_dependence_unless_definite(&self) {
+            if !self.is_definite() {
+                note_block_size_dependence_observation();
+            }
+        }
+
         pub(crate) fn is_definite_for_child_constraint_propagation(&self) -> bool {
             self.is_definite()
         }
@@ -528,6 +534,15 @@ impl UsedValues {
             inline_size,
             block_size,
         }
+    }
+
+    pub(crate) fn content_block_size_of_containing_block_noting_dependence_when_indefinite(&self) -> CssPixels {
+        self.block_size_definiteness.note_dependence_unless_definite();
+        self.content_block_size.get()
+    }
+
+    pub(crate) fn content_block_size_for_relative_inset_basis(&self) -> CssPixels {
+        self.content_block_size.get()
     }
 }
 
