@@ -3015,7 +3015,7 @@ impl GridFormattingContext {
             if !style.min_height().is_auto() {
                 return self
                     .row_alignment_container_size
-                    .max(self.container_used().content_block_size.get());
+                    .max(self.container_used().content_block_size_for_internally_consistent_decision());
             }
             return self.row_alignment_container_size;
         }

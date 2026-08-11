@@ -856,7 +856,12 @@ impl<'context> InlineFormattingContext<'context> {
 
     pub(crate) fn compute_inset(&self, node: Node) {
         let used = self.containing_used();
-        crate::layout::compute_inset_native(self.run, node, used.content_inline_size.get(), used.content_block_size.get());
+        crate::layout::compute_inset_native(
+            self.run,
+            node,
+            used.content_inline_size.get(),
+            used.content_block_size_for_relative_inset_basis(),
+        );
     }
 
     pub(crate) fn parent_commit_pending_margin_before_inline_content(&self) -> CssPixels {
@@ -879,7 +884,7 @@ impl<'context> InlineFormattingContext<'context> {
             x: content_box_position_in_bfc_root.x,
             y: content_box_position_in_bfc_root.y + adjustment,
             width: self.containing_used().content_inline_size.get(),
-            height: self.containing_used().content_block_size.get(),
+            height: self.containing_used().content_block_size_for_float_placement_probe(),
         };
         self.parent.intrusion_by_floats_into_rect(rect, block_start, block_end)
     }

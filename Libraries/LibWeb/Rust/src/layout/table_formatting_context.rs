@@ -2488,7 +2488,7 @@ impl TableFormattingContext {
         // https://www.w3.org/TR/css-tables-3/#bounding-box-assignment
         let first = self.used_values(self.rows[cell.row_index].box_);
         if cell.row_span == 1 {
-            return first.content_block_size.get();
+            return first.content_block_size_for_internally_consistent_decision();
         }
         // When the row span is greater than 1, the borders of inner rows within the span have to be
         // included in the content block size of the spanning cell. First top and final bottom borders are
@@ -2498,9 +2498,9 @@ impl TableFormattingContext {
         for index in 0..cell.row_span {
             let used = self.used_values(self.rows[cell.row_index + index].box_);
             if index == 0 {
-                span += used.content_block_size.get() + used.border_box_bottom(false);
+                span += used.content_block_size_for_internally_consistent_decision() + used.border_box_bottom(false);
             } else if index == cell.row_span - 1 {
-                span += used.border_box_top(false) + used.content_block_size.get();
+                span += used.border_box_top(false) + used.content_block_size_for_internally_consistent_decision();
             } else {
                 span += used.border_box_block_size(false);
             }

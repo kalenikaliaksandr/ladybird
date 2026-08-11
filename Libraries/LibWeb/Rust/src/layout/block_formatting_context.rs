@@ -364,7 +364,7 @@ impl BlockFormattingContext {
             x: position.x,
             y: position.y,
             width: used.content_inline_size.get(),
-            height: used.content_block_size.get(),
+            height: used.content_block_size_for_float_placement_probe(),
         }
     }
 
@@ -445,7 +445,7 @@ impl BlockFormattingContext {
             x: content_position_in_root.x,
             y: content_position_in_root.y,
             width: available_inline_size,
-            height: self.used(node).content_block_size.get(),
+            height: self.used(node).content_block_size_for_float_placement_probe(),
         };
         let intrusion = self.intrusions_for_band_into_rect(self.band_at(box_in_root_rect.y), box_in_root_rect);
         let mut remaining_inline_size = available_inline_size - intrusion.left - intrusion.right;
@@ -1362,7 +1362,7 @@ impl BlockFormattingContext {
                     x: content_position_in_root.x,
                     y: content_position_in_root.y,
                     width: content_inline_size,
-                    height: used.content_block_size.get(),
+                    height: used.content_block_size_for_float_placement_probe(),
                 }
                 .into(),
                 CssPixels::default(),
@@ -1915,7 +1915,7 @@ impl BlockFormattingContext {
             node,
             LogicalSize {
                 inline_size: block_container_used.content_inline_size.get(),
-                block_size: block_container_used.content_block_size.get(),
+                block_size: block_container_used.content_block_size_for_relative_inset_basis(),
             },
         );
 
@@ -2530,7 +2530,7 @@ impl BlockFormattingContext {
             node,
             LogicalSize {
                 inline_size: block_container_used.content_inline_size.get(),
-                block_size: block_container_used.content_block_size.get(),
+                block_size: block_container_used.content_block_size_for_relative_inset_basis(),
             },
         );
 

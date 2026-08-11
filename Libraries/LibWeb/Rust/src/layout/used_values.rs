@@ -543,6 +543,14 @@ impl UsedValues {
     pub(crate) fn content_block_size_for_relative_inset_basis(&self) -> CssPixels {
         self.content_block_size.get()
     }
+
+    pub(crate) fn content_block_size_for_float_placement_probe(&self) -> CssPixels {
+        self.content_block_size.get()
+    }
+
+    pub(crate) fn content_block_size_for_internally_consistent_decision(&self) -> CssPixels {
+        self.content_block_size.get()
+    }
 }
 
 pub(crate) fn create_used_values(
