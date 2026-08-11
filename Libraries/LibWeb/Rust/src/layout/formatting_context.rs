@@ -18,6 +18,23 @@ pub(crate) enum LayoutMode {
     IntrinsicSizing,
 }
 
+mod block_size_dependence_observation_counter {
+    thread_local! {
+        static BLOCK_SIZE_DEPENDENCE_OBSERVATION_COUNT: std::cell::Cell<u64> =
+            const { std::cell::Cell::new(0) };
+    }
+
+    #[expect(dead_code)]
+    pub(crate) fn note_block_size_dependence_observation() {
+        BLOCK_SIZE_DEPENDENCE_OBSERVATION_COUNT.with(|count| count.set(count.get() + 1));
+    }
+
+    #[expect(dead_code)]
+    pub(crate) fn block_size_dependence_observation_count() -> u64 {
+        BLOCK_SIZE_DEPENDENCE_OBSERVATION_COUNT.with(|count| count.get())
+    }
+}
+
 /// The anchor() inset resolutions of one positioned box, produced by the
 /// abspos engine's resolve pass; sides without anchor functions stay
 /// unresolved and read from style.
