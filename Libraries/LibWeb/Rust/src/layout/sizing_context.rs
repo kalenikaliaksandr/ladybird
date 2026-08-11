@@ -1185,13 +1185,13 @@ impl SizingContext {
             - used.border_right.get()
     }
 
-    fn calculate_stretch_fit_block_size(&self, node: Node, available: AvailableSize) -> CssPixels {
+    fn calculate_stretch_fit_block_size(&self, node: Node, definite_available_block_size: CssPixels) -> CssPixels {
         // https://drafts.csswg.org/css-sizing-3/#stretch-fit-size
         // The size a box would take if its outer size filled the available space in the given axis;
         // in other words, the stretch fit into the available space, if that is definite.
         // Undefined if the available space is indefinite.
         let used = self.used(node);
-        available.to_px_or_zero()
+        definite_available_block_size
             - used.margin_top.get()
             - used.margin_bottom.get()
             - used.padding_top.get()
@@ -1914,7 +1914,7 @@ impl SizingContext {
         let containing_block_inline_size = available_space.inline_size.to_px_or_zero();
         let containing_block_block_size = available_space
             .block_size
-            .raw_value_pending_noting_tier_assignment()
+            .axis_generic_value_for_internally_consistent_decision()
             .to_px_or_zero();
 
         // If 'margin-top', or 'margin-bottom' are computed as 'auto', their used value is '0'.
@@ -1946,7 +1946,9 @@ impl SizingContext {
             .table_box_in_wrapper_border_box_block_size
             .expect("a table wrapper's measurement run lays out the table box inside it");
         if matches!(
-            available_space.block_size.raw_value_pending_noting_tier_assignment(),
+            available_space
+                .block_size
+                .axis_generic_value_for_internally_consistent_decision(),
             AvailableSize::Definite(_)
         ) {
             table_used_block_size.min(available_block_size)
@@ -1988,14 +1990,11 @@ impl SizingContext {
                 // If the available space in a given axis is definite,
                 // equal to clamp(min-content size, stretch-fit size, max-content size)
                 // (i.e. max(min-content size, min(max-content size, stretch-fit size))).
-                if matches!(
-                    available_space.block_size.raw_value_pending_noting_tier_assignment(),
-                    AvailableSize::Definite(_)
-                ) {
-                    let stretch = self.calculate_stretch_fit_block_size(
-                        node,
-                        available_space.block_size.raw_value_pending_noting_tier_assignment(),
-                    );
+                if let Some(definite_available_block_size) = available_space
+                    .block_size
+                    .definite_value_for_already_derived_state_gate()
+                {
+                    let stretch = self.calculate_stretch_fit_block_size(node, definite_available_block_size);
                     let max_content = self.calculate_max_content_block_size(node, inline_size, constraints);
                     if max_content <= stretch {
                         return max_content;

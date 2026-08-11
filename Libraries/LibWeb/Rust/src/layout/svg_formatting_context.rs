@@ -710,15 +710,22 @@ impl SvgFormattingContext {
             let child_used_pointer = self.create_used_values(child);
             let style = self.style(child);
             let available_space = self.available_space.unwrap();
+            let block_percentage_basis_for = |value_contains_percentage: bool| {
+                if value_contains_percentage {
+                    available_space
+                        .block_size
+                        .percentage_basis_or_zero_noting_dependence_when_indefinite()
+                } else {
+                    CssPixels::default()
+                }
+            };
+            let y = style.y();
+            let height = style.height();
             let rect = SvgCssPixelRect {
                 x: style.x().to_px(available_space.inline_size.to_px_or_zero()),
-                y: style
-                    .y()
-                    .to_px(available_space.block_size.raw_value_pending_noting_tier_assignment().to_px_or_zero()),
+                y: y.to_px(block_percentage_basis_for(y.contains_percentage())),
                 width: style.width().to_px(available_space.inline_size.to_px_or_zero()),
-                height: style
-                    .height()
-                    .to_px(available_space.block_size.raw_value_pending_noting_tier_assignment().to_px_or_zero()),
+                height: height.to_px(block_percentage_basis_for(height.contains_percentage())),
             };
 
             let mut svg_transform = parent_svg_transform;

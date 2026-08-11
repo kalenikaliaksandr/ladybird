@@ -3463,7 +3463,10 @@ impl GridFormattingContext {
         self.use_row_alignment_container_size = false;
         let intrinsic_block_size = self.automatic_content_block_size;
         if self.layout_mode == LayoutMode::Normal
-            && available.block_size.raw_value_pending_noting_tier_assignment() == AvailableSize::Indefinite
+            && available
+                .block_size
+                .axis_generic_value_for_internally_consistent_decision()
+                == AvailableSize::Indefinite
         {
             let resolved_block_size = self.used_container_block_size_for_second_row_layout();
             self.rerun_rows_with_container_block_size(resolved_block_size);
@@ -3471,7 +3474,8 @@ impl GridFormattingContext {
             self.use_row_alignment_container_size = true;
             self.automatic_content_block_size = intrinsic_block_size;
         } else if self.layout_mode == LayoutMode::Normal
-            && let AvailableSize::Definite(block_size) = available.block_size.raw_value_pending_noting_tier_assignment()
+            && let AvailableSize::Definite(block_size) =
+                available.block_size.axis_generic_value_for_internally_consistent_decision()
             && self.sizing().should_treat_block_size_as_auto(
                 self.grid_container,
                 available,

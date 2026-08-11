@@ -119,8 +119,22 @@ mod block_axis_available_space_funnel {
             self.0.to_px_or_zero()
         }
 
-        pub(crate) fn raw_value_pending_noting_tier_assignment(self) -> AvailableSize {
+        pub(crate) fn axis_generic_value_for_internally_consistent_decision(self) -> AvailableSize {
             self.0
+        }
+
+        pub(crate) fn definite_value_for_already_derived_state_gate(self) -> Option<CssPixels> {
+            match self.0 {
+                AvailableSize::Definite(value) => Some(value),
+                _ => None,
+            }
+        }
+
+        pub(crate) fn percentage_basis_or_zero_noting_dependence_when_indefinite(self) -> CssPixels {
+            if self.0 == AvailableSize::Indefinite {
+                crate::layout::note_block_size_dependence_observation();
+            }
+            self.0.to_px_or_zero()
         }
 
         pub(crate) fn is_indefinite_noting_dependence_when_indefinite(self) -> bool {
