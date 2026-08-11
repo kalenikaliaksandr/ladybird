@@ -1400,7 +1400,8 @@ impl BlockFormattingContext {
                 .has_definite_inline_size()
                 .then(|| list_item_used.content_inline_size.get()),
             percentage_basis_block_size: list_item_used
-                .has_definite_block_size()
+                .block_size_definiteness
+                .is_definite_for_child_constraint_propagation()
                 .then(|| list_item_used.content_block_size.get()),
             ..ContainingBlockConstraints::default()
         };
@@ -1628,7 +1629,12 @@ impl BlockFormattingContext {
             facts.document_in_quirks_mode() && facts.is_html_html_element() && style.height().is_auto();
 
         // NOTE: In quirks mode, the html element's block size matches the viewport so it can be treated as definite.
-        if self.used(node).has_definite_block_size() || box_is_html_element_in_quirks_mode {
+        if self
+            .used(node)
+            .block_size_definiteness
+            .is_definite_for_already_derived_state_gate()
+            || box_is_html_element_in_quirks_mode
+        {
             self.resolve_used_block_size_if_treated_as_auto(
                 node,
                 available_space,

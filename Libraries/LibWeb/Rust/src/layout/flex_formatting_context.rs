@@ -401,11 +401,19 @@ impl<'pass> FlexFormattingContext<'pass> {
     }
 
     fn has_definite_main_size_used(&self, used: &UsedValues) -> bool {
-        self.select_main(used.has_definite_inline_size(), used.has_definite_block_size())
+        if self.main_axis_is_horizontal() {
+            used.has_definite_inline_size()
+        } else {
+            used.block_size_definiteness.is_definite_for_already_derived_state_gate()
+        }
     }
 
     fn has_definite_cross_size_used(&self, used: &UsedValues) -> bool {
-        self.select_cross(used.has_definite_inline_size(), used.has_definite_block_size())
+        if self.cross_axis_is_horizontal() {
+            used.has_definite_inline_size()
+        } else {
+            used.block_size_definiteness.is_definite_for_already_derived_state_gate()
+        }
     }
 
     fn has_definite_main_size(&self, index: usize) -> bool {
@@ -434,14 +442,20 @@ impl<'pass> FlexFormattingContext<'pass> {
 
     fn set_has_definite_main_size(&mut self, index: usize) {
         let used = self.item_used(index);
-        self.select_main(&used.has_definite_inline_size, &used.has_definite_block_size)
-            .set(true);
+        if self.main_axis_is_horizontal() {
+            used.has_definite_inline_size.set(true);
+        } else {
+            used.block_size_definiteness.set_has_definite_block_size(true);
+        }
     }
 
     fn set_has_definite_cross_size(&mut self, index: usize) {
         let used = self.item_used(index);
-        self.select_cross(&used.has_definite_inline_size, &used.has_definite_block_size)
-            .set(true);
+        if self.cross_axis_is_horizontal() {
+            used.has_definite_inline_size.set(true);
+        } else {
+            used.block_size_definiteness.set_has_definite_block_size(true);
+        }
     }
 
     fn set_main_size(&mut self, index: usize, size: CssPixels) {

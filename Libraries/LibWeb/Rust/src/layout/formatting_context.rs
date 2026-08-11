@@ -24,7 +24,6 @@ mod block_size_dependence_observation_counter {
             const { std::cell::Cell::new(0) };
     }
 
-    #[expect(dead_code)]
     pub(crate) fn note_block_size_dependence_observation() {
         BLOCK_SIZE_DEPENDENCE_OBSERVATION_COUNT.with(|count| count.set(count.get() + 1));
     }
@@ -34,6 +33,8 @@ mod block_size_dependence_observation_counter {
         BLOCK_SIZE_DEPENDENCE_OBSERVATION_COUNT.with(|count| count.get())
     }
 }
+
+pub(crate) use block_size_dependence_observation_counter::note_block_size_dependence_observation;
 
 /// The anchor() inset resolutions of one positioned box, produced by the
 /// abspos engine's resolve pass; sides without anchor functions stay
@@ -1444,7 +1445,7 @@ fn apply_root_sizing_directives(
                 }
                 if let Some(block_size) = directives.forced_content_block_size {
                     used.set_content_block_size(block_size);
-                    used.has_definite_block_size.set(true);
+                    used.block_size_definiteness.set_has_definite_block_size(true);
                 }
             }
             *input
@@ -1804,9 +1805,9 @@ pub(crate) fn layout_inside_child(
         && layout_mode == LayoutMode::IntrinsicSizing
         && !facts.is_inline()
         && used.inline_size_constraint.get() == SizeConstraint::None
-        && used.block_size_constraint.get() == SizeConstraint::None
+        && used.block_size_definiteness.size_constraint_for_intrinsic_mode_dispatch() == SizeConstraint::None
         && used.has_definite_inline_size()
-        && used.has_definite_block_size()
+        && used.block_size_definiteness.is_definite_for_already_derived_state_gate()
     {
         size_skipped_independent_root(run, parent_block, child, &input);
         return ChildLayoutOutcome::Skipped;
@@ -1883,7 +1884,7 @@ fn independent_formatting_context_type(
     FfiFormattingContextType::InternalDummy
 }
 
-pub(crate) fn resolve_block_axis_percentage_inset_basis_is_definite(
+pub(crate) fn resolve_block_axis_percentage_inset_basis_is_definite_for_propagation(
     records: &RunRecords,
     callbacks: &FfiLayoutFcCallbacks,
     containing_block: Node,
@@ -1894,7 +1895,10 @@ pub(crate) fn resolve_block_axis_percentage_inset_basis_is_definite(
     while !candidate.is_invalid() {
         let facts = NodeFacts::new(callbacks, candidate);
         if !facts.is_anonymous() || facts.is_table_cell() {
-            return records.used_values(candidate).has_definite_block_size();
+            return records
+                .used_values(candidate)
+                .block_size_definiteness
+                .is_definite_for_child_constraint_propagation();
         }
         if candidate == formatting_context_root {
             return !treat_block_axis_percentage_insets_as_auto_beyond_root;
@@ -1902,6 +1906,26 @@ pub(crate) fn resolve_block_axis_percentage_inset_basis_is_definite(
         candidate = callbacks.containing_block(candidate);
     }
     true
+}
+
+pub(crate) fn resolve_block_axis_percentage_inset_basis_is_definite_noting_dependence_when_indefinite(
+    records: &RunRecords,
+    callbacks: &FfiLayoutFcCallbacks,
+    containing_block: Node,
+    formatting_context_root: Node,
+    treat_block_axis_percentage_insets_as_auto_beyond_root: bool,
+) -> bool {
+    let basis_is_definite = resolve_block_axis_percentage_inset_basis_is_definite_for_propagation(
+        records,
+        callbacks,
+        containing_block,
+        formatting_context_root,
+        treat_block_axis_percentage_insets_as_auto_beyond_root,
+    );
+    if !basis_is_definite {
+        note_block_size_dependence_observation();
+    }
+    basis_is_definite
 }
 
 pub(crate) fn treat_block_axis_percentage_insets_as_auto_beyond_anonymous_child_root(
@@ -1915,7 +1939,7 @@ pub(crate) fn treat_block_axis_percentage_insets_as_auto_beyond_anonymous_child_
     if !child_root_facts.is_anonymous() || child_root_facts.is_table_cell() {
         return false;
     }
-    !resolve_block_axis_percentage_inset_basis_is_definite(
+    !resolve_block_axis_percentage_inset_basis_is_definite_for_propagation(
         records,
         callbacks,
         callbacks.containing_block(child_root),

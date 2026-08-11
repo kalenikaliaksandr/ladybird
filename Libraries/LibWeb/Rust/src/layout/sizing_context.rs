@@ -678,7 +678,7 @@ impl SizingContext {
             && !facts.is_table_cell()
             && !facts.has_auto_content_box_size()
             && used.inline_size_constraint.get() == SizeConstraint::None
-            && used.block_size_constraint.get() == SizeConstraint::None;
+            && used.block_size_definiteness.size_constraint_for_intrinsic_mode_dispatch() == SizeConstraint::None;
 
         let inline = if used.has_definite_inline_size() {
             Some(used.content_inline_size.get())
@@ -687,7 +687,7 @@ impl SizingContext {
         } else {
             None
         };
-        let block = if used.has_definite_block_size() {
+        let block = if used.block_size_definiteness.is_definite_for_child_constraint_propagation() {
             Some(used.content_block_size.get())
         } else if should_forward_indefinite_basis {
             constraints.percentage_basis_block_size
@@ -762,7 +762,11 @@ impl SizingContext {
                 return true;
             }
             // If the box has definite height, we can resolve the width through the aspect ratio.
-            if self.used(node).has_definite_block_size() {
+            if self
+                .used(node)
+                .block_size_definiteness
+                .is_definite_noting_dependence_when_indefinite()
+            {
                 return true;
             }
         }
@@ -966,7 +970,7 @@ impl SizingContext {
         let used = self.used(node);
         used.set_content_block_size(block_size);
         if !style.height().is_intrinsic_sizing_constraint() {
-            used.has_definite_block_size.set(true);
+            used.block_size_definiteness.set_has_definite_block_size(true);
         }
     }
 
@@ -1006,7 +1010,7 @@ impl SizingContext {
             //    according to the CSS specification.
             block_size = block_size.max(size);
             // NOTE: The block size of the root element when affected by this quirk is considered to be definite.
-            self.used(node).has_definite_block_size.set(true);
+            self.used(node).block_size_definiteness.set_has_definite_block_size(true);
         }
 
         if facts.document_in_quirks_mode() && facts.is_html_body_element() && style.height().is_auto() {
@@ -1079,7 +1083,7 @@ impl SizingContext {
                 style.height().is_auto() || self.should_treat_block_size_as_auto(node, available_space, constraints);
             if self.used(node).has_definite_inline_size() && facts.has_preferred_aspect_ratio() && block_size_is_automatic
             {
-                self.used(node).has_definite_block_size.set(true);
+                self.used(node).block_size_definiteness.set_has_definite_block_size(true);
             }
             return;
         }
@@ -1419,12 +1423,17 @@ impl SizingContext {
         if let Some(width) = auto_size.width {
             return width;
         }
-        let definite_block_size =
-            if facts.is_replaced_box() && auto_size.height.is_none() && self.used(node).has_definite_block_size() {
-                Some(self.used(node).content_block_size.get())
-            } else {
-                None
-            };
+        let definite_block_size = if facts.is_replaced_box()
+            && auto_size.height.is_none()
+            && self
+                .used(node)
+                .block_size_definiteness
+                .is_definite_noting_dependence_when_indefinite()
+        {
+            Some(self.used(node).content_block_size.get())
+        } else {
+            None
+        };
         let max_content_available = AvailableSize::MaxContent;
         let intrinsic_available_space = AvailableSpace {
             inline_size: max_content_available,
@@ -1567,11 +1576,9 @@ impl SizingContext {
         let root = measurement.create_used_values(node, constraints);
         root.inline_size_constraint.set(size_constraint);
         root.has_definite_inline_size.set(false);
-        let block_size = if root.has_definite_block_size() {
-            AvailableSize::definite(root.content_block_size.get())
-        } else {
-            AvailableSize::Indefinite
-        };
+        let block_size = root
+            .block_size_definiteness
+            .derive_available_block_size_for_child_propagation(root.content_block_size.get());
         let mut result = measurement.run(
             node,
             root.clone(),
@@ -1610,8 +1617,8 @@ impl SizingContext {
 
         let measurement = MeasurementState::create(self.callbacks);
         let root = measurement.create_used_values(node, constraints);
-        root.block_size_constraint.set(size_constraint);
-        root.has_definite_block_size.set(false);
+        root.block_size_definiteness.set_block_size_constraint(size_constraint);
+        root.block_size_definiteness.set_has_definite_block_size(false);
         root.set_content_inline_size(inline_size);
         let result = measurement.run(
             node,
@@ -1724,7 +1731,11 @@ impl SizingContext {
         if style.height().is_auto() && style.min_height().is_auto() {
             return;
         }
-        if self.used(node).has_definite_block_size() {
+        if self
+            .used(node)
+            .block_size_definiteness
+            .is_definite_noting_dependence_when_indefinite()
+        {
             return;
         }
         let natural = measured_content_block_size.unwrap_or_else(|| {
@@ -1767,7 +1778,7 @@ impl SizingContext {
         }
         let used = self.used(node);
         used.set_content_block_size(used_block_size);
-        used.has_definite_block_size.set(true);
+        used.block_size_definiteness.set_has_definite_block_size(true);
     }
 
     pub(crate) fn table_box_inside_wrapper(&self, wrapper: Node) -> Node {

@@ -129,6 +129,83 @@ pub(crate) struct UsedValuesRareData {
     pub(crate) abspos_layout_inputs: Option<AbsposLayoutInputs>,
 }
 
+mod block_size_definiteness_funnel {
+    use super::{AvailableSize, CssPixels, SizeConstraint, note_block_size_dependence_observation};
+    use std::cell::Cell;
+
+    #[derive(Debug, Default)]
+    pub(crate) struct BlockSizeDefiniteness {
+        has_definite_block_size: Cell<bool>,
+        block_size_constraint: Cell<SizeConstraint>,
+    }
+
+    impl BlockSizeDefiniteness {
+        fn is_definite(&self) -> bool {
+            self.has_definite_block_size.get() && self.block_size_constraint.get() == SizeConstraint::None
+        }
+
+        pub(crate) fn is_definite_noting_dependence_when_indefinite(&self) -> bool {
+            let is_definite = self.is_definite();
+            if !is_definite {
+                note_block_size_dependence_observation();
+            }
+            is_definite
+        }
+
+        pub(crate) fn is_definite_for_child_constraint_propagation(&self) -> bool {
+            self.is_definite()
+        }
+
+        pub(crate) fn is_definite_for_already_derived_state_gate(&self) -> bool {
+            self.is_definite()
+        }
+
+        pub(crate) fn is_definite_for_internally_consistent_decision(&self) -> bool {
+            self.is_definite()
+        }
+
+        pub(crate) fn size_constraint_for_intrinsic_mode_dispatch(&self) -> SizeConstraint {
+            self.block_size_constraint.get()
+        }
+
+        pub(crate) fn derive_available_block_size_for_child_propagation(
+            &self,
+            content_block_size: CssPixels,
+        ) -> AvailableSize {
+            match self.block_size_constraint.get() {
+                SizeConstraint::MinContent => AvailableSize::MinContent,
+                SizeConstraint::MaxContent => AvailableSize::MaxContent,
+                SizeConstraint::None if self.has_definite_block_size.get() => {
+                    AvailableSize::definite(content_block_size)
+                }
+                SizeConstraint::None => AvailableSize::Indefinite,
+            }
+        }
+
+        pub(crate) fn set_has_definite_block_size(&self, value: bool) {
+            self.has_definite_block_size.set(value);
+        }
+
+        pub(crate) fn set_block_size_constraint(&self, value: SizeConstraint) {
+            self.block_size_constraint.set(value);
+        }
+
+        pub(crate) fn mirror_size_constraint_into(&self, scratch: &BlockSizeDefiniteness) {
+            scratch.block_size_constraint.set(self.block_size_constraint.get());
+        }
+
+        pub(crate) fn mirror_raw_definiteness_flag_into(&self, scratch: &BlockSizeDefiniteness) {
+            scratch.has_definite_block_size.set(self.has_definite_block_size.get());
+        }
+
+        pub(crate) fn mirror_effective_definiteness_into(&self, scratch: &BlockSizeDefiniteness) {
+            scratch.has_definite_block_size.set(self.is_definite());
+        }
+    }
+}
+
+pub(crate) use block_size_definiteness_funnel::BlockSizeDefiniteness;
+
 /// The per-box geometry stored in a Rust-owned layout pass.
 #[derive(Debug)]
 pub(crate) struct UsedValues {
@@ -156,11 +233,10 @@ pub(crate) struct UsedValues {
     pub inset_bottom: SealableCell<CssPixels>,
 
     pub has_definite_inline_size: Cell<bool>,
-    pub has_definite_block_size: Cell<bool>,
+    pub block_size_definiteness: BlockSizeDefiniteness,
     pub uses_collapsing_borders_model: Cell<bool>,
 
     pub inline_size_constraint: Cell<SizeConstraint>,
-    pub block_size_constraint: Cell<SizeConstraint>,
 
     // Keep these as separate cells: content_offset is read by placement code
     // even where has_content_offset is false.
@@ -202,10 +278,9 @@ impl Default for UsedValues {
             inset_top: SealableCell::new(zero),
             inset_bottom: SealableCell::new(zero),
             has_definite_inline_size: Cell::new(false),
-            has_definite_block_size: Cell::new(false),
+            block_size_definiteness: BlockSizeDefiniteness::default(),
             uses_collapsing_borders_model: Cell::new(false),
             inline_size_constraint: Cell::new(SizeConstraint::None),
-            block_size_constraint: Cell::new(SizeConstraint::None),
             has_content_offset: SealableCell::new(false),
             content_offset: SealableCell::new(FfiCssPixelPoint::default()),
             has_first_baseline: Cell::new(false),
@@ -299,15 +374,12 @@ impl UsedValues {
         scratch.content_inline_size.set(self.content_inline_size.get());
         scratch.content_block_size.set(self.content_block_size.get());
         scratch.inline_size_constraint.set(self.inline_size_constraint.get());
-        scratch.block_size_constraint.set(self.block_size_constraint.get());
+        self.block_size_definiteness
+            .mirror_size_constraint_into(&scratch.block_size_definiteness);
     }
 
     pub(crate) fn has_definite_inline_size(&self) -> bool {
         self.has_definite_inline_size.get() && self.inline_size_constraint.get() == SizeConstraint::None
-    }
-
-    pub(crate) fn has_definite_block_size(&self) -> bool {
-        self.has_definite_block_size.get() && self.block_size_constraint.get() == SizeConstraint::None
     }
 
     pub(crate) fn set_content_inline_size(&self, value: CssPixels) {
@@ -433,14 +505,9 @@ impl UsedValues {
             }
             SizeConstraint::None => AvailableSize::Indefinite,
         };
-        let mut block_size = match self.block_size_constraint.get() {
-            SizeConstraint::MinContent => AvailableSize::MinContent,
-            SizeConstraint::MaxContent => AvailableSize::MaxContent,
-            SizeConstraint::None if self.has_definite_block_size.get() => {
-                AvailableSize::definite(self.content_block_size.get())
-            }
-            SizeConstraint::None => AvailableSize::Indefinite,
-        };
+        let mut block_size = self
+            .block_size_definiteness
+            .derive_available_block_size_for_child_propagation(self.content_block_size.get());
         if inline_size == AvailableSize::Indefinite
             && matches!(
                 outer.inline_size,
@@ -593,7 +660,8 @@ pub(crate) fn create_used_values(
     let mut content_block_size = is_definite_size(style.height(), Axis::Block);
 
     used.has_definite_inline_size.set(content_inline_size.is_some());
-    used.has_definite_block_size.set(content_block_size.is_some());
+    used.block_size_definiteness
+        .set_has_definite_block_size(content_block_size.is_some());
     if let Some(size) = content_inline_size.as_mut() {
         if let Some(minimum) = min_inline_size {
             *size = clamp_to_max_dimension_value((*size).max(minimum));
@@ -637,7 +705,7 @@ pub(crate) fn used_values_from_paintable(
     used.set_content_inline_size(geometry.content_inline_size);
     used.set_content_block_size(geometry.content_block_size);
     used.has_definite_inline_size.set(true);
-    used.has_definite_block_size.set(true);
+    used.block_size_definiteness.set_has_definite_block_size(true);
     used.content_offset.set(geometry.content_offset);
     used.margin_left.set(geometry.margin_left);
     used.margin_right.set(geometry.margin_right);

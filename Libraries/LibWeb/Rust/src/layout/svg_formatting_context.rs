@@ -579,7 +579,7 @@ impl SvgFormattingContext {
         // NOTE: We consider all SVG root elements to have definite size in both axes.
         //       I'm not sure if this is good or bad, but our viewport transform logic depends on it.
         used.has_definite_inline_size.set(true);
-        used.has_definite_block_size.set(true);
+        used.block_size_definiteness.set_has_definite_block_size(true);
 
         if kind == NodeKind::SVGSVGBox {
             self.set_svg_viewport_size(
@@ -625,7 +625,7 @@ impl SvgFormattingContext {
             } else {
                 1.0
             };
-            let scale_height = if used.has_definite_block_size() {
+            let scale_height = if used.block_size_definiteness.is_definite_noting_dependence_when_indefinite() {
                 used.content_block_size.get().to_double() / view_box.height
             } else {
                 1.0
@@ -666,7 +666,7 @@ impl SvgFormattingContext {
         );
         self.viewport_height = active_view_box.map_or_else(
             || {
-                if used.has_definite_block_size() {
+                if used.block_size_definiteness.is_definite_noting_dependence_when_indefinite() {
                     used.content_block_size.get()
                 } else {
                     CssPixels::default()
@@ -840,7 +840,7 @@ impl SvgFormattingContext {
         used.set_content_inline_size(content_inline_size);
         used.set_content_block_size(content_block_size);
         used.has_definite_inline_size.set(true);
-        used.has_definite_block_size.set(true);
+        used.block_size_definiteness.set_has_definite_block_size(true);
 
         let mut nested_context = Self::new_nested(run, viewport, parent_viewbox_transform, Some(parent_svg_transform));
         nested_context.run(run, self.nested_layout_input());
@@ -979,7 +979,7 @@ impl SvgFormattingContext {
         self.used_values(graphics_box).rare_data_mut().computed_svg_path = Some(path);
         self.place_child(graphics_box, transformed_bounding_box.x, transformed_bounding_box.y);
         used.has_definite_inline_size.set(true);
-        used.has_definite_block_size.set(true);
+        used.block_size_definiteness.set_has_definite_block_size(true);
     }
 
     fn layout_image_element(&self, image_box: Node) {
@@ -1005,7 +1005,7 @@ impl SvgFormattingContext {
         used.set_content_block_size(bounding_box.height);
         self.place_child(image_box, bounding_box.x, bounding_box.y);
         used.has_definite_inline_size.set(true);
-        used.has_definite_block_size.set(true);
+        used.block_size_definiteness.set_has_definite_block_size(true);
     }
 
     fn layout_mask_or_clip(&mut self, run: &FormattingContextRun, resource: Node) {
@@ -1075,7 +1075,7 @@ impl SvgFormattingContext {
 
         let used = used_pointer.clone();
         used.has_definite_inline_size.set(true);
-        used.has_definite_block_size.set(true);
+        used.block_size_definiteness.set_has_definite_block_size(true);
         // Pretend masks/clips are a viewport so we can scale the contents depending on the `contentUnits`.
         let mut nested_context = Self::new_nested(run, resource, parent_viewbox_transform, Some(FfiAffineTransform::default()));
         nested_context.run(run, self.nested_layout_input());
@@ -1144,6 +1144,6 @@ impl SvgFormattingContext {
         used.set_content_block_size(max_y - min_y);
         self.place_child(container, min_x, min_y);
         used.has_definite_inline_size.set(true);
-        used.has_definite_block_size.set(true);
+        used.block_size_definiteness.set_has_definite_block_size(true);
     }
 }

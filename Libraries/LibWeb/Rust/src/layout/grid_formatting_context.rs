@@ -1978,7 +1978,7 @@ impl GridFormattingContext {
             } else {
                 AvailableSize::Indefinite
             },
-            block_size: if used.has_definite_block_size() {
+            block_size: if used.block_size_definiteness.is_definite_for_child_constraint_propagation() {
                 AvailableSize::definite(used.content_block_size.get())
             } else {
                 AvailableSize::Indefinite
@@ -2151,7 +2151,11 @@ impl GridFormattingContext {
         }
 
         let used = self.used(item);
-        let has_definite_preferred_size = axis.select(used.has_definite_inline_size(), used.has_definite_block_size());
+        let has_definite_preferred_size = if axis.is_column() {
+            used.has_definite_inline_size()
+        } else {
+            used.block_size_definiteness.is_definite_for_internally_consistent_decision()
+        };
         if has_definite_preferred_size {
             // FIXME: consider margins, padding and borders because it is outer size.
             let containing_block_size = self.containing_block_size(item, axis);
@@ -2485,7 +2489,8 @@ impl GridFormattingContext {
         let scratch_root = scratch.create_used_values(subgrid.box_, ContainingBlockConstraints::default());
         live.mirror_box_metrics_and_size_constraints_into(&scratch_root);
         scratch_root.has_definite_inline_size.set(live.has_definite_inline_size.get());
-        scratch_root.has_definite_block_size.set(live.has_definite_block_size.get());
+        live.block_size_definiteness
+            .mirror_raw_definiteness_flag_into(&scratch_root.block_size_definiteness);
         let scratch_run = FormattingContextRun {
             purpose: LayoutPurpose::Measurement,
             records: std::rc::Rc::new(RunRecords::new(subgrid.box_, scratch_root)),
@@ -3005,7 +3010,11 @@ impl GridFormattingContext {
             }
             return self.row_alignment_container_size;
         }
-        if self.container_used().has_definite_block_size() {
+        if self
+            .container_used()
+            .block_size_definiteness
+            .is_definite_for_internally_consistent_decision()
+        {
             self.container_used().content_block_size.get()
         } else {
             self.row_alignment_container_size
@@ -3201,7 +3210,7 @@ impl GridFormattingContext {
             {
                 let used = self.used(item);
                 used.has_definite_inline_size.set(true);
-                used.has_definite_block_size.set(true);
+                used.block_size_definiteness.set_has_definite_block_size(true);
             }
             let input = LayoutInput {
                 available_space: AvailableSpace {

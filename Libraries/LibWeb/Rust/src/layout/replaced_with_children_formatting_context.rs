@@ -11,7 +11,7 @@ fn layout_replaced_with_children(run: &FormattingContextRun, layout_input: Layou
     let (content_inline_size, root_content_block_size) = {
         let root_state = run.records.used_values(run.box_);
         root_state.has_definite_inline_size.set(true);
-        root_state.has_definite_block_size.set(true);
+        root_state.block_size_definiteness.set_has_definite_block_size(true);
         (
             root_state.content_inline_size.get(),
             root_state.content_block_size.get(),

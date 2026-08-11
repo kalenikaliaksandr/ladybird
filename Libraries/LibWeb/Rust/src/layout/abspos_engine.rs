@@ -1463,7 +1463,7 @@ impl AbsposEngine {
             return;
         }
         if !style.height().is_intrinsic_sizing_constraint() {
-            used.has_definite_block_size.set(true);
+            used.block_size_definiteness.set_has_definite_block_size(true);
         }
         used.inset_top.set(auto_px_value(solution.top));
         used.inset_bottom.set(auto_px_value(solution.bottom));
@@ -1515,7 +1515,7 @@ impl AbsposEngine {
             return;
         }
         if !style.height().is_intrinsic_sizing_constraint() {
-            used.has_definite_block_size.set(true);
+            used.block_size_definiteness.set_has_definite_block_size(true);
         }
         used.inset_top.set(solution.start);
         used.inset_bottom.set(solution.end);
@@ -1609,7 +1609,7 @@ impl AbsposEngine {
                 && !style.inset_bottom().is_auto()
                 && (style.height().is_auto() || !style.height().is_intrinsic_sizing_constraint())
             {
-                used.has_definite_block_size.set(true);
+                used.block_size_definiteness.set_has_definite_block_size(true);
             }
         }
         if !self.facts(node).creates_block_formatting_context() {
@@ -1621,7 +1621,7 @@ impl AbsposEngine {
             if (!style.height().is_auto() && !style.height().is_intrinsic_sizing_constraint())
                 || block_size_resolved_from_aspect_ratio
             {
-                used.has_definite_block_size.set(true);
+                used.block_size_definiteness.set_has_definite_block_size(true);
             }
         }
 
@@ -1847,7 +1847,7 @@ impl AbsposEngine {
 
         let treat_block_axis_percentage_insets_as_auto = (style.inset_top().contains_percentage()
             || style.inset_bottom().contains_percentage())
-            && !crate::layout::resolve_block_axis_percentage_inset_basis_is_definite(
+            && !crate::layout::resolve_block_axis_percentage_inset_basis_is_definite_noting_dependence_when_indefinite(
                 &self.records,
                 &self.callbacks,
                 self.callbacks.containing_block(node),

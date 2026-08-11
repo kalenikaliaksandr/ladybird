@@ -2003,9 +2003,9 @@ impl TableFormattingContext {
         if self.layout_mode == LayoutMode::IntrinsicSizing
             && !facts.is_inline()
             && used.inline_size_constraint.get() == SizeConstraint::None
-            && used.block_size_constraint.get() == SizeConstraint::None
+            && used.block_size_definiteness.size_constraint_for_intrinsic_mode_dispatch() == SizeConstraint::None
             && used.has_definite_inline_size()
-            && used.has_definite_block_size()
+            && used.block_size_definiteness.is_definite_for_already_derived_state_gate()
         {
             return None;
         }
@@ -2019,9 +2019,8 @@ impl TableFormattingContext {
         measured_root
             .has_definite_inline_size
             .set(used.has_definite_inline_size());
-        measured_root
-            .has_definite_block_size
-            .set(used.has_definite_block_size());
+        used.block_size_definiteness
+            .mirror_effective_definiteness_into(&measured_root.block_size_definiteness);
         measured_root
             .uses_collapsing_borders_model
             .set(used.uses_collapsing_borders_model.get());
