@@ -690,7 +690,9 @@ impl SizingContext {
         let block = if used.block_size_definiteness.is_definite_for_child_constraint_propagation() {
             Some(used.content_block_size.get())
         } else if should_forward_indefinite_basis {
-            constraints.percentage_basis_block_size
+            constraints
+                .block_axis_bases
+                .percentage_basis_block_size_for_child_constraint_propagation()
         } else {
             None
         };
@@ -722,13 +724,14 @@ impl SizingContext {
         {
             Some(used.content_block_size.get())
         } else {
-            constraints.quirks_mode_percentage_basis_block_size
+            constraints
+                .block_axis_bases
+                .quirks_mode_percentage_basis_block_size_for_child_constraint_propagation()
         };
 
         ContainingBlockConstraints {
             percentage_basis_inline_size: inline,
-            percentage_basis_block_size: block,
-            quirks_mode_percentage_basis_block_size: quirks_block,
+            block_axis_bases: BlockAxisPercentageBases::new(block, quirks_block),
         }
     }
 
@@ -823,7 +826,12 @@ impl SizingContext {
                     && !facts.is_table_box()
                     && !parent_is_flex_or_grid
                     && !facts.is_in_user_agent_shadow_tree();
-                if !quirk_applies && constraints.percentage_basis_block_size.is_none() {
+                if !quirk_applies
+                    && constraints
+                        .block_axis_bases
+                        .percentage_basis_block_size_noting_dependence_when_unavailable()
+                        .is_none()
+                {
                     return true;
                 }
             }
@@ -891,7 +899,11 @@ impl SizingContext {
             if available.is_min_content_sizing_constraint_for_mode_dispatch() {
                 return false;
             }
-            if constraints.percentage_basis_block_size.is_none() {
+            if constraints
+                .block_axis_bases
+                .percentage_basis_block_size_noting_dependence_when_unavailable()
+                .is_none()
+            {
                 return true;
             }
         }
@@ -929,8 +941,12 @@ impl SizingContext {
             return available_space;
         }
         let mut resolution_space = available_space;
-        resolution_space.block_size =
-            BlockAxisAvailableSize::definite(constraints.quirks_mode_percentage_basis_block_size.unwrap_or_default());
+        resolution_space.block_size = BlockAxisAvailableSize::definite(
+            constraints
+                .block_axis_bases
+                .quirks_mode_percentage_basis_block_size_for_quirk_resolution()
+                .unwrap_or_default(),
+        );
         resolution_space
     }
 
@@ -1005,7 +1021,10 @@ impl SizingContext {
             let used = self.used(node);
             let margins = used.margin_top.get() + used.margin_bottom.get();
             // 2. Let size be the size of the initial containing block in the block flow direction minus margins.
-            let size = constraints.block_basis() - margins;
+            let size = constraints
+                .block_axis_bases
+                .percentage_basis_block_size_or_zero_for_document_quirk_sizing()
+                - margins;
             // 3. Return the bigger value of size and the normal border box size the element would have
             //    according to the CSS specification.
             block_size = block_size.max(size);
@@ -1031,7 +1050,10 @@ impl SizingContext {
                 let used = self.used(node);
                 let margins = used.margin_top.get() + used.margin_bottom.get();
                 // 2. Let size be the size of element's parent element's content box in the block flow direction minus margins.
-                let size = constraints.block_basis() - margins;
+                let size = constraints
+                    .block_axis_bases
+                    .percentage_basis_block_size_or_zero_for_document_quirk_sizing()
+                    - margins;
                 // 3. Return the bigger value of size and the normal border box size the element would have
                 //    according to the CSS specification.
                 block_size = block_size.max(size);
@@ -1469,7 +1491,12 @@ impl SizingContext {
             if !size.is_length_percentage() {
                 return None;
             }
-            if !size.contains_percentage() || constraints.percentage_basis_block_size.is_some() {
+            if !size.contains_percentage()
+                || constraints
+                    .block_axis_bases
+                    .percentage_basis_block_size_noting_dependence_when_unavailable()
+                    .is_some()
+            {
                 return Some(self.calculate_inner_block_size(node, intrinsic_available_space, size, constraints));
             }
             match cyclic_percentage_intrinsic_contribution(
@@ -1481,7 +1508,9 @@ impl SizingContext {
                 CyclicPercentageIntrinsicContribution::TreatAsInitialValue => None,
                 CyclicPercentageIntrinsicContribution::ResolveAsZero => {
                     let mut zero_constraints = constraints;
-                    zero_constraints.percentage_basis_block_size = Some(CssPixels::default());
+                    zero_constraints.block_axis_bases = zero_constraints
+                        .block_axis_bases
+                        .with_percentage_basis_block_size(Some(CssPixels::default()));
                     Some(self.calculate_inner_block_size(node, intrinsic_available_space, size, zero_constraints))
                 }
                 CyclicPercentageIntrinsicContribution::NotCyclic => None,
@@ -2063,10 +2092,7 @@ impl SizingContext {
             );
         }
 
-        let mut basis = available_space
-            .block_size
-            .raw_value_pending_noting_tier_assignment()
-            .to_px_or_zero();
+        let mut basis = available_space.block_size.to_px_or_zero_for_already_derived_state();
         // NOTE: Percentage heights are resolved against the containing block's used height,
         //       not the available space height. The containing block's height must be definite
         //       for percentage resolution to work (otherwise should_treat_block_size_as_auto
@@ -2075,7 +2101,9 @@ impl SizingContext {
         //       we trust that the caller has set it up correctly (e.g., grid/flex items get
         //       their cell/area size as available space).
         if preferred_size.contains_percentage()
-            && available_space.block_size.raw_value_pending_noting_tier_assignment() == AvailableSize::Indefinite
+            && available_space
+                .block_size
+                .is_indefinite_noting_dependence_when_indefinite()
         {
             // https://quirks.spec.whatwg.org/#the-percentage-height-calculation-quirk
             // NOTE: Flex/grid items resolve percentage heights against their container, not via quirk.
@@ -2092,9 +2120,15 @@ impl SizingContext {
                 && !parent_is_flex_or_grid
                 && !facts.is_in_user_agent_shadow_tree()
             {
-                basis = constraints.quirks_mode_percentage_basis_block_size.unwrap_or_default();
+                basis = constraints
+                    .block_axis_bases
+                    .quirks_mode_percentage_basis_block_size_for_quirk_resolution()
+                    .unwrap_or_default();
             } else {
-                basis = constraints.block_basis();
+                basis = constraints
+                    .block_axis_bases
+                    .percentage_basis_block_size_noting_dependence_when_unavailable()
+                    .unwrap_or_default();
             }
         }
         let value = preferred_size.to_px(basis);

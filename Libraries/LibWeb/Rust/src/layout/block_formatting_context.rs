@@ -1399,11 +1399,13 @@ impl BlockFormattingContext {
             percentage_basis_inline_size: list_item_used
                 .has_definite_inline_size()
                 .then(|| list_item_used.content_inline_size.get()),
-            percentage_basis_block_size: list_item_used
-                .block_size_definiteness
-                .is_definite_for_child_constraint_propagation()
-                .then(|| list_item_used.content_block_size.get()),
-            ..ContainingBlockConstraints::default()
+            block_axis_bases: BlockAxisPercentageBases::new(
+                list_item_used
+                    .block_size_definiteness
+                    .is_definite_for_child_constraint_propagation()
+                    .then(|| list_item_used.content_block_size.get()),
+                None,
+            ),
         };
         self.create_used_values(marker, marker_constraints);
     }

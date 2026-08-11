@@ -262,7 +262,11 @@ impl<'pass> FlexFormattingContext<'pass> {
             self.layout_input.unwrap().containing_block_constraints,
         );
         constraints.percentage_basis_inline_size = self.item_percentage_bases.percentage_basis_inline_size;
-        constraints.percentage_basis_block_size = self.item_percentage_bases.percentage_basis_block_size;
+        constraints.block_axis_bases = constraints.block_axis_bases.with_percentage_basis_block_size(
+            self.item_percentage_bases
+                .block_axis_bases
+                .percentage_basis_block_size_for_child_constraint_propagation(),
+        );
         constraints
     }
 

@@ -555,7 +555,6 @@ pub(crate) fn create_used_values(
 
     let style = StyleValues::for_node(callbacks, node);
     let percentage_basis_inline_size = constraints.percentage_basis_inline_size;
-    let percentage_basis_block_size = constraints.percentage_basis_block_size;
 
     // NOTE: In the code below, we decide if `node` has definite inline
     // and/or block size. This attempts to cover all the *general* cases
@@ -577,11 +576,17 @@ pub(crate) fn create_used_values(
 
     let containing_block_size_for_axis = |axis: Axis| match axis {
         Axis::Inline => percentage_basis_inline_size.unwrap_or_default(),
-        Axis::Block => percentage_basis_block_size.unwrap_or_default(),
+        Axis::Block => constraints
+            .block_axis_bases
+            .percentage_basis_block_size_noting_dependence_when_unavailable()
+            .unwrap_or_default(),
     };
     let containing_block_has_definite_size = |axis: Axis| match axis {
         Axis::Inline => percentage_basis_inline_size.is_some(),
-        Axis::Block => percentage_basis_block_size.is_some(),
+        Axis::Block => constraints
+            .block_axis_bases
+            .percentage_basis_block_size_noting_dependence_when_unavailable()
+            .is_some(),
     };
 
     let adjust_for_box_sizing = |unadjusted: crate::layout::CssPixels, computed_size: &ComputedSize, axis: Axis| {

@@ -447,8 +447,8 @@ impl SvgFormattingContext {
         LayoutInput::new(
             self.available_space.unwrap(),
             ContainingBlockConstraints {
-                quirks_mode_percentage_basis_block_size: self.quirks_mode_percentage_basis_block_size,
-                ..Default::default()
+                percentage_basis_inline_size: None,
+                block_axis_bases: BlockAxisPercentageBases::new(None, self.quirks_mode_percentage_basis_block_size),
             },
             ParticipationInParentFormattingContext::Item,
         )
@@ -677,7 +677,8 @@ impl SvgFormattingContext {
         self.available_space = Some(input.available_space);
         self.quirks_mode_percentage_basis_block_size = input
             .containing_block_constraints
-            .quirks_mode_percentage_basis_block_size;
+            .block_axis_bases
+            .quirks_mode_percentage_basis_block_size_for_child_constraint_propagation();
 
         let mut svg_transform_for_children = self.parent_svg_transform.unwrap_or_default();
         if let Some(transforms) = self.computed_transforms(self.box_) {
@@ -747,8 +748,8 @@ impl SvgFormattingContext {
                     block_size: BlockAxisAvailableSize::definite(child_used.content_block_size.get()),
                 },
                 containing_block_constraints: ContainingBlockConstraints {
-                    quirks_mode_percentage_basis_block_size: self.quirks_mode_percentage_basis_block_size,
-                    ..Default::default()
+                    percentage_basis_inline_size: None,
+                    block_axis_bases: BlockAxisPercentageBases::new(None, self.quirks_mode_percentage_basis_block_size),
                 },
                 content_box_position_in_bfc_root: None,
                 sizing: RootSizingDirectives::default(),

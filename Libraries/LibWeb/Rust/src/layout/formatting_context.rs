@@ -225,8 +225,12 @@ fn cache_key(
     IntrinsicSizeCacheKey {
         measured_at_inline_size,
         percentage_basis_inline_size: constraints.percentage_basis_inline_size,
-        percentage_basis_block_size: constraints.percentage_basis_block_size,
-        quirks_mode_percentage_basis_block_size: constraints.quirks_mode_percentage_basis_block_size,
+        percentage_basis_block_size: constraints
+            .block_axis_bases
+            .percentage_basis_block_size_for_cache_key(),
+        quirks_mode_percentage_basis_block_size: constraints
+            .block_axis_bases
+            .quirks_mode_percentage_basis_block_size_for_cache_key(),
     }
 }
 
@@ -1973,8 +1977,7 @@ pub unsafe extern "C" fn rust_layout_run_root_layout(
 
         let root_constraints = crate::layout::ContainingBlockConstraints {
             percentage_basis_inline_size: Some(viewport_inline_size),
-            percentage_basis_block_size: Some(viewport_block_size),
-            ..crate::layout::ContainingBlockConstraints::default()
+            block_axis_bases: crate::layout::BlockAxisPercentageBases::new(Some(viewport_block_size), None),
         };
         let entry_records = std::rc::Rc::new(RunRecords::new_unrooted(root));
         let viewport_used = entry_records.create_used_values(&callbacks, root, root_constraints);
@@ -2099,8 +2102,7 @@ pub unsafe extern "C" fn rust_layout_compute_subtree_layout(
             let viewport_block_size = CssPixels::from_raw(viewport_block_size_raw);
             let viewport_constraints = crate::layout::ContainingBlockConstraints {
                 percentage_basis_inline_size: Some(viewport_inline_size),
-                percentage_basis_block_size: Some(viewport_block_size),
-                ..crate::layout::ContainingBlockConstraints::default()
+                block_axis_bases: crate::layout::BlockAxisPercentageBases::new(Some(viewport_block_size), None),
             };
             let viewport_used = entry_records.create_used_values(&callbacks, viewport, viewport_constraints);
             viewport_used.set_content_inline_size(viewport_inline_size);

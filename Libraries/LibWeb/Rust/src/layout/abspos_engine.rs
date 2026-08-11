@@ -58,8 +58,7 @@ fn out_of_flow_root_space(inputs: AbsposLayoutInputs) -> (AvailableSpace, Contai
         },
         ContainingBlockConstraints {
             percentage_basis_inline_size: Some(containing_block_size.inline_size),
-            percentage_basis_block_size: Some(containing_block_size.block_size),
-            quirks_mode_percentage_basis_block_size: None,
+            block_axis_bases: BlockAxisPercentageBases::new(Some(containing_block_size.block_size), None),
         },
     )
 }

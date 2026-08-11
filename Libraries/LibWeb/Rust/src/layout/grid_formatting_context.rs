@@ -2003,8 +2003,7 @@ impl GridFormattingContext {
         );
         ContainingBlockConstraints {
             percentage_basis_inline_size: None,
-            percentage_basis_block_size: None,
-            ..inherited
+            block_axis_bases: inherited.block_axis_bases.with_percentage_basis_block_size(None),
         }
     }
 
@@ -2837,7 +2836,8 @@ impl GridFormattingContext {
             };
             let mut constraints = self.grid_area_constraints(item);
             if !axis.is_column() {
-                constraints.percentage_basis_block_size = Some(containing);
+                constraints.block_axis_bases =
+                    constraints.block_axis_bases.with_percentage_basis_block_size(Some(containing));
             }
             let style = self.style(item.box_);
             let preferred = axis.select(style.width(), style.height());
@@ -3228,7 +3228,9 @@ impl GridFormattingContext {
                 },
                 containing_block_constraints: {
                     let mut constraints = self.grid_area_constraints(item);
-                    constraints.percentage_basis_block_size = Some(area.size.block_size);
+                    constraints.block_axis_bases = constraints
+                        .block_axis_bases
+                        .with_percentage_basis_block_size(Some(area.size.block_size));
                     if let Some(inline_basis) = table_wrapper_inline_basis {
                         // Table wrappers pass their constraints through to the table box, so hand them the
                         // grid area in both axes for the table's percentage resolution.

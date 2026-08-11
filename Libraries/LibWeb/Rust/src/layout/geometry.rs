@@ -122,6 +122,18 @@ mod block_axis_available_space_funnel {
         pub(crate) fn raw_value_pending_noting_tier_assignment(self) -> AvailableSize {
             self.0
         }
+
+        pub(crate) fn is_indefinite_noting_dependence_when_indefinite(self) -> bool {
+            let is_indefinite = self.0 == AvailableSize::Indefinite;
+            if is_indefinite {
+                crate::layout::note_block_size_dependence_observation();
+            }
+            is_indefinite
+        }
+
+        pub(crate) fn to_px_or_zero_for_already_derived_state(self) -> CssPixels {
+            self.0.to_px_or_zero()
+        }
     }
 }
 
@@ -161,20 +173,80 @@ pub(crate) struct LogicalRect {
     pub(crate) size: LogicalSize,
 }
 
+mod block_axis_percentage_basis_funnel {
+    use super::CssPixels;
+    use crate::layout::note_block_size_dependence_observation;
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct BlockAxisPercentageBases {
+        percentage_basis_block_size: Option<CssPixels>,
+        quirks_mode_percentage_basis_block_size: Option<CssPixels>,
+    }
+
+    impl BlockAxisPercentageBases {
+        pub(crate) fn new(
+            percentage_basis_block_size: Option<CssPixels>,
+            quirks_mode_percentage_basis_block_size: Option<CssPixels>,
+        ) -> Self {
+            Self {
+                percentage_basis_block_size,
+                quirks_mode_percentage_basis_block_size,
+            }
+        }
+
+        pub(crate) fn with_percentage_basis_block_size(self, value: Option<CssPixels>) -> Self {
+            Self {
+                percentage_basis_block_size: value,
+                ..self
+            }
+        }
+
+        pub(crate) fn percentage_basis_block_size_noting_dependence_when_unavailable(self) -> Option<CssPixels> {
+            if self.percentage_basis_block_size.is_none() {
+                note_block_size_dependence_observation();
+            }
+            self.percentage_basis_block_size
+        }
+
+        pub(crate) fn percentage_basis_block_size_for_child_constraint_propagation(self) -> Option<CssPixels> {
+            self.percentage_basis_block_size
+        }
+
+        pub(crate) fn percentage_basis_block_size_for_cache_key(self) -> Option<CssPixels> {
+            self.percentage_basis_block_size
+        }
+
+        pub(crate) fn percentage_basis_block_size_or_zero_for_document_quirk_sizing(self) -> CssPixels {
+            self.percentage_basis_block_size.unwrap_or_default()
+        }
+
+        pub(crate) fn quirks_mode_percentage_basis_block_size_for_quirk_resolution(self) -> Option<CssPixels> {
+            self.quirks_mode_percentage_basis_block_size
+        }
+
+        pub(crate) fn quirks_mode_percentage_basis_block_size_for_child_constraint_propagation(
+            self,
+        ) -> Option<CssPixels> {
+            self.quirks_mode_percentage_basis_block_size
+        }
+
+        pub(crate) fn quirks_mode_percentage_basis_block_size_for_cache_key(self) -> Option<CssPixels> {
+            self.quirks_mode_percentage_basis_block_size
+        }
+    }
+}
+
+pub(crate) use block_axis_percentage_basis_funnel::BlockAxisPercentageBases;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ContainingBlockConstraints {
     pub(crate) percentage_basis_inline_size: Option<CssPixels>,
-    pub(crate) percentage_basis_block_size: Option<CssPixels>,
-    pub(crate) quirks_mode_percentage_basis_block_size: Option<CssPixels>,
+    pub(crate) block_axis_bases: BlockAxisPercentageBases,
 }
 
 impl ContainingBlockConstraints {
     pub(crate) fn inline_basis(self) -> CssPixels {
         self.percentage_basis_inline_size.unwrap_or_default()
-    }
-
-    pub(crate) fn block_basis(self) -> CssPixels {
-        self.percentage_basis_block_size.unwrap_or_default()
     }
 }
 
