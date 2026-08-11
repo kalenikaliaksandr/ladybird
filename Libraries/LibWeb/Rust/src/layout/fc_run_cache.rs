@@ -23,7 +23,7 @@ fn fc_run_cache_mode_from_environment() -> FcRunCacheMode {
             eprintln!("Unknown LADYBIRD_FC_RUN_CACHE value {unknown:?} (expected 0, 1, or shadow); disabling the run cache");
             FcRunCacheMode::Disabled
         }
-        Err(_) => FcRunCacheMode::Disabled,
+        Err(_) => FcRunCacheMode::Enabled,
     })
 }
 
