@@ -161,8 +161,7 @@ fn run_root_validity(callbacks: &FfiLayoutFcCallbacks, box_: Node) -> FcRunCache
 
 /// A run's cache interaction, decided at probe time and concluded after
 /// the run executes. Uncacheable classes bypass entirely: measurement and
-/// intrinsic-sizing runs produce no fragments; float roots stay bypassed
-/// until replay equivalence is verified corpus-wide; subgridded grid items copy
+/// intrinsic-sizing runs produce no fragments; subgridded grid items copy
 /// the parent grid's mid-run track state, which the key cannot see;
 /// anchor()-positioned roots keep their bypass while the resolved-inset
 /// side effects are audited; pass entries and internal runs are not
@@ -200,10 +199,7 @@ impl FcRunCacheAttempt {
             || layout_mode != LayoutMode::Normal
             || purpose.is_measurement()
             || should_collect_devtools_layout_data
-            || matches!(
-                input.participation,
-                ParticipationInParentFormattingContext::Float | ParticipationInParentFormattingContext::Root
-            )
+            || input.participation == ParticipationInParentFormattingContext::Root
             || matches!(
                 fc_type,
                 FfiFormattingContextType::InternalReplaced | FfiFormattingContextType::InternalDummy
