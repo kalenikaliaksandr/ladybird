@@ -958,19 +958,18 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
                 .may_reuse_layout_node_for_child_list_insertion = may_reuse_layout_node_for_child_list_insertion(node),
                 .document_needs_full_layout_tree_update = node.document().needs_full_layout_tree_update(),
                 .is_document = node.is_document(),
-                .has_layout_node = existing_layout_node != nullptr,
                 .is_element = element != nullptr,
                 .is_text = is<DOM::Text>(node),
                 .rendered_in_top_layer = element && element->rendered_in_top_layer(),
-                .layout_node_is_attached = existing_layout_node && existing_layout_node->parent(),
                 .is_svg_container = node.is_svg_container(),
                 .requires_svg_container = node.requires_svg_container(),
                 .is_svg_foreign_object = node.is_svg_foreign_object_element(),
+                .layout_node = Node::slot_id(existing_layout_node),
             }; },
         .request_top_layer_zone_rebuild = [](void* node_pointer) {
             VERIFY(node_pointer);
             static_cast<DOM::Node*>(node_pointer)->document().set_top_layer_needs_layout_zone_rebuild(); },
-        .push_principal_frame = [](void* builder_pointer, void* node_pointer) -> RustFFI::FfiPrincipalNodeFrame {
+        .push_principal_frame = [](void* builder_pointer, void* node_pointer) -> void* {
             VERIFY(builder_pointer);
             VERIFY(node_pointer);
             auto& builder = *static_cast<LayoutTreeBuildBridge*>(builder_pointer);
@@ -986,10 +985,7 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
             frame.layout_node = nullptr;
             frame.anonymous_computed_values = nullptr;
             frame.style_record_identity = 0;
-            return {
-                .frame = &frame,
-                .old_layout_node = Node::slot_id(frame.old_layout_node.ptr()),
-            }; },
+            return &frame; },
         .pop_principal_frame = [](void* builder_pointer, void* frame_pointer) {
             VERIFY(builder_pointer);
             VERIFY(frame_pointer);
@@ -1039,7 +1035,7 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
                 .is_svg_clip_path_element = is<SVG::SVGClipPathElement>(element),
                 .is_svg_pattern_element = is<SVG::SVGPatternElement>(element),
             }; },
-        .create_principal_element_layout = [](void* builder_pointer, void* frame_pointer, void* element_pointer, RustFFI::FfiElementLayoutKind kind) {
+        .create_principal_element_layout = [](void* builder_pointer, void* frame_pointer, void* element_pointer, RustFFI::FfiElementLayoutKind kind) -> RustFFI::NodeSlotId {
             VERIFY(builder_pointer);
             VERIFY(frame_pointer);
             VERIFY(element_pointer);
@@ -1069,14 +1065,16 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
             case RustFFI::FfiElementLayoutKind::Normal:
                 frame.layout_node = element.create_layout_node(style);
                 break;
-            } },
-        .create_principal_document_layout = [](void* frame_pointer, void* document_pointer) {
+            }
+            return Node::slot_id(frame.layout_node.ptr()); },
+        .create_principal_document_layout = [](void* frame_pointer, void* document_pointer) -> RustFFI::NodeSlotId {
             VERIFY(frame_pointer);
             VERIFY(document_pointer);
             auto& frame = *static_cast<PrincipalNodeFrame*>(frame_pointer);
             auto& document = *static_cast<DOM::Document*>(document_pointer);
             frame.anonymous_computed_values = document.style_computer().create_document_style();
-            frame.layout_node = make_ref_counted<Layout::Viewport>(document, frame.anonymous_computed_values.release_nonnull()); },
+            frame.layout_node = make_ref_counted<Layout::Viewport>(document, frame.anonymous_computed_values.release_nonnull());
+            return Node::slot_id(frame.layout_node.ptr()); },
         .principal_text_layout_facts = [](void* text_pointer) -> RustFFI::FfiTextLayoutFacts {
             VERIFY(text_pointer);
             auto& text = *static_cast<DOM::Text*>(text_pointer);
@@ -1085,19 +1083,19 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
                 .style_parent_record_id = style_parent ? style_parent->style_record_identity().value() : 0,
                 .text_is_ascii_whitespace = text.data().is_ascii_whitespace(),
             }; },
-        .create_principal_text_layout = [](void* frame_pointer, void* text_pointer, bool needs_style_wrapper) {
+        .create_principal_text_layout = [](void* frame_pointer, void* text_pointer, bool needs_style_wrapper) -> RustFFI::NodeSlotId {
             VERIFY(frame_pointer);
             VERIFY(text_pointer);
             auto& frame = *static_cast<PrincipalNodeFrame*>(frame_pointer);
-            frame.layout_node = create_layout_node_for_text(*static_cast<DOM::Text*>(text_pointer), needs_style_wrapper); },
-        .reuse_principal_layout = [](void* frame_pointer, void* node_pointer) {
+            frame.layout_node = create_layout_node_for_text(*static_cast<DOM::Text*>(text_pointer), needs_style_wrapper);
+            return Node::slot_id(frame.layout_node.ptr()); },
+        .reuse_principal_layout = [](void* frame_pointer, void* node_pointer) -> RustFFI::NodeSlotId {
             VERIFY(frame_pointer);
             VERIFY(node_pointer);
             // NB: Called during layout tree construction.
-            static_cast<PrincipalNodeFrame*>(frame_pointer)->layout_node = static_cast<DOM::Node*>(node_pointer)->unsafe_layout_node(); },
-        .principal_layout_node = [](void* frame_pointer) -> RustFFI::NodeSlotId {
-            VERIFY(frame_pointer);
-            return Node::slot_id(static_cast<PrincipalNodeFrame*>(frame_pointer)->layout_node.ptr()); },
+            auto& frame = *static_cast<PrincipalNodeFrame*>(frame_pointer);
+            frame.layout_node = static_cast<DOM::Node*>(node_pointer)->unsafe_layout_node();
+            return Node::slot_id(frame.layout_node.ptr()); },
         .attach_principal_style_resources = [](void* frame_pointer) {
             VERIFY(frame_pointer);
             auto& frame = *static_cast<PrincipalNodeFrame*>(frame_pointer);

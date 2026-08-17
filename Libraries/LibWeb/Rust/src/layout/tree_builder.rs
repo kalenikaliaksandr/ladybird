@@ -93,18 +93,17 @@ pub struct FfiDomTreeBuilderCallbacks {
     pub element_layout_node: unsafe extern "C" fn(*mut c_void) -> NodeSlotId,
     pub principal_node_entry_facts: unsafe extern "C" fn(*mut c_void, *mut c_void, bool) -> FfiPrincipalNodeEntryFacts,
     pub request_top_layer_zone_rebuild: unsafe extern "C" fn(*mut c_void),
-    pub push_principal_frame: unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiPrincipalNodeFrame,
+    pub push_principal_frame: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void,
     pub pop_principal_frame: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub prepare_principal_element:
         unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, bool) -> FfiPreparedPrincipalElementFacts,
     pub principal_element_layout_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiElementLayoutFacts,
     pub create_principal_element_layout:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, FfiElementLayoutKind),
-    pub create_principal_document_layout: unsafe extern "C" fn(*mut c_void, *mut c_void),
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, FfiElementLayoutKind) -> NodeSlotId,
+    pub create_principal_document_layout: unsafe extern "C" fn(*mut c_void, *mut c_void) -> NodeSlotId,
     pub principal_text_layout_facts: unsafe extern "C" fn(*mut c_void) -> FfiTextLayoutFacts,
-    pub create_principal_text_layout: unsafe extern "C" fn(*mut c_void, *mut c_void, bool),
-    pub reuse_principal_layout: unsafe extern "C" fn(*mut c_void, *mut c_void),
-    pub principal_layout_node: unsafe extern "C" fn(*mut c_void) -> NodeSlotId,
+    pub create_principal_text_layout: unsafe extern "C" fn(*mut c_void, *mut c_void, bool) -> NodeSlotId,
+    pub reuse_principal_layout: unsafe extern "C" fn(*mut c_void, *mut c_void) -> NodeSlotId,
     pub attach_principal_style_resources: unsafe extern "C" fn(*mut c_void),
     pub apply_replaced_display_adjustment: unsafe extern "C" fn(*mut c_void, FfiReplacedElementDisplayAdjustment),
     pub insert_principal_backdrop_before_old: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void),
@@ -117,15 +116,6 @@ pub struct FfiDomTreeBuilderCallbacks {
     pub clear_overflow_caches: unsafe extern "C" fn(*mut c_void, *const *mut c_void, usize),
     pub layout: FfiTreeBuilderCallbacks,
     pub pseudo: FfiPseudoTreeBuilderCallbacks,
-}
-
-/// The C++ frame that retains a principal node's old and new layout boxes, paired with the old
-/// box's arena slot so Rust can reason about in-place replacement without calling back.
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub struct FfiPrincipalNodeFrame {
-    pub frame: *mut c_void,
-    pub old_layout_node: NodeSlotId,
 }
 
 #[derive(Clone, Copy)]
@@ -195,14 +185,14 @@ pub struct FfiPrincipalNodeEntryFacts {
     pub may_reuse_layout_node_for_child_list_insertion: bool,
     pub document_needs_full_layout_tree_update: bool,
     pub is_document: bool,
-    pub has_layout_node: bool,
     pub is_element: bool,
     pub is_text: bool,
     pub rendered_in_top_layer: bool,
-    pub layout_node_is_attached: bool,
     pub is_svg_container: bool,
     pub requires_svg_container: bool,
     pub is_svg_foreign_object: bool,
+    // The DOM node's existing layout node, or INVALID. Attachment is a native parent-link read.
+    pub layout_node: NodeSlotId,
 }
 
 #[derive(Clone, Copy)]
@@ -533,16 +523,17 @@ pub(crate) fn principal_box_placement_decision(
 
 pub(crate) fn principal_node_entry_decision(
     facts: FfiPrincipalNodeEntryFacts,
+    layout_node_is_attached: bool,
     context: &TreeBuilderContext,
 ) -> PrincipalNodeEntryDecision {
     abort_on_panic(|| {
         let should_create_layout_node = facts.must_create_subtree
             || (facts.needs_layout_tree_update && !facts.may_reuse_layout_node_for_child_list_insertion)
             || facts.document_needs_full_layout_tree_update
-            || (facts.is_document && !facts.has_layout_node);
+            || (facts.is_document && facts.layout_node.is_invalid());
 
         let top_layer = if facts.is_element && facts.rendered_in_top_layer && !context.layout_top_layer {
-            if !facts.layout_node_is_attached && !facts.needs_layout_tree_update {
+            if !layout_node_is_attached && !facts.needs_layout_tree_update {
                 TopLayerEntryDecision::SkipAndRequestZoneRebuild
             } else {
                 TopLayerEntryDecision::Skip
@@ -1407,7 +1398,7 @@ fn construct_principal_layout_node(
     update: &mut PrincipalNodeUpdate<'_, '_, '_, '_>,
     entry_facts: FfiPrincipalNodeEntryFacts,
     should_create_layout_node: bool,
-) -> (bool, bool) {
+) -> (LayoutNode, bool) {
     let host = update.host;
     let frame = update.frame;
     let dom_node = update.dom_node;
@@ -1438,7 +1429,7 @@ fn construct_principal_layout_node(
             display_is_contents,
         );
         if generation == PrincipalBoxGenerationDecision::Suppress {
-            return (false, false);
+            return (NodeSlotId::INVALID, false);
         }
         if generation == PrincipalBoxGenerationDecision::DisplayContents {
             // SAFETY: The callback table, DOM element, and context remain valid throughout the recursive walk.
@@ -1452,7 +1443,7 @@ fn construct_principal_layout_node(
                     should_create_layout_node,
                 );
             }
-            return (false, true);
+            return (NodeSlotId::INVALID, true);
         }
         if should_create_layout_node {
             // SAFETY: The frame and element remain live throughout construction.
@@ -1463,9 +1454,9 @@ fn construct_principal_layout_node(
                 context.layout_svg_pattern,
             );
             // SAFETY: The builder, frame, and element remain live throughout construction.
-            unsafe {
-                (host.callbacks.create_principal_element_layout)(host.callbacks.builder, frame, dom_node, layout_kind);
-            }
+            let layout_node = unsafe {
+                (host.callbacks.create_principal_element_layout)(host.callbacks.builder, frame, dom_node, layout_kind)
+            };
             if matches!(
                 layout_kind,
                 FfiElementLayoutKind::SvgMask | FfiElementLayoutKind::SvgClipPath
@@ -1476,15 +1467,20 @@ fn construct_principal_layout_node(
                 // Only the directly referenced pattern inherits this construction mode.
                 context.layout_svg_pattern = false;
             }
-        } else {
-            // SAFETY: The frame and DOM node remain live throughout the call.
-            unsafe { (host.callbacks.reuse_principal_layout)(frame, dom_node) };
+            return (layout_node, false);
         }
-    } else if should_create_layout_node {
+        // SAFETY: The frame and DOM node remain live throughout the call.
+        return (unsafe { (host.callbacks.reuse_principal_layout)(frame, dom_node) }, false);
+    }
+    if should_create_layout_node {
         if entry_facts.is_document {
             // SAFETY: The frame and DOM document remain live throughout construction.
-            unsafe { (host.callbacks.create_principal_document_layout)(frame, dom_node) };
-        } else if entry_facts.is_text {
+            return (
+                unsafe { (host.callbacks.create_principal_document_layout)(frame, dom_node) },
+                false,
+            );
+        }
+        if entry_facts.is_text {
             // SAFETY: The DOM text node remains live throughout the fact query.
             let facts = unsafe { (host.callbacks.principal_text_layout_facts)(dom_node) };
             let parent_style_facts = host.with_style_record(facts.style_parent_record_id, |view| {
@@ -1502,18 +1498,15 @@ fn construct_principal_layout_node(
                 parent_collapses_whitespace,
             );
             // SAFETY: The frame and DOM text node remain live throughout construction.
-            unsafe { (host.callbacks.create_principal_text_layout)(frame, dom_node, needs_style_wrapper) };
+            return (
+                unsafe { (host.callbacks.create_principal_text_layout)(frame, dom_node, needs_style_wrapper) },
+                false,
+            );
         }
-    } else {
-        // SAFETY: The frame and DOM node remain live throughout the call.
-        unsafe { (host.callbacks.reuse_principal_layout)(frame, dom_node) };
+        return (NodeSlotId::INVALID, false);
     }
-
-    // SAFETY: The frame remains live throughout the call.
-    (
-        !unsafe { (host.callbacks.principal_layout_node)(frame) }.is_invalid(),
-        false,
-    )
+    // SAFETY: The frame and DOM node remain live throughout the call.
+    (unsafe { (host.callbacks.reuse_principal_layout)(frame, dom_node) }, false)
 }
 
 fn update_principal_node_after_entry(
@@ -1532,21 +1525,19 @@ fn update_principal_node_after_entry(
         SvgEntryDecision::Continue | SvgEntryDecision::Skip => {}
     }
 
-    let (has_layout_node, handled_display_contents) = if entry_decision.svg == SvgEntryDecision::Skip {
-        (false, false)
+    let (layout_node, handled_display_contents) = if entry_decision.svg == SvgEntryDecision::Skip {
+        (NodeSlotId::INVALID, false)
     } else {
         construct_principal_layout_node(update, entry_facts, entry_decision.should_create_layout_node)
     };
     let context = &mut *update.context;
 
-    if has_layout_node {
+    if !layout_node.is_invalid() {
         if entry_facts.is_element || entry_facts.is_document {
             // SAFETY: The frame owns a live NodeWithStyle for elements and documents.
             unsafe { (host.callbacks.attach_principal_style_resources)(frame) };
         }
 
-        // SAFETY: `has_layout_node` guarantees that the frame owns a live principal layout node.
-        let layout_node = unsafe { (host.callbacks.principal_layout_node)(frame) };
         let adjustment = replaced_element_display_adjustment(&host.layout(), layout_node);
         if adjustment != FfiReplacedElementDisplayAdjustment::None {
             // SAFETY: The frame owns a live NodeWithStyle.
@@ -1672,7 +1663,7 @@ fn update_principal_node_after_entry(
                 host,
                 update.state,
                 dom_node,
-                (host.callbacks.principal_layout_node)(frame),
+                layout_node,
                 context,
                 PrincipalDescendantUpdate {
                     should_create_layout_node: entry_decision.should_create_layout_node,
@@ -1731,7 +1722,13 @@ fn update_layout_tree(
         let entry_facts = unsafe {
             (host.callbacks.principal_node_entry_facts)(host.callbacks.builder, dom_node, must_create_subtree)
         };
-        let entry_decision = principal_node_entry_decision(entry_facts, context);
+        // Attachment is only consumed by the top-layer half of the entry decision; skip the
+        // arena lookup on the common path.
+        let layout_node_is_attached = entry_facts.is_element
+            && entry_facts.rendered_in_top_layer
+            && !entry_facts.layout_node.is_invalid()
+            && !host.layout().parent(entry_facts.layout_node).is_invalid();
+        let entry_decision = principal_node_entry_decision(entry_facts, layout_node_is_attached, context);
         if entry_decision.top_layer != TopLayerEntryDecision::Continue {
             if entry_decision.top_layer == TopLayerEntryDecision::SkipAndRequestZoneRebuild {
                 // A member found here without an attached box was cleared together with a hidden ancestor subtree, and
@@ -1744,13 +1741,13 @@ fn update_layout_tree(
         }
 
         // SAFETY: The builder and DOM node remain live, and the callback retains frame-owned C++ objects.
-        let pushed_frame = unsafe { (host.callbacks.push_principal_frame)(host.callbacks.builder, dom_node) };
-        assert!(!pushed_frame.frame.is_null());
+        let frame = unsafe { (host.callbacks.push_principal_frame)(host.callbacks.builder, dom_node) };
+        assert!(!frame.is_null());
         let mut update = PrincipalNodeUpdate {
             host,
             state,
-            frame: pushed_frame.frame,
-            old_layout_node: pushed_frame.old_layout_node,
+            frame,
+            old_layout_node: entry_facts.layout_node,
             dom_node,
             context,
             must_create_subtree,
@@ -1758,7 +1755,7 @@ fn update_layout_tree(
         };
         update_principal_node_after_entry(&mut update, entry_facts, entry_decision);
         // SAFETY: `frame` is the most recently pushed principal frame and is no longer used by Rust.
-        unsafe { (host.callbacks.pop_principal_frame)(host.callbacks.builder, pushed_frame.frame) };
+        unsafe { (host.callbacks.pop_principal_frame)(host.callbacks.builder, frame) };
     });
 }
 
@@ -3768,54 +3765,52 @@ mod tests {
             may_reuse_layout_node_for_child_list_insertion: false,
             document_needs_full_layout_tree_update: false,
             is_document: false,
-            has_layout_node: true,
             is_element: true,
             is_text: false,
             rendered_in_top_layer: false,
-            layout_node_is_attached: true,
             is_svg_container: false,
             requires_svg_container: false,
             is_svg_foreign_object: false,
+            layout_node: NodeSlotId { index: 42 },
         };
         let mut context = TreeBuilderContext::default();
-        let decision = principal_node_entry_decision(facts, &context);
+        let decision = principal_node_entry_decision(facts, true, &context);
         assert!(!decision.should_create_layout_node);
         assert_eq!(decision.top_layer, TopLayerEntryDecision::Continue);
         assert_eq!(decision.svg, SvgEntryDecision::Continue);
 
         facts.rendered_in_top_layer = true;
-        facts.layout_node_is_attached = false;
-        let decision = principal_node_entry_decision(facts, &context);
+        let decision = principal_node_entry_decision(facts, false, &context);
         assert_eq!(decision.top_layer, TopLayerEntryDecision::SkipAndRequestZoneRebuild);
 
         facts.rendered_in_top_layer = false;
         facts.requires_svg_container = true;
-        let decision = principal_node_entry_decision(facts, &context);
+        let decision = principal_node_entry_decision(facts, true, &context);
         assert_eq!(decision.svg, SvgEntryDecision::Skip);
 
         facts.must_create_subtree = true;
         facts.is_svg_container = true;
         context.has_svg_root = false;
-        let decision = principal_node_entry_decision(facts, &context);
+        let decision = principal_node_entry_decision(facts, true, &context);
         assert!(decision.should_create_layout_node);
         assert_eq!(decision.svg, SvgEntryDecision::EnterSvgRoot);
 
         facts.is_svg_container = false;
         facts.is_svg_foreign_object = true;
         context.has_svg_root = true;
-        let decision = principal_node_entry_decision(facts, &context);
+        let decision = principal_node_entry_decision(facts, true, &context);
         assert_eq!(decision.svg, SvgEntryDecision::EnterForeignContent);
         context.has_svg_root = false;
-        let decision = principal_node_entry_decision(facts, &context);
+        let decision = principal_node_entry_decision(facts, true, &context);
         assert_eq!(decision.svg, SvgEntryDecision::Skip);
 
         facts.is_svg_foreign_object = false;
         facts.requires_svg_container = false;
         context.has_svg_root = true;
-        let decision = principal_node_entry_decision(facts, &context);
+        let decision = principal_node_entry_decision(facts, true, &context);
         assert_eq!(decision.svg, SvgEntryDecision::Skip);
         context.has_svg_root = false;
-        let decision = principal_node_entry_decision(facts, &context);
+        let decision = principal_node_entry_decision(facts, true, &context);
         assert_eq!(decision.svg, SvgEntryDecision::Continue);
     }
 
