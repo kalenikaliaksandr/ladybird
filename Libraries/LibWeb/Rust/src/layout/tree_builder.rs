@@ -922,6 +922,34 @@ unsafe fn update_layout_tree_for_display_contents(
     });
 }
 
+/// Whether the layout node's originating element has a `::first-letter` style.
+///
+/// The style-record mask proves absence natively for the overwhelmingly common case. A set bit
+/// records that first-letter rules matched, not that a style exists — a matched `content: none`
+/// still suppresses the pseudo style — so it must be confirmed with the element through the
+/// callback.
+fn node_has_first_letter_style(host: &DomTreeBuilderHost<'_>, node: LayoutNode) -> bool {
+    let layout_host = host.layout();
+    let data = layout_host.data(node);
+    // The C++ answer starts from the layout node's DOM element; anonymous nodes have none.
+    if node_has_flag(data, NodeFlag::Anonymous) {
+        return false;
+    }
+    let mask = host.pseudo_element_style_mask(data.style_record_id);
+    if mask & (1u64 << (crate::css::selector::PseudoElementType::FirstLetter as u8)) == 0 {
+        if host.verify_native_style_facts {
+            // SAFETY: The shell and its associated DOM node remain live throughout the call.
+            assert!(
+                !unsafe { (host.callbacks.layout_node_has_first_letter_style)(layout_host.shell(node)) },
+                "style record mask claims no ::first-letter style but the element has one"
+            );
+        }
+        return false;
+    }
+    // SAFETY: The shell and its associated DOM node remain live throughout the call.
+    unsafe { (host.callbacks.layout_node_has_first_letter_style)(layout_host.shell(node)) }
+}
+
 fn ancestor_stack_contains_element_layout_node(
     host: &DomTreeBuilderHost<'_>,
     state: &TreeBuilderState,
@@ -1274,9 +1302,8 @@ unsafe fn update_principal_node_descendants(
                 );
                 assert!(state.ancestor_stack.pop().is_some());
 
-                // SAFETY: The layout node's shell and its associated DOM node remain live throughout the call.
                 if node_kind_is_block_container(layout_host.data(layout_node).kind)
-                    && unsafe { (host.callbacks.layout_node_has_first_letter_style)(layout_host.shell(layout_node)) }
+                    && node_has_first_letter_style(host, layout_node)
                 {
                     let target = find_first_letter_in_block(host, layout_node);
                     if target.found {
@@ -2926,8 +2953,7 @@ fn find_first_letter_in_block(host: &DomTreeBuilderHost<'_>, block: LayoutNode) 
         }
         // Stop descending if this child block defines its own ::first-letter: the child will style the first letter
         // inside it, so the ancestor's ::first-letter must not also claim the same letter.
-        // SAFETY: The child shell and its associated DOM node remain live throughout the walk.
-        if unsafe { (host.callbacks.layout_node_has_first_letter_style)(layout_host.shell(child)) } {
+        if node_has_first_letter_style(host, child) {
             break;
         }
         let target = find_first_letter_in_block(host, child);
