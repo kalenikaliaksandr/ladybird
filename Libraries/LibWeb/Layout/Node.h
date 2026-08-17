@@ -31,7 +31,7 @@ namespace Web::Layout {
 static_assert(sizeof(RustFFI::NodeSlotId) == sizeof(u32));
 static_assert(offsetof(RustFFI::NodeSlotId, index) == 0);
 
-static_assert(sizeof(RustFFI::NodeData) == 64);
+static_assert(sizeof(RustFFI::NodeData) == 72);
 static_assert(offsetof(RustFFI::NodeData, parent) == 0);
 static_assert(offsetof(RustFFI::NodeData, first_child) == 4);
 static_assert(offsetof(RustFFI::NodeData, last_child) == 8);
@@ -49,6 +49,7 @@ static_assert(offsetof(RustFFI::NodeData, table_column_span) == 42);
 static_assert(offsetof(RustFFI::NodeData, table_row_span) == 44);
 static_assert(offsetof(RustFFI::NodeData, style) == 48);
 static_assert(offsetof(RustFFI::NodeData, shell) == 56);
+static_assert(offsetof(RustFFI::NodeData, style_record_id) == 64);
 
 static_assert(sizeof(RustFFI::NodeKind) == sizeof(u8));
 static_assert(sizeof(RustFFI::NodeFlag) == sizeof(u32));

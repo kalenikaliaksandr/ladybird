@@ -145,6 +145,9 @@ pub struct FfiDisplayContentsFacts {
     pub dom_children_parent: *mut c_void,
     pub shadow_root: *mut c_void,
     pub slot_element: *mut c_void,
+    // A display:contents element has no layout node to mirror its style record, so the facts
+    // carry it for native pseudo-element existence checks.
+    pub style_record_id: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -582,6 +585,8 @@ pub(crate) fn principal_node_entry_decision(
 struct DomTreeBuilderHost<'a> {
     callbacks: &'a FfiDomTreeBuilderCallbacks,
     arena: *mut LayoutNodeArena,
+    style_engine: *const c_void,
+    verify_native_style_facts: bool,
 }
 
 impl DomTreeBuilderHost<'_> {
@@ -593,6 +598,13 @@ impl DomTreeBuilderHost<'_> {
     fn next_sibling(&self, node: *mut c_void) -> *mut c_void {
         // SAFETY: Callers only pass live DOM nodes.
         unsafe { (self.callbacks.next_sibling)(node) }
+    }
+
+    /// The pseudo-element existence bitmask of a style record, read natively. The entry point
+    /// keeps the style engine alive for the whole build.
+    fn pseudo_element_style_mask(&self, style_record: u64) -> u64 {
+        // SAFETY: Host construction asserted a live style engine.
+        unsafe { crate::css::style::style_record_pseudo_element_style_mask(self.style_engine, style_record) }
     }
 
     fn layout(&self) -> TreeBuilderHost<'_> {
@@ -622,13 +634,17 @@ fn has_unrendered_flat_tree_ancestor(host: &DomTreeBuilderHost<'_>, element: *mu
 unsafe fn dom_tree_builder_host<'a>(
     callbacks: *const FfiDomTreeBuilderCallbacks,
     arena: *mut c_void,
+    style_engine: *const c_void,
 ) -> DomTreeBuilderHost<'a> {
     assert!(!callbacks.is_null());
     assert!(!arena.is_null());
+    assert!(!style_engine.is_null());
     // SAFETY: Each exported entry point requires the callback table to remain live for the duration of its call.
     DomTreeBuilderHost {
         callbacks: unsafe { &*callbacks },
         arena: arena.cast(),
+        style_engine,
+        verify_native_style_facts: verify_native_style_facts(),
     }
 }
 
@@ -822,6 +838,7 @@ unsafe fn update_layout_tree_for_display_contents(
                 host,
                 state,
                 element,
+                facts.style_record_id,
                 FfiPseudoElement::Before,
                 Some(FfiInsertionMode::Append),
             );
@@ -889,6 +906,7 @@ unsafe fn update_layout_tree_for_display_contents(
                 host,
                 state,
                 element,
+                facts.style_record_id,
                 FfiPseudoElement::After,
                 Some(FfiInsertionMode::Append),
             );
@@ -1033,6 +1051,7 @@ unsafe fn update_principal_node_descendants(
                     host,
                     state,
                     dom_node,
+                    layout_host.data(layout_node).style_record_id,
                     FfiPseudoElement::Before,
                     Some(FfiInsertionMode::Prepend),
                 );
@@ -1240,6 +1259,7 @@ unsafe fn update_principal_node_descendants(
                         host,
                         state,
                         dom_node,
+                        layout_host.data(layout_node).style_record_id,
                         FfiPseudoElement::Marker,
                         Some(FfiInsertionMode::Prepend),
                     );
@@ -1248,6 +1268,7 @@ unsafe fn update_principal_node_descendants(
                     host,
                     state,
                     dom_node,
+                    layout_host.data(layout_node).style_record_id,
                     FfiPseudoElement::After,
                     Some(FfiInsertionMode::Append),
                 );
@@ -1473,8 +1494,14 @@ fn update_principal_node_after_entry(
             } else {
                 Some(FfiInsertionMode::Append)
             };
-            let backdrop =
-                create_pseudo_element(host, update.state, dom_node, FfiPseudoElement::Backdrop, insertion_mode);
+            let backdrop = create_pseudo_element(
+                host,
+                update.state,
+                dom_node,
+                host.layout().data(layout_node).style_record_id,
+                FfiPseudoElement::Backdrop,
+                insertion_mode,
+            );
             if placement.may_replace_existing_layout_node && !backdrop.is_invalid() {
                 // The backdrop lands next to the still-attached old box, so this restructures the
                 // old box's parent.
@@ -1639,17 +1666,19 @@ fn update_layout_tree(
 ///
 /// # Safety
 ///
-/// The callback table, arena, and document must remain valid for the duration of the call.
+/// The callback table, arena, style engine, and document must remain valid for the duration of
+/// the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_build_layout_tree(
     callbacks: *const FfiDomTreeBuilderCallbacks,
     arena: *mut c_void,
+    style_engine: *const c_void,
     document: *mut c_void,
 ) {
     abort_on_panic(|| {
         assert!(!document.is_null());
         // SAFETY: Guaranteed by the entry point's contract.
-        let host = unsafe { dom_tree_builder_host(callbacks, arena) };
+        let host = unsafe { dom_tree_builder_host(callbacks, arena, style_engine) };
         let mut state = TreeBuilderState::default();
         let mut context = TreeBuilderContext::default();
         // SAFETY: All pointers remain live throughout the build.
@@ -1705,6 +1734,30 @@ pub enum FfiPseudoElement {
     Other,
     // Marks counter resolution against the element itself rather than one of its pseudo-elements.
     None,
+}
+
+/// Whether native style-fact reads must be cross-checked against the C++ answer they replaced.
+/// Always on in debug builds; `LADYBIRD_VERIFY_TREE_BUILDER` turns it on in release builds.
+fn verify_native_style_facts() -> bool {
+    static VERIFY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VERIFY.get_or_init(|| {
+        cfg!(debug_assertions) || std::env::var_os("LADYBIRD_VERIFY_TREE_BUILDER").is_some_and(|value| value != "0")
+    })
+}
+
+/// The style-record mask bit that proves this pseudo-element has no computed style, or `None`
+/// when the mask cannot prove absence: `::marker` styles are computed implicitly for list items
+/// even when no rules match (`rust_pseudo_element_has_implicit_style`), so its rule-match bit
+/// says nothing about style existence. The mask is indexed by the C++ CSS::PseudoElement value,
+/// which the generated `PseudoElementType` mirrors drift-proof from the same JSON.
+fn pseudo_element_style_mask_bit(pseudo_element: FfiPseudoElement) -> Option<u8> {
+    use crate::css::selector::PseudoElementType;
+    match pseudo_element {
+        FfiPseudoElement::Before => Some(PseudoElementType::Before as u8),
+        FfiPseudoElement::After => Some(PseudoElementType::After as u8),
+        FfiPseudoElement::Backdrop => Some(PseudoElementType::Backdrop as u8),
+        FfiPseudoElement::Marker | FfiPseudoElement::Other | FfiPseudoElement::None => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1841,11 +1894,38 @@ fn create_pseudo_element(
     host: &DomTreeBuilderHost<'_>,
     state: &mut TreeBuilderState,
     element: *mut c_void,
+    originating_style_record: u64,
     pseudo_element: FfiPseudoElement,
     insertion_mode: Option<FfiInsertionMode>,
 ) -> LayoutNode {
     assert!(!element.is_null());
     let callbacks = &host.callbacks.pseudo;
+
+    // Fast path: when the originating element's style record proves the pseudo-element has no
+    // computed style, skip the frame round trip entirely. This is behavior-identical to letting
+    // `initialize` report has_style = false: every path here already cleared the element's stale
+    // synthetic pseudo-element layout nodes.
+    if let Some(mask_bit) = pseudo_element_style_mask_bit(pseudo_element) {
+        let mask = host.pseudo_element_style_mask(originating_style_record);
+        if mask & (1u64 << mask_bit) == 0 {
+            if host.verify_native_style_facts {
+                // Cross-check the mask against the computed pseudo style the full path would see.
+                // SAFETY: Same contract as the full path below.
+                let frame = unsafe { (callbacks.push_frame)(callbacks.builder) };
+                assert!(!frame.is_null());
+                // SAFETY: The frame and element remain live throughout initialization.
+                let facts = unsafe { (callbacks.initialize)(frame, element, pseudo_element) };
+                assert!(
+                    !facts.has_style,
+                    "style record mask claims no pseudo style but a computed pseudo style exists"
+                );
+                // SAFETY: `frame` is the most recently pushed pseudo-element frame.
+                unsafe { (callbacks.pop_frame)(callbacks.builder, frame) };
+            }
+            return NodeSlotId::INVALID;
+        }
+    }
+
     // SAFETY: The builder owns frame storage that remains live throughout the build.
     let frame = unsafe { (callbacks.push_frame)(callbacks.builder) };
     assert!(!frame.is_null());

@@ -45,6 +45,11 @@ public:
 
     void visit_edges(GC::Cell::Visitor&);
 
+    // The raw Rust engine, for FFI entry points that resolve style records natively (the layout
+    // tree builder). Readers on the other side follow the same borrow discipline as this bridge:
+    // resolve fresh, never hold across a call that can mutate the engine.
+    [[nodiscard]] void* rust_engine_handle() const { return m_impl; }
+
 #include <LibWeb/StyleEngineBridgeGenerated.h>
 
     // Identity 0 is never returned; it means "no node".

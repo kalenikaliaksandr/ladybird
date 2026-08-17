@@ -858,6 +858,7 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
                 .dom_children_parent = static_cast<DOM::ParentNode*>(&element),
                 .shadow_root = shadow_root ? static_cast<DOM::ParentNode*>(shadow_root.ptr()) : nullptr,
                 .slot_element = slot_element,
+                .style_record_id = element.style_record_identity().value(),
             };
         },
         .clear_synthetic_pseudo_element_layout_nodes = [](void*, void* element_pointer) {
@@ -1260,7 +1261,12 @@ static NonnullRefPtr<NodeWithStyle> create_button_content_box_wrapper(NodeWithSt
 LayoutTreeBuildResult LayoutTreeBuildBridge::build(DOM::Node& dom_node)
 {
     auto callbacks = make_ffi_dom_tree_builder_callbacks();
-    RustFFI::rust_build_layout_tree(&callbacks, dom_node.document().layout_node_arena().handle(), &dom_node);
+    auto& document = dom_node.document();
+    RustFFI::rust_build_layout_tree(
+        &callbacks,
+        document.layout_node_arena().handle(),
+        document.style_computer().style_engine().rust_engine_handle(),
+        &dom_node);
     return {
         .root = move(m_layout_root),
         .rebuilt_subtree_roots = move(m_rebuilt_subtree_roots),

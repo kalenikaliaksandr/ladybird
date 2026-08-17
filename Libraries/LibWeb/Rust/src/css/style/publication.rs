@@ -926,3 +926,23 @@ impl StyleEngine {
         Some(removed_style_record)
     }
 }
+
+/// The pseudo-element existence bitmask of a style record (`1 << CSS::PseudoElement`), or 0 when
+/// the record does not exist. `Element::has_style(pseudo)` is exactly a bit test on this mask.
+///
+/// # Safety
+///
+/// `engine` must point at the document's live `StyleEngine` for the duration of the call.
+pub(crate) unsafe fn style_record_pseudo_element_style_mask(
+    engine: *const std::ffi::c_void,
+    style_record: u64,
+) -> u64 {
+    if style_record == 0 {
+        return 0;
+    }
+    // SAFETY: The caller guarantees a live engine.
+    let engine = unsafe { &*engine.cast::<StyleEngine>() };
+    engine
+        .style_record_view(style_record)
+        .map_or(0, |view| view.pseudo_element_styles)
+}

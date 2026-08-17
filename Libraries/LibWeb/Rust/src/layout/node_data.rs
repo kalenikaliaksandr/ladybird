@@ -188,6 +188,10 @@ pub struct NodeData {
     pub table_row_span: u16,
     pub style: *const c_void,
     pub shell: *mut c_void,
+    /// The style engine record whose payload groups `style` points at, or 0 while no style is
+    /// attached. Lets the tree builder resolve style-record facts (like the pseudo-element
+    /// existence bitmask) natively instead of asking C++.
+    pub style_record_id: u64,
 }
 
 impl Default for NodeData {
@@ -210,6 +214,7 @@ impl Default for NodeData {
             fragment_cache_epoch: 0,
             style: std::ptr::null(),
             shell: std::ptr::null_mut(),
+            style_record_id: 0,
         }
     }
 }
@@ -226,7 +231,7 @@ mod tests {
 
     #[test]
     fn intrinsic_cache_epoch_uses_existing_node_data_padding() {
-        assert_eq!(std::mem::size_of::<NodeData>(), 64);
+        assert_eq!(std::mem::size_of::<NodeData>(), 72);
         assert_eq!(std::mem::offset_of!(NodeData, intrinsic_cache_epoch), 30);
         assert_eq!(std::mem::offset_of!(NodeData, flags), 32);
         assert_eq!(std::mem::offset_of!(NodeData, fragment_cache_epoch), 36);
@@ -235,6 +240,7 @@ mod tests {
         assert_eq!(std::mem::offset_of!(NodeData, table_row_span), 44);
         assert_eq!(std::mem::offset_of!(NodeData, style), 48);
         assert_eq!(std::mem::offset_of!(NodeData, shell), 56);
+        assert_eq!(std::mem::offset_of!(NodeData, style_record_id), 64);
     }
 
     #[test]

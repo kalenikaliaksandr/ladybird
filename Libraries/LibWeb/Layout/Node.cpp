@@ -1372,6 +1372,7 @@ void NodeWithStyle::publish_style_record_to_node_data()
     auto const* payloads = document().style_computer().style_engine().style_record_payloads(m_style_record_identity);
     VERIFY(payloads);
     node_data().style = payloads;
+    node_data().style_record_id = m_style_record_identity.value();
 }
 
 bool NodeWithStyle::synchronize_table_span_data()
