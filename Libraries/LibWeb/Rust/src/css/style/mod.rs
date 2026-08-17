@@ -80,7 +80,7 @@ mod prefix;
 pub mod program;
 mod program_updates;
 mod publication;
-pub(crate) use publication::style_record_pseudo_element_style_mask;
+pub(crate) use publication::{style_record_pseudo_element_style_mask, with_style_record_computed_values};
 #[cfg(feature = "style-recording")]
 pub mod record_replay;
 mod routing;

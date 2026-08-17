@@ -547,6 +547,22 @@ impl<'a> ComputedValuesView<'a> {
         self.box_values().float_ != crate::css::css_enums::float::NONE
     }
 
+    pub(crate) fn content_visibility_hidden(self) -> bool {
+        self.inherited_box().content_visibility == crate::css::css_enums::content_visibility::HIDDEN
+    }
+
+    // https://drafts.csswg.org/css-contain-2/#containment-style
+    // The Rust twin of NodeWithStyle::has_style_containment(): explicit `contain: style`, either
+    // container type (both apply style containment), or content-visibility: auto's used-value
+    // containment.
+    pub(crate) fn has_style_containment(self) -> bool {
+        let box_values = self.box_values();
+        box_values.style_containment
+            || box_values.is_size_container
+            || box_values.is_inline_size_container
+            || self.inherited_box().content_visibility == crate::css::css_enums::content_visibility::AUTO
+    }
+
     pub(crate) fn is_absolutely_positioned(self) -> bool {
         matches!(
             self.box_values().position,

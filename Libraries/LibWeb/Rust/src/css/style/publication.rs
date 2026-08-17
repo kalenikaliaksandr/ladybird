@@ -946,3 +946,35 @@ pub(crate) unsafe fn style_record_pseudo_element_style_mask(
         .style_record_view(style_record)
         .map_or(0, |view| view.pseudo_element_styles)
 }
+
+/// Resolves a style record to a computed-values view for a native read from the layout engine,
+/// bypassing the C++ boundary entirely. Returns `None` for the zero "no style" identity and for
+/// records the engine no longer holds.
+///
+/// The view borrows engine storage: the closure must finish before control returns to C++, which
+/// may re-cascade and invalidate the borrow. Callers resolve fresh on every read, exactly like
+/// arena `NodeData` reads.
+///
+/// # Safety
+///
+/// `engine` must point at the document's live `StyleEngine` for the duration of the call.
+pub(crate) unsafe fn with_style_record_computed_values<R>(
+    engine: *const std::ffi::c_void,
+    style_record: u64,
+    read: impl FnOnce(crate::css::computed_value_views::ComputedValuesView<'_>) -> R,
+) -> Option<R> {
+    if style_record == 0 {
+        return None;
+    }
+    // SAFETY: The caller guarantees a live engine.
+    let engine = unsafe { &*engine.cast::<StyleEngine>() };
+    let view = engine.style_record_view(style_record)?;
+    assert_eq!(
+        view.payloads.len(),
+        crate::layout::node_data::STYLE_GROUP_COUNT,
+        "computed style record must carry every style group"
+    );
+    Some(read(crate::css::computed_value_views::ComputedValuesView::new(
+        view.payloads,
+    )))
+}

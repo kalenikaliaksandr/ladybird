@@ -102,7 +102,6 @@ void LayoutTreeBuilderAccess::set_synthetic_pseudo_element_node(DOM::Element& el
     element.set_synthetic_pseudo_element_node({}, pseudo_element, layout_node);
 }
 
-static RustFFI::FfiPrincipalDisplayFacts ffi_principal_display_facts(CSS::Display);
 static void update_style_if_needed_for_layout_tree_bypass_path(DOM::Element&);
 static RefPtr<Layout::Node> create_layout_node_for_text(DOM::Text&, bool needs_style_wrapper);
 
@@ -543,16 +542,12 @@ RustFFI::FfiPseudoTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_pseudo_tr
             auto computed_values = element.computed_style(pseudo_element);
             if (!computed_values) {
                 return {
-                    .has_style = false,
                     .pseudo_element = ffi_pseudo,
                     .content_type = RustFFI::FfiComputedContentType::None,
-                    .display_is_none = false,
-                    .display_is_contents = false,
-                    .display_is_list_item = false,
                     .has_content_replacement = false,
                     .originating_layout_node_is_list_item = false,
                     .normal_marker_has_content = false,
-                    .marker_position_is_inside = false,
+                    .style_record_id = 0,
                 };
             }
             frame.display = computed_values->display();
@@ -563,17 +558,12 @@ RustFFI::FfiPseudoTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_pseudo_tr
             auto const normal_marker_has_content = frame.originating_list_box
                 && (!frame.originating_list_box->list_style_type().has<Empty>() || frame.originating_list_box->list_style_image());
             return {
-                .has_style = true,
                 .pseudo_element = ffi_pseudo,
                 .content_type = ffi_computed_content_type(computed_content_type),
-                .display_is_none = frame.display.is_none(),
-                .display_is_contents = frame.display.is_contents(),
-                .display_is_list_item = frame.display.is_list_item(),
                 .has_content_replacement = frame.replacement_image != nullptr,
                 .originating_layout_node_is_list_item = frame.originating_list_box != nullptr,
                 .normal_marker_has_content = normal_marker_has_content,
-                .marker_position_is_inside = frame.originating_list_box
-                    && frame.originating_list_box->list_style_position() == CSS::ListStylePosition::Inside,
+                .style_record_id = frame.style_record_identity.value(),
             }; },
         .create_layout_node = [](void* builder_pointer, void* frame_pointer, void* element_pointer, RustFFI::FfiPseudoElement, RustFFI::FfiPseudoElementDecision decision) {
             VERIFY(builder_pointer);
@@ -807,18 +797,6 @@ LayoutTreeBuildBridge::~LayoutTreeBuildBridge()
 {
 }
 
-static RustFFI::FfiPrincipalDisplayFacts ffi_principal_display_facts(CSS::Display display)
-{
-    return {
-        .display_is_none = display.is_none(),
-        .display_is_contents = display.is_contents(),
-        .display_is_table_inside = display.is_table_inside(),
-        .display_is_block_outside = display.is_block_outside(),
-        .display_is_internal_table = display.is_internal_table(),
-        .display_is_table_caption = display.is_table_caption(),
-    };
-}
-
 RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_builder_callbacks()
 {
     return {
@@ -852,7 +830,6 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
             auto shadow_root = element.shadow_root();
             return {
                 .rendered_in_top_layer = element.rendered_in_top_layer(),
-                .content_visibility_hidden = static_cast<CSS::ContentVisibility>(element.style_group<CSS::ComputedValues::InheritedBoxValues>()->content_visibility) == CSS::ContentVisibility::Hidden,
                 .should_layout_dom_children = slot_element ? slot_element->assigned_nodes_internal().is_empty() && element.has_children() : element.has_children(),
                 .child_needs_layout_tree_update = element.child_needs_layout_tree_update(),
                 .dom_children_parent = static_cast<DOM::ParentNode*>(&element),
@@ -889,11 +866,9 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
                 DOM::AbstractElement element_reference { element, css_pseudo_element(ffi_pseudo) };
                 CSS::resolve_counters(element_reference);
             } },
-        .principal_descendant_facts = [](void*, void* node_pointer, void* layout_node_pointer) -> RustFFI::FfiPrincipalDescendantFacts {
+        .principal_descendant_facts = [](void*, void* node_pointer) -> RustFFI::FfiPrincipalDescendantFacts {
             VERIFY(node_pointer);
-            VERIFY(layout_node_pointer);
             auto& node = *static_cast<DOM::Node*>(node_pointer);
-            auto& layout_node = *static_cast<Layout::Node*>(layout_node_pointer);
             auto* element = as_if<DOM::Element>(node);
             auto* slot_element = as_if<HTML::HTMLSlotElement>(node);
             auto* parent_node = as_if<DOM::ParentNode>(node);
@@ -905,12 +880,10 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
             auto stroke_pattern = graphics_element ? graphics_element->stroke_pattern() : nullptr;
             return {
                 .is_element = element != nullptr,
-                .content_visibility_hidden = element && static_cast<CSS::ContentVisibility>(element->style_group<CSS::ComputedValues::InheritedBoxValues>()->content_visibility) == CSS::ContentVisibility::Hidden,
                 .should_layout_dom_children = slot_element ? slot_element->assigned_nodes_internal().is_empty() && node.has_children() : node.has_children(),
                 .child_needs_layout_tree_update = node.child_needs_layout_tree_update(),
                 .is_svg_switch_element = is<SVG::SVGSwitchElement>(node),
                 .is_document = node.is_document(),
-                .has_style_containment = is<NodeWithStyle>(layout_node) && static_cast<NodeWithStyle&>(layout_node).has_style_containment(),
                 .dom_children_parent = parent_node,
                 .shadow_root = shadow_root ? static_cast<DOM::ParentNode*>(shadow_root.ptr()) : nullptr,
                 .slot_element = slot_element,
@@ -957,11 +930,9 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
         .flat_tree_render_facts = [](void* node_pointer) -> RustFFI::FfiFlatTreeRenderFacts {
             VERIFY(node_pointer);
             auto* element = as_if<DOM::Element>(*static_cast<DOM::Node*>(node_pointer));
-            auto computed_values = element ? element->computed_style() : CSS::ComputedStyleRecordView {};
             return {
                 .is_element = element != nullptr,
-                .has_computed_style = static_cast<bool>(computed_values),
-                .display_is_none = computed_values && computed_values->display().is_none(),
+                .style_record_id = element ? element->style_record_identity().value() : 0,
             }; },
         .svg_pattern_content_element = [](void* pattern_pointer) -> void* {
             VERIFY(pattern_pointer);
@@ -1052,10 +1023,9 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
                 update_style_if_needed_for_layout_tree_bypass_path(element);
             }
             frame.style_record_identity = element.style_record_identity();
-            auto computed_values = element.computed_style();
-            VERIFY(computed_values);
+            VERIFY(frame.style_record_identity);
             return {
-                .display = ffi_principal_display_facts(computed_values->display()),
+                .style_record_id = frame.style_record_identity.value(),
                 .removed_old_backdrop_layout_node = removed_old_backdrop_layout_node,
             }; },
         .principal_element_layout_facts = [](void* frame_pointer, void* element_pointer) -> RustFFI::FfiElementLayoutFacts {
@@ -1112,12 +1082,9 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
             VERIFY(text_pointer);
             auto& text = *static_cast<DOM::Text*>(text_pointer);
             auto* style_parent = as_if<DOM::Element>(text.flat_tree_parent());
-            auto style_parent_values = style_parent ? style_parent->computed_style() : CSS::ComputedStyleRecordView {};
             return {
-                .has_style_parent = static_cast<bool>(style_parent_values),
-                .parent_display_is_contents = style_parent_values && style_parent_values->display().is_contents(),
+                .style_parent_record_id = style_parent ? style_parent->style_record_identity().value() : 0,
                 .text_is_ascii_whitespace = text.data().is_ascii_whitespace(),
-                .parent_collapses_whitespace = style_parent_values && first_is_one_of(style_parent_values->white_space_collapse(), CSS::WhiteSpaceCollapse::Collapse),
             }; },
         .create_principal_text_layout = [](void* frame_pointer, void* text_pointer, bool needs_style_wrapper) {
             VERIFY(frame_pointer);

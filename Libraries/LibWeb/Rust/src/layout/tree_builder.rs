@@ -79,8 +79,7 @@ pub struct FfiDomTreeBuilderCallbacks {
     pub clear_synthetic_pseudo_element_layout_nodes: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub clear_stale_subtree: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiStaleSubtreeClearScope),
     pub resolve_counters: unsafe extern "C" fn(*mut c_void, FfiPseudoElement),
-    pub principal_descendant_facts:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> FfiPrincipalDescendantFacts,
+    pub principal_descendant_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiPrincipalDescendantFacts,
     pub layout_node_has_first_letter_style: unsafe extern "C" fn(*mut c_void) -> bool,
     pub create_first_letter_wrapper: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiFirstLetterTarget),
     pub ensure_replaced_children_wrapper: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> NodeSlotId,
@@ -129,7 +128,8 @@ pub struct FfiPrincipalNodeFrame {
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct FfiPreparedPrincipalElementFacts {
-    pub display: FfiPrincipalDisplayFacts,
+    // The element's computed style record; Rust reads the display facts it needs natively.
+    pub style_record_id: u64,
     // A stale ::backdrop box is a viewport child, so removing it restructures the tree outside
     // every rebuild root.
     pub removed_old_backdrop_layout_node: bool,
@@ -139,44 +139,41 @@ pub struct FfiPreparedPrincipalElementFacts {
 #[repr(C)]
 pub struct FfiDisplayContentsFacts {
     pub rendered_in_top_layer: bool,
-    pub content_visibility_hidden: bool,
     pub should_layout_dom_children: bool,
     pub child_needs_layout_tree_update: bool,
     pub dom_children_parent: *mut c_void,
     pub shadow_root: *mut c_void,
     pub slot_element: *mut c_void,
     // A display:contents element has no layout node to mirror its style record, so the facts
-    // carry it for native pseudo-element existence checks.
+    // carry it for native style reads (pseudo-element existence, content-visibility).
     pub style_record_id: u64,
 }
 
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct FfiTextLayoutFacts {
-    pub has_style_parent: bool,
-    pub parent_display_is_contents: bool,
+    // The flat-tree parent element's computed style record, or 0 when the parent is not an
+    // element or has no style; Rust reads the display and whitespace facts natively.
+    pub style_parent_record_id: u64,
     pub text_is_ascii_whitespace: bool,
-    pub parent_collapses_whitespace: bool,
 }
 
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct FfiFlatTreeRenderFacts {
     pub is_element: bool,
-    pub has_computed_style: bool,
-    pub display_is_none: bool,
+    // The element's computed style record, or 0 when it has none.
+    pub style_record_id: u64,
 }
 
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct FfiPrincipalDescendantFacts {
     pub is_element: bool,
-    pub content_visibility_hidden: bool,
     pub should_layout_dom_children: bool,
     pub child_needs_layout_tree_update: bool,
     pub is_svg_switch_element: bool,
     pub is_document: bool,
-    pub has_style_containment: bool,
     pub dom_children_parent: *mut c_void,
     pub shadow_root: *mut c_void,
     pub slot_element: *mut c_void,
@@ -203,17 +200,6 @@ pub struct FfiPrincipalNodeEntryFacts {
     pub is_svg_container: bool,
     pub requires_svg_container: bool,
     pub is_svg_foreign_object: bool,
-}
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub struct FfiPrincipalDisplayFacts {
-    pub display_is_none: bool,
-    pub display_is_contents: bool,
-    pub display_is_table_inside: bool,
-    pub display_is_block_outside: bool,
-    pub display_is_internal_table: bool,
-    pub display_is_table_caption: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -607,6 +593,15 @@ impl DomTreeBuilderHost<'_> {
         unsafe { crate::css::style::style_record_pseudo_element_style_mask(self.style_engine, style_record) }
     }
 
+    /// Resolves a style record to a computed-values view for a native read, or `None` for the
+    /// zero "no style" identity and for records the engine no longer holds. The entry point
+    /// keeps the style engine alive for the whole build; `read` must finish before any callback
+    /// into C++, which can re-cascade and invalidate the borrow.
+    fn with_style_record<R>(&self, style_record: u64, read: impl FnOnce(ComputedValuesView<'_>) -> R) -> Option<R> {
+        // SAFETY: Host construction asserted a live style engine.
+        unsafe { crate::css::style::with_style_record_computed_values(self.style_engine, style_record, read) }
+    }
+
     fn layout(&self) -> TreeBuilderHost<'_> {
         TreeBuilderHost {
             callbacks: &self.callbacks.layout,
@@ -621,9 +616,12 @@ fn has_unrendered_flat_tree_ancestor(host: &DomTreeBuilderHost<'_>, element: *mu
     while !ancestor.is_null() {
         // SAFETY: `ancestor` is a live DOM node.
         let facts = unsafe { (host.callbacks.flat_tree_render_facts)(ancestor) };
-        // Null style means the style update pass skipped a display:none subtree.
-        if facts.is_element && (!facts.has_computed_style || facts.display_is_none) {
-            return true;
+        if facts.is_element {
+            let display_is_none = host.with_style_record(facts.style_record_id, |view| view.display().is_none());
+            // A missing style record means the style update pass skipped a display:none subtree.
+            if display_is_none.unwrap_or(true) {
+                return true;
+            }
         }
         // SAFETY: `ancestor` remains live throughout the walk.
         ancestor = unsafe { (host.callbacks.flat_tree_parent)(ancestor) };
@@ -808,6 +806,9 @@ unsafe fn update_layout_tree_for_display_contents(
         assert!(!element.is_null());
         // SAFETY: The element remains live for the duration of the call.
         let facts = unsafe { (host.callbacks.display_contents_facts)(host.callbacks.builder, element) };
+        let content_visibility_hidden = host
+            .with_style_record(facts.style_record_id, |view| view.content_visibility_hidden())
+            .expect("a display:contents element must have a computed style record");
 
         // A display:contents member builds its children through this path, so the top layer flag
         // is consumed here the same way update_layout_tree does for members with a box.
@@ -833,7 +834,7 @@ unsafe fn update_layout_tree_for_display_contents(
             }
         }
 
-        if !facts.content_visibility_hidden && !context.has_svg_root {
+        if !content_visibility_hidden && !context.has_svg_root {
             create_pseudo_element(
                 host,
                 state,
@@ -844,7 +845,7 @@ unsafe fn update_layout_tree_for_display_contents(
             );
         }
 
-        if !facts.content_visibility_hidden && (should_create_layout_node || facts.child_needs_layout_tree_update) {
+        if !content_visibility_hidden && (should_create_layout_node || facts.child_needs_layout_tree_update) {
             let must_create_children = should_create_layout_node;
             if !facts.shadow_root.is_null() {
                 // SAFETY: The callback table, shadow root, and context remain valid.
@@ -874,7 +875,7 @@ unsafe fn update_layout_tree_for_display_contents(
         }
 
         if !facts.slot_element.is_null() {
-            if !facts.content_visibility_hidden {
+            if !content_visibility_hidden {
                 // SAFETY: The callback table, slot element, and context remain valid.
                 unsafe {
                     update_layout_tree_for_assigned_slottables(
@@ -901,7 +902,7 @@ unsafe fn update_layout_tree_for_display_contents(
             }
         }
 
-        if !facts.content_visibility_hidden && !context.has_svg_root {
+        if !content_visibility_hidden && !context.has_svg_root {
             create_pseudo_element(
                 host,
                 state,
@@ -1044,13 +1045,7 @@ unsafe fn update_principal_node_descendants(
         assert!(!layout_node.is_invalid());
         let layout_host = host.layout();
         // SAFETY: All pointers remain live throughout the call.
-        let facts = unsafe {
-            (host.callbacks.principal_descendant_facts)(
-                host.callbacks.builder,
-                dom_node,
-                layout_host.shell(layout_node),
-            )
-        };
+        let facts = unsafe { (host.callbacks.principal_descendant_facts)(host.callbacks.builder, dom_node) };
         let (layout_node_can_have_children, layout_node_is_replaced_box_with_children) = {
             let layout_node_data = layout_host.data(layout_node);
             let can_have_children = node_can_have_children(layout_node_data);
@@ -1059,6 +1054,12 @@ unsafe fn update_principal_node_descendants(
                 kind_is_replaced_box(layout_node_data.kind) && can_have_children,
             )
         };
+        // The layout node's style is the element's computed style (display adjustments never
+        // touch these properties), so both facts read natively from the mirrored payloads.
+        let layout_node_style = layout_host.style(layout_node);
+        let content_visibility_hidden =
+            facts.is_element && layout_node_style.is_some_and(|view| view.content_visibility_hidden());
+        let has_style_containment = layout_node_style.is_some_and(|view| view.has_style_containment());
         let prior_quote_nesting_level = state.quote_nesting_level;
 
         if should_create_layout_node {
@@ -1071,7 +1072,7 @@ unsafe fn update_principal_node_descendants(
             // Add the ::before pseudo-element before walking normal children.
             if facts.is_element
                 && layout_node_can_have_children
-                && !facts.content_visibility_hidden
+                && !content_visibility_hidden
                 && !context.has_svg_root
             {
                 state.ancestor_stack.push(layout_node);
@@ -1087,7 +1088,7 @@ unsafe fn update_principal_node_descendants(
             }
         }
 
-        if facts.content_visibility_hidden {
+        if content_visibility_hidden {
             // SAFETY: The builder and DOM node remain live throughout the call.
             unsafe {
                 (host.callbacks.clear_stale_subtree)(
@@ -1101,7 +1102,7 @@ unsafe fn update_principal_node_descendants(
         if (should_create_layout_node || facts.child_needs_layout_tree_update)
             && (!facts.shadow_root.is_null() || facts.should_layout_dom_children)
             && layout_node_can_have_children
-            && !facts.content_visibility_hidden
+            && !content_visibility_hidden
         {
             state.ancestor_stack.push(layout_node);
 
@@ -1207,7 +1208,7 @@ unsafe fn update_principal_node_descendants(
         }
 
         if !facts.slot_element.is_null() {
-            if !facts.content_visibility_hidden {
+            if !content_visibility_hidden {
                 state.ancestor_stack.push(layout_node);
                 // SAFETY: The callback table, slot element, and context remain valid.
                 unsafe {
@@ -1278,7 +1279,7 @@ unsafe fn update_principal_node_descendants(
             // Add ::marker and ::after once normal and SVG resource children are complete.
             if facts.is_element
                 && layout_node_can_have_children
-                && !facts.content_visibility_hidden
+                && !content_visibility_hidden
                 && !context.has_svg_root
             {
                 state.ancestor_stack.push(layout_node);
@@ -1324,7 +1325,7 @@ unsafe fn update_principal_node_descendants(
         // Giving an element style containment has the following effects:
         // 2. The effects of the 'content' property’s 'open-quote', 'close-quote', 'no-open-quote' and 'no-close-quote'
         //    must be scoped to the element’s sub-tree.
-        if facts.has_style_containment {
+        if has_style_containment {
             state.quote_nesting_level = prior_quote_nesting_level;
         }
 
@@ -1367,10 +1368,16 @@ fn construct_principal_layout_node(
         if prepared.removed_old_backdrop_layout_node {
             update.state.layout_tree_update_escaped_rebuild_roots = true;
         }
+        let (display_is_none, display_is_contents) = host
+            .with_style_record(prepared.style_record_id, |view| {
+                let display = view.display();
+                (display.is_none(), display.is_contents())
+            })
+            .expect("a prepared principal element must have a computed style record");
         let generation = principal_box_generation_decision(
             true,
-            should_create_layout_node && prepared.display.display_is_none,
-            prepared.display.display_is_contents,
+            should_create_layout_node && display_is_none,
+            display_is_contents,
         );
         if generation == PrincipalBoxGenerationDecision::Suppress {
             return (false, false);
@@ -1422,11 +1429,19 @@ fn construct_principal_layout_node(
         } else if entry_facts.is_text {
             // SAFETY: The DOM text node remains live throughout the fact query.
             let facts = unsafe { (host.callbacks.principal_text_layout_facts)(dom_node) };
+            let parent_style_facts = host.with_style_record(facts.style_parent_record_id, |view| {
+                (
+                    view.display().is_contents(),
+                    view.white_space_collapse() == crate::css::css_enums::white_space_collapse::COLLAPSE,
+                )
+            });
+            let (parent_display_is_contents, parent_collapses_whitespace) =
+                parent_style_facts.unwrap_or_default();
             let needs_style_wrapper = display_contents_text_needs_style_wrapper(
-                facts.has_style_parent,
-                facts.parent_display_is_contents,
+                parent_style_facts.is_some(),
+                parent_display_is_contents,
                 facts.text_is_ascii_whitespace,
-                facts.parent_collapses_whitespace,
+                parent_collapses_whitespace,
             );
             // SAFETY: The frame and DOM text node remain live throughout construction.
             unsafe { (host.callbacks.create_principal_text_layout)(frame, dom_node, needs_style_wrapper) };
@@ -1809,16 +1824,21 @@ pub enum FfiPseudoElementDecision {
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct FfiPseudoElementFacts {
-    pub has_style: bool,
     pub pseudo_element: FfiPseudoElement,
     pub content_type: FfiComputedContentType,
-    pub display_is_none: bool,
-    pub display_is_contents: bool,
-    pub display_is_list_item: bool,
     pub has_content_replacement: bool,
     pub originating_layout_node_is_list_item: bool,
     pub normal_marker_has_content: bool,
-    pub marker_position_is_inside: bool,
+    // The pseudo-element's computed style record; Rust reads the display facts it needs natively.
+    pub style_record_id: u64,
+}
+
+/// Display facts of a pseudo-element's computed style, read natively from its style record.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PseudoDisplayFacts {
+    pub(crate) display_is_none: bool,
+    pub(crate) display_is_contents: bool,
+    pub(crate) display_is_list_item: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1847,15 +1867,19 @@ pub struct FfiPseudoTreeBuilderCallbacks {
     pub create_content_item: unsafe extern "C" fn(*mut c_void, *mut c_void, FfiPseudoElement, usize) -> NodeSlotId,
 }
 
-pub(crate) fn pseudo_element_decision(facts: FfiPseudoElementFacts) -> FfiPseudoElementDecision {
+pub(crate) fn pseudo_element_decision(
+    facts: FfiPseudoElementFacts,
+    display: Option<PseudoDisplayFacts>,
+) -> FfiPseudoElementDecision {
     abort_on_panic(|| {
-        if !facts.has_style {
+        // No resolvable style record means no computed pseudo style, so no box.
+        let Some(display) = display else {
             return FfiPseudoElementDecision::None;
-        }
+        };
 
         // https://drafts.csswg.org/css-display-3/#box-generation
         // The element and its descendants generate no boxes or text sequences.
-        if facts.display_is_none {
+        if display.display_is_none {
             return FfiPseudoElementDecision::None;
         }
 
@@ -1896,20 +1920,20 @@ pub(crate) fn pseudo_element_decision(facts: FfiPseudoElementFacts) -> FfiPseudo
 
         // INTEROP: Blink, WebKit, and Gecko keep generated images as children of pseudo-element boxes. Preserve that
         //          behavior for list items because our marker layout currently requires a ListItemBox.
-        if facts.display_is_list_item {
+        if display.display_is_list_item {
             is_content_replacement = false;
         }
 
         // https://drafts.csswg.org/css-display-3/#box-generation
         // This value computes to 'display: none' on replaced elements.
         // INTEROP: Blink, WebKit, and Gecko preserve image content on 'display: contents' pseudo-elements instead.
-        if facts.display_is_contents {
+        if display.display_is_contents {
             is_content_replacement = false;
         }
 
         if is_content_replacement {
             FfiPseudoElementDecision::ContentReplacement
-        } else if facts.display_is_contents {
+        } else if display.display_is_contents {
             FfiPseudoElementDecision::Contents
         } else {
             FfiPseudoElementDecision::Box
@@ -1930,8 +1954,8 @@ fn create_pseudo_element(
 
     // Fast path: when the originating element's style record proves the pseudo-element has no
     // computed style, skip the frame round trip entirely. This is behavior-identical to letting
-    // `initialize` report has_style = false: every path here already cleared the element's stale
-    // synthetic pseudo-element layout nodes.
+    // the full path find no resolvable pseudo style record: every path here already cleared the
+    // element's stale synthetic pseudo-element layout nodes.
     if let Some(mask_bit) = pseudo_element_style_mask_bit(pseudo_element) {
         let mask = host.pseudo_element_style_mask(originating_style_record);
         if mask & (1u64 << mask_bit) == 0 {
@@ -1943,7 +1967,7 @@ fn create_pseudo_element(
                 // SAFETY: The frame and element remain live throughout initialization.
                 let facts = unsafe { (callbacks.initialize)(frame, element, pseudo_element) };
                 assert!(
-                    !facts.has_style,
+                    host.with_style_record(facts.style_record_id, |_| ()).is_none(),
                     "style record mask claims no pseudo style but a computed pseudo style exists"
                 );
                 // SAFETY: `frame` is the most recently pushed pseudo-element frame.
@@ -1973,7 +1997,15 @@ fn create_pseudo_element_with_frame(
     let callbacks = &host.callbacks.pseudo;
     // SAFETY: The frame and element remain live throughout initialization.
     let facts = unsafe { (callbacks.initialize)(frame, element, pseudo_element) };
-    let decision = pseudo_element_decision(facts);
+    let display = host.with_style_record(facts.style_record_id, |view| {
+        let display = view.display();
+        PseudoDisplayFacts {
+            display_is_none: display.is_none(),
+            display_is_contents: display.is_contents(),
+            display_is_list_item: display.is_list_item(),
+        }
+    });
+    let decision = pseudo_element_decision(facts, display);
     if decision == FfiPseudoElementDecision::None {
         return NodeSlotId::INVALID;
     }
@@ -2004,7 +2036,9 @@ fn create_pseudo_element_with_frame(
     let layout_node_kind = host.layout().data(layout_node).kind;
     // https://drafts.csswg.org/css-lists-3/#list-style-position-outside
     // "the marker box is a block container and is placed outside the principal block box"
-    let is_outside_marker = layout_node_kind == NodeKind::ListItemMarkerBox && !facts.marker_position_is_inside;
+    // The marker's constructor mirrored the list box's list-style-position into the node flag.
+    let is_outside_marker = layout_node_kind == NodeKind::ListItemMarkerBox
+        && !node_has_flag(host.layout().data(layout_node), NodeFlag::ListMarkerIsInside);
     if let Some(insertion_mode) = insertion_mode
         && !is_outside_marker
     {
@@ -3451,7 +3485,8 @@ mod tests {
         FfiComputedContentType, FfiElementLayoutFacts, FfiElementLayoutKind, FfiFirstLetterCodePointFacts,
         FfiFirstLetterTextCallbacks, FfiPrincipalBoxPlacement, FfiPrincipalNodeEntryFacts, FfiPseudoElement,
         FfiPseudoElementDecision, FfiPseudoElementFacts, FfiReplacedElementDisplayAdjustment, FirstLetterTextHost,
-        PrincipalBoxGenerationDecision, PrincipalBoxPlacementFacts, SvgEntryDecision, TopLayerEntryDecision,
+        PrincipalBoxGenerationDecision, PrincipalBoxPlacementFacts, PseudoDisplayFacts, SvgEntryDecision,
+        TopLayerEntryDecision,
         TreeBuilderContext, adjusted_table_display_for_replaced_element, display_contents_text_needs_style_wrapper,
         element_layout_kind, find_first_letter_in_text, principal_box_generation_decision,
         principal_box_placement_decision, principal_node_entry_decision, pseudo_element_decision,
@@ -3570,18 +3605,21 @@ mod tests {
                       has_content_replacement,
                       originating_layout_node_is_list_item,
                       normal_marker_has_content| {
-            pseudo_element_decision(FfiPseudoElementFacts {
-                has_style: true,
-                pseudo_element,
-                content_type,
-                display_is_none,
-                display_is_contents,
-                display_is_list_item,
-                has_content_replacement,
-                originating_layout_node_is_list_item,
-                normal_marker_has_content,
-                marker_position_is_inside: false,
-            })
+            pseudo_element_decision(
+                FfiPseudoElementFacts {
+                    pseudo_element,
+                    content_type,
+                    has_content_replacement,
+                    originating_layout_node_is_list_item,
+                    normal_marker_has_content,
+                    style_record_id: 1,
+                },
+                Some(PseudoDisplayFacts {
+                    display_is_none,
+                    display_is_contents,
+                    display_is_list_item,
+                }),
+            )
         };
 
         assert_eq!(
