@@ -416,6 +416,17 @@ impl LayoutNodeArena {
         }
     }
 
+    /// Whether the slot id still names the live node it was recorded against. Structure-damage
+    /// notes can outlive the nodes they were recorded for within one build: freeing a slot
+    /// vacates it and reusing it advances the generation, so a stale id never matches.
+    pub(crate) fn is_slot_current(&self, id: NodeSlotId) -> bool {
+        !id.is_invalid()
+            && self
+                .slot_metadata
+                .get(id.slot_index() as usize)
+                .is_some_and(|metadata| metadata.occupied && metadata.generation == id.generation())
+    }
+
     pub(crate) fn data(&self, id: NodeSlotId) -> *mut NodeData {
         assert!(!id.is_invalid(), "invalid layout node arena slot ID");
         let index = id.slot_index() as usize;
@@ -992,13 +1003,24 @@ impl LayoutNodeArena {
     // OPTIMIZATION: The edit invalidates line data at its direct parent and every formatting
     // ancestor. Preserve the structural proof along the same unbounded path as the fragment
     // epoch bumps so each affected inline context can reuse its unchanged line prefix.
-    pub(crate) fn note_inline_layout_damage_at_and_above(&self, mut box_: NodeSlotId) {
+    /// The per-edit invalidation walk every child-list edit shares: inline-layout damage notes
+    /// for the fc-run cache and, when epochs are enabled, the fragment-cache epoch bumps. Cached
+    /// runs capture subtree structure, and there is no absolutely-positioned or SVG boundary --
+    /// those descendants' fragments live in ancestor run trees -- so the walk is unbounded.
+    pub(crate) fn note_structural_damage_at_and_above(&self, mut box_: NodeSlotId) {
+        let bump_epochs = layout_fc_run_cache_epochs_enabled();
         while !box_.is_invalid() {
             let data = self.data(box_);
             self.fc_run_cache_store.note_inline_layout_damage(box_);
             // SAFETY: data() validated that box_ names a live slot, and the layout tree is stable
             // for the duration of this synchronous topology update.
-            box_ = unsafe { (&raw const (*data).parent).read() };
+            unsafe {
+                if bump_epochs {
+                    let epoch = &raw mut (*data).fragment_cache_epoch;
+                    epoch.write(epoch.read().wrapping_add(1));
+                }
+                box_ = (&raw const (*data).parent).read();
+            }
         }
     }
 
@@ -1083,7 +1105,7 @@ impl LayoutNodeArena {
             }
         }
 
-        self.note_inline_layout_damage_at_and_above(parent);
+        self.note_structural_damage_at_and_above(parent);
     }
 
     pub(crate) fn remove_child(&self, parent: NodeSlotId, child: NodeSlotId) {
@@ -1133,7 +1155,7 @@ impl LayoutNodeArena {
             (&raw mut (*child_data).next_sibling).write(NodeSlotId::INVALID);
         }
 
-        self.note_inline_layout_damage_at_and_above(parent);
+        self.note_structural_damage_at_and_above(parent);
     }
 
     pub(crate) unsafe fn from_handle<'a>(arena: *mut c_void) -> &'a Self {

@@ -211,6 +211,17 @@ void Node::bump_fragment_cache_epoch_of_self_and_ancestors()
     }
 }
 
+// The epoch half of the invalidation fires inside the arena child-list primitives, which every
+// mutation wrapper funnels through; the wrappers only add the paintable-side clearing the arena
+// cannot reach.
+void Node::clear_cached_overflow_of_self_and_ancestors()
+{
+    for (auto* node = this; node; node = node->parent_ptr()) {
+        if (auto* box = as_if<Box>(*node); box && box->paintable_box())
+            const_cast<Painting::Paintable&>(*box->paintable_box()).clear_cached_overflow_data();
+    }
+}
+
 void* Node::arena_handle() const
 {
     return m_arena->handle();
@@ -219,7 +230,7 @@ void* Node::arena_handle() const
 void Node::insert_before(NonnullRefPtr<Node> node, Node* before)
 {
     RustFFI::layout_arena_insert_child(m_arena->handle(), slot_id(this), slot_id(node.ptr()), slot_id(before));
-    bump_fragment_cache_epoch_of_self_and_ancestors();
+    clear_cached_overflow_of_self_and_ancestors();
     (void)node.leak_ref();
 }
 
@@ -236,7 +247,7 @@ void Node::prepend_child(NonnullRefPtr<Node> node)
 void Node::remove_child(Node& node)
 {
     RustFFI::layout_arena_remove_child(m_arena->handle(), slot_id(this), slot_id(&node));
-    bump_fragment_cache_epoch_of_self_and_ancestors();
+    clear_cached_overflow_of_self_and_ancestors();
     node.unref();
 }
 
@@ -246,7 +257,7 @@ void Node::replace_child(NonnullRefPtr<Node> new_child, Node& old_child)
     auto successor_slot = old_child.m_data->next_sibling;
     RustFFI::layout_arena_remove_child(m_arena->handle(), slot_id(this), slot_id(&old_child));
     RustFFI::layout_arena_insert_child(m_arena->handle(), slot_id(this), slot_id(new_child.ptr()), successor_slot);
-    bump_fragment_cache_epoch_of_self_and_ancestors();
+    clear_cached_overflow_of_self_and_ancestors();
     old_child.unref();
     (void)new_child.leak_ref();
 }

@@ -904,11 +904,10 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
             VERIFY(builder_pointer);
             VERIFY(layout_node_pointer);
             VERIFY(parent_pointer);
+            // The Rust caller already proved no anonymous wrapper exists; this only creates.
             auto& layout_node = *static_cast<Layout::Node*>(layout_node_pointer);
-            if (!layout_node.first_child() || !layout_node.first_child()->is_anonymous()) {
-                auto wrapper = as<NodeWithStyle>(layout_node).create_anonymous_wrapper();
-                static_cast<Layout::NodeWithStyle*>(parent_pointer)->append_child(wrapper);
-            }
+            auto wrapper = as<NodeWithStyle>(layout_node).create_anonymous_wrapper();
+            static_cast<Layout::NodeWithStyle*>(parent_pointer)->append_child(wrapper);
             return Node::slot_id(layout_node.first_child().ptr()); },
         .top_layer_element_count = [](void* document_pointer) {
             VERIFY(document_pointer);
@@ -1167,6 +1166,13 @@ RustFFI::FfiDomTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_dom_tree_bui
             for (size_t index = 0; index < rebuilt_root_count; ++index)
                 builder.m_rebuilt_subtree_roots.unchecked_append(static_cast<Layout::Node*>(rebuilt_root_pointers[index]));
             builder.m_layout_tree_update_escaped_rebuild_roots = layout_tree_update_escaped_rebuild_roots; },
+        .clear_overflow_caches = [](void*, void* const* shell_pointers, size_t shell_count) {
+            VERIFY(shell_pointers || shell_count == 0);
+            for (size_t index = 0; index < shell_count; ++index) {
+                auto& node = *static_cast<Layout::Node*>(shell_pointers[index]);
+                if (auto* box = as_if<Box>(node); box && box->paintable_box())
+                    const_cast<Painting::Paintable&>(*box->paintable_box()).clear_cached_overflow_data();
+            } },
         .layout = make_ffi_tree_builder_callbacks(),
         .pseudo = make_ffi_pseudo_tree_builder_callbacks(),
     };
@@ -1309,11 +1315,10 @@ static void ffi_remove_layout_nodes(void*, void* const* node_pointers, size_t no
     }
 }
 
-static void ffi_wrap_in_anonymous_table_box(void*, void* const* node_pointers, size_t node_count, void* nearest_sibling_pointer, RustFFI::FfiAnonymousTableBoxKind kind)
+static RustFFI::NodeSlotId ffi_create_anonymous_table_box(void*, void* parent_pointer, void* nearest_sibling_pointer, RustFFI::FfiAnonymousTableBoxKind kind)
 {
-    VERIFY(node_count > 0);
-    auto sequence = retain_ffi_layout_nodes(node_pointers, node_count);
-    auto& parent = *sequence.first()->parent();
+    VERIFY(parent_pointer);
+    auto& parent = as<NodeWithStyle>(*static_cast<Node*>(parent_pointer));
     auto parent_values = parent.copy_computed_values();
     auto builder = CSS::ComputedValues::Builder::create_inheriting_from(*parent_values);
     switch (kind) {
@@ -1336,15 +1341,13 @@ static void ffi_wrap_in_anonymous_table_box(void*, void* const* node_pointers, s
             return make_ref_counted<BlockContainer>(parent.document(), nullptr, move(builder).build());
         return make_ref_counted<Box>(parent.document(), nullptr, move(builder).build());
     }();
-    for (auto& child : sequence) {
-        parent.remove_child(*child);
-        wrapper->append_child(*child);
-    }
     wrapper->set_children_are_inline(parent.children_are_inline());
+    auto* wrapper_pointer = wrapper.ptr();
     if (nearest_sibling_pointer)
-        parent.insert_before(*wrapper, *static_cast<Node*>(nearest_sibling_pointer));
+        parent.insert_before(move(wrapper), static_cast<Node*>(nearest_sibling_pointer));
     else
-        parent.append_child(*wrapper);
+        parent.append_child(move(wrapper));
+    return Node::slot_id(wrapper_pointer);
 }
 
 static NonnullRefPtr<CSS::ComputedValues const> table_wrapper_computed_values(Box& table_box)
@@ -1390,21 +1393,6 @@ static RustFFI::NodeSlotId ffi_create_and_append_anonymous_wrapper(void*, void* 
     auto wrapper = parent.create_anonymous_wrapper();
     parent.append_child(*wrapper);
     return Node::slot_id(wrapper.ptr());
-}
-
-static void ffi_wrap_children_in_anonymous(void*, void* parent_pointer, void* const* child_pointers, size_t child_count)
-{
-    VERIFY(parent_pointer);
-    auto& parent = as<NodeWithStyle>(*static_cast<Node*>(parent_pointer));
-    auto children = retain_ffi_layout_nodes(child_pointers, child_count);
-    auto wrapper = parent.create_anonymous_wrapper();
-    wrapper->set_children_are_inline(true);
-    for (auto& child : children) {
-        parent.remove_child(*child);
-        wrapper->append_child(*child);
-    }
-    parent.set_children_are_inline(false);
-    parent.append_child(*wrapper);
 }
 
 static void ffi_insert_child(void*, void* parent_pointer, void* child_pointer, RustFFI::FfiInsertionMode mode)
@@ -1490,28 +1478,15 @@ static RustFFI::NodeSlotId ffi_create_fieldset_content_wrapper(void*, void* layo
     return Node::slot_id(wrapper.ptr());
 }
 
-static void ffi_move_nodes_to_parent(void*, void* parent_pointer, void* const* node_pointers, size_t node_count)
-{
-    VERIFY(parent_pointer);
-    auto& parent = *static_cast<Node*>(parent_pointer);
-    auto nodes = retain_ffi_layout_nodes(node_pointers, node_count);
-    for (auto& node : nodes) {
-        VERIFY(node->parent());
-        node->parent()->remove_child(*node);
-        parent.append_child(*node);
-    }
-}
-
 RustFFI::FfiTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_tree_builder_callbacks()
 {
     return {
         .context = this,
         .remove_nodes = ffi_remove_layout_nodes,
-        .wrap_in_anonymous = ffi_wrap_in_anonymous_table_box,
+        .create_anonymous_table_box = ffi_create_anonymous_table_box,
         .wrap_table_root = ffi_wrap_table_root,
         .append_missing_table_cell = ffi_append_missing_table_cell,
         .create_and_append_anonymous_wrapper = ffi_create_and_append_anonymous_wrapper,
-        .wrap_children_in_anonymous = ffi_wrap_children_in_anonymous,
         .insert_child = ffi_insert_child,
         .text_is_ascii_whitespace = [](void*, void* node_pointer) {
             VERIFY(node_pointer);
@@ -1539,7 +1514,6 @@ RustFFI::FfiTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_tree_builder_ca
                 CSS::WhiteSpaceCollapse::Preserve, CSS::WhiteSpaceCollapse::PreserveBreaks, CSS::WhiteSpaceCollapse::BreakSpaces); },
         .create_button_content_wrapper = ffi_create_button_content_wrapper,
         .create_fieldset_content_wrapper = ffi_create_fieldset_content_wrapper,
-        .move_nodes_to_parent = ffi_move_nodes_to_parent,
     };
 }
 

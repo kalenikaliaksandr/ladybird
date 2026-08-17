@@ -112,6 +112,9 @@ pub struct FfiDomTreeBuilderCallbacks {
     pub clear_stale_inclusive_subtree: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub document_layout_node: unsafe extern "C" fn(*mut c_void) -> NodeSlotId,
     pub report_rebuild_outcome: unsafe extern "C" fn(*mut c_void, *const *mut c_void, usize, bool),
+    // The batched paintable half of the C++ mutation wrappers' invalidation, fired once at end
+    // of build for the ancestor chains of every native child-list edit.
+    pub clear_overflow_caches: unsafe extern "C" fn(*mut c_void, *const *mut c_void, usize),
     pub layout: FfiTreeBuilderCallbacks,
     pub pseudo: FfiPseudoTreeBuilderCallbacks,
 }
@@ -573,6 +576,11 @@ struct DomTreeBuilderHost<'a> {
     arena: *mut LayoutNodeArena,
     style_engine: *const c_void,
     verify_native_style_facts: bool,
+    // Parents of native child-list edits, recorded for the batched paintable overflow-cache
+    // flush at the end of the build. Epoch bumps happen eagerly at each edit; only the
+    // paintable-side clearing is deferred, which is safe because overflow caches are only read
+    // by phases that run after tree building completes.
+    structure_damage: std::cell::RefCell<Vec<NodeSlotId>>,
 }
 
 impl DomTreeBuilderHost<'_> {
@@ -606,8 +614,49 @@ impl DomTreeBuilderHost<'_> {
         TreeBuilderHost {
             callbacks: &self.callbacks.layout,
             arena: self.arena,
+            structure_damage: &self.structure_damage,
         }
     }
+}
+
+/// Clears the cached overflow data of every paintable on the ancestor chains of the recorded
+/// edit parents, in one batched callback. Ancestor chains are resolved at flush time; every
+/// mutation-time ancestor of an edit is covered because the edit that detached a subtree
+/// recorded that subtree's old parent as well.
+fn flush_structure_damage(host: &DomTreeBuilderHost<'_>) {
+    let damage = host.structure_damage.take();
+    if damage.is_empty() {
+        return;
+    }
+    // SAFETY: The entry point keeps the arena alive.
+    let arena = unsafe { &*host.arena };
+    let layout_host = host.layout();
+    let mut shells = Vec::new();
+    let mut seen = crate::css::style::fast_hash::FastSet::default();
+    for &parent in &damage {
+        if !arena.is_slot_current(parent) {
+            continue;
+        }
+        let mut node = parent;
+        while !node.is_invalid() {
+            if !seen.insert(node) {
+                // This node's chain was already collected in full.
+                break;
+            }
+            let data = layout_host.data(node);
+            // Only boxes carry paintable overflow caches; keep everything else off the boundary.
+            if node_kind_is_box(data.kind) {
+                assert!(!data.shell.is_null());
+                shells.push(data.shell);
+            }
+            node = data.parent;
+        }
+    }
+    if shells.is_empty() {
+        return;
+    }
+    // SAFETY: Every collected shell names a live layout node.
+    unsafe { (host.callbacks.clear_overflow_caches)(host.callbacks.builder, shells.as_ptr(), shells.len()) };
 }
 
 fn has_unrendered_flat_tree_ancestor(host: &DomTreeBuilderHost<'_>, element: *mut c_void) -> bool {
@@ -643,6 +692,7 @@ unsafe fn dom_tree_builder_host<'a>(
         arena: arena.cast(),
         style_engine,
         verify_native_style_facts: verify_native_style_facts(),
+        structure_damage: std::cell::RefCell::new(Vec::new()),
     }
 }
 
@@ -1109,14 +1159,22 @@ unsafe fn update_principal_node_descendants(
             if !facts.shadow_root.is_null() {
                 if layout_node_is_replaced_box_with_children {
                     // For replaced elements with shadow DOM children, wrap the children in an
-                    // anonymous BlockContainer so that a BFC handles their layout.
-                    // SAFETY: The callback returns the live first-child wrapper.
-                    let wrapper = unsafe {
-                        (host.callbacks.ensure_replaced_children_wrapper)(
-                            host.callbacks.builder,
-                            layout_host.shell(layout_node),
-                            layout_host.shell(state.current_parent()),
-                        )
+                    // anonymous BlockContainer so that a BFC handles their layout. An existing
+                    // anonymous first child is that wrapper; only its creation needs C++.
+                    let first_child = layout_host.first_child(layout_node);
+                    let wrapper = if !first_child.is_invalid()
+                        && node_has_flag(layout_host.data(first_child), NodeFlag::Anonymous)
+                    {
+                        first_child
+                    } else {
+                        // SAFETY: The callback returns the live first-child wrapper.
+                        unsafe {
+                            (host.callbacks.ensure_replaced_children_wrapper)(
+                                host.callbacks.builder,
+                                layout_host.shell(layout_node),
+                                layout_host.shell(state.current_parent()),
+                            )
+                        }
                     };
                     assert!(!wrapper.is_invalid());
                     state.ancestor_stack.push(wrapper);
@@ -1744,6 +1802,8 @@ pub unsafe extern "C" fn rust_build_layout_tree(
             fixup_tables(&host.layout(), document_layout_node);
         }
 
+        flush_structure_damage(&host);
+
         // SAFETY: The builder remains live and copies the reported shell pointers before returning.
         unsafe {
             (host.callbacks.report_rebuild_outcome)(
@@ -2204,19 +2264,19 @@ pub enum FfiInsertionMode {
 pub struct FfiTreeBuilderCallbacks {
     pub context: *mut c_void,
     pub remove_nodes: unsafe extern "C" fn(*mut c_void, *const *mut c_void, usize),
-    pub wrap_in_anonymous:
-        unsafe extern "C" fn(*mut c_void, *const *mut c_void, usize, *mut c_void, FfiAnonymousTableBoxKind),
+    // Creates an empty anonymous table box of the given kind and attaches it before the given
+    // sibling (or appends). Rust moves the wrapped sequence into it natively.
+    pub create_anonymous_table_box:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, FfiAnonymousTableBoxKind) -> NodeSlotId,
     pub wrap_table_root: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void),
     pub append_missing_table_cell: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub create_and_append_anonymous_wrapper: unsafe extern "C" fn(*mut c_void, *mut c_void) -> NodeSlotId,
-    pub wrap_children_in_anonymous: unsafe extern "C" fn(*mut c_void, *mut c_void, *const *mut c_void, usize),
     pub insert_child: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, FfiInsertionMode),
     pub text_is_ascii_whitespace: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
     pub prepare_first_letter_text:
         unsafe extern "C" fn(*mut c_void, *mut c_void, *mut FfiFirstLetterTextCallbacks) -> bool,
     pub create_button_content_wrapper: unsafe extern "C" fn(*mut c_void, *mut c_void) -> NodeSlotId,
     pub create_fieldset_content_wrapper: unsafe extern "C" fn(*mut c_void, *mut c_void) -> NodeSlotId,
-    pub move_nodes_to_parent: unsafe extern "C" fn(*mut c_void, *mut c_void, *const *mut c_void, usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2229,6 +2289,7 @@ enum TraversalDecision {
 struct TreeBuilderHost<'a> {
     callbacks: &'a FfiTreeBuilderCallbacks,
     arena: *mut LayoutNodeArena,
+    structure_damage: &'a std::cell::RefCell<Vec<NodeSlotId>>,
 }
 
 fn node_has_flag(data: &NodeData, flag: NodeFlag) -> bool {
@@ -2502,19 +2563,49 @@ impl TreeBuilderHost<'_> {
         unsafe { (self.callbacks.remove_nodes)(self.callbacks.context, shells.as_ptr(), shells.len()) };
     }
 
+    /// Records an edited parent for the batched paintable overflow-cache flush at end of build.
+    /// The epoch half of the invalidation fires inside the arena child-list primitives.
+    fn note_structure_damage_at(&self, parent: LayoutNode) {
+        self.structure_damage.borrow_mut().push(parent);
+    }
+
+    /// Moves attached sibling nodes under a new parent (appending in order) natively: the
+    /// tree-edge strong references transfer between edges, so no C++ call is needed. The arena
+    /// primitives fire the per-edit damage notes and epoch bumps; the batched overflow-cache
+    /// damage is recorded once per touched parent.
+    fn move_nodes_to(&self, new_parent: LayoutNode, nodes: &[LayoutNode]) {
+        let Some(&first) = nodes.first() else { return };
+        let old_parent = self.parent(first);
+        assert!(!old_parent.is_invalid(), "moved layout nodes must be attached");
+        for &node in nodes {
+            // SAFETY: Entry points guarantee a live arena, and mutation is serialized on the
+            // owner thread. remove_child asserts each node is a child of `old_parent`, and the
+            // edge reference owning it transfers from the old edge to the new one.
+            unsafe {
+                (*self.arena).remove_child(old_parent, node);
+                (*self.arena).insert_child(new_parent, node, NodeSlotId::INVALID);
+            }
+        }
+        self.note_structure_damage_at(old_parent);
+        self.note_structure_damage_at(new_parent);
+    }
+
     fn wrap_in_anonymous(&self, nodes: &[LayoutNode], nearest_sibling: LayoutNode, kind: FfiAnonymousTableBoxKind) {
         assert!(!nodes.is_empty());
-        let shells = self.shells(nodes);
-        // SAFETY: The nodes are live siblings and `nearest_sibling` is either null or their live next sibling.
-        unsafe {
-            (self.callbacks.wrap_in_anonymous)(
+        let parent = self.parent(nodes[0]);
+        assert!(!parent.is_invalid());
+        // SAFETY: The parent is a live NodeWithStyle and `nearest_sibling` is either null or its
+        // live child. The callback creates and attaches an empty anonymous table box.
+        let wrapper = unsafe {
+            (self.callbacks.create_anonymous_table_box)(
                 self.callbacks.context,
-                shells.as_ptr(),
-                shells.len(),
+                self.shell(parent),
                 self.shell_or_null(nearest_sibling),
                 kind,
-            );
+            )
         };
+        assert!(!wrapper.is_invalid());
+        self.move_nodes_to(wrapper, nodes);
     }
 }
 
@@ -2556,6 +2647,24 @@ fn note_layout_tree_restructuring_at(host: &TreeBuilderHost<'_>, state: &mut Tre
     if !is_inclusive_layout_ancestor_of(host, state.current_rebuild_root, node) {
         state.layout_tree_update_escaped_rebuild_roots = true;
     }
+}
+
+/// Snapshots the children of `parent` that pass `keep`, in order. Callers move the collected
+/// nodes afterwards, which mutates the sibling chain, so the snapshot must complete first.
+fn collect_children(
+    host: &TreeBuilderHost<'_>,
+    parent: LayoutNode,
+    mut keep: impl FnMut(LayoutNode) -> bool,
+) -> Vec<LayoutNode> {
+    let mut children = Vec::new();
+    let mut child = host.first_child(parent);
+    while !child.is_invalid() {
+        if keep(child) {
+            children.push(child);
+        }
+        child = host.next_sibling(child);
+    }
+    children
 }
 
 fn has_inline_or_in_flow_block_children(host: &TreeBuilderHost<'_>, node: LayoutNode) -> bool {
@@ -2725,23 +2834,13 @@ fn insertion_parent_for_block_node(
 
     // Parent block has inline-level children (our siblings); wrap these siblings into an anonymous wrapper block.
     note_layout_tree_restructuring_at(host, state, new_parent);
-    let mut child_shells = Vec::new();
-    let mut child = host.first_child(new_parent);
-    while !child.is_invalid() {
-        if !is_out_of_flow_table_internal_child_of_table_root(host, new_parent, child) {
-            child_shells.push(host.shell(child));
-        }
-        child = host.next_sibling(child);
-    }
-    // SAFETY: The callback retains the children before moving them and leaves `new_parent` live.
-    unsafe {
-        (host.callbacks.wrap_children_in_anonymous)(
-            host.callbacks.context,
-            host.shell(new_parent),
-            child_shells.as_ptr(),
-            child_shells.len(),
-        );
-    };
+    let children_to_wrap = collect_children(host, new_parent, |child| {
+        !is_out_of_flow_table_internal_child_of_table_root(host, new_parent, child)
+    });
+    let wrapper = create_anonymous_wrapper(host, new_parent);
+    host.set_children_are_inline(wrapper, true);
+    host.move_nodes_to(wrapper, &children_to_wrap);
+    host.set_children_are_inline(new_parent, false);
 
     // Then it's safe to insert this block into parent.
     new_parent
@@ -3015,27 +3114,14 @@ fn wrap_button_contents_if_needed(host: &TreeBuilderHost<'_>, layout_node: Layou
     let display = host.style(layout_node).map(|style| style.display());
     if !display.is_some_and(|display| display.is_grid_inside() || display.is_flex_inside()) {
         let children_are_inline = node_has_flag(host.data(layout_node), NodeFlag::ChildrenAreInline);
-        let mut child_shells = Vec::new();
-        let mut child = host.first_child(layout_node);
-        while !child.is_invalid() {
-            child_shells.push(host.shell(child));
-            child = host.next_sibling(child);
-        }
+        let children_to_move = collect_children(host, layout_node, |_| true);
 
         // SAFETY: `layout_node` remains live and owns the returned content wrapper through its flex wrapper.
         let content_wrapper =
             unsafe { (host.callbacks.create_button_content_wrapper)(host.callbacks.context, host.shell(layout_node)) };
         assert!(!content_wrapper.is_invalid());
         host.set_children_are_inline(content_wrapper, children_are_inline);
-        // SAFETY: The parent and content wrapper remain live, and the callback retains all nodes while moving them.
-        unsafe {
-            (host.callbacks.move_nodes_to_parent)(
-                host.callbacks.context,
-                host.shell(content_wrapper),
-                child_shells.as_ptr(),
-                child_shells.len(),
-            );
-        }
+        host.move_nodes_to(content_wrapper, &children_to_move);
         host.set_children_are_inline(layout_node, false);
     }
 }
@@ -3067,29 +3153,14 @@ fn wrap_fieldset_contents_if_needed(host: &TreeBuilderHost<'_>, layout_node: Lay
             return;
         }
 
-        let mut child_shells = Vec::new();
-        let mut child = host.first_child(layout_node);
-        while !child.is_invalid() {
-            if child != legend {
-                child_shells.push(host.shell(child));
-            }
-            child = host.next_sibling(child);
-        }
+        let children_to_move = collect_children(host, layout_node, |child| child != legend);
 
         // SAFETY: The fieldset remains live and owns the returned wrapper.
         let wrapper = unsafe {
             (host.callbacks.create_fieldset_content_wrapper)(host.callbacks.context, host.shell(layout_node))
         };
         assert!(!wrapper.is_invalid());
-        // SAFETY: The wrapper remains attached and the callback retains all nodes while moving them.
-        unsafe {
-            (host.callbacks.move_nodes_to_parent)(
-                host.callbacks.context,
-                host.shell(wrapper),
-                child_shells.as_ptr(),
-                child_shells.len(),
-            );
-        }
+        host.move_nodes_to(wrapper, &children_to_move);
     }
 }
 

@@ -235,13 +235,16 @@ public:
 
     void bump_fragment_cache_epoch();
 
-    // Any invalidation or restructuring below a node must reach every ancestor's epoch: cached
-    // runs capture subtree structure, and unlike intrinsic-size invalidation there is no
-    // absolutely-positioned or SVG boundary — those descendants' fragments live in ancestor
-    // run trees. Layout tree restructuring in particular never funnels through
-    // set_needs_layout_update (a full pass lays out everything), so the tree mutation
-    // primitives call this on the parent of every structural change.
+    // Any invalidation below a node must reach every ancestor's epoch: cached runs capture
+    // subtree structure, and unlike intrinsic-size invalidation there is no absolutely-positioned
+    // or SVG boundary — those descendants' fragments live in ancestor run trees. Child-list
+    // edits get their epoch bumps from the arena primitives; this walk serves the non-structural
+    // invalidations (style, text, replaced-content changes).
     void bump_fragment_cache_epoch_of_self_and_ancestors();
+
+    // The paintable half of the invalidation for child-list edits, whose epoch half fires inside
+    // the arena primitives.
+    void clear_cached_overflow_of_self_and_ancestors();
 
     // Set when a style change altered geometry-determining properties of this node itself, so
     // a partial relayout must re-resolve its own size and position instead of reusing them.
