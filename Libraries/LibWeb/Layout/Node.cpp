@@ -1021,6 +1021,8 @@ void NodeWithStyle::propagate_style_to_anonymous_wrappers()
         builder->inherit_from(*values);
         transfer_table_box_computed_values_to_wrapper_computed_values(builder);
         table_wrapper->set_computed_values(move(builder).build());
+        if (auto paintable = table_wrapper->paintable())
+            paintable->set_needs_repaint();
     }
 
     // Propagate style to all anonymous children (except table wrappers!)
@@ -1035,6 +1037,8 @@ void NodeWithStyle::propagate_style_to_anonymous_wrappers()
             auto values = copy_computed_values();
             builder->inherit_from(*values);
             child.set_computed_values(move(builder).build());
+            if (auto paintable = child.paintable())
+                paintable->set_needs_repaint();
             child.propagate_style_to_anonymous_wrappers();
         }
         return IterationDecision::Continue;
@@ -1527,6 +1531,7 @@ void Node::clear_paintable()
 
     invalidate_paint_caches(*this);
     if (m_paintable) {
+        RustFFI::layout_arena_paintable_cleared_from_node(arena_handle(), slot_id(this), m_paintable->rust_slot());
         if (m_paintable->parent())
             m_paintable->remove();
         // NB: Layout state may retain this paintable after it stops being the node's current paintable, but its

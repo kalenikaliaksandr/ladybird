@@ -1,0 +1,21 @@
+nodes=6 root_is_visual_viewport=true reused_previous_version=false
+[0] parent=0 depth=0 empty_clip=false transform matrix=[1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1] origin=[0,0] flattens=false
+[1] parent=0 depth=1 empty_clip=false scroll sticky=false slot=0
+[2] parent=1 depth=2 empty_clip=false clip rect=[8,8 100x60] radii=[0x0 0x0 0x0 0x0]
+[3] parent=2 depth=3 empty_clip=false scroll sticky=false slot=1
+[4] parent=1 depth=2 empty_clip=false effects opacity=0.5 blend_mode=1 filter=none
+[5] parent=4 depth=3 empty_clip=false transform matrix=[1 0 0 10 0 1 0 5 0 0 1 0 0 0 0 1] origin=[50,40] flattens=true
+scroll_state slots=2
+  slot 0 ViewportPaintable(Viewport<#document>) sticky=false node=1 parent_slot=none own_offset=[0,0]
+  slot 1 PaintableWithLines(BlockContainer<DIV>#scroller) sticky=false node=3 parent_slot=0 own_offset=[0,0]
+snapshot=[ [0,0] [0,0] [0,0] [0,0] ]
+paintables:
+  ViewportPaintable(Viewport<#document>) own=0 descendants=1 enclosing_scroll=0 own_scroll=1 fixed_background=none range=[0,0) non_invertible=false
+  PaintableWithLines(BlockContainer<HTML>) own=1 descendants=1 enclosing_scroll=1 own_scroll=0 fixed_background=none range=[2,2) non_invertible=false
+  PaintableWithLines(BlockContainer<BODY>) own=1 descendants=1 enclosing_scroll=1 own_scroll=0 fixed_background=none range=[2,2) non_invertible=false
+  PaintableWithLines(BlockContainer<DIV>#scroller) own=1 descendants=3 enclosing_scroll=1 own_scroll=3 fixed_background=none range=[2,4) non_invertible=false
+  PaintableWithLines(BlockContainer<DIV>#tall) own=3 descendants=3 enclosing_scroll=3 own_scroll=0 fixed_background=none range=[4,4) non_invertible=false
+  PaintableWithLines(BlockContainer(anonymous)) own=1 descendants=1 enclosing_scroll=1 own_scroll=0 fixed_background=none range=[4,4) non_invertible=false
+  PaintableWithLines(BlockContainer<DIV>#box) own=5 descendants=5 enclosing_scroll=1 own_scroll=0 fixed_background=none range=[4,6) non_invertible=false
+  PaintableWithLines(BlockContainer<PRE>#out) own=1 descendants=1 enclosing_scroll=1 own_scroll=0 fixed_background=none range=[6,6) non_invertible=false
+

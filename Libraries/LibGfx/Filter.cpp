@@ -15,6 +15,9 @@
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
 
+extern "C" void ladybird_gfx_filter_destroy(void*);
+extern "C" void ladybird_gfx_filter_serialized_summary(void const*, size_t*, u64*);
+
 namespace Gfx {
 
 static ErrorOr<Optional<ByteBuffer>> copy_optional_color_table(Optional<ReadonlyBytes> bytes)
@@ -673,4 +676,23 @@ ErrorOr<Gfx::Filter> decode(Decoder& decoder)
     });
 }
 
+}
+
+extern "C" void ladybird_gfx_filter_destroy(void* filter)
+{
+    delete static_cast<Gfx::Filter*>(filter);
+}
+
+extern "C" void ladybird_gfx_filter_serialized_summary(void const* filter, size_t* out_size, u64* out_hash)
+{
+    u64 image_counter = 0;
+    Function<u64(Gfx::DecodedImageFrame const&)> encode_image = [&](Gfx::DecodedImageFrame const&) -> u64 { return image_counter++; };
+    auto bytes = Gfx::serialize_filter(*static_cast<Gfx::Filter const*>(filter), encode_image);
+    u64 hash = 0xcbf29ce484222325ull;
+    for (auto byte : bytes.bytes()) {
+        hash ^= byte;
+        hash *= 0x100000001b3ull;
+    }
+    *out_size = bytes.size();
+    *out_hash = hash;
 }

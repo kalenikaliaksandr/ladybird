@@ -4643,6 +4643,10 @@ void LocalNavigable::destroy_compositor_context()
 {
     clear_parent_compositor_context();
     m_compositor_context.clear();
+    if (auto container = this->container()) {
+        if (auto paintable = container->paintable())
+            paintable->set_needs_repaint();
+    }
 }
 
 void LocalNavigable::repaint_after_compositor_process_reconnect()

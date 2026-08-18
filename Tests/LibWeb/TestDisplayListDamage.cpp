@@ -19,7 +19,7 @@ static ByteBuffer command_bytes(Command const& command, Optional<Gfx::IntRect> b
     constexpr size_t command_alignment = 16;
     auto payload_size = align_up_to(record_size, command_alignment) - sizeof(DisplayListCommandHeader);
     DisplayListCommandHeader header {
-        .type = Command::command_type,
+        .command_type = Command::command_type,
         .payload_size = static_cast<u32>(payload_size),
         .context_index = context_index,
         .has_bounding_rect = bounding_rect.has_value(),
@@ -52,7 +52,7 @@ static ByteBuffer glyph_run_command_bytes(size_t inline_padding)
     };
     auto payload_size = align_up_to(sizeof(DisplayListCommandHeader) + sizeof(command) + inline_padding + sizeof(glyph), 16) - sizeof(DisplayListCommandHeader);
     DisplayListCommandHeader header {
-        .type = DrawGlyphRun::command_type,
+        .command_type = DrawGlyphRun::command_type,
         .payload_size = static_cast<u32>(payload_size),
         .context_index = VISUAL_VIEWPORT_NODE_INDEX,
         .has_bounding_rect = true,

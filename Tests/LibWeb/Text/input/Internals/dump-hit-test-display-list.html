@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    #box { width: 100px; height: 50px; border-radius: 8px; }
+</style>
+<div id="box">Hello <span>world</span></div>
+<script>
+    test(() => {
+        println(internals.dumpHitTestDisplayList());
+    });
+</script>
