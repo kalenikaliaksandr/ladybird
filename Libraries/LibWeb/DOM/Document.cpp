@@ -8969,6 +8969,10 @@ void Document::set_needs_to_record_display_list()
 
 RefPtr<Painting::DisplayList> Document::record_display_list(HTML::PaintConfig config, Painting::DisplayListResourceStorage& resource_storage, Painting::PaintCommandCacheMode cache_mode)
 {
+    if (auto* root = document_element(); root && root->unsafe_layout_node()) {
+        if (auto const* root_box = as_if<Layout::Box>(root->unsafe_layout_node()))
+            ensure_scrollable_overflow_is_measured(*root_box);
+    }
     update_paint_and_hit_testing_properties_if_needed();
     VERIFY(paintable());
 
