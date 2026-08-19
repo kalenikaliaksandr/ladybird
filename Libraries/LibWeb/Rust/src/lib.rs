@@ -50,3 +50,38 @@ unsafe fn bytes_from_raw<'a>(bytes: *const u8, len: usize) -> Option<&'a [u8]> {
         Some(std::slice::from_raw_parts(bytes, len))
     }
 }
+
+#[cfg(test)]
+#[unsafe(no_mangle)]
+pub extern "C" fn ladybird_gfx_font_unref(_font: *mut std::ffi::c_void) {}
+
+#[cfg(test)]
+#[unsafe(no_mangle)]
+pub extern "C" fn ladybird_gfx_filter_destroy(_filter: *mut std::ffi::c_void) {}
+
+#[cfg(test)]
+#[unsafe(no_mangle)]
+pub extern "C" fn ladybird_gfx_filter_serialized_summary(
+    _filter: *const std::ffi::c_void,
+    _out_size: *mut usize,
+    _out_hash: *mut u64,
+) {
+}
+
+#[cfg(test)]
+#[unsafe(no_mangle)]
+pub extern "C" fn ladybird_web_svg_path_from_path_data_ascii(
+    _bytes: *const u8,
+    _length: usize,
+) -> *mut std::ffi::c_void {
+    std::ptr::null_mut()
+}
+
+#[cfg(test)]
+#[unsafe(no_mangle)]
+pub extern "C" fn ladybird_web_svg_path_from_path_data_utf16(
+    _units: *const u16,
+    _length: usize,
+) -> *mut std::ffi::c_void {
+    std::ptr::null_mut()
+}

@@ -92,6 +92,15 @@ impl CssPixels {
         Self(clamp_f32_to_i32(value * FIXED_POINT_DENOMINATOR as f32))
     }
 
+    pub fn round(self) -> Self {
+        let half = Self(FIXED_POINT_DENOMINATOR >> 1);
+        if self.0 > 0 {
+            (self + half).floor()
+        } else {
+            (self - half).ceil()
+        }
+    }
+
     pub fn floor(self) -> Self {
         Self(self.0 & !RADIX_MASK)
     }
@@ -104,6 +113,10 @@ impl CssPixels {
             0
         };
         Self(floor.wrapping_add(increment))
+    }
+
+    pub fn to_int(self) -> i32 {
+        self.0 / FIXED_POINT_DENOMINATOR
     }
 
     pub fn to_double(self) -> f64 {
@@ -139,6 +152,20 @@ impl CssPixels {
         Self(clamp_i64_to_i32(wide_value / denominator.0 as i64))
     }
 
+    pub fn mul_by_fraction(self, fraction: CssPixelFraction) -> Self {
+        let mut wide_value = self.0 as i64;
+        wide_value *= fraction.numerator.0 as i64;
+        wide_value /= fraction.denominator.0 as i64;
+        Self(clamp_i64_to_i32(wide_value))
+    }
+
+    pub fn div_by_fraction(self, fraction: CssPixelFraction) -> Self {
+        let mut wide_value = self.0 as i64;
+        wide_value *= fraction.denominator.0 as i64;
+        wide_value /= fraction.numerator.0 as i64;
+        Self(clamp_i64_to_i32(wide_value))
+    }
+
     pub fn scaled(self, factor: f64) -> Self {
         Self::nearest_value_for(self.to_double() * factor)
     }
@@ -152,6 +179,47 @@ impl CssPixels {
             denominator = 1.0;
         }
         (Self::nearest_value_for(numerator), Self::nearest_value_for(denominator))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CssPixelFraction {
+    numerator: CssPixels,
+    denominator: CssPixels,
+}
+
+impl CssPixelFraction {
+    pub fn one() -> Self {
+        Self {
+            numerator: CssPixels::from_integer(1),
+            denominator: CssPixels::from_integer(1),
+        }
+    }
+
+    pub fn ratio_of(numerator: CssPixels, denominator: CssPixels) -> Self {
+        assert!(denominator.raw_value() != 0);
+        Self { numerator, denominator }
+    }
+
+    fn cross_products(self, other: Self) -> (i64, i64) {
+        let left = self.numerator.raw_value() as i64 * other.denominator.raw_value() as i64;
+        let right = other.numerator.raw_value() as i64 * self.denominator.raw_value() as i64;
+        (left, right)
+    }
+
+    pub fn min(self, other: Self) -> Self {
+        let (left, right) = self.cross_products(other);
+        if left <= right { self } else { other }
+    }
+
+    pub fn is_at_least_one(self) -> bool {
+        let (left, right) = self.cross_products(Self::one());
+        left >= right
+    }
+
+    #[cfg(test)]
+    pub(crate) fn numerator_for_test(self) -> CssPixels {
+        self.numerator
     }
 }
 
@@ -235,6 +303,183 @@ impl std::ops::Div<usize> for CssPixels {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CssPixelPoint {
+    pub x: CssPixels,
+    pub y: CssPixels,
+}
+
+impl CssPixelPoint {
+    pub const fn new(x: CssPixels, y: CssPixels) -> Self {
+        Self { x, y }
+    }
+    pub fn translated(self, dx: CssPixels, dy: CssPixels) -> Self {
+        Self {
+            x: self.x + dx,
+            y: self.y + dy,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CssPixelSize {
+    pub width: CssPixels,
+    pub height: CssPixels,
+}
+
+impl CssPixelSize {
+    pub const fn new(width: CssPixels, height: CssPixels) -> Self {
+        Self { width, height }
+    }
+    pub fn is_empty(self) -> bool {
+        self.width <= CssPixels::from_raw(0) || self.height <= CssPixels::from_raw(0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CssPixelRect {
+    pub x: CssPixels,
+    pub y: CssPixels,
+    pub width: CssPixels,
+    pub height: CssPixels,
+}
+
+impl CssPixelRect {
+    pub const fn new(x: CssPixels, y: CssPixels, width: CssPixels, height: CssPixels) -> Self {
+        Self { x, y, width, height }
+    }
+    pub const fn from_location_and_size(location: CssPixelPoint, size: CssPixelSize) -> Self {
+        Self {
+            x: location.x,
+            y: location.y,
+            width: size.width,
+            height: size.height,
+        }
+    }
+    pub const fn location(self) -> CssPixelPoint {
+        CssPixelPoint { x: self.x, y: self.y }
+    }
+    pub const fn size(self) -> CssPixelSize {
+        CssPixelSize {
+            width: self.width,
+            height: self.height,
+        }
+    }
+    pub fn left(self) -> CssPixels {
+        self.x
+    }
+    pub fn top(self) -> CssPixels {
+        self.y
+    }
+    pub fn right(self) -> CssPixels {
+        self.x + self.width
+    }
+    pub fn bottom(self) -> CssPixels {
+        self.y + self.height
+    }
+    pub fn is_empty(self) -> bool {
+        self.width <= CssPixels::from_raw(0) || self.height <= CssPixels::from_raw(0)
+    }
+    pub fn translated(self, dx: CssPixels, dy: CssPixels) -> Self {
+        Self {
+            x: self.x + dx,
+            y: self.y + dy,
+            ..self
+        }
+    }
+    pub fn translated_by(self, offset: CssPixelPoint) -> Self {
+        self.translated(offset.x, offset.y)
+    }
+    fn set_left(&mut self, left: CssPixels) {
+        self.width = self.right() - left;
+        self.x = left;
+    }
+    fn set_top(&mut self, top: CssPixels) {
+        self.height = self.bottom() - top;
+        self.y = top;
+    }
+    fn set_right(&mut self, right: CssPixels) {
+        self.width = right - self.x;
+    }
+    fn set_bottom(&mut self, bottom: CssPixels) {
+        self.height = bottom - self.y;
+    }
+    pub fn unite_horizontally(&mut self, other: Self) {
+        let new_left = self.left().min(other.left());
+        let new_right = self.right().max(other.right());
+        self.set_left(new_left);
+        self.set_right(new_right);
+    }
+    pub fn unite_vertically(&mut self, other: Self) {
+        let new_top = self.top().min(other.top());
+        let new_bottom = self.bottom().max(other.bottom());
+        self.set_top(new_top);
+        self.set_bottom(new_bottom);
+    }
+    pub fn intersected(self, other: Self) -> Self {
+        let left = self.left().max(other.left());
+        let right = self.right().min(other.right());
+        let top = self.top().max(other.top());
+        let bottom = self.bottom().min(other.bottom());
+        if left > right || top > bottom {
+            return Self::default();
+        }
+        Self {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        }
+    }
+    pub fn center(self) -> CssPixelPoint {
+        let two = CssPixels::from_integer(2);
+        CssPixelPoint {
+            x: self.x + self.width.div_as_fraction(two),
+            y: self.y + self.height.div_as_fraction(two),
+        }
+    }
+    pub fn unite(&mut self, other: Self) {
+        if self.is_empty() {
+            *self = other;
+            return;
+        }
+        if other.is_empty() {
+            return;
+        }
+        self.unite_horizontally(other);
+        self.unite_vertically(other);
+    }
+    pub fn shrink(&mut self, top: CssPixels, right: CssPixels, bottom: CssPixels, left: CssPixels) {
+        self.x += left;
+        self.width = self.width - left - right;
+        self.y += top;
+        self.height = self.height - top - bottom;
+    }
+    pub fn shrunken(mut self, top: CssPixels, right: CssPixels, bottom: CssPixels, left: CssPixels) -> Self {
+        self.shrink(top, right, bottom, left);
+        self
+    }
+    pub fn inflate(&mut self, top: CssPixels, right: CssPixels, bottom: CssPixels, left: CssPixels) {
+        self.x -= left;
+        self.width = self.width + left + right;
+        self.y -= top;
+        self.height = self.height + top + bottom;
+    }
+    pub fn inflated(mut self, top: CssPixels, right: CssPixels, bottom: CssPixels, left: CssPixels) -> Self {
+        self.inflate(top, right, bottom, left);
+        self
+    }
+    pub fn contains_rect(self, other: Self) -> bool {
+        self.left() <= other.left()
+            && self.right() >= other.right()
+            && self.top() <= other.top()
+            && self.bottom() >= other.bottom()
+    }
+    pub fn contains_point(self, point: CssPixelPoint) -> bool {
+        point.x >= self.x && point.x < self.right() && point.y >= self.y && point.y < self.bottom()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +489,29 @@ mod tests {
         assert_eq!(CssPixels::from_integer(3).raw_value(), 3 << 6);
         assert_eq!(CssPixels::from_integer(1 << 40).raw_value(), i32::MAX);
         assert_eq!(CssPixels::from_integer(-(1 << 40)).raw_value(), i32::MIN);
+    }
+
+    #[test]
+    fn fraction_comparison_and_multiplication_stay_deferred() {
+        let ten_thirds = CssPixelFraction::ratio_of(CssPixels::from_integer(10), CssPixels::from_integer(3));
+        assert_eq!(
+            CssPixels::from_integer(3).mul_by_fraction(ten_thirds),
+            CssPixels::from_integer(10)
+        );
+        assert!(ten_thirds.is_at_least_one());
+        let two_thirds = CssPixelFraction::ratio_of(CssPixels::from_integer(2), CssPixels::from_integer(3));
+        assert!(!two_thirds.is_at_least_one());
+        assert!(CssPixelFraction::one().is_at_least_one());
+
+        let three_fifths = CssPixelFraction::ratio_of(CssPixels::from_integer(3), CssPixels::from_integer(5));
+        assert_eq!(
+            two_thirds.min(three_fifths).numerator_for_test().raw_value(),
+            CssPixels::from_integer(3).raw_value()
+        );
+        assert_eq!(
+            CssPixels::from_raw(100).mul_by_fraction(two_thirds).raw_value(),
+            (100i64 * 128 / 192) as i32
+        );
     }
 
     #[test]
