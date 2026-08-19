@@ -1,0 +1,13 @@
+items=8
+[0] kind=0 paintable=ViewportPaintable(Viewport<#document>) chrome_widget=0 text_fragment=none caret_node=none caret_offset=0 rect=[0,0 800x600] caret_rect=[0,0 800x600] caret_line_index=none caret_line_rect=none block_container_margin_rect=none context=0 border_radii=[0x0 0x0 0x0 0x0] winding_rule=0 path=none
+[1] kind=0 paintable=PaintableWithLines(BlockContainer<HTML>) chrome_widget=0 text_fragment=none caret_node=none caret_offset=0 rect=[0,0 800x71] caret_rect=[0,0 800x71] caret_line_index=none caret_line_rect=none block_container_margin_rect=[0,0 800x600] context=1 border_radii=[0x0 0x0 0x0 0x0] winding_rule=0 path=none
+[2] kind=0 paintable=PaintableWithLines(BlockContainer<BODY>) chrome_widget=0 text_fragment=none caret_node=none caret_offset=0 rect=[8,8 784x50] caret_rect=[8,8 784x50] caret_line_index=none caret_line_rect=none block_container_margin_rect=[0,0 800x71] context=1 border_radii=[0x0 0x0 0x0 0x0] winding_rule=0 path=none
+[3] kind=0 paintable=PaintableWithLines(BlockContainer<DIV>#box) chrome_widget=0 text_fragment=none caret_node=none caret_offset=0 rect=[8,8 100x50] caret_rect=[8,8 100x50] caret_line_index=none caret_line_rect=none block_container_margin_rect=[0,0 800x66] context=1 border_radii=[8x8 8x8 8x8 8x8] winding_rule=0 path=none
+[4] kind=0 paintable=PaintableWithLines(BlockContainer<PRE>#out) chrome_widget=0 text_fragment=none caret_node=none caret_offset=0 rect=[8,71 784x0] caret_rect=[8,71 784x0] caret_line_index=none caret_line_rect=none block_container_margin_rect=[0,0 800x66] context=1 border_radii=[0x0 0x0 0x0 0x0] winding_rule=0 path=none
+[5] kind=0 paintable=InlinePaintable(InlineNode<SPAN>) chrome_widget=0 text_fragment=none caret_node=none caret_offset=0 rect=[55.78125,8 42.5x16] caret_rect=[55.78125,8 42.5x16] caret_line_index=none caret_line_rect=none block_container_margin_rect=[8,8 784x50] context=1 border_radii=[0x0 0x0 0x0 0x0] winding_rule=0 path=none
+[6] kind=2 paintable=PaintableWithLines(BlockContainer<DIV>#box) chrome_widget=0 text_fragment=0 caret_node=none caret_offset=0 rect=[8,8 47.78125x16] caret_rect=[8,8 47.78125x16] caret_line_index=0 caret_line_rect=[8,8 90.28125x16] block_container_margin_rect=[8,8 784x50] context=1 border_radii=[0x0 0x0 0x0 0x0] winding_rule=0 path=none
+[7] kind=2 paintable=PaintableWithLines(BlockContainer<DIV>#box) chrome_widget=0 text_fragment=1 caret_node=none caret_offset=0 rect=[55.78125,8 42.5x16] caret_rect=[55.78125,8 42.5x16] caret_line_index=0 caret_line_rect=[8,8 90.28125x16] block_container_margin_rect=[8,8 784x50] context=1 border_radii=[0x0 0x0 0x0 0x0] winding_rule=0 path=none
+caret_items=[ 6 7 ]
+caret_lines=1
+  rect=[8,8 90.28125x16] block_container_margin_rect=[8,8 784x50] context=1 items=[0,1]
+

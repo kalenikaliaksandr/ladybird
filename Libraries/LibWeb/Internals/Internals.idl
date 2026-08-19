@@ -118,6 +118,7 @@ interface Internals {
     Utf16DOMString dumpPaintableTree(Node node);
     Utf16DOMString dumpStackingContextTree();
     Utf16DOMString dumpAccumulatedVisualContextTree();
+    Utf16DOMString dumpHitTestDisplayList();
     Utf16DOMString dumpGCGraph();
     Utf16DOMString dumpSessionHistory();
     Utf16DOMString dumpUIProcessSessionHistory();

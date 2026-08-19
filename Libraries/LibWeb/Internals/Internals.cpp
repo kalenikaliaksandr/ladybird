@@ -825,6 +825,11 @@ Utf16String Internals::dump_accumulated_visual_context_tree()
     return window().associated_document().dump_accumulated_visual_context_tree();
 }
 
+Utf16String Internals::dump_hit_test_display_list()
+{
+    return window().associated_document().dump_hit_test_display_list();
+}
+
 Utf16String Internals::dump_gc_graph()
 {
     return dump_string_to_utf16(GC::Heap::the().dump_graph().serialized());
