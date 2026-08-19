@@ -6,6 +6,7 @@
 
 pub mod border_radii;
 pub mod display_list;
+pub mod dump;
 pub mod ffi;
 pub mod fragment_ownership;
 pub mod host;

@@ -212,6 +212,7 @@
 #include <LibWeb/Painting/PrerecordedNestedDisplayLists.h>
 #include <LibWeb/Painting/StackingContext.h>
 #include <LibWeb/Painting/ViewportPaintable.h>
+#include <LibWeb/Painting/PaintingRustBridge.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/ResizeObserver/ResizeObserver.h>
 #include <LibWeb/ResizeObserver/ResizeObserverEntry.h>
@@ -9666,6 +9667,21 @@ Utf16String Document::dump_display_list()
 
     dump_commands(*display_list, 0);
 
+    return Utf16String::from_utf8_without_validation(builder.string_view());
+}
+
+Utf16String Document::dump_accumulated_visual_context_tree()
+{
+    update_layout(UpdateLayoutReason::DumpDisplayList);
+
+    auto viewport_paintable = paintable();
+    if (!viewport_paintable)
+        return "No paintable"_utf16;
+
+    update_paint_and_hit_testing_properties_if_needed();
+
+    StringBuilder builder;
+    Painting::dump_visual_context_tree(builder, *viewport_paintable);
     return Utf16String::from_utf8_without_validation(builder.string_view());
 }
 

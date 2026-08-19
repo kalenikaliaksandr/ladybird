@@ -1354,6 +1354,7 @@ public:
 
     Utf16String dump_display_list();
     Utf16String dump_stacking_context_tree();
+    Utf16String dump_accumulated_visual_context_tree();
 
     Optional<Vector<CSS::Parser::ComponentValue>> environment_variable_value(CSS::EnvironmentVariable, Span<i32> indices = {}) const;
 
