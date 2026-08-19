@@ -9029,6 +9029,7 @@ RefPtr<Painting::DisplayList> Document::record_display_list(HTML::PaintConfig co
         // Versions only move forward, so a mismatched list can never be spliced from again.
         m_hit_test_display_list_used_as_item_cache_source = nullptr;
     }
+    viewport_paintable.build_stacking_context_tree_if_needed();
     viewport_paintable.refresh_scroll_state();
     viewport_paintable.initialize_async_scrolling_metadata_recording(context);
 
