@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    #target td { width: 100px; height: 100px; background: orange; }
+</style>
+<table id="target"><tr><td></td></tr></table>
+<script>
+    asyncTest(done => {
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                println(`visible: ${document.elementFromPoint(50, 50).tagName}`);
+                document.getElementById("target").style.visibility = "hidden";
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        println(`hidden: ${document.elementFromPoint(50, 50).tagName}`);
+                        done();
+                    });
+                });
+            });
+        });
+    });
+</script>

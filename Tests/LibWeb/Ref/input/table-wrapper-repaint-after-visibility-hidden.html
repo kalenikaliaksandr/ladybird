@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html class="reftest-wait">
+<link rel="match" href="../expected/table-wrapper-repaint-after-visibility-hidden-ref.html" />
+<style>
+    td {
+        border: 5px solid blue;
+        background-color: orange;
+        width: 50px;
+        height: 50px;
+    }
+</style>
+<table id="target">
+    <tr><td></td><td></td></tr>
+</table>
+<script>
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            document.getElementById("target").style.visibility = "hidden";
+            requestAnimationFrame(() => {
+                if (window.internals)
+                    internals.signalTestIsDone("PASS");
+                else
+                    document.documentElement.classList.remove("reftest-wait");
+            });
+        });
+    });
+</script>
+</html>
