@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html class="reftest-wait">
+<link rel="match" href="../expected/iframe-repaint-after-removal-ref.html" />
+<iframe id="target" srcdoc="<body style='background: orange'>frame content</body>" width="200" height="100"></iframe>
+<script>
+    document.getElementById("target").onload = () => {
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                document.getElementById("target").remove();
+                requestAnimationFrame(() => {
+                    if (window.internals)
+                        internals.signalTestIsDone("PASS");
+                    else
+                        document.documentElement.classList.remove("reftest-wait");
+                });
+            });
+        });
+    };
+</script>
+</html>
