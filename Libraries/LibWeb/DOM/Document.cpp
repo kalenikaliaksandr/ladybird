@@ -205,14 +205,11 @@
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListCommand.h>
-#include <LibWeb/Painting/DisplayListRecorder.h>
 #include <LibWeb/Painting/DisplayListRecordingContext.h>
 #include <LibWeb/Painting/HitTestDisplayList.h>
 #include <LibWeb/Painting/Paintable.h>
-#include <LibWeb/Painting/PrerecordedNestedDisplayLists.h>
-#include <LibWeb/Painting/StackingContext.h>
-#include <LibWeb/Painting/ViewportPaintable.h>
 #include <LibWeb/Painting/PaintingRustBridge.h>
+#include <LibWeb/Painting/ViewportPaintable.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/ResizeObserver/ResizeObserver.h>
 #include <LibWeb/ResizeObserver/ResizeObserverEntry.h>
@@ -774,7 +771,6 @@ void Document::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_previously_repainted_cursor_position);
     if (m_hit_test_display_list)
         m_hit_test_display_list->visit_edges(visitor);
-    // In the steady state the item cache source aliases the current list; avoid tracing it twice.
     visitor.visit(m_editing_host_manager);
     visitor.visit(m_editing_history);
     visitor.visit(m_local_storage_holder);
@@ -5215,8 +5211,6 @@ void Document::invalidate_stacking_context_tree()
     // NB: Called during stacking context invalidation.
     if (auto paintable_box = this->unsafe_paintable_box())
         paintable_box->invalidate_stacking_context();
-    if (auto viewport_paintable = this->unsafe_paintable())
-        viewport_paintable->invalidate_stacking_context_tree();
 }
 
 void Document::check_favicon_after_loading_link_resource()
@@ -9020,7 +9014,6 @@ void Document::set_caret_hit_test_debug_rect(Optional<CSSPixelRect> rect)
     page().client().request_frame();
 }
 
-
 Painting::HitTestDisplayList const* Document::ensure_hit_test_display_list()
 {
     update_paint_and_hit_testing_properties_if_needed();
@@ -9595,6 +9588,23 @@ Utf16String Document::dump_display_list()
     return Utf16String::from_utf8_without_validation(builder.string_view());
 }
 
+Utf16String Document::dump_stacking_context_tree()
+{
+    update_layout(UpdateLayoutReason::DumpDisplayList);
+
+    auto viewport_paintable = paintable();
+    if (!viewport_paintable)
+        return "No paintable"_utf16;
+
+    viewport_paintable->build_stacking_context_tree_if_needed();
+
+    StringBuilder builder;
+    Painting::dump_stacking_context_tree(builder, *viewport_paintable);
+    if (builder.is_empty())
+        return "No stacking context"_utf16;
+    return Utf16String::from_utf8_without_validation(builder.string_view());
+}
+
 Utf16String Document::dump_accumulated_visual_context_tree()
 {
     update_layout(UpdateLayoutReason::DumpDisplayList);
@@ -9620,23 +9630,6 @@ Utf16String Document::dump_hit_test_display_list()
 
     StringBuilder builder;
     hit_test_display_list->dump(builder);
-    return Utf16String::from_utf8_without_validation(builder.string_view());
-}
-
-Utf16String Document::dump_stacking_context_tree()
-{
-    update_layout(UpdateLayoutReason::DumpDisplayList);
-
-    auto viewport_paintable = paintable();
-    if (!viewport_paintable)
-        return "No paintable"_utf16;
-
-    viewport_paintable->build_stacking_context_tree_if_needed();
-
-    StringBuilder builder;
-    Painting::dump_stacking_context_tree(builder, *viewport_paintable);
-    if (builder.is_empty())
-        return "No stacking context"_utf16;
     return Utf16String::from_utf8_without_validation(builder.string_view());
 }
 

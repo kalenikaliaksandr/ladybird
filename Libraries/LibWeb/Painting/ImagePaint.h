@@ -7,7 +7,6 @@
 #pragma once
 
 #include <AK/Variant.h>
-#include <LibGC/Ptr.h>
 #include <LibGfx/DecodedImageFrame.h>
 #include <LibGfx/Rect.h>
 #include <LibGfx/Size.h>
@@ -35,17 +34,12 @@ struct ImagePaint {
 };
 
 struct ImagePaintRequest {
-    GC::Ref<DOM::Document const> document;
+    DOM::Document const& document;
     Gfx::FloatRect dest_rect;
     CSS::ImageRendering image_rendering;
     CSS::PreferredColorScheme color_scheme;
     Gfx::FloatSize accumulated_scale;
     DisplayListResourceStorage& resource_storage;
 };
-
-WEB_API ImagePaintRequest image_paint_request_for_recording(DisplayListRecordingContext&, DOM::Document const&, Gfx::FloatRect dest_rect, CSS::ImageRendering, CSS::PreferredColorScheme);
-
-WEB_API void record_image_paint(DisplayListRecordingContext&, ImagePaint const&, Gfx::FloatRect dest_rect, CSS::ImageRendering);
-
 
 }

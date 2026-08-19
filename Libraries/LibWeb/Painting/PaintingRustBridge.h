@@ -45,7 +45,6 @@ WEB_API void rust_refresh_scroll_state(ViewportPaintable&);
 WEB_API ScrollStateSnapshot rust_scroll_state_snapshot(ViewportPaintable&);
 WEB_API CSSPixelPoint rust_cumulative_scroll_offset_for_node(ViewportPaintable const&, VisualContextIndex scroll_node_index);
 WEB_API void dump_visual_context_tree(StringBuilder&, ViewportPaintable const&);
-WEB_API ScrollState materialize_rust_scroll_state(ViewportPaintable&, bool& has_non_viewport_wheel_scroll_target_candidate);
 WEB_API void mirror_rust_refresh_sticky_constraints(ViewportPaintable&);
 WEB_API void mirror_rust_clear_scroll_state(ViewportPaintable&);
 WEB_API void mirror_rust_set_needs_to_refresh_scroll_state(ViewportPaintable&, bool);
