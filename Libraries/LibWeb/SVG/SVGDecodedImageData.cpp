@@ -295,8 +295,9 @@ Optional<Painting::DisplayListResource> SVGDecodedImageData::record_display_list
 
     auto document_paintable = m_document->paintable();
     VERIFY(document_paintable);
-    VERIFY(document_paintable->display_list_used_as_paint_command_cache_source() == display_list.ptr());
-    auto referenced_resources = document_paintable->paint_command_cache_source_referenced_resources();
+    auto referenced_resources = document_paintable->display_list_used_as_paint_command_cache_source() == display_list.ptr()
+        ? document_paintable->paint_command_cache_source_referenced_resources()
+        : resource_storage.collect_referenced_resources(*display_list);
     copy_referenced_resources_to(destination_resource_storage, resource_storage, referenced_resources);
     auto visual_context_tree = document_paintable->visual_context_tree();
     auto display_list_resource = Painting::DisplayListResource { *display_list, visual_context_tree };
