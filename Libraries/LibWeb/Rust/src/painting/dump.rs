@@ -326,3 +326,86 @@ fn dump_visual_context_paintable(
         child = arena.next_sibling(current);
     }
 }
+
+// --- Hit-test display list ------------------------------------------------------------------------
+
+use crate::painting::hit_test::HitTestList;
+
+pub fn dump_hit_test_list(
+    list: &mut HitTestList,
+    arena: &PaintableArena,
+    describer: &dyn LayoutNodeDescriber,
+) -> String {
+    let mut out = String::new();
+    let optional_rect = |rect: Option<crate::css::css_pixels::CssPixelRect>| -> String {
+        rect.map_or_else(|| "none".to_string(), |rect| format_css_rect(rect.into()))
+    };
+    let optional_index =
+        |index: Option<usize>| -> String { index.map_or_else(|| "none".to_string(), |index| index.to_string()) };
+    writeln!(out, "items={}", list.items.len()).unwrap();
+    for (index, item) in list.items.iter().enumerate() {
+        let caret_node = if item.caret_node.is_invalid() {
+            None
+        } else {
+            describer.describe_dom_node(item.caret_node)
+        };
+        write!(
+            out,
+            "[{}] kind={} paintable={} chrome_widget={} text_fragment={}",
+            index,
+            item.kind as u8,
+            paintable_description(arena, describer, item.paintable),
+            item.chrome_widget_kind,
+            item.text_fragment_index
+                .map_or_else(|| "none".to_string(), |index| index.to_string())
+        )
+        .unwrap();
+        match caret_node {
+            Some(description) => write!(out, " caret_node={description}").unwrap(),
+            None => out.push_str(" caret_node=none"),
+        }
+        write!(
+            out,
+            " caret_offset={} rect={} caret_rect={} caret_line_index={} caret_line_rect={} block_container_margin_rect={} context={} border_radii=[{}x{} {}x{} {}x{} {}x{}] winding_rule={} path={}",
+            item.caret_offset,
+            format_css_rect(item.rect.into()),
+            format_css_rect(item.caret_rect.into()),
+            optional_index(item.caret_line_index),
+            optional_rect(item.caret_line_rect),
+            optional_rect(item.block_container_margin_rect),
+            item.visual_context_index,
+            format_css_pixels(item.border_radii.values[0]),
+            format_css_pixels(item.border_radii.values[1]),
+            format_css_pixels(item.border_radii.values[2]),
+            format_css_pixels(item.border_radii.values[3]),
+            format_css_pixels(item.border_radii.values[4]),
+            format_css_pixels(item.border_radii.values[5]),
+            format_css_pixels(item.border_radii.values[6]),
+            format_css_pixels(item.border_radii.values[7]),
+            item.winding_rule,
+            item.path.as_ref().map_or_else(|| "none".to_string(), |path| path.to_svg_string())
+        )
+        .unwrap();
+        out.push('\n');
+    }
+
+    list.build_derived_structures_if_needed();
+    out.push_str("caret_items=[");
+    for item_index in &list.caret_item_indices {
+        write!(out, " {item_index}").unwrap();
+    }
+    writeln!(out, " ]\ncaret_lines={}", list.caret_lines.len()).unwrap();
+    for line in &list.caret_lines {
+        writeln!(
+            out,
+            "  rect={} block_container_margin_rect={} context={} items=[{},{}]",
+            format_css_rect(line.rect.into()),
+            optional_rect(line.block_container_margin_rect),
+            line.visual_context_index,
+            line.first_caret_item_index,
+            line.last_caret_item_index
+        )
+        .unwrap();
+    }
+    out
+}
