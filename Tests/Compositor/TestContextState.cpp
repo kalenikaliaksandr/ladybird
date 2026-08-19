@@ -30,7 +30,7 @@ static NonnullRefPtr<Web::Painting::DisplayList> make_display_list(Web::Painting
         auto record_size = sizeof(Web::Painting::DisplayListCommandHeader) + payload.size();
         auto payload_size = align_up_to(record_size, Web::Painting::DisplayList::command_alignment) - sizeof(Web::Painting::DisplayListCommandHeader);
         Web::Painting::DisplayListCommandHeader header {
-            .type = Web::Painting::FillRect::command_type,
+            .command_type = Web::Painting::FillRect::command_type,
             .payload_size = static_cast<u32>(payload_size),
             .context_index = Web::Painting::VISUAL_VIEWPORT_NODE_INDEX,
             .has_bounding_rect = true,
