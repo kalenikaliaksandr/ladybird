@@ -21,8 +21,6 @@
 
 namespace Web::Painting {
 
-class Paintable;
-
 struct HitTestResult {
     GC::Ptr<DOM::Node> node;
     Layout::RustFFI::PaintableSlotId box;
@@ -33,7 +31,10 @@ struct HitTestResult {
 
     DOM::Node* dom_node() { return node.ptr(); }
     DOM::Node const* dom_node() const { return node.ptr(); }
-    RefPtr<Paintable> paintable() const;
+    Layout::Node* layout_node() const
+    {
+        return static_cast<Layout::Node*>(Layout::RustFFI::layout_arena_paintable_layout_node_shell(arena->handle(), box));
+    }
 };
 
 struct CaretPosition {
@@ -44,7 +45,10 @@ struct CaretPosition {
     Optional<DOM::BoundaryPoint> secondary_boundary {};
     Optional<CSSPixelRect> debug_rect {};
 
-    RefPtr<Paintable> paintable() const;
+    Layout::Node* layout_node() const
+    {
+        return static_cast<Layout::Node*>(Layout::RustFFI::layout_arena_paintable_layout_node_shell(arena->handle(), box));
+    }
 };
 
 }

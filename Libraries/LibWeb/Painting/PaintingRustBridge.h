@@ -52,16 +52,16 @@ WEB_API void mirror_rust_reset_visual_context_state(DOM::Document&);
 WEB_API void mirror_rust_invalidate_paint_cache(Layout::Node const&);
 WEB_API void rust_invalidate_propagated_text_decoration_caches(Layout::Node const&);
 struct InspectorOverlayInputs {
-    Paintable const* highlighted_paintable { nullptr };
+    Layout::Node const* highlighted_layout_node { nullptr };
     Color tooltip_color;
     Color tooltip_text_color;
     Color tooltip_border_color;
     struct GridHighlight {
-        Paintable const* paintable { nullptr };
+        Layout::Node const* layout_node { nullptr };
         GridInspectorOverlayOptions options;
     };
     struct FlexHighlight {
-        Paintable const* paintable { nullptr };
+        Layout::Node const* layout_node { nullptr };
         FlexboxInspectorOverlayOptions options;
     };
     Vector<GridHighlight> grid_highlights;

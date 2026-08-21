@@ -569,8 +569,8 @@ void ConnectionFromClient::debug_request(u64 page_id, ByteString request, ByteSt
 
     if (request == "dump-paint-tree") {
         if (auto* doc = page->page().top_level_browsing_context().active_document()) {
-            if (auto paintable = static_cast<Web::DOM::Node&>(*doc).paintable())
-                Web::dump_tree(*paintable);
+            if (auto* viewport = doc->layout_node(); viewport && Web::Painting::has_committed_box(*viewport))
+                Web::dump_paint_tree(*viewport);
         }
         return;
     }
@@ -578,7 +578,7 @@ void ConnectionFromClient::debug_request(u64 page_id, ByteString request, ByteSt
     if (request == "dump-stacking-context-tree") {
         if (auto* doc = page->page().top_level_browsing_context().active_document()) {
             if (auto* viewport = doc->layout_node()) {
-                VERIFY(viewport->paintable_box());
+                VERIFY(Web::Painting::has_committed_box(*viewport));
                 doc->paint_state().build_stacking_context_tree_if_needed(*doc);
                 StringBuilder builder;
                 Web::Painting::dump_stacking_context_tree(builder, *doc);
@@ -1813,12 +1813,12 @@ static void append_paint_tree(Web::Page& page, StringBuilder& builder)
         builder.append("(no layout tree)"sv);
         return;
     }
-    if (!layout_root->paintable()) {
+    if (!Web::Painting::has_committed_box(*layout_root)) {
         builder.append("(no paint tree)"sv);
         return;
     }
 
-    Web::dump_tree(builder, *layout_root->paintable());
+    Web::dump_paint_tree(builder, *layout_root);
 }
 
 static void append_stacking_context_tree(Web::Page& page, StringBuilder& builder)
@@ -1836,12 +1836,11 @@ static void append_stacking_context_tree(Web::Page& page, StringBuilder& builder
         builder.append("(no layout tree)"sv);
         return;
     }
-    if (!layout_root->paintable()) {
+    if (!Web::Painting::has_committed_box(*layout_root)) {
         builder.append("(no paint tree)"sv);
         return;
     }
 
-    VERIFY(layout_root->paintable_box());
     document->paint_state().build_stacking_context_tree_if_needed(*document);
     Web::Painting::dump_stacking_context_tree(builder, *document);
 }

@@ -1428,7 +1428,7 @@ private:
 
     virtual void finalize() override final;
 
-    void clear_layout_and_paintable_nodes_for_inactive_document();
+    void clear_layout_nodes_for_inactive_document();
     void tear_down_layout_tree();
     void process_pending_top_layer_layout_changes();
 

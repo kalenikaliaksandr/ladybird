@@ -14,7 +14,6 @@
 #include <LibWeb/Painting/BoxViews.h>
 #include <LibWeb/Painting/ChromeWidget.h>
 #include <LibWeb/Painting/HitTestDisplayList.h>
-#include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/PaintingRustBridge.h>
 #include <LibWeb/Painting/ResizeHandle.h>
 #include <LibWeb/Painting/Scrollbar.h>
