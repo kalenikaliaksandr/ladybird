@@ -152,9 +152,6 @@ public:
 
     virtual CSSPixelPoint box_type_agnostic_position() const;
 
-    static void scroll_text_offset_into_view(DOM::Text const&, size_t offset, TextAffinity = TextAffinity::Downstream, ScrollBlockDirection = ScrollBlockDirection::Yes);
-    void scroll_ancestor_to_offset_into_view(size_t offset);
-
     using SelectionState = Painting::SelectionState;
     SelectionState selection_state() const { return static_cast<SelectionState>(rust_data().selection_state); }
 
@@ -227,11 +224,6 @@ public:
 
     // Offset from the top left of the containing block's content edge.
     [[nodiscard]] CSSPixelPoint offset() const;
-
-    ScrollHandled set_scroll_offset(CSSPixelPoint);
-    ScrollHandled set_scroll_offset_from_user_input(CSSPixelPoint);
-    ScrollHandled scroll_by(double delta_x, double delta_y);
-    void scroll_into_view(CSSPixelRect);
 
     CSSPixelSize content_size() const;
     CSSPixels content_width() const { return content_size().width(); }
