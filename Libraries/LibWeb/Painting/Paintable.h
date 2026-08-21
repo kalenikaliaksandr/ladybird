@@ -50,7 +50,6 @@ class Scrollbar;
 
 WEB_API void set_paint_viewport_scrollbars(bool enabled);
 bool should_paint_viewport_scrollbars();
-CSS::ScrollbarColorData scrollbar_colors_for_paint(Paintable const&);
 ResolvedCSSFilter resolve_css_filter(CSS::ComputedFilterView computed_filter, Paintable const& paintable_box);
 
 // Walks layout ancestors so it also covers content of unconnected resource subtrees.
@@ -266,25 +265,6 @@ public:
 
     void set_needs_repaint(InvalidateDisplayList = InvalidateDisplayList::Yes);
 
-    struct ScrollbarData {
-        CSSPixelRect gutter_rect;
-        CSSPixelRect thumb_rect;
-        CSSPixelRect track_rect;
-        CSSPixelFraction thumb_travel_to_scroll_ratio { 0 };
-    };
-    enum class ScrollbarSizing {
-        Current,
-        Regular,
-        Enlarged,
-    };
-
-    Optional<ScrollbarData> compute_scrollbar_data(
-        ScrollDirection direction,
-        ChromeMetrics const& chrome_metrics,
-        ScrollStateSnapshot const* = nullptr,
-        ScrollbarSizing = ScrollbarSizing::Current) const;
-    Optional<CSSPixelRect> absolute_scrollbar_rect(ScrollDirection direction, bool with_gutter, ChromeMetrics const& chrome_metrics) const;
-
     RefPtr<Scrollbar> scrollbar(ScrollDirection) const;
     NonnullRefPtr<Scrollbar> ensure_scrollbar(ScrollDirection);
 
@@ -295,16 +275,6 @@ public:
 
     void set_filter(ResolvedCSSFilter filter) { m_filter = move(filter); }
     ResolvedCSSFilter const& filter() const { return m_filter; }
-
-    struct PhysicalResizeAxes {
-        bool horizontal;
-        bool vertical;
-    };
-    PhysicalResizeAxes physical_resize_axes() const;
-
-    bool resizer_contains(CSSPixelPoint adjusted_position, ChromeMetrics const& chrome_metrics) const;
-    bool is_chrome_mirrored() const;
-    bool has_resizer() const;
 
     RefPtr<ResizeHandle> resize_handle() const;
     NonnullRefPtr<ResizeHandle> ensure_resize_handle();
@@ -350,13 +320,6 @@ public:
 protected:
     explicit Paintable(Layout::NodeWithStyle const&);
     explicit Paintable(Layout::Box const&);
-
-public:
-protected:
-    CSSPixels available_scrollbar_length(ScrollDirection direction, ChromeMetrics const& chrome_metrics) const;
-
-public:
-    Optional<CSSPixelRect> absolute_resizer_rect(ChromeMetrics const& chrome_metrics) const;
 
 private:
     void detach_from_layout_node(Badge<Layout::Node>);
