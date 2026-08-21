@@ -773,14 +773,11 @@ EventResult EventHandler::handle_mousewheel(CSSPixelPoint visual_viewport_positi
         };
 
         auto perform_wheel_default_action = [&](RefPtr<Painting::Paintable> target) -> EventResult {
-            RefPtr<Painting::Paintable> containing_block = move(target);
-            while (containing_block) {
-                auto handled_scroll_event = containing_block->handle_mousewheel({}, visual_viewport_position, buttons, modifiers, wheel_delta_x, wheel_delta_y);
-                if (handled_scroll_event)
+            Layout::Node* current = target ? &target->layout_node() : nullptr;
+            while (current) {
+                if (!current->is_viewport() && Painting::wheel_scroll(*current, wheel_delta_x, wheel_delta_y) == Painting::ScrollHandled::Yes)
                     return EventResult::Handled;
-
-                auto* containing_block_box = containing_block->layout_node().containing_block();
-                containing_block = containing_block_box ? containing_block_box->paintable() : nullptr;
+                current = current->containing_block();
             }
 
             auto document = m_navigable->active_document();
@@ -1321,12 +1318,11 @@ EventResult EventHandler::handle_keydown(UIEvents::KeyCode key, u32 modifiers, u
         if (!scroll_target)
             return false;
         document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleKeyDown);
-        RefPtr<Painting::Paintable> containing_block = scroll_target->paintable();
-        while (containing_block) {
-            if (containing_block->handle_mousewheel({}, {}, 0, 0, delta_x, delta_y))
+        Layout::Node* current = scroll_target->layout_node();
+        while (current) {
+            if (!current->is_viewport() && Painting::wheel_scroll(*current, delta_x, delta_y) == Painting::ScrollHandled::Yes)
                 return true;
-            auto* containing_block_box = containing_block->layout_node().containing_block();
-            containing_block = containing_block_box ? containing_block_box->paintable() : nullptr;
+            current = current->containing_block();
         }
         return false;
     };
