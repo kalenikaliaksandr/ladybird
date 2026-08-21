@@ -13,12 +13,12 @@
 #include <LibGC/Ptr.h>
 #include <LibWeb/DOM/AbstractRange.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/Painting/ChromeWidget.h>
 #include <LibWeb/PixelUnits.h>
 #include <LibWeb/TextAffinity.h>
 
 namespace Web::Painting {
 
-class ChromeWidget;
 class Paintable;
 
 struct HitTestResult {

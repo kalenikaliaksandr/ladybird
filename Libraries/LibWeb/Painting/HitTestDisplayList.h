@@ -13,6 +13,7 @@
 #include <LibWeb/Layout/LayoutRustFFI.h>
 #include <LibWeb/Layout/NodeArena.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
+#include <LibWeb/Painting/ChromeWidget.h>
 #include <LibWeb/Painting/Paintable.h>
 
 namespace Web {

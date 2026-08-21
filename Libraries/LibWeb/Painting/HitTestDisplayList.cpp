@@ -91,13 +91,13 @@ NonnullRefPtr<HitTestDisplayList> HitTestDisplayList::create_from_rust_recording
         case ChromeWidgetKind::None:
             break;
         case ChromeWidgetKind::ResizeHandle:
-            (void)chrome_widget_registry.ensure_resize_handle(arena, paintable.rust_slot());
+            (void)chrome_widget_registry.get_or_create_resize_handle(arena, paintable.rust_slot());
             break;
         case ChromeWidgetKind::HorizontalScrollbar:
-            (void)chrome_widget_registry.ensure_scrollbar(arena, paintable.rust_slot(), ScrollDirection::Horizontal);
+            (void)chrome_widget_registry.get_or_create_scrollbar(arena, paintable.rust_slot(), ScrollDirection::Horizontal);
             break;
         case ChromeWidgetKind::VerticalScrollbar:
-            (void)chrome_widget_registry.ensure_scrollbar(arena, paintable.rust_slot(), ScrollDirection::Vertical);
+            (void)chrome_widget_registry.get_or_create_scrollbar(arena, paintable.rust_slot(), ScrollDirection::Vertical);
             break;
         }
         list->m_items.unchecked_append(Item {
