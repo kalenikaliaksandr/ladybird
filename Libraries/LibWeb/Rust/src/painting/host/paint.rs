@@ -367,7 +367,7 @@ pub struct FfiImagePaintFacts {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct FfiStackingContextNodeExport {
-    pub paintable_shell: *mut c_void,
+    pub layout_node_shell: *mut c_void,
     pub child_count: usize,
     pub has_effective_z_index: bool,
     pub effective_z_index: i32,
@@ -450,21 +450,21 @@ pub struct ColorStopSink {
 }
 
 impl FfiPaintHostCallbacks {
-    pub(crate) fn outline_facts(&self, paintable_shell: *mut c_void) -> FfiOutlineFacts {
+    pub(crate) fn outline_facts(&self, layout_node_shell: *mut c_void) -> FfiOutlineFacts {
         // SAFETY: The C++ host answers synchronously from a live paintable shell.
-        unsafe { (self.outline_facts)(self.context, paintable_shell) }
+        unsafe { (self.outline_facts)(self.context, layout_node_shell) }
     }
-    pub(crate) fn overlay_facts(&self, paintable_shell: *mut c_void) -> FfiOverlayFacts {
+    pub(crate) fn overlay_facts(&self, layout_node_shell: *mut c_void) -> FfiOverlayFacts {
         // SAFETY: The C++ host answers synchronously from a live paintable shell.
-        unsafe { (self.overlay_facts)(self.context, paintable_shell) }
+        unsafe { (self.overlay_facts)(self.context, layout_node_shell) }
     }
-    pub(crate) fn async_scroll_facts(&self, paintable_shell: *mut c_void) -> FfiAsyncScrollFacts {
+    pub(crate) fn async_scroll_facts(&self, layout_node_shell: *mut c_void) -> FfiAsyncScrollFacts {
         // SAFETY: The C++ host answers synchronously from a live paintable shell.
-        unsafe { (self.async_scroll_facts)(self.context, paintable_shell) }
+        unsafe { (self.async_scroll_facts)(self.context, layout_node_shell) }
     }
     pub(crate) fn overlay_label(
         &self,
-        paintable_shell: *mut c_void,
+        layout_node_shell: *mut c_void,
         text: &[u16],
         utf16_fly_string_raw: usize,
         css_font_size: f32,
@@ -477,7 +477,7 @@ impl FfiPaintHostCallbacks {
         let facts = unsafe {
             (self.overlay_label)(
                 self.context,
-                paintable_shell,
+                layout_node_shell,
                 text.as_ptr(),
                 text.len(),
                 utf16_fly_string_raw,
@@ -509,22 +509,26 @@ impl FfiPaintHostCallbacks {
         // resource table synchronously.
         unsafe { (self.register_font)(self.context, font) }
     }
-    pub(crate) fn cursor_facts(&self, paintable_shell: *mut c_void, owner_shell: *mut c_void) -> FfiCursorFacts {
+    pub(crate) fn cursor_facts(
+        &self,
+        layout_node_shell: *mut c_void,
+        owner_layout_node_shell: *mut c_void,
+    ) -> FfiCursorFacts {
         // SAFETY: The C++ host answers synchronously from live paintable shells.
-        unsafe { (self.cursor_facts)(self.context, paintable_shell, owner_shell) }
+        unsafe { (self.cursor_facts)(self.context, layout_node_shell, owner_layout_node_shell) }
     }
     pub(crate) fn layer_image_prepare(
         &self,
-        paintable_shell: *mut c_void,
+        layout_node_shell: *mut c_void,
         list: FfiLayerImageList,
         computed_index: u32,
     ) -> FfiLayerImagePrepareFacts {
         // SAFETY: The C++ host answers synchronously from a live paintable shell.
-        unsafe { (self.layer_image_prepare)(self.context, paintable_shell, list, computed_index) }
+        unsafe { (self.layer_image_prepare)(self.context, layout_node_shell, list, computed_index) }
     }
     pub(crate) fn layer_image_nested_display_list(
         &self,
-        paintable_shell: *mut c_void,
+        layout_node_shell: *mut c_void,
         list: FfiLayerImageList,
         computed_index: u32,
         device_dest_rect: libgfx_rust::IntRect,
@@ -537,12 +541,12 @@ impl FfiPaintHostCallbacks {
         ];
         // SAFETY: The C++ host answers synchronously from a live paintable shell.
         unsafe {
-            (self.layer_image_nested_display_list)(self.context, paintable_shell, list, computed_index, dest.as_ptr())
+            (self.layer_image_nested_display_list)(self.context, layout_node_shell, list, computed_index, dest.as_ptr())
         }
     }
     pub(crate) fn layer_image_current_frame(
         &self,
-        paintable_shell: *mut c_void,
+        layout_node_shell: *mut c_void,
         list: FfiLayerImageList,
         computed_index: u32,
         device_dest_rect: libgfx_rust::IntRect,
@@ -554,12 +558,14 @@ impl FfiPaintHostCallbacks {
             device_dest_rect.height,
         ];
         // SAFETY: The C++ host answers synchronously from a live paintable shell.
-        unsafe { (self.layer_image_current_frame)(self.context, paintable_shell, list, computed_index, dest.as_ptr()) }
+        unsafe {
+            (self.layer_image_current_frame)(self.context, layout_node_shell, list, computed_index, dest.as_ptr())
+        }
     }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn layer_image_paint(
         &self,
-        paintable_shell: *mut c_void,
+        layout_node_shell: *mut c_void,
         list: FfiLayerImageList,
         computed_index: u32,
         dest: [f32; 4],
@@ -571,7 +577,7 @@ impl FfiPaintHostCallbacks {
         unsafe {
             (self.layer_image_paint)(
                 self.context,
-                paintable_shell,
+                layout_node_shell,
                 list,
                 computed_index,
                 dest.as_ptr(),
@@ -583,24 +589,24 @@ impl FfiPaintHostCallbacks {
     }
     pub(crate) fn image_intrinsic_facts(
         &self,
-        paintable_shell: *mut c_void,
+        layout_node_shell: *mut c_void,
         list: FfiLayerImageList,
         computed_index: u32,
     ) -> FfiImageIntrinsicFacts {
         // SAFETY: The C++ host answers synchronously from a live paintable shell.
-        unsafe { (self.image_intrinsic_facts)(self.context, paintable_shell, list, computed_index) }
+        unsafe { (self.image_intrinsic_facts)(self.context, layout_node_shell, list, computed_index) }
     }
     pub(crate) fn root_background_source(&self) -> FfiRootBackgroundSource {
         // SAFETY: The C++ host answers synchronously.
         unsafe { (self.root_background_source)(self.context) }
     }
-    pub(crate) fn replaced_paint_facts(&self, paintable_shell: *mut c_void) -> FfiReplacedPaintFacts {
+    pub(crate) fn replaced_paint_facts(&self, layout_node_shell: *mut c_void) -> FfiReplacedPaintFacts {
         // SAFETY: The C++ host answers synchronously from a live paintable shell.
-        unsafe { (self.replaced_paint_facts)(self.context, paintable_shell) }
+        unsafe { (self.replaced_paint_facts)(self.context, layout_node_shell) }
     }
     pub(crate) fn replaced_image_paint(
         &self,
-        paintable_shell: *mut c_void,
+        layout_node_shell: *mut c_void,
         dest: [f32; 4],
         accumulated_scale: libgfx_rust::FloatSize,
     ) -> FfiImagePaintFacts {
@@ -608,17 +614,17 @@ impl FfiPaintHostCallbacks {
         unsafe {
             (self.replaced_image_paint)(
                 self.context,
-                paintable_shell,
+                layout_node_shell,
                 dest.as_ptr(),
                 [accumulated_scale.width, accumulated_scale.height].as_ptr(),
             )
         }
     }
-    pub(crate) fn backdrop_filter_bytes(&self, paintable_shell: *mut c_void) -> Option<Vec<u8>> {
+    pub(crate) fn backdrop_filter_bytes(&self, layout_node_shell: *mut c_void) -> Option<Vec<u8>> {
         let mut bytes: Vec<u8> = Vec::new();
         // SAFETY: The C++ host pushes into the Vec through the exported sink function, synchronously.
         let has_filter =
-            unsafe { (self.backdrop_filter_bytes)(self.context, paintable_shell, (&raw mut bytes).cast()) };
+            unsafe { (self.backdrop_filter_bytes)(self.context, layout_node_shell, (&raw mut bytes).cast()) };
         has_filter.then_some(bytes)
     }
     pub(crate) fn nested_display_list_from_bytes(
@@ -638,13 +644,13 @@ impl FfiPaintHostCallbacks {
         };
         crate::painting::display_list::commands::DisplayListResourceId(id)
     }
-    pub(crate) fn svg_host_facts(&self, paintable_shell: *mut c_void) -> FfiSvgHostFacts {
+    pub(crate) fn svg_host_facts(&self, layout_node_shell: *mut c_void) -> FfiSvgHostFacts {
         // SAFETY: The C++ host answers synchronously from a live paintable shell.
-        unsafe { (self.svg_host_facts)(self.context, paintable_shell) }
+        unsafe { (self.svg_host_facts)(self.context, layout_node_shell) }
     }
     pub(crate) fn svg_paint_style(
         &self,
-        paintable_shell: *mut c_void,
+        layout_node_shell: *mut c_void,
         is_stroke: bool,
         paint_context: &FfiSvgPaintContext,
     ) -> (FfiSvgPaintStyle, ColorStopSink) {
@@ -653,7 +659,7 @@ impl FfiPaintHostCallbacks {
         let style = unsafe {
             (self.svg_paint_style)(
                 self.context,
-                paintable_shell,
+                layout_node_shell,
                 is_stroke,
                 paint_context,
                 (&raw mut sink).cast(),
