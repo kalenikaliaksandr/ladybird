@@ -265,9 +265,6 @@ public:
 
     void set_needs_repaint(InvalidateDisplayList = InvalidateDisplayList::Yes);
 
-    RefPtr<Scrollbar> scrollbar(ScrollDirection) const;
-    NonnullRefPtr<Scrollbar> ensure_scrollbar(ScrollDirection);
-
     bool uses_collapsing_borders_model() const { return rust_data().uses_collapsing_borders_model; }
 
     Optional<CSS::BorderData> outline_data(CSS::ComputedValues const&) const;
@@ -275,9 +272,6 @@ public:
 
     void set_filter(ResolvedCSSFilter filter) { m_filter = move(filter); }
     ResolvedCSSFilter const& filter() const { return m_filter; }
-
-    RefPtr<ResizeHandle> resize_handle() const;
-    NonnullRefPtr<ResizeHandle> ensure_resize_handle();
 
     CSSPixelRect transform_reference_box() const;
 
@@ -336,10 +330,6 @@ private:
     Layout::RustFFI::PaintableData* m_rust_data { nullptr };
 
     ResolvedCSSFilter m_filter;
-
-    RefPtr<Scrollbar> m_horizontal_scrollbar;
-    RefPtr<Scrollbar> m_vertical_scrollbar;
-    RefPtr<ResizeHandle> m_resize_handle;
 };
 
 template<>

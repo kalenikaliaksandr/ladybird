@@ -525,18 +525,8 @@ void Paintable::detach_from_layout_node(Badge<Layout::Node>)
 
 void Paintable::detach_chrome_widgets()
 {
-    if (m_horizontal_scrollbar) {
-        m_horizontal_scrollbar->detach_from_paintable({});
-        m_horizontal_scrollbar = nullptr;
-    }
-    if (m_vertical_scrollbar) {
-        m_vertical_scrollbar->detach_from_paintable({});
-        m_vertical_scrollbar = nullptr;
-    }
-    if (m_resize_handle) {
-        m_resize_handle->detach_from_paintable({});
-        m_resize_handle = nullptr;
-    }
+    if (has_layout_node())
+        document().chrome_widget_registry().drop_widgets_for_slot(rust_slot());
 }
 
 bool Paintable::has_css_transform() const
@@ -668,19 +658,6 @@ CSSPixelRect Paintable::absolute_border_box_rect() const
     return from_ffi_css_pixel_rect(Layout::RustFFI::layout_arena_paintable_absolute_border_box_rect(m_rust_arena->handle(), m_rust_slot));
 }
 
-RefPtr<Scrollbar> Paintable::scrollbar(ScrollDirection direction) const
-{
-    return direction == ScrollDirection::Horizontal ? m_horizontal_scrollbar : m_vertical_scrollbar;
-}
-
-NonnullRefPtr<Scrollbar> Paintable::ensure_scrollbar(ScrollDirection direction)
-{
-    auto& slot = direction == ScrollDirection::Horizontal ? m_horizontal_scrollbar : m_vertical_scrollbar;
-    if (!slot)
-        slot = Scrollbar::create(const_cast<Paintable&>(*this), direction);
-    return *slot;
-}
-
 Optional<UsedGridTrackList> Paintable::used_values_for_grid_template_columns() const
 {
     Optional<UsedGridTrackList> result;
@@ -793,18 +770,6 @@ CSSPixelPoint Paintable::inverse_transform_point(CSSPixelPoint screen_position) 
 CSSPixelPoint Paintable::transform_to_local_coordinates(CSSPixelPoint screen_position) const
 {
     return transform_point_to_local(screen_position).value_or(screen_position);
-}
-
-RefPtr<ResizeHandle> Paintable::resize_handle() const
-{
-    return m_resize_handle;
-}
-
-NonnullRefPtr<ResizeHandle> Paintable::ensure_resize_handle()
-{
-    if (!m_resize_handle)
-        m_resize_handle = ResizeHandle::create(*this);
-    return *m_resize_handle;
 }
 
 void Paintable::set_needs_repaint(InvalidateDisplayList should_invalidate_display_list)
