@@ -40,6 +40,7 @@ RefPtr<Paintable const> nearest_scrollable_ancestor(Layout::Node const&);
 ScrollHandled set_scroll_offset(Layout::Node&, CSSPixelPoint);
 ScrollHandled set_scroll_offset_from_user_input(Layout::Node&, CSSPixelPoint);
 ScrollHandled scroll_by(Layout::Node&, double delta_x, double delta_y);
+ScrollHandled wheel_scroll(Layout::Node&, double wheel_delta_x, double wheel_delta_y);
 void scroll_text_offset_into_view(DOM::Text const&, size_t offset, TextAffinity = TextAffinity::Downstream, ScrollBlockDirection = ScrollBlockDirection::Yes);
 void scroll_ancestor_to_offset_into_view(DOM::Node const&, size_t offset);
 
