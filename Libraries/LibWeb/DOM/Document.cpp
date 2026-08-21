@@ -620,9 +620,15 @@ Layout::NodeArena& Document::layout_node_arena()
         m_layout_node_arena = make_ref_counted<Layout::NodeArena>();
     if (!m_chrome_state_callback_registered) {
         Layout::RustFFI::layout_arena_set_chrome_state_callback(
-            m_layout_node_arena->handle(), m_chrome_widget_registry.ptr(),
-            [](void* context, Layout::RustFFI::PaintableSlotId slot, u8) {
-                static_cast<Painting::ChromeWidgetRegistry*>(context)->drop_widgets_for_slot(slot);
+            m_layout_node_arena->handle(), this,
+            [](void* context, Layout::RustFFI::PaintableSlotId slot, Layout::RustFFI::PaintableRowResetKind kind) {
+                auto& document = *static_cast<Document*>(context);
+                document.chrome_widget_registry().drop_widgets_for_slot(slot);
+                if (kind != Layout::RustFFI::PaintableRowResetKind::RelayoutReuse)
+                    return;
+                auto const* viewport = document.unsafe_layout_node();
+                if (viewport && Painting::committed_row_slot(*viewport).index == slot.index)
+                    document.paint_state().viewport_row_was_reset(document);
             });
         m_chrome_state_callback_registered = true;
     }
@@ -8939,8 +8945,8 @@ void Document::schedule_accumulated_visual_context_value_update(Layout::Node con
         return;
     }
 
-    if (auto layout_node_paintable = layout_node.paintable()) {
-        m_paintable_boxes_needing_visual_context_value_update.append(layout_node_paintable->rust_slot());
+    if (Painting::has_committed_box(layout_node)) {
+        m_paintable_boxes_needing_visual_context_value_update.append(Painting::committed_row_slot(layout_node));
         set_needs_repaint(InvalidateDisplayList::No);
     }
 }
@@ -8983,8 +8989,8 @@ void Document::schedule_scrollable_overflow_recalculation(Layout::Node const& la
         return;
     }
 
-    if (auto layout_node_paintable = layout_node.paintable())
-        m_paintable_boxes_needing_scrollable_overflow_recalculation.append(layout_node_paintable->rust_slot());
+    if (Painting::has_committed_box(layout_node))
+        m_paintable_boxes_needing_scrollable_overflow_recalculation.append(Painting::committed_row_slot(layout_node));
 }
 
 void Document::schedule_scrollable_overflow_recalculation(Element& element)
