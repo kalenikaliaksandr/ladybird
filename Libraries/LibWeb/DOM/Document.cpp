@@ -593,7 +593,11 @@ Document::Document(Page& page, GC::Ref<EventTarget> relevant_global_event_target
     HTML::main_thread_event_loop().register_document({}, *this);
 }
 
-Document::~Document() = default;
+Document::~Document()
+{
+    if (m_layout_node_arena)
+        Layout::RustFFI::layout_arena_clear_chrome_state_callback(m_layout_node_arena->handle());
+}
 
 void Document::synchronize_dirty_style_attributes()
 {
@@ -614,6 +618,14 @@ Layout::NodeArena& Document::layout_node_arena()
     // fragment-parsing documents) skip the Rust arena round-trip entirely.
     if (!m_layout_node_arena)
         m_layout_node_arena = make_ref_counted<Layout::NodeArena>();
+    if (!m_chrome_state_callback_registered) {
+        Layout::RustFFI::layout_arena_set_chrome_state_callback(
+            m_layout_node_arena->handle(), m_chrome_widget_registry.ptr(),
+            [](void* context, Layout::RustFFI::PaintableSlotId slot, u8) {
+                static_cast<Painting::ChromeWidgetRegistry*>(context)->drop_widgets_for_slot(slot);
+            });
+        m_chrome_state_callback_registered = true;
+    }
     return *m_layout_node_arena;
 }
 
@@ -1385,6 +1397,10 @@ void Document::tear_down_layout_tree()
         m_layout_root->prepare_subtree_for_detach_from_layout_tree();
     m_hit_test_display_list = nullptr;
     m_chrome_widget_registry->clear();
+    if (m_layout_node_arena) {
+        Layout::RustFFI::layout_arena_clear_chrome_state_callback(m_layout_node_arena->handle());
+        m_chrome_state_callback_registered = false;
+    }
     m_layout_root = nullptr;
     m_paintable = nullptr;
     if (m_layout_node_arena)

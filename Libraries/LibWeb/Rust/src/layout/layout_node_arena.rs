@@ -410,14 +410,21 @@ impl LayoutNodeArena {
         self.paintables
             .borrow()
             .clear_descendant_subtree_caches_from_layout_node(self, id);
-        let metadata = self.metadata_mut(index);
-        assert!(metadata.occupied, "layout node arena freed an unused slot");
-        assert_eq!(
-            metadata.generation, id_generation,
-            "layout node arena freed a stale slot generation"
-        );
-        metadata.occupied = false;
-        let should_reuse = metadata.generation != u8::MAX;
+        let should_reuse = {
+            let metadata = self.metadata_mut(index);
+            assert!(metadata.occupied, "layout node arena freed an unused slot");
+            assert_eq!(
+                metadata.generation, id_generation,
+                "layout node arena freed a stale slot generation"
+            );
+            metadata.generation != u8::MAX
+        };
+
+        if let Some(reset) = self.paintables.get_mut().prepare_layout_node_freed_reset(index) {
+            reset.invoke_callback();
+            self.paintables.get_mut().layout_node_freed(reset);
+        }
+        self.metadata_mut(index).occupied = false;
 
         if let Some(slot) = self.intrinsic_size_caches.get_mut().get_mut(index as usize) {
             *slot = IntrinsicSizeCacheSlot::default();
@@ -448,7 +455,6 @@ impl LayoutNodeArena {
         }
         self.fc_run_cache_store.remove_entry(index);
         self.raw_table_column_spans.remove(&id);
-        self.paintables.get_mut().layout_node_freed(index);
         let data = self.data_mut(index);
         debug_assert!(
             data.parent.is_invalid()
