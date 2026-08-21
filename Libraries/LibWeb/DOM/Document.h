@@ -515,6 +515,8 @@ public:
     RefPtr<Painting::ViewportPaintable const> unsafe_paintable() const;
     RefPtr<Painting::ViewportPaintable> unsafe_paintable();
 
+    Painting::DocumentPaintState& paint_state();
+    Painting::DocumentPaintState const& paint_state() const;
     Painting::AccumulatedVisualContextTree const& visual_context_tree() const;
     Painting::ScrollStateSnapshot const& scroll_state_snapshot() const;
 
@@ -1508,6 +1510,7 @@ private:
     GC::Ref<DOM::EventTarget> m_relevant_global_event_target;
 
     RefPtr<Layout::NodeArena> m_layout_node_arena;
+    OwnPtr<Painting::DocumentPaintState> m_paint_state;
     NonnullRefPtr<Painting::ChromeWidgetRegistry> m_chrome_widget_registry;
     bool m_chrome_state_callback_registered { false };
     RefPtr<Layout::Viewport> m_layout_root;

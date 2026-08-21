@@ -207,6 +207,7 @@
 #include <LibWeb/Painting/ChromeWidget.h>
 #include <LibWeb/Painting/DisplayList.h>
 #include <LibWeb/Painting/DisplayListCommand.h>
+#include <LibWeb/Painting/DocumentPaintState.h>
 #include <LibWeb/Painting/HitTestDisplayList.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/PaintableTypes.h>
@@ -1403,6 +1404,7 @@ void Document::tear_down_layout_tree()
     }
     m_layout_root = nullptr;
     m_paintable = nullptr;
+    m_paint_state = nullptr;
     if (m_layout_node_arena)
         Layout::RustFFI::layout_arena_clear_scrollable_overflow_contained_boxes(m_layout_node_arena->handle());
     m_needs_full_layout_tree_update = true;
@@ -6920,14 +6922,26 @@ RefPtr<Painting::ViewportPaintable> Document::unsafe_paintable()
     return as<Painting::ViewportPaintable>(*paintable);
 }
 
+Painting::DocumentPaintState& Document::paint_state()
+{
+    if (!m_paint_state)
+        m_paint_state = make<Painting::DocumentPaintState>(layout_node_arena());
+    return *m_paint_state;
+}
+
+Painting::DocumentPaintState const& Document::paint_state() const
+{
+    return const_cast<Document&>(*this).paint_state();
+}
+
 Painting::AccumulatedVisualContextTree const& Document::visual_context_tree() const
 {
-    return paintable()->visual_context_tree();
+    return paint_state().visual_context_tree(*this);
 }
 
 Painting::ScrollStateSnapshot const& Document::scroll_state_snapshot() const
 {
-    return paintable()->scroll_state_snapshot();
+    return paint_state().scroll_state_snapshot();
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#restore-the-history-object-state
@@ -8334,7 +8348,7 @@ void Document::set_needs_to_refresh_scroll_state(bool b)
 {
     // NB: Propagating scroll state invalidation.
     if (auto paintable = this->unsafe_paintable())
-        paintable->set_needs_to_refresh_scroll_state(b);
+        paint_state().set_needs_to_refresh_scroll_state(*paintable, b);
 }
 
 Vector<GC::Root<Range>> Document::find_matching_text(Utf16View query, CaseSensitivity case_sensitivity)
