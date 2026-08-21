@@ -28,19 +28,19 @@ class WEB_API DocumentPaintState {
 public:
     explicit DocumentPaintState(Layout::NodeArena&);
 
-    void viewport_row_was_reset(ViewportPaintable&);
+    void viewport_row_was_reset(DOM::Document&);
 
     BlockingWheelEventRegionState collect_root_blocking_wheel_event_regions(DOM::Document&);
-    void build_stacking_context_tree_if_needed(ViewportPaintable&);
+    void build_stacking_context_tree_if_needed(DOM::Document&);
     void invalidate_stacking_context_tree();
 
-    void refresh_scroll_state(ViewportPaintable&);
-    void refresh_sticky_constraints(ViewportPaintable&);
-    CSSPixelPoint cumulative_scroll_offset_for_node(ViewportPaintable const&, VisualContextIndex) const;
+    void refresh_scroll_state(DOM::Document&);
+    void refresh_sticky_constraints(DOM::Document&);
+    CSSPixelPoint cumulative_scroll_offset_for_node(DOM::Document const&, VisualContextIndex) const;
 
-    void assign_accumulated_visual_contexts(ViewportPaintable&);
-    bool update_accumulated_visual_context_values(ViewportPaintable&, Paintable&);
-    void update_visual_viewport_accumulated_visual_context(ViewportPaintable&);
+    void assign_accumulated_visual_contexts(DOM::Document&);
+    bool update_accumulated_visual_context_values(DOM::Document&, Paintable&);
+    void update_visual_viewport_accumulated_visual_context(DOM::Document&);
     bool visual_context_tree_needs_compositor_update() const { return m_visual_context_tree_needs_compositor_update; }
     void did_update_visual_context_tree_in_compositor() { m_visual_context_tree_needs_compositor_update = false; }
     void set_force_incompatible_visual_context_tree_rebuild_for_testing() { m_force_incompatible_visual_context_tree_rebuild_for_testing = true; }
@@ -48,12 +48,12 @@ public:
     u64 accumulated_visual_context_tree_build_count() const { return m_accumulated_visual_context_tree_build_count; }
 
     GC::Ptr<Selection::Selection> selection(DOM::Document const&) const;
-    void recompute_selection_states(ViewportPaintable&, DOM::Range&);
-    void reset_selection_states(ViewportPaintable&);
+    void recompute_selection_states(DOM::Document&, DOM::Range&);
+    void reset_selection_states(DOM::Document&);
 
-    void invalidate_all_cached_paint(ViewportPaintable&);
+    void invalidate_all_cached_paint(DOM::Document&);
 
-    void set_needs_to_refresh_scroll_state(ViewportPaintable&, bool);
+    void set_needs_to_refresh_scroll_state(DOM::Document&, bool);
 
     ScrollStateSnapshot const& scroll_state_snapshot() const { return m_scroll_state_snapshot; }
 
@@ -75,7 +75,7 @@ public:
 
 private:
     void ensure_visual_context_tree(DOM::Document const&) const;
-    void clear_scroll_state(ViewportPaintable&);
+    void clear_scroll_state(DOM::Document&);
 
     NonnullRefPtr<Layout::NodeArena> m_layout_node_arena;
     bool m_stacking_context_tree_is_valid { false };
