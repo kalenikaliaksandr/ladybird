@@ -520,13 +520,6 @@ Paintable::~Paintable()
 void Paintable::detach_from_layout_node(Badge<Layout::Node>)
 {
     m_layout_node.clear();
-    detach_chrome_widgets();
-}
-
-void Paintable::detach_chrome_widgets()
-{
-    if (has_layout_node())
-        document().chrome_widget_registry().drop_widgets_for_slot(rust_slot());
 }
 
 bool Paintable::has_css_transform() const
@@ -609,10 +602,6 @@ void Paintable::repaint_after_style_change(CSS::RequiredInvalidationAfterStyleCh
 
 void Paintable::reset_for_relayout()
 {
-    // A reused paintable must shed its chrome widgets: whether the box still warrants them
-    // (e.g. scrollbars on a scroll container) is only known after the new layout is painted.
-    detach_chrome_widgets();
-
     invalidate_stacking_context();
 }
 

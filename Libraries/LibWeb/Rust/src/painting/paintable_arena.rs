@@ -31,6 +31,22 @@ fn new_chunk() -> Box<Chunk> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct PaintableRowReset {
+    slot: PaintableSlotId,
+    kind: u8,
+    callback: Option<(*mut c_void, unsafe extern "C" fn(*mut c_void, PaintableSlotId, u8))>,
+}
+
+impl PaintableRowReset {
+    pub(crate) fn invoke_callback(self) {
+        if let Some((context, callback)) = self.callback {
+            // SAFETY: Registration and unregistration keep the callback context live.
+            unsafe { callback(context, self.slot, self.kind) };
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct PaintableArena {
     chunks: Vec<Box<Chunk>>,
@@ -47,11 +63,32 @@ pub struct PaintableArena {
     absolute_rect_memo_epoch: Cell<u64>,
     pub(crate) scrollable_overflow_contained_boxes: std::collections::HashMap<NodeSlotId, Vec<NodeSlotId>>,
     pub(crate) selection: Option<crate::painting::selection::SelectionRange>,
+    chrome_state_callback: Option<(*mut c_void, unsafe extern "C" fn(*mut c_void, PaintableSlotId, u8))>,
 }
 
 impl PaintableArena {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn set_chrome_state_callback(
+        &mut self,
+        context: *mut c_void,
+        callback: unsafe extern "C" fn(*mut c_void, PaintableSlotId, u8),
+    ) {
+        self.chrome_state_callback = Some((context, callback));
+    }
+
+    pub(crate) fn clear_chrome_state_callback(&mut self) {
+        self.chrome_state_callback = None;
+    }
+
+    fn prepare_row_reset(&self, slot: PaintableSlotId, kind: u8) -> PaintableRowReset {
+        PaintableRowReset {
+            slot,
+            kind,
+            callback: self.chrome_state_callback,
+        }
     }
 
     pub fn memoized_absolute_rect(&self, id: PaintableSlotId) -> Option<crate::css::css_pixels::CssPixelRect> {
@@ -160,7 +197,12 @@ impl PaintableArena {
         }
     }
 
-    pub fn shell_destroyed(&mut self, id: PaintableSlotId, generation: u32, shell: *mut c_void) {
+    pub(crate) fn prepare_shell_destroyed_reset(
+        &self,
+        id: PaintableSlotId,
+        generation: u32,
+        shell: *mut c_void,
+    ) -> Option<PaintableRowReset> {
         assert!(!id.is_invalid(), "invalid paintable arena slot ID");
         assert_eq!(
             u32::from(id.generation()),
@@ -168,12 +210,17 @@ impl PaintableArena {
             "paintable arena slot ID and allocation generation disagree"
         );
         if !self.is_live(id) || self.data_ref(id).shell != shell {
-            return;
+            return None;
         }
-        self.reset_row(id);
+        Some(self.prepare_row_reset(id, ROW_RESET_SHELL_REPLACED))
     }
 
-    fn reset_row(&mut self, id: PaintableSlotId) {
+    pub(crate) fn shell_destroyed(&mut self, reset: PaintableRowReset) {
+        self.reset_row(reset);
+    }
+
+    fn reset_row(&mut self, reset: PaintableRowReset) {
+        let id = reset.slot;
         self.clear_absolute_rect_memo();
         self.remove_from_tree(id);
         while let Some(child) = self.first_child(id) {
@@ -185,22 +232,34 @@ impl PaintableArena {
         self.paint_caches[index as usize].clear();
     }
 
-    pub fn layout_node_freed(&mut self, layout_slot_index: u32) {
+    pub(crate) fn prepare_layout_node_freed_reset(&self, layout_slot_index: u32) -> Option<PaintableRowReset> {
         if layout_slot_index as usize >= self.side_data.len() {
-            return;
+            return None;
         }
         let generation = self.data_by_index(layout_slot_index).slot_generation;
         if generation == 0 {
-            return;
+            return None;
         }
-        self.reset_row(PaintableSlotId::new(layout_slot_index, generation));
+        Some(self.prepare_row_reset(PaintableSlotId::new(layout_slot_index, generation), ROW_RESET_FREED))
     }
 
-    pub fn node_cleared(&mut self, layout_node: NodeSlotId, id: PaintableSlotId) {
+    pub(crate) fn layout_node_freed(&mut self, reset: PaintableRowReset) {
+        self.reset_row(reset);
+    }
+
+    pub(crate) fn prepare_node_cleared_reset(
+        &self,
+        layout_node: NodeSlotId,
+        id: PaintableSlotId,
+    ) -> Option<PaintableRowReset> {
         if self.paintable_of_node(layout_node) != id {
-            return;
+            return None;
         }
-        self.reset_row(id);
+        Some(self.prepare_row_reset(id, ROW_RESET_CLEARED))
+    }
+
+    pub(crate) fn node_cleared(&mut self, reset: PaintableRowReset) {
+        self.reset_row(reset);
     }
 
     pub fn is_live(&self, id: PaintableSlotId) -> bool {
@@ -467,7 +526,13 @@ impl PaintableArena {
         }
     }
 
-    pub fn reset_for_relayout(&mut self, id: PaintableSlotId) {
+    pub(crate) fn prepare_reset_for_relayout(&self, id: PaintableSlotId) -> PaintableRowReset {
+        assert!(self.is_live(id));
+        self.prepare_row_reset(id, ROW_RESET_RELAYOUT_REUSE)
+    }
+
+    pub(crate) fn reset_for_relayout(&mut self, reset: PaintableRowReset) {
+        let id = reset.slot;
         self.clear_absolute_rect_memo();
         self.remove_from_tree(id);
         while let Some(child) = self.first_child(id) {

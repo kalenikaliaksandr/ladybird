@@ -1504,6 +1504,7 @@ private:
 
     RefPtr<Layout::NodeArena> m_layout_node_arena;
     NonnullRefPtr<Painting::ChromeWidgetRegistry> m_chrome_widget_registry;
+    bool m_chrome_state_callback_registered { false };
     RefPtr<Layout::Viewport> m_layout_root;
     bool m_may_have_content_visibility_auto_style { false };
     bool m_may_have_default_scroll_shift_anchor { false };
