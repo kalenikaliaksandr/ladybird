@@ -139,8 +139,8 @@ static Optional<ScrollOffsetData> compute_scroll_offset_data(Variant<GC::Ptr<DOM
 
     return ScrollOffsetData {
         .scroll_offset = computed_axis.is_vertical
-            ? paintable_box->scroll_offset().y().to_double()
-            : paintable_box->scroll_offset().x().to_double(),
+            ? Painting::scroll_offset(paintable_box->layout_node()).y().to_double()
+            : Painting::scroll_offset(paintable_box->layout_node()).x().to_double(),
         .max_scroll_offset = computed_axis.is_vertical
             ? scrollable_overflow_rect.height().to_double() - paintable_box->content_height().to_double()
             : scrollable_overflow_rect.width().to_double() - paintable_box->content_width().to_double(),

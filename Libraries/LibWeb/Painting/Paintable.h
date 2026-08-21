@@ -228,12 +228,6 @@ public:
     // Offset from the top left of the containing block's content edge.
     [[nodiscard]] CSSPixelPoint offset() const;
 
-    CSSPixelPoint scroll_offset() const;
-    CSSPixelPoint minimum_scroll_offset() const;
-    CSSPixelPoint maximum_scroll_offset() const;
-    CSSPixelPoint clamp_scroll_offset(CSSPixelPoint) const;
-    CSSPixelRect scroll_snapport_rect() const;
-    CSSPixelRect scroll_snapport_rect(CSSPixelRect scrollport) const;
     ScrollHandled set_scroll_offset(CSSPixelPoint);
     ScrollHandled set_scroll_offset_from_user_input(CSSPixelPoint);
     ScrollHandled scroll_by(double delta_x, double delta_y);
@@ -328,15 +322,10 @@ public:
 
     CSSPixelRect transform_reference_box() const;
 
-    RefPtr<Paintable const> nearest_scrollable_ancestor() const;
-
     using StickyInsets = Painting::StickyInsets;
     bool has_sticky_insets() const { return rust_data().has_sticky_insets; }
     StickyInsets sticky_insets() const;
     void set_sticky_insets(OwnPtr<StickyInsets>);
-
-    [[nodiscard]] bool could_be_scrolled_by_wheel_event() const;
-    [[nodiscard]] bool could_be_scrolled_by_wheel_event(ScrollDirection direction) const;
 
     Optional<UsedGridTrackList> used_values_for_grid_template_columns() const;
     Optional<UsedGridTrackList> used_values_for_grid_template_rows() const;
