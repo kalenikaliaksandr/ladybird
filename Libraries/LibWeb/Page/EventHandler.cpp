@@ -852,7 +852,7 @@ EventResult EventHandler::handle_mousewheel(CSSPixelPoint visual_viewport_positi
             } else
                 handled_event = dispatch_result;
         } else if (!async_scroll_performed_default_action) {
-            handled_event = perform_wheel_default_action(move(paintable));
+            handled_event = perform_wheel_default_action(target_layout_node);
         }
     }
 
