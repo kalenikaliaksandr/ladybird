@@ -15,6 +15,9 @@ struct CaretPaint {
     Color color;
 };
 
+Layout::RustFFI::PaintableSlotId committed_row_slot(Layout::Node const&);
+Layout::RustFFI::PaintableData const* committed_row(Layout::Node const&);
+
 WEB_API bool has_committed_box(Layout::Node const&);
 
 WEB_API CSSPixelRect absolute_rect(Layout::Node const&);

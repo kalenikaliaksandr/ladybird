@@ -11,7 +11,6 @@
 #include <LibWeb/Painting/BoxViews.h>
 #include <LibWeb/Painting/ChromeMetrics.h>
 #include <LibWeb/Painting/ChromeWidget.h>
-#include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/ResizeHandle.h>
 #include <LibWeb/Painting/ScrollState.h>
 #include <LibWeb/Painting/Scrollbar.h>

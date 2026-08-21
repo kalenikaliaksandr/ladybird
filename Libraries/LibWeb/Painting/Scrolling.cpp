@@ -17,7 +17,6 @@
 #include <LibWeb/Layout/Node.h>
 #include <LibWeb/Layout/TextOffsetMapping.h>
 #include <LibWeb/Painting/BoxViews.h>
-#include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/PaintingRustBridge.h>
 #include <LibWeb/Painting/Scrolling.h>
 
@@ -180,14 +179,13 @@ bool could_be_scrolled_by_wheel_event(Layout::Node const& node)
     return could_be_scrolled_by_wheel_event(node, ScrollDirection::Horizontal) || could_be_scrolled_by_wheel_event(node, ScrollDirection::Vertical);
 }
 
-RefPtr<Paintable const> nearest_scrollable_ancestor(Layout::Node const& node)
+Layout::Node const* nearest_scrollable_ancestor(Layout::Node const& node)
 {
     for (auto const* box = node.containing_block(); box; box = box->containing_block()) {
-        auto const* paintable = box->paintable_ptr();
-        if (!paintable)
+        if (!has_committed_box(*box))
             return nullptr;
         if (could_be_scrolled_by_wheel_event(*box))
-            return paintable;
+            return box;
         if (is_fixed_position(*box))
             return nullptr;
     }
@@ -345,24 +343,24 @@ void scroll_text_offset_into_view(DOM::Text const& text, size_t offset, TextAffi
             cursor_rect.set_y(cursor_rect.y() - 1);
         cursor_rect.set_height(1);
     }
-    auto owner = paintable_for_slot(layout_node->arena_handle(), result.owner_paintable);
-    for (auto* ancestor = owner.ptr(); ancestor;) {
-        if (Painting::has_scrollable_overflow(ancestor->layout_node())) {
+    auto* owner = static_cast<Layout::Node*>(Layout::RustFFI::layout_arena_paintable_layout_node_shell(layout_node->arena_handle(), result.owner_paintable));
+    for (auto* ancestor = owner; ancestor;) {
+        if (Painting::has_scrollable_overflow(*ancestor)) {
             if (scroll_block_direction == ScrollBlockDirection::No) {
-                auto snapport = scroll_snapport_rect(ancestor->layout_node());
+                auto snapport = scroll_snapport_rect(*ancestor);
                 if (style_source.writing_mode() == CSS::WritingMode::HorizontalTb) {
-                    cursor_rect.set_y(snapport.y() + scroll_offset(ancestor->layout_node()).y());
+                    cursor_rect.set_y(snapport.y() + scroll_offset(*ancestor).y());
                     cursor_rect.set_height(snapport.height());
                 } else {
-                    cursor_rect.set_x(snapport.x() + scroll_offset(ancestor->layout_node()).x());
+                    cursor_rect.set_x(snapport.x() + scroll_offset(*ancestor).x());
                     cursor_rect.set_width(snapport.width());
                 }
             }
-            scroll_into_view(ancestor->layout_node(), cursor_rect);
+            scroll_into_view(*ancestor, cursor_rect);
             return;
         }
-        auto* containing_block_box = ancestor->layout_node().containing_block();
-        ancestor = containing_block_box ? containing_block_box->paintable_ptr() : nullptr;
+        auto* containing_block_box = ancestor->containing_block();
+        ancestor = containing_block_box && has_committed_box(*containing_block_box) ? containing_block_box : nullptr;
     }
 }
 
