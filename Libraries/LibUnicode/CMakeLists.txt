@@ -13,6 +13,7 @@ set(SOURCES
     FullwidthMapping.cpp
     ICU.cpp
     IDNA.cpp
+    LayoutTextFFI.cpp
     ListFormat.cpp
     Locale.cpp
     Normalize.cpp
