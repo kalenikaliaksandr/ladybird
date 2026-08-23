@@ -2072,7 +2072,6 @@ pub struct FfiTreeBuilderCallbacks {
     pub create_and_append_anonymous_wrapper: unsafe extern "C" fn(*mut c_void, *mut c_void) -> NodeSlotId,
     pub wrap_children_in_anonymous: unsafe extern "C" fn(*mut c_void, *mut c_void, *const *mut c_void, usize),
     pub insert_child: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, FfiInsertionMode),
-    pub text_is_ascii_whitespace: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
     pub prepare_first_letter_text:
         unsafe extern "C" fn(*mut c_void, *mut c_void, *mut FfiFirstLetterTextCallbacks) -> bool,
     pub create_button_content_wrapper: unsafe extern "C" fn(*mut c_void, *mut c_void) -> NodeSlotId,
@@ -2255,6 +2254,12 @@ impl TreeBuilderHost<'_> {
         // SAFETY: Entry points guarantee that the arena remains live, and callers only retain the reference until the
         // next mutation callback.
         unsafe { &*(*self.arena).data(node) }
+    }
+
+    fn text_for_rendering_is_ascii_whitespace(&self, node: LayoutNode) -> bool {
+        assert!(!node.is_invalid());
+        // SAFETY: Entry points guarantee that the arena remains live.
+        unsafe { &*self.arena }.rendered_text_is_ascii_whitespace(node)
     }
 
     fn style(&self, node: LayoutNode) -> Option<ComputedValuesView<'_>> {
@@ -3011,9 +3016,7 @@ fn is_tabular_container(host: &TreeBuilderHost<'_>, node: LayoutNode) -> bool {
 
 fn is_ignorable_whitespace(host: &TreeBuilderHost<'_>, node: LayoutNode) -> bool {
     let data = host.data(node);
-    if node_kind_is_text(data.kind)
-        && unsafe { (host.callbacks.text_is_ascii_whitespace)(host.callbacks.context, host.shell(node)) }
-    {
+    if node_kind_is_text(data.kind) && host.text_for_rendering_is_ascii_whitespace(node) {
         return true;
     }
 
@@ -3025,8 +3028,7 @@ fn is_ignorable_whitespace(host: &TreeBuilderHost<'_>, node: LayoutNode) -> bool
         host.for_each_in_inclusive_subtree(node, |descendant| {
             let descendant_data = host.data(descendant);
             if node_kind_is_text(descendant_data.kind) {
-                if !unsafe { (host.callbacks.text_is_ascii_whitespace)(host.callbacks.context, host.shell(descendant)) }
-                {
+                if !host.text_for_rendering_is_ascii_whitespace(descendant) {
                     contains_only_whitespace = false;
                     return TraversalDecision::Break;
                 }

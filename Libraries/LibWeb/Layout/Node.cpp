@@ -1001,11 +1001,6 @@ void NodeWithStyle::set_computed_values(NonnullRefPtr<CSS::ComputedValues const>
 
     if (changes_layout_affecting_style)
         bump_fragment_cache_epoch_of_self_and_ancestors();
-
-    for (auto* child = first_child_ptr(); child; child = child->next_sibling_ptr()) {
-        if (auto* text_child = as_if<TextNode>(*child))
-            text_child->enroll_for_arena_text_content_sync();
-    }
 }
 
 void NodeWithStyle::set_style_record_identity(CSS::StyleRecordID style_record_identity)

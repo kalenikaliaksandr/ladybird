@@ -185,10 +185,10 @@ WebIDL::ExceptionOr<void> CharacterData::replace_data(size_t offset, size_t coun
             if (parent())
                 parent()->set_needs_layout_tree_update(true, SetNeedsLayoutTreeUpdateReason::CharacterDataReplaceData);
         } else if (auto* text_layout_node = as_if<Layout::TextNode>(unsafe_layout_node())) {
-            // NB: Since the text node's data has changed, we need to invalidate the text for rendering.
-            //     This ensures that the new text is reflected in layout, even if we don't end up doing a full layout
-            //     tree rebuild.
-            text_layout_node->invalidate_text_for_rendering();
+            // NB: Since the text node's data has changed, the layout node arena needs the new text
+            //     to derive the rendered text from. This ensures that the new text is reflected in
+            //     layout, even if we don't end up doing a full layout tree rebuild.
+            text_layout_node->push_text_source_to_arena();
 
             // We also need to relayout.
             text_layout_node->set_needs_layout_update(SetNeedsLayoutReason::CharacterDataReplaceData);

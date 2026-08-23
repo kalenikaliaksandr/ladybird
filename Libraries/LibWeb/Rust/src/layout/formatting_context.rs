@@ -923,9 +923,10 @@ impl FfiLayoutFcCallbacks {
         let content = self
             .arena()
             .text_content(node)
-            .expect("text node content must be synced to the arena before layout");
-        // SAFETY: The document arena outlives the layout pass, and text
-        // content is only mutated between passes.
+            .expect("text node must push its DOM source to the arena at construction");
+        // SAFETY: The document arena outlives the layout pass, and the
+        // derived content is only replaced when an input changes, which
+        // only happens between passes.
         unsafe { &*std::ptr::from_ref(content) }
     }
 
@@ -964,9 +965,7 @@ impl FfiLayoutFcCallbacks {
         let mut child = data.first_child;
         while !child.is_invalid() {
             let data = self.node_data(child);
-            if !crate::layout::kind_is_text(data.kind)
-                || !self.text_content(child).untransformed_text_is_ascii_whitespace
-            {
+            if !crate::layout::kind_is_text(data.kind) || !self.arena().text_source_is_ascii_whitespace(child) {
                 return false;
             }
             child = data.next_sibling;

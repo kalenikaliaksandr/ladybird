@@ -48,7 +48,6 @@ static void publish_language_and_directionality(DOM::Element& element, bool is_d
             if (node.parent())
                 node.parent()->set_needs_layout_tree_update(true, DOM::SetNeedsLayoutTreeUpdateReason::LanguageChangeUnderCasingTextTransform);
         } else {
-            text_layout_node->invalidate_text_for_rendering();
             text_layout_node->set_needs_layout_update(DOM::SetNeedsLayoutReason::LanguageChangeUnderCasingTextTransform);
         }
         return TraversalDecision::Continue;

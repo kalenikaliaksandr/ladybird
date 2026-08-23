@@ -1554,9 +1554,6 @@ RustFFI::FfiTreeBuilderCallbacks LayoutTreeBuildBridge::make_ffi_tree_builder_ca
         .create_and_append_anonymous_wrapper = ffi_create_and_append_anonymous_wrapper,
         .wrap_children_in_anonymous = ffi_wrap_children_in_anonymous,
         .insert_child = ffi_insert_child,
-        .text_is_ascii_whitespace = [](void*, void* node_pointer) {
-            VERIFY(node_pointer);
-            return as<TextNode>(*static_cast<Node*>(node_pointer)).text_for_rendering().is_ascii_whitespace(); },
         .prepare_first_letter_text = [](void* builder_pointer, void* node_pointer, RustFFI::FfiFirstLetterTextCallbacks* callbacks) {
             VERIFY(builder_pointer);
             VERIFY(node_pointer);

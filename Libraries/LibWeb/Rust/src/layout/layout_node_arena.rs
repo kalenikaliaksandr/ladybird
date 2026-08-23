@@ -11,22 +11,16 @@ use crate::layout::CssPixels;
 use crate::layout::FfiReplacedContentFacts;
 use crate::layout::UsedValues;
 use crate::layout::node_data::{FfiStylePayloads, MAX_NODE_SLOT_COUNT, NodeData, NodeFlag, NodeKind, NodeSlotId};
+use crate::layout::text_for_rendering::{RenderedTextEdit, TextSource, utf16_vec_from_ffi};
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
 
+type CasingLocaleSink = unsafe extern "C" fn(context: *mut c_void, ascii_locale: *const u8, length: usize);
+
 unsafe extern "C" {
-    fn ladybird_layout_text_node_dom_offset_for_rendered_text_offset(
-        node: *mut c_void,
-        offset: usize,
-        use_end_boundary: bool,
-    ) -> usize;
-    fn ladybird_layout_text_node_rendered_text_offset_for_dom_offset(
-        node: *mut c_void,
-        offset: usize,
-        use_end_boundary: bool,
-    ) -> usize;
+    fn ladybird_layout_text_node_casing_locale(node: *mut c_void, context: *mut c_void, sink: CasingLocaleSink);
 }
 
 #[derive(Clone, Copy)]
@@ -159,11 +153,17 @@ struct SavedAbsposLayoutInputsSlot {
 }
 
 #[derive(Default)]
+struct TextSourceSlot {
+    generation: u8,
+    source: Option<TextSource>,
+}
+
 pub(crate) struct TextContent {
     pub(crate) text: Vec<u16>,
-    pub(crate) untransformed_text_is_ascii_whitespace: bool,
+    pub(crate) edits: Vec<RenderedTextEdit>,
     pub(crate) may_require_bidi_processing: bool,
     pub(crate) dom_start_offset: usize,
+    pub(crate) dom_length: usize,
     grapheme_segmenter: std::cell::OnceCell<crate::layout::GraphemeSegmenter>,
 }
 
@@ -174,10 +174,22 @@ impl TextContent {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RenderedTextKey {
+    text_transform: u8,
+    white_space_collapse: u8,
+}
+
+struct RenderedTextEntry {
+    key: RenderedTextKey,
+    casing_locale: Option<Vec<u8>>,
+    content: TextContent,
+}
+
 #[derive(Default)]
 struct TextContentSlot {
     generation: u8,
-    content: Option<Box<TextContent>>,
+    entry: Option<Box<RenderedTextEntry>>,
 }
 
 #[derive(Default)]
@@ -256,7 +268,8 @@ pub(crate) struct LayoutNodeArena {
     live_count: u32,
     intrinsic_size_caches: RefCell<Vec<IntrinsicSizeCacheSlot>>,
     saved_abspos_layout_inputs: RefCell<Vec<SavedAbsposLayoutInputsSlot>>,
-    text_contents: Vec<TextContentSlot>,
+    text_sources: Vec<TextSourceSlot>,
+    text_contents: RefCell<Vec<TextContentSlot>>,
     text_chunk_caches: RefCell<Vec<TextChunkCacheSlot>>,
     replaced_content_facts: Vec<ReplacedContentFactsSlot>,
     raw_table_column_spans: HashMap<NodeSlotId, u32>,
@@ -280,7 +293,8 @@ impl LayoutNodeArena {
             live_count: 0,
             intrinsic_size_caches: RefCell::new(Vec::new()),
             saved_abspos_layout_inputs: RefCell::new(Vec::new()),
-            text_contents: Vec::new(),
+            text_sources: Vec::new(),
+            text_contents: RefCell::new(Vec::new()),
             text_chunk_caches: RefCell::new(Vec::new()),
             replaced_content_facts: Vec::new(),
             raw_table_column_spans: HashMap::new(),
@@ -439,7 +453,10 @@ impl LayoutNodeArena {
             *slot = SavedAbsposLayoutInputsSlot::default();
         }
         self.paintable_rows.reset_committed_fragment_link_slot(index);
-        if let Some(slot) = self.text_contents.get_mut(index as usize) {
+        if let Some(slot) = self.text_sources.get_mut(index as usize) {
+            *slot = TextSourceSlot::default();
+        }
+        if let Some(slot) = self.text_contents.get_mut().get_mut(index as usize) {
             *slot = TextContentSlot::default();
         }
         if let Some(slot) = self.text_chunk_caches.get_mut().get_mut(index as usize) {
@@ -1116,48 +1133,59 @@ impl LayoutNodeArena {
         drop(self.take_committed_fragment_link(self.data(id)));
     }
 
-    pub(crate) fn set_text_content(
-        &mut self,
-        id: NodeSlotId,
-        text: Vec<u16>,
-        untransformed_text_is_ascii_whitespace: bool,
-        may_require_bidi_processing: bool,
-        dom_start_offset: usize,
-    ) -> bool {
+    pub(crate) fn set_text_source(&mut self, id: NodeSlotId, source: TextSource) {
         self.assert_owner_thread();
         self.data(id);
         let index = id.slot_index() as usize;
-        if self.text_contents.len() <= index {
-            self.text_contents.resize_with(index + 1, TextContentSlot::default);
+        if self.text_sources.len() <= index {
+            self.text_sources.resize_with(index + 1, TextSourceSlot::default);
         }
-        let previous = &self.text_contents[index];
+        let previous = &self.text_sources[index];
         let changed = previous.generation != id.generation()
-            || match &previous.content {
-                Some(content) => {
-                    content.text != text
-                        || content.untransformed_text_is_ascii_whitespace != untransformed_text_is_ascii_whitespace
-                        || content.may_require_bidi_processing != may_require_bidi_processing
-                        || content.dom_start_offset != dom_start_offset
+            || match &previous.source {
+                Some(previous_source) => {
+                    previous_source.text != source.text
+                        || previous_source.dom_start_offset != source.dom_start_offset
+                        || previous_source.dom_length != source.dom_length
+                        || previous_source.is_password_input != source.is_password_input
                 }
                 None => true,
             };
         if !changed {
-            return false;
+            return;
         }
-        self.text_contents[index] = TextContentSlot {
+        self.text_sources[index] = TextSourceSlot {
             generation: id.generation(),
-            content: Some(Box::new(TextContent {
-                text,
-                untransformed_text_is_ascii_whitespace,
-                may_require_bidi_processing,
-                dom_start_offset,
-                grapheme_segmenter: std::cell::OnceCell::new(),
-            })),
+            source: Some(source),
         };
-        if let Some(slot) = self.text_chunk_caches.get_mut().get_mut(index) {
+        self.discard_rendered_text(index);
+    }
+
+    pub(crate) fn rendered_text_is_ascii_whitespace(&self, id: NodeSlotId) -> bool {
+        self.text_content(id)
+            .expect("text node must push its DOM source to the arena at construction")
+            .text
+            .iter()
+            .all(|unit| crate::layout::code_point_is_ascii_space(u32::from(*unit)))
+    }
+
+    pub(crate) fn text_source_is_ascii_whitespace(&self, id: NodeSlotId) -> bool {
+        assert!(!id.is_invalid(), "invalid layout node arena slot ID");
+        self.text_sources
+            .get(id.slot_index() as usize)
+            .filter(|slot| slot.generation == id.generation())
+            .and_then(|slot| slot.source.as_ref())
+            .expect("text node must push its DOM source to the arena at construction")
+            .untransformed_text_is_ascii_whitespace
+    }
+
+    fn discard_rendered_text(&self, index: usize) {
+        if let Some(slot) = self.text_contents.borrow_mut().get_mut(index) {
+            *slot = TextContentSlot::default();
+        }
+        if let Some(slot) = self.text_chunk_caches.borrow_mut().get_mut(index) {
             *slot = TextChunkCacheSlot::default();
         }
-        true
     }
 
     pub(crate) fn set_replaced_content_facts(&mut self, id: NodeSlotId, facts: FfiReplacedContentFacts) -> bool {
@@ -1201,12 +1229,120 @@ impl LayoutNodeArena {
         self.raw_table_column_spans.get(&id).copied().unwrap_or(1)
     }
 
+    fn rendered_text_key(&self, id: NodeSlotId) -> RenderedTextKey {
+        let parent_style = self
+            .node_parent_if_live(id)
+            .and_then(|parent| self.node_style_if_live(parent));
+        let (text_transform, white_space_collapse) = parent_style
+            .map(|style| {
+                let inherited_text = style.inherited_text();
+                (inherited_text.text_transform, inherited_text.white_space_collapse)
+            })
+            .unwrap_or((
+                crate::css::css_enums::text_transform::NONE,
+                crate::css::css_enums::white_space_collapse::COLLAPSE,
+            ));
+        RenderedTextKey {
+            text_transform,
+            white_space_collapse,
+        }
+    }
+
+    fn casing_locale(&self, id: NodeSlotId) -> Option<Vec<u8>> {
+        unsafe extern "C" fn collect_locale(context: *mut c_void, ascii_locale: *const u8, length: usize) {
+            // SAFETY: The caller below passes its own Option<Vec<u8>>, and
+            // the C++ side keeps the locale storage live until the sink
+            // returns.
+            let collected = unsafe { &mut *context.cast::<Option<Vec<u8>>>() };
+            *collected = Some(unsafe { std::slice::from_raw_parts(ascii_locale, length) }.to_vec());
+        }
+
+        let shell = self.shell_if_live(id);
+        if shell.is_null() {
+            return None;
+        }
+        let mut collected: Option<Vec<u8>> = None;
+        // SAFETY: shell_if_live() returned the live C++ TextNode for this
+        // slot, and the sink only writes to this frame's local.
+        unsafe { ladybird_layout_text_node_casing_locale(shell, (&raw mut collected).cast(), collect_locale) };
+        collected
+    }
+
     pub(crate) fn text_content(&self, id: NodeSlotId) -> Option<&TextContent> {
         assert!(!id.is_invalid(), "invalid layout node arena slot ID");
-        self.text_contents
-            .get(id.slot_index() as usize)
+        let index = id.slot_index() as usize;
+        let source = self
+            .text_sources
+            .get(index)
             .filter(|slot| slot.generation == id.generation())
-            .and_then(|slot| slot.content.as_deref())
+            .and_then(|slot| slot.source.as_ref())?;
+        let key = self.rendered_text_key(id);
+        let casing_locale = matches!(
+            key.text_transform,
+            crate::css::css_enums::text_transform::UPPERCASE
+                | crate::css::css_enums::text_transform::LOWERCASE
+                | crate::css::css_enums::text_transform::CAPITALIZE
+        )
+        .then(|| self.casing_locale(id));
+
+        // SAFETY (for both laundered returns below): the entry is boxed, so
+        // its address survives slot vector growth, and it is only replaced
+        // when the source is pushed again, the key or locale changes, or the
+        // slot is freed. Every one of those is a mutation between reads, so a
+        // reference handed out stays valid for as long as its reader uses it.
+        {
+            let slots = self.text_contents.borrow();
+            if let Some(slot) = slots.get(index)
+                && slot.generation == id.generation()
+                && let Some(entry) = slot.entry.as_deref()
+                && entry.key == key
+                && casing_locale
+                    .as_ref()
+                    .is_none_or(|locale| *locale == entry.casing_locale)
+            {
+                return Some(unsafe { &*std::ptr::from_ref(&entry.content) });
+            }
+        }
+
+        let casing_locale = casing_locale.flatten();
+        let rendered = crate::layout::text_for_rendering::derive_rendered_text(
+            source,
+            key.text_transform,
+            key.white_space_collapse,
+            casing_locale.as_deref(),
+        );
+        let may_require_bidi_processing =
+            crate::layout::text_for_rendering::may_require_bidi_processing(&rendered.text);
+        let mut slots = self.text_contents.borrow_mut();
+        if slots.len() <= index {
+            slots.resize_with(index + 1, TextContentSlot::default);
+        }
+        let rendered_text_changed = match slots[index].entry.as_deref() {
+            Some(previous) => slots[index].generation != id.generation() || previous.content.text != rendered.text,
+            None => true,
+        };
+        slots[index] = TextContentSlot {
+            generation: id.generation(),
+            entry: Some(Box::new(RenderedTextEntry {
+                key,
+                casing_locale,
+                content: TextContent {
+                    text: rendered.text,
+                    edits: rendered.edits,
+                    may_require_bidi_processing,
+                    dom_start_offset: source.dom_start_offset,
+                    dom_length: source.dom_length,
+                    grapheme_segmenter: std::cell::OnceCell::new(),
+                },
+            })),
+        };
+        let content = &slots[index].entry.as_deref().expect("entry was just stored").content;
+        let content = unsafe { &*std::ptr::from_ref(content) };
+        drop(slots);
+        if rendered_text_changed && let Some(slot) = self.text_chunk_caches.borrow_mut().get_mut(index) {
+            *slot = TextChunkCacheSlot::default();
+        }
+        Some(content)
     }
 
     /// The node's group payload pointer array, read in place from the
@@ -1582,18 +1718,19 @@ impl LayoutNodeArena {
         offset: usize,
         boundary: RenderedTextBoundary,
     ) -> usize {
-        let shell = self.shell_if_live(id);
-        if shell.is_null() || !self.node_kind_if_live(id).is_some_and(crate::layout::kind_is_text) {
+        if !self.node_kind_if_live(id).is_some_and(crate::layout::kind_is_text) {
             return offset;
         }
-        // SAFETY: shell_if_live() returned the live C++ TextNode corresponding to this text layout node.
-        unsafe {
-            ladybird_layout_text_node_dom_offset_for_rendered_text_offset(
-                shell,
-                offset,
-                matches!(boundary, RenderedTextBoundary::End),
-            )
-        }
+        let Some(content) = self.text_content(id) else {
+            return offset;
+        };
+        let offset = offset.min(content.text.len());
+        crate::layout::text_for_rendering::dom_offset_for_rendered_text_offset(
+            &content.edits,
+            content.dom_start_offset,
+            offset,
+            boundary,
+        )
     }
 
     pub(crate) fn rendered_text_offset_for_dom_offset(
@@ -1602,18 +1739,20 @@ impl LayoutNodeArena {
         offset: usize,
         boundary: RenderedTextBoundary,
     ) -> usize {
-        let shell = self.shell_if_live(id);
-        if shell.is_null() || !self.node_kind_if_live(id).is_some_and(crate::layout::kind_is_text) {
+        if !self.node_kind_if_live(id).is_some_and(crate::layout::kind_is_text) {
             return offset;
         }
-        // SAFETY: shell_if_live() returned the live C++ TextNode corresponding to this text layout node.
-        unsafe {
-            ladybird_layout_text_node_rendered_text_offset_for_dom_offset(
-                shell,
-                offset,
-                matches!(boundary, RenderedTextBoundary::End),
-            )
-        }
+        let Some(content) = self.text_content(id) else {
+            return offset;
+        };
+        let offset = offset.clamp(content.dom_start_offset, content.dom_start_offset + content.dom_length);
+        let rendered_offset = crate::layout::text_for_rendering::rendered_text_offset_for_dom_offset(
+            &content.edits,
+            content.dom_start_offset,
+            offset,
+            boundary,
+        );
+        rendered_offset.min(content.text.len())
     }
 
     pub(crate) unsafe fn from_handle<'a>(arena: *mut c_void) -> &'a Self {
@@ -1818,43 +1957,52 @@ pub unsafe extern "C" fn layout_arena_remove_child(arena: *mut c_void, parent: N
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn layout_arena_set_text_content(
+pub unsafe extern "C" fn layout_arena_set_text_source(
     arena: *mut c_void,
     id: NodeSlotId,
     ascii_text: *const u8,
     utf16_text: *const u16,
     length_in_code_units: usize,
-    untransformed_text_is_ascii_whitespace: bool,
-    may_require_bidi_processing: bool,
     dom_start_offset: usize,
-) -> bool {
+    dom_length: usize,
+    is_password_input: bool,
+) {
     abort_on_panic(|| {
         assert!(!arena.is_null(), "layout node arena handle is null");
-        let text = if length_in_code_units == 0 {
-            Vec::new()
-        } else if !ascii_text.is_null() {
-            // SAFETY: The C++ caller passes the live ASCII storage of the
-            // node's rendered text for the duration of this synchronous call.
-            unsafe { std::slice::from_raw_parts(ascii_text, length_in_code_units) }
-                .iter()
-                .map(|unit| u16::from(*unit))
-                .collect()
-        } else {
-            assert!(!utf16_text.is_null(), "text content push carries no storage");
-            // SAFETY: The C++ caller passes the live UTF-16 storage of the
-            // node's rendered text for the duration of this synchronous call.
-            unsafe { std::slice::from_raw_parts(utf16_text, length_in_code_units) }.to_vec()
-        };
+        // SAFETY: The C++ caller passes the live storage of the node's DOM
+        // text for the duration of this synchronous call.
+        let text = unsafe { utf16_vec_from_ffi(ascii_text, utf16_text, length_in_code_units) };
         // SAFETY: The C++ wrapper keeps the arena alive for this call and
         // serializes all access on the document thread.
-        unsafe { &mut *arena.cast::<LayoutNodeArena>() }.set_text_content(
+        unsafe { &mut *arena.cast::<LayoutNodeArena>() }.set_text_source(
             id,
-            text,
-            untransformed_text_is_ascii_whitespace,
-            may_require_bidi_processing,
-            dom_start_offset,
-        )
-    })
+            TextSource::new(text, dom_start_offset, dom_length, is_password_input),
+        );
+    });
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_text_node_rendered_text(
+    arena: *mut c_void,
+    id: NodeSlotId,
+    out_text: *mut *const u16,
+    out_length_in_code_units: *mut usize,
+) {
+    abort_on_panic(|| {
+        assert!(!arena.is_null(), "layout node arena handle is null");
+        // SAFETY: The C++ wrapper keeps the arena alive for this call and
+        // serializes all access on the document thread.
+        let content = unsafe { LayoutNodeArena::from_handle(arena) }.text_content(id);
+        let (text, length) = match content {
+            Some(content) => (content.text.as_ptr(), content.text.len()),
+            None => (std::ptr::null(), 0),
+        };
+        // SAFETY: The caller passes valid out-pointers.
+        unsafe {
+            *out_text = text;
+            *out_length_in_code_units = length;
+        }
+    });
 }
 
 #[unsafe(no_mangle)]

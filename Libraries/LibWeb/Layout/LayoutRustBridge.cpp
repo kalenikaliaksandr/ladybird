@@ -696,24 +696,15 @@ extern "C" WEB_API bool ladybird_layout_code_point_has_emoji_property(u32 code_p
     return Unicode::code_point_has_emoji_property(code_point);
 }
 
-extern "C" WEB_API size_t ladybird_layout_text_node_dom_offset_for_rendered_text_offset(void* node, size_t offset, bool use_end_boundary)
+extern "C" WEB_API void ladybird_layout_text_node_casing_locale(void* node, void* context, void (*sink)(void* context, u8 const* ascii_locale, size_t length))
 {
     auto const& layout_node = *static_cast<Web::Layout::Node*>(node);
     VERIFY(is<Web::Layout::TextNode>(layout_node));
-    auto const& text_node = static_cast<Web::Layout::TextNode const&>(layout_node);
-    auto boundary = use_end_boundary
-        ? Web::Layout::TextNode::RenderedTextBoundary::End
-        : Web::Layout::TextNode::RenderedTextBoundary::Start;
-    return text_node.dom_offset_for_rendered_text_offset(offset, boundary);
-}
-
-extern "C" WEB_API size_t ladybird_layout_text_node_rendered_text_offset_for_dom_offset(void* node, size_t offset, bool use_end_boundary)
-{
-    auto const& layout_node = *static_cast<Web::Layout::Node*>(node);
-    VERIFY(is<Web::Layout::TextNode>(layout_node));
-    auto const& text_node = static_cast<Web::Layout::TextNode const&>(layout_node);
-    auto boundary = use_end_boundary
-        ? Web::Layout::TextNode::RenderedTextBoundary::End
-        : Web::Layout::TextNode::RenderedTextBoundary::Start;
-    return text_node.rendered_text_offset_for_dom_offset(offset, boundary);
+    auto locale = static_cast<Web::Layout::TextNode const&>(layout_node).casing_locale();
+    if (!locale.has_value())
+        return;
+    auto view = locale->utf16_view();
+    if (!view.has_ascii_storage())
+        return;
+    sink(context, reinterpret_cast<u8 const*>(view.ascii_span().data()), view.length_in_code_units());
 }
