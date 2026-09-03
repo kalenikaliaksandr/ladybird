@@ -429,7 +429,6 @@ pub struct FfiPaintHostCallbacks {
     pub context: *mut c_void,
     pub image_intrinsic_facts:
         unsafe extern "C" fn(*mut c_void, *mut c_void, FfiLayerImageList, u32) -> FfiImageIntrinsicFacts,
-    pub selection_style_facts: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> FfiSelectionStyleFacts,
     pub layer_image_prepare:
         unsafe extern "C" fn(*mut c_void, *mut c_void, FfiLayerImageList, u32) -> FfiLayerImagePrepareFacts,
     pub layer_image_nested_display_list: unsafe extern "C" fn(
@@ -470,19 +469,6 @@ pub struct ColorStopSink {
 }
 
 impl FfiPaintHostCallbacks {
-    pub(crate) fn selection_style_facts(
-        &self,
-        layout_node_shell: *mut c_void,
-    ) -> (
-        FfiSelectionStyleFacts,
-        Vec<crate::painting::record::paint::text::ShadowLayer>,
-    ) {
-        let mut shadows: Vec<crate::painting::record::paint::text::ShadowLayer> = Vec::new();
-        // SAFETY: The C++ host answers synchronously, pushing shadow layers into
-        // the sink through the exported function.
-        let facts = unsafe { (self.selection_style_facts)(self.context, layout_node_shell, (&raw mut shadows).cast()) };
-        (facts, shadows)
-    }
     pub(crate) fn layer_image_prepare(
         &self,
         layout_node_shell: *mut c_void,

@@ -42,6 +42,7 @@ pub(crate) struct RenderSpan {
     pub selection_text_decoration: Option<SpanTextDecoration>,
 }
 
+#[derive(Default)]
 pub(crate) struct SelectionStyleAnswer {
     pub facts: crate::painting::host::FfiSelectionStyleFacts,
     pub shadows: Vec<ShadowLayer>,

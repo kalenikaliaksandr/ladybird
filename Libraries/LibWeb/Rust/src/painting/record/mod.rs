@@ -143,7 +143,6 @@ pub struct PaintRecorder<'a> {
     pub(crate) all_paint_caches_dirty: bool,
     pub(crate) all_descendant_subtree_caches_dirty: bool,
     pub(crate) resource_manifest: &'a RefCell<manifest::ResourceManifest>,
-    selection_style_cache: HashMap<u32, Rc<paint::text::SelectionStyleAnswer>>,
     pub(crate) wheel_hit_test_target_cache: HashMap<NodeSlotId, SpatialNodeIndex>,
 }
 
@@ -228,20 +227,14 @@ impl<'a> PaintRecorder<'a> {
             .then_some((control.start, control.end))
     }
 
-    pub(crate) fn selection_style(
-        &mut self,
-        node: crate::layout::node_data::NodeSlotId,
-    ) -> Rc<paint::text::SelectionStyleAnswer> {
-        let key = node.index;
-        if let Some(answer) = self.selection_style_cache.get(&key) {
-            return answer.clone();
-        }
-        let (facts, shadows) = self
-            .paint_host
-            .selection_style_facts(self.layout_arena.shell_if_live(node));
-        let answer = Rc::new(paint::text::SelectionStyleAnswer { facts, shadows });
-        self.selection_style_cache.insert(key, answer.clone());
-        answer
+    /// The `::selection` style of a selected text node, as the host resolved it before the
+    /// recording (`layout_arena_sync_selection_styles`).
+    pub(crate) fn selection_style(&self, node: NodeSlotId) -> Rc<paint::text::SelectionStyleAnswer> {
+        self.paint_state
+            .selection_styles
+            .get(&node)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub(crate) fn nested_recording_session(
@@ -280,7 +273,6 @@ impl<'a> PaintRecorder<'a> {
             all_paint_caches_dirty: self.all_paint_caches_dirty,
             all_descendant_subtree_caches_dirty: self.all_descendant_subtree_caches_dirty,
             resource_manifest: self.resource_manifest,
-            selection_style_cache: HashMap::new(),
             wheel_hit_test_target_cache: HashMap::new(),
         }
     }

@@ -105,6 +105,11 @@ pub(crate) struct PaintableRowStore {
     /// Rows the layout commit found laying out a `<br>`; the host recomputes their empty-line
     /// caret targets before the next recording.
     rows_enrolled_for_line_break_caret_targets_sync: EnrolledRows,
+    // While text is selected, every row whose paint cache is invalidated is enrolled so the host
+    // re-resolves the ::selection styles of the fragments it paints before the next recording.
+    has_selection: Cell<bool>,
+    rows_enrolled_for_selection_style_sync: EnrolledRows,
+    all_selection_styles_stale: Cell<bool>,
     paint_recording_in_progress: Cell<bool>,
 }
 
@@ -212,6 +217,12 @@ where
             return;
         }
         self.arena.debug_assert_not_recording();
+        if self.arena.paintable_rows.has_selection.get() {
+            self.arena
+                .paintable_rows
+                .rows_enrolled_for_selection_style_sync
+                .enroll(id);
+        }
         let next_dirty_gen = self.arena.paint_cache_next_dirty_gen();
         self.arena.paintable_paint_cache(id).mark_self_dirty(next_dirty_gen);
         let mut ancestor = crate::painting::paint_order::paint_parent(self, id);
@@ -651,6 +662,7 @@ impl LayoutNodeArena {
 
     pub(crate) fn mark_all_paint_caches_dirty(&self) {
         self.debug_assert_not_recording();
+        self.paintable_rows.all_selection_styles_stale.set(true);
         self.paintable_rows
             .all_paint_caches_dirty_gen
             .set(self.paint_cache_next_dirty_gen());
@@ -658,6 +670,7 @@ impl LayoutNodeArena {
 
     pub(crate) fn mark_all_descendant_subtree_caches_dirty(&self) {
         self.debug_assert_not_recording();
+        self.paintable_rows.all_selection_styles_stale.set(true);
         self.paintable_rows
             .all_descendant_subtree_caches_dirty_gen
             .set(self.paint_cache_next_dirty_gen());
@@ -904,6 +917,62 @@ impl LayoutNodeArena {
             caches.get(id.slot_index() as usize)
         })
         .ok()
+    }
+
+    pub(crate) fn set_has_selection(&self, has_selection: bool) {
+        self.paintable_rows.has_selection.set(has_selection);
+    }
+
+    pub(crate) fn mark_all_selection_styles_stale(&self) {
+        self.paintable_rows.all_selection_styles_stale.set(true);
+    }
+
+    /// The selected text nodes whose `::selection` style the host must re-resolve before the next
+    /// recording: every one after the selection changed or every cache was dirtied, otherwise those
+    /// painted by rows whose paint cache was invalidated since the last sync. `always` (the focused
+    /// text control's text, whose selection lives outside the document selection) is included on
+    /// every call. Sorted and deduplicated.
+    pub(crate) fn take_selected_text_nodes_to_resync_styles(&self, always: &[NodeSlotId]) -> Vec<NodeSlotId> {
+        let all_stale = self.paintable_rows.all_selection_styles_stale.replace(false);
+        let enrolled_rows = self.paintable_rows.rows_enrolled_for_selection_style_sync.take();
+        let mut text_nodes = always.to_vec();
+        let paint_state = self.paint_state().borrow();
+        if paint_state.selection.is_none() {
+            // Nothing selected: only the text control's text is resolved.
+        } else if all_stale {
+            text_nodes.extend_from_slice(&paint_state.selected_text_nodes);
+        } else {
+            let paintable_rows = self.paintable_rows();
+            for row in enrolled_rows {
+                if !paintable_rows.paintable_row_is_populated(row) {
+                    continue;
+                }
+                // A row re-records the fragments it paints: its own lines, or, for a self-painting
+                // inline, the fragments it owns in its containing block.
+                let block = if crate::painting::fragment_ownership::is_self_painting_inline(&paintable_rows, row) {
+                    crate::painting::text_fragment::containing_block_paintable_of_node(&paintable_rows, row)
+                } else {
+                    Some(row)
+                };
+                let Some(block) = block else {
+                    continue;
+                };
+                if !paintable_rows.paintable_row_is_populated(block) {
+                    continue;
+                }
+                let filter = crate::painting::fragment_ownership::effective_filter(&paintable_rows, row);
+                let side_data = paintable_rows.paintable_side_data(block);
+                filter.for_each_owned_fragment_index(side_data.fragments.len(), |index| {
+                    let fragment = &side_data.fragments[index];
+                    if fragment.selection_state != SELECTION_STATE_NONE {
+                        text_nodes.push(fragment.layout_node);
+                    }
+                });
+            }
+        }
+        text_nodes.sort_unstable_by_key(|node| node.index);
+        text_nodes.dedup();
+        text_nodes
     }
 
     pub(crate) fn invalidate_paint_cache(&self, id: NodeSlotId) {

@@ -19,6 +19,11 @@ pub struct PaintState {
     pub(crate) recorded_has_blocking_wheel_event_region_covering_viewport: Option<bool>,
     pub(crate) recorded_canvas_color: Option<libgfx_rust::Color>,
     pub(crate) selection: Option<crate::painting::selection::SelectionRange>,
+    /// The text nodes the applied selection covers, and their `::selection` styles as the host
+    /// resolved them before the recording that painted them.
+    pub(crate) selected_text_nodes: Vec<NodeSlotId>,
+    pub(crate) selection_styles:
+        std::collections::HashMap<NodeSlotId, Rc<crate::painting::record::paint::text::SelectionStyleAnswer>>,
     pub(crate) scrollable_overflow_contained_boxes: std::collections::HashMap<NodeSlotId, Vec<NodeSlotId>>,
     pub(crate) per_recording_memo_tables: RefCell<crate::painting::record::scratch::PerRecordingMemoTables>,
     /// Resources the last recording produced, until the host takes them.

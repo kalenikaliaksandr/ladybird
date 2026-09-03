@@ -709,10 +709,21 @@ pub unsafe extern "C" fn layout_arena_selection_apply(
     // SAFETY: The caller guarantees the entry span is valid for this synchronous call.
     let entries = unsafe { ffi_slice(entries, entry_count) };
     crate::painting::selection::apply(&mut arena.paintable_rows_mut(), viewport, entries);
-    arena.paint_state().borrow_mut().selection = Some(crate::painting::selection::SelectionRange {
+    let mut paint_state = arena.paint_state().borrow_mut();
+    paint_state.selection = Some(crate::painting::selection::SelectionRange {
         start_offset: range_start_offset,
         end_offset: range_end_offset,
     });
+    paint_state.selected_text_nodes = entries
+        .iter()
+        .filter(|entry| {
+            entry.is_text_node_entry && entry.state != crate::painting::paintable_data::SELECTION_STATE_NONE
+        })
+        .map(|entry| entry.layout_node)
+        .collect();
+    paint_state.selection_styles.clear();
+    arena.set_has_selection(true);
+    arena.mark_all_selection_styles_stale();
 }
 
 /// # Safety
@@ -725,7 +736,57 @@ pub unsafe extern "C" fn layout_arena_selection_clear(arena: *mut c_void, viewpo
         return;
     }
     crate::painting::selection::clear(&mut arena.paintable_rows_mut(), viewport);
-    arena.paint_state().borrow_mut().selection = None;
+    let mut paint_state = arena.paint_state().borrow_mut();
+    paint_state.selection = None;
+    paint_state.selected_text_nodes.clear();
+    paint_state.selection_styles.clear();
+    arena.set_has_selection(false);
+}
+
+/// Resolves, through the host, the `::selection` style of every selected text node whose painted
+/// output the next recording rebuilds: all of them after the selection changed or every cache was
+/// dirtied, otherwise those painted by rows whose paint cache was invalidated since the last sync.
+/// `always_resolved_text_nodes` (the focused text control's text, whose selection lives outside the
+/// document selection) are resolved on every call.
+///
+/// # Safety
+///
+/// `arena` must be a live handle from `layout_arena_create`, used on the document thread. `resolve`
+/// runs synchronously with a live text node shell and pushes shadow layers into the sink it
+/// receives through `layout_arena_paint_push_selection_shadow`. The node span is valid for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_sync_selection_styles(
+    arena: *mut c_void,
+    context: *mut c_void,
+    always_resolved_text_nodes: *const NodeSlotId,
+    always_resolved_text_node_count: usize,
+    resolve: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+    ) -> crate::painting::host::FfiSelectionStyleFacts,
+) {
+    use crate::painting::record::paint::text::{SelectionStyleAnswer, ShadowLayer};
+    let arena = unsafe { arena_from_handle(arena) };
+    // SAFETY: The caller guarantees the span is valid for this synchronous call.
+    let always_resolved_text_nodes = unsafe { ffi_slice(always_resolved_text_nodes, always_resolved_text_node_count) };
+    let text_nodes = arena.take_selected_text_nodes_to_resync_styles(always_resolved_text_nodes);
+    let mut answers = Vec::with_capacity(text_nodes.len());
+    for node in text_nodes {
+        let shell = arena.shell_if_live(node);
+        if shell.is_null() {
+            continue;
+        }
+        let mut shadows: Vec<ShadowLayer> = Vec::new();
+        // SAFETY: The host answers synchronously from a live text node shell and pushes shadow
+        // layers into the Vec through the exported sink function.
+        let facts = unsafe { resolve(context, shell, (&raw mut shadows).cast()) };
+        answers.push((node, Rc::new(SelectionStyleAnswer { facts, shadows })));
+    }
+    let mut paint_state = arena.paint_state().borrow_mut();
+    for (node, answer) in answers {
+        paint_state.selection_styles.insert(node, answer);
+    }
 }
 
 /// # Safety
@@ -1973,8 +2034,7 @@ pub unsafe extern "C" fn layout_arena_paint_push_selection_shadow(
     offset_y: CssPixels,
     blur_radius: CssPixels,
 ) {
-    // SAFETY: `sink` is the Vec pointer handed out by
-    // FfiPaintHostCallbacks::selection_style_facts.
+    // SAFETY: `sink` is the Vec pointer layout_arena_sync_selection_styles hands to the host.
     let shadows = unsafe { &mut *sink.cast::<Vec<crate::painting::record::paint::text::ShadowLayer>>() };
     shadows.push(crate::painting::record::paint::text::ShadowLayer {
         color: color.0,

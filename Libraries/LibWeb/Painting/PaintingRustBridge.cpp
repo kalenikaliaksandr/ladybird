@@ -714,6 +714,36 @@ void dump_stacking_context_tree(StringBuilder& builder, DOM::Document const& doc
 
 namespace {
 
+// Selected text paints with its element's ::selection style. The host resolves it before a recording for the
+// selected text nodes whose painted output that recording rebuilds.
+static void sync_selection_styles(void* arena, Layout::RustFFI::FfiFocusedTextControlSelection const& text_control_selection)
+{
+    // The focused text control's selection is not part of the document selection, so its text is resolved every time.
+    Layout::RustFFI::layout_arena_sync_selection_styles(arena, nullptr, text_control_selection.text_nodes, text_control_selection.text_node_count, [](void*, void* layout_node_shell, void* shadow_sink) -> Layout::RustFFI::FfiSelectionStyleFacts {
+        Layout::RustFFI::FfiSelectionStyleFacts facts {};
+        auto const* text_node = as_if<Layout::TextNode>(static_cast<Layout::Node const*>(layout_node_shell));
+        if (!text_node)
+            return facts;
+        auto style = selection_style_for_node(*text_node, text_node->dom_text());
+        facts.background_color = style.background_color;
+        facts.text_color = style.text_color;
+        if (style.text_shadow.has_value()) {
+            facts.has_text_shadow = true;
+            for (auto const& layer : *style.text_shadow)
+                Layout::RustFFI::layout_arena_paint_push_selection_shadow(shadow_sink, layer.color, layer.offset_x, layer.offset_y, layer.blur_radius);
+        }
+        if (style.text_decoration.has_value()) {
+            facts.has_text_decoration = true;
+            facts.text_decoration_line_count = min(style.text_decoration->line.size(), array_size(facts.text_decoration_lines));
+            for (size_t i = 0; i < facts.text_decoration_line_count; ++i)
+                facts.text_decoration_lines[i] = to_underlying(style.text_decoration->line[i]);
+            facts.text_decoration_style = to_underlying(style.text_decoration->style);
+            facts.text_decoration_color = style.text_decoration->color;
+        }
+        return facts;
+    });
+}
+
 // Blocks that lay out a <br> get the empty-line caret targets of their <br> children recomputed before a
 // recording, for the rows the layout commit enrolled. The targets are stored relative to the block's padding box:
 // a reused subtree that moves is not re-committed, so the recorder places them at the block's current position.
@@ -850,29 +880,6 @@ Layout::RustFFI::FfiPaintHostCallbacks paint_host_callbacks(PaintHostContext& co
                     facts.has_selected_image_value = true;
                     facts.selected_image_value = selected_image->rust_style_value_data();
                 }
-            }
-            return facts;
-        },
-        .selection_style_facts = [](void*, void* layout_node_shell, void* shadow_sink) -> Layout::RustFFI::FfiSelectionStyleFacts {
-            Layout::RustFFI::FfiSelectionStyleFacts facts {};
-            auto const* text_node = as_if<Layout::TextNode>(static_cast<Layout::Node const*>(layout_node_shell));
-            if (!text_node)
-                return facts;
-            auto style = selection_style_for_node(*text_node, text_node->dom_text());
-            facts.background_color = style.background_color;
-            facts.text_color = style.text_color;
-            if (style.text_shadow.has_value()) {
-                facts.has_text_shadow = true;
-                for (auto const& layer : *style.text_shadow)
-                    Layout::RustFFI::layout_arena_paint_push_selection_shadow(shadow_sink, layer.color, layer.offset_x, layer.offset_y, layer.blur_radius);
-            }
-            if (style.text_decoration.has_value()) {
-                facts.has_text_decoration = true;
-                facts.text_decoration_line_count = min(style.text_decoration->line.size(), array_size(facts.text_decoration_lines));
-                for (size_t i = 0; i < facts.text_decoration_line_count; ++i)
-                    facts.text_decoration_lines[i] = to_underlying(style.text_decoration->line[i]);
-                facts.text_decoration_style = to_underlying(style.text_decoration->style);
-                facts.text_decoration_color = style.text_decoration->color;
             }
             return facts;
         },
@@ -1244,6 +1251,7 @@ RefPtr<DisplayList> record_rust_display_list(DOM::Document& document, DisplayLis
     }
     invalidate_navigable_containers_whose_composited_context_changed(document);
     sync_line_break_caret_targets(arena);
+    sync_selection_styles(arena, inputs.focused_text_control);
     PaintHostContext paint_host_context { resource_storage, document, paint_generation_id, device_pixels_per_css_pixel };
     auto rust_timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
     auto generation = Layout::RustFFI::layout_arena_record_display_list(arena, viewport_row_slot(document), paint_host_callbacks(paint_host_context), visual_context_host_callbacks(document), inputs);

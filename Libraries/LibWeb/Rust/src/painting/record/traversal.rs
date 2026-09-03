@@ -124,7 +124,6 @@ pub(crate) fn record_display_list(
         all_paint_caches_dirty: layout_arena.all_paint_caches_dirty(),
         all_descendant_subtree_caches_dirty: layout_arena.all_descendant_subtree_caches_dirty(),
         resource_manifest: &resource_manifest,
-        selection_style_cache: HashMap::new(),
         wheel_hit_test_target_cache: HashMap::new(),
     };
     if inputs.canvas_fill_rect.has_value {
