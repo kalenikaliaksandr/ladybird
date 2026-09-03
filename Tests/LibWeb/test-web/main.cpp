@@ -1141,6 +1141,7 @@ static ErrorOr<int> run_tests(Core::AnonymousBuffer const& theme, Web::DevicePix
     size_t total_tests = tests.size();
     auto concurrency = min(app.test_concurrency, total_tests);
     size_t loaded_web_views = 0;
+    size_t crashed_web_views = 0;
     Vector<NonnullOwnPtr<TestWebView>> views;
     views.ensure_capacity(concurrency);
 
@@ -1149,15 +1150,20 @@ static ErrorOr<int> run_tests(Core::AnonymousBuffer const& theme, Web::DevicePix
     for (size_t i = 0; i < concurrency; ++i) {
         auto view = TestWebView::create(theme, window_size);
         view->on_load_finish = [&](auto const&) { ++loaded_web_views; };
+        view->on_web_content_crashed = [&]() { ++crashed_web_views; };
 
         views.unchecked_append(move(view));
     }
 
     // We need to wait for the initial about:blank load to complete before starting the tests, otherwise we may load the
     // test URL before the about:blank load completes. WebContent currently cannot handle this, and will drop the test URL.
+    // A WebContent that dies during that load would otherwise leave us waiting forever (for example under
+    // LADYBIRD_PAINT_NO_HOST_CALLBACKS=1 while the recorder still calls back into the host).
     Core::EventLoop::current().spin_until([&]() {
-        return loaded_web_views == concurrency;
+        return loaded_web_views + crashed_web_views == concurrency;
     });
+    if (crashed_web_views > 0)
+        return Error::from_string_literal("WebContent crashed while loading its initial page");
 
     // Initialize view display states (used for idle tracking even when not on TTY)
     s_view_display_states.resize(concurrency);
