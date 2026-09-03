@@ -36,10 +36,17 @@ DisplayList::DisplayList(u64 compatible_visual_context_tree_structural_epoch, u6
 {
 }
 
-NonnullRefPtr<DisplayList> DisplayList::create_from_command_bytes(AccumulatedVisualContextTree const& visual_context_tree, ByteBuffer&& command_bytes, Vector<DisplayListCommandRun>&& command_runs)
+extern "C" u64 ladybird_web_display_list_allocate_id()
+{
+    return s_next_id.fetch_add(1, AK::MemoryOrder::memory_order_relaxed);
+}
+
+NonnullRefPtr<DisplayList> DisplayList::create_from_command_bytes(AccumulatedVisualContextTree const& visual_context_tree, ByteBuffer&& command_bytes, Vector<DisplayListCommandRun>&& command_runs, Optional<u64> id)
 {
     MUST(validate_display_list_command_runs(command_bytes, command_runs));
     auto display_list = create(visual_context_tree);
+    if (id.has_value())
+        display_list->m_id = *id;
     display_list->m_command_bytes = move(command_bytes);
     display_list->m_command_runs = move(command_runs);
     return display_list;

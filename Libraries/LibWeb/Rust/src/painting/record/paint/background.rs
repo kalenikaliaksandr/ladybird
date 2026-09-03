@@ -158,9 +158,7 @@ pub(crate) fn paint_resolved_background(
             x: -group_device_rect.x,
             y: -group_device_rect.y,
         });
-        recorder
-            .paint_host
-            .nested_display_list_from_tree(&group, group_tree, &[])
+        recorder.publish_nested_display_list(group, group_tree, Vec::new())
     };
     let group_display_list_id = record_into_nested_list(recorder, &mut |recorder| {
         paint_background_layers(recorder, paintable, inputs, backdrop);
@@ -202,9 +200,7 @@ fn record_into_context_free_nested_list(
         x: -content_origin.x,
         y: -content_origin.y,
     });
-    recorder
-        .paint_host
-        .nested_display_list_from_tree(&content, content_tree, &[])
+    recorder.publish_nested_display_list(content, content_tree, Vec::new())
 }
 
 fn paint_background_layers(
@@ -862,7 +858,7 @@ fn paint_image_layer(
             x: -tile_device_rect.x,
             y: -tile_device_rect.y,
         });
-        let tile_display_list_id = recorder.paint_host.nested_display_list_from_tree(&tile, tile_tree, &[]);
+        let tile_display_list_id = recorder.publish_nested_display_list(tile, tile_tree, Vec::new());
 
         // A pattern repeats along both axes. On any non-repeating axis, constrain the coverage to a single tile.
         let mut coverage = clip_rect;
@@ -989,7 +985,7 @@ fn append_text_clip_paths(recorder: &mut PaintRecorder<'_>, paintable: NodeSlotI
         }
         let fragment_absolute_rect = crate::painting::text_fragment::absolute_rect(recorder.layout_arena, fragment);
         let fragment_absolute_device_rect = converter.enclosing_device_rect(fragment_absolute_rect);
-        let font_id = recorder.register_font(run.font.as_raw());
+        let font_id = recorder.register_font(&run.font);
         let emission =
             crate::painting::record::paint::text::glyph_run_emission(fragment, run, fragment_absolute_rect, scale);
         recorder.recorder.draw_glyph_run(

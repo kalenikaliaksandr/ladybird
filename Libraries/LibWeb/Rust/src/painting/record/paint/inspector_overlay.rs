@@ -493,7 +493,7 @@ fn shape_overlay_label(recorder: &mut PaintRecorder<'_>, text: &[u16], css_font_
     );
     let blob_bounds = libgfx_rust::text_layout::glyph_run_bounding_box(device_font_ref, shaped.glyphs(), 1.0);
     let (device_ascent, device_descent) = device_font_ref.pixel_metrics_ascent_descent();
-    let font_id = recorder.register_font(device_font.as_raw());
+    let font_id = recorder.register_font(&device_font);
     let glyphs = shaped
         .glyphs()
         .iter()

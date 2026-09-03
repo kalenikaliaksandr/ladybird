@@ -25,10 +25,12 @@ use crate::painting::record::cache::{
     CachedSubtreeCapture, CaptureAddress, CaptureKind, CaptureSite, EnclosingCaptureAnchor, OpenCapture, RecordGen,
     SourceTapePosition, SubtreeCaptureWalkOutcome, narrow_record_gen, resolve_capture_address_in_source_tape,
 };
+use crate::painting::record::manifest::ResourceManifest;
 use crate::painting::record::masks::MaskLayerSet;
 use crate::painting::record::verify::{CaptureLog, LoggedCapture};
 use crate::painting::record::{DeferredWholeTapeSplice, RecordingOutput};
 use crate::painting::style_queries;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -88,6 +90,7 @@ pub(crate) fn record_display_list(
         foreground_brightness_threshold: inputs.force_dark_foreground_threshold,
         background_brightness_threshold: inputs.force_dark_background_threshold,
     });
+    let resource_manifest = RefCell::new(ResourceManifest::default());
     let mut recorder = PaintRecorder {
         layout_arena: &paintable_rows,
         paint_state,
@@ -125,7 +128,7 @@ pub(crate) fn record_display_list(
         all_paint_caches_dirty: layout_arena.all_paint_caches_dirty(),
         all_descendant_subtree_caches_dirty: layout_arena.all_descendant_subtree_caches_dirty(),
         text_node_facts_cache: HashMap::new(),
-        font_resource_id_cache: HashMap::new(),
+        resource_manifest: &resource_manifest,
         text_control_selection_cache: HashMap::new(),
         selection_style_cache: HashMap::new(),
         wheel_hit_test_target_cache: HashMap::new(),
@@ -175,6 +178,7 @@ pub(crate) fn record_display_list(
         has_blocking_wheel_event_listeners: recorder.blocking_wheel_event_region_count > 0,
         wheel_event_listener_state_generation: inputs.wheel_event_listener_state_generation,
         mask_display_lists,
+        resource_manifest: std::mem::take(&mut *resource_manifest.borrow_mut()),
         recording_stats: recorder.recording_stats,
         is_identical_to_cache_source: false,
         capture_log_for_verification: recorder.capture_log_for_verification,

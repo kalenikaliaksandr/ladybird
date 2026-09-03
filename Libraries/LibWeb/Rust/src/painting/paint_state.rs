@@ -21,6 +21,8 @@ pub struct PaintState {
     pub(crate) selection: Option<crate::painting::selection::SelectionRange>,
     pub(crate) scrollable_overflow_contained_boxes: std::collections::HashMap<NodeSlotId, Vec<NodeSlotId>>,
     pub(crate) per_recording_memo_tables: RefCell<crate::painting::record::scratch::PerRecordingMemoTables>,
+    /// Resources the last recording produced, until the host takes them.
+    pub(crate) pending_resource_manifest: crate::painting::record::manifest::ResourceManifest,
 }
 
 impl PaintState {

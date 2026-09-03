@@ -29,6 +29,10 @@
 
 namespace Web::Painting {
 
+// Mints a display list id from the same counter DisplayList uses, for creators that must write the id into other
+// lists' bytes before the list itself exists (the Rust recorder's nested lists).
+extern "C" WEB_API u64 ladybird_web_display_list_allocate_id();
+
 class WEB_API DisplayListPlayer {
 public:
     virtual ~DisplayListPlayer() = default;
@@ -107,7 +111,9 @@ public:
         return adopt_ref(*new DisplayList(visual_context_tree.structural_epoch()));
     }
 
-    static WEB_API NonnullRefPtr<DisplayList> create_from_command_bytes(AccumulatedVisualContextTree const&, ByteBuffer&& command_bytes, Vector<DisplayListCommandRun>&& command_runs);
+    // `id` lets the creator name the list by an id it already wrote into other lists' bytes; it must come
+    // from ladybird_web_display_list_allocate_id().
+    static WEB_API NonnullRefPtr<DisplayList> create_from_command_bytes(AccumulatedVisualContextTree const&, ByteBuffer&& command_bytes, Vector<DisplayListCommandRun>&& command_runs, Optional<u64> id = {});
 
     u64 compatible_visual_context_tree_structural_epoch() const { return m_compatible_visual_context_tree_structural_epoch; }
     u64 id() const { return m_id; }

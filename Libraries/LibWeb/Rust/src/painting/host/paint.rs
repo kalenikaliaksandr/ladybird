@@ -408,7 +408,6 @@ pub struct FfiPaintHostCallbacks {
         unsafe extern "C" fn(*mut c_void, *mut c_void, FfiLayerImageList, u32) -> FfiImageIntrinsicFacts,
     pub text_control_selection: unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiTextControlSelection,
     pub selection_style_facts: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> FfiSelectionStyleFacts,
-    pub register_font: unsafe extern "C" fn(*mut c_void, *const c_void) -> u64,
     pub cursor_facts: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> FfiCursorFacts,
     pub layer_image_prepare:
         unsafe extern "C" fn(*mut c_void, *mut c_void, FfiLayerImageList, u32) -> FfiLayerImagePrepareFacts,
@@ -442,7 +441,6 @@ pub struct FfiPaintHostCallbacks {
         *const FfiSvgPaintContext,
         *mut c_void,
     ) -> FfiSvgPaintStyle,
-    pub nested_display_list_from_tree: unsafe extern "C" fn(*mut c_void, FfiRecordedDisplayList, *const c_void) -> u64,
     pub overlay_label_font: unsafe extern "C" fn(*mut c_void, f32) -> *const c_void,
     pub overlay_node_label_text: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void),
 }
@@ -493,11 +491,6 @@ impl FfiPaintHostCallbacks {
         // the sink through the exported function.
         let facts = unsafe { (self.selection_style_facts)(self.context, layout_node_shell, (&raw mut shadows).cast()) };
         (facts, shadows)
-    }
-    pub(crate) fn register_font(&self, font: *const c_void) -> u64 {
-        // SAFETY: The C++ host registers the live font in the recording's
-        // resource table synchronously.
-        unsafe { (self.register_font)(self.context, font) }
     }
     pub(crate) fn cursor_facts(
         &self,
@@ -619,23 +612,5 @@ impl FfiPaintHostCallbacks {
             )
         };
         (style, sink)
-    }
-    pub(crate) fn nested_display_list_from_tree(
-        &self,
-        recorded: &RecordedDisplayList,
-        tree: crate::painting::visual_context::VisualContextTree,
-        mask_registrations: &[FfiMaskDisplayListRegistration],
-    ) -> DisplayListResourceId {
-        let retained_tree = std::rc::Rc::into_raw(std::rc::Rc::new(tree)).cast();
-        // SAFETY: The C++ host copies the recording and its mask registrations synchronously and
-        // takes ownership of the retained tree handle.
-        let id = unsafe {
-            (self.nested_display_list_from_tree)(
-                self.context,
-                FfiRecordedDisplayList::with_mask_registrations(recorded, mask_registrations),
-                retained_tree,
-            )
-        };
-        DisplayListResourceId(id)
     }
 }

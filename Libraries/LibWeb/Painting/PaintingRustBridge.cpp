@@ -791,12 +791,12 @@ static void write_image_paint_facts(ImagePaint const& paint, PaintHostContext& c
         [](ImagePaint::Gradient const&) { VERIFY_NOT_REACHED(); });
 }
 
-static NonnullRefPtr<DisplayList> display_list_from_rust_recording(AccumulatedVisualContextTree const& visual_context_tree, Layout::RustFFI::FfiRecordedDisplayList const& recorded)
+static NonnullRefPtr<DisplayList> display_list_from_rust_recording(AccumulatedVisualContextTree const& visual_context_tree, Layout::RustFFI::FfiRecordedDisplayList const& recorded, Optional<u64> id = {})
 {
     VERIFY(recorded.byte_count % DisplayList::command_alignment == 0);
     auto command_bytes = MUST(ByteBuffer::copy(recorded.bytes, recorded.byte_count));
     Vector<DisplayListCommandRun> command_runs { ReadonlySpan<DisplayListCommandRun> { recorded.command_runs, recorded.command_run_count } };
-    auto display_list = DisplayList::create_from_command_bytes(visual_context_tree, move(command_bytes), move(command_runs));
+    auto display_list = DisplayList::create_from_command_bytes(visual_context_tree, move(command_bytes), move(command_runs), id);
     for (auto const& registration : ReadonlySpan<Layout::RustFFI::FfiMaskDisplayListRegistration> { recorded.mask_registrations, recorded.mask_registration_count })
         display_list->set_mask_display_list_id(registration.frame, DisplayListResourceId { registration.display_list_id });
     return display_list;
@@ -963,10 +963,6 @@ Layout::RustFFI::FfiPaintHostCallbacks paint_host_callbacks(PaintHostContext& co
                 facts.text_decoration_color = style.text_decoration->color;
             }
             return facts;
-        },
-        .register_font = [](void* context_pointer, void const* font) -> u64 {
-            auto& context = *static_cast<PaintHostContext*>(context_pointer);
-            return context.resource_storage.add_font(*static_cast<Gfx::Font const*>(font)).value();
         },
         .cursor_facts = [](void*, void* layout_node_shell, void* owner_layout_node_shell) -> Layout::RustFFI::FfiCursorFacts {
             auto const& layout_node = *static_cast<Layout::Node const*>(layout_node_shell);
@@ -1233,11 +1229,6 @@ Layout::RustFFI::FfiPaintHostCallbacks paint_host_callbacks(PaintHostContext& co
                 });
             return style;
         },
-        .nested_display_list_from_tree = [](void* context_pointer, Layout::RustFFI::FfiRecordedDisplayList recorded, void const* retained_tree) -> u64 {
-            auto& context = *static_cast<PaintHostContext*>(context_pointer);
-            auto visual_context_tree = AccumulatedVisualContextTree::adopt_rust_handle(retained_tree);
-            return context.resource_storage.add_display_list(display_list_from_rust_recording(visual_context_tree, recorded), visual_context_tree).value();
-        },
         .overlay_label_font = [](void*, float point_size) -> void const* {
             auto font = Platform::FontPlugin::the().default_font(point_size);
             VERIFY(font);
@@ -1351,6 +1342,19 @@ RefPtr<DisplayList> record_rust_display_list(DOM::Document& document, DisplayLis
     auto generation = Layout::RustFFI::layout_arena_record_display_list(arena, viewport_row_slot(document), hit_test_host_callbacks(), paint_host_callbacks(paint_host_context), visual_context_host_callbacks(document), inputs);
     if (generation == 0)
         return nullptr;
+    // The recorder wrote the ids of the fonts and nested display lists it used into the bytes; register the
+    // resources behind them before anything scans the bytes for references.
+    Layout::RustFFI::layout_arena_take_last_recording_resource_manifest(
+        arena, &paint_host_context,
+        [](void* context_pointer, void const* font) {
+            auto& context = *static_cast<PaintHostContext*>(context_pointer);
+            context.resource_storage.add_font(*static_cast<Gfx::Font const*>(font));
+        },
+        [](void* context_pointer, u64 id, Layout::RustFFI::FfiRecordedDisplayList recorded, void const* retained_tree) {
+            auto& context = *static_cast<PaintHostContext*>(context_pointer);
+            auto visual_context_tree = AccumulatedVisualContextTree::adopt_rust_handle(retained_tree);
+            context.resource_storage.add_display_list(display_list_from_rust_recording(visual_context_tree, recorded, id), visual_context_tree);
+        });
     if (Layout::RustFFI::layout_arena_last_recording_has_blocking_wheel_event_listeners(arena))
         wheel_event_region_state.has_blocking_wheel_event_listeners = true;
     auto stamp_async_scrolling_metadata_with_current_viewport_rect = [&](DisplayList& display_list) {

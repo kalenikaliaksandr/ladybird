@@ -1898,6 +1898,7 @@ pub unsafe extern "C" fn layout_arena_record_display_list(
         output
     };
     let mut paint_state = arena.paint_state().borrow_mut();
+    paint_state.pending_resource_manifest = std::mem::take(&mut output.resource_manifest);
     output.is_identical_to_cache_source = paint_state
         .paint_command_cache_source
         .as_ref()
@@ -2099,6 +2100,35 @@ pub unsafe extern "C" fn layout_arena_last_recording_stats(
         .last_recording
         .as_ref()
         .map_or_else(Default::default, |recording| recording.recording_stats)
+}
+
+/// Hands the resources the last recording produced to the host: fonts by pointer, nested display
+/// lists by id with their bytes and a retained visual context tree handle the host owns. Each
+/// resource is handed over once.
+///
+/// # Safety
+///
+/// `arena` must be a live handle from `layout_arena_create`, used on the document thread; the
+/// callbacks run synchronously during this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_take_last_recording_resource_manifest(
+    arena: *mut c_void,
+    context: *mut c_void,
+    add_font: unsafe extern "C" fn(*mut c_void, *const c_void),
+    add_nested_display_list: unsafe extern "C" fn(*mut c_void, u64, FfiRecordedDisplayList, *const c_void),
+) {
+    let arena = unsafe { arena_from_handle(arena) };
+    let manifest = std::mem::take(&mut arena.paint_state().borrow_mut().pending_resource_manifest);
+    for font in manifest.fonts() {
+        // SAFETY: The host copies its own reference synchronously; the manifest keeps the font live.
+        unsafe { add_font(context, font.as_raw()) };
+    }
+    for entry in manifest.into_nested_display_lists() {
+        let recorded = FfiRecordedDisplayList::with_mask_registrations(&entry.recorded, &entry.mask_registrations);
+        let retained_tree = Rc::into_raw(Rc::new(entry.tree)).cast();
+        // SAFETY: The host copies the recording synchronously and takes ownership of the tree handle.
+        unsafe { add_nested_display_list(context, entry.id.0, recorded, retained_tree) };
+    }
 }
 
 /// # Safety

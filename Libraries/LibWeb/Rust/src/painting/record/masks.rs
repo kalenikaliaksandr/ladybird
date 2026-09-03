@@ -385,7 +385,7 @@ impl PaintRecorder<'_> {
             .take()
             .expect("CSS mask recording has a visual context tree");
         let recorded = session.recorder.into_builder().finish();
-        self.paint_host.nested_display_list_from_tree(&recorded, tree, &[])
+        self.publish_nested_display_list(recorded, tree, Vec::new())
     }
 
     pub(crate) fn record_nested_svg_display_list(
@@ -423,7 +423,6 @@ impl PaintRecorder<'_> {
             .map(FfiMaskDisplayListRegistration::from)
             .collect();
         let recorded = nested_recorder.into_builder().finish();
-        self.paint_host
-            .nested_display_list_from_tree(&recorded, tree, &mask_display_lists)
+        self.publish_nested_display_list(recorded, tree, mask_display_lists)
     }
 }

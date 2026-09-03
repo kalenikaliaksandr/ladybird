@@ -335,7 +335,7 @@ fn paint_text_shadow(recorder: &mut PaintRecorder<'_>, block: NodeSlotId, span: 
     let fragment_height = converter.enclosing_device_pixels(fragment.size.height);
     let fragment_baseline = converter.rounded_device_pixels(fragment.baseline);
     let fragment_absolute_rect = text_fragment::absolute_rect(recorder.layout_arena, fragment);
-    let font_id = recorder.register_font(run.font.as_raw());
+    let font_id = recorder.register_font(&run.font);
 
     // Shadow layers are ordered front-to-back, so we paint them in reverse.
     for layer in span.shadow_layers.iter().rev() {
@@ -424,7 +424,7 @@ fn paint_text_fragment(
     let scale = recorder.inputs.device_pixels_per_css_pixel;
     let fragment_absolute_rect = text_fragment::absolute_rect(recorder.layout_arena, fragment);
     let fragment_device_rect = converter.enclosing_device_rect(fragment_absolute_rect);
-    let font_id = recorder.register_font(run.font.as_raw());
+    let font_id = recorder.register_font(&run.font);
     let GlyphRunEmission {
         glyphs,
         baseline_start,

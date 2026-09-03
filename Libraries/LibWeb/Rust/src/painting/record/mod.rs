@@ -7,6 +7,7 @@
 pub mod async_scroll_metadata;
 pub mod cache;
 pub mod hit_test_items;
+pub(crate) mod manifest;
 pub mod masks;
 pub mod paint;
 pub(crate) mod scratch;
@@ -18,7 +19,7 @@ use crate::layout::node_data::NodeSlotId;
 use crate::layout::node_data::{NodeFlag, NodeKind};
 use crate::painting::border_radii::BorderRadii;
 use crate::painting::display_list::builder::{CommandRange, PendingInlineClip, RecordedDisplayList};
-use crate::painting::display_list::commands::{ContextRef, SpatialNodeIndex};
+use crate::painting::display_list::commands::{ContextRef, DisplayListResourceId, SpatialNodeIndex};
 use crate::painting::display_list::device_pixels::DevicePixelConverter;
 use crate::painting::display_list::recorder::DisplayListRecorder;
 use crate::painting::hit_test::HitTestList;
@@ -84,6 +85,7 @@ pub struct RecordingOutput {
     pub has_blocking_wheel_event_listeners: bool,
     pub wheel_event_listener_state_generation: u64,
     pub mask_display_lists: Vec<FfiMaskDisplayListRegistration>,
+    pub resource_manifest: manifest::ResourceManifest,
     pub recording_stats: FfiPaintRecordingStats,
     pub is_identical_to_cache_source: bool,
     pub(crate) capture_log_for_verification: Option<verify::CaptureLog>,
@@ -143,7 +145,7 @@ pub struct PaintRecorder<'a> {
     pub(crate) all_paint_caches_dirty: bool,
     pub(crate) all_descendant_subtree_caches_dirty: bool,
     text_node_facts_cache: HashMap<u32, FfiHitTestTextNodeFacts>,
-    font_resource_id_cache: HashMap<usize, u64>,
+    pub(crate) resource_manifest: &'a RefCell<manifest::ResourceManifest>,
     text_control_selection_cache: HashMap<u32, crate::painting::host::FfiTextControlSelection>,
     selection_style_cache: HashMap<u32, Rc<paint::text::SelectionStyleAnswer>>,
     pub(crate) wheel_hit_test_target_cache: HashMap<NodeSlotId, SpatialNodeIndex>,
@@ -187,14 +189,22 @@ impl<'a> PaintRecorder<'a> {
         facts
     }
 
-    pub(crate) fn register_font(&mut self, font: *const std::ffi::c_void) -> u64 {
-        let key = font as usize;
-        if let Some(font_id) = self.font_resource_id_cache.get(&key) {
-            return *font_id;
-        }
-        let font_id = self.paint_host.register_font(font);
-        self.font_resource_id_cache.insert(key, font_id);
-        font_id
+    /// The id the display list names `font` by. The font itself reaches the host through the
+    /// resource manifest once the recording has returned.
+    pub(crate) fn register_font(&self, font: &libgfx_rust::font::RetainedFont) -> u64 {
+        self.resource_manifest.borrow_mut().register_font(font)
+    }
+
+    /// Lists a finished nested recording in the resource manifest under a freshly minted id.
+    pub(crate) fn publish_nested_display_list(
+        &self,
+        recorded: RecordedDisplayList,
+        tree: crate::painting::visual_context::VisualContextTree,
+        mask_registrations: Vec<FfiMaskDisplayListRegistration>,
+    ) -> DisplayListResourceId {
+        self.resource_manifest
+            .borrow_mut()
+            .publish_nested_display_list(recorded, tree, mask_registrations)
     }
 
     pub(crate) fn text_control_selection(
@@ -265,7 +275,7 @@ impl<'a> PaintRecorder<'a> {
             all_paint_caches_dirty: self.all_paint_caches_dirty,
             all_descendant_subtree_caches_dirty: self.all_descendant_subtree_caches_dirty,
             text_node_facts_cache: HashMap::new(),
-            font_resource_id_cache: HashMap::new(),
+            resource_manifest: self.resource_manifest,
             text_control_selection_cache: HashMap::new(),
             selection_style_cache: HashMap::new(),
             wheel_hit_test_target_cache: HashMap::new(),
