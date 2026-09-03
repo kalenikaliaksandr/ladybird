@@ -36,6 +36,7 @@ void SVGMaskElement::attribute_changed(Utf16FlyString const& name, Optional<Utf1
         m_mask_units = parse_units(value.value_or({}));
     } else if (name == AttributeNames::maskContentUnits) {
         m_mask_content_units = parse_units(value.value_or({}));
+        sync_dom_paint_facts_of_resource_boxes();
     } else if (name == AttributeNames::x) {
         m_x = parse_number_percentage(value.value_or({}));
     } else if (name == AttributeNames::y) {

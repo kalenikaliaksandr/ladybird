@@ -172,6 +172,29 @@ pub enum NodeFlag {
     IsDocumentElement = 1 << 30,
 }
 
+/// Facts about a layout node's DOM node that painting reads. The host mirrors them into the arena
+/// when the node is constructed and again from `DOM::Node::set_needs_repaint()`, which every flip
+/// of one of them reaches. Text nodes carry none: a text's inertness follows its nearest
+/// non-anonymous ancestor's.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum DomPaintFact {
+    /// `DOM::Node::is_inert()`.
+    Inert = 1 << 0,
+    /// The DOM node has a parent.
+    HasDomParent = 1 << 1,
+    /// `DOM::Node::is_editable_or_editing_host()`.
+    EditableOrEditingHost = 1 << 2,
+    /// `DOM::Node::inside_blocking_wheel_event_handler()`.
+    InsideBlockingWheelEventHandler = 1 << 3,
+    /// The DOM node is an element rather than the document or a text.
+    IsElement = 1 << 4,
+    /// A navigable container whose content navigable exists.
+    IsNestedNavigableContainer = 1 << 5,
+    /// On an SVG mask or clip-path box: the element's content units are objectBoundingBox.
+    SvgUnitsObjectBoundingBox = 1 << 6,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum CompositorAnimationFrameKind {
@@ -203,6 +226,10 @@ pub struct FfiNodeConstructionFacts {
     pub uses_button_layout: bool,
     pub is_editing_host: bool,
     pub is_body: bool,
+    /// `DomPaintFact` bits.
+    pub dom_paint_facts: u8,
+    /// The DOM node's unique id, the document's for anonymous boxes.
+    pub dom_unique_id: i64,
 }
 
 #[repr(C)]
@@ -229,6 +256,8 @@ pub(crate) struct NodeData {
     pub compositor_animation_frame_kinds: Cell<u8>,
     pub table_column_span: Cell<u16>,
     pub table_row_span: Cell<u16>,
+    /// `DomPaintFact` bits, mirrored from the DOM node by the host.
+    pub dom_paint_facts: Cell<u8>,
     pub style: Cell<*const c_void>,
     pub shell: Cell<*mut c_void>,
 }
@@ -251,6 +280,7 @@ impl Default for NodeData {
             compositor_animation_frame_kinds: Cell::new(0),
             table_column_span: Cell::new(1),
             table_row_span: Cell::new(1),
+            dom_paint_facts: Cell::new(0),
             fragment_cache_epoch: Cell::new(0),
             style: Cell::new(std::ptr::null()),
             shell: Cell::new(std::ptr::null_mut()),
@@ -278,6 +308,7 @@ mod tests {
         assert_eq!(std::mem::offset_of!(NodeData, compositor_animation_frame_kinds), 41);
         assert_eq!(std::mem::offset_of!(NodeData, table_column_span), 42);
         assert_eq!(std::mem::offset_of!(NodeData, table_row_span), 44);
+        assert_eq!(std::mem::offset_of!(NodeData, dom_paint_facts), 46);
         assert_eq!(std::mem::offset_of!(NodeData, style), 48);
         assert_eq!(std::mem::offset_of!(NodeData, shell), 56);
     }

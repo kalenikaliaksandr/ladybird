@@ -2441,6 +2441,8 @@ void Node::removed_from(IsSubtreeRoot, Node* old_parent, Node&)
 void Node::moved_from(IsSubtreeRoot, GC::Ptr<Node>)
 {
     recompute_editable_subtree_flag();
+    if (auto* layout_node = unsafe_layout_node())
+        layout_node->sync_dom_paint_facts();
     if (update_inside_blocking_wheel_event_handler_state())
         set_needs_repaint();
 }
@@ -2485,6 +2487,8 @@ void Node::update_inside_blocking_wheel_event_handler_state_for_subtree()
         if (!node.update_inside_blocking_wheel_event_handler_state())
             return TraversalDecision::Continue;
         any_descendant_flipped_blocking_wheel_state = true;
+        if (auto* layout_node = node.unsafe_layout_node())
+            layout_node->sync_dom_paint_facts();
         if (auto* element = as_if<Element>(node); element && element->rendered_in_top_layer())
             set_needs_repaint_of_top_layer_boxes(*element, subtree_layout_node);
         else if (!subtree_layout_node)
@@ -3409,6 +3413,8 @@ Layout::Node* Node::layout_node()
 void Node::set_needs_repaint(InvalidateDisplayList should_invalidate_display_list)
 {
     if (auto* layout_node = unsafe_layout_node()) {
+        // Every flip of a DOM fact painting reads repaints the node, so the mirror is refreshed here.
+        layout_node->sync_dom_paint_facts();
         if (auto* text_node = as_if<Layout::TextNode>(*layout_node)) {
             text_node->set_needs_repaint(should_invalidate_display_list);
             return;

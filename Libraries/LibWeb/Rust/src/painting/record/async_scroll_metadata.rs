@@ -5,7 +5,8 @@
  */
 
 use crate::css::css_pixels::{CssPixelPoint, CssPixelRect, CssPixelSize};
-use crate::layout::node_data::{NodeKind, NodeSlotId};
+use crate::layout::LayoutNodeArena;
+use crate::layout::node_data::{DomPaintFact, NodeFlag, NodeKind, NodeSlotId};
 use crate::painting::chrome_geometry::{
     ChromeGeometry, maximum_scroll_offset, minimum_scroll_offset, scrollbar_colors_for_paint,
 };
@@ -194,18 +195,29 @@ impl PaintRecorder<'_> {
             .compositor_main_thread_wheel_event_region(CompositorMainThreadWheelEventRegion { rect });
     }
 
-    fn record_scroll_node(&mut self, paintable: NodeSlotId, facts: &crate::painting::host::FfiAsyncScrollFacts) {
-        let scroll_node_kind = match facts.scroll_node_kind {
-            crate::painting::host::FfiScrollNodeKind::Viewport => CompositorScrollNodeKind::Viewport,
-            crate::painting::host::FfiScrollNodeKind::Element => CompositorScrollNodeKind::Element,
-            crate::painting::host::FfiScrollNodeKind::PseudoElement => CompositorScrollNodeKind::PseudoElement,
-            crate::painting::host::FfiScrollNodeKind::None => return,
+    fn record_scroll_node(&mut self, paintable: NodeSlotId) {
+        // The scroll node names the DOM thing that scrolls: the document, an element, or a pseudo-element's
+        // generator, by the unique id the host mirrors into the arena.
+        let is_viewport = self.layout_arena.node_kind_if_live(paintable) == Some(NodeKind::Viewport);
+        let generated_for = self.layout_arena.node_generated_for(paintable);
+        let scroll_node_kind = if is_viewport {
+            CompositorScrollNodeKind::Viewport
+        } else if generated_for != 0 {
+            CompositorScrollNodeKind::PseudoElement
+        } else if self
+            .layout_arena
+            .node_has_dom_paint_fact(paintable, DomPaintFact::IsElement)
+        {
+            CompositorScrollNodeKind::Element
+        } else {
+            return;
         };
+        let (snaps_scroll_position_horizontally, snaps_scroll_position_vertically) =
+            snap_axes(self.layout_arena, paintable);
         let parent_scroll_node_index = match self.nearest_scrollable_ancestor(paintable) {
             Some(ancestor) => self.data(ancestor).own_scroll_node_index,
             None => VISUAL_VIEWPORT_NODE_INDEX,
         };
-        let is_viewport = self.layout_arena.node_kind_if_live(paintable) == Some(NodeKind::Viewport);
         let scrollport_rect = if is_viewport {
             IntRect::new(
                 0,
@@ -224,19 +236,20 @@ impl PaintRecorder<'_> {
         let hit_test_facts = self.hit_test_facts(paintable);
         self.recorder.compositor_scroll_node(CompositorScrollNode {
             document_id: UniqueNodeId(self.inputs.document_id),
-            scrollable_node_id: UniqueNodeId(facts.scrollable_node_id),
+            scrollable_node_id: UniqueNodeId(self.layout_arena.node_dom_unique_id_if_live(paintable)),
             scroll_node_index: self.data(paintable).own_scroll_node_index,
             parent_scroll_node_index,
             scrollport_rect,
             min_scroll_offset: css_point_to_device_point(minimum_scroll_offset(self.layout_arena, paintable), scale),
             max_scroll_offset: css_point_to_device_point(maximum_scroll_offset(self.layout_arena, paintable), scale),
             scroll_node_kind,
-            pseudo_element_type: facts.pseudo_element_type,
+            // The arena stores the pseudo-element type offset by one so that zero means none.
+            pseudo_element_type: generated_for.saturating_sub(1),
             is_viewport,
             can_be_wheel_scrolled_horizontally: hit_test_facts.could_be_scrolled_horizontally,
             can_be_wheel_scrolled_vertically: hit_test_facts.could_be_scrolled_vertically,
-            snaps_scroll_position_horizontally: facts.snaps_scroll_position_horizontally,
-            snaps_scroll_position_vertically: facts.snaps_scroll_position_vertically,
+            snaps_scroll_position_horizontally,
+            snaps_scroll_position_vertically,
         });
     }
 
@@ -300,18 +313,55 @@ impl PaintRecorder<'_> {
         if !self.inputs.is_recording_async_scrolling_metadata {
             return;
         }
-        let facts = self.paint_host.async_scroll_facts(self.layout_node_shell(paintable));
-
         self.record_wheel_hit_test_target(paintable);
         self.record_blocking_wheel_event_region(paintable);
 
-        if facts.is_nested_navigable_container {
+        if self
+            .layout_arena
+            .node_has_dom_paint_fact(paintable, DomPaintFact::IsNestedNavigableContainer)
+        {
             self.record_main_thread_wheel_event_region(paintable);
         } else if self.data(paintable).own_scroll_node_index != VISUAL_VIEWPORT_NODE_INDEX
             && self.could_be_scrolled_by_wheel_event(paintable)
         {
-            self.record_scroll_node(paintable, &facts);
+            self.record_scroll_node(paintable);
         }
         self.record_viewport_scrollbar_state(paintable);
+    }
+}
+
+/// The axes `scroll-snap-type` makes a scroll container snap on, as `(x, y)`; the viewport snaps
+/// by the root element's value. The main thread's snapping asks the same question through
+/// `layout_arena_scroll_snap_axes`, so the compositor and the main thread snap in the same axes.
+pub(crate) fn snap_axes(arena: &LayoutNodeArena, scroll_container: NodeSlotId) -> (bool, bool) {
+    use crate::css::css_enums::{scroll_snap_axis, scroll_snap_strictness, writing_mode};
+    let style_source = if arena.node_kind_if_live(scroll_container) == Some(NodeKind::Viewport) {
+        let mut child = arena.node_first_child_if_live(scroll_container);
+        loop {
+            let Some(node) = child else {
+                return (false, false);
+            };
+            if arena.node_flags_if_live(node) & NodeFlag::IsDocumentElement as u32 != 0 {
+                break node;
+            }
+            child = arena.node_next_sibling_if_live(node);
+        }
+    } else {
+        scroll_container
+    };
+    let Some(style) = arena.node_style_if_live(style_source) else {
+        return (false, false);
+    };
+    let misc = style.misc_reset();
+    if misc.scroll_snap_strictness == scroll_snap_strictness::NONE {
+        return (false, false);
+    }
+    let horizontal_writing_mode = style.writing_mode() == writing_mode::HORIZONTAL_TB;
+    match misc.scroll_snap_axis {
+        scroll_snap_axis::X => (true, false),
+        scroll_snap_axis::Y => (false, true),
+        scroll_snap_axis::INLINE => (horizontal_writing_mode, !horizontal_writing_mode),
+        scroll_snap_axis::BLOCK => (!horizontal_writing_mode, horizontal_writing_mode),
+        _ => (true, true),
     }
 }

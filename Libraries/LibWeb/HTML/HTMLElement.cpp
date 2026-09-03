@@ -25,6 +25,7 @@
 #include <LibWeb/DOM/Position.h>
 #include <LibWeb/DOM/Range.h>
 #include <LibWeb/DOM/ShadowRoot.h>
+#include <LibWeb/DOM/Text.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/CloseWatcher.h>
 #include <LibWeb/HTML/CustomElements/CustomElementDefinition.h>
@@ -922,12 +923,21 @@ void HTMLElement::set_subtree_inertness(bool is_inert)
     };
 
     update_inertness(*this);
-    for_each_in_subtree_of_type<Element>([&](auto& element) {
-        auto* html_element = as_if<HTMLElement>(element);
+    for_each_in_subtree([&](DOM::Node& node) {
+        if (auto* text = as_if<DOM::Text>(node)) {
+            // Text carries no inert flag either and resolves is_inert() through its enclosing HTML
+            // element; the repaint refreshes the mirror of that answer on the text's layout node.
+            text->set_needs_repaint();
+            return TraversalDecision::Continue;
+        }
+        auto* element = as_if<DOM::Element>(node);
+        if (!element)
+            return TraversalDecision::Continue;
+        auto* html_element = as_if<HTMLElement>(*element);
         if (!html_element) {
             // Non-HTML elements (SVG, MathML) carry no inert flag and resolve is_inert() through
             // their nearest HTML ancestor, so their recorded hit-test output must be repainted here.
-            element.set_needs_repaint();
+            element->set_needs_repaint();
             return TraversalDecision::Continue;
         }
         if (html_element->has_attribute(HTML::AttributeNames::inert))

@@ -561,6 +561,28 @@ pub unsafe extern "C" fn layout_arena_paintable_layout_node_shell(arena: *mut c_
     arena.shell_if_live(slot)
 }
 
+/// The axes a scroll container snaps on.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct FfiScrollSnapAxes {
+    pub x: bool,
+    pub y: bool,
+}
+
+/// The axes `scroll-snap-type` makes the scroll container at `slot` (a box or the viewport) snap on:
+/// the computation the recorder writes into the compositor's scroll nodes, for the main thread's
+/// snapping.
+///
+/// # Safety
+///
+/// `arena` must be a live handle from `layout_arena_create`, used on the document thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_scroll_snap_axes(arena: *mut c_void, slot: NodeSlotId) -> FfiScrollSnapAxes {
+    let arena = unsafe { arena_from_handle(arena) };
+    let (x, y) = crate::painting::record::async_scroll_metadata::snap_axes(arena, slot);
+    FfiScrollSnapAxes { x, y }
+}
+
 /// # Safety
 ///
 /// `arena` must be a live handle from `layout_arena_create`, used on the document thread.

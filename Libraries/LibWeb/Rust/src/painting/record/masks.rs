@@ -6,7 +6,7 @@
 
 use crate::css::css_pixels::CssPixelRect;
 use crate::css::css_pixels::CssPixels;
-use crate::layout::node_data::{NodeKind, NodeSlotId};
+use crate::layout::node_data::{DomPaintFact, NodeKind, NodeSlotId};
 use crate::painting::display_list::commands::DisplayListResourceId;
 use crate::painting::display_list::commands::{ContextRef, VISUAL_VIEWPORT_NODE_INDEX};
 use crate::painting::display_list::recorder::DisplayListRecorder;
@@ -277,7 +277,10 @@ impl PaintRecorder<'_> {
         mask_device_rect: libgfx_rust::IntRect,
     ) -> Option<DisplayListResourceId> {
         let mask_paintable = self.first_child_paintable_of_kind(target, NodeKind::SVGMaskBox)?;
-        let content_units_transform = if self.hit_test_facts(target).svg_mask_content_units_object_bbox {
+        let content_units_transform = if self
+            .layout_arena
+            .node_has_dom_paint_fact(mask_paintable, DomPaintFact::SvgUnitsObjectBoundingBox)
+        {
             self.object_bounding_box_content_units_transform(target)
         } else {
             AffineTransform::identity()
@@ -291,7 +294,10 @@ impl PaintRecorder<'_> {
         clip_device_rect: libgfx_rust::IntRect,
     ) -> Option<DisplayListResourceId> {
         let clip_paintable = self.first_child_paintable_of_kind(target, NodeKind::SVGClipBox)?;
-        let content_units_transform = if self.hit_test_facts(target).svg_clip_path_units_object_bbox {
+        let content_units_transform = if self
+            .layout_arena
+            .node_has_dom_paint_fact(clip_paintable, DomPaintFact::SvgUnitsObjectBoundingBox)
+        {
             self.object_bounding_box_content_units_transform(target)
         } else {
             AffineTransform::identity()

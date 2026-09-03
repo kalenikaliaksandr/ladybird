@@ -127,7 +127,6 @@ pub(crate) fn record_display_list(
         completed_record_gen: narrow_record_gen(layout_arena.paint_cache_completed_record_gen()),
         all_paint_caches_dirty: layout_arena.all_paint_caches_dirty(),
         all_descendant_subtree_caches_dirty: layout_arena.all_descendant_subtree_caches_dirty(),
-        text_node_facts_cache: HashMap::new(),
         resource_manifest: &resource_manifest,
         selection_style_cache: HashMap::new(),
         wheel_hit_test_target_cache: HashMap::new(),

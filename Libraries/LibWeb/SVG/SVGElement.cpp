@@ -408,6 +408,22 @@ void SVGElement::register_resource_box_referencing_element(Badge<Layout::LayoutT
     m_resource_box_referencing_elements.append(referencing_element);
 }
 
+void SVGElement::sync_dom_paint_facts_of_resource_boxes()
+{
+    for (auto& weak_referencing_element : m_resource_box_referencing_elements) {
+        auto referencing_element = weak_referencing_element.ptr();
+        auto* referencing_layout_node = referencing_element ? referencing_element->unsafe_layout_node() : nullptr;
+        if (!referencing_layout_node)
+            continue;
+        // The tree builder appends the resource box directly under the referencing element's box.
+        referencing_layout_node->for_each_child([&](Layout::Node& child) {
+            if (child.dom_node() == this)
+                child.sync_dom_paint_facts();
+            return IterationDecision::Continue;
+        });
+    }
+}
+
 void SVGElement::mark_resource_box_referencing_elements_for_layout_tree_update()
 {
     for (auto& weak_referencing_element : m_resource_box_referencing_elements) {

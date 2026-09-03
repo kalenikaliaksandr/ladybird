@@ -50,6 +50,10 @@ public:
     virtual void apply_presentational_hints(Vector<CSS::StyleProperty>&) const final override;
 
     void register_resource_box_referencing_element(Badge<Layout::LayoutTreeBuilderAccess>, DOM::Element&);
+    // Refreshes the mirrored DOM paint facts of every resource box built from this element: there is
+    // one under each referencing element's layout node, and this element's own layout node pointer
+    // names only the last one built.
+    void sync_dom_paint_facts_of_resource_boxes();
 
 protected:
     SVGElement(DOM::Document&, DOM::QualifiedName);

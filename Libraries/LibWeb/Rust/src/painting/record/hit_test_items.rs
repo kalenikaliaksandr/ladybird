@@ -7,12 +7,11 @@
 use super::{PaintPhase, PaintRecorder};
 use crate::css::css_enums;
 use crate::css::css_pixels::{CssPixelRect, CssPixels};
-use crate::layout::node_data::{NodeFlag, NodeSlotId};
+use crate::layout::node_data::{DomPaintFact, NodeFlag, NodeSlotId};
 use crate::layout::node_facts;
 use crate::painting::display_list::commands::ContextRef;
 use crate::painting::fragment_ownership;
 use crate::painting::hit_test::*;
-use crate::painting::host::FfiHitTestTextNodeFacts;
 use crate::painting::node_painting;
 use crate::painting::paintable_data::*;
 use crate::painting::paintable_geometry;
@@ -30,8 +29,6 @@ pub(crate) struct HitTestFacts {
     pub(crate) could_be_scrolled_vertically: bool,
     pub(crate) svg_path_has_fill: bool,
     pub(crate) svg_path_winding_rule: WindingRule,
-    pub(crate) svg_mask_content_units_object_bbox: bool,
-    pub(crate) svg_clip_path_units_object_bbox: bool,
     pub(crate) inside_blocking_wheel_event_handler: bool,
 }
 
@@ -39,15 +36,14 @@ pub(crate) fn hit_test_facts(
     arena: &impl crate::painting::paintable_rows::PaintableRowsRead,
     paintable: NodeSlotId,
     inputs: &crate::painting::record::RecordingInputs,
-    dom: crate::painting::host::FfiHitTestPaintableFacts,
 ) -> HitTestFacts {
+    // The DOM facts the host mirrors into the arena (`DomPaintFact`).
+    let has = |fact: DomPaintFact| arena.node_has_dom_paint_fact(paintable, fact);
     let Some(style) = arena.node_style_if_live(paintable) else {
         return HitTestFacts {
-            dom_node_has_parent: dom.dom_node_has_parent,
-            is_editable_or_editing_host: dom.is_editable_or_editing_host,
-            svg_mask_content_units_object_bbox: dom.svg_mask_content_units_object_bbox,
-            svg_clip_path_units_object_bbox: dom.svg_clip_path_units_object_bbox,
-            inside_blocking_wheel_event_handler: dom.inside_blocking_wheel_event_handler,
+            dom_node_has_parent: has(DomPaintFact::HasDomParent),
+            is_editable_or_editing_host: has(DomPaintFact::EditableOrEditingHost),
+            inside_blocking_wheel_event_handler: has(DomPaintFact::InsideBlockingWheelEventHandler),
             ..HitTestFacts::default()
         };
     };
@@ -63,10 +59,10 @@ pub(crate) fn hit_test_facts(
     let svg = style.inherited_svg();
     HitTestFacts {
         visible_for_hit_testing: arena.paintable_row_is_populated(paintable)
-            && !dom.is_inert
+            && !has(DomPaintFact::Inert)
             && style.inherited_ui().pointer_events != css_enums::pointer_events::NONE,
-        dom_node_has_parent: dom.dom_node_has_parent,
-        is_editable_or_editing_host: dom.is_editable_or_editing_host,
+        dom_node_has_parent: has(DomPaintFact::HasDomParent),
+        is_editable_or_editing_host: has(DomPaintFact::EditableOrEditingHost),
         has_resizer: crate::painting::chrome_geometry::has_resizer(arena, paintable),
         could_be_scrolled_horizontally: wheel_axes.horizontal,
         could_be_scrolled_vertically: wheel_axes.vertical,
@@ -76,21 +72,16 @@ pub(crate) fn hit_test_facts(
         } else {
             WindingRule::Nonzero
         },
-        svg_mask_content_units_object_bbox: dom.svg_mask_content_units_object_bbox,
-        svg_clip_path_units_object_bbox: dom.svg_clip_path_units_object_bbox,
-        inside_blocking_wheel_event_handler: dom.inside_blocking_wheel_event_handler,
+        inside_blocking_wheel_event_handler: has(DomPaintFact::InsideBlockingWheelEventHandler),
     }
 }
 
 impl<'a> PaintRecorder<'a> {
-    fn text_node_facts(&mut self, text_node: NodeSlotId) -> FfiHitTestTextNodeFacts {
-        let key = text_node.index;
-        if let Some(facts) = self.text_node_facts_cache.get(&key) {
-            return *facts;
-        }
-        let facts = self.host.text_node_facts(self.layout_arena.shell_if_live(text_node));
-        self.text_node_facts_cache.insert(key, facts);
-        facts
+    /// A DOM text's inertness is its enclosing HTML element's, mirrored onto the text's own layout
+    /// node: the inert element need not have a box of its own (`display: contents`, a slot).
+    fn text_node_is_inert(&self, text_node: NodeSlotId) -> bool {
+        self.layout_arena
+            .node_has_dom_paint_fact(text_node, DomPaintFact::Inert)
     }
 
     fn is_anonymous(&self, paintable: NodeSlotId) -> bool {
@@ -379,7 +370,7 @@ impl<'a> PaintRecorder<'a> {
         {
             return None;
         }
-        if self.text_node_facts(node).is_inert {
+        if self.text_node_is_inert(node) {
             return None;
         }
         // Resolving the hit needs a committed paintable row; without one there is nothing to resolve against.

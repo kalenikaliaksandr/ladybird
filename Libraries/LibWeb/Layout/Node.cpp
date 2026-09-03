@@ -23,6 +23,7 @@
 #include <LibWeb/HTML/HTMLTableCellElement.h>
 #include <LibWeb/HTML/HTMLTableColElement.h>
 #include <LibWeb/HTML/LocalNavigable.h>
+#include <LibWeb/HTML/NavigableContainer.h>
 #include <LibWeb/Layout/BlockContainer.h>
 #include <LibWeb/Layout/LayoutRustBridge.h>
 #include <LibWeb/Layout/Node.h>
@@ -35,10 +36,33 @@
 #include <LibWeb/SVG/SVGClipPathElement.h>
 #include <LibWeb/SVG/SVGFilterElement.h>
 #include <LibWeb/SVG/SVGGradientElement.h>
+#include <LibWeb/SVG/SVGMaskElement.h>
 #include <LibWeb/SVG/SVGPatternElement.h>
 #include <LibWeb/SVG/SVGTextContentElement.h>
 
 namespace Web::Layout {
+
+static u8 dom_paint_facts_for(DOM::Node const* node)
+{
+    if (!node)
+        return 0;
+    u8 facts = 0;
+    auto set = [&](RustFFI::DomPaintFact fact, bool value) {
+        if (value)
+            facts |= to_underlying(fact);
+    };
+    set(RustFFI::DomPaintFact::Inert, node->is_inert());
+    set(RustFFI::DomPaintFact::HasDomParent, node->parent() != nullptr);
+    set(RustFFI::DomPaintFact::EditableOrEditingHost, node->is_editable_or_editing_host());
+    set(RustFFI::DomPaintFact::InsideBlockingWheelEventHandler, node->inside_blocking_wheel_event_handler());
+    set(RustFFI::DomPaintFact::IsElement, is<DOM::Element>(*node));
+    set(RustFFI::DomPaintFact::IsNestedNavigableContainer, node->is_navigable_container() && as<HTML::NavigableContainer const>(*node).content_navigable());
+    if (auto const* mask_element = as_if<SVG::SVGMaskElement>(*node))
+        set(RustFFI::DomPaintFact::SvgUnitsObjectBoundingBox, mask_element->mask_content_units() == SVG::MaskContentUnits::ObjectBoundingBox);
+    else if (auto const* clip_path_element = as_if<SVG::SVGClipPathElement>(*node))
+        set(RustFFI::DomPaintFact::SvgUnitsObjectBoundingBox, clip_path_element->clip_path_units() == SVG::ClipPathUnits::ObjectBoundingBox);
+    return facts;
+}
 
 static RustFFI::FfiNodeConstructionFacts build_node_construction_facts(DOM::Document& document, GC::Ptr<DOM::Node> node, RustFFI::NodeKind kind, void* shell)
 {
@@ -54,6 +78,8 @@ static RustFFI::FfiNodeConstructionFacts build_node_construction_facts(DOM::Docu
         .uses_button_layout = node && is<HTML::HTMLElement>(*node) && static_cast<HTML::HTMLElement const&>(*node).uses_button_layout(),
         .is_editing_host = node && node->is_editing_host(),
         .is_body = node && node == GC::Ptr { document.body() },
+        .dom_paint_facts = dom_paint_facts_for(node.ptr()),
+        .dom_unique_id = node ? node->unique_id().value() : document.unique_id().value(),
     };
 }
 
@@ -954,6 +980,7 @@ void Node::set_generated_for(CSS::PseudoElement type, DOM::Element& element)
     static_assert(encode_generated_for(CSS::PseudoElement::After) == RustFFI::GENERATED_FOR_AFTER);
     static_assert(encode_generated_for(CSS::PseudoElement::Marker) == RustFFI::GENERATED_FOR_MARKER);
     RustFFI::layout_arena_set_node_generated_for(arena_handle(), slot_id(this), encode_generated_for(type));
+    RustFFI::layout_arena_set_node_dom_unique_id(arena_handle(), slot_id(this), element.unique_id().value());
     m_pseudo_element_generator = element;
     if (auto* node_with_style = as_if<NodeWithStyle>(*this))
         node_with_style->bind_generated_style_record(element.style_record_identity(type));
@@ -973,6 +1000,11 @@ bool Node::dom_target_stores_scroll_offset() const
     if (auto const* element = as_if<DOM::Element>(dom_node()))
         return !element->scroll_offset({}).is_zero();
     return false;
+}
+
+void Node::sync_dom_paint_facts()
+{
+    RustFFI::layout_arena_set_node_dom_paint_facts(arena_handle(), slot_id(this), dom_paint_facts_for(dom_node()));
 }
 
 void Node::update_has_scroll_offset_flag()

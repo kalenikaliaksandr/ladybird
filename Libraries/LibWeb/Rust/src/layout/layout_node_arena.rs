@@ -16,8 +16,8 @@ use crate::layout::ComputedValuesView;
 use crate::layout::CssPixels;
 use crate::layout::FfiReplacedContentFacts;
 use crate::layout::node_data::{
-    FfiNodeConstructionFacts, FfiNodeLink, FfiStylePayloads, MAX_NODE_SLOT_COUNT, NodeData, NodeFlag, NodeKind,
-    NodeSlotId,
+    DomPaintFact, FfiNodeConstructionFacts, FfiNodeLink, FfiStylePayloads, MAX_NODE_SLOT_COUNT, NodeData, NodeFlag,
+    NodeKind, NodeSlotId,
 };
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -567,6 +567,9 @@ pub(crate) struct LayoutNodeArena {
     dom_nodes: Vec<Cell<*mut c_void>>,
     style_records: Vec<Cell<u64>>,
     style_records_pinned_by_arena: Vec<Cell<bool>>,
+    /// The DOM node's unique id (the generator's for pseudo-element boxes), naming compositor scroll
+    /// nodes. Beside the node data, which is sized to a cache line.
+    dom_unique_ids: Vec<Cell<i64>>,
     style_record_host: Cell<Option<FfiStyleRecordHostCallbacks>>,
     shell_factory: Cell<Option<ShellFactory>>,
     pre_order_labels: Vec<Cell<u64>>,
@@ -607,6 +610,7 @@ impl LayoutNodeArena {
             dom_nodes: Vec::new(),
             style_records: Vec::new(),
             style_records_pinned_by_arena: Vec::new(),
+            dom_unique_ids: Vec::new(),
             style_record_host: Cell::new(None),
             shell_factory: Cell::new(None),
             pre_order_labels: Vec::new(),
@@ -726,6 +730,8 @@ impl LayoutNodeArena {
         data.shell.set(construction_facts.shell);
         data.flags
             .set(super::node_facts::construction_flags(&construction_facts));
+        data.dom_paint_facts.set(construction_facts.dom_paint_facts);
+        self.dom_unique_ids[slot.slot_index() as usize].set(construction_facts.dom_unique_id);
         self.enroll_node_for_replaced_content_facts_sync_if_eligible(slot);
     }
 
@@ -771,6 +777,7 @@ impl LayoutNodeArena {
             self.dom_nodes.push(Cell::new(std::ptr::null_mut()));
             self.style_records.push(Cell::new(0));
             self.style_records_pinned_by_arena.push(Cell::new(false));
+            self.dom_unique_ids.push(Cell::new(0));
             self.pre_order_labels.push(Cell::new(0));
             // Grown with the slot space up front: nearly every slot gets a run
             // record each layout pass, so register() never has to resize.
@@ -873,6 +880,7 @@ impl LayoutNodeArena {
         self.dom_nodes[index as usize].set(std::ptr::null_mut());
         self.style_records[index as usize].set(0);
         self.style_records_pinned_by_arena[index as usize].set(false);
+        self.dom_unique_ids[index as usize].set(0);
 
         if let Some(slot) = self.intrinsic_size_caches.get_mut().get_mut(index as usize) {
             *slot = IntrinsicSizeCacheSlot::default();
@@ -1121,6 +1129,8 @@ impl LayoutNodeArena {
                 uses_button_layout: false,
                 is_editing_host: false,
                 is_body: false,
+                dom_paint_facts: 0,
+                dom_unique_id: 0,
             }));
         self.style_records[slot.slot_index() as usize].set(derived.record);
         self.style_records_pinned_by_arena[slot.slot_index() as usize].set(true);
@@ -1199,6 +1209,16 @@ impl LayoutNodeArena {
             "layout node arena attached a second shell to a slot"
         );
         data.shell.set(shell);
+    }
+
+    pub(crate) fn set_node_dom_paint_facts(&self, id: NodeSlotId, facts: u8) {
+        self.assert_owner_thread();
+        self.data(id).dom_paint_facts.set(facts);
+    }
+
+    pub(crate) fn set_node_dom_unique_id(&self, id: NodeSlotId, unique_id: i64) {
+        self.assert_owner_thread();
+        self.dom_unique_ids[id.slot_index() as usize].set(unique_id);
     }
 
     pub(crate) fn set_node_flag(&self, id: NodeSlotId, flag: NodeFlag, value: bool) {
@@ -2318,6 +2338,18 @@ impl LayoutNodeArena {
         self.data(id).flags.get()
     }
 
+    /// Whether the host mirrored `fact` from the node's DOM node; false for a dead slot.
+    pub(crate) fn node_has_dom_paint_fact(&self, id: NodeSlotId, fact: DomPaintFact) -> bool {
+        self.slot_is_live(id) && self.data(id).dom_paint_facts.get() & fact as u8 != 0
+    }
+
+    pub(crate) fn node_dom_unique_id_if_live(&self, id: NodeSlotId) -> i64 {
+        if !self.slot_is_live(id) {
+            return 0;
+        }
+        self.dom_unique_ids[id.slot_index() as usize].get()
+    }
+
     pub(crate) fn node_is_generated_for_pseudo_element(&self, id: NodeSlotId) -> bool {
         if !self.slot_is_live(id) {
             return false;
@@ -2955,6 +2987,20 @@ pub unsafe extern "C" fn layout_arena_set_node_needs_compositor_animation_frame(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_set_node_dom_paint_facts(arena: *mut c_void, id: NodeSlotId, facts: u8) {
+    assert!(!arena.is_null(), "layout node arena handle is null");
+    // SAFETY: As above.
+    unsafe { &*arena.cast::<LayoutNodeArena>() }.set_node_dom_paint_facts(id, facts);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_set_node_dom_unique_id(arena: *mut c_void, id: NodeSlotId, unique_id: i64) {
+    assert!(!arena.is_null(), "layout node arena handle is null");
+    // SAFETY: As above.
+    unsafe { &*arena.cast::<LayoutNodeArena>() }.set_node_dom_unique_id(id, unique_id);
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn layout_arena_set_node_generated_for(arena: *mut c_void, id: NodeSlotId, generated_for: u8) {
     assert!(!arena.is_null(), "layout node arena handle is null");
     // SAFETY: As above.
@@ -3232,6 +3278,8 @@ mod tests {
             uses_button_layout: false,
             is_editing_host: false,
             is_body: false,
+            dom_paint_facts: 0,
+            dom_unique_id: 0,
         }
     }
 

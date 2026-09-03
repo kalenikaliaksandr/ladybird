@@ -3034,6 +3034,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "FfiReplacedContentFacts".to_string(),
         "FfiStylePayloads".to_string(),
         "NodeFlag".to_string(),
+        "DomPaintFact".to_string(),
         "NodeKind".to_string(),
         "NodeSlotId".to_string(),
     ];

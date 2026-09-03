@@ -24,9 +24,8 @@ use crate::painting::display_list::device_pixels::DevicePixelConverter;
 use crate::painting::display_list::recorder::DisplayListRecorder;
 use crate::painting::hit_test::HitTestList;
 use crate::painting::host::{
-    FfiHitTestHostCallbacks, FfiHitTestTextNodeFacts, FfiMaskDisplayListRegistration, FfiPaintHostCallbacks,
-    FfiPaintRecordingStats, FfiRecordingInputs, FfiRootBackgroundSource, FfiVisualContextHostCallbacks,
-    FfiVisualContextTreeInputs,
+    FfiHitTestHostCallbacks, FfiMaskDisplayListRegistration, FfiPaintHostCallbacks, FfiPaintRecordingStats,
+    FfiRecordingInputs, FfiRootBackgroundSource, FfiVisualContextHostCallbacks, FfiVisualContextTreeInputs,
 };
 use crate::painting::paintable_data::{InlineBoxPieceRecord, PaintableData};
 use crate::painting::paintable_rows::PaintableRowsRef;
@@ -144,7 +143,6 @@ pub struct PaintRecorder<'a> {
     pub(crate) completed_record_gen: RecordGen,
     pub(crate) all_paint_caches_dirty: bool,
     pub(crate) all_descendant_subtree_caches_dirty: bool,
-    text_node_facts_cache: HashMap<u32, FfiHitTestTextNodeFacts>,
     pub(crate) resource_manifest: &'a RefCell<manifest::ResourceManifest>,
     selection_style_cache: HashMap<u32, Rc<paint::text::SelectionStyleAnswer>>,
     pub(crate) wheel_hit_test_target_cache: HashMap<NodeSlotId, SpatialNodeIndex>,
@@ -182,8 +180,7 @@ impl<'a> PaintRecorder<'a> {
         if let Some(facts) = self.memo_tables.borrow().hit_test_facts(paintable) {
             return facts;
         }
-        let dom_facts = self.host.paintable_facts(self.layout_node_shell(paintable));
-        let facts = hit_test_items::hit_test_facts(self.layout_arena, paintable, &self.inputs, dom_facts);
+        let facts = hit_test_items::hit_test_facts(self.layout_arena, paintable, &self.inputs);
         self.memo_tables.borrow_mut().set_hit_test_facts(paintable, facts);
         facts
     }
@@ -284,7 +281,6 @@ impl<'a> PaintRecorder<'a> {
             completed_record_gen: self.completed_record_gen,
             all_paint_caches_dirty: self.all_paint_caches_dirty,
             all_descendant_subtree_caches_dirty: self.all_descendant_subtree_caches_dirty,
-            text_node_facts_cache: HashMap::new(),
             resource_manifest: self.resource_manifest,
             selection_style_cache: HashMap::new(),
             wheel_hit_test_target_cache: HashMap::new(),

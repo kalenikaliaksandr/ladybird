@@ -25,8 +25,10 @@ void SVGClipPathElement::attribute_changed(Utf16FlyString const& name, Optional<
 {
     Base::attribute_changed(name, old_value, value, namespace_);
 
-    if (name == AttributeNames::clipPathUnits)
+    if (name == AttributeNames::clipPathUnits) {
         m_clip_path_units = parse_units(value.value_or({}));
+        sync_dom_paint_facts_of_resource_boxes();
+    }
 }
 
 Layout::Node* SVGClipPathElement::create_layout_node(CSS::LayoutStyle)
