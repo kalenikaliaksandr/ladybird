@@ -146,7 +146,6 @@ pub struct PaintRecorder<'a> {
     pub(crate) all_descendant_subtree_caches_dirty: bool,
     text_node_facts_cache: HashMap<u32, FfiHitTestTextNodeFacts>,
     pub(crate) resource_manifest: &'a RefCell<manifest::ResourceManifest>,
-    text_control_selection_cache: HashMap<u32, crate::painting::host::FfiTextControlSelection>,
     selection_style_cache: HashMap<u32, Rc<paint::text::SelectionStyleAnswer>>,
     pub(crate) wheel_hit_test_target_cache: HashMap<NodeSlotId, SpatialNodeIndex>,
 }
@@ -207,19 +206,13 @@ impl<'a> PaintRecorder<'a> {
             .publish_nested_display_list(recorded, tree, mask_registrations)
     }
 
-    pub(crate) fn text_control_selection(
-        &mut self,
-        node: crate::layout::node_data::NodeSlotId,
-    ) -> crate::painting::host::FfiTextControlSelection {
-        let key = node.index;
-        if let Some(facts) = self.text_control_selection_cache.get(&key) {
-            return *facts;
-        }
-        let facts = self
-            .paint_host
-            .text_control_selection(self.layout_arena.shell_if_live(node));
-        self.text_control_selection_cache.insert(key, facts);
-        facts
+    /// The focused text control's selection as `(start, end)` when `node` is one of its text
+    /// node's committed rows.
+    pub(crate) fn text_control_selection(&self, node: NodeSlotId) -> Option<(usize, usize)> {
+        let control = &self.inputs.focused_text_control;
+        control.text_nodes[..control.text_node_count.min(control.text_nodes.len())]
+            .contains(&node)
+            .then_some((control.start, control.end))
     }
 
     pub(crate) fn selection_style(
@@ -276,7 +269,6 @@ impl<'a> PaintRecorder<'a> {
             all_descendant_subtree_caches_dirty: self.all_descendant_subtree_caches_dirty,
             text_node_facts_cache: HashMap::new(),
             resource_manifest: self.resource_manifest,
-            text_control_selection_cache: HashMap::new(),
             selection_style_cache: HashMap::new(),
             wheel_hit_test_target_cache: HashMap::new(),
         }
