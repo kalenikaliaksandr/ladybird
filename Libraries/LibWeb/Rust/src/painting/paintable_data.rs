@@ -230,6 +230,9 @@ pub struct PaintableSideData {
     pub(crate) inline_box_pieces: Vec<InlineBoxPieceRecord>,
     pub(crate) piece_indices: Vec<u32>,
     pub(crate) svg_filter_bounds: Cell<Option<used_values::FfiCssPixelRect>>,
+    // A `backdrop-filter` that references an SVG filter, resolved by the host against the box's
+    // geometry in the visual context update; other backdrop filters serialise at paint time.
+    pub(crate) url_backdrop_filter: std::cell::RefCell<Option<std::rc::Rc<Vec<u8>>>>,
     // Only meaningful while is_self_painting(); assigned by the containing block's
     // assign_fragment_ownership().
     pub(crate) fragment_ownership: Option<crate::painting::fragment_ownership::FragmentOwnershipFilter>,

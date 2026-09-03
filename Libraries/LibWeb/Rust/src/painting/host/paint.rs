@@ -475,7 +475,6 @@ pub struct FfiPaintHostCallbacks {
     pub replaced_paint_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiReplacedPaintFacts,
     pub replaced_image_paint:
         unsafe extern "C" fn(*mut c_void, *mut c_void, FloatRect, FloatSize) -> FfiImagePaintFacts,
-    pub backdrop_filter_bytes: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool,
     pub svg_image_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiSvgImageFacts,
     pub svg_paint_style: unsafe extern "C" fn(
         *mut c_void,
@@ -593,13 +592,6 @@ impl FfiPaintHostCallbacks {
     ) -> FfiImagePaintFacts {
         // SAFETY: The C++ host answers synchronously from a live layout node shell.
         unsafe { (self.replaced_image_paint)(self.context, layout_node_shell, dest, accumulated_scale) }
-    }
-    pub(crate) fn backdrop_filter_bytes(&self, layout_node_shell: *mut c_void) -> Option<Vec<u8>> {
-        let mut bytes: Vec<u8> = Vec::new();
-        // SAFETY: The C++ host pushes into the Vec through the exported sink function, synchronously.
-        let has_filter =
-            unsafe { (self.backdrop_filter_bytes)(self.context, layout_node_shell, (&raw mut bytes).cast()) };
-        has_filter.then_some(bytes)
     }
     pub(crate) fn svg_image_facts(&self, layout_node_shell: *mut c_void) -> FfiSvgImageFacts {
         // SAFETY: The C++ host answers synchronously from a live layout node shell.

@@ -87,7 +87,8 @@ pub struct FfiVisualContextHostCallbacks {
         unsafe extern "C" fn(*mut c_void, *mut c_void, *mut libgfx_rust::AffineTransform) -> bool,
     pub root_background_source: unsafe extern "C" fn(*mut c_void) -> FfiRootBackgroundSource,
     pub svg_mask_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiSvgMaskFacts,
-    pub resolve_effects_filter: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> FfiResolvedEffectsFilter,
+    pub resolve_effects_filter:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, bool, *mut c_void) -> FfiResolvedEffectsFilter,
 }
 
 impl FfiVisualContextHostCallbacks {
@@ -117,12 +118,18 @@ impl FfiVisualContextHostCallbacks {
         // SAFETY: The C++ host answers synchronously from a live layout node shell.
         unsafe { (self.svg_mask_facts)(self.context, layout_node_shell) }
     }
-    pub(crate) fn resolve_effects_filter(&self, layout_node_shell: *mut c_void) -> ResolvedEffectsFilter {
+    /// Resolves the node's `filter`, or its `backdrop-filter` when `backdrop` is set.
+    pub(crate) fn resolve_effects_filter(
+        &self,
+        layout_node_shell: *mut c_void,
+        backdrop: bool,
+    ) -> ResolvedEffectsFilter {
         let mut bytes: Vec<u8> = Vec::new();
         // SAFETY: The C++ host answers synchronously from a live layout node shell and only writes
         // into the Vec whose pointer it receives.
-        let resolved =
-            unsafe { (self.resolve_effects_filter)(self.context, layout_node_shell, (&raw mut bytes).cast()) };
+        let resolved = unsafe {
+            (self.resolve_effects_filter)(self.context, layout_node_shell, backdrop, (&raw mut bytes).cast())
+        };
         ResolvedEffectsFilter {
             filter_bytes: resolved.has_filter.then_some(bytes),
             svg_filter_bounds: resolved.svg_filter_bounds,

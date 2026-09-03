@@ -536,7 +536,7 @@ pub(crate) fn compute_effects_data(
     let style = layout_arena.node_style_if_live(slot)?;
     let effects_values = style.effects();
     let filter = if crate::painting::filter_bytes::contains_url(&effects_values.filter) {
-        let resolved_filter = callbacks.resolve_effects_filter(layout_arena.shell_if_live(slot));
+        let resolved_filter = callbacks.resolve_effects_filter(layout_arena.shell_if_live(slot), false);
         layout_arena.paintable_side_data(slot).svg_filter_bounds.set(
             resolved_filter
                 .svg_filter_bounds
@@ -549,6 +549,20 @@ pub(crate) fn compute_effects_data(
         crate::painting::filter_bytes::serialize_non_url_filter(&effects_values.filter, device_pixels_per_css_pixel)
             .map(std::rc::Rc::new)
     };
+    // A `backdrop-filter` that references an SVG filter is resolved the same way and kept on the
+    // row for the recorder; other backdrop filters are serialised at paint time.
+    let url_backdrop_filter = crate::painting::filter_bytes::contains_url(&effects_values.backdrop_filter)
+        .then(|| {
+            callbacks
+                .resolve_effects_filter(layout_arena.shell_if_live(slot), true)
+                .filter_bytes
+                .map(std::rc::Rc::new)
+        })
+        .flatten();
+    layout_arena
+        .paintable_side_data(slot)
+        .url_backdrop_filter
+        .replace(url_backdrop_filter);
     let needs_compositor_effects_layer = layout_arena
         .node_has_compositor_animation_frame(slot, crate::layout::node_data::CompositorAnimationFrameKind::Opacity);
     if filter.is_none()

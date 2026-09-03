@@ -465,13 +465,17 @@ Layout::RustFFI::FfiVisualContextHostCallbacks visual_context_host_callbacks(DOM
             facts.clip_area = clip_area(layout_node);
             return facts;
         },
-        .resolve_effects_filter = [](void* context, void* layout_node_shell, void* sink) -> Layout::RustFFI::FfiResolvedEffectsFilter {
+        .resolve_effects_filter = [](void* context, void* layout_node_shell, bool backdrop, void* sink) -> Layout::RustFFI::FfiResolvedEffectsFilter {
             auto& document = *static_cast<DOM::Document*>(context);
             auto const& style_source = *static_cast<Layout::NodeWithStyle const*>(layout_node_shell);
             Layout::RustFFI::FfiResolvedEffectsFilter result {};
             ResolvedCSSFilter resolved_filter;
-            if (style_source.filter().has_filters())
+            if (backdrop) {
+                if (style_source.backdrop_filter().has_filters())
+                    resolved_filter = resolve_css_filter(style_source.backdrop_filter(), style_source);
+            } else if (style_source.filter().has_filters()) {
                 resolved_filter = resolve_css_filter(style_source.filter(), style_source);
+            }
             result.svg_filter_bounds = resolved_filter.svg_filter_bounds;
             if (!resolved_filter.has_filters())
                 return result;
@@ -1089,14 +1093,6 @@ Layout::RustFFI::FfiPaintHostCallbacks paint_host_callbacks(PaintHostContext& co
             if (paint.has_value())
                 write_image_paint_facts(*paint, context, facts);
             return facts;
-        },
-        .backdrop_filter_bytes = [](void* context_pointer, void* layout_node_shell, void* sink) -> bool {
-            auto& context = *static_cast<PaintHostContext*>(context_pointer);
-            auto const& layout_node = *static_cast<Layout::NodeWithStyle const*>(layout_node_shell);
-            auto const& backdrop_filter = layout_node.backdrop_filter();
-            if (!backdrop_filter.has_filters())
-                return false;
-            return push_serialized_css_filter(resolve_css_filter(backdrop_filter, layout_node), context.device_pixels_per_css_pixel, &context.resource_storage, sink);
         },
         .svg_image_facts = [](void*, void* layout_node_shell) -> Layout::RustFFI::FfiSvgImageFacts {
             auto const& layout_node = *static_cast<Layout::Node const*>(layout_node_shell);

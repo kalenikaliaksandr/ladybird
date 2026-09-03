@@ -236,6 +236,14 @@ pub(crate) fn box_owns_geometry_dependent_nodes(
     if layout_arena.paintable_side_data(slot).svg_filter_bounds.get().is_some() {
         return true;
     }
+    // A url() backdrop-filter is resolved by the host against the box's geometry, like a url()
+    // filter below.
+    if layout_arena
+        .node_style_if_live(slot)
+        .is_some_and(|style| crate::painting::filter_bytes::contains_url(&style.effects().backdrop_filter))
+    {
+        return true;
+    }
     let spatial_is_geometry_dependent = handles.spatial.iter().any(|index| {
         matches!(
             tree.spatial_nodes[index.0 as usize].data,
