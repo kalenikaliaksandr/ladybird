@@ -208,13 +208,16 @@ pub struct FfiReplacedPaintFacts {
     pub canvas_color: Color,
     pub canvas_text_color: Color,
     pub accent_color: Color,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-#[repr(C)]
-pub struct FfiSvgImageFacts {
-    pub has_decoded_image_data: bool,
-    pub natural_size: used_values::OptionalFloatSize,
+    // SVG image boxes.
+    pub svg_has_decoded_image_data: bool,
+    pub svg_natural_size: used_values::OptionalFloatSize,
+    // Image boxes: a vector image records through the host at paint time; a raster image's current
+    // frame is registered during the sync.
+    pub is_vector_image: bool,
+    pub has_raster_frame: bool,
+    pub frame_id: u64,
+    pub natural_frame_width: i32,
+    pub natural_frame_height: i32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -426,10 +429,8 @@ pub struct FfiPaintHostCallbacks {
         u8,
         FloatSize,
     ) -> FfiImagePaintFacts,
-    pub replaced_paint_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiReplacedPaintFacts,
     pub replaced_image_paint:
         unsafe extern "C" fn(*mut c_void, *mut c_void, FloatRect, FloatSize) -> FfiImagePaintFacts,
-    pub svg_image_facts: unsafe extern "C" fn(*mut c_void, *mut c_void) -> FfiSvgImageFacts,
     pub svg_paint_style: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -486,10 +487,6 @@ impl FfiPaintHostCallbacks {
             )
         }
     }
-    pub(crate) fn replaced_paint_facts(&self, layout_node_shell: *mut c_void) -> FfiReplacedPaintFacts {
-        // SAFETY: The C++ host answers synchronously from a live layout node shell.
-        unsafe { (self.replaced_paint_facts)(self.context, layout_node_shell) }
-    }
     pub(crate) fn replaced_image_paint(
         &self,
         layout_node_shell: *mut c_void,
@@ -498,10 +495,6 @@ impl FfiPaintHostCallbacks {
     ) -> FfiImagePaintFacts {
         // SAFETY: The C++ host answers synchronously from a live layout node shell.
         unsafe { (self.replaced_image_paint)(self.context, layout_node_shell, dest, accumulated_scale) }
-    }
-    pub(crate) fn svg_image_facts(&self, layout_node_shell: *mut c_void) -> FfiSvgImageFacts {
-        // SAFETY: The C++ host answers synchronously from a live layout node shell.
-        unsafe { (self.svg_image_facts)(self.context, layout_node_shell) }
     }
     pub(crate) fn svg_paint_style(
         &self,

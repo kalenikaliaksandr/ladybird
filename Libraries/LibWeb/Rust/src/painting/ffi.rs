@@ -4389,6 +4389,35 @@ pub unsafe extern "C" fn layout_arena_sync_layer_image_facts(
     );
 }
 
+/// Has the host describe the content of every replaced box that needs it (image, canvas, video,
+/// nested navigable, check box, radio button), registering raster frames and video sinks on the
+/// way, and stores the facts on the row for the recorder.
+///
+/// # Safety
+///
+/// `arena` must be a live handle from `layout_arena_create`, used on the document thread.
+/// `describe` runs synchronously with a live layout node shell and a valid out-pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_sync_replaced_paint_facts(
+    arena: *mut c_void,
+    context: *mut c_void,
+    describe: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut crate::painting::host::FfiReplacedPaintFacts),
+) {
+    let arena = unsafe { arena_from_handle(arena) };
+    let rows = arena.take_replaced_paint_facts_sync_work();
+    sync_enrolled_rows(
+        arena,
+        rows,
+        |shell| {
+            let mut facts = crate::painting::host::FfiReplacedPaintFacts::default();
+            // SAFETY: The host answers synchronously from a live layout node shell into the out-pointer.
+            unsafe { describe(context, shell, &raw mut facts) };
+            facts
+        },
+        |side_data, facts| side_data.replaced_paint_facts = Some(Box::new(facts)),
+    );
+}
+
 /// # Safety
 ///
 /// `sink` must be the pointer handed to the callback, used synchronously.

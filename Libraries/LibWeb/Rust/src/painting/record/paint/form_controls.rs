@@ -88,9 +88,7 @@ fn check_mark_path(checkbox_rect: IntRect) -> OwnedPath {
 }
 
 pub(crate) fn paint_check_box_foreground(recorder: &mut PaintRecorder<'_>, paintable: NodeSlotId) {
-    let facts = recorder
-        .paint_host
-        .replaced_paint_facts(recorder.layout_node_shell(paintable));
+    let facts = recorder.replaced_paint_facts(paintable);
     let enabled = facts.enabled;
     let canvas_color = facts.canvas_color;
 
@@ -189,9 +187,7 @@ pub(crate) fn paint_check_box_foreground(recorder: &mut PaintRecorder<'_>, paint
 }
 
 pub(crate) fn paint_radio_button_foreground(recorder: &mut PaintRecorder<'_>, paintable: NodeSlotId) {
-    let facts = recorder
-        .paint_host
-        .replaced_paint_facts(recorder.layout_node_shell(paintable));
+    let facts = recorder.replaced_paint_facts(paintable);
     let canvas_color = facts.canvas_color;
 
     let enabled = facts.enabled;

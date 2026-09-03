@@ -110,6 +110,11 @@ pub(crate) struct PaintableRowStore {
     has_selection: Cell<bool>,
     rows_enrolled_for_selection_style_sync: EnrolledRows,
     rows_enrolled_for_layer_image_facts_sync: EnrolledRows,
+    // Replaced boxes re-sync their paint facts when their cache is invalidated; the registry lets a
+    // global cache dirtying re-sync them all.
+    rows_enrolled_for_replaced_paint_facts_sync: EnrolledRows,
+    replaced_paint_rows: RefCell<Vec<NodeSlotId>>,
+    all_replaced_paint_facts_stale: Cell<bool>,
     all_selection_styles_stale: Cell<bool>,
     paint_recording_in_progress: Cell<bool>,
 }
@@ -222,6 +227,13 @@ where
         // only the frames the last published tape named: the sync registers them anew.
         if !self.arena.paintable_side_data(id).layer_images.is_empty() {
             self.arena.enroll_row_for_layer_image_facts_sync(id);
+        }
+        if self
+            .arena
+            .node_kind_if_live(id)
+            .is_some_and(crate::layout::node_facts::kind_paints_replaced_content_from_host_facts)
+        {
+            self.arena.enroll_row_for_replaced_paint_facts_sync(id);
         }
         if self.arena.paintable_rows.has_selection.get() {
             self.arena
@@ -669,6 +681,7 @@ impl LayoutNodeArena {
     pub(crate) fn mark_all_paint_caches_dirty(&self) {
         self.debug_assert_not_recording();
         self.paintable_rows.all_selection_styles_stale.set(true);
+        self.paintable_rows.all_replaced_paint_facts_stale.set(true);
         self.paintable_rows
             .all_paint_caches_dirty_gen
             .set(self.paint_cache_next_dirty_gen());
@@ -677,6 +690,7 @@ impl LayoutNodeArena {
     pub(crate) fn mark_all_descendant_subtree_caches_dirty(&self) {
         self.debug_assert_not_recording();
         self.paintable_rows.all_selection_styles_stale.set(true);
+        self.paintable_rows.all_replaced_paint_facts_stale.set(true);
         self.paintable_rows
             .all_descendant_subtree_caches_dirty_gen
             .set(self.paint_cache_next_dirty_gen());
@@ -718,6 +732,13 @@ impl LayoutNodeArena {
             .is_some_and(crate::painting::style_queries::style_holds_layer_images)
         {
             self.enroll_row_for_layer_image_facts_sync(layout_node);
+        }
+        if self
+            .node_kind_if_live(layout_node)
+            .is_some_and(crate::layout::node_facts::kind_paints_replaced_content_from_host_facts)
+        {
+            self.paintable_rows.replaced_paint_rows.borrow_mut().push(layout_node);
+            self.enroll_row_for_replaced_paint_facts_sync(layout_node);
         }
         let store = &mut self.paintable_rows;
         let index = layout_node.slot_index() as usize;
@@ -931,6 +952,29 @@ impl LayoutNodeArena {
             caches.get(id.slot_index() as usize)
         })
         .ok()
+    }
+
+    pub(crate) fn enroll_row_for_replaced_paint_facts_sync(&self, row: NodeSlotId) {
+        self.paintable_rows
+            .rows_enrolled_for_replaced_paint_facts_sync
+            .enroll(row);
+    }
+
+    /// The replaced rows whose paint facts the host must re-sync: every live one after a global
+    /// cache dirtying, otherwise those enrolled since the last sync. Sorted and deduplicated.
+    pub(crate) fn take_replaced_paint_facts_sync_work(&self) -> Vec<NodeSlotId> {
+        let enrolled = &self.paintable_rows.rows_enrolled_for_replaced_paint_facts_sync;
+        if self.paintable_rows.all_replaced_paint_facts_stale.replace(false) {
+            // A row re-populated in place registered itself again; the pruned registry is kept unique.
+            let mut registry = self.paintable_rows.replaced_paint_rows.borrow_mut();
+            registry.retain(|row| !self.shell_if_live(*row).is_null());
+            registry.sort_unstable_by_key(|row| row.index);
+            registry.dedup();
+            for row in registry.iter() {
+                enrolled.enroll(*row);
+            }
+        }
+        enrolled.take()
     }
 
     pub(crate) fn enroll_row_for_layer_image_facts_sync(&self, row: NodeSlotId) {

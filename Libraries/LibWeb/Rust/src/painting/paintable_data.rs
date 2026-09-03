@@ -240,6 +240,11 @@ pub struct PaintableSideData {
     // before a recording for rows enrolled at commit, on style attach and on image updates. Not a
     // committed record: layout does not change them.
     pub(crate) layer_images: Vec<crate::painting::host::FfiLayerImageFacts>,
+    // The host's facts about a replaced box's content (image, canvas, video, nested navigable,
+    // check box, radio button), synced before a recording for rows enrolled at first commit and
+    // whenever their paint cache is invalidated.
+    // Boxed: the facts are wide and nearly every row has none.
+    pub(crate) replaced_paint_facts: Option<Box<crate::painting::host::FfiReplacedPaintFacts>>,
     // Only meaningful while is_self_painting(); assigned by the containing block's
     // assign_fragment_ownership().
     pub(crate) fragment_ownership: Option<crate::painting::fragment_ownership::FragmentOwnershipFilter>,

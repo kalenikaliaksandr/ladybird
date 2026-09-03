@@ -25,7 +25,7 @@ use crate::painting::display_list::recorder::DisplayListRecorder;
 use crate::painting::hit_test::HitTestList;
 use crate::painting::host::{
     FfiImagePaintFacts, FfiImagePaintKind, FfiLayerImageFacts, FfiLayerImageList, FfiMaskDisplayListRegistration,
-    FfiPaintHostCallbacks, FfiPaintRecordingStats, FfiRecordingInputs, FfiRootBackgroundSource,
+    FfiPaintHostCallbacks, FfiPaintRecordingStats, FfiRecordingInputs, FfiReplacedPaintFacts, FfiRootBackgroundSource,
     FfiVisualContextHostCallbacks, FfiVisualContextTreeInputs,
 };
 use crate::painting::paintable_data::{InlineBoxPieceRecord, PaintableData};
@@ -200,6 +200,44 @@ impl<'a> PaintRecorder<'a> {
         self.resource_manifest
             .borrow_mut()
             .publish_nested_display_list(recorded, tree, mask_registrations)
+    }
+
+    /// The host's facts about a replaced box's content, synced before the recording.
+    pub(crate) fn replaced_paint_facts(&self, paintable: NodeSlotId) -> FfiReplacedPaintFacts {
+        if !self.layout_arena.paintable_row_is_populated(paintable) {
+            return FfiReplacedPaintFacts::default();
+        }
+        self.layout_arena
+            .paintable_side_data(paintable)
+            .replaced_paint_facts
+            .as_deref()
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// How to paint an image box's or SVG image's decoded image into `dest`: a raster frame the
+    /// host registered during the sync, or, for a vector image, a nested list it records at this size.
+    pub(crate) fn replaced_image_paint(
+        &self,
+        paintable: NodeSlotId,
+        shell: *mut std::ffi::c_void,
+        dest: libgfx_rust::FloatRect,
+        accumulated_scale: libgfx_rust::FloatSize,
+    ) -> FfiImagePaintFacts {
+        let facts = self.replaced_paint_facts(paintable);
+        if facts.is_vector_image {
+            return self.paint_host.replaced_image_paint(shell, dest, accumulated_scale);
+        }
+        if !facts.has_raster_frame {
+            return FfiImagePaintFacts::default();
+        }
+        FfiImagePaintFacts {
+            image_paint_kind: FfiImagePaintKind::DecodedFrame,
+            frame_id: facts.frame_id,
+            natural_width: facts.natural_frame_width,
+            natural_height: facts.natural_frame_height,
+            ..FfiImagePaintFacts::default()
+        }
     }
 
     /// The host's facts about one of `paintable`'s layer images, synced before the recording. The

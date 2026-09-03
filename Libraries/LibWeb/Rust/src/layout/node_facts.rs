@@ -215,6 +215,21 @@ pub(crate) fn has_flag(data: &NodeData, flag: NodeFlag) -> bool {
     data.flags.get() & flag as u32 != 0
 }
 
+/// Boxes whose foreground paints from facts the host syncs onto the row before a recording
+/// (`layout_arena_sync_replaced_paint_facts`).
+pub(crate) fn kind_paints_replaced_content_from_host_facts(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::ImageBox
+            | NodeKind::CanvasBox
+            | NodeKind::VideoBox
+            | NodeKind::NavigableContainerViewport
+            | NodeKind::CheckBox
+            | NodeKind::RadioButton
+            | NodeKind::SVGImageBox
+    )
+}
+
 pub(crate) fn kind_is_text(kind: NodeKind) -> bool {
     matches!(
         kind,

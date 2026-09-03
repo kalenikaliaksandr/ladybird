@@ -72,13 +72,11 @@ fn svg_paint_facts(recorder: &mut PaintRecorder<'_>, paintable: NodeSlotId) -> (
         ..SvgPaintFacts::default()
     };
     if kind == Some(NodeKind::SVGImageBox) {
-        let image = recorder
-            .paint_host
-            .svg_image_facts(recorder.layout_node_shell(paintable));
-        facts.has_decoded_image_data = image.has_decoded_image_data;
-        facts.has_natural_size = image.natural_size.has_value;
-        facts.natural_width = image.natural_size.value.width;
-        facts.natural_height = image.natural_size.value.height;
+        let image = recorder.replaced_paint_facts(paintable);
+        facts.has_decoded_image_data = image.svg_has_decoded_image_data;
+        facts.has_natural_size = image.svg_natural_size.has_value;
+        facts.natural_width = image.svg_natural_size.value.width;
+        facts.natural_height = image.svg_natural_size.value.height;
     }
     let Some(style) = layout_arena.node_style_if_live(paintable) else {
         return (facts, Vec::new());
@@ -507,7 +505,8 @@ pub(crate) fn paint_image_element(recorder: &mut PaintRecorder<'_>, paintable: N
     recorder.record_with_inline_clips(image_rect_clip.as_slice(), |recorder| {
         let accumulated_scale =
             recorder.accumulated_2d_scale_at(recorder.recorder.accumulated_visual_context().spatial);
-        let paint = recorder.paint_host.replaced_image_paint(
+        let paint = recorder.replaced_image_paint(
+            paintable,
             recorder.layout_node_shell(paintable),
             draw_rect,
             accumulated_scale,

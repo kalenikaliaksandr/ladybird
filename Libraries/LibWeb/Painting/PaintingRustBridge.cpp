@@ -802,6 +802,117 @@ static void sync_layer_image_facts(void* arena, PaintHostContext& context)
     });
 }
 
+static Optional<u64> composited_context_id_for_navigable_container(HTML::NavigableContainer const&);
+
+// A replaced box's foreground paints from facts about its content the host writes onto the row before a
+// recording, for the rows enrolled since the last sync: at first commit and whenever the box's paint cache is
+// invalidated. Raster frames and video sinks are registered here; the nested navigable's paint bookkeeping
+// moves here with them.
+static void sync_replaced_paint_facts(void* arena, PaintHostContext& context)
+{
+    Layout::RustFFI::layout_arena_sync_replaced_paint_facts(arena, &context, [](void* context_pointer, void* layout_node_shell, Layout::RustFFI::FfiReplacedPaintFacts* out_facts) {
+        auto& context = *static_cast<PaintHostContext*>(context_pointer);
+        auto const& layout_node = *static_cast<Layout::NodeWithStyle const*>(layout_node_shell);
+        auto const* row = committed_row(layout_node);
+        VERIFY(row);
+        auto kind = layout_node.kind();
+        auto& facts = *out_facts;
+        // An image box or SVG image with a vector image records through the host at paint time; a raster
+        // image's current frame is registered here.
+        auto describe_decoded_image = [&](GC::Ptr<HTML::DecodedImageData> decoded_image_data) {
+            if (!decoded_image_data)
+                return;
+            facts.is_vector_image = is<SVG::SVGDecodedImageData>(*decoded_image_data);
+            if (auto frame = register_current_raster_frame(*decoded_image_data, context.resource_storage); frame.has_value()) {
+                facts.has_raster_frame = true;
+                facts.frame_id = frame->frame_id;
+                facts.natural_frame_width = frame->natural_size.width();
+                facts.natural_frame_height = frame->natural_size.height();
+            }
+        };
+        if (kind == Layout::RustFFI::NodeKind::ImageBox) {
+            auto const& image_provider = static_cast<Layout::Box const&>(layout_node).image_provider();
+            facts.has_decoded_image_data = image_provider.decoded_image_data() != nullptr;
+            facts.natural_width = image_provider.intrinsic_width();
+            facts.natural_height = image_provider.intrinsic_height();
+            if (auto aspect_ratio = image_provider.intrinsic_aspect_ratio(); aspect_ratio.has_value()) {
+                facts.has_natural_aspect_ratio = true;
+                facts.natural_aspect_ratio_numerator = aspect_ratio->numerator();
+                facts.natural_aspect_ratio_denominator = aspect_ratio->denominator();
+            }
+            if (selection_state(layout_node) != SelectionState::None)
+                facts.selection_background_color = selection_style(layout_node).background_color;
+            describe_decoded_image(image_provider.decoded_image_data());
+        } else if (kind == Layout::RustFFI::NodeKind::SVGImageBox) {
+            auto const& image_provider = as<SVG::SVGImageElement>(*layout_node.dom_node());
+            auto decoded_image_data = image_provider.decoded_image_data();
+            facts.svg_has_decoded_image_data = decoded_image_data != nullptr;
+            if (auto natural_size = image_provider.intrinsic_size(); natural_size.has_value())
+                facts.svg_natural_size = natural_size->to_type<float>();
+            describe_decoded_image(decoded_image_data);
+        } else if (kind == Layout::RustFFI::NodeKind::CanvasBox) {
+            auto& canvas_element = as<HTML::HTMLCanvasElement>(*layout_node.dom_node());
+            if (auto content_size = canvas_element.canvas_surface_content_size(); content_size.has_value()) {
+                facts.has_canvas_content = true;
+                facts.canvas_content_width = content_size->width();
+                facts.canvas_content_height = content_size->height();
+                facts.canvas_id = canvas_element.canvas_id().value().value();
+                facts.canvas_content_generation = canvas_element.content_generation();
+            }
+        } else if (kind == Layout::RustFFI::NodeKind::VideoBox) {
+            auto const& video_element = as<HTML::HTMLVideoElement>(*layout_node.dom_node());
+            switch (video_element.current_representation()) {
+            case HTML::HTMLVideoElement::Representation::FirstVideoFrame:
+            case HTML::HTMLVideoElement::Representation::VideoFrame: {
+                facts.video_representation = Layout::RustFFI::FfiVideoRepresentation::VideoFrame;
+                auto sink_handle = video_element.video_sink_handle();
+                if (sink_handle.has_value() && video_element.natural_media_size().has_value()) {
+                    facts.has_video_frame = true;
+                    auto src_size = video_element.natural_media_size()->to_type<int>();
+                    facts.video_src_width = src_size.width();
+                    facts.video_src_height = src_size.height();
+                    facts.video_sink_storage_id = context.resource_storage.add_video_sink(video_element.video_sink_resource_id().value(), *sink_handle).value();
+                }
+                break;
+            }
+            case HTML::HTMLVideoElement::Representation::PosterFrame: {
+                facts.video_representation = Layout::RustFFI::FfiVideoRepresentation::PosterFrame;
+                if (auto const& poster_frame = video_element.poster_frame()) {
+                    facts.has_poster_frame = true;
+                    auto frame = Gfx::DecodedImageFrame { *poster_frame };
+                    facts.poster_width = frame.size().width();
+                    facts.poster_height = frame.size().height();
+                    facts.poster_frame_id = context.resource_storage.add_image_frame(move(frame)).value();
+                }
+                break;
+            }
+            case HTML::HTMLVideoElement::Representation::TransparentBlack:
+                facts.video_representation = Layout::RustFFI::FfiVideoRepresentation::TransparentBlack;
+                break;
+            }
+        } else if (is_navigable_container_viewport_paintable(layout_node)) {
+            auto& navigable_container = const_cast<HTML::NavigableContainer&>(as<HTML::NavigableContainer>(*layout_node.dom_node()));
+            auto context_id = composited_context_id_for_navigable_container(navigable_container);
+            navigable_container.set_compositor_context_id_at_last_paint(context_id);
+            context.document->paint_state().set_has_painted_navigable_container_foreground();
+            if (context_id.has_value()) {
+                facts.has_composited_context = true;
+                facts.composited_context_id = *context_id;
+            }
+        } else if (kind == Layout::RustFFI::NodeKind::CheckBox || kind == Layout::RustFFI::NodeKind::RadioButton) {
+            auto const& input = as<HTML::HTMLInputElement const>(*layout_node.dom_node());
+            facts.enabled = input.enabled();
+            facts.checked = input.checked();
+            facts.indeterminate = input.indeterminate();
+            facts.being_activated = input.is_being_activated();
+            auto color_scheme = layout_node.color_scheme();
+            facts.canvas_color = CSS::SystemColor::canvas(color_scheme);
+            facts.canvas_text_color = CSS::SystemColor::canvas_text(color_scheme);
+            facts.accent_color = layout_node.accent_color().value_or(CSS::SystemColor::accent_color(color_scheme));
+        }
+    });
+}
+
 // Selected text paints with its element's ::selection style. The host resolves it before a recording for the
 // selected text nodes whose painted output that recording rebuilds.
 static void sync_selection_styles(void* arena, Layout::RustFFI::FfiFocusedTextControlSelection const& text_control_selection)
@@ -973,87 +1084,6 @@ Layout::RustFFI::FfiPaintHostCallbacks paint_host_callbacks(PaintHostContext& co
                 write_image_paint_facts(*paint, context, facts);
             return facts;
         },
-        .replaced_paint_facts = [](void* context_pointer, void* layout_node_shell) -> Layout::RustFFI::FfiReplacedPaintFacts {
-            auto& context = *static_cast<PaintHostContext*>(context_pointer);
-            auto const& layout_node = *static_cast<Layout::NodeWithStyle const*>(layout_node_shell);
-            auto const* row = committed_row(layout_node);
-            VERIFY(row);
-            auto kind = layout_node.kind();
-            Layout::RustFFI::FfiReplacedPaintFacts facts {};
-            if (kind == Layout::RustFFI::NodeKind::ImageBox) {
-                auto const& image_provider = static_cast<Layout::Box const&>(layout_node).image_provider();
-                facts.has_decoded_image_data = image_provider.decoded_image_data() != nullptr;
-                facts.natural_width = image_provider.intrinsic_width();
-                facts.natural_height = image_provider.intrinsic_height();
-                if (auto aspect_ratio = image_provider.intrinsic_aspect_ratio(); aspect_ratio.has_value()) {
-                    facts.has_natural_aspect_ratio = true;
-                    facts.natural_aspect_ratio_numerator = aspect_ratio->numerator();
-                    facts.natural_aspect_ratio_denominator = aspect_ratio->denominator();
-                }
-                if (selection_state(layout_node) != SelectionState::None)
-                    facts.selection_background_color = selection_style(layout_node).background_color;
-            } else if (kind == Layout::RustFFI::NodeKind::CanvasBox) {
-                auto& canvas_element = as<HTML::HTMLCanvasElement>(*layout_node.dom_node());
-                if (auto content_size = canvas_element.canvas_surface_content_size(); content_size.has_value()) {
-                    facts.has_canvas_content = true;
-                    facts.canvas_content_width = content_size->width();
-                    facts.canvas_content_height = content_size->height();
-                    facts.canvas_id = canvas_element.canvas_id().value().value();
-                    facts.canvas_content_generation = canvas_element.content_generation();
-                }
-            } else if (kind == Layout::RustFFI::NodeKind::VideoBox) {
-                auto const& video_element = as<HTML::HTMLVideoElement>(*layout_node.dom_node());
-                switch (video_element.current_representation()) {
-                case HTML::HTMLVideoElement::Representation::FirstVideoFrame:
-                case HTML::HTMLVideoElement::Representation::VideoFrame: {
-                    facts.video_representation = Layout::RustFFI::FfiVideoRepresentation::VideoFrame;
-                    auto sink_handle = video_element.video_sink_handle();
-                    if (sink_handle.has_value() && video_element.natural_media_size().has_value()) {
-                        facts.has_video_frame = true;
-                        auto src_size = video_element.natural_media_size()->to_type<int>();
-                        facts.video_src_width = src_size.width();
-                        facts.video_src_height = src_size.height();
-                        facts.video_sink_storage_id = context.resource_storage.add_video_sink(video_element.video_sink_resource_id().value(), *sink_handle).value();
-                    }
-                    break;
-                }
-                case HTML::HTMLVideoElement::Representation::PosterFrame: {
-                    facts.video_representation = Layout::RustFFI::FfiVideoRepresentation::PosterFrame;
-                    if (auto const& poster_frame = video_element.poster_frame()) {
-                        facts.has_poster_frame = true;
-                        auto frame = Gfx::DecodedImageFrame { *poster_frame };
-                        facts.poster_width = frame.size().width();
-                        facts.poster_height = frame.size().height();
-                        facts.poster_frame_id = context.resource_storage.add_image_frame(move(frame)).value();
-                    }
-                    break;
-                }
-                case HTML::HTMLVideoElement::Representation::TransparentBlack:
-                    facts.video_representation = Layout::RustFFI::FfiVideoRepresentation::TransparentBlack;
-                    break;
-                }
-            } else if (is_navigable_container_viewport_paintable(layout_node)) {
-                auto& navigable_container = const_cast<HTML::NavigableContainer&>(as<HTML::NavigableContainer>(*layout_node.dom_node()));
-                auto context_id = composited_context_id_for_navigable_container(navigable_container);
-                navigable_container.set_compositor_context_id_at_last_paint(context_id);
-                context.document->paint_state().set_has_painted_navigable_container_foreground();
-                if (context_id.has_value()) {
-                    facts.has_composited_context = true;
-                    facts.composited_context_id = *context_id;
-                }
-            } else if (kind == Layout::RustFFI::NodeKind::CheckBox || kind == Layout::RustFFI::NodeKind::RadioButton) {
-                auto const& input = as<HTML::HTMLInputElement const>(*layout_node.dom_node());
-                facts.enabled = input.enabled();
-                facts.checked = input.checked();
-                facts.indeterminate = input.indeterminate();
-                facts.being_activated = input.is_being_activated();
-                auto color_scheme = layout_node.color_scheme();
-                facts.canvas_color = CSS::SystemColor::canvas(color_scheme);
-                facts.canvas_text_color = CSS::SystemColor::canvas_text(color_scheme);
-                facts.accent_color = layout_node.accent_color().value_or(CSS::SystemColor::accent_color(color_scheme));
-            }
-            return facts;
-        },
         .replaced_image_paint = [](void* context_pointer, void* layout_node_shell, Gfx::FloatRect dest_rect, Gfx::FloatSize accumulated_scale) -> Layout::RustFFI::FfiImagePaintFacts {
             auto& context = *static_cast<PaintHostContext*>(context_pointer);
             auto const& layout_node = *static_cast<Layout::NodeWithStyle const*>(layout_node_shell);
@@ -1081,18 +1111,6 @@ Layout::RustFFI::FfiPaintHostCallbacks paint_host_callbacks(PaintHostContext& co
             auto paint = decoded_image_data->image_paint(request);
             if (paint.has_value())
                 write_image_paint_facts(*paint, context, facts);
-            return facts;
-        },
-        .svg_image_facts = [](void*, void* layout_node_shell) -> Layout::RustFFI::FfiSvgImageFacts {
-            auto const& layout_node = *static_cast<Layout::Node const*>(layout_node_shell);
-            auto const* row = committed_row(layout_node);
-            VERIFY(row);
-            VERIFY(layout_node.kind() == Layout::RustFFI::NodeKind::SVGImageBox);
-            Layout::RustFFI::FfiSvgImageFacts facts {};
-            auto const& image_provider = as<SVG::SVGImageElement>(*layout_node.dom_node());
-            facts.has_decoded_image_data = image_provider.decoded_image_data() != nullptr;
-            if (auto natural_size = image_provider.intrinsic_size(); natural_size.has_value())
-                facts.natural_size = natural_size->to_type<float>();
             return facts;
         },
         .svg_paint_style = [](void* context_pointer, void* layout_node_shell, bool is_stroke, Layout::RustFFI::FfiSvgPaintContext const* ffi_paint_context, void* sink) -> Layout::RustFFI::FfiSvgPaintStyle {
@@ -1284,6 +1302,7 @@ RefPtr<DisplayList> record_rust_display_list(DOM::Document& document, DisplayLis
     sync_line_break_caret_targets(arena);
     sync_selection_styles(arena, inputs.focused_text_control);
     sync_layer_image_facts(arena, paint_host_context);
+    sync_replaced_paint_facts(arena, paint_host_context);
     auto rust_timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
     auto generation = Layout::RustFFI::layout_arena_record_display_list(arena, viewport_row_slot(document), paint_host_callbacks(paint_host_context), visual_context_host_callbacks(document), inputs);
     if (generation == 0)
