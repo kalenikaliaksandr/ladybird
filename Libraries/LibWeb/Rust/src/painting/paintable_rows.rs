@@ -109,6 +109,7 @@ pub(crate) struct PaintableRowStore {
     // re-resolves the ::selection styles of the fragments it paints before the next recording.
     has_selection: Cell<bool>,
     rows_enrolled_for_selection_style_sync: EnrolledRows,
+    rows_enrolled_for_layer_image_facts_sync: EnrolledRows,
     all_selection_styles_stale: Cell<bool>,
     paint_recording_in_progress: Cell<bool>,
 }
@@ -217,6 +218,11 @@ where
             return;
         }
         self.arena.debug_assert_not_recording();
+        // A re-recorded row names its layer images' raster frames again, and the storage keeps
+        // only the frames the last published tape named: the sync registers them anew.
+        if !self.arena.paintable_side_data(id).layer_images.is_empty() {
+            self.arena.enroll_row_for_layer_image_facts_sync(id);
+        }
         if self.arena.paintable_rows.has_selection.get() {
             self.arena
                 .paintable_rows
@@ -705,6 +711,14 @@ impl LayoutNodeArena {
     }
 
     pub(crate) fn populate_paintable_row(&mut self, layout_node: NodeSlotId) {
+        // A new row's layer image facts are unknown until the host syncs them; a style attach
+        // enrols the row again should its style come to name an image.
+        if self
+            .node_style_if_live(layout_node)
+            .is_some_and(crate::painting::style_queries::style_holds_layer_images)
+        {
+            self.enroll_row_for_layer_image_facts_sync(layout_node);
+        }
         let store = &mut self.paintable_rows;
         let index = layout_node.slot_index() as usize;
         let chunks = &mut store.chunks;
@@ -917,6 +931,14 @@ impl LayoutNodeArena {
             caches.get(id.slot_index() as usize)
         })
         .ok()
+    }
+
+    pub(crate) fn enroll_row_for_layer_image_facts_sync(&self, row: NodeSlotId) {
+        self.paintable_rows.rows_enrolled_for_layer_image_facts_sync.enroll(row);
+    }
+
+    pub(crate) fn take_rows_enrolled_for_layer_image_facts_sync(&self) -> Vec<NodeSlotId> {
+        self.paintable_rows.rows_enrolled_for_layer_image_facts_sync.take()
     }
 
     pub(crate) fn set_has_selection(&self, has_selection: bool) {

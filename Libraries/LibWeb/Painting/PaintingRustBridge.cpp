@@ -61,6 +61,7 @@
 #include <LibWeb/Painting/Scrolling.h>
 #include <LibWeb/Painting/ShadowData.h>
 #include <LibWeb/Platform/FontPlugin.h>
+#include <LibWeb/SVG/SVGDecodedImageData.h>
 #include <LibWeb/SVG/SVGGradientElement.h>
 #include <LibWeb/SVG/SVGGraphicsElement.h>
 #include <LibWeb/SVG/SVGImageElement.h>
@@ -714,6 +715,93 @@ void dump_stacking_context_tree(StringBuilder& builder, DOM::Document const& doc
 
 namespace {
 
+// What the host callbacks made during a recording, and the syncs that precede it, work with.
+struct PaintHostContext {
+    DisplayListResourceStorage& resource_storage;
+    GC::Ref<DOM::Document> document;
+    u64 paint_generation_id { 0 };
+    double device_pixels_per_css_pixel { 1 };
+};
+
+struct RegisteredRasterFrame {
+    u64 frame_id { 0 };
+    Gfx::IntSize frame_size;
+    Gfx::IntSize natural_size;
+};
+
+// Registers a decoded image's current raster frame with the resource storage, so the recorder only names it. A
+// vector image has no raster frame.
+static Optional<RegisteredRasterFrame> register_current_raster_frame(HTML::DecodedImageData const& decoded_image_data, DisplayListResourceStorage& resource_storage)
+{
+    if (is<SVG::SVGDecodedImageData>(decoded_image_data))
+        return {};
+    auto frame = decoded_image_data.current_frame();
+    if (!frame.has_value())
+        return {};
+    // A raster image's natural size is its intrinsic size, one CSS pixel per image pixel.
+    Gfx::IntSize natural_size { decoded_image_data.intrinsic_width().value_or(0).to_int(), decoded_image_data.intrinsic_height().value_or(0).to_int() };
+    return RegisteredRasterFrame {
+        .frame_id = resource_storage.add_image_frame(*frame).value(),
+        .frame_size = frame->size(),
+        .natural_size = natural_size,
+    };
+}
+
+// The recorder reads a box's background, mask and border-image layer images from facts the host writes onto the
+// row before a recording, for the rows enrolled since the last sync; raster frames are registered here so the
+// recorder only names them.
+static void sync_layer_image_facts(void* arena, PaintHostContext& context)
+{
+    Layout::RustFFI::layout_arena_sync_layer_image_facts(arena, &context, [](void* context_pointer, void* layout_node_shell, void* sink) {
+        auto& context = *static_cast<PaintHostContext*>(context_pointer);
+        auto const* layout_node = as_if<Layout::NodeWithStyle>(static_cast<Layout::Node const*>(layout_node_shell));
+        if (!layout_node)
+            return;
+        auto emit = [&](Layout::RustFFI::FfiLayerImageList list, u32 computed_index) {
+            auto [image, decoded_image_data] = layer_image_for(*layout_node, list, computed_index);
+            if (!image)
+                return;
+            Layout::RustFFI::FfiLayerImageFacts facts {};
+            facts.list = list;
+            facts.computed_index = computed_index;
+            facts.is_image_style_value = is<CSS::ImageStyleValue>(*image);
+            facts.is_paintable = image->is_paintable(decoded_image_data);
+            if (decoded_image_data) {
+                facts.single_pixel_color = decoded_image_data->color_if_single_pixel_bitmap();
+                auto natural_size = image->natural_size(*decoded_image_data);
+                facts.natural_width = natural_size.width;
+                facts.natural_height = natural_size.height;
+                if (natural_size.aspect_ratio.has_value()) {
+                    facts.has_natural_aspect_ratio = true;
+                    facts.natural_aspect_ratio_numerator = natural_size.aspect_ratio->numerator();
+                    facts.natural_aspect_ratio_denominator = natural_size.aspect_ratio->denominator();
+                }
+                facts.is_vector_image = is<SVG::SVGDecodedImageData>(*decoded_image_data);
+                if (auto frame = register_current_raster_frame(*decoded_image_data, context.resource_storage); frame.has_value()) {
+                    facts.has_raster_frame = true;
+                    facts.frame_id = frame->frame_id;
+                    facts.frame_width = frame->frame_size.width();
+                    facts.frame_height = frame->frame_size.height();
+                    facts.natural_frame_width = frame->natural_size.width();
+                    facts.natural_frame_height = frame->natural_size.height();
+                }
+            }
+            if (auto const* image_set = as_if<CSS::ImageSetStyleValue>(*image)) {
+                if (auto const* selected_image = image_set->selected_image()) {
+                    facts.has_selected_image_value = true;
+                    facts.selected_image_value = selected_image->rust_style_value_data();
+                }
+            }
+            Layout::RustFFI::layout_arena_paint_push_layer_image_facts(sink, facts);
+        };
+        for (u32 index = 0; index < layout_node->background_layers().size(); ++index)
+            emit(Layout::RustFFI::FfiLayerImageList::Background, index);
+        for (u32 index = 0; index < layout_node->mask_layers().size(); ++index)
+            emit(Layout::RustFFI::FfiLayerImageList::Mask, index);
+        emit(Layout::RustFFI::FfiLayerImageList::BorderImageSource, 0);
+    });
+}
+
 // Selected text paints with its element's ::selection style. The host resolves it before a recording for the
 // selected text nodes whose painted output that recording rebuilds.
 static void sync_selection_styles(void* arena, Layout::RustFFI::FfiFocusedTextControlSelection const& text_control_selection)
@@ -770,13 +858,6 @@ static void sync_line_break_caret_targets(void* arena)
 }
 
 namespace {
-
-struct PaintHostContext {
-    DisplayListResourceStorage& resource_storage;
-    GC::Ref<DOM::Document const> document;
-    u64 paint_generation_id { 0 };
-    double device_pixels_per_css_pixel { 1 };
-};
 
 static void write_image_paint_facts(ImagePaint const& paint, PaintHostContext& context, Layout::RustFFI::FfiImagePaintFacts& facts)
 {
@@ -858,42 +939,6 @@ Layout::RustFFI::FfiPaintHostCallbacks paint_host_callbacks(PaintHostContext& co
 {
     return {
         .context = &context,
-        .image_intrinsic_facts = [](void*, void* layout_node_shell, Layout::RustFFI::FfiLayerImageList list, u32 computed_index) -> Layout::RustFFI::FfiImageIntrinsicFacts {
-            auto const& layout_node = *static_cast<Layout::NodeWithStyle const*>(layout_node_shell);
-            Layout::RustFFI::FfiImageIntrinsicFacts facts {};
-            auto [image, decoded_image_data] = layer_image_for(layout_node, list, computed_index);
-            if (!image)
-                return facts;
-            facts.is_paintable = image->is_paintable(decoded_image_data);
-            if (decoded_image_data) {
-                auto natural_size = image->natural_size(*decoded_image_data);
-                facts.natural_width = natural_size.width;
-                facts.natural_height = natural_size.height;
-                if (natural_size.aspect_ratio.has_value()) {
-                    facts.has_natural_aspect_ratio = true;
-                    facts.natural_aspect_ratio_numerator = natural_size.aspect_ratio->numerator();
-                    facts.natural_aspect_ratio_denominator = natural_size.aspect_ratio->denominator();
-                }
-            }
-            if (auto const* image_set = as_if<CSS::ImageSetStyleValue>(*image)) {
-                if (auto const* selected_image = image_set->selected_image()) {
-                    facts.has_selected_image_value = true;
-                    facts.selected_image_value = selected_image->rust_style_value_data();
-                }
-            }
-            return facts;
-        },
-        .layer_image_prepare = [](void*, void* layout_node_shell, Layout::RustFFI::FfiLayerImageList list, u32 computed_index) -> Layout::RustFFI::FfiLayerImagePrepareFacts {
-            auto const& layout_node = *static_cast<Layout::NodeWithStyle const*>(layout_node_shell);
-            Layout::RustFFI::FfiLayerImagePrepareFacts facts {};
-            auto [image, decoded_image_data] = layer_image_for(layout_node, list, computed_index);
-            if (!image)
-                return facts;
-            facts.is_image_style_value = is<CSS::ImageStyleValue>(*image);
-            if (decoded_image_data)
-                facts.single_pixel_color = decoded_image_data->color_if_single_pixel_bitmap();
-            return facts;
-        },
         .layer_image_nested_display_list = [](void* context_pointer, void* layout_node_shell, Layout::RustFFI::FfiLayerImageList list, u32 computed_index, Gfx::IntRect dest) -> Layout::RustFFI::FfiLayerImageNestedDisplayListFacts {
             auto& context = *static_cast<PaintHostContext*>(context_pointer);
             auto const& layout_node = *static_cast<Layout::NodeWithStyle const*>(layout_node_shell);
@@ -904,21 +949,6 @@ Layout::RustFFI::FfiPaintHostCallbacks paint_host_callbacks(PaintHostContext& co
             if (auto display_list = decoded_image_data->record_display_list(dest.size(), layout_node.color_scheme(), context.resource_storage); display_list.has_value()) {
                 facts.has_nested_display_list = true;
                 facts.nested_display_list_id = context.resource_storage.add_display_list(display_list->display_list, display_list->visual_context_tree).value();
-            }
-            return facts;
-        },
-        .layer_image_current_frame = [](void* context_pointer, void* layout_node_shell, Layout::RustFFI::FfiLayerImageList list, u32 computed_index, Gfx::IntRect dest) -> Layout::RustFFI::FfiLayerImageFrameFacts {
-            auto& context = *static_cast<PaintHostContext*>(context_pointer);
-            auto const& layout_node = *static_cast<Layout::NodeWithStyle const*>(layout_node_shell);
-            Layout::RustFFI::FfiLayerImageFrameFacts facts {};
-            auto [image, decoded_image_data] = layer_image_for(layout_node, list, computed_index);
-            if (!image || !is<CSS::ImageStyleValue>(*image) || !decoded_image_data)
-                return facts;
-            if (auto frame = decoded_image_data->current_frame(dest.size()); frame.has_value()) {
-                facts.has_frame = true;
-                facts.frame_id = context.resource_storage.add_image_frame(*frame).value();
-                facts.frame_width = frame->size().width();
-                facts.frame_height = frame->size().height();
             }
             return facts;
         },
@@ -1006,7 +1036,7 @@ Layout::RustFFI::FfiPaintHostCallbacks paint_host_callbacks(PaintHostContext& co
                 auto& navigable_container = const_cast<HTML::NavigableContainer&>(as<HTML::NavigableContainer>(*layout_node.dom_node()));
                 auto context_id = composited_context_id_for_navigable_container(navigable_container);
                 navigable_container.set_compositor_context_id_at_last_paint(context_id);
-                const_cast<DOM::Document&>(*context.document).paint_state().set_has_painted_navigable_container_foreground();
+                context.document->paint_state().set_has_painted_navigable_container_foreground();
                 if (context_id.has_value()) {
                     facts.has_composited_context = true;
                     facts.composited_context_id = *context_id;
@@ -1250,9 +1280,10 @@ RefPtr<DisplayList> record_rust_display_list(DOM::Document& document, DisplayLis
         inputs.background_color = document.background_color();
     }
     invalidate_navigable_containers_whose_composited_context_changed(document);
+    PaintHostContext paint_host_context { resource_storage, document, paint_generation_id, device_pixels_per_css_pixel };
     sync_line_break_caret_targets(arena);
     sync_selection_styles(arena, inputs.focused_text_control);
-    PaintHostContext paint_host_context { resource_storage, document, paint_generation_id, device_pixels_per_css_pixel };
+    sync_layer_image_facts(arena, paint_host_context);
     auto rust_timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
     auto generation = Layout::RustFFI::layout_arena_record_display_list(arena, viewport_row_slot(document), paint_host_callbacks(paint_host_context), visual_context_host_callbacks(document), inputs);
     if (generation == 0)

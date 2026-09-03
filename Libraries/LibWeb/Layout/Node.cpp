@@ -433,6 +433,8 @@ NodeWithStyle::ImageObserver::~ImageObserver()
 void NodeWithStyle::ImageObserver::image_style_value_did_update(CSS::ImageStyleValue&)
 {
     VERIFY(m_owner);
+    // A decode or animation frame changes the layer image facts painting reads; the next recording's sync refreshes them.
+    RustFFI::layout_arena_enroll_row_for_layer_image_facts_sync(m_owner->arena_handle(), Node::slot_id(m_owner.ptr()));
 
     if (Painting::has_committed_box(*m_owner))
         Painting::set_needs_repaint(*m_owner);
@@ -562,6 +564,8 @@ void NodeWithStyle::attach_style_resources()
     load_image(list_style_image());
 
     rebuild_image_observers();
+    // New observers can mean new decoded data; the next recording's sync refreshes the layer image facts.
+    RustFFI::layout_arena_enroll_row_for_layer_image_facts_sync(arena_handle(), slot_id(this));
 }
 
 CSS::StyleScope const& NodeWithStyle::style_scope() const

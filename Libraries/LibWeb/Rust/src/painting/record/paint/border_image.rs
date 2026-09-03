@@ -406,15 +406,9 @@ pub(crate) fn paint_border_image(
         return false;
     }
     let image_rendering = style.image_rendering();
-    let frame = recorder.paint_host.layer_image_current_frame(
-        recorder.layout_node_shell(paintable),
-        FfiLayerImageList::BorderImageSource,
-        0,
-        libgfx_rust::IntRect::default(),
-    );
-    if !frame.has_frame {
+    let Some(frame) = recorder.layer_image_current_frame(paintable, FfiLayerImageList::BorderImageSource, 0) else {
         return false;
-    }
+    };
 
     let Some(StyleValueData::BorderImageSlice {
         top: slice_top,

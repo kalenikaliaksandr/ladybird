@@ -24,8 +24,9 @@ use crate::painting::display_list::device_pixels::DevicePixelConverter;
 use crate::painting::display_list::recorder::DisplayListRecorder;
 use crate::painting::hit_test::HitTestList;
 use crate::painting::host::{
-    FfiMaskDisplayListRegistration, FfiPaintHostCallbacks, FfiPaintRecordingStats, FfiRecordingInputs,
-    FfiRootBackgroundSource, FfiVisualContextHostCallbacks, FfiVisualContextTreeInputs,
+    FfiImagePaintFacts, FfiImagePaintKind, FfiLayerImageFacts, FfiLayerImageList, FfiMaskDisplayListRegistration,
+    FfiPaintHostCallbacks, FfiPaintRecordingStats, FfiRecordingInputs, FfiRootBackgroundSource,
+    FfiVisualContextHostCallbacks, FfiVisualContextTreeInputs,
 };
 use crate::painting::paintable_data::{InlineBoxPieceRecord, PaintableData};
 use crate::painting::paintable_rows::PaintableRowsRef;
@@ -199,6 +200,95 @@ impl<'a> PaintRecorder<'a> {
         self.resource_manifest
             .borrow_mut()
             .publish_nested_display_list(recorded, tree, mask_registrations)
+    }
+
+    /// The host's facts about one of `paintable`'s layer images, synced before the recording. The
+    /// document background paints the body's background layers.
+    pub(crate) fn layer_image_facts(
+        &self,
+        paintable: NodeSlotId,
+        list: FfiLayerImageList,
+        computed_index: u32,
+    ) -> Option<FfiLayerImageFacts> {
+        let (row, list) = if list == FfiLayerImageList::DocumentBackground {
+            (
+                self.inputs.root_background_source.body_layout_node,
+                FfiLayerImageList::Background,
+            )
+        } else {
+            (paintable, list)
+        };
+        if row.is_invalid() || !self.layout_arena.paintable_row_is_populated(row) {
+            return None;
+        }
+        self.layout_arena
+            .paintable_side_data(row)
+            .layer_images
+            .iter()
+            .find(|facts| facts.list == list && facts.computed_index == computed_index)
+            .copied()
+    }
+
+    /// Vector images record through the host at paint time until their nested lists move ahead of
+    /// the recording as well.
+    pub(crate) fn layer_image_is_vector(
+        &self,
+        paintable: NodeSlotId,
+        list: FfiLayerImageList,
+        computed_index: u32,
+    ) -> bool {
+        self.layer_image_facts(paintable, list, computed_index)
+            .is_some_and(|facts| facts.is_vector_image)
+    }
+
+    /// The layer image's facts when it is a `url()` image with a raster frame the host registered
+    /// during the sync.
+    pub(crate) fn layer_image_current_frame(
+        &self,
+        paintable: NodeSlotId,
+        list: FfiLayerImageList,
+        computed_index: u32,
+    ) -> Option<FfiLayerImageFacts> {
+        self.layer_image_facts(paintable, list, computed_index)
+            .filter(|facts| facts.is_image_style_value && facts.has_raster_frame)
+    }
+
+    /// How to paint a layer image into `dest`: a registered raster frame from the synced facts, or,
+    /// for a vector image, a nested list the host records at this size.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn layer_image_paint(
+        &self,
+        paintable: NodeSlotId,
+        shell: *mut std::ffi::c_void,
+        list: FfiLayerImageList,
+        computed_index: u32,
+        dest: libgfx_rust::FloatRect,
+        image_rendering: u8,
+        accumulated_scale: libgfx_rust::FloatSize,
+    ) -> FfiImagePaintFacts {
+        let Some(facts) = self.layer_image_facts(paintable, list, computed_index) else {
+            return FfiImagePaintFacts::default();
+        };
+        if facts.is_vector_image {
+            return self.paint_host.layer_image_paint(
+                shell,
+                list,
+                computed_index,
+                dest,
+                image_rendering,
+                accumulated_scale,
+            );
+        }
+        if !facts.has_raster_frame {
+            return FfiImagePaintFacts::default();
+        }
+        FfiImagePaintFacts {
+            image_paint_kind: FfiImagePaintKind::DecodedFrame,
+            frame_id: facts.frame_id,
+            natural_width: facts.natural_frame_width,
+            natural_height: facts.natural_frame_height,
+            ..FfiImagePaintFacts::default()
+        }
     }
 
     /// The scroll offset of `paintable` as a scroll container, zero for a box that owns no scroll

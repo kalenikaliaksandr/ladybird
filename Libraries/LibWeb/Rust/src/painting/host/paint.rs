@@ -166,34 +166,6 @@ pub struct FfiFlexOverlayInput {
     pub color: Color,
 }
 
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct FfiImageIntrinsicFacts {
-    pub is_paintable: bool,
-    pub natural_width: used_values::OptionalCssPixels,
-    pub natural_height: used_values::OptionalCssPixels,
-    pub has_natural_aspect_ratio: bool,
-    pub natural_aspect_ratio_numerator: crate::css::css_pixels::CssPixels,
-    pub natural_aspect_ratio_denominator: crate::css::css_pixels::CssPixels,
-    pub has_selected_image_value: bool,
-    pub selected_image_value: *const c_void,
-}
-
-impl Default for FfiImageIntrinsicFacts {
-    fn default() -> Self {
-        Self {
-            is_paintable: false,
-            natural_width: Default::default(),
-            natural_height: Default::default(),
-            has_natural_aspect_ratio: false,
-            natural_aspect_ratio_numerator: Default::default(),
-            natural_aspect_ratio_denominator: Default::default(),
-            has_selected_image_value: false,
-            selected_image_value: std::ptr::null(),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FfiVideoRepresentation {
@@ -313,11 +285,31 @@ pub enum FfiLayerImageList {
     DocumentBackground,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+/// What the host knows about one background, mask or border-image layer image, synced onto the row
+/// before a recording (`layout_arena_sync_layer_image_facts`). Raster frames are registered with the
+/// resource storage during that sync; vector images still record through the host at paint time.
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub struct FfiLayerImagePrepareFacts {
+pub struct FfiLayerImageFacts {
+    pub list: FfiLayerImageList,
+    pub computed_index: u32,
     pub is_image_style_value: bool,
+    pub is_paintable: bool,
     pub single_pixel_color: OptionalColor,
+    pub natural_width: used_values::OptionalCssPixels,
+    pub natural_height: used_values::OptionalCssPixels,
+    pub has_natural_aspect_ratio: bool,
+    pub natural_aspect_ratio_numerator: crate::css::css_pixels::CssPixels,
+    pub natural_aspect_ratio_denominator: crate::css::css_pixels::CssPixels,
+    pub has_selected_image_value: bool,
+    pub selected_image_value: *const c_void,
+    pub is_vector_image: bool,
+    pub has_raster_frame: bool,
+    pub frame_id: u64,
+    pub frame_width: i32,
+    pub frame_height: i32,
+    pub natural_frame_width: i32,
+    pub natural_frame_height: i32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -325,15 +317,6 @@ pub struct FfiLayerImagePrepareFacts {
 pub struct FfiLayerImageNestedDisplayListFacts {
     pub has_nested_display_list: bool,
     pub nested_display_list_id: u64,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-#[repr(C)]
-pub struct FfiLayerImageFrameFacts {
-    pub has_frame: bool,
-    pub frame_id: u64,
-    pub frame_width: i32,
-    pub frame_height: i32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -427,10 +410,6 @@ impl From<&RecordedDisplayList> for FfiRecordedDisplayList {
 #[repr(C)]
 pub struct FfiPaintHostCallbacks {
     pub context: *mut c_void,
-    pub image_intrinsic_facts:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, FfiLayerImageList, u32) -> FfiImageIntrinsicFacts,
-    pub layer_image_prepare:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, FfiLayerImageList, u32) -> FfiLayerImagePrepareFacts,
     pub layer_image_nested_display_list: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -438,8 +417,6 @@ pub struct FfiPaintHostCallbacks {
         u32,
         IntRect,
     ) -> FfiLayerImageNestedDisplayListFacts,
-    pub layer_image_current_frame:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, FfiLayerImageList, u32, IntRect) -> FfiLayerImageFrameFacts,
     pub layer_image_paint: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -469,15 +446,6 @@ pub struct ColorStopSink {
 }
 
 impl FfiPaintHostCallbacks {
-    pub(crate) fn layer_image_prepare(
-        &self,
-        layout_node_shell: *mut c_void,
-        list: FfiLayerImageList,
-        computed_index: u32,
-    ) -> FfiLayerImagePrepareFacts {
-        // SAFETY: The C++ host answers synchronously from a live layout node shell.
-        unsafe { (self.layer_image_prepare)(self.context, layout_node_shell, list, computed_index) }
-    }
     pub(crate) fn layer_image_nested_display_list(
         &self,
         layout_node_shell: *mut c_void,
@@ -494,18 +462,6 @@ impl FfiPaintHostCallbacks {
                 computed_index,
                 device_dest_rect,
             )
-        }
-    }
-    pub(crate) fn layer_image_current_frame(
-        &self,
-        layout_node_shell: *mut c_void,
-        list: FfiLayerImageList,
-        computed_index: u32,
-        device_dest_rect: libgfx_rust::IntRect,
-    ) -> FfiLayerImageFrameFacts {
-        // SAFETY: The C++ host answers synchronously from a live layout node shell.
-        unsafe {
-            (self.layer_image_current_frame)(self.context, layout_node_shell, list, computed_index, device_dest_rect)
         }
     }
     pub(crate) fn layer_image_paint(
@@ -529,15 +485,6 @@ impl FfiPaintHostCallbacks {
                 accumulated_scale,
             )
         }
-    }
-    pub(crate) fn image_intrinsic_facts(
-        &self,
-        layout_node_shell: *mut c_void,
-        list: FfiLayerImageList,
-        computed_index: u32,
-    ) -> FfiImageIntrinsicFacts {
-        // SAFETY: The C++ host answers synchronously from a live layout node shell.
-        unsafe { (self.image_intrinsic_facts)(self.context, layout_node_shell, list, computed_index) }
     }
     pub(crate) fn replaced_paint_facts(&self, layout_node_shell: *mut c_void) -> FfiReplacedPaintFacts {
         // SAFETY: The C++ host answers synchronously from a live layout node shell.

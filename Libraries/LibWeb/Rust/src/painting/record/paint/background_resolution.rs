@@ -624,11 +624,17 @@ fn image_intrinsic_facts<'a>(
             selected_image_value: None,
         },
         _ => {
-            let facts = recorder.paint_host.image_intrinsic_facts(
-                recorder.layout_node_shell(paintable),
-                image.list,
-                image.computed_index,
-            );
+            let Some(facts) = recorder.layer_image_facts(paintable, image.list, image.computed_index) else {
+                return LayerImageIntrinsics {
+                    is_paintable: false,
+                    natural: SizeWithAspectRatio {
+                        width: None,
+                        height: None,
+                        aspect_ratio: None,
+                    },
+                    selected_image_value: None,
+                };
+            };
             LayerImageIntrinsics {
                 is_paintable: facts.is_paintable,
                 natural: SizeWithAspectRatio {

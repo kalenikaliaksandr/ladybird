@@ -236,6 +236,10 @@ pub struct PaintableSideData {
     // Empty-line caret targets of this block's `<br>` children, relative to its padding box,
     // computed by the host before a recording for rows the layout commit enrolled.
     pub(crate) line_break_caret_targets: Vec<crate::painting::host::FfiLineBreakCaretTarget>,
+    // The host's facts about this box's background, mask and border-image layer images, synced
+    // before a recording for rows enrolled at commit, on style attach and on image updates. Not a
+    // committed record: layout does not change them.
+    pub(crate) layer_images: Vec<crate::painting::host::FfiLayerImageFacts>,
     // Only meaningful while is_self_painting(); assigned by the containing block's
     // assign_fragment_ownership().
     pub(crate) fragment_ownership: Option<crate::painting::fragment_ownership::FragmentOwnershipFilter>,

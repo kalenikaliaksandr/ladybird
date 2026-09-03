@@ -4347,6 +4347,61 @@ pub unsafe extern "C" fn layout_arena_sync_line_break_caret_targets(
     );
 }
 
+/// Enrols a row whose layer images may have changed (a style attach or an image update), so the
+/// host re-syncs its layer image facts before the next recording.
+///
+/// # Safety
+///
+/// `arena` must be a live handle from `layout_arena_create`, used on the document thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_enroll_row_for_layer_image_facts_sync(arena: *mut c_void, row: NodeSlotId) {
+    let arena = unsafe { arena_from_handle(arena) };
+    arena.enroll_row_for_layer_image_facts_sync(row);
+}
+
+/// Has the host describe the background, mask and border-image layer images of every enrolled row,
+/// registering raster frames on the way, and stores the facts on the row for the recorder.
+///
+/// # Safety
+///
+/// `arena` must be a live handle from `layout_arena_create`, used on the document thread. `collect`
+/// runs synchronously with a live layout node shell and pushes facts into the sink it receives
+/// through `layout_arena_paint_push_layer_image_facts`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_sync_layer_image_facts(
+    arena: *mut c_void,
+    context: *mut c_void,
+    collect: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void),
+) {
+    let arena = unsafe { arena_from_handle(arena) };
+    let rows = arena.take_rows_enrolled_for_layer_image_facts_sync();
+    sync_enrolled_rows(
+        arena,
+        rows,
+        |shell| {
+            let mut facts: Vec<crate::painting::host::FfiLayerImageFacts> = Vec::new();
+            // SAFETY: The host answers synchronously from a live layout node shell and pushes into
+            // the Vec through the exported sink function.
+            unsafe { collect(context, shell, (&raw mut facts).cast()) };
+            facts
+        },
+        |side_data, facts| side_data.layer_images = facts,
+    );
+}
+
+/// # Safety
+///
+/// `sink` must be the pointer handed to the callback, used synchronously.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_paint_push_layer_image_facts(
+    sink: *mut c_void,
+    facts: crate::painting::host::FfiLayerImageFacts,
+) {
+    // SAFETY: `sink` is the Vec pointer layout_arena_sync_layer_image_facts hands to the host.
+    let all_facts = unsafe { &mut *sink.cast::<Vec<crate::painting::host::FfiLayerImageFacts>>() };
+    all_facts.push(facts);
+}
+
 /// # Safety
 ///
 /// `sink` must be the pointer handed to the callback, used synchronously.

@@ -17,7 +17,7 @@ use crate::painting::display_list::commands::{
 };
 use crate::painting::display_list::recorder::{DisplayListRecorder, FillPathParams, PaintStyle, PaintStyleOrColor};
 use crate::painting::force_dark::ForceDarkRole;
-use crate::painting::host::{FfiImagePaintFacts, FfiLayerImagePrepareFacts};
+use crate::painting::host::FfiImagePaintFacts;
 use crate::painting::node_painting;
 use crate::painting::paintable_data::FfiPixelBox;
 use crate::painting::record::PaintRecorder;
@@ -618,13 +618,15 @@ fn paint_image_layer(
 
     // An SVG used as an image resolves `prefers-color-scheme` from the used `color-scheme` of
     // the element referencing it.
-    let prepare = if resolved_gradient.is_some() {
-        FfiLayerImagePrepareFacts::default()
+    let facts = if resolved_gradient.is_some() {
+        None
     } else {
-        recorder
-            .paint_host
-            .layer_image_prepare(shell, image.list, image.computed_index)
+        recorder.layer_image_facts(paintable, image.list, image.computed_index)
     };
+    let single_pixel_color = facts
+        .filter(|facts| facts.single_pixel_color.has_value)
+        .map(|facts| facts.single_pixel_color.value);
+    let is_image_style_value = facts.is_some_and(|facts| facts.is_image_style_value);
 
     let device_rects = |image_rect: CssPixelRect| -> Vec<IntRect> {
         let mut rects = Vec::new();
@@ -676,7 +678,7 @@ fn paint_image_layer(
 
     let inline_operator = compositing_and_blending_operator;
 
-    if prepare.single_pixel_color.has_value {
+    if let Some(single_pixel_color) = single_pixel_color {
         // OPTIMIZATION: If the image is a single pixel, we can just fill the whole area with it.
         //               However, we must first figure out the real coverage area, taking repeat etc into account.
 
@@ -691,18 +693,18 @@ fn paint_image_layer(
         if inline_operator == CompositingAndBlendingOperator::Normal {
             recorder.recorder.fill_rect(
                 fill_rect.unwrap_or_default(),
-                prepare.single_pixel_color.value,
+                single_pixel_color,
                 ForceDarkRole::Background,
             );
         } else {
             recorder.recorder.fill_rect_with_compositing_and_blending_operator(
                 fill_rect.unwrap_or_default(),
-                prepare.single_pixel_color.value,
+                single_pixel_color,
                 inline_operator,
                 ForceDarkRole::Background,
             );
         }
-    } else if prepare.is_image_style_value
+    } else if is_image_style_value
         && ((repeat_x || repeat_y) || compositing_and_blending_operator != CompositingAndBlendingOperator::Normal)
         && !repeat_x_has_gap
         && !repeat_y_has_gap
@@ -718,10 +720,13 @@ fn paint_image_layer(
         if dest_rect.height == 0 {
             dest_rect.height = 1;
         }
-        let nested =
+        let nested = if recorder.layer_image_is_vector(paintable, image.list, image.computed_index) {
             recorder
                 .paint_host
-                .layer_image_nested_display_list(shell, image.list, image.computed_index, dest_rect);
+                .layer_image_nested_display_list(shell, image.list, image.computed_index, dest_rect)
+        } else {
+            crate::painting::host::FfiLayerImageNestedDisplayListFacts::default()
+        };
         if nested.has_nested_display_list {
             let scaling_mode = to_gfx_scaling_mode(
                 image_rendering,
@@ -740,13 +745,9 @@ fn paint_image_layer(
                 },
             );
         } else {
-            let frame =
-                recorder
-                    .paint_host
-                    .layer_image_current_frame(shell, image.list, image.computed_index, dest_rect);
-            if !frame.has_frame {
+            let Some(frame) = recorder.layer_image_current_frame(paintable, image.list, image.computed_index) else {
                 return;
-            }
+            };
             let tile_device_rect = dest_rect;
             let clip_device_rect = clip_rect;
             let visible_rect = tile_device_rect.intersected(clip_device_rect);
@@ -837,7 +838,8 @@ fn paint_image_layer(
                 CompositingAndBlendingOperator::Normal,
             );
         } else {
-            let paint = recorder.paint_host.layer_image_paint(
+            let paint = recorder.layer_image_paint(
+                paintable,
                 shell,
                 image.list,
                 image.computed_index,
@@ -910,7 +912,8 @@ fn paint_image_layer(
             }
             let accumulated_scale =
                 recorder.accumulated_2d_scale_at(recorder.recorder.accumulated_visual_context().spatial);
-            let paint = recorder.paint_host.layer_image_paint(
+            let paint = recorder.layer_image_paint(
+                paintable,
                 shell,
                 image.list,
                 image.computed_index,

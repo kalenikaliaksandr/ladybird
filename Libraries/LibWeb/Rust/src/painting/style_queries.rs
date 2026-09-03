@@ -59,6 +59,14 @@ pub(crate) fn is_abstract_image(value: &StyleValueData) -> bool {
     )
 }
 
+/// Whether the style names an image in a background or mask layer or as the border-image source:
+/// the layer images the host describes for the recorder. Nearly every style names none.
+pub(crate) fn style_holds_layer_images(style: ComputedValuesView<'_>) -> bool {
+    background_layers_have_image(style)
+        || mask_layers_have_image(style.mask())
+        || handle_value(&style.border().border_image_source).is_some_and(is_abstract_image)
+}
+
 pub(crate) fn has_css_borders(style: ComputedValuesView<'_>) -> bool {
     let zero = CssPixels::from_raw(0);
     style.border_top_width() != zero
