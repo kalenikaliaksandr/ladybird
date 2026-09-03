@@ -281,14 +281,8 @@ pub(crate) fn paint_image_foreground(recorder: &mut PaintRecorder<'_>, paintable
             recorder.record_with_inline_clips(&inline_clips, |recorder| {
                 let accumulated_scale =
                     recorder.accumulated_2d_scale_at(recorder.recorder.accumulated_visual_context().spatial);
-                let paint = recorder.replaced_image_paint(
-                    paintable,
-                    recorder.layout_node_shell(paintable),
-                    dest_rect,
-                    accumulated_scale,
-                );
-                if paint.image_paint_kind != crate::painting::host::FfiImagePaintKind::None {
-                    paint_image(recorder, &paint, dest_rect, image_rendering);
+                if let Some(paint) = recorder.replaced_image_paint(paintable, accumulated_scale) {
+                    paint_image(recorder, paint, dest_rect, image_rendering);
                 }
             });
         }

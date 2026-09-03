@@ -15,6 +15,7 @@
 
 use crate::painting::display_list::builder::RecordedDisplayList;
 use crate::painting::display_list::commands::DisplayListResourceId;
+use crate::painting::display_list::recorder::VectorImagePaintRequest;
 use crate::painting::host::FfiMaskDisplayListRegistration;
 use crate::painting::visual_context::VisualContextTree;
 use libgfx_rust::font::{FontRef, RetainedFont};
@@ -32,6 +33,8 @@ pub(crate) struct NestedDisplayListEntry {
     pub(crate) recorded: RecordedDisplayList,
     pub(crate) tree: VisualContextTree,
     pub(crate) mask_registrations: Vec<FfiMaskDisplayListRegistration>,
+    /// Placeholder vector image paints inside this nested list, patched at publish time.
+    pub(crate) vector_image_paints: Vec<VectorImagePaintRequest>,
 }
 
 #[derive(Default)]
@@ -60,6 +63,7 @@ impl ResourceManifest {
         recorded: RecordedDisplayList,
         tree: VisualContextTree,
         mask_registrations: Vec<FfiMaskDisplayListRegistration>,
+        vector_image_paints: Vec<VectorImagePaintRequest>,
     ) -> DisplayListResourceId {
         // SAFETY: A relaxed atomic increment on the host side; no other state is touched.
         let id = DisplayListResourceId(unsafe { ladybird_web_display_list_allocate_id() });
@@ -68,12 +72,17 @@ impl ResourceManifest {
             recorded,
             tree,
             mask_registrations,
+            vector_image_paints,
         });
         id
     }
 
     pub(crate) fn fonts(&self) -> impl Iterator<Item = &RetainedFont> {
         self.fonts.values()
+    }
+
+    pub(crate) fn nested_display_lists_mut(&mut self) -> &mut [NestedDisplayListEntry] {
+        &mut self.nested_display_lists
     }
 
     pub(crate) fn into_nested_display_lists(self) -> Vec<NestedDisplayListEntry> {

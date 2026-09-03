@@ -211,8 +211,8 @@ pub struct FfiReplacedPaintFacts {
     // SVG image boxes.
     pub svg_has_decoded_image_data: bool,
     pub svg_natural_size: used_values::OptionalFloatSize,
-    // Image boxes: a vector image records through the host at paint time; a raster image's current
-    // frame is registered during the sync.
+    // Image and SVG image boxes: a vector image paints through a placeholder nested list the publish
+    // step has the host record; a raster image's current frame is registered during the sync.
     pub is_vector_image: bool,
     pub has_raster_frame: bool,
     pub frame_id: u64,
@@ -290,7 +290,8 @@ pub enum FfiLayerImageList {
 
 /// What the host knows about one background, mask or border-image layer image, synced onto the row
 /// before a recording (`layout_arena_sync_layer_image_facts`). Raster frames are registered with the
-/// resource storage during that sync; vector images still record through the host at paint time.
+/// resource storage during that sync; a vector image paints through a placeholder nested list the
+/// publish step has the host record at the painted size.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct FfiLayerImageFacts {
@@ -315,32 +316,42 @@ pub struct FfiLayerImageFacts {
     pub natural_frame_height: i32,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+/// One placeholder vector image paint for the host to resolve at publish time.
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub struct FfiLayerImageNestedDisplayListFacts {
-    pub has_nested_display_list: bool,
-    pub nested_display_list_id: u64,
+pub struct FfiVectorImagePaintRequest {
+    pub shell: *mut c_void,
+    pub is_layer_image: bool,
+    pub list: FfiLayerImageList,
+    pub computed_index: u32,
+    pub records_at_size: bool,
+    pub dest_rect: FloatRect,
+    pub image_rendering: u8,
+    pub accumulated_scale: FloatSize,
+    pub size: libgfx_rust::IntSize,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(u8)]
-pub enum FfiImagePaintKind {
-    #[default]
-    None,
-    DecodedFrame,
-    NestedDisplayList,
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
-pub struct FfiImagePaintFacts {
-    pub image_paint_kind: FfiImagePaintKind,
-    pub frame_id: u64,
-    pub natural_width: i32,
-    pub natural_height: i32,
-    pub nested_display_list_id: u64,
+pub struct FfiVectorImagePaintResult {
+    pub has_display_list: bool,
+    pub display_list_id: u64,
     pub list_width: i32,
     pub list_height: i32,
+}
+
+/// What the host does for `layout_arena_publish_recording`: records the nested lists of the vector
+/// images painted with placeholders, and registers the fonts and nested display lists the
+/// recording produced, the latter by the id the recorder wrote into the bytes together with a
+/// retained visual context tree handle the host owns.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct FfiPublishHostCallbacks {
+    pub context: *mut c_void,
+    pub resolve_vector_image:
+        unsafe extern "C" fn(*mut c_void, FfiVectorImagePaintRequest, *mut FfiVectorImagePaintResult),
+    pub add_font: unsafe extern "C" fn(*mut c_void, *const c_void),
+    pub add_nested_display_list: unsafe extern "C" fn(*mut c_void, u64, FfiRecordedDisplayList, *const c_void),
 }
 
 // A recording lent to C++ for the duration of one call. An empty Vec's pointer is dangling, so
@@ -413,24 +424,6 @@ impl From<&RecordedDisplayList> for FfiRecordedDisplayList {
 #[repr(C)]
 pub struct FfiPaintHostCallbacks {
     pub context: *mut c_void,
-    pub layer_image_nested_display_list: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        FfiLayerImageList,
-        u32,
-        IntRect,
-    ) -> FfiLayerImageNestedDisplayListFacts,
-    pub layer_image_paint: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        FfiLayerImageList,
-        u32,
-        FloatRect,
-        u8,
-        FloatSize,
-    ) -> FfiImagePaintFacts,
-    pub replaced_image_paint:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, FloatRect, FloatSize) -> FfiImagePaintFacts,
     pub svg_paint_style: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -447,55 +440,6 @@ pub struct ColorStopSink {
 }
 
 impl FfiPaintHostCallbacks {
-    pub(crate) fn layer_image_nested_display_list(
-        &self,
-        layout_node_shell: *mut c_void,
-        list: FfiLayerImageList,
-        computed_index: u32,
-        device_dest_rect: libgfx_rust::IntRect,
-    ) -> FfiLayerImageNestedDisplayListFacts {
-        // SAFETY: The C++ host answers synchronously from a live layout node shell.
-        unsafe {
-            (self.layer_image_nested_display_list)(
-                self.context,
-                layout_node_shell,
-                list,
-                computed_index,
-                device_dest_rect,
-            )
-        }
-    }
-    pub(crate) fn layer_image_paint(
-        &self,
-        layout_node_shell: *mut c_void,
-        list: FfiLayerImageList,
-        computed_index: u32,
-        dest: FloatRect,
-        image_rendering: u8,
-        accumulated_scale: libgfx_rust::FloatSize,
-    ) -> FfiImagePaintFacts {
-        // SAFETY: The C++ host answers synchronously from a live layout node shell.
-        unsafe {
-            (self.layer_image_paint)(
-                self.context,
-                layout_node_shell,
-                list,
-                computed_index,
-                dest,
-                image_rendering,
-                accumulated_scale,
-            )
-        }
-    }
-    pub(crate) fn replaced_image_paint(
-        &self,
-        layout_node_shell: *mut c_void,
-        dest: FloatRect,
-        accumulated_scale: libgfx_rust::FloatSize,
-    ) -> FfiImagePaintFacts {
-        // SAFETY: The C++ host answers synchronously from a live layout node shell.
-        unsafe { (self.replaced_image_paint)(self.context, layout_node_shell, dest, accumulated_scale) }
-    }
     pub(crate) fn svg_paint_style(
         &self,
         layout_node_shell: *mut c_void,

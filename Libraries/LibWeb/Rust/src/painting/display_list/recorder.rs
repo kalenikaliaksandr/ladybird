@@ -236,6 +236,61 @@ pub struct GlyphRunForRecording<'a> {
     pub glyphs: &'a [DisplayListGlyph],
 }
 
+/// Which box's image a placeholder nested-list command shows.
+#[derive(Clone, Copy, Debug)]
+pub enum VectorImageSource {
+    LayerImage {
+        paintable: crate::layout::node_data::NodeSlotId,
+        list: crate::painting::host::FfiLayerImageList,
+        computed_index: u32,
+    },
+    ReplacedImage {
+        paintable: crate::layout::node_data::NodeSlotId,
+    },
+}
+
+/// How the host produces the nested list: an image paint at a destination (the list's own size
+/// follows the raster scale), or a recording at exactly `size`.
+#[derive(Clone, Copy, Debug)]
+pub enum VectorImageResolve {
+    ImagePaint {
+        dest_rect: FloatRect,
+        image_rendering: u8,
+        accumulated_scale: FloatSize,
+    },
+    RecordAtSize {
+        size: IntSize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorImagePaintCommand {
+    /// A `PaintNestedDisplayList`: the id and the list size are patched.
+    PaintNested,
+    /// A `DrawRepeatedDisplayList`: the id is patched.
+    DrawRepeated,
+}
+
+/// A vector image painted with a placeholder id. The nested list a vector image paints with is a
+/// sub-document recording at a size only the recording knows, so the recorder emits the command
+/// with a zero id, and the publish step has the host record the list and patches the bytes.
+#[derive(Clone, Copy, Debug)]
+pub struct VectorImagePaintRequest {
+    /// Byte offset of the command payload in the tape that holds it.
+    pub payload_offset: usize,
+    pub command: VectorImagePaintCommand,
+    pub source: VectorImageSource,
+    pub resolve: VectorImageResolve,
+}
+
+/// A finished recording: the tape, the mask lists its frames reference, and the placeholder vector
+/// image paints the publish step patches into the tape.
+pub struct FinishedRecording {
+    pub recorded: RecordedDisplayList,
+    pub mask_display_lists: Vec<(FrameNodeIndex, DisplayListResourceId)>,
+    pub vector_image_paints: Vec<VectorImagePaintRequest>,
+}
+
 #[derive(Default)]
 pub struct DisplayListRecorder {
     builder: DisplayListBuilder,
@@ -246,6 +301,7 @@ pub struct DisplayListRecorder {
     contrast_backdrop: Option<Color>,
     context: ContextRef,
     mask_display_lists: Vec<(FrameNodeIndex, DisplayListResourceId)>,
+    vector_image_paints: Vec<VectorImagePaintRequest>,
     ambient_inline_clips: Vec<PendingInlineClip>,
 }
 
@@ -380,21 +436,38 @@ impl DisplayListRecorder {
         }
     }
 
-    pub fn take_mask_display_lists(&mut self) -> Vec<(FrameNodeIndex, DisplayListResourceId)> {
-        std::mem::take(&mut self.mask_display_lists)
+    /// Emits a vector image's placeholder command through `emit`, which paints a nested list with
+    /// a zero id, and remembers where the publish step patches the resolved id in. An empty
+    /// destination appends nothing and asks for nothing.
+    pub fn paint_vector_image_placeholder(
+        &mut self,
+        source: VectorImageSource,
+        resolve: VectorImageResolve,
+        emit: impl FnOnce(&mut Self) -> VectorImagePaintCommand,
+    ) {
+        let payload_offset = self.builder.byte_size() + HEADER_SIZE;
+        let command = emit(self);
+        if self.builder.byte_size() > payload_offset {
+            self.vector_image_paints.push(VectorImagePaintRequest {
+                payload_offset,
+                command,
+                source,
+                resolve,
+            });
+        }
     }
 
     pub fn builder(&self) -> &DisplayListBuilder {
         &self.builder
     }
 
-    pub fn mask_display_lists(&self) -> &[(FrameNodeIndex, DisplayListResourceId)] {
-        &self.mask_display_lists
-    }
-
-    pub fn into_builder(self) -> DisplayListBuilder {
+    pub fn finish(self) -> FinishedRecording {
         debug_assert!(self.ambient_inline_clips.is_empty());
-        self.builder
+        FinishedRecording {
+            recorded: self.builder.finish(),
+            mask_display_lists: self.mask_display_lists,
+            vector_image_paints: self.vector_image_paints,
+        }
     }
 
     pub fn byte_size(&self) -> usize {

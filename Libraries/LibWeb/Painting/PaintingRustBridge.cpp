@@ -817,8 +817,8 @@ static void sync_replaced_paint_facts(void* arena, PaintHostContext& context)
         VERIFY(row);
         auto kind = layout_node.kind();
         auto& facts = *out_facts;
-        // An image box or SVG image with a vector image records through the host at paint time; a raster
-        // image's current frame is registered here.
+        // An image box or SVG image with a vector image paints through a placeholder nested list recorded at
+        // publish time; a raster image's current frame is registered here.
         auto describe_decoded_image = [&](GC::Ptr<HTML::DecodedImageData> decoded_image_data) {
             if (!decoded_image_data)
                 return;
@@ -970,24 +970,6 @@ static void sync_line_break_caret_targets(void* arena)
 
 namespace {
 
-static void write_image_paint_facts(ImagePaint const& paint, PaintHostContext& context, Layout::RustFFI::FfiImagePaintFacts& facts)
-{
-    paint.value.visit(
-        [&](ImagePaint::DecodedFrame const& decoded_frame) {
-            facts.image_paint_kind = Layout::RustFFI::FfiImagePaintKind::DecodedFrame;
-            facts.frame_id = context.resource_storage.add_image_frame(decoded_frame.frame).value();
-            facts.natural_width = decoded_frame.natural_size.width();
-            facts.natural_height = decoded_frame.natural_size.height();
-        },
-        [&](ImagePaint::NestedDisplayList const& nested) {
-            facts.image_paint_kind = Layout::RustFFI::FfiImagePaintKind::NestedDisplayList;
-            facts.nested_display_list_id = context.resource_storage.add_display_list(nested.resource.display_list, nested.resource.visual_context_tree).value();
-            facts.list_width = nested.list_size.width();
-            facts.list_height = nested.list_size.height();
-        },
-        [](ImagePaint::Gradient const&) { VERIFY_NOT_REACHED(); });
-}
-
 static NonnullRefPtr<DisplayList> display_list_from_rust_recording(AccumulatedVisualContextTree const& visual_context_tree, Layout::RustFFI::FfiRecordedDisplayList const& recorded, Optional<u64> id = {})
 {
     VERIFY(recorded.byte_count % DisplayList::command_alignment == 0);
@@ -1050,69 +1032,6 @@ Layout::RustFFI::FfiPaintHostCallbacks paint_host_callbacks(PaintHostContext& co
 {
     return {
         .context = &context,
-        .layer_image_nested_display_list = [](void* context_pointer, void* layout_node_shell, Layout::RustFFI::FfiLayerImageList list, u32 computed_index, Gfx::IntRect dest) -> Layout::RustFFI::FfiLayerImageNestedDisplayListFacts {
-            auto& context = *static_cast<PaintHostContext*>(context_pointer);
-            auto const& layout_node = *static_cast<Layout::NodeWithStyle const*>(layout_node_shell);
-            Layout::RustFFI::FfiLayerImageNestedDisplayListFacts facts {};
-            auto [image, decoded_image_data] = layer_image_for(layout_node, list, computed_index);
-            if (!image || !is<CSS::ImageStyleValue>(*image) || !decoded_image_data)
-                return facts;
-            if (auto display_list = decoded_image_data->record_display_list(dest.size(), layout_node.color_scheme(), context.resource_storage); display_list.has_value()) {
-                facts.has_nested_display_list = true;
-                facts.nested_display_list_id = context.resource_storage.add_display_list(display_list->display_list, display_list->visual_context_tree).value();
-            }
-            return facts;
-        },
-        .layer_image_paint = [](void* context_pointer, void* layout_node_shell, Layout::RustFFI::FfiLayerImageList list, u32 computed_index, Gfx::FloatRect dest_rect, u8 image_rendering_raw, Gfx::FloatSize accumulated_scale) -> Layout::RustFFI::FfiImagePaintFacts {
-            auto& context = *static_cast<PaintHostContext*>(context_pointer);
-            auto const& layout_node = *static_cast<Layout::NodeWithStyle const*>(layout_node_shell);
-            Layout::RustFFI::FfiImagePaintFacts facts {};
-            auto [image, decoded_image_data] = layer_image_for(layout_node, list, computed_index);
-            if (!image)
-                return facts;
-            ImagePaintRequest request {
-                .document = layout_node.document(),
-                .dest_rect = decoded_image_data ? dest_rect.to_type<int>().to_type<float>() : dest_rect,
-                .image_rendering = static_cast<CSS::ImageRendering>(image_rendering_raw),
-                .color_scheme = layout_node.color_scheme(),
-                .gradient_stop_color_resolution_context = gradient_stop_color_resolution_context(layout_node),
-                .accumulated_scale = accumulated_scale,
-                .resource_storage = context.resource_storage,
-            };
-            auto paint = decoded_image_data ? decoded_image_data->image_paint(request) : image->image_paint(request);
-            if (paint.has_value())
-                write_image_paint_facts(*paint, context, facts);
-            return facts;
-        },
-        .replaced_image_paint = [](void* context_pointer, void* layout_node_shell, Gfx::FloatRect dest_rect, Gfx::FloatSize accumulated_scale) -> Layout::RustFFI::FfiImagePaintFacts {
-            auto& context = *static_cast<PaintHostContext*>(context_pointer);
-            auto const& layout_node = *static_cast<Layout::NodeWithStyle const*>(layout_node_shell);
-            auto const* row = committed_row(layout_node);
-            VERIFY(row);
-            Layout::RustFFI::FfiImagePaintFacts facts {};
-            GC::Ptr<HTML::DecodedImageData> decoded_image_data;
-            if (layout_node.kind() == Layout::RustFFI::NodeKind::ImageBox)
-                decoded_image_data = static_cast<Layout::Box const&>(layout_node).image_provider().decoded_image_data();
-            else if (layout_node.kind() == Layout::RustFFI::NodeKind::SVGImageBox) {
-                auto const& image_provider = as<SVG::SVGImageElement>(*layout_node.dom_node());
-                decoded_image_data = image_provider.decoded_image_data();
-            }
-            if (!decoded_image_data)
-                return facts;
-            ImagePaintRequest request {
-                .document = layout_node.document(),
-                .dest_rect = dest_rect,
-                .image_rendering = layout_node.image_rendering(),
-                .color_scheme = layout_node.color_scheme(),
-                .gradient_stop_color_resolution_context = {},
-                .accumulated_scale = accumulated_scale,
-                .resource_storage = context.resource_storage,
-            };
-            auto paint = decoded_image_data->image_paint(request);
-            if (paint.has_value())
-                write_image_paint_facts(*paint, context, facts);
-            return facts;
-        },
         .svg_paint_style = [](void* context_pointer, void* layout_node_shell, bool is_stroke, Layout::RustFFI::FfiSvgPaintContext const* ffi_paint_context, void* sink) -> Layout::RustFFI::FfiSvgPaintStyle {
             auto& context = *static_cast<PaintHostContext*>(context_pointer);
             auto const& layout_node = *static_cast<Layout::Node const*>(layout_node_shell);
@@ -1167,6 +1086,67 @@ Layout::RustFFI::FfiPaintHostCallbacks paint_host_callbacks(PaintHostContext& co
                 });
             return style;
         },
+    };
+}
+
+// Publishing a recording: vector images were painted with placeholder nested lists, recorded here at the painted
+// sizes for the recorder to patch their ids in before the tape is shared; the fonts and nested display lists the
+// recorder wrote the ids of into the bytes are registered here before anything scans the bytes for references.
+Layout::RustFFI::FfiPublishHostCallbacks publish_host_callbacks(PaintHostContext& context)
+{
+    return {
+        .context = &context,
+        .resolve_vector_image = [](void* context_pointer, Layout::RustFFI::FfiVectorImagePaintRequest request, Layout::RustFFI::FfiVectorImagePaintResult* result) {
+            auto& context = *static_cast<PaintHostContext*>(context_pointer);
+            auto const& layout_node = *static_cast<Layout::NodeWithStyle const*>(request.shell);
+            GC::Ptr<HTML::DecodedImageData> decoded_image_data;
+            CSS::AbstractImageStyleValue const* layer_image = nullptr;
+            if (request.is_layer_image) {
+                auto layer = layer_image_for(layout_node, request.list, request.computed_index);
+                layer_image = layer.value;
+                decoded_image_data = layer.decoded_image_data;
+            } else if (layout_node.kind() == Layout::RustFFI::NodeKind::ImageBox) {
+                decoded_image_data = static_cast<Layout::Box const&>(layout_node).image_provider().decoded_image_data();
+            } else if (layout_node.kind() == Layout::RustFFI::NodeKind::SVGImageBox) {
+                decoded_image_data = as<SVG::SVGImageElement>(*layout_node.dom_node()).decoded_image_data();
+            }
+            if (!decoded_image_data)
+                return;
+            auto publish = [&](DisplayListResource const& resource, Gfx::IntSize list_size) {
+                result->has_display_list = true;
+                result->display_list_id = context.resource_storage.add_display_list(resource.display_list, resource.visual_context_tree).value();
+                result->list_width = list_size.width();
+                result->list_height = list_size.height();
+            };
+            if (request.records_at_size) {
+                // The repeated tile path records url() images only.
+                if (!layer_image || !is<CSS::ImageStyleValue>(*layer_image))
+                    return;
+                if (auto display_list = decoded_image_data->record_display_list(request.size, layout_node.color_scheme(), context.resource_storage); display_list.has_value())
+                    publish(*display_list, request.size);
+                return;
+            }
+            ImagePaintRequest paint_request {
+                .document = layout_node.document(),
+                .dest_rect = request.is_layer_image ? request.dest_rect.to_type<int>().to_type<float>() : request.dest_rect,
+                .image_rendering = request.is_layer_image ? static_cast<CSS::ImageRendering>(request.image_rendering) : layout_node.image_rendering(),
+                .color_scheme = layout_node.color_scheme(),
+                .gradient_stop_color_resolution_context = request.is_layer_image ? gradient_stop_color_resolution_context(layout_node) : CSS::ColorResolutionContext {},
+                .accumulated_scale = request.accumulated_scale,
+                .resource_storage = context.resource_storage,
+            };
+            auto paint = decoded_image_data->image_paint(paint_request);
+            if (paint.has_value() && paint->value.has<ImagePaint::NestedDisplayList>()) {
+                auto const& nested = paint->value.get<ImagePaint::NestedDisplayList>();
+                publish(nested.resource, nested.list_size);
+            } },
+        .add_font = [](void* context_pointer, void const* font) {
+            auto& context = *static_cast<PaintHostContext*>(context_pointer);
+            context.resource_storage.add_font(*static_cast<Gfx::Font const*>(font)); },
+        .add_nested_display_list = [](void* context_pointer, u64 id, Layout::RustFFI::FfiRecordedDisplayList recorded, void const* retained_tree) {
+            auto& context = *static_cast<PaintHostContext*>(context_pointer);
+            auto visual_context_tree = AccumulatedVisualContextTree::adopt_rust_handle(retained_tree);
+            context.resource_storage.add_display_list(display_list_from_rust_recording(visual_context_tree, recorded, id), visual_context_tree); },
     };
 }
 
@@ -1304,22 +1284,9 @@ RefPtr<DisplayList> record_rust_display_list(DOM::Document& document, DisplayLis
     sync_layer_image_facts(arena, paint_host_context);
     sync_replaced_paint_facts(arena, paint_host_context);
     auto rust_timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
-    auto generation = Layout::RustFFI::layout_arena_record_display_list(arena, viewport_row_slot(document), paint_host_callbacks(paint_host_context), visual_context_host_callbacks(document), inputs);
-    if (generation == 0)
+    if (!Layout::RustFFI::layout_arena_record_display_list(arena, viewport_row_slot(document), paint_host_callbacks(paint_host_context), visual_context_host_callbacks(document), inputs))
         return nullptr;
-    // The recorder wrote the ids of the fonts and nested display lists it used into the bytes; register the
-    // resources behind them before anything scans the bytes for references.
-    Layout::RustFFI::layout_arena_take_last_recording_resource_manifest(
-        arena, &paint_host_context,
-        [](void* context_pointer, void const* font) {
-            auto& context = *static_cast<PaintHostContext*>(context_pointer);
-            context.resource_storage.add_font(*static_cast<Gfx::Font const*>(font));
-        },
-        [](void* context_pointer, u64 id, Layout::RustFFI::FfiRecordedDisplayList recorded, void const* retained_tree) {
-            auto& context = *static_cast<PaintHostContext*>(context_pointer);
-            auto visual_context_tree = AccumulatedVisualContextTree::adopt_rust_handle(retained_tree);
-            context.resource_storage.add_display_list(display_list_from_rust_recording(visual_context_tree, recorded, id), visual_context_tree);
-        });
+    Layout::RustFFI::layout_arena_publish_recording(arena, publish_host_callbacks(paint_host_context));
     if (Layout::RustFFI::layout_arena_last_recording_has_blocking_wheel_event_listeners(arena))
         wheel_event_region_state.has_blocking_wheel_event_listeners = true;
     auto stamp_async_scrolling_metadata_with_current_viewport_rect = [&](DisplayList& display_list) {

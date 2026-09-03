@@ -1893,6 +1893,9 @@ pub unsafe extern "C" fn layout_arena_refresh_scroll_state(
         .snapshot(callbacks.tree_inputs().device_pixels_per_css_pixel);
 }
 
+/// Records the display list and leaves it pending for `layout_arena_publish_recording`. Returns
+/// false when nothing could be recorded.
+///
 /// # Safety
 ///
 /// `arena` must be a live handle from `layout_arena_create`, used on the document thread.
@@ -1903,7 +1906,7 @@ pub unsafe extern "C" fn layout_arena_record_display_list(
     paint_callbacks: crate::painting::host::FfiPaintHostCallbacks,
     visual_context_callbacks: crate::painting::host::FfiVisualContextHostCallbacks,
     inputs: crate::painting::host::FfiRecordingInputs,
-) -> u64 {
+) -> bool {
     let arena = unsafe { arena_from_handle(arena) };
     {
         let mut paint_state = arena.paint_state().borrow_mut();
@@ -1921,10 +1924,10 @@ pub unsafe extern "C" fn layout_arena_record_display_list(
             paint_state.recorded_canvas_color = Some(inputs.canvas_color);
         }
     }
-    let mut output = {
+    let (output, recording_from_scratch_for_verification) = {
         let paint_state = arena.paint_state().borrow();
         if !arena.paintable_row_is_populated(viewport) || arena.stacking_context_entries(viewport).is_none() {
-            return 0;
+            return false;
         }
         let visual_context = &paint_state.visual_context;
         let inputs = crate::painting::record::RecordingInputs::from_host_and_last_visual_context_update(
@@ -1951,34 +1954,240 @@ pub unsafe extern "C" fn layout_arena_record_display_list(
             command_cache_source,
             paint_state.hit_test_item_cache_source.clone(),
         );
-        if crate::painting::record::verify::enabled_by_environment()
+        // The verifier compares the recording from scratch at publish time, once both recordings
+        // have resolved their vector image placeholders through the host.
+        let recording_from_scratch_for_verification = (crate::painting::record::verify::enabled_by_environment()
             && output.recording_stats.spliced_capture_count() > 0
-            && !inputs.should_show_line_box_borders
-        {
-            let mut inputs_for_recording_from_scratch = inputs;
-            inputs_for_recording_from_scratch.paint_command_cache_read_write = false;
-            let recording_from_scratch = crate::painting::record::traversal::record_display_list(
-                arena,
-                &paint_state,
-                viewport,
-                &paint_callbacks,
-                &visual_context_callbacks,
-                inputs_for_recording_from_scratch,
-                paint_state.hit_test_list_generation + 1,
-                None,
-                None,
-            );
-            crate::painting::record::verify::verify_spliced_recording_matches_fresh(
-                arena,
-                &output,
-                &recording_from_scratch,
-            );
-        }
+            && !inputs.should_show_line_box_borders)
+            .then(|| {
+                let mut inputs_for_recording_from_scratch = inputs;
+                inputs_for_recording_from_scratch.paint_command_cache_read_write = false;
+                crate::painting::record::traversal::record_display_list(
+                    arena,
+                    &paint_state,
+                    viewport,
+                    &paint_callbacks,
+                    &visual_context_callbacks,
+                    inputs_for_recording_from_scratch,
+                    paint_state.hit_test_list_generation + 1,
+                    None,
+                    None,
+                )
+            });
         arena.set_paint_recording_in_progress(false);
-        output
+        (output, recording_from_scratch_for_verification)
     };
+    arena.paint_state().borrow_mut().pending_recording = Some(crate::painting::paint_state::PendingRecording {
+        output,
+        paint_command_cache_read_write: inputs.paint_command_cache_read_write,
+        recording_from_scratch_for_verification,
+    });
+    true
+}
+
+/// Asks the host for the nested lists of placeholder vector image paints. Each answer is returned
+/// with the request it belongs to; an image the host could not record yields no display list.
+fn resolve_vector_image_paints(
+    arena: &crate::layout::LayoutNodeArena,
+    requests: Vec<crate::painting::display_list::recorder::VectorImagePaintRequest>,
+    host: &crate::painting::host::FfiPublishHostCallbacks,
+) -> Vec<(
+    crate::painting::display_list::recorder::VectorImagePaintRequest,
+    crate::painting::host::FfiVectorImagePaintResult,
+)> {
+    use crate::painting::display_list::recorder::{VectorImageResolve, VectorImageSource};
+    requests
+        .into_iter()
+        .map(|request| {
+            let (paintable, is_layer_image, list, computed_index) = match request.source {
+                VectorImageSource::LayerImage {
+                    paintable,
+                    list,
+                    computed_index,
+                } => (paintable, true, list, computed_index),
+                VectorImageSource::ReplacedImage { paintable } => (
+                    paintable,
+                    false,
+                    crate::painting::host::FfiLayerImageList::Background,
+                    0,
+                ),
+            };
+            let mut result = crate::painting::host::FfiVectorImagePaintResult::default();
+            let shell = arena.shell_if_live(paintable);
+            if !shell.is_null() {
+                let mut ffi_request = crate::painting::host::FfiVectorImagePaintRequest {
+                    shell,
+                    is_layer_image,
+                    list,
+                    computed_index,
+                    records_at_size: false,
+                    dest_rect: libgfx_rust::FloatRect::default(),
+                    image_rendering: 0,
+                    accumulated_scale: libgfx_rust::FloatSize::default(),
+                    size: libgfx_rust::IntSize::default(),
+                };
+                match request.resolve {
+                    VectorImageResolve::ImagePaint {
+                        dest_rect,
+                        image_rendering,
+                        accumulated_scale,
+                    } => {
+                        ffi_request.dest_rect = dest_rect;
+                        ffi_request.image_rendering = image_rendering;
+                        ffi_request.accumulated_scale = accumulated_scale;
+                    }
+                    VectorImageResolve::RecordAtSize { size } => {
+                        ffi_request.records_at_size = true;
+                        ffi_request.size = size;
+                    }
+                }
+                // SAFETY: The host answers synchronously from a live layout node shell into the out-pointer.
+                unsafe { (host.resolve_vector_image)(host.context, ffi_request, &raw mut result) };
+            }
+            (request, result)
+        })
+        .collect()
+}
+
+/// Writes the resolved ids (and, for `PaintNestedDisplayList`, the list sizes) into the tape. An
+/// image the host could not record paints an empty nested list, so the tape never names a resource
+/// the storage lacks.
+fn patch_vector_image_paints(
+    bytes: &mut [u8],
+    answers: &[(
+        crate::painting::display_list::recorder::VectorImagePaintRequest,
+        crate::painting::host::FfiVectorImagePaintResult,
+    )],
+    empty_display_list_id: crate::painting::display_list::commands::DisplayListResourceId,
+) {
+    use crate::painting::display_list::commands::{
+        DisplayListResourceId, DrawRepeatedDisplayList, PaintNestedDisplayList,
+    };
+    use crate::painting::display_list::ffi_bytes::FfiBytes;
+    use crate::painting::display_list::recorder::VectorImagePaintCommand;
+    for (request, result) in answers {
+        let (id, list_size) = if result.has_display_list {
+            (
+                DisplayListResourceId(result.display_list_id),
+                libgfx_rust::IntSize {
+                    width: result.list_width,
+                    height: result.list_height,
+                },
+            )
+        } else {
+            (empty_display_list_id, libgfx_rust::IntSize { width: 1, height: 1 })
+        };
+        let id_offset = request.payload_offset
+            + match request.command {
+                VectorImagePaintCommand::PaintNested => std::mem::offset_of!(PaintNestedDisplayList, display_list_id),
+                VectorImagePaintCommand::DrawRepeated => std::mem::offset_of!(DrawRepeatedDisplayList, display_list_id),
+            };
+        id.write_ffi_bytes(&mut bytes[id_offset..id_offset + std::mem::size_of::<DisplayListResourceId>()]);
+        if request.command == VectorImagePaintCommand::PaintNested {
+            let size_offset = request.payload_offset + std::mem::offset_of!(PaintNestedDisplayList, list_size);
+            list_size
+                .write_ffi_bytes(&mut bytes[size_offset..size_offset + std::mem::size_of::<libgfx_rust::IntSize>()]);
+        }
+    }
+}
+
+/// Publishes the recording `layout_arena_record_display_list` left pending: has the host record the
+/// nested lists of the vector images painted with placeholders and patches their ids into the tape
+/// and the manifest's nested lists, hands the manifest's fonts and nested lists to the host, then
+/// makes the recording the last one, the paint command cache source when it may be, and the
+/// hit-test list.
+///
+/// # Safety
+///
+/// `arena` must be a live handle from `layout_arena_create`, used on the document thread, with a
+/// recording pending. The callbacks run synchronously during this call, with live layout node
+/// shells and valid out-pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_publish_recording(
+    arena: *mut c_void,
+    host: crate::painting::host::FfiPublishHostCallbacks,
+) {
+    let arena = unsafe { arena_from_handle(arena) };
+    let pending = arena
+        .paint_state()
+        .borrow_mut()
+        .pending_recording
+        .take()
+        .expect("a recording is pending publication");
+    let crate::painting::paint_state::PendingRecording {
+        mut output,
+        paint_command_cache_read_write,
+        mut recording_from_scratch_for_verification,
+    } = pending;
+    // Placeholders are patched before the tape is shared with the paint command cache. The nested
+    // lists' own placeholders are resolved first, so a fallback empty list they need is published
+    // before the manifest is walked. The verifier's recording from scratch resolves its placeholders
+    // the same way, so the list sizes it compares are the host's answers.
+    let main_answers = resolve_vector_image_paints(arena, std::mem::take(&mut output.vector_image_paints), &host);
+    let nested_answers: Vec<_> = output
+        .resource_manifest
+        .nested_display_lists_mut()
+        .iter_mut()
+        .map(|entry| resolve_vector_image_paints(arena, std::mem::take(&mut entry.vector_image_paints), &host))
+        .collect();
+    let from_scratch_answers = recording_from_scratch_for_verification
+        .as_mut()
+        .map(|recording| resolve_vector_image_paints(arena, std::mem::take(&mut recording.vector_image_paints), &host));
+    let needs_empty_display_list = main_answers
+        .iter()
+        .chain(nested_answers.iter().flatten())
+        .chain(from_scratch_answers.iter().flatten())
+        .any(|(_, result)| !result.has_display_list);
+    let empty_display_list_id = if needs_empty_display_list {
+        output.resource_manifest.publish_nested_display_list(
+            crate::painting::display_list::builder::RecordedDisplayList::default(),
+            crate::painting::visual_context::VisualContextTree::create_with_content_offset(
+                libgfx_rust::IntPoint::default(),
+            ),
+            Vec::new(),
+            Vec::new(),
+        )
+    } else {
+        crate::painting::display_list::commands::DisplayListResourceId(0)
+    };
+    if !main_answers.is_empty() {
+        let display_list = std::rc::Rc::get_mut(&mut output.display_list)
+            .expect("a tape with placeholder paints is this recording's own");
+        patch_vector_image_paints(&mut display_list.bytes, &main_answers, empty_display_list_id);
+    }
+    for (entry, answers) in output
+        .resource_manifest
+        .nested_display_lists_mut()
+        .iter_mut()
+        .zip(&nested_answers)
+    {
+        patch_vector_image_paints(&mut entry.recorded.bytes, answers, empty_display_list_id);
+    }
+    if let Some((recording, answers)) = recording_from_scratch_for_verification
+        .as_mut()
+        .zip(from_scratch_answers.as_ref())
+    {
+        if !answers.is_empty() {
+            let display_list = std::rc::Rc::get_mut(&mut recording.display_list)
+                .expect("a recording from scratch shares no tape with the cache");
+            patch_vector_image_paints(&mut display_list.bytes, answers, empty_display_list_id);
+        }
+        crate::painting::record::verify::verify_spliced_recording_matches_fresh(arena, &output, recording);
+    }
+    // The recorder wrote the ids of the fonts and nested display lists it used into the bytes; the
+    // host registers the resources behind them before anything scans the bytes for references.
+    let manifest = std::mem::take(&mut output.resource_manifest);
+    for font in manifest.fonts() {
+        // SAFETY: The host copies its own reference synchronously; the manifest keeps the font live.
+        unsafe { (host.add_font)(host.context, font.as_raw()) };
+    }
+    for entry in manifest.into_nested_display_lists() {
+        let recorded = FfiRecordedDisplayList::with_mask_registrations(&entry.recorded, &entry.mask_registrations);
+        let retained_tree = Rc::into_raw(Rc::new(entry.tree)).cast();
+        // SAFETY: The host copies the recording synchronously and takes ownership of the tree handle.
+        unsafe { (host.add_nested_display_list)(host.context, entry.id.0, recorded, retained_tree) };
+    }
     let mut paint_state = arena.paint_state().borrow_mut();
-    paint_state.pending_resource_manifest = std::mem::take(&mut output.resource_manifest);
     output.is_identical_to_cache_source = paint_state
         .paint_command_cache_source
         .as_ref()
@@ -2003,7 +2212,7 @@ pub unsafe extern "C" fn layout_arena_record_display_list(
     } else {
         paint_state.hit_test_list_generation += 1;
         debug_assert_eq!(list.generation, paint_state.hit_test_list_generation);
-        if inputs.paint_command_cache_read_write {
+        if paint_command_cache_read_write {
             paint_state.hit_test_item_cache_source = Some(std::rc::Rc::new(
                 crate::painting::record::cache::HitTestItemCacheSource {
                     items: list.items.clone(),
@@ -2013,14 +2222,13 @@ pub unsafe extern "C" fn layout_arena_record_display_list(
         paint_state.hit_test_list = Some(list);
     }
     let output = std::rc::Rc::new(output);
-    if inputs.paint_command_cache_read_write {
+    if paint_command_cache_read_write {
         paint_state.paint_command_cache_source = Some(output.clone());
         // Read-only recordings commit nothing and must not age dirty stamps out.
         arena.note_paint_record_completed_with_cache_writes();
         paint_state.visual_context.quarantined_slots_are_releasable = true;
     }
     paint_state.last_recording = Some(output);
-    list_generation_of(&paint_state)
 }
 
 /// # Safety
@@ -2162,7 +2370,7 @@ pub unsafe extern "C" fn ladybird_web_record_image_paint_display_list(
             );
         }
     }
-    let recorded = recorder.into_builder().finish();
+    let recorded = recorder.finish().recorded;
     unsafe { consume(context, (&recorded).into(), Rc::into_raw(Rc::new(tree)).cast()) };
 }
 
@@ -2179,35 +2387,6 @@ pub unsafe extern "C" fn layout_arena_last_recording_stats(
         .last_recording
         .as_ref()
         .map_or_else(Default::default, |recording| recording.recording_stats)
-}
-
-/// Hands the resources the last recording produced to the host: fonts by pointer, nested display
-/// lists by id with their bytes and a retained visual context tree handle the host owns. Each
-/// resource is handed over once.
-///
-/// # Safety
-///
-/// `arena` must be a live handle from `layout_arena_create`, used on the document thread; the
-/// callbacks run synchronously during this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn layout_arena_take_last_recording_resource_manifest(
-    arena: *mut c_void,
-    context: *mut c_void,
-    add_font: unsafe extern "C" fn(*mut c_void, *const c_void),
-    add_nested_display_list: unsafe extern "C" fn(*mut c_void, u64, FfiRecordedDisplayList, *const c_void),
-) {
-    let arena = unsafe { arena_from_handle(arena) };
-    let manifest = std::mem::take(&mut arena.paint_state().borrow_mut().pending_resource_manifest);
-    for font in manifest.fonts() {
-        // SAFETY: The host copies its own reference synchronously; the manifest keeps the font live.
-        unsafe { add_font(context, font.as_raw()) };
-    }
-    for entry in manifest.into_nested_display_lists() {
-        let recorded = FfiRecordedDisplayList::with_mask_registrations(&entry.recorded, &entry.mask_registrations);
-        let retained_tree = Rc::into_raw(Rc::new(entry.tree)).cast();
-        // SAFETY: The host copies the recording synchronously and takes ownership of the tree handle.
-        unsafe { add_nested_display_list(context, entry.id.0, recorded, retained_tree) };
-    }
 }
 
 /// # Safety

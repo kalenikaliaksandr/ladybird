@@ -10,7 +10,6 @@ use crate::layout::node_data::{DomPaintFact, NodeKind, NodeSlotId};
 use crate::painting::display_list::commands::DisplayListResourceId;
 use crate::painting::display_list::commands::{ContextRef, VISUAL_VIEWPORT_NODE_INDEX};
 use crate::painting::display_list::recorder::DisplayListRecorder;
-use crate::painting::host::FfiMaskDisplayListRegistration;
 use crate::painting::node_painting;
 use crate::painting::paintable_geometry::absolute_border_box_rect;
 use crate::painting::record::{NestedRecordingState, PaintPhase, PaintRecorder};
@@ -390,8 +389,7 @@ impl PaintRecorder<'_> {
             .nested_tree
             .take()
             .expect("CSS mask recording has a visual context tree");
-        let recorded = session.recorder.into_builder().finish();
-        self.publish_nested_display_list(recorded, tree, Vec::new())
+        self.publish_nested_display_list(session.recorder, tree)
     }
 
     pub(crate) fn record_nested_svg_display_list(
@@ -421,14 +419,6 @@ impl PaintRecorder<'_> {
         session.paint_svg(root, PaintPhase::Foreground);
 
         let tree = session.nested_tree.take().expect("nested tree");
-        let nested_recorder = session.recorder;
-        let mask_display_lists: Vec<FfiMaskDisplayListRegistration> = nested_recorder
-            .mask_display_lists()
-            .iter()
-            .copied()
-            .map(FfiMaskDisplayListRegistration::from)
-            .collect();
-        let recorded = nested_recorder.into_builder().finish();
-        self.publish_nested_display_list(recorded, tree, mask_display_lists)
+        self.publish_nested_display_list(session.recorder, tree)
     }
 }

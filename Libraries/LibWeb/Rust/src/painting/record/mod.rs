@@ -21,11 +21,11 @@ use crate::painting::border_radii::BorderRadii;
 use crate::painting::display_list::builder::{CommandRange, PendingInlineClip, RecordedDisplayList};
 use crate::painting::display_list::commands::{ContextRef, DisplayListResourceId, SpatialNodeIndex};
 use crate::painting::display_list::device_pixels::DevicePixelConverter;
-use crate::painting::display_list::recorder::DisplayListRecorder;
+use crate::painting::display_list::recorder::{DisplayListRecorder, VectorImageSource};
 use crate::painting::hit_test::HitTestList;
 use crate::painting::host::{
-    FfiImagePaintFacts, FfiImagePaintKind, FfiLayerImageFacts, FfiLayerImageList, FfiMaskDisplayListRegistration,
-    FfiPaintHostCallbacks, FfiPaintRecordingStats, FfiRecordingInputs, FfiReplacedPaintFacts, FfiRootBackgroundSource,
+    FfiLayerImageFacts, FfiLayerImageList, FfiMaskDisplayListRegistration, FfiPaintHostCallbacks,
+    FfiPaintRecordingStats, FfiRecordingInputs, FfiReplacedPaintFacts, FfiRootBackgroundSource,
     FfiVisualContextHostCallbacks, FfiVisualContextTreeInputs,
 };
 use crate::painting::paintable_data::{InlineBoxPieceRecord, PaintableData};
@@ -86,9 +86,55 @@ pub struct RecordingOutput {
     pub wheel_event_listener_state_generation: u64,
     pub mask_display_lists: Vec<FfiMaskDisplayListRegistration>,
     pub resource_manifest: manifest::ResourceManifest,
+    /// Placeholder vector image paints in `display_list`, patched at publish time.
+    pub vector_image_paints: Vec<crate::painting::display_list::recorder::VectorImagePaintRequest>,
     pub recording_stats: FfiPaintRecordingStats,
     pub is_identical_to_cache_source: bool,
     pub(crate) capture_log_for_verification: Option<verify::CaptureLog>,
+}
+
+/// How the recorder paints an image, from the facts the host synced onto its row before the
+/// recording.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ImagePaint {
+    /// A raster frame the host registered during the sync.
+    DecodedFrame {
+        frame_id: u64,
+        natural_width: i32,
+        natural_height: i32,
+    },
+    /// A vector image, painted with a placeholder nested list the publish step has the host record
+    /// at the painted size.
+    VectorImage {
+        source: VectorImageSource,
+        accumulated_scale: libgfx_rust::FloatSize,
+    },
+}
+
+impl ImagePaint {
+    fn from_synced_facts(
+        is_vector_image: bool,
+        has_raster_frame: bool,
+        frame_id: u64,
+        (natural_width, natural_height): (i32, i32),
+        vector_source: VectorImageSource,
+        accumulated_scale: libgfx_rust::FloatSize,
+    ) -> Option<Self> {
+        if is_vector_image {
+            Some(Self::VectorImage {
+                source: vector_source,
+                accumulated_scale,
+            })
+        } else if has_raster_frame {
+            Some(Self::DecodedFrame {
+                frame_id,
+                natural_width,
+                natural_height,
+            })
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -190,16 +236,24 @@ impl<'a> PaintRecorder<'a> {
         self.resource_manifest.borrow_mut().register_font(font)
     }
 
-    /// Lists a finished nested recording in the resource manifest under a freshly minted id.
+    /// Finishes a nested recording and lists it in the resource manifest under a freshly minted id.
     pub(crate) fn publish_nested_display_list(
         &self,
-        recorded: RecordedDisplayList,
+        recorder: DisplayListRecorder,
         tree: crate::painting::visual_context::VisualContextTree,
-        mask_registrations: Vec<FfiMaskDisplayListRegistration>,
     ) -> DisplayListResourceId {
-        self.resource_manifest
-            .borrow_mut()
-            .publish_nested_display_list(recorded, tree, mask_registrations)
+        let finished = recorder.finish();
+        let mask_registrations = finished
+            .mask_display_lists
+            .into_iter()
+            .map(FfiMaskDisplayListRegistration::from)
+            .collect();
+        self.resource_manifest.borrow_mut().publish_nested_display_list(
+            finished.recorded,
+            tree,
+            mask_registrations,
+            finished.vector_image_paints,
+        )
     }
 
     /// The host's facts about a replaced box's content, synced before the recording.
@@ -215,29 +269,21 @@ impl<'a> PaintRecorder<'a> {
             .unwrap_or_default()
     }
 
-    /// How to paint an image box's or SVG image's decoded image into `dest`: a raster frame the
-    /// host registered during the sync, or, for a vector image, a nested list it records at this size.
+    /// How to paint an image box's or SVG image's decoded image, from the facts the host synced.
     pub(crate) fn replaced_image_paint(
         &self,
         paintable: NodeSlotId,
-        shell: *mut std::ffi::c_void,
-        dest: libgfx_rust::FloatRect,
         accumulated_scale: libgfx_rust::FloatSize,
-    ) -> FfiImagePaintFacts {
+    ) -> Option<ImagePaint> {
         let facts = self.replaced_paint_facts(paintable);
-        if facts.is_vector_image {
-            return self.paint_host.replaced_image_paint(shell, dest, accumulated_scale);
-        }
-        if !facts.has_raster_frame {
-            return FfiImagePaintFacts::default();
-        }
-        FfiImagePaintFacts {
-            image_paint_kind: FfiImagePaintKind::DecodedFrame,
-            frame_id: facts.frame_id,
-            natural_width: facts.natural_frame_width,
-            natural_height: facts.natural_frame_height,
-            ..FfiImagePaintFacts::default()
-        }
+        ImagePaint::from_synced_facts(
+            facts.is_vector_image,
+            facts.has_raster_frame,
+            facts.frame_id,
+            (facts.natural_frame_width, facts.natural_frame_height),
+            VectorImageSource::ReplacedImage { paintable },
+            accumulated_scale,
+        )
     }
 
     /// The host's facts about one of `paintable`'s layer images, synced before the recording. The
@@ -267,8 +313,8 @@ impl<'a> PaintRecorder<'a> {
             .copied()
     }
 
-    /// Vector images record through the host at paint time until their nested lists move ahead of
-    /// the recording as well.
+    /// Whether the layer image is a vector image, whose nested list the publish step has the host
+    /// record at the painted size.
     pub(crate) fn layer_image_is_vector(
         &self,
         paintable: NodeSlotId,
@@ -291,42 +337,27 @@ impl<'a> PaintRecorder<'a> {
             .filter(|facts| facts.is_image_style_value && facts.has_raster_frame)
     }
 
-    /// How to paint a layer image into `dest`: a registered raster frame from the synced facts, or,
-    /// for a vector image, a nested list the host records at this size.
-    #[allow(clippy::too_many_arguments)]
+    /// How to paint a layer image, from the facts the host synced.
     pub(crate) fn layer_image_paint(
         &self,
         paintable: NodeSlotId,
-        shell: *mut std::ffi::c_void,
         list: FfiLayerImageList,
         computed_index: u32,
-        dest: libgfx_rust::FloatRect,
-        image_rendering: u8,
         accumulated_scale: libgfx_rust::FloatSize,
-    ) -> FfiImagePaintFacts {
-        let Some(facts) = self.layer_image_facts(paintable, list, computed_index) else {
-            return FfiImagePaintFacts::default();
-        };
-        if facts.is_vector_image {
-            return self.paint_host.layer_image_paint(
-                shell,
+    ) -> Option<ImagePaint> {
+        let facts = self.layer_image_facts(paintable, list, computed_index)?;
+        ImagePaint::from_synced_facts(
+            facts.is_vector_image,
+            facts.has_raster_frame,
+            facts.frame_id,
+            (facts.natural_frame_width, facts.natural_frame_height),
+            VectorImageSource::LayerImage {
+                paintable,
                 list,
                 computed_index,
-                dest,
-                image_rendering,
-                accumulated_scale,
-            );
-        }
-        if !facts.has_raster_frame {
-            return FfiImagePaintFacts::default();
-        }
-        FfiImagePaintFacts {
-            image_paint_kind: FfiImagePaintKind::DecodedFrame,
-            frame_id: facts.frame_id,
-            natural_width: facts.natural_frame_width,
-            natural_height: facts.natural_frame_height,
-            ..FfiImagePaintFacts::default()
-        }
+            },
+            accumulated_scale,
+        )
     }
 
     /// The scroll offset of `paintable` as a scroll container, zero for a box that owns no scroll

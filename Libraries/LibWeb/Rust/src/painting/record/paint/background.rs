@@ -15,17 +15,19 @@ use crate::painting::display_list::commands::ContextRef;
 use crate::painting::display_list::commands::{
     DisplayListResourceId, ImageFrameResourceId, NO_MASK_DISPLAY_LIST, OptionalAffineTransform, Repeat,
 };
-use crate::painting::display_list::recorder::{DisplayListRecorder, FillPathParams, PaintStyle, PaintStyleOrColor};
+use crate::painting::display_list::recorder::{
+    DisplayListRecorder, FillPathParams, PaintStyle, PaintStyleOrColor, VectorImagePaintCommand, VectorImageResolve,
+    VectorImageSource,
+};
 use crate::painting::force_dark::ForceDarkRole;
-use crate::painting::host::FfiImagePaintFacts;
 use crate::painting::node_painting;
 use crate::painting::paintable_data::FfiPixelBox;
-use crate::painting::record::PaintRecorder;
 use crate::painting::record::paint::background_resolution::{
     BackgroundPaintInputs, ResolvedBackgroundLayer, operator_erases_destination_outside_the_drawn_geometry,
     resolve_background_for_paint, resolve_background_layers,
 };
 use crate::painting::record::paint::gradient_resolution::{gradient_paint_value, record_gradient_fill};
+use crate::painting::record::{ImagePaint, PaintRecorder};
 use crate::painting::visual_context::VisualContextTree;
 use libgfx_rust::{
     CompositingAndBlendingOperator, FloatRect, IntPoint, IntRect, IntSize, MaskKind, ScalingMode, ShouldAntiAlias,
@@ -145,26 +147,15 @@ pub(crate) fn paint_resolved_background(
             .rounded_device_rect(background_rect)
             .united(converter.enclosing_device_rect(color_box.rect))
     };
-    let record_into_nested_list = |recorder: &mut PaintRecorder<'_>, record: &mut dyn FnMut(&mut PaintRecorder<'_>)| {
-        let force_dark_settings = recorder.recorder.force_dark_settings();
-        let outer_recorder = std::mem::replace(&mut recorder.recorder, DisplayListRecorder::new(force_dark_settings));
-        let recording_into_enclosing_nested_list =
-            std::mem::replace(&mut recorder.recording_into_context_free_nested_list, true);
-        record(recorder);
-        recorder.recording_into_context_free_nested_list = recording_into_enclosing_nested_list;
-        let group_recorder = std::mem::replace(&mut recorder.recorder, outer_recorder);
-        let group = group_recorder.into_builder().finish();
-        let group_tree = VisualContextTree::create_with_content_offset(IntPoint {
-            x: -group_device_rect.x,
-            y: -group_device_rect.y,
-        });
-        recorder.publish_nested_display_list(group, group_tree, Vec::new())
+    let group_origin = IntPoint {
+        x: group_device_rect.x,
+        y: group_device_rect.y,
     };
-    let group_display_list_id = record_into_nested_list(recorder, &mut |recorder| {
+    let group_display_list_id = record_into_context_free_nested_list(recorder, group_origin, |recorder| {
         paint_background_layers(recorder, paintable, inputs, backdrop);
     });
     let mask_display_list_id = if needs_text_clip {
-        record_into_nested_list(recorder, &mut |recorder| {
+        record_into_context_free_nested_list(recorder, group_origin, |recorder| {
             append_text_clip_paths(recorder, paintable);
         })
     } else {
@@ -195,12 +186,11 @@ fn record_into_context_free_nested_list(
     record(recorder);
     recorder.recording_into_context_free_nested_list = recording_into_enclosing_nested_list;
     let content_recorder = std::mem::replace(&mut recorder.recorder, outer_recorder);
-    let content = content_recorder.into_builder().finish();
     let content_tree = VisualContextTree::create_with_content_offset(IntPoint {
         x: -content_origin.x,
         y: -content_origin.y,
     });
-    recorder.publish_nested_display_list(content, content_tree, Vec::new())
+    recorder.publish_nested_display_list(content_recorder, content_tree)
 }
 
 fn paint_background_layers(
@@ -423,13 +413,13 @@ pub(crate) fn to_gfx_scaling_mode(image_rendering: u8, source: (i32, i32), targe
 
 pub(crate) fn paint_image(
     recorder: &mut PaintRecorder<'_>,
-    facts: &FfiImagePaintFacts,
+    paint: ImagePaint,
     dest_rect: FloatRect,
     image_rendering: u8,
 ) {
     paint_image_with_compositing_and_blending_operator(
         recorder,
-        facts,
+        paint,
         dest_rect,
         image_rendering,
         CompositingAndBlendingOperator::Normal,
@@ -438,59 +428,68 @@ pub(crate) fn paint_image(
 
 pub(crate) fn paint_image_with_compositing_and_blending_operator(
     recorder: &mut PaintRecorder<'_>,
-    facts: &FfiImagePaintFacts,
+    paint: ImagePaint,
     dest_rect: FloatRect,
     image_rendering: u8,
     compositing_and_blending_operator: CompositingAndBlendingOperator,
 ) {
-    match facts.image_paint_kind {
-        crate::painting::host::FfiImagePaintKind::DecodedFrame => {
+    match paint {
+        ImagePaint::DecodedFrame {
+            frame_id,
+            natural_width,
+            natural_height,
+        } => {
             let target = (
                 dest_rect.width.round_ties_even() as i32,
                 dest_rect.height.round_ties_even() as i32,
             );
-            let scaling_mode =
-                to_gfx_scaling_mode(image_rendering, (facts.natural_width, facts.natural_height), target);
+            let scaling_mode = to_gfx_scaling_mode(image_rendering, (natural_width, natural_height), target);
             let force_dark_role = crate::painting::force_dark::role_for_image(
                 ForceDarkRole::Background,
                 dest_rect.width,
                 dest_rect.height,
                 recorder.inputs.device_pixels_per_css_pixel,
-                (facts.natural_width, facts.natural_height),
+                (natural_width, natural_height),
             );
             recorder.recorder.draw_scaled_decoded_image_frame(
                 dest_rect,
                 None,
-                ImageFrameResourceId(facts.frame_id),
+                ImageFrameResourceId(frame_id),
                 scaling_mode,
                 compositing_and_blending_operator,
                 None,
                 force_dark_role,
             );
         }
-        crate::painting::host::FfiImagePaintKind::NestedDisplayList => {
-            if compositing_and_blending_operator != CompositingAndBlendingOperator::Normal {
-                let dest_device_rect = enclosing_int_rect(dest_rect);
-                recorder.recorder.draw_repeated_display_list(
-                    dest_device_rect,
-                    dest_device_rect,
-                    DisplayListResourceId(facts.nested_display_list_id),
-                    ScalingMode::Bilinear,
-                    compositing_and_blending_operator,
-                    Repeat { x: false, y: false },
-                );
-                return;
-            }
-            recorder.recorder.paint_nested_display_list(
-                DisplayListResourceId(facts.nested_display_list_id),
+        ImagePaint::VectorImage {
+            source,
+            accumulated_scale,
+        } => {
+            let resolve = VectorImageResolve::ImagePaint {
                 dest_rect,
-                IntSize {
-                    width: facts.list_width,
-                    height: facts.list_height,
-                },
-            );
+                image_rendering,
+                accumulated_scale,
+            };
+            recorder
+                .recorder
+                .paint_vector_image_placeholder(source, resolve, |recorder| {
+                    if compositing_and_blending_operator != CompositingAndBlendingOperator::Normal {
+                        let dest_device_rect = enclosing_int_rect(dest_rect);
+                        recorder.draw_repeated_display_list(
+                            dest_device_rect,
+                            dest_device_rect,
+                            DisplayListResourceId(0),
+                            ScalingMode::Bilinear,
+                            compositing_and_blending_operator,
+                            Repeat { x: false, y: false },
+                        );
+                        VectorImagePaintCommand::DrawRepeated
+                    } else {
+                        recorder.paint_nested_display_list(DisplayListResourceId(0), dest_rect, IntSize::default());
+                        VectorImagePaintCommand::PaintNested
+                    }
+                });
         }
-        crate::painting::host::FfiImagePaintKind::None => {}
     }
 }
 
@@ -506,7 +505,6 @@ fn paint_image_layer(
     backdrop: LayerBackdrop,
 ) {
     let converter = recorder.converter;
-    let shell = recorder.layout_node_shell(paintable);
     let image = layer.image.expect("an imageless layer never reaches the image paint");
     let mut image_rect = layer.image_rect;
     let mut background_positioning_area = layer.background_positioning_area;
@@ -720,30 +718,40 @@ fn paint_image_layer(
         if dest_rect.height == 0 {
             dest_rect.height = 1;
         }
-        let nested = if recorder.layer_image_is_vector(paintable, image.list, image.computed_index) {
-            recorder
-                .paint_host
-                .layer_image_nested_display_list(shell, image.list, image.computed_index, dest_rect)
-        } else {
-            crate::painting::host::FfiLayerImageNestedDisplayListFacts::default()
-        };
-        if nested.has_nested_display_list {
+        if recorder.layer_image_is_vector(paintable, image.list, image.computed_index) {
+            // The tile is a vector image recorded at the tile size by the publish step.
             let scaling_mode = to_gfx_scaling_mode(
                 image_rendering,
                 (dest_rect.width, dest_rect.height),
                 (dest_rect.width, dest_rect.height),
             );
-            recorder.recorder.draw_repeated_display_list(
-                dest_rect,
-                clip_rect,
-                DisplayListResourceId(nested.nested_display_list_id),
-                scaling_mode,
-                inline_operator,
-                Repeat {
-                    x: repeat_x,
-                    y: repeat_y,
+            let source = VectorImageSource::LayerImage {
+                paintable,
+                list: image.list,
+                computed_index: image.computed_index,
+            };
+            let resolve = VectorImageResolve::RecordAtSize {
+                size: IntSize {
+                    width: dest_rect.width,
+                    height: dest_rect.height,
                 },
-            );
+            };
+            recorder
+                .recorder
+                .paint_vector_image_placeholder(source, resolve, |recorder| {
+                    recorder.draw_repeated_display_list(
+                        dest_rect,
+                        clip_rect,
+                        DisplayListResourceId(0),
+                        scaling_mode,
+                        inline_operator,
+                        Repeat {
+                            x: repeat_x,
+                            y: repeat_y,
+                        },
+                    );
+                    VectorImagePaintCommand::DrawRepeated
+                });
         } else {
             let Some(frame) = recorder.layer_image_current_frame(paintable, image.list, image.computed_index) else {
                 return;
@@ -840,27 +848,23 @@ fn paint_image_layer(
         } else {
             let paint = recorder.layer_image_paint(
                 paintable,
-                shell,
                 image.list,
                 image.computed_index,
-                tile_dest_rect,
-                image_rendering,
                 libgfx_rust::FloatSize {
                     width: 1.0,
                     height: 1.0,
                 },
             );
-            if paint.image_paint_kind != crate::painting::host::FfiImagePaintKind::None {
-                paint_image(recorder, &paint, tile_dest_rect, image_rendering);
+            if let Some(paint) = paint {
+                paint_image(recorder, paint, tile_dest_rect, image_rendering);
             }
         }
         let tile_recorder = std::mem::replace(&mut recorder.recorder, outer_recorder);
-        let tile = tile_recorder.into_builder().finish();
         let tile_tree = VisualContextTree::create_with_content_offset(IntPoint {
             x: -tile_device_rect.x,
             y: -tile_device_rect.y,
         });
-        let tile_display_list_id = recorder.publish_nested_display_list(tile, tile_tree, Vec::new());
+        let tile_display_list_id = recorder.publish_nested_display_list(tile_recorder, tile_tree);
 
         // A pattern repeats along both axes. On any non-repeating axis, constrain the coverage to a single tile.
         let mut coverage = clip_rect;
@@ -912,19 +916,12 @@ fn paint_image_layer(
             }
             let accumulated_scale =
                 recorder.accumulated_2d_scale_at(recorder.recorder.accumulated_visual_context().spatial);
-            let paint = recorder.layer_image_paint(
-                paintable,
-                shell,
-                image.list,
-                image.computed_index,
-                dest_rect,
-                image_rendering,
-                accumulated_scale,
-            );
-            if paint.image_paint_kind != crate::painting::host::FfiImagePaintKind::None {
+            if let Some(paint) =
+                recorder.layer_image_paint(paintable, image.list, image.computed_index, accumulated_scale)
+            {
                 paint_image_with_compositing_and_blending_operator(
                     recorder,
-                    &paint,
+                    paint,
                     dest_rect,
                     image_rendering,
                     inline_operator,

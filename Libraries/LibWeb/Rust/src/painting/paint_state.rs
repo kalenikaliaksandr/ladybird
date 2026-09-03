@@ -26,8 +26,17 @@ pub struct PaintState {
         std::collections::HashMap<NodeSlotId, Rc<crate::painting::record::paint::text::SelectionStyleAnswer>>,
     pub(crate) scrollable_overflow_contained_boxes: std::collections::HashMap<NodeSlotId, Vec<NodeSlotId>>,
     pub(crate) per_recording_memo_tables: RefCell<crate::painting::record::scratch::PerRecordingMemoTables>,
-    /// Resources the last recording produced, until the host takes them.
-    pub(crate) pending_resource_manifest: crate::painting::record::manifest::ResourceManifest,
+    /// A recording waiting for `layout_arena_publish_recording` to resolve its placeholders and
+    /// make it the last recording.
+    pub(crate) pending_recording: Option<PendingRecording>,
+}
+
+pub(crate) struct PendingRecording {
+    pub(crate) output: crate::painting::record::RecordingOutput,
+    pub(crate) paint_command_cache_read_write: bool,
+    /// Under `LADYBIRD_VERIFY_PAINT_CACHE`, the same recording made from scratch, compared with
+    /// `output` at publish time, once both have resolved their vector image placeholders.
+    pub(crate) recording_from_scratch_for_verification: Option<crate::painting::record::RecordingOutput>,
 }
 
 impl PaintState {

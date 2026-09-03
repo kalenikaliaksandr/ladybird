@@ -12,7 +12,7 @@ use crate::layout::{node_facts, used_values};
 use crate::painting::display_list::builder::{CommandRange, DisplayListBuilder, RecordedDisplayList};
 use crate::painting::display_list::commands::{ContextRef, VISUAL_VIEWPORT_NODE_INDEX};
 use crate::painting::display_list::device_pixels::DevicePixelConverter;
-use crate::painting::display_list::recorder::DisplayListRecorder;
+use crate::painting::display_list::recorder::{DisplayListRecorder, FinishedRecording};
 use crate::painting::force_dark::{ForceDarkRole, ForceDarkSettings};
 use crate::painting::hit_test::*;
 use crate::painting::host::FfiPaintRecordingStats;
@@ -149,18 +149,32 @@ pub(crate) fn record_display_list(
     recorder.prerecord_nested_display_lists();
     recorder.paint_and_capture_as_stacking_context(viewport);
     crate::painting::record::paint::inspector_overlay::record_inspector_overlays(&mut recorder);
-    let mask_display_lists: Vec<FfiMaskDisplayListRegistration> = recorder
-        .recorder
-        .take_mask_display_lists()
+    let FinishedRecording {
+        recorded,
+        mask_display_lists,
+        vector_image_paints,
+    } = recorder.recorder.finish();
+    let mask_display_lists: Vec<FfiMaskDisplayListRegistration> = mask_display_lists
         .into_iter()
         .map(FfiMaskDisplayListRegistration::from)
         .collect();
     let mut hit_test_list = recorder.list;
     hit_test_list.generation = hit_test_list_generation;
-    let recorded = recorder.recorder.into_builder().finish();
     let display_list = match recorder.deferred_whole_tape_splice {
-        Some(deferred) if recorded.bytes.len() == deferred.prologue_byte_count => deferred.source_display_list,
-        Some(deferred) => Rc::new(materialize_deferred_whole_tape_splice(&recorded, &deferred)),
+        Some(deferred) => {
+            // A placeholder's offset is measured against the tape as recorded, which a whole-tape
+            // splice reshapes; every vector image paints inside the viewport capture, so none is
+            // left to patch here.
+            assert!(
+                vector_image_paints.is_empty(),
+                "a vector image placeholder outside the viewport capture of a whole-tape splice"
+            );
+            if recorded.bytes.len() == deferred.prologue_byte_count {
+                deferred.source_display_list
+            } else {
+                Rc::new(materialize_deferred_whole_tape_splice(&recorded, &deferred))
+            }
+        }
         None => Rc::new(recorded),
     };
     RecordingOutput {
@@ -172,6 +186,7 @@ pub(crate) fn record_display_list(
         wheel_event_listener_state_generation: inputs.wheel_event_listener_state_generation,
         mask_display_lists,
         resource_manifest: std::mem::take(&mut *resource_manifest.borrow_mut()),
+        vector_image_paints,
         recording_stats: recorder.recording_stats,
         is_identical_to_cache_source: false,
         capture_log_for_verification: recorder.capture_log_for_verification,
