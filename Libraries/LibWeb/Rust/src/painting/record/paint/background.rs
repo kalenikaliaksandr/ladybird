@@ -5,8 +5,8 @@
  */
 
 use crate::css::css_enums;
+use crate::css::css_pixels::CssPixelRect;
 use crate::css::css_pixels::CssPixels;
-use crate::css::css_pixels::{CssPixelPoint, CssPixelRect};
 use crate::layout::node_data::{NodeKind, NodeSlotId};
 use crate::layout::node_facts;
 use crate::painting::border_radii::BorderRadii;
@@ -525,7 +525,7 @@ fn paint_image_layer(
         css_enums::background_attachment::LOCAL
             if recorder.layout_arena.node_kind_if_live(paintable) != Some(NodeKind::Viewport) =>
         {
-            let scroll_offset = CssPixelPoint::from(recorder.visual_context_host.scroll_offset(shell));
+            let scroll_offset = recorder.scroll_offset(paintable);
             background_positioning_area = background_positioning_area.translated(-scroll_offset.x, -scroll_offset.y);
         }
         _ => {}
