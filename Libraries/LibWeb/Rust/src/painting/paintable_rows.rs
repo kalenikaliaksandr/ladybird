@@ -67,6 +67,24 @@ struct CommittedFragmentLinkSlot {
     link: Option<Box<fragment_tree::FragmentLink>>,
 }
 
+/// Rows enrolled for a host sync before the next recording. Enrolment is cheap and may repeat;
+/// the rows are taken sorted and deduplicated.
+#[derive(Default)]
+pub(crate) struct EnrolledRows(RefCell<Vec<NodeSlotId>>);
+
+impl EnrolledRows {
+    pub(crate) fn enroll(&self, row: NodeSlotId) {
+        self.0.borrow_mut().push(row);
+    }
+
+    pub(crate) fn take(&self) -> Vec<NodeSlotId> {
+        let mut rows = std::mem::take(&mut *self.0.borrow_mut());
+        rows.sort_unstable_by_key(|row| row.index);
+        rows.dedup();
+        rows
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct PaintableRowStore {
     chunks: Vec<Box<PaintableRowChunk>>,
@@ -84,6 +102,9 @@ pub(crate) struct PaintableRowStore {
     completed_record_gen: Cell<u64>,
     all_paint_caches_dirty_gen: Cell<u64>,
     all_descendant_subtree_caches_dirty_gen: Cell<u64>,
+    /// Rows the layout commit found laying out a `<br>`; the host recomputes their empty-line
+    /// caret targets before the next recording.
+    rows_enrolled_for_line_break_caret_targets_sync: EnrolledRows,
     paint_recording_in_progress: Cell<bool>,
 }
 
@@ -653,6 +674,21 @@ impl LayoutNodeArena {
 
     pub(crate) fn inline_pieces_root(&self, inline_paintable: NodeSlotId) -> Option<NodeSlotId> {
         self.paintable_rows().inline_pieces_root(inline_paintable)
+    }
+
+    /// Enrols the row that lays out a `<br>`, so the host recomputes the empty-line caret targets
+    /// of its `<br>` children before the next recording. The commit walk calls this from the
+    /// `<br>` itself, so the row is enrolled exactly when it is committed.
+    pub(crate) fn enroll_row_for_line_break_caret_targets_sync(&self, row: NodeSlotId) {
+        self.paintable_rows
+            .rows_enrolled_for_line_break_caret_targets_sync
+            .enroll(row);
+    }
+
+    pub(crate) fn take_rows_enrolled_for_line_break_caret_targets_sync(&self) -> Vec<NodeSlotId> {
+        self.paintable_rows
+            .rows_enrolled_for_line_break_caret_targets_sync
+            .take()
     }
 
     pub(crate) fn populate_paintable_row(&mut self, layout_node: NodeSlotId) {

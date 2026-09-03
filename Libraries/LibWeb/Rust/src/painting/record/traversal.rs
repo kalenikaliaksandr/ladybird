@@ -16,9 +16,7 @@ use crate::painting::display_list::recorder::DisplayListRecorder;
 use crate::painting::force_dark::{ForceDarkRole, ForceDarkSettings};
 use crate::painting::hit_test::*;
 use crate::painting::host::FfiPaintRecordingStats;
-use crate::painting::host::{
-    FfiHitTestHostCallbacks, FfiMaskDisplayListRegistration, FfiPaintHostCallbacks, FfiVisualContextHostCallbacks,
-};
+use crate::painting::host::{FfiMaskDisplayListRegistration, FfiPaintHostCallbacks, FfiVisualContextHostCallbacks};
 use crate::painting::node_painting;
 use crate::painting::record::RecordingInputs;
 use crate::painting::record::cache::{
@@ -70,7 +68,6 @@ pub(crate) fn record_display_list(
     layout_arena: &LayoutNodeArena,
     paint_state: &crate::painting::paint_state::PaintState,
     viewport: NodeSlotId,
-    host: &FfiHitTestHostCallbacks,
     paint_host: &FfiPaintHostCallbacks,
     visual_context_host: &FfiVisualContextHostCallbacks,
     inputs: RecordingInputs,
@@ -94,7 +91,6 @@ pub(crate) fn record_display_list(
     let mut recorder = PaintRecorder {
         layout_arena: &paintable_rows,
         paint_state,
-        host,
         paint_host,
         inputs,
         recorder: DisplayListRecorder::new(force_dark_settings),

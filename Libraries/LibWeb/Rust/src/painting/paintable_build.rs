@@ -75,6 +75,12 @@ impl<'a> PaintableCommit<'a> {
             )
         };
         let row_existed_before_this_commit = self.arena().paintable_rows().paintable_row_is_populated(node);
+        if node_kind == NodeKind::BreakNode
+            && let Some(row) = self.arena().node_parent_if_live(node)
+        {
+            // The row laying out this <br> has its empty-line caret targets recomputed before the next recording.
+            self.arena().enroll_row_for_line_break_caret_targets_sync(row);
+        }
         if !wants_paintable {
             self.arena().clear_committed_fragment_link(node);
             if row_existed_before_this_commit {

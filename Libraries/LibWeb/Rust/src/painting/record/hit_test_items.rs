@@ -188,8 +188,20 @@ impl<'a> PaintRecorder<'a> {
             self.append_empty_line_for_fragment(paintable, 0, target.offset, target.line_index, target.rect, context);
         }
         if !self.layout_arena.paintable_side_data(paintable).fragments.is_empty() {
-            for target in self.host.line_break_caret_targets(self.layout_node_shell(paintable)) {
-                let rect = CssPixelRect::from(target.rect);
+            // Computed by the host before the recording, for the rows the layout commit enrolled,
+            // relative to the padding box: the block may have moved with a reused subtree since.
+            let padding_box = paintable_geometry::absolute_padding_box_rect(self.layout_arena, paintable);
+            let target_count = self
+                .layout_arena
+                .paintable_side_data(paintable)
+                .line_break_caret_targets
+                .len();
+            for index in 0..target_count {
+                let target = self
+                    .layout_arena
+                    .paintable_side_data(paintable)
+                    .line_break_caret_targets[index];
+                let rect = CssPixelRect::from(target.rect_in_padding_box).translated(padding_box.x, padding_box.y);
                 let caret_node = paintable;
                 self.append_empty_line_for_node(paintable, caret_node, target.caret_offset, rect, context);
             }

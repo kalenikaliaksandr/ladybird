@@ -1839,7 +1839,6 @@ pub unsafe extern "C" fn layout_arena_refresh_scroll_state(
 pub unsafe extern "C" fn layout_arena_record_display_list(
     arena: *mut c_void,
     viewport: NodeSlotId,
-    callbacks: crate::painting::host::FfiHitTestHostCallbacks,
     paint_callbacks: crate::painting::host::FfiPaintHostCallbacks,
     visual_context_callbacks: crate::painting::host::FfiVisualContextHostCallbacks,
     inputs: crate::painting::host::FfiRecordingInputs,
@@ -1884,7 +1883,6 @@ pub unsafe extern "C" fn layout_arena_record_display_list(
             arena,
             &paint_state,
             viewport,
-            &callbacks,
             &paint_callbacks,
             &visual_context_callbacks,
             inputs,
@@ -1902,7 +1900,6 @@ pub unsafe extern "C" fn layout_arena_record_display_list(
                 arena,
                 &paint_state,
                 viewport,
-                &callbacks,
                 &paint_callbacks,
                 &visual_context_callbacks,
                 inputs_for_recording_from_scratch,
@@ -4241,6 +4238,55 @@ pub unsafe extern "C" fn layout_arena_hit_test_adjacent_line(
     })
 }
 
+/// Has the host answer for each enrolled row that is still live and populated, then stores the
+/// answer on the row's side data.
+fn sync_enrolled_rows<T>(
+    arena: &crate::layout::LayoutNodeArena,
+    rows: Vec<NodeSlotId>,
+    ask_host: impl Fn(*mut c_void) -> T,
+    store: impl Fn(&mut crate::painting::paintable_data::PaintableSideData, T),
+) {
+    for row in rows {
+        let shell = arena.shell_if_live(row);
+        if shell.is_null() || !arena.paintable_rows().paintable_row_is_populated(row) {
+            continue;
+        }
+        let answer = ask_host(shell);
+        store(&mut arena.paintable_side_data_mut(row), answer);
+    }
+}
+
+/// Recomputes, through the host, the empty-line caret targets of the `<br>` children of every row
+/// the layout commit enrolled (a block that lays out a `<br>`, committed since the last sync), and
+/// stores them on the row for the recorder.
+///
+/// # Safety
+///
+/// `arena` must be a live handle from `layout_arena_create`, used on the document thread. `collect`
+/// runs synchronously with a live layout node shell and pushes targets into the sink it receives
+/// through `layout_arena_hit_test_push_line_break_caret_target`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_sync_line_break_caret_targets(
+    arena: *mut c_void,
+    context: *mut c_void,
+    collect: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void),
+) {
+    let arena = unsafe { arena_from_handle(arena) };
+    let rows = arena.take_rows_enrolled_for_line_break_caret_targets_sync();
+    sync_enrolled_rows(
+        arena,
+        rows,
+        |shell| {
+            let mut targets: Vec<crate::painting::host::FfiLineBreakCaretTarget> = Vec::new();
+            // SAFETY: The host answers synchronously from a live layout node shell and pushes into
+            // the Vec through the exported sink function.
+            unsafe { collect(context, shell, (&raw mut targets).cast()) };
+            targets
+        },
+        |side_data, targets| side_data.line_break_caret_targets = targets,
+    );
+}
+
 /// # Safety
 ///
 /// `sink` must be the pointer handed to the callback, used synchronously.
@@ -4249,7 +4295,7 @@ pub unsafe extern "C" fn layout_arena_hit_test_push_line_break_caret_target(
     sink: *mut c_void,
     target: crate::painting::host::FfiLineBreakCaretTarget,
 ) {
-    // SAFETY: `sink` is the Vec pointer handed out by FfiHitTestHostCallbacks::line_break_caret_targets.
+    // SAFETY: `sink` is the Vec pointer layout_arena_sync_line_break_caret_targets hands to the host.
     let targets = unsafe { &mut *sink.cast::<Vec<crate::painting::host::FfiLineBreakCaretTarget>>() };
     targets.push(target);
 }

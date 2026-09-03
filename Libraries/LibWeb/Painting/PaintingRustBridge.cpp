@@ -714,25 +714,27 @@ void dump_stacking_context_tree(StringBuilder& builder, DOM::Document const& doc
 
 namespace {
 
-Layout::RustFFI::FfiHitTestHostCallbacks hit_test_host_callbacks()
+// Blocks that lay out a <br> get the empty-line caret targets of their <br> children recomputed before a
+// recording, for the rows the layout commit enrolled. The targets are stored relative to the block's padding box:
+// a reused subtree that moves is not re-committed, so the recorder places them at the block's current position.
+static void sync_line_break_caret_targets(void* arena)
 {
-    return {
-        .context = nullptr,
-        .line_break_caret_targets = [](void*, void* layout_node_shell, void* sink) {
-            auto const& layout_node = *static_cast<Layout::Node const*>(layout_node_shell);
-            auto* dom_node = layout_node.dom_node();
-            if (!dom_node)
-                return;
-            for (auto* child = dom_node->first_child(); child; child = child->next_sibling()) {
-                auto* br = as_if<HTML::HTMLBRElement>(*child);
-                if (!br || !br->represents_empty_line())
-                    continue;
-                Layout::RustFFI::FfiLineBreakCaretTarget target {};
-                target.caret_offset = br->index();
-                target.rect = caret_rect_for_child_offset(layout_node, br->index());
-                Layout::RustFFI::layout_arena_hit_test_push_line_break_caret_target(sink, target);
-            } },
-    };
+    Layout::RustFFI::layout_arena_sync_line_break_caret_targets(arena, nullptr, [](void*, void* layout_node_shell, void* sink) {
+        auto const& layout_node = *static_cast<Layout::Node const*>(layout_node_shell);
+        auto* dom_node = layout_node.dom_node();
+        if (!dom_node)
+            return;
+        auto padding_box_location = has_committed_box(layout_node) ? absolute_padding_box_rect(layout_node).location() : CSSPixelPoint {};
+        for (auto* child = dom_node->first_child(); child; child = child->next_sibling()) {
+            auto* br = as_if<HTML::HTMLBRElement>(*child);
+            if (!br || !br->represents_empty_line())
+                continue;
+            Layout::RustFFI::FfiLineBreakCaretTarget target {};
+            target.caret_offset = br->index();
+            target.rect_in_padding_box = caret_rect_for_child_offset(layout_node, br->index()).translated(-padding_box_location);
+            Layout::RustFFI::layout_arena_hit_test_push_line_break_caret_target(sink, target);
+        }
+    });
 }
 
 }
@@ -1241,9 +1243,10 @@ RefPtr<DisplayList> record_rust_display_list(DOM::Document& document, DisplayLis
         inputs.background_color = document.background_color();
     }
     invalidate_navigable_containers_whose_composited_context_changed(document);
+    sync_line_break_caret_targets(arena);
     PaintHostContext paint_host_context { resource_storage, document, paint_generation_id, device_pixels_per_css_pixel };
     auto rust_timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
-    auto generation = Layout::RustFFI::layout_arena_record_display_list(arena, viewport_row_slot(document), hit_test_host_callbacks(), paint_host_callbacks(paint_host_context), visual_context_host_callbacks(document), inputs);
+    auto generation = Layout::RustFFI::layout_arena_record_display_list(arena, viewport_row_slot(document), paint_host_callbacks(paint_host_context), visual_context_host_callbacks(document), inputs);
     if (generation == 0)
         return nullptr;
     // The recorder wrote the ids of the fonts and nested display lists it used into the bytes; register the

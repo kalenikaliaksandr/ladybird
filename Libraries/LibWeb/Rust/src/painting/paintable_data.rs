@@ -233,6 +233,9 @@ pub struct PaintableSideData {
     // A `backdrop-filter` that references an SVG filter, resolved by the host against the box's
     // geometry in the visual context update; other backdrop filters serialise at paint time.
     pub(crate) url_backdrop_filter: std::cell::RefCell<Option<std::rc::Rc<Vec<u8>>>>,
+    // Empty-line caret targets of this block's `<br>` children, relative to its padding box,
+    // computed by the host before a recording for rows the layout commit enrolled.
+    pub(crate) line_break_caret_targets: Vec<crate::painting::host::FfiLineBreakCaretTarget>,
     // Only meaningful while is_self_painting(); assigned by the containing block's
     // assign_fragment_ownership().
     pub(crate) fragment_ownership: Option<crate::painting::fragment_ownership::FragmentOwnershipFilter>,
@@ -244,6 +247,7 @@ impl PaintableSideData {
         self.fragments.clear();
         self.inline_box_pieces.clear();
         self.piece_indices.clear();
+        self.line_break_caret_targets.clear();
         self.fragment_ownership = None;
     }
 }

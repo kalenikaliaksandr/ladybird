@@ -10,27 +10,13 @@ use crate::layout::used_values::OptionalCssPixelRect;
 use crate::painting::display_list::commands::ContextRef;
 use std::ffi::c_void;
 
+/// An empty line a `<br>` renders, as a caret target: the line's rect relative to the block's
+/// padding box, so a reused subtree that moves keeps its rows' targets.
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct FfiLineBreakCaretTarget {
     pub caret_offset: usize,
-    pub rect: used_values::FfiCssPixelRect,
-}
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub struct FfiHitTestHostCallbacks {
-    pub context: *mut c_void,
-    pub line_break_caret_targets: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void),
-}
-
-impl FfiHitTestHostCallbacks {
-    pub(crate) fn line_break_caret_targets(&self, layout_node_shell: *mut c_void) -> Vec<FfiLineBreakCaretTarget> {
-        let mut targets: Vec<FfiLineBreakCaretTarget> = Vec::new();
-        // SAFETY: The C++ host pushes into the Vec through the exported sink function, synchronously.
-        unsafe { (self.line_break_caret_targets)(self.context, layout_node_shell, (&raw mut targets).cast()) };
-        targets
-    }
+    pub rect_in_padding_box: used_values::FfiCssPixelRect,
 }
 
 #[derive(Clone, Copy)]

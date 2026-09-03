@@ -24,8 +24,8 @@ use crate::painting::display_list::device_pixels::DevicePixelConverter;
 use crate::painting::display_list::recorder::DisplayListRecorder;
 use crate::painting::hit_test::HitTestList;
 use crate::painting::host::{
-    FfiHitTestHostCallbacks, FfiMaskDisplayListRegistration, FfiPaintHostCallbacks, FfiPaintRecordingStats,
-    FfiRecordingInputs, FfiRootBackgroundSource, FfiVisualContextHostCallbacks, FfiVisualContextTreeInputs,
+    FfiMaskDisplayListRegistration, FfiPaintHostCallbacks, FfiPaintRecordingStats, FfiRecordingInputs,
+    FfiRootBackgroundSource, FfiVisualContextHostCallbacks, FfiVisualContextTreeInputs,
 };
 use crate::painting::paintable_data::{InlineBoxPieceRecord, PaintableData};
 use crate::painting::paintable_rows::PaintableRowsRef;
@@ -117,7 +117,6 @@ pub(crate) struct DeferredWholeTapeSplice {
 pub struct PaintRecorder<'a> {
     pub(crate) layout_arena: &'a PaintableRowsRef<'a>,
     pub(crate) paint_state: &'a crate::painting::paint_state::PaintState,
-    pub(crate) host: &'a FfiHitTestHostCallbacks,
     pub(crate) paint_host: &'a FfiPaintHostCallbacks,
     pub(crate) inputs: RecordingInputs,
     pub(crate) recorder: DisplayListRecorder,
@@ -255,7 +254,6 @@ impl<'a> PaintRecorder<'a> {
         PaintRecorder {
             layout_arena: self.layout_arena,
             paint_state: self.paint_state,
-            host: self.host,
             paint_host: self.paint_host,
             inputs: self.inputs,
             recorder,
