@@ -14,6 +14,7 @@
 #include <AK/Vector.h>
 #include <LibIPC/Forward.h>
 #include <LibWeb/Compositor/AsyncScrollingState.h>
+#include <LibWeb/Compositor/ScrollSnapState.h>
 #include <LibWeb/Export.h>
 
 namespace Web::Compositor {

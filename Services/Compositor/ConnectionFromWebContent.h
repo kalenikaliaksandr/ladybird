@@ -45,9 +45,9 @@ private:
     virtual void set_parent_context(Web::Compositor::CompositorContextId, Optional<Web::Compositor::CompositorContextId>) override;
     virtual void stop_presenting_to_client(Web::Compositor::CompositorContextId) override;
     virtual void destroy_context(Web::Compositor::CompositorContextId) override;
-    virtual void update_display_list(Web::Compositor::CompositorContextId, NonnullRefPtr<Web::Painting::DisplayList>, Web::Painting::AccumulatedVisualContextTree, Web::Painting::DisplayListResourceTransaction, Web::Painting::ScrollStateSnapshot) override;
-    virtual void update_visual_context_tree(Web::Compositor::CompositorContextId, Web::Painting::AccumulatedVisualContextTree, Web::Painting::DisplayListResourceTransaction) override;
-    virtual void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot) override;
+    virtual void update_display_list(Web::Compositor::CompositorContextId, NonnullRefPtr<Web::Painting::DisplayList>, Web::Painting::AccumulatedVisualContextTree, Web::Painting::DisplayListResourceTransaction, Web::Painting::ScrollStateSnapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot>) override;
+    virtual void update_visual_context_tree(Web::Compositor::CompositorContextId, Web::Painting::AccumulatedVisualContextTree, Web::Painting::DisplayListResourceTransaction, Optional<Web::Compositor::ScrollSnapStateSnapshot>) override;
+    virtual void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot>) override;
     virtual void update_image_frame_resources(Web::Compositor::CompositorContextId, Vector<Web::Painting::DisplayListImageFrameResource>) override;
     virtual Messages::CompositorWebContentServer::CreateCanvas2dContextResponse create_canvas_2d_context(Gfx::IntSize, bool) override;
     virtual void update_canvas_2d_stream(Vector<Web::Painting::Canvas2DCommandStreamSegment>, Vector<Web::Painting::DisplayListFontResource>) override;

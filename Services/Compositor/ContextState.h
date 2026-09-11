@@ -107,9 +107,9 @@ public:
     void install_display_list_update(
         NonnullRefPtr<Web::Painting::DisplayList>,
         Web::Painting::AccumulatedVisualContextTree,
-        Web::Painting::ScrollStateSnapshot&&);
-    void update_visual_context_tree(Web::Painting::AccumulatedVisualContextTree, Web::Painting::DisplayListResourceTransaction&&);
-    void update_scroll_state(Web::Painting::ScrollStateSnapshot&&);
+        Web::Painting::ScrollStateSnapshot&&, Optional<Web::Compositor::ScrollSnapStateSnapshot> = {});
+    void update_visual_context_tree(Web::Painting::AccumulatedVisualContextTree, Web::Painting::DisplayListResourceTransaction&&, Optional<Web::Compositor::ScrollSnapStateSnapshot> = {});
+    void update_scroll_state(Web::Painting::ScrollStateSnapshot&&, Optional<Web::Compositor::ScrollSnapStateSnapshot> = {});
     void set_video_sink(Web::Painting::VideoSinkResourceId, RefPtr<Media::VideoSink>);
     HashMap<u64, Media::VideoSinkHandle> const& video_sink_handles() const { return m_display_list_resource_storage.video_sink_handles(); }
 

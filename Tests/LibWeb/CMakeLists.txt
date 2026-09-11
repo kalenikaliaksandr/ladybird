@@ -22,6 +22,7 @@ set(TEST_SOURCES
     TestMimeSniff.cpp
     TestNumbers.cpp
     TestScrollSnap.cpp
+    TestScrollSnapState.cpp
     TestScrollState.cpp
     TestSecureContexts.cpp
     TestSessionHistoryEntry.cpp
@@ -84,6 +85,7 @@ target_link_libraries(TestImageData PRIVATE LibGC LibJS)
 target_link_libraries(TestWebIDLBuffers PRIVATE LibGC LibJS)
 target_link_libraries(TestWebGLSpanWithStorage PRIVATE LibGC LibJS)
 target_link_libraries(TestScrollState PRIVATE LibGfx LibIPC)
+target_link_libraries(TestScrollSnapState PRIVATE LibGfx LibIPC)
 target_link_libraries(TestStructuredSerializeCorpus PRIVATE LibGC LibJS LibCrypto LibGfx LibIPC)
 target_link_libraries(TestStructuredSerializeDurability PRIVATE LibGC LibJS LibCrypto LibGfx LibIPC)
 target_link_libraries(TestStructuredSerializeFormat PRIVATE LibGC LibJS LibCrypto LibGfx LibIPC)

@@ -213,16 +213,16 @@ void CompositorHostBase::stop_presenting_to_client(Web::Compositor::CompositorCo
         connection->stop_presenting_to_client(context_id);
 }
 
-void CompositorHostBase::update_display_list(Web::Compositor::CompositorContextId context_id, NonnullRefPtr<Web::Painting::DisplayList> display_list, Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction&& resource_transaction, Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot)
+void CompositorHostBase::update_display_list(Web::Compositor::CompositorContextId context_id, NonnullRefPtr<Web::Painting::DisplayList> display_list, Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction&& resource_transaction, Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     if (auto* connection = compositor_connection())
-        connection->update_display_list(context_id, display_list, visual_context_tree, resource_transaction, scroll_state_snapshot);
+        connection->update_display_list(context_id, display_list, visual_context_tree, resource_transaction, scroll_state_snapshot, move(snap_state));
 }
 
-void CompositorHostBase::update_visual_context_tree(Web::Compositor::CompositorContextId context_id, Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction&& resource_transaction)
+void CompositorHostBase::update_visual_context_tree(Web::Compositor::CompositorContextId context_id, Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction&& resource_transaction, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     if (auto* connection = compositor_connection())
-        connection->update_visual_context_tree(context_id, visual_context_tree, move(resource_transaction));
+        connection->update_visual_context_tree(context_id, visual_context_tree, move(resource_transaction), move(snap_state));
 }
 
 void CompositorHostBase::add_video_sink(Media::VideoSinkHandle video_sink_handle)
@@ -243,10 +243,10 @@ void CompositorHostBase::set_video_sink_ticking(Media::VideoSinkHandle video_sin
         connection->set_video_sink_ticking(video_sink_handle, should_tick);
 }
 
-void CompositorHostBase::update_scroll_state(Web::Compositor::CompositorContextId context_id, Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot)
+void CompositorHostBase::update_scroll_state(Web::Compositor::CompositorContextId context_id, Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     if (auto* connection = compositor_connection())
-        connection->update_scroll_state(context_id, scroll_state_snapshot);
+        connection->update_scroll_state(context_id, scroll_state_snapshot, move(snap_state));
 }
 
 void CompositorHostBase::invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId context_id, u64 generation)

@@ -1188,6 +1188,8 @@ public:
     void schedule_list_item_renumber(Element& list_owner);
     void did_render_list_item_counter_value(Element&);
 
+    u64 scroll_snap_geometry_revision() const { return m_scroll_snap_geometry_revision; }
+    void invalidate_scroll_snap_data() { ++m_scroll_snap_geometry_revision; }
     void schedule_scroll_container_resnap() { m_needs_scroll_container_resnap = true; }
     void cancel_scheduled_scroll_container_resnap() { m_needs_scroll_container_resnap = false; }
     [[nodiscard]] bool needs_scroll_container_resnap() const { return m_needs_scroll_container_resnap; }
@@ -1924,6 +1926,7 @@ private:
     HashMap<Compositor::AsyncScrollNodeStableID, Painting::SnappedAreas> m_scroll_container_snapped_areas;
     Vector<WeakPtr<Layout::Node const>> m_scroll_snap_containers;
     bool m_needs_scroll_container_resnap { false };
+    u64 m_scroll_snap_geometry_revision { 1 };
     bool m_may_have_scroll_snap_areas { false };
 
     HashTable<GC::Ref<Element>> m_list_owners_pending_item_renumber;

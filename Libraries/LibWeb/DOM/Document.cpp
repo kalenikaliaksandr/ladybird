@@ -1937,6 +1937,7 @@ void Document::after_layout_commit(LayoutTreeChanged layout_tree_changed, Layout
             collect_boxes_with_auto_content_visibility();
     }
 
+    invalidate_scroll_snap_data();
     schedule_scroll_container_resnap();
 
     m_document->set_needs_repaint();

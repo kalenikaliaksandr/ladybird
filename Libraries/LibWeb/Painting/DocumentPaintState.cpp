@@ -92,6 +92,7 @@ void DocumentPaintState::invalidate_scroll_state(DOM::Document& document)
 
 void DocumentPaintState::update_accumulated_visual_contexts(DOM::Document& document)
 {
+    document.invalidate_scroll_snap_data();
     bool svg_paint_resources_changed = sync_svg_paint_resources(document);
     auto result = rust_update_accumulated_visual_contexts(document);
     if (result.performed_full_build)

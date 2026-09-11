@@ -162,11 +162,11 @@ void ConnectionFromWebContent::destroy_context(Web::Compositor::CompositorContex
     m_compositor_state->destroy_context(context_id);
 }
 
-void ConnectionFromWebContent::update_display_list(Web::Compositor::CompositorContextId context_id, NonnullRefPtr<Web::Painting::DisplayList> display_list, Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction resource_transaction, Web::Painting::ScrollStateSnapshot scroll_state_snapshot)
+void ConnectionFromWebContent::update_display_list(Web::Compositor::CompositorContextId context_id, NonnullRefPtr<Web::Painting::DisplayList> display_list, Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction resource_transaction, Web::Painting::ScrollStateSnapshot scroll_state_snapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     if (!context_is_owned_by_this_connection(context_id))
         return;
-    m_compositor_state->update_display_list(context_id, move(display_list), move(visual_context_tree), move(resource_transaction), move(scroll_state_snapshot));
+    m_compositor_state->update_display_list(context_id, move(display_list), move(visual_context_tree), move(resource_transaction), move(scroll_state_snapshot), move(snap_state));
 }
 
 void ConnectionFromWebContent::update_image_frame_resources(Web::Compositor::CompositorContextId context_id, Vector<Web::Painting::DisplayListImageFrameResource> image_frames)
@@ -176,18 +176,18 @@ void ConnectionFromWebContent::update_image_frame_resources(Web::Compositor::Com
     m_compositor_state->update_image_frame_resources(context_id, move(image_frames));
 }
 
-void ConnectionFromWebContent::update_visual_context_tree(Web::Compositor::CompositorContextId context_id, Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction resource_transaction)
+void ConnectionFromWebContent::update_visual_context_tree(Web::Compositor::CompositorContextId context_id, Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction resource_transaction, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     if (!context_is_owned_by_this_connection(context_id))
         return;
-    m_compositor_state->update_visual_context_tree(context_id, move(visual_context_tree), move(resource_transaction));
+    m_compositor_state->update_visual_context_tree(context_id, move(visual_context_tree), move(resource_transaction), move(snap_state));
 }
 
-void ConnectionFromWebContent::update_scroll_state(Web::Compositor::CompositorContextId context_id, Web::Painting::ScrollStateSnapshot scroll_state_snapshot)
+void ConnectionFromWebContent::update_scroll_state(Web::Compositor::CompositorContextId context_id, Web::Painting::ScrollStateSnapshot scroll_state_snapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     if (!context_is_owned_by_this_connection(context_id))
         return;
-    m_compositor_state->update_scroll_state(context_id, move(scroll_state_snapshot));
+    m_compositor_state->update_scroll_state(context_id, move(scroll_state_snapshot), move(snap_state));
 }
 
 Messages::CompositorWebContentServer::CreateCanvas2dContextResponse ConnectionFromWebContent::create_canvas_2d_context(Gfx::IntSize size, bool alpha)

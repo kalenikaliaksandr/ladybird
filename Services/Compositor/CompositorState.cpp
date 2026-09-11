@@ -136,7 +136,7 @@ void CompositorState::stop_presenting_to_client(Web::Compositor::CompositorConte
     context->stop_presenting_to_client();
 }
 
-void CompositorState::update_display_list(Web::Compositor::CompositorContextId context_id, NonnullRefPtr<Web::Painting::DisplayList> display_list, Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction&& resource_transaction, Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot)
+void CompositorState::update_display_list(Web::Compositor::CompositorContextId context_id, NonnullRefPtr<Web::Painting::DisplayList> display_list, Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction&& resource_transaction, Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     auto* context = context_if_present(context_id);
     VERIFY(context);
@@ -153,7 +153,7 @@ void CompositorState::update_display_list(Web::Compositor::CompositorContextId c
     }
 
     context->apply_display_list_resource_transaction(move(resource_transaction));
-    context->install_display_list_update(move(display_list), move(visual_context_tree), move(scroll_state_snapshot));
+    context->install_display_list_update(move(display_list), move(visual_context_tree), move(scroll_state_snapshot), move(snap_state));
     resolve_video_sinks(*context);
 
     update_unpainted_video_update_scheduling();
@@ -166,20 +166,20 @@ void CompositorState::update_image_frame_resources(Web::Compositor::CompositorCo
     context->update_image_frame_resources(move(image_frames));
 }
 
-void CompositorState::update_visual_context_tree(Web::Compositor::CompositorContextId context_id, Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction&& resource_transaction)
+void CompositorState::update_visual_context_tree(Web::Compositor::CompositorContextId context_id, Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction&& resource_transaction, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     auto* context = context_if_present(context_id);
     VERIFY(context);
 
-    context->update_visual_context_tree(move(visual_context_tree), move(resource_transaction));
+    context->update_visual_context_tree(move(visual_context_tree), move(resource_transaction), move(snap_state));
 }
 
-void CompositorState::update_scroll_state(Web::Compositor::CompositorContextId context_id, Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot)
+void CompositorState::update_scroll_state(Web::Compositor::CompositorContextId context_id, Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     auto* context = context_if_present(context_id);
     VERIFY(context);
 
-    context->update_scroll_state(move(scroll_state_snapshot));
+    context->update_scroll_state(move(scroll_state_snapshot), move(snap_state));
 }
 
 CompositorState::VideoSinkState* CompositorState::video_sink_state(CompositorStateWebContentClient& client, Media::VideoSinkHandle handle)

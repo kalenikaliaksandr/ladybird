@@ -32,17 +32,17 @@ void CompositorContextHandle::stop_presenting_to_client()
     m_host.stop_presenting_to_client(m_context_id);
 }
 
-void CompositorContextHandle::update_display_list(NonnullRefPtr<Painting::DisplayList> display_list, Painting::AccumulatedVisualContextTree visual_context_tree, Painting::DisplayListResourceTransaction&& resource_transaction, Painting::ScrollStateSnapshot&& scroll_state_snapshot)
+void CompositorContextHandle::update_display_list(NonnullRefPtr<Painting::DisplayList> display_list, Painting::AccumulatedVisualContextTree visual_context_tree, Painting::DisplayListResourceTransaction&& resource_transaction, Painting::ScrollStateSnapshot&& scroll_state_snapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     // Pending canvas commands (and present markers) must reach the Compositor
     // before a display list that samples the presented canvas surfaces.
     m_host.flush_canvas_2d_stream();
-    m_host.update_display_list(m_context_id, move(display_list), move(visual_context_tree), move(resource_transaction), move(scroll_state_snapshot));
+    m_host.update_display_list(m_context_id, move(display_list), move(visual_context_tree), move(resource_transaction), move(scroll_state_snapshot), move(snap_state));
 }
 
-void CompositorContextHandle::update_visual_context_tree(Painting::AccumulatedVisualContextTree visual_context_tree, Painting::DisplayListResourceTransaction&& resource_transaction)
+void CompositorContextHandle::update_visual_context_tree(Painting::AccumulatedVisualContextTree visual_context_tree, Painting::DisplayListResourceTransaction&& resource_transaction, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
-    m_host.update_visual_context_tree(m_context_id, move(visual_context_tree), move(resource_transaction));
+    m_host.update_visual_context_tree(m_context_id, move(visual_context_tree), move(resource_transaction), move(snap_state));
 }
 
 void CompositorContextHandle::add_video_sink(Media::VideoSinkHandle video_sink_handle)
@@ -60,9 +60,9 @@ void CompositorContextHandle::set_video_sink_ticking(Media::VideoSinkHandle vide
     m_host.set_video_sink_ticking(video_sink_handle, should_tick);
 }
 
-void CompositorContextHandle::update_scroll_state(Painting::ScrollStateSnapshot&& scroll_state_snapshot)
+void CompositorContextHandle::update_scroll_state(Painting::ScrollStateSnapshot&& scroll_state_snapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
-    m_host.update_scroll_state(m_context_id, move(scroll_state_snapshot));
+    m_host.update_scroll_state(m_context_id, move(scroll_state_snapshot), move(snap_state));
 }
 
 void CompositorContextHandle::invalidate_wheel_event_listener_state(u64 generation)

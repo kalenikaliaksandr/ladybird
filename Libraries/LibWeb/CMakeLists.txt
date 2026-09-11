@@ -36,6 +36,7 @@ set(SOURCES
     Compositor/AsyncScrollingState.cpp
     Compositor/CompositorHost.cpp
     Compositor/ScrollSnap.cpp
+    Compositor/ScrollSnapState.cpp
     Compositor/SmoothScrollAnimation.cpp
     Compositor/Types.cpp
     Compositor/VisualAnimation.cpp

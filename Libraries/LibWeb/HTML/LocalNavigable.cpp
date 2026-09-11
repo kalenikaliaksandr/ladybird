@@ -6142,6 +6142,29 @@ bool LocalNavigable::record_display_list_and_scroll_state(PaintConfig paint_conf
     document->update_paint_and_hit_testing_properties_if_needed();
     document->update_compositor_animations();
 
+    Optional<Compositor::ScrollSnapStateSnapshot> snap_state_update;
+    auto snap_scale = page().client().device_pixels_per_css_pixel();
+    if (!m_compositor_scroll_snap_state.has_value()
+        || m_compositor_scroll_snap_state->document_id != document->unique_id()
+        || m_cached_scroll_snap_geometry_revision != document->scroll_snap_geometry_revision()
+        || m_compositor_scroll_snap_state->device_pixels_per_css_pixel != snap_scale) {
+        Compositor::ScrollSnapStateSnapshot state {
+            .document_id = document->unique_id(),
+            .revision = ++m_next_scroll_snap_state_revision,
+            .device_pixels_per_css_pixel = snap_scale,
+            .containers = {},
+        };
+        for (auto const& container : document->collect_scroll_snap_containers()) {
+            auto stable_id = Painting::async_scroll_node_stable_id(*container);
+            auto data = Painting::collect_scroll_snap_data(*container);
+            if (stable_id.has_value() && data.has_value())
+                state.containers.append({ *stable_id, data.release_value() });
+        }
+        m_cached_scroll_snap_geometry_revision = document->scroll_snap_geometry_revision();
+        m_compositor_scroll_snap_state = move(state);
+        snap_state_update = *m_compositor_scroll_snap_state;
+    }
+
     auto should_record_display_list = m_needs_to_record_display_list
         || !m_compositor_display_list_paint_config.has_value()
         || !(m_compositor_display_list_paint_config.value() == paint_config);
@@ -6176,7 +6199,7 @@ bool LocalNavigable::record_display_list_and_scroll_state(PaintConfig paint_conf
     scroll_state_snapshot.set_adopted_async_scroll_sequence(m_adopted_async_scroll_sequence);
     if (should_record_display_list && !compositor_display_list_is_unchanged) {
         m_compositor_display_list_visual_context_tree_structural_epoch = display_list->compatible_visual_context_tree_structural_epoch();
-        compositor_context().update_display_list(*display_list, visual_context_tree.release_value(), move(resource_transaction), move(scroll_state_snapshot));
+        compositor_context().update_display_list(*display_list, visual_context_tree.release_value(), move(resource_transaction), move(scroll_state_snapshot), *m_compositor_scroll_snap_state);
         document_paint_state.did_update_visual_context_tree_in_compositor();
         m_display_list_resource_storage.retain_only(display_list_resources);
         m_compositor_display_list = display_list;
@@ -6196,12 +6219,13 @@ bool LocalNavigable::record_display_list_and_scroll_state(PaintConfig paint_conf
             VERIFY(updated_visual_context_tree.structural_epoch() == m_compositor_display_list_visual_context_tree_structural_epoch);
             auto updated_display_list_resources = compositor_display_list_resources(m_display_list_resource_storage, document_paint_state, m_compositor_display_list_command_resources, updated_visual_context_tree);
             auto updated_resource_transaction = m_display_list_resource_storage.create_transaction(m_compositor_display_list_resources, updated_display_list_resources);
-            compositor_context().update_visual_context_tree(updated_visual_context_tree, move(updated_resource_transaction));
+            compositor_context().update_visual_context_tree(updated_visual_context_tree, move(updated_resource_transaction), move(snap_state_update));
+            snap_state_update.clear();
             document_paint_state.did_update_visual_context_tree_in_compositor();
             m_display_list_resource_storage.retain_only(updated_display_list_resources);
             m_compositor_display_list_resources = move(updated_display_list_resources);
         }
-        compositor_context().update_scroll_state(move(scroll_state_snapshot));
+        compositor_context().update_scroll_state(move(scroll_state_snapshot), move(snap_state_update));
     }
     return true;
 }

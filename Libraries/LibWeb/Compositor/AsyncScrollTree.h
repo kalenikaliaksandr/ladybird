@@ -13,6 +13,7 @@
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
 #include <LibWeb/Compositor/AsyncScrollingState.h>
+#include <LibWeb/Compositor/ScrollSnapState.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>
@@ -51,6 +52,9 @@ struct CachedBlockingWheelEventTarget {
 class WEB_API AsyncScrollTree {
 public:
     void set_state(AsyncScrollingState&&);
+    void set_snap_state(ScrollSnapStateSnapshot&&);
+    SnapContainerData const* snap_data_for_node(AsyncScrollNodeID) const;
+    double snap_device_pixels_per_css_pixel() const { return m_snap_state.has_value() ? m_snap_state->device_pixels_per_css_pixel : 1; }
 
     void rebuild_wheel_hit_test_targets(RefPtr<Painting::DisplayList const> const&, Painting::AccumulatedVisualContextTree const*, Painting::ScrollStateSnapshot const&);
     void clear_wheel_hit_test_targets();
@@ -76,6 +80,7 @@ private:
     Gfx::FloatPoint apply_scroll_delta_to_node(AsyncScrollNode const&, Gfx::FloatPoint delta, Painting::ScrollStateSnapshot&);
 
     Vector<AsyncScrollNode> m_scroll_nodes;
+    Optional<ScrollSnapStateSnapshot> m_snap_state;
     Vector<WheelHitTestTarget> m_wheel_hit_test_regions;
     Vector<MainThreadWheelEventRegion> m_main_thread_wheel_event_regions;
     Vector<CachedWheelHitTestTarget> m_cached_wheel_hit_test_targets;

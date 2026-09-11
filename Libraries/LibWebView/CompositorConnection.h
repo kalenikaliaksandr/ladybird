@@ -43,9 +43,9 @@ public:
     void set_parent_context(Web::Compositor::CompositorContextId, Optional<Web::Compositor::CompositorContextId>);
     void stop_presenting_to_client(Web::Compositor::CompositorContextId);
     void destroy_context(Web::Compositor::CompositorContextId);
-    void update_display_list(Web::Compositor::CompositorContextId, NonnullRefPtr<Web::Painting::DisplayList> const&, Web::Painting::AccumulatedVisualContextTree const&, Web::Painting::DisplayListResourceTransaction, Web::Painting::ScrollStateSnapshot const&);
-    void update_visual_context_tree(Web::Compositor::CompositorContextId, Web::Painting::AccumulatedVisualContextTree const&, Web::Painting::DisplayListResourceTransaction);
-    void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot const&);
+    void update_display_list(Web::Compositor::CompositorContextId, NonnullRefPtr<Web::Painting::DisplayList> const&, Web::Painting::AccumulatedVisualContextTree const&, Web::Painting::DisplayListResourceTransaction, Web::Painting::ScrollStateSnapshot const&, Optional<Web::Compositor::ScrollSnapStateSnapshot> = {});
+    void update_visual_context_tree(Web::Compositor::CompositorContextId, Web::Painting::AccumulatedVisualContextTree const&, Web::Painting::DisplayListResourceTransaction, Optional<Web::Compositor::ScrollSnapStateSnapshot> = {});
+    void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot const&, Optional<Web::Compositor::ScrollSnapStateSnapshot> = {});
     void add_video_sink(Media::VideoSinkHandle);
     void remove_video_sink(Media::VideoSinkHandle);
     void set_video_sink_ticking(Media::VideoSinkHandle, bool should_tick);

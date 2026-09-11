@@ -86,10 +86,10 @@ public:
 
     void set_parent_context(Web::Compositor::CompositorContextId, Optional<Web::Compositor::CompositorContextId> parent_context_id);
     void stop_presenting_to_client(Web::Compositor::CompositorContextId);
-    void update_display_list(Web::Compositor::CompositorContextId, NonnullRefPtr<Web::Painting::DisplayList>, Web::Painting::AccumulatedVisualContextTree, Web::Painting::DisplayListResourceTransaction&&, Web::Painting::ScrollStateSnapshot&&);
+    void update_display_list(Web::Compositor::CompositorContextId, NonnullRefPtr<Web::Painting::DisplayList>, Web::Painting::AccumulatedVisualContextTree, Web::Painting::DisplayListResourceTransaction&&, Web::Painting::ScrollStateSnapshot&&, Optional<Web::Compositor::ScrollSnapStateSnapshot> = {});
     void update_image_frame_resources(Web::Compositor::CompositorContextId, Vector<Web::Painting::DisplayListImageFrameResource>);
-    void update_visual_context_tree(Web::Compositor::CompositorContextId, Web::Painting::AccumulatedVisualContextTree, Web::Painting::DisplayListResourceTransaction&&);
-    void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot&&);
+    void update_visual_context_tree(Web::Compositor::CompositorContextId, Web::Painting::AccumulatedVisualContextTree, Web::Painting::DisplayListResourceTransaction&&, Optional<Web::Compositor::ScrollSnapStateSnapshot> = {});
+    void update_scroll_state(Web::Compositor::CompositorContextId, Web::Painting::ScrollStateSnapshot&&, Optional<Web::Compositor::ScrollSnapStateSnapshot> = {});
     void add_video_sink(CompositorStateWebContentClient&, Media::VideoSinkHandle);
     void remove_video_sink(CompositorStateWebContentClient&, Media::VideoSinkHandle);
     void set_video_sink_ticking(CompositorStateWebContentClient&, Media::VideoSinkHandle, bool should_tick);

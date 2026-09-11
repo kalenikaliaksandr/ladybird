@@ -211,7 +211,7 @@ void ContextState::update_image_frame_resources(Vector<Web::Painting::DisplayLis
 void ContextState::install_display_list_update(
     NonnullRefPtr<Web::Painting::DisplayList> display_list,
     Web::Painting::AccumulatedVisualContextTree visual_context_tree,
-    Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot)
+    Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     VERIFY(display_list->compatible_visual_context_tree_structural_epoch() == visual_context_tree.structural_epoch());
     invalidate_visual_context_tree_for_compositing();
@@ -249,6 +249,8 @@ void ContextState::install_display_list_update(
     m_viewport_scrollbar_controller.set_scrollbars(async_scrolling_state.viewport_scrollbars);
     note_user_scroll_gesture_end_if_drag_ended(was_dragging_viewport_scrollbar);
     m_async_scroll_tree.set_state(move(async_scrolling_state));
+    if (snap_state.has_value())
+        m_async_scroll_tree.set_snap_state(snap_state.release_value());
     if (auto unreconciled = unreconciled_async_scroll_offsets(); !unreconciled.is_empty()) {
         if (auto viewport_scroll_offset = reapply_pending_async_scroll_offsets(unreconciled); viewport_scroll_offset.has_value())
             async_scrolling_viewport_rect.set_location(viewport_scroll_offset->to_type<int>());
@@ -323,7 +325,7 @@ Gfx::IntRect ContextState::caret_damage_rect()
     return damage_rect;
 }
 
-void ContextState::update_visual_context_tree(Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction&& resource_transaction)
+void ContextState::update_visual_context_tree(Web::Painting::AccumulatedVisualContextTree visual_context_tree, Web::Painting::DisplayListResourceTransaction&& resource_transaction, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     if (!m_display_list || m_display_list->compatible_visual_context_tree_structural_epoch() != visual_context_tree.structural_epoch()) {
         dbgln("Compositor: Dropping stale visual context tree update (tree epoch {}, display list epoch {})",
@@ -334,6 +336,8 @@ void ContextState::update_visual_context_tree(Web::Painting::AccumulatedVisualCo
     invalidate_visual_context_tree_for_compositing();
     apply_display_list_resource_transaction(move(resource_transaction));
     m_visual_context_tree = move(visual_context_tree);
+    if (snap_state.has_value())
+        m_async_scroll_tree.set_snap_state(snap_state.release_value());
     update_visual_animation_sampling_state(*m_visual_context_tree, m_visual_animation_sample_time_ns, m_has_active_visual_animations);
     // A constraints refresh changes sticky payloads without a new snapshot, and the snapshot that
     // pairs with this tree arrives in a separate message.
@@ -345,8 +349,10 @@ void ContextState::update_visual_context_tree(Web::Painting::AccumulatedVisualCo
         rebuild_wheel_hit_test_targets();
 }
 
-void ContextState::update_scroll_state(Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot)
+void ContextState::update_scroll_state(Web::Painting::ScrollStateSnapshot&& scroll_state_snapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
+    if (snap_state.has_value())
+        m_async_scroll_tree.set_snap_state(snap_state.release_value());
     m_scroll_state_snapshot = move(scroll_state_snapshot);
     m_scroll_state_snapshot.set_node_count(m_visual_context_tree.has_value() ? m_visual_context_tree->spatial_node_count() : 0);
     retire_reconciled_async_scroll_offsets(m_scroll_state_snapshot.adopted_async_scroll_sequence());

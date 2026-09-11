@@ -93,7 +93,7 @@ bool CompositorConnection::post_image_frame_resources_in_batches(Web::Compositor
     return true;
 }
 
-void CompositorConnection::update_display_list(Web::Compositor::CompositorContextId context_id, NonnullRefPtr<Web::Painting::DisplayList> const& display_list, Web::Painting::AccumulatedVisualContextTree const& visual_context_tree, Web::Painting::DisplayListResourceTransaction resource_transaction, Web::Painting::ScrollStateSnapshot const& scroll_state_snapshot)
+void CompositorConnection::update_display_list(Web::Compositor::CompositorContextId context_id, NonnullRefPtr<Web::Painting::DisplayList> const& display_list, Web::Painting::AccumulatedVisualContextTree const& visual_context_tree, Web::Painting::DisplayListResourceTransaction resource_transaction, Web::Painting::ScrollStateSnapshot const& scroll_state_snapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     if (!can_send_message_to_compositor())
         return;
@@ -101,12 +101,12 @@ void CompositorConnection::update_display_list(Web::Compositor::CompositorContex
     if (!post_image_frame_resources_in_batches(context_id, move(resource_transaction.image_frames)))
         return;
 
-    auto encoded_message = MUST(Messages::CompositorWebContentServer::UpdateDisplayList::static_encode(context_id, display_list, visual_context_tree, resource_transaction, scroll_state_snapshot));
+    auto encoded_message = MUST(Messages::CompositorWebContentServer::UpdateDisplayList::static_encode(context_id, display_list, visual_context_tree, resource_transaction, scroll_state_snapshot, snap_state));
     if (post_message(encoded_message).is_error())
         did_lose_compositor();
 }
 
-void CompositorConnection::update_visual_context_tree(Web::Compositor::CompositorContextId context_id, Web::Painting::AccumulatedVisualContextTree const& visual_context_tree, Web::Painting::DisplayListResourceTransaction resource_transaction)
+void CompositorConnection::update_visual_context_tree(Web::Compositor::CompositorContextId context_id, Web::Painting::AccumulatedVisualContextTree const& visual_context_tree, Web::Painting::DisplayListResourceTransaction resource_transaction, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     if (!can_send_message_to_compositor())
         return;
@@ -114,16 +114,16 @@ void CompositorConnection::update_visual_context_tree(Web::Compositor::Composito
     if (!post_image_frame_resources_in_batches(context_id, move(resource_transaction.image_frames)))
         return;
 
-    auto encoded_message = MUST(Messages::CompositorWebContentServer::UpdateVisualContextTree::static_encode(context_id, visual_context_tree, resource_transaction));
+    auto encoded_message = MUST(Messages::CompositorWebContentServer::UpdateVisualContextTree::static_encode(context_id, visual_context_tree, resource_transaction, snap_state));
     if (post_message(encoded_message).is_error())
         did_lose_compositor();
 }
 
-void CompositorConnection::update_scroll_state(Web::Compositor::CompositorContextId context_id, Web::Painting::ScrollStateSnapshot const& scroll_state_snapshot)
+void CompositorConnection::update_scroll_state(Web::Compositor::CompositorContextId context_id, Web::Painting::ScrollStateSnapshot const& scroll_state_snapshot, Optional<Web::Compositor::ScrollSnapStateSnapshot> snap_state)
 {
     if (!can_send_message_to_compositor())
         return;
-    async_update_scroll_state(context_id, scroll_state_snapshot);
+    async_update_scroll_state(context_id, scroll_state_snapshot, move(snap_state));
 }
 
 void CompositorConnection::add_video_sink(Media::VideoSinkHandle video_sink_handle)

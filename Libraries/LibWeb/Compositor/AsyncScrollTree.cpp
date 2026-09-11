@@ -7,6 +7,7 @@
 #include <LibWeb/Compositor/AsyncScrollTree.h>
 #include <LibWeb/Painting/DisplayList.h>
 
+#include <AK/AnyOf.h>
 #include <AK/Debug.h>
 
 namespace Web::Compositor {
@@ -14,6 +15,8 @@ namespace Web::Compositor {
 void AsyncScrollTree::set_state(AsyncScrollingState&& state)
 {
     m_scroll_nodes = move(state.scroll_nodes);
+    if (m_snap_state.has_value() && !any_of(m_scroll_nodes, [&](auto const& node) { return node.node_id.document_id == m_snap_state->document_id; }))
+        m_snap_state.clear();
     m_wheel_hit_test_regions = move(state.wheel_hit_test_targets);
     m_main_thread_wheel_event_regions = move(state.main_thread_wheel_event_regions);
     m_blocking_wheel_event_regions = move(state.blocking_wheel_event_regions);
@@ -22,6 +25,27 @@ void AsyncScrollTree::set_state(AsyncScrollingState&& state)
     m_cached_main_thread_wheel_event_targets.clear();
     m_cached_blocking_wheel_event_targets.clear();
     m_visual_context_tree_structural_epoch.clear();
+}
+
+void AsyncScrollTree::set_snap_state(ScrollSnapStateSnapshot&& state)
+{
+    if (!any_of(m_scroll_nodes, [&](auto const& node) { return node.node_id.document_id == state.document_id; }))
+        return;
+    if (m_snap_state.has_value() && m_snap_state->document_id == state.document_id && m_snap_state->revision > state.revision)
+        return;
+    m_snap_state = move(state);
+}
+
+SnapContainerData const* AsyncScrollTree::snap_data_for_node(AsyncScrollNodeID node_id) const
+{
+    auto const* node = scroll_node_for_id(node_id);
+    if (!node || !m_snap_state.has_value() || m_snap_state->document_id != node_id.document_id)
+        return nullptr;
+    for (auto const& container : m_snap_state->containers) {
+        if (container.stable_node_id == node->stable_node_id)
+            return &container.data;
+    }
+    return nullptr;
 }
 
 AsyncScrollNode const* AsyncScrollTree::scroll_node_for_id(AsyncScrollNodeID node_id) const

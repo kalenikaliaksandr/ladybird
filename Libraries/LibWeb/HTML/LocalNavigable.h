@@ -610,6 +610,9 @@ private:
     Vector<PendingAsyncScrollOperation> m_pending_async_scroll_operations;
     // The latest publication of the compositor's async scroll updates this navigable adopted.
     u64 m_adopted_async_scroll_sequence { 0 };
+    Optional<Compositor::ScrollSnapStateSnapshot> m_compositor_scroll_snap_state;
+    u64 m_cached_scroll_snap_geometry_revision { 0 };
+    u64 m_next_scroll_snap_state_revision { 0 };
 
     struct MainThreadSmoothScroll {
         Compositor::AsyncScrollNodeStableID stable_node_id;
