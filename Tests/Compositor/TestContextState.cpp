@@ -427,7 +427,7 @@ TEST_CASE(wheel_hit_testing_uses_the_current_visual_animation_tree)
         { 20, 20 },
         { 0, 10 },
         { 0, 0, 100, 100 },
-        Web::Compositor::SnapContainerHandling::ScrollOnCompositor,
+        Web::Compositor::AsyncScrollInput {},
         Web::Compositor::AsyncScrollOperationTracking::No);
     EXPECT(result.enqueue_result.accepted);
 }
@@ -458,7 +458,7 @@ TEST_CASE(wheel_hit_testing_ignores_targets_from_a_larger_visual_context_tree)
         { 20, 20 },
         { 0, 10 },
         { 0, 0, 100, 100 },
-        Web::Compositor::SnapContainerHandling::ScrollOnCompositor,
+        Web::Compositor::AsyncScrollInput {},
         Web::Compositor::AsyncScrollOperationTracking::No);
     EXPECT(result.enqueue_result.accepted);
 }
@@ -1445,13 +1445,13 @@ TEST_CASE(async_scroll_presents_report_the_damage_of_the_scrolled_content)
     fixture.present();
 
     auto already_presented = fixture.compositor_client.presented_frames.size();
-    EXPECT(fixture.compositor_state->async_scroll_by(fixture.context_id, { 20, 20 }, { 0, 5 }, Web::Compositor::SnapContainerHandling::ScrollOnCompositor));
+    EXPECT(fixture.compositor_state->async_scroll_by(fixture.context_id, { 20, 20 }, { 0, 5 }, Web::Compositor::AsyncScrollInput {}));
     auto nested_scroll_frame = fixture.wait_for_frame(already_presented);
     EXPECT_EQ(nested_scroll_frame.content_rect, fixture.viewport_rect);
     EXPECT_EQ(nested_scroll_frame.damage_rect, (Gfx::IntRect { 9, 4, 42, 17 }));
 
     already_presented = fixture.compositor_client.presented_frames.size();
-    EXPECT(fixture.compositor_state->async_scroll_by(fixture.context_id, { 80, 80 }, { 0, 10 }, Web::Compositor::SnapContainerHandling::ScrollOnCompositor));
+    EXPECT(fixture.compositor_state->async_scroll_by(fixture.context_id, { 80, 80 }, { 0, 10 }, Web::Compositor::AsyncScrollInput {}));
     auto viewport_scroll_frame = fixture.wait_for_frame(already_presented);
     EXPECT_EQ(viewport_scroll_frame.content_rect, (Gfx::IntRect { 0, 10, 100, 100 }));
     EXPECT_EQ(viewport_scroll_frame.damage_rect, fixture.viewport_rect);

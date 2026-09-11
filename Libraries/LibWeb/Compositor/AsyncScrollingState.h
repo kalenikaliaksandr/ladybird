@@ -17,6 +17,7 @@
 #include <LibGfx/CornerRadii.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Rect.h>
+#include <LibWeb/Compositor/ScrollInput.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/Painting/AccumulatedVisualContext.h>

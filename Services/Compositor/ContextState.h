@@ -121,10 +121,11 @@ public:
         Gfx::FloatPoint position,
         Gfx::FloatPoint delta,
         Gfx::IntRect viewport_rect,
-        Web::Compositor::SnapContainerHandling,
+        Web::Compositor::AsyncScrollInput,
         Web::Compositor::AsyncScrollOperationTracking);
     AsyncScrollResult smooth_scroll_to(Web::Compositor::AsyncScrollNodeStableID, Gfx::FloatPoint offset, Gfx::FloatPoint main_thread_offset, Gfx::IntRect viewport_rect, double device_pixels_per_css_pixel, Web::Compositor::ScrollAnimationKind);
     void cancel_smooth_scroll(Web::Compositor::AsyncScrollNodeStableID);
+    bool take_over_user_scroll(Web::Compositor::AsyncScrollNodeStableID, Web::Compositor::UserScrollTakeoverReason);
     Optional<Gfx::IntRect> advance_smooth_scroll_animations(MonotonicTime now);
     bool has_active_smooth_scroll_animations() const { return !m_smooth_scroll_animations.is_empty(); }
     bool advance_visual_animations(MonotonicTime now);
@@ -134,7 +135,7 @@ public:
     bool has_sampled_visual_animation_values_for_testing() const { return m_sampled_visual_context_tree.has_value(); }
     u64 visual_context_tree_copy_count_for_testing() const { return m_visual_context_tree_copy_count; }
     Gfx::IntRect caret_damage_rect_for_testing() { return caret_damage_rect(); }
-    ContextUpdateResult async_scroll_by(Gfx::FloatPoint position, Gfx::FloatPoint delta, Web::Compositor::SnapContainerHandling);
+    ContextUpdateResult async_scroll_by(Gfx::FloatPoint position, Gfx::FloatPoint delta, Web::Compositor::AsyncScrollInput);
     Web::Compositor::PendingAsyncScrollUpdates take_pending_async_scroll_updates();
     bool has_pending_async_scroll_updates() const;
 
@@ -268,6 +269,22 @@ private:
     Vector<Web::Compositor::AsyncScrollOperationID> m_async_scroll_operation_ids_taken_over_by_user_input;
     bool m_user_scroll_gesture_ended { false };
     bool m_published_user_scroll_gesture_in_progress { false };
+    struct UserScrollGesture {
+        Web::Compositor::UserScrollUpdate update;
+        Web::CSSPixelPoint unsnapped_destination;
+        Web::Compositor::AsyncScrollInput input;
+        Web::Compositor::MomentumFlingEstimator momentum_estimator;
+        Optional<MonotonicTime> settle_deadline;
+        Optional<Web::Compositor::AsyncScrollOperationID> animation_id;
+        bool scrollbar { false };
+        bool input_ended { false };
+        bool selected_at_end { false };
+        bool selected_per_scroll { false };
+        bool momentum_selected { false };
+        bool momentum_has_no_target { false };
+    };
+    Vector<UserScrollGesture> m_user_scroll_gestures;
+    Vector<Web::Compositor::UserScrollUpdate> m_pending_user_scroll_updates;
     Vector<ActiveSmoothScrollAnimation> m_smooth_scroll_animations;
     Web::Compositor::AsyncScrollOperationID m_next_async_scroll_operation_id { 0 };
     Gfx::IntRect m_async_scrolling_viewport_rect;

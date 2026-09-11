@@ -446,7 +446,7 @@ bool CompositorState::handle_pinch_event(Web::Compositor::CompositorContextId co
     return apply_context_update_result(context_id, *context, context->handle_pinch_event(event));
 }
 
-Web::Compositor::AsyncScrollEnqueueResult CompositorState::async_scroll_by(Web::Compositor::CompositorContextId context_id, Web::UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::SnapContainerHandling snap_container_handling, Web::Compositor::AsyncScrollOperationTracking operation_tracking)
+Web::Compositor::AsyncScrollEnqueueResult CompositorState::async_scroll_by(Web::Compositor::CompositorContextId context_id, Web::UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollInput input, Web::Compositor::AsyncScrollOperationTracking operation_tracking)
 {
     if (!m_async_scrolling_enabled)
         return {};
@@ -454,7 +454,7 @@ Web::Compositor::AsyncScrollEnqueueResult CompositorState::async_scroll_by(Web::
     auto* context = context_if_present(context_id);
     VERIFY(context);
 
-    auto result = context->async_scroll_by(expected_document_id, position, delta, viewport_rect, snap_container_handling, operation_tracking);
+    auto result = context->async_scroll_by(expected_document_id, position, delta, viewport_rect, input, operation_tracking);
     if (result.frame_to_present.has_value())
         schedule_present_frame(context_id, *context, *result.frame_to_present);
     publish_pending_async_scroll_updates(context_id, *context);
@@ -485,7 +485,7 @@ void CompositorState::cancel_smooth_scroll(Web::Compositor::CompositorContextId 
     publish_pending_async_scroll_updates(context_id, *context);
 }
 
-bool CompositorState::async_scroll_by(Web::Compositor::CompositorContextId context_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Web::Compositor::SnapContainerHandling snap_container_handling)
+bool CompositorState::async_scroll_by(Web::Compositor::CompositorContextId context_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Web::Compositor::AsyncScrollInput input)
 {
     if (!m_async_scrolling_enabled)
         return false;
@@ -494,7 +494,15 @@ bool CompositorState::async_scroll_by(Web::Compositor::CompositorContextId conte
     if (!context)
         return false;
 
-    return apply_context_update_result(context_id, *context, context->async_scroll_by(position, delta, snap_container_handling));
+    return apply_context_update_result(context_id, *context, context->async_scroll_by(position, delta, input));
+}
+
+Optional<Web::Compositor::PendingAsyncScrollUpdates> CompositorState::take_over_user_scroll(Web::Compositor::CompositorContextId context_id, Web::Compositor::AsyncScrollNodeStableID id, Web::Compositor::UserScrollTakeoverReason reason)
+{
+    auto* context = context_if_present(context_id);
+    if (!context || !context->take_over_user_scroll(id, reason))
+        return {};
+    return context->take_pending_async_scroll_updates();
 }
 
 Web::Compositor::PendingAsyncScrollUpdates CompositorState::take_pending_async_scroll_updates(Web::Compositor::CompositorContextId context_id)

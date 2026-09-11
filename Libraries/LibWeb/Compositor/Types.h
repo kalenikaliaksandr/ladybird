@@ -51,6 +51,27 @@ enum class AsyncScrollUpdateFreshness : u8 {
     FromCompositor,
 };
 
+enum class UserScrollStatus : u8 {
+    Active,
+    Settled,
+    TakenOverByUserInput,
+    ReplacedByProgrammaticScroll,
+};
+
+enum class UserScrollTakeoverReason : u8 {
+    UserInput,
+    Programmatic,
+};
+
+struct UserScrollUpdate {
+    AsyncScrollNodeStableID stable_node_id;
+    u64 gesture_id { 0 };
+    UserScrollStatus status { UserScrollStatus::Active };
+    CSSPixelPoint initial_scroll_offset;
+    Optional<SnapDestination> snap_destination;
+    bool did_scroll { false };
+};
+
 struct PendingAsyncScrollUpdates {
     // The publication these updates were handed out in, per context and increasing. A scroll state
     // snapshot WebContent produces after adopting them carries it back.
@@ -58,9 +79,12 @@ struct PendingAsyncScrollUpdates {
     Vector<AsyncScrollOffset> scroll_offsets;
     Vector<AsyncScrollOperationID> completed_operation_ids;
     Vector<AsyncScrollOperationID> operation_ids_taken_over_by_user_input;
+    Vector<UserScrollUpdate> user_scroll_updates;
     bool user_scroll_gesture_in_progress { false };
     bool user_scroll_gesture_ended { false };
 };
+
+WEB_API void merge_async_scroll_updates(PendingAsyncScrollUpdates& pending, PendingAsyncScrollUpdates&& updates);
 
 struct AsyncScrollEnqueueResult {
     bool accepted { false };
@@ -80,6 +104,15 @@ enum class ScrollAnimationKind : u8 {
 }
 
 namespace IPC {
+
+template<>
+WEB_API ErrorOr<void> encode(Encoder&, Web::Compositor::AsyncScrollInput const&);
+template<>
+WEB_API ErrorOr<Web::Compositor::AsyncScrollInput> decode(Decoder&);
+template<>
+WEB_API ErrorOr<void> encode(Encoder&, Web::Compositor::UserScrollUpdate const&);
+template<>
+WEB_API ErrorOr<Web::Compositor::UserScrollUpdate> decode(Decoder&);
 
 template<>
 WEB_API ErrorOr<void> encode(Encoder&, Web::Compositor::AsyncScrollNodeStableID const&);

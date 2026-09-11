@@ -4936,6 +4936,8 @@ void LocalNavigable::re_snap_scroll_containers_after_layout_change()
 
 void LocalNavigable::cancel_user_scroll_settlement()
 {
+    m_compositor_user_scrolls.clear();
+    m_completed_compositor_user_scrolls.clear();
     if (m_user_scroll_settle_timer)
         m_user_scroll_settle_timer->stop();
     m_pending_user_scrollend_targets.clear();
@@ -4962,6 +4964,9 @@ Optional<LocalNavigable::InFlightScroll> LocalNavigable::in_flight_scroll_for(Op
 {
     if (!stable_node_id.has_value())
         return {};
+
+    if (auto scroll = m_compositor_user_scrolls.get(*stable_node_id); scroll.has_value())
+        return InFlightScroll { ScrollTrigger::UserInput, scroll->snap_destination.map([](auto const& destination) { return destination.position; }) };
 
     Optional<InFlightScroll> in_flight_scroll;
     auto consider = [&](ScrollTrigger trigger, Optional<CSSPixelPoint> destination_scroll_offset) {
@@ -5207,7 +5212,19 @@ void LocalNavigable::adopt_pending_async_scroll_offsets(Compositor::AsyncScrollU
 
     // The compositor process may have already presented newer scroll offsets. Adopt the latest ones before running
     // rendering-update observers so they see the same scroll positions as the user.
-    auto async_scroll_updates = compositor_context().take_pending_async_scroll_updates(freshness);
+    adopt_async_scroll_updates(compositor_context().take_pending_async_scroll_updates(freshness));
+}
+
+void LocalNavigable::take_over_compositor_user_scroll(Compositor::AsyncScrollNodeStableID id, Compositor::UserScrollTakeoverReason reason)
+{
+    if (!page().async_scrolling_enabled() || !has_compositor_context())
+        return;
+    if (auto updates = compositor_context().take_over_user_scroll(id, reason); updates.has_value())
+        adopt_async_scroll_updates(updates.release_value());
+}
+
+void LocalNavigable::adopt_async_scroll_updates(Compositor::PendingAsyncScrollUpdates async_scroll_updates)
+{
     m_adopted_async_scroll_sequence = max(m_adopted_async_scroll_sequence, async_scroll_updates.sequence);
 
     // A gesture that both began and ended since the previous update is held for the length of this one, so that it
@@ -5222,7 +5239,7 @@ void LocalNavigable::adopt_pending_async_scroll_offsets(Compositor::AsyncScrollU
             m_compositor_user_scroll_gesture_hold = nullptr;
     };
 
-    if (async_scroll_updates.scroll_offsets.is_empty() && async_scroll_updates.completed_operation_ids.is_empty())
+    if (async_scroll_updates.scroll_offsets.is_empty() && async_scroll_updates.completed_operation_ids.is_empty() && async_scroll_updates.user_scroll_updates.is_empty())
         return;
 
     auto document = active_document();
@@ -5230,6 +5247,27 @@ void LocalNavigable::adopt_pending_async_scroll_offsets(Compositor::AsyncScrollU
         for (auto operation_id : async_scroll_updates.completed_operation_ids)
             resolve_async_scroll_operation(operation_id);
         return;
+    }
+
+    Vector<Compositor::AsyncScrollNodeStableID> owned_in_this_update;
+    for (auto const& update : async_scroll_updates.user_scroll_updates) {
+        if (!scroll_event_target_for_async_scroll_node(*document, update.stable_node_id))
+            continue;
+        owned_in_this_update.append(update.stable_node_id);
+        auto existing = m_compositor_user_scrolls.get(update.stable_node_id);
+        if (existing.has_value() && existing->gesture_id > update.gesture_id)
+            continue;
+        if (update.status == Compositor::UserScrollStatus::Active)
+            m_compositor_user_scrolls.set(update.stable_node_id, update);
+        else
+            m_compositor_user_scrolls.remove(update.stable_node_id);
+        m_pending_user_scrollend_targets.remove_all_matching([&](auto const& pending) { return pending.stable_node_id == update.stable_node_id; });
+        if (update.snap_destination.has_value()) {
+            auto const& result = *update.snap_destination;
+            Painting::SnapDestination destination { result.position, result.snapped_x, result.snapped_y, result.evaluated_x, result.evaluated_y,
+                Painting::resolve_snapped_areas(result.snapped_areas, *document) };
+            record_snapped_areas_of_scroll_container(*document, update.stable_node_id, destination);
+        }
     }
 
     // https://drafts.csswg.org/css-scroll-snap-1/#scroll-types
@@ -5254,7 +5292,9 @@ void LocalNavigable::adopt_pending_async_scroll_offsets(Compositor::AsyncScrollU
     bool adopted_any_scroll_offset = false;
     for (auto const& async_scroll_offset : async_scroll_updates.scroll_offsets) {
         auto css_scroll_delta = async_scroll_offset_to_css_pixels(async_scroll_offset.unadopted_scroll_delta, device_pixels_per_css_pixel);
-        bool has_in_flight_smooth_scroll = false;
+        bool compositor_owns_scroll = m_compositor_user_scrolls.contains(async_scroll_offset.stable_node_id)
+            || owned_in_this_update.contains_slow(async_scroll_offset.stable_node_id);
+        bool has_in_flight_smooth_scroll = compositor_owns_scroll;
         for (auto const& pending_operation : m_pending_async_scroll_operations) {
             if (pending_operation.stable_node_id == async_scroll_offset.stable_node_id) {
                 has_in_flight_smooth_scroll = true;
@@ -5276,7 +5316,7 @@ void LocalNavigable::adopt_pending_async_scroll_offsets(Compositor::AsyncScrollU
 
             // The gesture of the input that took the scroll over is latched here, so that the scrollend event the
             // taken-over scroll owes is delivered once that gesture settles rather than in the middle of it.
-            if (user_input_took_over_the_scroll_of(async_scroll_offset.stable_node_id)) {
+            if (!compositor_owns_scroll && user_input_took_over_the_scroll_of(async_scroll_offset.stable_node_id)) {
                 if (auto target = scroll_event_target_for_async_scroll_node(*document, async_scroll_offset.stable_node_id))
                     queue_scrollend_event_after_user_scroll(*target, async_scroll_offset.stable_node_id, scroll_offset_before_scroll);
             }
@@ -5300,6 +5340,24 @@ void LocalNavigable::adopt_pending_async_scroll_offsets(Compositor::AsyncScrollU
             queue_scrollend_event_after_user_scroll(*element, async_scroll_offset.stable_node_id, scroll_offset_before_scroll);
             dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Main thread adopting async element delta {},{}",
                 async_scroll_offset.unadopted_scroll_delta.x(), async_scroll_offset.unadopted_scroll_delta.y());
+        }
+    }
+
+    for (auto const& update : async_scroll_updates.user_scroll_updates) {
+        if (update.status == Compositor::UserScrollStatus::Active)
+            continue;
+        auto last_completed = m_completed_compositor_user_scrolls.get(update.stable_node_id).value_or(0);
+        if (last_completed >= update.gesture_id)
+            continue;
+        m_completed_compositor_user_scrolls.set(update.stable_node_id, update.gesture_id);
+        auto target = scroll_event_target_for_async_scroll_node(*document, update.stable_node_id);
+        if (!target || !update.did_scroll)
+            continue;
+        if (update.status == Compositor::UserScrollStatus::Settled) {
+            document->append_pending_scroll_event({ *target, EventNames::scrollend });
+            page().client().request_frame();
+        } else if (update.status == Compositor::UserScrollStatus::TakenOverByUserInput) {
+            queue_scrollend_event_after_user_scroll(*target, update.stable_node_id, update.initial_scroll_offset);
         }
     }
 
@@ -6281,6 +6339,7 @@ void LocalNavigable::abort_in_flight_smooth_scrolls(Compositor::AsyncScrollNodeS
 
 void LocalNavigable::abort_in_flight_smooth_scrolls_taken_over_by_user_input(Compositor::AsyncScrollNodeStableID stable_node_id, CSSPixelPoint scroll_offset_at_gesture_start)
 {
+    take_over_compositor_user_scroll(stable_node_id, Compositor::UserScrollTakeoverReason::UserInput);
     auto document = active_document();
     auto target = document ? scroll_event_target_for_async_scroll_node(*document, stable_node_id) : nullptr;
 
@@ -6313,6 +6372,7 @@ GC::Ref<WebIDL::Promise> LocalNavigable::perform_a_scroll_of_a_scrolling_box(Com
         settle_user_scroll_gesture_if_input_deadline_passed();
     };
 
+    take_over_compositor_user_scroll(stable_node_id, trigger == ScrollTrigger::Programmatic ? Compositor::UserScrollTakeoverReason::Programmatic : Compositor::UserScrollTakeoverReason::UserInput);
     auto initial_scroll_offset = scroll_offset_for(stable_node_id);
     if (!initial_scroll_offset.has_value())
         return WebIDL::create_resolved_promise_for(*document, JS::js_undefined());
@@ -6449,6 +6509,7 @@ bool LocalNavigable::perform_a_snapped_relative_user_scroll(Layout::Node& scroll
     if (!stable_node_id.has_value())
         return false;
 
+    take_over_compositor_user_scroll(*stable_node_id, Compositor::UserScrollTakeoverReason::UserInput);
     auto current_scroll_offset = scroll_offset_for(*stable_node_id);
     if (!current_scroll_offset.has_value())
         return false;

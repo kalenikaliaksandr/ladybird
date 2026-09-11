@@ -815,9 +815,9 @@ EventResult EventHandler::handle_mousewheel(CSSPixelPoint visual_viewport_positi
             auto operation_tracking = async_scroll_operation
                 ? Compositor::AsyncScrollOperationTracking::Yes
                 : Compositor::AsyncScrollOperationTracking::No;
-            auto snap_container_handling = Compositor::snap_container_handling_for(wheel_delta_precision, scroll_gesture_phase);
+            Compositor::AsyncScrollInput input { wheel_delta_precision, scroll_gesture_phase };
             auto enqueue_result = m_navigable->compositor_context().async_scroll_by(
-                document->unique_id(), async_scroll_position, async_scroll_delta_in_device_pixels, viewport_rect, snap_container_handling, operation_tracking);
+                document->unique_id(), async_scroll_position, async_scroll_delta_in_device_pixels, viewport_rect, input, operation_tracking);
             async_scroll_performed_default_action = enqueue_result.accepted;
             if (enqueue_result.operation_id.has_value() && async_scroll_operation)
                 *async_scroll_operation = AsyncScrollOperation { m_navigable, *enqueue_result.operation_id };

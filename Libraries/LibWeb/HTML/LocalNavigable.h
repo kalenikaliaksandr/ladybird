@@ -468,6 +468,8 @@ private:
         bool awaits_layout_for_snapping { false };
     };
     PendingUserScrollendTarget* latched_user_scroll_gesture_for(GC::Ref<DOM::EventTarget>, Optional<Compositor::AsyncScrollNodeStableID> const&);
+    void adopt_async_scroll_updates(Compositor::PendingAsyncScrollUpdates);
+    void take_over_compositor_user_scroll(Compositor::AsyncScrollNodeStableID, Compositor::UserScrollTakeoverReason);
     void abandon_snapping_of_user_scroll_gesture(Compositor::AsyncScrollNodeStableID);
     void settle_user_scroll_gesture();
     void settle_user_scroll_gesture_if_input_deadline_passed();
@@ -580,6 +582,8 @@ private:
     OwnPtr<Compositor::CompositorContextHandle> m_compositor_context;
     RefPtr<Core::Timer> m_async_scroll_hover_update_timer;
     Vector<PendingUserScrollendTarget> m_pending_user_scrollend_targets;
+    HashMap<Compositor::AsyncScrollNodeStableID, Compositor::UserScrollUpdate> m_compositor_user_scrolls;
+    HashMap<Compositor::AsyncScrollNodeStableID, u64> m_completed_compositor_user_scrolls;
     RefPtr<Core::Timer> m_user_scroll_settle_timer;
     OwnPtr<UserScrollGestureHold> m_compositor_user_scroll_gesture_hold;
     OwnPtr<UserScrollGestureHold> m_wheel_user_scroll_gesture_hold;

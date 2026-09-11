@@ -290,11 +290,11 @@ void ConnectionFromWebContent::invalidate_wheel_event_listener_state(Web::Compos
     m_compositor_state->invalidate_wheel_event_listener_state(context_id, generation);
 }
 
-Messages::CompositorWebContentServer::AsyncScrollByResponse ConnectionFromWebContent::async_scroll_by(Web::Compositor::CompositorContextId context_id, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::SnapContainerHandling snap_container_handling, Web::Compositor::AsyncScrollOperationTracking operation_tracking)
+Messages::CompositorWebContentServer::AsyncScrollByResponse ConnectionFromWebContent::async_scroll_by(Web::Compositor::CompositorContextId context_id, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollInput input, Web::Compositor::AsyncScrollOperationTracking operation_tracking)
 {
     if (!context_is_owned_by_this_connection(context_id))
         return Web::Compositor::AsyncScrollEnqueueResult {};
-    auto result = m_compositor_state->async_scroll_by(context_id, document_id, position, delta, viewport_rect, snap_container_handling, operation_tracking);
+    auto result = m_compositor_state->async_scroll_by(context_id, document_id, position, delta, viewport_rect, input, operation_tracking);
     if (result.accepted)
         async_request_rendering_update();
     return result;
@@ -315,6 +315,13 @@ void ConnectionFromWebContent::cancel_smooth_scroll(Web::Compositor::CompositorC
     if (!context_is_owned_by_this_connection(context_id))
         return;
     m_compositor_state->cancel_smooth_scroll(context_id, stable_node_id);
+}
+
+Messages::CompositorWebContentServer::TakeOverUserScrollResponse ConnectionFromWebContent::take_over_user_scroll(Web::Compositor::CompositorContextId context_id, Web::Compositor::AsyncScrollNodeStableID id, Web::Compositor::UserScrollTakeoverReason reason)
+{
+    if (!context_is_owned_by_this_connection(context_id))
+        return Optional<Web::Compositor::PendingAsyncScrollUpdates> {};
+    return m_compositor_state->take_over_user_scroll(context_id, id, reason);
 }
 
 Messages::CompositorWebContentServer::TakePendingAsyncScrollUpdatesResponse ConnectionFromWebContent::take_pending_async_scroll_updates(Web::Compositor::CompositorContextId context_id)

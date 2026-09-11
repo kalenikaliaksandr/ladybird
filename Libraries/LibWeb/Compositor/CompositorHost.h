@@ -44,9 +44,10 @@ public:
     void update_scroll_state(Painting::ScrollStateSnapshot&&, Optional<Web::Compositor::ScrollSnapStateSnapshot> = {});
     void invalidate_wheel_event_listener_state(u64 generation);
     AsyncScrollEnqueueResult async_scroll_by(UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels,
-        Gfx::IntRect viewport_rect, SnapContainerHandling, AsyncScrollOperationTracking = AsyncScrollOperationTracking::No);
+        Gfx::IntRect viewport_rect, AsyncScrollInput, AsyncScrollOperationTracking = AsyncScrollOperationTracking::No);
     AsyncScrollEnqueueResult smooth_scroll_to(AsyncScrollNodeStableID, Gfx::FloatPoint offset_in_device_pixels, Gfx::FloatPoint main_thread_offset_in_device_pixels, Gfx::IntRect viewport_rect, double device_pixels_per_css_pixel, ScrollAnimationKind);
     void cancel_smooth_scroll(AsyncScrollNodeStableID);
+    Optional<PendingAsyncScrollUpdates> take_over_user_scroll(AsyncScrollNodeStableID, UserScrollTakeoverReason);
     PendingAsyncScrollUpdates take_pending_async_scroll_updates(AsyncScrollUpdateFreshness);
     void viewport_size_updated(Gfx::IntSize, WindowResizingInProgress);
     bool request_rendering_opportunity(double maximum_frames_per_second);
@@ -91,10 +92,11 @@ public:
     virtual void update_scroll_state(CompositorContextId, Painting::ScrollStateSnapshot&&, Optional<Web::Compositor::ScrollSnapStateSnapshot> = {}) = 0;
     virtual void invalidate_wheel_event_listener_state(CompositorContextId, u64 generation) = 0;
     virtual AsyncScrollEnqueueResult async_scroll_by(CompositorContextId, UniqueNodeID expected_document_id, Gfx::FloatPoint position,
-        Gfx::FloatPoint delta_in_device_pixels, Gfx::IntRect viewport_rect, SnapContainerHandling, AsyncScrollOperationTracking)
+        Gfx::FloatPoint delta_in_device_pixels, Gfx::IntRect viewport_rect, AsyncScrollInput, AsyncScrollOperationTracking)
         = 0;
     virtual AsyncScrollEnqueueResult smooth_scroll_to(CompositorContextId, AsyncScrollNodeStableID, Gfx::FloatPoint offset_in_device_pixels, Gfx::FloatPoint main_thread_offset_in_device_pixels, Gfx::IntRect viewport_rect, double device_pixels_per_css_pixel, ScrollAnimationKind) = 0;
     virtual void cancel_smooth_scroll(CompositorContextId, AsyncScrollNodeStableID) = 0;
+    virtual Optional<PendingAsyncScrollUpdates> take_over_user_scroll(CompositorContextId, AsyncScrollNodeStableID, UserScrollTakeoverReason) = 0;
     virtual PendingAsyncScrollUpdates take_pending_async_scroll_updates(CompositorContextId, AsyncScrollUpdateFreshness) = 0;
     virtual void viewport_size_updated(CompositorContextId, Gfx::IntSize, WindowResizingInProgress) = 0;
     virtual bool request_rendering_opportunity(CompositorContextId, double maximum_frames_per_second) = 0;

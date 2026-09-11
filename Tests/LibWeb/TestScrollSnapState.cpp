@@ -13,6 +13,7 @@
 #include <LibTest/TestCase.h>
 #include <LibWeb/Compositor/AsyncScrollTree.h>
 #include <LibWeb/Compositor/ScrollSnapState.h>
+#include <LibWeb/Compositor/Types.h>
 
 using namespace Web;
 using namespace Web::Compositor;
@@ -53,7 +54,8 @@ static ScrollSnapStateSnapshot snap_state(u64 revision = 1)
     return state;
 }
 
-static ErrorOr<ScrollSnapStateSnapshot> round_trip(ScrollSnapStateSnapshot const& state)
+template<typename T>
+static ErrorOr<T> round_trip(T const& state)
 {
     IPC::MessageBuffer buffer;
     IPC::Encoder encoder { buffer };
@@ -62,7 +64,7 @@ static ErrorOr<ScrollSnapStateSnapshot> round_trip(ScrollSnapStateSnapshot const
     FixedMemoryStream stream { bytes.span() };
     Queue<IPC::Attachment> attachments;
     IPC::Decoder decoder { stream, attachments };
-    return decoder.decode<ScrollSnapStateSnapshot>();
+    return decoder.decode<T>();
 }
 
 TEST_CASE(snapshot_round_trip_preserves_fixed_point_geometry_and_pseudo_identity)
@@ -127,4 +129,66 @@ TEST_CASE(tree_replacement_retains_matching_identities_and_drops_old_documents)
     EXPECT(!tree.snap_data_for_node({ UniqueNodeID { 10 }, node_id.scroll_node_index }));
     tree.set_snap_state(snap_state(3));
     EXPECT(!tree.snap_data_for_node({ UniqueNodeID { 10 }, node_id.scroll_node_index }));
+}
+
+TEST_CASE(input_round_trip_preserves_precision_and_zero_delta_gesture_end)
+{
+    AsyncScrollInput input { WheelDeltaPrecision::Precise, ScrollGesturePhase::Ended };
+    auto decoded = MUST(round_trip(input));
+    EXPECT_EQ(decoded.precision, input.precision);
+    EXPECT_EQ(decoded.phase, input.phase);
+    input.phase = static_cast<ScrollGesturePhase>(255);
+    EXPECT(round_trip(input).is_error());
+}
+
+TEST_CASE(user_scroll_completion_is_separate_from_input_acknowledgements)
+{
+    PendingAsyncScrollUpdates updates;
+    updates.sequence = 42;
+    updates.completed_operation_ids.append(17);
+    UserScrollUpdate gesture {
+        .stable_node_id = stable_id,
+        .gesture_id = 3,
+        .status = UserScrollStatus::Active,
+        .initial_scroll_offset = { 0, CSSPixels::from_raw(65) },
+        .snap_destination = select_snap_destination(snap_state().containers[0].data, { 0, 250 }),
+    };
+    updates.user_scroll_updates.append(gesture);
+    auto decoded = MUST(round_trip(updates));
+    EXPECT_EQ(decoded.completed_operation_ids[0], 17u);
+    EXPECT_EQ(decoded.user_scroll_updates[0].status, UserScrollStatus::Active);
+    EXPECT_EQ(decoded.user_scroll_updates[0].initial_scroll_offset, gesture.initial_scroll_offset);
+    EXPECT_EQ(decoded.user_scroll_updates[0].snap_destination->position, gesture.snap_destination->position);
+    EXPECT(decoded.user_scroll_updates[0].snap_destination->snapped_areas == gesture.snap_destination->snapped_areas);
+}
+
+TEST_CASE(merging_publications_preserves_settlement_before_the_next_gesture)
+{
+    PendingAsyncScrollUpdates pending;
+    PendingAsyncScrollUpdates finished;
+    finished.sequence = 10;
+    finished.user_scroll_updates.append({
+        .stable_node_id = stable_id,
+        .gesture_id = 1,
+        .status = UserScrollStatus::Settled,
+        .initial_scroll_offset = {},
+        .snap_destination = {},
+        .did_scroll = true,
+    });
+    merge_async_scroll_updates(pending, move(finished));
+    PendingAsyncScrollUpdates started;
+    started.sequence = 11;
+    started.user_scroll_updates.append({
+        .stable_node_id = stable_id,
+        .gesture_id = 2,
+        .status = UserScrollStatus::Active,
+        .initial_scroll_offset = { 0, 200 },
+        .snap_destination = {},
+    });
+    merge_async_scroll_updates(pending, move(started));
+    EXPECT_EQ(pending.sequence, 11u);
+    EXPECT_EQ(pending.user_scroll_updates.size(), 2u);
+    EXPECT_EQ(pending.user_scroll_updates[0].status, UserScrollStatus::Settled);
+    EXPECT_EQ(pending.user_scroll_updates[1].status, UserScrollStatus::Active);
+    EXPECT(pending.scroll_offsets.is_empty());
 }

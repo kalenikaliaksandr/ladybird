@@ -11,6 +11,7 @@
 #include <AK/Vector.h>
 #include <LibGfx/Point.h>
 #include <LibIPC/Forward.h>
+#include <LibWeb/Compositor/ScrollInput.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/HTML/SelectedFile.h>
 #include <LibWeb/PixelUnits.h>
@@ -39,22 +40,6 @@ struct WEB_API KeyEvent {
     bool should_insert_text { false };
 
     OwnPtr<BrowserInputData> browser_data;
-};
-
-// Discrete wheel deltas come from stepwise input such as mouse wheel notches; precise wheel deltas come from input
-// that reports exact pixel distances, such as touchpad panning gestures.
-enum class WheelDeltaPrecision : u8 {
-    Discrete,
-    Precise,
-};
-
-// Input that scrolls with a gesture, such as a touchpad, reports whether the user is still making that gesture,
-// whether a flick has handed the scrolling over to momentum, and when it ends.
-enum class ScrollGesturePhase : u8 {
-    None,
-    Ongoing,
-    Momentum,
-    Ended,
 };
 
 struct WEB_API MouseEvent {

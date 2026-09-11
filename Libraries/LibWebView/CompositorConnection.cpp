@@ -194,12 +194,12 @@ void CompositorConnection::invalidate_wheel_event_listener_state(Web::Compositor
     async_invalidate_wheel_event_listener_state(context_id, generation);
 }
 
-Web::Compositor::AsyncScrollEnqueueResult CompositorConnection::async_scroll_by(Web::Compositor::CompositorContextId context_id, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::SnapContainerHandling snap_container_handling, Web::Compositor::AsyncScrollOperationTracking operation_tracking)
+Web::Compositor::AsyncScrollEnqueueResult CompositorConnection::async_scroll_by(Web::Compositor::CompositorContextId context_id, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollInput input, Web::Compositor::AsyncScrollOperationTracking operation_tracking)
 {
     if (!can_send_message_to_compositor())
         return {};
 
-    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::AsyncScrollBy>(context_id, document_id, position, delta, viewport_rect, snap_container_handling, operation_tracking);
+    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::AsyncScrollBy>(context_id, document_id, position, delta, viewport_rect, input, operation_tracking);
     if (!response) {
         did_lose_compositor();
         return {};
@@ -225,6 +225,34 @@ void CompositorConnection::cancel_smooth_scroll(Web::Compositor::CompositorConte
     if (!can_send_message_to_compositor())
         return;
     async_cancel_smooth_scroll(context_id, stable_node_id);
+}
+
+Optional<Web::Compositor::PendingAsyncScrollUpdates> CompositorConnection::take_over_user_scroll(Web::Compositor::CompositorContextId context_id, Web::Compositor::AsyncScrollNodeStableID id, Web::Compositor::UserScrollTakeoverReason reason)
+{
+    if (!can_send_message_to_compositor())
+        return {};
+    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::TakeOverUserScroll>(context_id, id, reason);
+    if (!response) {
+        did_lose_compositor();
+        return {};
+    }
+    auto updates = response->take_updates();
+    if (!updates.has_value())
+        return {};
+    // Drain older pushed publications before the takeover's final publication.
+    Vector<Web::Compositor::PendingAsyncScrollUpdates> arrivals;
+    for (auto& message : take_unprocessed_messages(Messages::CompositorWebContentClient::AsyncScrollUpdates::ENDPOINT_MAGIC, Messages::CompositorWebContentClient::AsyncScrollUpdates::static_message_id())) {
+        auto& pushed = static_cast<Messages::CompositorWebContentClient::AsyncScrollUpdates&>(*message);
+        if (pushed.context_id() == context_id)
+            arrivals.append(pushed.updates());
+        else
+            merge_async_scroll_updates(pushed.context_id(), pushed.updates());
+    }
+    arrivals.append(updates.release_value());
+    quick_sort(arrivals, [](auto const& a, auto const& b) { return a.sequence < b.sequence; });
+    for (auto& arrival : arrivals)
+        merge_async_scroll_updates(context_id, move(arrival));
+    return take_pending_async_scroll_updates(context_id, Web::Compositor::AsyncScrollUpdateFreshness::Pushed);
 }
 
 Web::Compositor::PendingAsyncScrollUpdates CompositorConnection::take_pending_async_scroll_updates(Web::Compositor::CompositorContextId context_id, Web::Compositor::AsyncScrollUpdateFreshness freshness)
@@ -264,6 +292,7 @@ Web::Compositor::PendingAsyncScrollUpdates CompositorConnection::take_pending_as
     updates.scroll_offsets = move(pending->scroll_offsets);
     updates.completed_operation_ids = move(pending->completed_operation_ids);
     updates.operation_ids_taken_over_by_user_input = move(pending->operation_ids_taken_over_by_user_input);
+    updates.user_scroll_updates = move(pending->user_scroll_updates);
     updates.user_scroll_gesture_in_progress = pending->user_scroll_gesture_in_progress;
     updates.user_scroll_gesture_ended = pending->user_scroll_gesture_ended;
     // Whether a gesture is in progress is a state the compositor process keeps current; the rest
@@ -271,6 +300,7 @@ Web::Compositor::PendingAsyncScrollUpdates CompositorConnection::take_pending_as
     pending->scroll_offsets.clear();
     pending->completed_operation_ids.clear();
     pending->operation_ids_taken_over_by_user_input.clear();
+    pending->user_scroll_updates.clear();
     pending->user_scroll_gesture_ended = false;
     return updates;
 }
@@ -283,23 +313,7 @@ void CompositorConnection::async_scroll_updates(Web::Compositor::CompositorConte
 void CompositorConnection::merge_async_scroll_updates(Web::Compositor::CompositorContextId context_id, Web::Compositor::PendingAsyncScrollUpdates updates)
 {
     auto& pending = m_pending_async_scroll_updates.ensure(context_id);
-    // Whether a gesture is in progress is a state, not an event: the newest publication decides it.
-    bool const is_newest = updates.sequence >= pending.sequence;
-    pending.sequence = max(pending.sequence, updates.sequence);
-    for (auto const& scroll_offset : updates.scroll_offsets) {
-        auto existing = pending.scroll_offsets.find_if([&](auto const& existing) { return existing.stable_node_id == scroll_offset.stable_node_id; });
-        if (existing != pending.scroll_offsets.end()) {
-            existing->compositor_scroll_offset = scroll_offset.compositor_scroll_offset;
-            existing->unadopted_scroll_delta.translate_by(scroll_offset.unadopted_scroll_delta);
-        } else {
-            pending.scroll_offsets.append(scroll_offset);
-        }
-    }
-    pending.completed_operation_ids.extend(move(updates.completed_operation_ids));
-    pending.operation_ids_taken_over_by_user_input.extend(move(updates.operation_ids_taken_over_by_user_input));
-    if (is_newest)
-        pending.user_scroll_gesture_in_progress = updates.user_scroll_gesture_in_progress;
-    pending.user_scroll_gesture_ended |= updates.user_scroll_gesture_ended;
+    Web::Compositor::merge_async_scroll_updates(pending, move(updates));
 }
 
 void CompositorConnection::viewport_size_updated(Web::Compositor::CompositorContextId context_id, Gfx::IntSize viewport_size, Web::Compositor::WindowResizingInProgress window_resize_in_progress)

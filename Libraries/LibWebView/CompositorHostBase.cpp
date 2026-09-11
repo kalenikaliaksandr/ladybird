@@ -256,10 +256,10 @@ void CompositorHostBase::invalidate_wheel_event_listener_state(Web::Compositor::
 }
 
 Web::Compositor::AsyncScrollEnqueueResult CompositorHostBase::async_scroll_by(Web::Compositor::CompositorContextId context_id, Web::UniqueNodeID expected_document_id, Gfx::FloatPoint position,
-    Gfx::FloatPoint delta_in_device_pixels, Gfx::IntRect viewport_rect, Web::Compositor::SnapContainerHandling snap_container_handling, Web::Compositor::AsyncScrollOperationTracking operation_tracking)
+    Gfx::FloatPoint delta_in_device_pixels, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollInput input, Web::Compositor::AsyncScrollOperationTracking operation_tracking)
 {
     if (auto* connection = compositor_connection())
-        return connection->async_scroll_by(context_id, expected_document_id, position, delta_in_device_pixels, viewport_rect, snap_container_handling, operation_tracking);
+        return connection->async_scroll_by(context_id, expected_document_id, position, delta_in_device_pixels, viewport_rect, input, operation_tracking);
     return {};
 }
 
@@ -274,6 +274,13 @@ void CompositorHostBase::cancel_smooth_scroll(Web::Compositor::CompositorContext
 {
     if (auto* connection = compositor_connection())
         connection->cancel_smooth_scroll(context_id, stable_node_id);
+}
+
+Optional<Web::Compositor::PendingAsyncScrollUpdates> CompositorHostBase::take_over_user_scroll(Web::Compositor::CompositorContextId context_id, Web::Compositor::AsyncScrollNodeStableID id, Web::Compositor::UserScrollTakeoverReason reason)
+{
+    if (auto* connection = compositor_connection())
+        return connection->take_over_user_scroll(context_id, id, reason);
+    return {};
 }
 
 Web::Compositor::PendingAsyncScrollUpdates CompositorHostBase::take_pending_async_scroll_updates(Web::Compositor::CompositorContextId context_id, Web::Compositor::AsyncScrollUpdateFreshness freshness)

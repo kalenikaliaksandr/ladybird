@@ -54,9 +54,10 @@ public:
     void destroy_canvas_context(Web::Painting::CanvasId);
     Gfx::ShareableBitmap get_canvas_pixels(Web::Painting::CanvasId, Gfx::IntRect);
     void invalidate_wheel_event_listener_state(Web::Compositor::CompositorContextId, u64 generation);
-    Web::Compositor::AsyncScrollEnqueueResult async_scroll_by(Web::Compositor::CompositorContextId, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::SnapContainerHandling, Web::Compositor::AsyncScrollOperationTracking);
+    Web::Compositor::AsyncScrollEnqueueResult async_scroll_by(Web::Compositor::CompositorContextId, Web::UniqueNodeID document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta, Gfx::IntRect viewport_rect, Web::Compositor::AsyncScrollInput, Web::Compositor::AsyncScrollOperationTracking);
     Web::Compositor::AsyncScrollEnqueueResult smooth_scroll_to(Web::Compositor::CompositorContextId, Web::Compositor::AsyncScrollNodeStableID, Gfx::FloatPoint offset, Gfx::FloatPoint main_thread_offset, Gfx::IntRect viewport_rect, double device_pixels_per_css_pixel, Web::Compositor::ScrollAnimationKind);
     void cancel_smooth_scroll(Web::Compositor::CompositorContextId, Web::Compositor::AsyncScrollNodeStableID);
+    Optional<Web::Compositor::PendingAsyncScrollUpdates> take_over_user_scroll(Web::Compositor::CompositorContextId, Web::Compositor::AsyncScrollNodeStableID, Web::Compositor::UserScrollTakeoverReason);
     Web::Compositor::PendingAsyncScrollUpdates take_pending_async_scroll_updates(Web::Compositor::CompositorContextId, Web::Compositor::AsyncScrollUpdateFreshness);
     void viewport_size_updated(Web::Compositor::CompositorContextId, Gfx::IntSize, Web::Compositor::WindowResizingInProgress);
     bool request_rendering_opportunity(Web::Compositor::CompositorContextId, double maximum_frames_per_second);
