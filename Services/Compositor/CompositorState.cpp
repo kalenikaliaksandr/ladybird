@@ -73,9 +73,13 @@ void CompositorState::create_context(Web::Compositor::CompositorContextId contex
         VERIFY(context_id == Web::Compositor::compositor_context_id_for_page(*page_id));
 
     auto& context = *m_contexts.ensure(context_id, [&] {
-        return make<ContextState>(context_id, page_id, web_content_client, m_canvas_surface_registry, m_async_scrolling_enabled, [this, context_id](Gfx::IntRect damage_rect) {
-            schedule_caret_repaint(context_id, damage_rect);
-        });
+        return make<ContextState>(context_id, page_id, web_content_client, m_canvas_surface_registry, m_async_scrolling_enabled, [this, context_id](Gfx::IntRect damage_rect) { schedule_caret_repaint(context_id, damage_rect); }, [this, context_id] {
+            auto* context = context_if_present(context_id);
+            if (!context)
+                return;
+            if (auto frame = context->process_user_scroll_deadlines(MonotonicTime::now()); frame.has_value())
+                schedule_present_frame(context_id, *context, *frame);
+            publish_pending_async_scroll_updates(context_id, *context); });
     });
     resize_backing_stores_if_needed(context_id, context);
 }

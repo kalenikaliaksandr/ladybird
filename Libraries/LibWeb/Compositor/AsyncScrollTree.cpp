@@ -303,6 +303,13 @@ Optional<Gfx::FloatPoint> AsyncScrollTree::scroll_offset_for_node(AsyncScrollNod
     return {};
 }
 
+Optional<AsyncScrollNodeStableID> AsyncScrollTree::stable_node_id_for_node(AsyncScrollNodeID id) const
+{
+    if (auto const* node = scroll_node_for_id(id))
+        return node->stable_node_id;
+    return {};
+}
+
 Optional<AsyncScrollNodeID> AsyncScrollTree::viewport_scroll_node_id() const
 {
     for (auto const& node : m_scroll_nodes) {

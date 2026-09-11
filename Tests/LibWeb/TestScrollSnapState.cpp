@@ -192,3 +192,20 @@ TEST_CASE(merging_publications_preserves_settlement_before_the_next_gesture)
     EXPECT_EQ(pending.user_scroll_updates[1].status, UserScrollStatus::Active);
     EXPECT(pending.scroll_offsets.is_empty());
 }
+
+TEST_CASE(visual_viewport_pans_are_not_merged_into_absolute_layout_scrolls)
+{
+    PendingAsyncScrollUpdates pending;
+    PendingAsyncScrollUpdates layout;
+    layout.scroll_offsets.append({ stable_id, { 0, 100 }, { 0, 20 } });
+    merge_async_scroll_updates(pending, move(layout));
+    PendingAsyncScrollUpdates visual;
+    visual.scroll_offsets.append({ stable_id, { 0, 100 }, { 0, 30 }, true });
+    merge_async_scroll_updates(pending, move(visual));
+    auto decoded = MUST(round_trip(pending));
+    EXPECT_EQ(decoded.scroll_offsets.size(), 2u);
+    EXPECT(!decoded.scroll_offsets[0].is_visual_viewport_pan);
+    EXPECT(decoded.scroll_offsets[1].is_visual_viewport_pan);
+    EXPECT_EQ(decoded.scroll_offsets[0].unadopted_scroll_delta, Gfx::FloatPoint(0, 20));
+    EXPECT_EQ(decoded.scroll_offsets[1].unadopted_scroll_delta, Gfx::FloatPoint(0, 30));
+}

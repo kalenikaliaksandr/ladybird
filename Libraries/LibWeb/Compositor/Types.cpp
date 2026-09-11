@@ -82,6 +82,7 @@ ErrorOr<void> encode(Encoder& encoder, Web::Compositor::AsyncScrollOffset const&
     TRY(encoder.encode(offset.stable_node_id));
     TRY(encoder.encode(offset.compositor_scroll_offset));
     TRY(encoder.encode(offset.unadopted_scroll_delta));
+    TRY(encoder.encode(offset.is_visual_viewport_pan));
     return {};
 }
 
@@ -92,6 +93,7 @@ ErrorOr<Web::Compositor::AsyncScrollOffset> decode(Decoder& decoder)
         .stable_node_id = TRY(decoder.decode<Web::Compositor::AsyncScrollNodeStableID>()),
         .compositor_scroll_offset = TRY(decoder.decode<Gfx::FloatPoint>()),
         .unadopted_scroll_delta = TRY(decoder.decode<Gfx::FloatPoint>()),
+        .is_visual_viewport_pan = TRY(decoder.decode<bool>()),
     };
 }
 
@@ -149,7 +151,7 @@ void merge_async_scroll_updates(PendingAsyncScrollUpdates& pending, PendingAsync
     bool const is_newest = updates.sequence >= pending.sequence;
     pending.sequence = max(pending.sequence, updates.sequence);
     for (auto const& scroll_offset : updates.scroll_offsets) {
-        auto existing = pending.scroll_offsets.find_if([&](auto const& existing) { return existing.stable_node_id == scroll_offset.stable_node_id; });
+        auto existing = pending.scroll_offsets.find_if([&](auto const& existing) { return existing.stable_node_id == scroll_offset.stable_node_id && existing.is_visual_viewport_pan == scroll_offset.is_visual_viewport_pan; });
         if (existing != pending.scroll_offsets.end()) {
             existing->compositor_scroll_offset = scroll_offset.compositor_scroll_offset;
             existing->unadopted_scroll_delta.translate_by(scroll_offset.unadopted_scroll_delta);

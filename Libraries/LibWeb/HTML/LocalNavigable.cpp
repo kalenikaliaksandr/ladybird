@@ -5251,8 +5251,10 @@ void LocalNavigable::adopt_async_scroll_updates(Compositor::PendingAsyncScrollUp
 
     Vector<Compositor::AsyncScrollNodeStableID> owned_in_this_update;
     for (auto const& update : async_scroll_updates.user_scroll_updates) {
-        if (!scroll_event_target_for_async_scroll_node(*document, update.stable_node_id))
+        if (!scroll_event_target_for_async_scroll_node(*document, update.stable_node_id)) {
+            m_compositor_user_scrolls.remove(update.stable_node_id);
             continue;
+        }
         owned_in_this_update.append(update.stable_node_id);
         auto existing = m_compositor_user_scrolls.get(update.stable_node_id);
         if (existing.has_value() && existing->gesture_id > update.gesture_id)
@@ -5290,7 +5292,16 @@ void LocalNavigable::adopt_async_scroll_updates(Compositor::PendingAsyncScrollUp
 
     auto device_pixels_per_css_pixel = page().client().device_pixels_per_css_pixel();
     bool adopted_any_scroll_offset = false;
+    // Visual viewport deltas are relative pans, even when the layout viewport is owned by a snap animation.
+    for (auto const& offset : async_scroll_updates.scroll_offsets) {
+        if (offset.is_visual_viewport_pan && offset.stable_node_id.node_id == document->unique_id()) {
+            auto delta = async_scroll_offset_to_css_pixels(offset.unadopted_scroll_delta, device_pixels_per_css_pixel);
+            adopted_any_scroll_offset |= adopt_async_viewport_scroll_delta(*this, delta);
+        }
+    }
     for (auto const& async_scroll_offset : async_scroll_updates.scroll_offsets) {
+        if (async_scroll_offset.is_visual_viewport_pan)
+            continue;
         auto css_scroll_delta = async_scroll_offset_to_css_pixels(async_scroll_offset.unadopted_scroll_delta, device_pixels_per_css_pixel);
         bool compositor_owns_scroll = m_compositor_user_scrolls.contains(async_scroll_offset.stable_node_id)
             || owned_in_this_update.contains_slow(async_scroll_offset.stable_node_id);
@@ -5342,6 +5353,11 @@ void LocalNavigable::adopt_async_scroll_updates(Compositor::PendingAsyncScrollUp
                 async_scroll_offset.unadopted_scroll_delta.x(), async_scroll_offset.unadopted_scroll_delta.y());
         }
     }
+
+    m_pending_user_scrollend_targets.remove_all_matching([&](auto const& pending) {
+        return pending.stable_node_id.has_value()
+            && (m_compositor_user_scrolls.contains(*pending.stable_node_id) || owned_in_this_update.contains_slow(*pending.stable_node_id));
+    });
 
     for (auto const& update : async_scroll_updates.user_scroll_updates) {
         if (update.status == Compositor::UserScrollStatus::Active)
@@ -6024,6 +6040,17 @@ void LocalNavigable::destroy_compositor_context()
 
 void LocalNavigable::repaint_after_compositor_process_reconnect()
 {
+    auto interrupted_scrolls = move(m_compositor_user_scrolls);
+    m_completed_compositor_user_scrolls.clear();
+    if (auto document = active_document()) {
+        for (auto const& entry : interrupted_scrolls) {
+            if (entry.value.did_scroll) {
+                if (auto target = scroll_event_target_for_async_scroll_node(*document, entry.key))
+                    queue_scrollend_event_after_user_scroll(*target, entry.key, entry.value.initial_scroll_offset);
+            }
+        }
+    }
+
     resolve_all_pending_async_scroll_operations();
     // A new compositor process publishes its scroll updates from a fresh sequence; what this navigable
     // adopted from the old one acknowledges nothing of it.

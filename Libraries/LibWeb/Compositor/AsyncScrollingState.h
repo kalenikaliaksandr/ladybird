@@ -56,6 +56,7 @@ struct AsyncScrollOffset {
     AsyncScrollNodeStableID stable_node_id;
     Gfx::FloatPoint compositor_scroll_offset;
     Gfx::FloatPoint unadopted_scroll_delta;
+    bool is_visual_viewport_pan { false };
 };
 
 // One scrollable area from the paint snapshot.
