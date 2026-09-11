@@ -21,6 +21,7 @@ set(TEST_SOURCES
     TestMicrosyntax.cpp
     TestMimeSniff.cpp
     TestNumbers.cpp
+    TestScrollSnap.cpp
     TestScrollState.cpp
     TestSecureContexts.cpp
     TestSessionHistoryEntry.cpp

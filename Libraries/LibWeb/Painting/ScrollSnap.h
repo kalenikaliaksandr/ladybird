@@ -11,11 +11,13 @@
 #include <LibGC/Ptr.h>
 #include <LibGC/WeakInlines.h>
 #include <LibWeb/CSS/PseudoElement.h>
+#include <LibWeb/Compositor/ScrollSnap.h>
 #include <LibWeb/Export.h>
 #include <LibWeb/PixelUnits.h>
 
 namespace Web::DOM {
 
+class Document;
 class Element;
 class Node;
 
@@ -42,50 +44,9 @@ struct SnapAreaReference {
     }
 };
 
-// https://drafts.csswg.org/css-scroll-snap-1/#scroll-types
-struct SnapSelectionStrategy {
-    enum class Type : u8 {
-        // An absolute scroll, or any other operation with only an intended end position.
-        EndPosition,
-        // A relative scroll with only an intended direction, such as a mouse wheel step or an arrow key press.
-        Direction,
-        // A relative scroll with both an intended direction and end position, such as scrollBy().
-        EndPositionAndDirection,
-    };
-
-    Type type { Type::EndPosition };
-    // The scroll offset the operation travels from; a snap position with `scroll-snap-stop: always` must not be
-    // passed over on the way from there to the selected snap position.
-    Optional<CSSPixelPoint> start_offset {};
-    // The net offset change the operation's input produced; an axis the operation did not travel in selects no snap
-    // position.
-    CSSPixelPoint displacement {};
-    // Snap positions short of this offset in the direction of travel are not selected; it defaults to the start
-    // offset.
-    Optional<CSSPixelPoint> starting_positions_boundary {};
-};
-
-// The displacement the momentum of a flick has left to travel, estimated from the deltas that momentum has produced
-// so far.
-class WEB_API MomentumFlingEstimator {
-public:
-    void reset();
-
-    // The displacement left to travel, including the delta given; momentum that has not yet decayed far enough to
-    // tell where it is headed reports no estimate.
-    Optional<CSSPixelPoint> estimate_remaining_displacement(CSSPixelPoint momentum_delta);
-
-private:
-    Optional<CSSPixelPoint> m_previous_momentum_delta;
-    u32 m_consecutively_decaying_momentum_deltas { 0 };
-};
-
-struct SnapAxes {
-    bool x { false };
-    bool y { false };
-
-    bool is_empty() const { return !x && !y; }
-};
+using Compositor::MomentumFlingEstimator;
+using Compositor::SnapAxes;
+using Compositor::SnapSelectionStrategy;
 
 WEB_API SnapAxes snap_axes_of_scroll_container(Layout::Node const& snap_container);
 
@@ -112,6 +73,9 @@ struct SnapDestination {
     bool evaluated_y { false };
     SnappedAreas snapped_areas {};
 };
+
+WEB_API Optional<Compositor::SnapContainerData> collect_scroll_snap_data(Layout::Node const&);
+WEB_API SnappedAreas resolve_snapped_areas(Compositor::SnappedAreaIDs const&, DOM::Document const&);
 
 WEB_API SnapDestination adjust_scroll_destination_for_snapping(Layout::Node const& snap_container, CSSPixelPoint destination, SnapSelectionStrategy const& strategy = {});
 
