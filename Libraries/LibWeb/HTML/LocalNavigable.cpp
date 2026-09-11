@@ -5255,14 +5255,16 @@ void LocalNavigable::adopt_async_scroll_updates(Compositor::PendingAsyncScrollUp
             m_compositor_user_scrolls.remove(update.stable_node_id);
             continue;
         }
+        if (update.status == Compositor::UserScrollStatus::Active
+            && m_completed_compositor_user_scrolls.get(update.stable_node_id).value_or(0) >= update.gesture_id)
+            continue;
         owned_in_this_update.append(update.stable_node_id);
         auto existing = m_compositor_user_scrolls.get(update.stable_node_id);
         if (existing.has_value() && existing->gesture_id > update.gesture_id)
             continue;
-        if (update.status == Compositor::UserScrollStatus::Active)
-            m_compositor_user_scrolls.set(update.stable_node_id, update);
-        else
-            m_compositor_user_scrolls.remove(update.stable_node_id);
+        // Applying the final offset can update layout. Keep the container owned until that offset is installed,
+        // otherwise layout re-snapping can run first and have its result overwritten by compositor progress.
+        m_compositor_user_scrolls.set(update.stable_node_id, update);
         m_pending_user_scrollend_targets.remove_all_matching([&](auto const& pending) { return pending.stable_node_id == update.stable_node_id; });
         if (update.snap_destination.has_value()) {
             auto const& result = *update.snap_destination;
@@ -5272,11 +5274,8 @@ void LocalNavigable::adopt_async_scroll_updates(Compositor::PendingAsyncScrollUp
         }
     }
 
-    // https://drafts.csswg.org/css-scroll-snap-1/#scroll-types
-    // AD-HOC: The scrolling the compositor process performs on its own is panning and scrollbar thumb dragging, both
-    //         of which report where the user's input came to rest, so their offsets settle as absolute scrolls even
-    //         though the specification lists a panning gesture among the relative scrolls with both an intended
-    //         direction and end position.
+    // Compositor-owned gestures report their snap selection explicitly. Other asynchronous deltas retain the
+    // end-position intent used by the main-thread settlement path.
     if (!async_scroll_updates.scroll_offsets.is_empty())
         note_user_scroll_input_intent(Painting::SnapSelectionStrategy::Type::EndPosition);
 
@@ -5362,6 +5361,9 @@ void LocalNavigable::adopt_async_scroll_updates(Compositor::PendingAsyncScrollUp
     for (auto const& update : async_scroll_updates.user_scroll_updates) {
         if (update.status == Compositor::UserScrollStatus::Active)
             continue;
+        if (auto current = m_compositor_user_scrolls.get(update.stable_node_id); current.has_value()
+            && current->gesture_id == update.gesture_id && current->status != Compositor::UserScrollStatus::Active)
+            m_compositor_user_scrolls.remove(update.stable_node_id);
         auto last_completed = m_completed_compositor_user_scrolls.get(update.stable_node_id).value_or(0);
         if (last_completed >= update.gesture_id)
             continue;

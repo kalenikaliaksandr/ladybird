@@ -1902,7 +1902,7 @@ Utf16String Internals::async_scrolling_state_wheel_routing_admission()
     return Utf16String::from_utf16(Compositor::wheel_routing_admission_to_utf16_view(admission));
 }
 
-static Compositor::WheelScrollAdmission wheel_scroll_admission_at(DOM::Document& document, double x, double y, double delta_x, double delta_y, bool precise, bool force_stale_wheel_event_regions)
+static Compositor::WheelScrollAdmission wheel_scroll_admission_at(DOM::Document& document, double x, double y, double delta_x, double delta_y, bool, bool force_stale_wheel_event_regions)
 {
     auto snapshot = capture_async_scrolling_state(document);
     if (!snapshot.has_value())
@@ -1914,7 +1914,6 @@ static Compositor::WheelScrollAdmission wheel_scroll_admission_at(DOM::Document&
         snapshot->document->scroll_state_snapshot(),
         { static_cast<float>(x), static_cast<float>(y) },
         { static_cast<float>(delta_x), static_cast<float>(delta_y) },
-        Compositor::snap_container_handling_for(wheel_delta_precision_from(precise), ScrollGesturePhase::None),
         snapshot->state.has_blocking_wheel_event_listeners && !force_stale_wheel_event_regions);
 }
 
@@ -1946,7 +1945,7 @@ Utf16String Internals::async_scrolling_state_wheel_scroll_admission_at(double x,
     return wheel_scroll_admission_to_string(admission);
 }
 
-Utf16String Internals::async_scrolling_state_wheel_target_at(double x, double y, double delta_x, double delta_y, bool precise, Bindings::ScrollGesturePhase phase)
+Utf16String Internals::async_scrolling_state_wheel_target_at(double x, double y, double delta_x, double delta_y, bool, Bindings::ScrollGesturePhase)
 {
     auto snapshot = capture_async_scrolling_state(window().associated_document());
     if (!snapshot.has_value())
@@ -1959,8 +1958,7 @@ Utf16String Internals::async_scrolling_state_wheel_target_at(double x, double y,
     auto target = scroll_tree.hit_test_scroll_node_for_wheel(
         snapshot->visual_context_tree,
         { static_cast<float>(x), static_cast<float>(y) },
-        { static_cast<float>(delta_x), static_cast<float>(delta_y) },
-        Compositor::snap_container_handling_for(wheel_delta_precision_from(precise), scroll_gesture_phase_from(phase)));
+        { static_cast<float>(delta_x), static_cast<float>(delta_y) });
     if (target.blocked_by_main_thread_region)
         return "main-thread"_utf16;
     if (target.blocked_by_wheel_event_region || !target.node_id.has_value())

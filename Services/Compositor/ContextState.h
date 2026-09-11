@@ -205,6 +205,9 @@ private:
 
     struct UserScrollGesture;
     bool user_scroll_animation_is_active(UserScrollGesture const&) const;
+    UserScrollGesture& user_scroll_gesture_for(Web::Compositor::AsyncScrollNodeStableID, Web::CSSPixelPoint start, Web::Compositor::AsyncScrollInput, bool scrollbar, MonotonicTime);
+    Optional<ContextUpdateResult> scroll_by_with_snapping(Web::Compositor::AsyncScrollNodeID, Gfx::FloatPoint delta, Web::Compositor::AsyncScrollInput, MonotonicTime);
+    bool consume_selected_momentum_scroll(Web::Compositor::AsyncScrollInput, MonotonicTime, Optional<Web::UniqueNodeID> = {});
     void update_user_scroll_settle_timer();
     void note_user_scroll_input(Web::Compositor::AsyncScrollInput, MonotonicTime);
     void track_user_scroll_offsets(Vector<Web::Compositor::AsyncScrollOffset> const&, Web::Compositor::AsyncScrollInput, bool scrollbar, MonotonicTime);

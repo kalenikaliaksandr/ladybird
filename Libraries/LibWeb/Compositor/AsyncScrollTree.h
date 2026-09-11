@@ -54,6 +54,7 @@ public:
     void set_state(AsyncScrollingState&&);
     void set_snap_state(ScrollSnapStateSnapshot&&);
     SnapContainerData const* snap_data_for_node(AsyncScrollNodeID) const;
+    bool is_missing_snap_data(AsyncScrollNodeID) const;
     double snap_device_pixels_per_css_pixel() const { return m_snap_state.has_value() ? m_snap_state->device_pixels_per_css_pixel : 1; }
 
     void rebuild_wheel_hit_test_targets(RefPtr<Painting::DisplayList const> const&, Painting::AccumulatedVisualContextTree const*, Painting::ScrollStateSnapshot const&);
@@ -63,7 +64,7 @@ public:
     Optional<AsyncScrollNodeID> viewport_scroll_node_id() const;
     Optional<AsyncScrollNodeStableID> stable_node_id_for_node(AsyncScrollNodeID) const;
     Optional<AsyncScrollNodeID> scroll_node_id_for_stable_id(AsyncScrollNodeStableID) const;
-    WheelHitTestResult hit_test_scroll_node_for_wheel(Painting::AccumulatedVisualContextTree const&, Gfx::FloatPoint position, Gfx::FloatPoint delta, SnapContainerHandling) const;
+    WheelHitTestResult hit_test_scroll_node_for_wheel(Painting::AccumulatedVisualContextTree const&, Gfx::FloatPoint position, Gfx::FloatPoint delta) const;
     bool scroll_node_is_viewport(AsyncScrollNodeID) const;
     Vector<AsyncScrollOffset> apply_scroll_delta(AsyncScrollNodeID, Gfx::FloatPoint delta, Painting::AccumulatedVisualContextTree const&, Painting::ScrollStateSnapshot&);
     Optional<Gfx::FloatPoint> set_scroll_offset(AsyncScrollNodeID, Gfx::FloatPoint, Painting::AccumulatedVisualContextTree const&, Painting::ScrollStateSnapshot&);

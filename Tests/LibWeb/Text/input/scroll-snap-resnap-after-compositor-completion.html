@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<style>
+    #scroller {
+        width: 200px;
+        height: 200px;
+        overflow: auto;
+        scroll-snap-type: y mandatory;
+    }
+    .area {
+        height: 200px;
+        scroll-snap-align: start;
+    }
+</style>
+<div id="scroller">
+    <div id="spacer"></div>
+    <div class="area"></div>
+    <div class="area"></div>
+    <div class="area"></div>
+</div>
+<script>
+    promiseTest(async () => {
+        const scroller = document.getElementById("scroller");
+        await animationFrame();
+        await animationFrame();
+
+        await internals.wheel(50, 50, 0, 120, true, "ongoing");
+        const settled = scrollendEvent(scroller);
+        await internals.wheel(50, 50, 0, 0, true, "ended");
+
+        // Leave layout dirty while the compositor finishes the snap. Adopting its final offset must keep layout
+        // re-snapping deferred until that offset has been applied, so it cannot overwrite the re-snap afterwards.
+        document.getElementById("spacer").style.height = "50px";
+        const blockedAt = performance.now();
+        while (performance.now() - blockedAt < 400) {}
+
+        await settled;
+        await animationFrame();
+        await animationFrame();
+        println(`offset after re-snapping to the moved area: ${scroller.scrollTop}`);
+    });
+</script>

@@ -191,7 +191,7 @@ static Web::Painting::AccumulatedVisualContextTree make_scrollable_viewport_visu
     return builder.finish();
 }
 
-static NonnullRefPtr<Web::Painting::DisplayList> make_scrollable_viewport_display_list(Web::Painting::AccumulatedVisualContextTree const& visual_context_tree, bool with_viewport_scrollbar = true, Optional<Web::Painting::ContextRef> wheel_hit_test_context = {}, bool snaps_vertically = false)
+static NonnullRefPtr<Web::Painting::DisplayList> make_scrollable_viewport_display_list(Web::Painting::AccumulatedVisualContextTree const& visual_context_tree, bool with_viewport_scrollbar = true, Optional<Web::Painting::ContextRef> wheel_hit_test_context = {}, bool snaps_vertically = false, int scroll_extent = 100)
 {
     ByteBuffer command_bytes;
     Web::UniqueNodeID document_id { 1 };
@@ -207,7 +207,7 @@ static NonnullRefPtr<Web::Painting::DisplayList> make_scrollable_viewport_displa
             .parent_scroll_node_index = Web::Painting::VISUAL_VIEWPORT_NODE_INDEX,
             .scrollport_rect = { 0, 0, 100, 100 },
             .min_scroll_offset = { 0, 0 },
-            .max_scroll_offset = { 0, 100 },
+            .max_scroll_offset = { 0, static_cast<float>(scroll_extent) },
             .scroll_node_kind = Web::Painting::CompositorScrollNodeKind::Viewport,
             .pseudo_element_type = 0,
             .is_viewport = true,
@@ -242,7 +242,7 @@ static NonnullRefPtr<Web::Painting::DisplayList> make_scrollable_viewport_displa
                 .scroll_size = 0.8,
                 .expanded_scroll_size = 0.8,
                 .min_scroll_offset = 0,
-                .max_scroll_offset = 100,
+                .max_scroll_offset = static_cast<float>(scroll_extent),
                 .thumb_color = Gfx::Color::Black,
                 .track_color = Gfx::Color::Transparent,
                 .vertical = true,
@@ -1542,7 +1542,7 @@ struct ScrollSnapFixture {
         return { Web::UniqueNodeID { 2 }, Web::Compositor::AsyncScrollNodeKind::Viewport };
     }
 
-    static Web::Compositor::ScrollSnapStateSnapshot snap_state(int destination = 100, u64 revision = 1)
+    static Web::Compositor::ScrollSnapStateSnapshot snap_state(int destination = 100, u64 revision = 1, int scroll_extent = 100)
     {
         Web::Compositor::ScrollSnapStateSnapshot snapshot { .document_id = Web::UniqueNodeID { 1 }, .revision = revision, .containers = {} };
         Web::Compositor::SnapContainerData data {
@@ -1550,7 +1550,7 @@ struct ScrollSnapFixture {
             .strictness = Web::CSS::ScrollSnapStrictness::Mandatory,
             .snapport_size = { 100, 100 },
             .min_scroll_offset = {},
-            .max_scroll_offset = { 0, 100 },
+            .max_scroll_offset = { 0, scroll_extent },
             .candidates = {},
         };
         for (auto offset : { 0, destination }) {
@@ -1566,9 +1566,9 @@ struct ScrollSnapFixture {
         return snapshot;
     }
 
-    ScrollSnapFixture()
+    explicit ScrollSnapFixture(int scroll_extent = 100)
     {
-        context.install_display_list_update(make_scrollable_viewport_display_list(tree, true, {}, true), tree, {}, snap_state());
+        context.install_display_list_update(make_scrollable_viewport_display_list(tree, true, {}, true, scroll_extent), tree, {}, snap_state(100, 1, scroll_extent));
     }
 
     void drain()
@@ -1728,4 +1728,79 @@ TEST_CASE(candidate_refresh_does_not_redirect_an_ongoing_snap_animation)
     fixture.drain();
     EXPECT_EQ(*fixture.last_offset, Gfx::FloatPoint(0, 100));
     EXPECT_EQ(fixture.settled_count(), 1u);
+}
+
+static Web::Compositor::ScrollSnapStateSnapshot multi_position_snap_state(bool always_stop = false)
+{
+    auto state = ScrollSnapFixture::snap_state(200, 2, 400);
+    auto& candidates = state.containers[0].data.candidates.y_candidates;
+    auto last = candidates.last();
+    last.offset = 400;
+    last.area.element_id = Web::UniqueNodeID { 410 };
+    candidates.last().always_stop = always_stop;
+    candidates.append(move(last));
+    return state;
+}
+
+TEST_CASE(compositor_wheel_bursts_accumulate_unsnapped_input_without_web_content)
+{
+    ScrollSnapFixture fixture(400);
+    fixture.context.update_scroll_state({}, multi_position_snap_state());
+    for (int i = 0; i < 3; ++i) {
+        EXPECT(fixture.context.async_scroll_by({ 50, 50 }, { 0, 50 }, { Web::WheelDeltaPrecision::Discrete, Web::ScrollGesturePhase::None }).accepted);
+        fixture.drain();
+        EXPECT_EQ(fixture.reports.last().snap_destination->position, Web::CSSPixelPoint(0, 200));
+    }
+    EXPECT(fixture.context.async_scroll_by({ 50, 50 }, { 0, 100 }, { Web::WheelDeltaPrecision::Discrete, Web::ScrollGesturePhase::None }).accepted);
+    fixture.drain();
+    EXPECT_EQ(fixture.reports.last().snap_destination->position, Web::CSSPixelPoint(0, 400));
+    (void)fixture.context.advance_smooth_scroll_animations(MonotonicTime::now() + AK::Duration::from_seconds(1));
+    fixture.drain();
+    EXPECT_EQ(*fixture.last_offset, Gfx::FloatPoint(0, 400));
+    EXPECT_EQ(fixture.settled_count(), 1u);
+}
+
+TEST_CASE(compositor_fling_selects_once_and_consumes_the_remaining_momentum)
+{
+    ScrollSnapFixture fixture(400);
+    fixture.context.update_scroll_state({}, multi_position_snap_state());
+    fixture.pan(40);
+    fixture.pan(80, Web::ScrollGesturePhase::Momentum);
+    EXPECT_EQ(*fixture.last_offset, Gfx::FloatPoint(0, 120));
+    fixture.pan(40, Web::ScrollGesturePhase::Momentum);
+    EXPECT(fixture.context.has_active_smooth_scroll_animations());
+    EXPECT_EQ(fixture.reports.last().snap_destination->position, Web::CSSPixelPoint(0, 200));
+    // The chosen fling is still consumed even if the pointer leaves its scrolling box.
+    EXPECT(fixture.context.async_scroll_by({ 500, 500 }, { 0, 20 }, { Web::WheelDeltaPrecision::Precise, Web::ScrollGesturePhase::Momentum }).accepted);
+    fixture.drain();
+    EXPECT_EQ(*fixture.last_offset, Gfx::FloatPoint(0, 120));
+    fixture.pan(0, Web::ScrollGesturePhase::Ended);
+    (void)fixture.context.advance_smooth_scroll_animations(MonotonicTime::now() + AK::Duration::from_seconds(5));
+    fixture.drain();
+    EXPECT_EQ(*fixture.last_offset, Gfx::FloatPoint(0, 200));
+    EXPECT_EQ(fixture.settled_count(), 1u);
+}
+
+TEST_CASE(compositor_wheel_selection_honors_stop_always)
+{
+    ScrollSnapFixture fixture(400);
+    fixture.context.update_scroll_state({}, multi_position_snap_state(true));
+    EXPECT(fixture.context.async_scroll_by({ 50, 50 }, { 0, 350 }, { Web::WheelDeltaPrecision::Discrete, Web::ScrollGesturePhase::None }).accepted);
+    fixture.drain();
+    EXPECT_EQ(fixture.reports.last().snap_destination->position, Web::CSSPixelPoint(0, 200));
+    (void)fixture.context.advance_smooth_scroll_animations(MonotonicTime::now() + AK::Duration::from_seconds(1));
+    fixture.drain();
+    EXPECT_EQ(*fixture.last_offset, Gfx::FloatPoint(0, 200));
+}
+
+TEST_CASE(snap_container_without_candidate_metadata_defers_to_web_content)
+{
+    ScrollSnapFixture fixture;
+    auto empty = ScrollSnapFixture::snap_state(100, 2);
+    empty.containers.clear();
+    fixture.context.update_scroll_state({}, move(empty));
+    EXPECT(!fixture.context.async_scroll_by({ 50, 50 }, { 0, 20 }, { Web::WheelDeltaPrecision::Discrete, Web::ScrollGesturePhase::None }).accepted);
+    EXPECT(!fixture.context.async_scroll_by(Web::UniqueNodeID { 1 }, { 50, 50 }, { 0, 20 }, { 0, 0, 100, 100 },
+                               { Web::WheelDeltaPrecision::Precise, Web::ScrollGesturePhase::Ongoing }, Web::Compositor::AsyncScrollOperationTracking::No)
+            .enqueue_result.accepted);
 }

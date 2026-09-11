@@ -1,0 +1,1 @@
+offset after re-snapping to the moved area: 250

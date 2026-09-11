@@ -556,11 +556,26 @@ ContextState::AsyncScrollResult ContextState::async_scroll_by(
 
     // Scroll node chaining selects a scrolling box the main thread never examined, so the snap containers among the
     // chained boxes are recognized here rather than only before the step is admitted to this path.
-    auto scroll_target = m_async_scroll_tree.hit_test_scroll_node_for_wheel(visual_context_tree_for_compositing(), position, delta, Web::Compositor::snap_container_handling_for(input.precision, input.phase));
-    if (scroll_target.blocked_by_main_thread_region || scroll_target.blocked_by_wheel_event_region || !scroll_target.node_id.has_value())
+    auto scroll_target = m_async_scroll_tree.hit_test_scroll_node_for_wheel(visual_context_tree_for_compositing(), position, delta);
+    if (scroll_target.blocked_by_main_thread_region || scroll_target.blocked_by_wheel_event_region)
+        return {};
+    auto acknowledge_snap = [&](Optional<PendingFrame> frame) {
+        Optional<Web::Compositor::AsyncScrollOperationID> id;
+        if (operation_tracking == Web::Compositor::AsyncScrollOperationTracking::Yes) {
+            id = ++m_next_async_scroll_operation_id;
+            m_completed_async_scroll_operation_ids.append(*id);
+        }
+        return AsyncScrollResult { .enqueue_result = { true, id }, .frame_to_present = frame };
+    };
+    if (consume_selected_momentum_scroll(input, now, expected_document_id))
+        return acknowledge_snap({});
+    if (!scroll_target.node_id.has_value() || m_async_scroll_tree.is_missing_snap_data(*scroll_target.node_id))
         return {};
     if (scroll_target.node_id->document_id != expected_document_id)
         return {};
+
+    if (auto snapped = scroll_by_with_snapping(*scroll_target.node_id, delta, input, now); snapped.has_value())
+        return acknowledge_snap(snapped->frame_to_present);
 
     cancel_smooth_scroll_taken_over_by_user_input(*scroll_target.node_id);
 
@@ -724,8 +739,13 @@ ContextState::ContextUpdateResult ContextState::async_scroll_by(Gfx::FloatPoint 
     if (!m_can_accept_async_wheel_events)
         return {};
 
-    auto initial_scroll_target = m_async_scroll_tree.hit_test_scroll_node_for_wheel(visual_context_tree_for_compositing(), position, delta, Web::Compositor::snap_container_handling_for(input.precision, input.phase));
+    auto initial_scroll_target = m_async_scroll_tree.hit_test_scroll_node_for_wheel(visual_context_tree_for_compositing(), position, delta);
     if (initial_scroll_target.blocked_by_main_thread_region || initial_scroll_target.blocked_by_wheel_event_region)
+        return {};
+
+    if (consume_selected_momentum_scroll(input, now))
+        return { .accepted = true, .frame_to_present = {}, .should_request_rendering_update = true };
+    if (initial_scroll_target.node_id.has_value() && m_async_scroll_tree.is_missing_snap_data(*initial_scroll_target.node_id))
         return {};
 
     Optional<PendingFrame> frame_to_present;
@@ -751,8 +771,8 @@ ContextState::ContextUpdateResult ContextState::async_scroll_by(Gfx::FloatPoint 
     if (auto scale = visual_viewport_scale_for_compositing(); scale.has_value() && *scale > 1.0f)
         async_scroll_delta.scale_by(1.0f / *scale);
 
-    auto scroll_target = m_async_scroll_tree.hit_test_scroll_node_for_wheel(visual_context_tree_for_compositing(), position, async_scroll_delta, Web::Compositor::snap_container_handling_for(input.precision, input.phase));
-    if (scroll_target.blocked_by_main_thread_region || scroll_target.blocked_by_wheel_event_region || !scroll_target.node_id.has_value()) {
+    auto scroll_target = m_async_scroll_tree.hit_test_scroll_node_for_wheel(visual_context_tree_for_compositing(), position, async_scroll_delta);
+    if (scroll_target.blocked_by_main_thread_region || scroll_target.blocked_by_wheel_event_region || !scroll_target.node_id.has_value() || m_async_scroll_tree.is_missing_snap_data(*scroll_target.node_id)) {
         if (frame_to_present.has_value())
             return {
                 .accepted = true,
@@ -760,6 +780,12 @@ ContextState::ContextUpdateResult ContextState::async_scroll_by(Gfx::FloatPoint 
                 .should_request_rendering_update = true,
             };
         return {};
+    }
+
+    if (auto snapped = scroll_by_with_snapping(*scroll_target.node_id, async_scroll_delta, input, now); snapped.has_value()) {
+        if (!snapped->frame_to_present.has_value())
+            snapped->frame_to_present = frame_to_present;
+        return *snapped;
     }
 
     cancel_smooth_scroll_taken_over_by_user_input(*scroll_target.node_id);

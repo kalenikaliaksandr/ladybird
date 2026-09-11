@@ -36,6 +36,12 @@ void AsyncScrollTree::set_snap_state(ScrollSnapStateSnapshot&& state)
     m_snap_state = move(state);
 }
 
+bool AsyncScrollTree::is_missing_snap_data(AsyncScrollNodeID id) const
+{
+    auto const* node = scroll_node_for_id(id);
+    return node && (node->snaps_scroll_position_horizontally || node->snaps_scroll_position_vertically) && !snap_data_for_node(id);
+}
+
 SnapContainerData const* AsyncScrollTree::snap_data_for_node(AsyncScrollNodeID node_id) const
 {
     auto const* node = scroll_node_for_id(node_id);
@@ -326,22 +332,10 @@ Optional<AsyncScrollNodeID> AsyncScrollTree::scroll_node_id_for_stable_id(AsyncS
     return {};
 }
 
-WheelHitTestResult AsyncScrollTree::hit_test_scroll_node_for_wheel(Painting::AccumulatedVisualContextTree const& visual_context_tree, Gfx::FloatPoint position, Gfx::FloatPoint delta, SnapContainerHandling snap_container_handling) const
+WheelHitTestResult AsyncScrollTree::hit_test_scroll_node_for_wheel(Painting::AccumulatedVisualContextTree const& visual_context_tree, Gfx::FloatPoint position, Gfx::FloatPoint delta) const
 {
-    auto scrolled_on_the_main_thread_instead = [&](WheelHitTestResult const& result) {
-        if (snap_container_handling == SnapContainerHandling::ScrollOnCompositor || !result.node_id.has_value())
-            return false;
-        auto const* node = scroll_node_for_id(*result.node_id);
-        if (!node)
-            return false;
-        return (node->snaps_scroll_position_horizontally && delta.x() != 0)
-            || (node->snaps_scroll_position_vertically && delta.y() != 0);
-    };
     auto hit_test_result_for_wheel_scroll_of_node = [&](AsyncScrollNodeID node_id) {
-        auto result = hit_test_result_for_scroll_node(node_id, delta);
-        if (scrolled_on_the_main_thread_instead(result))
-            return WheelHitTestResult { {}, true };
-        return result;
+        return hit_test_result_for_scroll_node(node_id, delta);
     };
 
     if (m_visual_context_tree_structural_epoch != visual_context_tree.structural_epoch())

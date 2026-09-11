@@ -65,11 +65,41 @@ void ContextState::note_user_scroll_input(Web::Compositor::AsyncScrollInput inpu
     update_user_scroll_settle_timer();
 }
 
+ContextState::UserScrollGesture& ContextState::user_scroll_gesture_for(Web::Compositor::AsyncScrollNodeStableID id, Web::CSSPixelPoint start, Web::Compositor::AsyncScrollInput input, bool scrollbar, MonotonicTime now)
+{
+    auto entry = m_user_scroll_gestures.find_if([&](auto const& value) { return value.update.stable_node_id == id; });
+    auto* gesture = entry == m_user_scroll_gestures.end() ? nullptr : &*entry;
+    bool new_gesture = !gesture || gesture->input_ended || gesture->selected_at_end
+        || gesture->scrollbar != scrollbar || gesture->input.precision != input.precision
+        || (gesture->input.phase == Web::ScrollGesturePhase::Momentum && input.phase != Web::ScrollGesturePhase::Momentum);
+    if (new_gesture) {
+        UserScrollGesture state;
+        state.update.stable_node_id = id;
+        state.update.gesture_id = ++m_next_user_scroll_gesture_id;
+        state.update.initial_scroll_offset = start;
+        state.unsnapped_destination = start;
+        if (gesture) {
+            // A new gesture takes over the pending scrollend as well as the animation's visual position.
+            state.update.did_scroll = gesture->update.did_scroll;
+            state.update.snap_destination = gesture->update.snap_destination;
+            state.animation_id = gesture->animation_id;
+            *gesture = move(state);
+        } else {
+            m_user_scroll_gestures.append(move(state));
+            gesture = &m_user_scroll_gestures.last();
+        }
+    }
+    gesture->input = input;
+    gesture->scrollbar = scrollbar;
+    gesture->input_ended = scrollbar && !m_viewport_scrollbar_controller.has_captured_scrollbar();
+    gesture->settle_deadline = !scrollbar && input.phase == Web::ScrollGesturePhase::None
+        ? Optional<MonotonicTime> { now + AK::Duration::from_milliseconds(500) }
+        : OptionalNone {};
+    return *gesture;
+}
+
 void ContextState::track_user_scroll_offsets(Vector<Web::Compositor::AsyncScrollOffset> const& offsets, Web::Compositor::AsyncScrollInput input, bool scrollbar, MonotonicTime now)
 {
-    // Discrete and momentum input continue to use WebContent until their per-scroll selection is enabled.
-    if (!scrollbar && (input.precision == Web::WheelDeltaPrecision::Discrete || input.phase == Web::ScrollGesturePhase::Momentum))
-        return;
     auto scale = m_async_scroll_tree.snap_device_pixels_per_css_pixel();
     for (auto const& offset : offsets) {
         auto node_id = m_async_scroll_tree.scroll_node_id_for_stable_id(offset.stable_node_id);
@@ -77,35 +107,89 @@ void ContextState::track_user_scroll_offsets(Vector<Web::Compositor::AsyncScroll
             continue;
         auto current = css_offset(offset.compositor_scroll_offset, scale);
         auto start = css_offset(offset.compositor_scroll_offset - offset.unadopted_scroll_delta, scale);
-        auto entry = m_user_scroll_gestures.find_if([&](auto const& value) { return value.update.stable_node_id == offset.stable_node_id; });
-        auto* gesture = entry == m_user_scroll_gestures.end() ? nullptr : &*entry;
-        if (!gesture) {
-            UserScrollGesture state;
-            state.update.stable_node_id = offset.stable_node_id;
-            state.update.gesture_id = ++m_next_user_scroll_gesture_id;
-            state.update.initial_scroll_offset = start;
-            state.unsnapped_destination = start;
-            state.scrollbar = scrollbar;
-            m_user_scroll_gestures.append(move(state));
-            gesture = &m_user_scroll_gestures.last();
-        } else if (gesture->input_ended) {
-            gesture->update.gesture_id = ++m_next_user_scroll_gesture_id;
-            gesture->update.initial_scroll_offset = start;
-            gesture->update.snap_destination.clear();
-        }
-        gesture->input = input;
-        gesture->scrollbar = scrollbar;
-        gesture->input_ended = scrollbar && !m_viewport_scrollbar_controller.has_captured_scrollbar();
-        gesture->selected_at_end = false;
-        gesture->animation_id.clear();
-        gesture->unsnapped_destination = current;
-        gesture->update.did_scroll |= !offset.unadopted_scroll_delta.is_zero();
-        gesture->settle_deadline = !scrollbar && input.phase == Web::ScrollGesturePhase::None
-            ? Optional<MonotonicTime> { now + AK::Duration::from_milliseconds(500) }
-            : OptionalNone {};
-        m_pending_user_scroll_updates.append(gesture->update);
+        auto& gesture = user_scroll_gesture_for(offset.stable_node_id, start, input, scrollbar, now);
+        gesture.selected_at_end = false;
+        gesture.animation_id.clear();
+        gesture.unsnapped_destination = current;
+        gesture.update.did_scroll |= !offset.unadopted_scroll_delta.is_zero();
+        m_pending_user_scroll_updates.append(gesture.update);
     }
     update_user_scroll_settle_timer();
+}
+
+bool ContextState::consume_selected_momentum_scroll(Web::Compositor::AsyncScrollInput input, MonotonicTime now, Optional<Web::UniqueNodeID> document_id)
+{
+    if (input.phase != Web::ScrollGesturePhase::Momentum)
+        return false;
+    for (auto const& gesture : m_user_scroll_gestures) {
+        if (!gesture.momentum_selected || gesture.input_ended)
+            continue;
+        auto node = m_async_scroll_tree.scroll_node_id_for_stable_id(gesture.update.stable_node_id);
+        if (!node.has_value() || (document_id.has_value() && node->document_id != *document_id))
+            continue;
+        note_user_scroll_input(input, now);
+        return true;
+    }
+    return false;
+}
+
+Optional<ContextState::ContextUpdateResult> ContextState::scroll_by_with_snapping(Web::Compositor::AsyncScrollNodeID node_id, Gfx::FloatPoint delta, Web::Compositor::AsyncScrollInput input, MonotonicTime now)
+{
+    bool discrete = input.precision == Web::WheelDeltaPrecision::Discrete;
+    bool momentum = input.phase == Web::ScrollGesturePhase::Momentum;
+    if (!discrete && !momentum)
+        return {};
+    auto const* data = m_async_scroll_tree.snap_data_for_node(node_id);
+    auto stable_id = m_async_scroll_tree.stable_node_id_for_node(node_id);
+    auto offset = m_async_scroll_tree.scroll_offset_for_node(node_id, m_scroll_state_snapshot);
+    if (!data || !stable_id.has_value() || !offset.has_value())
+        return {};
+    auto scale = m_async_scroll_tree.snap_device_pixels_per_css_pixel();
+    auto current = css_offset(*offset, scale);
+    auto displacement = css_offset(delta, scale);
+    auto& gesture = user_scroll_gesture_for(*stable_id, current, input, false, now);
+    if (momentum) {
+        if (gesture.momentum_has_no_target)
+            return {};
+        auto estimate = gesture.momentum_estimator.estimate_remaining_displacement(displacement);
+        if (!estimate.has_value())
+            return {};
+        displacement = *estimate;
+    }
+    auto start = discrete ? gesture.unsnapped_destination : current;
+    Web::CSSPixelPoint unsnapped_destination {
+        clamp(start.x() + displacement.x(), data->min_scroll_offset.x(), data->max_scroll_offset.x()),
+        clamp(start.y() + displacement.y(), data->min_scroll_offset.y(), data->max_scroll_offset.y()),
+    };
+    Web::Compositor::SnapSelectionStrategy strategy {
+        discrete ? Web::Compositor::SnapSelectionStrategy::Type::Direction : Web::Compositor::SnapSelectionStrategy::Type::EndPositionAndDirection,
+        start,
+        displacement,
+    };
+    if (discrete)
+        strategy.starting_positions_boundary = unsnapped_destination;
+    auto destination = Web::Compositor::select_snap_destination(*data, unsnapped_destination, strategy);
+    if (!(destination.snapped_x && displacement.x() != 0) && !(destination.snapped_y && displacement.y() != 0)) {
+        if (momentum)
+            gesture.momentum_has_no_target = true;
+        return {};
+    }
+    gesture.unsnapped_destination = unsnapped_destination;
+    gesture.selected_per_scroll = true;
+    gesture.momentum_selected = momentum;
+    auto resting_position = user_scroll_animation_is_active(gesture) && gesture.update.snap_destination.has_value()
+        ? gesture.update.snap_destination->position
+        : current;
+    Optional<PendingFrame> frame;
+    if (destination.position == resting_position) {
+        gesture.update.snap_destination = move(destination);
+        m_pending_user_scroll_updates.append(gesture.update);
+    } else {
+        cancel_smooth_scroll_taken_over_by_user_input(node_id);
+        frame = animate_user_scroll_to(gesture, move(destination), momentum ? Web::Compositor::ScrollAnimationKind::Momentum : Web::Compositor::ScrollAnimationKind::SmoothScroll, now);
+    }
+    note_user_scroll_input(input, now);
+    return ContextUpdateResult { .accepted = true, .frame_to_present = frame, .should_request_rendering_update = true };
 }
 
 Optional<ContextState::PendingFrame> ContextState::animate_user_scroll_to(UserScrollGesture& gesture, Web::Compositor::SnapDestination destination, Web::Compositor::ScrollAnimationKind kind, MonotonicTime now)
@@ -144,6 +228,11 @@ Optional<ContextState::PendingFrame> ContextState::process_user_scroll_deadlines
             take_over_user_scroll(id, Web::Compositor::UserScrollTakeoverReason::Programmatic);
             continue;
         }
+        if (m_async_scroll_tree.is_missing_snap_data(*node_id)) {
+            auto id = gesture.update.stable_node_id;
+            take_over_user_scroll(id, Web::Compositor::UserScrollTakeoverReason::UserInput);
+            continue;
+        }
         if (gesture.settle_deadline.has_value() && now >= *gesture.settle_deadline)
             gesture.input_ended = true;
         if (!gesture.input_ended || user_scroll_animation_is_active(gesture)) {
@@ -158,8 +247,13 @@ Optional<ContextState::PendingFrame> ContextState::process_user_scroll_deadlines
             if (data && offset.has_value()) {
                 auto current = css_offset(*offset, m_async_scroll_tree.snap_device_pixels_per_css_pixel());
                 Web::Compositor::SnapSelectionStrategy strategy;
-                if (!gesture.scrollbar && !gesture.selected_per_scroll)
+                if (!gesture.scrollbar && !gesture.selected_per_scroll) {
                     strategy.displacement = current - gesture.update.initial_scroll_offset;
+                    if (gesture.input.precision == Web::WheelDeltaPrecision::Discrete)
+                        strategy.type = Web::Compositor::SnapSelectionStrategy::Type::Direction;
+                    if (gesture.input.precision == Web::WheelDeltaPrecision::Discrete || gesture.input.phase == Web::ScrollGesturePhase::Momentum)
+                        strategy.start_offset = gesture.update.initial_scroll_offset;
+                }
                 auto destination = Web::Compositor::select_snap_destination(*data, current, strategy);
                 if (auto animation_frame = animate_user_scroll_to(gesture, move(destination), Web::Compositor::ScrollAnimationKind::SmoothScroll, now); animation_frame.has_value()) {
                     frame = animation_frame;
