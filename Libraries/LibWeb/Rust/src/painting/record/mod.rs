@@ -112,6 +112,8 @@ pub(crate) struct BasePaintFacts {
     pub has_backdrop_filter: bool,
     pub has_box_shadow: bool,
     pub paints_border_image: bool,
+    pub has_fixed_background: bool,
+    pub has_scroll_offset_dependent_background: bool,
     pub paint_phase_mask: u8,
 }
 
@@ -404,6 +406,17 @@ impl<O: Observer> PaintRecorder<'_, O> {
             has_backdrop_filter,
             has_box_shadow: effects.box_shadows.length != 0,
             paints_border_image,
+            has_fixed_background: paint::background_resolution::background_has_fixed_attachment(
+                self.layout_arena,
+                self.inputs.root_background_source,
+                paintable,
+            ),
+            has_scroll_offset_dependent_background:
+                paint::background_resolution::background_depends_on_live_scroll_offset(
+                    self.layout_arena,
+                    self.inputs.root_background_source,
+                    paintable,
+                ),
             paint_phase_mask: 0,
         };
         facts.paint_phase_mask = paint::paint_phase_mask(self, paintable, style, &facts);

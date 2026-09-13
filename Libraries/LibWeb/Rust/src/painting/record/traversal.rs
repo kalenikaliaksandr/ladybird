@@ -960,11 +960,12 @@ impl<O: Observer> PaintRecorder<'_, O> {
             PaintPhase::Background | PaintPhase::Foreground | PaintPhase::Overlay
         );
         let is_nested = self.is_recording_svg_resource_content();
+        let paint_facts = self.base_paint_facts(paintable);
         let data = self.data(paintable);
         // Scrolling repaints without invalidating paint caches, so scroll-offset-dependent
         // captures can never be reused.
-        let skip_cache = data.has_fixed_background_visual_context
-            || (data.has_scroll_offset_dependent_background && phase == PaintPhase::Background);
+        let skip_cache = paint_facts.has_fixed_background
+            || (paint_facts.has_scroll_offset_dependent_background && phase == PaintPhase::Background);
         let phase_records_scrollbars_with_scroll_node_indices = phase == PaintPhase::Overlay
             && (data.own_scroll_node_index != VISUAL_VIEWPORT_NODE_INDEX
                 || self.layout_kind(paintable) == Some(NodeKind::Viewport));

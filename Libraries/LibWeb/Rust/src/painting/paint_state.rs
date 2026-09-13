@@ -24,6 +24,7 @@ pub struct PaintState {
     pub(crate) pending_recording_trace: Option<PendingRecordingTrace>,
     pub(crate) pending_recording: Option<PendingRecording>,
     pub(crate) visual_context: crate::painting::visual_context::VisualContextState,
+    pub(crate) root_background_source: Option<crate::painting::host::FfiRootBackgroundSource>,
     pub(crate) hit_test_list: Option<crate::painting::hit_test::HitTestList>,
     pub(crate) hit_test_list_generation: u64,
     pub(crate) last_recording: Option<Rc<crate::painting::record::RecordingOutput>>,
@@ -35,6 +36,27 @@ pub struct PaintState {
 }
 
 impl PaintState {
+    pub(crate) fn update_root_background_source(
+        &mut self,
+        arena: &crate::layout::LayoutNodeArena,
+        source: crate::painting::host::FfiRootBackgroundSource,
+    ) -> bool {
+        let Some(previous) = self.root_background_source.replace(source) else {
+            return false;
+        };
+        if previous == source {
+            return false;
+        }
+        // Propagation changes which box paints the body's background. Invalidate both
+        // the old and new owners, including inline pieces cached by their containing block.
+        for source in [previous, source] {
+            for slot in [source.root_layout_node, source.body_layout_node] {
+                arena.invalidate_for_repaint(slot);
+            }
+        }
+        true
+    }
+
     pub(crate) fn reset_visual_context_state(&mut self) {
         self.visual_context = crate::painting::visual_context::VisualContextState {
             needs_to_refresh_scroll_state: true,
