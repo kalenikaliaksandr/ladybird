@@ -514,6 +514,7 @@ pub(crate) struct LayoutNodeArena {
     rows_sharing_dom_node: RefCell<HashMap<*mut c_void, RowsSharingDomNode>>,
     dom_nodes_whose_bound_row_was_freed: Vec<*mut c_void>,
     fc_run_cache_store: super::fc_run_cache::FcRunCacheArenaStore,
+    pub(super) layout_trace: super::trace::LayoutTrace,
     pub(crate) paintable_rows: crate::painting::paintable_rows::PaintableRowStore,
     paint_state: RefCell<crate::painting::paint_state::PaintState>,
     // Reuse workspace allocations without making recording scratch part of the committed paint state.
@@ -567,6 +568,7 @@ impl LayoutNodeArena {
             rows_sharing_dom_node: RefCell::new(HashMap::default()),
             dom_nodes_whose_bound_row_was_freed: Vec::new(),
             fc_run_cache_store: super::fc_run_cache::FcRunCacheArenaStore::default(),
+            layout_trace: super::trace::LayoutTrace::default(),
             paintable_rows: crate::painting::paintable_rows::PaintableRowStore::default(),
             paint_state: RefCell::new(crate::painting::paint_state::PaintState::default()),
             recording_scratch: RefCell::new(crate::painting::record::scratch::RecordingScratch::default()),
@@ -2888,16 +2890,6 @@ pub unsafe extern "C" fn layout_arena_live_slot_count(arena: *mut c_void) -> u32
     // SAFETY: The C++ wrapper keeps the arena alive for this call and
     // serializes all access on the document thread.
     unsafe { &*arena.cast::<LayoutNodeArena>() }.live_slot_count()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn layout_arena_fc_run_cache_hit_count(arena: *mut c_void) -> u64 {
-    assert!(!arena.is_null(), "layout node arena handle is null");
-    // SAFETY: The C++ wrapper keeps the arena alive for this call and
-    // serializes all access on the document thread.
-    unsafe { &*arena.cast::<LayoutNodeArena>() }
-        .fc_run_cache_store()
-        .hit_count()
 }
 
 #[unsafe(no_mangle)]
