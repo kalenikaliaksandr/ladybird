@@ -228,67 +228,6 @@ Layout tests compare the layout tree of a page with an expected one. They are be
 are also used for testing some other features that have an observable effect on the layout. No JavaScript is needed -
 once the page loads, the layout tree will be dumped automatically.
 
-### Layout memoization
-
-Text tests can include `layout-test.js` after `include.js` to assert the formatting-context work performed by a mutation.
-Use `layoutTest({ setup, steps, cleanup })`, with an exact `expect` trace for each step and optional geometry checks:
-
-```js
-layoutTest({
-    steps: [
-        {
-            name: "growing a sibling reuses the cached subtree",
-            mutate: () => { spacer.style.height = "80px"; },
-            expect: `
-                layout FULL
-                  @viewport/block RUN (cache=bypass)
-                    BlockContainer<HTML>/block RUN (cache=miss)
-                      BlockContainer<DIV>#cached/block REUSE SUBTREE
-            `,
-            check: equal => {
-                equal(deep.getBoundingClientRect().top, 90, "deep top");
-            },
-        },
-    ],
-});
-```
-
-See `Tests/LibWeb/Text/input/layout-run-cache-sibling-growth.html` for the complete fixture. The helper waits for loading,
-setup, and fonts, then warms layout. Each measured step starts tracing before `mutate`, flushes pending layout, runs
-`check`, and takes the trace. Both callbacks must be synchronous; geometry reads and explicit layout flushes inside them
-are part of the expectation. `setup` and `cleanup` may be asynchronous. Test output is hidden and buffered until all steps
-finish; callbacks should use `equal(actual, expected, label)` rather than `println()` for assertions.
-
-Traces preserve call nesting, repeated runs, and multiple layout passes. `layout FULL` starts a document pass;
-`layout PARTIAL <owner>` starts a pass for one partial relayout root. Each run identifies its owner and formatting-context
-type, with measurement and intrinsic-sizing runs marked separately. The actions are:
-
-- `RUN (cache=miss)`: execute a run whose cache lookup missed.
-- `RUN (cache=bypass)`: execute a run that bypasses the formatting-context run cache.
-- `REUSE SUBTREE`: reuse cached output while retaining the committed subtree.
-- `REPLAY FRAGMENTS`: reuse cached output whose fragments must go through commit again.
-- `RUN (cache=shadow-hit)`: execute and verify a matching run when `LADYBIRD_FC_RUN_CACHE=shadow` is enabled.
-
-Only formatting-context calls appear, not every DOM or layout node. Reuse skips executing that run; later work for escaped
-out-of-flow descendants still appears in its caller's scope. This trace does not yet expose individual intrinsic-size
-cache lookups or line reuse. Expectations describe the normal enabled cache mode (`LADYBIRD_FC_RUN_CACHE=1`, the default);
-shadow mode executes additional work and therefore produces a different trace.
-
-`expect: ""` asserts that no formatting-context work occurred. Comparison ignores surrounding blank lines and template
-indentation, but preserves relative indentation, order, and every event. Failures print the first difference and the full
-actual trace. Review that trace before updating the inline expectation; rebaselining the text output alone must not turn
-a `FAIL` into an accepted result.
-
-Scenario matrices can warm each fixture and call `runLayoutTestStep(step, testInternals = internals)` directly. For a
-same-process iframe resize, mutate the frame size and flush the parent with `internals.updateLayoutForTesting()` inside
-`mutate`, passing `frame.contentWindow.internals` as `testInternals` to measure the child.
-
-The underlying hooks are `internals.beginLayoutTrace()`, `internals.updateLayoutForTesting()`, and
-`internals.takeLayoutTrace()`. Beginning a trace clears previous events and enables recording; taking it disables
-recording and drains the events. Neither operation flushes layout. Updating layout follows the normal full/partial
-layout decision and does nothing to a clean document. Owner descriptions are captured while nodes are live, so later
-removal or rebuilding does not change earlier events.
-
 ### Ref
 
 Reference or "ref" tests compare a screenshot of the test page with one of a reference page. The test passes if the two
