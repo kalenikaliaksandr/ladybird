@@ -6,7 +6,7 @@
 
 use crate::css::css_pixels::CssPixelRect;
 use crate::layout::LayoutNodeArena;
-use crate::layout::node_data::{NodeKind, NodeSlotId};
+use crate::layout::node_data::{DomPaintFact, NodeKind, NodeSlotId};
 use crate::layout::{formatting_context, fragment_tree, node_facts, used_values};
 use crate::painting::node_painting;
 use crate::painting::visual_context::dirty::VisualContextBoxDirtyKind;
@@ -273,8 +273,24 @@ impl<'a> PaintableCommit<'a> {
         // commit. Comparing that final offset with the fragment's temporary one would dirty
         // identical inlines on every relayout; their line content and box properties suffice.
         let paint_offset_unchanged = offset_unchanged || painted_geometry_lives_in_enclosing_line_root;
+        // record_lines_hit_test_items() emits an EmptyEditable target only without paint
+        // children. An out-of-flow child can change that eligibility without changing the
+        // editor's box properties or inline content, so descendant dirtiness alone is insufficient.
+        let empty_editable_children_changed = !child_placements_unchanged
+            && node_painting::has_lines(self.arena(), node)
+            && self
+                .arena()
+                .node_has_dom_paint_fact(node, DomPaintFact::EditableOrEditingHost)
+            && fragment
+                .line_data
+                .as_ref()
+                .is_none_or(|content| content.fragments.is_empty());
         // Equality only avoids adding dirtiness; it never clears a pending style/content repaint.
-        if !own_paint_unchanged || !paint_offset_unchanged || enclosing_inline_paint_changed {
+        if !own_paint_unchanged
+            || !paint_offset_unchanged
+            || enclosing_inline_paint_changed
+            || empty_editable_children_changed
+        {
             self.arena().paintable_rows().mark_paint_cache_self_dirty(node);
         } else if !child_placements_unchanged {
             // Rebuild captures containing inserted, removed or reordered children, while
