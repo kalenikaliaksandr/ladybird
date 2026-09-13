@@ -189,6 +189,7 @@ impl Hash for TableCellMeasurementKey {
 pub(crate) struct TableCellMeasurement {
     pub(crate) automatic_content_block_size: CssPixels,
     pub(crate) baselines: DerivedBaselines,
+    pub(crate) depends_on_percentage_block_size: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3908,6 +3909,7 @@ mod tests {
                 first: Some(CssPixels::from_raw(64)),
                 last: None,
             },
+            depends_on_percentage_block_size: true,
         };
 
         let first_data = arena.data(first.slot);
