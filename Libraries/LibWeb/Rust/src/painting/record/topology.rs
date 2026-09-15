@@ -171,6 +171,46 @@ mod tests {
     }
 
     #[test]
+    fn context_composition_changes_preserve_the_internal_plans_of_its_children() {
+        let source = program();
+        let mut changes = PaintTopologyChanges::default();
+        changes.publish(source.clone(), 0);
+        changes.note_context(row(0), false);
+        assert_eq!(changes.invalidated_scopes(&source, 0), [true, false, false, false]);
+    }
+
+    #[test]
+    fn geometry_is_not_an_ordering_input_but_flex_item_participation_is() {
+        let mut arena = LayoutNodeArena::new();
+        let root = arena.allocate_for_test().slot;
+        let child = arena.allocate_for_test().slot;
+        let sibling = arena.allocate_for_test().slot;
+        for node in [child, sibling] {
+            arena.insert_child(root, node, NodeSlotId::INVALID);
+        }
+        for node in [root, child, sibling] {
+            arena.populate_paintable_row(node);
+            arena.refresh_paint_order_inputs(node);
+        }
+        let source = test_program(&[(root, NO_INDEX), (child, 0), (sibling, 0)]);
+        arena.publish_paint_topology(source.clone(), 0);
+        arena.paintable_rows_mut().paintable_data_mut(child).offset.x =
+            crate::css::css_pixels::CssPixels::from_integer(100);
+        arena.refresh_paint_order_inputs(child);
+        assert_eq!(
+            arena.pending_paint_topology_changes().invalidated_scopes(&source, 0),
+            [false; 3]
+        );
+        let flags = &arena.data(child).flags;
+        flags.set(flags.get() | crate::layout::node_data::NodeFlag::IsFlexItem as u32);
+        arena.refresh_paint_order_inputs(child);
+        assert_eq!(
+            arena.pending_paint_topology_changes().invalidated_scopes(&source, 0),
+            [true, true, false]
+        );
+    }
+
+    #[test]
     fn notifications_coalesce_and_read_only_compilation_does_not_consume_them() {
         let program = program();
         let mut changes = PaintTopologyChanges::default();

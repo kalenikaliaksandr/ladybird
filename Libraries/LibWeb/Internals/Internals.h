@@ -148,6 +148,7 @@ public:
     GC::Ref<JS::Object> recorded_async_scrolling_state_object();
     bool recorded_display_list_blocks_wheel_event_at(double x, double y);
     void record_display_list_for_testing(bool paint_overlay, bool cold);
+    GC::Ref<JS::Object> paint_program_stats();
     void set_autoplay_policy(Utf16String const& policy);
 
     Utf16String get_computed_role(DOM::Element& element);

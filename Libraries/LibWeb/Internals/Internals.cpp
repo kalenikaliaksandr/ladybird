@@ -978,6 +978,17 @@ void Internals::record_display_list_for_testing(bool paint_overlay, bool cold)
     (void)document.record_display_list(HTML::PaintConfig { .paint_overlay = paint_overlay }, document.navigable()->display_list_resource_storage(), Painting::PaintCommandCacheMode::ReadWrite);
 }
 
+GC::Ref<JS::Object> Internals::paint_program_stats()
+{
+    auto& document = window().associated_document();
+    auto stats = Layout::RustFFI::layout_arena_last_paint_program_statistics(document.layout_node_arena().handle());
+    auto object = JS::Object::create(window().principal_realm(), nullptr);
+    object->define_direct_property("rebuiltScopes"_utf16_fly_string, JS::Value(stats.rebuilt_scopes), JS::default_attributes);
+    object->define_direct_property("copiedScopes"_utf16_fly_string, JS::Value(stats.copied_scopes), JS::default_attributes);
+    object->define_direct_property("shared"_utf16_fly_string, JS::Value(stats.shared), JS::default_attributes);
+    return object;
+}
+
 void Internals::set_autoplay_policy(Utf16String const& policy)
 {
     if (auto parsed = HTML::autoplay_policy_from_string(policy.utf16_view()); parsed.has_value())

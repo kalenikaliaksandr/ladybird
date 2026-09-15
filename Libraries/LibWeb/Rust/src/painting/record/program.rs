@@ -64,11 +64,19 @@ const _: () = assert!(std::mem::size_of::<ProgramOwner>() == 12);
 
 pub(crate) struct ProgramUpdate {
     pub program: Rc<PaintProgram>,
+    pub statistics: PaintProgramStatistics,
     // Empty means identity. Otherwise each new operation names its counterpart in the source,
     // or NO_INDEX when there was no unambiguous occurrence in that generation.
     pub source_ops: Vec<u32>,
     // For every operation, the start of the contiguous source run that contains it.
     run_starts: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PaintProgramStatistics {
+    pub rebuilt_scopes: u32,
+    pub copied_scopes: u32,
+    pub shared: bool,
 }
 
 impl ProgramUpdate {
@@ -190,6 +198,11 @@ impl PaintProgram {
         {
             return ProgramUpdate {
                 program: program.clone(),
+                statistics: PaintProgramStatistics {
+                    copied_scopes: program.scopes.len() as u32,
+                    shared: true,
+                    ..Default::default()
+                },
                 source_ops: Vec::new(),
                 run_starts: Vec::new(),
             };
@@ -202,6 +215,7 @@ impl PaintProgram {
                 ..Default::default()
             },
             owner_indices: FastMap::default(),
+            statistics: PaintProgramStatistics::default(),
             source_ops: Vec::new(),
             invalid_scopes: source.map_or_else(Vec::new, |(program, revision)| {
                 arena
@@ -227,6 +241,7 @@ impl PaintProgram {
         }
         ProgramUpdate {
             program: Rc::new(compiler.program),
+            statistics: compiler.statistics,
             source_ops: compiler.source_ops,
             run_starts,
         }
@@ -240,6 +255,7 @@ struct ProgramCompiler<'a, 'arena> {
     owner_indices: FastMap<NodeSlotId, u32>,
     source_ops: Vec<u32>,
     invalid_scopes: Vec<bool>,
+    statistics: PaintProgramStatistics,
 }
 
 impl ProgramCompiler<'_, '_> {
@@ -284,6 +300,7 @@ impl ProgramCompiler<'_, '_> {
             self.copy_scope(source, old, parent);
             return;
         }
+        self.statistics.rebuilt_scopes += 1;
         let plan = PaintScopePlan::build(self.arena, key, self.program.paint_overlay);
         // Helper descents with no operations have no rendering or eligibility semantics.
         if plan.items.is_empty() && !plan.establishes_stacking_context {
@@ -331,6 +348,7 @@ impl ProgramCompiler<'_, '_> {
     fn copy_scope(&mut self, source: &PaintProgram, old: u32, parent: u32) {
         let old_scope = source.scopes[old as usize];
         let old_scope_end = source.scopes.partition_point(|scope| scope.begin < old_scope.end);
+        self.statistics.copied_scopes += (old_scope_end - old as usize) as u32;
         let new_scope = self.program.scopes.len() as u32;
         let new_begin = self.program.ops.len() as u32;
         for (index, old_entry) in source.scopes[old as usize..old_scope_end].iter().enumerate() {
@@ -504,6 +522,7 @@ mod tests {
             owner_indices: FastMap::default(),
             source_ops: Vec::new(),
             invalid_scopes: Vec::new(),
+            statistics: PaintProgramStatistics::default(),
         };
         compiler.copy_scope(&source, 1, NO_INDEX);
         assert_eq!(compiler.source_ops, [2, 3, 4]);

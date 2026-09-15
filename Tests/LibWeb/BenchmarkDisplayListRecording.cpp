@@ -48,6 +48,7 @@ enum class DocumentShape {
     FlatCards,
     FlatCardsFew,
     NestedPanels,
+    SharedContextCards,
 };
 
 size_t card_count_of(DocumentShape shape)
@@ -153,6 +154,7 @@ OwnPtr<Core::EventLoop> s_event_loop;
 OwnPtr<LoadedPage> s_flat_cards_page;
 OwnPtr<LoadedPage> s_flat_cards_few_page;
 OwnPtr<LoadedPage> s_nested_panels_page;
+OwnPtr<LoadedPage> s_shared_context_cards_page;
 
 // The markup goes into the initial about:blank document's root element: navigations are driven by the browser
 // process's session history, which an in-process page has no access to.
@@ -162,6 +164,8 @@ Utf16String build_document_markup(DocumentShape shape)
     builder.append("<head><style>"sv);
     builder.append("html,body{margin:0;padding:0}body{background:white;font:8px/12px monospace}"sv);
     builder.append(".card{position:absolute;z-index:1;box-sizing:border-box;border:1px solid #446;background:#dde;color:#113;overflow:hidden}"sv);
+    if (shape == DocumentShape::SharedContextCards)
+        builder.append(".card{z-index:auto}"sv);
     builder.append(".panel{position:relative;z-index:0;width:800px;height:600px}"sv);
     builder.append("#negative{position:absolute;z-index:-1;left:0;top:0;width:800px;height:600px;background:#eef}"sv);
     builder.append("</style></head><body>"sv);
@@ -248,6 +252,8 @@ LoadedPage& page_for(DocumentShape shape)
             return s_flat_cards_few_page;
         case DocumentShape::NestedPanels:
             return s_nested_panels_page;
+        case DocumentShape::SharedContextCards:
+            return s_shared_context_cards_page;
         }
         VERIFY_NOT_REACHED();
     }();
@@ -435,6 +441,30 @@ BENCHMARK_CASE(rust_record_after_one_card_style_change_among_2000_nested)
 BENCHMARK_CASE(document_record_quiet_frame_among_2000_flat)
 {
     time_document_recordings(DocumentShape::FlatCards, "document recording, flat cards, quiet"sv, {});
+}
+
+BENCHMARK_CASE(document_record_after_removal_in_shared_stacking_context)
+{
+    auto& loaded_page = page_for(DocumentShape::SharedContextCards);
+    auto& document = loaded_page.document();
+    auto card = GC::make_root(*document.get_element_by_id("card-1000"_utf16));
+    auto parent = GC::make_root(*card->parent());
+    Samples layout_samples;
+    Samples recording_samples;
+    for (size_t iteration = 0; iteration < timed_iterations; ++iteration) {
+        auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
+        if (card->parent())
+            card->remove();
+        else
+            MUST(parent->append_child(*card));
+        document.update_layout(Web::DOM::UpdateLayoutReason::Debugging);
+        layout_samples.microseconds.append(timer.elapsed_time().to_microseconds());
+        timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
+        VERIFY(document.record_display_list(benchmark_paint_config(), loaded_page.display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite));
+        recording_samples.microseconds.append(timer.elapsed_time().to_microseconds());
+    }
+    layout_samples.report("  removal/attachment and layout"sv);
+    recording_samples.report("document recording, shared context, one card removed/attached"sv);
 }
 
 BENCHMARK_CASE(paint_cache_metadata_after_staggered_updates)

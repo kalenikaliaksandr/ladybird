@@ -97,6 +97,7 @@ fn record_display_list_impl<O: Observer>(
             .and_then(|source| source.paint_cache.as_ref())
             .map(|cache| (&cache.program, cache.topology_revision)),
     );
+    let program_statistics = update.statistics;
     let packed = PackedRecording::new(
         update,
         command_cache_source
@@ -140,6 +141,7 @@ fn record_display_list_impl<O: Observer>(
     let display_list = shared.unwrap_or_else(|| Arc::new(recorded));
     RecordingResult {
         output: RecordingOutput {
+            program_statistics,
             recorded_structural_epoch: structural_epoch,
             cache_inputs,
             hit_test_list,

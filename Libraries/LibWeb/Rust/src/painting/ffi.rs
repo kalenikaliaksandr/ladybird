@@ -4196,6 +4196,30 @@ pub struct FfiPaintCacheMemoryUsage {
     pub owner_count: usize,
 }
 
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct FfiPaintProgramStatistics {
+    pub rebuilt_scopes: u32,
+    pub copied_scopes: u32,
+    pub shared: bool,
+}
+
+/// # Safety
+/// `arena` must be a live layout arena used on its owning document thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_last_paint_program_statistics(arena: *mut c_void) -> FfiPaintProgramStatistics {
+    let arena = unsafe { arena_from_handle(arena) };
+    let state = arena.paint_state().borrow();
+    state.last_recording.as_ref().map_or_else(Default::default, |output| {
+        let stats = output.program_statistics;
+        FfiPaintProgramStatistics {
+            rebuilt_scopes: stats.rebuilt_scopes,
+            copied_scopes: stats.copied_scopes,
+            shared: stats.shared,
+        }
+    })
+}
+
 /// # Safety
 /// `arena` must be a live layout arena used on its owning document thread.
 #[unsafe(no_mangle)]

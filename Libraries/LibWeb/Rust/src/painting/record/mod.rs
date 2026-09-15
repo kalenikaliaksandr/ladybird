@@ -54,6 +54,7 @@ pub struct RecordingOutput {
     pub wheel_event_listener_state_generation: u64,
     pub is_identical_to_cache_source: bool,
     pub(crate) paint_cache: Option<directory::FramePaintCache>,
+    pub(crate) program_statistics: program::PaintProgramStatistics,
     pub(crate) capture_log_for_verification: Option<verify::CaptureLog>,
 }
 

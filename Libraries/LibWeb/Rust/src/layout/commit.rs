@@ -96,6 +96,7 @@ fn commit_subtree(
     }
 
     paintables.stamp_containing_block(node);
+    paintables.arena().refresh_paint_order_inputs(node);
 
     if reuses_committed_subtree {
         return;

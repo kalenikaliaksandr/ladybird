@@ -633,10 +633,6 @@ impl LayoutNodeArena {
     // Resolve old occurrences against the retained program. Also invalidate the first
     // current ancestor represented there, covering attachments to a different paint owner
     // and rows which did not occur in the previous program (including empty helper scopes).
-    pub(crate) fn note_paint_topology_changed_for_row(&self, row: NodeSlotId) {
-        self.note_paint_scope_plans_changed(row, true);
-    }
-
     pub(crate) fn note_paint_scope_plans_changed(&self, row: NodeSlotId, descendants: bool) {
         self.debug_assert_not_recording();
         let mut changes = self.paintable_rows.paint_topology_changes.borrow_mut();
@@ -653,12 +649,23 @@ impl LayoutNodeArena {
             .mark_descendant_subtree_caches_dirty_along_paint_chain(row);
     }
 
+    pub(crate) fn refresh_paint_order_inputs(&self, row: NodeSlotId) {
+        if !self.paintable_row_is_populated(row) {
+            return;
+        }
+        let inputs = crate::painting::paint_order_plan::PaintOrderInputs::gather(&self.paintable_rows(), row);
+        let changed = self.paintable_paint_cache(row).update_order_inputs(inputs);
+        if changed {
+            self.note_paint_scope_plans_changed(row, false);
+        }
+    }
+
     pub(crate) fn note_stacking_context_paint_order_changed(&self, owner: NodeSlotId) {
         self.debug_assert_not_recording();
         self.paintable_rows
             .paint_topology_changes
             .borrow_mut()
-            .note_context(owner, true);
+            .note_context(owner, false);
         self.paintable_rows()
             .mark_descendant_subtree_caches_dirty_along_paint_chain(owner);
     }
@@ -882,6 +889,7 @@ impl LayoutNodeArena {
             overflow_style,
             ..Default::default()
         };
+        paint_caches[index].clear_order_inputs();
         absolute_rect_memo[index] = None;
         visual_context_records[index] = None;
         stacking_context_entries[index] = None;
@@ -951,6 +959,7 @@ impl LayoutNodeArena {
     pub(crate) fn set_paintable_visual_context_record(&self, id: NodeSlotId, record: PaintableVisualContextRecord) {
         debug_assert!(self.paintable_row_is_populated(id));
         self.paintable_rows.visual_context_records.borrow_mut()[id.slot_index() as usize] = Some(record);
+        self.refresh_paint_order_inputs(id);
     }
 
     pub(crate) fn drop_all_visual_context_records(&self) {

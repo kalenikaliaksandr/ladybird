@@ -1,0 +1,7 @@
+content shares program: true
+geometry shares program: true
+removal replans locally: true
+removed hit target: survivor
+batched mutations preserve clean scopes: true
+reparented hit target: survivor
+pseudo removal replans locally: true

@@ -134,6 +134,8 @@ interface Internals {
     [ImplementedAs=recorded_async_scrolling_state_object] object recordedAsyncScrollingState();
     boolean recordedDisplayListBlocksWheelEventAt(double x, double y);
     undefined recordDisplayListForTesting(optional boolean paintOverlay = false, optional boolean cold = false);
+    // Scope planning performed by the last recording; does not trigger layout or recording.
+    object paintProgramStats();
     undefined setAutoplayPolicy(DOMString policy);
 
     DOMString getComputedRole(Element element);

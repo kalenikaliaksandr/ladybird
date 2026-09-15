@@ -1,0 +1,77 @@
+<!doctype html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; }
+    #left, #right { position: absolute; top: 0; width: 200px; }
+    #right { left: 240px; }
+    .row { height: 8px; background: silver; }
+    .branch { height: 20px; }
+    .positioned { position: absolute; top: 0; left: 0; width: 20px; height: 20px; z-index: 2; background: green; }
+    #left.generated::before { content: ""; display: block; height: 5px; }
+</style>
+<div id="left"><div class="branch" id="removed"><span>text<span>nested text</span></span><div class="positioned" id="hoisted"></div></div><div class="row" id="survivor"></div></div>
+<div id="right"></div>
+<script>
+promiseTest(async () => {
+    if (document.readyState !== "complete") await new Promise(resolve => addEventListener("load", resolve, { once: true }));
+    __outputElement.style.display = "none";
+    const left = document.getElementById("left");
+    const right = document.getElementById("right");
+    const output = [];
+    for (let i = 0; i < 400; ++i) {
+        const row = document.createElement("div");
+        row.className = "row";
+        right.append(row);
+    }
+    // Nodes which never reach a recorded frame need no source occurrences.
+    const transient = document.createElement("div");
+    left.append(transient);
+    transient.remove();
+    const record = () => {
+        internals.recordDisplayListForTesting(true, false);
+        return internals.paintProgramStats();
+    };
+    record();
+    right.lastChild.style.background = "blue";
+    output.push(`content shares program: ${record().shared}`);
+    right.style.paddingLeft = "5px";
+    output.push(`geometry shares program: ${record().shared}`);
+
+    // The removed text descendants lose their paint parents during teardown. The
+    // positioned descendant contributes to the enclosing context, outside the branch.
+    document.getElementById("removed").remove();
+    let stats = record();
+    output.push(`removal replans locally: ${stats.rebuiltScopes > 0 && stats.rebuiltScopes < 100 && stats.copiedScopes > 400}`);
+    output.push(`removed hit target: ${document.elementFromPoint(5, 5)?.id}`);
+
+    // Force several layout commits without publishing an intermediate program.
+    const survivor = document.getElementById("survivor");
+    right.append(survivor);
+    survivor.getBoundingClientRect();
+    left.append(survivor);
+    survivor.getBoundingClientRect();
+    for (let i = 0; i < 20; ++i) {
+        const child = document.createElement("div");
+        child.className = "row";
+        left.append(child);
+        child.getBoundingClientRect();
+        child.remove();
+    }
+    stats = record();
+    // The destination's direct children must be reconsidered even though the move
+    // was reversed. Its retained child scopes remain reusable; empty helper plans
+    // have no source intervals and are included in rebuiltScopes.
+    output.push(`batched mutations preserve clean scopes: ${stats.rebuiltScopes > 0 && stats.copiedScopes > 400}`);
+    output.push(`reparented hit target: ${document.elementFromPoint(5, 5)?.id}`);
+
+    left.classList.add("generated");
+    record();
+    left.classList.remove("generated");
+    stats = record();
+    output.push(`pseudo removal replans locally: ${stats.rebuiltScopes < 100 && stats.copiedScopes > 400}`);
+    // All cached order and commands are also checked against canonical recording
+    // by test-web's --verify-paint-cache mode, independently of these work counts.
+    __outputElement.style.display = "";
+    output.forEach(println);
+});
+</script>

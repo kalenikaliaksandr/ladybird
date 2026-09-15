@@ -55,6 +55,19 @@ do not consume the log, and publication preserves changes newer than the recordi
 snapshot. The log shares the frame's program and owns only pending scope entries;
 the old per-row ordering stamps are no longer needed.
 
+Layout commit compares child identities separately from their placement and drawing
+data. Each row also keeps an 8-byte snapshot of the per-row decisions used by the
+order planner. Commit and visual-context assignment refresh this snapshot, covering
+both layout changes and style changes which do not require layout. Geometry and
+content changes alone leave the program reusable. The snapshot only determines
+invalidation: fresh CSS planning reads current inputs independently, so verification
+can detect a missing notification.
+
+Stacking-context entry changes invalidate the context's composition, preserving the
+internal plans of unchanged child scopes. Float and inline/replaced counts affect
+that composition when their phases appear or disappear. Reattachment conservatively
+invalidates the moved subtree's participation as well as its source and destination.
+
 Embedded visual-context indices conservatively require matching
 structural epochs. Copied hit items rebind external geometry when the geometry
 revision changes. SVG content and scroll metadata additionally depend on
@@ -74,3 +87,7 @@ production, including frames retaining only ordering. Directory tests cover grow
 and empty/skipped occurrences. Program and topology tests cover copying, remapping,
 coalescing, row retirement, reparenting and publication boundaries. Web regressions cover
 reparenting, z-order changes, hidden content, scroll metadata and vector resources.
+`internals.paintProgramStats()` reports the last recording's rebuilt/copied scope
+counts and whole-program sharing, allowing tests to check ordering locality even
+when visual-context changes force fresh command production. The shared-context
+removal benchmark times mutation/layout and recording separately.

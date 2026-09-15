@@ -93,6 +93,59 @@ pub(crate) struct PaintScopePlan {
     pub items: SmallVec<[PaintOrderItem; 16]>,
 }
 
+/// The per-row decisions read by the CSS order planner. Geometry and drawing data
+/// do not belong here. Keep this comparison aligned with PaintOrderBuilder below;
+/// canonical recording still reads current inputs independently of this snapshot.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PaintOrderInputs {
+    flags: u32,
+    z_index: i32,
+}
+
+const _: () = assert!(std::mem::size_of::<PaintOrderInputs>() == 8);
+
+impl PaintOrderInputs {
+    pub fn gather(arena: &PaintableRowsRef<'_>, row: NodeSlotId) -> Self {
+        let display = style_queries::display(arena, row);
+        let kind = arena.node_kind_if_live(row);
+        let z_index = style_queries::z_index(arena, row);
+        let (collapsed_borders, hidden_columns) = arena.with_committed_fragment_link(row, |link| {
+            link.map_or((false, false), |link| {
+                (
+                    link.fragment.collapsed_table_borders.is_some(),
+                    link.fragment.hidden_by_collapsed_columns,
+                )
+            })
+        });
+        let decisions = [
+            arena.paintable_data(row).establishes_stacking_context,
+            style_queries::is_positioned(arena, row),
+            style_queries::is_floating(arena, row),
+            display.is_inline_outside(),
+            style_queries::is_flex_or_grid_item(arena, row),
+            node_painting::is_fragmented_inline(arena, row),
+            style_queries::is_replaced_box(arena, row),
+            display.is_inline_outside() && (display.is_flow_root_inside() || display.is_table_inside()),
+            display.is_table_inside(),
+            display.is_table_column_group() || display.is_table_column(),
+            kind == Some(NodeKind::Box),
+            kind == Some(NodeKind::SVGSVGBox),
+            collapsed_borders,
+            hidden_columns,
+            z_index.is_some(),
+        ];
+        // The high bit distinguishes the initial empty snapshot from a recorded row.
+        let flags = decisions
+            .iter()
+            .enumerate()
+            .fold(1 << 31, |flags, (index, &value)| flags | (u32::from(value) << index));
+        Self {
+            flags,
+            z_index: z_index.unwrap_or(0),
+        }
+    }
+}
+
 impl PaintScopePlan {
     pub(crate) fn build(arena: &PaintableRowsRef<'_>, scope: PaintScope, paint_overlay: bool) -> Self {
         let mut builder = PaintOrderBuilder {

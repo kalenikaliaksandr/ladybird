@@ -35,9 +35,18 @@ pub(crate) fn narrow_record_gen(generation: u64) -> RecordGen {
 pub struct PaintCache {
     self_dirty_gen: Cell<u64>,
     descendant_dirty_gen: Cell<u64>,
+    order_inputs: Cell<crate::painting::paint_order_plan::PaintOrderInputs>,
 }
 
 impl PaintCache {
+    pub(crate) fn update_order_inputs(&self, inputs: crate::painting::paint_order_plan::PaintOrderInputs) -> bool {
+        self.order_inputs.replace(inputs) != inputs
+    }
+
+    pub(crate) fn clear_order_inputs(&self) {
+        self.order_inputs.set(Default::default());
+    }
+
     pub(crate) fn reset_dirty_generations(&self) {
         self.self_dirty_gen.set(0);
         self.descendant_dirty_gen.set(0);
