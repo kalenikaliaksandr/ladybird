@@ -31,6 +31,7 @@ use crate::painting::record::trace::{Action, Operation};
 use crate::painting::record::verify::LoggedCapture;
 use crate::painting::record::{DeferredWholeTapeSplice, RecordingOutput, RecordingResult};
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub(crate) use crate::painting::paint_order_plan::StackingContextPaintPhase;
 use crate::painting::paint_order_plan::{PaintOrderItem, PaintProducer, PaintScope, PaintScopeKind, PaintScopePlan};
@@ -161,8 +162,8 @@ fn record_display_list_impl<O: Observer>(
     let recorded = recorder.recorder.into_builder().finish();
     let display_list = match recorder.deferred_whole_tape_splice {
         Some(deferred) if recorded.bytes.len() == deferred.prologue_byte_count => deferred.source_display_list,
-        Some(deferred) => Rc::new(materialize_deferred_whole_tape_splice(&recorded, &deferred)),
-        None => Rc::new(recorded),
+        Some(deferred) => Arc::new(materialize_deferred_whole_tape_splice(&recorded, &deferred)),
+        None => Arc::new(recorded),
     };
     let output = RecordingOutput {
         recorded_structural_epoch: structural_epoch,
