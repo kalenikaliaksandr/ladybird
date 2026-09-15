@@ -261,7 +261,19 @@ impl<O: Observer> PaintRecorder<'_, O> {
                 && !self.all_paint_caches_dirty
                 // Embedded scroll and animation references need a fresh recording after
                 // structural changes until their narrower dependency contracts are available.
-                && source.recorded_structural_epoch == self.paint_state.visual_context.structural_epoch()
+                && match self.paint_state.visual_context.cache_changes.since(
+                    source.recorded_structural_epoch,
+                    self.paint_state.visual_context.structural_epoch(),
+                ) {
+                    crate::painting::visual_context::cache_changes::CacheChanges::Unchanged => true,
+                    crate::painting::visual_context::cache_changes::CacheChanges::Nodes(nodes) => {
+                        // Until individual source ranges are validated, keep the existing
+                        // conservative policy for every structural change.
+                        debug_assert!(!nodes.is_empty());
+                        false
+                    }
+                    crate::painting::visual_context::cache_changes::CacheChanges::Full => false,
+                }
                 && self.cache_compatibility.allows_subtree(CaptureKind::PaintedAsStackingContext)
         })
     }

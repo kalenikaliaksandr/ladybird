@@ -7,6 +7,7 @@
 use super::box_build::{
     AnchorScrollShiftResolver, BoxBuildEnvironment, PaintableVisualContextAssignment, build_box_visual_context_nodes,
 };
+use super::cache_changes::VisualContextNodeRef;
 use super::delta::VisualContextTreeDelta;
 use super::dirty::{
     BoxDirtyBits, VisualContextBoxDirtyKind, VisualContextDirtySet, VisualContextGlobalRebuildReason,
@@ -120,17 +121,17 @@ fn tombstone_removed_blocks(
     for removed in &dirty.removed {
         for index in &removed.node_handles.spatial {
             if tree.tombstone_spatial_slot(*index) {
-                delta.note_tombstoned();
+                delta.note_tombstoned(VisualContextNodeRef::Spatial(*index));
             }
         }
         for index in removed.node_handles.clip_handles() {
             if tree.tombstone_clip_slot(index) {
-                delta.note_tombstoned();
+                delta.note_tombstoned(VisualContextNodeRef::Clip(index));
             }
         }
         for index in &removed.node_handles.effects {
             if tree.tombstone_effect_slot(*index) {
-                delta.note_tombstoned();
+                delta.note_tombstoned(VisualContextNodeRef::Effect(*index));
             }
         }
     }
@@ -327,6 +328,7 @@ pub(crate) fn update_visual_context_tree<Arena: PaintableRowsRead>(
     scope: VisualContextUpdateScope,
     state: &mut VisualContextState,
 ) -> IncrementalUpdateResult {
+    let previous_epoch = state.structural_epoch();
     let plan = if scope.rebuilds_every_box() {
         WorkPlan::default()
     } else {
@@ -578,6 +580,9 @@ pub(crate) fn update_visual_context_tree<Arena: PaintableRowsRead>(
     if delta.structural_epoch_changed {
         tree.structural_epoch = allocate_structural_epoch();
     }
+    state
+        .cache_changes
+        .record(previous_epoch, tree.structural_epoch, &delta.invalidated_nodes);
     state.scroll_state = scroll_state;
     state.needs_to_refresh_scroll_state = true;
     IncrementalUpdateResult::Applied(Box::new(IncrementalUpdateOutcome {
@@ -689,7 +694,7 @@ mod tests {
 
         let mut delta = VisualContextTreeDelta::default();
         assert!(tree.tombstone_effect_slot(parent));
-        delta.note_tombstoned();
+        delta.note_tombstoned(VisualContextNodeRef::Effect(parent));
 
         assert!(incremental_tree_requires_fresh_build(&tree, &delta));
     }

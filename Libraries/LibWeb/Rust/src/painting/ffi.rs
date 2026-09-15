@@ -1208,6 +1208,7 @@ fn fresh_visual_context_tree_build(
     arena.take_line_roots_needing_fragment_ownership();
     crate::painting::fragment_ownership::assign_fragment_ownership(&arena.paintable_rows(), viewport);
     arena.mark_all_paint_caches_dirty();
+    state.cache_changes.reset(state.structural_epoch());
     state.quarantined_slots_are_releasable = false;
     debug_assert_every_live_node_is_owned(
         &arena.paintable_rows(),
@@ -4227,7 +4228,7 @@ pub unsafe extern "C" fn layout_arena_paint_cache_memory_usage(arena: *mut c_voi
     let arena = unsafe { arena_from_handle(arena) };
     let state = arena.paint_state().borrow();
     let mut result = FfiPaintCacheMemoryUsage {
-        metadata_bytes: arena.paint_invalidation_storage_bytes(),
+        metadata_bytes: arena.paint_invalidation_storage_bytes() + state.visual_context.cache_changes.retained_bytes(),
         ..Default::default()
     };
     if let Some(source) = &state.paint_command_cache_source {

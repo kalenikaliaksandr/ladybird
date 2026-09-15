@@ -7,6 +7,7 @@
 pub mod basic_shapes;
 pub mod box_build;
 pub mod build;
+pub(crate) mod cache_changes;
 pub mod delta;
 pub mod dirty;
 pub mod dump;
@@ -662,6 +663,7 @@ pub struct VisualContextState {
     pub last_tree_inputs: Option<crate::painting::host::FfiVisualContextTreeInputs>,
     pub last_full_build_reason: dirty::VisualContextGlobalRebuildReason,
     pub quarantined_slots_are_releasable: bool,
+    pub(crate) cache_changes: cache_changes::VisualContextCacheChanges,
 }
 
 impl VisualContextState {

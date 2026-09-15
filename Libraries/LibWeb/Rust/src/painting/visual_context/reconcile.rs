@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+use super::cache_changes::VisualContextNodeRef;
 use super::delta::VisualContextTreeDelta;
 use super::shape::{
     clip_node_shape, clip_payloads_are_equal, effect_node_shape, effect_payloads_are_equal, spatial_node_shape,
@@ -149,6 +150,7 @@ pub(crate) struct ReconcileOutcome {
 // A slot whose shape differs is repurposed, one whose payload differs is patched, and
 // surplus slots the box no longer needs are tombstoned.
 trait ReconciledNode: SlotNode {
+    fn reference(index: Self::Index) -> VisualContextNodeRef;
     fn slots(tree: &VisualContextTree) -> &[Self];
     fn allocate(tree: &mut VisualContextTree) -> (Self::Index, bool);
     fn same_shape(&self, other: &Self) -> bool;
@@ -161,6 +163,9 @@ trait ReconciledNode: SlotNode {
 }
 
 impl ReconciledNode for SpatialNode {
+    fn reference(index: SpatialNodeIndex) -> VisualContextNodeRef {
+        VisualContextNodeRef::Spatial(index)
+    }
     fn allocate(tree: &mut VisualContextTree) -> (SpatialNodeIndex, bool) {
         tree.allocate_spatial_slot()
     }
@@ -182,6 +187,9 @@ impl ReconciledNode for SpatialNode {
 }
 
 impl ReconciledNode for ClipNode {
+    fn reference(index: ClipNodeIndex) -> VisualContextNodeRef {
+        VisualContextNodeRef::Clip(index)
+    }
     fn allocate(tree: &mut VisualContextTree) -> (ClipNodeIndex, bool) {
         tree.allocate_clip_slot()
     }
@@ -203,6 +211,9 @@ impl ReconciledNode for ClipNode {
 }
 
 impl ReconciledNode for EffectNode {
+    fn reference(index: EffectNodeIndex) -> VisualContextNodeRef {
+        VisualContextNodeRef::Effect(index)
+    }
     fn allocate(tree: &mut VisualContextTree) -> (EffectNodeIndex, bool) {
         tree.allocate_effect_slot()
     }
@@ -239,7 +250,7 @@ fn write_node<N: ReconciledNode>(
         Some(&handle) => handle,
         None => {
             let (handle, reused) = N::allocate(tree);
-            delta.note_allocated(reused);
+            delta.note_allocated(N::reference(handle), reused);
             handle
         }
     };
@@ -250,7 +261,7 @@ fn write_node<N: ReconciledNode>(
     if !shape_matches {
         outcome.shape_changed = true;
         if was_live {
-            delta.note_repurposed_in_place();
+            delta.note_repurposed_in_place(N::reference(handle));
         }
     }
     if !payload_matches {
@@ -275,7 +286,7 @@ fn retire_surplus<N: ReconciledNode>(
     }
     for &handle in existing.get(used..).unwrap_or(&[]) {
         if N::tombstone_slot(tree, handle) {
-            delta.note_tombstoned();
+            delta.note_tombstoned(N::reference(handle));
         }
     }
 }

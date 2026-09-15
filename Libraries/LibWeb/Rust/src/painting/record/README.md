@@ -75,6 +75,12 @@ revision changes. SVG content and scroll metadata additionally depend on
 appropriate descendant invalidation; snap areas are not solely inputs of the
 scroller's own box.
 
+`visual_context/cache_changes.rs` journals the typed slots invalidated by AVC
+retirement, repurposing and recycling. It coalesces changes relative to the last
+published recording, preserves changes newer than a recording snapshot and treats
+fresh trees or missing history as a full reset. Read-only recordings do not consume
+the journal. Payload-only AVC changes preserve identity and remain replay updates.
+
 Metadata layouts have compile-time size checks: operations are 12 bytes, scopes
 24 bytes, and output boundaries 8 bytes. Owner inputs are stored once per program
 owner. `BenchmarkDisplayListRecording` reports retained capacities, including

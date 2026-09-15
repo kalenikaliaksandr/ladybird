@@ -135,6 +135,10 @@ fn publish_recording_output(
     }
     let output = std::rc::Rc::new(output);
     if paint_command_cache_read_write {
+        paint_state
+            .visual_context
+            .cache_changes
+            .publish(output.recorded_structural_epoch);
         if let Some(cache) = &output.paint_cache {
             arena.publish_paint_topology(cache.program.clone(), cache.topology_revision);
         }
@@ -159,6 +163,7 @@ mod tests {
         let row = arena.allocate_for_test().slot;
         arena.populate_paintable_row(row);
         let output = RecordingOutput {
+            recorded_structural_epoch: 7,
             hit_test_list: HitTestList {
                 generation: 1,
                 ..Default::default()
@@ -168,8 +173,18 @@ mod tests {
         publish_recording_output(&arena, output, true);
         let source = arena.paint_state().borrow().paint_command_cache_source.clone().unwrap();
         let generation = arena.paint_cache_completed_record_gen();
+        let changed_node = crate::painting::visual_context::cache_changes::VisualContextNodeRef::Spatial(
+            crate::painting::display_list::commands::SpatialNodeIndex(4),
+        );
+        arena
+            .paint_state()
+            .borrow_mut()
+            .visual_context
+            .cache_changes
+            .record(7, 8, &[changed_node]);
         arena.invalidate_paint_cache(row);
         let output = RecordingOutput {
+            recorded_structural_epoch: 8,
             hit_test_list: HitTestList {
                 generation: 2,
                 ..Default::default()
@@ -187,6 +202,13 @@ mod tests {
                 .unwrap()
         ));
         assert_eq!(arena.paint_cache_completed_record_gen(), generation);
+        let state = arena.paint_state().borrow();
+        let crate::painting::visual_context::cache_changes::CacheChanges::Nodes(nodes) =
+            state.visual_context.cache_changes.since(7, 8)
+        else {
+            panic!("read-only publication consumed AVC invalidation");
+        };
+        assert!(nodes.contains_key(&changed_node));
         assert!(arena.paintable_paint_cache(row).is_self_dirty_since(generation as u32));
         assert!(
             arena
