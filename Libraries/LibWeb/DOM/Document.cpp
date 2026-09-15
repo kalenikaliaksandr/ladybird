@@ -28,6 +28,7 @@
 #include <LibGC/ConservativeVector.h>
 #include <LibGC/Heap.h>
 #include <LibGC/HeapVector.h>
+#include <LibGC/RootHashMap.h>
 #include <LibGC/RootHashTable.h>
 #include <LibGC/RootVector.h>
 #include <LibHTTP/Cookie/Cookie.h>
@@ -7974,6 +7975,7 @@ void Document::update_compositor_animations()
 
     auto visual_context_tree = paint_state().visual_context_tree(*this);
     Vector<Compositor::VisualAnimation> visual_animations;
+    GC::RootHashMap<GC::Ref<Layout::Node>, bool> previous_content_retention;
     GC::RootHashTable<GC::Ref<Animations::KeyframeEffect>> previously_compositor_driven_effects;
     GC::RootHashTable<GC::Ref<Animations::KeyframeEffect>> previously_compositor_replaced_effects;
     GC::RootHashTable<GC::Ref<Animations::KeyframeEffect>> previously_published_effects;
@@ -8308,8 +8310,10 @@ void Document::update_compositor_animations()
         if (effect.is_offscreen_throttled())
             previously_offscreen_throttled_effects.set(effect);
         if (auto target = effect.target_abstract_element(); target.has_value()) {
-            if (auto* layout_node = target->unsafe_layout_node())
+            if (auto* layout_node = target->unsafe_layout_node()) {
+                previous_content_retention.ensure(*layout_node, [&] { return layout_node->retains_compositor_animated_content(); });
                 layout_node->set_retains_compositor_animated_content(false);
+            }
         }
         effect.set_is_compositor_driven(false);
         effect.set_is_compositor_replaced(false);
@@ -8657,6 +8661,15 @@ void Document::update_compositor_animations()
         if (auto* layout_node = abstract_target->unsafe_layout_node())
             layout_node->set_retains_compositor_animated_content(true);
         published_compositor_animation = true;
+    }
+
+    // Retention changes whether zero-opacity or singular-transform content is recorded.
+    // Compare the complete selection pass: its temporary false/true flags are not changes
+    // to the prepared paint scene when an animation remains on the compositor.
+    for (auto const& [layout_node, retained_before] : previous_content_retention) {
+        if (layout_node->retains_compositor_animated_content() == retained_before)
+            continue;
+        Painting::set_needs_repaint(*layout_node, InvalidateDisplayList::PaintCommandsAndHitTestList);
     }
 
     for (auto& layout_node : layout_nodes_with_stale_forced_effects_layer) {
