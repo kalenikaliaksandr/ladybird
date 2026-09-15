@@ -2448,12 +2448,15 @@ impl LayoutNodeArena {
             self.data(before).previous_sibling.set(child);
         }
 
+        self.note_paint_scope_plans_changed(child, true);
         self.assign_pre_order_labels_to_inserted_subtree(parent, child);
         self.note_layout_subtree_attached(child);
         self.note_structural_change_at_and_above(parent);
     }
 
     pub(crate) fn remove_child(&self, parent: NodeSlotId, child: NodeSlotId) {
+        self.assert_owner_thread();
+        self.note_paint_scope_plans_changed(child, false);
         self.unlink_child(parent, child);
         self.note_structural_change_at_and_above(parent);
     }

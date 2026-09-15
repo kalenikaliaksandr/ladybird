@@ -184,6 +184,7 @@ impl PaintProgram {
     ) -> ProgramUpdate {
         if let Some((program, revision)) = source
             && revision == arena.paint_topology_revision()
+            && arena.pending_paint_topology_changes().matches_source(program, revision)
             && program.paint_overlay == paint_overlay
             && program.scope_key(0) == PaintScope::stacking_context(viewport)
         {
@@ -202,6 +203,11 @@ impl PaintProgram {
             },
             owner_indices: FastMap::default(),
             source_ops: Vec::new(),
+            invalid_scopes: source.map_or_else(Vec::new, |(program, revision)| {
+                arena
+                    .pending_paint_topology_changes()
+                    .invalidated_scopes(program, revision)
+            }),
         };
         compiler.emit_producer(viewport, PaintProducer::Canvas, NO_INDEX, None);
         compiler.emit_scope(PaintScope::stacking_context(viewport), NO_INDEX);
@@ -233,6 +239,7 @@ struct ProgramCompiler<'a, 'arena> {
     program: PaintProgram,
     owner_indices: FastMap<NodeSlotId, u32>,
     source_ops: Vec<u32>,
+    invalid_scopes: Vec<bool>,
 }
 
 impl ProgramCompiler<'_, '_> {
@@ -268,13 +275,11 @@ impl ProgramCompiler<'_, '_> {
     fn emit_scope(&mut self, key: PaintScope, parent: u32) {
         let old_scope = self.source.and_then(|(program, _)| program.find_scope(key));
         let topology_owner = self.arena.paint_scope_owner(key).unwrap_or(NodeSlotId::INVALID);
-        if let Some((source, revision)) = self.source
+        if let Some((source, _)) = self.source
             && let Some(old) = old_scope
             && source.paint_overlay == self.program.paint_overlay
             && source.scopes[old as usize].topology_owner == topology_owner
-            && self
-                .arena
-                .paint_scope_topology_unchanged(key.owner, topology_owner, revision)
+            && !self.invalid_scopes[old as usize]
         {
             self.copy_scope(source, old, parent);
             return;
@@ -355,6 +360,62 @@ impl ProgramCompiler<'_, '_> {
             );
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_program(entries: &[(NodeSlotId, u32)]) -> Rc<PaintProgram> {
+    let mut program = PaintProgram::default();
+    for &(row, parent) in entries {
+        let owner = program
+            .owners
+            .iter()
+            .position(|entry| entry.row == row)
+            .unwrap_or_else(|| {
+                program.owners.push(ProgramOwner {
+                    row,
+                    first_use: 0,
+                    end_use: 0,
+                });
+                program.owners.len() - 1
+            }) as u32;
+        program.scopes.push(ProgramScope {
+            owner,
+            parent,
+            begin: 0,
+            end: 0,
+            topology_owner: entries[0].0,
+            kind: PaintScopeKind::PaintedAsStackingContext,
+            establishes_context: parent == NO_INDEX,
+        });
+    }
+    fn emit(program: &mut PaintProgram, scope: u32) {
+        let owner = program.scopes[scope as usize].owner;
+        program.scopes[scope as usize].begin = program.ops.len() as u32;
+        program.ops.push(PaintOp {
+            owner,
+            scope,
+            action: PaintAction::BeginScope,
+        });
+        program.ops.push(PaintOp {
+            owner,
+            scope,
+            action: PaintAction::Produce(PaintProducer::ScopePreamble),
+        });
+        for child in scope + 1..program.scopes.len() as u32 {
+            if program.scopes[child as usize].parent == scope {
+                emit(program, child);
+            }
+        }
+        program.ops.push(PaintOp {
+            owner,
+            scope,
+            action: PaintAction::EndScope,
+        });
+        program.scopes[scope as usize].end = program.ops.len() as u32;
+    }
+    emit(&mut program, 0);
+    program.finish_owner_index();
+    Rc::new(program)
 }
 
 #[cfg(test)]
@@ -442,6 +503,7 @@ mod tests {
             program: PaintProgram::default(),
             owner_indices: FastMap::default(),
             source_ops: Vec::new(),
+            invalid_scopes: Vec::new(),
         };
         compiler.copy_scope(&source, 1, NO_INDEX);
         assert_eq!(compiler.source_ops, [2, 3, 4]);

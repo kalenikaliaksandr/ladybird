@@ -26,126 +26,6 @@ pub(crate) const PAINTABLE_SLOTS_PER_CHUNK: usize = 64;
 mod tests {
     use super::*;
 
-    fn test_paint_context(arena: &mut LayoutNodeArena, parent: NodeSlotId) -> NodeSlotId {
-        use crate::painting::display_list::commands::{ClipNodeIndex, EffectNodeIndex, VISUAL_VIEWPORT_NODE_INDEX};
-        use crate::painting::visual_context::{DescendantVisualContexts, NearestScrollNodeIndices, PositioningContext};
-        let row = arena.allocate_for_test().slot;
-        arena.data(row).parent.set(parent);
-        arena.populate_paintable_row(row);
-        let positioning = PositioningContext {
-            spatial: VISUAL_VIEWPORT_NODE_INDEX,
-            clip: ClipNodeIndex::NONE,
-            plane_root: VISUAL_VIEWPORT_NODE_INDEX,
-            nearest_scroll_nodes: NearestScrollNodeIndices {
-                stopping_at_fixed_position_ancestors: VISUAL_VIEWPORT_NODE_INDEX,
-                continuing_through_fixed_position_ancestors: VISUAL_VIEWPORT_NODE_INDEX,
-            },
-        };
-        let contexts = DescendantVisualContexts {
-            effect: EffectNodeIndex::NONE,
-            normal: positioning,
-            absolute_position: positioning,
-            fixed_position: positioning,
-            flattens_inherited_transform: true,
-            sorting_context_root: None,
-            enclosing_stacking_context: row,
-        };
-        arena.set_paintable_visual_context_record(
-            row,
-            PaintableVisualContextRecord {
-                inherited_input: contexts,
-                output_for_descendants: contexts,
-                node_handles: BoxVisualContextNodeHandles::default(),
-                has_mask_nodes: false,
-                may_be_root_element: false,
-                owns_geometry_dependent_nodes: false,
-                subtree_may_own_geometry_dependent_nodes: false,
-                stacking_context: crate::painting::stacking_context::StackingContextFacts {
-                    enclosing_stacking_context: parent,
-                    ..crate::painting::stacking_context::StackingContextFacts::for_viewport()
-                },
-            },
-        );
-        row
-    }
-
-    #[test]
-    fn order_changes_without_own_context_preserve_unrelated_paint_scopes() {
-        let mut arena = LayoutNodeArena::new();
-        let root = test_paint_context(&mut arena, NodeSlotId::INVALID);
-        let owner = test_paint_context(&mut arena, root);
-        let sibling = test_paint_context(&mut arena, root);
-        let intermediate = arena.allocate_for_test().slot;
-        let child = arena.allocate_for_test().slot;
-        arena.data(intermediate).parent.set(owner);
-        arena.data(child).parent.set(intermediate);
-        arena.populate_paintable_row(intermediate);
-        arena.populate_paintable_row(child);
-        let before = arena.paint_topology_revision();
-
-        arena.note_paint_topology_changed_for_row(child);
-
-        assert!(!arena.paint_scope_topology_unchanged(owner, owner, before));
-        assert!(!arena.paint_scope_topology_unchanged(root, root, before));
-        assert!(arena.paint_scope_topology_unchanged(sibling, sibling, before));
-        assert_eq!(arena.paintable_rows.full_paint_topology_revision.get(), before);
-    }
-
-    #[test]
-    fn order_changes_before_and_after_reparenting_invalidate_both_known_owners() {
-        let mut arena = LayoutNodeArena::new();
-        let old_owner = test_paint_context(&mut arena, NodeSlotId::INVALID);
-        let new_owner = test_paint_context(&mut arena, NodeSlotId::INVALID);
-        let unrelated = test_paint_context(&mut arena, NodeSlotId::INVALID);
-        let child = arena.allocate_for_test().slot;
-        arena.data(child).parent.set(old_owner);
-        arena.populate_paintable_row(child);
-        let before = arena.paint_topology_revision();
-
-        arena.note_paint_topology_changed_for_row(child);
-        arena.data(child).parent.set(new_owner);
-        arena.note_paint_topology_changed_for_row(child);
-
-        assert!(!arena.paint_scope_topology_unchanged(old_owner, old_owner, before));
-        assert!(!arena.paint_scope_topology_unchanged(new_owner, new_owner, before));
-        assert!(arena.paint_scope_topology_unchanged(unrelated, unrelated, before));
-    }
-
-    #[test]
-    fn order_changes_with_unresolved_ownership_keep_full_invalidation() {
-        let mut arena = LayoutNodeArena::new();
-        let context = test_paint_context(&mut arena, NodeSlotId::INVALID);
-        let disconnected = arena.allocate_for_test().slot;
-        arena.populate_paintable_row(disconnected);
-        let before = arena.paint_topology_revision();
-
-        arena.note_paint_topology_changed_for_row(disconnected);
-
-        assert!(!arena.paint_scope_topology_unchanged(context, context, before));
-        assert!(arena.paintable_rows.full_paint_topology_revision.get() > before);
-    }
-
-    #[test]
-    fn order_changes_in_unconnected_subtrees_do_not_inherit_an_outer_owner() {
-        let mut arena = LayoutNodeArena::new();
-        let outer = test_paint_context(&mut arena, NodeSlotId::INVALID);
-        let mask = arena.allocate_for_test().slot;
-        let child = arena.allocate_for_test().slot;
-        arena
-            .data(mask)
-            .kind
-            .set(crate::layout::node_data::NodeKind::SVGMaskBox);
-        arena.data(mask).parent.set(outer);
-        arena.data(child).parent.set(mask);
-        arena.populate_paintable_row(mask);
-        arena.populate_paintable_row(child);
-        let before = arena.paint_topology_revision();
-
-        arena.note_paint_topology_changed_for_row(child);
-
-        assert!(arena.paintable_rows.full_paint_topology_revision.get() > before);
-    }
-
     #[test]
     fn overflow_queries_do_not_measure_ordinary_inline_fragments() {
         use crate::css::css_pixels::{CssPixelRect, CssPixels};
@@ -287,8 +167,7 @@ struct CommittedFragmentLinkSlot {
 #[derive(Default)]
 pub(crate) struct PaintableRowStore {
     pending_paint_rows: RefCell<crate::painting::record::cache::PendingPaintRows>,
-    paint_topology_revision: Cell<u64>,
-    full_paint_topology_revision: Cell<u64>,
+    paint_topology_changes: RefCell<crate::painting::record::topology::PaintTopologyChanges>,
     chunks: Vec<Box<PaintableRowChunk>>,
     side_data: RefCell<Vec<PaintableSideData>>,
     paint_caches: RefCell<Vec<PaintCache>>,
@@ -708,14 +587,32 @@ impl LayoutNodeArena {
     }
 
     pub(crate) fn paint_invalidation_storage_bytes(&self) -> usize {
-        self.paintable_rows.paint_caches.borrow().capacity() * std::mem::size_of::<PaintCache>()
+        self.pending_paint_topology_changes().retained_bytes()
+            + self.paintable_rows.paint_caches.borrow().capacity() * std::mem::size_of::<PaintCache>()
             + std::mem::size_of::<crate::painting::record::cache::PendingPaintRows>()
             + self.pending_paint_rows().rows.capacity()
                 * std::mem::size_of::<crate::painting::record::cache::DirtyPaintRow>()
     }
 
     pub(crate) fn paint_topology_revision(&self) -> u64 {
-        self.paintable_rows.paint_topology_revision.get()
+        self.paintable_rows.paint_topology_changes.borrow().revision()
+    }
+
+    pub(crate) fn pending_paint_topology_changes(
+        &self,
+    ) -> Ref<'_, crate::painting::record::topology::PaintTopologyChanges> {
+        self.paintable_rows.paint_topology_changes.borrow()
+    }
+
+    pub(crate) fn publish_paint_topology(
+        &self,
+        program: std::rc::Rc<crate::painting::record::program::PaintProgram>,
+        revision: u64,
+    ) {
+        self.paintable_rows
+            .paint_topology_changes
+            .borrow_mut()
+            .publish(program, revision);
     }
 
     pub(crate) fn paint_scope_owner(&self, scope: crate::painting::paint_order_plan::PaintScope) -> Option<NodeSlotId> {
@@ -733,55 +630,37 @@ impl LayoutNodeArena {
         self.paintable_row_is_populated(owner).then_some(owner)
     }
 
-    pub(crate) fn paint_scope_topology_unchanged(&self, row: NodeSlotId, owner: NodeSlotId, revision: u64) -> bool {
-        self.paintable_row_is_populated(row)
-            && self.paintable_row_is_populated(owner)
-            && self.paintable_rows.full_paint_topology_revision.get() <= revision
-            && self.paintable_paint_cache(owner).order_unchanged_since(revision)
-            && self.paintable_paint_cache(row).subtree_order_unchanged_since(revision)
-    }
-
-    fn next_paint_topology_revision(&self) -> u64 {
-        self.debug_assert_not_recording();
-        let revision = self
-            .paint_topology_revision()
-            .checked_add(1)
-            .expect("paint topology revision overflowed");
-        self.paintable_rows.paint_topology_revision.set(revision);
-        revision
-    }
-
+    // Resolve old occurrences against the retained program. Also invalidate the first
+    // current ancestor represented there, covering attachments to a different paint owner
+    // and rows which did not occur in the previous program (including empty helper scopes).
     pub(crate) fn note_paint_topology_changed_for_row(&self, row: NodeSlotId) {
-        // Text rows and newly committed boxes can lack their own visual-context record.
-        // Resolve ownership while the current paint-parent relationships are still available.
-        let rows = self.paintable_rows();
-        let mut current = Some(row);
-        while let Some(candidate) = current {
-            if let Some(owner) = self.paint_scope_owner(
-                crate::painting::paint_order_plan::PaintScope::stacking_context(candidate),
-            ) {
-                self.note_stacking_context_paint_order_changed(owner);
-                return;
+        self.note_paint_scope_plans_changed(row, true);
+    }
+
+    pub(crate) fn note_paint_scope_plans_changed(&self, row: NodeSlotId, descendants: bool) {
+        self.debug_assert_not_recording();
+        let mut changes = self.paintable_rows.paint_topology_changes.borrow_mut();
+        changes.note_row(row, descendants);
+        let mut current = self.node_parent_if_live(row);
+        while let Some(parent) = current {
+            if changes.note_row(parent, false) {
+                break;
             }
-            current = crate::painting::paint_order::paint_parent(&rows, candidate);
+            current = self.node_parent_if_live(parent);
         }
-        let revision = self.next_paint_topology_revision();
-        self.paintable_rows.full_paint_topology_revision.set(revision);
+        drop(changes);
+        self.paintable_rows()
+            .mark_descendant_subtree_caches_dirty_along_paint_chain(row);
     }
 
     pub(crate) fn note_stacking_context_paint_order_changed(&self, owner: NodeSlotId) {
-        if !self.paintable_row_is_populated(owner) {
-            return;
-        }
-        let revision = self.next_paint_topology_revision();
-        self.paintable_paint_cache(owner).note_order_revision(revision);
-        let rows = self.paintable_rows();
-        let mut current = Some(owner);
-        while let Some(row) = current {
-            self.paintable_paint_cache(row).note_subtree_order_revision(revision);
-            current = crate::painting::paint_order::paint_parent(&rows, row);
-        }
-        rows.mark_descendant_subtree_caches_dirty_along_paint_chain(owner);
+        self.debug_assert_not_recording();
+        self.paintable_rows
+            .paint_topology_changes
+            .borrow_mut()
+            .note_context(owner, true);
+        self.paintable_rows()
+            .mark_descendant_subtree_caches_dirty_along_paint_chain(owner);
     }
 
     pub(crate) fn paintable_rows(&self) -> PaintableRowsRef<'_> {
@@ -878,6 +757,9 @@ impl LayoutNodeArena {
     }
 
     fn prepare_paintable_row_reset(&self, slot: NodeSlotId, kind: PaintableRowResetKind) -> PaintableRowReset {
+        if !matches!(kind, PaintableRowResetKind::Recommitted) {
+            self.note_paint_scope_plans_changed(slot, false);
+        }
         PaintableRowReset {
             slot,
             kind,
@@ -1007,7 +889,6 @@ impl LayoutNodeArena {
 
     fn reset_paintable_row(&mut self, mark_caches_dirty_along_paint_chain: bool, reset: PaintableRowReset) {
         let id = reset.slot;
-        self.note_paint_topology_changed_for_row(id);
         if mark_caches_dirty_along_paint_chain {
             self.paintable_rows()
                 .mark_descendant_subtree_caches_dirty_along_paint_chain(id);

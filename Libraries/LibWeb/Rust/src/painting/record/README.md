@@ -37,11 +37,25 @@ recovery. A skipped operation has no reusable output, even if an older frame had
 painted it. Read-only recordings publish neither the new directory nor a new
 cache generation.
 
-Content invalidation uses the existing source-relative row stamps. Topology has
-separate owner and subtree revisions, updated while old and new paint ownership
-is known. A topology change recompiles affected ordering scopes; unchanged scope
-intervals can be copied into the new program. Unknown ownership forces a fresh
-ordering pass. Embedded visual-context indices conservatively require matching
+Content invalidation uses source-relative row stamps. `topology.rs` accumulates
+ordering invalidations against the last published program. Its scope keys describe
+actual paint occurrences, including content painted outside its layout parent's
+scope. Repeated changes coalesce until a recording publishes its replacement.
+Compilation propagates the pending changes through the source program's scope
+ancestry, rebuilds affected plans from the final committed state and copies clean
+intervals. Subtree changes additionally invalidate nested plans whose participation
+can depend on the changed ancestor. The flat arrays and reverse index are rebuilt;
+there are no retained command buffers or ordering vectors per scope.
+
+Row retirement resolves its old occurrences before clearing paint data, using the
+source program's immutable ownership and ancestry. Clearing parents before their
+descendants therefore does not require recovering ownership from retired rows.
+Attachment also invalidates the destination's existing scopes. Read-only recordings
+do not consume the log, and publication preserves changes newer than the recording
+snapshot. The log shares the frame's program and owns only pending scope entries;
+the old per-row ordering stamps are no longer needed.
+
+Embedded visual-context indices conservatively require matching
 structural epochs. Copied hit items rebind external geometry when the geometry
 revision changes. SVG content and scroll metadata additionally depend on
 appropriate descendant invalidation; snap areas are not solely inputs of the
@@ -56,6 +70,7 @@ workspace, C++ objects and other in-flight frames; process memory must be measur
 separately.
 
 `--verify-paint-cache` compares cached recording with fresh ordering and command
-production. Directory tests cover growth and empty/skipped occurrences; program
-tests cover copying and remapping scope intervals. Web regressions cover
+production, including frames retaining only ordering. Directory tests cover growth
+and empty/skipped occurrences. Program and topology tests cover copying, remapping,
+coalescing, row retirement, reparenting and publication boundaries. Web regressions cover
 reparenting, z-order changes, hidden content, scroll metadata and vector resources.

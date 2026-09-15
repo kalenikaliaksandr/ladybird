@@ -35,8 +35,6 @@ pub(crate) fn narrow_record_gen(generation: u64) -> RecordGen {
 pub struct PaintCache {
     self_dirty_gen: Cell<u64>,
     descendant_dirty_gen: Cell<u64>,
-    order_revision: Cell<u64>,
-    subtree_order_revision: Cell<u64>,
 }
 
 impl PaintCache {
@@ -49,18 +47,6 @@ impl PaintCache {
     }
     pub(crate) fn mark_descendants_dirty(&self, generation: u64) -> bool {
         self.descendant_dirty_gen.replace(generation) == generation
-    }
-    pub(crate) fn note_order_revision(&self, revision: u64) {
-        self.order_revision.set(revision);
-    }
-    pub(crate) fn note_subtree_order_revision(&self, revision: u64) {
-        self.subtree_order_revision.set(revision);
-    }
-    pub(crate) fn order_unchanged_since(&self, revision: u64) -> bool {
-        self.order_revision.get() <= revision
-    }
-    pub(crate) fn subtree_order_unchanged_since(&self, revision: u64) -> bool {
-        self.subtree_order_revision.get() <= revision
     }
     pub(crate) fn is_self_dirty_since(&self, generation: RecordGen) -> bool {
         self.self_dirty_gen.get() > u64::from(generation)
