@@ -1515,16 +1515,10 @@ pub unsafe extern "C" fn layout_arena_record_display_list(
             paint_state.hit_test_item_cache_source.clone(),
             paint_state.trace_recordings || crate::painting::record::verify::enabled_by_environment(),
         );
+        // A recording can retain paint order even when its commands must all be rebuilt.
+        // Verify every recording with a cache source, including that ordering-only reuse.
         let recording_from_scratch = (crate::painting::record::verify::enabled_by_environment()
-            && recording
-                .output
-                .capture_log_for_verification
-                .as_ref()
-                .is_some_and(|log| {
-                    log.command_byte_captures
-                        .iter()
-                        .any(|capture| capture.spliced_from_cache)
-                })
+            && paint_state.paint_command_cache_source.is_some()
             && !inputs.should_show_line_box_borders)
             .then(|| {
                 let mut inputs_for_recording_from_scratch = inputs.clone();
