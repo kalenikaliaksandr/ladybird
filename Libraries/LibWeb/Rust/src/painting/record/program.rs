@@ -24,7 +24,6 @@ pub(crate) enum PaintAction {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PaintOp {
-    pub owner: u32,
     pub scope: u32,
     pub action: PaintAction,
 }
@@ -38,6 +37,8 @@ pub(crate) struct ProgramScope {
     pub topology_owner: NodeSlotId,
     pub kind: PaintScopeKind,
     pub establishes_context: bool,
+    // Non-closing operations owned directly by this scope, including its opener.
+    own_operation_count: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -58,7 +59,7 @@ pub(crate) struct PaintProgram {
 }
 
 // Keep metadata cost explicit as the representation evolves.
-const _: () = assert!(std::mem::size_of::<PaintOp>() == 12);
+const _: () = assert!(std::mem::size_of::<PaintOp>() == 8);
 const _: () = assert!(std::mem::size_of::<ProgramScope>() == 24);
 const _: () = assert!(std::mem::size_of::<ProgramOwner>() == 12);
 
@@ -117,9 +118,29 @@ impl ProgramUpdate {
 }
 
 impl PaintProgram {
+    #[inline]
+    pub fn op_owner(&self, op: PaintOp) -> u32 {
+        if op.scope == NO_INDEX {
+            // Canvas and inspector producers belong to the viewport, registered first.
+            0
+        } else {
+            self.scopes[op.scope as usize].owner
+        }
+    }
+
+    #[inline]
+    pub fn op_row(&self, op: PaintOp) -> NodeSlotId {
+        self.owners[self.op_owner(op) as usize].row
+    }
+
     fn push_op(&mut self, op: PaintOp) {
         if op.action != PaintAction::EndScope {
-            self.owners[op.owner as usize].end_use += 1;
+            if op.scope == NO_INDEX {
+                self.owners[0].end_use += 1;
+            } else {
+                let count = &mut self.scopes[op.scope as usize].own_operation_count;
+                *count = count.checked_add(1).expect("paint scope has too many own operations");
+            }
         }
         self.ops.push(op);
     }
@@ -183,7 +204,10 @@ impl PaintProgram {
         found
     }
 
-    fn finish_owner_index(&mut self) {
+    fn finish_owner_index(&mut self, inherited_order: Option<Vec<u32>>) {
+        for scope in &self.scopes {
+            self.owners[scope.owner as usize].end_use += u32::from(scope.own_operation_count);
+        }
         let mut cursor = 0;
         for owner in &mut self.owners {
             owner.first_use = cursor;
@@ -195,13 +219,18 @@ impl PaintProgram {
             if op.action == PaintAction::EndScope {
                 continue;
             }
-            let owner = &mut self.owners[op.owner as usize];
+            let owner_index = self.op_owner(*op);
+            let owner = &mut self.owners[owner_index as usize];
             self.owner_uses[owner.end_use as usize] = index as u32;
             owner.end_use += 1;
         }
-        self.sorted_owners.extend(0..self.owners.len() as u32);
-        self.sorted_owners
-            .sort_unstable_by_key(|&index| self.owners[index as usize].row.index);
+        if let Some(order) = inherited_order {
+            self.sorted_owners = order;
+        } else {
+            self.sorted_owners.extend(0..self.owners.len() as u32);
+            self.sorted_owners
+                .sort_unstable_by_key(|&index| self.owners[index as usize].row.index);
+        }
     }
 
     pub fn compile(
@@ -248,7 +277,8 @@ impl PaintProgram {
         compiler.emit_producer(viewport, PaintProducer::Canvas, NO_INDEX, None);
         compiler.emit_scope(PaintScope::stacking_context(viewport), NO_INDEX);
         compiler.emit_producer(viewport, PaintProducer::InspectorOverlays, NO_INDEX, None);
-        compiler.program.finish_owner_index();
+        let owner_order = compiler.inherited_owner_order();
+        compiler.program.finish_owner_index(owner_order);
         ProgramUpdate {
             program: Rc::new(compiler.program),
             statistics: compiler.statistics,
@@ -302,6 +332,7 @@ impl ProgramCompiler<'_, '_> {
         owner
     }
 
+    #[inline]
     fn copied_owner(&mut self, source: &PaintProgram, old: u32) -> u32 {
         let owner = self.remapped_owners[old as usize];
         if owner != NO_INDEX {
@@ -309,6 +340,31 @@ impl ProgramCompiler<'_, '_> {
         }
         debug_assert!(!self.owner_indices.contains_key(&source.owners[old as usize].row));
         self.insert_owner(source.owners[old as usize].row, Some(old))
+    }
+
+    fn inherited_owner_order(&self) -> Option<Vec<u32>> {
+        let (source, _) = self.source?;
+        let mut fresh: Vec<u32> = self.owner_indices.values().copied().collect();
+        fresh.sort_unstable_by_key(|&owner| self.program.owners[owner as usize].row.index);
+        let mut fresh = fresh.into_iter().peekable();
+        let mut order = Vec::with_capacity(self.program.owners.len());
+        for &old in &source.sorted_owners {
+            let owner = self.remapped_owners[old as usize];
+            if owner == NO_INDEX {
+                continue;
+            }
+            let row = self.program.owners[owner as usize].row.index;
+            while fresh
+                .peek()
+                .is_some_and(|&next| self.program.owners[next as usize].row.index < row)
+            {
+                order.push(fresh.next().unwrap());
+            }
+            order.push(owner);
+        }
+        order.extend(fresh);
+        debug_assert_eq!(order.len(), self.program.owners.len());
+        Some(order)
     }
 
     fn note_source_interval(&mut self, begin: u32, end: u32, source_begin: u32) {
@@ -340,8 +396,15 @@ impl ProgramCompiler<'_, '_> {
         let source = self
             .source
             .and_then(|(program, _)| program.find_producer(row, action, old_scope));
-        let owner = self.owner(row);
-        self.push(PaintOp { owner, scope, action }, source);
+        if scope == NO_INDEX {
+            assert_eq!(self.owner(row), 0, "global paint producers belong to the viewport");
+        } else {
+            assert_eq!(
+                self.program.owners[self.program.scopes[scope as usize].owner as usize].row,
+                row
+            );
+        }
+        self.push(PaintOp { scope, action }, source);
     }
 
     fn emit_scope(&mut self, key: PaintScope, parent: u32) {
@@ -373,10 +436,10 @@ impl ProgramCompiler<'_, '_> {
             topology_owner,
             kind: key.kind,
             establishes_context: plan.establishes_stacking_context,
+            own_operation_count: 0,
         });
         self.push(
             PaintOp {
-                owner,
                 scope,
                 action: PaintAction::BeginScope,
             },
@@ -391,7 +454,6 @@ impl ProgramCompiler<'_, '_> {
         }
         self.push(
             PaintOp {
-                owner,
                 scope,
                 action: PaintAction::EndScope,
             },
@@ -421,15 +483,15 @@ impl ProgramCompiler<'_, '_> {
                 ..*old_entry
             });
         }
-        for index in old_scope.begin..old_scope.end {
-            let old_op = source.ops[index as usize];
-            let owner = self.copied_owner(source, old_op.owner);
-            self.program.push_op(PaintOp {
-                owner,
-                scope: new_scope + old_op.scope - old,
-                action: old_op.action,
-            });
-        }
+        let scope_delta = new_scope.wrapping_sub(old);
+        self.program.ops.extend(
+            source.ops[old_scope.begin as usize..old_scope.end as usize]
+                .iter()
+                .map(|op| PaintOp {
+                    scope: op.scope.wrapping_add(scope_delta),
+                    action: op.action,
+                }),
+        );
         assert!(self.program.ops.len() < NO_INDEX as usize);
         self.note_source_interval(new_begin, self.program.ops.len() as u32, old_scope.begin);
     }
@@ -459,18 +521,16 @@ pub(crate) fn test_program(entries: &[(NodeSlotId, u32)]) -> Rc<PaintProgram> {
             topology_owner: entries[0].0,
             kind: PaintScopeKind::PaintedAsStackingContext,
             establishes_context: parent == NO_INDEX,
+            own_operation_count: 0,
         });
     }
     fn emit(program: &mut PaintProgram, scope: u32) {
-        let owner = program.scopes[scope as usize].owner;
         program.scopes[scope as usize].begin = program.ops.len() as u32;
         program.push_op(PaintOp {
-            owner,
             scope,
             action: PaintAction::BeginScope,
         });
         program.push_op(PaintOp {
-            owner,
             scope,
             action: PaintAction::Produce(PaintProducer::ScopePreamble),
         });
@@ -480,14 +540,13 @@ pub(crate) fn test_program(entries: &[(NodeSlotId, u32)]) -> Rc<PaintProgram> {
             }
         }
         program.push_op(PaintOp {
-            owner,
             scope,
             action: PaintAction::EndScope,
         });
         program.scopes[scope as usize].end = program.ops.len() as u32;
     }
     emit(&mut program, 0);
-    program.finish_owner_index();
+    program.finish_owner_index(None);
     Rc::new(program)
 }
 
@@ -523,6 +582,7 @@ mod tests {
                     topology_owner: parent,
                     kind: PaintScopeKind::PaintedAsStackingContext,
                     establishes_context: true,
+                    own_operation_count: 0,
                 },
                 ProgramScope {
                     owner: 1,
@@ -532,36 +592,31 @@ mod tests {
                     topology_owner: child,
                     kind: PaintScopeKind::PaintedAsStackingContext,
                     establishes_context: true,
+                    own_operation_count: 0,
                 },
             ],
             ops: vec![
                 PaintOp {
-                    owner: 0,
                     scope: 0,
                     action: PaintAction::BeginScope,
                 },
                 PaintOp {
-                    owner: 0,
                     scope: 0,
                     action: PaintAction::Produce(PaintProducer::DrawBoxPhase(PaintPhase::Background)),
                 },
                 PaintOp {
-                    owner: 1,
                     scope: 1,
                     action: PaintAction::BeginScope,
                 },
                 PaintOp {
-                    owner: 1,
                     scope: 1,
                     action: PaintAction::Produce(PaintProducer::DrawBoxPhase(PaintPhase::Foreground)),
                 },
                 PaintOp {
-                    owner: 1,
                     scope: 1,
                     action: PaintAction::EndScope,
                 },
                 PaintOp {
-                    owner: 0,
                     scope: 0,
                     action: PaintAction::EndScope,
                 },
@@ -571,7 +626,7 @@ mod tests {
         for op in std::mem::take(&mut source.ops) {
             source.push_op(op);
         }
-        source.finish_owner_index();
+        source.finish_owner_index(None);
         let source = Rc::new(source);
         let arena = LayoutNodeArena::new();
         let rows = arena.paintable_rows();
@@ -587,6 +642,7 @@ mod tests {
             statistics: PaintProgramStatistics::default(),
         };
         compiler.copy_scope(&source, 1, NO_INDEX);
+        assert_eq!(compiler.inherited_owner_order().unwrap(), [0]);
         assert_eq!(
             compiler.source_intervals,
             [SourceInterval {
@@ -599,7 +655,13 @@ mod tests {
         assert_eq!(compiler.program.owners[0].row, child);
         let scope = compiler.program.scopes[0];
         assert_eq!((scope.begin, scope.end, scope.parent), (0, 3, NO_INDEX));
-        assert!(compiler.program.ops.iter().all(|op| op.owner == 0 && op.scope == 0));
+        assert!(
+            compiler
+                .program
+                .ops
+                .iter()
+                .all(|op| compiler.program.op_owner(*op) == 0 && op.scope == 0)
+        );
         assert_eq!(
             compiler.program.ops.iter().map(|op| op.action).collect::<Vec<_>>(),
             source.ops[2..5].iter().map(|op| op.action).collect::<Vec<_>>()
@@ -617,6 +679,17 @@ mod tests {
         let new_row = NodeSlotId::new(3, 1);
         assert_eq!(compiler.owner(new_row), 2);
         assert_eq!(compiler.source_owners, [1, 0, NO_INDEX]);
+        let earlier_row = NodeSlotId::new(0, 1);
+        assert_eq!(compiler.owner(earlier_row), 3);
+        let order = compiler.inherited_owner_order().unwrap();
+        assert_eq!(order, [3, 1, 0, 2]);
+        compiler.program.finish_owner_index(Some(order));
+        assert_eq!(compiler.program.owner_index(child), Some(0));
+        assert_eq!(compiler.program.owner_index(parent), Some(1));
+        assert_eq!(compiler.program.owner_index(new_row), Some(2));
+        assert_eq!(compiler.program.owner_index(earlier_row), Some(3));
+        assert_eq!(compiler.program.uses(0), [0, 1]);
+        assert!(compiler.program.uses(1).is_empty());
     }
 
     #[test]

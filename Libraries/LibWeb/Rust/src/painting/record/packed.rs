@@ -110,7 +110,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
             self.record_sparse_program(&program, &dirty);
             return None;
         }
-        self.record_program_producer(program.ops[0]);
+        self.record_program_producer(&program, program.ops[0]);
         let canvas_end = self.output_point();
         if let Some(shared) = self.try_share_complete_frame(&program, canvas_end) {
             return Some(shared);
@@ -304,7 +304,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
             return false;
         }
         let op = program.ops[index as usize];
-        program.owners[op.owner as usize].row == self.inputs.uncaptured.root_background_source.root_layout_node
+        program.op_row(op) == self.inputs.uncaptured.root_background_source.root_layout_node
             && reads_root_canvas(op.action)
     }
 
@@ -352,7 +352,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
         if source_op.action != PaintAction::BeginScope
             || !source.directory.recorded(interval.0)
             || source.directory.needs_refresh(interval.0, interval.1)
-            || source.owner_inputs[source_op.owner as usize] != inputs
+            || source.owner_inputs[source.program.op_owner(source_op) as usize] != inputs
         {
             return None;
         }
@@ -496,7 +496,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
         if !self.packed().avc_reuse.permits_interval(source_index, source_index + 1) {
             return None;
         }
-        let row = program.owners[op.owner as usize].row;
+        let row = program.op_row(op);
         if self
             .layout_arena
             .paintable_paint_cache(row)
@@ -519,13 +519,13 @@ impl<O: Observer> PaintRecorder<'_, O> {
         {
             return None;
         }
-        let inputs = self.prepared_owner(op.owner);
+        let inputs = self.prepared_owner(program.op_owner(op));
         let source = self.command_cache_source.as_ref()?.paint_cache.as_ref()?;
         let old_op = source.program.ops[source_index as usize];
         if old_op.action != op.action
             || !source.directory.recorded(source_index)
             || source.directory.needs_refresh(source_index, source_index + 1)
-            || source.owner_inputs[old_op.owner as usize] != inputs
+            || source.owner_inputs[source.program.op_owner(old_op) as usize] != inputs
         {
             return None;
         }
@@ -540,10 +540,10 @@ impl<O: Observer> PaintRecorder<'_, O> {
             self.log_reused_producer(program, op, start);
             return;
         }
-        self.prepared_owner(op.owner);
+        self.prepared_owner(program.op_owner(op));
         let before = self.uncacheable_paint_generation;
         let blocking = self.blocking_wheel_event_region_count;
-        self.record_program_producer(op);
+        self.record_program_producer(program, op);
         let end = self.output_point();
         let refresh = self.uncacheable_paint_generation != before;
         let blocking_count = self.blocking_wheel_event_region_count - blocking;
@@ -590,7 +590,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
         if !O::ENABLED {
             return;
         }
-        let row = program.owners[op.owner as usize].row;
+        let row = program.op_row(op);
         let end = self.output_point();
         match op.action {
             PaintAction::Produce(PaintProducer::DrawBoxPhase(phase)) => {
@@ -636,9 +636,8 @@ impl<O: Observer> PaintRecorder<'_, O> {
         }
     }
 
-    fn record_program_producer(&mut self, op: PaintOp) {
-        let program = self.packed().update.program.clone();
-        let row = program.owners[op.owner as usize].row;
+    fn record_program_producer(&mut self, program: &PaintProgram, op: PaintOp) {
+        let row = program.op_row(op);
         let PaintAction::Produce(producer) = op.action else {
             unreachable!()
         };

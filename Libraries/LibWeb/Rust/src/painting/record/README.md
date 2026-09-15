@@ -49,9 +49,12 @@ there are no retained command buffers or ordering vectors per scope.
 
 Compilation records source mappings as coalesced intervals, with gaps for new
 occurrences. It does not build a source-index table or run-start table per operation.
-Copied operations remap their owner through a temporary dense array; the inverse
-mapping also carries retained owner inputs into the new frame. These mappings are
-discarded after recording and add no per-owner state to the retained program.
+Each scope owns its direct producers; child producers always enter child scopes.
+Instructions name that scope, so copied instructions only need a constant scope-index
+adjustment. Owners are remapped once per scope, and the inverse mapping carries
+retained owner inputs into the new frame. Scope-local operation counts prepare the
+reverse index, and the old owner lookup ordering is merged with newly introduced
+owners. Temporary mappings are discarded after recording.
 
 Row retirement resolves its old occurrences before clearing paint data, using the
 source program's immutable ownership and ancestry. Clearing parents before their
@@ -111,7 +114,7 @@ content, geometry, frame-input and recorded-output checks still apply independen
 Sparse recording schedules invalidated producers even when their layout rows stayed
 clean. Missing history and whole-tree resets retain the full-recording fallback.
 
-Metadata layouts have compile-time size checks: operations are 12 bytes, scopes
+Metadata layouts have compile-time size checks: operations are 8 bytes, scopes
 24 bytes, and output boundaries 8 bytes. Owner inputs are stored once per program
 owner. `BenchmarkDisplayListRecording` reports retained capacities, including
 invalidation stamps, rather than counting logical payload sizes alone. Those
