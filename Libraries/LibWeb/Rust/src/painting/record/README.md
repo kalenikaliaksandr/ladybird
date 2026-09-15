@@ -69,8 +69,7 @@ internal plans of unchanged child scopes. Float and inline/replaced counts affec
 that composition when their phases appear or disappear. Reattachment conservatively
 invalidates the moved subtree's participation as well as its source and destination.
 
-Embedded visual-context indices conservatively require matching
-structural epochs. Copied hit items rebind external geometry when the geometry
+Copied hit items rebind external geometry when the geometry
 revision changes. SVG content and scroll metadata additionally depend on
 appropriate descendant invalidation; snap areas are not solely inputs of the
 scroller's own box.
@@ -80,6 +79,16 @@ retirement, repurposing and recycling. It coalesces changes relative to the last
 published recording, preserves changes newer than a recording snapshot and treats
 fresh trees or missing history as a full reset. Read-only recordings do not consume
 the journal. Payload-only AVC changes preserve identity and remain replay updates.
+
+When structural epochs differ, `avc_reuse.rs` derives invalid references and their
+dependent contexts from this journal. A single pass over the source commands and
+hit items finds the affected producers through the existing output directory.
+Validation includes command headers, embedded scroll and animation references, and
+inline mask, group and pattern records. External nested display lists retain their
+own visual-context namespace. Only affected source intervals become unavailable;
+content, geometry, frame-input and recorded-output checks still apply independently.
+Sparse recording schedules invalidated producers even when their layout rows stayed
+clean. Missing history and whole-tree resets retain the full-recording fallback.
 
 Metadata layouts have compile-time size checks: operations are 12 bytes, scopes
 24 bytes, and output boundaries 8 bytes. Owner inputs are stored once per program

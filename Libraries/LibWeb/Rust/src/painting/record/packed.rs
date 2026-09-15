@@ -8,6 +8,7 @@
 //! belongs to the preceding frame's complete directory; no row carries a historical address.
 
 use super::PaintRecorder;
+use super::avc_reuse::AvcReuseFilter;
 use super::cache::{CaptureKind, CaptureSite};
 use super::directory::{FramePaintCache, OutputPoint, OwnerInputs, PaintDirectory};
 use super::program::{PaintAction, PaintOp, PaintProgram, ProgramUpdate};
@@ -25,6 +26,7 @@ pub(super) struct PackedRecording {
     owner_inputs: Rc<Vec<OwnerInputs>>,
     topology_revision: u64,
     geometry_revision: u64,
+    avc_reuse: AvcReuseFilter,
 }
 
 impl PackedRecording {
@@ -33,6 +35,7 @@ impl PackedRecording {
         source: Option<&FramePaintCache>,
         topology_revision: u64,
         geometry_revision: u64,
+        avc_reuse: AvcReuseFilter,
     ) -> Self {
         let owner_inputs = match source {
             Some(source) if Rc::ptr_eq(&source.program, &update.program) => source.owner_inputs.clone(),
@@ -61,6 +64,7 @@ impl PackedRecording {
             owner_inputs,
             topology_revision,
             geometry_revision,
+            avc_reuse,
         }
     }
 
@@ -113,7 +117,9 @@ impl<O: Observer> PaintRecorder<'_, O> {
         if pending.requires_validation
             || !Rc::ptr_eq(program, &source.program)
             || source.geometry_revision != self.packed().geometry_revision
-            || pending.rows.is_empty() && source.directory.refresh.is_empty()
+            || pending.rows.is_empty()
+                && source.directory.refresh.is_empty()
+                && self.packed().avc_reuse.rejected_operations().is_empty()
         {
             return None;
         }
@@ -154,6 +160,9 @@ impl<O: Observer> PaintRecorder<'_, O> {
             }
         }
         dirty.extend_from_slice(&source.directory.refresh);
+        // Sparse recording keeps the source program's operation indices. A changed
+        // AVC dependency schedules its producer even when its layout row stayed clean.
+        dirty.extend_from_slice(self.packed().avc_reuse.rejected_operations());
         dirty.push(0); // Canvas and inspector content have independent frame inputs.
         dirty.push(program.ops.len() as u32 - 1);
         dirty.sort_unstable();
@@ -257,24 +266,15 @@ impl<O: Observer> PaintRecorder<'_, O> {
 
     fn source_permits_reuse(&self) -> bool {
         self.command_cache_source.as_ref().is_some_and(|source| {
-            source.paint_cache.as_ref().is_some_and(|cache| cache.record_gen == self.completed_record_gen)
+            source
+                .paint_cache
+                .as_ref()
+                .is_some_and(|cache| cache.record_gen == self.completed_record_gen)
                 && !self.all_paint_caches_dirty
-                // Embedded scroll and animation references need a fresh recording after
-                // structural changes until their narrower dependency contracts are available.
-                && match self.paint_state.visual_context.cache_changes.since(
-                    source.recorded_structural_epoch,
-                    self.paint_state.visual_context.structural_epoch(),
-                ) {
-                    crate::painting::visual_context::cache_changes::CacheChanges::Unchanged => true,
-                    crate::painting::visual_context::cache_changes::CacheChanges::Nodes(nodes) => {
-                        // Until individual source ranges are validated, keep the existing
-                        // conservative policy for every structural change.
-                        debug_assert!(!nodes.is_empty());
-                        false
-                    }
-                    crate::painting::visual_context::cache_changes::CacheChanges::Full => false,
-                }
-                && self.cache_compatibility.allows_subtree(CaptureKind::PaintedAsStackingContext)
+                && self.packed().avc_reuse.permits_any_reuse()
+                && self
+                    .cache_compatibility
+                    .allows_subtree(CaptureKind::PaintedAsStackingContext)
         })
     }
 
@@ -284,6 +284,9 @@ impl<O: Observer> PaintRecorder<'_, O> {
         }
         let entry = program.scopes[scope as usize];
         let interval = self.packed().update.source_interval(entry.begin, entry.end)?;
+        if !self.packed().avc_reuse.permits_interval(interval.0, interval.1) {
+            return None;
+        }
         let row = program.owners[entry.owner as usize].row;
         let cache = self.layout_arena.paintable_paint_cache(row);
         if cache.is_self_dirty_since(self.completed_record_gen)
@@ -435,6 +438,9 @@ impl<O: Observer> PaintRecorder<'_, O> {
             return None;
         }
         let source_index = self.packed().update.source_op(index)?;
+        if !self.packed().avc_reuse.permits_interval(source_index, source_index + 1) {
+            return None;
+        }
         let row = program.owners[op.owner as usize].row;
         if self
             .layout_arena
@@ -490,6 +496,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
     }
 
     fn copy_program_interval(&mut self, begin: u32, end: u32) {
+        debug_assert!(self.packed().avc_reuse.permits_interval(begin, end));
         let source = self
             .command_cache_source
             .clone()

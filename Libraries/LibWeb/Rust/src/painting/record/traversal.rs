@@ -98,6 +98,11 @@ fn record_display_list_impl<O: Observer>(
             .map(|cache| (&cache.program, cache.topology_revision)),
     );
     let program_statistics = update.statistics;
+    let avc_reuse = super::avc_reuse::AvcReuseFilter::new(
+        &paint_state.visual_context,
+        command_cache_source.as_deref(),
+        item_cache_source.as_deref(),
+    );
     let packed = PackedRecording::new(
         update,
         command_cache_source
@@ -105,6 +110,7 @@ fn record_display_list_impl<O: Observer>(
             .and_then(|source| source.paint_cache.as_ref()),
         layout_arena.paint_topology_revision(),
         layout_arena.paint_geometry_revision(),
+        avc_reuse,
     );
     let mut recorder = PaintRecorder {
         layout_arena: &rows,

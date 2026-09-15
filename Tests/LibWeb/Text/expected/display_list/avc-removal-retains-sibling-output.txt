@@ -1,0 +1,18 @@
+clip removal: epoch changed true
+clip removal: sibling output reused true
+clip removal: sibling indices unchanged true
+slot recycling: epoch changed true
+slot recycling: sibling output reused true
+slot recycling: sibling indices unchanged true
+clip slot recycled: true
+transform removal: epoch changed true
+transform removal: sibling output reused true
+transform removal: sibling indices unchanged true
+mask removal: epoch changed true
+mask removal: sibling output reused true
+mask removal: sibling indices unchanged true
+scroller removal: epoch changed true
+scroller removal: sibling output reused true
+scroller removal: sibling indices unchanged true
+stable hit target: stable
+removed hit target absent: true

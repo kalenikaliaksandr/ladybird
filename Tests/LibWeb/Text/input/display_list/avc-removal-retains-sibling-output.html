@@ -1,0 +1,63 @@
+<!doctype html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; }
+    #anchor { anchor-name: --anchor; width: 10px; height: 10px; }
+    #anchored { position: absolute; position-anchor: --anchor; top: anchor(bottom); left: anchor(left); }
+    .panel { position: absolute; top: 40px; width: 120px; height: 100px; z-index: 0; }
+    #volatile { left: 0; background: green; overflow: scroll; }
+    #stable { left: 150px; background: silver; }
+    #replacement { left: 300px; }
+    #persistent-scroller { left: 450px; overflow: scroll; }
+    .contents { width: 250px; height: 400px; }
+    .clipped { clip-path: inset(2px); }
+    .lifted { transform: translateX(1px); }
+    .masked { mask-image: linear-gradient(black, black); }
+</style>
+<div id="anchor"></div><div id="anchored"></div>
+<div id="volatile" class="panel clipped lifted masked"><div class="contents">changing</div></div>
+<div id="stable" class="panel lifted"><div class="contents">unchanged text</div></div>
+<div id="replacement" class="panel"></div>
+<div id="persistent-scroller" class="panel"><div class="contents"></div></div>
+<script>
+promiseTest(async () => {
+    if (document.readyState !== "complete") await new Promise(resolve => addEventListener("load", resolve, { once: true }));
+    await document.fonts.ready;
+    __outputElement.style.display = "none";
+    const changing = document.getElementById("volatile");
+    const replacement = document.getElementById("replacement");
+    const stable = document.getElementById("stable");
+    const output = [];
+    const record = () => internals.recordDisplayListForTesting(true, false);
+    record();
+    record();
+    const stableIndices = JSON.stringify(internals.visualContextNodeIndices(stable));
+    const removedClips = internals.visualContextNodeIndices(changing).clips;
+    const mutateAndCheck = (label, mutate) => {
+        const epoch = internals.visualContextTreeStructuralEpoch();
+        internals.beginDisplayListTrace();
+        mutate();
+        record();
+        const trace = internals.takeDisplayListTrace();
+        output.push(`${label}: epoch changed ${internals.visualContextTreeStructuralEpoch() !== epoch}`);
+        // Sparse recomposition traces only scheduled work; an untouched sibling is
+        // copied in the intervening clean span and has no individual trace entry.
+        const reused = /#stable[^\s/]* REUSE WHOLE CAPTURE/.test(trace)
+            || (trace.includes("@viewport RECOMPOSE") && !trace.includes("#stable"));
+        output.push(`${label}: sibling output reused ${reused}`);
+        output.push(`${label}: sibling indices unchanged ${JSON.stringify(internals.visualContextNodeIndices(stable)) === stableIndices}`);
+    };
+    mutateAndCheck("clip removal", () => changing.classList.remove("clipped"));
+    mutateAndCheck("slot recycling", () => replacement.classList.add("clipped"));
+    output.push(`clip slot recycled: ${internals.visualContextNodeIndices(replacement).clips.some(index => removedClips.includes(index))}`);
+    mutateAndCheck("transform removal", () => changing.classList.remove("lifted"));
+    mutateAndCheck("mask removal", () => changing.classList.remove("masked"));
+    mutateAndCheck("scroller removal", () => changing.remove());
+    // The persistent scroller keeps wheel-target eligibility enabled. Hit geometry
+    // must stay correct while the unrelated scroller is retired.
+    output.push(`stable hit target: ${document.elementFromPoint(160, 60)?.parentElement?.id}`);
+    output.push(`removed hit target absent: ${document.elementFromPoint(10, 60)?.id !== "volatile"}`);
+    __outputElement.style.display = "";
+    output.forEach(println);
+});
+</script>

@@ -710,7 +710,7 @@ pub(crate) struct NodeDependencyOrder {
     pub dangling_references: Vec<(u32, u32)>,
 }
 
-fn for_each_spatial_node_reference(
+pub(crate) fn for_each_spatial_node_reference(
     index: SpatialNodeIndex,
     node: &SpatialNode,
     mut visit: impl FnMut(SpatialNodeIndex),
