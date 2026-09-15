@@ -146,23 +146,56 @@ impl PaintDirectory {
     }
 
     pub fn append_skipped(&mut self, count: u32, at: OutputPoint) {
-        for _ in 0..count {
-            self.append(at, false, false, 0);
+        if count == 0 {
+            return;
+        }
+        let previous = self.boundaries.last().unwrap();
+        assert!(at.commands >= previous.commands && at.hits >= previous.hits);
+        self.boundaries.resize(self.boundaries.len() + count as usize, at);
+        self.recorded.resize((self.boundaries.len() - 1).div_ceil(64), 0);
+    }
+
+    fn append_recorded_range(&mut self, source: &Self, mut from: u32, mut to: u32, mut count: u32) {
+        self.recorded.resize(((to + count) as usize).div_ceil(64), 0);
+        while count != 0 {
+            let source_shift = from % 64;
+            let destination_shift = to % 64;
+            let length = count.min(64 - destination_shift);
+            let mut bits = source.recorded[from as usize / 64] >> source_shift;
+            if source_shift + length > 64 {
+                bits |= source.recorded[from as usize / 64 + 1] << (64 - source_shift);
+            }
+            bits &= u64::MAX >> (64 - length);
+            self.recorded[to as usize / 64] |= bits << destination_shift;
+            from += length;
+            to += length;
+            count -= length;
         }
     }
 
     pub fn append_source(&mut self, source: &Self, begin: u32, end: u32) {
+        if begin == end {
+            return;
+        }
         let destination_begin = (self.boundaries.len() - 1) as u32;
         let new_base = *self.boundaries.last().unwrap();
         let old_base = source.boundaries[begin as usize];
-        for operation in begin..end {
-            self.append(
-                source.boundaries[operation as usize + 1].relocated(old_base, new_base),
-                source.recorded(operation),
-                false,
-                0,
-            );
-        }
+        // Source endpoints are monotonic. Checking the last relocated endpoint
+        // proves that adding these deltas cannot overflow anywhere in the range.
+        let new_end = source.boundaries[end as usize].relocated(old_base, new_base);
+        let command_delta = new_base.commands.wrapping_sub(old_base.commands);
+        let hit_delta = new_base.hits.wrapping_sub(old_base.hits);
+        self.boundaries.reserve((end - begin) as usize);
+        self.boundaries.extend(
+            source.boundaries[begin as usize + 1..end as usize]
+                .iter()
+                .map(|point| OutputPoint {
+                    commands: point.commands.wrapping_add(command_delta),
+                    hits: point.hits.wrapping_add(hit_delta),
+                }),
+        );
+        self.boundaries.push(new_end);
+        self.append_recorded_range(source, begin, destination_begin, end - begin);
         let first = source.refresh.partition_point(|&operation| operation < begin);
         for &operation in source.refresh[first..].iter().take_while(|&&operation| operation < end) {
             self.refresh.push(destination_begin + operation - begin);
@@ -220,5 +253,79 @@ mod tests {
         assert!(!next.recorded(64));
         assert!(next.recorded(65));
         assert!(next.boundaries.iter().all(|point| *point == OutputPoint::default()));
+    }
+
+    #[test]
+    #[should_panic(expected = "display list exceeds u32")]
+    fn bulk_copy_checks_the_relocated_range_for_overflow() {
+        let mut source = PaintDirectory::new(1);
+        source.append(
+            OutputPoint {
+                commands: u32::MAX,
+                hits: 0,
+            },
+            true,
+            false,
+            0,
+        );
+        let mut next = PaintDirectory::new(2);
+        next.append(OutputPoint { commands: 16, hits: 0 }, true, false, 0);
+        next.append_source(&source, 0, 1);
+    }
+
+    #[test]
+    fn copied_ranges_preserve_availability_at_every_word_alignment() {
+        let available = |index: u32| !index.is_multiple_of(3) && !index.is_multiple_of(5);
+        let mut source = PaintDirectory::new(256);
+        for index in 0..256 {
+            source.append(
+                OutputPoint {
+                    commands: (index + 1) * 16,
+                    hits: (index + 1) / 3,
+                },
+                available(index),
+                false,
+                0,
+            );
+        }
+        for prefix in 0..64 {
+            for begin in 0..64 {
+                for count in [0, 1, 63, 64, 65, 129] {
+                    let mut next = PaintDirectory::new((prefix + count + 3) as usize);
+                    for index in 0..prefix {
+                        next.append(
+                            OutputPoint {
+                                commands: (index + 1) * 8,
+                                hits: (index + 1) / 5,
+                            },
+                            index % 2 != 0,
+                            false,
+                            0,
+                        );
+                    }
+                    next.append_source(&source, begin, begin + count);
+                    for index in 0..prefix {
+                        assert_eq!(next.recorded(index), index % 2 != 0);
+                    }
+                    for index in 0..count {
+                        assert_eq!(next.recorded(prefix + index), available(begin + index));
+                        assert_eq!(
+                            next.boundaries[(prefix + index + 1) as usize],
+                            OutputPoint {
+                                commands: prefix * 8 + (index + 1) * 16,
+                                hits: prefix / 5 + (begin + index + 1) / 3 - begin / 3,
+                            },
+                        );
+                    }
+                    let end = *next.boundaries.last().unwrap();
+                    next.append_skipped(2, end);
+                    next.append(end, true, false, 0);
+                    assert!(!next.recorded(prefix + count));
+                    assert!(!next.recorded(prefix + count + 1));
+                    assert!(next.recorded(prefix + count + 2));
+                    assert_eq!(next.boundaries.len(), (prefix + count + 4) as usize);
+                }
+            }
+        }
     }
 }
