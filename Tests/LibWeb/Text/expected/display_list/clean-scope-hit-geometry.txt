@@ -1,0 +1,2 @@
+PASS: unrelated layout preserves the clean scope and caret target
+PASS: external containing-block margin preserves the clean scope and caret target

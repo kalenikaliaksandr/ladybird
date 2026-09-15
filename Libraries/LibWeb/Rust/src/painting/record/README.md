@@ -75,8 +75,11 @@ internal plans of unchanged child scopes. Float and inline/replaced counts affec
 that composition when their phases appear or disappear. Reattachment conservatively
 invalidates the moved subtree's participation as well as its source and destination.
 
-Copied hit items rebind external geometry when the geometry
-revision changes. SVG content and scroll metadata additionally depend on
+Copied hit items rebind external geometry when the geometry revision changes.
+A validated clean scope also proves that geometry owned by its paint subtree
+is unchanged: these hit items are copied directly, while references outside
+the scope still get repaired. Arbitrary producer spans carry no such proof.
+SVG content and scroll metadata additionally depend on
 appropriate descendant invalidation; snap areas are not solely inputs of the
 scroller's own box.
 

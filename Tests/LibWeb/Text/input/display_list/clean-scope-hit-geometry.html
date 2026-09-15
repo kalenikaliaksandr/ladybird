@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; font: 16px/20px monospace; }
+    #external { position: relative; width: 260px; height: 70px; }
+    #scope { position: absolute; z-index: 1; left: 10px; top: 10px; width: 120px; height: 30px; background: silver; }
+    #other { width: 200px; height: 30px; }
+</style>
+<body>
+<div id="external"><div id="scope"><span id="text">cached text</span></div></div><div id="other"></div>
+<script>
+promiseTest(async () => {
+    if (document.readyState !== "complete") await new Promise(resolve => addEventListener("load", resolve, { once: true }));
+    await document.fonts.ready;
+    __outputElement.style.display = "none";
+    const output = [];
+    const text = document.getElementById("text").firstChild;
+    internals.recordDisplayListForTesting(false, false);
+    for (const [name, mutate] of [
+        ["unrelated layout", () => { document.getElementById("other").style.height = "60px"; }],
+        ["external containing-block margin", () => { document.getElementById("external").style.marginRight = "25px"; }],
+    ]) {
+        mutate();
+        internals.beginDisplayListTrace();
+        internals.recordDisplayListForTesting(false, false);
+        const trace = internals.takeDisplayListTrace();
+        const caret = document.caretPositionFromPoint(20, 20);
+        // Canonical cache verification also compares the background hit item's
+        // external containing-block rectangle against a fresh recording.
+        if (!trace.includes("#scope REUSE WHOLE CAPTURE") && trace.includes("#scope")) {
+            output.push(`FAIL: ${name} did not reuse the clean scope\n${trace}`);
+        } else if (!caret || caret.offsetNode !== text) {
+            output.push(`FAIL: ${name} changed the caret target`);
+        } else {
+            output.push(`PASS: ${name} preserves the clean scope and caret target`);
+        }
+    }
+    __outputElement.style.display = "";
+    for (const line of output) println(line);
+});
+</script>

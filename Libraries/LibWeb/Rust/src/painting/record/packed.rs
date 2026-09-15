@@ -13,6 +13,7 @@ use super::directory::{FramePaintCache, OutputPoint, OwnerInputs, PaintDirectory
 use super::program::{PaintAction, PaintOp, PaintProgram, ProgramUpdate};
 use super::trace::{Action, Observer, Operation};
 use super::{PaintPhase, PaintRecorder};
+use crate::layout::node_data::NodeSlotId;
 use crate::painting::display_list::builder::{CommandRange, RecordedDisplayList};
 use crate::painting::display_list::commands::ContextRef;
 use crate::painting::paint_order_plan::{PaintProducer, PaintScopeKind};
@@ -38,6 +39,14 @@ pub(super) struct PackedRecording {
     topology_revision: u64,
     geometry_revision: u64,
     avc_reuse: AvcReuseFilter,
+}
+
+// Constructed only after validating a complete scope's dirtiness, position,
+// contexts and source interval. Arbitrary copied spans do not carry this proof.
+struct ReusableScope {
+    begin: u32,
+    end: u32,
+    paint_root: NodeSlotId,
 }
 
 impl PackedRecording {
@@ -310,7 +319,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
             .filter(|&index| reads_root_canvas(program.ops[index as usize].action))
     }
 
-    fn scope_source_interval(&mut self, program: &PaintProgram, scope: u32) -> Option<(u32, u32)> {
+    fn scope_source_interval(&mut self, program: &PaintProgram, scope: u32) -> Option<ReusableScope> {
         if !self.source_permits_reuse() {
             return None;
         }
@@ -347,7 +356,11 @@ impl<O: Observer> PaintRecorder<'_, O> {
         {
             return None;
         }
-        Some(interval)
+        Some(ReusableScope {
+            begin: interval.0,
+            end: interval.1,
+            paint_root: row,
+        })
     }
 
     fn try_share_complete_frame(
@@ -358,7 +371,8 @@ impl<O: Observer> PaintRecorder<'_, O> {
         if self.has_inspector_overlays() {
             return None;
         }
-        let (begin, end) = self.scope_source_interval(program, 0)?;
+        let scope = self.scope_source_interval(program, 0)?;
+        let (begin, end) = (scope.begin, scope.end);
         let source = self.command_cache_source.clone()?;
         let cache = source.paint_cache.as_ref()?;
         if !Rc::ptr_eq(&cache.program, &self.packed().update.program)
@@ -370,13 +384,9 @@ impl<O: Observer> PaintRecorder<'_, O> {
             return None;
         }
         let items = self.item_cache_source.as_ref()?.items.clone();
-        if cache.geometry_revision == self.packed().geometry_revision {
-            self.list.items = items;
-        } else {
-            for item in items.iter() {
-                self.append_spliced_hit_test_item(item);
-            }
-        }
+        // The validated viewport scope covers all hit geometry in this document.
+        // A layout commit may advance the global geometry revision without changing it.
+        self.list.items = items;
         self.blocking_wheel_event_region_count += cache.directory.blocking_count(begin, end);
         self.packed_mut().shared_directory = Some(cache.directory.clone());
         let site = self.program_scope_site(program, 0);
@@ -410,8 +420,8 @@ impl<O: Observer> PaintRecorder<'_, O> {
         let entry = program.scopes[scope as usize];
         let site = self.program_scope_site(program, scope);
         let start = self.output_point();
-        if let Some((begin, end)) = self.scope_source_interval(program, scope) {
-            self.copy_program_interval(begin, end);
+        if let Some(reused) = self.scope_source_interval(program, scope) {
+            self.copy_program_interval_with_scope(reused.begin, reused.end, Some(&reused));
             self.log_scope_result(site, start, true);
             self.observer
                 .observe(|log| log.leaf(Operation::Capture(site), Action::Reuse, false));
@@ -541,6 +551,10 @@ impl<O: Observer> PaintRecorder<'_, O> {
     }
 
     fn copy_program_interval(&mut self, begin: u32, end: u32) {
+        self.copy_program_interval_with_scope(begin, end, None);
+    }
+
+    fn copy_program_interval_with_scope(&mut self, begin: u32, end: u32, scope: Option<&ReusableScope>) {
         debug_assert!(self.packed().avc_reuse.permits_interval(begin, end));
         let source = self
             .command_cache_source
@@ -560,6 +574,9 @@ impl<O: Observer> PaintRecorder<'_, O> {
         let items = &items[from.hits as usize..to.hits as usize];
         if cache.geometry_revision == self.packed().geometry_revision {
             self.list.append_copies_of(items);
+        } else if let Some(scope) = scope {
+            debug_assert_eq!((begin, end), (scope.begin, scope.end));
+            self.append_hit_test_items_from_clean_scope(items, scope.paint_root);
         } else {
             for item in items {
                 self.append_spliced_hit_test_item(item);

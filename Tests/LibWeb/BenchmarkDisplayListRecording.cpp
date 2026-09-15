@@ -49,6 +49,7 @@ enum class DocumentShape {
     FlatCardsFew,
     NestedPanels,
     SharedContextCards,
+    TokenizedCards,
 };
 
 size_t card_count_of(DocumentShape shape)
@@ -159,6 +160,7 @@ OwnPtr<LoadedPage> s_flat_cards_page;
 OwnPtr<LoadedPage> s_flat_cards_few_page;
 OwnPtr<LoadedPage> s_nested_panels_page;
 OwnPtr<LoadedPage> s_shared_context_cards_page;
+OwnPtr<LoadedPage> s_tokenized_cards_page;
 
 // The markup goes into the initial about:blank document's root element: navigations are driven by the browser
 // process's session history, which an in-process page has no access to.
@@ -170,6 +172,7 @@ Utf16String build_document_markup(DocumentShape shape)
     builder.append(".card{position:absolute;z-index:1;box-sizing:border-box;border:1px solid #446;background:#dde;color:#113;overflow:hidden}"sv);
     if (shape == DocumentShape::SharedContextCards)
         builder.append(".card{z-index:auto}"sv);
+    builder.append(".token:nth-child(2n){color:#c40}.token:nth-child(2n+1){color:#048}"sv);
     builder.append(".panel{position:relative;z-index:0;width:800px;height:600px}"sv);
     builder.append("#negative{position:absolute;z-index:-1;left:0;top:0;width:800px;height:600px;background:#eef}"sv);
     builder.append("</style></head><body>"sv);
@@ -180,9 +183,18 @@ Utf16String build_document_markup(DocumentShape shape)
     }
     builder.append("<div id=negative></div>"sv);
     for (size_t i = 0; i < card_count_of(shape); ++i) {
-        auto left = static_cast<int>(i % cards_per_row) * card_width;
-        auto top = static_cast<int>(i / cards_per_row) * card_height;
-        builder.appendff("<div class=card id=card-{} style=\"left:{}px;top:{}px;width:{}px;height:{}px\">{}</div>", i, left, top, card_width, card_height, i % 100);
+        auto columns = shape == DocumentShape::TokenizedCards ? 4 : cards_per_row;
+        auto width = shape == DocumentShape::TokenizedCards ? 200 : card_width;
+        auto left = static_cast<int>(i % columns) * width;
+        auto top = static_cast<int>(i / columns) * card_height;
+        builder.appendff("<div class=card id=card-{} style=\"left:{}px;top:{}px;width:{}px;height:{}px\">", i, left, top, width, card_height);
+        if (shape == DocumentShape::TokenizedCards) {
+            for (auto token : { "auto"sv, " value"sv, " ="sv, " foo"sv, "("sv, "42"sv, ")"sv, ";"sv })
+                builder.appendff("<span class=token>{}</span>", token);
+        } else {
+            builder.appendff("{}", i % 100);
+        }
+        builder.append("</div>"sv);
     }
     for (; open_panels > 0; --open_panels)
         builder.append("</div>"sv);
@@ -258,6 +270,8 @@ LoadedPage& page_for(DocumentShape shape)
             return s_nested_panels_page;
         case DocumentShape::SharedContextCards:
             return s_shared_context_cards_page;
+        case DocumentShape::TokenizedCards:
+            return s_tokenized_cards_page;
         }
         VERIFY_NOT_REACHED();
     }();
@@ -375,6 +389,30 @@ void time_rust_recordings(DocumentShape shape, StringView label)
     outln("  retained command/run capacity: {} bytes; hit capacity: {} bytes; cache metadata: {} bytes ({} operations, {} scopes, {} owners)", memory.command_storage_bytes, memory.hit_storage_bytes, memory.metadata_bytes, memory.operation_count, memory.scope_count, memory.owner_count);
 }
 
+void time_removal_recordings(DocumentShape shape, StringView label)
+{
+    auto& loaded_page = page_for(shape);
+    auto& document = loaded_page.document();
+    auto card = GC::make_root(*document.get_element_by_id("card-1000"_utf16));
+    auto parent = GC::make_root(*card->parent());
+    Samples layout_samples;
+    Samples recording_samples;
+    for (size_t iteration = 0; iteration < timed_iterations; ++iteration) {
+        auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
+        if (card->parent())
+            card->remove();
+        else
+            MUST(parent->append_child(*card));
+        document.update_layout(Web::DOM::UpdateLayoutReason::Debugging);
+        layout_samples.microseconds.append(timer.elapsed_time().to_microseconds());
+        timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
+        VERIFY(document.record_display_list(benchmark_paint_config(), loaded_page.display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite));
+        recording_samples.microseconds.append(timer.elapsed_time().to_microseconds());
+    }
+    layout_samples.report("  removal/attachment and layout"sv);
+    recording_samples.report(label);
+}
+
 }
 
 TEST_SETUP
@@ -449,26 +487,12 @@ BENCHMARK_CASE(document_record_quiet_frame_among_2000_flat)
 
 BENCHMARK_CASE(document_record_after_removal_in_shared_stacking_context)
 {
-    auto& loaded_page = page_for(DocumentShape::SharedContextCards);
-    auto& document = loaded_page.document();
-    auto card = GC::make_root(*document.get_element_by_id("card-1000"_utf16));
-    auto parent = GC::make_root(*card->parent());
-    Samples layout_samples;
-    Samples recording_samples;
-    for (size_t iteration = 0; iteration < timed_iterations; ++iteration) {
-        auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
-        if (card->parent())
-            card->remove();
-        else
-            MUST(parent->append_child(*card));
-        document.update_layout(Web::DOM::UpdateLayoutReason::Debugging);
-        layout_samples.microseconds.append(timer.elapsed_time().to_microseconds());
-        timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
-        VERIFY(document.record_display_list(benchmark_paint_config(), loaded_page.display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite));
-        recording_samples.microseconds.append(timer.elapsed_time().to_microseconds());
-    }
-    layout_samples.report("  removal/attachment and layout"sv);
-    recording_samples.report("document recording, shared context, one card removed/attached"sv);
+    time_removal_recordings(DocumentShape::SharedContextCards, "document recording, shared context, one card removed/attached"sv);
+}
+
+BENCHMARK_CASE(document_record_after_removal_among_tokenized_cards)
+{
+    time_removal_recordings(DocumentShape::TokenizedCards, "document recording, tokenized cards, one card removed/attached"sv);
 }
 
 BENCHMARK_CASE(document_record_after_viewport_scroll_and_one_card_change)

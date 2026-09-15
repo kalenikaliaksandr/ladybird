@@ -534,6 +534,46 @@ impl<O: Observer> PaintRecorder<'_, O> {
         self.list.append(item);
     }
 
+    pub(super) fn append_hit_test_items_from_clean_scope(&mut self, items: &[HitTestItem], root: NodeSlotId) {
+        let mut last_container = None;
+        let mut copy_begin = 0;
+        for (index, item) in items.iter().enumerate() {
+            let container = item.block_container;
+            let inside = if container.is_invalid() {
+                false
+            } else if let Some((previous, inside)) = last_container
+                && previous == container
+            {
+                inside
+            } else {
+                let inside = self.is_inclusive_paint_descendant(container, root);
+                last_container = Some((container, inside));
+                inside
+            };
+            if !inside {
+                self.list.append_copies_of(&items[copy_begin..index]);
+                self.append_spliced_hit_test_item(item);
+                copy_begin = index + 1;
+            }
+        }
+        self.list.append_copies_of(&items[copy_begin..]);
+    }
+
+    fn is_inclusive_paint_descendant(&self, node: NodeSlotId, root: NodeSlotId) -> bool {
+        let mut from_node = Some(node);
+        let mut from_root = Some(root);
+        loop {
+            match (from_node, from_root) {
+                (Some(current), _) if current == root => return true,
+                (_, Some(current)) if current == node => return false,
+                (None, None) => return false,
+                _ => {}
+            }
+            from_node = from_node.and_then(|row| crate::painting::paint_order::paint_parent(self.layout_arena, row));
+            from_root = from_root.and_then(|row| crate::painting::paint_order::paint_parent(self.layout_arena, row));
+        }
+    }
+
     fn paint(&mut self, paintable: NodeSlotId, phase: PaintPhase) {
         crate::painting::record::paint::paint(self, paintable, phase);
     }
