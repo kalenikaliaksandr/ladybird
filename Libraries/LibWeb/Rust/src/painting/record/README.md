@@ -74,6 +74,12 @@ revision changes. SVG content and scroll metadata additionally depend on
 appropriate descendant invalidation; snap areas are not solely inputs of the
 scroller's own box.
 
+Viewport scrolling keeps the scrollport size unchanged; the viewport position is
+compositor state, not a shared recording input. The root background separately
+depends on the union of the viewport and root overflow rectangles. If that painted
+area changes, sparse scheduling and scope reuse checks select its background
+producer (or opaque SVG unit) while preserving unrelated output.
+
 `visual_context/cache_changes.rs` journals the typed slots invalidated by AVC
 retirement, repurposing and recycling. It coalesces changes relative to the last
 published recording, preserves changes newer than a recording snapshot and treats

@@ -7,17 +7,28 @@
 //! Recording consumes a packed program and writes one destination tape. Every source span
 //! belongs to the preceding frame's complete directory; no row carries a historical address.
 
-use super::PaintRecorder;
 use super::avc_reuse::AvcReuseFilter;
 use super::cache::{CaptureKind, CaptureSite};
 use super::directory::{FramePaintCache, OutputPoint, OwnerInputs, PaintDirectory};
 use super::program::{PaintAction, PaintOp, PaintProgram, ProgramUpdate};
 use super::trace::{Action, Observer, Operation};
+use super::{PaintPhase, PaintRecorder};
 use crate::painting::display_list::builder::{CommandRange, RecordedDisplayList};
 use crate::painting::display_list::commands::ContextRef;
 use crate::painting::paint_order_plan::{PaintProducer, PaintScopeKind};
 use std::rc::Rc;
 use std::sync::Arc;
+
+fn reads_root_canvas(action: PaintAction) -> bool {
+    matches!(
+        action,
+        PaintAction::Produce(
+            PaintProducer::DrawBoxPhase(PaintPhase::Background)
+                | PaintProducer::Svg(_)
+                | PaintProducer::SvgBoxForeground
+        )
+    )
+}
 
 pub(super) struct PackedRecording {
     update: ProgramUpdate,
@@ -120,10 +131,15 @@ impl<O: Observer> PaintRecorder<'_, O> {
             || pending.rows.is_empty()
                 && source.directory.refresh.is_empty()
                 && self.packed().avc_reuse.rejected_operations().is_empty()
+                && self.cache_compatibility.root_background
         {
             return None;
         }
         let mut dirty = Vec::new();
+        dirty.extend(
+            self.changed_root_background_operations(program)
+                .filter(|&index| source.directory.recorded(index)),
+        );
         for dirty_row in &pending.rows {
             let row = dirty_row.row;
             let Some(owner) = program.owner_index(row) else {
@@ -278,6 +294,26 @@ impl<O: Observer> PaintRecorder<'_, O> {
         })
     }
 
+    fn reads_changed_root_background(&self, program: &PaintProgram, index: u32) -> bool {
+        if self.cache_compatibility.root_background {
+            return false;
+        }
+        let op = program.ops[index as usize];
+        program.owners[op.owner as usize].row == self.inputs.uncaptured.root_background_source.root_layout_node
+            && reads_root_canvas(op.action)
+    }
+
+    fn changed_root_background_operations<'p>(&self, program: &'p PaintProgram) -> impl Iterator<Item = u32> + 'p {
+        let owner = (!self.cache_compatibility.root_background)
+            .then(|| program.owner_index(self.inputs.uncaptured.root_background_source.root_layout_node))
+            .flatten();
+        owner
+            .into_iter()
+            .flat_map(|owner| program.uses(owner))
+            .copied()
+            .filter(|&index| reads_root_canvas(program.ops[index as usize].action))
+    }
+
     fn scope_source_interval(&mut self, program: &PaintProgram, scope: u32) -> Option<(u32, u32)> {
         if !self.source_permits_reuse() {
             return None;
@@ -285,6 +321,16 @@ impl<O: Observer> PaintRecorder<'_, O> {
         let entry = program.scopes[scope as usize];
         let interval = self.packed().update.source_interval(entry.begin, entry.end)?;
         if !self.packed().avc_reuse.permits_interval(interval.0, interval.1) {
+            return None;
+        }
+        if let Some(source) = self
+            .command_cache_source
+            .as_ref()
+            .and_then(|source| source.paint_cache.as_ref())
+            && self
+                .changed_root_background_operations(&source.program)
+                .any(|index| interval.0 <= index && index < interval.1)
+        {
             return None;
         }
         let row = program.owners[entry.owner as usize].row;
@@ -431,6 +477,9 @@ impl<O: Observer> PaintRecorder<'_, O> {
             return None;
         }
         let op = program.ops[index as usize];
+        if self.reads_changed_root_background(program, index) {
+            return None;
+        }
         if matches!(
             op.action,
             PaintAction::Produce(PaintProducer::Canvas | PaintProducer::InspectorOverlays)

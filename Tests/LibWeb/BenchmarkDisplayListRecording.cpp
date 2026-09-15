@@ -467,6 +467,28 @@ BENCHMARK_CASE(document_record_after_removal_in_shared_stacking_context)
     recording_samples.report("document recording, shared context, one card removed/attached"sv);
 }
 
+BENCHMARK_CASE(document_record_after_viewport_scroll_and_one_card_change)
+{
+    auto loaded_page = load_page(DocumentShape::FlatCards);
+    auto& document = loaded_page->document();
+    document.document_element()->set_attribute("style"_fly_string, "height:2400px"_utf16);
+    VERIFY(record_display_list(*loaded_page));
+    Samples layout_samples;
+    Samples recording_samples;
+    for (size_t iteration = 0; iteration < timed_iterations; ++iteration) {
+        auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
+        loaded_page->page->local_root_navigable()->perform_scroll_of_viewport_scrolling_box({ 0, iteration % 2 ? 200 : 300 });
+        apply_mutation(*loaded_page, Mutation::OneCardBackground);
+        document.update_layout(Web::DOM::UpdateLayoutReason::Debugging);
+        layout_samples.microseconds.append(timer.elapsed_time().to_microseconds());
+        timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
+        VERIFY(document.record_display_list(benchmark_paint_config(), loaded_page->display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite));
+        recording_samples.microseconds.append(timer.elapsed_time().to_microseconds());
+    }
+    layout_samples.report("  scrolling, mutation and layout"sv);
+    recording_samples.report("document recording, viewport scroll and one changed card"sv);
+}
+
 BENCHMARK_CASE(paint_cache_metadata_after_staggered_updates)
 {
     auto& loaded_page = page_for(DocumentShape::FlatCards);

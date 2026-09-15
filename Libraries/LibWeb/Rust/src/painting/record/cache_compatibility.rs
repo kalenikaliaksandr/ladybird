@@ -7,8 +7,11 @@
 use super::RecordingInputs;
 use super::cache::CaptureKind;
 use super::inputs::UncapturedContentInputs;
+use super::paint::background_resolution::root_background_canvas_rect;
+use crate::css::css_pixels::CssPixelRect;
 use crate::painting::force_dark::ForceDarkSettings;
 use crate::painting::paint_state::PaintState;
+use crate::painting::paintable_rows::PaintableRowsRef;
 
 /// Recording inputs whose changes affect cache reuse independently of per-paintable dirtiness.
 /// Keep these with the cache source: a read-only recording must not replace them.
@@ -21,13 +24,20 @@ pub(crate) struct PaintCacheInputs {
     pub(crate) should_show_line_box_borders: bool,
     pub(crate) should_paint_overlay: bool,
     pub(crate) uncaptured: UncapturedContentInputs,
+    // The root background covers both the viewport and the root's overflow. Moving
+    // the viewport inside that area does not change the recorded background.
+    root_background_canvas_rect: CssPixelRect,
     // Whether any box but the viewport could take a wheel event decides if the scroll metadata
     // inside subtree captures carries per-box wheel hit-test targets.
     pub(crate) has_non_viewport_wheel_scroll_target_candidate: bool,
 }
 
 impl PaintCacheInputs {
-    pub(crate) fn from_recording_inputs(inputs: &RecordingInputs<'_>, paint_state: &PaintState) -> Self {
+    pub(crate) fn from_recording_inputs(
+        rows: &PaintableRowsRef<'_>,
+        inputs: &RecordingInputs<'_>,
+        paint_state: &PaintState,
+    ) -> Self {
         Self {
             device_pixels_per_css_pixel: inputs.device_pixels_per_css_pixel,
             force_dark_enabled: inputs.force_dark_enabled,
@@ -35,6 +45,11 @@ impl PaintCacheInputs {
             should_show_line_box_borders: inputs.should_show_line_box_borders,
             should_paint_overlay: inputs.should_paint_overlay,
             uncaptured: inputs.uncaptured,
+            root_background_canvas_rect: root_background_canvas_rect(
+                rows,
+                inputs.uncaptured.root_background_source.root_layout_node,
+                inputs.css_viewport_rect,
+            ),
             has_non_viewport_wheel_scroll_target_candidate: paint_state
                 .visual_context
                 .scroll_state
@@ -70,6 +85,7 @@ impl PaintCacheInputs {
             hit_test_items,
             descendant_subtrees,
             stacking_contexts,
+            root_background: self.root_background_canvas_rect == source.root_background_canvas_rect,
         }
     }
 }
@@ -78,6 +94,7 @@ impl PaintCacheInputs {
 pub(crate) struct PaintCacheCompatibility {
     pub(crate) commands: bool,
     pub(crate) hit_test_items: bool,
+    pub(crate) root_background: bool,
     descendant_subtrees: bool,
     stacking_contexts: bool,
 }

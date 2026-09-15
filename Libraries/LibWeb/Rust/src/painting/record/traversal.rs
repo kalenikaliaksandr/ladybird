@@ -83,11 +83,11 @@ fn record_display_list_impl<O: Observer>(
             .is_some_and(|cache| cache.record_gen == completed)
     });
     let structural_epoch = paint_state.visual_context.structural_epoch();
-    let cache_inputs = PaintCacheInputs::from_recording_inputs(inputs, paint_state);
+    let rows = layout_arena.paintable_rows();
+    let cache_inputs = PaintCacheInputs::from_recording_inputs(&rows, inputs, paint_state);
     let cache_compatibility = command_cache_source.as_ref().map_or_else(Default::default, |source| {
         cache_inputs.compatibility_with(&source.cache_inputs)
     });
-    let rows = layout_arena.paintable_rows();
     let update = PaintProgram::compile(
         &rows,
         viewport,
