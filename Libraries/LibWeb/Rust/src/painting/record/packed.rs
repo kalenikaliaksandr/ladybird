@@ -51,16 +51,12 @@ impl PackedRecording {
         let owner_inputs = match source {
             Some(source) if Rc::ptr_eq(&source.program, &update.program) => source.owner_inputs.clone(),
             _ => Rc::new(
-                update
-                    .program
-                    .owners
-                    .iter()
+                (0..update.program.owners.len())
                     .map(|owner| {
                         source
                             .and_then(|source| {
-                                source
-                                    .program
-                                    .owner_index(owner.row)
+                                update
+                                    .source_owner(owner as u32)
                                     .map(|index| source.owner_inputs[index as usize])
                             })
                             .unwrap_or_default()

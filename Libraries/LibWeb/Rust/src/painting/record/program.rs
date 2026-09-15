@@ -65,11 +65,19 @@ const _: () = assert!(std::mem::size_of::<ProgramOwner>() == 12);
 pub(crate) struct ProgramUpdate {
     pub program: Rc<PaintProgram>,
     pub statistics: PaintProgramStatistics,
-    // Empty means identity. Otherwise each new operation names its counterpart in the source,
-    // or NO_INDEX when there was no unambiguous occurrence in that generation.
-    pub source_ops: Vec<u32>,
-    // For every operation, the start of the contiguous source run that contains it.
-    run_starts: Vec<u32>,
+    // None means the program is shared. Otherwise only these intervals have source
+    // counterparts; gaps describe newly planned occurrences without reusable output.
+    source_intervals: Option<Vec<SourceInterval>>,
+    // Each destination owner names its source owner, or NO_INDEX. Empty for a shared
+    // program or when there was no source. This mapping is recording workspace only.
+    source_owners: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SourceInterval {
+    begin: u32,
+    end: u32,
+    source_begin: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -81,24 +89,41 @@ pub(crate) struct PaintProgramStatistics {
 
 impl ProgramUpdate {
     pub fn source_op(&self, operation: u32) -> Option<u32> {
-        let source = if self.source_ops.is_empty() {
-            operation
-        } else {
-            self.source_ops[operation as usize]
-        };
-        (source != NO_INDEX).then_some(source)
+        self.source_interval(operation, operation + 1).map(|(begin, _)| begin)
     }
 
     pub fn source_interval(&self, begin: u32, end: u32) -> Option<(u32, u32)> {
-        let first = self.source_op(begin)?;
-        if !self.run_starts.is_empty() && self.run_starts[(end - 1) as usize] > begin {
+        debug_assert!(begin < end);
+        let Some(intervals) = &self.source_intervals else {
+            return Some((begin, end));
+        };
+        let index = intervals.partition_point(|interval| interval.end <= begin);
+        let interval = intervals.get(index)?;
+        if begin < interval.begin || end > interval.end {
             return None;
         }
-        Some((first, first + end - begin))
+        let source_begin = interval.source_begin + begin - interval.begin;
+        Some((source_begin, source_begin + end - begin))
+    }
+
+    pub fn source_owner(&self, owner: u32) -> Option<u32> {
+        let source = if self.source_owners.is_empty() {
+            owner
+        } else {
+            self.source_owners[owner as usize]
+        };
+        (source != NO_INDEX).then_some(source)
     }
 }
 
 impl PaintProgram {
+    fn push_op(&mut self, op: PaintOp) {
+        if op.action != PaintAction::EndScope {
+            self.owners[op.owner as usize].end_use += 1;
+        }
+        self.ops.push(op);
+    }
+
     pub(super) fn retained_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.ops.capacity() * std::mem::size_of::<PaintOp>()
@@ -159,11 +184,6 @@ impl PaintProgram {
     }
 
     fn finish_owner_index(&mut self) {
-        for op in &self.ops {
-            if op.action != PaintAction::EndScope {
-                self.owners[op.owner as usize].end_use += 1;
-            }
-        }
         let mut cursor = 0;
         for owner in &mut self.owners {
             owner.first_use = cursor;
@@ -203,8 +223,8 @@ impl PaintProgram {
                     shared: true,
                     ..Default::default()
                 },
-                source_ops: Vec::new(),
-                run_starts: Vec::new(),
+                source_intervals: None,
+                source_owners: Vec::new(),
             };
         }
         let mut compiler = ProgramCompiler {
@@ -216,7 +236,9 @@ impl PaintProgram {
             },
             owner_indices: FastMap::default(),
             statistics: PaintProgramStatistics::default(),
-            source_ops: Vec::new(),
+            source_intervals: Vec::new(),
+            source_owners: Vec::new(),
+            remapped_owners: source.map_or_else(Vec::new, |(program, _)| vec![NO_INDEX; program.owners.len()]),
             invalid_scopes: source.map_or_else(Vec::new, |(program, revision)| {
                 arena
                     .pending_paint_topology_changes()
@@ -227,23 +249,11 @@ impl PaintProgram {
         compiler.emit_scope(PaintScope::stacking_context(viewport), NO_INDEX);
         compiler.emit_producer(viewport, PaintProducer::InspectorOverlays, NO_INDEX, None);
         compiler.program.finish_owner_index();
-        let mut run_starts = Vec::with_capacity(compiler.source_ops.len());
-        let mut run_start = 0;
-        for (index, &source_op) in compiler.source_ops.iter().enumerate() {
-            if index == 0
-                || source_op == NO_INDEX
-                || compiler.source_ops[index - 1] == NO_INDEX
-                || compiler.source_ops[index - 1] + 1 != source_op
-            {
-                run_start = index as u32;
-            }
-            run_starts.push(run_start);
-        }
         ProgramUpdate {
             program: Rc::new(compiler.program),
             statistics: compiler.statistics,
-            source_ops: compiler.source_ops,
-            run_starts,
+            source_intervals: Some(compiler.source_intervals),
+            source_owners: compiler.source_owners,
         }
     }
 }
@@ -253,29 +263,75 @@ struct ProgramCompiler<'a, 'arena> {
     source: Option<(&'a Rc<PaintProgram>, u64)>,
     program: PaintProgram,
     owner_indices: FastMap<NodeSlotId, u32>,
-    source_ops: Vec<u32>,
+    source_intervals: Vec<SourceInterval>,
+    source_owners: Vec<u32>,
+    remapped_owners: Vec<u32>,
     invalid_scopes: Vec<bool>,
     statistics: PaintProgramStatistics,
 }
 
 impl ProgramCompiler<'_, '_> {
     fn owner(&mut self, row: NodeSlotId) -> u32 {
-        *self.owner_indices.entry(row).or_insert_with(|| {
-            let index = self.program.owners.len() as u32;
-            self.program.owners.push(ProgramOwner {
-                row,
-                first_use: 0,
-                end_use: 0,
-            });
-            index
-        })
+        if let Some((source, _)) = self.source
+            && let Some(owner) = source.owner_index(row)
+        {
+            return self.copied_owner(source, owner);
+        }
+        if let Some(&owner) = self.owner_indices.get(&row) {
+            return owner;
+        }
+        self.insert_owner(row, None)
+    }
+
+    fn insert_owner(&mut self, row: NodeSlotId, source_owner: Option<u32>) -> u32 {
+        let owner = self.program.owners.len() as u32;
+        self.program.owners.push(ProgramOwner {
+            row,
+            first_use: 0,
+            end_use: 0,
+        });
+        if source_owner.is_none() {
+            self.owner_indices.insert(row, owner);
+        }
+        if self.source.is_some() {
+            self.source_owners.push(source_owner.unwrap_or(NO_INDEX));
+        }
+        if let Some(source_owner) = source_owner {
+            self.remapped_owners[source_owner as usize] = owner;
+        }
+        owner
+    }
+
+    fn copied_owner(&mut self, source: &PaintProgram, old: u32) -> u32 {
+        let owner = self.remapped_owners[old as usize];
+        if owner != NO_INDEX {
+            return owner;
+        }
+        debug_assert!(!self.owner_indices.contains_key(&source.owners[old as usize].row));
+        self.insert_owner(source.owners[old as usize].row, Some(old))
+    }
+
+    fn note_source_interval(&mut self, begin: u32, end: u32, source_begin: u32) {
+        if let Some(last) = self.source_intervals.last_mut()
+            && last.end == begin
+            && last.source_begin + last.end - last.begin == source_begin
+        {
+            last.end = end;
+            return;
+        }
+        self.source_intervals.push(SourceInterval {
+            begin,
+            end,
+            source_begin,
+        });
     }
 
     fn push(&mut self, op: PaintOp, source: Option<u32>) {
         assert!(self.program.ops.len() < NO_INDEX as usize);
-        self.program.ops.push(op);
-        if self.source.is_some() {
-            self.source_ops.push(source.unwrap_or(NO_INDEX));
+        let index = self.program.ops.len() as u32;
+        self.program.push_op(op);
+        if let Some(source) = source {
+            self.note_source_interval(index, index + 1, source);
         }
     }
 
@@ -352,7 +408,7 @@ impl ProgramCompiler<'_, '_> {
         let new_scope = self.program.scopes.len() as u32;
         let new_begin = self.program.ops.len() as u32;
         for (index, old_entry) in source.scopes[old as usize..old_scope_end].iter().enumerate() {
-            let owner = self.owner(source.owners[old_entry.owner as usize].row);
+            let owner = self.copied_owner(source, old_entry.owner);
             self.program.scopes.push(ProgramScope {
                 owner,
                 parent: if index == 0 {
@@ -367,16 +423,15 @@ impl ProgramCompiler<'_, '_> {
         }
         for index in old_scope.begin..old_scope.end {
             let old_op = source.ops[index as usize];
-            let owner = self.owner(source.owners[old_op.owner as usize].row);
-            self.push(
-                PaintOp {
-                    owner,
-                    scope: new_scope + old_op.scope - old,
-                    action: old_op.action,
-                },
-                Some(index),
-            );
+            let owner = self.copied_owner(source, old_op.owner);
+            self.program.push_op(PaintOp {
+                owner,
+                scope: new_scope + old_op.scope - old,
+                action: old_op.action,
+            });
         }
+        assert!(self.program.ops.len() < NO_INDEX as usize);
+        self.note_source_interval(new_begin, self.program.ops.len() as u32, old_scope.begin);
     }
 }
 
@@ -409,12 +464,12 @@ pub(crate) fn test_program(entries: &[(NodeSlotId, u32)]) -> Rc<PaintProgram> {
     fn emit(program: &mut PaintProgram, scope: u32) {
         let owner = program.scopes[scope as usize].owner;
         program.scopes[scope as usize].begin = program.ops.len() as u32;
-        program.ops.push(PaintOp {
+        program.push_op(PaintOp {
             owner,
             scope,
             action: PaintAction::BeginScope,
         });
-        program.ops.push(PaintOp {
+        program.push_op(PaintOp {
             owner,
             scope,
             action: PaintAction::Produce(PaintProducer::ScopePreamble),
@@ -424,7 +479,7 @@ pub(crate) fn test_program(entries: &[(NodeSlotId, u32)]) -> Rc<PaintProgram> {
                 emit(program, child);
             }
         }
-        program.ops.push(PaintOp {
+        program.push_op(PaintOp {
             owner,
             scope,
             action: PaintAction::EndScope,
@@ -446,7 +501,7 @@ mod tests {
     fn copying_a_scope_rebases_metadata_without_changing_its_source_or_occurrence_order() {
         let parent = NodeSlotId::new(1, 1);
         let child = NodeSlotId::new(2, 1);
-        let source = Rc::new(PaintProgram {
+        let mut source = PaintProgram {
             owners: vec![
                 ProgramOwner {
                     row: parent,
@@ -512,7 +567,12 @@ mod tests {
                 },
             ],
             ..Default::default()
-        });
+        };
+        for op in std::mem::take(&mut source.ops) {
+            source.push_op(op);
+        }
+        source.finish_owner_index();
+        let source = Rc::new(source);
         let arena = LayoutNodeArena::new();
         let rows = arena.paintable_rows();
         let mut compiler = ProgramCompiler {
@@ -520,12 +580,22 @@ mod tests {
             source: Some((&source, 0)),
             program: PaintProgram::default(),
             owner_indices: FastMap::default(),
-            source_ops: Vec::new(),
+            source_intervals: Vec::new(),
+            source_owners: Vec::new(),
+            remapped_owners: vec![NO_INDEX; source.owners.len()],
             invalid_scopes: Vec::new(),
             statistics: PaintProgramStatistics::default(),
         };
         compiler.copy_scope(&source, 1, NO_INDEX);
-        assert_eq!(compiler.source_ops, [2, 3, 4]);
+        assert_eq!(
+            compiler.source_intervals,
+            [SourceInterval {
+                begin: 0,
+                end: 3,
+                source_begin: 2
+            }]
+        );
+        assert_eq!(compiler.source_owners, [1]);
         assert_eq!(compiler.program.owners[0].row, child);
         let scope = compiler.program.scopes[0];
         assert_eq!((scope.begin, scope.end, scope.parent), (0, 3, NO_INDEX));
@@ -537,6 +607,92 @@ mod tests {
         assert_eq!(
             (source.scopes[1].begin, source.scopes[1].end, source.scopes[1].parent),
             (2, 5, 0)
+        );
+        // Replanned occurrences and copied occurrences share the same destination
+        // owner even when owners first appear in a different order this generation.
+        assert_eq!(compiler.owner(child), 0);
+        assert_eq!(compiler.owner(parent), 1);
+        assert_eq!(compiler.copied_owner(&source, 0), 1);
+        assert_eq!(compiler.source_owners, [1, 0]);
+        let new_row = NodeSlotId::new(3, 1);
+        assert_eq!(compiler.owner(new_row), 2);
+        assert_eq!(compiler.source_owners, [1, 0, NO_INDEX]);
+    }
+
+    #[test]
+    fn source_intervals_do_not_reuse_across_insertions_or_reordered_occurrences() {
+        let update = ProgramUpdate {
+            program: Rc::new(PaintProgram::default()),
+            statistics: PaintProgramStatistics::default(),
+            source_intervals: Some(vec![
+                SourceInterval {
+                    begin: 1,
+                    end: 4,
+                    source_begin: 10,
+                },
+                SourceInterval {
+                    begin: 4,
+                    end: 7,
+                    source_begin: 2,
+                },
+                SourceInterval {
+                    begin: 9,
+                    end: 12,
+                    source_begin: 5,
+                },
+            ]),
+            source_owners: Vec::new(),
+        };
+        assert_eq!(update.source_interval(1, 4), Some((10, 13)));
+        assert_eq!(update.source_interval(2, 3), Some((11, 12)));
+        assert_eq!(update.source_interval(4, 7), Some((2, 5)));
+        assert_eq!(update.source_interval(1, 7), None);
+        assert_eq!(update.source_interval(4, 12), None);
+        assert_eq!(update.source_op(0), None);
+        assert_eq!(update.source_op(7), None);
+        assert_eq!(update.source_op(8), None);
+        assert_eq!(update.source_op(9), Some(5));
+        assert_eq!(update.source_op(12), None);
+    }
+
+    #[test]
+    fn adjacent_source_intervals_coalesce_only_when_both_orders_are_contiguous() {
+        let arena = LayoutNodeArena::new();
+        let rows = arena.paintable_rows();
+        let mut compiler = ProgramCompiler {
+            arena: &rows,
+            source: None,
+            program: PaintProgram::default(),
+            owner_indices: FastMap::default(),
+            source_intervals: Vec::new(),
+            source_owners: Vec::new(),
+            remapped_owners: Vec::new(),
+            invalid_scopes: Vec::new(),
+            statistics: PaintProgramStatistics::default(),
+        };
+        compiler.note_source_interval(0, 3, 10);
+        compiler.note_source_interval(3, 6, 13);
+        compiler.note_source_interval(6, 9, 0);
+        compiler.note_source_interval(10, 13, 3);
+        assert_eq!(
+            compiler.source_intervals,
+            [
+                SourceInterval {
+                    begin: 0,
+                    end: 6,
+                    source_begin: 10
+                },
+                SourceInterval {
+                    begin: 6,
+                    end: 9,
+                    source_begin: 0
+                },
+                SourceInterval {
+                    begin: 10,
+                    end: 13,
+                    source_begin: 3
+                },
+            ]
         );
     }
 }

@@ -47,6 +47,12 @@ intervals. Subtree changes additionally invalidate nested plans whose participat
 can depend on the changed ancestor. The flat arrays and reverse index are rebuilt;
 there are no retained command buffers or ordering vectors per scope.
 
+Compilation records source mappings as coalesced intervals, with gaps for new
+occurrences. It does not build a source-index table or run-start table per operation.
+Copied operations remap their owner through a temporary dense array; the inverse
+mapping also carries retained owner inputs into the new frame. These mappings are
+discarded after recording and add no per-owner state to the retained program.
+
 Row retirement resolves its old occurrences before clearing paint data, using the
 source program's immutable ownership and ancestry. Clearing parents before their
 descendants therefore does not require recovering ownership from retired rows.

@@ -53,6 +53,10 @@ enum class DocumentShape {
 
 size_t card_count_of(DocumentShape shape)
 {
+    // A long diff has many paint occurrences sharing one stacking context. Keep
+    // enough owners here to expose the cost of reconstructing the packed program.
+    if (shape == DocumentShape::SharedContextCards)
+        return 20000;
     return shape == DocumentShape::FlatCardsFew ? 200 : 2000;
 }
 
