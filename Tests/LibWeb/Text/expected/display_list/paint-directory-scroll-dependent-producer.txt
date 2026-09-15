@@ -1,0 +1,3 @@
+PASS: offset 35 updates the background independently
+PASS: offset 70 updates the background independently
+PASS: offset 70 updates the background independently

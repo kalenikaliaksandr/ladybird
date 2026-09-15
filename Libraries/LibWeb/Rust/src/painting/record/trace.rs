@@ -52,6 +52,7 @@ impl Observer for Trace {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     Walk,
+    Recompose,
     Record,
     Reuse,
     Skip,
@@ -138,6 +139,7 @@ impl CaptureLog {
             };
             let action = match event.action {
                 Action::Walk => "WALK",
+                Action::Recompose => "RECOMPOSE",
                 Action::Record => "RECORD",
                 Action::Reuse => match event.operation {
                     Operation::Capture(CaptureSite {

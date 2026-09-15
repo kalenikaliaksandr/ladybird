@@ -185,5 +185,12 @@ mod tests {
         ));
         assert_eq!(arena.paint_cache_completed_record_gen(), generation);
         assert!(arena.paintable_paint_cache(row).is_self_dirty_since(generation as u32));
+        assert!(
+            arena
+                .pending_paint_rows()
+                .rows
+                .iter()
+                .any(|entry| entry.row == row && !entry.descendants)
+        );
     }
 }

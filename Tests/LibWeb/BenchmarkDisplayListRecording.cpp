@@ -436,3 +436,24 @@ BENCHMARK_CASE(document_record_quiet_frame_among_2000_flat)
 {
     time_document_recordings(DocumentShape::FlatCards, "document recording, flat cards, quiet"sv, {});
 }
+
+BENCHMARK_CASE(paint_cache_metadata_after_staggered_updates)
+{
+    auto& loaded_page = page_for(DocumentShape::FlatCards);
+    auto& document = loaded_page.document();
+    set_card_style(loaded_page, 0, "#fdd"sv, false);
+    VERIFY(record_display_list(loaded_page));
+    auto initial = Web::Layout::RustFFI::layout_arena_paint_cache_memory_usage(document.layout_node_arena().handle());
+    for (size_t pass = 0; pass < 2; ++pass) {
+        for (size_t index = 0; index < card_count_of(DocumentShape::FlatCards); ++index) {
+            set_card_style(loaded_page, index, pass == 0 ? "#dfd"sv : "#fdd"sv, false);
+            VERIFY(record_display_list(loaded_page));
+        }
+    }
+    auto final = Web::Layout::RustFFI::layout_arena_paint_cache_memory_usage(document.layout_node_arena().handle());
+    VERIFY(final.operation_count == initial.operation_count);
+    VERIFY(final.scope_count == initial.scope_count);
+    VERIFY(final.owner_count == initial.owner_count);
+    VERIFY(final.metadata_bytes == initial.metadata_bytes);
+    outln("4000 staggered updates: cache metadata stays at {} bytes", final.metadata_bytes);
+}

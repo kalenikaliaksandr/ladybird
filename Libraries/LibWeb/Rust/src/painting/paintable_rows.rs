@@ -166,6 +166,7 @@ struct CommittedFragmentLinkSlot {
 
 #[derive(Default)]
 pub(crate) struct PaintableRowStore {
+    pending_paint_rows: RefCell<crate::painting::record::cache::PendingPaintRows>,
     paint_topology_revision: Cell<u64>,
     full_paint_topology_revision: Cell<u64>,
     chunks: Vec<Box<PaintableRowChunk>>,
@@ -289,7 +290,13 @@ where
         }
         self.arena.debug_assert_not_recording();
         let next_dirty_gen = self.arena.paint_cache_next_dirty_gen();
-        self.arena.paintable_paint_cache(id).mark_self_dirty(next_dirty_gen);
+        if !self.arena.paintable_paint_cache(id).mark_self_dirty(next_dirty_gen) {
+            self.arena
+                .paintable_rows
+                .pending_paint_rows
+                .borrow_mut()
+                .note(id, false);
+        }
         let mut ancestor = crate::painting::paint_order::paint_parent(self, id);
         while let Some(current) = ancestor {
             if self
@@ -299,6 +306,11 @@ where
             {
                 break;
             }
+            self.arena
+                .paintable_rows
+                .pending_paint_rows
+                .borrow_mut()
+                .note(current, true);
             ancestor = crate::painting::paint_order::paint_parent(self, current);
         }
     }
@@ -308,6 +320,11 @@ where
             return;
         }
         self.arena.debug_assert_not_recording();
+        self.arena
+            .paintable_rows
+            .pending_paint_rows
+            .borrow_mut()
+            .require_validation();
         let next_dirty_gen = self.arena.paint_cache_next_dirty_gen();
         let mut current = Some(id);
         while let Some(slot) = current {
@@ -566,8 +583,15 @@ impl LayoutNodeArena {
     pub(crate) fn paint_geometry_revision(&self) -> u64 {
         self.paintable_rows.absolute_rect_memo_epoch.get()
     }
+    pub(crate) fn pending_paint_rows(&self) -> Ref<'_, crate::painting::record::cache::PendingPaintRows> {
+        self.paintable_rows.pending_paint_rows.borrow()
+    }
+
     pub(crate) fn paint_invalidation_storage_bytes(&self) -> usize {
         self.paintable_rows.paint_caches.borrow().capacity() * std::mem::size_of::<PaintCache>()
+            + std::mem::size_of::<crate::painting::record::cache::PendingPaintRows>()
+            + self.pending_paint_rows().rows.capacity()
+                * std::mem::size_of::<crate::painting::record::cache::DirtyPaintRow>()
     }
 
     pub(crate) fn paint_topology_revision(&self) -> u64 {
@@ -773,6 +797,7 @@ impl LayoutNodeArena {
     }
 
     pub(crate) fn note_paint_record_completed_with_cache_writes(&self) {
+        self.paintable_rows.pending_paint_rows.borrow_mut().clear();
         let generation = &self.paintable_rows.completed_record_gen;
         let next = generation.get() + 1;
         if next >= u64::from(u32::MAX) {
@@ -803,6 +828,7 @@ impl LayoutNodeArena {
 
     pub(crate) fn mark_all_paint_caches_dirty(&self) {
         self.debug_assert_not_recording();
+        self.paintable_rows.pending_paint_rows.borrow_mut().require_validation();
         self.paintable_rows
             .all_paint_caches_dirty_gen
             .set(self.paint_cache_next_dirty_gen());

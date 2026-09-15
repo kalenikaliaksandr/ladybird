@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; }
+    #panel { position: absolute; top: 0; left: 0; width: 300px; height: 180px; z-index: 1; background: silver; }
+    #scroll { width: 100px; height: 80px; overflow: scroll; background: repeating-linear-gradient(red 0 20px, blue 20px 40px); background-attachment: local; }
+    #content { height: 500px; }
+    #sibling { position: absolute; top: 0; left: 120px; width: 80px; height: 80px; background: green; }
+</style>
+<body>
+<div id="panel"><div id="scroll"><div id="content"></div></div><div id="sibling"></div></div>
+<script>
+promiseTest(async () => {
+    if (document.readyState !== "complete") await new Promise(resolve => addEventListener("load", resolve, { once: true }));
+    __outputElement.style.display = "none";
+    const scroll = document.getElementById("scroll");
+    const output = [];
+    internals.recordDisplayListForTesting(true, false);
+    for (const offset of [35, 70, 70]) {
+        scroll.scrollTop = offset;
+        internals.beginDisplayListTrace();
+        internals.recordDisplayListForTesting(true, false);
+        const trace = internals.takeDisplayListTrace();
+        if (scroll.scrollTop !== offset || !trace.includes("@viewport RECOMPOSE") || !trace.includes("#scroll/background RECORD")) {
+            output.push(`FAIL: offset ${offset} did not schedule its background\n${trace}`);
+        } else if (trace.includes("#panel/background RECORD") || trace.includes("#sibling/background RECORD") || trace.includes("#scroll/scroll-metadata RECORD")) {
+            output.push(`FAIL: offset ${offset} recorded unchanged producers\n${trace}`);
+        } else {
+            output.push(`PASS: offset ${offset} updates the background independently`);
+        }
+    }
+    __outputElement.style.display = "";
+    for (const line of output) println(line);
+});
+</script>

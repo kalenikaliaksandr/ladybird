@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; }
+    #panel, #other { position: absolute; top: 0; width: 250px; height: 180px; z-index: 1; background: silver; }
+    #panel { left: 0; }
+    #other { left: 300px; }
+    #positioned { position: relative; width: 250px; height: 180px; }
+    #leaf { width: 100px; height: 50px; background: red; }
+    #hoisted { position: absolute; top: 0; left: 150px; width: 60px; height: 60px; z-index: 2; background: blue; }
+</style>
+<body>
+<div id="panel"><div id="positioned"><div id="leaf"></div><div id="hoisted"></div></div></div>
+<div id="other"></div>
+<script>
+promiseTest(async () => {
+    if (document.readyState !== "complete") await new Promise(resolve => addEventListener("load", resolve, { once: true }));
+    __outputElement.style.display = "none";
+    const leaf = document.getElementById("leaf");
+    const hoisted = document.getElementById("hoisted");
+    const other = document.getElementById("other");
+    const output = [];
+    internals.recordDisplayListForTesting(true, false);
+    function record(name, mutate, check, scheduledOwner = null) {
+        mutate();
+        internals.beginDisplayListTrace();
+        internals.recordDisplayListForTesting(true, false);
+        const trace = internals.takeDisplayListTrace();
+        try {
+            if (scheduledOwner !== null) {
+                if (!trace.includes("@viewport RECOMPOSE")) throw new Error("content change did not use the scheduled path");
+                if (!trace.includes(`#${scheduledOwner}/background RECORD`)) throw new Error("affected producer was not recorded");
+                if (trace.includes("#panel/background RECORD") || trace.includes("#other/background RECORD"))
+                    throw new Error("unchanged parent content was recorded");
+            }
+            check();
+            output.push(`PASS: ${name}`);
+        } catch (error) {
+            output.push(`FAIL: ${name}: ${error}\n${trace}`);
+        }
+    }
+    const hit = (x, expected) => {
+        const actual = document.elementFromPoint(x, 10)?.id;
+        if (actual !== expected) throw new Error(`hit at ${x}: expected ${expected}, got ${actual}`);
+    };
+    record("update a producer inside a positioned box", () => { leaf.style.background = "green"; }, () => hit(10, "leaf"), "leaf");
+    record("grow a fragment without changing its siblings", () => { leaf.style.outline = "3px solid black"; }, () => hit(10, "leaf"), "leaf");
+    record("shrink the fragment again", () => { leaf.style.outline = "none"; }, () => hit(10, "leaf"), "leaf");
+    record("update a hoisted positioned descendant", () => { hoisted.style.background = "purple"; }, () => hit(160, "hoisted"), "hoisted");
+    record("reparent into another paint scope", () => { other.appendChild(hoisted); }, () => {
+        hit(160, "positioned");
+        hit(460, "hoisted");
+    });
+    record("schedule under the new owner", () => { hoisted.style.background = "orange"; }, () => hit(460, "hoisted"), "hoisted");
+    __outputElement.style.display = "";
+    for (const line of output) println(line);
+});
+</script>

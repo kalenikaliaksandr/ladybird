@@ -1,0 +1,6 @@
+PASS: update a producer inside a positioned box
+PASS: grow a fragment without changing its siblings
+PASS: shrink the fragment again
+PASS: update a hoisted positioned descendant
+PASS: reparent into another paint scope
+PASS: schedule under the new owner

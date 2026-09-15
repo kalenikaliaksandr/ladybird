@@ -86,6 +86,10 @@ impl<O: Observer> PaintRecorder<'_, O> {
 
     pub(super) fn record_packed_program(&mut self) -> Option<Arc<RecordedDisplayList>> {
         let program = self.packed().update.program.clone();
+        if let Some(dirty) = self.plan_sparse_update(&program) {
+            self.record_sparse_program(&program, &dirty);
+            return None;
+        }
         self.record_program_producer(program.ops[0]);
         let canvas_end = self.output_point();
         if let Some(shared) = self.try_share_complete_frame(&program, canvas_end) {
@@ -98,6 +102,136 @@ impl<O: Observer> PaintRecorder<'_, O> {
         self.record_program_operation(&program, inspector);
         assert_eq!(self.packed().directory.boundaries.len(), program.ops.len() + 1);
         None
+    }
+
+    fn plan_sparse_update(&self, program: &Rc<PaintProgram>) -> Option<Vec<u32>> {
+        if !self.source_permits_reuse() {
+            return None;
+        }
+        let source = self.command_cache_source.as_ref()?.paint_cache.as_ref()?;
+        let pending = self.layout_arena.pending_paint_rows();
+        if pending.requires_validation
+            || !Rc::ptr_eq(program, &source.program)
+            || source.geometry_revision != self.packed().geometry_revision
+            || pending.rows.is_empty() && source.directory.refresh.is_empty()
+        {
+            return None;
+        }
+        let mut dirty = Vec::new();
+        for dirty_row in &pending.rows {
+            let row = dirty_row.row;
+            let Some(owner) = program.owner_index(row) else {
+                if dirty_row.descendants {
+                    continue;
+                }
+                return None;
+            };
+            for &index in program.uses(owner) {
+                let op = program.ops[index as usize];
+                match op.action {
+                    PaintAction::BeginScope if !dirty_row.descendants => {
+                        let scope = program.scopes[op.scope as usize];
+                        let parent_active = scope.parent == super::program::NO_INDEX
+                            || source.directory.recorded(program.scopes[scope.parent as usize].begin);
+                        if scope.establishes_context
+                            && parent_active
+                            && self.stacking_context_is_painted(row) != source.directory.recorded(index)
+                        {
+                            return None;
+                        }
+                    }
+                    PaintAction::Produce(producer) if source.directory.recorded(index) => {
+                        let reads_descendants =
+                            matches!(producer, PaintProducer::Svg(_) | PaintProducer::SvgBoxForeground)
+                                || producer == PaintProducer::ScrollMetadata
+                                    && self.inputs.uncaptured.is_recording_async_scrolling_metadata;
+                        if !dirty_row.descendants || reads_descendants {
+                            dirty.push(index);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        dirty.extend_from_slice(&source.directory.refresh);
+        dirty.push(0); // Canvas and inspector content have independent frame inputs.
+        dirty.push(program.ops.len() as u32 - 1);
+        dirty.sort_unstable();
+        dirty.dedup();
+        Some(dirty)
+    }
+
+    fn record_sparse_program(&mut self, program: &PaintProgram, dirty: &[u32]) {
+        self.packed_mut().directory = PaintDirectory::new(program.ops.len());
+        let mut cursor = 0;
+        let mut open_scopes = Vec::new();
+        let mut touched_scopes = Vec::new();
+        for &index in dirty {
+            if index != cursor {
+                self.copy_program_interval(cursor, index);
+            }
+            self.trace_sparse_path(
+                program,
+                program.ops[index as usize].scope,
+                &mut open_scopes,
+                &mut touched_scopes,
+            );
+            self.record_program_operation(program, index);
+            cursor = index + 1;
+        }
+        if cursor != program.ops.len() as u32 {
+            self.copy_program_interval(cursor, program.ops.len() as u32);
+        }
+        self.trace_sparse_path(program, super::program::NO_INDEX, &mut open_scopes, &mut touched_scopes);
+        assert_eq!(self.packed().directory.boundaries.len(), program.ops.len() + 1);
+        if O::ENABLED {
+            for scope in touched_scopes {
+                let entry = program.scopes[scope as usize];
+                let from = self.packed().directory.boundaries[entry.begin as usize];
+                let to = self.packed().directory.boundaries[entry.end as usize];
+                let site = self.program_scope_site(program, scope);
+                self.log_command_byte_capture_for_verification(
+                    site.paintable,
+                    site.kind,
+                    CommandRange {
+                        offset: from.commands,
+                        size: to.commands - from.commands,
+                    },
+                    false,
+                );
+                self.log_hit_test_item_capture_for_verification(
+                    site.paintable,
+                    site.kind,
+                    from.hits as usize,
+                    (to.hits - from.hits) as usize,
+                    false,
+                );
+            }
+        }
+    }
+
+    fn trace_sparse_path(&self, program: &PaintProgram, mut scope: u32, open: &mut Vec<u32>, touched: &mut Vec<u32>) {
+        if !O::ENABLED {
+            return;
+        }
+        let mut path = smallvec::SmallVec::<[u32; 16]>::new();
+        while scope != super::program::NO_INDEX {
+            path.push(scope);
+            scope = program.scopes[scope as usize].parent;
+        }
+        path.reverse();
+        let common = open.iter().zip(&path).take_while(|(a, b)| a == b).count();
+        while open.len() > common {
+            self.observer.observe(|log| log.end(false));
+            open.pop();
+        }
+        for &scope in &path[common..] {
+            let site = self.program_scope_site(program, scope);
+            self.observer
+                .observe(|log| log.begin(Operation::Capture(site), Action::Recompose));
+            open.push(scope);
+            touched.push(scope);
+        }
     }
 
     fn output_point(&self) -> OutputPoint {
@@ -228,8 +362,9 @@ impl<O: Observer> PaintRecorder<'_, O> {
         }
         self.prepared_owner(entry.owner);
         self.trace_scope(Operation::Capture(site), Action::Walk, |this| {
-            this.packed_mut().directory.append(start, true, false, 0);
-            if entry.establishes_context && !this.stacking_context_is_painted(site.paintable) {
+            let active = !entry.establishes_context || this.stacking_context_is_painted(site.paintable);
+            this.packed_mut().directory.append(start, active, false, 0);
+            if !active {
                 this.packed_mut()
                     .directory
                     .append_skipped(entry.end - entry.begin - 1, start);

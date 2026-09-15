@@ -17,39 +17,10 @@ displayListTest({
             name: "quiet masked root",
             expect: `
                 @canvas RECORD (empty)
-                @viewport WALK
-                  @viewport/background/hit-test REUSE
-                  @viewport/scroll-metadata REUSE
-                  @viewport/background SKIP
-                  @viewport/border SKIP
-                  @viewport/foreground/hit-test REUSE
-                  @viewport/foreground REUSE
-                  BlockContainer<HTML>#html WALK
-                    BlockContainer<HTML>#html/background/hit-test REUSE
-                    BlockContainer<HTML>#html/scroll-metadata REUSE
-                    BlockContainer<HTML>#html/background REUSE
-                    BlockContainer<HTML>#html/border SKIP
-                    BlockContainer<BODY>#body/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                    BlockContainer<HTML>#html/foreground/hit-test REUSE
-                    BlockContainer<HTML>#html/foreground REUSE
-                    BlockContainer<BODY>#body/descendants(foreground) REUSE WHOLE CAPTURE
-                    BlockContainer<DIV>#root WALK
+                @viewport RECOMPOSE
+                  BlockContainer<HTML>#html RECOMPOSE
+                    BlockContainer<DIV>#root RECOMPOSE
                       BlockContainer<DIV>#root/css-mask RECORD
-                      BlockContainer<DIV>#root/background/hit-test REUSE
-                      BlockContainer<DIV>#root/scroll-metadata REUSE
-                      BlockContainer<DIV>#root/background SKIP
-                      BlockContainer<DIV>#root/border SKIP
-                      BlockContainer<DIV>#r0.row/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#r1.row/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#r2.row/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#root/foreground/hit-test REUSE
-                      BlockContainer<DIV>#root/foreground REUSE
-                      BlockContainer<DIV>#r0.row/descendants(foreground) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#r1.row/descendants(foreground) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#r2.row/descendants(foreground) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#root/outline SKIP
-                    BlockContainer<HTML>#html/outline SKIP
-                  @viewport/outline SKIP
             `
         },
         {
@@ -58,57 +29,26 @@ displayListTest({
             check: equal => { equal(document.elementFromPoint(10, 30).id, "r1", "hit target"); },
             expect: `
                 @canvas RECORD (empty)
-                @viewport WALK
-                  @viewport/background/hit-test REUSE
+                @viewport RECOMPOSE
                   @viewport/scroll-metadata RECORD (empty)
-                  @viewport/background SKIP
-                  @viewport/border SKIP
-                  @viewport/foreground/hit-test REUSE
-                  @viewport/foreground REUSE
-                  BlockContainer<HTML>#html WALK
-                    BlockContainer<HTML>#html/background/hit-test REUSE
+                  BlockContainer<HTML>#html RECOMPOSE
                     BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
-                    BlockContainer<HTML>#html/background REUSE
-                    BlockContainer<HTML>#html/border SKIP
-                    BlockContainer<BODY>#body/descendants(background-and-borders) WALK
-                      BlockContainer<BODY>#body/background/hit-test REUSE
+                    BlockContainer<BODY>#body/descendants(background-and-borders) RECOMPOSE
                       BlockContainer<BODY>#body/scroll-metadata RECORD (empty)
-                      BlockContainer<BODY>#body/background SKIP
-                      BlockContainer<BODY>#body/border SKIP
-                    BlockContainer<HTML>#html/foreground/hit-test REUSE
-                    BlockContainer<HTML>#html/foreground REUSE
-                    BlockContainer<BODY>#body/descendants(foreground) WALK
-                      BlockContainer<BODY>#body/foreground/hit-test REUSE
-                      BlockContainer<BODY>#body/foreground REUSE
-                      BlockContainer<BODY>#body/outline SKIP
-                      BlockContainer<BODY>#body/overlay/hit-test REUSE
-                      BlockContainer<BODY>#body/overlay SKIP
-                    BlockContainer<DIV>#root WALK
+                    BlockContainer<DIV>#root RECOMPOSE
                       BlockContainer<DIV>#root/css-mask RECORD
-                      BlockContainer<DIV>#root/background/hit-test REUSE
                       BlockContainer<DIV>#root/scroll-metadata RECORD (empty)
-                      BlockContainer<DIV>#root/background SKIP
-                      BlockContainer<DIV>#root/border SKIP
-                      BlockContainer<DIV>#r0.row/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#r1.row/descendants(background-and-borders) WALK
+                      BlockContainer<DIV>#r1.row/descendants(background-and-borders) RECOMPOSE
                         BlockContainer<DIV>#r1.row/background/hit-test RECORD
                         BlockContainer<DIV>#r1.row/scroll-metadata RECORD (empty)
                         BlockContainer<DIV>#r1.row/background SKIP
                         BlockContainer<DIV>#r1.row/border SKIP
-                      BlockContainer<DIV>#r2.row/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#root/foreground/hit-test REUSE
-                      BlockContainer<DIV>#root/foreground REUSE
-                      BlockContainer<DIV>#r0.row/descendants(foreground) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#r1.row/descendants(foreground) WALK
+                      BlockContainer<DIV>#r1.row/descendants(foreground) RECOMPOSE
                         BlockContainer<DIV>#r1.row/foreground/hit-test RECORD
                         BlockContainer<DIV>#r1.row/foreground RECORD
                         BlockContainer<DIV>#r1.row/outline SKIP
                         BlockContainer<DIV>#r1.row/overlay/hit-test RECORD (empty)
                         BlockContainer<DIV>#r1.row/overlay SKIP
-                      BlockContainer<DIV>#r2.row/descendants(foreground) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#root/outline SKIP
-                    BlockContainer<HTML>#html/outline SKIP
-                  @viewport/outline SKIP
             `
         }
     ]

@@ -33,43 +33,15 @@ displayListTest({
             // A must be a single reuse leaf, covering both nested contexts and their content.
             expect: `
                 @canvas RECORD (empty)
-                @viewport WALK
-                  @viewport/background/hit-test REUSE
+                @viewport RECOMPOSE
                   @viewport/scroll-metadata RECORD (empty)
-                  @viewport/background SKIP
-                  @viewport/border SKIP
-                  @viewport/foreground/hit-test REUSE
-                  @viewport/foreground REUSE
-                  BlockContainer<HTML>#html WALK
-                    BlockContainer<HTML>#html/background/hit-test REUSE
+                  BlockContainer<HTML>#html RECOMPOSE
                     BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
-                    BlockContainer<HTML>#html/background REUSE
-                    BlockContainer<HTML>#html/border SKIP
-                    BlockContainer<BODY>#body/descendants(background-and-borders) WALK
-                      BlockContainer<BODY>#body/background/hit-test REUSE
+                    BlockContainer<BODY>#body/descendants(background-and-borders) RECOMPOSE
                       BlockContainer<BODY>#body/scroll-metadata RECORD (empty)
-                      BlockContainer<BODY>#body/background SKIP
-                      BlockContainer<BODY>#body/border SKIP
-                    BlockContainer<HTML>#html/foreground/hit-test REUSE
-                    BlockContainer<HTML>#html/foreground REUSE
-                    BlockContainer<BODY>#body/descendants(foreground) WALK
-                      BlockContainer<BODY>#body/foreground/hit-test REUSE
-                      BlockContainer<BODY>#body/foreground REUSE
-                      BlockContainer<BODY>#body/outline SKIP
-                      BlockContainer<BODY>#body/overlay/hit-test REUSE
-                      BlockContainer<BODY>#body/overlay SKIP
-                    BlockContainer<DIV>#a.context REUSE WHOLE CAPTURE
-                    BlockContainer<DIV>#b.context WALK
-                      BlockContainer<DIV>#b.context/background/hit-test REUSE
+                    BlockContainer<DIV>#b.context RECOMPOSE
                       BlockContainer<DIV>#b.context/scroll-metadata RECORD (empty)
-                      BlockContainer<DIV>#b.context/background REUSE
-                      BlockContainer<DIV>#b.context/border REUSE
-                      BlockContainer<DIV>#b-underlay.underlay REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#b-label.label/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#b.context/foreground/hit-test REUSE
-                      BlockContainer<DIV>#b.context/foreground REUSE
-                      BlockContainer<DIV>#b-label.label/descendants(foreground) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#b-detail.detail WALK
+                      BlockContainer<DIV>#b-detail.detail RECOMPOSE
                         BlockContainer<DIV>#b-detail.detail/background/hit-test RECORD
                         BlockContainer<DIV>#b-detail.detail/scroll-metadata RECORD (empty)
                         BlockContainer<DIV>#b-detail.detail/background RECORD
@@ -77,9 +49,6 @@ displayListTest({
                         BlockContainer<DIV>#b-detail.detail/foreground/hit-test RECORD
                         BlockContainer<DIV>#b-detail.detail/foreground RECORD
                         BlockContainer<DIV>#b-detail.detail/outline SKIP
-                      BlockContainer<DIV>#b.context/outline SKIP
-                    BlockContainer<HTML>#html/outline SKIP
-                  @viewport/outline SKIP
             `
         },
         {
@@ -97,55 +66,25 @@ displayListTest({
             // Changing the command size before B also tests relocation of B's complete capture.
             expect: `
                 @canvas RECORD (empty)
-                @viewport WALK
-                  @viewport/background/hit-test REUSE
+                @viewport RECOMPOSE
                   @viewport/scroll-metadata RECORD (empty)
-                  @viewport/background SKIP
-                  @viewport/border SKIP
-                  @viewport/foreground/hit-test REUSE
-                  @viewport/foreground REUSE
-                  BlockContainer<HTML>#html WALK
-                    BlockContainer<HTML>#html/background/hit-test REUSE
+                  BlockContainer<HTML>#html RECOMPOSE
                     BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
-                    BlockContainer<HTML>#html/background REUSE
-                    BlockContainer<HTML>#html/border SKIP
-                    BlockContainer<BODY>#body/descendants(background-and-borders) WALK
-                      BlockContainer<BODY>#body/background/hit-test REUSE
+                    BlockContainer<BODY>#body/descendants(background-and-borders) RECOMPOSE
                       BlockContainer<BODY>#body/scroll-metadata RECORD (empty)
-                      BlockContainer<BODY>#body/background SKIP
-                      BlockContainer<BODY>#body/border SKIP
-                    BlockContainer<HTML>#html/foreground/hit-test REUSE
-                    BlockContainer<HTML>#html/foreground REUSE
-                    BlockContainer<BODY>#body/descendants(foreground) WALK
-                      BlockContainer<BODY>#body/foreground/hit-test REUSE
-                      BlockContainer<BODY>#body/foreground REUSE
-                      BlockContainer<BODY>#body/outline SKIP
-                      BlockContainer<BODY>#body/overlay/hit-test REUSE
-                      BlockContainer<BODY>#body/overlay SKIP
-                    BlockContainer<DIV>#a.context WALK
-                      BlockContainer<DIV>#a.context/background/hit-test REUSE
+                    BlockContainer<DIV>#a.context RECOMPOSE
                       BlockContainer<DIV>#a.context/scroll-metadata RECORD (empty)
-                      BlockContainer<DIV>#a.context/background REUSE
-                      BlockContainer<DIV>#a.context/border REUSE
-                      BlockContainer<DIV>#a-underlay.underlay REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#a-label.label/descendants(background-and-borders) WALK
+                      BlockContainer<DIV>#a-label.label/descendants(background-and-borders) RECOMPOSE
                         BlockContainer<DIV>#a-label.label/background/hit-test RECORD
                         BlockContainer<DIV>#a-label.label/scroll-metadata RECORD (empty)
                         BlockContainer<DIV>#a-label.label/background RECORD
                         BlockContainer<DIV>#a-label.label/border RECORD
-                      BlockContainer<DIV>#a.context/foreground/hit-test REUSE
-                      BlockContainer<DIV>#a.context/foreground REUSE
-                      BlockContainer<DIV>#a-label.label/descendants(foreground) WALK
+                      BlockContainer<DIV>#a-label.label/descendants(foreground) RECOMPOSE
                         BlockContainer<DIV>#a-label.label/foreground/hit-test RECORD
                         BlockContainer<DIV>#a-label.label/foreground RECORD
                         BlockContainer<DIV>#a-label.label/outline SKIP
                         BlockContainer<DIV>#a-label.label/overlay/hit-test RECORD (empty)
                         BlockContainer<DIV>#a-label.label/overlay SKIP
-                      BlockContainer<DIV>#a-detail.detail REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#a.context/outline SKIP
-                    BlockContainer<DIV>#b.context REUSE WHOLE CAPTURE
-                    BlockContainer<HTML>#html/outline SKIP
-                  @viewport/outline SKIP
             `
         },
         {
@@ -155,38 +94,15 @@ displayListTest({
             // Descend into the previously spliced B, reusing its positive context from the first step.
             expect: `
                 @canvas RECORD (empty)
-                @viewport WALK
-                  @viewport/background/hit-test REUSE
+                @viewport RECOMPOSE
                   @viewport/scroll-metadata RECORD (empty)
-                  @viewport/background SKIP
-                  @viewport/border SKIP
-                  @viewport/foreground/hit-test REUSE
-                  @viewport/foreground REUSE
-                  BlockContainer<HTML>#html WALK
-                    BlockContainer<HTML>#html/background/hit-test REUSE
+                  BlockContainer<HTML>#html RECOMPOSE
                     BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
-                    BlockContainer<HTML>#html/background REUSE
-                    BlockContainer<HTML>#html/border SKIP
-                    BlockContainer<BODY>#body/descendants(background-and-borders) WALK
-                      BlockContainer<BODY>#body/background/hit-test REUSE
+                    BlockContainer<BODY>#body/descendants(background-and-borders) RECOMPOSE
                       BlockContainer<BODY>#body/scroll-metadata RECORD (empty)
-                      BlockContainer<BODY>#body/background SKIP
-                      BlockContainer<BODY>#body/border SKIP
-                    BlockContainer<HTML>#html/foreground/hit-test REUSE
-                    BlockContainer<HTML>#html/foreground REUSE
-                    BlockContainer<BODY>#body/descendants(foreground) WALK
-                      BlockContainer<BODY>#body/foreground/hit-test REUSE
-                      BlockContainer<BODY>#body/foreground REUSE
-                      BlockContainer<BODY>#body/outline SKIP
-                      BlockContainer<BODY>#body/overlay/hit-test REUSE
-                      BlockContainer<BODY>#body/overlay SKIP
-                    BlockContainer<DIV>#a.context REUSE WHOLE CAPTURE
-                    BlockContainer<DIV>#b.context WALK
-                      BlockContainer<DIV>#b.context/background/hit-test REUSE
+                    BlockContainer<DIV>#b.context RECOMPOSE
                       BlockContainer<DIV>#b.context/scroll-metadata RECORD (empty)
-                      BlockContainer<DIV>#b.context/background REUSE
-                      BlockContainer<DIV>#b.context/border REUSE
-                      BlockContainer<DIV>#b-underlay.underlay WALK
+                      BlockContainer<DIV>#b-underlay.underlay RECOMPOSE
                         BlockContainer<DIV>#b-underlay.underlay/background/hit-test RECORD
                         BlockContainer<DIV>#b-underlay.underlay/scroll-metadata RECORD (empty)
                         BlockContainer<DIV>#b-underlay.underlay/background RECORD
@@ -194,14 +110,6 @@ displayListTest({
                         BlockContainer<DIV>#b-underlay.underlay/foreground/hit-test RECORD
                         BlockContainer<DIV>#b-underlay.underlay/foreground RECORD
                         BlockContainer<DIV>#b-underlay.underlay/outline SKIP
-                      BlockContainer<DIV>#b-label.label/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#b.context/foreground/hit-test REUSE
-                      BlockContainer<DIV>#b.context/foreground REUSE
-                      BlockContainer<DIV>#b-label.label/descendants(foreground) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#b-detail.detail REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#b.context/outline SKIP
-                    BlockContainer<HTML>#html/outline SKIP
-                  @viewport/outline SKIP
             `
         }
     ]

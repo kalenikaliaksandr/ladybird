@@ -22,6 +22,13 @@ frame. SVG and mask work can remain opaque inside that boundary. Resources are
 registered in one recording manifest, then resolved and retained through the
 existing frame resource-set publication path.
 
+With unchanged topology, geometry and frame inputs, a bounded owner queue and the
+program's packed reverse index identify dirty occurrences. Descendant invalidation
+also schedules SVG and scrolling producers that read descendant inputs. Consecutive
+clean operations are copied in one run, without validating each clean scope. Unknown
+ownership, subtree dependencies and eligibility transitions use the validated walk.
+Live producers such as scroll-dependent backgrounds are scheduled independently.
+
 For reuse, an operation or scope must map to a complete interval in the previous
 frame. The source directory stays immutable while the destination directory is
 written in output order. Copied intervals get new endpoints immediately. Changes

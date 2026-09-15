@@ -41,51 +41,12 @@ displayListTest({
             check: equal => { equal(nestedElementScrollers(), 0, "inner has no element scroller parent"); },
             expect: `
                 @canvas RECORD (empty)
-                @viewport WALK
-                  @viewport/background/hit-test REUSE
-                  @viewport/scroll-metadata REUSE
-                  @viewport/background SKIP
-                  @viewport/border SKIP
-                  @viewport/foreground/hit-test REUSE
-                  @viewport/foreground REUSE
-                  BlockContainer<HTML>#html WALK
-                    BlockContainer<HTML>#html/background/hit-test REUSE
-                    BlockContainer<HTML>#html/scroll-metadata REUSE
-                    BlockContainer<HTML>#html/background REUSE
-                    BlockContainer<HTML>#html/border SKIP
-                    BlockContainer<BODY>#body/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                    BlockContainer<HTML>#html/foreground/hit-test REUSE
-                    BlockContainer<HTML>#html/foreground REUSE
-                    BlockContainer<BODY>#body/descendants(foreground) REUSE WHOLE CAPTURE
-                    BlockContainer<DIV>#row-0.box REUSE WHOLE CAPTURE
-                    BlockContainer<DIV>#outer.box WALK
-                      BlockContainer<DIV>#outer.box/background/hit-test REUSE
-                      BlockContainer<DIV>#outer.box/scroll-metadata REUSE
-                      BlockContainer<DIV>#outer.box/background SKIP
-                      BlockContainer<DIV>#outer.box/border REUSE
-                      BlockContainer<DIV>#inner/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#filler/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#inner/descendants(floats) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#inner/descendants(inline-background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#outer.box/foreground/hit-test REUSE
-                      BlockContainer<DIV>#outer.box/foreground REUSE
-                      BlockContainer<DIV>#inner/descendants(foreground) WALK
-                        BlockContainer<DIV>#inner/foreground/hit-test REUSE
-                        BlockContainer<DIV>#inner/foreground REUSE
-                        BlockContainer<DIV>#inner-content.tall/descendants(foreground) REUSE WHOLE CAPTURE
-                        BlockContainer<DIV>#inner/outline SKIP
+                @viewport RECOMPOSE
+                  BlockContainer<HTML>#html RECOMPOSE
+                    BlockContainer<DIV>#outer.box RECOMPOSE
+                      BlockContainer<DIV>#inner/descendants(foreground) RECOMPOSE
                         BlockContainer<DIV>#inner/overlay/hit-test RECORD
                         BlockContainer<DIV>#inner/overlay RECORD
-                      BlockContainer<DIV>#filler/descendants(foreground) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#outer.box/outline SKIP
-                      BlockContainer<DIV>#outer.box/overlay/hit-test REUSE
-                      BlockContainer<DIV>#outer.box/overlay SKIP
-                    BlockContainer<DIV>#row-2.box REUSE WHOLE CAPTURE
-                    BlockContainer<DIV>#second-row-0.box REUSE WHOLE CAPTURE
-                    BlockContainer<DIV>#second-row-1.box REUSE WHOLE CAPTURE
-                    BlockContainer<DIV>#second-row-2.box REUSE WHOLE CAPTURE
-                    BlockContainer<HTML>#html/outline SKIP
-                  @viewport/outline SKIP
             `
         },
         {
@@ -93,68 +54,19 @@ displayListTest({
             mutate: () => { document.getElementById("row-2").style.color = "red"; },
             expect: `
                 @canvas RECORD (empty)
-                @viewport WALK
-                  @viewport/background/hit-test REUSE
+                @viewport RECOMPOSE
                   @viewport/scroll-metadata RECORD
-                  @viewport/background SKIP
-                  @viewport/border SKIP
-                  @viewport/foreground/hit-test REUSE
-                  @viewport/foreground REUSE
-                  BlockContainer<HTML>#html WALK
-                    BlockContainer<HTML>#html/background/hit-test REUSE
+                  BlockContainer<HTML>#html RECOMPOSE
                     BlockContainer<HTML>#html/scroll-metadata RECORD
-                    BlockContainer<HTML>#html/background REUSE
-                    BlockContainer<HTML>#html/border SKIP
-                    BlockContainer<BODY>#body/descendants(background-and-borders) WALK
-                      BlockContainer<BODY>#body/background/hit-test REUSE
+                    BlockContainer<BODY>#body/descendants(background-and-borders) RECOMPOSE
                       BlockContainer<BODY>#body/scroll-metadata RECORD
-                      BlockContainer<BODY>#body/background SKIP
-                      BlockContainer<BODY>#body/border SKIP
-                      Box<DIV>#row.row/descendants(background-and-borders) WALK
-                        Box<DIV>#row.row/background/hit-test REUSE
+                      Box<DIV>#row.row/descendants(background-and-borders) RECOMPOSE
                         Box<DIV>#row.row/scroll-metadata RECORD
-                        Box<DIV>#row.row/background SKIP
-                        Box<DIV>#row.row/border SKIP
-                      Box<DIV>#second-row.row/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                    BlockContainer<HTML>#html/foreground/hit-test REUSE
-                    BlockContainer<HTML>#html/foreground REUSE
-                    BlockContainer<BODY>#body/descendants(foreground) WALK
-                      BlockContainer<BODY>#body/foreground/hit-test REUSE
-                      BlockContainer<BODY>#body/foreground REUSE
-                      Box<DIV>#row.row/descendants(foreground) WALK
-                        Box<DIV>#row.row/foreground/hit-test REUSE
-                        Box<DIV>#row.row/foreground REUSE
-                        Box<DIV>#row.row/outline SKIP
-                        Box<DIV>#row.row/overlay/hit-test REUSE
-                        Box<DIV>#row.row/overlay SKIP
-                      Box<DIV>#second-row.row/descendants(foreground) REUSE WHOLE CAPTURE
-                      BlockContainer<BODY>#body/outline SKIP
-                      BlockContainer<BODY>#body/overlay/hit-test REUSE
-                      BlockContainer<BODY>#body/overlay SKIP
-                    BlockContainer<DIV>#row-0.box REUSE WHOLE CAPTURE
-                    BlockContainer<DIV>#outer.box WALK
-                      BlockContainer<DIV>#outer.box/background/hit-test REUSE
-                      BlockContainer<DIV>#outer.box/scroll-metadata REUSE
-                      BlockContainer<DIV>#outer.box/background SKIP
-                      BlockContainer<DIV>#outer.box/border REUSE
-                      BlockContainer<DIV>#inner/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#filler/descendants(background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#inner/descendants(floats) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#inner/descendants(inline-background-and-borders) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#outer.box/foreground/hit-test REUSE
-                      BlockContainer<DIV>#outer.box/foreground REUSE
-                      BlockContainer<DIV>#inner/descendants(foreground) WALK
-                        BlockContainer<DIV>#inner/foreground/hit-test REUSE
-                        BlockContainer<DIV>#inner/foreground REUSE
-                        BlockContainer<DIV>#inner-content.tall/descendants(foreground) REUSE WHOLE CAPTURE
-                        BlockContainer<DIV>#inner/outline SKIP
+                    BlockContainer<DIV>#outer.box RECOMPOSE
+                      BlockContainer<DIV>#inner/descendants(foreground) RECOMPOSE
                         BlockContainer<DIV>#inner/overlay/hit-test RECORD
                         BlockContainer<DIV>#inner/overlay RECORD
-                      BlockContainer<DIV>#filler/descendants(foreground) REUSE WHOLE CAPTURE
-                      BlockContainer<DIV>#outer.box/outline SKIP
-                      BlockContainer<DIV>#outer.box/overlay/hit-test REUSE
-                      BlockContainer<DIV>#outer.box/overlay SKIP
-                    BlockContainer<DIV>#row-2.box WALK
+                    BlockContainer<DIV>#row-2.box RECOMPOSE
                       BlockContainer<DIV>#row-2.box/background/hit-test RECORD
                       BlockContainer<DIV>#row-2.box/scroll-metadata RECORD
                       BlockContainer<DIV>#row-2.box/background SKIP
@@ -164,11 +76,6 @@ displayListTest({
                       BlockContainer<DIV>#row-2.box/outline SKIP
                       BlockContainer<DIV>#row-2.box/overlay/hit-test RECORD (empty)
                       BlockContainer<DIV>#row-2.box/overlay SKIP
-                    BlockContainer<DIV>#second-row-0.box REUSE WHOLE CAPTURE
-                    BlockContainer<DIV>#second-row-1.box REUSE WHOLE CAPTURE
-                    BlockContainer<DIV>#second-row-2.box REUSE WHOLE CAPTURE
-                    BlockContainer<HTML>#html/outline SKIP
-                  @viewport/outline SKIP
             `
         },
         {

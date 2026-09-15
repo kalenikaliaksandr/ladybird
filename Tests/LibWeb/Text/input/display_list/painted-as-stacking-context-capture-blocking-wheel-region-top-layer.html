@@ -101,32 +101,13 @@ displayListTest({
             check: equal => { equal(internals.recordedDisplayListBlocksWheelEventAt(250, 250), false, "blocking wheel region"); },
             expect: `
                 @canvas RECORD (empty)
-                @viewport WALK
-                  @viewport/background/hit-test REUSE
+                @viewport RECOMPOSE
                   @viewport/scroll-metadata RECORD (empty)
-                  @viewport/background SKIP
-                  @viewport/border SKIP
-                  @viewport/foreground/hit-test REUSE
-                  @viewport/foreground REUSE
-                  BlockContainer<HTML>#html WALK
-                    BlockContainer<HTML>#html/background/hit-test REUSE
+                  BlockContainer<HTML>#html RECOMPOSE
                     BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
-                    BlockContainer<HTML>#html/background REUSE
-                    BlockContainer<HTML>#html/border SKIP
-                    BlockContainer<BODY>#body/descendants(background-and-borders) WALK
-                      BlockContainer<BODY>#body/background/hit-test REUSE
+                    BlockContainer<BODY>#body/descendants(background-and-borders) RECOMPOSE
                       BlockContainer<BODY>#body/scroll-metadata RECORD (empty)
-                      BlockContainer<BODY>#body/background SKIP
-                      BlockContainer<BODY>#body/border SKIP
-                    BlockContainer<HTML>#html/foreground/hit-test REUSE
-                    BlockContainer<HTML>#html/foreground REUSE
-                    BlockContainer<BODY>#body/descendants(foreground) WALK
-                      BlockContainer<BODY>#body/foreground/hit-test REUSE
-                      BlockContainer<BODY>#body/foreground REUSE
-                      BlockContainer<BODY>#body/outline SKIP
-                      BlockContainer<BODY>#body/overlay/hit-test REUSE
-                      BlockContainer<BODY>#body/overlay SKIP
-                    BlockContainer<DIV>#host WALK
+                    BlockContainer<DIV>#host RECOMPOSE
                       BlockContainer<DIV>#host/background/hit-test RECORD
                       BlockContainer<DIV>#host/scroll-metadata RECORD (empty)
                       BlockContainer<DIV>#host/background SKIP
@@ -136,8 +117,7 @@ displayListTest({
                       BlockContainer<DIV>#host/outline SKIP
                       BlockContainer<DIV>#host/overlay/hit-test RECORD (empty)
                       BlockContainer<DIV>#host/overlay SKIP
-                    BlockContainer<HTML>#html/outline SKIP
-                  BlockContainer(anonymous) WALK
+                  BlockContainer(anonymous) RECOMPOSE
                     BlockContainer(anonymous)/background/hit-test RECORD
                     BlockContainer(anonymous)/scroll-metadata RECORD (empty)
                     BlockContainer(anonymous)/background RECORD
@@ -145,7 +125,7 @@ displayListTest({
                     BlockContainer(anonymous)/foreground/hit-test RECORD (empty)
                     BlockContainer(anonymous)/foreground RECORD (empty)
                     BlockContainer(anonymous)/outline SKIP
-                  BlockContainer<DIALOG>#modal WALK
+                  BlockContainer<DIALOG>#modal RECOMPOSE
                     BlockContainer<DIALOG>#modal/background/hit-test RECORD
                     BlockContainer<DIALOG>#modal/scroll-metadata RECORD (empty)
                     BlockContainer<DIALOG>#modal/background RECORD
@@ -153,7 +133,6 @@ displayListTest({
                     BlockContainer<DIALOG>#modal/foreground/hit-test RECORD (empty)
                     BlockContainer<DIALOG>#modal/foreground RECORD (empty)
                     BlockContainer<DIALOG>#modal/outline SKIP
-                  @viewport/outline SKIP
             `
         }
     ]
