@@ -636,6 +636,11 @@ impl LayoutNodeArena {
     pub(crate) fn note_paint_scope_plans_changed(&self, row: NodeSlotId, descendants: bool) {
         self.debug_assert_not_recording();
         let mut changes = self.paintable_rows.paint_topology_changes.borrow_mut();
+        // Before the first published program there are no scopes to invalidate. In
+        // particular, do not search every ancestor of each newly constructed layout node.
+        if !changes.has_source() {
+            return;
+        }
         changes.note_row(row, descendants);
         let mut current = self.node_parent_if_live(row);
         while let Some(parent) = current {

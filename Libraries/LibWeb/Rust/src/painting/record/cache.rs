@@ -39,6 +39,11 @@ pub struct PaintCache {
 }
 
 impl PaintCache {
+    pub(crate) fn order_inputs(&self) -> Option<crate::painting::paint_order_plan::PaintOrderInputs> {
+        let inputs = self.order_inputs.get();
+        inputs.is_initialized().then_some(inputs)
+    }
+
     pub(crate) fn update_order_inputs(&self, inputs: crate::painting::paint_order_plan::PaintOrderInputs) -> bool {
         self.order_inputs.replace(inputs) != inputs
     }

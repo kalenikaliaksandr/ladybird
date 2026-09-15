@@ -32,6 +32,10 @@ pub(crate) struct PaintTopologyChanges {
 }
 
 impl PaintTopologyChanges {
+    pub fn has_source(&self) -> bool {
+        self.source.is_some()
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }

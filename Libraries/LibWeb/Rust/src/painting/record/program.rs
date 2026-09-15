@@ -301,7 +301,7 @@ impl ProgramCompiler<'_, '_> {
             return;
         }
         self.statistics.rebuilt_scopes += 1;
-        let plan = PaintScopePlan::build(self.arena, key, self.program.paint_overlay);
+        let plan = PaintScopePlan::build(self.arena, key, self.program.paint_overlay, self.source.is_some());
         // Helper descents with no operations have no rendering or eligibility semantics.
         if plan.items.is_empty() && !plan.establishes_stacking_context {
             return;

@@ -56,12 +56,13 @@ snapshot. The log shares the frame's program and owns only pending scope entries
 the old per-row ordering stamps are no longer needed.
 
 Layout commit compares child identities separately from their placement and drawing
-data. Each row also keeps an 8-byte snapshot of the per-row decisions used by the
-order planner. Commit and visual-context assignment refresh this snapshot, covering
+data. The order planner consumes `PaintOrderInputs`, and each row keeps an 8-byte
+snapshot of those inputs. Commit and visual-context assignment refresh this snapshot, covering
 both layout changes and style changes which do not require layout. Geometry and
-content changes alone leave the program reusable. The snapshot only determines
-invalidation: fresh CSS planning reads current inputs independently, so verification
-can detect a missing notification.
+content changes alone leave the program reusable. Retained compilation consumes
+these prepared inputs. Compilation without a source gathers current inputs
+independently, so canonical verification can detect a missing notification or
+stale prepared snapshot.
 
 Stacking-context entry changes invalidate the context's composition, preserving the
 internal plans of unchanged child scopes. Float and inline/replaced counts affect
@@ -88,6 +89,7 @@ and empty/skipped occurrences. Program and topology tests cover copying, remappi
 coalescing, row retirement, reparenting and publication boundaries. Web regressions cover
 reparenting, z-order changes, hidden content, scroll metadata and vector resources.
 `internals.paintProgramStats()` reports the last recording's rebuilt/copied scope
-counts and whole-program sharing, allowing tests to check ordering locality even
+counts and whole-program sharing. Rebuilt counts include structurally empty helper
+plans, which have no retained intervals. Tests can check ordering locality even
 when visual-context changes force fresh command production. The shared-context
 removal benchmark times mutation/layout and recording separately.
