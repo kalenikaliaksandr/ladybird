@@ -19,16 +19,14 @@ displayListTest({
                 @canvas RECORD (empty)
                 @viewport WALK
                   @viewport/background/hit-test REUSE
-                  @viewport/scroll-metadata RECORD (empty)
+                  @viewport/scroll-metadata REUSE
                   @viewport/background SKIP
                   @viewport/border SKIP
-                  BlockContainer<HTML>#html/descendants(background-and-borders) REUSE WHOLE CAPTURE
                   @viewport/foreground/hit-test REUSE
                   @viewport/foreground REUSE
-                  BlockContainer<HTML>#html/descendants(foreground) REUSE WHOLE CAPTURE
                   BlockContainer<HTML>#html WALK
                     BlockContainer<HTML>#html/background/hit-test REUSE
-                    BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
+                    BlockContainer<HTML>#html/scroll-metadata REUSE
                     BlockContainer<HTML>#html/background REUSE
                     BlockContainer<HTML>#html/border SKIP
                     BlockContainer<BODY>#body/descendants(background-and-borders) REUSE WHOLE CAPTURE
@@ -38,7 +36,7 @@ displayListTest({
                     BlockContainer<DIV>#root WALK
                       BlockContainer<DIV>#root/css-mask RECORD
                       BlockContainer<DIV>#root/background/hit-test REUSE
-                      BlockContainer<DIV>#root/scroll-metadata RECORD (empty)
+                      BlockContainer<DIV>#root/scroll-metadata REUSE
                       BlockContainer<DIV>#root/background SKIP
                       BlockContainer<DIV>#root/border SKIP
                       BlockContainer<DIV>#r0.row/descendants(background-and-borders) REUSE WHOLE CAPTURE
@@ -65,10 +63,8 @@ displayListTest({
                   @viewport/scroll-metadata RECORD (empty)
                   @viewport/background SKIP
                   @viewport/border SKIP
-                  BlockContainer<HTML>#html/descendants(background-and-borders) WALK
                   @viewport/foreground/hit-test REUSE
                   @viewport/foreground REUSE
-                  BlockContainer<HTML>#html/descendants(foreground) WALK
                   BlockContainer<HTML>#html WALK
                     BlockContainer<HTML>#html/background/hit-test REUSE
                     BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
@@ -79,13 +75,11 @@ displayListTest({
                       BlockContainer<BODY>#body/scroll-metadata RECORD (empty)
                       BlockContainer<BODY>#body/background SKIP
                       BlockContainer<BODY>#body/border SKIP
-                      BlockContainer<DIV>#root/descendants(background-and-borders) WALK
                     BlockContainer<HTML>#html/foreground/hit-test REUSE
                     BlockContainer<HTML>#html/foreground REUSE
                     BlockContainer<BODY>#body/descendants(foreground) WALK
                       BlockContainer<BODY>#body/foreground/hit-test REUSE
                       BlockContainer<BODY>#body/foreground REUSE
-                      BlockContainer<DIV>#root/descendants(foreground) WALK
                       BlockContainer<BODY>#body/outline SKIP
                       BlockContainer<BODY>#body/overlay/hit-test REUSE
                       BlockContainer<BODY>#body/overlay SKIP

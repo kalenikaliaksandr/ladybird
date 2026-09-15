@@ -1,0 +1,31 @@
+<!doctype html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; }
+    #root { position: absolute; z-index: 0; width: 100px; height: 100px; transform: scale(1); }
+    #target { position: absolute; z-index: 1; width: 80px; height: 80px; background: red; }
+</style>
+<div id="root"><div id="target"></div></div>
+<script>
+    test(() => {
+        __outputElement.style.display = "none";
+        const root = document.getElementById("root");
+        const target = document.getElementById("target");
+        const results = [];
+        internals.recordDisplayListForTesting(false, true);
+        root.style.transform = "scale(0)";
+        internals.recordDisplayListForTesting(false, false);
+        target.style.background = "blue";
+        target.style.pointerEvents = "none";
+        internals.recordDisplayListForTesting(false, false);
+        internals.recordDisplayListForTesting(false, false);
+        root.style.transform = "scale(1)";
+        internals.recordDisplayListForTesting(false, false);
+        results.push(`disabled target stays excluded: ${document.elementFromPoint(10, 10) === root}`);
+        target.style.pointerEvents = "auto";
+        internals.recordDisplayListForTesting(false, false);
+        results.push(`enabled target is restored: ${document.elementFromPoint(10, 10) === target}`);
+        __outputElement.style.display = "";
+        for (const result of results) println(result);
+    });
+</script>

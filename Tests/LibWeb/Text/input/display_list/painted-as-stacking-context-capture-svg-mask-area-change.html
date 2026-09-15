@@ -23,16 +23,14 @@ displayListTest({
                 @canvas RECORD (empty)
                 @viewport WALK
                   @viewport/background/hit-test REUSE
-                  @viewport/scroll-metadata RECORD (empty)
+                  @viewport/scroll-metadata REUSE
                   @viewport/background SKIP
                   @viewport/border SKIP
-                  BlockContainer<HTML>#html/descendants(background-and-borders) REUSE WHOLE CAPTURE
                   @viewport/foreground/hit-test REUSE
                   @viewport/foreground REUSE
-                  BlockContainer<HTML>#html/descendants(foreground) REUSE WHOLE CAPTURE
                   BlockContainer<HTML>#html WALK
                     BlockContainer<HTML>#html/background/hit-test REUSE
-                    BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
+                    BlockContainer<HTML>#html/scroll-metadata REUSE
                     BlockContainer<HTML>#html/background REUSE
                     BlockContainer<HTML>#html/border SKIP
                     BlockContainer<BODY>#body/descendants(background-and-borders) REUSE WHOLE CAPTURE
@@ -43,7 +41,7 @@ displayListTest({
                       BlockContainer<BODY>#body/foreground/hit-test REUSE
                       BlockContainer<BODY>#body/foreground REUSE
                       SVGSVGBox<svg>#svg/descendants(foreground) WALK
-                        SVGSVGBox<svg>#svg/background/hit-test REUSE
+                        SVGSVGBox<svg>#svg/background/hit-test RECORD
                         SVGSVGBox<svg>#svg/scroll-metadata RECORD (empty)
                         SVGSVGBox<svg>#svg/background SKIP
                         SVGSVGBox<svg>#svg/border SKIP
@@ -69,10 +67,8 @@ displayListTest({
                   @viewport/scroll-metadata RECORD (empty)
                   @viewport/background SKIP
                   @viewport/border SKIP
-                  BlockContainer<HTML>#html/descendants(background-and-borders) WALK
                   @viewport/foreground/hit-test REUSE
                   @viewport/foreground REUSE
-                  BlockContainer<HTML>#html/descendants(foreground) WALK
                   BlockContainer<HTML>#html WALK
                     BlockContainer<HTML>#html/background/hit-test REUSE
                     BlockContainer<HTML>#html/scroll-metadata RECORD (empty)

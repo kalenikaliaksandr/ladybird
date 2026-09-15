@@ -164,6 +164,10 @@ pub struct DisplayListBuilder {
 }
 
 impl DisplayListBuilder {
+    pub(crate) fn is_at_closed_group_boundary(&self) -> bool {
+        self.open_group_depth == 0
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

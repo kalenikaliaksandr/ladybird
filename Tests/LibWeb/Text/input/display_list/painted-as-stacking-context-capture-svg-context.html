@@ -20,16 +20,14 @@ displayListTest({
                 @canvas RECORD (empty)
                 @viewport WALK
                   @viewport/background/hit-test REUSE
-                  @viewport/scroll-metadata RECORD (empty)
+                  @viewport/scroll-metadata REUSE
                   @viewport/background SKIP
                   @viewport/border SKIP
-                  BlockContainer<HTML>#html/descendants(background-and-borders) REUSE WHOLE CAPTURE
                   @viewport/foreground/hit-test REUSE
                   @viewport/foreground REUSE
-                  BlockContainer<HTML>#html/descendants(foreground) REUSE WHOLE CAPTURE
                   BlockContainer<HTML>#html WALK
                     BlockContainer<HTML>#html/background/hit-test REUSE
-                    BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
+                    BlockContainer<HTML>#html/scroll-metadata REUSE
                     BlockContainer<HTML>#html/background REUSE
                     BlockContainer<HTML>#html/border SKIP
                     BlockContainer<BODY>#body/descendants(background-and-borders) REUSE WHOLE CAPTURE
@@ -40,7 +38,7 @@ displayListTest({
                     BlockContainer<DIV>#root REUSE WHOLE CAPTURE
                     SVGSVGBox<svg>#svg WALK
                       SVGSVGBox<svg>#svg/background/hit-test REUSE
-                      SVGSVGBox<svg>#svg/scroll-metadata RECORD (empty)
+                      SVGSVGBox<svg>#svg/scroll-metadata REUSE
                       SVGSVGBox<svg>#svg/background SKIP
                       SVGSVGBox<svg>#svg/border SKIP
                       SVGSVGBox<svg>#svg/svg WALK
@@ -61,16 +59,14 @@ displayListTest({
                 @canvas RECORD (empty)
                 @viewport WALK
                   @viewport/background/hit-test REUSE
-                  @viewport/scroll-metadata RECORD (empty)
+                  @viewport/scroll-metadata REUSE
                   @viewport/background SKIP
                   @viewport/border SKIP
-                  BlockContainer<HTML>#html/descendants(background-and-borders) REUSE WHOLE CAPTURE
                   @viewport/foreground/hit-test REUSE
                   @viewport/foreground REUSE
-                  BlockContainer<HTML>#html/descendants(foreground) REUSE WHOLE CAPTURE
                   BlockContainer<HTML>#html WALK
                     BlockContainer<HTML>#html/background/hit-test REUSE
-                    BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
+                    BlockContainer<HTML>#html/scroll-metadata REUSE
                     BlockContainer<HTML>#html/background REUSE
                     BlockContainer<HTML>#html/border SKIP
                     BlockContainer<BODY>#body/descendants(background-and-borders) REUSE WHOLE CAPTURE
@@ -81,7 +77,7 @@ displayListTest({
                     BlockContainer<DIV>#root REUSE WHOLE CAPTURE
                     SVGSVGBox<svg>#svg WALK
                       SVGSVGBox<svg>#svg/background/hit-test REUSE
-                      SVGSVGBox<svg>#svg/scroll-metadata RECORD (empty)
+                      SVGSVGBox<svg>#svg/scroll-metadata REUSE
                       SVGSVGBox<svg>#svg/background SKIP
                       SVGSVGBox<svg>#svg/border SKIP
                       SVGSVGBox<svg>#svg/svg WALK

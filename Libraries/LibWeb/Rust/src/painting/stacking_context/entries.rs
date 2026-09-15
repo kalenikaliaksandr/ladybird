@@ -80,6 +80,7 @@ impl LayoutNodeArena {
         if !self.paintable_row_is_populated(enclosing) {
             return;
         }
+        self.note_stacking_context_paint_order_changed(enclosing);
         let mut tables = self.paintable_rows.stacking_context_entries.borrow_mut();
         let Some(table) = tables
             .get_mut(enclosing.slot_index() as usize)
@@ -115,6 +116,7 @@ impl LayoutNodeArena {
         if !self.paintable_row_is_populated(enclosing) {
             return;
         }
+        self.note_stacking_context_paint_order_changed(enclosing);
         let mut tables = self.paintable_rows.stacking_context_entries.borrow_mut();
         let Some(table) = tables
             .get_mut(enclosing.slot_index() as usize)
@@ -147,6 +149,7 @@ impl LayoutNodeArena {
         if !self.paintable_row_is_populated(root) {
             return;
         }
+        self.note_stacking_context_paint_order_changed(root);
         let mut tables = self.paintable_rows.stacking_context_entries.borrow_mut();
         let Some(table) = tables
             .get_mut(root.slot_index() as usize)

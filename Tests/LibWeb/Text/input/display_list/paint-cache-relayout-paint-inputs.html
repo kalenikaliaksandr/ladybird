@@ -42,10 +42,8 @@ displayListTest({
                   @viewport/scroll-metadata RECORD (empty)
                   @viewport/background SKIP
                   @viewport/border SKIP
-                  BlockContainer<HTML>#html/descendants(background-and-borders) WALK
                   @viewport/foreground/hit-test REUSE
                   @viewport/foreground REUSE
-                  BlockContainer<HTML>#html/descendants(foreground) WALK
                   BlockContainer<HTML>#html WALK
                     BlockContainer<HTML>#html/background/hit-test REUSE
                     BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
@@ -61,11 +59,8 @@ displayListTest({
                         BlockContainer<DIV>#target/scroll-metadata RECORD (empty)
                         BlockContainer<DIV>#target/background RECORD
                         BlockContainer<DIV>#target/border SKIP
-                        InlineNode<SPAN>#inline/descendants(background-and-borders) WALK
-                      CanvasBox<CANVAS>#trigger/descendants(background-and-borders) REUSE WHOLE CAPTURE
                     BlockContainer<BODY>#body/descendants(inline-background-and-borders) WALK
                       BlockContainer<DIV>#target/descendants(inline-background-and-borders) WALK
-                        InlineNode<SPAN>#inline/descendants(inline-background-and-borders) WALK
                       CanvasBox<CANVAS>#trigger/descendants(inline-background-and-borders) REUSE WHOLE CAPTURE
                     BlockContainer<HTML>#html/foreground/hit-test REUSE
                     BlockContainer<HTML>#html/foreground REUSE
@@ -75,7 +70,6 @@ displayListTest({
                       BlockContainer<DIV>#target/descendants(foreground) WALK
                         BlockContainer<DIV>#target/foreground/hit-test RECORD (empty)
                         BlockContainer<DIV>#target/foreground RECORD (empty)
-                        InlineNode<SPAN>#inline/descendants(foreground) WALK
                         BlockContainer<DIV>#target/outline SKIP
                         BlockContainer<DIV>#target/overlay/hit-test RECORD (empty)
                         BlockContainer<DIV>#target/overlay SKIP
@@ -115,10 +109,8 @@ displayListTest({
                   @viewport/scroll-metadata RECORD (empty)
                   @viewport/background SKIP
                   @viewport/border SKIP
-                  BlockContainer<HTML>#html/descendants(background-and-borders) WALK
                   @viewport/foreground/hit-test REUSE
                   @viewport/foreground REUSE
-                  BlockContainer<HTML>#html/descendants(foreground) WALK
                   BlockContainer<HTML>#html WALK
                     BlockContainer<HTML>#html/background/hit-test REUSE
                     BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
@@ -134,11 +126,8 @@ displayListTest({
                         BlockContainer<DIV>#target/scroll-metadata RECORD (empty)
                         BlockContainer<DIV>#target/background RECORD
                         BlockContainer<DIV>#target/border SKIP
-                        InlineNode<SPAN>#inline/descendants(background-and-borders) WALK
-                      CanvasBox<CANVAS>#trigger/descendants(background-and-borders) REUSE WHOLE CAPTURE
                     BlockContainer<BODY>#body/descendants(inline-background-and-borders) WALK
                       BlockContainer<DIV>#target/descendants(inline-background-and-borders) WALK
-                        InlineNode<SPAN>#inline/descendants(inline-background-and-borders) WALK
                       CanvasBox<CANVAS>#trigger/descendants(inline-background-and-borders) REUSE WHOLE CAPTURE
                     BlockContainer<HTML>#html/foreground/hit-test REUSE
                     BlockContainer<HTML>#html/foreground REUSE
@@ -148,7 +137,6 @@ displayListTest({
                       BlockContainer<DIV>#target/descendants(foreground) WALK
                         BlockContainer<DIV>#target/foreground/hit-test RECORD (empty)
                         BlockContainer<DIV>#target/foreground RECORD (empty)
-                        InlineNode<SPAN>#inline/descendants(foreground) WALK
                         BlockContainer<DIV>#target/outline SKIP
                         BlockContainer<DIV>#target/overlay/hit-test RECORD (empty)
                         BlockContainer<DIV>#target/overlay SKIP

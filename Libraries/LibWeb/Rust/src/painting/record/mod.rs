@@ -9,9 +9,12 @@ use crate::painting::record::trace::{Observer, Operation};
 pub mod async_scroll_metadata;
 pub mod cache;
 pub(crate) mod cache_compatibility;
+pub(crate) mod directory;
 pub mod hit_test_items;
 pub(crate) mod inputs;
+mod packed;
 pub mod paint;
+mod program;
 pub(crate) mod publish;
 pub(crate) mod resources;
 pub(crate) mod scratch;
@@ -25,14 +28,14 @@ use crate::css::css_enums;
 use crate::layout::node_data::NodeSlotId;
 use crate::layout::node_data::{NodeFlag, NodeKind};
 use crate::painting::border_radii::BorderRadii;
-use crate::painting::display_list::builder::{CommandRange, PendingInlineClip, RecordedDisplayList};
+use crate::painting::display_list::builder::{PendingInlineClip, RecordedDisplayList};
 use crate::painting::display_list::commands::{ContextRef, SpatialNodeIndex};
 use crate::painting::display_list::device_pixels::DevicePixelConverter;
 use crate::painting::display_list::recorder::DisplayListRecorder;
 use crate::painting::hit_test::HitTestList;
 use crate::painting::paintable_data::{InlineBoxPieceRecord, PaintableData};
 use crate::painting::paintable_rows::PaintableRowsRef;
-use crate::painting::record::cache::{OpenCapture, PendingPaintCacheUpdates, RecordGen};
+use crate::painting::record::cache::RecordGen;
 use crate::painting::record::cache_compatibility::{PaintCacheCompatibility, PaintCacheInputs};
 use crate::painting::record::svg_resources::SvgResourceWalk;
 use std::rc::Rc;
@@ -49,13 +52,13 @@ pub struct RecordingOutput {
     pub has_blocking_wheel_event_listeners: bool,
     pub wheel_event_listener_state_generation: u64,
     pub is_identical_to_cache_source: bool,
+    pub(crate) paint_cache: Option<directory::FramePaintCache>,
     pub(crate) capture_log_for_verification: Option<verify::CaptureLog>,
 }
 
 pub(crate) struct RecordingResult {
     pub(crate) output: RecordingOutput,
     pub(crate) resources: resources::RecordingResourceManifest,
-    pub(crate) cache_updates: PendingPaintCacheUpdates,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -76,12 +79,6 @@ impl PaintPhase {
         1 << self as u8
     }
 }
-pub(crate) struct DeferredWholeTapeSplice {
-    pub(crate) source_display_list: Arc<RecordedDisplayList>,
-    pub(crate) prologue_byte_count: usize,
-    pub(crate) source_range: CommandRange,
-}
-
 pub struct PaintRecorder<'a, O: Observer> {
     pub(crate) layout_arena: &'a PaintableRowsRef<'a>,
     pub(crate) paint_state: &'a crate::painting::paint_state::PaintState,
@@ -93,9 +90,7 @@ pub struct PaintRecorder<'a, O: Observer> {
     command_cache_source: Option<Rc<RecordingOutput>>,
     item_cache_source: Option<Rc<crate::painting::record::cache::HitTestItemCacheSource>>,
     cache_compatibility: PaintCacheCompatibility,
-    open_capture_stack: Vec<OpenCapture>,
-    cache_updates: PendingPaintCacheUpdates,
-    deferred_whole_tape_splice: Option<DeferredWholeTapeSplice>,
+    packed: Option<packed::PackedRecording>,
     pub(crate) blocking_wheel_event_region_count: u32,
     uncacheable_paint_generation: u64,
     pub(crate) observer: O,

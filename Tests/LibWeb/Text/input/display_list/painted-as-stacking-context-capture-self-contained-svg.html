@@ -31,10 +31,8 @@ displayListTest({
                   @viewport/scroll-metadata RECORD (empty)
                   @viewport/background SKIP
                   @viewport/border SKIP
-                  BlockContainer<HTML>#html/descendants(background-and-borders) WALK
                   @viewport/foreground/hit-test REUSE
                   @viewport/foreground REUSE
-                  BlockContainer<HTML>#html/descendants(foreground) WALK
                   BlockContainer<HTML>#html WALK
                     BlockContainer<HTML>#html/background/hit-test REUSE
                     BlockContainer<HTML>#html/scroll-metadata RECORD (empty)
@@ -45,15 +43,12 @@ displayListTest({
                       BlockContainer<BODY>#body/scroll-metadata RECORD (empty)
                       BlockContainer<BODY>#body/background SKIP
                       BlockContainer<BODY>#body/border SKIP
-                      BlockContainer<DIV>#root/descendants(background-and-borders) WALK
                     BlockContainer<BODY>#body/descendants(inline-background-and-borders) WALK
-                      BlockContainer<DIV>#root/descendants(inline-background-and-borders) WALK
                     BlockContainer<HTML>#html/foreground/hit-test REUSE
                     BlockContainer<HTML>#html/foreground REUSE
                     BlockContainer<BODY>#body/descendants(foreground) WALK
                       BlockContainer<BODY>#body/foreground/hit-test REUSE
                       BlockContainer<BODY>#body/foreground REUSE
-                      BlockContainer<DIV>#root/descendants(foreground) WALK
                       BlockContainer<BODY>#body/outline SKIP
                       BlockContainer<BODY>#body/overlay/hit-test REUSE
                       BlockContainer<BODY>#body/overlay SKIP
@@ -68,7 +63,7 @@ displayListTest({
                       BlockContainer<DIV>#root/foreground/hit-test REUSE
                       BlockContainer<DIV>#root/foreground REUSE
                       SVGSVGBox<svg>#svg/descendants(foreground) WALK
-                        SVGSVGBox<svg>#svg/background/hit-test REUSE
+                        SVGSVGBox<svg>#svg/background/hit-test RECORD
                         SVGSVGBox<svg>#svg/scroll-metadata RECORD (empty)
                         SVGSVGBox<svg>#svg/background SKIP
                         SVGSVGBox<svg>#svg/border SKIP

@@ -4187,3 +4187,45 @@ pub unsafe extern "C" fn layout_arena_set_recording_trace_enabled(arena: *mut c_
         .borrow_mut()
         .trace_recordings = enabled;
 }
+
+/// Retained capacities owned by the recording cache, excluding the layout tree, scratch
+/// workspace, externally referenced paths/resources, C++ objects and other in-flight frames.
+/// Allocator bookkeeping and size-class rounding are not included.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct FfiPaintCacheMemoryUsage {
+    pub command_storage_bytes: usize,
+    pub hit_storage_bytes: usize,
+    pub metadata_bytes: usize,
+    pub operation_count: usize,
+    pub scope_count: usize,
+    pub owner_count: usize,
+}
+
+/// # Safety
+/// `arena` must be a live layout arena used on its owning document thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn layout_arena_paint_cache_memory_usage(arena: *mut c_void) -> FfiPaintCacheMemoryUsage {
+    let arena = unsafe { arena_from_handle(arena) };
+    let state = arena.paint_state().borrow();
+    let mut result = FfiPaintCacheMemoryUsage {
+        metadata_bytes: arena.paint_invalidation_storage_bytes(),
+        ..Default::default()
+    };
+    if let Some(source) = &state.paint_command_cache_source {
+        result.metadata_bytes +=
+            std::mem::size_of::<crate::painting::record::RecordingOutput>() + 2 * std::mem::size_of::<usize>();
+        result.command_storage_bytes = source.display_list.bytes.capacity()
+            + source.display_list.command_runs.capacity()
+                * std::mem::size_of::<crate::painting::display_list::commands::DisplayListCommandRun>();
+        if let Some(cache) = &source.paint_cache {
+            result.metadata_bytes += cache.metadata_bytes();
+            (result.operation_count, result.scope_count, result.owner_count) = cache.counts();
+        }
+    }
+    if let Some(items) = &state.hit_test_item_cache_source {
+        result.hit_storage_bytes =
+            items.items.capacity() * std::mem::size_of::<crate::painting::hit_test::HitTestItem>();
+    }
+    result
+}

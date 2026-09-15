@@ -166,6 +166,8 @@ struct CommittedFragmentLinkSlot {
 
 #[derive(Default)]
 pub(crate) struct PaintableRowStore {
+    paint_topology_revision: Cell<u64>,
+    full_paint_topology_revision: Cell<u64>,
     chunks: Vec<Box<PaintableRowChunk>>,
     side_data: RefCell<Vec<PaintableSideData>>,
     paint_caches: RefCell<Vec<PaintCache>>,
@@ -561,6 +563,76 @@ impl PaintableRowStore {
 }
 
 impl LayoutNodeArena {
+    pub(crate) fn paint_geometry_revision(&self) -> u64 {
+        self.paintable_rows.absolute_rect_memo_epoch.get()
+    }
+    pub(crate) fn paint_invalidation_storage_bytes(&self) -> usize {
+        self.paintable_rows.paint_caches.borrow().capacity() * std::mem::size_of::<PaintCache>()
+    }
+
+    pub(crate) fn paint_topology_revision(&self) -> u64 {
+        self.paintable_rows.paint_topology_revision.get()
+    }
+
+    pub(crate) fn paint_scope_owner(&self, scope: crate::painting::paint_order_plan::PaintScope) -> Option<NodeSlotId> {
+        use crate::painting::paint_order_plan::PaintScopeKind;
+        if !self.paintable_row_is_populated(scope.owner) {
+            return None;
+        }
+        let record = self.paintable_visual_context_record(scope.owner)?;
+        if scope.kind == PaintScopeKind::PaintedAsStackingContext
+            && record.stacking_context.establishes_stacking_context
+        {
+            return Some(scope.owner);
+        }
+        let owner = record.stacking_context.enclosing_stacking_context;
+        self.paintable_row_is_populated(owner).then_some(owner)
+    }
+
+    pub(crate) fn paint_scope_topology_unchanged(&self, row: NodeSlotId, owner: NodeSlotId, revision: u64) -> bool {
+        self.paintable_row_is_populated(row)
+            && self.paintable_row_is_populated(owner)
+            && self.paintable_rows.full_paint_topology_revision.get() <= revision
+            && self.paintable_paint_cache(owner).order_unchanged_since(revision)
+            && self.paintable_paint_cache(row).subtree_order_unchanged_since(revision)
+    }
+
+    fn next_paint_topology_revision(&self) -> u64 {
+        self.debug_assert_not_recording();
+        let revision = self
+            .paint_topology_revision()
+            .checked_add(1)
+            .expect("paint topology revision overflowed");
+        self.paintable_rows.paint_topology_revision.set(revision);
+        revision
+    }
+
+    pub(crate) fn note_paint_topology_changed_for_row(&self, row: NodeSlotId) {
+        if let Some(owner) =
+            self.paint_scope_owner(crate::painting::paint_order_plan::PaintScope::stacking_context(row))
+        {
+            self.note_stacking_context_paint_order_changed(owner);
+        } else {
+            let revision = self.next_paint_topology_revision();
+            self.paintable_rows.full_paint_topology_revision.set(revision);
+        }
+    }
+
+    pub(crate) fn note_stacking_context_paint_order_changed(&self, owner: NodeSlotId) {
+        if !self.paintable_row_is_populated(owner) {
+            return;
+        }
+        let revision = self.next_paint_topology_revision();
+        self.paintable_paint_cache(owner).note_order_revision(revision);
+        let rows = self.paintable_rows();
+        let mut current = Some(owner);
+        while let Some(row) = current {
+            self.paintable_paint_cache(row).note_subtree_order_revision(revision);
+            current = crate::painting::paint_order::paint_parent(&rows, row);
+        }
+        rows.mark_descendant_subtree_caches_dirty_along_paint_chain(owner);
+    }
+
     pub(crate) fn paintable_rows(&self) -> PaintableRowsRef<'_> {
         PaintableRows { arena: self }
     }
@@ -712,7 +784,7 @@ impl LayoutNodeArena {
 
     fn forget_every_paint_cache_entry_before_record_gen_exceeds_u32(&self) {
         for cache in self.paintable_rows.paint_caches.borrow().iter() {
-            cache.reset_entries_position_and_dirty_gens();
+            cache.reset_dirty_generations();
         }
         self.paintable_rows.all_paint_caches_dirty_gen.set(0);
         self.paintable_rows.completed_record_gen.set(0);
@@ -775,7 +847,6 @@ impl LayoutNodeArena {
             overflow_style,
             ..Default::default()
         };
-        paint_caches[index].clear();
         absolute_rect_memo[index] = None;
         visual_context_records[index] = None;
         stacking_context_entries[index] = None;
@@ -783,6 +854,7 @@ impl LayoutNodeArena {
 
     fn reset_paintable_row(&mut self, mark_caches_dirty_along_paint_chain: bool, reset: PaintableRowReset) {
         let id = reset.slot;
+        self.note_paint_topology_changed_for_row(id);
         if mark_caches_dirty_along_paint_chain {
             self.paintable_rows()
                 .mark_descendant_subtree_caches_dirty_along_paint_chain(id);
@@ -814,7 +886,6 @@ impl LayoutNodeArena {
         store.chunks[index / PAINTABLE_SLOTS_PER_CHUNK].slots[index % PAINTABLE_SLOTS_PER_CHUNK] =
             PaintableData::default();
         store.side_data.borrow_mut()[index] = PaintableSideData::default();
-        store.paint_caches.borrow()[index].clear();
         store.visual_context_records.borrow_mut()[index] = None;
         store.stacking_context_entries.borrow_mut()[index] = None;
     }
@@ -956,13 +1027,6 @@ impl LayoutNodeArena {
         Ref::map(self.paintable_rows.paint_caches.borrow(), |caches| {
             &caches[id.slot_index() as usize]
         })
-    }
-
-    pub(crate) fn paintable_paint_cache_if_allocated(&self, id: NodeSlotId) -> Option<Ref<'_, PaintCache>> {
-        Ref::filter_map(self.paintable_rows.paint_caches.borrow(), |caches| {
-            caches.get(id.slot_index() as usize)
-        })
-        .ok()
     }
 
     pub(crate) fn invalidate_paint_cache(&self, id: NodeSlotId) {

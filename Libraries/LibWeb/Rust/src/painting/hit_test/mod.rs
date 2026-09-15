@@ -141,6 +141,18 @@ impl HitTestList {
         items.push(item);
     }
 
+    pub(crate) fn append_copies_of(&mut self, source: &[HitTestItem]) {
+        assert!(!self.derived_structures_built);
+        if source.is_empty() {
+            return;
+        }
+        let items = Rc::make_mut(&mut self.items);
+        if items.capacity() == 0 {
+            items.reserve(self.item_capacity_hint_from_previous_list.max(source.len()));
+        }
+        items.extend_from_slice(source);
+    }
+
     pub fn caret_line_rect_for_item(item: &HitTestItem) -> CssPixelRect {
         let Some(line_rect) = item.caret_line_rect else {
             return item.caret_rect;

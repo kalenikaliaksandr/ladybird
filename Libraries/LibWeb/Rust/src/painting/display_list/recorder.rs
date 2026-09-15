@@ -271,6 +271,13 @@ pub struct DisplayListRecorder {
 }
 
 impl DisplayListRecorder {
+    pub(crate) fn is_producer_boundary(&self) -> bool {
+        self.builder.is_at_closed_group_boundary()
+            && self.ambient_inline_clips.is_empty()
+            && self.ambient_inline_transform.is_none()
+            && self.contrast_backdrop.is_none()
+    }
+
     pub fn new(force_dark_settings: Option<ForceDarkSettings>) -> Self {
         Self {
             force_dark: force_dark_settings.map(ForceDarkResolver::new),

@@ -255,6 +255,9 @@ impl<'a> PaintableCommit<'a> {
             content_size_change = Some((old_content_size, new_content_size));
         }
         let committed_fragment_identity_changed = old_identity != fragment.identity;
+        if !own_paint_unchanged || !child_placements_unchanged {
+            self.arena().note_paint_topology_changed_for_row(node);
+        }
         let painted_geometry_lives_in_enclosing_line_root = {
             let data = self.arena().data(node);
             node_facts::node_is_fragmented_inline(data, node_facts::node_style_view(data))

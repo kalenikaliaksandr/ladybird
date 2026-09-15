@@ -25,10 +25,6 @@ pub(crate) enum StackingContextPaintPhase {
     Foreground = 3,
 }
 
-impl StackingContextPaintPhase {
-    pub(crate) const COUNT: usize = Self::Foreground as usize + 1;
-}
-
 const _: () = assert!(
     StackingContextPaintPhase::Floats as usize == StackingContextPaintPhase::BackgroundAndBorders as usize + 1
         && StackingContextPaintPhase::BackgroundAndBordersForInlineLevelAndReplaced as usize
@@ -70,7 +66,12 @@ impl PaintScope {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum PaintProducer {
-    BoxPhase(PaintPhase),
+    DrawBoxPhase(PaintPhase),
+    HitTestPhase(PaintPhase),
+    ScrollMetadata,
+    ScopePreamble,
+    Canvas,
+    InspectorOverlays,
     Svg(PaintPhase),
     SvgBoxForeground,
 }
@@ -103,6 +104,7 @@ impl PaintScopePlan {
             scope.kind == PaintScopeKind::PaintedAsStackingContext && builder.has_stacking_context(scope.owner);
         match scope.kind {
             PaintScopeKind::PaintedAsStackingContext if establishes_stacking_context => {
+                builder.append_producer(scope.owner, PaintProducer::ScopePreamble);
                 builder.append_context_contents(scope.owner);
             }
             PaintScopeKind::PaintedAsStackingContext => builder.append_as_stacking_context(scope.owner),
@@ -138,11 +140,22 @@ impl PaintOrderBuilder<'_, '_> {
         style_queries::is_replaced_box(self.layout_arena, owner)
     }
 
+    fn append_producer(&mut self, owner: NodeSlotId, producer: PaintProducer) {
+        self.items
+            .push(PaintOrderItem::Producer(ProducerSite { owner, producer }));
+    }
+
     fn append_box_phase(&mut self, owner: NodeSlotId, phase: PaintPhase) {
-        self.items.push(PaintOrderItem::Producer(ProducerSite {
-            owner,
-            producer: PaintProducer::BoxPhase(phase),
-        }));
+        if matches!(
+            phase,
+            PaintPhase::Background | PaintPhase::Foreground | PaintPhase::Overlay
+        ) {
+            self.append_producer(owner, PaintProducer::HitTestPhase(phase));
+        }
+        if phase == PaintPhase::Background {
+            self.append_producer(owner, PaintProducer::ScrollMetadata);
+        }
+        self.append_producer(owner, PaintProducer::DrawBoxPhase(phase));
     }
 
     fn append_stacking_context(&mut self, owner: NodeSlotId) {

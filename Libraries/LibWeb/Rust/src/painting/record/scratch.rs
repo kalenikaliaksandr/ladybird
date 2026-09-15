@@ -7,7 +7,6 @@
 use crate::layout::node_data::NodeSlotId;
 use crate::layout::used_values::FfiCssPixelPoint;
 use crate::painting::display_list::commands::SpatialNodeIndex;
-use crate::painting::record::cache::{PendingPaintCacheUpdates, ResolvedEnclosingCaptureMemo};
 use crate::painting::record::hit_test_items::HitTestFacts;
 use crate::painting::record::paint::text::SelectionStyleAnswer;
 use crate::painting::record::{BasePaintFacts, PatternTileKey};
@@ -39,9 +38,6 @@ pub(crate) struct RecordingScratch {
     base_paint_facts: Vec<StampedEntry<BasePaintFacts>>,
     hit_test_facts: Vec<StampedEntry<HitTestFacts>>,
     absolute_positions: Vec<StampedEntry<FfiCssPixelPoint>>,
-    resolved_enclosing_capture_memo: ResolvedEnclosingCaptureMemo,
-    // Publication returns an empty batch so the next recording can reuse its allocations.
-    pub(super) recycled_cache_updates: PendingPaintCacheUpdates,
     pub(super) pattern_tile_records: HashMap<PatternTileKey, Rc<Vec<u8>>>,
     pub(super) selection_style_cache: HashMap<u32, Rc<SelectionStyleAnswer>>,
     pub(super) wheel_hit_test_target_cache: HashMap<NodeSlotId, SpatialNodeIndex>,
@@ -104,14 +100,9 @@ impl RecordingScratch {
 
     // Retain the allocations, but release temporary records and styles before publication.
     pub(super) fn clear_temporary_caches(&mut self) {
-        self.resolved_enclosing_capture_memo.clear();
         self.pattern_tile_records.clear();
         self.selection_style_cache.clear();
         self.wheel_hit_test_target_cache.clear();
-    }
-
-    pub(crate) fn resolved_enclosing_capture_memo(&mut self) -> &mut ResolvedEnclosingCaptureMemo {
-        &mut self.resolved_enclosing_capture_memo
     }
 
     memo_table!(base_paint_facts, set_base_paint_facts, base_paint_facts, BasePaintFacts);
