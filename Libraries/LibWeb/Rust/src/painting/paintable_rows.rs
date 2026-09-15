@@ -963,8 +963,21 @@ impl LayoutNodeArena {
 
     pub(crate) fn set_paintable_visual_context_record(&self, id: NodeSlotId, record: PaintableVisualContextRecord) {
         debug_assert!(self.paintable_row_is_populated(id));
+        let inputs = self.paintable_paint_cache(id).order_inputs().map(|inputs| {
+            inputs.with_visual_context(
+                &record.stacking_context,
+                crate::painting::style_queries::z_index(self, id),
+            )
+        });
         self.paintable_rows.visual_context_records.borrow_mut()[id.slot_index() as usize] = Some(record);
-        self.refresh_paint_order_inputs(id);
+        if let Some(inputs) = inputs {
+            if self.paintable_paint_cache(id).update_order_inputs(inputs) {
+                self.note_paint_scope_plans_changed(id, false);
+            }
+        } else {
+            // Some resource paintables are first prepared outside a layout commit.
+            self.refresh_paint_order_inputs(id);
+        }
     }
 
     pub(crate) fn drop_all_visual_context_records(&self) {

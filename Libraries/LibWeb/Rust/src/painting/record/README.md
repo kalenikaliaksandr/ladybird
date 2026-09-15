@@ -70,6 +70,12 @@ these prepared inputs. Compilation without a source gathers current inputs
 independently, so canonical verification can detect a missing notification or
 stale prepared snapshot.
 
+Layout commits prepare display, node-kind, fragmentation, flex/grid membership
+and table inputs. AVC assignment updates stacking-context and positioned paint
+participation from its existing facts, plus the raw z-index. It does not gather
+all layout inputs again for every box. Non-auto z-index also changes positioned
+participation for flex and grid items, even without a layout change.
+
 Stacking-context entry changes invalidate the context's composition, preserving the
 internal plans of unchanged child scopes. Float and inline/replaced counts affect
 that composition when their phases appear or disappear. Reattachment conservatively

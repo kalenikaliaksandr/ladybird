@@ -136,6 +136,25 @@ impl PaintOrderInputs {
         self.has(PaintOrderFlag::HasZIndex).then_some(self.z_index)
     }
 
+    // Display, node kind, fragmentation, flex/grid membership and table geometry
+    // are prepared by layout commit. AVC assignment only changes these live facts.
+    // A z-index on a flex/grid item also changes its positioned paint participation.
+    pub(crate) fn with_visual_context(
+        mut self,
+        facts: &crate::painting::stacking_context::StackingContextFacts,
+        z_index: Option<i32>,
+    ) -> Self {
+        for (flag, value) in [
+            (PaintOrderFlag::EstablishesContext, facts.establishes_stacking_context),
+            (PaintOrderFlag::Positioned, facts.is_positioned),
+            (PaintOrderFlag::HasZIndex, z_index.is_some()),
+        ] {
+            self.flags = (self.flags & !(1 << flag as u32)) | (u32::from(value) << flag as u32);
+        }
+        self.z_index = z_index.unwrap_or(0);
+        self
+    }
+
     pub fn gather(arena: &PaintableRowsRef<'_>, row: NodeSlotId) -> Self {
         let display = style_queries::display(arena, row);
         let kind = arena.node_kind_if_live(row);
