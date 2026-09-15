@@ -26,6 +26,126 @@ pub(crate) const PAINTABLE_SLOTS_PER_CHUNK: usize = 64;
 mod tests {
     use super::*;
 
+    fn test_paint_context(arena: &mut LayoutNodeArena, parent: NodeSlotId) -> NodeSlotId {
+        use crate::painting::display_list::commands::{ClipNodeIndex, EffectNodeIndex, VISUAL_VIEWPORT_NODE_INDEX};
+        use crate::painting::visual_context::{DescendantVisualContexts, NearestScrollNodeIndices, PositioningContext};
+        let row = arena.allocate_for_test().slot;
+        arena.data(row).parent.set(parent);
+        arena.populate_paintable_row(row);
+        let positioning = PositioningContext {
+            spatial: VISUAL_VIEWPORT_NODE_INDEX,
+            clip: ClipNodeIndex::NONE,
+            plane_root: VISUAL_VIEWPORT_NODE_INDEX,
+            nearest_scroll_nodes: NearestScrollNodeIndices {
+                stopping_at_fixed_position_ancestors: VISUAL_VIEWPORT_NODE_INDEX,
+                continuing_through_fixed_position_ancestors: VISUAL_VIEWPORT_NODE_INDEX,
+            },
+        };
+        let contexts = DescendantVisualContexts {
+            effect: EffectNodeIndex::NONE,
+            normal: positioning,
+            absolute_position: positioning,
+            fixed_position: positioning,
+            flattens_inherited_transform: true,
+            sorting_context_root: None,
+            enclosing_stacking_context: row,
+        };
+        arena.set_paintable_visual_context_record(
+            row,
+            PaintableVisualContextRecord {
+                inherited_input: contexts,
+                output_for_descendants: contexts,
+                node_handles: BoxVisualContextNodeHandles::default(),
+                has_mask_nodes: false,
+                may_be_root_element: false,
+                owns_geometry_dependent_nodes: false,
+                subtree_may_own_geometry_dependent_nodes: false,
+                stacking_context: crate::painting::stacking_context::StackingContextFacts {
+                    enclosing_stacking_context: parent,
+                    ..crate::painting::stacking_context::StackingContextFacts::for_viewport()
+                },
+            },
+        );
+        row
+    }
+
+    #[test]
+    fn order_changes_without_own_context_preserve_unrelated_paint_scopes() {
+        let mut arena = LayoutNodeArena::new();
+        let root = test_paint_context(&mut arena, NodeSlotId::INVALID);
+        let owner = test_paint_context(&mut arena, root);
+        let sibling = test_paint_context(&mut arena, root);
+        let intermediate = arena.allocate_for_test().slot;
+        let child = arena.allocate_for_test().slot;
+        arena.data(intermediate).parent.set(owner);
+        arena.data(child).parent.set(intermediate);
+        arena.populate_paintable_row(intermediate);
+        arena.populate_paintable_row(child);
+        let before = arena.paint_topology_revision();
+
+        arena.note_paint_topology_changed_for_row(child);
+
+        assert!(!arena.paint_scope_topology_unchanged(owner, owner, before));
+        assert!(!arena.paint_scope_topology_unchanged(root, root, before));
+        assert!(arena.paint_scope_topology_unchanged(sibling, sibling, before));
+        assert_eq!(arena.paintable_rows.full_paint_topology_revision.get(), before);
+    }
+
+    #[test]
+    fn order_changes_before_and_after_reparenting_invalidate_both_known_owners() {
+        let mut arena = LayoutNodeArena::new();
+        let old_owner = test_paint_context(&mut arena, NodeSlotId::INVALID);
+        let new_owner = test_paint_context(&mut arena, NodeSlotId::INVALID);
+        let unrelated = test_paint_context(&mut arena, NodeSlotId::INVALID);
+        let child = arena.allocate_for_test().slot;
+        arena.data(child).parent.set(old_owner);
+        arena.populate_paintable_row(child);
+        let before = arena.paint_topology_revision();
+
+        arena.note_paint_topology_changed_for_row(child);
+        arena.data(child).parent.set(new_owner);
+        arena.note_paint_topology_changed_for_row(child);
+
+        assert!(!arena.paint_scope_topology_unchanged(old_owner, old_owner, before));
+        assert!(!arena.paint_scope_topology_unchanged(new_owner, new_owner, before));
+        assert!(arena.paint_scope_topology_unchanged(unrelated, unrelated, before));
+    }
+
+    #[test]
+    fn order_changes_with_unresolved_ownership_keep_full_invalidation() {
+        let mut arena = LayoutNodeArena::new();
+        let context = test_paint_context(&mut arena, NodeSlotId::INVALID);
+        let disconnected = arena.allocate_for_test().slot;
+        arena.populate_paintable_row(disconnected);
+        let before = arena.paint_topology_revision();
+
+        arena.note_paint_topology_changed_for_row(disconnected);
+
+        assert!(!arena.paint_scope_topology_unchanged(context, context, before));
+        assert!(arena.paintable_rows.full_paint_topology_revision.get() > before);
+    }
+
+    #[test]
+    fn order_changes_in_unconnected_subtrees_do_not_inherit_an_outer_owner() {
+        let mut arena = LayoutNodeArena::new();
+        let outer = test_paint_context(&mut arena, NodeSlotId::INVALID);
+        let mask = arena.allocate_for_test().slot;
+        let child = arena.allocate_for_test().slot;
+        arena
+            .data(mask)
+            .kind
+            .set(crate::layout::node_data::NodeKind::SVGMaskBox);
+        arena.data(mask).parent.set(outer);
+        arena.data(child).parent.set(mask);
+        arena.populate_paintable_row(mask);
+        arena.populate_paintable_row(child);
+        let before = arena.paint_topology_revision();
+
+        arena.note_paint_topology_changed_for_row(child);
+
+        assert!(arena.paintable_rows.full_paint_topology_revision.get() > before);
+    }
+
     #[test]
     fn overflow_queries_do_not_measure_ordinary_inline_fragments() {
         use crate::css::css_pixels::{CssPixelRect, CssPixels};
@@ -632,14 +752,21 @@ impl LayoutNodeArena {
     }
 
     pub(crate) fn note_paint_topology_changed_for_row(&self, row: NodeSlotId) {
-        if let Some(owner) =
-            self.paint_scope_owner(crate::painting::paint_order_plan::PaintScope::stacking_context(row))
-        {
-            self.note_stacking_context_paint_order_changed(owner);
-        } else {
-            let revision = self.next_paint_topology_revision();
-            self.paintable_rows.full_paint_topology_revision.set(revision);
+        // Text rows and newly committed boxes can lack their own visual-context record.
+        // Resolve ownership while the current paint-parent relationships are still available.
+        let rows = self.paintable_rows();
+        let mut current = Some(row);
+        while let Some(candidate) = current {
+            if let Some(owner) = self.paint_scope_owner(
+                crate::painting::paint_order_plan::PaintScope::stacking_context(candidate),
+            ) {
+                self.note_stacking_context_paint_order_changed(owner);
+                return;
+            }
+            current = crate::painting::paint_order::paint_parent(&rows, candidate);
         }
+        let revision = self.next_paint_topology_revision();
+        self.paintable_rows.full_paint_topology_revision.set(revision);
     }
 
     pub(crate) fn note_stacking_context_paint_order_changed(&self, owner: NodeSlotId) {
