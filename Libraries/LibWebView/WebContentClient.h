@@ -146,8 +146,8 @@ public:
     Web::Compositor::CompositorContextId compositor_context_id_for_page(Web::PageId page_id);
     Optional<Web::PageId> page_id_for_compositor_context_id(Web::Compositor::CompositorContextId) const;
     bool send_async_scroll_to_compositor(Web::PageId page_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels, Web::WheelDeltaPrecision, Web::ScrollGesturePhase);
-    bool handle_mouse_event_in_compositor(Web::PageId page_id, Web::MouseEvent const&);
-    bool handle_mouse_event_in_compositor(Web::PageId page_id, CanonicalNavigable const& root, Optional<Web::Compositor::CompositorContextId>, Web::MouseEvent const&);
+    Web::Compositor::MouseEventHandlingResult handle_mouse_event_in_compositor(Web::PageId page_id, Web::MouseEvent const&);
+    Web::Compositor::MouseEventHandlingResult handle_mouse_event_in_compositor(Web::PageId page_id, CanonicalNavigable const& root, Optional<Web::Compositor::CompositorContextId>, Web::MouseEvent const&);
     bool handle_key_event_in_compositor(Web::PageId page_id, Web::KeyEvent const&);
     void dispatch_key_event_to_web_content(Web::PageId page_id, Web::KeyEvent const&);
     bool handle_pinch_event_in_compositor(Web::PageId page_id, Web::PinchEvent const&);

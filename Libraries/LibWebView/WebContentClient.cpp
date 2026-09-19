@@ -674,16 +674,16 @@ void WebContentClient::dispatch_key_event_to_web_content(Web::PageId page_id, We
         async_key_event(page_id, event.clone_without_browser_data());
 }
 
-bool WebContentClient::handle_mouse_event_in_compositor(Web::PageId page_id, Web::MouseEvent const& event)
+Web::Compositor::MouseEventHandlingResult WebContentClient::handle_mouse_event_in_compositor(Web::PageId page_id, Web::MouseEvent const& event)
 {
     auto* traversable = traversable_for_page(page_id);
     if (!traversable)
-        return false;
+        return {};
     return handle_mouse_event_in_compositor(page_id, *traversable, compositor_context_id_for_page(page_id), event);
 }
 
 // Input over a remote child of the root is the hosting process's to handle, in the root's compositor context there.
-bool WebContentClient::handle_mouse_event_in_compositor(Web::PageId page_id, CanonicalNavigable const& root, Optional<Web::Compositor::CompositorContextId> context_id, Web::MouseEvent const& event)
+Web::Compositor::MouseEventHandlingResult WebContentClient::handle_mouse_event_in_compositor(Web::PageId page_id, CanonicalNavigable const& root, Optional<Web::Compositor::CompositorContextId> context_id, Web::MouseEvent const& event)
 {
     if (auto target = SiteIsolationManager::the().remote_child_frame_input_target_at({ this, page_id }, root, event.position); target.has_value()) {
         auto translated_event = event.clone_without_browser_data();
@@ -693,15 +693,15 @@ bool WebContentClient::handle_mouse_event_in_compositor(Web::PageId page_id, Can
     }
 
     if (!context_id.has_value())
-        return false;
+        return {};
 
     auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
 
-    auto handled = Application::the().handle_mouse_event_in_compositor(*context_id, event);
+    auto result = Application::the().handle_mouse_event_in_compositor(*context_id, event);
 
     dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI compositor IPC mouse_event page {} returned {} in {} us",
-        page_id, handled, timer.elapsed_time().to_microseconds());
-    return handled;
+        page_id, result.handled, timer.elapsed_time().to_microseconds());
+    return result;
 }
 
 bool WebContentClient::handle_pinch_event_in_compositor(Web::PageId page_id, Web::PinchEvent const& event)

@@ -858,10 +858,13 @@ void ViewImplementation::enqueue_input_event(Web::InputEvent event)
                 mouse_event->async_scroll_performed_default_action = true;
             dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI compositor wheel bypass result for page {}: {}",
                 m_client_state.page_index, mouse_event->async_scroll_performed_default_action ? "accepted"sv : "rejected"sv);
-        } else if (client().handle_mouse_event_in_compositor(m_client_state.page_index, *mouse_event)) {
+        } else if (auto result = client().handle_mouse_event_in_compositor(m_client_state.page_index, *mouse_event); result.handled) {
             dbgln_if(COMPOSITOR_DEBUG, "[Compositor] UI compositor handled mouse event for page {} at {},{}",
                 m_client_state.page_index, mouse_event->position.x().value(), mouse_event->position.y().value());
-            return;
+            // The page still sees the events of a drag the compositor scrolls for a scrollbar the display list paints.
+            if (!result.scrollbar_dragged_by_compositor.has_value())
+                return;
+            mouse_event->scrollbar_dragged_by_compositor = result.scrollbar_dragged_by_compositor;
         }
     }
     if (Application::web_content_options().enable_async_scrolling == EnableAsyncScrolling::Yes
