@@ -2366,6 +2366,53 @@ TEST_CASE(a_discrete_wheel_step_takes_over_a_smooth_scroll_the_main_thread_start
     EXPECT_EQ(updates.started_user_scrolls.first().selection.position, Web::CSSPixelPoint(0, 100));
 }
 
+template<typename T>
+static T round_trip_through_ipc(T const& value)
+{
+    IPC::MessageBuffer buffer;
+    IPC::Encoder encoder { buffer };
+    MUST(encoder.encode(value));
+
+    FixedMemoryStream stream { buffer.data().span() };
+    Queue<IPC::Attachment> attachments;
+    IPC::Decoder decoder { stream, attachments };
+    return MUST(decoder.decode<T>());
+}
+
+TEST_CASE(a_scrollbar_drag_the_compositor_drives_round_trips_through_ipc)
+{
+    Web::Compositor::ScrollbarDraggedByCompositor scrollbar {
+        .scroller_stable_node_id = { .node_id = Web::UniqueNodeID { 11 }, .kind = Web::Compositor::AsyncScrollNodeKind::PseudoElement, .pseudo_element_type = 3 },
+        .vertical = true,
+    };
+
+    auto handled = round_trip_through_ipc(Web::Compositor::MouseEventHandlingResult { .handled = true, .scrollbar_dragged_by_compositor = scrollbar });
+    EXPECT(handled.handled);
+    EXPECT(handled.scrollbar_dragged_by_compositor == scrollbar);
+
+    auto unhandled = round_trip_through_ipc(Web::Compositor::MouseEventHandlingResult {});
+    EXPECT(!unhandled.handled);
+    EXPECT(!unhandled.scrollbar_dragged_by_compositor.has_value());
+
+    auto event = mouse_event(Web::MouseEvent::Type::MouseDown, 48, 15, Web::UIEvents::MouseButton::Primary);
+    event.id = 9;
+    event.click_count = 2;
+    event.scrollbar_dragged_by_compositor = scrollbar;
+    auto decoded_event = round_trip_through_ipc(event);
+    EXPECT_EQ(decoded_event.type, Web::MouseEvent::Type::MouseDown);
+    EXPECT_EQ(decoded_event.position, event.position);
+    EXPECT_EQ(decoded_event.button, Web::UIEvents::MouseButton::Primary);
+    EXPECT_EQ(decoded_event.click_count, 2);
+    EXPECT_EQ(decoded_event.id, 9u);
+    EXPECT(decoded_event.scrollbar_dragged_by_compositor == scrollbar);
+
+    // Cloning is how the event is handed to the compositor and to WebContent.
+    EXPECT(event.clone_without_browser_data().scrollbar_dragged_by_compositor == scrollbar);
+
+    auto untagged_event = round_trip_through_ipc(mouse_event(Web::MouseEvent::Type::MouseMove, 1, 2));
+    EXPECT(!untagged_event.scrollbar_dragged_by_compositor.has_value());
+}
+
 TEST_CASE(started_user_scrolls_round_trip_through_ipc)
 {
     Web::Compositor::PendingAsyncScrollUpdates updates;
