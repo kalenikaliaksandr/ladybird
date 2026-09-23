@@ -2355,23 +2355,6 @@ unsafe fn commit_entry_pass<'a>(
     arena
 }
 
-/// # Safety
-///
-/// `arena` must be a live handle with a registered layout host, used on the document thread, and
-/// `root` must be a live partial relayout boundary.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn layout_arena_compute_subtree_layout(
-    arena: *mut c_void,
-    root: NodeSlotId,
-    viewport_inline_size_raw: i32,
-    document_in_quirks_mode: bool,
-) {
-    // SAFETY: Guaranteed by the entry point's contract.
-    unsafe {
-        compute_subtree_layout(arena, root, viewport_inline_size_raw, document_in_quirks_mode);
-    }
-}
-
 /// Lays out one partial relayout boundary in place and commits its fragments. Enrolled content
 /// is not synced here: the caller syncs once ahead of a batch of boundaries.
 ///
@@ -2379,12 +2362,15 @@ pub unsafe extern "C" fn layout_arena_compute_subtree_layout(
 ///
 /// `arena_handle` must be a live handle with a registered layout host, used on the document
 /// thread, and `root` must be a live partial relayout boundary.
-pub(crate) unsafe fn compute_subtree_layout(
+pub(super) unsafe fn compute_subtree_layout(
     arena_handle: *mut c_void,
     root: NodeSlotId,
+    replay: partial_relayout::PartialRelayoutReplay,
     viewport_inline_size_raw: i32,
     document_in_quirks_mode: bool,
 ) {
+    use partial_relayout::PartialRelayoutReplay;
+
     assert!(!arena_handle.is_null(), "layout node arena handle is null");
     assert!(!root.is_invalid());
     // SAFETY: The caller keeps the arena alive for this synchronous call. The host table is
@@ -2406,15 +2392,13 @@ pub(crate) unsafe fn compute_subtree_layout(
     arena.recompute_containing_blocks_in_subtree(root, host.inline_containing_block_lookup);
 
     let read_scope = arena.enter_read_scope(root);
-    // Abspos boundaries recompute their size and position in their containing block's space.
-    // In-flow SVG boundaries keep their committed geometry and lay out only their contents.
-    let root_is_absolutely_positioned = NodeFacts::new(&callbacks, root).is_absolutely_positioned();
-    let entry_root = if root_is_absolutely_positioned {
-        let containing_block = callbacks.containing_block(root);
-        assert!(!containing_block.is_invalid());
-        containing_block
-    } else {
-        root
+    let entry_root = match replay {
+        PartialRelayoutReplay::AbsolutelyPositioned => {
+            let containing_block = callbacks.containing_block(root);
+            assert!(!containing_block.is_invalid());
+            containing_block
+        }
+        PartialRelayoutReplay::SvgViewport => root,
     };
     let pass_fragments = RunRecords::with_unrooted(arena, entry_root, |entry_records| {
         let _trace = arena.layout_trace.pass(arena, Some(root));
@@ -2430,10 +2414,11 @@ pub(crate) unsafe fn compute_subtree_layout(
             fragments: Some(entry_fragments.clone()),
             previous_line_data: None,
         };
-        if root_is_absolutely_positioned {
-            abspos_engine::AbsposEngine::for_run(&entry_run).replay(&entry_run, root);
-        } else {
-            layout_subtree_with_frozen_root_geometry(&entry_run);
+        match replay {
+            PartialRelayoutReplay::AbsolutelyPositioned => {
+                abspos_engine::AbsposEngine::for_run(&entry_run).replay(&entry_run, root);
+            }
+            PartialRelayoutReplay::SvgViewport => layout_subtree_with_frozen_root_geometry(&entry_run),
         }
         finish_entry_pass(entry_records, &entry_fragments, &callbacks, false)
     });

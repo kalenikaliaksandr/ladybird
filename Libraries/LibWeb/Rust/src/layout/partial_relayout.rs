@@ -11,6 +11,16 @@ use crate::layout::node_data::{NodeFlag, NodeKind, NodeSlotId};
 use crate::layout::node_facts;
 use std::ffi::c_void;
 
+/// How a partial relayout lays out one of its roots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PartialRelayoutReplay {
+    /// Re-solves the box's own size and position in its containing block from the inputs the last
+    /// committing pass saved, then lays out its contents.
+    AbsolutelyPositioned,
+    /// Keeps the viewport's committed geometry and lays out only its contents.
+    SvgViewport,
+}
+
 #[repr(C)]
 pub struct FfiLayoutTreeUpdateClassification {
     pub marks_partial_relayout_boundary_self_only: bool,
@@ -85,19 +95,24 @@ impl LayoutNodeArena {
     }
 
     pub(crate) fn node_is_partial_relayout_boundary(&self, node: NodeSlotId) -> bool {
+        self.partial_relayout_replay(node).is_some()
+    }
+
+    /// How a partial relayout lays the box out, if the box is a partial relayout boundary.
+    pub(super) fn partial_relayout_replay(&self, node: NodeSlotId) -> Option<PartialRelayoutReplay> {
         let data = self.data(node);
 
         // An absolutely or fixed positioned descendant whose containing block is outside this
         // box's subtree is laid out by a formatting context outside it, which makes subtree
         // isolation impossible for any kind of boundary.
         if node_facts::has_flag(data, NodeFlag::AbsposDescendantEscapes) {
-            return false;
+            return None;
         }
 
         if !self.paintable_rows().paintable_row_is_populated(node)
             && !self.commit_splice_position_is_derivable_from_layout_ancestors(node)
         {
-            return false;
+            return None;
         }
 
         let style = node_facts::node_style_view(data);
@@ -110,26 +125,25 @@ impl LayoutNodeArena {
         // outermost one. An absolutely positioned SVG root's placement is not frozen, so it must
         // qualify through the saved-inputs replay path below instead.
         if data.kind.get() == NodeKind::SVGSVGBox && !style_is_absolutely_positioned {
-            return node_facts::has_flag(data, NodeFlag::HasCommittedFragmentLink);
+            return node_facts::has_flag(data, NodeFlag::HasCommittedFragmentLink)
+                .then_some(PartialRelayoutReplay::SvgViewport);
         }
 
         if !style_is_absolutely_positioned {
-            return false;
+            return None;
         }
         if node_facts::has_flag(data, NodeFlag::Anonymous) {
-            return false;
+            return None;
         }
         if node_facts::has_flag(data, NodeFlag::IsDocumentElement) {
-            return false;
+            return None;
         }
-        if self.saved_abspos_layout_inputs(data).is_none() {
-            return false;
-        }
+        self.saved_abspos_layout_inputs(data)?;
 
         // Only a full layout pass resolves anchor() functions in the inset properties to plain
         // values; a replay from saved inputs cannot.
         if node_facts::has_flag(data, NodeFlag::InsetsUseAnchorFunctions) {
-            return false;
+            return None;
         }
 
         // NOTE: Content-dependent sizing (shrink-to-fit, intrinsic constraints, aspect-ratio) does
@@ -153,6 +167,7 @@ impl LayoutNodeArena {
                     | FormattingContextType::Svg
             )
         )
+        .then_some(PartialRelayoutReplay::AbsolutelyPositioned)
     }
 
     pub(crate) fn register_partial_relayout_boundary_root(&self, node: NodeSlotId) {

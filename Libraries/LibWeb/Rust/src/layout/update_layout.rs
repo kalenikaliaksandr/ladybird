@@ -270,21 +270,28 @@ unsafe fn try_partial_relayout(
     else {
         return PartialRelayout::NotEligible;
     };
-    for &root in &partial_relayout_roots {
-        debug_assert!(unsafe { arena(arena_handle) }.slot_is_live(root));
-        debug_assert!(node_facts::kind_is_box(
-            unsafe { arena(arena_handle) }.data(root).kind.get()
-        ));
-    }
+    let partial_relayout_replays: Vec<_> = partial_relayout_roots
+        .iter()
+        .map(|&root| {
+            debug_assert!(unsafe { arena(arena_handle) }.slot_is_live(root));
+            debug_assert!(node_facts::kind_is_box(
+                unsafe { arena(arena_handle) }.data(root).kind.get()
+            ));
+            unsafe { arena(arena_handle) }
+                .partial_relayout_replay(root)
+                .expect("a planned partial relayout root is a partial relayout boundary")
+        })
+        .collect();
 
     // The build may have resized this document's viewport through its embedding document.
     let facts = host.document_facts(unsafe { arena(arena_handle) });
     unsafe { sync_enrolled_content_for_layout(arena_handle) };
-    for &root in &partial_relayout_roots {
+    for (&root, &replay) in partial_relayout_roots.iter().zip(&partial_relayout_replays) {
         unsafe {
             compute_subtree_layout(
                 arena_handle,
                 root,
+                replay,
                 facts.viewport_inline_size_raw,
                 facts.document_in_quirks_mode,
             );
