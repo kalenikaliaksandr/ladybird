@@ -205,6 +205,8 @@ enum PartialRelayout {
     NotEligible,
     Done,
     NeedsAnotherLayoutPass,
+    /// A root answers its parent differently now, and its ancestors lay out in the next pass.
+    AncestorsNeedLayout,
 }
 
 const ORDINARY_STABILIZATION_ROUND_LIMIT: u64 = 8;
@@ -270,6 +272,8 @@ unsafe fn try_partial_relayout(
     else {
         return PartialRelayout::NotEligible;
     };
+    // A commit sweeps the stale run cache entries that other roots replay their committed runs from,
+    // so decide how every root is laid out before the first commit.
     let partial_relayout_replays: Vec<_> = partial_relayout_roots
         .iter()
         .map(|&root| {
@@ -286,28 +290,34 @@ unsafe fn try_partial_relayout(
     // The build may have resized this document's viewport through its embedding document.
     let facts = host.document_facts(unsafe { arena(arena_handle) });
     unsafe { sync_enrolled_content_for_layout(arena_handle) };
-    for (&root, &replay) in partial_relayout_roots.iter().zip(&partial_relayout_replays) {
-        unsafe {
+    let mut ancestors_need_layout = false;
+    for (&root, replay) in partial_relayout_roots.iter().zip(partial_relayout_replays) {
+        ancestors_need_layout |= unsafe {
             compute_subtree_layout(
                 arena_handle,
                 root,
                 replay,
                 facts.viewport_inline_size_raw,
                 facts.document_in_quirks_mode,
-            );
-        }
+            )
+        };
     }
 
     unsafe { arena(arena_handle) }.note_partial_layout();
 
     host.after_layout_commit(layout_tree_was_built_in_partial_branch);
-    if host.needs_style_update_after_layout()
-        || !layout_is_up_to_date(
-            unsafe { arena(arena_handle) },
-            &host.document_facts(unsafe { arena(arena_handle) }),
-        )
-    {
+    if host.needs_style_update_after_layout() {
         return PartialRelayout::NeedsAnotherLayoutPass;
+    }
+    if !layout_is_up_to_date(
+        unsafe { arena(arena_handle) },
+        &host.document_facts(unsafe { arena(arena_handle) }),
+    ) {
+        return if ancestors_need_layout {
+            PartialRelayout::AncestorsNeedLayout
+        } else {
+            PartialRelayout::NeedsAnotherLayoutPass
+        };
     }
     PartialRelayout::Done
 }
@@ -329,8 +339,18 @@ unsafe fn update_layout(arena_handle: *mut c_void, inputs: &FfiLayoutUpdateInput
     // a nested dependency chain. One pass per connected element is a conservative exact bound.
     // Recompute it after each pass because an initial style update can enroll the elements of a
     // freshly parsed document after the layout update has already started.
+    //
+    // A partial relayout that leaves ancestors to lay out settles no level; the pass after it finishes
+    // the same round, so it does not count. Such passes move up to ancestors of the roots before them,
+    // and partial relayout stops being attempted after as many of them as there are connected elements.
     let mut layout_pass: u64 = 0;
-    while layout_pass < ORDINARY_STABILIZATION_ROUND_LIMIT + u64::from(host.connected_element_count()) + 1 {
+    let mut passes_finishing_a_partial_relayout: u64 = 0;
+    while layout_pass
+        < ORDINARY_STABILIZATION_ROUND_LIMIT
+            + u64::from(host.connected_element_count())
+            + 1
+            + passes_finishing_a_partial_relayout
+    {
         layout_pass += 1;
 
         host.update_style();
@@ -358,18 +378,27 @@ unsafe fn update_layout(arena_handle: *mut c_void, inputs: &FfiLayoutUpdateInput
             || facts.document_needs_layout_tree_build
             || unsafe { arena(arena_handle) }.needs_full_layout_tree_update();
 
-        match unsafe {
-            try_partial_relayout(
-                arena_handle,
-                &host,
-                &facts,
-                &mut registered_partial_relayout_roots,
-                &mut needs_layout_tree_rebuild,
-                &trace,
-            )
-        } {
+        let partial_relayout = if passes_finishing_a_partial_relayout <= u64::from(host.connected_element_count()) {
+            unsafe {
+                try_partial_relayout(
+                    arena_handle,
+                    &host,
+                    &facts,
+                    &mut registered_partial_relayout_roots,
+                    &mut needs_layout_tree_rebuild,
+                    &trace,
+                )
+            }
+        } else {
+            PartialRelayout::NotEligible
+        };
+        match partial_relayout {
             PartialRelayout::Done => return,
             PartialRelayout::NeedsAnotherLayoutPass => continue,
+            PartialRelayout::AncestorsNeedLayout => {
+                passes_finishing_a_partial_relayout += 1;
+                continue;
+            }
             PartialRelayout::NotEligible => {}
         }
         drop(registered_partial_relayout_roots);

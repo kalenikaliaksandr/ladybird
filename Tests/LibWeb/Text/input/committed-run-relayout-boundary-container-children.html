@@ -1,0 +1,93 @@
+<!doctype html>
+<script src="include.js"></script>
+<script src="layout-test.js"></script>
+<style>
+    body { margin: 0; }
+    .clipped { overflow: hidden; height: 50px; }
+    .child { height: 10px; }
+    #flex-container { display: flex; }
+    #grid-container { display: grid; }
+    #float { float: left; overflow: hidden; }
+</style>
+<div id="flex-container"><div class="clipped" id="flex-item"><div class="child" id="flex-item-child"></div></div></div>
+<div id="grid-container"><div class="clipped" id="grid-item"><div class="child" id="grid-item-child"></div></div></div>
+<table><tr><td class="clipped" id="cell"><div class="child" id="cell-child"></div></td></tr></table>
+<div id="float"><div class="child" id="float-child"></div></div>
+<ul><li class="clipped" id="list-item"><div class="child" id="list-item-child"></div></li></ul>
+<script>
+    layoutTest({
+        steps: [
+            {
+                name: "a flex item is not laid out on its own",
+                mutate: () => { document.getElementById("flex-item-child").style.height = "20px"; },
+                expect: `
+                    layout PARTIAL Box<DIV>#flex-container
+                      Box<DIV>#flex-container/flex RUN (cache=miss)
+                        BlockContainer<DIV>#flex-item.clipped/block (measurement, intrinsic) RUN (cache=bypass)
+                        BlockContainer<DIV>#flex-item.clipped/block RUN (cache=miss)
+                `,
+            },
+            {
+                name: "a grid item is not laid out on its own",
+                mutate: () => { document.getElementById("grid-item-child").style.height = "20px"; },
+                expect: `
+                    layout PARTIAL Box<DIV>#grid-container
+                      Box<DIV>#grid-container/grid RUN (cache=miss)
+                        BlockContainer<DIV>#grid-item.clipped/block (measurement, intrinsic) RUN (cache=bypass)
+                        BlockContainer<DIV>#grid-item.clipped/block RUN (cache=miss)
+                `,
+            },
+            {
+                name: "a table cell is not laid out on its own",
+                mutate: () => { document.getElementById("cell-child").style.height = "20px"; },
+                expect: `
+                    layout FULL
+                      @viewport/block RUN (cache=bypass)
+                        BlockContainer<HTML>/block RUN (cache=miss)
+                          Box<DIV>#flex-container/flex REUSE SUBTREE
+                          Box<DIV>#grid-container/grid REUSE SUBTREE
+                          BlockContainer<TD>#cell.clipped/block (measurement, intrinsic) RUN (cache=bypass)
+                          BlockContainer<TD>#cell.clipped/block (measurement, intrinsic) RUN (cache=bypass)
+                          TableWrapper(anonymous)/block RUN (cache=miss)
+                            Box<TABLE>/table RUN (cache=miss)
+                              BlockContainer<TD>#cell.clipped/block (measurement, intrinsic) RUN (cache=bypass)
+                              BlockContainer<TD>#cell.clipped/block (measurement) RUN (cache=bypass)
+                              BlockContainer<TD>#cell.clipped/block RUN (cache=miss)
+                          BlockContainer<DIV>#float/block REUSE SUBTREE
+                          ListItemBox<LI>#list-item.clipped/block REUSE SUBTREE
+                `,
+            },
+            {
+                name: "a float sized to its contents is not laid out on its own",
+                mutate: () => { document.getElementById("float-child").style.width = "20px"; },
+                expect: `
+                    layout FULL
+                      @viewport/block RUN (cache=bypass)
+                        BlockContainer<HTML>/block RUN (cache=miss)
+                          Box<DIV>#flex-container/flex REUSE SUBTREE
+                          Box<DIV>#grid-container/grid REUSE SUBTREE
+                          TableWrapper(anonymous)/block REUSE SUBTREE
+                          BlockContainer<DIV>#float/block (measurement, intrinsic) RUN (cache=bypass)
+                          BlockContainer<DIV>#float/block RUN (cache=miss)
+                          ListItemBox<LI>#list-item.clipped/block REUSE SUBTREE
+                `,
+                check: equal => equal(document.getElementById("float").getBoundingClientRect().width, 20, "float width"),
+            },
+            {
+                name: "a list item with an outside marker is not laid out on its own",
+                mutate: () => { document.getElementById("list-item-child").style.height = "20px"; },
+                expect: `
+                    layout FULL
+                      @viewport/block RUN (cache=bypass)
+                        BlockContainer<HTML>/block RUN (cache=miss)
+                          Box<DIV>#flex-container/flex REUSE SUBTREE
+                          Box<DIV>#grid-container/grid REUSE SUBTREE
+                          TableWrapper(anonymous)/block REUSE SUBTREE
+                          BlockContainer<DIV>#float/block REUSE SUBTREE
+                          ListItemBox<LI>#list-item.clipped/block RUN (cache=miss)
+                            ListItemMarkerBox(anonymous)/block REUSE SUBTREE
+                `,
+            },
+        ],
+    });
+</script>

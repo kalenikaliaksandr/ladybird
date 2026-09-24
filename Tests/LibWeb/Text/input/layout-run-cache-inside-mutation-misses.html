@@ -19,6 +19,9 @@
                 name: "a descendant mutation invalidates the cached run",
                 mutate: () => {
                     inner.style.height = "70px";
+                    // A dirty body keeps this a full layout, which probes the cached run of #cached
+                    // instead of laying #cached out on its own.
+                    document.body.style.paddingTop = "1px";
                 },
                 expect: `
                     layout FULL

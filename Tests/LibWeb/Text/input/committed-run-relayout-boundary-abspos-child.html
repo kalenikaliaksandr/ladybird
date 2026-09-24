@@ -1,0 +1,41 @@
+<!doctype html>
+<script src="include.js"></script>
+<script src="layout-test.js"></script>
+<style>
+    body { margin: 0; }
+    #positioned { display: flow-root; position: relative; height: 100px; }
+    #positioned-child { height: 10px; }
+    #statically-placed { position: absolute; width: 10px; height: 10px; }
+    #inset-placed { position: absolute; right: 0; bottom: 0; width: 10px; height: 10px; }
+</style>
+<div id="positioned"><div id="positioned-child"></div><div id="statically-placed"></div><div id="inset-placed"></div></div>
+<script>
+    function offsetInPositioned(box) {
+        const container = document.getElementById("positioned").getBoundingClientRect();
+        const rect = box.getBoundingClientRect();
+        return [rect.left - container.left, rect.top - container.top];
+    }
+
+    layoutTest({
+        steps: [
+            {
+                name: "a boundary lays out the absolutely positioned boxes it is the containing block of",
+                mutate: () => { document.getElementById("positioned-child").style.height = "20px"; },
+                expect: `
+                    layout PARTIAL BlockContainer<DIV>#positioned
+                      BlockContainer<DIV>#positioned/block RUN (cache=miss)
+                      BlockContainer<DIV>#statically-placed/block RUN (cache=miss)
+                      BlockContainer<DIV>#inset-placed/block RUN (cache=miss)
+                `,
+                check: equal => {
+                    const [staticLeft, staticTop] = offsetInPositioned(document.getElementById("statically-placed"));
+                    equal(staticLeft, 0, "statically placed left");
+                    equal(staticTop, 20, "statically placed top");
+                    const [insetLeft, insetTop] = offsetInPositioned(document.getElementById("inset-placed"));
+                    equal(insetLeft, document.getElementById("positioned").getBoundingClientRect().width - 10, "inset placed left");
+                    equal(insetTop, 90, "inset placed top");
+                },
+            },
+        ],
+    });
+</script>

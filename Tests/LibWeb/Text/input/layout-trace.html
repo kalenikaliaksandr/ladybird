@@ -71,11 +71,15 @@ layoutTest({
                 target.remove();
                 internals.gc();
             },
+            // The flow-root target is a partial relayout boundary; its grown height escalates to a
+            // full layout that reuses the run the partial relayout recorded.
             expect: `
+                layout PARTIAL BlockContainer<DIV>#target
+                  BlockContainer<DIV>#target/block RUN (cache=miss)
                 layout FULL
                   @viewport/block RUN (cache=bypass)
                     BlockContainer<HTML>/block RUN (cache=miss)
-                      BlockContainer<DIV>#target/block RUN (cache=miss)
+                      BlockContainer<DIV>#target/block REUSE SUBTREE
                   BlockContainer<DIV>#boundary/block RUN (cache=miss)
                 layout FULL
                   @viewport/block RUN (cache=bypass)

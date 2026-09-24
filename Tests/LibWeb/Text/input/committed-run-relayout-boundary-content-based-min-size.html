@@ -1,0 +1,43 @@
+<!doctype html>
+<script src="include.js"></script>
+<script src="layout-test.js"></script>
+<style>
+    body { margin: 0; }
+    #wide { display: flow-root; width: 50px; height: 20px; min-width: max-content; }
+    #wide-content { display: inline-block; width: 40px; height: 10px; }
+    #tall { display: flow-root; width: 50px; height: 20px; min-height: max-content; }
+    #tall-content { height: 10px; }
+</style>
+<div id="wide"><div id="wide-content"></div></div>
+<div id="tall"><div id="tall-content"></div></div>
+<script>
+    layoutTest({
+        steps: [
+            {
+                name: "a box with a content-based minimum width widens to its contents",
+                mutate: () => { document.getElementById("wide-content").style.width = "80px"; },
+                expect: `
+                    layout FULL
+                      @viewport/block RUN (cache=bypass)
+                        BlockContainer<HTML>/block RUN (cache=miss)
+                          BlockContainer<DIV>#wide/block RUN (cache=miss)
+                          BlockContainer<DIV>#tall/block REUSE SUBTREE
+                `,
+                check: equal => equal(wide.getBoundingClientRect().width, 80, "wide width"),
+            },
+            {
+                name: "a box with a content-based minimum height grows to its contents",
+                mutate: () => { document.getElementById("tall-content").style.height = "40px"; },
+                expect: `
+                    layout FULL
+                      @viewport/block RUN (cache=bypass)
+                        BlockContainer<HTML>/block RUN (cache=miss)
+                          BlockContainer<DIV>#wide/block REUSE SUBTREE
+                          BlockContainer<DIV>#tall/block (measurement, intrinsic) RUN (cache=bypass)
+                          BlockContainer<DIV>#tall/block RUN (cache=miss)
+                `,
+                check: equal => equal(tall.getBoundingClientRect().height, 40, "tall height"),
+            },
+        ],
+    });
+</script>

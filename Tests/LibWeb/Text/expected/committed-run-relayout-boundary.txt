@@ -1,0 +1,5 @@
+PASS: a change inside a fixed-height formatting context root lays out only that root (work + checks)
+PASS: a child appended to a fixed-height formatting context root lays out only that root (work + checks)
+PASS: a formatting context root that grows lays out its ancestors again (work + checks)
+PASS: an inline-block whose baseline moves lays out its line again (work + checks)
+PASS: an inline-block whose baseline stays lays out only itself (work)

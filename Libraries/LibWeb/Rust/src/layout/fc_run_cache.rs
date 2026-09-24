@@ -43,6 +43,20 @@ pub(super) struct FcRunCacheKey {
     root_cells: used_values::UsedValuesCellState,
 }
 
+impl FcRunCacheKey {
+    pub(super) fn fc_type(&self) -> formatting_context::FormattingContextType {
+        self.fc_type
+    }
+
+    pub(super) fn input(&self) -> LayoutInput {
+        self.input
+    }
+
+    pub(super) fn root_cells(&self) -> used_values::UsedValuesCellState {
+        self.root_cells
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct RunInputsTheStoredRunNeverObserved {
     pub(super) percentage_block_basis_and_block_size_definiteness: bool,
@@ -229,6 +243,10 @@ pub(super) struct FcRunCacheEntry {
 }
 
 impl FcRunCacheEntry {
+    pub(super) fn key(&self) -> &FcRunCacheKey {
+        &self.key
+    }
+
     pub(super) fn can_reuse_committed_subtree(&self) -> bool {
         self.outputs
             .root
@@ -278,9 +296,48 @@ pub(crate) struct FcRunCacheArenaStore {
     inline_layout_damage: RefCell<Vec<InlineLayoutDamage>>,
     pending_sweep_slots: RefCell<Vec<u32>>,
     enrolled_for_sweep: RefCell<Vec<bool>>,
+    /// The generation of the box in each slot that layout has measured, or zero.
+    measured_generation: RefCell<Vec<u8>>,
 }
 
 impl FcRunCacheArenaStore {
+    /// Records that layout measured the box for something outside it: its intrinsic sizes, or a
+    /// layout of it in intrinsic sizing mode or for a measurement. Whatever the measurement answered
+    /// may live on in the intrinsic size caches of the box's ancestors for as long as the box does,
+    /// so the note is never cleared; a new box in the slot has a new generation.
+    pub(crate) fn note_measured(&self, box_: Node) {
+        let mut measured_generation = self.measured_generation.borrow_mut();
+        let slot = box_.slot_index() as usize;
+        if measured_generation.len() <= slot {
+            measured_generation.resize(slot + 1, 0);
+        }
+        measured_generation[slot] = box_.generation();
+    }
+
+    pub(crate) fn box_was_ever_measured(&self, box_: Node) -> bool {
+        self.measured_generation
+            .borrow()
+            .get(box_.slot_index() as usize)
+            .is_some_and(|&generation| generation == box_.generation())
+    }
+
+    /// The entry the box's last committed run stored, if the box still occupies the slot. The entry
+    /// may be stale: a change below the box invalidates it, which is exactly when a partial relayout
+    /// replays it.
+    pub(super) fn committed_run_entry(&self, box_: Node) -> Option<std::rc::Rc<FcRunCacheEntry>> {
+        self.with_committed_run_entry(box_, std::rc::Rc::clone)
+    }
+
+    pub(super) fn with_committed_run_entry<R>(
+        &self,
+        box_: Node,
+        read: impl FnOnce(&std::rc::Rc<FcRunCacheEntry>) -> R,
+    ) -> Option<R> {
+        let entries = self.entries.borrow();
+        let entry = entries.get(box_.slot_index() as usize)?.as_ref()?;
+        (entry.validity.slot_generation == box_.generation()).then(|| read(entry))
+    }
+
     fn enqueue_for_sweep(&self, slot: u32) {
         let mut enrolled = self.enrolled_for_sweep.borrow_mut();
         if enrolled.len() <= slot as usize {
@@ -489,6 +546,9 @@ impl FcRunCacheAttempt {
         let fc_type = key.fc_type;
         let input = &key.input;
         let mode = fc_run_cache_mode_from_environment();
+        if layout_mode != LayoutMode::Normal || purpose.is_measurement() {
+            callbacks.arena().note_measured(box_);
+        }
         // A run this cache cannot describe still commits its subtree, so a stored entry would go on
         // describing paintables that run has replaced. Measurement runs commit nothing and leave it alone.
         let run_supersedes_stored_entry = layout_mode == LayoutMode::Normal && !purpose.is_measurement();
@@ -945,6 +1005,23 @@ mod tests {
         store.store(0, entry(1));
         store.sweep_pending_entries(|_, validity| validity.fragment_cache_epoch == 2);
         assert!(store.entries.borrow()[0].is_none());
+    }
+
+    #[test]
+    fn a_measured_box_stays_measured_until_its_slot_holds_a_new_box() {
+        let store = FcRunCacheArenaStore::default();
+        let measured = Node::new(3, 1);
+        assert!(!store.box_was_ever_measured(measured));
+
+        store.note_measured(measured);
+        store.remove_entry(measured.slot_index());
+        store.note_invalidated_entry(measured);
+        store.sweep_pending_entries(|_, _| false);
+        assert!(store.box_was_ever_measured(measured));
+
+        assert!(!store.box_was_ever_measured(Node::new(3, 2)));
+        assert!(!store.box_was_ever_measured(Node::new(2, 1)));
+        assert!(!store.box_was_ever_measured(Node::new(4, 1)));
     }
 
     #[test]

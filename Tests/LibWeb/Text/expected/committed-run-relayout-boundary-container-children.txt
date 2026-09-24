@@ -1,0 +1,5 @@
+PASS: a flex item is not laid out on its own (work)
+PASS: a grid item is not laid out on its own (work)
+PASS: a table cell is not laid out on its own (work)
+PASS: a float sized to its contents is not laid out on its own (work + checks)
+PASS: a list item with an outside marker is not laid out on its own (work)

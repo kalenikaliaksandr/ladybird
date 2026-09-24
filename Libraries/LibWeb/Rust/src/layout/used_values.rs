@@ -614,6 +614,13 @@ used_values_cell_state! {
 }
 
 impl UsedValuesCellState {
+    pub(crate) fn content_baselines(&self) -> DerivedBaselines {
+        DerivedBaselines {
+            first: self.has_first_baseline.then_some(self.first_baseline),
+            last: self.has_last_baseline.then_some(self.last_baseline),
+        }
+    }
+
     pub(crate) fn materialize_record(&self) -> UsedValues {
         let record = UsedValues::default();
         self.apply_to_record(&record);

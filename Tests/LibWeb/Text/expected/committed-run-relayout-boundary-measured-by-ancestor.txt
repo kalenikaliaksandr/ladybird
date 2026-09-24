@@ -1,0 +1,3 @@
+PASS: the menu widens to its header while the row lays out again without being measured (work + checks)
+PASS: a row the menu measured before cannot keep the menu from widening to it (work + checks)
+PASS: an inline-block that only measures itself lays out on its own (work + checks)

@@ -1,0 +1,2 @@
+PASS: a box with a content-based minimum width widens to its contents (work + checks)
+PASS: a box with a content-based minimum height grows to its contents (work + checks)

@@ -1,0 +1,61 @@
+<!doctype html>
+<script src="include.js"></script>
+<script src="layout-test.js"></script>
+<style>
+    body { margin: 0; }
+    .sized { width: 60px; height: 60px; }
+    .line-content { display: inline-block; width: 10px; height: 10px; }
+    .first-row { height: 30px; }
+    #float { float: left; }
+    .badge { display: inline-block; }
+    #block { display: flow-root; }
+</style>
+<div class="sized" id="float"><span class="line-content" id="float-content"></span></div>
+<div id="line">x<span class="sized badge" id="badge"><div class="first-row"><span class="line-content" id="badge-first-content"></span></div><span class="line-content"></span></span></div>
+<div id="control-line">x<span class="sized badge" id="control-badge"><div class="first-row"><span class="line-content" style="padding-top: 10px"></span></div><span class="line-content"></span></span></div>
+<div class="sized" id="block"><span class="line-content" id="block-content"></span></div>
+<script>
+    function offsetInLine(box, line) {
+        return box.getBoundingClientRect().top - line.getBoundingClientRect().top;
+    }
+
+    layoutTest({
+        steps: [
+            {
+                name: "a float whose baselines move lays out only itself",
+                mutate: () => { document.getElementById("float-content").style.paddingTop = "10px"; },
+                expect: `
+                    layout PARTIAL BlockContainer<DIV>#float.sized
+                      BlockContainer<DIV>#float.sized/block RUN (cache=miss)
+                `,
+            },
+            {
+                name: "an inline-block whose first baseline moves but whose last stays lays out only itself",
+                mutate: () => { document.getElementById("badge-first-content").style.paddingTop = "10px"; },
+                expect: `
+                    layout PARTIAL BlockContainer<SPAN>#badge.sized.badge
+                      BlockContainer<SPAN>#badge.sized.badge/block RUN (cache=miss)
+                `,
+                check: equal => {
+                    const controlOffset = offsetInLine(document.getElementById("control-badge"), document.getElementById("control-line"));
+                    equal(offsetInLine(badge, line), controlOffset, "badge offset in its line");
+                },
+            },
+            {
+                name: "a block-level box whose baselines move lays out its ancestors again",
+                mutate: () => { document.getElementById("block-content").style.paddingTop = "10px"; },
+                expect: `
+                    layout PARTIAL BlockContainer<DIV>#block.sized
+                      BlockContainer<DIV>#block.sized/block RUN (cache=miss)
+                    layout FULL
+                      @viewport/block RUN (cache=bypass)
+                        BlockContainer<HTML>/block RUN (cache=miss)
+                          BlockContainer<DIV>#float.sized/block REUSE SUBTREE
+                          BlockContainer<SPAN>#badge.sized.badge/block REUSE SUBTREE
+                          BlockContainer<SPAN>#control-badge.sized.badge/block REUSE SUBTREE
+                          BlockContainer<DIV>#block.sized/block REUSE SUBTREE
+                `,
+            },
+        ],
+    });
+</script>

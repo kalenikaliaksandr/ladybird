@@ -1,0 +1,102 @@
+<!doctype html>
+<script src="include.js"></script>
+<script src="layout-test.js"></script>
+<style>
+    body { margin: 0; }
+    #fixed { display: flow-root; height: 100px; }
+    #fixed-child { height: 10px; }
+    #growing { display: flow-root; }
+    #growing-child { height: 10px; }
+    #after-growing { height: 10px; }
+    .line { width: 300px; }
+    .badge { display: inline-block; width: 40px; height: 40px; }
+    .badge-content { display: inline-block; width: 10px; height: 10px; }
+</style>
+<div id="fixed"><div id="fixed-child"></div></div>
+<div id="growing"><div id="growing-child"></div></div>
+<div id="after-growing"></div>
+<div class="line" id="line">x<span class="badge" id="badge"><span class="badge-content" id="badge-content"></span></span></div>
+<div class="line" id="control-line">x<span class="badge" id="control-badge"><span class="badge-content" style="padding-top: 20px"></span></span></div>
+<script>
+    function offsetInLine(box, line) {
+        return box.getBoundingClientRect().top - line.getBoundingClientRect().top;
+    }
+
+    layoutTest({
+        steps: [
+            {
+                name: "a change inside a fixed-height formatting context root lays out only that root",
+                mutate: () => { document.getElementById("fixed-child").style.height = "30px"; },
+                expect: `
+                    layout PARTIAL BlockContainer<DIV>#fixed
+                      BlockContainer<DIV>#fixed/block RUN (cache=miss)
+                `,
+                check: equal => equal(document.getElementById("fixed").getBoundingClientRect().height, 100, "fixed height"),
+            },
+            {
+                name: "a child appended to a fixed-height formatting context root lays out only that root",
+                mutate: () => {
+                    const appended = document.createElement("div");
+                    appended.id = "appended";
+                    appended.style.height = "5px";
+                    document.getElementById("fixed").append(appended);
+                },
+                expect: `
+                    layout PARTIAL BlockContainer<DIV>#fixed
+                      BlockContainer<DIV>#fixed/block RUN (cache=miss)
+                `,
+                check: equal => {
+                    const appended = document.getElementById("appended");
+                    equal(appended.getBoundingClientRect().top, 30, "appended top");
+                    equal(appended.getBoundingClientRect().height, 5, "appended height");
+                },
+            },
+            {
+                name: "a formatting context root that grows lays out its ancestors again",
+                mutate: () => { document.getElementById("growing-child").style.height = "30px"; },
+                expect: `
+                    layout PARTIAL BlockContainer<DIV>#growing
+                      BlockContainer<DIV>#growing/block RUN (cache=miss)
+                    layout FULL
+                      @viewport/block RUN (cache=bypass)
+                        BlockContainer<HTML>/block RUN (cache=miss)
+                          BlockContainer<DIV>#fixed/block REUSE SUBTREE
+                          BlockContainer<DIV>#growing/block REUSE SUBTREE
+                          BlockContainer<SPAN>#badge.badge/block REUSE SUBTREE
+                          BlockContainer<SPAN>#control-badge.badge/block REUSE SUBTREE
+                `,
+                check: equal => {
+                    equal(document.getElementById("growing").getBoundingClientRect().height, 30, "growing height");
+                    equal(document.getElementById("after-growing").getBoundingClientRect().top, 130, "top after growing box");
+                },
+            },
+            {
+                name: "an inline-block whose baseline moves lays out its line again",
+                mutate: () => { document.getElementById("badge-content").style.paddingTop = "20px"; },
+                expect: `
+                    layout PARTIAL BlockContainer<SPAN>#badge.badge
+                      BlockContainer<SPAN>#badge.badge/block RUN (cache=miss)
+                    layout FULL
+                      @viewport/block RUN (cache=bypass)
+                        BlockContainer<HTML>/block RUN (cache=miss)
+                          BlockContainer<DIV>#fixed/block REUSE SUBTREE
+                          BlockContainer<DIV>#growing/block REUSE SUBTREE
+                          BlockContainer<SPAN>#badge.badge/block REUSE SUBTREE
+                          BlockContainer<SPAN>#control-badge.badge/block REUSE SUBTREE
+                `,
+                check: equal => {
+                    equal(offsetInLine(badge, line), offsetInLine(document.getElementById("control-badge"), document.getElementById("control-line")), "badge offset in its line");
+                    equal(line.getBoundingClientRect().height, document.getElementById("control-line").getBoundingClientRect().height, "line height");
+                },
+            },
+            {
+                name: "an inline-block whose baseline stays lays out only itself",
+                mutate: () => { document.getElementById("badge-content").style.width = "20px"; },
+                expect: `
+                    layout PARTIAL BlockContainer<SPAN>#badge.badge
+                      BlockContainer<SPAN>#badge.badge/block RUN (cache=miss)
+                `,
+            },
+        ],
+    });
+</script>

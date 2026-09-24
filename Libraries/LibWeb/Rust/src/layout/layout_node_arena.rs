@@ -537,6 +537,8 @@ pub(crate) struct LayoutNodeArena {
     rows_sharing_dom_node: RefCell<HashMap<*mut c_void, RowsSharingDomNode>>,
     dom_nodes_whose_bound_row_was_freed: Vec<*mut c_void>,
     fc_run_cache_store: super::fc_run_cache::FcRunCacheArenaStore,
+    /// The root of the innermost formatting context run in progress.
+    pub(super) innermost_run_root: Cell<NodeSlotId>,
     pub(super) layout_trace: super::trace::LayoutTrace,
     #[cfg(debug_assertions)]
     pub(super) read_scope: Cell<super::read_scope::ReadScope>,
@@ -619,6 +621,7 @@ impl LayoutNodeArena {
             rows_sharing_dom_node: RefCell::new(HashMap::default()),
             dom_nodes_whose_bound_row_was_freed: Vec::new(),
             fc_run_cache_store: super::fc_run_cache::FcRunCacheArenaStore::default(),
+            innermost_run_root: Cell::new(NodeSlotId::INVALID),
             layout_trace: super::trace::LayoutTrace::default(),
             #[cfg(debug_assertions)]
             read_scope: Cell::new(super::read_scope::ReadScope::default()),
@@ -667,6 +670,14 @@ impl LayoutNodeArena {
 
     pub(crate) fn fc_run_cache_store(&self) -> &super::fc_run_cache::FcRunCacheArenaStore {
         &self.fc_run_cache_store
+    }
+
+    /// Records that layout measured the box, unless the box measures itself in its own run: that
+    /// run's outputs carry whatever the measurement decided.
+    pub(crate) fn note_measured(&self, box_: NodeSlotId) {
+        if box_ != self.innermost_run_root.get() {
+            self.fc_run_cache_store.note_measured(box_);
+        }
     }
 
     /// The items borrow fonts for the current layout pass, so the stash is cleared when the pass ends.
@@ -4001,6 +4012,7 @@ mod tests {
             inset_bottom: CssPixels::default(),
             containing_line_box_index: None,
             abspos_layout_inputs: None,
+            content_baselines: Default::default(),
         }
     }
 

@@ -1,0 +1,3 @@
+PASS: a float whose baselines move lays out only itself (work)
+PASS: an inline-block whose first baseline moves but whose last stays lays out only itself (work + checks)
+PASS: a block-level box whose baselines move lays out its ancestors again (work)

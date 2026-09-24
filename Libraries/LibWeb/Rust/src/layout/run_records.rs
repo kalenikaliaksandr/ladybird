@@ -50,7 +50,10 @@ impl<'arena> RunRecords<'arena> {
             table_inline_layouts: RefCell::new(HashMap::default()),
             omitted_line_layout: Cell::new(false),
         };
-        run(&records)
+        let enclosing_run_root = arena.innermost_run_root.replace(root);
+        let result = run(&records);
+        arena.innermost_run_root.set(enclosing_run_root);
+        result
     }
 
     pub(crate) fn note_omitted_line_layout(&self) {

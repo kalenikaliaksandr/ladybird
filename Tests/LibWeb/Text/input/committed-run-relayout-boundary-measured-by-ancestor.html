@@ -1,0 +1,73 @@
+<!doctype html>
+<script src="include.js"></script>
+<script src="layout-test.js"></script>
+<style>
+    body { margin: 0; }
+    #menu { position: absolute; top: 0; left: 0; }
+    #list { display: inline-block; width: 100%; }
+    #row { display: flex; height: 20px; }
+    .sized { flex: none; height: 10px; }
+    #self-sized { display: inline-block; height: 40px; }
+    .self-sized-row { height: 20px; }
+    .self-sized-content { display: inline-block; width: 10px; height: 10px; }
+</style>
+<div id="menu">
+    <div id="header"><div class="sized" id="header-content" style="width: 50px"></div></div>
+    <div id="list"><div id="row"><div class="sized" id="row-content" style="width: 30px"></div></div></div>
+</div>
+<div style="margin-top: 100px">x<span id="self-sized"><div class="self-sized-row"><span class="self-sized-content" id="self-sized-content"></span></div><div class="self-sized-row"><span class="self-sized-content"></span></div></span></div>
+<script>
+    layoutTest({
+        steps: [
+            {
+                name: "the menu widens to its header while the row lays out again without being measured",
+                mutate: () => { document.getElementById("header-content").style.width = "60px"; },
+                expect: `
+                    layout PARTIAL BlockContainer<DIV>#menu
+                      BlockContainer<DIV>#menu/block RUN (cache=miss)
+                        BlockContainer<DIV>#menu/block (measurement, intrinsic) RUN (cache=bypass)
+                          BlockContainer<DIV>#list/block (measurement, intrinsic) RUN (cache=bypass)
+                        BlockContainer<DIV>#list/block RUN (cache=miss)
+                          Box<DIV>#row/flex RUN (cache=miss)
+                            BlockContainer<DIV>#row-content.sized/block RUN (cache=miss)
+                `,
+                check: equal => {
+                    equal(menu.getBoundingClientRect().width, 60, "menu width");
+                    equal(row.getBoundingClientRect().width, 60, "row width");
+                },
+            },
+            {
+                name: "a row the menu measured before cannot keep the menu from widening to it",
+                mutate: () => { document.getElementById("row-content").style.width = "100px"; },
+                expect: `
+                    layout PARTIAL BlockContainer<DIV>#menu
+                      BlockContainer<DIV>#menu/block RUN (cache=miss)
+                        BlockContainer<DIV>#menu/block (measurement, intrinsic) RUN (cache=bypass)
+                          BlockContainer<DIV>#list/block (measurement, intrinsic) RUN (cache=bypass)
+                            BlockContainer<DIV>#list/block (measurement, intrinsic) RUN (cache=bypass)
+                              Box<DIV>#row/flex (measurement, intrinsic) RUN (cache=bypass)
+                                BlockContainer<DIV>#row-content.sized/block (measurement) RUN (cache=bypass)
+                              Box<DIV>#row/flex (measurement, intrinsic) RUN (cache=bypass)
+                                BlockContainer<DIV>#row-content.sized/block (measurement) RUN (cache=bypass)
+                        BlockContainer<DIV>#list/block RUN (cache=miss)
+                          Box<DIV>#row/flex RUN (cache=miss)
+                            BlockContainer<DIV>#row-content.sized/block RUN (cache=miss)
+                `,
+                check: equal => {
+                    equal(menu.getBoundingClientRect().width, 100, "menu width");
+                    equal(row.getBoundingClientRect().width, 100, "row width");
+                },
+            },
+            {
+                name: "an inline-block that only measures itself lays out on its own",
+                mutate: () => { document.getElementById("self-sized-content").style.paddingTop = "5px"; },
+                expect: `
+                    layout PARTIAL BlockContainer<SPAN>#self-sized
+                      BlockContainer<SPAN>#self-sized/block RUN (cache=miss)
+                        BlockContainer<SPAN>#self-sized/block (measurement, intrinsic) RUN (cache=bypass)
+                `,
+                check: equal => equal(document.getElementById("self-sized").getBoundingClientRect().width, 10, "self-sized width"),
+            },
+        ],
+    });
+</script>

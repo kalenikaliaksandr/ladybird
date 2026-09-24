@@ -2387,6 +2387,9 @@ unsafe fn commit_entry_pass<'a>(
 /// Lays out one partial relayout boundary in place and commits its fragments. Enrolled content
 /// is not synced here: the caller syncs once ahead of a batch of boundaries.
 ///
+/// Returns whether the boundary's ancestors have to lay out again, because the boundary answers its
+/// parent differently now.
+///
 /// # Safety
 ///
 /// `arena_handle` must be a live handle with a registered layout host, used on the document
@@ -2397,7 +2400,7 @@ pub(super) unsafe fn compute_subtree_layout(
     replay: partial_relayout::PartialRelayoutReplay,
     viewport_inline_size_raw: i32,
     document_in_quirks_mode: bool,
-) {
+) -> bool {
     use partial_relayout::PartialRelayoutReplay;
 
     assert!(!arena_handle.is_null(), "layout node arena handle is null");
@@ -2427,8 +2430,9 @@ pub(super) unsafe fn compute_subtree_layout(
             assert!(!containing_block.is_invalid());
             containing_block
         }
-        PartialRelayoutReplay::SvgViewport => root,
+        PartialRelayoutReplay::SvgViewport | PartialRelayoutReplay::CommittedRun(_) => root,
     };
+    let mut parent_reads_the_same_from_the_root = true;
     let pass_fragments = RunRecords::with_unrooted(arena, entry_root, |entry_records| {
         let _trace = arena.layout_trace.pass(arena, Some(root));
         let entry_fragments = std::rc::Rc::new(fragment_tree::RunFragmentBuilder::new_entry_accumulator(entry_root));
@@ -2443,11 +2447,14 @@ pub(super) unsafe fn compute_subtree_layout(
             fragments: Some(entry_fragments.clone()),
             previous_line_data: None,
         };
-        match replay {
+        match &replay {
             PartialRelayoutReplay::AbsolutelyPositioned => {
                 abspos_engine::AbsposEngine::for_run(&entry_run).replay(&entry_run, root);
             }
             PartialRelayoutReplay::SvgViewport => layout_subtree_with_frozen_root_geometry(&entry_run),
+            PartialRelayoutReplay::CommittedRun(committed) => {
+                parent_reads_the_same_from_the_root = replay_committed_run(&entry_run, committed);
+            }
         }
         finish_entry_pass(entry_records, &entry_fragments, &callbacks, false)
     });
@@ -2455,11 +2462,159 @@ pub(super) unsafe fn compute_subtree_layout(
     // SAFETY: Computation has finished and its input borrows are no longer used.
     let arena = unsafe { commit_entry_pass(arena_handle, &host, root, &pass_fragments) };
     // Commit reset the subtree's rows, and its new size may affect ancestor scrollable overflow.
-    // Partial relayout roots are SVG viewports or abspos boxes, never SVG content boxes that
-    // would require a new layout instead of an overflow update.
+    // Partial relayout roots are never SVG content boxes, which would require a new layout instead
+    // of an overflow update.
     debug_assert!(!node_facts::kind_is_svg_box(arena.data(root).kind.get()));
     arena.schedule_scrollable_overflow_recalculation(root);
     arena.end_active_layout_pass();
+    if !parent_reads_the_same_from_the_root {
+        // The committed subtree is right, but the parent laid the box out by answers that have now
+        // changed. The parent lays out again in the next pass, reusing the run stored here, on its own
+        // if it is a partial relayout boundary itself.
+        let parent = arena.data(root).parent.get();
+        assert!(!parent.is_invalid());
+        let parent_is_boundary =
+            node_facts::kind_is_box(arena.data(parent).kind.get()) && arena.node_is_partial_relayout_boundary(parent);
+        arena.set_needs_layout_update(parent, !parent_is_boundary);
+    }
+    !parent_reads_the_same_from_the_root
+}
+
+/// Whether a parent that laid a box out by the outputs of one of its runs would lay it out the same by
+/// those of another: the root cells it sizes and places the box by, the baselines it reads, and what
+/// vouched for reusing the run under inputs other than its own.
+fn parent_reads_the_same_from_runs(
+    callbacks: &LayoutPass<'_>,
+    node: Node,
+    participation: ParticipationInParentFormattingContext,
+    committed: &RunOutputs,
+    replayed: &RunOutputs,
+) -> bool {
+    debug_assert_eq!(
+        committed.root_outcome.own_metrics_sealed,
+        replayed.root_outcome.own_metrics_sealed
+    );
+    let without_baselines = |cells: used_values::UsedValuesCellState| used_values::UsedValuesCellState {
+        has_first_baseline: false,
+        first_baseline: CssPixels::default(),
+        has_last_baseline: false,
+        last_baseline: CssPixels::default(),
+        ..cells
+    };
+    let replayed_cells = &replayed.root_outcome.cells;
+    without_baselines(committed.root_outcome.cells) == without_baselines(*replayed_cells)
+        && parent_reads_the_same_baselines(
+            callbacks,
+            node,
+            participation,
+            replayed_cells,
+            committed.root_outcome.cells.content_baselines(),
+            replayed_cells.content_baselines(),
+        )
+        && committed.result.depends_on_percentage_block_size == replayed.result.depends_on_percentage_block_size
+        && committed.atomic_root_sizing_repeats_for_available_inline_sizes_at_or_above
+            == replayed.atomic_root_sizing_repeats_for_available_inline_sizes_at_or_above
+}
+
+/// Whether a parent reads the same of a box with either of two sets of content baselines, the box's
+/// metrics being the same. Block layout derives its own baselines from a block-level box's, inline
+/// layout aligns an atomic inline by the baseline box_baseline_with_content_baselines derives, and
+/// nothing reads a float's.
+fn parent_reads_the_same_baselines(
+    callbacks: &LayoutPass<'_>,
+    node: Node,
+    participation: ParticipationInParentFormattingContext,
+    cells: &used_values::UsedValuesCellState,
+    committed: DerivedBaselines,
+    replayed: DerivedBaselines,
+) -> bool {
+    match participation {
+        ParticipationInParentFormattingContext::Float => true,
+        ParticipationInParentFormattingContext::AtomicInline => {
+            // A keyword that aligns one of the box's edges places it by its metrics alone, and deriving
+            // that position would read the containing block, outside the laid out subtree.
+            let facts = NodeFacts::new(callbacks, node);
+            let style = StyleValues::for_node(callbacks, node);
+            if facts.vertical_align_applies()
+                && style.vertical_align_is_keyword()
+                && matches!(
+                    style.vertical_align_keyword(),
+                    vertical_align::TOP
+                        | vertical_align::MIDDLE
+                        | vertical_align::BOTTOM
+                        | vertical_align::TEXT_TOP
+                        | vertical_align::TEXT_BOTTOM
+                )
+            {
+                return true;
+            }
+            let used = cells.materialize_record();
+            box_baseline_with_content_baselines(callbacks, node, &used, BaselineSet::Last, committed)
+                == box_baseline_with_content_baselines(callbacks, node, &used, BaselineSet::Last, replayed)
+        }
+        _ => committed == replayed,
+    }
+}
+
+/// Runs the root's last committed run again under the input and pre-run root cells it was keyed by,
+/// places the root where its parent committed it, and reports whether the parent would read the same
+/// from the new run. The new run stores its outputs in the run cache; a run the cache cannot describe
+/// leaves nothing to compare, and counts as changed.
+fn replay_committed_run(run: &FormattingContextRun<'_>, committed: &fc_run_cache::FcRunCacheEntry) -> bool {
+    let root = run.box_;
+    let callbacks = &run.callbacks;
+    let link = callbacks
+        .committed_fragment_link(root)
+        .expect("partial relayout root must have committed geometry");
+    let key = committed.key();
+    let root_used = std::rc::Rc::new(key.root_cells().materialize_record());
+    run.records.register(root, root_used.clone());
+    run_formatting_context(
+        run.purpose,
+        run.fragments.as_deref(),
+        &root_used,
+        root,
+        None,
+        key.fc_type(),
+        LayoutMode::Normal,
+        run.should_collect_devtools_layout_data,
+        *callbacks,
+        key.input(),
+        None,
+        None,
+    );
+    let parent_reads_the_same = callbacks
+        .arena()
+        .fc_run_cache_store()
+        .committed_run_entry(root)
+        .is_some_and(|replayed| {
+            parent_reads_the_same_from_runs(
+                callbacks,
+                root,
+                key.input().participation,
+                &committed.outputs,
+                &replayed.outputs,
+            )
+        });
+
+    // The root stays where its parent placed it, with the insets its parent resolved.
+    root_used.inset_left.set(link.inset_left);
+    root_used.inset_right.set(link.inset_right);
+    root_used.inset_top.set(link.inset_top);
+    root_used.inset_bottom.set(link.inset_bottom);
+    root_used.content_offset.set(link.committed_offset);
+    root_used.has_content_offset.set(true);
+    root_used.seal_committed_box_metrics();
+    lay_out_contained_abspos_boxes_and_build_fragment(
+        run,
+        root,
+        &root_used,
+        None,
+        false,
+        link.containing_line_box_index,
+        link.committed_offset,
+    );
+    parent_reads_the_same
 }
 
 fn layout_subtree_with_frozen_root_geometry(run: &FormattingContextRun<'_>) {

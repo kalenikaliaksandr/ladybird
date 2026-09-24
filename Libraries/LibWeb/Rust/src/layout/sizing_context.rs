@@ -40,6 +40,10 @@ impl<'pass> SizingContext<'pass> {
         }
     }
 
+    fn note_measured(&self, node: Node) {
+        self.callbacks.arena().note_measured(node);
+    }
+
     pub(super) fn facts(&self, node: Node) -> NodeFacts<'_> {
         NodeFacts::new(&self.callbacks, node)
     }
@@ -1267,6 +1271,7 @@ impl<'pass> SizingContext<'pass> {
         transferred_size: CssPixels,
         constraints: ContainingBlockConstraints,
     ) -> CssPixels {
+        self.note_measured(node);
         // NB: The box's own intrinsic sizes are transferred through the ratio, so measure its content instead.
         if !self.has_children(node) {
             return CssPixels::default();
@@ -1601,6 +1606,7 @@ impl<'pass> SizingContext<'pass> {
         constraints: ContainingBlockConstraints,
         intrinsic_content_inline_size: Option<CssPixels>,
     ) -> AtomicRootInlineSizeResolution {
+        self.note_measured(node);
         let style = self.style(node);
         let mut max_content_size_that_fit_the_definite_available_inner_space = None;
         let width_was_treated_as_auto = self.should_treat_inline_size_as_auto(node, available_space);
@@ -1667,6 +1673,7 @@ impl<'pass> SizingContext<'pass> {
         {
             return None;
         }
+        self.note_measured(node);
         let min_content_inline_size = if self.has_children(node) {
             self.intrinsic_inline_measurement_cache_get(
                 node,
@@ -1921,6 +1928,7 @@ impl<'pass> SizingContext<'pass> {
         constraints: ContainingBlockConstraints,
         block_size: Option<CssPixels>,
     ) -> CssPixels {
+        self.note_measured(node);
         let facts = self.facts(node);
         let style = self.style(node);
         if facts.is_replaced_box() && (style.width().contains_percentage() || style.max_width().contains_percentage()) {
@@ -2024,6 +2032,7 @@ impl<'pass> SizingContext<'pass> {
         constraints: ContainingBlockConstraints,
         block_size: Option<CssPixels>,
     ) -> CssPixels {
+        self.note_measured(node);
         let facts = self.facts(node);
         let style = self.style(node);
         let mut auto_size = self.auto_content_size(node);
@@ -2333,6 +2342,7 @@ impl<'pass> SizingContext<'pass> {
         inline_size: CssPixels,
         constraints: ContainingBlockConstraints,
     ) -> CssPixels {
+        self.note_measured(node);
         // https://www.w3.org/TR/css-sizing-3/#min-content-block-size
         let facts = self.facts(node);
         // For block containers, tables, and inline boxes, this is equivalent to the max-content block size.
@@ -2356,6 +2366,7 @@ impl<'pass> SizingContext<'pass> {
         inline_size: CssPixels,
         constraints: ContainingBlockConstraints,
     ) -> CssPixels {
+        self.note_measured(node);
         if let Some(ratio) = self.facts(node).preferred_aspect_ratio() {
             return ratio.divide(inline_size);
         }
@@ -2385,6 +2396,7 @@ impl<'pass> SizingContext<'pass> {
         inner_available_space: AvailableSpace,
         constraints: ContainingBlockConstraints,
     ) -> CssPixels {
+        self.note_measured(node);
         let measurement = formatting_context::MeasurementState::create(self.callbacks);
         let node_used = measurement.create_used_values(node, constraints);
         measurement

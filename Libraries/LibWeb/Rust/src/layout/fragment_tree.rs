@@ -51,6 +51,8 @@ pub(crate) struct FragmentLink {
     pub(crate) inset_bottom: CssPixels,
     pub(crate) containing_line_box_index: Option<usize>,
     pub(crate) abspos_layout_inputs: Option<abspos_inputs::AbsposLayoutInputs>,
+    /// The baselines the box had when it was placed: with its box metrics, what its parent read of it.
+    pub(crate) content_baselines: formatting_context::DerivedBaselines,
 }
 
 fn same_allocation<T>(left: Option<&std::rc::Rc<T>>, right: Option<&std::rc::Rc<T>>) -> bool {
@@ -358,6 +360,7 @@ pub(crate) struct PlacementData {
     pub(crate) inset_bottom: CssPixels,
     pub(crate) containing_line_box_index: Option<usize>,
     pub(crate) abspos_layout_inputs: Option<abspos_inputs::AbsposLayoutInputs>,
+    pub(crate) content_baselines: formatting_context::DerivedBaselines,
 }
 
 impl PlacementData {
@@ -374,6 +377,7 @@ impl PlacementData {
             inset_bottom: used.inset_bottom.get(),
             containing_line_box_index,
             abspos_layout_inputs: used.rare_data.get().and_then(|cell| cell.borrow().abspos_layout_inputs),
+            content_baselines: used.content_baselines_from_cells(),
         }
     }
 }
@@ -388,6 +392,7 @@ fn link_fragment(fragment: std::rc::Rc<Fragment>, placement: PlacementData) -> F
         inset_bottom: placement.inset_bottom,
         containing_line_box_index: placement.containing_line_box_index,
         abspos_layout_inputs: placement.abspos_layout_inputs,
+        content_baselines: placement.content_baselines,
     }
 }
 

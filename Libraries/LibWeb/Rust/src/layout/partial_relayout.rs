@@ -6,25 +6,50 @@
 
 use crate::layout::LayoutNodeArena;
 use crate::layout::abspos_inputs::AbsposLayoutInputs;
+use crate::layout::fc_run_cache::FcRunCacheEntry;
 use crate::layout::formatting_context::{FormattingContextType, formatting_context_type_created_by_node_data};
 use crate::layout::node_data::{NodeFlag, NodeKind, NodeSlotId};
 use crate::layout::node_facts;
 use std::ffi::c_void;
 
-/// How a partial relayout lays out one of its roots.
+/// What makes a box a partial relayout boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PartialRelayoutBoundary {
+    AbsolutelyPositioned,
+    SvgViewport,
+    CommittedRun,
+}
+
+/// How a partial relayout lays out one of its roots.
+#[derive(Clone)]
 pub(super) enum PartialRelayoutReplay {
     /// Re-solves the box's own size and position in its containing block from the inputs the last
     /// committing pass saved, then lays out its contents.
     AbsolutelyPositioned,
     /// Keeps the viewport's committed geometry and lays out only its contents.
     SvgViewport,
+    /// Runs the box's last committed run again under the input its parent gave that run, at the
+    /// box's committed position, and compares what the parent read from the two runs.
+    CommittedRun(std::rc::Rc<FcRunCacheEntry>),
 }
 
 #[repr(C)]
 pub struct FfiLayoutTreeUpdateClassification {
     pub marks_partial_relayout_boundary_self_only: bool,
     pub nearest_non_anonymous_ancestor_when_parent_is_anonymous: NodeSlotId,
+}
+
+fn style_fixes_size_regardless_of_contents(style: crate::css::computed_value_views::ComputedValuesView<'_>) -> bool {
+    use crate::css::computed_value_types::ComputedSize;
+
+    let is_fixed_length = |size: &ComputedSize| size.is_length_percentage() && !size.contains_percentage();
+    let is_absent_or_fixed_length = |size: &ComputedSize| size.is_auto() || size.is_none() || is_fixed_length(size);
+    is_fixed_length(style.width())
+        && is_fixed_length(style.height())
+        && is_absent_or_fixed_length(style.min_width())
+        && is_absent_or_fixed_length(style.max_width())
+        && is_absent_or_fixed_length(style.min_height())
+        && is_absent_or_fixed_length(style.max_height())
 }
 
 impl LayoutNodeArena {
@@ -95,11 +120,21 @@ impl LayoutNodeArena {
     }
 
     pub(crate) fn node_is_partial_relayout_boundary(&self, node: NodeSlotId) -> bool {
-        self.partial_relayout_replay(node).is_some()
+        self.partial_relayout_boundary(node).is_some()
     }
 
     /// How a partial relayout lays the box out, if the box is a partial relayout boundary.
     pub(super) fn partial_relayout_replay(&self, node: NodeSlotId) -> Option<PartialRelayoutReplay> {
+        Some(match self.partial_relayout_boundary(node)? {
+            PartialRelayoutBoundary::AbsolutelyPositioned => PartialRelayoutReplay::AbsolutelyPositioned,
+            PartialRelayoutBoundary::SvgViewport => PartialRelayoutReplay::SvgViewport,
+            PartialRelayoutBoundary::CommittedRun => {
+                PartialRelayoutReplay::CommittedRun(self.fc_run_cache_store().committed_run_entry(node)?)
+            }
+        })
+    }
+
+    fn partial_relayout_boundary(&self, node: NodeSlotId) -> Option<PartialRelayoutBoundary> {
         let data = self.data(node);
 
         // An absolutely or fixed positioned descendant whose containing block is outside this
@@ -126,11 +161,13 @@ impl LayoutNodeArena {
         // qualify through the saved-inputs replay path below instead.
         if data.kind.get() == NodeKind::SVGSVGBox && !style_is_absolutely_positioned {
             return node_facts::has_flag(data, NodeFlag::HasCommittedFragmentLink)
-                .then_some(PartialRelayoutReplay::SvgViewport);
+                .then_some(PartialRelayoutBoundary::SvgViewport);
         }
 
         if !style_is_absolutely_positioned {
-            return None;
+            return self
+                .node_is_committed_run_boundary(node, data, style)
+                .then_some(PartialRelayoutBoundary::CommittedRun);
         }
         if node_facts::has_flag(data, NodeFlag::Anonymous) {
             return None;
@@ -167,7 +204,120 @@ impl LayoutNodeArena {
                     | FormattingContextType::Svg
             )
         )
-        .then_some(PartialRelayoutReplay::AbsolutelyPositioned)
+        .then_some(PartialRelayoutBoundary::AbsolutelyPositioned)
+    }
+
+    /// An in-flow box that establishes an independent formatting context, placed by block, inline or
+    /// float layout, whose last committed run the run cache still holds. Its parent laid it out by
+    /// nothing but that run's input and outputs, so running it again under the same input tells
+    /// whether anything above has to change. Flex, grid and table layout keep more about their
+    /// children than a run's outputs, so boxes they place do not qualify.
+    fn node_is_committed_run_boundary(
+        &self,
+        node: NodeSlotId,
+        data: &crate::layout::node_data::NodeData,
+        style: Option<crate::css::computed_value_views::ComputedValuesView<'_>>,
+    ) -> bool {
+        use crate::layout::ParticipationInParentFormattingContext;
+
+        // Block layout reads a list item's outside marker, which is inside the item's subtree, into
+        // the input it gives the item's run.
+        if !node_facts::has_flag(data, NodeFlag::HasCommittedFragmentLink)
+            || !matches!(data.kind.get(), NodeKind::BlockContainer | NodeKind::Box)
+        {
+            return false;
+        }
+        const DISQUALIFYING_FLAGS: u32 = NodeFlag::Anonymous as u32
+            | NodeFlag::IsDocumentElement as u32
+            | NodeFlag::IsBody as u32
+            | NodeFlag::IsFlexItem as u32
+            | NodeFlag::IsGridItem as u32
+            | NodeFlag::IsReplacedElement as u32
+            | NodeFlag::IsHtmlInputElement as u32
+            | NodeFlag::UsesButtonLayout as u32;
+        if data.flags.get() & DISQUALIFYING_FLAGS != 0 {
+            return false;
+        }
+        let Some(style) = style else {
+            return false;
+        };
+        let display = style.display();
+        if display.is_table_inside() || display.is_internal_table() || display.is_table_caption() {
+            return false;
+        }
+        let parent = data.parent.get();
+        if parent.is_invalid() {
+            return false;
+        }
+        let parent_kind = self.data(parent).kind.get();
+        if node_facts::kind_is_svg_box(parent_kind)
+            || matches!(parent_kind, NodeKind::SVGSVGBox | NodeKind::SVGForeignObjectBox)
+        {
+            return false;
+        }
+        let Some(fc_type) = formatting_context_type_created_by_node_data(data, Some(style), false) else {
+            return false;
+        };
+        if !matches!(
+            fc_type,
+            FormattingContextType::Block | FormattingContextType::Flex | FormattingContextType::Grid
+        ) {
+            return false;
+        }
+
+        // What an ancestor measured of the box can live on in its intrinsic size caches, and a
+        // replay measures nothing again. Only a box whose style fixes its size gives the same
+        // measurements whatever its contents.
+        let store = self.fc_run_cache_store();
+        if store.box_was_ever_measured(node) && !style_fixes_size_regardless_of_contents(style) {
+            return false;
+        }
+
+        store
+            .with_committed_run_entry(node, |entry| {
+                if entry.key().fc_type() != fc_type {
+                    return false;
+                }
+                match entry.key().input().participation {
+                    ParticipationInParentFormattingContext::BlockLevel
+                    | ParticipationInParentFormattingContext::Float => {}
+                    // An atomic inline root sizes its automatic block size through its parent's block
+                    // formatting context, which a replay does not have. The two agree only for a block
+                    // formatting context root without size containment.
+                    ParticipationInParentFormattingContext::AtomicInline => {
+                        if !node_facts::node_creates_block_formatting_context(data, Some(style), false)
+                            || style.has_size_containment()
+                            || style.is_size_container()
+                        {
+                            return false;
+                        }
+                    }
+                    _ => return false,
+                }
+                // The entry must describe the committed box, not a later run that was never committed.
+                let cells = &entry.outputs.root_outcome.cells;
+                self.with_committed_fragment_link_during_layout(node, |link| {
+                    link.is_some_and(|link| {
+                        let fragment = &link.fragment;
+                        cells.content_inline_size == fragment.content_inline_size
+                            && cells.content_block_size == fragment.content_block_size
+                            && cells.margin_left == fragment.margin_left
+                            && cells.margin_right == fragment.margin_right
+                            && cells.margin_top == fragment.margin_top
+                            && cells.margin_bottom == fragment.margin_bottom
+                            && cells.border_left == fragment.border_left
+                            && cells.border_right == fragment.border_right
+                            && cells.border_top == fragment.border_top
+                            && cells.border_bottom == fragment.border_bottom
+                            && cells.padding_left == fragment.padding_left
+                            && cells.padding_right == fragment.padding_right
+                            && cells.padding_top == fragment.padding_top
+                            && cells.padding_bottom == fragment.padding_bottom
+                            && cells.content_baselines() == link.content_baselines
+                    })
+                })
+            })
+            .unwrap_or(false)
     }
 
     pub(crate) fn register_partial_relayout_boundary_root(&self, node: NodeSlotId) {
@@ -675,6 +825,17 @@ impl LayoutNodeArena {
 
         if !propagate_through_ancestors {
             self.register_partial_relayout_boundary_root(node);
+            // Reset what the walk below would have: an in-flow boundary contributes its intrinsic sizes
+            // and baselines to its ancestors, and a boundary replaced in place is a new box that no
+            // ancestor has measured yet.
+            let node_contributes_to_ancestor_intrinsic_sizes = node_is_box
+                && data.kind.get() != NodeKind::SVGSVGBox
+                && !self
+                    .node_style_if_live(node)
+                    .is_some_and(|style| style.is_absolutely_positioned());
+            if node_contributes_to_ancestor_intrinsic_sizes {
+                self.reset_cached_intrinsic_sizes_of_ancestors(node);
+            }
             return;
         }
 
@@ -1104,5 +1265,22 @@ mod tests {
         assert!(!node_is_dirty(&arena, &parent));
         assert_eq!(arena.take_partial_relayout_boundary_roots(), vec![child.slot]);
         free_node(&mut arena, &parent);
+    }
+
+    #[test]
+    fn boundary_self_only_marking_of_an_in_flow_box_resets_its_ancestors_intrinsic_sizes() {
+        let mut arena = LayoutNodeArena::new();
+        let grandparent = allocate_box_with_a_dummy_shell(&mut arena);
+        let parent = allocate_box_with_a_dummy_shell(&mut arena);
+        let child = allocate_box_with_a_dummy_shell(&mut arena);
+        arena.insert_child(grandparent.slot, parent.slot, NodeSlotId::INVALID);
+        arena.insert_child(parent.slot, child.slot, NodeSlotId::INVALID);
+
+        arena.set_needs_layout_update(child.slot, false);
+
+        assert!(!node_is_dirty(&arena, &parent));
+        assert_eq!(intrinsic_cache_epoch(&arena, &parent), 1);
+        assert_eq!(intrinsic_cache_epoch(&arena, &grandparent), 1);
+        free_node(&mut arena, &grandparent);
     }
 }
