@@ -335,60 +335,89 @@ pub(crate) fn place_child(
     let purpose = run.purpose;
     let records = run.records;
     let callbacks = &run.callbacks;
-    let fragments = run.fragments.as_deref();
     let used = records.used_values(node);
     assert!(!used.has_content_offset.get());
     used.has_content_offset.set(true);
     used.content_offset.set(offset);
     used.seal_committed_box_metrics();
-    if let Some(fragments) = fragments {
-        fragments.normalize_arrivals_for_placement(node);
-        loop {
-            let batch = fragments.take_drainable_abspos(node, records, callbacks);
-            if batch.is_empty() {
-                break;
-            }
-            let engine = abspos_engine::AbsposEngine::for_run(run);
-            for entry in batch {
-                engine.layout_pending_child(run, entry);
-            }
-        }
-        let containing_block = callbacks.containing_block(node);
-        let containing_block_is_sealed = !containing_block.is_invalid()
-            && records
-                .used_values_if_owned(containing_block)
-                .is_none_or(|containing_block_used| containing_block_used.has_content_offset.get());
-        let node_facts = NodeFacts::new(callbacks, node);
-        let own_anchor_candidate_border_box_rect = (node_facts.is_box() && node_facts.has_anchor_names()).then(|| {
-            let collapsed = used.uses_collapsing_borders_model.get();
-            CssPixelRect {
-                x: used.content_offset.get().x - used.border_box_left(collapsed),
-                y: used.content_offset.get().y - used.border_box_top(collapsed),
-                width: used.border_box_inline_size(collapsed),
-                height: used.border_box_block_size(collapsed),
-            }
-        });
-        fragments.build_fragment_for_placed_box(
-            callbacks,
-            node,
-            (!containing_block.is_invalid()).then_some(containing_block),
-            &used,
-            containing_block_is_sealed,
-            resolve_containing_line_box_index(
-                records,
-                callbacks,
-                node,
-                containing_block,
-                containing_line_box_fragment,
-                offset,
-            ),
-            point_add(
-                offset,
-                committed_offset_delta_at_placement(purpose, records, callbacks, node, containing_block, &used),
-            ),
-            own_anchor_candidate_border_box_rect,
-        );
+    if run.fragments.is_none() {
+        return;
     }
+    let containing_block = callbacks.containing_block(node);
+    let containing_block_is_sealed = !containing_block.is_invalid()
+        && records
+            .used_values_if_owned(containing_block)
+            .is_none_or(|containing_block_used| containing_block_used.has_content_offset.get());
+    let containing_line_box_index = resolve_containing_line_box_index(
+        records,
+        callbacks,
+        node,
+        containing_block,
+        containing_line_box_fragment,
+        offset,
+    );
+    let committed_offset = point_add(
+        offset,
+        committed_offset_delta_at_placement(purpose, records, callbacks, node, containing_block, &used),
+    );
+    lay_out_contained_abspos_boxes_and_build_fragment(
+        run,
+        node,
+        &used,
+        (!containing_block.is_invalid()).then_some(containing_block),
+        containing_block_is_sealed,
+        containing_line_box_index,
+        committed_offset,
+    );
+}
+
+/// Builds the fragment of a box whose placement is final. The absolutely positioned boxes it is the
+/// containing block of are laid out first: they can only be placed against a placed containing block.
+fn lay_out_contained_abspos_boxes_and_build_fragment(
+    run: &FormattingContextRun,
+    node: Node,
+    used: &UsedValues,
+    containing_block: Option<Node>,
+    containing_block_is_sealed: bool,
+    containing_line_box_index: Option<usize>,
+    committed_offset: FfiCssPixelPoint,
+) {
+    let callbacks = &run.callbacks;
+    let fragments = run
+        .fragments
+        .as_deref()
+        .expect("a placed box builds its fragment in a run that builds fragments");
+    fragments.normalize_arrivals_for_placement(node);
+    loop {
+        let batch = fragments.take_drainable_abspos(node, run.records, callbacks);
+        if batch.is_empty() {
+            break;
+        }
+        let engine = abspos_engine::AbsposEngine::for_run(run);
+        for entry in batch {
+            engine.layout_pending_child(run, entry);
+        }
+    }
+    let node_facts = NodeFacts::new(callbacks, node);
+    let own_anchor_candidate_border_box_rect = (node_facts.is_box() && node_facts.has_anchor_names()).then(|| {
+        let collapsed = used.uses_collapsing_borders_model.get();
+        CssPixelRect {
+            x: used.content_offset.get().x - used.border_box_left(collapsed),
+            y: used.content_offset.get().y - used.border_box_top(collapsed),
+            width: used.border_box_inline_size(collapsed),
+            height: used.border_box_block_size(collapsed),
+        }
+    });
+    fragments.build_fragment_for_placed_box(
+        callbacks,
+        node,
+        containing_block,
+        used,
+        containing_block_is_sealed,
+        containing_line_box_index,
+        committed_offset,
+        own_anchor_candidate_border_box_rect,
+    );
 }
 
 /// The line box index to record for atomic inlines whose containing line
