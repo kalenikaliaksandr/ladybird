@@ -172,6 +172,12 @@ unsafe extern "C" {
 
 /// Opaque handle for the Rust HTML parser, passed across the FFI boundary.
 pub struct RustFfiHtmlParserHandle {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct ParserCell {
+    header: [usize; 2],
     run_count: u64,
     state: ParserState,
 }
@@ -5573,13 +5579,30 @@ impl Token {
     }
 }
 
-/// Create a new Rust HTML parser.
 #[unsafe(no_mangle)]
-pub extern "C" fn rust_html_parser_create() -> *mut RustFfiHtmlParserHandle {
-    Box::into_raw(Box::new(RustFfiHtmlParserHandle {
-        run_count: 0,
-        state: ParserState::new(),
-    }))
+pub extern "C" fn rust_html_parser_cell_size() -> usize {
+    size_of::<ParserCell>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_html_parser_cell_alignment() -> usize {
+    align_of::<ParserCell>()
+}
+
+/// Create a new Rust HTML parser.
+///
+/// # Safety
+/// `handle` must be valid for writes of `rust_html_parser_cell_size()` bytes and aligned to
+/// `rust_html_parser_cell_alignment()`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_html_parser_create(handle: *mut RustFfiHtmlParserHandle) {
+    unsafe {
+        handle.cast::<ParserCell>().write(ParserCell {
+            header: [0; 2],
+            run_count: 0,
+            state: ParserState::new(),
+        });
+    }
 }
 
 /// Initialize the Rust HTML parser for the HTML fragment parsing algorithm.
@@ -5613,8 +5636,8 @@ pub unsafe extern "C" fn rust_html_parser_begin_fragment(
     };
     let context_attributes = unsafe { owned_context_attributes_from_ffi(context_attributes, context_attribute_count) };
 
-    let handle = unsafe { &mut *handle };
-    handle.state.begin_fragment(FragmentParsingContext {
+    let state = unsafe { &mut (*handle.cast::<ParserCell>()).state };
+    state.begin_fragment(FragmentParsingContext {
         root,
         root_insertion_target,
         context_element: StackNode {
@@ -5650,23 +5673,24 @@ pub unsafe extern "C" fn rust_html_parser_run_document(
     if handle.is_null() || tokenizer.is_null() || host.is_null() {
         return RustFfiHtmlParserRunResult::Unsupported;
     }
+    let cell = handle.cast::<ParserCell>();
     // Do not materialize long-lived `&mut` references to the parser state or tokenizer here. C++ host callbacks can
     // synchronously execute script, and script can re-enter this function through document.write() or document.close().
     // TreeBuilder uses raw pointers internally so those nested parser runs do not alias an outer Rust `&mut` borrow.
     unsafe {
-        (*handle).run_count = (*handle).run_count.wrapping_add(1);
-        (*handle).state.scripting_enabled = scripting_enabled;
-        (*handle).state.allow_declarative_shadow_roots = allow_declarative_shadow_roots;
-        (*handle).state.parser_pause_requested = false;
+        (*cell).run_count = (*cell).run_count.wrapping_add(1);
+        (*cell).state.scripting_enabled = scripting_enabled;
+        (*cell).state.allow_declarative_shadow_roots = allow_declarative_shadow_roots;
+        (*cell).state.parser_pause_requested = false;
     }
     let tokenizer = NonNull::new(unsafe { addr_of_mut!((*tokenizer).tokenizer) }).unwrap();
-    let state = NonNull::new(unsafe { addr_of_mut!((*handle).state) }).unwrap();
+    let state = NonNull::new(unsafe { addr_of_mut!((*cell).state) }).unwrap();
     let mut tree_builder = TreeBuilder::new(tokenizer, host, state);
     tree_builder.run(stop_at_insertion_point);
-    if unsafe { (*handle).state.pending_script.is_some() } {
+    if unsafe { (*cell).state.pending_script.is_some() } {
         return RustFfiHtmlParserRunResult::ExecuteScript;
     }
-    if unsafe { (*handle).state.pending_svg_script.is_some() } {
+    if unsafe { (*cell).state.pending_svg_script.is_some() } {
         return RustFfiHtmlParserRunResult::ExecuteSvgScript;
     }
     RustFfiHtmlParserRunResult::Ok
@@ -5681,7 +5705,8 @@ pub unsafe extern "C" fn rust_html_parser_pop_all_open_elements(handle: *mut Rus
     if handle.is_null() {
         return;
     }
-    while let Some(node) = unsafe { (*handle).state.stack_of_open_elements.pop() } {
+    let cell = handle.cast::<ParserCell>();
+    while let Some(node) = unsafe { (*cell).state.stack_of_open_elements.pop() } {
         if requires_element_popped_callback(&node) {
             unsafe { ladybird_html_parser_handle_element_popped(node.handle) };
         }
@@ -5698,8 +5723,7 @@ pub unsafe extern "C" fn rust_html_parser_visit_edges(handle: *const RustFfiHtml
     if handle.is_null() || visitor.is_null() {
         return;
     }
-    let handle = unsafe { &*handle };
-    handle.state.visit_edges(visitor);
+    unsafe { (*handle.cast::<ParserCell>()).state.visit_edges(visitor) };
 }
 
 /// Take the script element that caused the last Rust HTML parser run to stop.
@@ -5711,8 +5735,8 @@ pub unsafe extern "C" fn rust_html_parser_take_pending_script(handle: *mut RustF
     if handle.is_null() {
         return 0;
     }
-    let handle = unsafe { &mut *handle };
-    handle.state.pending_script.take().unwrap_or(0)
+    let state = unsafe { &mut (*handle.cast::<ParserCell>()).state };
+    state.pending_script.take().unwrap_or(0)
 }
 
 /// Take the SVG script element that caused the last Rust HTML parser run to stop.
@@ -5724,8 +5748,8 @@ pub unsafe extern "C" fn rust_html_parser_take_pending_svg_script(handle: *mut R
     if handle.is_null() {
         return 0;
     }
-    let handle = unsafe { &mut *handle };
-    handle.state.pending_svg_script.take().unwrap_or(0)
+    let state = unsafe { &mut (*handle.cast::<ParserCell>()).state };
+    state.pending_svg_script.take().unwrap_or(0)
 }
 
 /// Return how many times this parser handle has been asked to run.
@@ -5737,8 +5761,7 @@ pub unsafe extern "C" fn rust_html_parser_run_count(handle: *const RustFfiHtmlPa
     if handle.is_null() {
         return 0;
     }
-    let handle = unsafe { &*handle };
-    handle.run_count
+    unsafe { (*handle.cast::<ParserCell>()).run_count }
 }
 
 /// Destroy a Rust HTML parser.
@@ -5749,6 +5772,6 @@ pub unsafe extern "C" fn rust_html_parser_run_count(handle: *const RustFfiHtmlPa
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_html_parser_destroy(handle: *mut RustFfiHtmlParserHandle) {
     if !handle.is_null() {
-        drop(unsafe { Box::from_raw(handle) });
+        unsafe { std::ptr::drop_in_place(addr_of_mut!((*handle.cast::<ParserCell>()).state)) };
     }
 }

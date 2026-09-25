@@ -147,13 +147,39 @@ extern "C" size_t ladybird_html_parser_attach_declarative_shadow_root(size_t, Ru
 extern "C" void ladybird_html_parser_set_template_content(size_t, size_t);
 extern "C" bool ladybird_html_parser_is_shadow_host(size_t);
 
+static GC::CellAllocatorDescriptorBase& rust_html_parser_cell_allocator()
+{
+    struct Allocator final : public GC::CellAllocatorDescriptorBase {
+        explicit Allocator(GC::CellTypeInfo const& type_info)
+            : CellAllocatorDescriptorBase(type_info, "HTMLParserState"sv)
+        {
+        }
+    };
+    static GC::CellTypeInfo const type_info {
+        .cell_size = static_cast<u32>(rust_html_parser_cell_size()),
+        .alignment = static_cast<u32>(rust_html_parser_cell_alignment()),
+        .visit_edges = [](GC::Cell* cell, GC::Cell::Visitor* visitor) { rust_html_parser_visit_edges(reinterpret_cast<RustFfiHtmlParserHandle*>(cell), visitor); },
+        .destroy = [](GC::Cell* cell) { rust_html_parser_destroy(reinterpret_cast<RustFfiHtmlParserHandle*>(cell)); },
+    };
+    static Allocator allocator { type_info };
+    return allocator;
+}
+
+static GC::Ref<GC::Cell> create_rust_html_parser(GC::Heap& heap)
+{
+    auto* cell = heap.begin_cell_allocation(rust_html_parser_cell_allocator());
+    rust_html_parser_create(reinterpret_cast<RustFfiHtmlParserHandle*>(cell));
+    heap.end_cell_allocation(*cell);
+    return *cell;
+}
+
 HTMLParser::HTMLParser(DOM::Document& document, ParserScriptingMode scripting_mode, StringView input, StringView encoding, EncodingConfidence encoding_confidence)
     : m_tokenizer(decode_html_parser_input(input, encoding))
+    , m_rust_parser(create_rust_html_parser(heap()))
     , m_scripting_mode(scripting_mode)
     , m_encoding_confidence(encoding_confidence)
     , m_document(document)
 {
-    m_rust_parser = rust_html_parser_create();
     m_document->set_parser({}, *this);
     auto standardized_encoding = TextCodec::get_standardized_encoding(encoding);
     VERIFY(standardized_encoding.has_value());
@@ -162,11 +188,11 @@ HTMLParser::HTMLParser(DOM::Document& document, ParserScriptingMode scripting_mo
 
 HTMLParser::HTMLParser(DOM::Document& document, ParserScriptingMode scripting_mode, Utf16View input, Utf16View encoding, EncodingConfidence encoding_confidence)
     : m_tokenizer(input)
+    , m_rust_parser(create_rust_html_parser(heap()))
     , m_scripting_mode(scripting_mode)
     , m_encoding_confidence(encoding_confidence)
     , m_document(document)
 {
-    m_rust_parser = rust_html_parser_create();
     m_document->set_parser({}, *this);
     auto standardized_encoding = TextCodec::get_standardized_encoding(encoding);
     VERIFY(standardized_encoding.has_value());
@@ -175,35 +201,26 @@ HTMLParser::HTMLParser(DOM::Document& document, ParserScriptingMode scripting_mo
 
 HTMLParser::HTMLParser(DOM::Document& document, ParserScriptingMode scripting_mode, Utf16View input, FragmentParser fragment_parser)
     : m_tokenizer(input)
+    , m_rust_parser(create_rust_html_parser(heap()))
     , m_parsing_fragment(fragment_parser == FragmentParser::Yes)
     , m_scripting_mode(scripting_mode)
     , m_encoding_confidence(EncodingConfidence::Irrelevant)
     , m_document(document)
 {
     VERIFY(m_parsing_fragment);
-    m_rust_parser = rust_html_parser_create();
 }
 
 HTMLParser::HTMLParser(DOM::Document& document, ParserScriptingMode scripting_mode, ScriptCreatedParser script_created, EncodingConfidence encoding_confidence)
-    : m_scripting_mode(scripting_mode)
+    : m_rust_parser(create_rust_html_parser(heap()))
+    , m_scripting_mode(scripting_mode)
     , m_script_created(script_created == ScriptCreatedParser::Yes)
     , m_encoding_confidence(encoding_confidence)
     , m_document(document)
 {
-    m_rust_parser = rust_html_parser_create();
     m_document->set_parser({}, *this);
 }
 
 HTMLParser::~HTMLParser() = default;
-
-void HTMLParser::finalize()
-{
-    Base::finalize();
-    if (m_rust_parser) {
-        rust_html_parser_destroy(m_rust_parser);
-        m_rust_parser = nullptr;
-    }
-}
 
 void HTMLParser::visit_edges(Cell::Visitor& visitor)
 {
@@ -216,8 +233,12 @@ void HTMLParser::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_change_encoding_callback);
     visitor.visit(m_ready_for_more_input_callback);
     visitor.visit(m_parsing_complete_callback);
+    visitor.visit(m_rust_parser);
+}
 
-    rust_html_parser_visit_edges(m_rust_parser, &visitor);
+RustFfiHtmlParserHandle* HTMLParser::rust_parser() const
+{
+    return reinterpret_cast<RustFfiHtmlParserHandle*>(m_rust_parser.ptr());
 }
 
 void HTMLParser::run(HTMLTokenizer::StopAtInsertionPoint stop_at_insertion_point)
@@ -229,7 +250,7 @@ void HTMLParser::run(HTMLTokenizer::StopAtInsertionPoint stop_at_insertion_point
             break;
 
         auto result = rust_html_parser_run_document(
-            m_rust_parser,
+            rust_parser(),
             m_tokenizer.ffi_handle({}),
             this,
             m_scripting_mode != ParserScriptingMode::Disabled,
@@ -239,14 +260,14 @@ void HTMLParser::run(HTMLTokenizer::StopAtInsertionPoint stop_at_insertion_point
             break;
 
         if (result == RustFfiHtmlParserRunResult::ExecuteScript) {
-            auto script = rust_html_parser_take_pending_script(m_rust_parser);
+            auto script = rust_html_parser_take_pending_script(rust_parser());
             VERIFY(script);
             process_script_end_tag_from_rust_parser(as<HTMLScriptElement>(node_from_html_parser_ffi(script)));
             continue;
         }
 
         if (result == RustFfiHtmlParserRunResult::ExecuteSvgScript) {
-            auto script = rust_html_parser_take_pending_svg_script(m_rust_parser);
+            auto script = rust_html_parser_take_pending_svg_script(rust_parser());
             VERIFY(script);
             if (process_svg_script_end_tag_from_rust_parser(as<SVG::SVGScriptElement>(node_from_html_parser_ffi(script))))
                 break;
@@ -268,7 +289,7 @@ void HTMLParser::run(URL::URL const& url, HTMLTokenizer::StopAtInsertionPoint st
 
 void HTMLParser::pop_all_open_elements()
 {
-    rust_html_parser_pop_all_open_elements(m_rust_parser);
+    rust_html_parser_pop_all_open_elements(rust_parser());
 }
 
 void HTMLParser::configure_element_created_by_rust_parser(DOM::Element& element)
@@ -1586,7 +1607,7 @@ WebIDL::ExceptionOr<GC::Ref<DOM::DocumentFragment>> HTMLParser::parse_html_fragm
         }
     }
     rust_html_parser_begin_fragment(
-        parser->m_rust_parser,
+        parser->rust_parser(),
         reinterpret_cast<size_t>(root.ptr()),
         reinterpret_cast<size_t>(fragment.ptr()),
         reinterpret_cast<size_t>(context),

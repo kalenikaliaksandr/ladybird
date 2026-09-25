@@ -120,8 +120,8 @@ private:
     HTMLParser(DOM::Document&, ParserScriptingMode, ScriptCreatedParser, EncodingConfidence);
 
     virtual void visit_edges(Cell::Visitor&) override;
-    virtual void finalize() override;
 
+    RustFfiHtmlParserHandle* rust_parser() const;
     void stop_parsing() { m_stop_parsing = true; }
 
     // https://html.spec.whatwg.org/multipage/parsing.html#start-the-speculative-html-parser
@@ -139,7 +139,7 @@ private:
     static void the_end(GC::Ref<DOM::Document>, GC::Ptr<HTMLParser>, u64 parser_generation);
 
     HTMLTokenizer m_tokenizer;
-    RustFfiHtmlParserHandle* m_rust_parser { nullptr };
+    GC::Ref<GC::Cell> m_rust_parser;
 
     bool m_parsing_fragment { false };
 
