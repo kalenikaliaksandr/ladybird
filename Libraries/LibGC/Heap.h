@@ -64,21 +64,18 @@ public:
     template<typename T, typename... Args>
     Ref<T> allocate(Args&&... args)
     {
-        VERIFY(!m_collecting_garbage);
-        auto* memory = allocate_cell<T>();
-        defer_gc();
-        new (memory) T(forward<Args>(args)...);
-        auto* cell = static_cast<T*>(memory);
-        cell->set_cell_kind(T::cell_kind_for_class);
-        // Cells allocated during incremental sweep must be marked so they
-        // survive until the next GC cycle clears and re-establishes marks.
-        if (m_incremental_sweep_active) {
-            cell->set_marked(true);
-            m_cells_allocated_during_sweep.append(cell);
-        }
-        undefer_gc();
+        static_assert(requires { T::cell_allocator.for_heap(*this).allocate_cell(*this); }, "GC cell type must declare its own allocator using GC_DECLARE_ALLOCATOR(ClassName)");
+        static_assert(IsSame<T, typename decltype(T::cell_allocator)::CellType>,
+            "GC cell allocator type mismatch");
+
+        auto* memory = begin_cell_allocation(T::cell_allocator);
+        auto* cell = new (memory) T(forward<Args>(args)...);
+        end_cell_allocation(*cell);
         return *cell;
     }
+
+    Cell* begin_cell_allocation(CellAllocatorDescriptorBase&);
+    void end_cell_allocation(Cell&);
 
     enum class CollectionType {
         CollectGarbage,
@@ -155,17 +152,6 @@ private:
     void undefer_gc();
 
     void dump_allocators();
-
-    template<typename T>
-    Cell* allocate_cell()
-    {
-        static_assert(requires { T::cell_allocator.for_heap(*this).allocate_cell(*this); }, "GC cell type must declare its own allocator using GC_DECLARE_ALLOCATOR(ClassName)");
-        static_assert(IsSame<T, typename decltype(T::cell_allocator)::CellType>,
-            "GC cell allocator type mismatch");
-
-        will_allocate(sizeof(T));
-        return T::cell_allocator.for_heap(*this).allocate_cell(*this);
-    }
 
     void will_allocate(size_t);
     void update_gc_bytes_threshold(size_t live_cell_bytes, size_t live_external_bytes);

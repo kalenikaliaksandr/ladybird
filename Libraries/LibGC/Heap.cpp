@@ -337,6 +337,27 @@ void Heap::will_allocate(size_t size)
         start_idle_gc_timer();
 }
 
+Cell* Heap::begin_cell_allocation(CellAllocatorDescriptorBase& descriptor)
+{
+    VERIFY(!m_collecting_garbage);
+    will_allocate(descriptor.cell_size());
+    auto* cell = descriptor.for_heap(*this).allocate_cell(*this);
+    defer_gc();
+    return cell;
+}
+
+void Heap::end_cell_allocation(Cell& cell)
+{
+    cell.set_state(Cell::State::Live);
+    cell.set_cell_kind(cell.type_info().kind);
+    // Cells allocated during incremental sweep must be marked so they
+    // survive until the next GC cycle clears and re-establishes marks.
+    cell.set_marked(m_incremental_sweep_active);
+    if (m_incremental_sweep_active)
+        m_cells_allocated_during_sweep.append(&cell);
+    undefer_gc();
+}
+
 void Heap::did_allocate_external_memory(size_t size)
 {
     will_allocate(size);
