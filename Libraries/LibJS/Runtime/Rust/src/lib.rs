@@ -20,6 +20,7 @@ pub mod gc;
 pub mod interpreter;
 pub mod layout;
 pub mod layout_forward;
+pub mod runtime;
 
 mod layout_static_assertions {
     include!(concat!(env!("OUT_DIR"), "/layout_static_assertions.rs"));
