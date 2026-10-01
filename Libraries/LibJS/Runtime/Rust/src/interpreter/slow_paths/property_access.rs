@@ -2012,35 +2012,41 @@ mod tests {
         let vm = Vm::create();
         let test_realm = TestRealm::new(&vm);
         let prototype = test_realm.object();
-        prototype
-            .set(&vm, &key("inherited"), int(1), ShouldThrowExceptions::Yes)
-            .must();
         let object = Object::create(&vm, test_realm.realm, Some(prototype));
         object.set(&vm, &key("own"), int(2), ShouldThrowExceptions::Yes).must();
         let receiver = Value::from_object(object);
         let cache = vm.keyed_property_lookup_cache();
-        let entry_for = |name: &str| {
-            let property_key = key(name);
-            cache.entry(KeyedPropertyLookupCache::entry_index_for(
-                object.shape(),
-                property_key.as_string(),
-            ))
-        };
+        let index_for = |name: &str| KeyedPropertyLookupCache::entry_index_for(object.shape(), key(name).as_string());
+        let entry_for = |name: &str| cache.entry(index_for(name));
         let get =
             |property_key: &PropertyKey| get_by_value_with_keyed_cache(&vm, object, receiver, property_key).must();
 
-        for name in ["own", "inherited", "missing"] {
+        // The cache keeps one entry per index, so the names must not share an entry for the object's shape.
+        let name_with_free_entry = |base: &str, taken: &[usize]| {
+            (0..)
+                .map(|suffix| format!("{base}{suffix}"))
+                .find(|name| !taken.contains(&index_for(name)))
+                .expect("some name has a free entry")
+        };
+        let inherited_name = name_with_free_entry("inherited", &[index_for("own")]);
+        let missing_name = name_with_free_entry("missing", &[index_for("own"), index_for(&inherited_name)]);
+        let (inherited_name, missing_name) = (inherited_name.as_str(), missing_name.as_str());
+        prototype
+            .set(&vm, &key(inherited_name), int(1), ShouldThrowExceptions::Yes)
+            .must();
+
+        for name in ["own", inherited_name, missing_name] {
             assert!(entry_for(name).entry_type == PropertyLookupCacheEntryType::Empty);
         }
         assert_eq!(get(&key("own")), int(2));
-        assert_eq!(get(&key("inherited")), int(1));
-        assert_eq!(get(&key("missing")), Value::UNDEFINED);
+        assert_eq!(get(&key(inherited_name)), int(1));
+        assert_eq!(get(&key(missing_name)), Value::UNDEFINED);
         let own = entry_for("own");
         assert!(own.entry_type == PropertyLookupCacheEntryType::GetOwnProperty && own.shape == Some(object.shape()));
-        let inherited = entry_for("inherited");
+        let inherited = entry_for(inherited_name);
         assert!(inherited.entry_type == PropertyLookupCacheEntryType::GetPropertyInPrototypeChain);
         assert!(inherited.prototype == Some(prototype));
-        let missing = entry_for("missing");
+        let missing = entry_for(missing_name);
         assert!(missing.entry_type == PropertyLookupCacheEntryType::GetMissingProperty);
         assert!(
             missing
@@ -2049,17 +2055,17 @@ mod tests {
         );
 
         // The cached entries answer again, and stop answering once the prototype chain changes.
-        assert_eq!(get(&key("inherited")), int(1));
+        assert_eq!(get(&key(inherited_name)), int(1));
         prototype
-            .set(&vm, &key("missing"), int(3), ShouldThrowExceptions::Yes)
+            .set(&vm, &key(missing_name), int(3), ShouldThrowExceptions::Yes)
             .must();
         prototype
-            .set(&vm, &key("inherited"), int(4), ShouldThrowExceptions::Yes)
+            .set(&vm, &key(inherited_name), int(4), ShouldThrowExceptions::Yes)
             .must();
         assert!(!missing.prototype_chain_validity.unwrap().is_valid());
-        assert_eq!(get(&key("missing")), int(3));
-        assert_eq!(get(&key("inherited")), int(4));
-        assert!(entry_for("missing").entry_type == PropertyLookupCacheEntryType::GetPropertyInPrototypeChain);
+        assert_eq!(get(&key(missing_name)), int(3));
+        assert_eq!(get(&key(inherited_name)), int(4));
+        assert!(entry_for(missing_name).entry_type == PropertyLookupCacheEntryType::GetPropertyInPrototypeChain);
 
         // Symbols and indices are looked up without the cache.
         let symbol = Symbol::create(&vm, None, Kind::Unique);

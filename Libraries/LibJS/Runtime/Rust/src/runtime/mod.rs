@@ -59,6 +59,7 @@ pub mod global_environment;
 pub mod global_object;
 pub mod indexed_properties;
 pub mod intrinsics;
+pub mod iterator;
 pub mod iterator_constructor;
 pub mod iterator_helper_prototype;
 pub mod iterator_prototype;
