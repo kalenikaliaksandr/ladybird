@@ -401,4 +401,14 @@ mod tests {
         assert_eq!(executable_ref.constants()[0], Value::from_i32(42));
         assert_eq!(executable_ref.registers_and_locals_count(), 5);
     }
+
+    #[test]
+    fn an_uncaught_throw_completes_the_script_abruptly() {
+        let vm = Vm::create();
+        let source: Vec<u16> = "throw 42".encode_utf16().collect();
+        let script = crate::script::Script::parse(&source).ok().expect("the script parses");
+        let thrown = vm.run_script(script).err().expect("the script throws");
+        assert!(thrown.value() == crate::layout::value::Value::from_i32(42));
+        assert!(vm.running_execution_context().is_none());
+    }
 }

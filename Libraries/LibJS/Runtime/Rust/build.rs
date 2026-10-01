@@ -185,7 +185,7 @@ fn main() {
     assemble_interpreter(&target, &assembly_path);
 }
 
-/// Unit tests that need a live heap link LibGC and AK from an existing Ladybird build, given as
+/// Unit tests that need a live heap link LibGC, AK and LibUnicode from an existing Ladybird build, given as
 /// LIBJS_RUNTIME_TEST_LIBRARY_DIRECTORY, and only build when it is set. Nothing else should set it, since the
 /// libraries are then linked into whatever cargo links.
 fn link_tests_against_prebuilt_libraries() {
@@ -197,8 +197,11 @@ fn link_tests_against_prebuilt_libraries() {
     let directory = PathBuf::from(directory);
     println!("cargo:rustc-cfg=libjs_runtime_tests_with_libgc");
     println!("cargo:rustc-link-arg=-L{}", directory.display());
-    println!("cargo:rustc-link-arg=-llagom-gc");
-    println!("cargo:rustc-link-arg=-llagom-ak");
+    // The libraries the staticlib's CMake target links: LibGC and AK for the heap and strings, LibUnicode for the
+    // frontend's lexer.
+    for library in ["lagom-gc", "lagom-ak", "lagom-unicode"] {
+        println!("cargo:rustc-link-arg=-l{library}");
+    }
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", directory.display());
 }
 
