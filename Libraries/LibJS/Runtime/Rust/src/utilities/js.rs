@@ -28,6 +28,7 @@ struct Options {
     parse_only: bool,
     as_module: bool,
     disable_ansi_colors: bool,
+    raw_strings: bool,
     gc_on_every_allocation: bool,
 }
 
@@ -44,6 +45,7 @@ fn parse_options(arguments: &[String]) -> Result<Options, String> {
             "-p" | "--parse-only" => options.parse_only = true,
             "-m" | "--as-module" => options.as_module = true,
             "-i" | "--disable-ansi-colors" => options.disable_ansi_colors = true,
+            "-r" | "--raw-strings" => options.raw_strings = true,
             "-g" | "--gc-on-every-allocation" => options.gc_on_every_allocation = true,
             _ if argument.starts_with('-') => return Err(format!("unknown option {argument}")),
             _ => options.script_paths.push(argument.clone()),
@@ -113,6 +115,7 @@ fn run(options: &Options, output: &mut impl Write) -> c_int {
     }
     let print_context = PrintContext {
         strip_ansi: options.disable_ansi_colors,
+        raw_strings: options.raw_strings,
     };
     match vm.run_script(script) {
         Ok(value) => {

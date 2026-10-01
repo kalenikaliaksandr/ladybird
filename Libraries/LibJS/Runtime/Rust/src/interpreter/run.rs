@@ -112,9 +112,7 @@ impl Vm {
                 0,
             );
         }
-        let executable = self
-            .heap()
-            .allocate(Executable::from_executable_data(script.compiled.executable));
+        let executable = Executable::create(self, script.compiled.executable);
         self.run_script_executable(executable).map_err(Throw::new)
     }
 }
