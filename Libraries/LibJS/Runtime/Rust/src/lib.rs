@@ -16,6 +16,7 @@ mod rust_panic;
 
 pub mod build_configuration;
 pub mod bytecode;
+pub mod frontend_host;
 pub mod gc;
 pub mod interpreter;
 pub mod layout;
