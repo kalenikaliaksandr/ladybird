@@ -11,6 +11,8 @@ pub mod big_int;
 pub mod big_int_algorithms;
 pub mod common_property_names;
 pub mod completion;
+pub mod error;
+pub mod error_types;
 pub mod number_prototype_algorithms;
 pub mod primitive_string;
 pub mod print;

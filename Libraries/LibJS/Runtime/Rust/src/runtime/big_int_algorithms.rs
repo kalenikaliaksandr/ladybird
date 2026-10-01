@@ -346,7 +346,10 @@ mod tests {
     fn describe(result: Result<BigInt, NumericOperationError>) -> String {
         match result {
             Ok(value) => value.to_string(),
-            Err(error) => error.error_description().to_string(),
+            Err(error) => {
+                let (kind, error_type) = error.error_kind_and_type();
+                format!("{kind:?}: {}", error_type.message(&[]))
+            }
         }
     }
 
