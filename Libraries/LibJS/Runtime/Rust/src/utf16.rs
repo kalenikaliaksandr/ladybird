@@ -115,6 +115,40 @@ impl<'a> Utf16View<'a> {
         }
     }
 
+    /// Appends the string to `output` as UTF-8 with each unpaired surrogate encoded as a three-byte sequence of its
+    /// own (WTF-8), the bytes AK::StringBuilder produces when it appends a Utf16View.
+    pub fn append_as_wtf8_to(self, output: &mut Vec<u8>) {
+        let units = match self {
+            Self::Ascii(units) => {
+                output.extend_from_slice(units);
+                return;
+            }
+            Self::Utf16(units) => units,
+        };
+        for decoded in char::decode_utf16(units.iter().copied()) {
+            match decoded {
+                Ok(character) => {
+                    let mut buffer = [0; 4];
+                    output.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+                }
+                Err(error) => {
+                    let surrogate = error.unpaired_surrogate();
+                    output.extend_from_slice(&[
+                        0xE0 | (surrogate >> 12) as u8,
+                        0x80 | ((surrogate >> 6) & 0x3F) as u8,
+                        0x80 | (surrogate & 0x3F) as u8,
+                    ]);
+                }
+            }
+        }
+    }
+
+    pub fn to_wtf8(self) -> Vec<u8> {
+        let mut output = Vec::with_capacity(self.length_in_code_units());
+        self.append_as_wtf8_to(&mut output);
+        output
+    }
+
     /// Mirrors AK::Utf16View::is_code_unit_less_than: compares the code units in order, and a proper prefix is less.
     pub fn is_code_unit_less_than(self, other: Utf16View<'_>) -> bool {
         let common_length = self.length_in_code_units().min(other.length_in_code_units());
@@ -309,5 +343,17 @@ mod wtf8_tests {
         assert_eq!(utf16_from_wtf8(b"\xE2\x82"), None);
         assert_eq!(utf16_from_wtf8(b"\xFF"), None);
         assert_eq!(utf16_from_wtf8(b"\xC0\x80"), None);
+    }
+
+    #[test]
+    fn unpaired_surrogates_encode_to_three_bytes_each() {
+        let wtf8 = |units: &[u16]| Utf16View::Utf16(units).to_wtf8();
+        assert_eq!(wtf8(&[0x61, 0xD800, 0x62]), b"a\xED\xA0\x80b");
+        assert_eq!(wtf8(&[0xDC00, 0xDC01]), b"\xED\xB0\x80\xED\xB0\x81");
+        assert_eq!(wtf8(&[0xD800, 0xD83D, 0xDE00]), b"\xED\xA0\x80\xF0\x9F\x98\x80");
+        assert_eq!(Utf16View::Ascii(b"plain").to_wtf8(), b"plain");
+        for units in [&[0x61, 0xD800, 0x62][..], &[0xDFFF], &[0xE9, 0xD83D, 0xDE00]] {
+            assert_eq!(utf16_from_wtf8(&wtf8(units)).as_deref(), Some(units));
+        }
     }
 }

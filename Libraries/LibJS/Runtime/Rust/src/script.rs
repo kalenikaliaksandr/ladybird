@@ -103,9 +103,21 @@ impl Script {
         realm: Gc<Realm>,
         filename: ak::Utf16String,
     ) -> Gc<Script> {
-        assert!(parsed.program_type() == ProgramType::Script && !parsed.has_errors());
         let source_code = SourceCode::create(filename, ak::Utf16String::from_utf16(source));
-        Self::create(vm, realm, compile_script(parsed, source.len()), source_code)
+        Self::create_from_parsed(vm, parsed, source_code, realm)
+    }
+
+    /// Compiles a script the caller parsed without errors from the code of `source_code`, whose filename the
+    /// script's code reports.
+    pub fn create_from_parsed(
+        vm: &Vm,
+        parsed: ParsedProgram,
+        source_code: Rc<SourceCode>,
+        realm: Gc<Realm>,
+    ) -> Gc<Script> {
+        assert!(parsed.program_type() == ProgramType::Script && !parsed.has_errors());
+        let source_length = source_code.length_in_code_units();
+        Self::create(vm, realm, compile_script(parsed, source_length), source_code)
     }
 
     fn create(vm: &Vm, realm: Gc<Realm>, compiled: CompiledScript, source_code: Rc<SourceCode>) -> Gc<Script> {
@@ -363,7 +375,7 @@ mod tests {
     use crate::layout::object::Object;
     use crate::runtime::completion::Must;
     use crate::runtime::global_environment::test_global_object::set_up_global_object;
-    use crate::runtime::print::{PrintContext, print_value};
+    use crate::runtime::print::{PrintContext, print};
     use crate::runtime::property_attributes::PropertyAttributes;
     use crate::runtime::realm::test_realm::{TestRealm, key, own_keys};
 
@@ -376,13 +388,15 @@ mod tests {
             Ok(value) => value,
             Err(throw) => return describe_thrown_error(vm, throw.value()),
         };
-        let mut text = String::new();
-        let context = PrintContext {
+        let mut text = Vec::new();
+        let mut context = PrintContext {
+            vm,
+            stream: &mut text,
             strip_ansi: true,
             raw_strings: false,
         };
-        print_value(&mut text, &context, value);
-        text
+        print(value, &mut context).expect("printing into a buffer succeeds");
+        String::from_utf8(text).expect("the printed value is UTF-8")
     }
 
     /// "Name: message" of a thrown error.
