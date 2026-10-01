@@ -22,6 +22,9 @@ endfunction()
 expect_result("2" -i -l -c "1 + 1")
 expect_result("2" -i -l -g -c "1 + 1")
 expect_result("5.75" -i -l -c "1.5 * 4 - 0.25")
+expect_result("\"a\\nb\"" -i -l -c "'a\\n' + 'b'")
+expect_result("a" -i -l -r -c "'a'")
+expect_result("31n" -i -l -c "0x1fn")
 
 # A runtime function that is not implemented yet stops the process and names itself.
 run_js_rust(-c "debugger")
