@@ -425,6 +425,7 @@ dependencies = [
  "ak",
  "cc",
  "flapc",
+ "libc",
  "libjs_abi",
  "libjs_runtime_macros",
  "libjs_rust",
