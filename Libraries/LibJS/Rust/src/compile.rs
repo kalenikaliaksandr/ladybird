@@ -6,6 +6,14 @@
 
 //! The parse and compile pipeline shared by every runtime that embeds the frontend.
 
+#![cfg_attr(
+    not(feature = "cpp-runtime"),
+    allow(
+        dead_code,
+        reason = "only the C++ runtime drives this pipeline until the native API covers it"
+    )
+)]
+
 use crate::ast;
 use crate::ast::StatementKind;
 use crate::bytecode;

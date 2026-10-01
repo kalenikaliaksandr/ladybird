@@ -43,6 +43,7 @@
 //!
 //! - `compile.rs` — Parse and compile pipeline shared by every runtime
 //! - `cpp_runtime/` — `extern "C"` entry points and FFI for the C++ runtime
+//! - `host.rs` — Functions every embedding runtime provides to the frontend
 //! - `token.rs` — Token types
 //! - `lexer.rs` — Tokenizer: UTF-16 input → Token stream
 //! - `parser.rs` — Parser state, helpers, token consumption
@@ -85,6 +86,7 @@ macro_rules! utf16 {
 
 // cbindgen writes RustFFI.h in the order it parses modules, so the C++ glue is
 // declared first to keep the entry points at the top of the header.
+#[cfg(feature = "cpp-runtime")]
 mod cpp_runtime;
 
 pub mod ast;
@@ -92,6 +94,7 @@ pub mod ast_dump;
 pub mod bytecode;
 pub mod compile;
 pub mod fast_hash;
+pub mod host;
 pub mod lexer;
 pub mod parser;
 pub mod runtime;

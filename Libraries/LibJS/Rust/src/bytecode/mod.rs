@@ -18,13 +18,11 @@
 //! - `generator` -- Generator: manages registers, constants, tables, and assembly
 //! - `codegen` -- AST-walking code that emits instructions via the Generator
 //! - `constant` -- VM-dependent constants codegen refers to by kind
-//! - `ffi` -- Functions imported from the runtime that embeds the frontend
 
 pub mod basic_block;
 pub mod codegen;
 pub mod constant;
 pub mod dump;
-pub mod ffi;
 pub mod generator;
 pub mod instruction;
 mod native_disassembler;
