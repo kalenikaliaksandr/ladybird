@@ -142,35 +142,6 @@ unsafe fn report_parse_error(
     }
 }
 
-/// Check for errors, optionally reporting them via a C++ callback.
-fn check_errors_with_callback(
-    parser: &mut Parser,
-    error_context: *mut c_void,
-    error_callback: ParseErrorCallback,
-) -> bool {
-    if parser.has_errors() {
-        if let Some(cb) = error_callback {
-            for err in parser.errors() {
-                unsafe {
-                    report_parse_error(cb, error_context, &err.message, err.line, err.column);
-                }
-            }
-        }
-        return true;
-    }
-    if parser.scope_collector.has_errors() {
-        if let Some(cb) = error_callback {
-            for err in parser.scope_collector.drain_errors() {
-                unsafe {
-                    report_parse_error(cb, error_context, &err.message, err.line, err.column);
-                }
-            }
-        }
-        return true;
-    }
-    false
-}
-
 /// Shared compilation pipeline: local variable setup → codegen → assemble → create Executable.
 ///
 /// Called by program-level entry points that compile synchronously on the main thread. Also returns the functions
@@ -1167,170 +1138,50 @@ pub unsafe extern "C" fn rust_compile_dynamic_function(
                 }
             };
 
-            // Validate parameters standalone.
-            // First lex independently to catch lexer errors (e.g. unterminated comments)
-            // with correct line/column positions relative to the parameter string.
-            let Some(parameters_slice) = source_from_raw(parameters_source, parameters_source_len) else {
+            let report_errors = |errors: &[crate::parser::ParseError]| {
+                if let Some(callback) = error_callback {
+                    for error in errors {
+                        report_parse_error(callback, error_context, &error.message, error.line, error.column);
+                    }
+                }
+            };
+            let (Some(parameters_slice), Some(body_slice), Some(full_slice)) = (
+                source_from_raw(parameters_source, parameters_source_len),
+                source_from_raw(body_source, body_source_len),
+                source_from_raw(full_source, full_source_len),
+            ) else {
                 return std::ptr::null_mut();
             };
-            {
-                let mut lexer = lexer::Lexer::new(parameters_slice, 1, 0);
-                loop {
-                    let token = lexer.next();
-                    if token.token_type == token::TokenType::Eof {
-                        break;
-                    }
-                    if token.token_type == token::TokenType::Invalid {
-                        let msg = token
-                            .message
-                            .unwrap_or_else(|| format!("Unexpected token {}", token.token_type.name()));
-                        if let Some(cb) = error_callback {
-                            report_parse_error(cb, error_context, &msg, token.line_number, token.line_column);
-                        }
-                        return std::ptr::null_mut();
-                    }
-                }
-            }
-            // Then wrap in a function for syntactic validation.
-            {
-                let mut validate_src: Vec<u16> = Vec::new();
-                match kind {
-                    ast::FunctionKind::Generator => {
-                        validate_src.extend_from_slice(utf16!("function* test("));
-                    }
-                    ast::FunctionKind::Async => {
-                        validate_src.extend_from_slice(utf16!("async function test("));
-                    }
-                    ast::FunctionKind::AsyncGenerator => {
-                        validate_src.extend_from_slice(utf16!("async function* test("));
-                    }
-                    ast::FunctionKind::Normal => {
-                        validate_src.extend_from_slice(utf16!("function test("));
-                    }
-                }
-                validate_src.extend_from_slice(parameters_slice);
-                validate_src.extend_from_slice(utf16!("\n) {}"));
-                let mut parser = Parser::new(&validate_src, ProgramType::Script);
-                parser.parse_program(false);
-                if check_errors_with_callback(&mut parser, error_context, error_callback) {
+            let parsed = match crate::compile::parse_dynamic_function(full_slice, parameters_slice, body_slice, kind) {
+                Ok(parsed) => parsed,
+                Err(errors) => {
+                    report_errors(&errors);
                     return std::ptr::null_mut();
                 }
-            }
-
-            // Validate body standalone: parse directly with function context flags.
-            // NB: The C++ caller already wraps the body as "\nBODY\n" in body_parse_string,
-            // so body_source already contains the newline-wrapped body. We parse it
-            // directly as a script with function context flags set, matching the C++
-            // approach of parse_function_body_from_string.
-            {
-                let Some(body_slice) = source_from_raw(body_source, body_source_len) else {
-                    return std::ptr::null_mut();
-                };
-                let mut parser = Parser::new(body_slice, ProgramType::Script);
-                parser.flags.in_function_context = true;
-                parser.flags.new_target_is_valid = true;
-                match kind {
-                    ast::FunctionKind::Async | ast::FunctionKind::AsyncGenerator => {
-                        parser.flags.await_expression_is_valid = true;
-                    }
-                    _ => {}
-                }
-                match kind {
-                    ast::FunctionKind::Generator | ast::FunctionKind::AsyncGenerator => {
-                        parser.flags.in_generator_function_context = true;
-                    }
-                    _ => {}
-                }
-                parser.parse_program(false);
-                if check_errors_with_callback(&mut parser, error_context, error_callback) {
-                    return std::ptr::null_mut();
-                }
-            }
-
-            let Some(full_slice) = source_from_raw(full_source, full_source_len) else {
-                return std::ptr::null_mut();
             };
-            let mut parser = Parser::new(full_slice, ProgramType::Script);
-            let program = parser.parse_program(false);
-
-            if check_errors_with_callback(&mut parser, error_context, error_callback) {
-                return std::ptr::null_mut();
-            }
-
-            // Run scope analysis. Use analyze_as_dynamic_function() to suppress
-            // marking identifiers as global, matching the C++ path which parses
-            // as a FunctionExpression (no Program scope for globals to bind to).
-            parser.scope_collector.analyze_as_dynamic_function(
-                &mut parser.arena.identifiers,
-                &parser.arena.strings,
-                &mut parser.arena.scopes,
-            );
-
-            if parser.scope_collector.has_errors() {
-                if let Some(cb) = error_callback {
-                    for err in parser.scope_collector.drain_errors() {
-                        report_parse_error(cb, error_context, &err.message, err.line, err.column);
-                    }
-                }
-                return std::ptr::null_mut();
-            }
 
             write_ast_dump_output(
-                &program,
-                &parser.function_table,
-                &parser.arena,
+                &parsed.program,
+                &parsed.function_table,
+                &parsed.arena,
                 ast_dump_output,
                 ast_dump_output_len,
             );
 
-            // Extract the FunctionExpression from the program.
-            // The program should contain a single ExpressionStatement wrapping a FunctionExpression.
-            let function_id = if let StatementKind::Program(ref data) = program.inner {
-                let scope = &parser.arena.scopes[data.scope];
-                scope.children.iter().find_map(|child| match &child.inner {
-                    StatementKind::FunctionDeclaration(fd) => Some(fd.function_id),
-                    StatementKind::Expression(expression) => {
-                        if let ast::ExpressionKind::Function(function_id) = &expression.inner {
-                            Some(*function_id)
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                })
-            } else {
-                None
-            };
-
-            let Some(function_id) = function_id else {
-                if let Some(cb) = error_callback {
-                    report_parse_error(cb, error_context, "Failed to parse dynamic function", 0, 0);
+            let description = match parsed.into_description() {
+                Ok(description) => description,
+                Err(errors) => {
+                    report_errors(&errors);
+                    return std::ptr::null_mut();
                 }
-                return std::ptr::null_mut();
             };
-
-            let mut function_data = parser.function_table.take(function_id);
-
-            // Dynamic functions always need an arguments object, matching the C++
-            // path in FunctionConstructor::create_dynamic_function.
-            function_data.parsing_insights.might_need_arguments_object = true;
-
-            let is_strict = function_data.is_strict_mode;
-            let subtable = parser
-                .function_table
-                .extract_reachable(&function_data, &parser.arena.scopes);
-            let arena = std::sync::Arc::new(std::mem::take(&mut parser.arena));
-
-            ffi::create_sfd_for_gdi(
-                function_data,
-                subtable,
+            ffi::create_shared_function_data_from_description(
+                description,
                 ffi::SharedFunctionDataCreationContext {
                     vm_ptr,
                     source_code_ptr,
                     owner: ffi::SharedFunctionDataOwner::None,
                 },
-                is_strict,
-                arena,
             )
         })
     }

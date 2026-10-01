@@ -914,6 +914,156 @@ pub fn compile_eval(mut parsed: ParsedEval, source_len: usize) -> CompiledEval {
 }
 
 // =============================================================================
+// Dynamic functions
+// =============================================================================
+
+/// The source of a function that CreateDynamicFunction (new Function() and its relatives) builds, parsed and analyzed
+/// without errors.
+pub struct ParsedDynamicFunction {
+    pub(crate) program: ast::Statement,
+    pub(crate) function_table: ast::FunctionTable,
+    pub(crate) arena: ast::AstArena,
+}
+
+// 20.2.1.1.1 CreateDynamicFunction ( constructor, newTarget, kind, parameterArgs, bodyArg ), https://tc39.es/ecma262/#sec-createdynamicfunction
+/// Checks the parameters and the body of a dynamic function on their own and then parses `full_source`, the function
+/// expression made of them, or returns the first errors one of these steps reports. `body_source` is the body as the
+/// caller wraps it in newlines.
+pub fn parse_dynamic_function(
+    full_source: &[u16],
+    parameters_source: &[u16],
+    body_source: &[u16],
+    kind: ast::FunctionKind,
+) -> Result<ParsedDynamicFunction, Vec<ParseError>> {
+    // Lex the parameters on their own first, so that lexer errors such as an unterminated comment have positions in
+    // the parameter string.
+    let mut lexer = crate::lexer::Lexer::new(parameters_source, 1, 0);
+    loop {
+        let token = lexer.next();
+        if token.token_type == crate::token::TokenType::Eof {
+            break;
+        }
+        if token.token_type == crate::token::TokenType::Invalid {
+            let message = token
+                .message
+                .unwrap_or_else(|| format!("Unexpected token {}", token.token_type.name()));
+            return Err(vec![ParseError {
+                message,
+                line: token.line_number,
+                column: token.line_column,
+            }]);
+        }
+    }
+
+    // Then check them as the parameters of a function of the same kind.
+    let mut parameters_check: Vec<u16> = Vec::new();
+    parameters_check.extend_from_slice(match kind {
+        ast::FunctionKind::Generator => utf16!("function* test("),
+        ast::FunctionKind::Async => utf16!("async function test("),
+        ast::FunctionKind::AsyncGenerator => utf16!("async function* test("),
+        ast::FunctionKind::Normal => utf16!("function test("),
+    });
+    parameters_check.extend_from_slice(parameters_source);
+    parameters_check.extend_from_slice(utf16!("\n) {}"));
+    let mut parser = Parser::new(&parameters_check, ProgramType::Script);
+    parser.parse_program(false);
+    take_parser_errors(&mut parser)?;
+
+    // Check the body on its own as a script with the flags of a function body of the kind, as the C++
+    // parse_function_body_from_string did.
+    let mut parser = Parser::new(body_source, ProgramType::Script);
+    parser.flags.in_function_context = true;
+    parser.flags.new_target_is_valid = true;
+    if matches!(kind, ast::FunctionKind::Async | ast::FunctionKind::AsyncGenerator) {
+        parser.flags.await_expression_is_valid = true;
+    }
+    if matches!(kind, ast::FunctionKind::Generator | ast::FunctionKind::AsyncGenerator) {
+        parser.flags.in_generator_function_context = true;
+    }
+    parser.parse_program(false);
+    take_parser_errors(&mut parser)?;
+
+    let mut parser = Parser::new(full_source, ProgramType::Script);
+    let program = parser.parse_program(false);
+    take_parser_errors(&mut parser)?;
+
+    // The function is parsed as a function expression, so it has no Program scope whose globals its identifiers
+    // could bind to.
+    parser.scope_collector.analyze_as_dynamic_function(
+        &mut parser.arena.identifiers,
+        &parser.arena.strings,
+        &mut parser.arena.scopes,
+    );
+    if parser.scope_collector.has_errors() {
+        return Err(parser.scope_collector.drain_errors());
+    }
+
+    Ok(ParsedDynamicFunction {
+        program,
+        function_table: std::mem::take(&mut parser.function_table),
+        arena: std::mem::take(&mut parser.arena),
+    })
+}
+
+/// The parser's syntax errors, or else the early errors its scope collector found while parsing.
+fn take_parser_errors(parser: &mut Parser) -> Result<(), Vec<ParseError>> {
+    if parser.has_errors() {
+        return Err(parser.take_errors());
+    }
+    if parser.scope_collector.has_errors() {
+        return Err(parser.scope_collector.drain_errors());
+    }
+    Ok(())
+}
+
+impl ParsedDynamicFunction {
+    /// Describes the function the source defines, which always gets an arguments object, as C++
+    /// FunctionConstructor::create_dynamic_function asks for.
+    pub fn into_description(mut self) -> Result<SharedFunctionDescription, Vec<ParseError>> {
+        // The program is a single ExpressionStatement wrapping a FunctionExpression.
+        let function_id = if let StatementKind::Program(ref data) = self.program.inner {
+            self.arena.scopes[data.scope]
+                .children
+                .iter()
+                .find_map(|child| match &child.inner {
+                    StatementKind::FunctionDeclaration(function_declaration) => Some(function_declaration.function_id),
+                    StatementKind::Expression(expression) => match &expression.inner {
+                        ast::ExpressionKind::Function(function_id) => Some(*function_id),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+        } else {
+            None
+        };
+        let Some(function_id) = function_id else {
+            return Err(vec![ParseError {
+                message: "Failed to parse dynamic function".to_string(),
+                line: 0,
+                column: 0,
+            }]);
+        };
+
+        let mut function_data = self.function_table.take(function_id);
+        function_data.parsing_insights.might_need_arguments_object = true;
+
+        let is_strict = function_data.is_strict_mode;
+        let subtable = self
+            .function_table
+            .extract_reachable(&function_data, &self.arena.scopes);
+        let arena = std::sync::Arc::new(self.arena);
+        Ok(describe_shared_function(
+            function_data,
+            subtable,
+            is_strict,
+            None,
+            arena,
+            None,
+        ))
+    }
+}
+
+// =============================================================================
 // Shared function data
 // =============================================================================
 
