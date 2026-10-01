@@ -24,6 +24,7 @@ pub use crate::layout::property_lookup_cache::{
 use crate::layout::shape::{PrototypeChainValidity, Shape};
 use crate::layout::value::Value;
 use crate::runtime::big_int::{BigInt, SignedBigInteger};
+use crate::runtime::environment_shape::{EnvironmentShape, EnvironmentShapeCache};
 use crate::runtime::primitive_string::PrimitiveString;
 use crate::runtime::primitive_string::u64_hash;
 use libjs_rust::bytecode::constant::WellKnownSymbolKind;
@@ -591,7 +592,8 @@ pub struct Executable {
     constants: Box<[Value]>,
     property_lookup_caches: Box<[PropertyLookupCache]>,
     global_variable_caches: Box<[GlobalVariableCache]>,
-    environment_coordinate_caches: Box<[EnvironmentCoordinate]>,
+    environment_coordinate_caches: Box<[Cell<EnvironmentCoordinate>]>,
+    environment_shape_caches: Box<[Cell<Option<Gc<EnvironmentShape>>>]>,
     pub number_of_registers: u32,
     pub number_of_arguments: u32,
     pub is_strict_mode: bool,
@@ -611,6 +613,7 @@ pub struct ExecutableCacheCounts {
     pub property_lookup_caches: u32,
     pub global_variable_caches: u32,
     pub environment_coordinate_caches: u32,
+    pub environment_shape_caches: u32,
 }
 
 fn interpreter_buffer<T>(elements: &[T]) -> InterpreterBuffer<T> {
@@ -664,12 +667,12 @@ impl Executable {
                 has_environment_binding_index: Cell::new(false),
             })
             .collect();
-        let environment_coordinate_caches: Box<[EnvironmentCoordinate]> = (0..cache_counts
+        let environment_coordinate_caches: Box<[Cell<EnvironmentCoordinate>]> = (0..cache_counts
             .environment_coordinate_caches)
-            .map(|_| EnvironmentCoordinate {
-                hops: EnvironmentCoordinate::INVALID_MARKER,
-                index: EnvironmentCoordinate::INVALID_MARKER,
-            })
+            .map(|_| Cell::new(EnvironmentCoordinate::invalid()))
+            .collect();
+        let environment_shape_caches = (0..cache_counts.environment_shape_caches)
+            .map(|_| Cell::new(None))
             .collect();
         let registers_and_locals_count = number_of_registers + number_of_locals;
         let constant_count = u32::try_from(constants.len()).expect("constant count fits in u32");
@@ -684,7 +687,12 @@ impl Executable {
             constants: interpreter_buffer(&constants),
             property_lookup_caches: interpreter_buffer(&property_lookup_caches),
             global_variable_caches: interpreter_buffer(&global_variable_caches),
-            environment_coordinate_caches: interpreter_buffer(&environment_coordinate_caches),
+            // The interpreter only reads the caches, which slow paths update through their cells.
+            environment_coordinate_caches: InterpreterBuffer {
+                data: Cell::new(environment_coordinate_caches.as_ptr().cast_mut().cast()),
+                size: Cell::new(environment_coordinate_caches.len()),
+                capacity: Cell::new(environment_coordinate_caches.len()),
+            },
         };
         Self {
             head,
@@ -693,6 +701,7 @@ impl Executable {
             property_lookup_caches,
             global_variable_caches,
             environment_coordinate_caches,
+            environment_shape_caches,
             number_of_registers,
             number_of_arguments,
             is_strict_mode,
@@ -726,6 +735,7 @@ impl Executable {
             property_lookup_caches: data.cache_counts.property_lookup,
             global_variable_caches: data.cache_counts.global_variable,
             environment_coordinate_caches: data.cache_counts.environment_coordinate,
+            environment_shape_caches: data.cache_counts.environment_shape,
         };
         let number_of_locals = u32::try_from(data.local_variables.len()).expect("local count fits in u32");
         let mut executable = Self::new(
@@ -773,6 +783,17 @@ impl Executable {
     pub fn registers_and_locals_count(&self) -> u32 {
         self.head.registers_and_locals_count.get()
     }
+
+    pub fn environment_coordinate_cache(&self, index: u32) -> &Cell<EnvironmentCoordinate> {
+        &self.environment_coordinate_caches[index as usize]
+    }
+
+    pub fn environment_shape_cache(&self, index: u32) -> EnvironmentShapeCache {
+        let slot = &self.environment_shape_caches[index as usize];
+        // SAFETY: Executables are only reached through the heap, and the slot is part of this one's caches, which
+        // live as long as it does.
+        unsafe { EnvironmentShapeCache::new(Gc::from_ref(self), slot) }
+    }
 }
 
 fn constant_value(vm: &Vm, constant: &ConstantValue) -> Value {
@@ -808,10 +829,11 @@ fn parse_big_int_literal(literal: &str) -> SignedBigInteger {
     SignedBigInteger::parse_bytes(digits, radix).expect("the frontend only emits valid BigInt literals")
 }
 
-// SAFETY: The constants are the only cells an executable holds so far. The inline caches do not keep the shapes
-// and objects they remember alive.
+// SAFETY: Visits the constants and the environment shapes, which are all the cells an executable keeps alive so far.
+// The inline caches do not keep the shapes and objects they remember alive.
 unsafe impl Trace for Executable {
     fn trace(&self, visitor: &mut Visitor) {
         visitor.visit_values(&self.constants);
+        self.environment_shape_caches.trace(visitor);
     }
 }
