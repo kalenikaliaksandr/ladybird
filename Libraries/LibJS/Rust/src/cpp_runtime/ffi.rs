@@ -390,74 +390,49 @@ pub unsafe fn create_shared_function_data(
     arena: std::sync::Arc<crate::ast::AstArena>,
     enclosing_environment_scope: Option<std::sync::Arc<crate::bytecode::generator::EnclosingEnvironmentScope>>,
 ) -> *mut c_void {
+    let description = crate::compile::describe_shared_function(
+        function_data,
+        subtable,
+        is_strict,
+        name_override,
+        arena,
+        enclosing_environment_scope,
+    );
+    unsafe { create_shared_function_data_from_description(description, context) }
+}
+
+/// Create a C++ SharedFunctionInstanceData for a described function.
+///
+/// # Safety
+/// `vm_ptr` and `source_code_ptr` must be valid pointers.
+unsafe fn create_shared_function_data_from_description(
+    description: crate::compile::SharedFunctionDescription,
+    context: SharedFunctionDataCreationContext,
+) -> *mut c_void {
     unsafe {
-        use crate::ast::FunctionParameterBinding;
-
-        let source_start = function_data.source_text_start as usize;
-        let source_end = function_data.source_text_end as usize;
-        let source_text_len = source_end - source_start;
-
-        let (name_ptr, name_len) = if let Some(name) = name_override {
-            (name.as_ptr(), name.len())
-        } else if let Some(name_ident) = function_data.name {
-            let name = arena.name_of(name_ident);
-            (name.as_ptr(), name.len())
-        } else {
+        let (name_ptr, name_len) = if description.name.is_empty() {
             (std::ptr::null(), 0)
-        };
-
-        let has_simple_parameter_list = function_data.parameters.iter().all(|p| {
-            !p.is_rest && p.default_value.is_none() && matches!(p.binding, FunctionParameterBinding::Identifier(_))
-        });
-
-        let parameter_names: Vec<ak::Utf16FlyString> = if has_simple_parameter_list {
-            function_data
-                .parameters
-                .iter()
-                .map(|p| {
-                    if let FunctionParameterBinding::Identifier(id) = p.binding {
-                        ak::Utf16FlyString::from_utf16(arena.name_slice(id))
-                    } else {
-                        unreachable!("has_simple_parameter_list guarantees all bindings are identifiers")
-                    }
-                })
-                .collect()
         } else {
-            Vec::new()
+            (description.name.as_ptr(), description.name.len())
         };
-
-        let function_kind = function_data.kind as u8;
-        let strict = function_data.is_strict_mode || is_strict;
-        let function_length = function_data.function_length;
-        let formal_parameter_count = u32_from_usize(function_data.parameters.len());
-        let is_arrow = function_data.is_arrow_function;
-        let uses_this = function_data.parsing_insights.uses_this;
-        let uses_this_from_environment = function_data.parsing_insights.uses_this_from_environment;
-
-        let payload = Box::new(crate::ast::FunctionPayload {
-            data: *function_data,
-            function_table: subtable,
-            arena,
-            enclosing_environment_scope,
-        });
-        let rust_ast_ptr = Box::into_raw(payload) as *mut c_void;
+        let rust_ast_ptr = Box::into_raw(description.payload) as *mut c_void;
 
         let ffi_data = FFISharedFunctionData {
             name: name_ptr,
             name_len,
-            function_kind,
-            function_length,
-            formal_parameter_count,
-            strict,
-            is_arrow,
-            has_simple_parameter_list,
-            parameter_names: parameter_names.as_ptr().cast(),
-            parameter_name_count: parameter_names.len(),
-            source_text_offset: source_start,
-            source_text_length: source_text_len,
+            function_kind: description.function_kind as u8,
+            function_length: description.function_length,
+            formal_parameter_count: description.formal_parameter_count,
+            strict: description.strict,
+            is_arrow: description.is_arrow,
+            has_simple_parameter_list: description.has_simple_parameter_list,
+            parameter_names: description.parameter_names.as_ptr().cast(),
+            parameter_name_count: description.parameter_names.len(),
+            source_text_offset: description.source_text_offset,
+            source_text_length: description.source_text_length,
             rust_function_ast: rust_ast_ptr,
-            uses_this,
-            uses_this_from_environment,
+            uses_this: description.uses_this,
+            uses_this_from_environment: description.uses_this_from_environment,
         };
 
         let sfd_ptr = match context.owner {
@@ -499,27 +474,8 @@ unsafe fn materialize_shared_function_data(
     unsafe {
         let mut sfd_ptrs = Vec::with_capacity(executable.shared_function_data.len());
         for pending in &mut executable.shared_function_data {
-            let function_data = pending
-                .function_data
-                .take()
-                .expect("pending shared function data was already materialized");
-            let subtable = pending
-                .subtable
-                .take()
-                .expect("pending shared function data subtable was already materialized");
-            let arena = pending
-                .arena
-                .clone()
-                .expect("executable data records the AST arena of every pending function");
-            let sfd_ptr = create_shared_function_data(
-                function_data,
-                subtable,
-                context,
-                executable.is_strict,
-                pending.name_override.as_ref().map(|name| name.as_slice()),
-                arena,
-                pending.enclosing_environment_scope.clone(),
-            );
+            let sfd_ptr =
+                create_shared_function_data_from_description(pending.take_description(executable.is_strict), context);
             if let Some((name, is_private)) = &pending.class_field_initializer_name {
                 rust_sfd_set_class_field_initializer_name(sfd_ptr, name.as_ptr(), name.len(), *is_private);
             }
