@@ -6,9 +6,9 @@
 
 use core::cell::Cell;
 
-use crate::gc::class::{GcCell, define_cell};
+use crate::gc::class::{Extends, GcCell, define_cell};
 use crate::gc::visitor::{Trace, Visitor};
-use crate::interpreter::runtime_functions::unimplemented_runtime_function;
+use crate::interpreter::execution_context::OwnedExecutionContext;
 use crate::interpreter::vm::Vm;
 use crate::layout::accessor::Accessor;
 use crate::layout::cell::{CellHeader, Gc};
@@ -16,15 +16,15 @@ use crate::layout::environment::{DeclarativeEnvironment, GlobalEnvironment};
 use crate::layout::function_object::FunctionObject;
 use crate::layout::object::Object;
 pub use crate::layout::realm::Realm;
+use crate::runtime::completion::ThrowCompletionOr;
+use crate::runtime::global_object::{GlobalObject, set_default_global_bindings};
+use crate::runtime::intrinsics::Intrinsics;
+use crate::runtime::object::allocate_object;
 use crate::runtime::shape::Shape;
 
 /// The parts of a realm the interpreter does not read. [[HostDefined]] comes with the hosts that define it.
 #[derive(Default)]
-pub struct RealmStorage {
-    /// The intrinsics the unit tests stand in for the realm's intrinsics, which do not exist yet.
-    #[cfg(test)]
-    pub test_intrinsics: test_intrinsics::TestIntrinsics,
-}
+pub struct RealmStorage {}
 
 define_cell!(Realm, Other);
 
@@ -35,100 +35,63 @@ unsafe impl Trace for Realm {
         self.global_object.trace(visitor);
         self.global_environment.trace(visitor);
         self.global_declarative_environment.trace(visitor);
-        #[cfg(test)]
-        self.storage.test_intrinsics.trace(visitor);
     }
 }
 
-/// Defines an accessor for each intrinsic the object model asks the realm for, and for each property offset of the
-/// premade shapes among them. Until the realm has its intrinsics, each stops the process with the intrinsic's name.
-macro_rules! define_intrinsic_accessors {
-    (
-        cells { $($name:ident: $type:ty => $description:literal,)* }
-        offsets { $($offset_name:ident => $offset_description:literal,)* }
-    ) => {
+/// Accessors for the intrinsics CreateIntrinsics creates up front, which the object model asks the realm for.
+macro_rules! realm_intrinsic_accessors {
+    (cells { $($name:ident: $type:ty,)* } offsets { $($offset:ident,)* }) => {
         impl Realm {
             $(
                 pub fn $name(&self) -> Gc<$type> {
-                    #[cfg(test)]
-                    if let Some(intrinsic) = self.storage.test_intrinsics.$name.get() {
-                        return intrinsic;
-                    }
-                    unimplemented_runtime_function(concat!("the realm intrinsic ", $description), 0)
+                    self.intrinsics().$name()
                 }
             )*
             $(
-                pub fn $offset_name(&self) -> u32 {
-                    #[cfg(test)]
-                    if let Some(offset) = self.storage.test_intrinsics.$offset_name.get() {
-                        return offset;
-                    }
-                    unimplemented_runtime_function(concat!("the realm intrinsic ", $offset_description), 0)
+                pub fn $offset(&self) -> u32 {
+                    self.intrinsics().$offset()
                 }
             )*
-        }
-
-        #[cfg(test)]
-        pub mod test_intrinsics {
-            use super::*;
-
-            #[derive(Default)]
-            pub struct TestIntrinsics {
-                $(pub $name: Cell<Option<Gc<$type>>>,)*
-                $(pub $offset_name: Cell<Option<u32>>,)*
-            }
-
-            // SAFETY: Visits every intrinsic.
-            unsafe impl Trace for TestIntrinsics {
-                fn trace(&self, visitor: &mut Visitor) {
-                    $(self.$name.trace(visitor);)*
-                }
-            }
         }
     };
 }
 
-define_intrinsic_accessors! {
+realm_intrinsic_accessors! {
     cells {
-        empty_object_shape: Shape => "empty object shape",
-        new_object_shape: Shape => "new object shape",
-        object_prototype: Object => "%Object.prototype%",
-        array_prototype: Object => "%Array.prototype%",
-        string_prototype: Object => "%String.prototype%",
-        number_prototype: Object => "%Number.prototype%",
-        boolean_prototype: Object => "%Boolean.prototype%",
-        bigint_prototype: Object => "%BigInt.prototype%",
-        symbol_prototype: Object => "%Symbol.prototype%",
-        function_prototype: Object => "%Function.prototype%",
-        generator_function_prototype: Object => "%GeneratorFunction.prototype%",
-        async_function_prototype: Object => "%AsyncFunction.prototype%",
-        async_generator_function_prototype: Object => "%AsyncGeneratorFunction.prototype%",
-        generator_function_prototype_prototype: Object => "%GeneratorFunction.prototype.prototype%",
-        async_generator_function_prototype_prototype: Object => "%AsyncGeneratorFunction.prototype.prototype%",
-        normal_function_prototype_shape: Shape => "normal function prototype shape",
-        normal_function_shape: Shape => "normal function shape",
-        async_function_shape: Shape => "async function shape",
-        generator_function_shape: Shape => "generator function shape",
-        async_generator_function_shape: Shape => "async generator function shape",
-        native_function_shape: Shape => "native function shape",
-        unmapped_arguments_object_shape: Shape => "unmapped arguments object shape",
-        mapped_arguments_object_shape: Shape => "mapped arguments object shape",
-        array_prototype_values_function: FunctionObject => "%Array.prototype.values%",
-        throw_type_error_accessor: Accessor => "%ThrowTypeError% accessor",
+        empty_object_shape: Shape,
+        new_object_shape: Shape,
+        iterator_result_object_shape: Shape,
+        normal_function_prototype_shape: Shape,
+        normal_function_shape: Shape,
+        async_function_shape: Shape,
+        generator_function_shape: Shape,
+        async_generator_function_shape: Shape,
+        native_function_shape: Shape,
+        unmapped_arguments_object_shape: Shape,
+        mapped_arguments_object_shape: Shape,
+        regexp_builtin_exec_array_shape: Shape,
+        throw_type_error_accessor: Accessor,
+        throw_type_error_function: FunctionObject,
+        array_prototype_values_function: FunctionObject,
     }
     offsets {
-        normal_function_prototype_constructor_offset => "normal function prototype constructor offset",
-        normal_function_length_offset => "normal function length offset",
-        normal_function_name_offset => "normal function name offset",
-        generator_function_prototype_property_offset => "generator function prototype property offset",
-        native_function_length_offset => "native function length offset",
-        native_function_name_offset => "native function name offset",
-        unmapped_arguments_object_length_offset => "unmapped arguments object length offset",
-        unmapped_arguments_object_well_known_symbol_iterator_offset => "unmapped arguments object @@iterator offset",
-        unmapped_arguments_object_callee_offset => "unmapped arguments object callee offset",
-        mapped_arguments_object_length_offset => "mapped arguments object length offset",
-        mapped_arguments_object_well_known_symbol_iterator_offset => "mapped arguments object @@iterator offset",
-        mapped_arguments_object_callee_offset => "mapped arguments object callee offset",
+        iterator_result_object_value_offset,
+        iterator_result_object_done_offset,
+        normal_function_prototype_constructor_offset,
+        normal_function_length_offset,
+        normal_function_name_offset,
+        generator_function_prototype_property_offset,
+        native_function_length_offset,
+        native_function_name_offset,
+        unmapped_arguments_object_length_offset,
+        unmapped_arguments_object_well_known_symbol_iterator_offset,
+        unmapped_arguments_object_callee_offset,
+        mapped_arguments_object_length_offset,
+        mapped_arguments_object_well_known_symbol_iterator_offset,
+        mapped_arguments_object_callee_offset,
+        regexp_builtin_exec_array_index_offset,
+        regexp_builtin_exec_array_input_offset,
+        regexp_builtin_exec_array_groups_offset,
     }
 }
 
@@ -144,6 +107,106 @@ impl Realm {
             intrinsics: Cell::new(None),
             storage: RealmStorage::default(),
         })
+    }
+
+    // 9.3.1 InitializeHostDefinedRealm ( ), https://tc39.es/ecma262/#sec-initializehostdefinedrealm
+    #[allow(clippy::unnecessary_wraps, reason = "the operation can throw in the spec")]
+    pub fn initialize_host_defined_realm(
+        vm: &Vm,
+        create_global_object: Option<&dyn Fn(Gc<Realm>) -> Gc<Object>>,
+        create_global_this_value: Option<&dyn Fn(Gc<Realm>) -> Gc<Object>>,
+    ) -> ThrowCompletionOr<OwnedExecutionContext> {
+        // 1. Let realm be a new Realm Record
+        let realm = Realm::create(vm);
+
+        // 2. Perform CreateIntrinsics(realm).
+        Intrinsics::create(vm, realm);
+
+        // FIXME: 3. Set realm.[[AgentSignifier]] to AgentSignifier().
+
+        // NOTE: Done on step 1.
+        // 4. Set realm.[[GlobalObject]] to undefined.
+        // 5. Set realm.[[GlobalEnv]] to undefined.
+
+        // FIXME: 6. Set realm.[[TemplateMap]] to a new empty List.
+
+        // 7. Let newContext be a new execution context.
+        let new_context = OwnedExecutionContext::create(0, 0, 0);
+
+        // 8. Set the Function of newContext to null.
+        new_context.function.set(None);
+
+        // 9. Set the Realm of newContext to realm.
+        new_context.realm.set(Some(realm));
+
+        // 10. Set the ScriptOrModule of newContext to null.
+        new_context
+            .script_or_module
+            .set(crate::layout::execution_context::ScriptOrModule::Empty);
+
+        // 11. Push newContext onto the execution context stack; newContext is now the running execution context.
+        vm.push_execution_context(new_context.as_non_null());
+
+        // 12. If the host requires use of an exotic object to serve as realm's global object, then
+        let global = if let Some(create_global_object) = create_global_object {
+            // a. Let global be such an object created in a host-defined manner.
+            create_global_object(realm)
+        }
+        // 13. Else,
+        else {
+            // a. Let global be OrdinaryObjectCreate(realm.[[Intrinsics]].[[%Object.prototype%]]).
+            // NOTE: We allocate a proper GlobalObject directly as this plain object is
+            //       turned into one via SetDefaultGlobalBindings in the spec.
+            allocate_object(vm, GlobalObject::new(vm, GlobalObject::CLASS, realm)).upcast()
+        };
+
+        // 14. If the host requires that the this binding in realm's global scope return an object other than the global object, then
+        let this_value = if let Some(create_global_this_value) = create_global_this_value {
+            // a. Let thisValue be such an object created in a host-defined manner.
+            create_global_this_value(realm)
+        }
+        // 15. Else,
+        else {
+            // a. Let thisValue be global.
+            global
+        };
+
+        // 16. Set realm.[[GlobalObject]] to global.
+        realm.global_object.set(Some(global));
+
+        // 17. Set realm.[[GlobalEnv]] to NewGlobalEnvironment(global, thisValue).
+        realm.set_global_environment(GlobalEnvironment::create(vm, global, this_value));
+
+        // 18. Perform ? SetDefaultGlobalBindings(realm).
+        set_default_global_bindings(vm, realm);
+
+        // 19. Create any host-defined global object properties on global.
+        global.initialize(vm, realm);
+
+        // 20. Return unused.
+        Ok(new_context)
+    }
+
+    /// Realm::create<T>(): allocates an object and runs its initialize(), which defines the properties of built-in
+    /// objects.
+    pub fn create_object<T: GcCell + Extends<Object>>(&self, vm: &Vm, object: T) -> Gc<T> {
+        let object = allocate_object(vm, object);
+        object.upcast::<Object>().initialize(vm, self.as_gc());
+        object
+    }
+
+    fn as_gc(&self) -> Gc<Realm> {
+        // SAFETY: Realms only exist as cells, since Realm::create() allocates every one.
+        unsafe { Gc::from_ref(self) }
+    }
+
+    pub fn intrinsics(&self) -> Gc<Intrinsics> {
+        self.intrinsics.get().expect("the realm has its intrinsics")
+    }
+
+    pub fn set_intrinsics(&self, intrinsics: Gc<Intrinsics>) {
+        assert!(self.intrinsics.get().is_none());
+        self.intrinsics.set(Some(intrinsics));
     }
 
     pub fn global_object(&self) -> Gc<Object> {
@@ -171,16 +234,34 @@ impl Realm {
             .get()
             .expect("the realm has a global environment")
     }
+
+    pub fn string_prototype(&self, vm: &Vm) -> Gc<Object> {
+        self.intrinsics().string_prototype(vm)
+    }
+
+    pub fn number_prototype(&self, vm: &Vm) -> Gc<Object> {
+        self.intrinsics().number_prototype(vm)
+    }
+
+    pub fn boolean_prototype(&self, vm: &Vm) -> Gc<Object> {
+        self.intrinsics().boolean_prototype(vm)
+    }
+
+    pub fn bigint_prototype(&self, vm: &Vm) -> Gc<Object> {
+        self.intrinsics().bigint_prototype(vm)
+    }
+
+    pub fn symbol_prototype(&self, vm: &Vm) -> Gc<Object> {
+        self.intrinsics().symbol_prototype(vm)
+    }
 }
 
-/// A realm with the intrinsics the object model asks for, created the way C++ Intrinsics creates them, running in an
-/// execution context of its own until it is dropped.
+/// A realm with its intrinsics, made by CreateIntrinsics but without a global object, running in an execution context
+/// of its own until it is dropped.
 #[cfg(all(test, libjs_runtime_tests_with_libgc))]
 pub mod test_realm {
     use super::*;
     use crate::runtime::array::Array;
-    use crate::runtime::completion::Must;
-    use crate::runtime::object::Object;
 
     pub struct TestRealm<'vm> {
         vm: &'vm Vm,
@@ -191,15 +272,7 @@ pub mod test_realm {
     impl<'vm> TestRealm<'vm> {
         pub fn new(vm: &'vm Vm) -> Self {
             let realm = Realm::create(vm);
-            let intrinsics = &realm.storage.test_intrinsics;
-            intrinsics.empty_object_shape.set(Some(Shape::create(vm, realm)));
-            let object_prototype = Object::create_prototype(vm, realm, None);
-            intrinsics.object_prototype.set(Some(object_prototype));
-            let new_object_shape = Shape::create(vm, realm);
-            new_object_shape.set_prototype_without_transition(vm, object_prototype);
-            intrinsics.new_object_shape.set(Some(new_object_shape));
-            let array_prototype = Array::create(vm, realm, 0, Some(object_prototype)).must();
-            intrinsics.array_prototype.set(Some(array_prototype.upcast()));
+            Intrinsics::create(vm, realm);
 
             let stack = vm.interpreter_stack();
             let stack_mark = stack.top.get();
@@ -221,181 +294,16 @@ pub mod test_realm {
     }
 
     impl<'vm> TestRealm<'vm> {
-        /// A test realm that also has the intrinsics functions and arguments objects are created with, made the way
-        /// C++ Intrinsics makes them. %Function.prototype% is an ordinary object here, and %Array.prototype.values%
-        /// returns undefined.
+        /// A test realm whose %Array.prototype.values%, which arguments objects are created with, returns undefined,
+        /// since realms have no Array builtins yet.
         pub fn with_function_intrinsics(vm: &'vm Vm) -> Self {
             use crate::layout::value::Value;
-            use crate::runtime::error::ErrorKind;
-            use crate::runtime::error_types::ErrorType;
-            use crate::runtime::native_function::{NativeFunction, RawNativeFunction, raw_native};
+            use crate::runtime::native_function::{RawNativeFunction, raw_native};
             use crate::runtime::property_attributes::{Attribute, PropertyAttributes};
-            use crate::runtime::property_key::PropertyKey;
 
             let test_realm = Self::new(vm);
             let realm = test_realm.realm;
-            let intrinsics = &realm.storage.test_intrinsics;
             let names = &vm.names;
-            let object_prototype = realm.object_prototype();
-            let configurable = PropertyAttributes::new(Attribute::CONFIGURABLE);
-            let writable = PropertyAttributes::new(Attribute::WRITABLE);
-            let writable_configurable = PropertyAttributes::new(Attribute::WRITABLE | Attribute::CONFIGURABLE);
-            let offset = |shape: Gc<Shape>, property_key: &PropertyKey| {
-                Some(
-                    shape
-                        .lookup(property_key)
-                        .expect("the premade shape has the property")
-                        .offset,
-                )
-            };
-
-            let function_prototype = Object::create_prototype(vm, realm, Some(object_prototype));
-            intrinsics.function_prototype.set(Some(function_prototype));
-
-            let normal_function_prototype_shape = Shape::create(vm, realm);
-            normal_function_prototype_shape.set_prototype_without_transition(vm, object_prototype);
-            normal_function_prototype_shape.add_property_without_transition(
-                vm,
-                &names.constructor,
-                writable_configurable,
-            );
-            intrinsics
-                .normal_function_prototype_constructor_offset
-                .set(offset(normal_function_prototype_shape, &names.constructor));
-            intrinsics
-                .normal_function_prototype_shape
-                .set(Some(normal_function_prototype_shape));
-
-            let create_function_shape = |prototype: Gc<Object>, has_prototype_property: bool| {
-                let shape = Shape::create(vm, realm);
-                shape.set_prototype_without_transition(vm, prototype);
-                shape.add_property_without_transition(vm, &names.length, configurable);
-                shape.add_property_without_transition(vm, &names.name, configurable);
-                if has_prototype_property {
-                    shape.add_property_without_transition(vm, &names.prototype, writable);
-                }
-                shape
-            };
-
-            let normal_function_shape = create_function_shape(function_prototype, false);
-            intrinsics
-                .normal_function_length_offset
-                .set(offset(normal_function_shape, &names.length));
-            intrinsics
-                .normal_function_name_offset
-                .set(offset(normal_function_shape, &names.name));
-            intrinsics.normal_function_shape.set(Some(normal_function_shape));
-
-            let native_function_shape = create_function_shape(function_prototype, false);
-            intrinsics
-                .native_function_length_offset
-                .set(offset(native_function_shape, &names.length));
-            intrinsics
-                .native_function_name_offset
-                .set(offset(native_function_shape, &names.name));
-            intrinsics.native_function_shape.set(Some(native_function_shape));
-
-            let iterator = PropertyKey::from(vm.well_known_symbols().iterator);
-            let create_arguments_object_shape = |callee_attributes: PropertyAttributes| {
-                let shape = Shape::create(vm, realm);
-                shape.set_prototype_without_transition(vm, object_prototype);
-                shape.set_has_parameter_map();
-                shape.add_property_without_transition(vm, &names.length, writable_configurable);
-                shape.add_property_without_transition(vm, &iterator, writable_configurable);
-                shape.add_property_without_transition(vm, &names.callee, callee_attributes);
-                shape
-            };
-
-            let unmapped_arguments_object_shape = create_arguments_object_shape(PropertyAttributes::new(0));
-            intrinsics
-                .unmapped_arguments_object_length_offset
-                .set(offset(unmapped_arguments_object_shape, &names.length));
-            intrinsics
-                .unmapped_arguments_object_well_known_symbol_iterator_offset
-                .set(offset(unmapped_arguments_object_shape, &iterator));
-            intrinsics
-                .unmapped_arguments_object_callee_offset
-                .set(offset(unmapped_arguments_object_shape, &names.callee));
-            intrinsics
-                .unmapped_arguments_object_shape
-                .set(Some(unmapped_arguments_object_shape));
-
-            let mapped_arguments_object_shape = create_arguments_object_shape(writable_configurable);
-            intrinsics
-                .mapped_arguments_object_length_offset
-                .set(offset(mapped_arguments_object_shape, &names.length));
-            intrinsics
-                .mapped_arguments_object_well_known_symbol_iterator_offset
-                .set(offset(mapped_arguments_object_shape, &iterator));
-            intrinsics
-                .mapped_arguments_object_callee_offset
-                .set(offset(mapped_arguments_object_shape, &names.callee));
-            intrinsics
-                .mapped_arguments_object_shape
-                .set(Some(mapped_arguments_object_shape));
-
-            let generator_function_prototype = Object::create_prototype(vm, realm, Some(function_prototype));
-            let async_function_prototype = Object::create_prototype(vm, realm, Some(function_prototype));
-            let async_generator_function_prototype = Object::create_prototype(vm, realm, Some(function_prototype));
-            intrinsics
-                .generator_function_prototype
-                .set(Some(generator_function_prototype));
-            intrinsics.async_function_prototype.set(Some(async_function_prototype));
-            intrinsics
-                .async_generator_function_prototype
-                .set(Some(async_generator_function_prototype));
-            intrinsics
-                .generator_function_prototype_prototype
-                .set(Some(Object::create_prototype(vm, realm, Some(object_prototype))));
-            intrinsics
-                .async_generator_function_prototype_prototype
-                .set(Some(Object::create_prototype(vm, realm, Some(object_prototype))));
-
-            let generator_function_shape = create_function_shape(generator_function_prototype, true);
-            intrinsics
-                .generator_function_prototype_property_offset
-                .set(offset(generator_function_shape, &names.prototype));
-            intrinsics.generator_function_shape.set(Some(generator_function_shape));
-            intrinsics
-                .async_function_shape
-                .set(Some(create_function_shape(async_function_prototype, false)));
-            intrinsics
-                .async_generator_function_shape
-                .set(Some(create_function_shape(async_generator_function_prototype, true)));
-
-            // 10.2.4.1 %ThrowTypeError% ( ), https://tc39.es/ecma262/#sec-%throwtypeerror%
-            let throw_type_error_function = NativeFunction::create(
-                vm,
-                (),
-                |vm, _| vm.throw_completion(ErrorKind::TypeError, ErrorType::RestrictedFunctionPropertiesAccess, &[]),
-                0,
-                &PropertyKey::from(ak::Utf16FlyString::default()),
-                Some(realm),
-                None,
-                None,
-            );
-            throw_type_error_function.define_direct_property(
-                vm,
-                &names.length,
-                Value::from_i32(0),
-                PropertyAttributes::new(0),
-            );
-            throw_type_error_function.define_direct_property(
-                vm,
-                &names.name,
-                Value::from_string(vm.empty_string()),
-                PropertyAttributes::new(0),
-            );
-            throw_type_error_function.internal_prevent_extensions(vm).must();
-            intrinsics
-                .throw_type_error_accessor
-                .set(Some(crate::runtime::accessor::Accessor::create(
-                    vm,
-                    Some(throw_type_error_function.upcast()),
-                    Some(throw_type_error_function.upcast()),
-                    None,
-                )));
-
             let array_prototype_values = RawNativeFunction::create(
                 vm,
                 raw_native!(|_| Ok(Value::UNDEFINED)),
@@ -409,11 +317,11 @@ pub mod test_realm {
                 vm,
                 &names.values,
                 Value::from_object(array_prototype_values),
-                writable_configurable,
+                PropertyAttributes::new(Attribute::WRITABLE | Attribute::CONFIGURABLE),
             );
-            intrinsics
-                .array_prototype_values_function
-                .set(Some(array_prototype_values.upcast()));
+            realm
+                .intrinsics()
+                .set_array_prototype_values_function_for_tests(array_prototype_values.upcast());
 
             test_realm
         }
@@ -446,11 +354,13 @@ pub mod test_realm {
 
     /// Reflect.ownKeys(object).map(String).join(",")
     pub fn own_keys(vm: &Vm, object: &Object) -> String {
+        use crate::runtime::completion::Must;
         key_values_to_string(&object.internal_own_property_keys(vm).must())
     }
 
     /// Object.keys(object).join(",")
     pub fn enumerable_keys(vm: &Vm, object: &Object) -> String {
+        use crate::runtime::completion::Must;
         key_values_to_string(
             &object
                 .enumerable_own_property_names(vm, crate::runtime::object::PropertyKind::Key)
@@ -458,12 +368,15 @@ pub mod test_realm {
         )
     }
 
-    /// Runs `operation`, which is expected to throw, and returns the message of the error the runtime stops at,
-    /// since throwing stops the process until realms have their error constructors.
+    /// Runs `operation`, which is expected to throw, and returns the message of the error it throws. While it runs,
+    /// throwing stops the process with "creating a <kind> with the message "<message>"" instead, so that the
+    /// operations the tests run outside the interpreter never reach its exception handling.
     pub fn thrown_message<T>(operation: impl FnOnce() -> T) -> String {
         let previous_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
+        let previous_throws_stop_the_process = crate::runtime::error::set_throws_stop_the_process_for_tests(true);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
+        crate::runtime::error::set_throws_stop_the_process_for_tests(previous_throws_stop_the_process);
         std::panic::set_hook(previous_hook);
         let Err(payload) = result else {
             panic!("the operation did not throw");
@@ -473,5 +386,70 @@ pub mod test_realm {
             .cloned()
             .or_else(|| payload.downcast_ref::<&str>().map(|message| (*message).to_string()))
             .unwrap_or_default()
+    }
+}
+
+#[cfg(all(test, libjs_runtime_tests_with_libgc))]
+mod tests {
+    use core::cell::Cell;
+
+    use super::*;
+    use crate::layout::value::Value;
+    use crate::runtime::completion::Must;
+    use crate::runtime::realm::test_realm::own_keys;
+
+    #[test]
+    fn initialize_host_defined_realm_runs_a_new_realm_with_its_global_object() {
+        let vm = Vm::create();
+        assert!(vm.current_realm().is_none());
+        let context = Realm::initialize_host_defined_realm(&vm, None, None).must();
+        let realm = context.realm.get().expect("the context has the new realm");
+        assert!(vm.running_execution_context() == Some(context.as_non_null()));
+        assert!(vm.current_realm() == Some(realm));
+        assert!(context.function.get().is_none() && context.executable.get().is_none());
+
+        let global = realm.global_object();
+        assert!(global.is::<GlobalObject>() && global.has_global_object_flag());
+        assert!(global.prototype() == Some(realm.object_prototype()));
+        let environment = realm.global_environment();
+        assert!(environment.global_this_value() == global);
+        assert!(environment.object_record().binding_object() == global);
+        assert!(realm.global_declarative_environment() == environment.declarative_record());
+        assert!(global.get(&vm, &vm.names.globalThis).must() == Value::from_object(global));
+        assert!(own_keys(&vm, &global).starts_with("globalThis,Infinity,NaN,undefined,AggregateError,"));
+        assert!(vm.pop_execution_context() == context.as_non_null());
+    }
+
+    #[test]
+    fn initialize_host_defined_realm_uses_the_hosts_global_object_and_this_value() {
+        let vm = Vm::create();
+        let calls = Cell::new(0);
+        let create_global_object = |realm: Gc<Realm>| {
+            calls.set(calls.get() + 1);
+            allocate_object(&vm, GlobalObject::new(&vm, GlobalObject::CLASS, realm)).upcast()
+        };
+        let create_global_this_value = |realm: Gc<Realm>| Object::create(&vm, realm, Some(realm.object_prototype()));
+        let context =
+            Realm::initialize_host_defined_realm(&vm, Some(&create_global_object), Some(&create_global_this_value))
+                .must();
+        let realm = context.realm.get().expect("the context has the new realm");
+        assert_eq!(calls.get(), 1);
+        let global = realm.global_object();
+        let this_value = realm.global_environment().global_this_value();
+        assert!(this_value != global && !this_value.is::<GlobalObject>());
+        // SetDefaultGlobalBindings defines globalThis as the this value of the global environment.
+        assert!(global.get(&vm, &vm.names.globalThis).must() == Value::from_object(this_value));
+        assert!(
+            global.get(&vm, &vm.names.Error).must() == Value::from_object(realm.intrinsics().error_constructor(&vm))
+        );
+
+        // Each realm has intrinsics of its own.
+        let other_context = Realm::initialize_host_defined_realm(&vm, None, None).must();
+        let other_realm = other_context.realm.get().expect("the context has the new realm");
+        assert!(other_realm.object_prototype() != realm.object_prototype());
+        assert!(vm.current_realm() == Some(other_realm));
+        vm.pop_execution_context();
+        assert!(vm.current_realm() == Some(realm));
+        vm.pop_execution_context();
     }
 }

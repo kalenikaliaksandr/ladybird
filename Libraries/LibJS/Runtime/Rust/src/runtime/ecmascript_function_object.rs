@@ -35,6 +35,7 @@ use crate::runtime::error::ErrorKind;
 use crate::runtime::error_types::ErrorType;
 use crate::runtime::function_environment::FunctionEnvironment;
 use crate::runtime::function_object::{FUNCTION_OBJECT_METHODS, FunctionObject};
+use crate::runtime::intrinsics::Intrinsics;
 use crate::runtime::object::{
     MayInterfereWithIndexedPropertyAccess, ObjectMethods, PrivateElement, StackFrameInfo, allocate_object,
 };
@@ -382,7 +383,7 @@ impl EcmascriptFunctionObject {
                 vm,
                 function.realm().expect("an ECMAScript function has a realm"),
                 new_target,
-                Realm::object_prototype,
+                Intrinsics::object_prototype,
             )?);
         }
 
@@ -1174,7 +1175,7 @@ mod tests {
         assert!(element(arguments, 0) == int(1) && element(arguments, 1) == int(2));
         assert!(arguments.prototype() == Some(realm.object_prototype()));
         let callee = arguments
-            .storage_get(&vm.names.callee)
+            .storage_get(&vm, &vm.names.callee)
             .expect("the arguments object has a callee");
         assert!(callee.value == Value::from_accessor(realm.throw_type_error_accessor()));
         assert!(!callee.attributes.is_configurable() && !callee.attributes.is_enumerable());
