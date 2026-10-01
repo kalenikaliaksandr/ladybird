@@ -425,6 +425,8 @@ dependencies = [
  "ak",
  "cc",
  "flapc",
+ "foldhash",
+ "indexmap",
  "libc",
  "libjs_abi",
  "libjs_runtime_macros",
