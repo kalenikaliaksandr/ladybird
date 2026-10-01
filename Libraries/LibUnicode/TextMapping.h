@@ -28,5 +28,6 @@ struct UnicodeTextMappingOutput {
 extern "C" {
 void unicode_apply_case_mapping(u16 const* text, size_t length, u8 mapping, u16 const* locale, size_t locale_length, bool preserve_existing, UnicodeTextMappingOutput);
 void unicode_apply_fullwidth_mapping(u16 const* text, size_t length, UnicodeTextMappingOutput);
+void unicode_normalize(u16 const* text, size_t length, u8 form, UnicodeTextMappingOutput);
 bool unicode_text_may_require_bidi_processing(u16 const* text, size_t length);
 }
