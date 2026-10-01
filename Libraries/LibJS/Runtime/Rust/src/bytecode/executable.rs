@@ -25,7 +25,7 @@ use crate::runtime::big_int::{BigInt, SignedBigInteger};
 use crate::runtime::primitive_string::PrimitiveString;
 use libjs_rust::bytecode::constant::WellKnownSymbolKind;
 use libjs_rust::bytecode::executable::ExecutableData;
-use libjs_rust::bytecode::generator::ConstantValue;
+use libjs_rust::bytecode::generator::{ConstantValue, ExceptionHandler};
 
 /// A unit of bytecode: a script, a module, a function body or an eval, with what the interpreter needs to run it.
 #[repr(C)]
@@ -42,6 +42,8 @@ pub struct Executable {
     pub identifier_table: Vec<ak::Utf16FlyString>,
     pub property_key_table: Vec<ak::Utf16FlyString>,
     pub string_table: Vec<ak::Utf16FlyString>,
+    /// Sorted by start offset, and not overlapping.
+    pub exception_handlers: Box<[ExceptionHandler]>,
 }
 
 define_cell!(Executable, Other);
@@ -133,6 +135,7 @@ impl Executable {
             identifier_table: Vec::new(),
             property_key_table: Vec::new(),
             string_table: Vec::new(),
+            exception_handlers: Box::new([]),
         }
     }
 
@@ -173,9 +176,26 @@ impl Executable {
         executable.identifier_table = data.identifier_table;
         executable.property_key_table = data.property_key_table;
         executable.string_table = data.string_table;
+        executable.exception_handlers = data.exception_handlers.into_boxed_slice();
         let executable = vm.heap().allocate(executable);
         drop(rooted_constants);
         executable
+    }
+
+    /// The handler whose range holds the instruction at `offset`.
+    pub fn exception_handlers_for_offset(&self, offset: u32) -> Option<&ExceptionHandler> {
+        self.exception_handlers
+            .binary_search_by(|handler| {
+                if offset < handler.start_offset {
+                    core::cmp::Ordering::Greater
+                } else if offset >= handler.end_offset {
+                    core::cmp::Ordering::Less
+                } else {
+                    core::cmp::Ordering::Equal
+                }
+            })
+            .ok()
+            .map(|index| &self.exception_handlers[index])
     }
 
     pub fn bytecode(&self) -> &[u8] {
