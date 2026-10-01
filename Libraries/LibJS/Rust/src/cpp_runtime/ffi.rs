@@ -405,7 +405,7 @@ pub unsafe fn create_shared_function_data(
 ///
 /// # Safety
 /// `vm_ptr` and `source_code_ptr` must be valid pointers.
-unsafe fn create_shared_function_data_from_description(
+pub(crate) unsafe fn create_shared_function_data_from_description(
     description: crate::compile::SharedFunctionDescription,
     context: SharedFunctionDataCreationContext,
 ) -> *mut c_void {
