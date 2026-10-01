@@ -101,6 +101,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/layout");
     println!("cargo:rerun-if-changed={}", interpreter_source.display());
     println!("cargo:rerun-if-changed={}", layout_fixture.display());
+    link_tests_against_prebuilt_libraries();
 
     let target = target();
     let address_sanitizer = env::var_os("CARGO_FEATURE_ADDRESS_SANITIZER").is_some();
@@ -181,6 +182,23 @@ fn main() {
     let assembly_path = output_directory.join("interpreter.S");
     write_if_changed(&assembly_path, assembly.as_str());
     assemble_interpreter(&target, &assembly_path);
+}
+
+/// Unit tests that need a live heap link LibGC and AK from an existing Ladybird build, given as
+/// LIBJS_RUNTIME_TEST_LIBRARY_DIRECTORY, and only build when it is set. Nothing else should set it, since the
+/// libraries are then linked into whatever cargo links.
+fn link_tests_against_prebuilt_libraries() {
+    println!("cargo::rustc-check-cfg=cfg(libjs_runtime_tests_with_libgc)");
+    println!("cargo:rerun-if-env-changed=LIBJS_RUNTIME_TEST_LIBRARY_DIRECTORY");
+    let Some(directory) = env::var_os("LIBJS_RUNTIME_TEST_LIBRARY_DIRECTORY") else {
+        return;
+    };
+    let directory = PathBuf::from(directory);
+    println!("cargo:rustc-cfg=libjs_runtime_tests_with_libgc");
+    println!("cargo:rustc-link-arg=-L{}", directory.display());
+    println!("cargo:rustc-link-arg=-llagom-gc");
+    println!("cargo:rustc-link-arg=-llagom-ak");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", directory.display());
 }
 
 fn interpreter_compiler(target: &Target) -> flapc::Compiler {
