@@ -1,0 +1,3 @@
+# test262 directories in which every file that passes with the C++ runtime also passes with the Rust runtime.
+# Meta/libjs-test262-parity.py diff fails on any regression in them. A directory is added in the change that brings
+# it to parity, and removed only with a reason.
