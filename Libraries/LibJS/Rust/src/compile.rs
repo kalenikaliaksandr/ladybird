@@ -821,6 +821,140 @@ fn for_each_bound_name_in_pattern(pattern: &ast::BindingPattern, arena: &ast::As
 }
 
 // =============================================================================
+// Shared function data
+// =============================================================================
+
+/// What a runtime needs to create a SharedFunctionInstanceData for one function, taken from the frontend's AST of it.
+/// The AST travels along in `payload`, which compile_function() turns into bytecode when the function is first called.
+pub struct SharedFunctionDescription {
+    /// Empty for an anonymous function.
+    pub name: Vec<u16>,
+    pub function_kind: ast::FunctionKind,
+    pub function_length: i32,
+    pub formal_parameter_count: u32,
+    pub strict: bool,
+    pub is_arrow: bool,
+    pub has_simple_parameter_list: bool,
+    /// The parameter names if the parameter list is simple, and empty otherwise.
+    pub parameter_names: Vec<ak::Utf16FlyString>,
+    pub source_text_offset: usize,
+    pub source_text_length: usize,
+    pub uses_this: bool,
+    pub uses_this_from_environment: bool,
+    pub payload: Box<ast::FunctionPayload>,
+}
+
+/// Describes a function whose AST the caller took out of a function table, together with the functions nested in it.
+#[allow(clippy::boxed_local)] // Callers produce Box<FunctionData>; unboxing would copy a large struct.
+pub fn describe_shared_function(
+    function_data: Box<ast::FunctionData>,
+    subtable: ast::FunctionTable,
+    is_strict: bool,
+    name_override: Option<&[u16]>,
+    arena: std::sync::Arc<ast::AstArena>,
+    enclosing_environment_scope: Option<std::sync::Arc<bytecode::generator::EnclosingEnvironmentScope>>,
+) -> SharedFunctionDescription {
+    use ast::FunctionParameterBinding;
+
+    let source_start = function_data.source_text_start as usize;
+    let source_end = function_data.source_text_end as usize;
+
+    let name = if let Some(name) = name_override {
+        name.to_vec()
+    } else if let Some(name_ident) = function_data.name {
+        arena.name_slice(name_ident).to_vec()
+    } else {
+        Vec::new()
+    };
+
+    let has_simple_parameter_list = function_data.parameters.iter().all(|p| {
+        !p.is_rest && p.default_value.is_none() && matches!(p.binding, FunctionParameterBinding::Identifier(_))
+    });
+
+    let parameter_names: Vec<ak::Utf16FlyString> = if has_simple_parameter_list {
+        function_data
+            .parameters
+            .iter()
+            .map(|p| {
+                if let FunctionParameterBinding::Identifier(id) = p.binding {
+                    ak::Utf16FlyString::from_utf16(arena.name_slice(id))
+                } else {
+                    unreachable!("has_simple_parameter_list guarantees all bindings are identifiers")
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    SharedFunctionDescription {
+        name,
+        function_kind: function_data.kind,
+        function_length: function_data.function_length,
+        formal_parameter_count: u32_from_usize(function_data.parameters.len()),
+        strict: function_data.is_strict_mode || is_strict,
+        is_arrow: function_data.is_arrow_function,
+        has_simple_parameter_list,
+        parameter_names,
+        source_text_offset: source_start,
+        source_text_length: source_end - source_start,
+        uses_this: function_data.parsing_insights.uses_this,
+        uses_this_from_environment: function_data.parsing_insights.uses_this_from_environment,
+        payload: Box::new(ast::FunctionPayload {
+            data: *function_data,
+            function_table: subtable,
+            arena,
+            enclosing_environment_scope,
+        }),
+    }
+}
+
+impl PendingSharedFunctionData {
+    /// Describes this function of an executable whose code is strict if `is_strict`, taking its AST. The precompiled
+    /// body and the class field initializer name stay here for the caller to take as well.
+    pub fn take_description(&mut self, is_strict: bool) -> SharedFunctionDescription {
+        let function_data = self
+            .function_data
+            .take()
+            .expect("pending shared function data was already materialized");
+        let subtable = self
+            .subtable
+            .take()
+            .expect("pending shared function data subtable was already materialized");
+        let arena = self
+            .arena
+            .clone()
+            .expect("executable data records the AST arena of every pending function");
+        describe_shared_function(
+            function_data,
+            subtable,
+            is_strict,
+            self.name_override.as_ref().map(|name| name.as_slice()),
+            arena,
+            self.enclosing_environment_scope.clone(),
+        )
+    }
+}
+
+/// Compiles the body of a described function, along with the functions nested in it that must be compiled eagerly.
+#[allow(clippy::boxed_local)] // Runtimes keep the payload boxed until the first call; unboxing would copy it.
+pub fn compile_function(
+    payload: Box<ast::FunctionPayload>,
+    source_len: usize,
+    builtin_abstract_operations_enabled: bool,
+) -> Box<bytecode::generator::PrecompiledFunction> {
+    let arena = payload.arena.clone();
+    let (_function_data, precompiled) = compile_function_payload_to_bytecode(
+        *payload,
+        source_len,
+        builtin_abstract_operations_enabled,
+        arena,
+        FunctionPrecompileMode::EagerOnly,
+    );
+    precompiled
+}
+
+// =============================================================================
 // Declaration instantiation data
 // =============================================================================
 
