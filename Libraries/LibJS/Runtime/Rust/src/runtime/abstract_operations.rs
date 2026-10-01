@@ -33,6 +33,7 @@ use crate::runtime::error_types::ErrorType;
 use crate::runtime::function_environment::FunctionEnvironment;
 use crate::runtime::indexed_properties::ValueAndAttributes;
 use crate::runtime::object::{MayInterfereWithIndexedPropertyAccess, Object, StackFrameInfo, allocate_object};
+use crate::runtime::object_environment::{IsWithEnvironment, ObjectEnvironment};
 use crate::runtime::private_environment::PrivateEnvironment;
 use crate::runtime::property_attributes::{DEFAULT_ATTRIBUTES, PropertyAttributes};
 use crate::runtime::property_descriptor::PropertyDescriptor;
@@ -550,6 +551,30 @@ pub fn new_declarative_environment(vm: &Vm, environment: Gc<Environment>) -> Gc<
     // 3. Set env.[[DisposeCapability]] to NewDisposeCapability().
     // 4. Return env.
     DeclarativeEnvironment::create(vm, Some(environment))
+}
+
+// 9.1.2.3 NewObjectEnvironment ( O, W, E ), https://tc39.es/ecma262/#sec-newobjectenvironment
+pub fn new_object_environment(
+    vm: &Vm,
+    object: Gc<Object>,
+    is_with_environment: bool,
+    environment: Option<Gc<Environment>>,
+) -> Gc<ObjectEnvironment> {
+    // 1. Let env be a new Object Environment Record.
+    // 2. Set env.[[BindingObject]] to O.
+    // 3. Set env.[[IsWithEnvironment]] to W.
+    // 4. Set env.[[OuterEnv]] to E.
+    // 5. Return env.
+    ObjectEnvironment::create(
+        vm,
+        object,
+        if is_with_environment {
+            IsWithEnvironment::Yes
+        } else {
+            IsWithEnvironment::No
+        },
+        environment,
+    )
 }
 
 fn native_javascript_backed_function_this_mode_is_lexical(_function: Gc<FunctionObject>) -> bool {

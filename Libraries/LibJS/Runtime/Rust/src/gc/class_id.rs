@@ -48,4 +48,7 @@ define_class_ids! {
     SharedFunctionInstanceData,
     BoundFunction,
     ArgumentsObject,
+    ObjectEnvironment,
+    GlobalEnvironment,
+    Script,
 }

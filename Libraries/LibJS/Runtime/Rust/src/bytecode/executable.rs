@@ -517,6 +517,14 @@ impl Drop for PropertyLookupCache {
 }
 
 impl GlobalVariableCache {
+    /// Assigns a default GlobalVariableCache, as `cache = {}` does in C++.
+    pub fn reset(&self) {
+        self.entry.set(PropertyLookupCacheEntryData::default());
+        self.environment_serial_number.set(0);
+        self.environment_binding_index.set(0);
+        self.has_environment_binding_index.set(false);
+    }
+
     pub fn first_entry(&self) -> Option<PropertyLookupCacheEntryData> {
         let entry = self.entry.get();
         (entry.entry_type != PropertyLookupCacheEntryType::Empty).then_some(entry)
@@ -843,6 +851,10 @@ impl Executable {
 
     pub fn registers_and_locals_count(&self) -> u32 {
         self.head.registers_and_locals_count.get()
+    }
+
+    pub fn global_variable_cache(&self, index: u32) -> &GlobalVariableCache {
+        &self.global_variable_caches[index as usize]
     }
 
     pub fn environment_coordinate_cache(&self, index: u32) -> &Cell<EnvironmentCoordinate> {

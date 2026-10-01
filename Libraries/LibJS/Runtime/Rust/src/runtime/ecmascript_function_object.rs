@@ -143,16 +143,6 @@ fn prototype_for_function_kind(realm: Gc<Realm>, kind: FunctionKind) -> Gc<Objec
     }
 }
 
-/// globalEnv.[[GlobalThisValue]], read straight from the layout until global environments are cells of the runtime.
-fn global_this_value(realm: Gc<Realm>) -> Gc<Object> {
-    let global_environment = realm.global_environment();
-    // SAFETY: A Gc points to a live cell.
-    unsafe { global_environment.as_non_null().as_ref() }
-        .global_this_value
-        .get()
-        .expect("a global environment has a global this value")
-}
-
 fn display_fly_string(string: &Utf16FlyString) -> String {
     Utf16View::of_fly_string(string).to_utf8()
 }
@@ -565,7 +555,7 @@ impl EcmascriptFunctionObject {
                 // i. Let globalEnv be calleeRealm.[[GlobalEnv]].
                 // ii. Assert: globalEnv is a global Environment Record.
                 // iii. Let thisValue be globalEnv.[[GlobalThisValue]].
-                Value::from_object(global_this_value(callee_realm))
+                Value::from_object(callee_realm.global_environment().global_this_value())
             }
             // b. Else,
             else {

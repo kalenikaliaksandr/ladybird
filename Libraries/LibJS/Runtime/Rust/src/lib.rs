@@ -18,6 +18,7 @@ pub mod build_configuration;
 pub mod bytecode;
 pub mod frontend_host;
 pub mod gc;
+pub mod hash_table;
 pub mod interpreter;
 pub mod layout;
 pub mod layout_forward;

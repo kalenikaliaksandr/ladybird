@@ -128,6 +128,12 @@ impl Realm {
             .expect("the realm has a global environment")
     }
 
+    pub fn set_global_environment(&self, environment: Gc<GlobalEnvironment>) {
+        self.global_environment.set(Some(environment));
+        self.global_declarative_environment
+            .set(Some(environment.declarative_record()));
+    }
+
     pub fn global_declarative_environment(&self) -> Gc<DeclarativeEnvironment> {
         self.global_declarative_environment
             .get()

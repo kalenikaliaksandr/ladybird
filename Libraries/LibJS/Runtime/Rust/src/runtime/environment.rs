@@ -31,7 +31,9 @@ use crate::layout::value::Value;
 use crate::runtime::completion::ThrowCompletionOr;
 use crate::runtime::declarative_environment::DECLARATIVE_ENVIRONMENT_METHODS;
 use crate::runtime::function_environment::FUNCTION_ENVIRONMENT_METHODS;
+use crate::runtime::global_environment::GLOBAL_ENVIRONMENT_METHODS;
 use crate::runtime::module_environment::MODULE_ENVIRONMENT_METHODS;
+use crate::runtime::object_environment::OBJECT_ENVIRONMENT_METHODS;
 use libjs_abi::value as nan_box;
 
 /// Mirrors JS::ThisBindingStatus, the [[ThisBindingStatus]] of a function Environment Record. C++ keeps it in
@@ -139,6 +141,8 @@ impl Environment {
             ClassId::DeclarativeEnvironment => &DECLARATIVE_ENVIRONMENT_METHODS,
             ClassId::FunctionEnvironment => &FUNCTION_ENVIRONMENT_METHODS,
             ClassId::ModuleEnvironment => &MODULE_ENVIRONMENT_METHODS,
+            ClassId::GlobalEnvironment => &GLOBAL_ENVIRONMENT_METHODS,
+            ClassId::ObjectEnvironment => &OBJECT_ENVIRONMENT_METHODS,
             class_id => unreachable!("{class_id:?} is not a class of environment"),
         }
     }
