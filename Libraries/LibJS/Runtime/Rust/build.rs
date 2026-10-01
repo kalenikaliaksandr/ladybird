@@ -185,9 +185,10 @@ fn main() {
     assemble_interpreter(&target, &assembly_path);
 }
 
-/// Unit tests that need a live heap link LibGC, AK and LibUnicode from an existing Ladybird build, given as
-/// LIBJS_RUNTIME_TEST_LIBRARY_DIRECTORY, and only build when it is set. Nothing else should set it, since the
-/// libraries are then linked into whatever cargo links.
+/// The unit tests link LibGC, AK and LibUnicode from an existing Ladybird build, given as
+/// LIBJS_RUNTIME_TEST_LIBRARY_DIRECTORY; the runtime's exported slow paths need them, so without it the tests do not
+/// link. Tests that need a live heap only build when it is set. Nothing else should set it, since the libraries are
+/// then linked into whatever cargo links.
 fn link_tests_against_prebuilt_libraries() {
     println!("cargo::rustc-check-cfg=cfg(libjs_runtime_tests_with_libgc)");
     println!("cargo:rerun-if-env-changed=LIBJS_RUNTIME_TEST_LIBRARY_DIRECTORY");
