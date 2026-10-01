@@ -10,7 +10,6 @@ use core::ops::Deref;
 use libjs_runtime_macros::Trace;
 
 use crate::gc::class::{Finalize, GcCell, define_cell};
-use crate::interpreter::runtime_functions::unimplemented_runtime_function;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
 use crate::layout::function_object::{EcmascriptFunctionObject, FunctionObject};
@@ -76,11 +75,6 @@ fn home_object(function: Gc<EcmascriptFunctionObject>) -> Option<Gc<Object>> {
     unsafe { function.as_non_null().as_ref() }.home_object.get()
 }
 
-/// The [[GetPrototypeOf]] internal method of an object, which the object model provides.
-fn object_internal_get_prototype_of(_vm: &Vm, _object: Gc<Object>) -> ThrowCompletionOr<Option<Gc<Object>>> {
-    unimplemented_runtime_function("Object::internal_get_prototype_of, for GetSuperBase", 0)
-}
-
 impl FunctionEnvironment {
     pub fn create(vm: &Vm, outer_environment: Option<Gc<Environment>>) -> Gc<FunctionEnvironment> {
         vm.heap().allocate(FunctionEnvironment {
@@ -137,7 +131,9 @@ impl FunctionEnvironment {
         // 3. Assert: Type(home) is Object.
 
         // 4. Return ? home.[[GetPrototypeOf]]().
-        Ok(object_internal_get_prototype_of(vm, home_object)?.map_or(Value::NULL, Value::from_object))
+        Ok(home_object
+            .internal_get_prototype_of(vm)?
+            .map_or(Value::NULL, Value::from_object))
     }
 
     // 9.1.1.3.2 HasThisBinding ( ), https://tc39.es/ecma262/#sec-function-environment-records-hasthisbinding

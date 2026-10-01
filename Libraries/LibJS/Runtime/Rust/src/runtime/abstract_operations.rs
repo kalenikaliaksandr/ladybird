@@ -644,14 +644,6 @@ pub fn add_disposable_resource(
     Ok(())
 }
 
-/// Value::to_string_without_side_effects, which error messages show values with.
-fn value_to_string_without_side_effects(_value: Value) -> String {
-    unimplemented_runtime_function(
-        "Value::to_string_without_side_effects, for a CreateDisposableResource error",
-        0,
-    )
-}
-
 // 2.1.5 CreateDisposableResource ( V, hint [ , method ] ), https://tc39.es/proposal-explicit-resource-management/#sec-createdisposableresource
 pub fn create_disposable_resource(
     vm: &Vm,
@@ -669,11 +661,7 @@ pub fn create_disposable_resource(
     if method.is_none() && !value.is_nullish() {
         // i. If V is not an Object, throw a TypeError exception.
         if !value.is_object() {
-            return vm.throw_completion(
-                ErrorKind::TypeError,
-                ErrorType::NotAnObject,
-                &[&value_to_string_without_side_effects(value)],
-            );
+            return vm.throw_completion(ErrorKind::TypeError, ErrorType::NotAnObject, &[&value]);
         }
 
         // ii. Set method to ? GetDisposeMethod(V, hint).
@@ -681,11 +669,7 @@ pub fn create_disposable_resource(
 
         // iii. If method is undefined, throw a TypeError exception.
         if method.is_none() {
-            return vm.throw_completion(
-                ErrorKind::TypeError,
-                ErrorType::NoDisposeMethod,
-                &[&value_to_string_without_side_effects(value)],
-            );
+            return vm.throw_completion(ErrorKind::TypeError, ErrorType::NoDisposeMethod, &[&value]);
         }
     }
     // 2. Else,
@@ -702,11 +686,38 @@ pub fn create_disposable_resource(
 
 // 2.1.6 GetDisposeMethod ( V, hint ), https://tc39.es/proposal-explicit-resource-management/#sec-getdisposemethod
 pub fn get_dispose_method(
-    _vm: &Vm,
-    _value: Value,
-    _hint: InitializeBindingHint,
+    vm: &Vm,
+    value: Value,
+    hint: InitializeBindingHint,
 ) -> ThrowCompletionOr<Option<Gc<FunctionObject>>> {
-    unimplemented_runtime_function("GetDisposeMethod, which needs GetMethod on objects", 0)
+    // 1. If hint is async-dispose, then
+    if hint == InitializeBindingHint::AsyncDispose {
+        // a. Let method be ? GetMethod(V, @@asyncDispose).
+        let method = value.get_method(vm, &PropertyKey::from(vm.well_known_symbols().async_dispose))?;
+
+        // b. If method is undefined, then
+        if method.is_none() {
+            // i. Set method to ? GetMethod(V, @@dispose).
+            let method = value.get_method(vm, &PropertyKey::from(vm.well_known_symbols().dispose))?;
+
+            // ii. If method is not undefined, then
+            if method.is_some() {
+                // 1. Let closure be a new Abstract Closure with no parameters that captures method and performs the
+                //    following steps when called: ...
+                // 3. Return CreateBuiltinFunction(closure, 0, "", « »).
+                unimplemented_runtime_function("the async-dispose wrapper of a @@dispose method", 0);
+            }
+            return Ok(None);
+        }
+
+        // 3. Return method.
+        return Ok(method);
+    }
+
+    // 2. Else,
+    //    a. Let method be ? GetMethod(V, @@dispose).
+    // 3. Return method.
+    value.get_method(vm, &PropertyKey::from(vm.well_known_symbols().dispose))
 }
 
 #[cfg(all(test, libjs_runtime_tests_with_libgc))]
