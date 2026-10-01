@@ -1058,45 +1058,43 @@ pub unsafe extern "C" fn rust_compile_eval(
             let Some(source_slice) = source_from_raw(source, source_len) else {
                 return std::ptr::null_mut();
             };
-            let mut parser = Parser::new(source_slice, ProgramType::Script);
-            parser.initiated_by_eval = true;
-            parser.in_eval_function_context = in_eval_function_context;
-            parser.flags.allow_super_property_lookup = allow_super_property_lookup;
-            parser.flags.allow_super_constructor_call = allow_super_constructor_call;
-            parser.flags.in_class_field_initializer = in_class_field_initializer;
-
-            let program = parser.parse_program(starts_in_strict_mode);
-
-            if check_errors_with_callback(&mut parser, error_context, error_callback) {
-                return std::ptr::null_mut();
-            }
-
-            let eval_referenced_private_names = parser.eval_referenced_private_names().to_vec();
-
-            parser.scope_collector.analyze(
-                true,
-                &mut parser.arena.identifiers,
-                &parser.arena.strings,
-                &mut parser.arena.scopes,
-            );
+            let context = crate::compile::EvalContext {
+                starts_in_strict_mode,
+                in_eval_function_context,
+                allow_super_property_lookup,
+                allow_super_constructor_call,
+                in_class_field_initializer,
+            };
+            let parsed = match crate::compile::parse_eval(source_slice, context) {
+                Ok(parsed) => parsed,
+                Err(errors) => {
+                    if let Some(callback) = error_callback {
+                        for error in &errors {
+                            report_parse_error(callback, error_context, &error.message, error.line, error.column);
+                        }
+                    }
+                    return std::ptr::null_mut();
+                }
+            };
 
             write_ast_dump_output(
-                &program,
-                &parser.function_table,
-                &parser.arena,
+                &parsed.program,
+                &parsed.function_table,
+                &parsed.arena,
                 ast_dump_output,
                 ast_dump_output_len,
             );
 
-            let (scope_id, is_strict) = if let StatementKind::Program(ref data) = program.inner {
-                (data.scope, data.is_strict_mode)
-            } else {
-                return std::ptr::null_mut();
-            };
-
-            let arena_arc = std::sync::Arc::new(std::mem::take(&mut parser.arena));
+            let crate::compile::ParsedEval {
+                program,
+                function_table,
+                arena: arena_arc,
+                scope_id,
+                is_strict,
+                eval_referenced_private_names,
+            } = parsed;
             let mut generator = new_program_generator(is_strict, source_len);
-            generator.function_table = std::mem::take(&mut parser.function_table);
+            generator.function_table = function_table;
             generator.arena = arena_arc.clone();
             let (exec_ptr, mut function_table) = compile_program_body(
                 generator,
