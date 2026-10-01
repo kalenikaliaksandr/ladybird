@@ -354,7 +354,7 @@ mod tests {
     use crate::runtime::global_environment::test_global_object::set_up_global_object;
     use crate::runtime::print::{PrintContext, print_value};
     use crate::runtime::property_attributes::PropertyAttributes;
-    use crate::runtime::realm::test_realm::{TestRealm, key, own_keys, thrown_message};
+    use crate::runtime::realm::test_realm::{TestRealm, key, own_keys};
 
     /// Runs `source` as a script of `realm` and describes its completion the way the C++ js REPL prints it, with a
     /// thrown error as its name and message. Errors stop the process until realms have error constructors, so only
