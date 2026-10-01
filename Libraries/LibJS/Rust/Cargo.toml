@@ -18,6 +18,10 @@ num-integer = "0.1"
 indexmap = "2"
 foldhash = "0.1"
 
+[features]
+default = []
+allocator = []
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
 
