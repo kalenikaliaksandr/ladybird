@@ -434,7 +434,7 @@ pub unsafe extern "C" fn rust_free_compiled_program(compiled: *mut CompiledProgr
     unsafe {
         fn free_generator_regexes(generator: &mut bytecode::generator::Generator) {
             for regex in generator.compiled_regexes.drain(..) {
-                unsafe { crate::ast::free_compiled_regex(regex) };
+                unsafe { crate::host::free_compiled_regex(regex) };
             }
             for shared_data in &mut generator.shared_function_data {
                 if let Some(precompiled) = &mut shared_data.precompiled_function {
