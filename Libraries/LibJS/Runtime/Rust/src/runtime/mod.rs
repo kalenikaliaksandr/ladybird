@@ -8,13 +8,17 @@
 
 pub mod accessor;
 pub mod big_int;
+pub mod big_int_algorithms;
 pub mod common_property_names;
 pub mod completion;
+pub mod number_prototype_algorithms;
 pub mod primitive_string;
 pub mod print;
 pub mod property_attributes;
 pub mod property_descriptor;
 pub mod property_key;
 pub mod regexp_object;
+pub mod string_conversions;
 pub mod symbol;
 pub mod value;
+pub mod value_conversions;
