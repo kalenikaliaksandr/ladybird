@@ -15,6 +15,7 @@ use crate::interpreter::vm::Vm;
 use crate::parser_error::ParserError;
 use crate::runtime::print::{PrintContext, print_value};
 use crate::script::Script;
+use crate::utf16::utf16_from_wtf8;
 use libjs_rust::ast::ProgramType;
 use libjs_rust::compile::parse;
 
@@ -51,22 +52,24 @@ fn parse_options(arguments: &[String]) -> Result<Options, String> {
     Ok(options)
 }
 
-fn read_source(options: &Options) -> Result<String, String> {
+/// The script's code units. Like AK's Utf16String::from_utf8() in the C++ js, this stops the process for a file that is
+/// not valid UTF-8.
+fn read_source(options: &Options) -> Result<Vec<u16>, String> {
     if let Some(source) = &options.script_source {
-        return Ok(source.clone());
+        return Ok(source.encode_utf16().collect());
     }
     if options.script_paths.is_empty() {
         return Err("no script given".to_string());
     }
-    let mut source = String::new();
+    let mut source = Vec::new();
     for path in &options.script_paths {
         let bytes = std::fs::read(path).map_err(|error| format!("{path}: {error}"))?;
         if !source.is_empty() {
-            source.push('\n');
+            source.push(b'\n');
         }
-        source.push_str(&String::from_utf8_lossy(&bytes));
+        source.extend_from_slice(&bytes);
     }
-    Ok(source)
+    Ok(utf16_from_wtf8(&source).unwrap_or_else(|| panic!("The script is not valid UTF-8")))
 }
 
 fn report_parse_errors(output: &mut impl Write, errors: &[ParserError]) {
@@ -83,7 +86,6 @@ fn run(options: &Options, output: &mut impl Write) -> c_int {
             return 1;
         }
     };
-    let source: Vec<u16> = source.encode_utf16().collect();
     let program_type = if options.as_module {
         ProgramType::Module
     } else {
