@@ -1713,12 +1713,10 @@ mod tests {
     fn strings_and_their_prototype_answer_property_reads() {
         let vm = Vm::create();
         let test_realm = TestRealm::new(&vm);
-        let string_prototype = test_realm.object();
+        let string_prototype = test_realm.realm.string_prototype(&vm);
         string_prototype
             .set(&vm, &key("shared"), int(5), ShouldThrowExceptions::Yes)
             .must();
-        let intrinsics = &test_realm.realm.storage.test_intrinsics;
-        intrinsics.string_prototype.set(Some(string_prototype));
         let result = run_case(
             &vm,
             &test_realm,
@@ -1982,7 +1980,7 @@ mod tests {
                 "{message}"
             );
             assert_eq!(delete(true, 1), Value::TRUE);
-            assert!(object.storage_get(&key("y")).is_none());
+            assert!(object.storage_get(&vm, &key("y")).is_none());
 
             let instruction = op::DeleteByValue {
                 header: header(true),

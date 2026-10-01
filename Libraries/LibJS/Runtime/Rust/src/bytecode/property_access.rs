@@ -236,19 +236,19 @@ pub fn base_object_for_get_impl(vm: &Vm, base_value: Value) -> Option<Gc<Object>
         .current_realm()
         .expect("there is a current realm to find the prototype of a primitive in");
     if base_value.is_string() {
-        return Some(realm.string_prototype());
+        return Some(realm.string_prototype(vm));
     }
     if base_value.is_number() {
-        return Some(realm.number_prototype());
+        return Some(realm.number_prototype(vm));
     }
     if base_value.is_boolean() {
-        return Some(realm.boolean_prototype());
+        return Some(realm.boolean_prototype(vm));
     }
     if base_value.is_bigint() {
-        return Some(realm.bigint_prototype());
+        return Some(realm.bigint_prototype(vm));
     }
     if base_value.is_symbol() {
-        return Some(realm.symbol_prototype());
+        return Some(realm.symbol_prototype(vm));
     }
 
     None
@@ -965,7 +965,7 @@ mod tests {
         let c = test_realm.object();
         c.internal_prevent_extensions(&vm).must();
         put_cached(&vm, c, "x", int(5), PutKind::Normal, &cache);
-        assert!(c.storage_get(&key("x")).is_none());
+        assert!(c.storage_get(&vm, &key("x")).is_none());
         let strict_failure = thrown_message(|| {
             let c = Value::from_object(c);
             put_by_property_key(
@@ -994,17 +994,17 @@ mod tests {
         let d = Object::create(&vm, test_realm.realm, Some(prototype));
         let accessor_cache = PropertyLookupCache::new();
         put_cached(&vm, d, "y", int(1), PutKind::Normal, &accessor_cache);
-        assert!(accessor_cache.first_entry().is_none() && d.storage_get(&key("y")).is_none());
+        assert!(accessor_cache.first_entry().is_none() && d.storage_get(&vm, &key("y")).is_none());
 
         // An own put defines the property over the accessor and caches the addition.
         put_cached(&vm, d, "y", int(1), PutKind::Own, &accessor_cache);
-        assert_eq!(d.storage_get(&key("y")).unwrap().value, int(1));
+        assert_eq!(d.storage_get(&vm, &key("y")).unwrap().value, int(1));
         let entry = accessor_cache.first_entry().unwrap();
         assert_eq!(entry.entry_type, PropertyLookupCacheEntryType::AddOwnProperty);
         let e = Object::create(&vm, test_realm.realm, Some(prototype));
         put_cached(&vm, e, "y", int(2), PutKind::Own, &accessor_cache);
         assert!(e.shape() == d.shape());
-        assert_eq!(e.storage_get(&key("y")).unwrap().value, int(2));
+        assert_eq!(e.storage_get(&vm, &key("y")).unwrap().value, int(2));
     }
 
     #[test]

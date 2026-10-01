@@ -92,8 +92,19 @@ impl Script {
 
     /// Compiles a script the caller parsed without errors from `source`.
     pub fn compile_parsed_program(vm: &Vm, parsed: ParsedProgram, source: &[u16], realm: Gc<Realm>) -> Gc<Script> {
+        Self::compile_parsed_program_with_filename(vm, parsed, source, realm, ak::Utf16String::default())
+    }
+
+    /// Compiles a script the caller parsed without errors from `source`, which came from `filename`.
+    pub fn compile_parsed_program_with_filename(
+        vm: &Vm,
+        parsed: ParsedProgram,
+        source: &[u16],
+        realm: Gc<Realm>,
+        filename: ak::Utf16String,
+    ) -> Gc<Script> {
         assert!(parsed.program_type() == ProgramType::Script && !parsed.has_errors());
-        let source_code = SourceCode::create(ak::Utf16String::default(), ak::Utf16String::from_utf16(source));
+        let source_code = SourceCode::create(filename, ak::Utf16String::from_utf16(source));
         Self::create(vm, realm, compile_script(parsed, source.len()), source_code)
     }
 
@@ -357,42 +368,41 @@ mod tests {
     use crate::runtime::realm::test_realm::{TestRealm, key, own_keys};
 
     /// Runs `source` as a script of `realm` and describes its completion the way the C++ js REPL prints it, with a
-    /// thrown error as its name and message. Errors stop the process until realms have error constructors, so only
-    /// GlobalDeclarationInstantiation, which runs before the script's code, may throw here.
+    /// thrown error as its name and message.
     fn evaluate(vm: &Vm, realm: Gc<Realm>, source: &str) -> String {
         let source: Vec<u16> = source.encode_utf16().collect();
         let script = Script::parse(vm, &source, realm).expect("the script parses");
-        let previous_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let completion = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| vm.run_script(script, None)));
-        std::panic::set_hook(previous_hook);
-        let completion = match completion {
-            Ok(completion) => completion,
-            Err(payload) => {
-                let message = payload.downcast_ref::<String>().cloned().unwrap_or_default();
-                return describe_trapped_error(&message);
-            }
+        let value = match vm.run_script(script, None) {
+            Ok(value) => value,
+            Err(throw) => return describe_thrown_error(vm, throw.value()),
         };
         let mut text = String::new();
         let context = PrintContext {
             strip_ansi: true,
             raw_strings: false,
         };
-        print_value(&mut text, &context, completion.must());
+        print_value(&mut text, &context, value);
         text
     }
 
-    /// "Kind: message" of the error a trapped throw would have created.
-    fn describe_trapped_error(message: &str) -> String {
-        let error = message
-            .split("creating a ")
-            .nth(1)
-            .unwrap_or_else(|| panic!("the script stopped without throwing: {message}"));
-        let (kind, message) = error
-            .split_once(" with the message \"")
-            .expect("the error has a message");
-        let message = message.rsplit_once("\" (pc").expect("the message is quoted").0;
-        format!("{kind}: {message}")
+    /// "Name: message" of a thrown error.
+    fn describe_thrown_error(vm: &Vm, thrown: Value) -> String {
+        assert!(
+            thrown.is_object() && thrown.as_object().has_error_data(),
+            "the script threw a value that is not an error"
+        );
+        let error = thrown.as_object();
+        let property = |name| {
+            error
+                .get_without_side_effects(vm, name)
+                .to_utf16_string_without_side_effects()
+        };
+        let (name, message) = (property(&vm.names.name), property(&vm.names.message));
+        format!(
+            "{}: {}",
+            crate::utf16::Utf16View::of_string(&name).to_utf8(),
+            crate::utf16::Utf16View::of_string(&message).to_utf8()
+        )
     }
 
     fn evaluate_session(vm: &Vm, realm: Gc<Realm>, session: &[(&str, &str)]) {
