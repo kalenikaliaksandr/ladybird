@@ -17,11 +17,11 @@
 use crate::ast;
 use crate::ast::StatementKind;
 use crate::bytecode;
+use crate::bytecode::executable::ExecutableData;
 use crate::bytecode::generator::PendingSharedFunctionData;
 use crate::parser::ParseError;
 use crate::parser::ProgramType;
 use std::collections::HashSet;
-use std::ffi::c_void;
 
 // Compile-time assertion: `ParsedProgram` travels between the parse worker
 // thread and the main thread, so it must be `Send`. After the StringId and
@@ -51,6 +51,7 @@ pub struct ParsedProgram {
 }
 
 pub struct CompiledProgram {
+    /// Its function table holds the functions that codegen left for declaration instantiation.
     pub(crate) parsed: ParsedProgram,
     pub(crate) bytecode: CompiledProgramBytecode,
     pub(crate) declaration_functions: Vec<PendingSharedFunctionData>,
@@ -58,18 +59,13 @@ pub struct CompiledProgram {
 }
 
 pub(crate) enum CompiledProgramBytecode {
-    Program(CompiledBytecode),
-    AsyncModule(CompiledBytecode),
+    Program(ExecutableData),
+    AsyncModule(ExecutableData),
 }
 
-pub(crate) struct CompiledBytecode {
-    pub(crate) generator: bytecode::generator::Generator,
-    pub(crate) assembled: bytecode::generator::AssembledBytecode,
-}
-
-// SAFETY: `CompiledProgram` owns codegen state that uses `Rc`/`RefCell` and
-// raw VM pointers; it is created on the parse-worker thread and consumed (or
-// freed) on the main thread, never accessed concurrently.
+// SAFETY: `CompiledProgram` owns raw handles of compiled regular expressions,
+// which Rust never dereferences; it is created on the parse-worker thread and
+// consumed (or freed) on the main thread, never accessed concurrently.
 unsafe impl Send for CompiledProgram {}
 
 /// Convert scope local variables to generator LocalVariable format.
@@ -88,17 +84,10 @@ fn convert_local_variables(scope: &ast::ScopeData) -> Vec<bytecode::generator::L
 }
 
 /// Create a Generator configured for program-level compilation.
-pub(crate) fn new_program_generator(
-    strict: bool,
-    vm_ptr: *mut c_void,
-    source_code_ptr: *const c_void,
-    source_len: usize,
-) -> bytecode::generator::Generator {
+pub(crate) fn new_program_generator(strict: bool, source_len: usize) -> bytecode::generator::Generator {
     let mut generator = bytecode::generator::Generator::new();
     generator.strict = strict;
     generator.must_propagate_completion = true;
-    generator.vm_ptr = vm_ptr;
-    generator.source_code_ptr = source_code_ptr;
     generator.source_len = source_len;
     generator
 }
@@ -340,17 +329,13 @@ pub(crate) fn compile_parsed_program_off_thread_impl(
             function_precompile_mode,
         );
         precompile_functions(&mut generator, function_precompile_mode);
+        parsed.function_table = std::mem::take(&mut generator.function_table);
         (
-            CompiledProgramBytecode::AsyncModule(CompiledBytecode { generator, assembled }),
+            CompiledProgramBytecode::AsyncModule(ExecutableData::new(generator, assembled)),
             declaration_functions,
         )
     } else {
-        let mut generator = new_program_generator(
-            parsed.is_strict_mode,
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            source_len,
-        );
+        let mut generator = new_program_generator(parsed.is_strict_mode, source_len);
         generator.arena = arena_arc;
         generator.eager_compile_direct_iifes = true;
         generator.function_table = std::mem::take(&mut parsed.function_table);
@@ -362,8 +347,9 @@ pub(crate) fn compile_parsed_program_off_thread_impl(
             function_precompile_mode,
         );
         precompile_functions(&mut generator, function_precompile_mode);
+        parsed.function_table = std::mem::take(&mut generator.function_table);
         (
-            CompiledProgramBytecode::Program(CompiledBytecode { generator, assembled }),
+            CompiledProgramBytecode::Program(ExecutableData::new(generator, assembled)),
             declaration_functions,
         )
     };
@@ -826,8 +812,7 @@ pub(crate) fn compile_function_payload_to_bytecode(
     (
         function_data,
         Box::new(bytecode::generator::PrecompiledFunction {
-            generator: Box::new(generator),
-            assembled,
+            executable: ExecutableData::new(generator, assembled),
             metadata: sfd_metadata,
         }),
     )

@@ -13,7 +13,8 @@ use crate::ast;
 use crate::ast::StatementKind;
 use crate::ast_dump;
 use crate::bytecode;
-use crate::compile::CompiledBytecode;
+use crate::bytecode::executable::ExecutableData;
+use crate::bytecode::generator::PrecompiledFunction;
 use crate::compile::CompiledProgram;
 use crate::compile::CompiledProgramBytecode;
 use crate::compile::FunctionPrecompileMode;
@@ -164,46 +165,24 @@ fn check_errors_with_callback(
     false
 }
 
-unsafe fn create_executable_from_compiled_bytecode(
-    bytecode: &mut CompiledBytecode,
-    vm_ptr: *mut c_void,
-    source_code_ptr: *const c_void,
-    shared_function_data_owner: ffi::SharedFunctionDataOwner,
-) -> *mut c_void {
-    unsafe {
-        bytecode.generator.vm_ptr = vm_ptr;
-        bytecode.generator.source_code_ptr = source_code_ptr;
-        ffi::create_executable(
-            &mut bytecode.generator,
-            &bytecode.assembled,
-            vm_ptr,
-            source_code_ptr,
-            shared_function_data_owner,
-        )
-    }
-}
-
 /// Shared compilation pipeline: local variable setup → codegen → assemble → create Executable.
 ///
-/// Called by program-level entry points that compile synchronously on the main thread.
+/// Called by program-level entry points that compile synchronously on the main thread. Also returns the functions
+/// that codegen left in the function table for declaration instantiation.
 unsafe fn compile_program_body(
-    generator: &mut bytecode::generator::Generator,
+    mut generator: bytecode::generator::Generator,
     program: &ast::Statement,
     scope_id: ast::ScopeId,
     vm_ptr: *mut c_void,
     source_code_ptr: *const c_void,
     shared_function_data_owner: ffi::SharedFunctionDataOwner,
-) -> *mut c_void {
-    let assembled = compile_program_body_to_bytecode(generator, program, scope_id);
-    unsafe {
-        ffi::create_executable(
-            generator,
-            &assembled,
-            vm_ptr,
-            source_code_ptr,
-            shared_function_data_owner,
-        )
-    }
+) -> (*mut c_void, ast::FunctionTable) {
+    let assembled = compile_program_body_to_bytecode(&mut generator, program, scope_id);
+    let function_table = std::mem::take(&mut generator.function_table);
+    let executable = ExecutableData::new(generator, assembled);
+    let executable_ptr =
+        unsafe { ffi::create_executable(executable, vm_ptr, source_code_ptr, shared_function_data_owner) };
+    (executable_ptr, function_table)
 }
 
 // =============================================================================
@@ -432,26 +411,26 @@ pub unsafe extern "C" fn rust_compile_parsed_program_fully_off_thread(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_free_compiled_program(compiled: *mut CompiledProgram) {
     unsafe {
-        fn free_generator_regexes(generator: &mut bytecode::generator::Generator) {
-            for regex in generator.compiled_regexes.drain(..) {
+        fn free_executable_regexes(executable: &mut ExecutableData) {
+            for regex in executable.compiled_regexes.drain(..) {
                 unsafe { crate::host::free_compiled_regex(regex) };
             }
-            for shared_data in &mut generator.shared_function_data {
+            for shared_data in &mut executable.shared_function_data {
                 if let Some(precompiled) = &mut shared_data.precompiled_function {
-                    free_generator_regexes(&mut precompiled.generator);
+                    free_executable_regexes(&mut precompiled.executable);
                 }
             }
         }
 
         let mut compiled = Box::from_raw(compiled);
         match &mut compiled.bytecode {
-            CompiledProgramBytecode::Program(bytecode) | CompiledProgramBytecode::AsyncModule(bytecode) => {
-                free_generator_regexes(&mut bytecode.generator);
+            CompiledProgramBytecode::Program(executable) | CompiledProgramBytecode::AsyncModule(executable) => {
+                free_executable_regexes(executable);
             }
         }
         for declaration in &mut compiled.declaration_functions {
             if let Some(precompiled) = &mut declaration.precompiled_function {
-                free_generator_regexes(&mut precompiled.generator);
+                free_executable_regexes(&mut precompiled.executable);
             }
         }
     }
@@ -470,25 +449,24 @@ pub unsafe extern "C" fn rust_collect_compiled_program_breakpoint_positions(
     callback: unsafe extern "C" fn(context: *mut c_void, line: u32, column: u32),
 ) {
     fn collect_precompiled_function(
-        precompiled: &bytecode::generator::PrecompiledFunction,
+        precompiled: &PrecompiledFunction,
         context: *mut c_void,
         callback: unsafe extern "C" fn(context: *mut c_void, line: u32, column: u32),
     ) {
-        collect_bytecode(&precompiled.generator, &precompiled.assembled, context, callback);
+        collect_bytecode(&precompiled.executable, context, callback);
     }
 
     fn collect_bytecode(
-        generator: &bytecode::generator::Generator,
-        assembled: &bytecode::generator::AssembledBytecode,
+        executable: &ExecutableData,
         context: *mut c_void,
         callback: unsafe extern "C" fn(context: *mut c_void, line: u32, column: u32),
     ) {
-        for entry in &assembled.source_map {
+        for entry in &executable.source_map {
             if entry.line != 0 {
                 unsafe { callback(context, entry.line, entry.column) };
             }
         }
-        for shared_data in &generator.shared_function_data {
+        for shared_data in &executable.shared_function_data {
             if let Some(precompiled) = &shared_data.precompiled_function {
                 collect_precompiled_function(precompiled, context, callback);
             }
@@ -502,8 +480,8 @@ pub unsafe extern "C" fn rust_collect_compiled_program_breakpoint_positions(
             }
             let compiled = &*compiled;
             match &compiled.bytecode {
-                CompiledProgramBytecode::Program(bytecode) | CompiledProgramBytecode::AsyncModule(bytecode) => {
-                    collect_bytecode(&bytecode.generator, &bytecode.assembled, context, callback);
+                CompiledProgramBytecode::Program(executable) | CompiledProgramBytecode::AsyncModule(executable) => {
+                    collect_bytecode(executable, context, callback);
                 }
             }
             for declaration in &compiled.declaration_functions {
@@ -922,13 +900,9 @@ pub unsafe extern "C" fn rust_materialize_precompiled_bytecode_function(
             if precompiled_executable.is_null() {
                 return std::ptr::null_mut();
             }
-            let mut precompiled =
-                Box::from_raw(precompiled_executable as *mut bytecode::generator::PrecompiledFunction);
-            precompiled.generator.vm_ptr = vm_ptr;
-            precompiled.generator.source_code_ptr = source_code_ptr;
+            let precompiled = Box::from_raw(precompiled_executable as *mut PrecompiledFunction);
             ffi::create_executable(
-                &mut precompiled.generator,
-                &precompiled.assembled,
+                precompiled.executable,
                 vm_ptr,
                 source_code_ptr,
                 if shared_function_data_list_ptr.is_null() {
@@ -951,9 +925,7 @@ pub unsafe extern "C" fn rust_free_precompiled_bytecode_executable(precompiled_e
     unsafe {
         abort_on_panic(|| {
             if !precompiled_executable.is_null() {
-                drop(Box::from_raw(
-                    precompiled_executable as *mut bytecode::generator::PrecompiledFunction,
-                ));
+                drop(Box::from_raw(precompiled_executable as *mut PrecompiledFunction));
             }
         });
     }
@@ -1008,7 +980,7 @@ pub unsafe extern "C" fn rust_compile_parsed_script(
         abort_on_panic(|| {
             let mut parsed = Box::from_raw(parsed);
 
-            let mut generator = new_program_generator(parsed.is_strict_mode, vm_ptr, source_code_ptr, source_len);
+            let mut generator = new_program_generator(parsed.is_strict_mode, source_len);
             generator.function_table = std::mem::take(&mut parsed.function_table);
             generator.arena = parsed.arena.clone();
             let shared_function_data_context = ffi::SharedFunctionDataCreationContext {
@@ -1016,8 +988,8 @@ pub unsafe extern "C" fn rust_compile_parsed_script(
                 source_code_ptr,
                 owner: ffi::SharedFunctionDataOwner::List(shared_function_data_list_ptr),
             };
-            let exec_ptr = compile_program_body(
-                &mut generator,
+            let (exec_ptr, mut function_table) = compile_program_body(
+                generator,
                 &parsed.program,
                 parsed.scope_ref,
                 vm_ptr,
@@ -1033,7 +1005,7 @@ pub unsafe extern "C" fn rust_compile_parsed_script(
                 parsed.is_strict_mode,
                 shared_function_data_context,
                 gdi_context,
-                &mut generator.function_table,
+                &mut function_table,
                 &parsed.arena,
             );
 
@@ -1063,8 +1035,10 @@ pub unsafe extern "C" fn rust_materialize_compiled_script(
                 return std::ptr::null_mut();
             }
 
-            let mut compiled = Box::from_raw(compiled);
-            let CompiledProgramBytecode::Program(ref mut bytecode) = compiled.bytecode else {
+            let CompiledProgram {
+                mut parsed, bytecode, ..
+            } = *Box::from_raw(compiled);
+            let CompiledProgramBytecode::Program(executable) = bytecode else {
                 return std::ptr::null_mut();
             };
 
@@ -1073,23 +1047,19 @@ pub unsafe extern "C" fn rust_materialize_compiled_script(
                 source_code_ptr,
                 owner: ffi::SharedFunctionDataOwner::List(shared_function_data_list_ptr),
             };
-            let exec_ptr = create_executable_from_compiled_bytecode(
-                bytecode,
-                vm_ptr,
-                source_code_ptr,
-                shared_function_data_context.owner,
-            );
+            let exec_ptr =
+                ffi::create_executable(executable, vm_ptr, source_code_ptr, shared_function_data_context.owner);
             if exec_ptr.is_null() {
                 return std::ptr::null_mut();
             }
 
             extract_script_gdi(
-                &compiled.parsed.arena.scopes[compiled.parsed.scope_ref],
-                compiled.parsed.is_strict_mode,
+                &parsed.arena.scopes[parsed.scope_ref],
+                parsed.is_strict_mode,
                 shared_function_data_context,
                 gdi_context,
-                &mut bytecode.generator.function_table,
-                &compiled.parsed.arena,
+                &mut parsed.function_table,
+                &parsed.arena,
             );
 
             exec_ptr
@@ -1172,11 +1142,11 @@ pub unsafe extern "C" fn rust_compile_eval(
             };
 
             let arena_arc = std::sync::Arc::new(std::mem::take(&mut parser.arena));
-            let mut generator = new_program_generator(is_strict, vm_ptr, source_code_ptr, source_len);
+            let mut generator = new_program_generator(is_strict, source_len);
             generator.function_table = std::mem::take(&mut parser.function_table);
             generator.arena = arena_arc.clone();
-            let exec_ptr = compile_program_body(
-                &mut generator,
+            let (exec_ptr, mut function_table) = compile_program_body(
+                generator,
                 &program,
                 scope_id,
                 vm_ptr,
@@ -1193,7 +1163,7 @@ pub unsafe extern "C" fn rust_compile_eval(
                 vm_ptr,
                 source_code_ptr,
                 gdi_context,
-                &mut generator.function_table,
+                &mut function_table,
                 &arena_arc,
                 &eval_referenced_private_names,
             );
@@ -1591,17 +1561,18 @@ pub unsafe extern "C" fn rust_compile_parsed_module(
                 if !tla_executable_out.is_null() {
                     *tla_executable_out = std::ptr::null_mut();
                 }
-                let mut generator = new_program_generator(true, vm_ptr, source_code_ptr, source_len);
+                let mut generator = new_program_generator(true, source_len);
                 generator.function_table = std::mem::take(&mut parsed.function_table);
                 generator.arena = parsed.arena.clone();
-                compile_program_body(
-                    &mut generator,
+                let (exec_ptr, _) = compile_program_body(
+                    generator,
                     &parsed.program,
                     parsed.scope_ref,
                     vm_ptr,
                     source_code_ptr,
                     shared_function_data_context.owner,
-                )
+                );
+                exec_ptr
             }
         })
     }
@@ -1631,7 +1602,9 @@ pub unsafe extern "C" fn rust_materialize_compiled_module(
                 return std::ptr::null_mut();
             }
 
-            let mut compiled = Box::from_raw(compiled);
+            let CompiledProgram {
+                mut parsed, bytecode, ..
+            } = *Box::from_raw(compiled);
             let cb = &*callbacks;
             let shared_function_data_context = ffi::SharedFunctionDataCreationContext {
                 vm_ptr,
@@ -1639,53 +1612,33 @@ pub unsafe extern "C" fn rust_materialize_compiled_module(
                 owner: ffi::SharedFunctionDataOwner::List(shared_function_data_list_ptr),
             };
 
-            (cb.set_has_top_level_await)(module_context, compiled.parsed.has_top_level_await);
-            extract_module_metadata(
-                &compiled.parsed.arena.scopes[compiled.parsed.scope_ref],
-                module_context,
-                cb,
-            );
+            (cb.set_has_top_level_await)(module_context, parsed.has_top_level_await);
+            extract_module_metadata(&parsed.arena.scopes[parsed.scope_ref], module_context, cb);
 
-            let bytecode = match &mut compiled.bytecode {
-                CompiledProgramBytecode::Program(bytecode) | CompiledProgramBytecode::AsyncModule(bytecode) => bytecode,
-            };
             extract_module_declarations(
-                &compiled.parsed.arena.scopes[compiled.parsed.scope_ref],
+                &parsed.arena.scopes[parsed.scope_ref],
                 shared_function_data_context,
                 module_context,
                 cb,
-                &mut bytecode.generator.function_table,
-                &compiled.parsed.arena,
+                &mut parsed.function_table,
+                &parsed.arena,
             );
-            extract_requested_modules(
-                &compiled.parsed.arena.scopes[compiled.parsed.scope_ref],
-                module_context,
-                cb,
-            );
+            extract_requested_modules(&parsed.arena.scopes[parsed.scope_ref], module_context, cb);
 
-            match &mut compiled.bytecode {
-                CompiledProgramBytecode::AsyncModule(bytecode) => {
-                    let exec_ptr = create_executable_from_compiled_bytecode(
-                        bytecode,
-                        vm_ptr,
-                        source_code_ptr,
-                        shared_function_data_context.owner,
-                    );
+            match bytecode {
+                CompiledProgramBytecode::AsyncModule(executable) => {
+                    let exec_ptr =
+                        ffi::create_executable(executable, vm_ptr, source_code_ptr, shared_function_data_context.owner);
                     if !tla_executable_out.is_null() {
                         *tla_executable_out = exec_ptr;
                     }
                     std::ptr::null_mut()
                 }
-                CompiledProgramBytecode::Program(bytecode) => {
+                CompiledProgramBytecode::Program(executable) => {
                     if !tla_executable_out.is_null() {
                         *tla_executable_out = std::ptr::null_mut();
                     }
-                    create_executable_from_compiled_bytecode(
-                        bytecode,
-                        vm_ptr,
-                        source_code_ptr,
-                        shared_function_data_context.owner,
-                    )
+                    ffi::create_executable(executable, vm_ptr, source_code_ptr, shared_function_data_context.owner)
                 }
             }
         })
@@ -2186,13 +2139,10 @@ unsafe fn compile_module_as_async(
     unsafe {
         let mut generator = new_module_async_generator(source_len, function_table);
         generator.arena = arena;
-        generator.vm_ptr = shared_function_data_context.vm_ptr;
-        generator.source_code_ptr = shared_function_data_context.source_code_ptr;
 
         let assembled = compile_module_as_async_to_bytecode(program, scope_id, &mut generator);
         ffi::create_executable(
-            &mut generator,
-            &assembled,
+            ExecutableData::new(generator, assembled),
             shared_function_data_context.vm_ptr,
             shared_function_data_context.source_code_ptr,
             shared_function_data_context.owner,
@@ -2512,7 +2462,7 @@ pub unsafe extern "C" fn rust_compile_function(
             }
             let payload = Box::from_raw(rust_function_ast as *mut ast::FunctionPayload);
             let arena = payload.arena.clone();
-            let (_function_data, mut precompiled) = compile_function_payload_to_bytecode(
+            let (_function_data, precompiled) = compile_function_payload_to_bytecode(
                 *payload,
                 source_len,
                 builtin_abstract_operations_enabled,
@@ -2520,14 +2470,10 @@ pub unsafe extern "C" fn rust_compile_function(
                 FunctionPrecompileMode::EagerOnly,
             );
 
-            precompiled.generator.vm_ptr = vm_ptr;
-            precompiled.generator.source_code_ptr = source_code_ptr;
-
             write_sfd_metadata(sfd_ptr, &precompiled.metadata);
 
             ffi::create_executable(
-                &mut precompiled.generator,
-                &precompiled.assembled,
+                precompiled.executable,
                 vm_ptr,
                 source_code_ptr,
                 if shared_function_data_list_ptr.is_null() {
