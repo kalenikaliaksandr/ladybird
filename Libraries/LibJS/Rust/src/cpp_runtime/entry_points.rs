@@ -18,6 +18,7 @@ use crate::bytecode::generator::PendingSharedFunctionData;
 use crate::bytecode::generator::PrecompiledFunction;
 use crate::compile::CompiledProgram;
 use crate::compile::CompiledProgramBytecode;
+use crate::compile::CompiledScript;
 use crate::compile::EvalDeclarations;
 use crate::compile::FunctionPrecompileMode;
 use crate::compile::ParsedProgram;
@@ -29,16 +30,17 @@ use crate::compile::compile_function_payload_to_bytecode;
 use crate::compile::compile_module_as_async_to_bytecode;
 use crate::compile::compile_parsed_program_off_thread_impl;
 use crate::compile::compile_program_body_to_bytecode;
+use crate::compile::compile_script;
 use crate::compile::for_each_bound_name;
 use crate::compile::module_default_export_binding_name;
 use crate::compile::module_environment_scope;
 use crate::compile::new_module_async_generator;
 use crate::compile::new_program_generator;
+use crate::compile::parse;
 use crate::lexer;
 use crate::parser::Parser;
 use crate::parser::ProgramType;
 use crate::token;
-use crate::u32_from_usize;
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::rc::Rc;
@@ -228,54 +230,12 @@ pub unsafe extern "C" fn rust_parse_program(
                 return std::ptr::null_mut();
             };
 
-            let initial_line_number = if pt == ProgramType::Module && initial_line_number == 0 {
-                1
-            } else {
-                initial_line_number
-            };
-            let mut parser = Parser::new_with_line_offset(source_slice, pt, u32_from_usize(initial_line_number));
-
-            let program = parser.parse_program(false);
-
-            // Collect errors from both parser and scope collector.
-            let mut errors = parser.take_errors();
-            if errors.is_empty() {
-                errors = parser.scope_collector.drain_errors();
-            }
-
-            if errors.is_empty() {
-                parser.scope_collector.analyze(
-                    false,
-                    &mut parser.arena.identifiers,
-                    &parser.arena.strings,
-                    &mut parser.arena.scopes,
-                );
-            }
+            let parsed = parse(source_slice, pt, initial_line_number);
 
             // Dump AST if requested (after scope analysis).
-            if dump_ast && errors.is_empty() {
-                ast_dump::dump_program(&program, use_color, &parser.function_table, &parser.arena);
+            if dump_ast && !parsed.has_errors() {
+                ast_dump::dump_program(&parsed.program, use_color, &parsed.function_table, &parsed.arena);
             }
-
-            let (scope_ref, is_strict, has_tla) = if errors.is_empty()
-                && let StatementKind::Program(ref data) = program.inner
-            {
-                (data.scope, data.is_strict_mode, data.has_top_level_await)
-            } else {
-                (parser.arena.scopes.insert(ast::ScopeData::default()), false, false)
-            };
-
-            let parsed = ParsedProgram {
-                program,
-                function_table: std::mem::take(&mut parser.function_table),
-                arena: std::sync::Arc::new(std::mem::take(&mut parser.arena)),
-                scope_ref,
-                program_type: pt,
-                is_strict_mode: is_strict,
-                has_top_level_await: has_tla,
-                errors,
-                ast_dump: None,
-            };
 
             Box::into_raw(Box::new(parsed))
         })
@@ -951,10 +911,7 @@ pub unsafe extern "C" fn rust_parsed_program_ast_dump(
     output_len: *mut usize,
 ) {
     unsafe {
-        let parsed = &mut *parsed;
-        let dump = parsed.ast_dump.get_or_insert_with(|| {
-            ast_dump::dump_program_to_string(&parsed.program, &parsed.function_table, &parsed.arena).into_bytes()
-        });
+        let dump = (*parsed).ast_dump();
         *output_ptr = dump.as_ptr();
         *output_len = dump.len();
     }
@@ -982,39 +939,25 @@ pub unsafe extern "C" fn rust_compile_parsed_script(
 ) -> *mut c_void {
     unsafe {
         abort_on_panic(|| {
-            let mut parsed = Box::from_raw(parsed);
+            let parsed = Box::from_raw(parsed);
+            let is_strict = parsed.is_strict_mode;
+            let CompiledScript {
+                executable,
+                declarations,
+            } = compile_script(*parsed, source_len);
 
-            let mut generator = new_program_generator(parsed.is_strict_mode, source_len);
-            generator.function_table = std::mem::take(&mut parsed.function_table);
-            generator.arena = parsed.arena.clone();
             let shared_function_data_context = ffi::SharedFunctionDataCreationContext {
                 vm_ptr,
                 source_code_ptr,
                 owner: ffi::SharedFunctionDataOwner::List(shared_function_data_list_ptr),
             };
-            let (exec_ptr, mut function_table) = compile_program_body(
-                generator,
-                &parsed.program,
-                parsed.scope_ref,
-                vm_ptr,
-                source_code_ptr,
-                shared_function_data_context.owner,
-            );
+            let exec_ptr =
+                ffi::create_executable(executable, vm_ptr, source_code_ptr, shared_function_data_context.owner);
             if exec_ptr.is_null() {
                 return std::ptr::null_mut();
             }
 
-            let declarations = collect_script_declarations(
-                &parsed.arena.scopes[parsed.scope_ref],
-                &mut function_table,
-                &parsed.arena,
-            );
-            push_script_declarations(
-                declarations,
-                parsed.is_strict_mode,
-                shared_function_data_context,
-                gdi_context,
-            );
+            push_script_declarations(declarations, is_strict, shared_function_data_context, gdi_context);
 
             exec_ptr
         })
