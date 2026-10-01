@@ -171,3 +171,34 @@ unsafe extern "C" fn gather_roots(context: *mut c_void, visitor: *mut GCVisitor)
     let (vm, mut visitor) = unsafe { (&*context.cast::<Vm>(), Visitor::from_raw(visitor)) };
     vm.gather_roots(&mut visitor);
 }
+
+#[cfg(all(test, libjs_runtime_tests_with_libgc))]
+mod tests {
+    use super::Vm;
+    use crate::bytecode::executable::{Executable, ExecutableCacheCounts};
+    use crate::layout::value::Value;
+
+    #[test]
+    fn allocated_cells_survive_collection_while_rooted_by_the_stack() {
+        let vm = Vm::create();
+        let counts = ExecutableCacheCounts {
+            property_lookup_caches: 1,
+            global_variable_caches: 1,
+            environment_coordinate_caches: 1,
+        };
+        let executable = vm.heap().allocate(Executable::new(
+            vec![0u8; 8].into_boxed_slice(),
+            5,
+            0,
+            0,
+            vec![Value::from_i32(42)].into_boxed_slice(),
+            &counts,
+            true,
+        ));
+        vm.heap().collect_garbage();
+        // SAFETY: The local keeps the executable alive through the collection.
+        let executable_ref = unsafe { executable.as_non_null().as_ref() };
+        assert_eq!(executable_ref.constants()[0], Value::from_i32(42));
+        assert_eq!(executable_ref.registers_and_locals_count(), 5);
+    }
+}
