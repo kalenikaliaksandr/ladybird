@@ -4,16 +4,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+//! The slow paths that create, look up and change bindings, and their helpers.
+
 use core::cell::Cell;
 
 use ak::Utf16FlyString;
 use libjs_abi::EnvironmentMode;
 
-use super::runtime_functions::{
-    Runtime, RuntimeFunctions, SlowPathControl, handle_asm_exception, unimplemented_runtime_function,
-};
-use super::vm::Vm;
-use crate::bytecode::op;
+use crate::interpreter::runtime_functions::unimplemented_runtime_function;
+use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
 use crate::runtime::abstract_operations::new_declarative_environment;
 use crate::runtime::completion::ThrowCompletionOr;
@@ -23,12 +22,6 @@ use crate::runtime::environment_coordinate::EnvironmentCoordinate;
 use crate::runtime::environment_shape::EnvironmentShapeCache;
 use crate::runtime::error::ErrorKind;
 use crate::utf16::Utf16View;
-
-impl RuntimeFunctions for Runtime {
-    fn throw(vm: &Vm, pc: u32, _instruction: &op::Throw, values: &mut op::ThrowValues) -> SlowPathControl {
-        handle_asm_exception(vm, pc, values.src)
-    }
-}
 
 /// The environment `coordinate` refers to from `environment`, if the interpreter may keep finding the binding there:
 /// every environment on the way must be declarative and not open to eval adding bindings.
