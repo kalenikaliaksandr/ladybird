@@ -2312,14 +2312,8 @@ pub unsafe extern "C" fn rust_compile_function(
                 return std::ptr::null_mut();
             }
             let payload = Box::from_raw(rust_function_ast as *mut ast::FunctionPayload);
-            let arena = payload.arena.clone();
-            let (_function_data, precompiled) = compile_function_payload_to_bytecode(
-                *payload,
-                source_len,
-                builtin_abstract_operations_enabled,
-                arena,
-                FunctionPrecompileMode::EagerOnly,
-            );
+            let precompiled =
+                crate::compile::compile_function(payload, source_len, builtin_abstract_operations_enabled);
 
             write_sfd_metadata(sfd_ptr, &precompiled.metadata);
 
