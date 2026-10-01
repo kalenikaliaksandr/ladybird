@@ -994,7 +994,7 @@ fn call_with_values(
     kind: crate::target::backend::HelperCallKind,
 ) -> Result<(), CompileError> {
     use super::Condition;
-    use crate::metadata::ParameterMode;
+    use crate::metadata::{ParameterMode, SlowPathAbi};
     use crate::target::description::ShiftOperation;
     use crate::target::registers::aarch64::{
         SP, X0, X3, X4, X5, X6, X7, X9, X10, X11, X12, X13, X14, X20, X21, X27, X28,
@@ -1005,15 +1005,14 @@ fn call_with_values(
         direct_call(emit, function);
         return Ok(());
     };
-    if kind == crate::target::backend::HelperCallKind::SlowPath
-        && emit.object_format != crate::ObjectFormat::Coff
-        && layout.uses_scalar_arguments()
-    {
+    let abi = match kind {
+        crate::target::backend::HelperCallKind::SlowPath => layout.abi(emit.object_format == crate::ObjectFormat::Coff),
+        crate::target::backend::HelperCallKind::Try => SlowPathAbi::Record,
+    };
+    if abi == SlowPathAbi::Scalar {
         return call_with_scalar_values(emit, function, &layout);
     }
-    let scalar_inputs = kind == crate::target::backend::HelperCallKind::SlowPath
-        && emit.object_format != crate::ObjectFormat::Coff
-        && layout.array.is_none();
+    let scalar_inputs = abi == SlowPathAbi::Mixed;
     let input_registers = [X4, X5, X6, X7];
     let input_count = layout
         .fields
