@@ -821,6 +821,99 @@ fn for_each_bound_name_in_pattern(pattern: &ast::BindingPattern, arena: &ast::As
 }
 
 // =============================================================================
+// Eval
+// =============================================================================
+
+/// How the code an eval runs relates to the code that calls it, as PerformEval works it out.
+#[derive(Clone, Copy, Default)]
+pub struct EvalContext {
+    pub starts_in_strict_mode: bool,
+    pub in_eval_function_context: bool,
+    pub allow_super_property_lookup: bool,
+    pub allow_super_constructor_call: bool,
+    pub in_class_field_initializer: bool,
+}
+
+/// The code of an eval, parsed and analyzed without errors.
+pub struct ParsedEval {
+    pub(crate) program: ast::Statement,
+    pub(crate) function_table: ast::FunctionTable,
+    pub(crate) arena: std::sync::Arc<ast::AstArena>,
+    pub(crate) scope_id: ast::ScopeId,
+    pub(crate) is_strict: bool,
+    pub(crate) eval_referenced_private_names: Vec<ast::Utf16String>,
+}
+
+/// Parses the code of an eval, or returns its syntax errors and then its early errors.
+pub fn parse_eval(source: &[u16], context: EvalContext) -> Result<ParsedEval, Vec<ParseError>> {
+    let mut parser = Parser::new(source, ProgramType::Script);
+    parser.initiated_by_eval = true;
+    parser.in_eval_function_context = context.in_eval_function_context;
+    parser.flags.allow_super_property_lookup = context.allow_super_property_lookup;
+    parser.flags.allow_super_constructor_call = context.allow_super_constructor_call;
+    parser.flags.in_class_field_initializer = context.in_class_field_initializer;
+
+    let program = parser.parse_program(context.starts_in_strict_mode);
+
+    if parser.has_errors() {
+        return Err(parser.take_errors());
+    }
+    if parser.scope_collector.has_errors() {
+        return Err(parser.scope_collector.drain_errors());
+    }
+
+    let eval_referenced_private_names = parser.eval_referenced_private_names().to_vec();
+
+    parser.scope_collector.analyze(
+        true,
+        &mut parser.arena.identifiers,
+        &parser.arena.strings,
+        &mut parser.arena.scopes,
+    );
+
+    let StatementKind::Program(ref data) = program.inner else {
+        unreachable!("the parser produces a program");
+    };
+    let (scope_id, is_strict) = (data.scope, data.is_strict_mode);
+
+    Ok(ParsedEval {
+        program,
+        function_table: std::mem::take(&mut parser.function_table),
+        arena: std::sync::Arc::new(std::mem::take(&mut parser.arena)),
+        scope_id,
+        is_strict,
+        eval_referenced_private_names,
+    })
+}
+
+/// An eval compiled to bytecode, with what EvalDeclarationInstantiation needs from it.
+pub struct CompiledEval {
+    pub executable: ExecutableData,
+    pub declarations: EvalDeclarations,
+}
+
+/// Compiles the code of an eval parsed from `source_len` code units.
+pub fn compile_eval(mut parsed: ParsedEval, source_len: usize) -> CompiledEval {
+    let mut generator = new_program_generator(parsed.is_strict, source_len);
+    generator.function_table = std::mem::take(&mut parsed.function_table);
+    generator.arena = parsed.arena.clone();
+    let assembled = compile_program_body_to_bytecode(&mut generator, &parsed.program, parsed.scope_id);
+    let mut function_table = std::mem::take(&mut generator.function_table);
+    let executable = ExecutableData::new(generator, assembled);
+    let declarations = collect_eval_declarations(
+        &parsed.arena.scopes[parsed.scope_id],
+        parsed.is_strict,
+        &mut function_table,
+        &parsed.arena,
+        parsed.eval_referenced_private_names,
+    );
+    CompiledEval {
+        executable,
+        declarations,
+    }
+}
+
+// =============================================================================
 // Shared function data
 // =============================================================================
 
