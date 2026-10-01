@@ -39,4 +39,13 @@ define_class_ids! {
     FunctionEnvironment,
     ModuleEnvironment,
     EnvironmentShape,
+    FunctionObject,
+    NativeFunction,
+    RawNativeFunction,
+    DirectGetterFunction,
+    CapturingNativeFunction,
+    EcmascriptFunctionObject,
+    SharedFunctionInstanceData,
+    BoundFunction,
+    ArgumentsObject,
 }

@@ -24,6 +24,7 @@ pub mod layout_forward;
 pub mod parser_error;
 pub mod runtime;
 pub mod script;
+pub mod source_code;
 pub mod utf16;
 pub mod utilities;
 

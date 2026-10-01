@@ -23,9 +23,25 @@ pub enum Module {}
 pub enum ObjectEnvironment {}
 pub enum Intrinsics {}
 
-/// An optional fly string that is written at most once.
+/// An optional fly string, which is only ever copied in and out.
 #[repr(transparent)]
 pub struct FlyStringSlot(pub UnsafeCell<Option<ak::Utf16FlyString>>);
+
+impl FlyStringSlot {
+    pub const fn new(string: Option<ak::Utf16FlyString>) -> Self {
+        Self(UnsafeCell::new(string))
+    }
+
+    pub fn get(&self) -> Option<ak::Utf16FlyString> {
+        // SAFETY: The slot is only ever copied in and out, so no reference into it outlives these calls.
+        unsafe { (*self.0.get()).clone() }
+    }
+
+    pub fn set(&self, string: Option<ak::Utf16FlyString>) {
+        // SAFETY: As above. The previous string is dropped after the slot no longer refers to it.
+        drop(unsafe { core::ptr::replace(self.0.get(), string) });
+    }
+}
 
 /// The resolved contents of a string, written at most once.
 #[repr(transparent)]
@@ -52,8 +68,5 @@ pub struct ObjectPropertyIteratorCacheDataStorage {}
 pub use crate::runtime::declarative_environment::DeclarativeEnvironmentRareDataStorage;
 pub use crate::runtime::environment_shape::EnvironmentShapeStorage;
 
-#[derive(Default)]
-pub struct EcmascriptFunctionObjectStorage {}
-
-#[derive(Default)]
-pub struct SharedFunctionInstanceDataStorage {}
+pub use crate::runtime::ecmascript_function_object::EcmascriptFunctionObjectStorage;
+pub use crate::runtime::shared_function_instance_data::SharedFunctionInstanceDataStorage;

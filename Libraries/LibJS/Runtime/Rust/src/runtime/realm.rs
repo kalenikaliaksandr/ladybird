@@ -10,8 +10,10 @@ use crate::gc::class::{GcCell, define_cell};
 use crate::gc::visitor::{Trace, Visitor};
 use crate::interpreter::runtime_functions::unimplemented_runtime_function;
 use crate::interpreter::vm::Vm;
+use crate::layout::accessor::Accessor;
 use crate::layout::cell::{CellHeader, Gc};
 use crate::layout::environment::{DeclarativeEnvironment, GlobalEnvironment};
+use crate::layout::function_object::FunctionObject;
 use crate::layout::object::Object;
 pub use crate::layout::realm::Realm;
 use crate::runtime::shape::Shape;
@@ -38,10 +40,13 @@ unsafe impl Trace for Realm {
     }
 }
 
-/// Defines an accessor for each intrinsic the object model asks the realm for. Until the realm has its intrinsics,
-/// each stops the process with the intrinsic's name.
+/// Defines an accessor for each intrinsic the object model asks the realm for, and for each property offset of the
+/// premade shapes among them. Until the realm has its intrinsics, each stops the process with the intrinsic's name.
 macro_rules! define_intrinsic_accessors {
-    ($($name:ident: $type:ty => $description:literal,)*) => {
+    (
+        cells { $($name:ident: $type:ty => $description:literal,)* }
+        offsets { $($offset_name:ident => $offset_description:literal,)* }
+    ) => {
         impl Realm {
             $(
                 pub fn $name(&self) -> Gc<$type> {
@@ -50,6 +55,15 @@ macro_rules! define_intrinsic_accessors {
                         return intrinsic;
                     }
                     unimplemented_runtime_function(concat!("the realm intrinsic ", $description), 0)
+                }
+            )*
+            $(
+                pub fn $offset_name(&self) -> u32 {
+                    #[cfg(test)]
+                    if let Some(offset) = self.storage.test_intrinsics.$offset_name.get() {
+                        return offset;
+                    }
+                    unimplemented_runtime_function(concat!("the realm intrinsic ", $offset_description), 0)
                 }
             )*
         }
@@ -61,6 +75,7 @@ macro_rules! define_intrinsic_accessors {
             #[derive(Default)]
             pub struct TestIntrinsics {
                 $(pub $name: Cell<Option<Gc<$type>>>,)*
+                $(pub $offset_name: Cell<Option<u32>>,)*
             }
 
             // SAFETY: Visits every intrinsic.
@@ -74,15 +89,47 @@ macro_rules! define_intrinsic_accessors {
 }
 
 define_intrinsic_accessors! {
-    empty_object_shape: Shape => "empty object shape",
-    new_object_shape: Shape => "new object shape",
-    object_prototype: Object => "%Object.prototype%",
-    array_prototype: Object => "%Array.prototype%",
-    string_prototype: Object => "%String.prototype%",
-    number_prototype: Object => "%Number.prototype%",
-    boolean_prototype: Object => "%Boolean.prototype%",
-    bigint_prototype: Object => "%BigInt.prototype%",
-    symbol_prototype: Object => "%Symbol.prototype%",
+    cells {
+        empty_object_shape: Shape => "empty object shape",
+        new_object_shape: Shape => "new object shape",
+        object_prototype: Object => "%Object.prototype%",
+        array_prototype: Object => "%Array.prototype%",
+        string_prototype: Object => "%String.prototype%",
+        number_prototype: Object => "%Number.prototype%",
+        boolean_prototype: Object => "%Boolean.prototype%",
+        bigint_prototype: Object => "%BigInt.prototype%",
+        symbol_prototype: Object => "%Symbol.prototype%",
+        function_prototype: Object => "%Function.prototype%",
+        generator_function_prototype: Object => "%GeneratorFunction.prototype%",
+        async_function_prototype: Object => "%AsyncFunction.prototype%",
+        async_generator_function_prototype: Object => "%AsyncGeneratorFunction.prototype%",
+        generator_function_prototype_prototype: Object => "%GeneratorFunction.prototype.prototype%",
+        async_generator_function_prototype_prototype: Object => "%AsyncGeneratorFunction.prototype.prototype%",
+        normal_function_prototype_shape: Shape => "normal function prototype shape",
+        normal_function_shape: Shape => "normal function shape",
+        async_function_shape: Shape => "async function shape",
+        generator_function_shape: Shape => "generator function shape",
+        async_generator_function_shape: Shape => "async generator function shape",
+        native_function_shape: Shape => "native function shape",
+        unmapped_arguments_object_shape: Shape => "unmapped arguments object shape",
+        mapped_arguments_object_shape: Shape => "mapped arguments object shape",
+        array_prototype_values_function: FunctionObject => "%Array.prototype.values%",
+        throw_type_error_accessor: Accessor => "%ThrowTypeError% accessor",
+    }
+    offsets {
+        normal_function_prototype_constructor_offset => "normal function prototype constructor offset",
+        normal_function_length_offset => "normal function length offset",
+        normal_function_name_offset => "normal function name offset",
+        generator_function_prototype_property_offset => "generator function prototype property offset",
+        native_function_length_offset => "native function length offset",
+        native_function_name_offset => "native function name offset",
+        unmapped_arguments_object_length_offset => "unmapped arguments object length offset",
+        unmapped_arguments_object_well_known_symbol_iterator_offset => "unmapped arguments object @@iterator offset",
+        unmapped_arguments_object_callee_offset => "unmapped arguments object callee offset",
+        mapped_arguments_object_length_offset => "mapped arguments object length offset",
+        mapped_arguments_object_well_known_symbol_iterator_offset => "mapped arguments object @@iterator offset",
+        mapped_arguments_object_callee_offset => "mapped arguments object callee offset",
+    }
 }
 
 impl Realm {
@@ -164,6 +211,205 @@ pub mod test_realm {
 
         pub fn array(&self, elements: &[crate::layout::value::Value]) -> Gc<Array> {
             Array::create_from(self.vm, self.realm, elements)
+        }
+    }
+
+    impl<'vm> TestRealm<'vm> {
+        /// A test realm that also has the intrinsics functions and arguments objects are created with, made the way
+        /// C++ Intrinsics makes them. %Function.prototype% is an ordinary object here, and %Array.prototype.values%
+        /// returns undefined.
+        pub fn with_function_intrinsics(vm: &'vm Vm) -> Self {
+            use crate::layout::value::Value;
+            use crate::runtime::error::ErrorKind;
+            use crate::runtime::error_types::ErrorType;
+            use crate::runtime::native_function::{NativeFunction, RawNativeFunction, raw_native};
+            use crate::runtime::property_attributes::{Attribute, PropertyAttributes};
+            use crate::runtime::property_key::PropertyKey;
+
+            let test_realm = Self::new(vm);
+            let realm = test_realm.realm;
+            let intrinsics = &realm.storage.test_intrinsics;
+            let names = &vm.names;
+            let object_prototype = realm.object_prototype();
+            let configurable = PropertyAttributes::new(Attribute::CONFIGURABLE);
+            let writable = PropertyAttributes::new(Attribute::WRITABLE);
+            let writable_configurable = PropertyAttributes::new(Attribute::WRITABLE | Attribute::CONFIGURABLE);
+            let offset = |shape: Gc<Shape>, property_key: &PropertyKey| {
+                Some(
+                    shape
+                        .lookup(property_key)
+                        .expect("the premade shape has the property")
+                        .offset,
+                )
+            };
+
+            let function_prototype = Object::create_prototype(vm, realm, Some(object_prototype));
+            intrinsics.function_prototype.set(Some(function_prototype));
+
+            let normal_function_prototype_shape = Shape::create(vm, realm);
+            normal_function_prototype_shape.set_prototype_without_transition(vm, object_prototype);
+            normal_function_prototype_shape.add_property_without_transition(
+                vm,
+                &names.constructor,
+                writable_configurable,
+            );
+            intrinsics
+                .normal_function_prototype_constructor_offset
+                .set(offset(normal_function_prototype_shape, &names.constructor));
+            intrinsics
+                .normal_function_prototype_shape
+                .set(Some(normal_function_prototype_shape));
+
+            let create_function_shape = |prototype: Gc<Object>, has_prototype_property: bool| {
+                let shape = Shape::create(vm, realm);
+                shape.set_prototype_without_transition(vm, prototype);
+                shape.add_property_without_transition(vm, &names.length, configurable);
+                shape.add_property_without_transition(vm, &names.name, configurable);
+                if has_prototype_property {
+                    shape.add_property_without_transition(vm, &names.prototype, writable);
+                }
+                shape
+            };
+
+            let normal_function_shape = create_function_shape(function_prototype, false);
+            intrinsics
+                .normal_function_length_offset
+                .set(offset(normal_function_shape, &names.length));
+            intrinsics
+                .normal_function_name_offset
+                .set(offset(normal_function_shape, &names.name));
+            intrinsics.normal_function_shape.set(Some(normal_function_shape));
+
+            let native_function_shape = create_function_shape(function_prototype, false);
+            intrinsics
+                .native_function_length_offset
+                .set(offset(native_function_shape, &names.length));
+            intrinsics
+                .native_function_name_offset
+                .set(offset(native_function_shape, &names.name));
+            intrinsics.native_function_shape.set(Some(native_function_shape));
+
+            let iterator = PropertyKey::from(vm.well_known_symbols().iterator);
+            let create_arguments_object_shape = |callee_attributes: PropertyAttributes| {
+                let shape = Shape::create(vm, realm);
+                shape.set_prototype_without_transition(vm, object_prototype);
+                shape.set_has_parameter_map();
+                shape.add_property_without_transition(vm, &names.length, writable_configurable);
+                shape.add_property_without_transition(vm, &iterator, writable_configurable);
+                shape.add_property_without_transition(vm, &names.callee, callee_attributes);
+                shape
+            };
+
+            let unmapped_arguments_object_shape = create_arguments_object_shape(PropertyAttributes::new(0));
+            intrinsics
+                .unmapped_arguments_object_length_offset
+                .set(offset(unmapped_arguments_object_shape, &names.length));
+            intrinsics
+                .unmapped_arguments_object_well_known_symbol_iterator_offset
+                .set(offset(unmapped_arguments_object_shape, &iterator));
+            intrinsics
+                .unmapped_arguments_object_callee_offset
+                .set(offset(unmapped_arguments_object_shape, &names.callee));
+            intrinsics
+                .unmapped_arguments_object_shape
+                .set(Some(unmapped_arguments_object_shape));
+
+            let mapped_arguments_object_shape = create_arguments_object_shape(writable_configurable);
+            intrinsics
+                .mapped_arguments_object_length_offset
+                .set(offset(mapped_arguments_object_shape, &names.length));
+            intrinsics
+                .mapped_arguments_object_well_known_symbol_iterator_offset
+                .set(offset(mapped_arguments_object_shape, &iterator));
+            intrinsics
+                .mapped_arguments_object_callee_offset
+                .set(offset(mapped_arguments_object_shape, &names.callee));
+            intrinsics
+                .mapped_arguments_object_shape
+                .set(Some(mapped_arguments_object_shape));
+
+            let generator_function_prototype = Object::create_prototype(vm, realm, Some(function_prototype));
+            let async_function_prototype = Object::create_prototype(vm, realm, Some(function_prototype));
+            let async_generator_function_prototype = Object::create_prototype(vm, realm, Some(function_prototype));
+            intrinsics
+                .generator_function_prototype
+                .set(Some(generator_function_prototype));
+            intrinsics.async_function_prototype.set(Some(async_function_prototype));
+            intrinsics
+                .async_generator_function_prototype
+                .set(Some(async_generator_function_prototype));
+            intrinsics
+                .generator_function_prototype_prototype
+                .set(Some(Object::create_prototype(vm, realm, Some(object_prototype))));
+            intrinsics
+                .async_generator_function_prototype_prototype
+                .set(Some(Object::create_prototype(vm, realm, Some(object_prototype))));
+
+            let generator_function_shape = create_function_shape(generator_function_prototype, true);
+            intrinsics
+                .generator_function_prototype_property_offset
+                .set(offset(generator_function_shape, &names.prototype));
+            intrinsics.generator_function_shape.set(Some(generator_function_shape));
+            intrinsics
+                .async_function_shape
+                .set(Some(create_function_shape(async_function_prototype, false)));
+            intrinsics
+                .async_generator_function_shape
+                .set(Some(create_function_shape(async_generator_function_prototype, true)));
+
+            // 10.2.4.1 %ThrowTypeError% ( ), https://tc39.es/ecma262/#sec-%throwtypeerror%
+            let throw_type_error_function = NativeFunction::create(
+                vm,
+                (),
+                |vm, _| vm.throw_completion(ErrorKind::TypeError, ErrorType::RestrictedFunctionPropertiesAccess, &[]),
+                0,
+                &PropertyKey::from(ak::Utf16FlyString::default()),
+                Some(realm),
+                None,
+                None,
+            );
+            throw_type_error_function.define_direct_property(
+                vm,
+                &names.length,
+                Value::from_i32(0),
+                PropertyAttributes::new(0),
+            );
+            throw_type_error_function.define_direct_property(
+                vm,
+                &names.name,
+                Value::from_string(vm.empty_string()),
+                PropertyAttributes::new(0),
+            );
+            throw_type_error_function.internal_prevent_extensions(vm).must();
+            intrinsics
+                .throw_type_error_accessor
+                .set(Some(crate::runtime::accessor::Accessor::create(
+                    vm,
+                    Some(throw_type_error_function.upcast()),
+                    Some(throw_type_error_function.upcast()),
+                    None,
+                )));
+
+            let array_prototype_values = RawNativeFunction::create(
+                vm,
+                raw_native!(|_| Ok(Value::UNDEFINED)),
+                0,
+                &names.values,
+                Some(realm),
+                None,
+                None,
+            );
+            realm.array_prototype().define_direct_property(
+                vm,
+                &names.values,
+                Value::from_object(array_prototype_values),
+                writable_configurable,
+            );
+            intrinsics
+                .array_prototype_values_function
+                .set(Some(array_prototype_values.upcast()));
+
+            test_realm
         }
     }
 
