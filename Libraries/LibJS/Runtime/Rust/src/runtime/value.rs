@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+//! The parts of Libraries/LibJS/Runtime/Value.cpp the runtime implements so far.
+
+use core::fmt::{self, Write};
 use core::ptr::NonNull;
 
 use crate::build_configuration::HEAP_REGION_OFFSET_MASK;
@@ -166,5 +169,260 @@ impl Value {
 impl core::fmt::Debug for Value {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(formatter, "Value(0x{:016x})", self.0)
+    }
+}
+
+/// The text and UTF-16 builders Number::toString writes its ASCII output into.
+pub trait NumberStringBuilder {
+    fn append_ascii(&mut self, text: &[u8]);
+    fn append_repeated_ascii(&mut self, code_unit: u8, count: usize);
+}
+
+impl NumberStringBuilder for String {
+    fn append_ascii(&mut self, text: &[u8]) {
+        self.extend(text.iter().copied().map(char::from));
+    }
+
+    fn append_repeated_ascii(&mut self, code_unit: u8, count: usize) {
+        self.extend(core::iter::repeat_n(char::from(code_unit), count));
+    }
+}
+
+impl NumberStringBuilder for Vec<u16> {
+    fn append_ascii(&mut self, text: &[u8]) {
+        self.extend(text.iter().copied().map(u16::from));
+    }
+
+    fn append_repeated_ascii(&mut self, code_unit: u8, count: usize) {
+        self.extend(core::iter::repeat_n(u16::from(code_unit), count));
+    }
+}
+
+pub fn number_to_string(value: f64) -> String {
+    let mut builder = String::new();
+    append_number_to_string(&mut builder, value);
+    builder
+}
+
+pub fn number_to_utf16_string(value: f64) -> Vec<u16> {
+    let mut builder = Vec::new();
+    append_number_to_string(&mut builder, value);
+    builder
+}
+
+// 6.1.6.1.20 Number::toString ( x ), https://tc39.es/ecma262/#sec-numeric-types-number-tostring
+// Implementation for radix = 10
+pub fn append_number_to_string(builder: &mut impl NumberStringBuilder, value: f64) {
+    // 1. If x is NaN, return "NaN".
+    if value.is_nan() {
+        builder.append_ascii(b"NaN");
+        return;
+    }
+
+    // 2. If x is +0𝔽 or -0𝔽, return "0".
+    if value == 0.0 {
+        builder.append_ascii(b"0");
+        return;
+    }
+
+    // 4. If x is +∞𝔽, return "Infinity".
+    if value.is_infinite() {
+        builder.append_ascii(if value > 0.0 { b"Infinity" } else { b"-Infinity" });
+        return;
+    }
+
+    // 5. Let n, k, and s be integers such that k ≥ 1, radix ^ (k - 1) ≤ s < radix ^ k, 𝔽(s × radix ^ (n - k)) is x,
+    //    and k is as small as possible.
+    let DecimalExponentialForm {
+        is_negative,
+        significand,
+        exponent,
+    } = convert_to_decimal_exponential_form(value);
+    let significand_digits = DecimalDigits::new(significand);
+    let digits = significand_digits.as_bytes();
+    let k = digits.len() as i32;
+    let n = exponent + k;
+
+    // 3. If x < -0𝔽, return the string-concatenation of "-" and Number::toString(-x, radix).
+    if is_negative {
+        builder.append_ascii(b"-");
+    }
+
+    // 6. If radix ≠ 10 or n is in the inclusive interval from -5 to 21, then
+    if (-5..=21).contains(&n) {
+        if n >= k {
+            // a. If n ≥ k, return the k digits of s followed by n - k zeros.
+            builder.append_ascii(digits);
+            builder.append_repeated_ascii(b'0', (n - k) as usize);
+        } else if n > 0 {
+            // b. Else if n > 0, return the most significant n digits of s, ".", and the remaining k - n digits.
+            builder.append_ascii(&digits[..n as usize]);
+            builder.append_ascii(b".");
+            builder.append_ascii(&digits[n as usize..]);
+        } else {
+            // c. Else, return "0.", -n zeros, and the k digits of s.
+            builder.append_ascii(b"0.");
+            builder.append_repeated_ascii(b'0', n.unsigned_abs() as usize);
+            builder.append_ascii(digits);
+        }
+        return;
+    }
+
+    // 7. NOTE: In this case, the input will be represented using scientific E notation, such as 1.2e+3.
+    // 9. If n < 0, let exponentSign be "-". 10. Else, let exponentSign be "+".
+    let exponent_sign: &[u8] = if n < 0 { b"-" } else { b"+" };
+    let exponent_digits = DecimalDigits::new(u64::from((n - 1).unsigned_abs()));
+
+    // 11. If k is 1, return the single digit of s, "e", exponentSign, and the decimal representation of abs(n - 1).
+    // 12. Return the most significant digit of s, ".", the remaining k - 1 digits, "e", exponentSign, and abs(n - 1).
+    builder.append_ascii(&digits[..1]);
+    if k > 1 {
+        builder.append_ascii(b".");
+        builder.append_ascii(&digits[1..]);
+    }
+    builder.append_ascii(b"e");
+    builder.append_ascii(exponent_sign);
+    builder.append_ascii(exponent_digits.as_bytes());
+}
+
+/// A finite, non-zero double as (-1)^is_negative × significand × 10^exponent, with the contract of
+/// AK::convert_to_decimal_exponential_form (Dragonbox): the significand has as few digits as possible, and of the
+/// significands of that length that round-trip, it is the one closest to the double, the even one on a tie.
+struct DecimalExponentialForm {
+    is_negative: bool,
+    significand: u64,
+    exponent: i32,
+}
+
+fn convert_to_decimal_exponential_form(value: f64) -> DecimalExponentialForm {
+    let magnitude = value.abs();
+    let mut shortest = AsciiBuffer::new();
+    write!(shortest, "{magnitude:e}").expect("the shortest exponential form of a double fits the buffer");
+    let (mantissa_text, exponent_text) = shortest
+        .as_str()
+        .split_once('e')
+        .expect("exponential formatting writes an exponent");
+
+    let mut significand = 0u64;
+    let mut digit_count = 0i32;
+    for digit in mantissa_text.bytes().filter(u8::is_ascii_digit) {
+        significand = significand * 10 + u64::from(digit - b'0');
+        digit_count += 1;
+    }
+    let exponent_of_first_digit: i32 = exponent_text
+        .parse()
+        .expect("exponential formatting writes a decimal exponent");
+    let exponent = exponent_of_first_digit - (digit_count - 1);
+
+    DecimalExponentialForm {
+        is_negative: value.is_sign_negative(),
+        significand: prefer_even_significand_on_exact_tie(magnitude, significand, exponent),
+        exponent,
+    }
+}
+
+/// Rust's shortest formatting finds the same significand as Dragonbox, except when the double lies exactly halfway
+/// between two shortest candidates: Rust then rounds up, where Dragonbox picks the even candidate.
+fn prefer_even_significand_on_exact_tie(magnitude: f64, significand: u64, exponent: i32) -> u64 {
+    if significand.is_multiple_of(2) {
+        return significand;
+    }
+    [significand - 1, significand + 1]
+        .into_iter()
+        .find(|&neighbour| {
+            neighbour != 0
+                && is_exactly_halfway_between(magnitude, significand + neighbour, exponent)
+                && decimal_rounds_to(neighbour, exponent, magnitude)
+        })
+        .unwrap_or(significand)
+}
+
+/// Whether magnitude is exactly (sum_of_significands / 2) × 10^exponent, for an odd sum_of_significands.
+fn is_exactly_halfway_between(magnitude: f64, sum_of_significands: u64, exponent: i32) -> bool {
+    // 2 × magnitude is odd_binary_significand × 2^(1 + trailing_zeros + binary_exponent), and the other side is
+    // sum_of_significands × 5^exponent × 2^exponent. Once a negative exponent's 5^-exponent is moved across, both are
+    // an odd number times a power of two, so they are equal exactly when the powers of two and the odd numbers are.
+    let bits = magnitude.to_bits();
+    let biased_exponent = ((bits >> 52) & 0x7ff) as i32;
+    let fraction = bits & ((1 << 52) - 1);
+    let (binary_significand, binary_exponent) = if biased_exponent == 0 {
+        (fraction, -1074)
+    } else {
+        (fraction | (1 << 52), biased_exponent - 1075)
+    };
+
+    let trailing_zeros = binary_significand.trailing_zeros();
+    let odd_binary_significand = u128::from(binary_significand >> trailing_zeros);
+    if 1 + trailing_zeros as i32 + binary_exponent != exponent {
+        return false;
+    }
+
+    let power_of_five = 5u128.checked_pow(exponent.unsigned_abs());
+    let sum_of_significands = u128::from(sum_of_significands);
+    if exponent >= 0 {
+        power_of_five.and_then(|power| power.checked_mul(sum_of_significands)) == Some(odd_binary_significand)
+    } else {
+        power_of_five.and_then(|power| power.checked_mul(odd_binary_significand)) == Some(sum_of_significands)
+    }
+}
+
+fn decimal_rounds_to(significand: u64, exponent: i32, magnitude: f64) -> bool {
+    let mut decimal = AsciiBuffer::new();
+    write!(decimal, "{significand}e{exponent}").expect("a decimal significand and exponent fit the buffer");
+    decimal.as_str().parse::<f64>() == Ok(magnitude)
+}
+
+struct AsciiBuffer {
+    bytes: [u8; 32],
+    length: usize,
+}
+
+impl AsciiBuffer {
+    fn new() -> Self {
+        Self {
+            bytes: [0; 32],
+            length: 0,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..self.length]).expect("only formatted ASCII is written")
+    }
+}
+
+impl Write for AsciiBuffer {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        let end = self.length + text.len();
+        self.bytes
+            .get_mut(self.length..end)
+            .ok_or(fmt::Error)?
+            .copy_from_slice(text.as_bytes());
+        self.length = end;
+        Ok(())
+    }
+}
+
+struct DecimalDigits {
+    digits: [u8; 20],
+    start: usize,
+}
+
+impl DecimalDigits {
+    fn new(mut value: u64) -> Self {
+        let mut digits = [0; 20];
+        let mut start = digits.len();
+        loop {
+            start -= 1;
+            digits[start] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        Self { digits, start }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.digits[self.start..]
     }
 }
