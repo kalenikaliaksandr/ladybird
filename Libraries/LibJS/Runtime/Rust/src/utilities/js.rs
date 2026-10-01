@@ -10,12 +10,13 @@ use core::ffi::{c_char, c_int};
 use std::ffi::CStr;
 use std::io::{IsTerminal, Write};
 
-use crate::bytecode::executable::Executable;
 use crate::interpreter::runtime_functions::unimplemented_runtime_function;
 use crate::interpreter::vm::Vm;
+use crate::parser_error::ParserError;
 use crate::runtime::print::{PrintContext, print_value};
+use crate::script::Script;
 use libjs_rust::ast::ProgramType;
-use libjs_rust::compile::{ParsedProgram, compile_script, parse};
+use libjs_rust::compile::parse;
 
 #[derive(Default)]
 struct Options {
@@ -68,13 +69,9 @@ fn read_source(options: &Options) -> Result<String, String> {
     Ok(source)
 }
 
-fn report_parse_errors(output: &mut impl Write, parsed: &ParsedProgram) {
-    for error in parsed.errors() {
-        let _ = writeln!(
-            output,
-            "{} (line: {}, column: {})",
-            error.message, error.line, error.column
-        );
+fn report_parse_errors(output: &mut impl Write, errors: &[ParserError]) {
+    for error in errors {
+        let _ = writeln!(output, "{error}");
     }
 }
 
@@ -93,12 +90,12 @@ fn run(options: &Options, output: &mut impl Write) -> c_int {
         ProgramType::Script
     };
     let mut parsed = parse(&source, program_type, 1);
-    if options.dump_ast && !parsed.has_errors() {
-        let _ = writeln!(output, "{}", parsed.ast_dump().trim_end());
-    }
     if parsed.has_errors() {
-        report_parse_errors(output, &parsed);
+        report_parse_errors(output, &ParserError::all_from_parsed_program(&parsed));
         return 1;
+    }
+    if options.dump_ast {
+        let _ = writeln!(output, "{}", parsed.ast_dump().trim_end());
     }
     if options.parse_only {
         return 0;
@@ -106,28 +103,16 @@ fn run(options: &Options, output: &mut impl Write) -> c_int {
     if options.as_module {
         unimplemented_runtime_function("running modules", 0);
     }
-
-    let compiled = compile_script(parsed, source.len());
-    let declarations = &compiled.declarations;
-    if !declarations.lexical_names.is_empty()
-        || !declarations.var_names.is_empty()
-        || !declarations.functions_to_initialize.is_empty()
-        || !declarations.lexical_bindings.is_empty()
-    {
-        unimplemented_runtime_function("global declaration instantiation", 0);
-    }
+    let script = Script::compile_parsed_program(parsed, source.len());
 
     let vm = Vm::create();
     if options.gc_on_every_allocation {
         vm.heap().set_should_collect_on_every_allocation(true);
     }
-    let executable = vm
-        .heap()
-        .allocate(Executable::from_executable_data(compiled.executable));
     let print_context = PrintContext {
         strip_ansi: options.disable_ansi_colors,
     };
-    match vm.run_script_executable(executable) {
+    match vm.run_script(script) {
         Ok(value) => {
             if options.print_last_result {
                 let mut text = String::new();
@@ -139,7 +124,7 @@ fn run(options: &Options, output: &mut impl Write) -> c_int {
         Err(exception) => {
             let _ = output.flush();
             let mut text = String::new();
-            print_value(&mut text, &print_context, exception);
+            print_value(&mut text, &print_context, exception.value());
             eprintln!("Uncaught exception: \n{text}");
             1
         }
