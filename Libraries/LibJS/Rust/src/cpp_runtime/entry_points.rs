@@ -14,13 +14,17 @@ use crate::ast::StatementKind;
 use crate::ast_dump;
 use crate::bytecode;
 use crate::bytecode::executable::ExecutableData;
+use crate::bytecode::generator::PendingSharedFunctionData;
 use crate::bytecode::generator::PrecompiledFunction;
 use crate::compile::CompiledProgram;
 use crate::compile::CompiledProgramBytecode;
+use crate::compile::EvalDeclarations;
 use crate::compile::FunctionPrecompileMode;
 use crate::compile::ParsedProgram;
+use crate::compile::ScriptDeclarations;
+use crate::compile::collect_eval_declarations;
 use crate::compile::collect_module_var_names;
-use crate::compile::collect_var_names_recursive;
+use crate::compile::collect_script_declarations;
 use crate::compile::compile_function_payload_to_bytecode;
 use crate::compile::compile_module_as_async_to_bytecode;
 use crate::compile::compile_parsed_program_off_thread_impl;
@@ -1000,13 +1004,16 @@ pub unsafe extern "C" fn rust_compile_parsed_script(
                 return std::ptr::null_mut();
             }
 
-            extract_script_gdi(
+            let declarations = collect_script_declarations(
                 &parsed.arena.scopes[parsed.scope_ref],
+                &mut function_table,
+                &parsed.arena,
+            );
+            push_script_declarations(
+                declarations,
                 parsed.is_strict_mode,
                 shared_function_data_context,
                 gdi_context,
-                &mut function_table,
-                &parsed.arena,
             );
 
             exec_ptr
@@ -1053,13 +1060,16 @@ pub unsafe extern "C" fn rust_materialize_compiled_script(
                 return std::ptr::null_mut();
             }
 
-            extract_script_gdi(
+            let declarations = collect_script_declarations(
                 &parsed.arena.scopes[parsed.scope_ref],
+                &mut parsed.function_table,
+                &parsed.arena,
+            );
+            push_script_declarations(
+                declarations,
                 parsed.is_strict_mode,
                 shared_function_data_context,
                 gdi_context,
-                &mut parsed.function_table,
-                &parsed.arena,
             );
 
             exec_ptr
@@ -1157,16 +1167,14 @@ pub unsafe extern "C" fn rust_compile_eval(
                 return std::ptr::null_mut();
             }
 
-            extract_eval_gdi(
+            let declarations = collect_eval_declarations(
                 &arena_arc.scopes[scope_id],
                 is_strict,
-                vm_ptr,
-                source_code_ptr,
-                gdi_context,
                 &mut function_table,
                 &arena_arc,
-                &eval_referenced_private_names,
+                eval_referenced_private_names,
             );
+            push_eval_declarations(declarations, vm_ptr, source_code_ptr, gdi_context);
 
             exec_ptr
         })
@@ -2155,126 +2163,42 @@ unsafe extern "C" {
 }
 
 // =============================================================================
-// GDI/EDI metadata extraction
+// GDI/EDI metadata
 // =============================================================================
 
-/// Collect var names + function declaration names, deduplicated function
-/// initializations, var-scoped names, annex B names, and lexical bindings.
-///
-/// Shared by both script and eval GDI extraction. All unsafe FFI calls are
-/// confined to the closures passed in by the caller.
-#[allow(clippy::too_many_arguments)]
-fn extract_gdi_common(
-    scope: &ast::ScopeData,
-    vm_ptr: *mut c_void,
-    source_code_ptr: *const c_void,
-    shared_function_data_owner: ffi::SharedFunctionDataOwner,
+/// Create the SharedFunctionInstanceData of a function that declaration
+/// instantiation initializes.
+unsafe fn create_sfd_for_function_to_initialize(
+    shared_function_data: PendingSharedFunctionData,
+    shared_function_data_context: ffi::SharedFunctionDataCreationContext,
     is_strict: bool,
-    push_var_name: &mut dyn FnMut(&[u16]),
-    push_function: &mut dyn FnMut(*mut c_void, &[u16]),
-    push_var_scoped_name: &mut dyn FnMut(&[u16]),
-    push_annex_b_name: &mut dyn FnMut(&[u16]),
-    push_lexical_binding: &mut dyn FnMut(&[u16], bool),
-    function_table: &mut ast::FunctionTable,
-    arena: &std::sync::Arc<ast::AstArena>,
-) {
-    use ast::DeclarationKind;
-    use ast::StatementKind;
-
-    // Var names (var declarations at any nesting level + top-level function declarations)
-    for child in &scope.children {
-        collect_var_names_recursive(&child.inner, arena, push_var_name);
-        if let Some(fd) = child.inner.function_declaration_for_labelled_item()
-            && let Some(name_ident) = fd.name
-        {
-            push_var_name(arena.name_slice(name_ident));
-        }
-    }
-
-    // Functions to initialize: keep the last declaration with each name
-    // (ECMAScript hoisting semantics), but emit them in source order. Two
-    // forward passes; StringId keys keep the inserts to a u32 compare.
-    let mut last_position: std::collections::HashMap<ast::StringId, usize> = std::collections::HashMap::new();
-    for (i, child) in scope.children.iter().enumerate() {
-        if let Some(fd) = child.inner.function_declaration_for_labelled_item()
-            && let Some(name_ident) = fd.name
-        {
-            last_position.insert(arena.identifiers[name_ident].name, i);
-        }
-    }
-    for (i, child) in scope.children.iter().enumerate() {
-        if let Some(fd) = child.inner.function_declaration_for_labelled_item()
-            && let Some(name_ident) = fd.name
-            && last_position.get(&arena.identifiers[name_ident].name).copied() == Some(i)
-        {
-            let function_data = function_table.take(fd.function_id);
-            let subtable = function_table.extract_reachable(&function_data, &arena.scopes);
-            let sfd_ptr = unsafe {
-                ffi::create_sfd_for_gdi(
-                    function_data,
-                    subtable,
-                    ffi::SharedFunctionDataCreationContext {
-                        vm_ptr,
-                        source_code_ptr,
-                        owner: shared_function_data_owner,
-                    },
-                    is_strict,
-                    arena.clone(),
-                )
-            };
-            assert!(!sfd_ptr.is_null(), "create_sfd_for_gdi returned null");
-            push_function(sfd_ptr, arena.name_slice(name_ident));
-        }
-    }
-
-    // Var-scoped names (var VariableDeclaration names, excluding function declarations)
-    for child in &scope.children {
-        collect_var_names_recursive(&child.inner, arena, push_var_scoped_name);
-    }
-
-    for name in &scope.annexb_function_names {
-        push_annex_b_name(name);
-    }
-
-    for child in &scope.children {
-        match &child.inner {
-            StatementKind::VariableDeclaration(vd) if vd.kind != DeclarationKind::Var => {
-                let is_constant = vd.kind == DeclarationKind::Const;
-                for declaration in &vd.declarations {
-                    for_each_bound_name(&declaration.target, arena, &mut |name| {
-                        push_lexical_binding(name, is_constant);
-                    });
-                }
-            }
-            StatementKind::UsingDeclaration(declarations) => {
-                for declaration in declarations.iter() {
-                    for_each_bound_name(&declaration.target, arena, &mut |name| {
-                        push_lexical_binding(name, false);
-                    });
-                }
-            }
-            StatementKind::ClassDeclaration(class_data) => {
-                if let Some(name) = class_data.name {
-                    push_lexical_binding(arena.name_slice(name), false);
-                }
-            }
-            _ => {}
-        }
-    }
+) -> *mut c_void {
+    let sfd_ptr = unsafe {
+        ffi::create_sfd_for_gdi(
+            shared_function_data
+                .function_data
+                .expect("function to initialize is missing its function data"),
+            shared_function_data
+                .subtable
+                .expect("function to initialize is missing its function table"),
+            shared_function_data_context,
+            is_strict,
+            shared_function_data
+                .arena
+                .expect("function to initialize is missing its AST arena"),
+        )
+    };
+    assert!(!sfd_ptr.is_null(), "create_sfd_for_gdi returned null");
+    sfd_ptr
 }
 
-/// Extract EDI metadata from a program-level ScopeData and populate
-/// the C++ EvalGdiBuilder via callbacks.
-#[allow(clippy::too_many_arguments)]
-unsafe fn extract_eval_gdi(
-    scope: &ast::ScopeData,
-    is_strict: bool,
+/// Populate the C++ EvalGdiBuilder from collected EDI metadata, creating each
+/// function's SharedFunctionInstanceData just before pushing it.
+unsafe fn push_eval_declarations(
+    declarations: EvalDeclarations,
     vm_ptr: *mut c_void,
     source_code_ptr: *const c_void,
     ctx: *mut c_void,
-    function_table: &mut ast::FunctionTable,
-    arena: &std::sync::Arc<ast::AstArena>,
-    referenced_private_names: &[ast::Utf16String],
 ) {
     unsafe {
         use ffi::eval_gdi_push_annex_b_name;
@@ -2285,44 +2209,48 @@ unsafe fn extract_eval_gdi(
         use ffi::eval_gdi_push_var_scoped_name;
         use ffi::eval_gdi_set_strict;
 
-        eval_gdi_set_strict(ctx, is_strict);
+        eval_gdi_set_strict(ctx, declarations.is_strict);
 
-        extract_gdi_common(
-            scope,
-            vm_ptr,
-            source_code_ptr,
-            ffi::SharedFunctionDataOwner::None,
-            is_strict,
-            &mut |name| eval_gdi_push_var_name(ctx, name.as_ptr(), name.len()),
-            &mut |sfd_ptr, name| eval_gdi_push_function(ctx, sfd_ptr, name.as_ptr(), name.len()),
-            &mut |name| eval_gdi_push_var_scoped_name(ctx, name.as_ptr(), name.len()),
-            &mut |name| eval_gdi_push_annex_b_name(ctx, name.as_ptr(), name.len()),
-            &mut |name, is_const| {
-                eval_gdi_push_lexical_binding(ctx, name.as_ptr(), name.len(), is_const);
-            },
-            function_table,
-            arena,
-        );
+        for name in &declarations.var_names {
+            eval_gdi_push_var_name(ctx, name.as_ptr(), name.len());
+        }
+        for function in declarations.functions_to_initialize {
+            let sfd_ptr = create_sfd_for_function_to_initialize(
+                function.shared_function_data,
+                ffi::SharedFunctionDataCreationContext {
+                    vm_ptr,
+                    source_code_ptr,
+                    owner: ffi::SharedFunctionDataOwner::None,
+                },
+                declarations.is_strict,
+            );
+            eval_gdi_push_function(ctx, sfd_ptr, function.name.as_ptr(), function.name.len());
+        }
+        for name in &declarations.var_scoped_names {
+            eval_gdi_push_var_scoped_name(ctx, name.as_ptr(), name.len());
+        }
+        for name in &declarations.annex_b_candidate_names {
+            eval_gdi_push_annex_b_name(ctx, name.as_ptr(), name.len());
+        }
+        for binding in &declarations.lexical_bindings {
+            eval_gdi_push_lexical_binding(ctx, binding.name.as_ptr(), binding.name.len(), binding.is_constant);
+        }
 
-        for name in referenced_private_names {
+        for name in &declarations.private_names {
             eval_gdi_push_private_name(ctx, name.as_ptr(), name.len());
         }
     }
 }
 
-/// Extract GDI metadata from a program-level ScopeData and populate
-/// the C++ ScriptGdiBuilder via callbacks.
-unsafe fn extract_script_gdi(
-    scope: &ast::ScopeData,
+/// Populate the C++ ScriptGdiBuilder from collected GDI metadata, creating
+/// each function's SharedFunctionInstanceData just before pushing it.
+unsafe fn push_script_declarations(
+    declarations: ScriptDeclarations,
     is_strict: bool,
     shared_function_data_context: ffi::SharedFunctionDataCreationContext,
     ctx: *mut c_void,
-    function_table: &mut ast::FunctionTable,
-    arena: &std::sync::Arc<ast::AstArena>,
 ) {
     unsafe {
-        use ast::DeclarationKind;
-        use ast::StatementKind;
         use ffi::script_gdi_push_annex_b_name;
         use ffi::script_gdi_push_function;
         use ffi::script_gdi_push_lexical_binding;
@@ -2330,49 +2258,29 @@ unsafe fn extract_script_gdi(
         use ffi::script_gdi_push_var_name;
         use ffi::script_gdi_push_var_scoped_name;
 
-        // Lexical names (let/const/using/class at top level) — script-only step.
-        for child in &scope.children {
-            match &child.inner {
-                StatementKind::VariableDeclaration(vd) if vd.kind != DeclarationKind::Var => {
-                    for declaration in &vd.declarations {
-                        for_each_bound_name(&declaration.target, arena, &mut |name| {
-                            script_gdi_push_lexical_name(ctx, name.as_ptr(), name.len());
-                        });
-                    }
-                }
-                StatementKind::UsingDeclaration(declarations) => {
-                    for declaration in declarations.iter() {
-                        for_each_bound_name(&declaration.target, arena, &mut |name| {
-                            script_gdi_push_lexical_name(ctx, name.as_ptr(), name.len());
-                        });
-                    }
-                }
-                StatementKind::ClassDeclaration(class_data) => {
-                    if let Some(name) = class_data.name {
-                        let n = arena.name_of(name);
-                        script_gdi_push_lexical_name(ctx, n.as_ptr(), n.len());
-                    }
-                }
-                _ => {}
-            }
+        for name in &declarations.lexical_names {
+            script_gdi_push_lexical_name(ctx, name.as_ptr(), name.len());
         }
-
-        extract_gdi_common(
-            scope,
-            shared_function_data_context.vm_ptr,
-            shared_function_data_context.source_code_ptr,
-            shared_function_data_context.owner,
-            is_strict,
-            &mut |name| script_gdi_push_var_name(ctx, name.as_ptr(), name.len()),
-            &mut |sfd_ptr, name| script_gdi_push_function(ctx, sfd_ptr, name.as_ptr(), name.len()),
-            &mut |name| script_gdi_push_var_scoped_name(ctx, name.as_ptr(), name.len()),
-            &mut |name| script_gdi_push_annex_b_name(ctx, name.as_ptr(), name.len()),
-            &mut |name, is_const| {
-                script_gdi_push_lexical_binding(ctx, name.as_ptr(), name.len(), is_const);
-            },
-            function_table,
-            arena,
-        );
+        for name in &declarations.var_names {
+            script_gdi_push_var_name(ctx, name.as_ptr(), name.len());
+        }
+        for function in declarations.functions_to_initialize {
+            let sfd_ptr = create_sfd_for_function_to_initialize(
+                function.shared_function_data,
+                shared_function_data_context,
+                is_strict,
+            );
+            script_gdi_push_function(ctx, sfd_ptr, function.name.as_ptr(), function.name.len());
+        }
+        for name in &declarations.var_scoped_names {
+            script_gdi_push_var_scoped_name(ctx, name.as_ptr(), name.len());
+        }
+        for name in &declarations.annex_b_candidate_names {
+            script_gdi_push_annex_b_name(ctx, name.as_ptr(), name.len());
+        }
+        for binding in &declarations.lexical_bindings {
+            script_gdi_push_lexical_binding(ctx, binding.name.as_ptr(), binding.name.len(), binding.is_constant);
+        }
     }
 }
 

@@ -690,6 +690,227 @@ fn for_each_bound_name_in_pattern(pattern: &ast::BindingPattern, arena: &ast::As
     }
 }
 
+// =============================================================================
+// Declaration instantiation data
+// =============================================================================
+
+/// A function declaration that declaration instantiation creates a function object for.
+pub struct FunctionToInitialize {
+    pub name: ast::Utf16String,
+    pub shared_function_data: PendingSharedFunctionData,
+}
+
+/// A `let`, `const`, `using` or `class` binding that declaration instantiation creates.
+pub struct LexicalBinding {
+    pub name: ast::Utf16String,
+    pub is_constant: bool,
+}
+
+/// The names and functions that GlobalDeclarationInstantiation needs from a script.
+/// https://tc39.es/ecma262/#sec-globaldeclarationinstantiation
+pub struct ScriptDeclarations {
+    pub lexical_names: Vec<ast::Utf16String>,
+    pub var_names: Vec<ast::Utf16String>,
+    /// The last declaration of each function name, in source order.
+    pub functions_to_initialize: Vec<FunctionToInitialize>,
+    pub var_scoped_names: Vec<ast::Utf16String>,
+    pub annex_b_candidate_names: Vec<ast::Utf16String>,
+    pub lexical_bindings: Vec<LexicalBinding>,
+}
+
+/// The names and functions that EvalDeclarationInstantiation needs from an eval script.
+/// https://tc39.es/ecma262/#sec-evaldeclarationinstantiation
+pub struct EvalDeclarations {
+    pub is_strict: bool,
+    pub var_names: Vec<ast::Utf16String>,
+    /// The last declaration of each function name, in source order.
+    pub functions_to_initialize: Vec<FunctionToInitialize>,
+    pub var_scoped_names: Vec<ast::Utf16String>,
+    pub annex_b_candidate_names: Vec<ast::Utf16String>,
+    pub lexical_bindings: Vec<LexicalBinding>,
+    pub private_names: Vec<ast::Utf16String>,
+}
+
+/// Collect what GlobalDeclarationInstantiation needs from a script's top-level scope, taking the functions to
+/// initialize out of `function_table`.
+pub fn collect_script_declarations(
+    scope: &ast::ScopeData,
+    function_table: &mut ast::FunctionTable,
+    arena: &std::sync::Arc<ast::AstArena>,
+) -> ScriptDeclarations {
+    use ast::DeclarationKind;
+
+    // Lexical names (let/const/using/class at top level) — script-only step.
+    let mut lexical_names = Vec::new();
+    for child in &scope.children {
+        match &child.inner {
+            StatementKind::VariableDeclaration(vd) if vd.kind != DeclarationKind::Var => {
+                for declaration in &vd.declarations {
+                    for_each_bound_name(&declaration.target, arena, &mut |name| lexical_names.push(name.into()));
+                }
+            }
+            StatementKind::UsingDeclaration(declarations) => {
+                for declaration in declarations.iter() {
+                    for_each_bound_name(&declaration.target, arena, &mut |name| lexical_names.push(name.into()));
+                }
+            }
+            StatementKind::ClassDeclaration(class_data) => {
+                if let Some(name) = class_data.name {
+                    lexical_names.push(arena.name_of(name).clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let declarations = collect_var_scoped_declarations(scope, function_table, arena);
+    ScriptDeclarations {
+        lexical_names,
+        var_names: declarations.var_names,
+        functions_to_initialize: declarations.functions_to_initialize,
+        var_scoped_names: declarations.var_scoped_names,
+        annex_b_candidate_names: declarations.annex_b_candidate_names,
+        lexical_bindings: declarations.lexical_bindings,
+    }
+}
+
+/// Collect what EvalDeclarationInstantiation needs from an eval script's top-level scope, taking the functions to
+/// initialize out of `function_table`.
+pub fn collect_eval_declarations(
+    scope: &ast::ScopeData,
+    is_strict: bool,
+    function_table: &mut ast::FunctionTable,
+    arena: &std::sync::Arc<ast::AstArena>,
+    referenced_private_names: Vec<ast::Utf16String>,
+) -> EvalDeclarations {
+    let declarations = collect_var_scoped_declarations(scope, function_table, arena);
+    EvalDeclarations {
+        is_strict,
+        var_names: declarations.var_names,
+        functions_to_initialize: declarations.functions_to_initialize,
+        var_scoped_names: declarations.var_scoped_names,
+        annex_b_candidate_names: declarations.annex_b_candidate_names,
+        lexical_bindings: declarations.lexical_bindings,
+        private_names: referenced_private_names,
+    }
+}
+
+struct VarScopedDeclarations {
+    var_names: Vec<ast::Utf16String>,
+    functions_to_initialize: Vec<FunctionToInitialize>,
+    var_scoped_names: Vec<ast::Utf16String>,
+    annex_b_candidate_names: Vec<ast::Utf16String>,
+    lexical_bindings: Vec<LexicalBinding>,
+}
+
+/// Collect var names + function declaration names, deduplicated function
+/// initializations, var-scoped names, annex B names, and lexical bindings.
+///
+/// Shared by both script and eval declaration instantiation.
+fn collect_var_scoped_declarations(
+    scope: &ast::ScopeData,
+    function_table: &mut ast::FunctionTable,
+    arena: &std::sync::Arc<ast::AstArena>,
+) -> VarScopedDeclarations {
+    use ast::DeclarationKind;
+
+    // Var names (var declarations at any nesting level + top-level function declarations)
+    let mut var_names = Vec::new();
+    for child in &scope.children {
+        collect_var_names_recursive(&child.inner, arena, &mut |name| var_names.push(name.into()));
+        if let Some(fd) = child.inner.function_declaration_for_labelled_item()
+            && let Some(name_ident) = fd.name
+        {
+            var_names.push(arena.name_of(name_ident).clone());
+        }
+    }
+
+    // Functions to initialize: keep the last declaration with each name
+    // (ECMAScript hoisting semantics), but emit them in source order. Two
+    // forward passes; StringId keys keep the inserts to a u32 compare.
+    let mut last_position: std::collections::HashMap<ast::StringId, usize> = std::collections::HashMap::new();
+    for (i, child) in scope.children.iter().enumerate() {
+        if let Some(fd) = child.inner.function_declaration_for_labelled_item()
+            && let Some(name_ident) = fd.name
+        {
+            last_position.insert(arena.identifiers[name_ident].name, i);
+        }
+    }
+    let mut functions_to_initialize = Vec::new();
+    for (i, child) in scope.children.iter().enumerate() {
+        if let Some(fd) = child.inner.function_declaration_for_labelled_item()
+            && let Some(name_ident) = fd.name
+            && last_position.get(&arena.identifiers[name_ident].name).copied() == Some(i)
+        {
+            let function_data = function_table.take(fd.function_id);
+            let subtable = function_table.extract_reachable(&function_data, &arena.scopes);
+            functions_to_initialize.push(FunctionToInitialize {
+                name: arena.name_of(name_ident).clone(),
+                shared_function_data: PendingSharedFunctionData {
+                    function_data: Some(function_data),
+                    subtable: Some(subtable),
+                    arena: Some(arena.clone()),
+                    name_override: None,
+                    class_field_initializer_name: None,
+                    should_eager_compile: false,
+                    precompiled_function: None,
+                    enclosing_environment_scope: None,
+                },
+            });
+        }
+    }
+
+    // Var-scoped names (var VariableDeclaration names, excluding function declarations)
+    let mut var_scoped_names = Vec::new();
+    for child in &scope.children {
+        collect_var_names_recursive(&child.inner, arena, &mut |name| var_scoped_names.push(name.into()));
+    }
+
+    let mut lexical_bindings = Vec::new();
+    for child in &scope.children {
+        match &child.inner {
+            StatementKind::VariableDeclaration(vd) if vd.kind != DeclarationKind::Var => {
+                let is_constant = vd.kind == DeclarationKind::Const;
+                for declaration in &vd.declarations {
+                    for_each_bound_name(&declaration.target, arena, &mut |name| {
+                        lexical_bindings.push(LexicalBinding {
+                            name: name.into(),
+                            is_constant,
+                        });
+                    });
+                }
+            }
+            StatementKind::UsingDeclaration(declarations) => {
+                for declaration in declarations.iter() {
+                    for_each_bound_name(&declaration.target, arena, &mut |name| {
+                        lexical_bindings.push(LexicalBinding {
+                            name: name.into(),
+                            is_constant: false,
+                        });
+                    });
+                }
+            }
+            StatementKind::ClassDeclaration(class_data) => {
+                if let Some(name) = class_data.name {
+                    lexical_bindings.push(LexicalBinding {
+                        name: arena.name_of(name).clone(),
+                        is_constant: false,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    VarScopedDeclarations {
+        var_names,
+        functions_to_initialize,
+        var_scoped_names,
+        annex_b_candidate_names: scope.annexb_function_names.clone(),
+        lexical_bindings,
+    }
+}
+
 pub(crate) fn compile_function_payload_to_bytecode(
     payload: ast::FunctionPayload,
     source_len: usize,
