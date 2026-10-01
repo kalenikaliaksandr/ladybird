@@ -18,10 +18,11 @@ pub use crate::runtime::symbol::Symbol;
 pub use ak::Utf16StringDataHeader;
 
 /// Cells the layout points to that the runtime does not define yet.
-pub enum Script {}
 pub enum Module {}
-pub enum ObjectEnvironment {}
 pub enum Intrinsics {}
+
+pub use crate::runtime::object_environment::ObjectEnvironment;
+pub use crate::script::Script;
 
 /// An optional fly string, which is only ever copied in and out.
 #[repr(transparent)]

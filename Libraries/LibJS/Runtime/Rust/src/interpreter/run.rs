@@ -7,15 +7,20 @@
 use core::ffi::c_void;
 use core::ptr::NonNull;
 
+use ak::ScopeGuard;
+
 use super::vm::Vm;
 use crate::bytecode::executable::Executable;
 use crate::layout::cell::Gc;
-use crate::layout::execution_context::ExecutionContext;
+use crate::layout::execution_context::{ExecutionContext, ScriptOrModule};
 use crate::layout::function_object::EcmascriptFunctionObject;
 use crate::layout::object::Object;
 use crate::layout::value::Value;
 use crate::runtime::abstract_operations::new_function_environment;
 use crate::runtime::completion::{Throw, ThrowCompletionOr};
+use crate::runtime::environment::Environment;
+use crate::runtime::error::ErrorKind;
+use crate::runtime::error_types::ErrorType;
 use crate::script::Script;
 use libjs_abi::register;
 
@@ -79,45 +84,96 @@ impl Vm {
         Ok(context_ref.register(register::RETURN_VALUE).get())
     }
 
-    /// Runs `executable` as a script in a context of its own.
-    pub fn run_script_executable(&self, executable: Gc<Executable>) -> Result<Value, Value> {
-        // SAFETY: The caller passes a live executable.
-        let executable_ref = unsafe { executable.as_non_null().as_ref() };
-        let stack = self.interpreter_stack();
-        let mark = stack.top.get();
-        let constant_count = u32::try_from(executable_ref.constants().len()).expect("constant count fits in u32");
-        let Some(context) = stack.allocate(executable_ref.registers_and_locals_count(), constant_count, 0) else {
-            crate::interpreter::runtime_functions::unimplemented_runtime_function(
-                "the InternalError for exceeding the call stack size",
-                0,
-            );
-        };
-        self.push_execution_context(context);
-        let result = self.run_executable(context, executable, 0);
-        self.pop_execution_context();
-        stack.deallocate(mark);
-        match result {
-            Ok(value) if value == Value::EMPTY => Ok(Value::UNDEFINED),
-            other => other,
-        }
-    }
+    // 16.1.6 ScriptEvaluation ( scriptRecord ), https://tc39.es/ecma262/#sec-runtime-semantics-scriptevaluation
+    pub fn run_script(
+        &self,
+        script_record: Gc<Script>,
+        lexical_environment_override: Option<Gc<Environment>>,
+    ) -> ThrowCompletionOr<Value> {
+        let vm = self;
 
-    /// 16.1.6 ScriptEvaluation ( scriptRecord ), https://tc39.es/ecma262/#sec-runtime-semantics-scriptevaluation
-    pub fn run_script(&self, script: Script) -> ThrowCompletionOr<Value> {
-        let declarations = &script.compiled.declarations;
-        if !declarations.lexical_names.is_empty()
-            || !declarations.var_names.is_empty()
-            || !declarations.functions_to_initialize.is_empty()
-            || !declarations.lexical_bindings.is_empty()
-        {
-            crate::interpreter::runtime_functions::unimplemented_runtime_function(
-                "global declaration instantiation",
-                0,
-            );
+        // 1. Let globalEnv be scriptRecord.[[Realm]].[[GlobalEnv]].
+        let global_environment = script_record.realm().global_environment();
+
+        // NOTE: Spec steps are rearranged in order to compute number of registers+constants+locals before construction of the execution context.
+
+        // 12. Let result be Completion(GlobalDeclarationInstantiation(script, globalEnv)).
+        let instantiation_result = script_record.global_declaration_instantiation(vm, global_environment);
+        let mut result = instantiation_result.map(|()| Value::UNDEFINED);
+
+        // 11. Let script be scriptRecord.[[ECMAScriptCode]].
+        let executable = script_record.cached_executable();
+        let registers_and_locals_count = executable.registers_and_locals_count();
+        let constant_count = u32::try_from(executable.constants().len()).expect("constant count fits in u32");
+
+        // 2. Let scriptContext be a new ECMAScript code execution context.
+        let stack = vm.interpreter_stack();
+        let stack_mark = stack.top.get();
+        let Some(script_context) = stack.allocate(registers_and_locals_count, constant_count, 0) else {
+            return vm.throw_completion(ErrorKind::InternalError, ErrorType::CallStackSizeExceeded, &[]);
+        };
+        let _deallocate_guard = ScopeGuard::new(|| stack.deallocate(stack_mark));
+        // SAFETY: The context was just allocated and stays allocated until the guard frees it.
+        let script_context_ref = unsafe { script_context.as_ref() };
+
+        // 3. Set the Function of scriptContext to null.
+        // NOTE: This was done during execution context construction.
+
+        // 4. Set the Realm of scriptContext to scriptRecord.[[Realm]].
+        script_context_ref.realm.set(Some(script_record.realm()));
+
+        // 5. Set the ScriptOrModule of scriptContext to scriptRecord.
+        script_context_ref
+            .script_or_module
+            .set(ScriptOrModule::Script(script_record));
+
+        // 6. Set the VariableEnvironment of scriptContext to globalEnv.
+        script_context_ref
+            .variable_environment
+            .set(Some(global_environment.upcast()));
+
+        // 7. Set the LexicalEnvironment of scriptContext to globalEnv.
+        script_context_ref
+            .lexical_environment
+            .set(Some(global_environment.upcast()));
+
+        // Non-standard: Override the lexical environment if requested.
+        if let Some(lexical_environment_override) = lexical_environment_override {
+            script_context_ref
+                .lexical_environment
+                .set(Some(lexical_environment_override));
         }
-        let executable =
-            Executable::create_with_source_code(self, script.compiled.executable, Some(&script.source_code));
-        self.run_script_executable(executable).map_err(Throw::new)
+
+        // 8. Set the PrivateEnvironment of scriptContext to null.
+
+        // 9. Suspend the currently running execution context.
+        // 10. Push scriptContext onto the execution context stack; scriptContext is now the running execution context.
+        vm.push_execution_context(script_context);
+
+        // 13. If result.[[Type]] is normal, then
+        if result.is_ok() {
+            // a. Set result to Completion(Evaluation of script).
+            result = vm.run_executable(script_context, executable, 0).map_err(Throw::new);
+
+            // b. If result is a normal completion and result.[[Value]] is empty, then
+            if result.is_ok_and(Value::is_empty) {
+                // i. Set result to NormalCompletion(undefined).
+                result = Ok(Value::UNDEFINED);
+            }
+        }
+
+        // 14. Suspend scriptContext and remove it from the execution context stack.
+        vm.pop_execution_context();
+
+        // 15. Assert: The execution context stack is not empty.
+        assert!(!vm.execution_context_stack_is_empty());
+
+        // FIXME: 16. Resume the context that is now on the top of the execution context stack as the running execution context.
+
+        vm.head.execution_generation.set(vm.head.execution_generation.get() + 1);
+
+        // 17. Return ? result.
+        result
     }
 
     /// Enters a frame for a call of `callee_function` that the interpreter runs inline, as Return leaves it: the
