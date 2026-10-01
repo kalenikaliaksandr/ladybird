@@ -512,9 +512,10 @@ pub mod test_script_realm {
     use crate::runtime::completion::ThrowCompletionOr;
     use crate::runtime::global_environment::test_global_object::set_up_global_object;
     use crate::runtime::object::StackFrameInfo;
-    use crate::runtime::print::{PrintContext, print_value};
+    use crate::runtime::print::{PrintContext, print};
     use crate::runtime::realm::test_realm::{TestRealm, key};
     use crate::script::Script;
+    use std::io::Write;
 
     pub struct ScriptRealm<'vm> {
         vm: &'vm Vm,
@@ -569,19 +570,25 @@ pub mod test_script_realm {
         /// Runs `source` and describes its completion the way the C++ js REPL prints it.
         pub fn evaluate(&self, source: &str) -> String {
             let completion = self.run(source);
-            let context = PrintContext {
+            let mut text = Vec::new();
+            let mut context = PrintContext {
+                vm: self.vm,
+                stream: &mut text,
                 strip_ansi: true,
                 raw_strings: false,
             };
-            let mut text = String::new();
-            match completion {
-                Ok(value) => print_value(&mut text, &context, value),
+            let printed = match completion {
+                Ok(value) => print(value, &mut context),
                 Err(throw) => {
-                    text.push_str("Uncaught ");
-                    print_value(&mut text, &context, throw.value());
+                    context
+                        .stream
+                        .write_all(b"Uncaught ")
+                        .expect("writing into a buffer succeeds");
+                    print(throw.value(), &mut context)
                 }
-            }
-            text
+            };
+            printed.expect("printing into a buffer succeeds");
+            String::from_utf8(text).expect("the printed value is UTF-8")
         }
 
         pub fn global_value(&self, name: &str) -> Value {

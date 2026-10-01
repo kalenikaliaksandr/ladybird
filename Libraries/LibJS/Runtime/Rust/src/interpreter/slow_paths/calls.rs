@@ -1746,7 +1746,7 @@ mod tests {
         });
         assert!(
             message.contains(&type_error(
-                "[object EcmascriptFunctionObject] is not a constructor (evaluated from 'f')"
+                "[object ECMAScriptFunctionObject] is not a constructor (evaluated from 'f')"
             )),
             "{message}"
         );
