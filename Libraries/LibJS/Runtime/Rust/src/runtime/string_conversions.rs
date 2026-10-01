@@ -1,0 +1,230 @@
+/*
+ * Copyright (c) 2026-present, the Ladybird developers.
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+//! The parts of AK/StringConversions.cpp that the numeric conversions build on: decimal parsing as fast_float does
+//! it, and the shortest decimal form of a double as fmt's Dragonbox computes it.
+
+use core::fmt::Write;
+
+/// AK::parse_number<double>(string, TrimWhitespace::No). AK parses with fast_float in its general format with a
+/// leading plus allowed and no "inf" or "nan", and requires the whole string to be consumed. Both fast_float and
+/// Rust's parser round correctly, so only the grammar has to be checked here.
+pub fn parse_number_f64(code_units: &[u16]) -> Option<f64> {
+    let is_digit_at = |index: usize| {
+        code_units
+            .get(index)
+            .is_some_and(|code_unit| is_ascii_digit(*code_unit))
+    };
+    let is_at = |index: usize, character: u8| code_units.get(index) == Some(&u16::from(character));
+
+    let mut index = 0;
+    if is_at(index, b'-') || is_at(index, b'+') {
+        index += 1;
+    }
+
+    let integer_start = index;
+    while is_digit_at(index) {
+        index += 1;
+    }
+    let mut digit_count = index - integer_start;
+
+    if is_at(index, b'.') {
+        index += 1;
+        let fraction_start = index;
+        while is_digit_at(index) {
+            index += 1;
+        }
+        digit_count += index - fraction_start;
+    }
+
+    if digit_count == 0 {
+        return None;
+    }
+
+    if is_at(index, b'e') || is_at(index, b'E') {
+        let exponent_marker = index;
+        index += 1;
+        if is_at(index, b'-') || is_at(index, b'+') {
+            index += 1;
+        }
+        let exponent_start = index;
+        while is_digit_at(index) {
+            index += 1;
+        }
+        // fast_float stops before an exponent marker that has no digits, which leaves the string partially consumed.
+        if index == exponent_start {
+            index = exponent_marker;
+        }
+    }
+
+    if index != code_units.len() {
+        return None;
+    }
+
+    let text: String = code_units
+        .iter()
+        .map(|code_unit| char::from(*code_unit as u8))
+        .collect();
+    text.parse::<f64>().ok()
+}
+
+fn is_ascii_digit(code_unit: u16) -> bool {
+    (u16::from(b'0')..=u16::from(b'9')).contains(&code_unit)
+}
+
+const DOUBLE_MANTISSA_BITS: u32 = 52;
+const DOUBLE_EXPONENT_BIAS: i32 = 1023;
+
+/// The exact value of a finite double, significand × 2^exponent, from the fields AK::FloatExtractor exposes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BinaryDecomposition {
+    pub significand: u64,
+    pub exponent: i32,
+}
+
+pub fn decompose_double(number: f64) -> BinaryDecomposition {
+    let bits = number.to_bits();
+    let extracted_exponent = ((bits >> DOUBLE_MANTISSA_BITS) & 0x7ff) as i32;
+    let extracted_mantissa = bits & ((1 << DOUBLE_MANTISSA_BITS) - 1);
+
+    if extracted_exponent == 0 {
+        BinaryDecomposition {
+            significand: extracted_mantissa,
+            exponent: 1 - DOUBLE_EXPONENT_BIAS - DOUBLE_MANTISSA_BITS as i32,
+        }
+    } else {
+        BinaryDecomposition {
+            significand: extracted_mantissa | (1 << DOUBLE_MANTISSA_BITS),
+            exponent: extracted_exponent - DOUBLE_EXPONENT_BIAS - DOUBLE_MANTISSA_BITS as i32,
+        }
+    }
+}
+
+/// AK::DecimalExponentialForm: the value is (-1)^sign × fraction × 10^exponent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecimalExponentialForm {
+    pub sign: bool,
+    pub fraction: u64,
+    pub exponent: i32,
+}
+
+/// AK::convert_to_decimal_exponential_form, which runs fmt's Dragonbox: the fewest significant decimal digits that
+/// round back to the value under round-to-nearest-even, and among those the candidate closest to the value, ties
+/// going to the even candidate. The fraction has no trailing zeros.
+pub fn convert_to_decimal_exponential_form(value: f64) -> DecimalExponentialForm {
+    debug_assert!(value.is_finite());
+
+    let sign = value.is_sign_negative();
+    let magnitude = value.abs();
+    if magnitude == 0.0 {
+        return DecimalExponentialForm {
+            sign,
+            fraction: 0,
+            exponent: 0,
+        };
+    }
+
+    // Rust's shortest formatting finds the same digit count and the same closest candidate, except that it rounds an
+    // exact tie between two candidates upwards where Dragonbox picks the even one.
+    let (fraction, exponent) = shortest_round_trip_digits(magnitude);
+    let fraction = break_tie_towards_even_candidate(magnitude, fraction, exponent).unwrap_or(fraction);
+
+    DecimalExponentialForm {
+        sign,
+        fraction,
+        exponent,
+    }
+}
+
+struct FormattingBuffer {
+    bytes: [u8; 32],
+    length: usize,
+}
+
+impl Write for FormattingBuffer {
+    fn write_str(&mut self, string: &str) -> core::fmt::Result {
+        let end = self.length + string.len();
+        self.bytes
+            .get_mut(self.length..end)
+            .ok_or(core::fmt::Error)?
+            .copy_from_slice(string.as_bytes());
+        self.length = end;
+        Ok(())
+    }
+}
+
+fn shortest_round_trip_digits(magnitude: f64) -> (u64, i32) {
+    let mut buffer = FormattingBuffer {
+        bytes: [0; 32],
+        length: 0,
+    };
+    write!(buffer, "{magnitude:e}").expect("a double's exponential form fits the buffer");
+    let formatted = &buffer.bytes[..buffer.length];
+
+    let exponent_marker = formatted
+        .iter()
+        .position(|byte| *byte == b'e')
+        .expect("exponential form has an exponent");
+    let mut fraction = 0u64;
+    let mut digit_count = 0i32;
+    for digit in formatted[..exponent_marker].iter().filter(|byte| byte.is_ascii_digit()) {
+        fraction = fraction * 10 + u64::from(digit - b'0');
+        digit_count += 1;
+    }
+
+    let exponent_text = core::str::from_utf8(&formatted[exponent_marker + 1..]).expect("the exponent is ASCII");
+    let exponent: i32 = exponent_text.parse().expect("the exponent is a decimal integer");
+    (fraction, exponent - (digit_count - 1))
+}
+
+/// When the value lies exactly halfway between two candidates with the shortest digit count, returns the candidate
+/// Dragonbox picks: the even one if both round back to the value, otherwise the one that does.
+fn break_tie_towards_even_candidate(magnitude: f64, fraction: u64, exponent: i32) -> Option<u64> {
+    let BinaryDecomposition {
+        significand,
+        exponent: binary_exponent,
+    } = decompose_double(magnitude);
+
+    // value = significand × 2^binary_exponent sits halfway between two multiples of 10^exponent exactly when
+    // 2 × value / 10^exponent is an odd integer. That only happens for exponent ≤ 0, where it is
+    // (significand / 2^trailing_zeros) × 5^-exponent, and needs the powers of two to cancel out.
+    let trailing_zeros = significand.trailing_zeros() as i32;
+    if exponent > 0 || exponent != binary_exponent + 1 + trailing_zeros {
+        return None;
+    }
+
+    // A shortest candidate has at most 17 digits, so a tie needs 2 × value / 10^exponent to fit in a u128.
+    let five_to_the_minus_exponent = 5u128.checked_pow(exponent.unsigned_abs())?;
+    let twice_value_over_unit = five_to_the_minus_exponent.checked_mul(u128::from(significand >> trailing_zeros))?;
+    let lower_candidate = u64::try_from(twice_value_over_unit / 2).ok()?;
+    let upper_candidate = lower_candidate + 1;
+    debug_assert!(fraction == lower_candidate || fraction == upper_candidate);
+
+    // Both candidates are 10^exponent / 2 away from the value. The upper one rounds back to the value when that is
+    // less than half the gap to the next double, 2^(binary_exponent - 1). Substituting the exponents, that is
+    // 2^(trailing_zeros + 1) < 5^-exponent. Equality cannot occur, so whether the boundaries are inclusive does not
+    // matter. The gap to the previous double is half as large when the significand is a power of two above the
+    // subnormal range, as fmt and Rust both treat it.
+    let is_power_of_two_with_shorter_lower_gap = significand == 1 << DOUBLE_MANTISSA_BITS;
+    let half_unit_is_below = |power_of_two_exponent: i32| (1u128 << power_of_two_exponent) < five_to_the_minus_exponent;
+    let upper_rounds_back = half_unit_is_below(trailing_zeros + 1);
+    let lower_rounds_back = half_unit_is_below(if is_power_of_two_with_shorter_lower_gap {
+        trailing_zeros + 2
+    } else {
+        trailing_zeros + 1
+    });
+
+    match (lower_rounds_back, upper_rounds_back) {
+        (true, true) => Some(if lower_candidate % 2 == 0 {
+            lower_candidate
+        } else {
+            upper_candidate
+        }),
+        (true, false) => Some(lower_candidate),
+        (false, true) => Some(upper_candidate),
+        (false, false) => None,
+    }
+}
