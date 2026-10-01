@@ -75,6 +75,19 @@ if (NOT WIN32)
 
     add_test(NAME RustWorkspace COMMAND ${rust_workspace_test_command})
     add_test(NAME Flap COMMAND ${flap_test_command})
+
+    # The Rust runtime's unit tests link the shared LibGC to run against a live heap.
+    if (ENABLE_LIBJS_RUST_RUNTIME AND BUILD_SHARED_LIBS)
+        add_test(
+            NAME LibJSRustRuntime
+            COMMAND "${CMAKE_COMMAND}" -E env
+                "CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/cargo/libjs-runtime-tests"
+                "LIBJS_RUNTIME_TEST_LIBRARY_DIRECTORY=$<TARGET_FILE_DIR:LibGC>"
+                "${RUST_CARGO}" test --workspace
+                    --manifest-path "${LADYBIRD_SOURCE_DIR}/Libraries/LibJS/Runtime/Rust/Cargo.toml"
+                    --target "${RUST_TARGET_TRIPLE}"
+        )
+    endif()
 endif()
 
 if (ENABLE_GUI_TARGETS)
