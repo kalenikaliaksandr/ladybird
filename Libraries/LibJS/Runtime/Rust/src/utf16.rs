@@ -1,0 +1,246 @@
+/*
+ * Copyright (c) 2026-present, the Ladybird developers.
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+//! The operations on AK's UTF-16 strings that the runtime needs and the ak crate does not provide. The ak crate only
+//! exposes a string's storage, so new strings are built here by copying code units.
+
+use core::sync::atomic::Ordering;
+
+use ak::{Utf16FlyString, Utf16String, Utf16StringUnits};
+
+/// The longest string AK stores inline in its one-word representation, as ASCII.
+pub const MAX_SHORT_STRING_BYTE_COUNT: usize = size_of::<usize>() - 1;
+
+/// Mirrors AK::Detail::Utf16StringData::Flag::IsFlyString.
+const IS_FLY_STRING_FLAG: u32 = 1 << 2;
+
+/// Mirrors AK::Utf16View: a borrowed run of UTF-16 code units, stored either as ASCII bytes or as UTF-16.
+#[derive(Clone, Copy, Debug)]
+pub enum Utf16View<'a> {
+    Ascii(&'a [u8]),
+    Utf16(&'a [u16]),
+}
+
+impl<'a> Utf16View<'a> {
+    pub const EMPTY: Utf16View<'static> = Utf16View::Ascii(&[]);
+
+    pub fn from_units(units: Utf16StringUnits<'a>) -> Self {
+        match units {
+            Utf16StringUnits::Ascii(units) => Self::Ascii(units),
+            Utf16StringUnits::Utf16(units) => Self::Utf16(units),
+        }
+    }
+
+    pub fn of_string(string: &'a Utf16String) -> Self {
+        Self::from_units(string.as_units())
+    }
+
+    pub fn of_fly_string(string: &'a Utf16FlyString) -> Self {
+        Self::from_units(string.as_units())
+    }
+
+    pub fn length_in_code_units(self) -> usize {
+        match self {
+            Self::Ascii(units) => units.len(),
+            Self::Utf16(units) => units.len(),
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.length_in_code_units() == 0
+    }
+
+    pub fn has_ascii_storage(self) -> bool {
+        matches!(self, Self::Ascii(_))
+    }
+
+    pub fn is_ascii(self) -> bool {
+        match self {
+            Self::Ascii(_) => true,
+            Self::Utf16(units) => units.iter().all(|&code_unit| code_unit < 0x80),
+        }
+    }
+
+    pub fn code_unit_at(self, index: usize) -> u16 {
+        match self {
+            Self::Ascii(units) => u16::from(units[index]),
+            Self::Utf16(units) => units[index],
+        }
+    }
+
+    pub fn substring_view(self, code_unit_offset: usize, code_unit_length: usize) -> Self {
+        let range = code_unit_offset..code_unit_offset + code_unit_length;
+        match self {
+            Self::Ascii(units) => Self::Ascii(&units[range]),
+            Self::Utf16(units) => Self::Utf16(&units[range]),
+        }
+    }
+
+    pub fn code_units(self) -> CodeUnits<'a> {
+        match self {
+            Self::Ascii(units) => CodeUnits::Ascii(units.iter()),
+            Self::Utf16(units) => CodeUnits::Utf16(units.iter()),
+        }
+    }
+
+    pub fn append_to(self, code_units: &mut Vec<u16>) {
+        match self {
+            Self::Ascii(units) => code_units.extend(units.iter().map(|&code_unit| u16::from(code_unit))),
+            Self::Utf16(units) => code_units.extend_from_slice(units),
+        }
+    }
+
+    pub fn to_utf16_string(self) -> Utf16String {
+        match self {
+            Self::Ascii(units) => Utf16String::from_utf8(ascii_as_str(units)),
+            Self::Utf16(units) => Utf16String::from_utf16(units),
+        }
+    }
+
+    pub fn to_utf16_fly_string(self) -> Utf16FlyString {
+        match self {
+            Self::Ascii(units) => Utf16FlyString::from_utf8(ascii_as_str(units)),
+            Self::Utf16(units) => Utf16FlyString::from_utf16(units),
+        }
+    }
+
+    /// Converts to UTF-8, replacing unpaired surrogates with U+FFFD like AK::Utf16View::to_utf8.
+    pub fn to_utf8(self) -> String {
+        match self {
+            Self::Ascii(units) => ascii_as_str(units).to_owned(),
+            Self::Utf16(units) => String::from_utf16_lossy(units),
+        }
+    }
+}
+
+impl PartialEq for Utf16View<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Ascii(left), Self::Ascii(right)) => left == right,
+            (Self::Utf16(left), Self::Utf16(right)) => left == right,
+            _ => {
+                self.length_in_code_units() == other.length_in_code_units() && self.code_units().eq(other.code_units())
+            }
+        }
+    }
+}
+
+impl Eq for Utf16View<'_> {}
+
+impl PartialEq<str> for Utf16View<'_> {
+    fn eq(&self, other: &str) -> bool {
+        self.code_units().eq(other.encode_utf16())
+    }
+}
+
+impl PartialEq<&str> for Utf16View<'_> {
+    fn eq(&self, other: &&str) -> bool {
+        *self == **other
+    }
+}
+
+/// The code units of a Utf16View, widened to u16.
+#[derive(Clone)]
+pub enum CodeUnits<'a> {
+    Ascii(core::slice::Iter<'a, u8>),
+    Utf16(core::slice::Iter<'a, u16>),
+}
+
+impl Iterator for CodeUnits<'_> {
+    type Item = u16;
+
+    fn next(&mut self) -> Option<u16> {
+        match self {
+            Self::Ascii(units) => units.next().map(|&code_unit| u16::from(code_unit)),
+            Self::Utf16(units) => units.next().copied(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Ascii(units) => units.size_hint(),
+            Self::Utf16(units) => units.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for CodeUnits<'_> {}
+
+fn ascii_as_str(units: &[u8]) -> &str {
+    core::str::from_utf8(units).expect("ASCII storage holds ASCII")
+}
+
+/// Mirrors AK::Utf16String::has_short_ascii_storage.
+pub fn has_short_ascii_storage(string: &Utf16String) -> bool {
+    string.raw_identity() & ak::SHORT_STRING_FLAG != 0
+}
+
+/// Mirrors AK::Utf16String::has_fly_string_storage: whether the string is stored as a fly string already, either
+/// inline or in storage interned in AK's fly string table.
+pub fn has_fly_string_storage(string: &Utf16String) -> bool {
+    if has_short_ascii_storage(string) {
+        return true;
+    }
+    // SAFETY: A string without short storage is the address of its live data, which starts with this header.
+    let header = unsafe { &*core::ptr::with_exposed_provenance::<ak::Utf16StringDataHeader>(string.raw_identity()) };
+    header.flags.load(Ordering::Acquire) & IS_FLY_STRING_FLAG != 0
+}
+
+/// Mirrors the AK::Utf16FlyString constructor from a Utf16String. AK interns the string's own storage when no equal
+/// fly string exists yet; the ak crate cannot add existing storage to the table, so this interns a copy instead.
+pub fn to_utf16_fly_string(string: &Utf16String) -> Utf16FlyString {
+    if has_fly_string_storage(string) {
+        // SAFETY: The string is live while the reference is added, and that reference moves to the fly string, which
+        // can own the storage since it is a fly string's already.
+        return unsafe {
+            ak::reference_utf16_string(string.raw_identity());
+            Utf16FlyString::from_raw_owned(string.raw_identity())
+        };
+    }
+    Utf16View::of_string(string).to_utf16_fly_string()
+}
+
+/// Concatenates views into a new string, ASCII when every view is.
+pub fn concatenate(views: &[Utf16View<'_>]) -> Utf16String {
+    let length = views.iter().map(|view| view.length_in_code_units()).sum();
+    if views.iter().all(|view| view.has_ascii_storage()) {
+        let mut bytes = Vec::with_capacity(length);
+        for view in views {
+            if let Utf16View::Ascii(units) = view {
+                bytes.extend_from_slice(units);
+            }
+        }
+        return Utf16String::from_utf8(ascii_as_str(&bytes));
+    }
+    let mut code_units = Vec::with_capacity(length);
+    for view in views {
+        view.append_to(&mut code_units);
+    }
+    Utf16String::from_utf16(&code_units)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn views_compare_code_units_across_storage_kinds() {
+        let ascii = Utf16View::Ascii(b"abc");
+        let utf16 = Utf16View::Utf16(&[0x61, 0x62, 0x63]);
+        assert_eq!(ascii, utf16);
+        assert_eq!(ascii, "abc");
+        assert_ne!(ascii, Utf16View::Utf16(&[0x61, 0x62]));
+        assert_eq!(utf16.substring_view(1, 2), "bc");
+        assert_eq!(utf16.code_unit_at(2), 0x63);
+        assert!(Utf16View::Utf16(&[0x61]).is_ascii() && !Utf16View::Utf16(&[0xd800]).is_ascii());
+    }
+
+    #[test]
+    fn unpaired_surrogates_become_replacement_characters_in_utf8() {
+        assert_eq!(Utf16View::Utf16(&[0x61, 0xd800, 0x62]).to_utf8(), "a\u{fffd}b");
+        assert_eq!(Utf16View::Utf16(&[0xd83d, 0xde00]).to_utf8(), "\u{1f600}");
+    }
+}
