@@ -44,8 +44,36 @@ pub struct SlowPathLayout {
     pub array: Option<(usize, usize, bool)>,
 }
 
+/// How an operation's slow path receives its operands and returns its outputs.
+///
+/// The control word every form returns is described in `SlowPaths.cpp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlowPathAbi {
+    /// `AsmSlowPathResult f(VM*, u32 pc, Op::Name const*, Value inputs...)`,
+    /// where `AsmSlowPathResult` is `{ i64 control; u64 value; }` returned in
+    /// two registers and `value` is the encoded output, if there is one.
+    Scalar,
+    /// `i64 f(VM*, u32 pc, Op::Name const*, Op::Name::Values& outputs, Value inputs...)`,
+    /// where the inputs include input/output operands.
+    Mixed,
+    /// `i64 f(VM*, u32 pc, Op::Name const*, Op::Name::Values& values)`.
+    Record,
+}
+
 impl SlowPathLayout {
-    pub fn uses_scalar_arguments(&self) -> bool {
+    /// Classify the slow-path call of this operation, where `record_form_only`
+    /// is set for targets that always pass a record, which is what Windows does.
+    pub fn abi(&self, record_form_only: bool) -> SlowPathAbi {
+        if record_form_only || self.array.is_some() {
+            SlowPathAbi::Record
+        } else if self.uses_scalar_arguments() {
+            SlowPathAbi::Scalar
+        } else {
+            SlowPathAbi::Mixed
+        }
+    }
+
+    fn uses_scalar_arguments(&self) -> bool {
         self.array.is_none()
             && self
                 .fields
@@ -835,7 +863,7 @@ mod tests {
         .unwrap();
         let op = &ops[0];
         let layout = SlowPathLayout::new(op);
-        assert!(!layout.uses_scalar_arguments());
+        assert_eq!(layout.abi(false), SlowPathAbi::Record);
         assert_eq!(layout.fields.len(), 3);
         for (index, (name, mode)) in [
             ("m_dst", ParameterMode::Out),
@@ -866,10 +894,13 @@ mod tests {
             "test.flap",
             "handler Get(dst: out Operand, base: Operand, property: Optional<Operand>) { dispatch_next; }\nhandler Update(dst: out Operand, src: inout Operand) { dispatch_next; }\nhandler OptionalOutput(dst: out Optional<Operand>) { dispatch_next; }\nhandler Put(base: Operand, value: Operand) { dispatch_next; }",
         ).unwrap();
-        assert!(SlowPathLayout::new(&ops[0]).uses_scalar_arguments());
-        assert!(!SlowPathLayout::new(&ops[1]).uses_scalar_arguments());
-        assert!(!SlowPathLayout::new(&ops[2]).uses_scalar_arguments());
-        assert!(SlowPathLayout::new(&ops[3]).uses_scalar_arguments());
+        assert_eq!(SlowPathLayout::new(&ops[0]).abi(false), SlowPathAbi::Scalar);
+        assert_eq!(SlowPathLayout::new(&ops[1]).abi(false), SlowPathAbi::Mixed);
+        assert_eq!(SlowPathLayout::new(&ops[2]).abi(false), SlowPathAbi::Mixed);
+        assert_eq!(SlowPathLayout::new(&ops[3]).abi(false), SlowPathAbi::Scalar);
+        for op in &ops {
+            assert_eq!(SlowPathLayout::new(op).abi(true), SlowPathAbi::Record);
+        }
     }
 
     #[test]
