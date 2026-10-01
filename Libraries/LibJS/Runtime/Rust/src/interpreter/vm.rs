@@ -464,6 +464,7 @@ mod tests {
             property_lookup_caches: 1,
             global_variable_caches: 1,
             environment_coordinate_caches: 1,
+            environment_shape_caches: 1,
         };
         let executable = vm.heap().allocate(Executable::new(
             vec![0u8; 8].into_boxed_slice(),

@@ -940,6 +940,7 @@ mod tests {
             property_lookup_caches: 64,
             global_variable_caches: 0,
             environment_coordinate_caches: 0,
+            environment_shape_caches: 0,
         };
         let executable = Executable::create_from_parts(
             &vm,

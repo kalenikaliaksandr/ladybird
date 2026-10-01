@@ -4,21 +4,26 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-//! The parts of Libraries/LibJS/Runtime/AbstractOperations.cpp the object model needs.
+//! The parts of Libraries/LibJS/Runtime/AbstractOperations.cpp the runtime has so far.
 
 use ak::{ScopeGuard, Utf16FlyString};
 
 use crate::bytecode::executable::StaticPropertyLookupCacheSite;
+use crate::gc::gc_ref_cell::GcRefCell;
 use crate::gc::root::MarkedVec;
 use crate::interpreter::runtime_functions::unimplemented_runtime_function;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
+use crate::layout::function_object::EcmascriptFunctionObject;
 use crate::layout::function_object::FunctionObject;
 use crate::layout::value::Value;
 use crate::runtime::accessor::Accessor;
 use crate::runtime::completion::ThrowCompletionOr;
+use crate::runtime::declarative_environment::DeclarativeEnvironment;
+use crate::runtime::environment::{Environment, InitializeBindingHint, ThisBindingStatus};
 use crate::runtime::error::ErrorKind;
 use crate::runtime::error_types::ErrorType;
+use crate::runtime::function_environment::FunctionEnvironment;
 use crate::runtime::indexed_properties::ValueAndAttributes;
 use crate::runtime::object::{Object, StackFrameInfo};
 use crate::runtime::private_environment::PrivateEnvironment;
@@ -26,6 +31,7 @@ use crate::runtime::property_attributes::PropertyAttributes;
 use crate::runtime::property_descriptor::PropertyDescriptor;
 use crate::runtime::property_key::PropertyKey;
 use crate::runtime::value::same_value;
+use libjs_runtime_macros::Trace;
 
 /// The Object a function object starts with.
 pub fn function_object_as_object(function: Gc<FunctionObject>) -> Gc<Object> {
@@ -450,4 +456,314 @@ pub fn new_private_environment(vm: &Vm, outer: Option<Gc<PrivateEnvironment>>) -
     // 1. Let names be a new empty List.
     // 2. Return the PrivateEnvironment Record { [[OuterPrivateEnvironment]]: outerPrivEnv, [[Names]]: names }.
     PrivateEnvironment::create(vm, outer)
+}
+
+// 9.1.2.2 NewDeclarativeEnvironment ( E ), https://tc39.es/ecma262/#sec-newdeclarativeenvironment
+// 4.1.2.1 NewDeclarativeEnvironment ( E ), https://tc39.es/proposal-explicit-resource-management/#sec-declarative-environment-records-initializebinding-n-v
+pub fn new_declarative_environment(vm: &Vm, environment: Gc<Environment>) -> Gc<DeclarativeEnvironment> {
+    // 1. Let env be a new Declarative Environment Record containing no bindings.
+    // 2. Set env.[[OuterEnv]] to E.
+    // 3. Set env.[[DisposeCapability]] to NewDisposeCapability().
+    // 4. Return env.
+    DeclarativeEnvironment::create(vm, Some(environment))
+}
+
+/// ECMAScriptFunctionObject::environment(), until ECMAScript function objects are cells of the runtime.
+fn ecmascript_function_object_environment(function: Gc<EcmascriptFunctionObject>) -> Option<Gc<Environment>> {
+    // SAFETY: A Gc points to a live cell.
+    unsafe { function.as_non_null().as_ref() }.environment.get()
+}
+
+/// Whether F.[[ThisMode]] is lexical, which an ECMAScript function object keeps in its shared data.
+fn ecmascript_function_object_this_mode_is_lexical(_function: Gc<EcmascriptFunctionObject>) -> bool {
+    unimplemented_runtime_function("ECMAScriptFunctionObject::this_mode, for NewFunctionEnvironment", 0)
+}
+
+fn native_javascript_backed_function_this_mode_is_lexical(_function: Gc<FunctionObject>) -> bool {
+    unimplemented_runtime_function(
+        "NativeJavaScriptBackedFunction::this_mode, for NewFunctionEnvironment",
+        0,
+    )
+}
+
+// 9.1.2.4 NewFunctionEnvironment ( F, newTarget ), https://tc39.es/ecma262/#sec-newfunctionenvironment
+// 4.1.2.2 NewFunctionEnvironment ( F, newTarget ), https://tc39.es/proposal-explicit-resource-management/#sec-newfunctionenvironment
+pub fn new_function_environment(
+    vm: &Vm,
+    function: Gc<EcmascriptFunctionObject>,
+    new_target: Option<Gc<Object>>,
+) -> Gc<FunctionEnvironment> {
+    // 1. Let env be a new function Environment Record containing no bindings.
+    let env = FunctionEnvironment::create(vm, ecmascript_function_object_environment(function));
+
+    // 2. Set env.[[FunctionObject]] to F.
+    // SAFETY: An ECMAScript function object starts with its FunctionObject.
+    env.set_function_object(unsafe { Gc::from_non_null(function.as_non_null().cast()) });
+
+    if ecmascript_function_object_this_mode_is_lexical(function) {
+        // 3. If F.[[ThisMode]] is lexical, set env.[[ThisBindingStatus]] to lexical.
+        env.set_this_binding_status(ThisBindingStatus::Lexical);
+    } else {
+        // 4. Else, set env.[[ThisBindingStatus]] to uninitialized.
+        env.set_this_binding_status(ThisBindingStatus::Uninitialized);
+    }
+
+    // 5. Set env.[[NewTarget]] to newTarget.
+    env.set_new_target(new_target.map_or(Value::UNDEFINED, Value::from_object));
+
+    // 6. Set env.[[OuterEnv]] to F.[[Environment]].
+    // 7. Set env.[[DisposeCapability]] to NewDisposeCapability().
+    // NOTE: Done in step 1 via the FunctionEnvironment constructor.
+
+    // 8. Return env.
+    env
+}
+
+// 9.1.2.4 NewFunctionEnvironment ( F, newTarget ), https://tc39.es/ecma262/#sec-newfunctionenvironment
+// 4.1.2.2 NewFunctionEnvironment ( F, newTarget ), https://tc39.es/proposal-explicit-resource-management/#sec-newfunctionenvironment
+pub fn new_function_environment_for_native_javascript_backed_function(
+    vm: &Vm,
+    function: Gc<FunctionObject>,
+    new_target: Option<Gc<Object>>,
+) -> Gc<FunctionEnvironment> {
+    // 1. Let env be a new function Environment Record containing no bindings.
+    let env = FunctionEnvironment::create(vm, None);
+
+    // 2. Set env.[[FunctionObject]] to F.
+    env.set_function_object(function);
+
+    if native_javascript_backed_function_this_mode_is_lexical(function) {
+        // 3. If F.[[ThisMode]] is lexical, set env.[[ThisBindingStatus]] to lexical.
+        env.set_this_binding_status(ThisBindingStatus::Lexical);
+    } else {
+        // 4. Else, set env.[[ThisBindingStatus]] to uninitialized.
+        env.set_this_binding_status(ThisBindingStatus::Uninitialized);
+    }
+
+    // 5. Set env.[[NewTarget]] to newTarget.
+    env.set_new_target(new_target.map_or(Value::UNDEFINED, Value::from_object));
+
+    // 6. Set env.[[OuterEnv]] to F.[[Environment]].
+    // 7. Set env.[[DisposeCapability]] to NewDisposeCapability().
+    // NOTE: Done in step 1 via the FunctionEnvironment constructor.
+
+    // 8. Return env.
+    env
+}
+
+// 9.4.3 GetThisEnvironment ( ), https://tc39.es/ecma262/#sec-getthisenvironment
+pub fn get_this_environment(vm: &Vm) -> Gc<Environment> {
+    let context = vm
+        .running_execution_context()
+        .expect("GetThisEnvironment runs in an execution context");
+
+    // 1. Let env be the running execution context's LexicalEnvironment.
+    // SAFETY: The running execution context is live.
+    let mut env = unsafe { context.as_ref() }.lexical_environment.get();
+
+    // 2. Repeat,
+    while let Some(environment) = env {
+        // a. Let exists be env.HasThisBinding().
+        // b. If exists is true, return env.
+        if environment.has_this_binding() {
+            return environment;
+        }
+
+        // c. Let outer be env.[[OuterEnv]].
+        // d. Assert: outer is not null.
+        // e. Set env to outer.
+        env = environment.outer_environment();
+    }
+    unreachable!("the outermost environment has a this binding");
+}
+
+// 2.1.1 DisposeCapability Records, https://tc39.es/proposal-explicit-resource-management/#sec-disposecapability-records
+#[derive(Default, Trace)]
+pub struct DisposeCapability {
+    pub disposable_resource_stack: Option<Vec<DisposableResource>>, // [[DisposableResourceStack]]
+}
+
+// 2.1.2 DisposableResource Records, https://tc39.es/proposal-explicit-resource-management/#sec-disposableresource-records
+#[derive(Clone, Copy, Trace)]
+pub struct DisposableResource {
+    pub resource_value: Option<Gc<Object>>, // [[ResourceValue]]
+    #[gc(untraced)]
+    pub hint: InitializeBindingHint, // [[Hint]]
+    pub dispose_method: Option<Gc<FunctionObject>>, // [[DisposeMethod]]
+}
+
+// 2.1.3 NewDisposeCapability ( ), https://tc39.es/proposal-explicit-resource-management/#sec-newdisposecapability
+pub fn new_dispose_capability() -> DisposeCapability {
+    // 1. Let stack be a new empty List.
+    // 2. Return the DisposeCapability Record { [[DisposableResourceStack]]: stack }.
+    DisposeCapability::default()
+}
+
+// 2.1.4 AddDisposableResource ( disposeCapability, V, hint [ , method ] ), https://tc39.es/proposal-explicit-resource-management/#sec-adddisposableresource-disposable-v-hint-disposemethod
+pub fn add_disposable_resource(
+    vm: &Vm,
+    dispose_capability: &GcRefCell<DisposeCapability>,
+    value: Value,
+    hint: InitializeBindingHint,
+    method: Option<Gc<FunctionObject>>,
+) -> ThrowCompletionOr<()> {
+    let resource = match method {
+        // 1. If method is not present then,
+        None => {
+            // a. If V is either null or undefined and hint is sync-dispose, then
+            if value.is_nullish() && hint == InitializeBindingHint::SyncDispose {
+                // i. Return unused.
+                return Ok(());
+            }
+
+            // b. NOTE: When V is either null or undefined and hint is async-dispose, we record that the resource was evaluated
+            //    to ensure we will still perform an Await when resources are later disposed.
+
+            // c. Let resource be ? CreateDisposableResource(V, hint).
+            create_disposable_resource(vm, value, hint, None)?
+        }
+        // 2. Else,
+        Some(method) => {
+            // a. Assert: V is undefined.
+            assert!(value.is_undefined());
+
+            // b. Let resource be ? CreateDisposableResource(undefined, hint, method).
+            create_disposable_resource(vm, Value::UNDEFINED, hint, Some(method))?
+        }
+    };
+
+    // 3. Append resource to disposeCapability.[[DisposableResourceStack]].
+    // NB: Creating the resource can run JavaScript, so the capability is only borrowed to append to it.
+    dispose_capability
+        .borrow_mut()
+        .disposable_resource_stack
+        .get_or_insert_with(Vec::new)
+        .push(resource);
+
+    // 4. Return unused.
+    Ok(())
+}
+
+/// Value::to_string_without_side_effects, which error messages show values with.
+fn value_to_string_without_side_effects(_value: Value) -> String {
+    unimplemented_runtime_function(
+        "Value::to_string_without_side_effects, for a CreateDisposableResource error",
+        0,
+    )
+}
+
+// 2.1.5 CreateDisposableResource ( V, hint [ , method ] ), https://tc39.es/proposal-explicit-resource-management/#sec-createdisposableresource
+pub fn create_disposable_resource(
+    vm: &Vm,
+    value: Value,
+    hint: InitializeBindingHint,
+    method: Option<Gc<FunctionObject>>,
+) -> ThrowCompletionOr<DisposableResource> {
+    let mut method = method;
+
+    // 1. If method is not present, then
+    // a. If V is either null or undefined, then
+    //    i. Set V to undefined.
+    //    ii. Set method to undefined.
+    // b. Else,
+    if method.is_none() && !value.is_nullish() {
+        // i. If V is not an Object, throw a TypeError exception.
+        if !value.is_object() {
+            return vm.throw_completion(
+                ErrorKind::TypeError,
+                ErrorType::NotAnObject,
+                &[&value_to_string_without_side_effects(value)],
+            );
+        }
+
+        // ii. Set method to ? GetDisposeMethod(V, hint).
+        method = get_dispose_method(vm, value, hint)?;
+
+        // iii. If method is undefined, throw a TypeError exception.
+        if method.is_none() {
+            return vm.throw_completion(
+                ErrorKind::TypeError,
+                ErrorType::NoDisposeMethod,
+                &[&value_to_string_without_side_effects(value)],
+            );
+        }
+    }
+    // 2. Else,
+    //    a. If IsCallable(method) is false, throw a TypeError exception.
+    //    NOTE: This is guaranteed to never occur due to its type.
+
+    // 3. Return the DisposableResource Record { [[ResourceValue]]: V, [[Hint]]: hint, [[DisposeMethod]]: method }.
+    Ok(DisposableResource {
+        resource_value: value.is_object().then(|| value.as_object()),
+        hint,
+        dispose_method: method,
+    })
+}
+
+// 2.1.6 GetDisposeMethod ( V, hint ), https://tc39.es/proposal-explicit-resource-management/#sec-getdisposemethod
+pub fn get_dispose_method(
+    _vm: &Vm,
+    _value: Value,
+    _hint: InitializeBindingHint,
+) -> ThrowCompletionOr<Option<Gc<FunctionObject>>> {
+    unimplemented_runtime_function("GetDisposeMethod, which needs GetMethod on objects", 0)
+}
+
+#[cfg(all(test, libjs_runtime_tests_with_libgc))]
+mod tests {
+    use ak::Utf16FlyString;
+
+    use super::*;
+
+    #[test]
+    fn using_null_or_undefined_adds_no_sync_resource_but_records_async_ones() {
+        let vm = Vm::create();
+        let environment = new_declarative_environment(&vm, DeclarativeEnvironment::create(&vm, None).upcast());
+        let (sync, async_) = (Utf16FlyString::from_utf8("sync"), Utf16FlyString::from_utf8("async"));
+        environment.create_immutable_binding(&vm, &sync, true).unwrap();
+        environment.create_immutable_binding(&vm, &async_, true).unwrap();
+
+        environment
+            .initialize_binding(&vm, &sync, Value::NULL, InitializeBindingHint::SyncDispose)
+            .unwrap();
+        assert!(environment.dispose_capability_if_exists().is_none());
+
+        environment
+            .initialize_binding(&vm, &async_, Value::UNDEFINED, InitializeBindingHint::AsyncDispose)
+            .unwrap();
+        let dispose_capability = environment
+            .dispose_capability_if_exists()
+            .expect("the async resource was recorded");
+        let dispose_capability = dispose_capability.borrow();
+        let stack = dispose_capability.disposable_resource_stack.as_ref().unwrap();
+        assert_eq!(stack.len(), 1);
+        assert!(stack[0].resource_value.is_none() && stack[0].dispose_method.is_none());
+        assert_eq!(stack[0].hint, InitializeBindingHint::AsyncDispose);
+        assert_eq!(
+            environment.get_binding_value(&vm, &async_, true).unwrap(),
+            Value::UNDEFINED
+        );
+    }
+
+    #[test]
+    fn the_this_environment_is_the_closest_one_with_a_this_binding() {
+        let vm = Vm::create();
+        let stack = vm.interpreter_stack();
+        let mark = stack.top.get();
+        let context = stack.allocate(0, 0, 0).expect("the stack has room");
+        vm.push_execution_context(context);
+
+        let function = FunctionEnvironment::create(&vm, None);
+        let arrow = FunctionEnvironment::create(&vm, Some(function.upcast()));
+        arrow.set_this_binding_status(ThisBindingStatus::Lexical);
+        let block = new_declarative_environment(&vm, arrow.upcast());
+        // SAFETY: The context was just pushed.
+        unsafe { context.as_ref() }
+            .lexical_environment
+            .set(Some(block.upcast()));
+        assert!(get_this_environment(&vm) == function.upcast());
+
+        vm.pop_execution_context();
+        stack.deallocate(mark);
+    }
 }
