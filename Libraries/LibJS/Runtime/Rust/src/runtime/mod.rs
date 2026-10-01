@@ -63,6 +63,7 @@ pub mod iterator_constructor;
 pub mod iterator_helper_prototype;
 pub mod iterator_prototype;
 pub mod map_iterator_prototype;
+pub mod math_object;
 pub mod module_environment;
 pub mod native_function;
 pub mod number_constructor;
