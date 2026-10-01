@@ -11,7 +11,10 @@ use super::vm::Vm;
 use crate::bytecode::executable::Executable;
 use crate::layout::cell::Gc;
 use crate::layout::execution_context::ExecutionContext;
+use crate::layout::function_object::EcmascriptFunctionObject;
+use crate::layout::object::Object;
 use crate::layout::value::Value;
+use crate::runtime::abstract_operations::new_function_environment;
 use crate::runtime::completion::{Throw, ThrowCompletionOr};
 use crate::script::Script;
 use libjs_abi::register;
@@ -112,8 +115,117 @@ impl Vm {
                 0,
             );
         }
-        let executable = Executable::create(self, script.compiled.executable);
+        let executable =
+            Executable::create_with_source_code(self, script.compiled.executable, Some(&script.source_code));
         self.run_script_executable(executable).map_err(Throw::new)
+    }
+
+    /// Enters a frame for a call of `callee_function` that the interpreter runs inline, as Return leaves it: the
+    /// frame is linked to the running one through caller_frame, rather than pushed onto the execution context stack.
+    /// Returns the callee's context, or None if the interpreter stack has no room for it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_inline_frame(
+        &self,
+        callee_function: Gc<EcmascriptFunctionObject>,
+        callee_executable: Gc<Executable>,
+        arguments: &[Value],
+        return_pc: u32,
+        dst_raw: u32,
+        this_value: Value,
+        new_target: Option<Gc<Object>>,
+        is_construct: bool,
+    ) -> Option<NonNull<ExecutionContext>> {
+        let stack = self.interpreter_stack();
+
+        let insn_argument_count = u32::try_from(arguments.len()).expect("the argument count fits in u32");
+        let registers_and_locals_count = callee_executable.registers_and_locals_count();
+        let constant_count =
+            u32::try_from(callee_executable.constants().len()).expect("the constant count fits in u32");
+        let argument_count = insn_argument_count.max(callee_function.formal_parameter_count());
+
+        let callee_context_pointer = stack.allocate(registers_and_locals_count, constant_count, argument_count)?;
+        // SAFETY: The context was just allocated, and stays allocated until the interpreter returns from it or
+        // unwinds it.
+        let callee_context = unsafe { callee_context_pointer.as_ref() };
+
+        // Copy the supplied arguments into the callee's argument slots.
+        let callee_argument_values = callee_context.arguments();
+        for (slot, argument) in callee_argument_values.iter().zip(arguments) {
+            slot.set(*argument);
+        }
+        for slot in &callee_argument_values[arguments.len()..] {
+            slot.set(Value::UNDEFINED);
+        }
+        callee_context.passed_argument_count.set(insn_argument_count);
+
+        // Set up caller linkage so Return can restore the caller frame.
+        callee_context
+            .caller_frame
+            .set(self.head.running_execution_context.get());
+        callee_context.caller_dst_raw.set(dst_raw);
+        callee_context.caller_return_pc.set(return_pc);
+        callee_context.caller_is_construct.set(is_construct);
+
+        // Inlined PrepareForOrdinaryCall (avoids function call overhead on hot path).
+        callee_context
+            .function
+            .set(Some(callee_function.as_function_object_gc()));
+        callee_context.realm.set(callee_function.realm());
+        callee_context.script_or_module.set(callee_function.script_or_module());
+        if callee_function.function_environment_needed() {
+            let local_environment = new_function_environment(self, callee_function, new_target);
+            let shared_data = callee_function.shared_data();
+            let function_environment_bindings_count = shared_data.function_environment_bindings_count();
+            local_environment.set_environment_shape_cache(
+                shared_data.function_environment_shape_cache(),
+                function_environment_bindings_count,
+            );
+            local_environment.ensure_capacity(function_environment_bindings_count);
+            callee_context.lexical_environment.set(Some(local_environment.upcast()));
+            callee_context
+                .variable_environment
+                .set(Some(local_environment.upcast()));
+        } else {
+            callee_context.lexical_environment.set(callee_function.environment());
+            callee_context.variable_environment.set(callee_function.environment());
+        }
+        callee_context
+            .private_environment
+            .set(callee_function.private_environment());
+
+        // Inline JS-to-JS frames stay out of the VM execution context stack and
+        // are tracked through caller_frame instead.
+        self.head.running_execution_context.set(callee_context_pointer.as_ptr());
+
+        // Bind this if the function uses it.
+        if callee_function.uses_this() {
+            callee_function.ordinary_call_bind_this(self, callee_context, this_value);
+        }
+
+        // Set up execution context fields that run_executable normally does.
+        // NB: We must use the callee's realm (not the caller's) for global_object
+        //     and global_declarative_environment, since the caller's realm may differ
+        //     in cross-realm calls (e.g. iframe <-> parent).
+        callee_context.executable.set(Some(Executable::head(callee_executable)));
+
+        // Set this value register.
+        callee_context
+            .register(register::THIS_VALUE)
+            .set(callee_context.this_value.get());
+
+        Some(callee_context_pointer)
+    }
+
+    /// Leaves the running frame, which the interpreter entered inline, for the frame that called it.
+    #[inline(never)]
+    pub fn unwind_inline_frame_for_exception(&self) {
+        let callee_frame = self.running_execution_context().expect("an inline frame is running");
+        // SAFETY: The running context is live until it is deallocated below.
+        let caller_frame = unsafe { callee_frame.as_ref() }.caller_frame.get();
+        assert!(!caller_frame.is_null());
+
+        self.interpreter_stack().deallocate(callee_frame.as_ptr().cast());
+        self.head.running_execution_context.set(caller_frame);
     }
 
     /// Unwinds to the innermost handler of an exception thrown at `program_counter` in the running frame, leaving

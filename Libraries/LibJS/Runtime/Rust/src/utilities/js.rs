@@ -107,7 +107,7 @@ fn run(options: &Options, output: &mut impl Write) -> c_int {
     if options.as_module {
         unimplemented_runtime_function("running modules", 0);
     }
-    let script = Script::compile_parsed_program(parsed, source.len());
+    let script = Script::compile_parsed_program(parsed, &source);
 
     let vm = Vm::create();
     if options.gc_on_every_allocation {

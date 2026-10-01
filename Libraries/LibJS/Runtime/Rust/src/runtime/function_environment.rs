@@ -12,11 +12,11 @@ use libjs_runtime_macros::Trace;
 use crate::gc::class::{Finalize, GcCell, define_cell};
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
-use crate::layout::function_object::{EcmascriptFunctionObject, FunctionObject};
-use crate::layout::object::{Object, object_flag};
+use crate::layout::function_object::FunctionObject;
 use crate::layout::value::Value;
 use crate::runtime::completion::ThrowCompletionOr;
 use crate::runtime::declarative_environment::{DECLARATIVE_ENVIRONMENT_METHODS, DeclarativeEnvironment};
+use crate::runtime::ecmascript_function_object::as_ecmascript_function_object;
 use crate::runtime::environment::{Environment, EnvironmentMethods, ThisBindingStatus};
 use crate::runtime::error::ErrorKind;
 use crate::runtime::error_types::ErrorType;
@@ -59,21 +59,6 @@ pub const FUNCTION_ENVIRONMENT_METHODS: EnvironmentMethods = EnvironmentMethods 
     is_function_environment: true,
     ..DECLARATIVE_ENVIRONMENT_METHODS
 };
-
-/// Like C++ as_if<ECMAScriptFunctionObject>, which checks the object's flag.
-pub(crate) fn as_ecmascript_function_object(function: Gc<FunctionObject>) -> Option<Gc<EcmascriptFunctionObject>> {
-    // SAFETY: A function object starts with its Object, and a Gc points to a live cell.
-    let flags = unsafe { function.as_non_null().cast::<Object>().as_ref() }.flags.get();
-    (flags & object_flag::IS_ECMASCRIPT_FUNCTION_OBJECT != 0)
-        // SAFETY: Only ECMAScript function objects have the flag.
-        .then(|| unsafe { Gc::from_non_null(function.as_non_null().cast()) })
-}
-
-/// ECMAScriptFunctionObject::home_object(), until ECMAScript function objects are cells of the runtime.
-fn home_object(function: Gc<EcmascriptFunctionObject>) -> Option<Gc<Object>> {
-    // SAFETY: A Gc points to a live cell.
-    unsafe { function.as_non_null().as_ref() }.home_object.get()
-}
 
 impl FunctionEnvironment {
     pub fn create(vm: &Vm, outer_environment: Option<Gc<Environment>>) -> Gc<FunctionEnvironment> {
@@ -121,7 +106,7 @@ impl FunctionEnvironment {
             return Ok(Value::UNDEFINED);
         };
 
-        let home_object = home_object(ecmascript_function_object);
+        let home_object = ecmascript_function_object.home_object();
 
         // 2. If home is undefined, return undefined.
         let Some(home_object) = home_object else {
@@ -147,7 +132,7 @@ impl FunctionEnvironment {
             return false;
         }
         as_ecmascript_function_object(self.function_object())
-            .is_some_and(|ecmascript_function_object| home_object(ecmascript_function_object).is_some())
+            .is_some_and(|ecmascript_function_object| ecmascript_function_object.home_object().is_some())
     }
 
     // 9.1.1.3.4 GetThisBinding ( ), https://tc39.es/ecma262/#sec-function-environment-records-getthisbinding

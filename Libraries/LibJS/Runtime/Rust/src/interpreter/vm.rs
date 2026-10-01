@@ -7,6 +7,7 @@
 use core::cell::{Cell, OnceCell, RefCell};
 use core::ffi::c_void;
 use core::ptr::NonNull;
+use std::collections::HashMap;
 
 use ak::{Utf16FlyString, Utf16String};
 use libjs_runtime_macros::Trace;
@@ -21,14 +22,21 @@ use crate::gc::heap::{Heap, cell_is_dead};
 use crate::gc::root::RootSet;
 use crate::gc::visitor::{Trace, Visitor};
 use crate::layout::cell::Gc;
-use crate::layout::execution_context::ExecutionContext;
-use crate::layout::function_object::NativeFunctionTableEntry;
+use crate::layout::environment::Environment;
+use crate::layout::execution_context::{ExecutionContext, ScriptOrModule};
+use crate::layout::function_object::{FunctionObject, NativeFunctionTableEntry, NativeFunctionType};
 use crate::layout::object::Object;
 use crate::layout::realm::Realm;
+use crate::layout::value::Value;
 use crate::layout::vm::{InterpreterStack, VmHead};
+use crate::layout_forward::RawNativeFunctionPointer;
 use crate::runtime::common_property_names::CommonPropertyNames;
 use crate::runtime::completion::ThrowCompletionOr;
+use crate::runtime::ecmascript_function_object::as_ecmascript_function_object;
+use crate::runtime::error::ErrorKind;
+use crate::runtime::error_types::ErrorType;
 use crate::runtime::primitive_string::PrimitiveString;
+use crate::runtime::shared_function_instance_data::SharedFunctionInstanceData;
 use crate::runtime::symbol::{self, Symbol, enumerate_well_known_symbols};
 
 /// HostEnsureCanAddPrivateElement, which hosts that are web browsers may override.
@@ -116,6 +124,8 @@ pub struct Vm {
     /// The context that was running when each context on the stack was pushed.
     previous_running_execution_contexts: RefCell<Vec<*mut ExecutionContext>>,
     native_function_table: RefCell<Vec<NativeFunctionTableEntry>>,
+    /// The index of each function in the native function table, by its address and type.
+    native_function_indices: RefCell<HashMap<(usize, u32), u32>>,
     roots: RootSet,
 
     pub names: CommonPropertyNames,
@@ -174,6 +184,7 @@ impl Vm {
             execution_context_stack: RefCell::new(Vec::new()),
             previous_running_execution_contexts: RefCell::new(Vec::new()),
             native_function_table: RefCell::new(native_function_table),
+            native_function_indices: RefCell::new(HashMap::new()),
             roots: RootSet::default(),
             names: CommonPropertyNames::new(),
             string_to_atom_cache: RefCell::default(),
@@ -424,10 +435,97 @@ impl Vm {
     }
 
     pub fn register_native_function(&self, entry: NativeFunctionTableEntry) -> u32 {
+        let function = entry.function.expect("a native function has a function pointer");
+        let key = (function as usize, entry.function_type as u32);
+        if let Some(index) = self.native_function_indices.borrow().get(&key) {
+            return *index;
+        }
+
         let mut table = self.native_function_table.borrow_mut();
+        assert!(table.len() < u32::MAX as usize);
+        let index = u32::try_from(table.len()).expect("native function index fits in u32");
         table.push(entry);
+        self.native_function_indices.borrow_mut().insert(key, index);
         self.head.native_function_table_data.set(table.as_ptr());
-        u32::try_from(table.len() - 1).expect("native function index fits in u32")
+        index
+    }
+
+    pub fn native_function(&self, index: u32, expected_type: NativeFunctionType) -> RawNativeFunctionPointer {
+        let table = self.native_function_table.borrow();
+        let entry = &table[index as usize];
+        assert!(entry.function_type == expected_type);
+        assert!(entry.function.is_some());
+        entry.function
+    }
+
+    /// Pushes `context`, unless so little of the native stack is left that the next call could overflow it.
+    pub fn push_execution_context_checking_stack_space(
+        &self,
+        context: NonNull<ExecutionContext>,
+    ) -> ThrowCompletionOr<()> {
+        // Ensure we got some stack space left, so the next function call doesn't kill us.
+        if self.did_reach_stack_space_limit() {
+            return self.throw_completion(ErrorKind::InternalError, ErrorType::CallStackSizeExceeded, &[]);
+        }
+        self.push_execution_context(context);
+        Ok(())
+    }
+
+    // 9.4.1 GetActiveScriptOrModule ( ), https://tc39.es/ecma262/#sec-getactivescriptormodule
+    pub fn get_active_script_or_module(&self) -> ScriptOrModule {
+        // 1. If the execution context stack is empty, return null.
+        if self.running_execution_context().is_none() {
+            return ScriptOrModule::Empty;
+        }
+
+        // 2. Let ec be the topmost execution context on the execution context stack whose ScriptOrModule component is not null.
+        let mut script_or_module = ScriptOrModule::Empty;
+        self.for_each_execution_context_top_to_bottom(|execution_context| {
+            if matches!(script_or_module, ScriptOrModule::Empty) {
+                script_or_module = execution_context.script_or_module.get();
+            }
+        });
+
+        // 3. If no such execution context exists, return null. Otherwise, return ec's ScriptOrModule.
+        script_or_module
+    }
+
+    fn running_execution_context_ref(&self) -> &ExecutionContext {
+        let context = self
+            .running_execution_context()
+            .expect("there is a running execution context");
+        // SAFETY: The running execution context is live while it runs, which outlasts any use of this reference by
+        // the code running in it.
+        unsafe { context.as_ref() }
+    }
+
+    /// The number of arguments the running execution context has slots for.
+    pub fn argument_count(&self) -> usize {
+        self.running_execution_context_ref().argument_count.get() as usize
+    }
+
+    pub fn argument(&self, index: usize) -> Value {
+        self.running_execution_context_ref().argument(index)
+    }
+
+    pub fn this_value(&self) -> Value {
+        let this_value = self.running_execution_context_ref().this_value.get();
+        assert!(!this_value.is_empty(), "the running execution context has a this value");
+        this_value
+    }
+
+    pub fn lexical_environment(&self) -> Option<Gc<Environment>> {
+        self.running_execution_context_ref().lexical_environment.get()
+    }
+
+    pub fn active_function_object(&self) -> Option<Gc<FunctionObject>> {
+        self.running_execution_context_ref().function.get()
+    }
+
+    pub fn active_shared_function_data(&self) -> Option<Gc<SharedFunctionInstanceData>> {
+        let function = self.active_function_object()?;
+        // NB: NativeJavaScriptBackedFunction has shared data as well, once the runtime has it.
+        as_ecmascript_function_object(function).map(|function| function.shared_data())
     }
 }
 
