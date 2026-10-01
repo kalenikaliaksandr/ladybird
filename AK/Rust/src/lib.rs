@@ -10,21 +10,25 @@ mod scope_guard;
 
 pub use scope_guard::ScopeGuard;
 
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-const SHORT_STRING_FLAG: usize = 1;
-const SHORT_STRING_BYTE_COUNT_SHIFT: u32 = 2;
-const HAS_UTF16_STORAGE: u32 = 1;
+/// Set in the raw word of a string whose bytes are stored inline in the word itself.
+pub const SHORT_STRING_FLAG: usize = 1;
+/// The byte count of a short string is stored in its tag byte, above the flag.
+pub const SHORT_STRING_BYTE_COUNT_SHIFT: u32 = 2;
+/// Set in `Utf16StringDataHeader::flags` when the storage holds UTF-16 code units rather than ASCII bytes.
+pub const HAS_UTF16_STORAGE: u32 = 1;
 const UNKNOWN_CODE_POINT_LENGTH: u32 = u32::MAX;
 
-/// Mirrors `AK::Detail::Utf16StringDataHeader`.
+/// Mirrors `AK::Detail::Utf16StringDataHeader`. The string's storage follows it directly.
 #[repr(C, align(8))]
-struct Utf16StringDataHeader {
-    reference_count: AtomicU32,
-    length_in_code_units: u32,
-    length_in_code_points: AtomicU32,
-    hash: AtomicU32,
-    flags: AtomicU32,
+pub struct Utf16StringDataHeader {
+    pub reference_count: AtomicU32,
+    pub length_in_code_units: u32,
+    pub length_in_code_points: AtomicU32,
+    pub hash: AtomicU32,
+    pub flags: AtomicU32,
 }
 
 const _: () = assert!(size_of::<Utf16StringDataHeader>() == 24);
@@ -50,37 +54,48 @@ unsafe extern "C" {
 
 // AK string data is immutable, and its reference count and cached metadata are atomic.
 // The fly-string table synchronizes interning and destruction across threads.
+// A raw string is never zero, which is what lets `Option` of an owner stay one word, the same as
+// `AK::Optional<AK::Utf16String>`.
 #[repr(transparent)]
 struct OwnedUtf16String {
-    raw: usize,
+    raw: NonZeroUsize,
 }
 
 impl OwnedUtf16String {
     const fn empty() -> Self {
-        Self { raw: SHORT_STRING_FLAG }
+        Self {
+            raw: NonZeroUsize::new(SHORT_STRING_FLAG).unwrap(),
+        }
     }
 
     unsafe fn from_raw(raw: usize) -> Self {
-        Self { raw }
+        Self {
+            raw: NonZeroUsize::new(raw).expect("raw AK strings are never zero"),
+        }
     }
 
     fn into_raw(self) -> usize {
         let this = std::mem::ManuallyDrop::new(self);
-        this.raw
+        this.raw.get()
+    }
+
+    fn raw_word(&self) -> &usize {
+        // SAFETY: NonZeroUsize has the same layout as usize.
+        unsafe { &*std::ptr::from_ref(&self.raw).cast::<usize>() }
     }
 
     fn as_units(&self) -> Utf16StringUnits<'_> {
         // SAFETY: This owner keeps the raw string alive for the returned lifetime.
-        unsafe { utf16_string_units(&self.raw) }
+        unsafe { utf16_string_units(self.raw_word()) }
     }
 }
 
 impl Clone for OwnedUtf16String {
     fn clone(&self) -> Self {
         // SAFETY: This owner keeps the raw string alive while adding a reference.
-        unsafe { reference_utf16_string(self.raw) };
+        unsafe { reference_utf16_string(self.raw.get()) };
         // SAFETY: The new reference is transferred to the returned owner.
-        unsafe { Self::from_raw(self.raw) }
+        unsafe { Self::from_raw(self.raw.get()) }
     }
 }
 
@@ -88,7 +103,7 @@ impl Drop for OwnedUtf16String {
     fn drop(&mut self) {
         // SAFETY: This object owns one reference to its raw string.
         unsafe {
-            release_utf16_string_with(self.raw, |raw| ladybird_utf16_string_unref(raw));
+            release_utf16_string_with(self.raw.get(), |raw| ladybird_utf16_string_unref(raw));
         }
     }
 }
@@ -107,6 +122,8 @@ const _: () = assert!(size_of::<Utf16String>() == size_of::<usize>());
 const _: () = assert!(align_of::<Utf16String>() == align_of::<usize>());
 const _: () = assert!(size_of::<Utf16FlyString>() == size_of::<usize>());
 const _: () = assert!(align_of::<Utf16FlyString>() == align_of::<usize>());
+const _: () = assert!(size_of::<Option<Utf16String>>() == size_of::<usize>());
+const _: () = assert!(size_of::<Option<Utf16FlyString>>() == size_of::<usize>());
 
 const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
@@ -136,7 +153,7 @@ macro_rules! impl_utf16_string_owner {
 
             /// Returns the shared one-word identity without transferring ownership.
             pub fn raw_identity(&self) -> usize {
-                self.0.raw
+                self.0.raw.get()
             }
 
             /// Borrows the shared ASCII or UTF-16 character storage directly.
