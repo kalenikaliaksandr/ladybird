@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+pub mod executable;
 pub mod operand;
 
 /// Views of the bytecode instructions and of the operand records their slow paths receive.

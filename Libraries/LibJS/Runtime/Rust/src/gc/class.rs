@@ -106,3 +106,23 @@ impl CellHeader {
         }
     }
 }
+
+/// Defines the class of a cell type, named after the type and its ClassId.
+macro_rules! define_cell {
+    ($type:ident, $kind:ident) => {
+        const _: () = {
+            static CLASS: $crate::gc::class::Class = $crate::gc::class::Class::new::<$type>(
+                stringify!($type),
+                $crate::gc::class_id::ClassId::$type,
+                $crate::layout::cell::CellKind::$kind,
+            );
+
+            // SAFETY: Checked by the asserts in Class::new and the cell's #[repr(C)] layout.
+            unsafe impl $crate::gc::class::GcCell for $type {
+                const CLASS: &'static $crate::gc::class::Class = &CLASS;
+            }
+        };
+    };
+}
+
+pub(crate) use define_cell;
