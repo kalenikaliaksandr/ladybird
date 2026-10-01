@@ -17,6 +17,7 @@ use core::cell::Cell;
 
 use super::runtime_functions::{Runtime, RuntimeFunctions, SlowPathControl, handle_asm_exception};
 use super::vm::Vm;
+use crate::bytecode::executable::PropertyLookupCache;
 use crate::bytecode::op;
 use crate::layout::value::Value;
 
@@ -327,6 +328,271 @@ impl RuntimeFunctions for Runtime {
     }
 
     // Property access and its inline caches: property_access.rs.
+
+    fn get_by_id(vm: &Vm, pc: u32, instruction: &op::GetById, values: &mut op::GetByIdValues) -> SlowPathControl {
+        property_access::get_by_id(vm, pc, instruction, values)
+    }
+
+    fn get_by_id_cached_accessor(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::GetById,
+        values: &mut op::GetByIdValues,
+    ) -> SlowPathControl {
+        property_access::get_by_id_cached_accessor(vm, pc, instruction, values)
+    }
+
+    fn get_by_id_with_this(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::GetByIdWithThis,
+        values: &mut op::GetByIdWithThisValues,
+    ) -> SlowPathControl {
+        property_access::get_by_id_with_this(vm, pc, instruction, values)
+    }
+
+    fn get_by_value(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::GetByValue,
+        values: &mut op::GetByValueValues,
+    ) -> SlowPathControl {
+        property_access::get_by_value(vm, pc, instruction, values)
+    }
+
+    fn get_by_value_with_this(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::GetByValueWithThis,
+        values: &mut op::GetByValueWithThisValues,
+    ) -> SlowPathControl {
+        property_access::get_by_value_with_this(vm, pc, values)
+    }
+
+    fn get_length(vm: &Vm, pc: u32, instruction: &op::GetLength, values: &mut op::GetLengthValues) -> SlowPathControl {
+        property_access::get_length(vm, pc, instruction, values)
+    }
+
+    fn get_length_with_this(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::GetLengthWithThis,
+        values: &mut op::GetLengthWithThisValues,
+    ) -> SlowPathControl {
+        property_access::get_length_with_this(vm, pc, instruction, values)
+    }
+
+    fn get_method(vm: &Vm, pc: u32, instruction: &op::GetMethod, values: &mut op::GetMethodValues) -> SlowPathControl {
+        property_access::get_method(vm, pc, instruction, values)
+    }
+
+    fn put_by_id(vm: &Vm, pc: u32, instruction: &op::PutById, values: &mut op::PutByIdValues) -> SlowPathControl {
+        property_access::put_by_id(vm, pc, instruction, values)
+    }
+
+    fn put_by_id_with_this(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::PutByIdWithThis,
+        values: &mut op::PutByIdWithThisValues,
+    ) -> SlowPathControl {
+        property_access::put_by_id_with_this(vm, pc, instruction, values)
+    }
+
+    fn put_by_value(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::PutByValue,
+        values: &mut op::PutByValueValues,
+    ) -> SlowPathControl {
+        property_access::put_by_value(vm, pc, instruction, values)
+    }
+
+    fn put_by_value_with_this(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::PutByValueWithThis,
+        values: &mut op::PutByValueWithThisValues,
+    ) -> SlowPathControl {
+        property_access::put_by_value_with_this(vm, pc, instruction, values)
+    }
+
+    fn put_by_spread(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::PutBySpread,
+        values: &mut op::PutBySpreadValues,
+    ) -> SlowPathControl {
+        property_access::put_by_spread(vm, pc, values)
+    }
+
+    fn delete_by_id(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::DeleteById,
+        values: &mut op::DeleteByIdValues,
+    ) -> SlowPathControl {
+        property_access::delete_by_id(vm, pc, instruction, values)
+    }
+
+    fn delete_by_value(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::DeleteByValue,
+        values: &mut op::DeleteByValueValues,
+    ) -> SlowPathControl {
+        property_access::delete_by_value(vm, pc, instruction, values)
+    }
+
+    fn get_private_by_id(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::GetPrivateById,
+        values: &mut op::GetPrivateByIdValues,
+    ) -> SlowPathControl {
+        property_access::get_private_by_id(vm, pc, instruction, values)
+    }
+
+    fn put_private_by_id(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::PutPrivateById,
+        values: &mut op::PutPrivateByIdValues,
+    ) -> SlowPathControl {
+        property_access::put_private_by_id(vm, pc, instruction, values)
+    }
+
+    fn has_private_id(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::HasPrivateId,
+        values: &mut op::HasPrivateIdValues,
+    ) -> SlowPathControl {
+        property_access::has_private_id(vm, pc, instruction, values)
+    }
+
+    fn add_private_name(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::AddPrivateName,
+        _values: &mut op::AddPrivateNameValues,
+    ) -> SlowPathControl {
+        property_access::add_private_name(vm, pc, instruction)
+    }
+
+    fn init_object_literal_property(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::InitObjectLiteralProperty,
+        values: &mut op::InitObjectLiteralPropertyValues,
+    ) -> SlowPathControl {
+        property_access::init_object_literal_property(vm, pc, instruction, values)
+    }
+
+    fn cache_object_shape(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::CacheObjectShape,
+        values: &mut op::CacheObjectShapeValues,
+    ) -> SlowPathControl {
+        property_access::cache_object_shape(vm, pc, instruction, values)
+    }
+
+    fn new_object(vm: &Vm, pc: u32, instruction: &op::NewObject, values: &mut op::NewObjectValues) -> SlowPathControl {
+        property_access::new_object(vm, pc, instruction, values)
+    }
+
+    fn new_object_with_no_prototype(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::NewObjectWithNoPrototype,
+        values: &mut op::NewObjectWithNoPrototypeValues,
+    ) -> SlowPathControl {
+        property_access::new_object_with_no_prototype(vm, pc, values)
+    }
+
+    fn copy_object_excluding_properties(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::CopyObjectExcludingProperties,
+        values: &mut op::CopyObjectExcludingPropertiesValues,
+        excluded_names: &mut [Value],
+    ) -> SlowPathControl {
+        property_access::copy_object_excluding_properties(vm, pc, instruction, values, excluded_names)
+    }
+
+    fn create_data_property_or_throw(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::CreateDataPropertyOrThrow,
+        values: &mut op::CreateDataPropertyOrThrowValues,
+    ) -> SlowPathControl {
+        property_access::create_data_property_or_throw(vm, pc, values)
+    }
+
+    fn get_object_property_iterator(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::GetObjectPropertyIterator,
+        values: &mut op::GetObjectPropertyIteratorValues,
+    ) -> SlowPathControl {
+        property_access::get_object_property_iterator(vm, pc, instruction, values)
+    }
+
+    fn object_property_iterator_next(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::ObjectPropertyIteratorNext,
+        values: &mut op::ObjectPropertyIteratorNextValues,
+    ) -> SlowPathControl {
+        property_access::object_property_iterator_next(vm, pc, values)
+    }
+
+    fn try_get_by_id_cache(encoded_base: u64, cache_address: u64) -> u64 {
+        // SAFETY: The interpreter passes the address of one of the running executable's property lookup caches.
+        let cache = unsafe { &*core::ptr::with_exposed_provenance::<PropertyLookupCache>(cache_address as usize) };
+        property_access::try_get_by_id_cache(Value(encoded_base), cache).0
+    }
+
+    fn try_get_by_value_typed_array(
+        _vm: &Vm,
+        pc: u32,
+        _instruction: &op::GetByValue,
+        values: &mut op::GetByValueValues,
+    ) -> bool {
+        property_access::try_get_by_value_typed_array(pc, values)
+    }
+
+    fn try_inline_get_by_id_accessor(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::GetById,
+        values: &mut op::GetByIdValues,
+    ) -> bool {
+        property_access::try_inline_get_by_id_accessor(vm, pc, instruction, values)
+    }
+
+    fn try_put_by_id_cache(vm: &Vm, _pc: u32, instruction: &op::PutById, values: &mut op::PutByIdValues) -> bool {
+        property_access::try_put_by_id_cache(vm, instruction, values)
+    }
+
+    fn try_put_by_value_holey_array(
+        _vm: &Vm,
+        _pc: u32,
+        _instruction: &op::PutByValue,
+        values: &mut op::PutByValueValues,
+    ) -> bool {
+        property_access::try_put_by_value_holey_array(values)
+    }
+
+    fn try_put_by_value_typed_array(
+        _vm: &Vm,
+        pc: u32,
+        _instruction: &op::PutByValue,
+        values: &mut op::PutByValueValues,
+    ) -> bool {
+        property_access::try_put_by_value_typed_array(pc, values)
+    }
 
     // Bindings and environments: bindings.rs.
 

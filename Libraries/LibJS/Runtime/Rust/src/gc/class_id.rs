@@ -53,4 +53,5 @@ define_class_ids! {
     Script,
     // Reserved for RegExpObject, whose [[RegExpMatcher]] slot IsRegExp already recognizes by its class.
     RegExpObject,
+    ObjectPropertyIteratorCacheData,
 }
