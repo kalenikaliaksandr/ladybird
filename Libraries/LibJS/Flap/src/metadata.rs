@@ -29,19 +29,34 @@ pub enum ParameterMode {
     InOut,
 }
 
-#[derive(Debug, Clone)]
+/// One `Value` of an operation's `Op::Values` record.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlowPathField {
+    /// The name of the bytecode field that holds the operand.
+    pub name: String,
     pub instruction_offset: usize,
     pub value_offset: usize,
     pub mode: ParameterMode,
     pub optional: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+/// The variable-length input operands that end an `Op::Values` record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlowPathArray {
+    /// The name of the bytecode field that holds the operands.
+    pub name: String,
+    pub instruction_offset: usize,
+    /// The instruction offset of the operand count.
+    pub count_offset: usize,
+    pub optional: bool,
+}
+
+/// The `Op::Values` record of an operation: one `Value` per scalar operand
+/// field in declaration order, followed by the variable-length operands.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SlowPathLayout {
     pub fields: Vec<SlowPathField>,
-    /// Instruction offsets of the operand array and its count, and whether its entries are optional.
-    pub array: Option<(usize, usize, bool)>,
+    pub array: Option<SlowPathArray>,
 }
 
 /// How an operation's slow path receives its operands and returns its outputs.
@@ -99,13 +114,15 @@ impl SlowPathLayout {
             let optional = field.ty == "Optional<Operand>";
             if field.is_array {
                 let array = op.array.as_ref().expect("operand array has a count");
-                layout.array = Some((
-                    array.offset,
-                    op.layout.field_offsets[&op.fields[array.count_field_index].name],
+                layout.array = Some(SlowPathArray {
+                    name: field.name.clone(),
+                    instruction_offset: array.offset,
+                    count_offset: op.layout.field_offsets[&op.fields[array.count_field_index].name],
                     optional,
-                ));
+                });
             } else {
                 layout.fields.push(SlowPathField {
+                    name: field.name.clone(),
                     instruction_offset: op.layout.field_offsets[&field.name],
                     value_offset: layout.fields.len() * 8,
                     mode: field.mode,
@@ -873,6 +890,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
+            assert_eq!(layout.fields[index].name, name);
             assert_eq!(layout.fields[index].instruction_offset, op.layout.field_offsets[name]);
             assert_eq!(layout.fields[index].value_offset, index * 8);
             assert_eq!(layout.fields[index].mode, mode);
@@ -880,11 +898,12 @@ mod tests {
         }
         assert_eq!(
             layout.array,
-            Some((
-                op.array.as_ref().unwrap().offset,
-                op.layout.field_offsets["m_argument_count"],
-                false
-            ))
+            Some(SlowPathArray {
+                name: "m_arguments".to_string(),
+                instruction_offset: op.array.as_ref().unwrap().offset,
+                count_offset: op.layout.field_offsets["m_argument_count"],
+                optional: false,
+            })
         );
     }
 
