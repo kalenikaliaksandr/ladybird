@@ -1106,6 +1106,12 @@ impl Intrinsics {
     pub fn set_array_prototype_values_function_for_tests(&self, function: Gc<FunctionObject>) {
         self.array_prototype_values_function.set(Some(function));
     }
+
+    /// Stands in for %eval% in the unit tests, which create realms without the global functions.
+    #[cfg(test)]
+    pub fn set_eval_function_for_tests(&self, function: Gc<FunctionObject>) {
+        self.eval_function.set(Some(function));
+    }
 }
 
 // 10.2.4 AddRestrictedFunctionProperties ( F, realm ), https://tc39.es/ecma262/#sec-addrestrictedfunctionproperties
