@@ -5,22 +5,30 @@
  */
 
 //! The parse and compile pipeline shared by every runtime that embeds the frontend.
+//!
+//! A runtime parses a program with [`parse()`] and compiles a script with
+//! [`compile_script()`], which returns the script's bytecode as
+//! [`ExecutableData`] along with the [`ScriptDeclarations`] that
+//! GlobalDeclarationInstantiation needs.
 
 #![cfg_attr(
     not(feature = "cpp-runtime"),
     allow(
         dead_code,
-        reason = "only the C++ runtime drives this pipeline until the native API covers it"
+        reason = "only the C++ runtime compiles functions, modules and off-thread programs until the native API does"
     )
 )]
 
 use crate::ast;
 use crate::ast::StatementKind;
+use crate::ast_dump;
 use crate::bytecode;
 use crate::bytecode::executable::ExecutableData;
 use crate::bytecode::generator::PendingSharedFunctionData;
 use crate::parser::ParseError;
+use crate::parser::Parser;
 use crate::parser::ProgramType;
+use crate::u32_from_usize;
 use std::collections::HashSet;
 
 // Compile-time assertion: `ParsedProgram` travels between the parse worker
@@ -47,7 +55,87 @@ pub struct ParsedProgram {
     pub(crate) is_strict_mode: bool,
     pub(crate) has_top_level_await: bool,
     pub(crate) errors: Vec<ParseError>,
-    pub(crate) ast_dump: Option<Vec<u8>>,
+    pub(crate) ast_dump: Option<String>,
+}
+
+impl ParsedProgram {
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+
+    pub fn errors(&self) -> &[ParseError] {
+        &self.errors
+    }
+
+    pub fn program_type(&self) -> ProgramType {
+        self.program_type
+    }
+
+    pub fn is_strict_mode(&self) -> bool {
+        self.is_strict_mode
+    }
+
+    pub fn has_top_level_await(&self) -> bool {
+        self.has_top_level_await
+    }
+
+    /// The textual AST dump, generated on first use.
+    pub fn ast_dump(&mut self) -> &str {
+        self.ast_dump
+            .get_or_insert_with(|| ast_dump::dump_program_to_string(&self.program, &self.function_table, &self.arena))
+    }
+}
+
+/// Lex and parse a script or module, then run scope analysis on it.
+///
+/// Errors are reported through the returned program rather than by failing,
+/// so check [`ParsedProgram::has_errors()`] before compiling it. Lines are
+/// counted from `initial_line_number`, except that a module always starts at
+/// line 1 or later.
+pub fn parse(source: &[u16], program_type: ProgramType, initial_line_number: usize) -> ParsedProgram {
+    let initial_line_number = if program_type == ProgramType::Module && initial_line_number == 0 {
+        1
+    } else {
+        initial_line_number
+    };
+    let mut parser = Parser::new_with_line_offset(source, program_type, u32_from_usize(initial_line_number));
+
+    let program = parser.parse_program(false);
+
+    // Collect errors from both parser and scope collector.
+    let mut errors = parser.take_errors();
+    if errors.is_empty() {
+        errors = parser.scope_collector.drain_errors();
+    }
+
+    if errors.is_empty() {
+        parser.scope_collector.analyze(
+            false,
+            &mut parser.arena.identifiers,
+            &parser.arena.strings,
+            &mut parser.arena.scopes,
+        );
+    }
+
+    let (scope_ref, is_strict, has_tla) = if errors.is_empty()
+        && let StatementKind::Program(ref data) = program.inner
+    {
+        (data.scope, data.is_strict_mode, data.has_top_level_await)
+    } else {
+        (parser.arena.scopes.insert(ast::ScopeData::default()), false, false)
+    };
+
+    ParsedProgram {
+        program,
+        function_table: std::mem::take(&mut parser.function_table),
+        arena: std::sync::Arc::new(std::mem::take(&mut parser.arena)),
+        scope_ref,
+        program_type,
+        is_strict_mode: is_strict,
+        has_top_level_await: has_tla,
+        errors,
+        ast_dump: None,
+    }
 }
 
 pub struct CompiledProgram {
@@ -126,6 +214,48 @@ pub(crate) fn compile_program_body_to_bytecode(
     // If result is None, the assembler will add End(undefined) as a fallthrough for unterminated blocks, matching C++.
 
     generator.assemble()
+}
+
+/// A compiled script and what GlobalDeclarationInstantiation needs to run it.
+pub struct CompiledScript {
+    pub executable: ExecutableData,
+    pub declarations: ScriptDeclarations,
+}
+
+/// Compile a script that parsed without errors.
+///
+/// `source_len` is the length of the source code in UTF-16 code units, which
+/// the source ranges of the script's functions must fit in.
+///
+/// # Panics
+/// Panics if `parsed` is a module or has errors.
+pub fn compile_script(mut parsed: ParsedProgram, source_len: usize) -> CompiledScript {
+    assert!(
+        parsed.program_type == ProgramType::Script,
+        "compile_script() needs a script, not a module"
+    );
+    assert!(
+        !parsed.has_errors(),
+        "compile_script() needs a script without parse errors"
+    );
+
+    let mut generator = new_program_generator(parsed.is_strict_mode, source_len);
+    generator.function_table = std::mem::take(&mut parsed.function_table);
+    generator.arena = parsed.arena.clone();
+    let assembled = compile_program_body_to_bytecode(&mut generator, &parsed.program, parsed.scope_ref);
+    let mut function_table = std::mem::take(&mut generator.function_table);
+    let executable = ExecutableData::new(generator, assembled);
+
+    let declarations = collect_script_declarations(
+        &parsed.arena.scopes[parsed.scope_ref],
+        &mut function_table,
+        &parsed.arena,
+    );
+
+    CompiledScript {
+        executable,
+        declarations,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1333,5 +1463,62 @@ fn for_each_binding_pattern_identifier(
             }
             Some(ast::BindingEntryAlias::MemberExpression(_)) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bytecode::generator::ConstantValue;
+    use crate::bytecode::instruction::Instruction;
+    use crate::bytecode::operand::Operand;
+
+    fn utf16(source: &str) -> Vec<u16> {
+        source.encode_utf16().collect()
+    }
+
+    #[test]
+    fn compiles_a_script_through_the_native_api() {
+        let source = utf16("1 + 1");
+        let parsed = parse(&source, ProgramType::Script, 1);
+        assert!(!parsed.has_errors());
+        assert!(!parsed.is_strict_mode());
+
+        let CompiledScript {
+            executable,
+            declarations,
+        } = compile_script(parsed, source.len());
+
+        let two = executable
+            .constants
+            .iter()
+            .position(|constant| matches!(constant, ConstantValue::Number(value) if *value == 2.0))
+            .expect("1 + 1 is folded into the constant 2");
+        // Operands index into [registers | locals | constants | arguments] once the bytecode is assembled.
+        let two = Operand::from_raw(
+            executable.number_of_registers + u32_from_usize(executable.local_variables.len()) + u32_from_usize(two),
+        );
+        let mut expected_bytecode = Vec::new();
+        Instruction::Enter {}.encode(executable.is_strict, &mut expected_bytecode);
+        Instruction::End { value: two }.encode(executable.is_strict, &mut expected_bytecode);
+        assert_eq!(executable.bytecode, expected_bytecode);
+
+        assert!(executable.shared_function_data.is_empty());
+        assert!(declarations.var_names.is_empty());
+        assert!(declarations.functions_to_initialize.is_empty());
+        assert!(declarations.lexical_bindings.is_empty());
+    }
+
+    #[test]
+    fn reports_parse_errors_through_the_native_api() {
+        let source = utf16("let = ;");
+        let parsed = parse(&source, ProgramType::Script, 1);
+        assert!(parsed.has_errors());
+        assert!(
+            parsed
+                .errors()
+                .iter()
+                .all(|error| error.line == 1 && !error.message.is_empty())
+        );
     }
 }
