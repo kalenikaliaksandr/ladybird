@@ -1230,6 +1230,159 @@ impl RuntimeFunctions for Runtime {
 
     // Literals, iterators, generators and control flow: control.rs.
 
+    fn debugger_check_breakpoint(vm: &Vm, pc: u32) {
+        control::debugger_check_breakpoint(vm, pc);
+    }
+
+    fn fallback_handler(_vm: &Vm, pc: u32, _instruction: *const u8) -> SlowPathControl {
+        control::fallback_handler(pc)
+    }
+
+    fn new_array(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::NewArray,
+        values: &mut op::NewArrayValues,
+        elements: &mut [Value],
+    ) -> SlowPathControl {
+        control::new_array(vm, pc, instruction, values, elements)
+    }
+
+    fn new_primitive_array(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::NewPrimitiveArray,
+        values: &mut op::NewPrimitiveArrayValues,
+    ) -> SlowPathControl {
+        control::new_primitive_array(vm, pc, instruction, values)
+    }
+
+    fn new_array_with_length(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::NewArrayWithLength,
+        values: &mut op::NewArrayWithLengthValues,
+    ) -> SlowPathControl {
+        control::new_array_with_length(vm, pc, values)
+    }
+
+    fn array_append(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::ArrayAppend,
+        values: &mut op::ArrayAppendValues,
+    ) -> SlowPathControl {
+        control::array_append(vm, pc, instruction, values)
+    }
+
+    fn get_template_object(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::GetTemplateObject,
+        values: &mut op::GetTemplateObjectValues,
+        strings: &mut [Value],
+    ) -> SlowPathControl {
+        control::get_template_object(vm, pc, instruction, values, strings)
+    }
+
+    fn new_regexp(vm: &Vm, pc: u32, instruction: &op::NewRegExp, _values: &mut op::NewRegExpValues) -> SlowPathControl {
+        control::new_regexp(vm, pc, instruction)
+    }
+
+    fn new_reference_error(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::NewReferenceError,
+        values: &mut op::NewReferenceErrorValues,
+    ) -> SlowPathControl {
+        control::new_reference_error(vm, pc, instruction, values)
+    }
+
+    fn new_type_error(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::NewTypeError,
+        values: &mut op::NewTypeErrorValues,
+    ) -> SlowPathControl {
+        control::new_type_error(vm, pc, instruction, values)
+    }
+
+    fn get_iterator(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::GetIterator,
+        values: &mut op::GetIteratorValues,
+    ) -> SlowPathControl {
+        control::get_iterator(vm, pc, instruction, values)
+    }
+
+    fn iterator_close(
+        vm: &Vm,
+        pc: u32,
+        instruction: &op::IteratorClose,
+        values: &mut op::IteratorCloseValues,
+    ) -> SlowPathControl {
+        control::iterator_close_slow_path(vm, pc, instruction, values)
+    }
+
+    fn iterator_next(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::IteratorNext,
+        values: &mut op::IteratorNextValues,
+    ) -> SlowPathControl {
+        control::iterator_next_slow_path(vm, pc, values)
+    }
+
+    fn iterator_next_unpack(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::IteratorNextUnpack,
+        values: &mut op::IteratorNextUnpackValues,
+    ) -> SlowPathControl {
+        control::iterator_next_unpack(vm, pc, values)
+    }
+
+    fn iterator_to_array(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::IteratorToArray,
+        values: &mut op::IteratorToArrayValues,
+    ) -> SlowPathControl {
+        control::iterator_to_array(vm, pc, values)
+    }
+
+    fn create_async_from_sync_iterator(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::CreateAsyncFromSyncIterator,
+        values: &mut op::CreateAsyncFromSyncIteratorValues,
+    ) -> SlowPathControl {
+        control::create_async_from_sync_iterator_slow_path(vm, pc, values)
+    }
+
+    fn get_completion_fields(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::GetCompletionFields,
+        values: &mut op::GetCompletionFieldsValues,
+    ) -> SlowPathControl {
+        control::get_completion_fields(vm, pc, values)
+    }
+
+    fn set_completion_type(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::SetCompletionType,
+        values: &mut op::SetCompletionTypeValues,
+    ) -> SlowPathControl {
+        control::set_completion_type(vm, pc, values)
+    }
+
+    fn debugger(_vm: &Vm, pc: u32, _instruction: &op::Debugger, _values: &mut op::DebuggerValues) -> SlowPathControl {
+        control::debugger(pc)
+    }
+
     fn throw(vm: &Vm, pc: u32, _instruction: &op::Throw, values: &mut op::ThrowValues) -> SlowPathControl {
         handle_asm_exception(vm, pc, values.src)
     }
