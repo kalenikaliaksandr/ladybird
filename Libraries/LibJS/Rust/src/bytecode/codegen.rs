@@ -60,8 +60,8 @@ use crate::ast::*;
 use crate::lexer::ch;
 use crate::u32_from_usize;
 
-use super::ffi::AbstractOperationKind;
-use super::ffi::WellKnownSymbolKind;
+use super::constant::AbstractOperationKind;
+use super::constant::WellKnownSymbolKind;
 use super::generator::BindingLocation;
 use super::generator::BlockBoundaryType;
 use super::generator::ConstantValue;
