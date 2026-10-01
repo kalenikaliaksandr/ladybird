@@ -14,7 +14,9 @@ mod rust_allocator;
 #[path = "../../../../RustPanic.rs"]
 mod rust_panic;
 
+pub mod bytecode;
 pub mod gc;
+pub mod interpreter;
 pub mod layout;
 pub mod layout_forward;
 

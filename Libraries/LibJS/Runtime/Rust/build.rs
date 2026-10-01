@@ -26,6 +26,12 @@ mod fixture;
 #[path = "generate/layout_table.rs"]
 mod layout_table;
 
+#[path = "generate/ops.rs"]
+mod ops;
+
+#[path = "generate/runtime_functions.rs"]
+mod runtime_functions;
+
 const KIB: u64 = 1024;
 const GIB: u64 = 1024 * 1024 * KIB;
 const TIB: u64 = 1024 * GIB;
@@ -132,35 +138,60 @@ fn main() {
     );
 
     let interpreter_source_text = fs::read_to_string(&interpreter_source).expect("read interpreter.flap");
-    let assembly = compile_interpreter(&target, &interpreter_source, &interpreter_source_text, &layout.text);
+    let interpreter_source_name = interpreter_source.display().to_string();
+    let compiler = interpreter_compiler(&target);
+    let prepared = compiler
+        .prepare(flapc::CompilationUnit {
+            source: flapc::SourceInput {
+                name: &interpreter_source_name,
+                contents: &interpreter_source_text,
+            },
+            constants: Some(flapc::SourceInput {
+                name: "layout.conf",
+                contents: &layout.text,
+            }),
+        })
+        .unwrap_or_else(|error| panic!("flapc failed to compile the interpreter:\n{error}"));
+    let functions = compiler
+        .runtime_functions(&prepared)
+        .unwrap_or_else(|error| panic!("flapc could not list the interpreter's runtime functions:\n{error}"));
+    let assembly = compiler
+        .compile_prepared(&prepared)
+        .unwrap_or_else(|error| panic!("flapc failed to compile the interpreter:\n{error}"));
+
+    let instructions = flapc::metadata::parse_flap_metadata(&interpreter_source_name, &interpreter_source_text)
+        .unwrap_or_else(|error| panic!("parse the interpreter's bytecode definitions: {error}"));
+    let instructions_with_values = functions
+        .iter()
+        .filter_map(|function| match &function.kind {
+            flapc::runtime_interface::RuntimeFunctionKind::SlowPath { op, .. }
+            | flapc::runtime_interface::RuntimeFunctionKind::Try { op, .. } => Some(op.clone()),
+            _ => None,
+        })
+        .collect();
+    write_if_changed(
+        &output_directory.join("bytecode_ops.rs"),
+        &ops::generate(&instructions, &instructions_with_values),
+    );
+    write_if_changed(
+        &output_directory.join("runtime_functions.rs"),
+        &runtime_functions::generate(&functions, &instructions),
+    );
+
     let assembly_path = output_directory.join("interpreter.S");
-    write_if_changed(&assembly_path, &assembly);
+    write_if_changed(&assembly_path, assembly.as_str());
     assemble_interpreter(&target, &assembly_path);
 }
 
-fn compile_interpreter(target: &Target, source_path: &Path, source: &str, layout: &str) -> String {
-    let compiler = flapc::Compiler::new(flapc::CompileOptions {
+fn interpreter_compiler(target: &Target) -> flapc::Compiler {
+    flapc::Compiler::new(flapc::CompileOptions {
         target: flapc::Target {
             architecture: target.architecture,
             object_format: target.object_format,
         },
         has_jscvt: target.is_apple && matches!(target.architecture, flapc::Architecture::Aarch64),
         enable_assertions: true,
-    });
-    let unit = flapc::CompilationUnit {
-        source: flapc::SourceInput {
-            name: &source_path.display().to_string(),
-            contents: source,
-        },
-        constants: Some(flapc::SourceInput {
-            name: "layout.conf",
-            contents: layout,
-        }),
-    };
-    match compiler.compile(unit) {
-        Ok(assembly) => assembly.as_str().to_string(),
-        Err(error) => panic!("flapc failed to compile the interpreter:\n{error}"),
-    }
+    })
 }
 
 fn assemble_interpreter(target: &Target, assembly_path: &Path) {
