@@ -17,6 +17,7 @@ use crate::build_configuration::VM_STACK_SPACE_LIMIT;
 use crate::bytecode::executable::{
     Executable, PropertyLookupCache, StaticPropertyLookupCacheSite, StaticPropertyLookupCaches,
 };
+use crate::bytecode::property_access::Strict;
 use crate::gc::capi::{self, GCVisitor};
 use crate::gc::heap::{Heap, cell_is_dead};
 use crate::gc::root::RootSet;
@@ -30,12 +31,18 @@ use crate::layout::realm::Realm;
 use crate::layout::value::Value;
 use crate::layout::vm::{InterpreterStack, VmHead};
 use crate::layout_forward::RawNativeFunctionPointer;
+use crate::runtime::abstract_operations::get_this_environment;
 use crate::runtime::common_property_names::CommonPropertyNames;
 use crate::runtime::completion::ThrowCompletionOr;
+use crate::runtime::declarative_environment::DeclarativeEnvironment;
 use crate::runtime::ecmascript_function_object::as_ecmascript_function_object;
+use crate::runtime::environment_coordinate::EnvironmentCoordinate;
 use crate::runtime::error::ErrorKind;
 use crate::runtime::error_types::ErrorType;
+use crate::runtime::function_environment::FunctionEnvironment;
 use crate::runtime::primitive_string::PrimitiveString;
+use crate::runtime::property_key::PropertyKey;
+use crate::runtime::reference::{BaseType, Reference};
 use crate::runtime::shared_function_instance_data::SharedFunctionInstanceData;
 use crate::runtime::symbol::{self, Symbol, enumerate_well_known_symbols};
 
@@ -529,6 +536,129 @@ impl Vm {
     }
 }
 
+impl Vm {
+    pub fn execution_context_stack_is_empty(&self) -> bool {
+        self.execution_context_stack.borrow().is_empty()
+    }
+
+    pub fn variable_environment(&self) -> Option<Gc<Environment>> {
+        self.running_execution_context_ref().variable_environment.get()
+    }
+
+    /// The Realm of the running execution context, which C++ VM::realm() dereferences.
+    fn running_realm(&self) -> Gc<Realm> {
+        self.current_realm().expect("the running execution context has a realm")
+    }
+
+    pub fn global_object(&self) -> Gc<Object> {
+        self.running_realm().global_object()
+    }
+
+    pub fn global_declarative_environment(&self) -> Gc<DeclarativeEnvironment> {
+        self.running_realm().global_declarative_environment()
+    }
+
+    // 9.1.2.1 GetIdentifierReference ( env, name, strict ), https://tc39.es/ecma262/#sec-getidentifierreference
+    pub fn get_identifier_reference(
+        &self,
+        environment: Option<Gc<Environment>>,
+        name: Utf16FlyString,
+        strict: Strict,
+        hops: usize,
+    ) -> ThrowCompletionOr<Reference> {
+        // 1. If env is the value null, then
+        let Some(environment) = environment else {
+            // a. Return the Reference Record { [[Base]]: unresolvable, [[ReferencedName]]: name, [[Strict]]: strict, [[ThisValue]]: empty }.
+            return Ok(Reference::with_base_type(
+                BaseType::Unresolvable,
+                PropertyKey::from(name),
+                strict,
+            ));
+        };
+
+        // 2. Let exists be ? env.HasBinding(name).
+        let mut index = None;
+        let exists = environment.has_binding(self, &name, Some(&mut index))?;
+
+        // Note: This is an optimization for looking up the same reference.
+        let environment_coordinate = index.map(|index| EnvironmentCoordinate {
+            hops: u32::try_from(hops).expect("the hop count fits in u32"),
+            index: u32::try_from(index).expect("the binding index fits in u32"),
+        });
+
+        // 3. If exists is true, then
+        if exists {
+            // a. Return the Reference Record { [[Base]]: env, [[ReferencedName]]: name, [[Strict]]: strict, [[ThisValue]]: empty }.
+            return Ok(Reference::with_base_environment(
+                environment,
+                name,
+                strict,
+                environment_coordinate,
+            ));
+        }
+        // 4. Else,
+        // a. Let outer be env.[[OuterEnv]].
+        // b. Return ? GetIdentifierReference(outer, name, strict).
+        self.get_identifier_reference(environment.outer_environment(), name, strict, hops + 1)
+    }
+
+    // 9.4.2 ResolveBinding ( name [ , env ] ), https://tc39.es/ecma262/#sec-resolvebinding
+    pub fn resolve_binding(
+        &self,
+        name: &Utf16FlyString,
+        strict: Strict,
+        environment: Option<Gc<Environment>>,
+    ) -> ThrowCompletionOr<Reference> {
+        // 1. If env is not present or if env is undefined, then
+        //     a. Set env to the running execution context's LexicalEnvironment.
+        let environment = environment.or_else(|| self.lexical_environment());
+
+        // 2. Assert: env is an Environment Record.
+        let environment = environment.expect("ResolveBinding has an environment to resolve in");
+
+        // 3. If the source text matched by the syntactic production that is being evaluated is contained in strict mode code, let strict be true; else let strict be false.
+        // NOTE: We take this as a parameter.
+
+        // 4. Return ? GetIdentifierReference(env, name, strict).
+        self.get_identifier_reference(Some(environment), name.clone(), strict, 0)
+
+        // NOTE: The spec says:
+        //       Note: The result of ResolveBinding is always a Reference Record whose [[ReferencedName]] field is name.
+        //       But this is not actually correct as GetIdentifierReference (or really the methods it calls) can throw.
+    }
+
+    // 9.4.4 ResolveThisBinding ( ), https://tc39.es/ecma262/#sec-resolvethisbinding
+    pub fn resolve_this_binding(&self) -> ThrowCompletionOr<Value> {
+        // 1. Let envRec be GetThisEnvironment().
+        let environment = get_this_environment(self);
+
+        // 2. Return ? envRec.GetThisBinding().
+        environment.get_this_binding(self)
+    }
+
+    // 9.4.5 GetNewTarget ( ), https://tc39.es/ecma262/#sec-getnewtarget
+    pub fn get_new_target(&self) -> Value {
+        // 1. Let envRec be GetThisEnvironment().
+        let environment = get_this_environment(self);
+
+        // 2. Assert: envRec has a [[NewTarget]] field.
+        // 3. Return envRec.[[NewTarget]].
+        environment
+            .downcast::<FunctionEnvironment>()
+            .expect("the this environment of new.target is a function environment")
+            .new_target()
+    }
+
+    // 9.4.5 GetGlobalObject ( ), https://tc39.es/ecma262/#sec-getglobalobject
+    pub fn get_global_object(&self) -> Gc<Object> {
+        // 1. Let currentRealm be the current Realm Record.
+        let current_realm = self.current_realm().expect("there is a current realm");
+
+        // 2. Return currentRealm.[[GlobalObject]].
+        current_realm.global_object()
+    }
+}
+
 impl Drop for Vm {
     fn drop(&mut self) {
         // The heap's final collection destroys every cell, so it has to happen while the rest of the VM exists.
@@ -583,10 +713,96 @@ mod tests {
     #[test]
     fn an_uncaught_throw_completes_the_script_abruptly() {
         let vm = Vm::create();
+        let test_realm = crate::runtime::realm::test_realm::TestRealm::new(&vm);
+        crate::runtime::global_environment::test_global_object::set_up_global_object(&vm, test_realm.realm);
+        let running_context = vm.running_execution_context();
         let source: Vec<u16> = "throw 42".encode_utf16().collect();
-        let script = crate::script::Script::parse(&source).ok().expect("the script parses");
-        let thrown = vm.run_script(script).err().expect("the script throws");
+        let script = crate::script::Script::parse(&vm, &source, test_realm.realm).expect("the script parses");
+        let thrown = vm.run_script(script, None).expect_err("the script throws");
         assert!(thrown.value() == crate::layout::value::Value::from_i32(42));
-        assert!(vm.running_execution_context().is_none());
+        assert!(vm.running_execution_context() == running_context);
+    }
+
+    #[test]
+    fn identifier_references_record_where_they_resolved() {
+        use crate::bytecode::property_access::Strict;
+        use crate::layout::cell::Gc;
+        use crate::runtime::completion::Must;
+        use crate::runtime::declarative_environment::DeclarativeEnvironment;
+        use crate::runtime::environment::{Environment, InitializeBindingHint, ThisBindingStatus};
+        use crate::runtime::environment_coordinate::EnvironmentCoordinate;
+        use crate::runtime::function_environment::FunctionEnvironment;
+        use crate::runtime::global_environment::test_global_object::set_up_global_object;
+        use crate::runtime::property_attributes::DEFAULT_ATTRIBUTES;
+        use crate::runtime::realm::test_realm::{TestRealm, key};
+        use ak::Utf16FlyString;
+
+        let vm = Vm::create();
+        let test_realm = TestRealm::new(&vm);
+        let global = set_up_global_object(&vm, test_realm.realm);
+        global.define_direct_property(&vm, &key("on_global"), Value::from_i32(3), DEFAULT_ATTRIBUTES);
+        let global_environment: Gc<Environment> = test_realm.realm.global_environment().upcast();
+        let function_environment = FunctionEnvironment::create(&vm, Some(global_environment));
+        function_environment.set_this_binding_status(ThisBindingStatus::Lexical);
+        let block = DeclarativeEnvironment::create(&vm, Some(function_environment.upcast()));
+        let (local, outer, on_global) = (
+            Utf16FlyString::from_utf8("local"),
+            Utf16FlyString::from_utf8("outer"),
+            Utf16FlyString::from_utf8("on_global"),
+        );
+        block.create_mutable_binding(&vm, &local, false).must();
+        function_environment.create_mutable_binding(&vm, &outer, false).must();
+        function_environment
+            .initialize_binding(&vm, &outer, Value::from_i32(2), InitializeBindingHint::Normal)
+            .must();
+        let context = vm.running_execution_context().expect("the test realm runs");
+        // SAFETY: The test realm's context is live while it exists.
+        unsafe { context.as_ref() }
+            .lexical_environment
+            .set(Some(block.upcast()));
+
+        let local_reference = vm.resolve_binding(&local, Strict::No, None).must();
+        assert!(local_reference.base_environment() == block.upcast());
+        assert_eq!(
+            local_reference.environment_coordinate(),
+            Some(EnvironmentCoordinate { hops: 0, index: 0 })
+        );
+
+        let outer_reference = vm.resolve_binding(&outer, Strict::Yes, None).must();
+        assert!(outer_reference.base_environment() == function_environment.upcast());
+        assert_eq!(
+            outer_reference.environment_coordinate(),
+            Some(EnvironmentCoordinate { hops: 1, index: 0 })
+        );
+        assert_eq!(outer_reference.get_value(&vm).must(), Value::from_i32(2));
+
+        // The global environment reports no coordinate, since its bindings may live on the global object.
+        let global_reference = vm.resolve_binding(&on_global, Strict::No, None).must();
+        assert!(global_reference.base_environment() == global_environment);
+        assert_eq!(global_reference.environment_coordinate(), None);
+        assert_eq!(global_reference.get_value(&vm).must(), Value::from_i32(3));
+
+        let missing = vm
+            .resolve_binding(&Utf16FlyString::from_utf8("missing"), Strict::No, None)
+            .must();
+        assert!(missing.is_unresolvable());
+
+        // Resolving from a given environment skips the closer ones.
+        let from_function = vm
+            .resolve_binding(&local, Strict::No, Some(function_environment.upcast()))
+            .must();
+        assert!(from_function.is_unresolvable());
+
+        // The lexical-this function environment defers to the global this binding.
+        assert_eq!(vm.resolve_this_binding().must(), Value::from_object(global));
+        assert!(vm.get_global_object() == global);
+        assert!(vm.global_object() == global);
+        assert!(vm.global_declarative_environment() == test_realm.realm.global_declarative_environment());
+
+        function_environment.set_this_binding_status(ThisBindingStatus::Uninitialized);
+        function_environment.bind_this_value(&vm, Value::from_i32(7)).must();
+        function_environment.set_new_target(Value::NULL);
+        assert_eq!(vm.resolve_this_binding().must(), Value::from_i32(7));
+        assert_eq!(vm.get_new_target(), Value::NULL);
     }
 }
