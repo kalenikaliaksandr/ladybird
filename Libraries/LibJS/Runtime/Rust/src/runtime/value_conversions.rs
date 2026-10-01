@@ -12,9 +12,11 @@ use core::cmp::Ordering;
 use num_bigint::{BigInt, BigUint};
 use num_traits::Zero;
 
-use crate::interpreter::runtime_functions::unimplemented_runtime_function;
+use crate::interpreter::vm::Vm;
 use crate::runtime::big_int_algorithms::unsigned_to_double;
-use crate::runtime::completion::Throw;
+use crate::runtime::completion::ThrowCompletionOr;
+use crate::runtime::error::ErrorKind;
+use crate::runtime::error_types::ErrorType;
 use crate::runtime::string_conversions::parse_number_f64;
 
 pub const MAX_ARRAY_LIKE_INDEX: f64 = 9007199254740991.0;
@@ -37,19 +39,19 @@ pub enum NumericOperationError {
 
 impl NumericOperationError {
     /// The constructor and message of the error the C++ runtime throws.
-    pub fn error_description(self) -> &'static str {
+    pub fn error_kind_and_type(self) -> (ErrorKind, ErrorType) {
         match self {
-            Self::InvalidIndex => "RangeError: Index must be a positive integer no greater than 2^53-1",
-            Self::BigIntFromNonIntegral => "RangeError: Cannot convert non-integral number to BigInt",
-            Self::BigIntSizeExceeded => "RangeError: Maximum BigInt size exceeded",
-            Self::NegativeExponent => "RangeError: Exponent must be positive",
-            Self::OutOfMemory => "InternalError: Out of memory",
+            Self::InvalidIndex => (ErrorKind::RangeError, ErrorType::InvalidIndex),
+            Self::BigIntFromNonIntegral => (ErrorKind::RangeError, ErrorType::BigIntFromNonIntegral),
+            Self::BigIntSizeExceeded => (ErrorKind::RangeError, ErrorType::BigIntSizeExceeded),
+            Self::NegativeExponent => (ErrorKind::RangeError, ErrorType::NegativeExponent),
+            Self::OutOfMemory => (ErrorKind::InternalError, ErrorType::OutOfMemory),
         }
     }
 
-    /// Throwing needs an error object from the current realm's intrinsics, which the Rust runtime cannot create yet.
-    pub fn throw_completion(self) -> Throw {
-        unimplemented_runtime_function(self.error_description(), 0)
+    pub fn throw_completion<T>(self, vm: &Vm) -> ThrowCompletionOr<T> {
+        let (kind, error_type) = self.error_kind_and_type();
+        vm.throw_completion(kind, error_type, &[])
     }
 }
 

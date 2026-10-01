@@ -11,13 +11,14 @@ use libjs_runtime_macros::Trace;
 
 use crate::gc::class::{Class, GcCell, define_cell};
 use crate::gc::visitor::{Trace, Visitor};
-use crate::interpreter::runtime_functions::unimplemented_runtime_function;
 use crate::interpreter::vm::{StringToAtomCacheEntry, Vm};
 use crate::layout::cell::{CellHeader, Gc};
 pub use crate::layout::primitive_string::{DeferredKind, PrimitiveString};
 use crate::layout::value::Value;
 use crate::layout_forward::Utf16StringSlot;
-use crate::runtime::completion::{Throw, ThrowCompletionOr};
+use crate::runtime::completion::ThrowCompletionOr;
+use crate::runtime::error::ErrorKind;
+use crate::runtime::error_types::ErrorType;
 use crate::runtime::property_key::PropertyKey;
 use crate::utf16::{
     MAX_SHORT_STRING_BYTE_COUNT, Utf16View, concatenate, has_fly_string_storage, has_short_ascii_storage,
@@ -61,13 +62,6 @@ fn u64_hash(mut key: u64) -> u32 {
 
 fn is_ascii(code_unit: u16) -> bool {
     code_unit < 0x80
-}
-
-fn throw_range_error_invalid_string_length() -> Throw {
-    unimplemented_runtime_function(
-        "PrimitiveString::create: RangeError (ErrorType::InvalidLength, \"string\")",
-        0,
-    )
 }
 
 impl PrimitiveString {
@@ -190,7 +184,7 @@ impl PrimitiveString {
         rhs: Gc<PrimitiveString>,
     ) -> ThrowCompletionOr<Gc<PrimitiveString>> {
         if rhs.length_in_utf16_code_units() >= u32::MAX as usize - lhs.length_in_utf16_code_units() {
-            return Err(throw_range_error_invalid_string_length());
+            return vm.throw_completion(ErrorKind::RangeError, ErrorType::InvalidLength, &[&"string"]);
         }
 
         // We're here to concatenate two strings into a new rope string. However, if any of them are empty, no rope is required.

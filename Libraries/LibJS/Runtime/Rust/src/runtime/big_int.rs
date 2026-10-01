@@ -9,11 +9,12 @@ use libjs_runtime_macros::Trace;
 use num_traits::FromPrimitive;
 
 use crate::gc::class::{GcCell, define_cell};
-use crate::interpreter::runtime_functions::unimplemented_runtime_function;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::{CellHeader, Gc};
 use crate::layout::value::Value;
-use crate::runtime::completion::{Throw, ThrowCompletionOr};
+use crate::runtime::completion::ThrowCompletionOr;
+use crate::runtime::error::ErrorKind;
+use crate::runtime::error_types::ErrorType;
 
 /// The arbitrary-precision integer a BigInt holds, in place of Crypto::SignedBigInteger.
 pub use num_bigint::BigInt as SignedBigInteger;
@@ -48,17 +49,13 @@ impl BigInt {
     }
 }
 
-fn throw_range_error_big_int_from_non_integral() -> Throw {
-    unimplemented_runtime_function("number_to_bigint: RangeError (ErrorType::BigIntFromNonIntegral)", 0)
-}
-
 // 21.2.1.1.1 NumberToBigInt ( number ), https://tc39.es/ecma262/#sec-numbertobigint
 pub fn number_to_bigint(vm: &Vm, number: Value) -> ThrowCompletionOr<Gc<BigInt>> {
     assert!(number.is_number());
 
     // 1. If IsIntegralNumber(number) is false, throw a RangeError exception.
     if !number.is_integral_number() {
-        return Err(throw_range_error_big_int_from_non_integral());
+        return vm.throw_completion(ErrorKind::RangeError, ErrorType::BigIntFromNonIntegral, &[]);
     }
 
     // 2. Return the BigInt value that represents ℝ(number).
