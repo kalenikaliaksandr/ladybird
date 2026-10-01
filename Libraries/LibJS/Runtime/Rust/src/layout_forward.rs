@@ -49,11 +49,8 @@ pub type RawNativeFunctionPointer = Option<unsafe extern "C" fn(result: *mut Raw
 #[derive(Default)]
 pub struct ObjectPropertyIteratorCacheDataStorage {}
 
-#[derive(Default)]
-pub struct DeclarativeEnvironmentRareDataStorage {}
-
-#[derive(Default)]
-pub struct EnvironmentShapeStorage {}
+pub use crate::runtime::declarative_environment::DeclarativeEnvironmentRareDataStorage;
+pub use crate::runtime::environment_shape::EnvironmentShapeStorage;
 
 #[derive(Default)]
 pub struct EcmascriptFunctionObjectStorage {}
