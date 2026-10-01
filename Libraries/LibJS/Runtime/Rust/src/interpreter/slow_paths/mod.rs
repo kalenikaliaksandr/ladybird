@@ -13,13 +13,318 @@ pub mod control;
 pub mod operators;
 pub mod property_access;
 
+use core::cell::Cell;
+
 use super::runtime_functions::{Runtime, RuntimeFunctions, SlowPathControl, handle_asm_exception};
 use super::vm::Vm;
 use crate::bytecode::op;
 use crate::layout::value::Value;
 
+/// The VM a helper receives as an integer argument.
+fn vm_from_helper_argument<'vm>(argument: u64) -> &'vm Vm {
+    // SAFETY: The interpreter passes the VM it runs on, whose address escaped to it through the FFI call that started
+    // it, and the VM outlives every call the interpreter makes into the runtime.
+    unsafe { &*core::ptr::with_exposed_provenance::<Vm>(argument as usize) }
+}
+
 impl RuntimeFunctions for Runtime {
     // Arithmetic, comparisons, conversions and the jumps on comparisons: operators.rs.
+
+    fn helper_to_boolean(encoded_value: u64) -> u64 {
+        operators::helper_to_boolean(encoded_value)
+    }
+
+    fn helper_math_exp(encoded_value: u64) -> u64 {
+        operators::helper_math_exp(encoded_value)
+    }
+
+    fn helper_empty_string(vm: u64) -> u64 {
+        operators::helper_empty_string(vm_from_helper_argument(vm))
+    }
+
+    fn helper_single_ascii_character_string(vm: u64, encoded_value: u64) -> u64 {
+        operators::helper_single_ascii_character_string(vm_from_helper_argument(vm), encoded_value)
+    }
+
+    fn helper_single_utf16_code_unit_string(vm: u64, encoded_value: u64) -> u64 {
+        operators::helper_single_utf16_code_unit_string(vm_from_helper_argument(vm), encoded_value)
+    }
+
+    fn add_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::add_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn sub_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::sub_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn mul_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::mul_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn div_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::div_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn mod_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::mod_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn exp_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::exp_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn bitwise_and_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::bitwise_and_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn bitwise_or_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::bitwise_or_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn bitwise_xor_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::bitwise_xor_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn left_shift_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::left_shift_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn right_shift_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::right_shift_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn unsigned_right_shift_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::unsigned_right_shift_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn less_than_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::less_than_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn less_than_equals_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::less_than_equals_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn greater_than_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::greater_than_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn greater_than_equals_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::greater_than_equals_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn loosely_equals_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::loosely_equals_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn loosely_inequals_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::loosely_inequals_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn strictly_equals_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::strictly_equals_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn strictly_inequals_values(vm: &Vm, pc: u32, dst: &Cell<Value>, lhs: Value, rhs: Value) -> SlowPathControl {
+        operators::strictly_inequals_values(vm, pc, dst, lhs, rhs)
+    }
+
+    fn jump_less_than_values(
+        vm: &Vm,
+        pc: u32,
+        lhs: Value,
+        rhs: Value,
+        true_target: u32,
+        false_target: u32,
+    ) -> SlowPathControl {
+        operators::jump_less_than_values(vm, pc, lhs, rhs, true_target, false_target)
+    }
+
+    fn jump_less_than_equals_values(
+        vm: &Vm,
+        pc: u32,
+        lhs: Value,
+        rhs: Value,
+        true_target: u32,
+        false_target: u32,
+    ) -> SlowPathControl {
+        operators::jump_less_than_equals_values(vm, pc, lhs, rhs, true_target, false_target)
+    }
+
+    fn jump_greater_than_values(
+        vm: &Vm,
+        pc: u32,
+        lhs: Value,
+        rhs: Value,
+        true_target: u32,
+        false_target: u32,
+    ) -> SlowPathControl {
+        operators::jump_greater_than_values(vm, pc, lhs, rhs, true_target, false_target)
+    }
+
+    fn jump_greater_than_equals_values(
+        vm: &Vm,
+        pc: u32,
+        lhs: Value,
+        rhs: Value,
+        true_target: u32,
+        false_target: u32,
+    ) -> SlowPathControl {
+        operators::jump_greater_than_equals_values(vm, pc, lhs, rhs, true_target, false_target)
+    }
+
+    fn jump_loosely_equals_values(
+        vm: &Vm,
+        pc: u32,
+        lhs: Value,
+        rhs: Value,
+        true_target: u32,
+        false_target: u32,
+    ) -> SlowPathControl {
+        operators::jump_loosely_equals_values(vm, pc, lhs, rhs, true_target, false_target)
+    }
+
+    fn jump_loosely_inequals_values(
+        vm: &Vm,
+        pc: u32,
+        lhs: Value,
+        rhs: Value,
+        true_target: u32,
+        false_target: u32,
+    ) -> SlowPathControl {
+        operators::jump_loosely_inequals_values(vm, pc, lhs, rhs, true_target, false_target)
+    }
+
+    fn jump_strictly_equals_values(
+        _vm: &Vm,
+        _pc: u32,
+        lhs: Value,
+        rhs: Value,
+        true_target: u32,
+        false_target: u32,
+    ) -> SlowPathControl {
+        operators::jump_strictly_equals_values(lhs, rhs, true_target, false_target)
+    }
+
+    fn jump_strictly_inequals_values(
+        _vm: &Vm,
+        _pc: u32,
+        lhs: Value,
+        rhs: Value,
+        true_target: u32,
+        false_target: u32,
+    ) -> SlowPathControl {
+        operators::jump_strictly_inequals_values(lhs, rhs, true_target, false_target)
+    }
+
+    fn unary_minus(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::UnaryMinus,
+        values: &mut op::UnaryMinusValues,
+    ) -> SlowPathControl {
+        operators::unary_minus(vm, pc, values)
+    }
+
+    fn unary_plus(vm: &Vm, pc: u32, _instruction: &op::UnaryPlus, values: &mut op::UnaryPlusValues) -> SlowPathControl {
+        operators::unary_plus(vm, pc, values)
+    }
+
+    fn bitwise_not(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::BitwiseNot,
+        values: &mut op::BitwiseNotValues,
+    ) -> SlowPathControl {
+        operators::bitwise_not(vm, pc, values)
+    }
+
+    fn increment(vm: &Vm, pc: u32, _instruction: &op::Increment, values: &mut op::IncrementValues) -> SlowPathControl {
+        operators::increment(vm, pc, values)
+    }
+
+    fn decrement(vm: &Vm, pc: u32, _instruction: &op::Decrement, values: &mut op::DecrementValues) -> SlowPathControl {
+        operators::decrement(vm, pc, values)
+    }
+
+    fn postfix_increment(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::PostfixIncrement,
+        values: &mut op::PostfixIncrementValues,
+    ) -> SlowPathControl {
+        operators::postfix_increment(vm, pc, values)
+    }
+
+    fn postfix_decrement(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::PostfixDecrement,
+        values: &mut op::PostfixDecrementValues,
+    ) -> SlowPathControl {
+        operators::postfix_decrement(vm, pc, values)
+    }
+
+    fn to_int32(vm: &Vm, pc: u32, _instruction: &op::ToInt32, values: &mut op::ToInt32Values) -> SlowPathControl {
+        operators::to_int32(vm, pc, values)
+    }
+
+    fn to_length(vm: &Vm, pc: u32, _instruction: &op::ToLength, values: &mut op::ToLengthValues) -> SlowPathControl {
+        operators::to_length(vm, pc, values)
+    }
+
+    fn to_object(vm: &Vm, pc: u32, _instruction: &op::ToObject, values: &mut op::ToObjectValues) -> SlowPathControl {
+        operators::to_object(vm, pc, values)
+    }
+
+    fn to_primitive_with_string_hint(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::ToPrimitiveWithStringHint,
+        values: &mut op::ToPrimitiveWithStringHintValues,
+    ) -> SlowPathControl {
+        operators::to_primitive_with_string_hint(vm, pc, values)
+    }
+
+    fn to_string(vm: &Vm, pc: u32, _instruction: &op::ToString, values: &mut op::ToStringValues) -> SlowPathControl {
+        operators::to_string(vm, pc, values)
+    }
+
+    fn r#typeof(vm: &Vm, pc: u32, _instruction: &op::Typeof, values: &mut op::TypeofValues) -> SlowPathControl {
+        operators::r#typeof(vm, pc, values)
+    }
+
+    fn concat_string(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::ConcatString,
+        values: &mut op::ConcatStringValues,
+    ) -> SlowPathControl {
+        operators::concat_string(vm, pc, values)
+    }
+
+    fn r#in(vm: &Vm, pc: u32, _instruction: &op::In, values: &mut op::InValues) -> SlowPathControl {
+        operators::r#in(vm, pc, values)
+    }
+
+    fn instance_of(
+        vm: &Vm,
+        pc: u32,
+        _instruction: &op::InstanceOf,
+        values: &mut op::InstanceOfValues,
+    ) -> SlowPathControl {
+        operators::instance_of(vm, pc, values)
+    }
+
+    fn is_constructor(
+        _vm: &Vm,
+        pc: u32,
+        _instruction: &op::IsConstructor,
+        values: &mut op::IsConstructorValues,
+    ) -> SlowPathControl {
+        operators::is_constructor(pc, values)
+    }
 
     // Property access and its inline caches: property_access.rs.
 
