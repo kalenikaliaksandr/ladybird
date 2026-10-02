@@ -6,12 +6,14 @@
 
 //! js-rust: runs scripts on the Rust runtime, with the command line of Utilities/js.cpp.
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int};
 use core::ops::Deref;
-use core::sync::atomic::{AtomicBool, Ordering};
-use std::ffi::CStr;
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::ffi::{CStr, CString, OsStr};
 use std::io::{self, Read, Write};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::OpenOptionsExt;
 
 use ak::{Utf16FlyString, Utf16String};
 use libjs_runtime_macros::Trace;
@@ -19,6 +21,7 @@ use libjs_runtime_macros::Trace;
 use crate::console::{Console, ConsoleClient, ConsoleClientMethods, LogLevel, PrinterArguments};
 use crate::contrib::test262::global_object::Test262GlobalObject;
 use crate::gc::class::{GcCell, define_cell};
+use crate::gc::root::Root;
 use crate::hash_table::HashTable;
 use crate::interpreter::run::set_dump_bytecode;
 use crate::interpreter::runtime_functions::unimplemented_runtime_function;
@@ -26,6 +29,7 @@ use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
 use crate::layout::object::Object;
 use crate::layout::value::Value;
+use crate::lexical_path;
 use crate::parser_error::ParserError;
 use crate::runtime::completion::ThrowCompletionOr;
 use crate::runtime::error::{Error, ErrorKind};
@@ -34,7 +38,7 @@ use crate::runtime::error_types::ErrorType;
 use crate::runtime::global_object::GlobalObject;
 use crate::runtime::json_object::JSONObject;
 use crate::runtime::native_function::raw_native;
-use crate::runtime::object::{ORDINARY_OBJECT_METHODS, allocate_object, define_object_class};
+use crate::runtime::object::{ORDINARY_OBJECT_METHODS, PropertyLookupPhase, allocate_object, define_object_class};
 use crate::runtime::primitive_string::PrimitiveString;
 use crate::runtime::print::{PrintContext, print};
 use crate::runtime::promise::Promise;
@@ -369,6 +373,154 @@ fn parse_arguments(arguments: &[String], output: &mut dyn Write) -> Result<Optio
 static STRIP_ANSI: AtomicBool = AtomicBool::new(false);
 static RAW_STRINGS: AtomicBool = AtomicBool::new(false);
 
+/// s_repl_line_level, s_keep_running_repl and s_exit_code of the C++ js. The line level counts the brackets that the
+/// lines read so far have left open, and is not reset between pieces.
+static REPL_LINE_LEVEL: AtomicI32 = AtomicI32::new(0);
+static KEEP_RUNNING_REPL: AtomicBool = AtomicBool::new(true);
+static EXIT_CODE: AtomicI32 = AtomicI32::new(0);
+
+thread_local! {
+    /// g_repl_statements of the C++ js: the pieces of input the REPL has run, which save() writes.
+    static REPL_STATEMENTS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+    /// g_last_value of the C++ js: the completion value of the last script that ran, which `_` of the REPL reads.
+    static LAST_VALUE: RefCell<Option<Root<'static, Value>>> = const { RefCell::new(None) };
+}
+
+/// The Error of AK's String::from_utf8() for bytes that are not UTF-8.
+const STRING_FROM_UTF8_ERROR: &str = "String::from_utf8: Input was not valid UTF-8";
+
+/// The global object of the realm the REPL runs its input in.
+#[repr(C)]
+#[derive(Trace)]
+pub struct ReplObject {
+    base: GlobalObject,
+}
+
+define_object_class!(ReplObject, extends: [GlobalObject, Object], methods: {
+    initialize: ReplObject::initialize,
+    ..ORDINARY_OBJECT_METHODS
+});
+
+impl ReplObject {
+    pub fn allocate(vm: &Vm, realm: Gc<Realm>) -> Gc<ReplObject> {
+        allocate_object(
+            vm,
+            ReplObject {
+                base: GlobalObject::new(vm, Self::CLASS, realm),
+            },
+        )
+    }
+
+    fn initialize(object: &Object, vm: &Vm, realm: Gc<Realm>) {
+        let base_initialize = GlobalObject::CLASS
+            .object_methods
+            .expect("GlobalObject is an object class")
+            .initialize;
+        base_initialize(object, vm, realm);
+
+        object.define_direct_property(
+            vm,
+            &key("global"),
+            Value::from_object(object.as_gc()),
+            PropertyAttributes::new(Attribute::ENUMERABLE),
+        );
+        let attr = PropertyAttributes::new(Attribute::CONFIGURABLE | Attribute::WRITABLE | Attribute::ENUMERABLE);
+        let define = |name: &str, function, length| {
+            object.define_native_function(vm, realm, &key(name), function, length, attr, None);
+        };
+        define("exit", raw_native!(ReplObject::exit_interpreter), 0);
+        define("help", raw_native!(ReplObject::repl_help), 0);
+        define("save", raw_native!(ReplObject::save_to_file), 1);
+        define("loadINI", raw_native!(ReplObject::load_ini), 1);
+        define("loadJSON", raw_native!(ReplObject::load_json), 1);
+        define("print", raw_native!(ReplObject::print), 1);
+        define("gc", raw_native!(ReplObject::gc), 0);
+
+        object.define_native_accessor(
+            vm,
+            realm,
+            &vm.names.underscore,
+            raw_native!(ReplObject::last_value_getter),
+            raw_native!(ReplObject::last_value_setter),
+            attr,
+        );
+    }
+
+    #[allow(clippy::unnecessary_wraps, reason = "native functions return a completion")]
+    fn last_value_getter(_vm: &Vm) -> ThrowCompletionOr<Value> {
+        Ok(LAST_VALUE.with_borrow(|last_value| last_value.as_ref().map_or(Value::UNDEFINED, Root::value)))
+    }
+
+    fn last_value_setter(vm: &Vm) -> ThrowCompletionOr<Value> {
+        let global_object = vm.get_global_object();
+        assert!(global_object.downcast::<ReplObject>().is_some());
+        standard_output::outln(b"Disable writing last value to '_'");
+
+        // We must delete first otherwise this setter gets called recursively.
+        global_object.internal_delete(vm, &vm.names.underscore)?;
+
+        let value = vm.argument(0);
+        global_object.internal_set(
+            vm,
+            &vm.names.underscore,
+            value,
+            Value::from_object(global_object),
+            None,
+            PropertyLookupPhase::OwnProperty,
+        )?;
+        Ok(value)
+    }
+
+    fn save_to_file(vm: &Vm) -> ThrowCompletionOr<Value> {
+        if vm.argument_count() == 0 {
+            return Ok(Value::from_bool(false));
+        }
+        let save_path = Utf16View::of_string(&vm.argument(0).to_utf16_string(vm)?).to_wtf8();
+        Ok(Value::from_bool(write_to_file(&save_path).is_ok()))
+    }
+
+    fn exit_interpreter(vm: &Vm) -> ThrowCompletionOr<Value> {
+        if vm.argument_count() != 0 {
+            // NB: The C++ js converts the double to the int s_exit_code, which on AArch64 saturates and takes NaN to
+            //     0, like this cast.
+            EXIT_CODE.store(vm.argument(0).to_double(vm)? as i32, Ordering::Relaxed);
+        }
+
+        KEEP_RUNNING_REPL.store(false, Ordering::Relaxed);
+        Ok(Value::UNDEFINED)
+    }
+
+    #[allow(clippy::unnecessary_wraps, reason = "native functions return a completion")]
+    fn repl_help(_vm: &Vm) -> ThrowCompletionOr<Value> {
+        eprintln!("REPL commands:");
+        eprintln!("    exit(code): exit the REPL with specified code. Defaults to 0.");
+        eprintln!("    help(): display this menu");
+        eprintln!("    loadINI(file): load the given file as INI.");
+        eprintln!("    loadJSON(file): load the given file as JSON.");
+        eprintln!("    print(value): pretty-print the given JS value.");
+        eprintln!("    save(file): write REPL input history to the given file. For example: save(\"foo.txt\")");
+        Ok(Value::UNDEFINED)
+    }
+
+    fn load_ini(vm: &Vm) -> ThrowCompletionOr<Value> {
+        load_ini_impl(vm)
+    }
+
+    fn load_json(vm: &Vm) -> ThrowCompletionOr<Value> {
+        load_json_impl(vm)
+    }
+
+    fn print(vm: &Vm) -> ThrowCompletionOr<Value> {
+        print_all_arguments_or_throw(vm)
+    }
+
+    #[allow(clippy::unnecessary_wraps, reason = "native functions return a completion")]
+    fn gc(vm: &Vm) -> ThrowCompletionOr<Value> {
+        vm.heap().collect_garbage();
+        Ok(Value::UNDEFINED)
+    }
+}
+
 /// The global object of the realm js runs scripts in.
 #[repr(C)]
 #[derive(Trace)]
@@ -423,14 +575,7 @@ impl ScriptObject {
     }
 
     fn print(vm: &Vm) -> ThrowCompletionOr<Value> {
-        if let Err(error) = print_all_arguments(vm, PrintTarget::StandardOutput, PrintEnd::Newline) {
-            return vm.throw_completion_with_message(
-                ErrorKind::InternalError,
-                format!("Failed to print value(s): {}", write_error_string(&error)),
-            );
-        }
-
-        Ok(Value::UNDEFINED)
+        print_all_arguments_or_throw(vm)
     }
 
     #[allow(clippy::unnecessary_wraps, reason = "native functions return a completion")]
@@ -515,6 +660,49 @@ fn print_all_arguments(vm: &Vm, target: PrintTarget, end: PrintEnd) -> io::Resul
     Ok(())
 }
 
+/// The print() of the global objects of js.
+fn print_all_arguments_or_throw(vm: &Vm) -> ThrowCompletionOr<Value> {
+    if let Err(error) = print_all_arguments(vm, PrintTarget::StandardOutput, PrintEnd::Newline) {
+        return vm.throw_completion_with_message(
+            ErrorKind::InternalError,
+            format!("Failed to print value(s): {}", write_error_string(&error)),
+        );
+    }
+
+    Ok(Value::UNDEFINED)
+}
+
+fn prompt_for_level(level: i32) -> CString {
+    let mut prompt = String::from("> ");
+
+    for _ in 0..level {
+        prompt.push_str("    ");
+    }
+
+    CString::new(prompt).expect("the prompt has no NULs")
+}
+
+/// Writes the statements that the REPL ran before the current one to `path`, each followed by a newline.
+fn write_to_file(path: &[u8]) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o666)
+        .open(OsStr::from_bytes(path))?;
+    REPL_STATEMENTS.with_borrow(|statements| {
+        for (i, line) in statements.iter().enumerate() {
+            if !line.is_empty() && i != statements.len() - 1 {
+                file.write_all(line)?;
+            }
+            if i != statements.len() - 1 {
+                file.write_all(b"\n")?;
+            }
+        }
+        Ok(())
+    })
+}
+
 /// error->stack_string(JS::CompactTraceback::Yes) of a thrown Error, which the C++ js prints after the error.
 fn stack_string_of_thrown_error(thrown_value: Value) -> Option<Utf16String> {
     if !thrown_value.is_object() {
@@ -538,7 +726,7 @@ fn handle_exception(vm: &Vm, thrown_value: Value) -> io::Result<()> {
 
 /// Returns whether the source ran without throwing, or the error that LibMain reports when printing fails.
 fn parse_and_run(
-    vm: &Vm,
+    vm: &'static Vm,
     realm: Gc<Realm>,
     options: &Options,
     source: &[u8],
@@ -587,6 +775,10 @@ fn parse_and_run(
                 result = vm.run_module(module);
             }
         }
+    }
+
+    if let Ok(value) = result {
+        LAST_VALUE.set(Some(Root::new(vm, value)));
     }
 
     match result {
@@ -950,6 +1142,487 @@ impl Deref for ReplConsoleClient {
     }
 }
 
+/// The REPL, which reads its input with libedit, which js does not link on Android.
+#[cfg(not(target_os = "android"))]
+mod repl {
+    use core::ops::ControlFlow;
+    use std::io::IsTerminal;
+
+    use super::*;
+    use crate::bytecode::property_access::Strict;
+    use crate::runtime::global_environment::GlobalEnvironment;
+    use crate::runtime::shape::Shape;
+    use crate::runtime::string_prototype::WHITESPACE_CHARACTER_CODE_UNITS;
+    use crate::utf16::TrimMode;
+    use crate::utilities::readline;
+    use libjs_rust::lexer::Lexer;
+    use libjs_rust::token::TokenType;
+
+    /// s_repl_realm and s_repl_global_environment of the C++ js, which complete_repl_line() completes names in.
+    struct ReplRealm {
+        vm: &'static Vm,
+        realm: Root<'static, Gc<Realm>>,
+        global_environment: Root<'static, Gc<GlobalEnvironment>>,
+    }
+
+    thread_local! {
+        static REPL_REALM: RefCell<Option<ReplRealm>> = const { RefCell::new(None) };
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum CompletionMode {
+        Initial,
+        CompleteVariable,
+        CompleteNullProperty,
+        CompleteProperty,
+    }
+
+    /// The names that the end of the line can be completed to: the global variables that start with its last
+    /// identifier, or the properties of a variable that start with what follows the period after it.
+    fn complete_repl_line(line: &[u8]) -> Vec<Vec<u8>> {
+        let Some((vm, realm, global_environment)) = REPL_REALM.with_borrow(|repl_realm| {
+            repl_realm.as_ref().map(|repl_realm| {
+                (
+                    repl_realm.vm,
+                    repl_realm.realm.value(),
+                    repl_realm.global_environment.value(),
+                )
+            })
+        }) else {
+            return Vec::new();
+        };
+        // Like Utf16String::from_utf8(), this stops the process for a line that is not valid UTF-8.
+        let code = utf16_from_wtf8(line).expect("the line is valid UTF-8");
+
+        let mut mode = CompletionMode::Initial;
+
+        let mut variable_name: &[u16] = &[];
+        let mut property_name: &[u16] = &[];
+
+        // We're only going to complete either
+        //    - <N>
+        //        where N is part of the name of a variable
+        //    - <N>.<P>
+        //        where N is the complete name of a variable and
+        //        P is part of the name of one of its properties
+        let mut lexer = Lexer::new(&code, 1, 0);
+        let mut last_token_has_trivia = loop {
+            let token = lexer.next();
+            if token.token_type == TokenType::Eof {
+                break token.trivia_len > 0;
+            }
+
+            let token_value = &code[token.value_start as usize..][..token.value_len as usize];
+
+            match mode {
+                CompletionMode::CompleteVariable => {
+                    if token.token_type == TokenType::Period {
+                        mode = CompletionMode::CompleteNullProperty;
+                    } else {
+                        mode = CompletionMode::Initial;
+                    }
+                }
+                CompletionMode::CompleteNullProperty => {
+                    if token.token_type.is_identifier_name() {
+                        mode = CompletionMode::CompleteProperty;
+                        property_name = token_value;
+                    } else {
+                        mode = CompletionMode::Initial;
+                    }
+                }
+                CompletionMode::CompleteProperty | CompletionMode::Initial => {
+                    if token.token_type == TokenType::Identifier {
+                        mode = CompletionMode::CompleteVariable;
+                        variable_name = token_value;
+                    } else {
+                        mode = CompletionMode::Initial;
+                    }
+                }
+            }
+        };
+
+        if mode == CompletionMode::CompleteNullProperty {
+            mode = CompletionMode::CompleteProperty;
+            property_name = &[];
+            last_token_has_trivia = false; // <name> <dot> [tab] is sensible to complete.
+        }
+
+        if mode == CompletionMode::Initial || last_token_has_trivia {
+            return Vec::new(); // we do not know how to complete this
+        }
+
+        let mut results = Vec::new();
+
+        match mode {
+            CompletionMode::CompleteProperty => {
+                let Ok(reference) = vm.resolve_binding(
+                    &Utf16FlyString::from_utf16(variable_name),
+                    Strict::No,
+                    Some(global_environment.upcast()),
+                ) else {
+                    return Vec::new();
+                };
+                let Ok(variable) = reference.get_value(vm) else {
+                    return Vec::new();
+                };
+
+                if variable.is_object() {
+                    list_all_properties(
+                        variable.as_object().shape(),
+                        Utf16View::Utf16(property_name),
+                        &mut results,
+                    );
+                    let variable_name = Utf16View::Utf16(variable_name).to_wtf8();
+                    for result in &mut results {
+                        let mut builder = variable_name.clone();
+                        builder.push(b'.');
+                        builder.append(result);
+                        *result = builder;
+                    }
+                }
+            }
+            CompletionMode::CompleteVariable => {
+                let variable = realm.global_object();
+                list_all_properties(variable.shape(), Utf16View::Utf16(variable_name), &mut results);
+
+                for name in global_environment.declarative_record().bindings() {
+                    let name = Utf16View::of_fly_string(&name);
+                    if name.starts_with(Utf16View::Utf16(variable_name)) {
+                        results.push(name.to_wtf8());
+                    }
+                }
+            }
+            CompletionMode::Initial | CompletionMode::CompleteNullProperty => unreachable!(),
+        }
+
+        results
+    }
+
+    /// Adds the string-keyed properties of `shape` and of its prototypes that start with `property_pattern` to `results`,
+    /// in insertion order and once each.
+    fn list_all_properties(shape: Gc<Shape>, property_pattern: Utf16View<'_>, results: &mut Vec<Vec<u8>>) {
+        shape.for_each_property_in_insertion_order(|property_key, _| {
+            if !property_key.is_string() {
+                return ControlFlow::Continue(());
+            }
+
+            let key = Utf16View::of_fly_string(property_key.as_string());
+
+            if key.starts_with(property_pattern) {
+                let completion = key.to_wtf8();
+                if !results.contains(&completion) {
+                    // hide duplicates
+                    results.push(completion);
+                }
+            }
+            ControlFlow::Continue(())
+        });
+        if let Some(prototype) = shape.prototype() {
+            list_all_properties(prototype.shape(), property_pattern, results);
+        }
+    }
+
+    extern "C" fn complete_repl_line_for_readline(
+        _text: *const c_char,
+        _start: c_int,
+        _end: c_int,
+    ) -> *mut *mut c_char {
+        let Some(line) = readline::line_buffer() else {
+            return core::ptr::null_mut();
+        };
+
+        readline::set_attempted_completion_over();
+
+        let completions = complete_repl_line(&line);
+        if completions.is_empty() {
+            return core::ptr::null_mut();
+        }
+
+        readline::completion_matches(common_prefix_of(&completions), &completions)
+    }
+
+    /// The longest run of bytes that every completion starts with, which replaces the word that is completed.
+    fn common_prefix_of(completions: &[Vec<u8>]) -> &[u8] {
+        let mut common_prefix = completions[0].as_slice();
+        for completion in &completions[1..] {
+            let prefix_length = common_prefix
+                .iter()
+                .zip(completion)
+                .take_while(|(prefix_byte, completion_byte)| prefix_byte == completion_byte)
+                .count();
+            common_prefix = &common_prefix[..prefix_length];
+        }
+        common_prefix
+    }
+
+    /// libedit only prompts when the standard input and output are terminals, and then flushes the stdout of C stdio
+    /// that it writes the prompt to, so what js has buffered for the standard output comes out first.
+    fn flush_standard_output_if_readline_prompts() {
+        if io::stdin().is_terminal() && io::stdout().is_terminal() {
+            standard_output::flush();
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum LabelState {
+        NotInLabelOrObjectKey,
+        InLabelOrObjectKeyIdentifier,
+        InLabelOrObjectKey,
+    }
+
+    /// Counts the brackets of `line` into the line level, and returns whether it ends in a label or an object literal
+    /// key.
+    fn update_line_level_for_line(line: &[u16]) -> bool {
+        let mut label_state = LabelState::NotInLabelOrObjectKey;
+
+        let mut lexer = Lexer::new(line, 1, 0);
+        loop {
+            let token = lexer.next();
+            match token.token_type {
+                TokenType::BracketOpen | TokenType::CurlyOpen | TokenType::ParenOpen => {
+                    label_state = LabelState::NotInLabelOrObjectKey;
+                    REPL_LINE_LEVEL.fetch_add(1, Ordering::Relaxed);
+                }
+                TokenType::BracketClose | TokenType::CurlyClose | TokenType::ParenClose => {
+                    label_state = LabelState::NotInLabelOrObjectKey;
+                    REPL_LINE_LEVEL.fetch_sub(1, Ordering::Relaxed);
+                }
+                TokenType::Identifier | TokenType::StringLiteral => {
+                    if label_state == LabelState::NotInLabelOrObjectKey {
+                        label_state = LabelState::InLabelOrObjectKeyIdentifier;
+                    } else {
+                        label_state = LabelState::NotInLabelOrObjectKey;
+                    }
+                }
+                TokenType::Colon => {
+                    if label_state == LabelState::InLabelOrObjectKeyIdentifier {
+                        label_state = LabelState::InLabelOrObjectKey;
+                    } else {
+                        label_state = LabelState::NotInLabelOrObjectKey;
+                    }
+                }
+                TokenType::Eof => break,
+                _ => {}
+            }
+        }
+
+        label_state == LabelState::InLabelOrObjectKey
+    }
+
+    /// Reads lines until the brackets they open are closed. Returns an empty piece at the end of the input.
+    fn read_next_piece() -> Result<Vec<u8>, String> {
+        let mut piece = Vec::new();
+
+        loop {
+            let prompt = prompt_for_level(REPL_LINE_LEVEL.load(Ordering::Relaxed));
+            flush_standard_output_if_readline_prompts();
+            let raw_line = readline::readline(&prompt);
+
+            let mut line_level_delta_for_next_line = 0;
+
+            let Some(line) = raw_line else {
+                KEEP_RUNNING_REPL.store(false, Ordering::Relaxed);
+                return Ok(Vec::new());
+            };
+
+            let Some(code) = utf16_from_wtf8(&line) else {
+                return Err(STRING_FROM_UTF8_ERROR.to_string());
+            };
+            if !line.is_empty() {
+                readline::add_history(&CString::new(line.as_slice()).expect("a line from readline() has no NULs"));
+            }
+
+            piece.extend_from_slice(&line);
+            piece.push(b'\n');
+
+            if update_line_level_for_line(&code) {
+                // If there's a label or object literal key at the end of this line,
+                // prompt for more lines but do not change the line level.
+                line_level_delta_for_next_line += 1;
+            }
+
+            if REPL_LINE_LEVEL.load(Ordering::Relaxed) + line_level_delta_for_next_line <= 0 {
+                return Ok(piece);
+            }
+        }
+    }
+
+    fn repl(vm: &'static Vm, realm: Gc<Realm>, options: &Options) -> Result<(), String> {
+        while KEEP_RUNNING_REPL.load(Ordering::Relaxed) {
+            let piece = read_next_piece()?;
+            let code = utf16_from_wtf8(&piece).expect("the lines of a piece are valid UTF-8");
+            if Utf16View::Utf16(&code)
+                .trim(&WHITESPACE_CHARACTER_CODE_UNITS, TrimMode::Both)
+                .is_empty()
+            {
+                continue;
+            }
+
+            REPL_STATEMENTS.with_borrow_mut(|statements| statements.push(piece.clone()));
+            parse_and_run(vm, realm, options, &piece, "REPL", false)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn run_repl(vm: &'static Vm, mut options: Options, history_path: &CStr) -> Result<c_int, String> {
+        options.print_last_result = true;
+
+        let root_execution_context =
+            initialize_realm_with_global_object(vm, &|realm| ReplObject::allocate(vm, realm).upcast());
+        let realm = root_execution_context.realm();
+
+        let console_object = realm.intrinsics().console_object(vm);
+        let console_client = ReplConsoleClient::create(vm, console_object.console());
+        console_object.console().set_client(console_client.upcast());
+        vm.heap()
+            .set_should_collect_on_every_allocation(options.gc_on_every_allocation);
+
+        let global_environment = realm.global_environment();
+        REPL_REALM.set(Some(ReplRealm {
+            vm,
+            realm: Root::new(vm, realm),
+            global_environment: Root::new(vm, global_environment),
+        }));
+
+        readline::read_history(history_path);
+        readline::set_attempted_completion_function(complete_repl_line_for_readline);
+
+        repl(vm, realm, &options)?;
+        readline::write_history(history_path);
+        Ok(EXIT_CODE.load(Ordering::Relaxed))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn lines_count_their_brackets_into_the_line_level() {
+            let level = || REPL_LINE_LEVEL.load(Ordering::Relaxed);
+            let read_line = |line: &str| update_line_level_for_line(&line.encode_utf16().collect::<Vec<_>>());
+            let initial_level = level();
+
+            assert!(!read_line("function f() { g(["));
+            assert_eq!(level(), initial_level + 3);
+            assert!(!read_line("'{' /* ( */ `[` // {"));
+            assert_eq!(level(), initial_level + 3);
+            assert!(!read_line("]) }"));
+            assert_eq!(level(), initial_level);
+
+            // A label or an object literal key at the end of a line asks for another line.
+            assert!(read_line("outer:"));
+            assert!(read_line("'key':"));
+            assert!(!read_line("a ? b :"));
+            assert!(!read_line("({ a: 1 })"));
+            assert!(read_line("x = { a:"));
+            assert_eq!(level(), initial_level + 1);
+
+            // Like s_repl_line_level, the level is not reset when a piece ends, so after more closing brackets than
+            // opening ones the next opening bracket does not ask for another line.
+            assert!(!read_line("}})"));
+            assert_eq!(level(), initial_level - 2);
+            REPL_LINE_LEVEL.store(initial_level, Ordering::Relaxed);
+        }
+
+        #[test]
+        fn completions_share_their_longest_common_prefix_of_bytes() {
+            let prefix = |completions: &[&[u8]]| {
+                let completions: Vec<Vec<u8>> = completions.iter().map(|completion| completion.to_vec()).collect();
+                common_prefix_of(&completions).to_vec()
+            };
+            assert_eq!(prefix(&[b"Math.abs"]), b"Math.abs");
+            assert_eq!(prefix(&[b"Math.abs", b"Math.acos", b"Math.acosh"]), b"Math.a");
+            assert_eq!(prefix(&[b"xyz", b"x"]), b"x");
+            assert_eq!(prefix(&[b"a", b"b"]), b"");
+            assert_eq!(prefix(&["\u{E4}".as_bytes(), "\u{E5}".as_bytes()]), b"\xC3");
+        }
+
+        #[cfg(libjs_runtime_tests_with_libgc)]
+        #[test]
+        fn lines_complete_to_global_names_and_to_properties_of_variables() {
+            let vm: &'static Vm = Box::leak(Vm::create());
+            let root_execution_context =
+                initialize_realm_with_global_object(vm, &|realm| ReplObject::allocate(vm, realm).upcast());
+            let realm = root_execution_context.realm();
+            REPL_REALM.set(Some(ReplRealm {
+                vm,
+                realm: Root::new(vm, realm),
+                global_environment: Root::new(vm, realm.global_environment()),
+            }));
+            let source = b"var xyz = { abc: 1, abd: 2, [Symbol()]: 3 }; let xylophone = 0; const xq = { abc: 1 }";
+            assert_eq!(
+                parse_and_run(vm, realm, &Options::default(), source, "REPL", false),
+                Ok(true)
+            );
+
+            let complete = |line: &str| -> Vec<String> {
+                complete_repl_line(line.as_bytes())
+                    .into_iter()
+                    .map(|completion| String::from_utf8(completion).expect("the completion is UTF-8"))
+                    .collect()
+            };
+            assert_eq!(complete("x"), ["xyz", "xylophone", "xq"]);
+            assert_eq!(complete("1 + xy"), ["xyz", "xylophone"]);
+            assert_eq!(complete("ex"), ["exit"]);
+            assert_eq!(complete("xyz.ab"), ["xyz.abc", "xyz.abd"]);
+            assert_eq!(complete("xq.a"), ["xq.abc"]);
+
+            // The properties of the prototypes follow the own ones, each once.
+            let properties = complete("xyz.");
+            assert_eq!(properties[..2], ["xyz.abc", "xyz.abd"]);
+            assert_eq!(
+                properties.iter().filter(|property| *property == "xyz.toString").count(),
+                1
+            );
+            assert_eq!(complete("xyz. "), properties);
+
+            for line in ["", "xyz ", "xyz.abc ", "xyz.abc.", "missing.", "'abc'.", "1.", "#xyz."] {
+                assert!(complete(line).is_empty(), "completing {line:?}");
+            }
+        }
+    }
+}
+
+/// LexicalPath::canonicalized_path() of a path that need not be UTF-8, which it only splits at slashes and dots.
+fn canonicalized_path_of_bytes(path: &[u8]) -> Vec<u8> {
+    let path_as_latin1: String = path.iter().copied().map(char::from).collect();
+    lexical_path::canonicalized_path(&path_as_latin1)
+        .chars()
+        .map(|character| u8::try_from(character).expect("canonicalizing a path only removes parts of it"))
+        .collect()
+}
+
+/// Core::StandardPaths::home_directory() without HOME: the home directory of the user in the user database.
+fn home_directory_of_user() -> Vec<u8> {
+    // SAFETY: getpwuid() returns NULL or an entry whose home directory is NUL-terminated, which is copied before
+    // endpwent() releases the entry.
+    unsafe {
+        let entry = libc::getpwuid(libc::getuid());
+        let home_directory = if entry.is_null() {
+            b"/".to_vec()
+        } else {
+            CStr::from_ptr((*entry).pw_dir).to_bytes().to_vec()
+        };
+        libc::endpwent();
+        home_directory
+    }
+}
+
+/// s_history_path of the C++ js: .js-history in Core::StandardPaths::home_directory(), which String::formatted()
+/// fails to make if the home directory is not UTF-8.
+fn history_path() -> Result<CString, String> {
+    let home_directory = match std::env::var_os("HOME") {
+        Some(home_directory) => home_directory.into_vec(),
+        None => home_directory_of_user(),
+    };
+    let mut history_path = canonicalized_path_of_bytes(&home_directory);
+    history_path.extend_from_slice(b"/.js-history");
+    if utf16_from_wtf8(&history_path).is_none() {
+        return Err(STRING_FROM_UTF8_ERROR.to_string());
+    }
+    Ok(CString::new(history_path).expect("a home directory has no NULs"))
+}
+
 /// What LibMain prints for the Error that ladybird_main() returns.
 fn report_runtime_error(error: &str) {
     eprintln!("\x1b[31;1mRuntime error\x1b[0m: {error}");
@@ -1014,9 +1687,16 @@ fn ladybird_main(arguments: &[String]) -> c_int {
     STRIP_ANSI.store(options.strip_ansi, Ordering::Relaxed);
     RAW_STRINGS.store(options.raw_strings, Ordering::Relaxed);
 
-    // NB: The -h and -s options change nothing yet: the C++ js does not read the first, and the second is for the
-    //     REPL. Besides the warnings about rejected promises, --disable-debug-output silences debug output, which the
-    //     runtime prints none of.
+    let history_path = match history_path() {
+        Ok(history_path) => history_path,
+        Err(error) => {
+            report_runtime_error(&error);
+            return 1;
+        }
+    };
+
+    // NB: The -h and -s options change nothing, since the C++ js reads neither. Besides the warnings about rejected
+    //     promises, --disable-debug-output silences debug output, which the runtime prints none of.
     set_dump_bytecode(options.dump_bytecode);
 
     // NB: Like the VM of the C++ js, which is NeverDestroyed, this one lives until the process exits, so that exiting does
@@ -1046,7 +1726,20 @@ fn ladybird_main(arguments: &[String]) -> c_int {
     }
 
     if options.evaluate_script.is_empty() && options.script_paths.is_empty() {
-        unimplemented_runtime_function("the REPL, which js runs when it is given no script", 0);
+        #[cfg(target_os = "android")]
+        {
+            let _ = history_path;
+            eprintln!("REPL functionality is not supported on this platform");
+            unreachable!("the REPL is not supported on this platform");
+        }
+        #[cfg(not(target_os = "android"))]
+        return match repl::run_repl(vm, options, &history_path) {
+            Ok(exit_code) => exit_code,
+            Err(error) => {
+                report_runtime_error(&error);
+                1
+            }
+        };
     }
 
     let root_execution_context = if options.use_test262_global {
@@ -1093,7 +1786,7 @@ fn ladybird_main(arguments: &[String]) -> c_int {
     // We resolve modules as if it is the first file
 
     match parse_and_run(vm, realm, &options, &builder, source_name, options.parse_only) {
-        Ok(true) => 0,
+        Ok(true) => EXIT_CODE.load(Ordering::Relaxed),
         Ok(false) => 1,
         Err(error) => {
             report_runtime_error(&error);
@@ -1195,6 +1888,33 @@ mod tests {
         "Arguments:\n",
         "\t\x1b[1mscripts\x1b[0m\tPath to script files\n",
     );
+
+    #[test]
+    fn prompts_indent_each_open_bracket() {
+        assert_eq!(prompt_for_level(0).as_bytes(), b"> ");
+        assert_eq!(prompt_for_level(2).as_bytes(), b">         ");
+        assert_eq!(prompt_for_level(-1).as_bytes(), b"> ");
+    }
+
+    #[test]
+    fn save_writes_the_statements_before_the_current_one() {
+        REPL_STATEMENTS.set(vec![b"1\n".to_vec(), b"f(\n)\n".to_vec(), b"save('x')\n".to_vec()]);
+        let path = std::env::temp_dir().join(format!("js-rust-save-{}", std::process::id()));
+        write_to_file(path.as_os_str().as_bytes()).expect("the file is written");
+        let contents = std::fs::read(&path).expect("the file is read");
+        let _ = std::fs::remove_file(&path);
+        // Each statement ends in a newline already, so one more follows it as an empty line.
+        assert_eq!(contents, b"1\n\nf(\n)\n\n");
+        REPL_STATEMENTS.set(Vec::new());
+    }
+
+    #[test]
+    fn the_history_file_is_in_the_canonical_home_directory() {
+        assert_eq!(canonicalized_path_of_bytes(b"/home//user/./x/../"), b"/home/user");
+        assert_eq!(canonicalized_path_of_bytes(b""), b".");
+        assert_eq!(canonicalized_path_of_bytes(b"/a/\xFF/.."), b"/a");
+        assert_eq!(canonicalized_path_of_bytes(b"/a/\xFF"), b"/a/\xFF");
+    }
 
     #[test]
     fn usage_matches_the_cpp_js() {
