@@ -26,8 +26,11 @@ expect_result("\"a\\nb\"" -i -l -c "'a\\n' + 'b'")
 expect_result("a" -i -l -r -c "'a'")
 expect_result("31n" -i -l -c "0x1fn")
 
-# A runtime function that is not implemented yet stops the process and names itself.
-run_js_rust(-c "debugger")
-if (result EQUAL 0 OR NOT error MATCHES "asm_slow_path_debugger")
-    message(FATAL_ERROR "js-rust -c debugger: exited with '${result}' and printed '${error}'")
+expect_result("42" -i -l -c "function f(a) { return a * 2 } f(21)")
+expect_result("Object{ \"a\": [ 1, 2 ] }" -i -l -c "({a: [1, 2]})")
+
+# An uncaught exception prints the error and its stack, and fails the run.
+run_js_rust(-i -c "throw new TypeError('x')")
+if (NOT result EQUAL 1 OR NOT error MATCHES "Uncaught exception: \n\\[TypeError\\] x")
+    message(FATAL_ERROR "js-rust -c throw: exited with '${result}' and printed '${error}'")
 endif()
