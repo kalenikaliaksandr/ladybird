@@ -22,6 +22,7 @@ add_test(NAME test-js COMMAND test-js)
 set_tests_properties(test-js PROPERTIES ENVIRONMENT "LADYBIRD_SOURCE_DIR=${LADYBIRD_SOURCE_DIR}")
 
 if (ENABLE_LIBJS_RUST_RUNTIME)
+    ladybird_utility(test-js-runtime-rust SOURCES test-js-runtime-rust.cpp LIBS libjs_runtime_rust LibMain)
     add_test(NAME js-rust-smoke COMMAND "${CMAKE_COMMAND}" -DJS_RUST=$<TARGET_FILE:js-rust> -P "${CMAKE_CURRENT_SOURCE_DIR}/js-rust-smoke.cmake")
     add_test(NAME js-rust-ast COMMAND test-js --suite ast --js $<TARGET_FILE:js-rust>)
     add_test(NAME js-rust-bytecode COMMAND test-js --suite bytecode --js $<TARGET_FILE:js-rust>)
