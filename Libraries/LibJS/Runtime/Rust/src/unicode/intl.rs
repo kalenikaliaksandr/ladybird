@@ -17,14 +17,14 @@ use crate::utf16::{Utf16StringBuilder, Utf16View};
 /// UnicodeIntlText: a borrowed string in either of AK::Utf16View's storages.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct UnicodeIntlText {
+pub(super) struct UnicodeIntlText {
     ascii: *const u8,
     utf16: *const u16,
     length: usize,
 }
 
 impl UnicodeIntlText {
-    fn of(view: Utf16View<'_>) -> Self {
+    pub(super) fn of(view: Utf16View<'_>) -> Self {
         match view {
             Utf16View::Ascii(units) => Self {
                 ascii: units.as_ptr(),
