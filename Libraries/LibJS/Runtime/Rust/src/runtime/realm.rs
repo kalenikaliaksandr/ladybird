@@ -296,36 +296,10 @@ pub mod test_realm {
     }
 
     impl<'vm> TestRealm<'vm> {
-        /// A test realm whose %Array.prototype.values%, which arguments objects are created with, returns undefined,
-        /// since realms have no Array builtins yet.
+        /// A test realm with the intrinsics that functions are created with, among them %Array.prototype.values%,
+        /// which arguments objects are created with.
         pub fn with_function_intrinsics(vm: &'vm Vm) -> Self {
-            use crate::layout::value::Value;
-            use crate::runtime::native_function::{RawNativeFunction, raw_native};
-            use crate::runtime::property_attributes::{Attribute, PropertyAttributes};
-
-            let test_realm = Self::new(vm);
-            let realm = test_realm.realm;
-            let names = &vm.names;
-            let array_prototype_values = RawNativeFunction::create(
-                vm,
-                raw_native!(|_| Ok(Value::UNDEFINED)),
-                0,
-                &names.values,
-                Some(realm),
-                None,
-                None,
-            );
-            realm.array_prototype().define_direct_property(
-                vm,
-                &names.values,
-                Value::from_object(array_prototype_values),
-                PropertyAttributes::new(Attribute::WRITABLE | Attribute::CONFIGURABLE),
-            );
-            realm
-                .intrinsics()
-                .set_array_prototype_values_function_for_tests(array_prototype_values.upcast());
-
-            test_realm
+            Self::new(vm)
         }
     }
 

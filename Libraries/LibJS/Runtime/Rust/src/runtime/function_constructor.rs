@@ -395,19 +395,6 @@ mod tests {
     fn run_cases(vm: &Vm) {
         let root_execution_context = initialize_realm(vm);
         let realm = root_execution_context.realm();
-        // NB: Dynamic functions always create an arguments object, which needs %Array.prototype.values%.
-        let array_prototype_values = RawNativeFunction::create(
-            vm,
-            raw_native!(|_| Ok(Value::UNDEFINED)),
-            0,
-            &vm.names.values,
-            Some(realm),
-            None,
-            None,
-        );
-        realm
-            .intrinsics()
-            .set_array_prototype_values_function_for_tests(array_prototype_values.upcast());
         for (source, expected) in CASES {
             assert_eq!(utf8(run_script(vm, realm, source).must()), *expected, "{source}");
         }

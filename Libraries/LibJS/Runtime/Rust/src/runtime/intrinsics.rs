@@ -1070,18 +1070,18 @@ impl Intrinsics {
                 == self.generator_function_prototype_property_offset.get()
         );
 
-        // NB: Array.prototype.values, Date.now, JSON.parse and JSON.stringify come with their builtins; until a realm
-        //     has them, their intrinsic accessors stop the process.
-        let array_prototype_values = self.array_prototype(vm).get_without_side_effects(vm, &names.values);
-        if array_prototype_values.is_function() {
-            self.array_prototype_values_function
-                .set(Some(array_prototype_values.as_function()));
-        }
+        self.array_prototype_values_function.set(Some(
+            self.array_prototype(vm)
+                .get_without_side_effects(vm, &names.values)
+                .as_function(),
+        ));
         self.object_prototype_to_string_function.set(Some(
             self.object_prototype(vm)
                 .get_without_side_effects(vm, &names.toString)
                 .as_function(),
         ));
+        // NB: Date.now, JSON.parse and JSON.stringify come with their builtins; until a realm has them, their
+        //     intrinsic accessors stop the process.
 
         assert!(self.array_prototype(vm).indexed_array_like_size() == 0);
         assert!(self.object_prototype(vm).indexed_array_like_size() == 0);
@@ -1115,12 +1115,6 @@ impl Intrinsics {
 
     pub fn realm(&self) -> Gc<Realm> {
         self.realm
-    }
-
-    /// Stands in for %Array.prototype.values% in the unit tests, which create realms without the Array builtins.
-    #[cfg(test)]
-    pub fn set_array_prototype_values_function_for_tests(&self, function: Gc<FunctionObject>) {
-        self.array_prototype_values_function.set(Some(function));
     }
 
     /// Stands in for %eval% in the unit tests, which create realms without the global functions.
@@ -1524,7 +1518,8 @@ mod tests {
         assert!(thrown_message(|| intrinsics.map_constructor(&vm)).contains("Intrinsics::initialize_map"));
         assert!(thrown_message(|| intrinsics.json_object(&vm)).contains("%JSON%"));
         assert!(thrown_message(|| intrinsics.eval_function()).contains("%eval%"));
-        assert!(thrown_message(|| realm.array_prototype_values_function()).contains("%Array.prototype.values%"));
+        let values = realm.array_prototype().get_without_side_effects(&vm, &vm.names.values);
+        assert!(values == Value::from_object(realm.array_prototype_values_function()));
     }
 
     #[test]

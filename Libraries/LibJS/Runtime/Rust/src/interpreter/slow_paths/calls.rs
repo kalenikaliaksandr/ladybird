@@ -1440,7 +1440,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "spreading needs Array.prototype[@@iterator] and %ArrayIteratorPrototype%.next from the Array builtins"]
     fn spread_and_super_calls_with_argument_arrays_behave_like_the_cpp_runtime() {
         let vm = Vm::create();
         check_oracle_cases(&vm, ORACLE_CASES_WITH_ARRAY_LITERALS);
