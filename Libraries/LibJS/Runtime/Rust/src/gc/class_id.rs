@@ -305,4 +305,6 @@ define_class_ids! {
     PlainYearMonthConstructor,
     PlainMonthDayPrototype,
     PlainMonthDayConstructor,
+    ZonedDateTimePrototype,
+    ZonedDateTimeConstructor,
 }

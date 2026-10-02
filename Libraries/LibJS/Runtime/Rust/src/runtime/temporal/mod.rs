@@ -40,3 +40,5 @@ pub mod plain_year_month_prototype;
 pub mod temporal;
 pub mod time_zone;
 pub mod zoned_date_time;
+pub mod zoned_date_time_constructor;
+pub mod zoned_date_time_prototype;

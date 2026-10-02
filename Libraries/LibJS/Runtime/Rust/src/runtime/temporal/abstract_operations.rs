@@ -2254,10 +2254,10 @@ pub fn to_offset_string(vm: &Vm, argument: Value) -> ThrowCompletionOr<Utf16Stri
 
     // 2. If offset is not a String, throw a TypeError exception.
     if !offset.is_string() {
-        return vm.throw_completion(
+        let offset_string = offset.to_utf16_string_without_side_effects();
+        return vm.throw_completion_with_utf16_message(
             ErrorKind::TypeError,
-            ErrorType::TemporalInvalidTimeZoneString,
-            &[&offset],
+            ErrorType::TemporalInvalidTimeZoneString.utf16_message(&[Utf16View::of_string(&offset_string)]),
         );
     }
 
