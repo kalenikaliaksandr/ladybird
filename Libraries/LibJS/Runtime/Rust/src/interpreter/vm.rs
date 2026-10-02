@@ -471,9 +471,9 @@ impl Vm {
             static VM_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
             VM_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
         };
-        // SAFETY: Initializes the region cell pointers are relative to, and the cage typed array data lives in.
-        let (heap_region_base, primitive_storage_cage_base) =
-            unsafe { (capi::gc_heap_region_base(), capi::gc_primitive_storage_cage_base()) };
+        // SAFETY: Initializes the region cell pointers are relative to.
+        let heap_region_base = unsafe { capi::gc_heap_region_base() };
+        let primitive_storage_cage_base = crate::runtime::array_buffer::primitive_storage_cage_base();
         let interpreter_stack_memory = InterpreterStackMemory::allocate();
         let native_function_table = Vec::new();
         let vm = Box::new(Vm {
