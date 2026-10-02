@@ -64,9 +64,7 @@ use crate::runtime::shared_function_instance_data::{
 use crate::runtime::string_conversions::parse_number_f64;
 use crate::runtime::string_prototype::string_index_of;
 use crate::runtime::suppressed_error::SuppressedError;
-use crate::runtime::temporal::abstract_operations::{
-    MessageArgument, throw_range_error_with_message_arguments, to_integer_with_truncation,
-};
+use crate::runtime::temporal::abstract_operations::to_integer_with_truncation;
 use crate::runtime::value::{number_to_utf16_string, same_value};
 use crate::runtime::value_conversions::MAX_ARRAY_LIKE_INDEX;
 use crate::script::LexicalBinding;
@@ -2692,11 +2690,10 @@ pub fn get_option(
         if !values.is_empty() {
             let value_string_view = Utf16View::of_string(&value_string);
             if !values.iter().any(|allowed_value| value_string_view == *allowed_value) {
-                let property_string = property.to_utf16_string();
-                return vm.throw_completion_with_utf16_message(
+                return vm.throw_completion(
                     ErrorKind::RangeError,
-                    ErrorType::OptionIsNotValidValue
-                        .utf16_message(&[value_string_view, Utf16View::of_string(&property_string)]),
+                    ErrorType::OptionIsNotValidValue,
+                    &[&value_string, property],
                 );
             }
         }
@@ -2789,21 +2786,15 @@ pub fn get_rounding_increment_option(vm: &Vm, options: &Object) -> ThrowCompleti
         vm,
         value,
         ErrorType::OptionIsNotValidValue,
-        &[
-            MessageArgument::Value(value),
-            MessageArgument::Text(Utf16View::Ascii(b"roundingIncrement")),
-        ],
+        &[&value, &"roundingIncrement"],
     )?;
 
     // 4. If integerIncrement < 1 or integerIncrement > 10**9, throw a RangeError exception.
     if !(1.0..=1_000_000_000.0).contains(&integer_increment) {
-        return throw_range_error_with_message_arguments(
-            vm,
+        return vm.throw_completion(
+            ErrorKind::RangeError,
             ErrorType::OptionIsNotValidValue,
-            &[
-                MessageArgument::Value(value),
-                MessageArgument::Text(Utf16View::Ascii(b"roundingIncrement")),
-            ],
+            &[&value, &"roundingIncrement"],
         );
     }
 
@@ -2866,14 +2857,14 @@ pub fn to_integer_if_integral(
     vm: &Vm,
     argument: Value,
     error_type: ErrorType,
-    arguments: &[MessageArgument<'_>],
+    arguments: &[&dyn Utf16Display],
 ) -> ThrowCompletionOr<f64> {
     // 1. Let number be ? ToNumber(argument).
     let number = argument.to_number(vm)?;
 
     // 2. If number is not an integral Number, throw a RangeError exception.
     if !number.is_integral_number() {
-        return throw_range_error_with_message_arguments(vm, error_type, arguments);
+        return vm.throw_completion(ErrorKind::RangeError, error_type, arguments);
     }
 
     // 3. Return ℝ(number).
