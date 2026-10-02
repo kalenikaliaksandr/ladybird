@@ -129,6 +129,11 @@ impl<'vm, T: Trace + Clone + 'static> MarkedVec<'vm, T> {
         self.len() == 0
     }
 
+    /// Lends the values to `callback`, which must not change the list.
+    pub fn with_values<R>(&self, callback: impl FnOnce(&[T]) -> R) -> R {
+        callback(&self.values.get().borrow())
+    }
+
     /// Copies the values out, for handing them to code that does not collect.
     pub fn to_vec(&self) -> Vec<T> {
         self.values.get().borrow().clone()
