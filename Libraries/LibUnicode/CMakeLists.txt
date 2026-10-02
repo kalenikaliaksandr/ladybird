@@ -8,6 +8,7 @@ set(SOURCES
     Collator.cpp
     CurrencyCode.cpp
     DateTimeFormat.cpp
+    DateTimeFormatExports.cpp
     DisplayNames.cpp
     DurationFormat.cpp
     FullwidthMapping.cpp
@@ -21,6 +22,7 @@ set(SOURCES
     NumberFormatExports.cpp
     PluralRules.cpp
     RelativeTimeFormat.cpp
+    RelativeTimeFormatExports.cpp
     Segmenter.cpp
     String.cpp
     TimeZone.cpp
