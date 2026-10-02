@@ -297,4 +297,8 @@ define_class_ids! {
     ZonedDateTime,
     Now,
     Temporal,
+    PlainDatePrototype,
+    PlainDateConstructor,
+    PlainDateTimePrototype,
+    PlainDateTimeConstructor,
 }
