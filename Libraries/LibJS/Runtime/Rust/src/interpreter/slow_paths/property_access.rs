@@ -645,16 +645,15 @@ pub fn get_private_by_id(
 
     if !base_value.is_object() {
         asm_try!(vm, pc, base_value.to_object(vm));
-        let name = vm.current_executable().get_identifier(instruction.property).clone();
-        let private_name = make_private_reference(vm, &name);
+        let private_name = make_private_reference(vm, vm.current_executable().get_identifier(instruction.property));
         let result = asm_try!(vm, pc, get_private_reference_value(vm, base_value, &private_name));
         values.dst = result;
         return SlowPathControl::continue_at(pc + op::GetPrivateById::LENGTH);
     }
 
-    let name = vm.current_executable().get_identifier(instruction.property).clone();
     let private_environment = running_private_environment(vm);
-    let private_name = private_environment.resolve_private_identifier(&name);
+    let private_name =
+        private_environment.resolve_private_identifier(vm.current_executable().get_identifier(instruction.property));
     let result = asm_try!(vm, pc, base_value.as_object().private_get(vm, &private_name));
     values.dst = result;
     SlowPathControl::continue_at(pc + op::GetPrivateById::LENGTH)
@@ -672,8 +671,7 @@ pub fn put_private_by_id(
 
     if !base_value.is_object() {
         let object = asm_try!(vm, pc, base_value.to_object(vm));
-        let name = vm.current_executable().get_identifier(instruction.property).clone();
-        let private_name = make_private_reference(vm, &name);
+        let private_name = make_private_reference(vm, vm.current_executable().get_identifier(instruction.property));
         asm_try!(
             vm,
             pc,
@@ -682,9 +680,9 @@ pub fn put_private_by_id(
         return SlowPathControl::continue_at(pc + op::PutPrivateById::LENGTH);
     }
 
-    let name = vm.current_executable().get_identifier(instruction.property).clone();
     let private_environment = running_private_environment(vm);
-    let private_name = private_environment.resolve_private_identifier(&name);
+    let private_name =
+        private_environment.resolve_private_identifier(vm.current_executable().get_identifier(instruction.property));
     asm_try!(vm, pc, base_value.as_object().private_set(vm, &private_name, value));
     SlowPathControl::continue_at(pc + op::PutPrivateById::LENGTH)
 }
