@@ -31,6 +31,7 @@ use crate::runtime::realm::Realm;
 use crate::runtime::string_iterator::StringIterator;
 use crate::runtime::string_object::{STRING_OBJECT_METHODS, StringObject};
 use crate::runtime::value_conversions::MAX_ARRAY_LIKE_INDEX;
+use crate::unicode::{NormalizationForm, normalize};
 use crate::utf16::{
     TrimMode, Utf16StringBuilder, Utf16View, decode_utf16_surrogate_pair, is_unicode_surrogate, is_utf16_low_surrogate,
 };
@@ -781,16 +782,19 @@ impl StringPrototype {
         }
 
         // 6. Let ns be the String value that is the result of normalizing S into the normalization form named by f as specified in https://unicode.org/reports/tr15/.
-        // NB: No ASCII code point has a decomposition, so every normalization form leaves an ASCII string as it is.
-        if !string.utf16_string_view().is_ascii() {
-            unimplemented_runtime_function(
-                "Unicode::normalize in String.prototype.normalize, which needs a C export of LibUnicode's normalization",
-                0,
-            );
-        }
+        let form = if form_view == "NFD" {
+            NormalizationForm::NFD
+        } else if form_view == "NFC" {
+            NormalizationForm::NFC
+        } else if form_view == "NFKD" {
+            NormalizationForm::NFKD
+        } else {
+            NormalizationForm::NFKC
+        };
+        let normalized = normalize(string.utf16_string_view(), form);
 
         // 7. Return ns.
-        Ok(Value::from_string(string))
+        Ok(Value::from_string(PrimitiveString::create(vm, normalized)))
     }
 
     // 22.1.3.16 String.prototype.padEnd ( maxLength [ , fillString ] ), https://tc39.es/ecma262/#sec-string.prototype.padend

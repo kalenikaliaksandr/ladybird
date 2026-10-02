@@ -33,6 +33,7 @@ pub mod simdjson;
 pub mod source_code;
 pub mod source_range;
 pub mod standard_output;
+pub mod unicode;
 pub mod utf16;
 pub mod utilities;
 
