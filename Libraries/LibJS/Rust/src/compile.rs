@@ -1357,6 +1357,75 @@ impl ParsedDynamicFunction {
 }
 
 // =============================================================================
+// Builtin files
+// =============================================================================
+
+/// Parses a file of builtin functions written in JavaScript, which is strict code, and runs scope analysis on it.
+/// Builtin files ship with the engine, so a syntax error in one stops the process.
+pub fn parse_builtin_file(source: &[u16]) -> ParsedProgram {
+    let mut parser = Parser::new(source, ProgramType::Script);
+    let program = parser.parse_program(true);
+
+    if parser.has_errors() {
+        let errors: Vec<String> = parser
+            .errors()
+            .iter()
+            .map(|e| format!("{}:{}: {}", e.line, e.column, e.message))
+            .collect();
+        panic!("Parse errors in builtin file: {}", errors.join("; "));
+    }
+
+    parser.scope_collector.analyze(
+        false,
+        &mut parser.arena.identifiers,
+        &parser.arena.strings,
+        &mut parser.arena.scopes,
+    );
+
+    let StatementKind::Program(ref data) = program.inner else {
+        unreachable!("parse_program() returns a Program");
+    };
+    let scope_ref = data.scope;
+
+    ParsedProgram {
+        program,
+        function_table: std::mem::take(&mut parser.function_table),
+        arena: std::sync::Arc::new(std::mem::take(&mut parser.arena)),
+        scope_ref,
+        program_type: ProgramType::Script,
+        is_strict_mode: true,
+        has_top_level_await: false,
+        errors: Vec::new(),
+        ast_dump: None,
+    }
+}
+
+/// Describes the named functions that a parsed builtin file declares at its top level, in source order, taking their
+/// ASTs out of the program.
+pub fn describe_builtin_file_functions(parsed: &mut ParsedProgram) -> Vec<SharedFunctionDescription> {
+    let arena = parsed.arena.clone();
+    let scope = &arena.scopes[parsed.scope_ref];
+    let mut descriptions = Vec::new();
+    for child in &scope.children {
+        if let StatementKind::FunctionDeclaration(ref function_declaration) = child.inner
+            && function_declaration.name.is_some()
+        {
+            let function_data = parsed.function_table.take(function_declaration.function_id);
+            let subtable = parsed.function_table.extract_reachable(&function_data, &arena.scopes);
+            descriptions.push(describe_shared_function(
+                function_data,
+                subtable,
+                true,
+                None,
+                arena.clone(),
+                None,
+            ));
+        }
+    }
+    descriptions
+}
+
+// =============================================================================
 // Shared function data
 // =============================================================================
 
@@ -2177,6 +2246,22 @@ mod tests {
         assert!(declarations.var_names.is_empty());
         assert!(declarations.functions_to_initialize.is_empty());
         assert!(declarations.lexical_bindings.is_empty());
+    }
+
+    #[test]
+    fn describes_the_top_level_functions_of_a_builtin_file() {
+        let source = utf16("function First(a, b) { return a; }\nvar ignored = 1;\nfunction Second(...rest) {}\n");
+        let mut parsed = parse_builtin_file(&source);
+        let descriptions = describe_builtin_file_functions(&mut parsed);
+        let names: Vec<String> = descriptions
+            .iter()
+            .map(|description| String::from_utf16_lossy(&description.name))
+            .collect();
+        assert_eq!(names, ["First", "Second"]);
+        assert!(descriptions.iter().all(|description| description.strict));
+        assert_eq!(descriptions[0].function_length, 2);
+        assert!(descriptions[0].has_simple_parameter_list);
+        assert!(!descriptions[1].has_simple_parameter_list);
     }
 
     #[test]
