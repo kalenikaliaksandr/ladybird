@@ -914,6 +914,299 @@ pub fn compile_eval(mut parsed: ParsedEval, source_len: usize) -> CompiledEval {
 }
 
 // =============================================================================
+// Modules
+// =============================================================================
+
+/// An ImportEntry Record of a module: `import_name` is None for a namespace import.
+pub struct ModuleImportEntry {
+    pub import_name: Option<ast::Utf16String>,
+    pub local_name: ast::Utf16String,
+    pub module_request: ast::ModuleRequest,
+}
+
+/// An ExportEntry Record of a module.
+pub struct ModuleExportEntry {
+    pub kind: ast::ExportEntryKind,
+    pub export_name: Option<ast::Utf16String>,
+    pub local_or_import_name: Option<ast::Utf16String>,
+    pub module_request: Option<ast::ModuleRequest>,
+}
+
+/// A function declaration of a module, which InitializeEnvironment instantiates.
+pub struct ModuleFunctionToInitialize {
+    pub description: SharedFunctionDescription,
+    /// The name the module binds the function under.
+    pub name: ast::Utf16String,
+    /// Whether this is an anonymous default export, whose function is named "default".
+    pub is_anonymous_default_export: bool,
+}
+
+/// A lexical declaration of a module; `function_index` refers to the function it is initialized with.
+pub struct ModuleLexicalBinding {
+    pub name: ast::Utf16String,
+    pub is_constant: bool,
+    pub function_index: Option<usize>,
+}
+
+/// What a Source Text Module Record needs from a module's code.
+/// https://tc39.es/ecma262/#sec-parsemodule
+pub struct ModuleDeclarations {
+    pub has_top_level_await: bool,
+    pub import_entries: Vec<ModuleImportEntry>,
+    pub default_export_binding_name: Option<ast::Utf16String>,
+    pub local_export_entries: Vec<ModuleExportEntry>,
+    pub indirect_export_entries: Vec<ModuleExportEntry>,
+    pub star_export_entries: Vec<ModuleExportEntry>,
+    pub var_names: Vec<ast::Utf16String>,
+    pub functions_to_initialize: Vec<ModuleFunctionToInitialize>,
+    pub lexical_bindings: Vec<ModuleLexicalBinding>,
+    /// In source order.
+    pub requested_modules: Vec<ast::ModuleRequest>,
+}
+
+/// Collects what ParseModule records from a module's top-level scope, taking the functions to initialize out of
+/// `function_table`.
+pub fn collect_module_declarations(
+    scope: &ast::ScopeData,
+    has_top_level_await: bool,
+    function_table: &mut ast::FunctionTable,
+    arena: &std::sync::Arc<ast::AstArena>,
+) -> ModuleDeclarations {
+    use ast::ExportEntryKind;
+
+    let mut declarations = ModuleDeclarations {
+        has_top_level_await,
+        import_entries: Vec::new(),
+        default_export_binding_name: module_default_export_binding_name(scope).cloned(),
+        local_export_entries: Vec::new(),
+        indirect_export_entries: Vec::new(),
+        star_export_entries: Vec::new(),
+        var_names: Vec::new(),
+        functions_to_initialize: Vec::new(),
+        lexical_bindings: Vec::new(),
+        requested_modules: Vec::new(),
+    };
+
+    for child in &scope.children {
+        if let StatementKind::Import(ref import_data) = child.inner {
+            for entry in &import_data.entries {
+                declarations.import_entries.push(ModuleImportEntry {
+                    import_name: entry.import_name.clone(),
+                    local_name: entry.local_name.clone(),
+                    module_request: import_data.module_request.clone(),
+                });
+            }
+        }
+    }
+
+    // ParseModule steps 9-10.
+    for child in &scope.children {
+        let StatementKind::Export(ref export_data) = child.inner else {
+            continue;
+        };
+        for entry in &export_data.entries {
+            if entry.kind == ExportEntryKind::EmptyNamedExport {
+                break;
+            }
+            let Some(ref module_request) = export_data.module_request else {
+                let matching_import = declarations
+                    .import_entries
+                    .iter()
+                    .find(|import_entry| entry.local_or_import_name.as_ref() == Some(&import_entry.local_name));
+                let export_entry = match matching_import {
+                    // Re-exporting an imported module namespace object is an indirect namespace export.
+                    Some(import_entry) if import_entry.import_name.is_none() => ModuleExportEntry {
+                        kind: ExportEntryKind::ModuleRequestAll,
+                        export_name: entry.export_name.clone(),
+                        local_or_import_name: None,
+                        module_request: Some(import_entry.module_request.clone()),
+                    },
+                    // Re-exporting an imported binding is an indirect export of it.
+                    Some(import_entry) => ModuleExportEntry {
+                        kind: ExportEntryKind::NamedExport,
+                        export_name: entry.export_name.clone(),
+                        local_or_import_name: import_entry.import_name.clone(),
+                        module_request: Some(import_entry.module_request.clone()),
+                    },
+                    None => {
+                        declarations.local_export_entries.push(ModuleExportEntry {
+                            kind: entry.kind,
+                            export_name: entry.export_name.clone(),
+                            local_or_import_name: entry.local_or_import_name.clone(),
+                            module_request: None,
+                        });
+                        continue;
+                    }
+                };
+                declarations.indirect_export_entries.push(export_entry);
+                continue;
+            };
+            let export_entry = ModuleExportEntry {
+                kind: entry.kind,
+                export_name: entry.export_name.clone(),
+                local_or_import_name: entry.local_or_import_name.clone(),
+                module_request: Some(module_request.clone()),
+            };
+            if entry.kind == ExportEntryKind::ModuleRequestAllButDefault {
+                declarations.star_export_entries.push(export_entry);
+            } else {
+                declarations.indirect_export_entries.push(export_entry);
+            }
+        }
+    }
+
+    for child in &scope.children {
+        collect_module_var_names(&child.inner, arena, &mut |name| {
+            declarations.var_names.push(name.to_vec().into());
+        });
+    }
+
+    let default_name: ast::Utf16String = utf16!("*default*").into();
+    let module_environment_scope = module_environment_scope(scope, arena);
+    for child in &scope.children {
+        let (declaration, is_exported) = match &child.inner {
+            StatementKind::Export(export_data) => match export_data.statement {
+                Some(ref statement) => (&statement.inner, true),
+                None => continue,
+            },
+            other => (other, false),
+        };
+        match declaration {
+            StatementKind::FunctionDeclaration(function_declaration) => {
+                let is_anonymous_default_export = is_exported
+                    && function_declaration
+                        .name
+                        .is_some_and(|name| arena.name_of(name).as_slice() == default_name.as_slice());
+                let function_data = function_table.take(function_declaration.function_id);
+                let subtable = function_table.extract_reachable(&function_data, &arena.scopes);
+                let description = describe_shared_function(
+                    function_data,
+                    subtable,
+                    true,
+                    None,
+                    arena.clone(),
+                    Some(module_environment_scope.clone()),
+                );
+                // The binding name from the AST, e.g. "*default*" for an anonymous default export.
+                let Some(binding_name) = function_declaration.name.map(|name| arena.name_of(name).clone()) else {
+                    continue;
+                };
+                let name = if is_anonymous_default_export {
+                    utf16!("default").into()
+                } else {
+                    binding_name.clone()
+                };
+                declarations.lexical_bindings.push(ModuleLexicalBinding {
+                    name: binding_name,
+                    is_constant: false,
+                    function_index: Some(declarations.functions_to_initialize.len()),
+                });
+                declarations.functions_to_initialize.push(ModuleFunctionToInitialize {
+                    description,
+                    name,
+                    is_anonymous_default_export,
+                });
+            }
+            StatementKind::ClassDeclaration(class_data) => {
+                if let Some(name) = class_data.name {
+                    declarations.lexical_bindings.push(ModuleLexicalBinding {
+                        name: arena.name_of(name).clone(),
+                        is_constant: false,
+                        function_index: None,
+                    });
+                }
+            }
+            StatementKind::VariableDeclaration(variable_declaration)
+                if variable_declaration.kind != ast::DeclarationKind::Var =>
+            {
+                let is_constant = variable_declaration.kind == ast::DeclarationKind::Const;
+                for declarator in &variable_declaration.declarations {
+                    for_each_bound_name(&declarator.target, arena, &mut |name| {
+                        declarations.lexical_bindings.push(ModuleLexicalBinding {
+                            name: name.to_vec().into(),
+                            is_constant,
+                            function_index: None,
+                        });
+                    });
+                }
+            }
+            StatementKind::UsingDeclaration(using_declarations) => {
+                for declarator in using_declarations.iter() {
+                    for_each_bound_name(&declarator.target, arena, &mut |name| {
+                        declarations.lexical_bindings.push(ModuleLexicalBinding {
+                            name: name.to_vec().into(),
+                            is_constant: false,
+                            function_index: None,
+                        });
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut requested_modules: Vec<(u32, &ast::ModuleRequest)> = Vec::new();
+    for child in &scope.children {
+        match &child.inner {
+            StatementKind::Import(import_data) => {
+                requested_modules.push((child.range.start.offset, &import_data.module_request));
+            }
+            StatementKind::Export(export_data) => {
+                if let Some(ref module_request) = export_data.module_request {
+                    requested_modules.push((child.range.start.offset, module_request));
+                }
+            }
+            _ => {}
+        }
+    }
+    requested_modules.sort_by_key(|(source_offset, _)| *source_offset);
+    declarations.requested_modules = requested_modules
+        .into_iter()
+        .map(|(_, module_request)| module_request.clone())
+        .collect();
+
+    declarations
+}
+
+/// A module compiled to bytecode, with what its Source Text Module Record needs.
+pub struct CompiledModule {
+    /// The module body; for a module with top-level await, the body of an async function.
+    pub executable: ExecutableData,
+    pub declarations: ModuleDeclarations,
+}
+
+/// Compiles a module the caller parsed without errors from `source_len` code units.
+pub fn compile_module(mut parsed: ParsedProgram, source_len: usize) -> CompiledModule {
+    assert!(
+        parsed.program_type == ProgramType::Module && !parsed.has_errors(),
+        "compile_module() needs a module without parse errors"
+    );
+    let declarations = collect_module_declarations(
+        &parsed.arena.scopes[parsed.scope_ref],
+        parsed.has_top_level_await,
+        &mut parsed.function_table,
+        &parsed.arena,
+    );
+    let function_table = std::mem::take(&mut parsed.function_table);
+    let executable = if parsed.has_top_level_await {
+        let mut generator = new_module_async_generator(source_len, function_table);
+        generator.arena = parsed.arena.clone();
+        let assembled = compile_module_as_async_to_bytecode(&parsed.program, parsed.scope_ref, &mut generator);
+        ExecutableData::new(generator, assembled)
+    } else {
+        let mut generator = new_program_generator(true, source_len);
+        generator.function_table = function_table;
+        generator.arena = parsed.arena.clone();
+        let assembled = compile_program_body_to_bytecode(&mut generator, &parsed.program, parsed.scope_ref);
+        ExecutableData::new(generator, assembled)
+    };
+    CompiledModule {
+        executable,
+        declarations,
+    }
+}
+
+// =============================================================================
 // Dynamic functions
 // =============================================================================
 
