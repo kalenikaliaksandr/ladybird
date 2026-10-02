@@ -58,6 +58,7 @@ void unicode_normalize(u16 const* text, size_t length, u8 form, UnicodeTextMappi
 bool unicode_text_may_require_bidi_processing(u16 const* text, size_t length);
 
 void unicode_current_time_zone(UnicodeTextMappingOutput);
+bool unicode_set_current_time_zone(u16 const* time_zone, size_t length);
 void unicode_available_time_zones(void* context, void (*append)(void*, u16 const*, size_t));
 bool unicode_resolve_primary_time_zone(u16 const* time_zone, size_t length, UnicodeTextMappingOutput);
 bool unicode_time_zone_offset(u16 const* time_zone, size_t length, i64 seconds, u32 nanoseconds, i64* offset_nanoseconds, bool* in_dst);
