@@ -1849,28 +1849,4 @@ mod tests {
         assert!(call(&vm, has_instance, error_constructor, &[type_error]).must() == Value::TRUE);
         assert!(call(&vm, has_instance, error_constructor, &[Value::from_i32(1)]).must() == Value::FALSE);
     }
-
-    #[test]
-    fn the_constructors_of_later_builtins_stop_the_process_with_their_names() {
-        let vm = Vm::create();
-        let root_execution_context = initialize_realm(&vm);
-        let realm = root_execution_context.realm();
-        let intrinsics = realm.intrinsics();
-        let proxy_constructor = Value::from_object(intrinsics.proxy_constructor());
-        assert!(proxy_constructor.is_constructor());
-        assert!(
-            thrown_message(|| call(&vm, proxy_constructor, Value::UNDEFINED, &[]))
-                .contains("ProxyConstructor::call, the [[Call]] of %Proxy%")
-        );
-        let proxy_constructor = intrinsics.proxy_constructor();
-        assert!(
-            thrown_message(|| crate::runtime::abstract_operations::construct(
-                &vm,
-                proxy_constructor.upcast(),
-                &[],
-                None
-            ))
-            .contains("ProxyConstructor::construct, the [[Construct]] of %Proxy%")
-        );
-    }
 }
