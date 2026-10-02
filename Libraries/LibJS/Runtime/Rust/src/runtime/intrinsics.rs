@@ -32,6 +32,7 @@ use crate::runtime::big_int_prototype::BigIntPrototype;
 use crate::runtime::boolean_constructor::BooleanConstructor;
 use crate::runtime::boolean_prototype::BooleanPrototype;
 use crate::runtime::completion::Must;
+use crate::runtime::console_object::ConsoleObject;
 use crate::runtime::error::ErrorKind;
 use crate::runtime::error_constructor::{
     ErrorConstructor, EvalErrorConstructor, InternalErrorConstructor, RangeErrorConstructor, ReferenceErrorConstructor,
@@ -316,7 +317,7 @@ define_intrinsics! {
 
     // JS_ENUMERATE_BUILTIN_NAMESPACE_OBJECTS
     atomics_object: Cell<Option<Gc<Object>>>,
-    console_object: Cell<Option<Gc<Object>>>,
+    console_object: Cell<Option<Gc<ConsoleObject>>>,
     intl_object: Cell<Option<Gc<Object>>>,
     json_object: Cell<Option<Gc<Object>>>,
     math_object: Cell<Option<Gc<Object>>>,
@@ -691,7 +692,6 @@ namespace_object_accessors! {
 
 unimplemented_lazy_intrinsics! {
     atomics_object: Object => "%Atomics%",
-    console_object: Object => "console",
     intl_object: Object => "%Intl%",
     temporal_object: Object => "%Temporal%",
     async_iterator_close_abstract_operation_function: FunctionObject => "AsyncIteratorClose, written in JavaScript",
@@ -711,6 +711,13 @@ impl Intrinsics {
         let reflect_object = ReflectObject::create(vm, self.realm).upcast();
         self.reflect_object.set(Some(reflect_object));
         reflect_object
+    }
+
+    pub fn console_object(&self, vm: &Vm) -> Gc<ConsoleObject> {
+        if self.console_object.get().is_none() {
+            self.console_object.set(Some(ConsoleObject::create(vm, self.realm)));
+        }
+        self.console_object.get().expect("the console object was just created")
     }
 }
 
@@ -971,7 +978,18 @@ impl Intrinsics {
         self.proxy_constructor.set(Some(ProxyConstructor::create(vm, realm)));
 
         // Global object functions
-        // NB: %eval% comes with eval, before %isFinite%.
+        self.eval_function.set(Some(
+            RawNativeFunction::create(
+                vm,
+                raw_native!(GlobalObject::eval),
+                1,
+                &names.eval,
+                Some(realm),
+                None,
+                None,
+            )
+            .upcast(),
+        ));
         let global_object_functions = [
             (
                 &self.is_finite_function,
@@ -1513,7 +1531,7 @@ mod tests {
         );
         assert_eq!(
             describe_properties(&vm, &named, realm.global_object()).join(" "),
-            "isFinite=function:w-c isNaN=function:w-c parseFloat=function:w-c parseInt=function:w-c \
+            "eval=function:w-c isFinite=function:w-c isNaN=function:w-c parseFloat=function:w-c parseInt=function:w-c \
              decodeURI=function:w-c decodeURIComponent=function:w-c encodeURI=function:w-c \
              encodeURIComponent=function:w-c globalThis=globalThis:w-c Infinity=Infinity:--- NaN=NaN:--- \
              undefined=undefined:--- AggregateError=AggregateError:w-c Array=Array:w-c BigInt=BigInt:w-c \
@@ -1521,7 +1539,7 @@ mod tests {
              Number=Number:w-c Object=Object:w-c Proxy=Proxy:w-c RangeError=RangeError:w-c \
              ReferenceError=ReferenceError:w-c String=String:w-c Symbol=Symbol:w-c SyntaxError=SyntaxError:w-c \
              TypeError=TypeError:w-c URIError=URIError:w-c JSON=object:w-c Math=object:w-c Reflect=object:w-c escape=function:w-c \
-             unescape=function:w-c InternalError=InternalError:w-c"
+             unescape=function:w-c InternalError=InternalError:w-c console=object:w-c"
         );
     }
 
@@ -1692,7 +1710,7 @@ mod tests {
         // The intrinsics the runtime does not have yet stop the process with their names.
         assert!(thrown_message(|| intrinsics.map_constructor(&vm)).contains("Intrinsics::initialize_map"));
         assert!(thrown_message(|| intrinsics.atomics_object(&vm)).contains("%Atomics%"));
-        assert!(thrown_message(|| intrinsics.eval_function()).contains("%eval%"));
+        assert!(Value::from_object(intrinsics.eval_function()).is_function());
         let values = realm.array_prototype().get_without_side_effects(&vm, &vm.names.values);
         assert!(values == Value::from_object(realm.array_prototype_values_function()));
     }
