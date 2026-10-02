@@ -1716,7 +1716,7 @@ pub fn parse_iso_date_time(
                             return vm.throw_completion(
                                 ErrorKind::RangeError,
                                 ErrorType::TemporalInvalidCriticalAnnotation,
-                                &[&key.to_utf8(), &value.to_utf8()],
+                                &[&key, &value],
                             );
                         }
                     }
@@ -1728,7 +1728,7 @@ pub fn parse_iso_date_time(
                         return vm.throw_completion(
                             ErrorKind::RangeError,
                             ErrorType::TemporalInvalidCriticalAnnotation,
-                            &[&key.to_utf8(), &value.to_utf8()],
+                            &[&key, &value],
                         );
                     }
                 }
@@ -1746,7 +1746,7 @@ pub fn parse_iso_date_time(
                     return vm.throw_completion(
                         ErrorKind::RangeError,
                         ErrorType::TemporalInvalidCalendarIdentifier,
-                        &[&Utf16View::of_string(calendar).to_utf8()],
+                        &[calendar],
                     );
                 }
 

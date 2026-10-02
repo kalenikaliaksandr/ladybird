@@ -32,7 +32,6 @@ use crate::runtime::environment_shape::{EnvironmentShape, EnvironmentShapeCache}
 use crate::runtime::error::ErrorKind;
 use crate::runtime::error_types::ErrorType;
 use crate::runtime::module_environment::ModuleEnvironment;
-use crate::utf16::Utf16View;
 
 /// Mirrors DeclarativeEnvironment::Binding.
 #[derive(Clone)]
@@ -216,10 +215,6 @@ pub const DECLARATIVE_ENVIRONMENT_METHODS: EnvironmentMethods = EnvironmentMetho
     is_catch_environment: |environment| declarative(environment).is_catch_environment(),
     ..ENVIRONMENT_METHODS
 };
-
-fn name_for_message(name: &Utf16FlyString) -> String {
-    Utf16View::of_fly_string(name).to_utf8()
-}
 
 impl DeclarativeEnvironment {
     const BINDING_FLAG_STRICT: u8 = EnvironmentShape::BINDING_FLAG_STRICT;
@@ -659,11 +654,7 @@ impl DeclarativeEnvironment {
         let Some(binding_and_index) = self.find_binding_and_index(name) else {
             // a. If S is true, throw a ReferenceError exception.
             if strict {
-                return vm.throw_completion(
-                    ErrorKind::ReferenceError,
-                    ErrorType::UnknownIdentifier,
-                    &[&name_for_message(name)],
-                );
+                return vm.throw_completion(ErrorKind::ReferenceError, ErrorType::UnknownIdentifier, &[name]);
             }
 
             // b. Perform ! envRec.CreateMutableBinding(N, true).
@@ -703,7 +694,7 @@ impl DeclarativeEnvironment {
             return vm.throw_completion(
                 ErrorKind::ReferenceError,
                 ErrorType::BindingNotInitialized,
-                &[&name_for_message(&self.binding_name(index))],
+                &[&self.binding_name(index)],
             );
         }
 
@@ -730,7 +721,7 @@ impl DeclarativeEnvironment {
             return vm.throw_completion(
                 ErrorKind::ReferenceError,
                 ErrorType::BindingNotInitialized,
-                &[&name_for_message(&binding.name)],
+                &[&binding.name],
             );
         }
 
@@ -764,7 +755,7 @@ impl DeclarativeEnvironment {
             return vm.throw_completion(
                 ErrorKind::ReferenceError,
                 ErrorType::BindingNotInitialized,
-                &[&name_for_message(&self.binding_name(index))],
+                &[&self.binding_name(index)],
             );
         }
 
@@ -782,7 +773,7 @@ impl DeclarativeEnvironment {
             return vm.throw_completion(
                 ErrorKind::ReferenceError,
                 ErrorType::BindingNotInitialized,
-                &[&name_for_message(&binding.name)],
+                &[&binding.name],
             );
         }
 
@@ -928,6 +919,8 @@ mod tests {
     #[cfg(libjs_runtime_tests_with_libgc)]
     #[test]
     fn error_messages_match_the_cpp_runtime() {
+        use crate::utf16::Utf16View;
+
         let table: &[(ErrorType, &str, &str)] = &[
             (ErrorType::BindingNotInitialized, "y", "Binding y is not initialized"),
             (ErrorType::BindingNotInitialized, "t2", "Binding t2 is not initialized"),
@@ -939,10 +932,10 @@ mod tests {
         ];
         for (error_type, name, expected) in table {
             let name = Utf16FlyString::from_utf8(name);
-            assert_eq!(error_type.message(&[&name_for_message(&name)]), *expected);
+            assert_eq!(Utf16View::of_string(&error_type.message(&[&name])), *expected);
         }
         assert_eq!(
-            ErrorType::InvalidAssignToConst.message(&[]),
+            Utf16View::of_string(&ErrorType::InvalidAssignToConst.message(&[])),
             "Invalid assignment to const variable"
         );
     }
@@ -954,6 +947,7 @@ mod tests_with_heap {
     use crate::bytecode::executable::{Executable, ExecutableCacheCounts};
     use crate::runtime::function_environment::FunctionEnvironment;
     use crate::runtime::primitive_string::PrimitiveString;
+    use crate::utf16::Utf16View;
 
     fn name(name: &str) -> Utf16FlyString {
         Utf16FlyString::from_utf8(name)
@@ -978,7 +972,11 @@ mod tests_with_heap {
     }
 
     fn binding_names(environment: &DeclarativeEnvironment) -> Vec<String> {
-        environment.bindings().iter().map(name_for_message).collect()
+        environment
+            .bindings()
+            .iter()
+            .map(|name| Utf16View::of_fly_string(name).to_utf8())
+            .collect()
     }
 
     fn rare_binding_flags(environment: &DeclarativeEnvironment) -> Vec<u8> {

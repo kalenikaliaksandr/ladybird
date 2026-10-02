@@ -347,6 +347,7 @@ pub fn exponentiate(base: &BigInt, exponent: &BigInt) -> Result<BigInt, NumericO
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utf16::Utf16View;
 
     include!("../../oracle/big_int_algorithms_table.rs");
 
@@ -359,7 +360,8 @@ mod tests {
             Ok(value) => value.to_string(),
             Err(error) => {
                 let (kind, error_type) = error.error_kind_and_type();
-                format!("{kind:?}: {}", error_type.message(&[]))
+                let message = error_type.message(&[]);
+                format!("{kind:?}: {}", Utf16View::of_string(&message).to_utf8())
             }
         }
     }

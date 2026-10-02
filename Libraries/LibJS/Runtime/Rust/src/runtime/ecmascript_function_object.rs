@@ -51,7 +51,7 @@ use crate::runtime::shared_function_instance_data::{
     ClassFieldInitializerName, ConstructorKind, FunctionKind, SharedFunctionInstanceData, ThisMode,
 };
 use crate::source_code::SourceCode;
-use crate::utf16::{Utf16View, to_utf16_fly_string};
+use crate::utf16::to_utf16_fly_string;
 
 #[derive(Default, Trace)]
 struct ClassData {
@@ -145,10 +145,6 @@ fn prototype_for_function_kind(realm: Gc<Realm>, kind: FunctionKind) -> Gc<Objec
         FunctionKind::Async => realm.async_function_prototype(),
         FunctionKind::AsyncGenerator => realm.async_generator_function_prototype(),
     }
-}
-
-fn display_fly_string(string: &Utf16FlyString) -> String {
-    Utf16View::of_fly_string(string).to_utf8()
 }
 
 impl EcmascriptFunctionObject {
@@ -337,7 +333,7 @@ impl EcmascriptFunctionObject {
             let throw_completion = vm.throw_completion(
                 ErrorKind::TypeError,
                 ErrorType::ClassConstructorWithoutNew,
-                &[&display_fly_string(&function.name())],
+                &[&function.name()],
             );
 
             // c. Remove calleeContext from the execution context stack and restore callerContext as the running execution context.
@@ -1121,6 +1117,7 @@ mod tests {
     use crate::runtime::environment::InitializeBindingHint;
     use crate::runtime::native_function::{RawNativeFunction, raw_native};
     use crate::runtime::realm::test_realm::{TestRealm, key, own_keys};
+    use crate::utf16::Utf16View;
 
     fn int(value: i32) -> Value {
         Value::from_i32(value)

@@ -49,7 +49,7 @@ use crate::runtime::module_request::{ImportAttribute, ModuleRequest};
 use crate::runtime::native_function::NativeFunction;
 use crate::runtime::native_javascript_backed_function::NativeJavaScriptBackedFunction;
 use crate::runtime::object::{MayInterfereWithIndexedPropertyAccess, Object, PropertyKind, StackFrameInfo};
-use crate::runtime::object_environment::{IsWithEnvironment, ObjectEnvironment, name_for_message};
+use crate::runtime::object_environment::{IsWithEnvironment, ObjectEnvironment};
 use crate::runtime::primitive_string::PrimitiveString;
 use crate::runtime::private_environment::PrivateEnvironment;
 use crate::runtime::promise_capability::{new_promise_capability, try_or_reject};
@@ -71,7 +71,7 @@ use crate::runtime::value::{number_to_utf16_string, same_value};
 use crate::runtime::value_conversions::MAX_ARRAY_LIKE_INDEX;
 use crate::script::LexicalBinding;
 use crate::source_code::SourceCode;
-use crate::utf16::{Utf16StringBuilder, Utf16View, to_utf16_fly_string};
+use crate::utf16::{Utf16Display, Utf16StringBuilder, Utf16View, to_utf16_fly_string};
 use libjs_runtime_macros::Trace;
 use libjs_rust::compile::{CompiledEval, EvalContext, parse_eval};
 
@@ -1360,7 +1360,7 @@ pub fn eval_declaration_instantiation(
                     return vm.throw_completion(
                         ErrorKind::SyntaxError,
                         ErrorType::TopLevelVariableAlreadyDeclared,
-                        &[&name_for_message(name)],
+                        &[name],
                     );
                 }
 
@@ -1392,7 +1392,7 @@ pub fn eval_declaration_instantiation(
                             return vm.throw_completion(
                                 ErrorKind::SyntaxError,
                                 ErrorType::EvalVarHoistingConflict,
-                                &[&name_for_message(name)],
+                                &[name],
                             );
                         }
                     }
@@ -1417,11 +1417,7 @@ pub fn eval_declaration_instantiation(
     for name in &data.referenced_private_names {
         if !private_environment.is_some_and(|private_environment| private_environment.contains_private_identifier(name))
         {
-            return vm.throw_completion(
-                ErrorKind::SyntaxError,
-                ErrorType::PrivateFieldNotDeclared,
-                &[&name_for_message(name)],
-            );
+            return vm.throw_completion(ErrorKind::SyntaxError, ErrorType::PrivateFieldNotDeclared, &[name]);
         }
     }
 
@@ -1439,7 +1435,7 @@ pub fn eval_declaration_instantiation(
                 return vm.throw_completion(
                     ErrorKind::TypeError,
                     ErrorType::CannotDeclareGlobalFunction,
-                    &[&name_for_message(&function.name)],
+                    &[&function.name],
                 );
             }
         }
@@ -1561,11 +1557,7 @@ pub fn eval_declaration_instantiation(
 
                 // ii. If vnDefinable is false, throw a TypeError exception.
                 if !variable_definable {
-                    return vm.throw_completion(
-                        ErrorKind::TypeError,
-                        ErrorType::CannotDeclareGlobalVariable,
-                        &[&name_for_message(name)],
-                    );
+                    return vm.throw_completion(ErrorKind::TypeError, ErrorType::CannotDeclareGlobalVariable, &[name]);
                 }
             }
 
@@ -2500,7 +2492,7 @@ pub fn perform_import_call(vm: &Vm, specifier: Value, options: Value) -> ThrowCo
     let promise_capability =
         new_promise_capability(vm, Value::from_object(realm.intrinsics().promise_constructor(vm))).must();
 
-    let reject_with_type_error = |error_type: ErrorType, arguments: &[&dyn core::fmt::Display]| {
+    let reject_with_type_error = |error_type: ErrorType, arguments: &[&dyn Utf16Display]| {
         let error = vm
             .throw_completion::<()>(ErrorKind::TypeError, error_type, arguments)
             .expect_err("throw_completion throws");
