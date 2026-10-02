@@ -45,7 +45,7 @@ use crate::runtime::source_text_module::SourceTextModule;
 use crate::script::Script;
 use crate::source_code::SourceCode;
 use crate::standard_output::{self, StandardOutputWriter, UnbufferedStandardOutputWriter};
-use crate::utf16::{Utf16View, utf16_from_wtf8};
+use crate::utf16::{Utf16View, utf16_formatted, utf16_from_wtf8};
 use crate::utilities::initialize_realm_with_global_object;
 use libjs_rust::ast::ProgramType;
 use libjs_rust::compile::parse;
@@ -627,14 +627,20 @@ enum ReadFileError {
 fn load_ini_impl(vm: &Vm) -> ThrowCompletionOr<Value> {
     let realm = vm.current_realm().expect("loadINI runs in a realm");
 
-    let filename = Utf16View::of_string(&vm.argument(0).to_utf16_string(vm)?).to_utf8();
-    let contents = match open_and_read_file(&filename) {
+    let filename = vm.argument(0).to_utf16_string(vm)?;
+    let contents = match open_and_read_file(&Utf16View::of_string(&filename).to_utf8()) {
         Ok(contents) => contents,
         Err(ReadFileError::Open(error)) => {
-            return vm.throw_completion_with_message(ErrorKind::Error, format!("Failed to open '{filename}': {error}"));
+            return vm.throw_completion_with_utf16_message(
+                ErrorKind::Error,
+                utf16_formatted("Failed to open '{}': {}", &[&filename, &error]),
+            );
         }
         Err(ReadFileError::Read(error)) => {
-            return vm.throw_completion_with_message(ErrorKind::Error, format!("Failed to read '{filename}': {error}"));
+            return vm.throw_completion_with_utf16_message(
+                ErrorKind::Error,
+                utf16_formatted("Failed to read '{}': {}", &[&filename, &error]),
+            );
         }
     };
 
@@ -784,14 +790,20 @@ impl ConfigFile {
 }
 
 fn load_json_impl(vm: &Vm) -> ThrowCompletionOr<Value> {
-    let filename = Utf16View::of_string(&vm.argument(0).to_utf16_string(vm)?).to_utf8();
-    let file_contents = match open_and_read_file(&filename) {
+    let filename = vm.argument(0).to_utf16_string(vm)?;
+    let file_contents = match open_and_read_file(&Utf16View::of_string(&filename).to_utf8()) {
         Ok(contents) => contents,
         Err(ReadFileError::Open(error)) => {
-            return vm.throw_completion_with_message(ErrorKind::Error, format!("Failed to open '{filename}': {error}"));
+            return vm.throw_completion_with_utf16_message(
+                ErrorKind::Error,
+                utf16_formatted("Failed to open '{}': {}", &[&filename, &error]),
+            );
         }
         Err(ReadFileError::Read(error)) => {
-            return vm.throw_completion_with_message(ErrorKind::Error, format!("Failed to read '{filename}': {error}"));
+            return vm.throw_completion_with_utf16_message(
+                ErrorKind::Error,
+                utf16_formatted("Failed to read '{}': {}", &[&filename, &error]),
+            );
         }
     };
 
