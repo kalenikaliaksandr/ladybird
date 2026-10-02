@@ -25,10 +25,14 @@ pub mod plain_date_time;
 pub mod plain_date_time_constructor;
 pub mod plain_date_time_prototype;
 pub mod plain_month_day;
+pub mod plain_month_day_constructor;
+pub mod plain_month_day_prototype;
 pub mod plain_time;
 pub mod plain_time_constructor;
 pub mod plain_time_prototype;
 pub mod plain_year_month;
+pub mod plain_year_month_constructor;
+pub mod plain_year_month_prototype;
 #[allow(
     clippy::module_inception,
     reason = "Temporal.cpp defines the Temporal object of the Temporal namespace"

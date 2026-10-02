@@ -118,14 +118,18 @@ const objects = [
     ["Temporal.Now", Temporal.Now],
     ["Temporal.Duration.prototype", Temporal.Duration.prototype],
     ["Temporal.Instant.prototype", Temporal.Instant.prototype],
+    ["Temporal.PlainMonthDay.prototype", Temporal.PlainMonthDay.prototype],
     ["Temporal.PlainTime.prototype", Temporal.PlainTime.prototype],
     ["Temporal.PlainDate.prototype", Temporal.PlainDate.prototype],
     ["Temporal.PlainDateTime.prototype", Temporal.PlainDateTime.prototype],
+    ["Temporal.PlainYearMonth.prototype", Temporal.PlainYearMonth.prototype],
     ["Temporal.Duration", Temporal.Duration],
     ["Temporal.Instant", Temporal.Instant],
+    ["Temporal.PlainMonthDay", Temporal.PlainMonthDay],
     ["Temporal.PlainTime", Temporal.PlainTime],
     ["Temporal.PlainDate", Temporal.PlainDate],
     ["Temporal.PlainDateTime", Temporal.PlainDateTime],
+    ["Temporal.PlainYearMonth", Temporal.PlainYearMonth],
     ["globalThis", globalThis],
 ];
 
