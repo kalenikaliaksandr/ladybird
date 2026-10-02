@@ -18,6 +18,7 @@ set(SOURCES
     Locale.cpp
     Normalize.cpp
     NumberFormat.cpp
+    NumberFormatExports.cpp
     PluralRules.cpp
     RelativeTimeFormat.cpp
     Segmenter.cpp
