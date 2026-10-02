@@ -17,6 +17,8 @@ use crate::layout::value::Value;
 use crate::runtime::accessor::Accessor;
 use crate::runtime::aggregate_error_constructor::AggregateErrorConstructor;
 use crate::runtime::aggregate_error_prototype::AggregateErrorPrototype;
+use crate::runtime::array_buffer_constructor::ArrayBufferConstructor;
+use crate::runtime::array_buffer_prototype::ArrayBufferPrototype;
 use crate::runtime::array_constructor::ArrayConstructor;
 use crate::runtime::array_iterator_prototype::ArrayIteratorPrototype;
 use crate::runtime::array_prototype::ArrayPrototype;
@@ -27,12 +29,15 @@ use crate::runtime::async_generator_function_constructor::AsyncGeneratorFunction
 use crate::runtime::async_generator_function_prototype::AsyncGeneratorFunctionPrototype;
 use crate::runtime::async_generator_prototype::AsyncGeneratorPrototype;
 use crate::runtime::async_iterator_prototype::AsyncIteratorPrototype;
+use crate::runtime::atomics_object::AtomicsObject;
 use crate::runtime::big_int_constructor::BigIntConstructor;
 use crate::runtime::big_int_prototype::BigIntPrototype;
 use crate::runtime::boolean_constructor::BooleanConstructor;
 use crate::runtime::boolean_prototype::BooleanPrototype;
 use crate::runtime::completion::Must;
 use crate::runtime::console_object::ConsoleObject;
+use crate::runtime::data_view_constructor::DataViewConstructor;
+use crate::runtime::data_view_prototype::DataViewPrototype;
 use crate::runtime::error::ErrorKind;
 use crate::runtime::error_constructor::{
     ErrorConstructor, EvalErrorConstructor, InternalErrorConstructor, RangeErrorConstructor, ReferenceErrorConstructor,
@@ -81,11 +86,23 @@ use crate::runtime::set_constructor::SetConstructor;
 use crate::runtime::set_iterator_prototype::SetIteratorPrototype;
 use crate::runtime::set_prototype::SetPrototype;
 use crate::runtime::shape::Shape;
+use crate::runtime::shared_array_buffer_constructor::SharedArrayBufferConstructor;
+use crate::runtime::shared_array_buffer_prototype::SharedArrayBufferPrototype;
 use crate::runtime::string_constructor::StringConstructor;
 use crate::runtime::string_iterator_prototype::StringIteratorPrototype;
 use crate::runtime::string_prototype::StringPrototype;
 use crate::runtime::symbol_constructor::SymbolConstructor;
 use crate::runtime::symbol_prototype::SymbolPrototype;
+use crate::runtime::typed_array::{
+    BigInt64ArrayConstructor, BigInt64ArrayPrototype, BigUint64ArrayConstructor, BigUint64ArrayPrototype,
+    Float16ArrayConstructor, Float16ArrayPrototype, Float32ArrayConstructor, Float32ArrayPrototype,
+    Float64ArrayConstructor, Float64ArrayPrototype, Int8ArrayConstructor, Int8ArrayPrototype, Int16ArrayConstructor,
+    Int16ArrayPrototype, Int32ArrayConstructor, Int32ArrayPrototype, Uint8ArrayConstructor, Uint8ArrayPrototype,
+    Uint8ClampedArrayConstructor, Uint8ClampedArrayPrototype, Uint16ArrayConstructor, Uint16ArrayPrototype,
+    Uint32ArrayConstructor, Uint32ArrayPrototype,
+};
+use crate::runtime::typed_array_constructor::TypedArrayConstructor;
+use crate::runtime::typed_array_prototype::TypedArrayPrototype;
 use crate::runtime::weak_map_constructor::WeakMapConstructor;
 use crate::runtime::weak_map_prototype::WeakMapPrototype;
 use crate::runtime::weak_ref_constructor::WeakRefConstructor;
@@ -610,6 +627,81 @@ initialize_builtin_types! {
     initialize_uri_error: uri_error_prototype: URIErrorPrototype, uri_error_constructor: URIErrorConstructor, URIError;
 }
 
+/// Intrinsics::initialize_snake_name() for the builtin types whose constructor slot holds a FunctionObject.
+macro_rules! initialize_builtin_function_types {
+    ($($initialize:ident: $prototype:ident: $prototype_type:ty, $constructor:ident: $constructor_type:ty, $name:ident;)*) => {
+        impl Intrinsics {
+            $(
+                fn $initialize(&self, vm: &Vm) {
+                    assert!(self.$prototype.get().is_none());
+                    assert!(self.$constructor.get().is_none());
+                    let prototype = <$prototype_type>::create(vm, self.realm);
+                    self.$prototype.set(Some(prototype.upcast()));
+                    let constructor = <$constructor_type>::create(vm, self.realm);
+                    self.$constructor.set(Some(constructor.upcast()));
+
+                    initialize_constructor(
+                        vm,
+                        &vm.names.$name,
+                        &constructor,
+                        Some(prototype.upcast()),
+                        PropertyAttributes::new(Attribute::WRITABLE | Attribute::CONFIGURABLE),
+                    );
+                }
+            )*
+        }
+    };
+}
+
+initialize_builtin_function_types! {
+    initialize_array_buffer: array_buffer_prototype: ArrayBufferPrototype, array_buffer_constructor: ArrayBufferConstructor, ArrayBuffer;
+    initialize_data_view: data_view_prototype: DataViewPrototype, data_view_constructor: DataViewConstructor, DataView;
+    initialize_shared_array_buffer: shared_array_buffer_prototype: SharedArrayBufferPrototype, shared_array_buffer_constructor: SharedArrayBufferConstructor, SharedArrayBuffer;
+    initialize_typed_array: typed_array_prototype: TypedArrayPrototype, typed_array_constructor: TypedArrayConstructor, TypedArray;
+}
+
+/// Intrinsics::initialize_snake_name() for the typed arrays, whose prototypes and constructors extend %TypedArray%'s.
+macro_rules! initialize_typed_array_types {
+    ($($initialize:ident: $prototype:ident: $prototype_type:ty, $constructor:ident: $constructor_type:ty, $name:ident;)*) => {
+        impl Intrinsics {
+            $(
+                fn $initialize(&self, vm: &Vm) {
+                    assert!(self.$prototype.get().is_none());
+                    assert!(self.$constructor.get().is_none());
+                    let prototype = <$prototype_type>::create(vm, self.realm, self.typed_array_prototype(vm));
+                    self.$prototype.set(Some(prototype.upcast()));
+                    let constructor =
+                        <$constructor_type>::create(vm, self.realm, self.typed_array_constructor(vm).upcast());
+                    self.$constructor.set(Some(constructor.upcast()));
+
+                    initialize_constructor(
+                        vm,
+                        &vm.names.$name,
+                        &constructor,
+                        Some(prototype.upcast()),
+                        PropertyAttributes::new(Attribute::WRITABLE | Attribute::CONFIGURABLE),
+                    );
+                }
+            )*
+        }
+    };
+}
+
+initialize_typed_array_types! {
+    initialize_uint8_array: uint8_array_prototype: Uint8ArrayPrototype, uint8_array_constructor: Uint8ArrayConstructor, Uint8Array;
+    initialize_uint8_clamped_array: uint8_clamped_array_prototype: Uint8ClampedArrayPrototype, uint8_clamped_array_constructor: Uint8ClampedArrayConstructor, Uint8ClampedArray;
+    initialize_uint16_array: uint16_array_prototype: Uint16ArrayPrototype, uint16_array_constructor: Uint16ArrayConstructor, Uint16Array;
+    initialize_uint32_array: uint32_array_prototype: Uint32ArrayPrototype, uint32_array_constructor: Uint32ArrayConstructor, Uint32Array;
+    initialize_big_uint64_array: big_uint64_array_prototype: BigUint64ArrayPrototype, big_uint64_array_constructor: BigUint64ArrayConstructor, BigUint64Array;
+    initialize_int8_array: int8_array_prototype: Int8ArrayPrototype, int8_array_constructor: Int8ArrayConstructor, Int8Array;
+    initialize_int16_array: int16_array_prototype: Int16ArrayPrototype, int16_array_constructor: Int16ArrayConstructor, Int16Array;
+    initialize_int32_array: int32_array_prototype: Int32ArrayPrototype, int32_array_constructor: Int32ArrayConstructor, Int32Array;
+    initialize_big_int64_array: big_int64_array_prototype: BigInt64ArrayPrototype, big_int64_array_constructor: BigInt64ArrayConstructor, BigInt64Array;
+    initialize_float16_array: float16_array_prototype: Float16ArrayPrototype, float16_array_constructor: Float16ArrayConstructor, Float16Array;
+    initialize_float32_array: float32_array_prototype: Float32ArrayPrototype, float32_array_constructor: Float32ArrayConstructor, Float32Array;
+    initialize_float64_array: float64_array_prototype: Float64ArrayPrototype, float64_array_constructor: Float64ArrayConstructor, Float64Array;
+}
+
 /// Intrinsics::initialize_snake_name() for the builtin types the runtime does not have yet.
 macro_rules! unimplemented_builtin_types {
     ($($initialize:ident => $name:literal,)*) => {
@@ -627,27 +719,10 @@ macro_rules! unimplemented_builtin_types {
 }
 
 unimplemented_builtin_types! {
-    initialize_array_buffer => "ArrayBuffer",
     initialize_async_disposable_stack => "AsyncDisposableStack",
-    initialize_data_view => "DataView",
     initialize_date => "Date",
     initialize_disposable_stack => "DisposableStack",
-
-    initialize_shared_array_buffer => "SharedArrayBuffer",
     initialize_suppressed_error => "SuppressedError",
-    initialize_typed_array => "%TypedArray%",
-    initialize_uint8_array => "Uint8Array",
-    initialize_uint8_clamped_array => "Uint8ClampedArray",
-    initialize_uint16_array => "Uint16Array",
-    initialize_uint32_array => "Uint32Array",
-    initialize_big_uint64_array => "BigUint64Array",
-    initialize_int8_array => "Int8Array",
-    initialize_int16_array => "Int16Array",
-    initialize_int32_array => "Int32Array",
-    initialize_big_int64_array => "BigInt64Array",
-    initialize_float16_array => "Float16Array",
-    initialize_float32_array => "Float32Array",
-    initialize_float64_array => "Float64Array",
     initialize_intl_collator => "Intl.Collator",
     initialize_intl_date_time_format => "Intl.DateTimeFormat",
     initialize_intl_display_names => "Intl.DisplayNames",
@@ -703,12 +778,12 @@ macro_rules! namespace_object_accessors {
 }
 
 namespace_object_accessors! {
+    atomics_object: AtomicsObject;
     json_object: JSONObject;
     math_object: MathObject;
 }
 
 unimplemented_lazy_intrinsics! {
-    atomics_object: Object => "%Atomics%",
     intl_object: Object => "%Intl%",
     temporal_object: Object => "%Temporal%",
     async_iterator_close_abstract_operation_function: FunctionObject => "AsyncIteratorClose, written in JavaScript",
@@ -1378,6 +1453,51 @@ mod tests {
         add("%AsyncFunction%", intrinsics.async_function_constructor(vm).upcast());
         add("Proxy", intrinsics.proxy_constructor().upcast());
         add("%ThrowTypeError%", intrinsics.throw_type_error_function().upcast());
+        add("ArrayBuffer.prototype", intrinsics.array_buffer_prototype(vm));
+        add(
+            "SharedArrayBuffer.prototype",
+            intrinsics.shared_array_buffer_prototype(vm),
+        );
+        add("DataView.prototype", intrinsics.data_view_prototype(vm));
+        add("%TypedArray.prototype%", intrinsics.typed_array_prototype(vm));
+        add("Uint8Array.prototype", intrinsics.uint8_array_prototype(vm));
+        add(
+            "Uint8ClampedArray.prototype",
+            intrinsics.uint8_clamped_array_prototype(vm),
+        );
+        add("Uint16Array.prototype", intrinsics.uint16_array_prototype(vm));
+        add("Uint32Array.prototype", intrinsics.uint32_array_prototype(vm));
+        add("BigUint64Array.prototype", intrinsics.big_uint64_array_prototype(vm));
+        add("Int8Array.prototype", intrinsics.int8_array_prototype(vm));
+        add("Int16Array.prototype", intrinsics.int16_array_prototype(vm));
+        add("Int32Array.prototype", intrinsics.int32_array_prototype(vm));
+        add("BigInt64Array.prototype", intrinsics.big_int64_array_prototype(vm));
+        add("Float16Array.prototype", intrinsics.float16_array_prototype(vm));
+        add("Float32Array.prototype", intrinsics.float32_array_prototype(vm));
+        add("Float64Array.prototype", intrinsics.float64_array_prototype(vm));
+        add("ArrayBuffer", intrinsics.array_buffer_constructor(vm).upcast());
+        add(
+            "SharedArrayBuffer",
+            intrinsics.shared_array_buffer_constructor(vm).upcast(),
+        );
+        add("DataView", intrinsics.data_view_constructor(vm).upcast());
+        add("%TypedArray%", intrinsics.typed_array_constructor(vm).upcast());
+        add("Uint8Array", intrinsics.uint8_array_constructor(vm).upcast());
+        add(
+            "Uint8ClampedArray",
+            intrinsics.uint8_clamped_array_constructor(vm).upcast(),
+        );
+        add("Uint16Array", intrinsics.uint16_array_constructor(vm).upcast());
+        add("Uint32Array", intrinsics.uint32_array_constructor(vm).upcast());
+        add("BigUint64Array", intrinsics.big_uint64_array_constructor(vm).upcast());
+        add("Int8Array", intrinsics.int8_array_constructor(vm).upcast());
+        add("Int16Array", intrinsics.int16_array_constructor(vm).upcast());
+        add("Int32Array", intrinsics.int32_array_constructor(vm).upcast());
+        add("BigInt64Array", intrinsics.big_int64_array_constructor(vm).upcast());
+        add("Float16Array", intrinsics.float16_array_constructor(vm).upcast());
+        add("Float32Array", intrinsics.float32_array_constructor(vm).upcast());
+        add("Float64Array", intrinsics.float64_array_constructor(vm).upcast());
+        add("Atomics", intrinsics.atomics_object(vm));
         add("globalThis", realm.global_object());
         named
     }
@@ -1551,13 +1671,18 @@ mod tests {
             "eval=function:w-c isFinite=function:w-c isNaN=function:w-c parseFloat=function:w-c parseInt=function:w-c \
              decodeURI=function:w-c decodeURIComponent=function:w-c encodeURI=function:w-c \
              encodeURIComponent=function:w-c globalThis=globalThis:w-c Infinity=Infinity:--- NaN=NaN:--- \
-             undefined=undefined:--- AggregateError=AggregateError:w-c Array=Array:w-c BigInt=BigInt:w-c \
-             Boolean=Boolean:w-c Error=Error:w-c EvalError=EvalError:w-c FinalizationRegistry=function:w-c \
-             Function=Function:w-c Iterator=Iterator:w-c Map=function:w-c Number=Number:w-c Object=Object:w-c \
-             Promise=function:w-c Proxy=Proxy:w-c RangeError=RangeError:w-c ReferenceError=ReferenceError:w-c RegExp=function:w-c \
-             Set=function:w-c String=String:w-c Symbol=Symbol:w-c SyntaxError=SyntaxError:w-c TypeError=TypeError:w-c \
-             URIError=URIError:w-c WeakMap=function:w-c WeakRef=function:w-c WeakSet=function:w-c JSON=object:w-c \
-             Math=object:w-c Reflect=object:w-c escape=function:w-c unescape=function:w-c \
+             undefined=undefined:--- AggregateError=AggregateError:w-c Array=Array:w-c ArrayBuffer=ArrayBuffer:w-c \
+             BigInt=BigInt:w-c BigInt64Array=BigInt64Array:w-c BigUint64Array=BigUint64Array:w-c Boolean=Boolean:w-c \
+             DataView=DataView:w-c Error=Error:w-c EvalError=EvalError:w-c FinalizationRegistry=function:w-c \
+             Float16Array=Float16Array:w-c Float32Array=Float32Array:w-c Float64Array=Float64Array:w-c \
+             Function=Function:w-c Int8Array=Int8Array:w-c Int16Array=Int16Array:w-c Int32Array=Int32Array:w-c \
+             Iterator=Iterator:w-c Map=function:w-c Number=Number:w-c Object=Object:w-c Promise=function:w-c \
+             Proxy=Proxy:w-c RangeError=RangeError:w-c ReferenceError=ReferenceError:w-c RegExp=function:w-c \
+             Set=function:w-c SharedArrayBuffer=SharedArrayBuffer:w-c String=String:w-c Symbol=Symbol:w-c \
+             SyntaxError=SyntaxError:w-c TypeError=TypeError:w-c Uint8Array=Uint8Array:w-c \
+             Uint8ClampedArray=Uint8ClampedArray:w-c Uint16Array=Uint16Array:w-c Uint32Array=Uint32Array:w-c \
+             URIError=URIError:w-c WeakMap=function:w-c WeakRef=function:w-c WeakSet=function:w-c Atomics=Atomics:w-c \
+             JSON=object:w-c Math=object:w-c Reflect=object:w-c escape=function:w-c unescape=function:w-c \
              InternalError=InternalError:w-c console=object:w-c"
         );
     }
@@ -1731,7 +1856,6 @@ mod tests {
             thrown_message(|| intrinsics.temporal_duration_constructor(&vm))
                 .contains("Intrinsics::initialize_temporal_duration")
         );
-        assert!(thrown_message(|| intrinsics.atomics_object(&vm)).contains("%Atomics%"));
         assert!(Value::from_object(intrinsics.eval_function()).is_function());
         let values = realm.array_prototype().get_without_side_effects(&vm, &vm.names.values);
         assert!(values == Value::from_object(realm.array_prototype_values_function()));

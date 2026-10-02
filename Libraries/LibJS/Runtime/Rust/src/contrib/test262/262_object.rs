@@ -13,11 +13,11 @@ use crate::contrib::test262::agent_object::AgentObject;
 use crate::contrib::test262::global_object::Test262GlobalObject;
 use crate::contrib::test262::is_htmldda::IsHTMLDDA;
 use crate::gc::class::{GcCell, define_cell};
-use crate::interpreter::runtime_functions::unimplemented_runtime_function;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
 use crate::layout::object::Object;
 use crate::layout::value::Value;
+use crate::runtime::array_buffer::{ArrayBuffer, detach_array_buffer};
 use crate::runtime::completion::{Must, ThrowCompletionOr};
 use crate::runtime::error::ErrorKind;
 use crate::runtime::native_function::raw_native;
@@ -118,15 +118,16 @@ impl Dollar262Object {
 
     fn detach_array_buffer(vm: &Vm) -> ThrowCompletionOr<Value> {
         let array_buffer = vm.argument(0);
-        // NB: The runtime has no ArrayBuffer yet, so no primitive and no object of the classes it has is one.
-        if !array_buffer.is_object() {
+        let array_buffer = array_buffer
+            .is_object()
+            .then(|| array_buffer.as_object().downcast::<ArrayBuffer>())
+            .flatten();
+        let Some(array_buffer) = array_buffer else {
             return vm.throw_completion_with_message(ErrorKind::TypeError, String::new());
-        }
+        };
 
-        unimplemented_runtime_function(
-            "$262.detachArrayBuffer of an object, which needs ArrayBuffer and DetachArrayBuffer",
-            0,
-        )
+        detach_array_buffer(vm, array_buffer, Some(vm.argument(1)))?;
+        Ok(Value::NULL)
     }
 
     fn eval_script(vm: &Vm) -> ThrowCompletionOr<Value> {
