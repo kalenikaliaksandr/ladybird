@@ -89,6 +89,13 @@ pub enum CompilationType {
     Timer,
 }
 
+/// The intrinsic accessors of each object that still has any, by the object's address.
+pub type IntrinsicAccessorMap = HashMap<
+    usize,
+    HashMap<Utf16FlyString, IntrinsicAccessor, foldhash::fast::RandomState>,
+    foldhash::fast::RandomState,
+>;
+
 /// HostEnsureCanAddPrivateElement, which hosts that are web browsers may override.
 pub type HostEnsureCanAddPrivateElement = fn(&Vm, &Object) -> ThrowCompletionOr<()>;
 
@@ -450,7 +457,7 @@ pub struct Vm {
     /// The properties defined with Object::define_intrinsic_accessor that have not been read yet, by the address of
     /// their object, the C++ static intrinsic_accessor_map(). The objects are weak: the sweep callback forgets the
     /// ones that die.
-    intrinsic_accessors: RefCell<HashMap<usize, HashMap<Utf16FlyString, IntrinsicAccessor>>>,
+    intrinsic_accessors: RefCell<IntrinsicAccessorMap>,
     /// The realm TypeErrors are created in while a TypeErrorRealmScope is active, at the execution context stack
     /// depth it was created at.
     type_error_realm_override: Cell<Option<Gc<Realm>>>,
@@ -533,7 +540,7 @@ impl Vm {
             module_execution_depth: Cell::new(0),
             module_async_evaluation_count: Cell::new(0),
             next_private_environment_id: Cell::new(1),
-            intrinsic_accessors: RefCell::new(HashMap::new()),
+            intrinsic_accessors: RefCell::new(HashMap::default()),
             type_error_realm_override: Cell::new(None),
             type_error_realm_override_depth: Cell::new(0),
         });
@@ -766,7 +773,7 @@ impl Vm {
         });
     }
 
-    pub fn intrinsic_accessors(&self) -> &RefCell<HashMap<usize, HashMap<Utf16FlyString, IntrinsicAccessor>>> {
+    pub fn intrinsic_accessors(&self) -> &RefCell<IntrinsicAccessorMap> {
         &self.intrinsic_accessors
     }
 
