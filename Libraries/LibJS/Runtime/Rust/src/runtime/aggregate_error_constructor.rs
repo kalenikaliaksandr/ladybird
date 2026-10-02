@@ -7,19 +7,21 @@
 use libjs_runtime_macros::Trace;
 
 use crate::gc::class::{GcCell, define_cell};
-use crate::interpreter::runtime_functions::unimplemented_runtime_function;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
 use crate::layout::object::Object;
 use crate::layout::value::Value;
 use crate::runtime::abstract_operations::get_prototype_from_constructor;
 use crate::runtime::aggregate_error::AggregateError;
-use crate::runtime::completion::ThrowCompletionOr;
+use crate::runtime::array::Array;
+use crate::runtime::completion::{Must, ThrowCompletionOr};
 use crate::runtime::function_object::FunctionObject;
 use crate::runtime::intrinsics::Intrinsics;
+use crate::runtime::iterator::{IteratorHint, get_iterator_impl, iterator_to_list};
 use crate::runtime::native_function::{NativeFunction, define_native_function_class};
 use crate::runtime::primitive_string::PrimitiveString;
 use crate::runtime::property_attributes::{Attribute, PropertyAttributes};
+use crate::runtime::property_descriptor::PropertyDescriptor;
 use crate::runtime::realm::Realm;
 
 #[repr(C)]
@@ -80,6 +82,7 @@ impl AggregateErrorConstructor {
     fn construct(_: &NativeFunction, vm: &Vm, new_target: Gc<FunctionObject>) -> ThrowCompletionOr<Gc<Object>> {
         let realm = vm.current_realm().expect("a constructor runs in a realm");
 
+        let errors = vm.argument(0);
         let message = vm.argument(1);
         let options = vm.argument(2);
 
@@ -104,11 +107,21 @@ impl AggregateErrorConstructor {
         aggregate_error.install_error_cause(vm, options)?;
 
         // 5. Let errorsList be ? IteratorToList(? GetIterator(errors, sync)).
+        let errors_list = iterator_to_list(vm, &get_iterator_impl(vm, errors, IteratorHint::Sync)?)?;
+
         // 6. Perform ! DefinePropertyOrThrow(O, "errors", PropertyDescriptor { [[Configurable]]: true, [[Enumerable]]: false, [[Writable]]: true, [[Value]]: CreateArrayFromList(errorsList) }).
+        let mut descriptor = PropertyDescriptor {
+            value: Some(Value::from_object(Array::create_from_list(vm, realm, &errors_list))),
+            writable: Some(true),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..Default::default()
+        };
+        aggregate_error
+            .define_property_or_throw(vm, &vm.names.errors, &mut descriptor)
+            .must();
+
         // 7. Return O.
-        unimplemented_runtime_function(
-            "GetIterator and IteratorToList, for the errors list of the AggregateError constructor",
-            0,
-        )
+        Ok(aggregate_error.upcast())
     }
 }

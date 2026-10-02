@@ -274,10 +274,11 @@ mod tests {
     use super::test_scripts::{run_script, utf8};
     use super::*;
     use crate::runtime::abstract_operations::{call, construct};
+    use crate::runtime::array::Array;
     use crate::runtime::completion::Must;
     use crate::runtime::native_function::NativeFunction;
     use crate::runtime::property_key::PropertyKey;
-    use crate::runtime::realm::test_realm::{key, own_keys, thrown_message};
+    use crate::runtime::realm::test_realm::{key, own_keys};
     use crate::utf16::Utf16View;
     use crate::utilities::initialize_realm;
 
@@ -486,12 +487,23 @@ mod tests {
         assert!(call(&vm, is_error, Value::UNDEFINED, &[Value::from_object(options)]).must() == Value::FALSE);
         assert!(call(&vm, is_error, Value::UNDEFINED, &[Value::from_i32(1)]).must() == Value::FALSE);
 
-        // The AggregateError constructor needs the iterator protocol for its errors.
+        // The AggregateError constructor copies its iterable of errors into a new array.
         let aggregate_error_constructor = intrinsics.aggregate_error_constructor(&vm);
         assert!(aggregate_error_constructor.prototype() == Some(error_constructor.upcast()));
         assert!(type_error_constructor.prototype() == Some(error_constructor.upcast()));
-        let message = thrown_message(|| construct(&vm, aggregate_error_constructor.upcast(), &[], None));
-        assert!(message.contains("GetIterator and IteratorToList"), "{message}");
+        let errors = Array::create_from(&vm, realm, &[Value::from_i32(1), Value::from_i32(2)]);
+        let aggregate_error = construct(
+            &vm,
+            aggregate_error_constructor.upcast(),
+            &[Value::from_object(errors), string(&vm, "both")],
+            None,
+        )
+        .must();
+        assert_eq!(message_of(&vm, aggregate_error), "both");
+        let errors_copy = aggregate_error.get(&vm, &vm.names.errors).must();
+        assert!(errors_copy.is_object() && errors_copy != Value::from_object(errors));
+        assert!(errors_copy.as_object().get(&vm, &vm.names.length).must() == Value::from_i32(2));
+        assert!(construct(&vm, aggregate_error_constructor.upcast(), &[], None).is_err());
     }
 
     #[test]
