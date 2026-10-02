@@ -14,8 +14,8 @@ use libjs_abi::PutKind;
 use libjs_abi::value as nan_box;
 
 use crate::bytecode::executable::{
-    ObjectPropertyIteratorCache, ObjectPropertyIteratorCacheData, ObjectPropertyIteratorFastPath, PropertyLookupCache,
-    PropertyLookupCacheEntryType,
+    Executable, ObjectPropertyIteratorCache, ObjectPropertyIteratorCacheData, ObjectPropertyIteratorFastPath,
+    PropertyLookupCache, PropertyLookupCacheEntryType,
 };
 use crate::bytecode::op;
 use crate::bytecode::operand::{IdentifierTableIndex, OptionalIndex};
@@ -143,7 +143,7 @@ pub fn get_by_id(vm: &Vm, pc: u32, instruction: &op::GetById, values: &mut op::G
             vm,
             GetByIdMode::Normal,
             || optional_identifier(vm, &instruction.base_identifier),
-            &property_key,
+            property_key,
             base_value,
             base_value,
             cache,
@@ -207,7 +207,7 @@ pub fn get_by_id_with_this(
             vm,
             GetByIdMode::Normal,
             || None,
-            &property_key,
+            property_key,
             base_value,
             this_value,
             cache,
@@ -233,7 +233,7 @@ pub fn put_by_id(vm: &Vm, pc: u32, instruction: &op::PutById, values: &mut op::P
             base,
             value,
             || optional_identifier(vm, &instruction.base_identifier),
-            &property_key,
+            property_key,
             put_kind_from_operand(instruction.kind),
             strict_of(instruction.header.strict),
             Some(cache),
@@ -262,7 +262,7 @@ pub fn put_by_id_with_this(
             values.this_value,
             value,
             || None,
-            &name,
+            name,
             put_kind_from_operand(instruction.kind),
             strict_of(instruction.header.strict),
             Some(cache),
@@ -318,8 +318,7 @@ pub fn get_by_value_with_this(vm: &Vm, pc: u32, values: &mut op::GetByValueWithT
     SlowPathControl::continue_at(pc + op::GetByValueWithThis::LENGTH)
 }
 
-fn length_property_key(vm: &Vm) -> PropertyKey {
-    let executable = vm.current_executable();
+fn length_property_key(executable: &Executable) -> &PropertyKey {
     executable.get_property_key(
         executable
             .length_identifier
@@ -338,7 +337,7 @@ pub fn get_length(vm: &Vm, pc: u32, instruction: &op::GetLength, values: &mut op
             vm,
             GetByIdMode::Length,
             || optional_identifier(vm, &instruction.base_identifier),
-            &length_property_key(vm),
+            length_property_key(&executable),
             base_value,
             base_value,
             cache,
@@ -366,7 +365,7 @@ pub fn get_length_with_this(
             vm,
             GetByIdMode::Length,
             || None,
-            &length_property_key(vm),
+            length_property_key(&executable),
             base_value,
             this_value,
             cache,
@@ -378,8 +377,9 @@ pub fn get_length_with_this(
 }
 
 pub fn get_method(vm: &Vm, pc: u32, instruction: &op::GetMethod, values: &mut op::GetMethodValues) -> SlowPathControl {
-    let property_key = vm.current_executable().get_property_key(instruction.property);
-    let method = asm_try!(vm, pc, values.object.get_method(vm, &property_key));
+    let executable = vm.current_executable();
+    let property_key = executable.get_property_key(instruction.property);
+    let method = asm_try!(vm, pc, values.object.get_method(vm, property_key));
     values.dst = method.map_or(Value::UNDEFINED, Value::from_object);
     SlowPathControl::continue_at(pc + op::GetMethod::LENGTH)
 }
@@ -461,7 +461,7 @@ pub fn delete_by_id(
     instruction: &op::DeleteById,
     values: &mut op::DeleteByIdValues,
 ) -> SlowPathControl {
-    let property_key = vm.current_executable().get_property_key(instruction.property);
+    let property_key = vm.current_executable().get_property_key(instruction.property).clone();
     let result = asm_try!(
         vm,
         pc,
@@ -592,13 +592,13 @@ pub fn init_object_literal_property(
     let property_key = executable.get_property_key(instruction.property);
     object.define_direct_property(
         vm,
-        &property_key,
+        property_key,
         value,
         PropertyAttributes::new(Attribute::ENUMERABLE | Attribute::WRITABLE | Attribute::CONFIGURABLE),
     );
 
     if !object.shape().is_dictionary()
-        && let Some(metadata) = object.shape().lookup(&property_key)
+        && let Some(metadata) = object.shape().lookup(property_key)
     {
         let mut property_offsets = cache.property_offsets.borrow_mut();
         if property_slot >= property_offsets.len() {
@@ -1274,7 +1274,7 @@ pub fn try_put_by_id_cache(vm: &Vm, instruction: &op::PutById, values: &op::PutB
                     continue;
                 }
                 if object.has_magical_length_property()
-                    && !property_addition_is_cacheable(vm, &object, &executable.get_property_key(instruction.property))
+                    && !property_addition_is_cacheable(vm, &object, executable.get_property_key(instruction.property))
                 {
                     continue;
                 }
@@ -1887,10 +1887,12 @@ mod tests {
         };
         let mut executable = Executable::new(vec![0u8; 8].into_boxed_slice(), 5, 0, 0, Box::new([]), &counts, true);
         executable.identifier_table = identifiers.iter().map(|name| Utf16FlyString::from_utf8(name)).collect();
-        executable.property_key_table = property_keys
-            .iter()
-            .map(|name| Utf16FlyString::from_utf8(name))
-            .collect();
+        executable.set_property_key_table(
+            property_keys
+                .iter()
+                .map(|name| Utf16FlyString::from_utf8(name))
+                .collect(),
+        );
         executable.allocate_object_caches(object_shape_caches, 1);
         executable.length_identifier = property_keys
             .iter()
