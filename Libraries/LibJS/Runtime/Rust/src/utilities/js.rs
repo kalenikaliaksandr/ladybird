@@ -44,7 +44,7 @@ use crate::runtime::realm::Realm;
 use crate::runtime::source_text_module::SourceTextModule;
 use crate::script::Script;
 use crate::source_code::SourceCode;
-use crate::standard_output::{self, StandardOutputWriter, UnbufferedStandardOutputWriter};
+use crate::standard_output::{self, StandardOutputWriter, UnbufferedWriter};
 use crate::utf16::{Utf16View, utf16_formatted, utf16_from_wtf8};
 use crate::utilities::initialize_realm_with_global_object;
 use libjs_rust::ast::ProgramType;
@@ -424,8 +424,10 @@ impl ScriptObject {
 
     fn print(vm: &Vm) -> ThrowCompletionOr<Value> {
         if let Err(error) = print_all_arguments(vm, PrintTarget::StandardOutput, PrintEnd::Newline) {
-            return vm
-                .throw_completion_with_message(ErrorKind::InternalError, format!("Failed to print value(s): {error}"));
+            return vm.throw_completion_with_message(
+                ErrorKind::InternalError,
+                format!("Failed to print value(s): {}", write_error_string(&error)),
+            );
         }
 
         Ok(Value::UNDEFINED)
@@ -459,14 +461,14 @@ enum PrintTarget {
 }
 
 /// The stream a print goes to: past stdio's buffer, which is flushed first.
-fn flushed_print_stream(target: PrintTarget) -> Box<dyn Write> {
+fn flushed_print_stream(target: PrintTarget) -> UnbufferedWriter {
     match target {
         PrintTarget::StandardOutput => {
             standard_output::flush();
-            Box::new(UnbufferedStandardOutputWriter)
+            UnbufferedWriter::STANDARD_OUTPUT
         }
         // NB: The standard error is unbuffered, so there is nothing to flush.
-        PrintTarget::StandardError => Box::new(io::stderr()),
+        PrintTarget::StandardError => UnbufferedWriter::STANDARD_ERROR,
     }
 }
 
@@ -529,12 +531,20 @@ fn handle_exception(vm: &Vm, thrown_value: Value) -> io::Result<()> {
     if let Some(stack_string) = stack_string_of_thrown_error(thrown_value) {
         let mut line = Utf16View::of_string(&stack_string).to_wtf8();
         line.push(b'\n');
-        io::stderr().write_all(&line)?;
+        let _ = io::stderr().write_all(&line);
     }
     Ok(())
 }
 
-fn parse_and_run(vm: &Vm, realm: Gc<Realm>, options: &Options, source: &[u8], source_name: &str) -> bool {
+/// Returns whether the source ran without throwing, or the error that LibMain reports when printing fails.
+fn parse_and_run(
+    vm: &Vm,
+    realm: Gc<Realm>,
+    options: &Options,
+    source: &[u8],
+    source_name: &str,
+    parse_only: bool,
+) -> Result<bool, String> {
     let mut result: ThrowCompletionOr<Value> = Ok(Value::UNDEFINED);
     // Like Utf16String::from_utf8(), this stops the process for a source that is not valid UTF-8, which the caller
     // has ruled out.
@@ -568,12 +578,12 @@ fn parse_and_run(vm: &Vm, realm: Gc<Realm>, options: &Options, source: &[u8], so
         );
         if !options.as_module {
             let script = Script::create_from_parsed_with_filename(vm, parsed, source_code, realm, source_name);
-            if !options.parse_only {
+            if !parse_only {
                 result = vm.run_script(script, None);
             }
         } else {
             let module = SourceTextModule::create_from_parsed(vm, parsed, source_code, realm, source_name);
-            if !options.parse_only {
+            if !parse_only {
                 result = vm.run_module(module);
             }
         }
@@ -581,16 +591,22 @@ fn parse_and_run(vm: &Vm, realm: Gc<Realm>, options: &Options, source: &[u8], so
 
     match result {
         Err(throw) => {
-            let _ = handle_exception(vm, throw.value());
-            false
+            handle_exception(vm, throw.value()).map_err(|error| write_error_string(&error))?;
+            Ok(false)
         }
         Ok(value) => {
             if options.print_last_result {
-                let _ = print_value(vm, value, PrintTarget::StandardOutput, PrintEnd::Newline);
+                print_value(vm, value, PrintTarget::StandardOutput, PrintEnd::Newline)
+                    .map_err(|error| write_error_string(&error))?;
             }
-            true
+            Ok(true)
         }
     }
+}
+
+/// How AK formats the Error of a failed write.
+fn write_error_string(error: &io::Error) -> String {
+    system_error_string("write", error)
 }
 
 /// How AK formats the Error of a failed system call: "<syscall>: <strerror> (errno=<code>)".
@@ -934,11 +950,9 @@ impl Deref for ReplConsoleClient {
     }
 }
 
-fn report_runtime_error(syscall: &str, error: &io::Error) {
-    eprintln!(
-        "\x1b[31;1mRuntime error\x1b[0m: {}",
-        system_error_string(syscall, error)
-    );
+/// What LibMain prints for the Error that ladybird_main() returns.
+fn report_runtime_error(error: &str) {
+    eprintln!("\x1b[31;1mRuntime error\x1b[0m: {error}");
 }
 
 /// What windows-1252 decodes the bytes 0x80 to 0x9F to; every other byte is its own code point.
@@ -984,10 +998,11 @@ fn convert_input_to_utf8_using_windows_1252_unless_there_is_a_byte_order_mark(in
 }
 
 fn read_file(path: &str) -> Result<Vec<u8>, ()> {
-    let mut file = std::fs::File::open(path).map_err(|error| report_runtime_error("open", &error))?;
+    let mut file =
+        std::fs::File::open(path).map_err(|error| report_runtime_error(&system_error_string("open", &error)))?;
     let mut file_contents = Vec::new();
     file.read_to_end(&mut file_contents)
-        .map_err(|error| report_runtime_error("read", &error))?;
+        .map_err(|error| report_runtime_error(&system_error_string("read", &error)))?;
     Ok(file_contents)
 }
 
@@ -1077,11 +1092,14 @@ fn ladybird_main(arguments: &[String]) -> c_int {
 
     // We resolve modules as if it is the first file
 
-    if !parse_and_run(vm, realm, &options, &builder, source_name) {
-        return 1;
+    match parse_and_run(vm, realm, &options, &builder, source_name, options.parse_only) {
+        Ok(true) => 0,
+        Ok(false) => 1,
+        Err(error) => {
+            report_runtime_error(&error);
+            1
+        }
     }
-
-    0
 }
 
 /// The entry point of js-rust, called from its C++ main.
