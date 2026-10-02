@@ -166,10 +166,20 @@ impl FunctionPrototype {
             && arg_array_object.indexed_storage_kind() == IndexedStorageKind::Packed
         {
             let length = length_of_array_like(vm, &arg_array_object)?;
-            let elements = arg_array_object.indexed_packed_elements(vm);
-            if elements.len() as u64 >= length {
-                let arguments = elements.to_vec();
-                return call_function_object(vm, function, this_arg, &arguments[..length as usize]);
+            // NB: C++ passes the call a span of the storage. A call may change the storage, so this copies the
+            //     elements first: few enough onto the stack, which the collector scans, and others into a rooted list.
+            if u64::from(arg_array_object.indexed_packed_elements_span_size()) >= length {
+                const STACK_ARGUMENT_CAPACITY: usize = 16;
+                let length = length as usize;
+                if length <= STACK_ARGUMENT_CAPACITY {
+                    let mut arguments = [Value::UNDEFINED; STACK_ARGUMENT_CAPACITY];
+                    let arguments = &mut arguments[..length];
+                    arg_array_object.copy_indexed_packed_elements(arguments);
+                    return call_function_object(vm, function, this_arg, arguments);
+                }
+                let elements = arg_array_object.indexed_packed_elements(vm);
+                return elements
+                    .with_values(|elements| call_function_object(vm, function, this_arg, &elements[..length]));
             }
         }
 
