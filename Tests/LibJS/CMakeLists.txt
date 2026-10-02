@@ -25,5 +25,6 @@ set_tests_properties(test-js PROPERTIES ENVIRONMENT "LADYBIRD_SOURCE_DIR=${LADYB
 
 if (ENABLE_LIBJS_RUST_RUNTIME)
     add_test(NAME js-rust-ast COMMAND test-js --suite ast --js $<TARGET_FILE:js-rust>)
-    set_tests_properties(js-rust-ast PROPERTIES ENVIRONMENT "LADYBIRD_SOURCE_DIR=${LADYBIRD_SOURCE_DIR}")
+    add_test(NAME js-rust-bytecode COMMAND test-js --suite bytecode --js $<TARGET_FILE:js-rust>)
+    set_tests_properties(js-rust-ast js-rust-bytecode PROPERTIES ENVIRONMENT "LADYBIRD_SOURCE_DIR=${LADYBIRD_SOURCE_DIR}")
 endif()
