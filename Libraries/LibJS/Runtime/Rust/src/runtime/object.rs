@@ -2464,8 +2464,8 @@ impl Object {
         mut callback: impl FnMut(&PropertyKey, bool) -> ThrowCompletionOr<()>,
     ) -> ThrowCompletionOr<()> {
         if self.eligible_for_own_property_enumeration_fast_path() {
-            let keys = MarkedVec::with_capacity(
-                vm,
+            // NB: These are index and string keys, which hold no cells, so they need no rooting.
+            let mut keys = Vec::with_capacity(
                 self.indexed_real_size()
                     + self.shape().property_count() as usize
                     + usize::from(self.has_magical_length_property()),
@@ -2496,9 +2496,8 @@ impl Object {
                     ControlFlow::Continue(())
                 });
 
-            for index in 0..keys.len() {
-                let (property_key, enumerable) = keys.get(index).expect("the index is in bounds");
-                callback(&property_key, enumerable)?;
+            for (property_key, enumerable) in &keys {
+                callback(property_key, *enumerable)?;
             }
         } else {
             let keys = self.internal_own_property_keys(vm)?;
