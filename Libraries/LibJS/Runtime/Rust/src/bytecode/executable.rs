@@ -334,8 +334,15 @@ impl PropertyLookupCache {
     /// The entries that may be for `shape`. A megamorphic cache finds the one for the shape and moves it first, where
     /// the interpreter looks.
     pub fn entries_for_shape(&self, shape: Gc<Shape>) -> PropertyLookupCacheEntries {
+        Self::copy_entries(self.entry_slots_for_shape(shape))
+    }
+
+    /// entries_for_shape() in place, for the cache-only fast paths. The entries must not be held across anything that
+    /// may update the cache.
+    #[inline]
+    pub fn entry_slots_for_shape(&self, shape: Gc<Shape>) -> &[PropertyLookupCacheEntry] {
         let Some(data) = self.megamorphic_data() else {
-            return Self::copy_entries(self.entries());
+            return self.entries();
         };
 
         let find_entry = |entries: &[PropertyLookupCacheEntry], index: usize| {
@@ -346,11 +353,11 @@ impl PropertyLookupCache {
         let entry = find_entry(&data.primary_entries, megamorphic_primary_index(shape))
             .or_else(|| find_entry(&data.secondary_entries, megamorphic_secondary_index(shape)));
         let Some(entry) = entry else {
-            return Self::copy_entries(&[]);
+            return &[];
         };
 
         data.entry.set(entry);
-        Self::copy_entries(core::slice::from_ref(&data.entry))
+        core::slice::from_ref(&data.entry)
     }
 
     /// Records a new entry of `entry_type`, filled in by `callback`, moving the cache to the next tier when it has no
