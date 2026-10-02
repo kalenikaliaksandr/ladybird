@@ -4,10 +4,14 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+use std::collections::HashMap;
+
 use ak::Utf16String;
 use libjs_runtime_macros::Trace;
 
 use crate::gc::class::{GcCell, define_cell};
+use crate::gc::gc_ref_cell::GcRefCell;
+use crate::gc::visitor::{Trace, Visitor};
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::{CellHeader, Gc};
 use crate::utf16::Utf16View;
@@ -115,6 +119,48 @@ impl Symbol {
     }
 }
 
+/// The global symbols by the code units of their keys.
+struct SymbolsByKey(HashMap<Vec<u16>, Gc<Symbol>>);
+
+// SAFETY: Visits every symbol of the map.
+unsafe impl Trace for SymbolsByKey {
+    fn trace(&self, visitor: &mut Visitor) {
+        for symbol in self.0.values() {
+            symbol.trace(visitor);
+        }
+    }
+}
+
+/// The C++ VM::m_global_symbol_registry, the GlobalSymbolRegistry List, https://tc39.es/ecma262/#table-globalsymbolregistry-record-fields.
+/// The VM roots it, so the symbols it holds live as long as the VM.
+#[repr(C)]
+#[derive(Trace)]
+pub struct GlobalSymbolRegistry {
+    header: CellHeader,
+    symbols: GcRefCell<SymbolsByKey>,
+}
+
+define_cell!(GlobalSymbolRegistry, Other);
+
+impl GlobalSymbolRegistry {
+    pub fn create(vm: &Vm) -> Gc<GlobalSymbolRegistry> {
+        vm.heap().allocate(GlobalSymbolRegistry {
+            header: CellHeader::for_class(Self::CLASS),
+            symbols: GcRefCell::new(SymbolsByKey(HashMap::new())),
+        })
+    }
+
+    pub fn get(&self, key: &Utf16String) -> Option<Gc<Symbol>> {
+        let key: Vec<u16> = Utf16View::of_string(key).code_units().collect();
+        self.symbols.borrow().0.get(&key).copied()
+    }
+
+    pub fn set(&self, key: &Utf16String, symbol: Gc<Symbol>) {
+        let key = Utf16View::of_string(key).code_units().collect();
+        self.symbols.borrow_mut().0.insert(key, symbol);
+    }
+}
+
 #[cfg(all(test, libjs_runtime_tests_with_libgc))]
 mod tests {
     use super::*;
@@ -165,5 +211,24 @@ mod tests {
             Utf16View::of_string(&iterator.descriptive_string()),
             "Symbol(Symbol.iterator)"
         );
+    }
+
+    #[test]
+    fn the_global_symbol_registry_keeps_its_symbols_alive() {
+        let vm = Vm::create();
+        let registry = vm.global_symbol_registry();
+        let key = Utf16String::from_utf16(&[0x6b, 0xd800]);
+        registry.set(&key, Symbol::create(&vm, Some(key.clone()), Kind::Global));
+        vm.heap().set_should_collect_on_every_allocation(true);
+        for index in 0..8 {
+            let other_key = Utf16String::from_utf8(&format!("other {index}"));
+            registry.set(&other_key, Symbol::create(&vm, Some(other_key.clone()), Kind::Global));
+        }
+        vm.heap().set_should_collect_on_every_allocation(false);
+        vm.heap().collect_garbage();
+        let symbol = registry.get(&key).expect("the registry has the symbol");
+        assert!(symbol.key() == Some(key));
+        assert!(registry.get(&Utf16String::from_utf8("other 7")).is_some());
+        assert!(registry.get(&Utf16String::from_utf8("k")).is_none());
     }
 }

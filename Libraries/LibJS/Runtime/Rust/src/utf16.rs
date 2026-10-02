@@ -164,6 +164,230 @@ impl<'a> Utf16View<'a> {
 
         self.length_in_code_units() < other.length_in_code_units()
     }
+
+    pub fn starts_with(self, prefix: Utf16View<'_>) -> bool {
+        prefix.length_in_code_units() <= self.length_in_code_units()
+            && self.substring_view(0, prefix.length_in_code_units()) == prefix
+    }
+
+    /// Mirrors AK::Utf16View::find_code_unit_offset(Utf16View const&, size_t): the first offset at or after
+    /// `start_offset` where `needle` occurs, which an empty needle does at `start_offset` itself unless that is past
+    /// the end.
+    pub fn find_code_unit_offset(self, needle: Utf16View<'_>, start_offset: usize) -> Option<usize> {
+        let needle_length = needle.length_in_code_units();
+        let maximum_offset = start_offset.checked_add(needle_length)?;
+        if maximum_offset > self.length_in_code_units() {
+            return None;
+        }
+
+        if needle_length == 0 {
+            return Some(start_offset);
+        }
+
+        let last_possible_offset = self.length_in_code_units() - needle_length;
+        match (self, needle) {
+            (Self::Ascii(haystack), Utf16View::Ascii(needle)) => haystack[start_offset..]
+                .windows(needle_length)
+                .position(|window| window == needle)
+                .map(|position| start_offset + position),
+            (Self::Utf16(haystack), Utf16View::Utf16(needle)) => haystack[start_offset..]
+                .windows(needle_length)
+                .position(|window| window == needle)
+                .map(|position| start_offset + position),
+            _ => (start_offset..=last_possible_offset)
+                .find(|&offset| self.substring_view(offset, needle_length) == needle),
+        }
+    }
+
+    /// Mirrors AK::Utf16View::validate(): whether the code units are well-formed UTF-16, without unpaired surrogates.
+    pub fn validate(self) -> bool {
+        match self {
+            Self::Ascii(_) => true,
+            Self::Utf16(units) => char::decode_utf16(units.iter().copied()).all(|decoded| decoded.is_ok()),
+        }
+    }
+
+    /// Mirrors AK::Utf16View::trim(): the view without the leading and/or trailing code units that are in
+    /// `code_units`.
+    pub fn trim(self, code_units: &[u16], mode: TrimMode) -> Self {
+        let mut substring_start = 0;
+        let mut substring_end = self.length_in_code_units();
+
+        if matches!(mode, TrimMode::Left | TrimMode::Both) {
+            while substring_start < substring_end && code_units.contains(&self.code_unit_at(substring_start)) {
+                substring_start += 1;
+            }
+        }
+
+        if matches!(mode, TrimMode::Right | TrimMode::Both) {
+            while substring_end > substring_start && code_units.contains(&self.code_unit_at(substring_end - 1)) {
+                substring_end -= 1;
+            }
+        }
+
+        self.substring_view(substring_start, substring_end - substring_start)
+    }
+
+    /// Mirrors AK::Utf16String::to_well_formed(): the string with every unpaired surrogate replaced by U+FFFD.
+    pub fn to_well_formed(self) -> Utf16String {
+        let Self::Utf16(units) = self else {
+            return self.to_utf16_string();
+        };
+        let mut builder = Utf16StringBuilder::with_capacity(units.len());
+        for decoded in char::decode_utf16(units.iter().copied()) {
+            builder.append_code_point(decoded.map_or(u32::from(char::REPLACEMENT_CHARACTER), u32::from));
+        }
+        builder.to_utf16_string()
+    }
+
+    /// Mirrors AK::Utf16String::to_lowercase() without a locale, which LibUnicode implements with ICU's full case
+    /// mapping in a locale without language-sensitive mappings, including the Final_Sigma context of U+03A3.
+    pub fn to_lowercase(self) -> Utf16String {
+        if let Self::Ascii(units) = self {
+            return Utf16String::from_utf8(ascii_as_str(&units.to_ascii_lowercase()));
+        }
+        self.transform_case(str::to_lowercase)
+    }
+
+    /// Mirrors AK::Utf16String::to_uppercase() without a locale, which LibUnicode implements with ICU's full case
+    /// mapping in a locale without language-sensitive mappings.
+    pub fn to_uppercase(self) -> Utf16String {
+        if let Self::Ascii(units) = self {
+            return Utf16String::from_utf8(ascii_as_str(&units.to_ascii_uppercase()));
+        }
+        self.transform_case(str::to_uppercase)
+    }
+
+    /// Applies a case mapping of Rust's standard library, whose Unicode version matches ICU's, to every run of
+    /// well-formed UTF-16 and keeps unpaired surrogates as they are, as ICU does. An unpaired surrogate is neither
+    /// cased nor case-ignorable, so ending a run there leaves the Final_Sigma context of each run unchanged.
+    fn transform_case(self, transform: fn(&str) -> String) -> Utf16String {
+        let code_units: Vec<u16> = self.code_units().collect();
+        let mut builder = Utf16StringBuilder::with_capacity(code_units.len());
+        let append_transformed_run = |run: &[u16], builder: &mut Utf16StringBuilder| {
+            if run.is_empty() {
+                return;
+            }
+            let run = String::from_utf16(run).expect("a run between unpaired surrogates is well-formed");
+            for code_unit in transform(&run).encode_utf16() {
+                builder.append_code_unit(code_unit);
+            }
+        };
+
+        let mut run_start = 0;
+        let mut index = 0;
+        while index < code_units.len() {
+            let code_unit = code_units[index];
+            if is_utf16_high_surrogate(code_unit)
+                && code_units
+                    .get(index + 1)
+                    .is_some_and(|&next_code_unit| is_utf16_low_surrogate(next_code_unit))
+            {
+                index += 2;
+                continue;
+            }
+            if is_unicode_surrogate(code_unit) {
+                append_transformed_run(&code_units[run_start..index], &mut builder);
+                builder.append_code_unit(code_unit);
+                run_start = index + 1;
+            }
+            index += 1;
+        }
+        append_transformed_run(&code_units[run_start..], &mut builder);
+        builder.to_utf16_string()
+    }
+}
+
+/// Mirrors AK::TrimMode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrimMode {
+    Left,
+    Right,
+    Both,
+}
+
+pub const HIGH_SURROGATE_MIN: u16 = 0xd800;
+pub const HIGH_SURROGATE_MAX: u16 = 0xdbff;
+pub const LOW_SURROGATE_MIN: u16 = 0xdc00;
+pub const LOW_SURROGATE_MAX: u16 = 0xdfff;
+pub const FIRST_SUPPLEMENTARY_PLANE_CODE_POINT: u32 = 0x10000;
+
+pub fn is_unicode_surrogate(code_unit: u16) -> bool {
+    (HIGH_SURROGATE_MIN..=LOW_SURROGATE_MAX).contains(&code_unit)
+}
+
+pub fn is_utf16_high_surrogate(code_unit: u16) -> bool {
+    (HIGH_SURROGATE_MIN..=HIGH_SURROGATE_MAX).contains(&code_unit)
+}
+
+pub fn is_utf16_low_surrogate(code_unit: u16) -> bool {
+    (LOW_SURROGATE_MIN..=LOW_SURROGATE_MAX).contains(&code_unit)
+}
+
+pub fn decode_utf16_surrogate_pair(high_surrogate: u16, low_surrogate: u16) -> u32 {
+    (u32::from(high_surrogate - HIGH_SURROGATE_MIN) << 10)
+        + u32::from(low_surrogate - LOW_SURROGATE_MIN)
+        + FIRST_SUPPLEMENTARY_PLANE_CODE_POINT
+}
+
+/// Mirrors AK::Utf16StringBuilder: collects code units, and builds a string with ASCII storage when all of them are
+/// ASCII.
+#[derive(Default)]
+pub struct Utf16StringBuilder {
+    code_units: Vec<u16>,
+}
+
+impl Utf16StringBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            code_units: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.code_units.is_empty()
+    }
+
+    pub fn append(&mut self, view: Utf16View<'_>) {
+        view.append_to(&mut self.code_units);
+    }
+
+    pub fn append_ascii(&mut self, ascii: &str) {
+        debug_assert!(ascii.is_ascii());
+        self.code_units.extend(ascii.bytes().map(u16::from));
+    }
+
+    pub fn append_code_unit(&mut self, code_unit: u16) {
+        self.code_units.push(code_unit);
+    }
+
+    /// Appends UTF16EncodeCodePoint(`code_point`), as AK::UnicodeUtils::code_point_to_utf16 encodes it.
+    pub fn append_code_point(&mut self, code_point: u32) {
+        assert!(code_point <= 0x10ffff);
+        if code_point < FIRST_SUPPLEMENTARY_PLANE_CODE_POINT {
+            self.code_units.push(code_point as u16);
+            return;
+        }
+        let code_point = code_point - FIRST_SUPPLEMENTARY_PLANE_CODE_POINT;
+        self.code_units.push(HIGH_SURROGATE_MIN | (code_point >> 10) as u16);
+        self.code_units.push(LOW_SURROGATE_MIN | (code_point & 0x3ff) as u16);
+    }
+
+    pub fn append_repeated(&mut self, view: Utf16View<'_>, count: usize) {
+        self.code_units
+            .reserve(view.length_in_code_units().saturating_mul(count));
+        for _ in 0..count {
+            view.append_to(&mut self.code_units);
+        }
+    }
+
+    pub fn to_utf16_string(&self) -> Utf16String {
+        Utf16String::from_utf16(&self.code_units)
+    }
 }
 
 impl PartialEq for Utf16View<'_> {
@@ -355,5 +579,68 @@ mod wtf8_tests {
         for units in [&[0x61, 0xD800, 0x62][..], &[0xDFFF], &[0xE9, 0xD83D, 0xDE00]] {
             assert_eq!(utf16_from_wtf8(&wtf8(units)).as_deref(), Some(units));
         }
+    }
+}
+
+#[cfg(all(test, libjs_runtime_tests_with_libgc))]
+mod case_mapping_tests {
+    use super::*;
+
+    fn code_units(string: &Utf16String) -> Vec<u16> {
+        Utf16View::of_string(string).code_units().collect()
+    }
+
+    #[test]
+    fn case_mappings_keep_unpaired_surrogates_and_their_final_sigma_context() {
+        // What ICU produces, as the C++ js binary prints it.
+        assert_eq!(
+            code_units(&Utf16View::Utf16(&[0x41, 0x3A3, 0xD800, 0x3A3]).to_lowercase()),
+            [0x61, 0x3C2, 0xD800, 0x3C3]
+        );
+        assert_eq!(
+            code_units(&Utf16View::Utf16(&[0xDC00, 0x0131, 0xD83D, 0xDE00]).to_uppercase()),
+            [0xDC00, 0x49, 0xD83D, 0xDE00]
+        );
+        assert_eq!(code_units(&Utf16View::Utf16(&[0x0130]).to_lowercase()), [0x69, 0x307]);
+        assert_eq!(
+            code_units(&Utf16View::Utf16(&[0xDF, 0x1F80]).to_uppercase()),
+            [0x53, 0x53, 0x1F08, 0x399]
+        );
+        assert_eq!(code_units(&Utf16View::Ascii(b"aBc").to_uppercase()), [0x41, 0x42, 0x43]);
+    }
+
+    #[test]
+    fn well_formed_strings_replace_only_unpaired_surrogates() {
+        assert_eq!(
+            code_units(&Utf16View::Utf16(&[0xD800, 0xD83D, 0xDE00, 0xDC00]).to_well_formed()),
+            [0xFFFD, 0xD83D, 0xDE00, 0xFFFD]
+        );
+        assert!(!Utf16View::Utf16(&[0xD800]).validate() && Utf16View::Utf16(&[0xD83D, 0xDE00]).validate());
+    }
+
+    #[test]
+    fn the_builder_encodes_supplementary_code_points_as_surrogate_pairs() {
+        let mut builder = Utf16StringBuilder::new();
+        builder.append_code_point(0x1F600);
+        builder.append_ascii("a");
+        builder.append_repeated(Utf16View::Ascii(b"bc"), 2);
+        assert_eq!(
+            code_units(&builder.to_utf16_string()),
+            [0xD83D, 0xDE00, 0x61, 0x62, 0x63, 0x62, 0x63]
+        );
+        assert!(Utf16View::of_string(&Utf16StringBuilder::new().to_utf16_string()).is_empty());
+    }
+
+    #[test]
+    fn trimming_and_searching_work_on_code_units() {
+        let view = Utf16View::Ascii(b"  ab  ");
+        assert_eq!(view.trim(&[0x20], TrimMode::Left), "ab  ");
+        assert_eq!(view.trim(&[0x20], TrimMode::Right), "  ab");
+        assert_eq!(view.trim(&[0x20], TrimMode::Both), "ab");
+        assert!(Utf16View::Ascii(b"   ").trim(&[0x20], TrimMode::Both).is_empty());
+        assert_eq!(view.find_code_unit_offset(Utf16View::Utf16(&[0x62]), 0), Some(3));
+        assert_eq!(view.find_code_unit_offset(Utf16View::Ascii(b"b"), 4), None);
+        assert_eq!(view.find_code_unit_offset(Utf16View::EMPTY, 6), Some(6));
+        assert_eq!(view.find_code_unit_offset(Utf16View::EMPTY, 7), None);
     }
 }

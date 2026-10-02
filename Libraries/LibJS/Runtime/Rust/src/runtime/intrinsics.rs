@@ -1825,15 +1825,15 @@ mod tests {
             thrown_message(|| call(&vm, proxy_constructor, Value::UNDEFINED, &[]))
                 .contains("ProxyConstructor::call, the [[Call]] of %Proxy%")
         );
-        let symbol_constructor = intrinsics.symbol_constructor(&vm);
+        let proxy_constructor = intrinsics.proxy_constructor();
         assert!(
             thrown_message(|| crate::runtime::abstract_operations::construct(
                 &vm,
-                symbol_constructor.upcast(),
+                proxy_constructor.upcast(),
                 &[],
                 None
             ))
-            .contains("SymbolConstructor::construct, the [[Construct]] of %Symbol%")
+            .contains("ProxyConstructor::construct, the [[Construct]] of %Proxy%")
         );
     }
 }
