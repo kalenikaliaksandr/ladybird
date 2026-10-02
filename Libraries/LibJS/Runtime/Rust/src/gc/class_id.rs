@@ -130,4 +130,5 @@ define_class_ids! {
     ReflectObject,
     // Reserved for Date, whose [[DateValue]] slot Object.prototype.toString already recognizes by its class.
     Date,
+    ArrayIterator,
 }

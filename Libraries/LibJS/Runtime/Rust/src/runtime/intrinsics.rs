@@ -1070,18 +1070,18 @@ impl Intrinsics {
                 == self.generator_function_prototype_property_offset.get()
         );
 
-        // NB: Array.prototype.values, Date.now, JSON.parse and JSON.stringify come with their builtins; until a realm
-        //     has them, their intrinsic accessors stop the process.
-        let array_prototype_values = self.array_prototype(vm).get_without_side_effects(vm, &names.values);
-        if array_prototype_values.is_function() {
-            self.array_prototype_values_function
-                .set(Some(array_prototype_values.as_function()));
-        }
+        self.array_prototype_values_function.set(Some(
+            self.array_prototype(vm)
+                .get_without_side_effects(vm, &names.values)
+                .as_function(),
+        ));
         self.object_prototype_to_string_function.set(Some(
             self.object_prototype(vm)
                 .get_without_side_effects(vm, &names.toString)
                 .as_function(),
         ));
+        // NB: Date.now, JSON.parse and JSON.stringify come with their builtins; until a realm has them, their
+        //     intrinsic accessors stop the process.
 
         assert!(self.array_prototype(vm).indexed_array_like_size() == 0);
         assert!(self.object_prototype(vm).indexed_array_like_size() == 0);
