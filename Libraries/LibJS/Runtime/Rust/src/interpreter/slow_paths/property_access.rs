@@ -1245,29 +1245,29 @@ pub fn try_put_by_id_cache(vm: &Vm, instruction: &op::PutById, values: &op::PutB
     let executable = vm.current_executable();
     let cache = executable.property_lookup_cache(instruction.cache as usize);
 
-    for entry in cache.entries_for_shape(object.shape()).as_slice() {
-        match entry.entry_type {
+    for entry in cache.entry_slots_for_shape(object.shape()) {
+        match entry.entry_type.get() {
             PropertyLookupCacheEntryType::ChangeOwnProperty => {
-                let Some(cached_shape) = entry.shape else {
+                let Some(cached_shape) = entry.shape.get() else {
                     continue;
                 };
                 if cached_shape != object.shape() {
                     continue;
                 }
                 if cached_shape.is_dictionary()
-                    && cached_shape.dictionary_generation() != entry.shape_dictionary_generation
+                    && cached_shape.dictionary_generation() != entry.shape_dictionary_generation.get()
                 {
                     continue;
                 }
-                let current = object.get_direct(entry.property_offset);
-                if current.is_accessor() || !entry.writes_data_property {
+                let current = object.get_direct(entry.property_offset.get());
+                if current.is_accessor() || !entry.writes_data_property.get() {
                     return false;
                 }
-                object.put_direct(entry.property_offset, value);
+                object.put_direct(entry.property_offset.get(), value);
                 return true;
             }
             PropertyLookupCacheEntryType::AddOwnProperty => {
-                if entry.from_shape != Some(object.shape()) {
+                if entry.from_shape.get() != Some(object.shape()) {
                     continue;
                 }
                 if !object_can_cache_property_additions(&object) {
@@ -1278,25 +1278,26 @@ pub fn try_put_by_id_cache(vm: &Vm, instruction: &op::PutById, values: &op::PutB
                 {
                     continue;
                 }
-                let Some(cached_shape) = entry.shape else {
+                let Some(cached_shape) = entry.shape.get() else {
                     continue;
                 };
                 if !object.extensible() {
                     continue;
                 }
                 if cached_shape.is_dictionary()
-                    && object.shape().dictionary_generation() != entry.shape_dictionary_generation
+                    && object.shape().dictionary_generation() != entry.shape_dictionary_generation.get()
                 {
                     continue;
                 }
                 if entry
                     .prototype_chain_validity
+                    .get()
                     .is_some_and(|validity| !validity.is_valid())
                 {
                     continue;
                 }
                 object.unsafe_set_shape(cached_shape);
-                object.put_direct(entry.property_offset, value);
+                object.put_direct(entry.property_offset.get(), value);
                 return true;
             }
             _ => continue,
@@ -1314,20 +1315,22 @@ pub fn try_get_by_id_cache(base: Value, cache: &PropertyLookupCache) -> Value {
     let object = base.as_object();
     let shape = object.shape();
 
-    for entry in cache.entries_for_shape(shape).as_slice() {
-        if entry.entry_type == PropertyLookupCacheEntryType::GetMissingProperty {
+    for entry in cache.entry_slots_for_shape(shape) {
+        let entry_type = entry.entry_type.get();
+        if entry_type == PropertyLookupCacheEntryType::GetMissingProperty {
             if !object.is_cacheable_for_property_absence() {
                 continue;
             }
-            if Some(shape) != entry.shape {
+            if Some(shape) != entry.shape.get() {
                 continue;
             }
-            if shape.is_dictionary() && shape.dictionary_generation() != entry.shape_dictionary_generation {
+            if shape.is_dictionary() && shape.dictionary_generation() != entry.shape_dictionary_generation.get() {
                 continue;
             }
             if shape.prototype().is_some()
                 && !entry
                     .prototype_chain_validity
+                    .get()
                     .is_some_and(|validity| validity.is_valid())
             {
                 continue;
@@ -1335,35 +1338,36 @@ pub fn try_get_by_id_cache(base: Value, cache: &PropertyLookupCache) -> Value {
             return Value::UNDEFINED;
         }
 
-        if entry.entry_type != PropertyLookupCacheEntryType::GetOwnProperty
-            && entry.entry_type != PropertyLookupCacheEntryType::GetPropertyInPrototypeChain
+        if entry_type != PropertyLookupCacheEntryType::GetOwnProperty
+            && entry_type != PropertyLookupCacheEntryType::GetPropertyInPrototypeChain
         {
             continue;
         }
 
-        if let Some(cached_prototype) = entry.prototype {
-            if Some(shape) != entry.shape {
+        if let Some(cached_prototype) = entry.prototype.get() {
+            if Some(shape) != entry.shape.get() {
                 continue;
             }
-            if shape.is_dictionary() && shape.dictionary_generation() != entry.shape_dictionary_generation {
+            if shape.is_dictionary() && shape.dictionary_generation() != entry.shape_dictionary_generation.get() {
                 continue;
             }
             if !entry
                 .prototype_chain_validity
+                .get()
                 .is_some_and(|validity| validity.is_valid())
             {
                 continue;
             }
-            let value = cached_prototype.get_direct(entry.property_offset);
+            let value = cached_prototype.get_direct(entry.property_offset.get());
             if value.is_accessor() {
                 return Value::EMPTY;
             }
             return value;
-        } else if Some(shape) == entry.shape {
-            if shape.is_dictionary() && shape.dictionary_generation() != entry.shape_dictionary_generation {
+        } else if Some(shape) == entry.shape.get() {
+            if shape.is_dictionary() && shape.dictionary_generation() != entry.shape_dictionary_generation.get() {
                 continue;
             }
-            let value = object.get_direct(entry.property_offset);
+            let value = object.get_direct(entry.property_offset.get());
             if value.is_accessor() {
                 return Value::EMPTY;
             }
