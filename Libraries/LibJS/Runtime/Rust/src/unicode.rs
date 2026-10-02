@@ -16,6 +16,7 @@ use crate::utf16::Utf16View;
 pub mod calendar;
 pub mod display_names;
 pub mod intl;
+pub mod number_format;
 pub mod time_zone;
 
 #[repr(C)]
