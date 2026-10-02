@@ -2560,7 +2560,8 @@ mod operator_tests {
 
     fn create_operands<'vm>(vm: &'vm Vm, test_realm: &TestRealm<'_>) -> MarkedVec<'vm, Value> {
         let symbol = Symbol::create(vm, Some(Utf16String::from_utf8("s")), symbol::Kind::Unique);
-        let object = test_realm.object();
+        // Like the oracle's operand, an object without toString or valueOf.
+        let object = Object::create(vm, test_realm.realm, None);
         let operands = MarkedVec::new(vm);
         for (descriptor, _) in OPERANDS {
             operands.push(operand(vm, symbol, object, descriptor));
