@@ -1574,10 +1574,8 @@ mod tests {
         assert!(math_object::pow_impl(&vm, int(2), Value::from_f64(0.5)).must() == Value::from_f64(2f64.sqrt()));
         let character = string_constructor::from_char_code_impl(&vm, Value::from_f64(65.0 + 65536.0)).must();
         assert_eq!(string_of(character), "A");
-        assert!(
-            thrown_message(math_object::random_impl).contains("MathObject::random_impl"),
-            "Math.random stops the process until it has a generator"
-        );
+        let random = math_object::random_impl();
+        assert!(random.is_number() && (0.0..1.0).contains(&random.as_f64()));
     }
 
     /// A running frame whose executable has `strings` in its string table, with `lexical_environment` or the global

@@ -13,6 +13,20 @@ use core::fmt::Write;
 /// leading plus allowed and no "inf" or "nan", and requires the whole string to be consumed. Both fast_float and
 /// Rust's parser round correctly, so only the grammar has to be checked here.
 pub fn parse_number_f64(code_units: &[u16]) -> Option<f64> {
+    let result = parse_first_number_f64(code_units)?;
+    (result.characters_parsed == code_units.len()).then_some(result.value)
+}
+
+/// AK::ParseFirstNumberResult<double>.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParseFirstNumberResult {
+    pub value: f64,
+    pub characters_parsed: usize,
+}
+
+/// AK::parse_first_number<double>(string, TrimWhitespace::No): the longest prefix that fast_float parses, which has
+/// to start the string. Out-of-range values become infinities and zeros, as AK lets them.
+pub fn parse_first_number_f64(code_units: &[u16]) -> Option<ParseFirstNumberResult> {
     let is_digit_at = |index: usize| {
         code_units
             .get(index)
@@ -60,15 +74,14 @@ pub fn parse_number_f64(code_units: &[u16]) -> Option<f64> {
         }
     }
 
-    if index != code_units.len() {
-        return None;
-    }
-
-    let text: String = code_units
+    let text: String = code_units[..index]
         .iter()
         .map(|code_unit| char::from(*code_unit as u8))
         .collect();
-    text.parse::<f64>().ok()
+    Some(ParseFirstNumberResult {
+        value: text.parse::<f64>().ok()?,
+        characters_parsed: index,
+    })
 }
 
 fn is_ascii_digit(code_unit: u16) -> bool {
