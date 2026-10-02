@@ -134,6 +134,8 @@ use crate::runtime::temporal::plain_time_prototype::PlainTimePrototype;
 use crate::runtime::temporal::plain_year_month_constructor::PlainYearMonthConstructor;
 use crate::runtime::temporal::plain_year_month_prototype::PlainYearMonthPrototype;
 use crate::runtime::temporal::temporal::Temporal;
+use crate::runtime::temporal::zoned_date_time_constructor::ZonedDateTimeConstructor;
+use crate::runtime::temporal::zoned_date_time_prototype::ZonedDateTimePrototype;
 use crate::runtime::typed_array::{
     BigInt64ArrayConstructor, BigInt64ArrayPrototype, BigUint64ArrayConstructor, BigUint64ArrayPrototype,
     Float16ArrayConstructor, Float16ArrayPrototype, Float32ArrayConstructor, Float32ArrayPrototype,
@@ -717,6 +719,7 @@ initialize_builtin_function_types! {
     initialize_temporal_plain_month_day: temporal_plain_month_day_prototype: PlainMonthDayPrototype, temporal_plain_month_day_constructor: PlainMonthDayConstructor, PlainMonthDay;
     initialize_temporal_plain_time: temporal_plain_time_prototype: PlainTimePrototype, temporal_plain_time_constructor: PlainTimeConstructor, PlainTime;
     initialize_temporal_plain_year_month: temporal_plain_year_month_prototype: PlainYearMonthPrototype, temporal_plain_year_month_constructor: PlainYearMonthConstructor, PlainYearMonth;
+    initialize_temporal_zoned_date_time: temporal_zoned_date_time_prototype: ZonedDateTimePrototype, temporal_zoned_date_time_constructor: ZonedDateTimeConstructor, ZonedDateTime;
 }
 
 /// Intrinsics::initialize_snake_name() for the typed arrays, whose prototypes and constructors extend %TypedArray%'s.
@@ -783,7 +786,6 @@ unimplemented_builtin_types! {
     initialize_intl_number_format => "Intl.NumberFormat",
     initialize_intl_plural_rules => "Intl.PluralRules",
     initialize_intl_relative_time_format => "Intl.RelativeTimeFormat",
-    initialize_temporal_zoned_date_time => "Temporal.ZonedDateTime",
 }
 
 /// The lazy accessors of the namespace objects, which create the object the first time it is asked for, as the C++
