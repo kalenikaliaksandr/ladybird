@@ -134,4 +134,6 @@ define_class_ids! {
     MathObject,
     JSONObject,
     RawJSONObject,
+    StringIterator,
+    GlobalSymbolRegistry,
 }

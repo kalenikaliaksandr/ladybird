@@ -17,6 +17,28 @@ pub const MAX_SHORT_STRING_BYTE_COUNT: usize = size_of::<usize>() - 1;
 /// Mirrors AK::Detail::Utf16StringData::Flag::IsFlyString.
 const IS_FLY_STRING_FLAG: u32 = 1 << 2;
 
+/// Mirrors AK::Span::index_of(): finds where `needle` first occurs in `haystack` at or after `start_offset`, comparing
+/// the whole needle only where `find_first` finds its first element. The needle must be non-empty and fit in the
+/// haystack after `start_offset`.
+fn find_subslice<T: Copy + PartialEq>(
+    haystack: &[T],
+    needle: &[T],
+    start_offset: usize,
+    find_first: impl Fn(&[T], T) -> Option<usize>,
+) -> Option<usize> {
+    let (&first, rest) = needle.split_first().expect("the needle is not empty");
+    let last_possible_offset = haystack.len() - needle.len();
+    let mut offset = start_offset;
+    while offset <= last_possible_offset {
+        offset += find_first(&haystack[offset..=last_possible_offset], first)?;
+        if haystack[offset + 1..offset + needle.len()] == *rest {
+            return Some(offset);
+        }
+        offset += 1;
+    }
+    None
+}
+
 /// Mirrors AK::Utf16View: a borrowed run of UTF-16 code units, stored either as ASCII bytes or as UTF-16.
 #[derive(Clone, Copy, Debug)]
 pub enum Utf16View<'a> {
@@ -179,6 +201,204 @@ impl<'a> Utf16View<'a> {
         }
 
         self.length_in_code_units() < other.length_in_code_units()
+    }
+
+    pub fn starts_with(self, prefix: Utf16View<'_>) -> bool {
+        prefix.length_in_code_units() <= self.length_in_code_units()
+            && self.substring_view(0, prefix.length_in_code_units()) == prefix
+    }
+
+    /// Mirrors AK::Utf16View::find_code_unit_offset(Utf16View const&, size_t): the first offset at or after
+    /// `start_offset` where `needle` occurs, which an empty needle does at `start_offset` itself unless that is past
+    /// the end.
+    pub fn find_code_unit_offset(self, needle: Utf16View<'_>, start_offset: usize) -> Option<usize> {
+        let needle_length = needle.length_in_code_units();
+        let maximum_offset = start_offset.checked_add(needle_length)?;
+        if maximum_offset > self.length_in_code_units() {
+            return None;
+        }
+
+        if needle_length == 0 {
+            return Some(start_offset);
+        }
+
+        let last_possible_offset = self.length_in_code_units() - needle_length;
+        match (self, needle) {
+            (Self::Ascii(haystack), Utf16View::Ascii(needle)) => {
+                find_subslice(haystack, needle, start_offset, |candidates, first_byte| {
+                    // SAFETY: The pointer and length describe the candidates slice.
+                    let found =
+                        unsafe { libc::memchr(candidates.as_ptr().cast(), first_byte.into(), candidates.len()) };
+                    (!found.is_null()).then(|| found as usize - candidates.as_ptr() as usize)
+                })
+            }
+            (Self::Utf16(haystack), Utf16View::Utf16(needle)) => {
+                find_subslice(haystack, needle, start_offset, |candidates, first_code_unit| {
+                    candidates.iter().position(|&code_unit| code_unit == first_code_unit)
+                })
+            }
+            _ => (start_offset..=last_possible_offset)
+                .find(|&offset| self.substring_view(offset, needle_length) == needle),
+        }
+    }
+
+    /// Mirrors AK::Utf16View::validate(): whether the code units are well-formed UTF-16, without unpaired surrogates.
+    pub fn validate(self) -> bool {
+        match self {
+            Self::Ascii(_) => true,
+            Self::Utf16(units) => char::decode_utf16(units.iter().copied()).all(|decoded| decoded.is_ok()),
+        }
+    }
+
+    /// Mirrors AK::Utf16View::trim(): the view without the leading and/or trailing code units that are in
+    /// `code_units`.
+    pub fn trim(self, code_units: &[u16], mode: TrimMode) -> Self {
+        let mut substring_start = 0;
+        let mut substring_end = self.length_in_code_units();
+
+        if matches!(mode, TrimMode::Left | TrimMode::Both) {
+            while substring_start < substring_end && code_units.contains(&self.code_unit_at(substring_start)) {
+                substring_start += 1;
+            }
+        }
+
+        if matches!(mode, TrimMode::Right | TrimMode::Both) {
+            while substring_end > substring_start && code_units.contains(&self.code_unit_at(substring_end - 1)) {
+                substring_end -= 1;
+            }
+        }
+
+        self.substring_view(substring_start, substring_end - substring_start)
+    }
+
+    /// Mirrors AK::Utf16String::to_well_formed(): the string with every unpaired surrogate replaced by U+FFFD.
+    pub fn to_well_formed(self) -> Utf16String {
+        let Self::Utf16(units) = self else {
+            return self.to_utf16_string();
+        };
+        let mut builder = Utf16StringBuilder::with_capacity(units.len());
+        for decoded in char::decode_utf16(units.iter().copied()) {
+            builder.append_code_point(decoded.map_or(u32::from(char::REPLACEMENT_CHARACTER), u32::from));
+        }
+        builder.to_utf16_string()
+    }
+
+    /// Mirrors AK::Utf16String::to_lowercase() without a locale, which LibUnicode implements with ICU's full case
+    /// mapping in the default locale.
+    pub fn to_lowercase(self) -> Utf16String {
+        if let Self::Ascii(units) = self {
+            return Utf16String::from_ascii_with(units.len(), |storage| {
+                for (byte, unit) in storage.iter_mut().zip(units) {
+                    *byte = unit.to_ascii_lowercase();
+                }
+            });
+        }
+        crate::unicode::apply_case_mapping(self, crate::unicode::CaseMapping::Lowercase, None, false)
+    }
+
+    /// Mirrors AK::Utf16String::to_uppercase() without a locale, which LibUnicode implements with ICU's full case
+    /// mapping in the default locale.
+    pub fn to_uppercase(self) -> Utf16String {
+        if let Self::Ascii(units) = self {
+            return Utf16String::from_ascii_with(units.len(), |storage| {
+                for (byte, unit) in storage.iter_mut().zip(units) {
+                    *byte = unit.to_ascii_uppercase();
+                }
+            });
+        }
+        crate::unicode::apply_case_mapping(self, crate::unicode::CaseMapping::Uppercase, None, false)
+    }
+}
+
+/// Mirrors AK::TrimMode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrimMode {
+    Left,
+    Right,
+    Both,
+}
+
+pub const HIGH_SURROGATE_MIN: u16 = 0xd800;
+pub const HIGH_SURROGATE_MAX: u16 = 0xdbff;
+pub const LOW_SURROGATE_MIN: u16 = 0xdc00;
+pub const LOW_SURROGATE_MAX: u16 = 0xdfff;
+pub const FIRST_SUPPLEMENTARY_PLANE_CODE_POINT: u32 = 0x10000;
+
+pub fn is_unicode_surrogate(code_unit: u16) -> bool {
+    (HIGH_SURROGATE_MIN..=LOW_SURROGATE_MAX).contains(&code_unit)
+}
+
+pub fn is_utf16_high_surrogate(code_unit: u16) -> bool {
+    (HIGH_SURROGATE_MIN..=HIGH_SURROGATE_MAX).contains(&code_unit)
+}
+
+pub fn is_utf16_low_surrogate(code_unit: u16) -> bool {
+    (LOW_SURROGATE_MIN..=LOW_SURROGATE_MAX).contains(&code_unit)
+}
+
+pub fn decode_utf16_surrogate_pair(high_surrogate: u16, low_surrogate: u16) -> u32 {
+    (u32::from(high_surrogate - HIGH_SURROGATE_MIN) << 10)
+        + u32::from(low_surrogate - LOW_SURROGATE_MIN)
+        + FIRST_SUPPLEMENTARY_PLANE_CODE_POINT
+}
+
+/// Mirrors AK::Utf16StringBuilder: collects code units, and builds a string with ASCII storage when all of them are
+/// ASCII.
+#[derive(Default)]
+pub struct Utf16StringBuilder {
+    code_units: Vec<u16>,
+}
+
+impl Utf16StringBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            code_units: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.code_units.is_empty()
+    }
+
+    pub fn append(&mut self, view: Utf16View<'_>) {
+        view.append_to(&mut self.code_units);
+    }
+
+    pub fn append_ascii(&mut self, ascii: &str) {
+        debug_assert!(ascii.is_ascii());
+        self.code_units.extend(ascii.bytes().map(u16::from));
+    }
+
+    pub fn append_code_unit(&mut self, code_unit: u16) {
+        self.code_units.push(code_unit);
+    }
+
+    /// Appends UTF16EncodeCodePoint(`code_point`), as AK::UnicodeUtils::code_point_to_utf16 encodes it.
+    pub fn append_code_point(&mut self, code_point: u32) {
+        assert!(code_point <= 0x10ffff);
+        if code_point < FIRST_SUPPLEMENTARY_PLANE_CODE_POINT {
+            self.code_units.push(code_point as u16);
+            return;
+        }
+        let code_point = code_point - FIRST_SUPPLEMENTARY_PLANE_CODE_POINT;
+        self.code_units.push(HIGH_SURROGATE_MIN | (code_point >> 10) as u16);
+        self.code_units.push(LOW_SURROGATE_MIN | (code_point & 0x3ff) as u16);
+    }
+
+    pub fn append_repeated(&mut self, view: Utf16View<'_>, count: usize) {
+        self.code_units
+            .reserve(view.length_in_code_units().saturating_mul(count));
+        for _ in 0..count {
+            view.append_to(&mut self.code_units);
+        }
+    }
+
+    pub fn to_utf16_string(&self) -> Utf16String {
+        Utf16String::from_utf16(&self.code_units)
     }
 }
 

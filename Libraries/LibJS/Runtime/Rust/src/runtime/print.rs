@@ -22,6 +22,7 @@ use crate::runtime::native_function::NativeFunction;
 use crate::runtime::number_object::NumberObject;
 use crate::runtime::property_key::PropertyKey;
 use crate::runtime::shared_function_instance_data::FunctionKind;
+use crate::runtime::string_object::StringObject;
 use crate::utf16::Utf16View;
 
 /// Where and how to print. A Vec<u8> stream stands in for the StringBuilder C++ can print into.
@@ -311,6 +312,20 @@ fn is_error_prototype_of_its_realm(vm: &Vm, prototype: Gc<Object>) -> bool {
     prototype == prototype.shape().realm().intrinsics().error_prototype(vm)
 }
 
+fn print_string_object(
+    print_context: &mut PrintContext<'_>,
+    string_object: Gc<StringObject>,
+    seen_objects: &mut SeenObjects<'_>,
+) -> io::Result<()> {
+    print_type(print_context, "String")?;
+    js_out(print_context, " ")?;
+    print_value(
+        print_context,
+        Value::from_string(string_object.primitive_string()),
+        seen_objects,
+    )
+}
+
 fn print_value(
     print_context: &mut PrintContext<'_>,
     value: Value,
@@ -363,7 +378,10 @@ fn print_value(
         if let Some(number_object) = object.downcast::<NumberObject>() {
             return print_number_object(print_context, number_object, seen_objects);
         }
-        // NB: Then come StringObject, Intl.DisplayNames, Intl.Locale, Intl.ListFormat, Intl.NumberFormat,
+        if let Some(string_object) = object.downcast::<StringObject>() {
+            return print_string_object(print_context, string_object, seen_objects);
+        }
+        // NB: Print.cpp then checks for Intl.DisplayNames, Intl.Locale, Intl.ListFormat, Intl.NumberFormat,
         //     Intl.DateTimeFormat, Intl.RelativeTimeFormat, Intl.PluralRules, Intl.Collator, Intl.Segmenter, Segments,
         //     Intl.DurationFormat, and Temporal.Duration, Temporal.Instant, Temporal.PlainDate, Temporal.PlainDateTime,
         //     Temporal.PlainMonthDay, Temporal.PlainTime, Temporal.PlainYearMonth and Temporal.ZonedDateTime.
