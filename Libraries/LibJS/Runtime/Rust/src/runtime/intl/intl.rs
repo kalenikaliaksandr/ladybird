@@ -76,14 +76,22 @@ impl Intl {
         object.define_intrinsic_accessor(vm, &names.DisplayNames, attr, |vm, realm| {
             Value::from_object(realm.intrinsics().intl_display_names_constructor(vm))
         });
-        // NB: Intl.DurationFormat comes with its builtins.
+        object.define_intrinsic_accessor(vm, &names.DurationFormat, attr, |vm, realm| {
+            Value::from_object(realm.intrinsics().intl_duration_format_constructor(vm))
+        });
         object.define_intrinsic_accessor(vm, &names.ListFormat, attr, |vm, realm| {
             Value::from_object(realm.intrinsics().intl_list_format_constructor(vm))
         });
         object.define_intrinsic_accessor(vm, &names.Locale, attr, |vm, realm| {
             Value::from_object(realm.intrinsics().intl_locale_constructor(vm))
         });
-        // NB: Intl.NumberFormat, Intl.PluralRules and Intl.RelativeTimeFormat come with their builtins.
+        object.define_intrinsic_accessor(vm, &names.NumberFormat, attr, |vm, realm| {
+            Value::from_object(realm.intrinsics().intl_number_format_constructor(vm))
+        });
+        object.define_intrinsic_accessor(vm, &names.PluralRules, attr, |vm, realm| {
+            Value::from_object(realm.intrinsics().intl_plural_rules_constructor(vm))
+        });
+        // NB: Intl.RelativeTimeFormat comes with its builtins.
         object.define_intrinsic_accessor(vm, &names.Segmenter, attr, |vm, realm| {
             Value::from_object(realm.intrinsics().intl_segmenter_constructor(vm))
         });
