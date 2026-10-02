@@ -318,4 +318,11 @@ define_class_ids! {
     DurationFormat,
     DurationFormatPrototype,
     DurationFormatConstructor,
+    DateTimeFormat,
+    DateTimeFormatPrototype,
+    DateTimeFormatConstructor,
+    DateTimeFormatFunction,
+    RelativeTimeFormat,
+    RelativeTimeFormatPrototype,
+    RelativeTimeFormatConstructor,
 }
