@@ -81,10 +81,23 @@ impl Vm {
     /// Throws a new error of `kind` with `message`.
     #[cold]
     pub fn throw_completion_with_message<T>(&self, kind: ErrorKind, message: String) -> ThrowCompletionOr<T> {
+        self.throw_completion_with_utf16_message(kind, Utf16String::from_utf8(&message))
+    }
+
+    /// Throws a new error of `kind` with `message`, for the messages that can hold any code unit of a string.
+    #[cold]
+    pub fn throw_completion_with_utf16_message<T>(
+        &self,
+        kind: ErrorKind,
+        message: Utf16String,
+    ) -> ThrowCompletionOr<T> {
         #[cfg(test)]
         if THROWS_STOP_THE_PROCESS_FOR_TESTS.with(core::cell::Cell::get) {
             crate::interpreter::runtime_functions::unimplemented_runtime_function(
-                &format!("creating a {kind:?} with the message \"{message}\""),
+                &format!(
+                    "creating a {kind:?} with the message \"{}\"",
+                    crate::utf16::Utf16View::of_string(&message).to_utf8()
+                ),
                 0,
             );
         }
@@ -95,7 +108,7 @@ impl Vm {
             self.current_realm()
         };
         let realm = realm.expect("an error is thrown in an execution context with a realm");
-        let completion = kind.create(self, realm, Utf16String::from_utf8(&message));
+        let completion = kind.create(self, realm, message);
         Err(Throw::new(Value::from_object(completion)))
     }
 }

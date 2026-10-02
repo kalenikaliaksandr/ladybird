@@ -70,6 +70,18 @@ pub fn max_js_string_length() -> usize {
     u32::MAX as usize
 }
 
+pub fn checked_js_string_length_sum(
+    vm: &Vm,
+    addend_a: usize,
+    addend_b: usize,
+    error_type: ErrorType,
+) -> ThrowCompletionOr<usize> {
+    match addend_a.checked_add(addend_b) {
+        Some(sum) if sum <= max_js_string_length() => Ok(sum),
+        _ => vm.throw_completion(ErrorKind::RangeError, error_type, &[]),
+    }
+}
+
 pub fn checked_js_string_length_product(
     vm: &Vm,
     factor_a: usize,
