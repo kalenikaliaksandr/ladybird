@@ -166,22 +166,10 @@ impl PropertyLookupCacheEntry {
         self.prototype_chain_validity.set(data.prototype_chain_validity);
     }
 
-    /// Forgets the cells of the entry that died in this collection, as clear_cache_entry_if_dead does.
-    fn clear_dead_cells(&self) {
-        if self.from_shape.get().is_some_and(cell_is_dead) {
-            self.from_shape.set(None);
-        }
-        if self.shape.get().is_some_and(cell_is_dead) {
-            self.shape.set(None);
-        }
-        if self.prototype.get().is_some_and(cell_is_dead) {
-            self.prototype.set(None);
-        }
-        if self.prototype_chain_validity.get().is_some_and(cell_is_dead) {
-            self.prototype_chain_validity.set(None);
-        }
-    }
-
+    /// Forgets the whole entry if one of its cells died in this collection.
+    /// NB: C++ clear_cache_entry_if_dead only nulls the cells that died. That leaves an entry for a property found on
+    ///     a prototype that died looking like an own property at the same offset, and an add-property entry whose
+    ///     prototype chain validity died looking like one with no prototype chain to validate.
     fn clear_if_it_has_a_dead_cell(&self) {
         if self.get().has_dead_cell() {
             self.set(PropertyLookupCacheEntryData::default());
@@ -532,7 +520,7 @@ impl PropertyLookupCache {
         }
 
         for entry in self.entries() {
-            entry.clear_dead_cells();
+            entry.clear_if_it_has_a_dead_cell();
         }
     }
 }
@@ -1069,7 +1057,7 @@ impl Executable {
             cache.remove_dead_entries();
         }
         for cache in &self.global_variable_caches {
-            cache.entry.clear_dead_cells();
+            cache.entry.clear_if_it_has_a_dead_cell();
         }
         for cache in &self.object_shape_caches {
             if cache.shape.get().is_some_and(cell_is_dead) {
@@ -1786,6 +1774,53 @@ mod tests {
         assert!(
             compared > 300,
             "only {compared} dumps were compared ({not_compiled_here} not compiled here)"
+        );
+    }
+
+    #[test]
+    fn property_lookup_cache_entries_with_a_dead_cell_are_forgotten() {
+        use crate::runtime::completion::Must;
+        use crate::runtime::error::test_scripts::{run_script, utf8};
+        use crate::utilities::initialize_realm;
+
+        let vm = crate::interpreter::vm::Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+
+        // A property found on a prototype that dies must not be read from the receiver at the cached offset.
+        let first_read = run_script(
+            &vm,
+            realm,
+            "var middle = Object.create({ x: 'inherited' }); var receiver = Object.create(middle); receiver.y = 'own'; \
+             function read(o) { return o.x; } read(receiver)",
+        )
+        .must();
+        assert_eq!(utf8(first_read), "inherited");
+        run_script(&vm, realm, "Object.setPrototypeOf(middle, null)").must();
+        vm.heap().collect_garbage();
+        assert_eq!(utf8(run_script(&vm, realm, "read(receiver)").must()), "undefined");
+
+        // Adding a property must not skip a setter defined on the prototype chain after the add was cached, even
+        // once the old prototype chain validity died.
+        run_script(
+            &vm,
+            realm,
+            "var base = {}; var proto = Object.create(base); var keepFromShape = Object.create(proto); \
+             function make() { var o = Object.create(proto); o.x = 1; return o; } var keepToShape = make(); \
+             var setterCalls = 0; Object.defineProperty(base, 'x', { set(v) { ++setterCalls; } })",
+        )
+        .must();
+        vm.heap().collect_garbage();
+        assert_eq!(
+            utf8(
+                run_script(
+                    &vm,
+                    realm,
+                    "var o = make(); [setterCalls, Object.hasOwn(o, 'x')].join()"
+                )
+                .must()
+            ),
+            "1,false"
         );
     }
 }
