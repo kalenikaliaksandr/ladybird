@@ -1004,7 +1004,9 @@ fn ladybird_main(arguments: &[String]) -> c_int {
     //     runtime prints none of.
     set_dump_bytecode(options.dump_bytecode);
 
-    let vm = Vm::create();
+    // NB: Like the VM of the C++ js, which is NeverDestroyed, this one lives until the process exits, so that exiting does
+    //     not first destroy every cell of the heap.
+    let vm: &'static Vm = Box::leak(Vm::create());
     vm.set_dynamic_imports_allowed(true);
 
     if options.debug {
@@ -1033,14 +1035,14 @@ fn ladybird_main(arguments: &[String]) -> c_int {
     }
 
     let root_execution_context = if options.use_test262_global {
-        initialize_realm_with_global_object(&vm, &|realm| Test262GlobalObject::allocate(&vm, realm).upcast())
+        initialize_realm_with_global_object(vm, &|realm| Test262GlobalObject::allocate(vm, realm).upcast())
     } else {
-        initialize_realm_with_global_object(&vm, &|realm| ScriptObject::allocate(&vm, realm).upcast())
+        initialize_realm_with_global_object(vm, &|realm| ScriptObject::allocate(vm, realm).upcast())
     };
 
     let realm = root_execution_context.realm();
-    let console_object = realm.intrinsics().console_object(&vm);
-    let console_client = ReplConsoleClient::create(&vm, console_object.console());
+    let console_object = realm.intrinsics().console_object(vm);
+    let console_client = ReplConsoleClient::create(vm, console_object.console());
     console_object.console().set_client(console_client.upcast());
     vm.heap()
         .set_should_collect_on_every_allocation(options.gc_on_every_allocation);
@@ -1075,7 +1077,7 @@ fn ladybird_main(arguments: &[String]) -> c_int {
 
     // We resolve modules as if it is the first file
 
-    if !parse_and_run(&vm, realm, &options, &builder, source_name) {
+    if !parse_and_run(vm, realm, &options, &builder, source_name) {
         return 1;
     }
 
