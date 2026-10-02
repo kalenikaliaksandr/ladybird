@@ -3715,13 +3715,26 @@ impl Object {
 
     // For FunctionPrototype.apply fast path
     pub fn indexed_packed_elements<'vm>(&self, vm: &'vm Vm) -> MarkedVec<'vm, Value> {
-        assert!(self.indexed_storage_kind() == IndexedStorageKind::Packed);
-        let count = self.indexed_packed_element_count();
+        let count = self.indexed_packed_elements_span_size();
         let elements = MarkedVec::with_capacity(vm, count as usize);
         for index in 0..count {
             elements.push(self.indexed_element(index));
         }
         elements
+    }
+
+    /// The size of indexed_packed_elements_span() in C++, which only packed storage has.
+    pub fn indexed_packed_elements_span_size(&self) -> u32 {
+        assert!(self.indexed_storage_kind() == IndexedStorageKind::Packed);
+        self.indexed_packed_element_count()
+    }
+
+    /// Copies the first elements of packed storage into `destination`.
+    pub fn copy_indexed_packed_elements(&self, destination: &mut [Value]) {
+        assert!(destination.len() <= self.indexed_packed_elements_span_size() as usize);
+        for (index, element) in destination.iter_mut().enumerate() {
+            *element = self.indexed_element(index as u32);
+        }
     }
 
     /// Writes one element of packed storage in place, as C++ writes through the span of
