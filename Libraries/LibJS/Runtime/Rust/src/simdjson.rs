@@ -63,7 +63,11 @@ fn find_structural_indexes(buffer: &[u8], length: usize) -> SimdjsonResult<Vec<u
     let mut follows_nonquote_scalar = false;
     let mut unescaped_chars_error = false;
 
-    for (index, &character) in buffer[..length].iter().enumerate() {
+    let text = &buffer[..length];
+    let mut index = 0;
+    while index < length {
+        let character = text[index];
+
         // A backslash escapes the byte after it, inside strings or not, unless it is escaped itself.
         let escaped = is_escaped;
         is_escaped = character == b'\\' && !escaped;
@@ -86,6 +90,17 @@ fn find_structural_indexes(buffer: &[u8], length: usize) -> SimdjsonResult<Vec<u
             structural_indexes.push(index as u32);
         }
         follows_nonquote_scalar = is_scalar && !is_quote;
+        index += 1;
+
+        // NB: Inside a string, a byte other than a quote, a backslash or a control character changes nothing above:
+        //     it is not structural, escapes nothing and is no error, and the closing quote decides what follows the
+        //     string. So the loop skips such bytes without tracking that state for each of them.
+        if in_string && !is_escaped {
+            index += text[index..]
+                .iter()
+                .position(|&character| character == b'"' || character == b'\\' || character <= 0x1F)
+                .unwrap_or(length - index);
+        }
     }
 
     if in_string {
@@ -775,6 +790,67 @@ mod tests {
         let mut indexes = find_structural_indexes(&buffer, text.len())?;
         indexes.truncate(indexes.len() - 3);
         Ok(indexes)
+    }
+
+    /// The structural indexer without the runs it skips, one byte at a time.
+    fn structurals_byte_by_byte(text: &[u8]) -> SimdjsonResult<Vec<u32>> {
+        let mut structural_indexes = Vec::new();
+        let mut in_string = false;
+        let mut is_escaped = false;
+        let mut follows_nonquote_scalar = false;
+        let mut unescaped_chars_error = false;
+        for (index, &character) in text.iter().enumerate() {
+            let escaped = is_escaped;
+            is_escaped = character == b'\\' && !escaped;
+            let is_quote = character == b'"' && !escaped;
+            if is_quote {
+                in_string = !in_string;
+            }
+            let is_in_string_tail = in_string != is_quote;
+            if in_string && character <= 0x1F {
+                unescaped_chars_error = true;
+            }
+            let is_whitespace = matches!(character, b' ' | b'\t' | b'\n' | b'\r');
+            let is_operator = matches!(character, b'{' | b'}' | b'[' | b']' | b',' | b':');
+            let is_scalar = !is_whitespace && !is_operator;
+            if (is_operator || (is_scalar && !follows_nonquote_scalar)) && !is_in_string_tail {
+                structural_indexes.push(index as u32);
+            }
+            follows_nonquote_scalar = is_scalar && !is_quote;
+        }
+        if in_string {
+            return Err(ErrorCode::UnclosedString);
+        }
+        if unescaped_chars_error {
+            return Err(ErrorCode::UnescapedChars);
+        }
+        if structural_indexes.is_empty() {
+            return Err(ErrorCode::Empty);
+        }
+        Ok(structural_indexes)
+    }
+
+    #[test]
+    fn stage1_finds_what_a_byte_by_byte_scan_finds() {
+        let alphabet = b"\"\\ \t\n{}[],:a1-.e\x01\x1f\xc3\xa9";
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        for _ in 0..20000 {
+            let length = next(24);
+            let text: Vec<u8> = (0..length).map(|_| alphabet[next(alphabet.len())]).collect();
+            let mut buffer = text.clone();
+            buffer.resize(text.len() + SIMDJSON_PADDING, 0);
+            let found = find_structural_indexes(&buffer, text.len()).map(|mut indexes| {
+                indexes.truncate(indexes.len() - 3);
+                indexes
+            });
+            assert_eq!(found, structurals_byte_by_byte(&text), "{text:?}");
+        }
     }
 
     #[test]
