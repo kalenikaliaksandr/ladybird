@@ -14,6 +14,7 @@ pub mod aggregate_error_prototype;
 pub mod arguments_object;
 pub mod array;
 pub mod array_constructor;
+pub mod array_iterator;
 pub mod array_iterator_prototype;
 pub mod array_prototype;
 pub mod async_from_sync_iterator_prototype;

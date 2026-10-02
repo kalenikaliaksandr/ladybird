@@ -603,16 +603,11 @@ mod tests {
     use super::*;
     use crate::bytecode::operand::{InstructionHeader, Operand};
     use crate::runtime::iterator::IteratorHint;
-    use crate::runtime::native_function::{RawNativeFunction, raw_native};
     use crate::runtime::realm::test_realm::{key, thrown_message};
-    use libjs_abi::Builtin;
 
-    /// The functions the scripts below share. ArrayPrototype is %Array.prototype%, which the runtime does not give
-    /// arrays an iterator method on yet, so the prelude installs one written in JavaScript.
+    /// The functions the scripts below share.
     const PRELUDE: &str = r#"
 var log = "";
-function arrayIterator() { return { array: this, index: 0, next: arrayIteratorNext }; }
-function arrayIteratorNext() { if (this.index < this.array.length) return { value: this.array[this.index++], done: false }; return { value: undefined, done: true }; }
 function show(array) { let s = "["; for (let i = 0; i < array.length; i++) { if (i > 0) s += ","; s += i in array ? "" + array[i] : "_"; } return s + "]"; }
 function makeIterable(limit, returnMethod) { let iterable = { limit: limit, returnMethod: returnMethod }; iterable[Symbol.iterator] = iterableIterator; return iterable; }
 function iterableIterator() { log += "I"; return { n: 0, limit: this.limit, next: counterNext, return: this.returnMethod }; }
@@ -643,7 +638,6 @@ function breakInFinally() { for (;;) { try { throw "x"; } finally { break; } } r
 function throwInFinally() { try { return 1; } finally { throw "f"; } }
 function nestedFinally() { let s = ""; for (let i = 0; i < 2; i++) { try { try { continue; } finally { s += "a" + i; } } finally { s += "b" + i; } } return s; }
 function returnThroughFinallyInForOf(iterable) { for (let x of iterable) { try { return x; } finally { log += "F"; } } }
-ArrayPrototype[Symbol.iterator] = arrayIterator;
 "#;
 
     /// What Build/release/bin/js -i -l printed for each script, run after the prelude with
@@ -867,49 +861,34 @@ ArrayPrototype[Symbol.iterator] = arrayIterator;
         let realm = script_realm.test_realm.realm;
         let names = &vm.names;
 
-        // The original %Array.prototype.values% of the test realm returns undefined, so spreading with it is only
-        // possible in bulk; %ArrayIteratorPrototype%.next is a stand-in with the builtin's identity.
-        let array_iterator_prototype = realm.array_iterator_prototype();
-        let next = RawNativeFunction::create(
-            &vm,
-            raw_native!(|_| Ok(Value::UNDEFINED)),
-            0,
-            &names.next,
-            Some(realm),
-            None,
-            Some(Builtin::ArrayIteratorPrototypeNext),
-        );
-        array_iterator_prototype.define_direct_property(&vm, &names.next, Value::from_object(next), DEFAULT_ATTRIBUTES);
-        let values_function = realm.array_prototype_values_function();
-        realm.array_prototype().define_direct_property(
-            &vm,
-            &PropertyKey::from(vm.well_known_symbols().iterator),
-            Value::from_object(values_function),
-            DEFAULT_ATTRIBUTES,
-        );
-
+        // With the original %Array.prototype.values% and %ArrayIteratorPrototype%.next, a packed array is appended in
+        // bulk, even to an array without indexed storage.
         let source = script_realm.test_realm.array(&[Value::from_i32(1), Value::from_i32(2)]);
-        let destination = script_realm.test_realm.array(&[Value::from_i32(0)]);
+        let destination = script_realm.test_realm.array(&[]);
+        assert_eq!(destination.indexed_storage_kind(), IndexedStorageKind::None);
         let mut values = op::ArrayAppendValues {
             dst: Value::from_object(destination),
             src: Value::from_object(source),
         };
         let control = array_append(&vm, 0, &array_append_instruction(true), &mut values);
         assert_eq!(control, SlowPathControl::continue_at(op::ArrayAppend::LENGTH));
-        assert_eq!(destination.indexed_array_like_size(), 3);
+        assert_eq!(destination.indexed_array_like_size(), 2);
         assert_eq!(destination.indexed_storage_kind(), IndexedStorageKind::Packed);
-        assert!(destination.get(&vm, &PropertyKey::from(2)).must() == Value::from_i32(2));
+        assert!(destination.get(&vm, &PropertyKey::from(1)).must() == Value::from_i32(2));
 
-        // A source with holes takes the iterator protocol, which calls the values function.
+        // A source with holes takes the iterator protocol, which reads the holes as undefined.
         source.indexed_put(3, Value::from_i32(3), DEFAULT_ATTRIBUTES);
         let mut values = op::ArrayAppendValues {
             dst: Value::from_object(destination),
             src: Value::from_object(source),
         };
-        let message = thrown_message(|| array_append(&vm, 0, &array_append_instruction(true), &mut values));
-        assert!(message.contains("is not iterable"), "{message}");
+        array_append(&vm, 0, &array_append_instruction(true), &mut values);
+        assert_eq!(destination.indexed_array_like_size(), 6);
+        assert!(destination.get(&vm, &PropertyKey::from(4)).must().is_undefined());
+        assert!(destination.get(&vm, &PropertyKey::from(5)).must() == Value::from_i32(3));
 
         // So does a source whose iterator prototype's next method is not the original one.
+        let array_iterator_prototype = realm.array_iterator_prototype();
         array_iterator_prototype.define_direct_property(&vm, &names.next, Value::UNDEFINED, DEFAULT_ATTRIBUTES);
         let packed_source = script_realm.test_realm.array(&[Value::from_i32(4)]);
         let mut values = op::ArrayAppendValues {
@@ -917,14 +896,14 @@ ArrayPrototype[Symbol.iterator] = arrayIterator;
             src: Value::from_object(packed_source),
         };
         let message = thrown_message(|| array_append(&vm, 0, &array_append_instruction(true), &mut values));
-        assert!(message.contains("is not iterable"), "{message}");
+        assert!(message.contains("is not a function"), "{message}");
 
         let mut values = op::ArrayAppendValues {
             dst: Value::from_object(destination),
             src: Value::EMPTY,
         };
         array_append(&vm, 0, &array_append_instruction(false), &mut values);
-        assert_eq!(destination.indexed_array_like_size(), 4);
+        assert_eq!(destination.indexed_array_like_size(), 7);
         assert_eq!(destination.indexed_storage_kind(), IndexedStorageKind::Holey);
     }
 

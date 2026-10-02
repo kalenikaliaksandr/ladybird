@@ -6,6 +6,8 @@
 
 use core::fmt;
 
+use crate::runtime::value::number_to_string;
+
 macro_rules! define_error_types {
     ($($name:ident => $format:literal,)*) => {
         /// The messages of the errors the runtime throws, as in Libraries/LibJS/Runtime/ErrorTypes.h. Each `{}` in a
@@ -297,6 +299,23 @@ impl ErrorType {
     }
 }
 
+/// A double as AK's Formatter<double> formats it into a message: the shortest digits that round-trip, laid out like
+/// Number::toString, except that zeros are "0" and the non-finite values are "nan", "inf" and "-inf".
+pub struct AkDouble(pub f64);
+
+impl fmt::Display for AkDouble {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = self.0;
+        if value.is_nan() {
+            return formatter.write_str("nan");
+        }
+        if value.is_infinite() {
+            return formatter.write_str(if value < 0.0 { "-inf" } else { "inf" });
+        }
+        formatter.write_str(&number_to_string(value))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +328,19 @@ mod tests {
             "Reflect.apply() needs 3 arguments"
         );
         assert_eq!(ErrorType::InvalidHint.message(&[&"x"]), "Invalid hint: \"x\"");
+    }
+
+    #[test]
+    fn doubles_are_formatted_like_ak_formats_them() {
+        let formatted = |value: f64| AkDouble(value).to_string();
+        assert_eq!(formatted(5.0), "5");
+        assert_eq!(formatted(-0.0), "0");
+        assert_eq!(formatted(2.5), "2.5");
+        assert_eq!(formatted(1e21), "1e+21");
+        assert_eq!(formatted(-1e21), "-1e+21");
+        assert_eq!(formatted(1.5e-7), "1.5e-7");
+        assert_eq!(formatted(f64::INFINITY), "inf");
+        assert_eq!(formatted(f64::NEG_INFINITY), "-inf");
+        assert_eq!(formatted(f64::NAN), "nan");
     }
 }
