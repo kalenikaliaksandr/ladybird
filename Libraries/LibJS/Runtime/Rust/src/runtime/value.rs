@@ -2770,7 +2770,7 @@ mod operator_tests {
 
     fn describe_script_outcome(vm: &Vm, realm: Gc<Realm>, source: &str) -> String {
         let code_units: Vec<u16> = source.encode_utf16().collect();
-        let script = Script::parse(vm, &code_units, realm).ok().expect("the script parses");
+        let script = Script::parse(vm, &code_units, realm).expect("the script parses");
         match vm.run_script(script, None) {
             Ok(value) => describe(value),
             Err(throw) => format!("!? threw {}", describe(throw.value())),

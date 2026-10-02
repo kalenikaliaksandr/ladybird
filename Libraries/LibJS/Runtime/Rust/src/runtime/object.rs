@@ -3988,7 +3988,7 @@ mod tests {
         {
             let a = test_realm.array(&[int(1), int(2)]);
             set(vm, &a, key("x"), int(1));
-            set(vm, &a, s.clone(), int(2));
+            set(vm, &a, s, int(2));
             lines.push(format!("9 {}", own_keys(vm, &a)));
         }
 

@@ -574,7 +574,6 @@ pub mod test_script_realm {
     use crate::runtime::print::{PrintContext, print};
     use crate::runtime::realm::test_realm::{TestRealm, key};
     use crate::script::Script;
-    use std::io::Write;
 
     pub struct ScriptRealm<'vm> {
         vm: &'vm Vm,

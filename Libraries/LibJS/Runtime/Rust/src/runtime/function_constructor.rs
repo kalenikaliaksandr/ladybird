@@ -361,10 +361,10 @@ fn compile_dynamic_function(
 #[cfg(all(test, libjs_runtime_tests_with_libgc))]
 mod tests {
     use crate::interpreter::vm::Vm;
-    use crate::layout::value::Value;
+
     use crate::runtime::completion::Must;
     use crate::runtime::error::test_scripts::{run_script, utf8};
-    use crate::runtime::native_function::{RawNativeFunction, raw_native};
+
     use crate::utilities::initialize_realm;
 
     /// What the C++ js binary computes for each script, run with -c.

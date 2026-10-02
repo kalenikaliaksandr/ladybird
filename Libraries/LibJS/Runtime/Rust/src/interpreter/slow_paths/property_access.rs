@@ -1434,7 +1434,7 @@ mod tests {
     use crate::runtime::property_descriptor::PropertyDescriptor;
     use crate::runtime::realm::test_realm::{TestRealm, enumerable_keys, key, thrown_message};
     use crate::runtime::symbol::{Kind, Symbol};
-    use crate::script::Script;
+
     use crate::utf16::Utf16View;
 
     fn int(value: i32) -> Value {
@@ -1901,7 +1901,7 @@ mod tests {
                 .private_method_or_accessor_add(
                     &vm,
                     PrivateElement {
-                        key: m.clone(),
+                        key: m,
                         kind: PrivateElementKind::Method,
                         value: int(3),
                     },

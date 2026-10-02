@@ -2090,7 +2090,7 @@ mod tests {
         let test_realm = realm_with_global_object(&vm);
         let code_units: Vec<u16> = source.encode_utf16().collect();
         let script = Script::parse(&vm, &code_units, test_realm.realm).expect("the script parses");
-        let thrown = vm.run_script(script, None).err().expect("the script throws").value();
+        let thrown = vm.run_script(script, None).expect_err("the script throws").value();
         let error = thrown.as_object();
         let name = error.get(&vm, &key("name")).must();
         let message = error.get(&vm, &key("message")).must();

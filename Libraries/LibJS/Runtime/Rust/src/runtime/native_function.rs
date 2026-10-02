@@ -919,6 +919,7 @@ mod tests {
         let test_realm = TestRealm::with_function_intrinsics(&vm);
         let realm = test_realm.realm;
 
+        #[allow(clippy::unnecessary_wraps, reason = "raw native functions return a completion")]
         fn add(vm: &Vm) -> ThrowCompletionOr<Value> {
             Ok(Value::from_i32(vm.argument(0).as_i32() + vm.argument(1).as_i32()))
         }

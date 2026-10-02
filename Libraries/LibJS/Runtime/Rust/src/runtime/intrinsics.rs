@@ -1285,7 +1285,7 @@ mod tests {
     include!("../../oracle/intrinsics_table.rs");
 
     /// The intrinsics of INTRINSICS, by the names it gives them.
-    fn named_intrinsics<'vm>(vm: &'vm Vm, realm: Gc<Realm>) -> MarkedVec<'vm, (&'static str, Gc<Object>)> {
+    fn named_intrinsics(vm: &Vm, realm: Gc<Realm>) -> MarkedVec<'_, (&'static str, Gc<Object>)> {
         let intrinsics = realm.intrinsics();
         let named = MarkedVec::new(vm);
         let add = |name: &'static str, object: Gc<Object>| named.push((name, object));
@@ -1786,7 +1786,7 @@ mod tests {
             object_prototype
                 .class()
                 .object_methods
-                .is_some_and(|methods| !core::ptr::eq(methods, &ORDINARY_OBJECT_METHODS))
+                .is_some_and(|methods| !core::ptr::eq(methods, &raw const ORDINARY_OBJECT_METHODS))
         );
         assert!(object_prototype.internal_set_prototype_of(&vm, None).must());
         let other = Object::create(&vm, realm, None);
