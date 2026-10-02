@@ -18,13 +18,14 @@ use std::os::unix::fs::OpenOptionsExt;
 use ak::{Utf16FlyString, Utf16String};
 use libjs_runtime_macros::Trace;
 
+use crate::breakpoint::Breakpoint;
 use crate::console::{Console, ConsoleClient, ConsoleClientMethods, LogLevel, PrinterArguments};
 use crate::contrib::test262::global_object::Test262GlobalObject;
+use crate::debugger::{Debugger, PauseInfo, PauseReason, ResumeMode};
 use crate::gc::class::{GcCell, define_cell};
 use crate::gc::root::Root;
 use crate::hash_table::HashTable;
 use crate::interpreter::run::set_dump_bytecode;
-use crate::interpreter::runtime_functions::unimplemented_runtime_function;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
 use crate::layout::object::Object;
@@ -49,8 +50,9 @@ use crate::runtime::source_text_module::SourceTextModule;
 use crate::script::Script;
 use crate::source_code::SourceCode;
 use crate::standard_output::{self, StandardOutputWriter, UnbufferedWriter};
-use crate::utf16::{Utf16View, utf16_formatted, utf16_from_wtf8};
+use crate::utf16::{Utf16View, string_from_utf8_with_replacement_character, utf16_formatted, utf16_from_wtf8};
 use crate::utilities::initialize_realm_with_global_object;
+use crate::utilities::readline;
 use libjs_rust::ast::ProgramType;
 use libjs_rust::compile::parse;
 
@@ -587,6 +589,251 @@ impl ScriptObject {
 
 fn key(name: &str) -> PropertyKey {
     PropertyKey::from(Utf16FlyString::from_utf8(name))
+}
+
+fn debugger_pause_reason(reason: PauseReason) -> &'static str {
+    match reason {
+        PauseReason::Entry => "entry",
+        PauseReason::Breakpoint => "breakpoint",
+        PauseReason::DebuggerStatement => "debugger statement",
+        PauseReason::Exception => "exception",
+        PauseReason::Step => "step",
+    }
+}
+
+struct BreakpointLocation {
+    filename: Utf16String,
+    line: u32,
+    column: Option<u32>,
+}
+
+/// StringView::trim_whitespace()
+fn trim_whitespace(mut string: &[u8]) -> &[u8] {
+    const WHITESPACE: &[u8] = b" \n\t\x0b\x0c\r";
+    while let [first, rest @ ..] = string
+        && WHITESPACE.contains(first)
+    {
+        string = rest;
+    }
+    while let [rest @ .., last] = string
+        && WHITESPACE.contains(last)
+    {
+        string = rest;
+    }
+    string
+}
+
+/// StringView::to_number<u32>(), which takes decimal digits without a sign, between whitespace.
+fn to_number(string: &[u8]) -> Option<u32> {
+    let digits = trim_whitespace(string);
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    core::str::from_utf8(digits).ok()?.parse().ok()
+}
+
+fn breakpoint_filename(filename: &[u8], current_filename: Utf16View<'_>) -> Utf16String {
+    if !current_filename.is_empty()
+        && let Ok(filename) = core::str::from_utf8(filename)
+    {
+        let canonical_filename = lexical_path::canonicalized_path(filename);
+        let canonical_current_filename = lexical_path::canonicalized_path(&current_filename.to_utf8());
+        if canonical_filename == canonical_current_filename {
+            return current_filename.to_utf16_string();
+        }
+    }
+    Utf16String::from_utf8(&string_from_utf8_with_replacement_character(filename))
+}
+
+fn parse_breakpoint_location(input: &[u8], current_filename: Utf16View<'_>) -> Option<BreakpointLocation> {
+    let input = trim_whitespace(input);
+    if let Some(line) = to_number(input) {
+        if line == 0 {
+            return None;
+        }
+        return Some(BreakpointLocation {
+            filename: current_filename.to_utf16_string(),
+            line,
+            column: None,
+        });
+    }
+
+    let last_colon = input.iter().rposition(|&byte| byte == b':')?;
+
+    let final_component = to_number(&input[last_colon + 1..])?;
+
+    let prefix = &input[..last_colon];
+    if let Some(line) = to_number(prefix) {
+        if line == 0 {
+            return None;
+        }
+        return Some(BreakpointLocation {
+            filename: current_filename.to_utf16_string(),
+            line,
+            column: Some(final_component),
+        });
+    }
+
+    if let Some(preceding_colon) = prefix.iter().rposition(|&byte| byte == b':')
+        && let Some(line) = to_number(&prefix[preceding_colon + 1..])
+    {
+        let filename = &prefix[..preceding_colon];
+        if filename.is_empty() || line == 0 {
+            return None;
+        }
+        return Some(BreakpointLocation {
+            filename: breakpoint_filename(filename, current_filename),
+            line,
+            column: Some(final_component),
+        });
+    }
+
+    if prefix.is_empty() || final_component == 0 {
+        return None;
+    }
+    Some(BreakpointLocation {
+        filename: breakpoint_filename(prefix, current_filename),
+        line: final_component,
+        column: None,
+    })
+}
+
+fn print_breakpoint(debugger: &Debugger, breakpoint: &Breakpoint) {
+    let state = if debugger.is_breakpoint_resolved(breakpoint.id) {
+        "resolved"
+    } else {
+        "pending"
+    };
+    let mut line = format!("{}: ", breakpoint.id).into_bytes();
+    line.extend(Utf16View::of_string(&breakpoint.filename).to_wtf8());
+    match breakpoint.column {
+        Some(column) => line.extend_from_slice(format!(":{}:{column} ({state})", breakpoint.line).as_bytes()),
+        None => line.extend_from_slice(format!(":{} ({state})", breakpoint.line).as_bytes()),
+    }
+    standard_output::outln(&line);
+}
+
+fn print_debugger_help() {
+    standard_output::outln(b"Debugger commands:");
+    standard_output::outln(b"    .break <line>[:column]");
+    standard_output::outln(b"    .break <file>:<line>[:column]");
+    standard_output::outln(b"    .breakpoints");
+    standard_output::outln(b"    .continue");
+    standard_output::outln(b"    .delete <id>");
+    standard_output::outln(b"    .help");
+}
+
+/// warnln() of bytes that need not be UTF-8.
+fn warn_bytes_line(bytes: &[u8]) {
+    let mut line = bytes.to_vec();
+    line.push(b'\n');
+    let _ = io::stderr().write_all(&line);
+}
+
+fn run_debugger_prompt(vm: &Vm, pause_info: &PauseInfo) {
+    let debugger = vm.debugger().expect("execution pauses in the attached debugger");
+    let reason = debugger_pause_reason(pause_info.reason);
+    if let Some(range) = &pause_info.source_range {
+        let filename = Utf16View::of_string(range.filename()).to_wtf8();
+        let mut line = Vec::new();
+        if range.start.line > 0 {
+            line.extend_from_slice(b"Paused at ");
+            line.extend(filename);
+            line.extend_from_slice(format!(":{}:{} ({reason})", range.start.line, range.start.column).as_bytes());
+        } else {
+            line.extend_from_slice(b"Paused in ");
+            line.extend(filename);
+            line.extend_from_slice(format!(" ({reason})").as_bytes());
+        }
+        standard_output::outln(&line);
+    } else {
+        standard_output::outln(
+            format!("Paused at bytecode offset {} ({reason})", pause_info.bytecode_offset).as_bytes(),
+        );
+    }
+
+    loop {
+        let Some(raw_line) = readline::read_line(c"(debug) ") else {
+            debugger.continue_execution(ResumeMode::Continue);
+            return;
+        };
+        let command = trim_whitespace(&raw_line);
+
+        if command == b".continue" {
+            debugger.continue_execution(ResumeMode::Continue);
+            return;
+        }
+
+        if command == b".help" {
+            print_debugger_help();
+            continue;
+        }
+
+        if command == b".breakpoints" {
+            let mut breakpoints = debugger.breakpoints();
+            if breakpoints.is_empty() {
+                standard_output::outln(b"No breakpoints.");
+                continue;
+            }
+            breakpoints.sort_by_key(|breakpoint| breakpoint.id);
+            for breakpoint in &breakpoints {
+                print_breakpoint(&debugger, breakpoint);
+            }
+            continue;
+        }
+
+        if let Some(location) = command.strip_prefix(b".break ") {
+            let current_filename = pause_info
+                .source_range
+                .as_ref()
+                .map_or(Utf16View::EMPTY, |source_range| {
+                    Utf16View::of_string(source_range.filename())
+                });
+
+            let location = parse_breakpoint_location(location, current_filename);
+            let Some(location) = location.filter(|location| !Utf16View::of_string(&location.filename).is_empty())
+            else {
+                eprintln!("Usage: .break <line>[:column] or .break <file>:<line>[:column]");
+                continue;
+            };
+
+            let breakpoint_id =
+                match debugger.add_breakpoint(Utf16View::of_string(&location.filename), location.line, location.column)
+                {
+                    Ok(breakpoint_id) => breakpoint_id,
+                    Err(error) => {
+                        eprintln!("Unable to set breakpoint: {error}");
+                        continue;
+                    }
+                };
+
+            let breakpoints = debugger.breakpoints();
+            let breakpoint = breakpoints
+                .iter()
+                .find(|breakpoint| breakpoint.id == breakpoint_id)
+                .expect("the debugger has the breakpoint it returned");
+            print_breakpoint(&debugger, breakpoint);
+            continue;
+        }
+
+        if let Some(breakpoint_id) = command.strip_prefix(b".delete ") {
+            let Some(breakpoint_id) = to_number(trim_whitespace(breakpoint_id)) else {
+                eprintln!("Usage: .delete <id>");
+                continue;
+            };
+            if !debugger.remove_breakpoint(breakpoint_id) {
+                eprintln!("No breakpoint with id {breakpoint_id}.");
+                continue;
+            }
+            standard_output::outln(format!("Deleted breakpoint {breakpoint_id}.").as_bytes());
+            continue;
+        }
+
+        let mut message = b"Unknown debugger command '".to_vec();
+        message.extend_from_slice(command);
+        message.extend_from_slice(b"'. Enter .help for a list of commands.");
+        warn_bytes_line(&message);
+    }
 }
 
 fn print_inline(vm: &Vm, value: Value, stream: &mut dyn Write) -> io::Result<()> {
@@ -1709,7 +1956,10 @@ fn ladybird_main(arguments: &[String]) -> c_int {
     vm.set_dynamic_imports_allowed(true);
 
     if options.debug {
-        unimplemented_runtime_function("the JavaScript debugger, which --debug runs scripts in", 0);
+        vm.enable_debugging();
+        let debugger = vm.debugger().expect("debugging was just enabled");
+        debugger.set_pause_callback(run_debugger_prompt);
+        debugger.request_pause_on_next_bytecode_execution();
     }
 
     if !options.disable_debug_printing {
@@ -1955,5 +2205,52 @@ mod tests {
             [(&b"c"[..], &b"4"[..]), (b"a", b"1"), (b"b", b"3"), (b"b ", b" 2")]
         );
         assert!(ConfigFile::parse(b"").groups().is_empty());
+    }
+
+    /// The breakpoints the C++ js sets for these .break commands while paused in sub/b.js.
+    #[test]
+    fn breakpoint_locations_parse_like_the_cpp_js() {
+        let current_filename = Utf16String::from_utf8("sub/b.js");
+        let parsed = |input: &str| {
+            parse_breakpoint_location(input.as_bytes(), Utf16View::of_string(&current_filename)).map(|location| {
+                (
+                    Utf16View::of_string(&location.filename).to_utf8(),
+                    location.line,
+                    location.column,
+                )
+            })
+        };
+        let location = |filename: &str, line: u32, column: Option<u32>| Some((filename.to_string(), line, column));
+
+        assert_eq!(parsed("3"), location("sub/b.js", 3, None));
+        assert_eq!(parsed("   7   "), location("sub/b.js", 7, None));
+        assert_eq!(parsed("0005"), location("sub/b.js", 5, None));
+        assert_eq!(parsed("4294967295"), location("sub/b.js", u32::MAX, None));
+        assert_eq!(parsed("3:0"), location("sub/b.js", 3, Some(0)));
+        assert_eq!(parsed("sub/b.js:8"), location("sub/b.js", 8, None));
+        assert_eq!(parsed("./sub/b.js:12"), location("sub/b.js", 12, None));
+        assert_eq!(parsed("sub/../sub/b.js:23:5"), location("sub/b.js", 23, Some(5)));
+        assert_eq!(parsed("other.js:2:3"), location("other.js", 2, Some(3)));
+        assert_eq!(parsed("::3"), location(":", 3, None));
+        assert_eq!(parsed("x::3"), location("x:", 3, None));
+        assert_eq!(parsed("1:2:3"), location("1", 2, Some(3)));
+        for rejected in [
+            "0",
+            "a.js:0",
+            ":5",
+            "4294967296",
+            "1:4294967296",
+            "+5",
+            "-5",
+            "",
+            "foo",
+            "a.js:0:1",
+        ] {
+            assert_eq!(parsed(rejected), None, "{rejected}");
+        }
+
+        let relative_to_nothing = parse_breakpoint_location(b"./sub/b.js:12", Utf16View::EMPTY)
+            .map(|location| Utf16View::of_string(&location.filename).to_utf8());
+        assert_eq!(relative_to_nothing.as_deref(), Some("./sub/b.js"));
     }
 }
