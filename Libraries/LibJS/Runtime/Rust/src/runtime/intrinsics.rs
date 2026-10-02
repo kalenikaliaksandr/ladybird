@@ -41,6 +41,8 @@ use crate::runtime::completion::Must;
 use crate::runtime::console_object::ConsoleObject;
 use crate::runtime::data_view_constructor::DataViewConstructor;
 use crate::runtime::data_view_prototype::DataViewPrototype;
+use crate::runtime::date_constructor::DateConstructor;
+use crate::runtime::date_prototype::DatePrototype;
 use crate::runtime::disposable_stack_constructor::DisposableStackConstructor;
 use crate::runtime::disposable_stack_prototype::DisposableStackPrototype;
 use crate::runtime::error::ErrorKind;
@@ -670,6 +672,7 @@ macro_rules! initialize_builtin_function_types {
 initialize_builtin_function_types! {
     initialize_array_buffer: array_buffer_prototype: ArrayBufferPrototype, array_buffer_constructor: ArrayBufferConstructor, ArrayBuffer;
     initialize_data_view: data_view_prototype: DataViewPrototype, data_view_constructor: DataViewConstructor, DataView;
+    initialize_date: date_prototype: DatePrototype, date_constructor: DateConstructor, Date;
     initialize_shared_array_buffer: shared_array_buffer_prototype: SharedArrayBufferPrototype, shared_array_buffer_constructor: SharedArrayBufferConstructor, SharedArrayBuffer;
     initialize_typed_array: typed_array_prototype: TypedArrayPrototype, typed_array_constructor: TypedArrayConstructor, TypedArray;
 }
@@ -733,7 +736,6 @@ macro_rules! unimplemented_builtin_types {
 }
 
 unimplemented_builtin_types! {
-    initialize_date => "Date",
     initialize_intl_collator => "Intl.Collator",
     initialize_intl_date_time_format => "Intl.DateTimeFormat",
     initialize_intl_display_names => "Intl.DisplayNames",
@@ -1364,7 +1366,11 @@ impl Intrinsics {
                 .get_without_side_effects(vm, &names.stringify)
                 .as_function(),
         ));
-        // NB: Date.now comes with the Date builtins; until a realm has them, its intrinsic accessor stops the process.
+        self.date_constructor_now_function.set(Some(
+            self.date_constructor(vm)
+                .get_without_side_effects(vm, &names.now)
+                .as_function(),
+        ));
 
         assert!(self.array_prototype(vm).indexed_array_like_size() == 0);
         assert!(self.object_prototype(vm).indexed_array_like_size() == 0);
@@ -1472,6 +1478,7 @@ mod tests {
         add("TypeError.prototype", intrinsics.type_error_prototype(vm));
         add("URIError.prototype", intrinsics.uri_error_prototype(vm));
         add("AggregateError.prototype", intrinsics.aggregate_error_prototype(vm));
+        add("Date.prototype", intrinsics.date_prototype(vm));
         add("%IteratorPrototype%", intrinsics.iterator_prototype(vm));
         add("%ArrayIteratorPrototype%", intrinsics.array_iterator_prototype());
         add("%AsyncIteratorPrototype%", intrinsics.async_iterator_prototype());
@@ -1515,6 +1522,7 @@ mod tests {
         add("TypeError", intrinsics.type_error_constructor(vm).upcast());
         add("URIError", intrinsics.uri_error_constructor(vm).upcast());
         add("AggregateError", intrinsics.aggregate_error_constructor(vm).upcast());
+        add("Date", intrinsics.date_constructor(vm).upcast());
         add("Iterator", intrinsics.iterator_constructor(vm).upcast());
         add(
             "%GeneratorFunction%",
@@ -1747,7 +1755,8 @@ mod tests {
              encodeURIComponent=function:w-c globalThis=globalThis:w-c Infinity=Infinity:--- NaN=NaN:--- \
              undefined=undefined:--- AggregateError=AggregateError:w-c Array=Array:w-c ArrayBuffer=ArrayBuffer:w-c \
              AsyncDisposableStack=function:w-c BigInt=BigInt:w-c BigInt64Array=BigInt64Array:w-c \
-             BigUint64Array=BigUint64Array:w-c Boolean=Boolean:w-c DataView=DataView:w-c DisposableStack=function:w-c \
+             BigUint64Array=BigUint64Array:w-c Boolean=Boolean:w-c DataView=DataView:w-c Date=Date:w-c \
+             DisposableStack=function:w-c \
              Error=Error:w-c EvalError=EvalError:w-c FinalizationRegistry=function:w-c Float16Array=Float16Array:w-c \
              Float32Array=Float32Array:w-c Float64Array=Float64Array:w-c Function=Function:w-c \
              Int8Array=Int8Array:w-c Int16Array=Int16Array:w-c Int32Array=Int32Array:w-c Iterator=Iterator:w-c \
