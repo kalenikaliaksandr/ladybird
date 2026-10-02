@@ -4,9 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-//! The parts of Libraries/LibJS/Runtime/Temporal/PlainDate.cpp the Temporal foundation needs: the Temporal.PlainDate
-//! object, the ISO Date Record operations, and CreateTemporalDate. Creating a Temporal.PlainDate needs its
-//! constructor, which comes with the Temporal.PlainDate builtins, as do the other operations of PlainDate.cpp.
+//! Libraries/LibJS/Runtime/Temporal/PlainDate.cpp: Temporal.PlainDate objects and the ISO Date Record operations.
 
 use ak::Utf16String;
 use libjs_runtime_macros::Trace;
@@ -16,24 +14,42 @@ use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
 use crate::layout::function_object::FunctionObject;
 use crate::layout::object::Object;
-use crate::runtime::abstract_operations::ordinary_create_from_constructor_of;
+use crate::layout::value::Value;
+use crate::runtime::abstract_operations::{get_options_object, ordinary_create_from_constructor_of};
 use crate::runtime::completion::{Must, ThrowCompletionOr};
-use crate::runtime::date::{is_within_i32_range, is_within_u8_range};
+use crate::runtime::date::{get_utc_epoch_nanoseconds, is_within_i32_range, is_within_u8_range};
 use crate::runtime::error::ErrorKind;
 use crate::runtime::error_types::ErrorType;
 use crate::runtime::intrinsics::Intrinsics;
 use crate::runtime::object::MayInterfereWithIndexedPropertyAccess;
-use crate::runtime::temporal::abstract_operations::{Overflow, epoch_days_to_epoch_ms, iso_date_to_epoch_days};
+use crate::runtime::temporal::abstract_operations::{
+    ArithmeticOperation, DurationOperation, Overflow, ShowCalendar, Unit, UnitGroup, ascii_view,
+    epoch_days_to_epoch_ms, get_difference_settings, get_temporal_overflow_option, iso_date_to_epoch_days,
+    parse_iso_date_time,
+};
 use crate::runtime::temporal::calendar::{
-    CalendarDate, calendar_iso_to_date, iso_days_in_month, iso8601_calendar_view,
+    CalendarDate, CalendarField, CalendarFieldListOrPartial, ISO8601_CALENDAR, calendar_date_add,
+    calendar_date_from_fields, calendar_date_until, calendar_equals, calendar_iso_to_date, canonicalize_calendar,
+    format_calendar_annotation, get_temporal_calendar_identifier_with_iso_default, iso_days_in_month,
+    iso8601_calendar_view, prepare_calendar_fields,
 };
 use crate::runtime::temporal::date_equations::{
     epoch_time_to_date, epoch_time_to_epoch_year, epoch_time_to_month_in_year,
 };
-use crate::runtime::temporal::iso_records::ISODate;
-use crate::runtime::temporal::plain_date_time::{combine_iso_date_and_time_record, iso_date_time_within_limits};
-use crate::runtime::temporal::plain_time::noon_time_record;
+use crate::runtime::temporal::duration::{
+    Duration, DurationFields, combine_date_and_time_duration, create_negated_temporal_duration,
+    create_temporal_duration, round_relative_duration, temporal_duration_from_internal,
+    to_date_duration_record_without_time, to_temporal_duration,
+};
+use crate::runtime::temporal::iso_records::{ISODate, TimeDuration};
+use crate::runtime::temporal::iso8601::Production;
+use crate::runtime::temporal::plain_date_time::{
+    PlainDateTime, combine_iso_date_and_time_record, iso_date_time_within_limits,
+};
+use crate::runtime::temporal::plain_time::{midnight_time_record, noon_time_record};
 use crate::runtime::temporal::plain_year_month::balance_iso_year_month;
+use crate::runtime::temporal::time_zone::get_iso_date_time_for;
+use crate::runtime::temporal::zoned_date_time::ZonedDateTime;
 use crate::utf16::Utf16View;
 
 // 3 Temporal.PlainDate Objects, https://tc39.es/proposal-temporal/#sec-temporal-plaindate-objects
@@ -117,6 +133,131 @@ pub fn create_temporal_date(
 
     // 6. Return object.
     Ok(object)
+}
+
+// 3.5.4 ToTemporalDate ( item [ , options ] ), https://tc39.es/proposal-temporal/#sec-temporal-totemporaldate
+pub fn to_temporal_date(vm: &Vm, item: Value, options: Value) -> ThrowCompletionOr<Gc<PlainDate>> {
+    // 1. If options is not present, set options to undefined.
+
+    // 2. If item is an Object, then
+    if item.is_object() {
+        let object = item.as_object();
+
+        // a. If item has an [[InitializedTemporalDate]] internal slot, then
+        if let Some(plain_date) = object.downcast::<PlainDate>() {
+            // i. Let resolvedOptions be ? GetOptionsObject(options).
+            let resolved_options = get_options_object(vm, options)?;
+
+            // ii. Perform ? GetTemporalOverflowOption(resolvedOptions).
+            get_temporal_overflow_option(vm, &resolved_options)?;
+
+            // iii. Return ! CreateTemporalDate(item.[[ISODate]], item.[[Calendar]]).
+            return Ok(create_temporal_date(vm, plain_date.iso_date(), plain_date.calendar(), None).must());
+        }
+
+        // b. If item has an [[InitializedTemporalZonedDateTime]] internal slot, then
+        if let Some(zoned_date_time) = object.downcast::<ZonedDateTime>() {
+            // i. Let isoDateTime be GetISODateTimeFor(item.[[TimeZone]], item.[[EpochNanoseconds]]).
+            let time_zone = zoned_date_time.time_zone();
+            let iso_date_time = get_iso_date_time_for(
+                Utf16View::of_string(&time_zone),
+                zoned_date_time.epoch_nanoseconds().big_integer(),
+            );
+
+            // ii. Let resolvedOptions be ? GetOptionsObject(options).
+            let resolved_options = get_options_object(vm, options)?;
+
+            // iii. Perform ? GetTemporalOverflowOption(resolvedOptions).
+            get_temporal_overflow_option(vm, &resolved_options)?;
+
+            // iv. Return ! CreateTemporalDate(isoDateTime.[[ISODate]], item.[[Calendar]]).
+            return Ok(create_temporal_date(vm, iso_date_time.iso_date, zoned_date_time.calendar(), None).must());
+        }
+
+        // c. If item has an [[InitializedTemporalDateTime]] internal slot, then
+        if let Some(plain_date_time) = object.downcast::<PlainDateTime>() {
+            // i. Let resolvedOptions be ? GetOptionsObject(options).
+            let resolved_options = get_options_object(vm, options)?;
+
+            // ii. Perform ? GetTemporalOverflowOption(resolvedOptions).
+            get_temporal_overflow_option(vm, &resolved_options)?;
+
+            // iii. Return ! CreateTemporalDate(item.[[ISODateTime]].[[ISODate]], item.[[Calendar]]).
+            return Ok(create_temporal_date(
+                vm,
+                plain_date_time.iso_date_time().iso_date,
+                plain_date_time.calendar(),
+                None,
+            )
+            .must());
+        }
+
+        // d. Let calendar be ? GetTemporalCalendarIdentifierWithISODefault(item).
+        let calendar = get_temporal_calendar_identifier_with_iso_default(vm, &object)?;
+
+        // e. Let fields be ? PrepareCalendarFields(calendar, item, « YEAR, MONTH, MONTH-CODE, DAY », «», «»).
+        let mut fields = prepare_calendar_fields(
+            vm,
+            Utf16View::of_string(&calendar),
+            &object,
+            &[
+                CalendarField::Year,
+                CalendarField::Month,
+                CalendarField::MonthCode,
+                CalendarField::Day,
+            ],
+            &[],
+            CalendarFieldListOrPartial::List(&[]),
+        )?;
+
+        // f. Let resolvedOptions be ? GetOptionsObject(options).
+        let resolved_options = get_options_object(vm, options)?;
+
+        // g. Let overflow be ? GetTemporalOverflowOption(resolvedOptions).
+        let overflow = get_temporal_overflow_option(vm, &resolved_options)?;
+
+        // h. Let isoDate be ? CalendarDateFromFields(calendar, fields, overflow).
+        let iso_date = calendar_date_from_fields(vm, Utf16View::of_string(&calendar), &mut fields, overflow)?;
+
+        // i. Return ! CreateTemporalDate(isoDate, calendar).
+        return Ok(create_temporal_date(vm, iso_date, calendar, None).must());
+    }
+
+    // 3. If item is not a String, throw a TypeError exception.
+    if !item.is_string() {
+        return vm.throw_completion(ErrorKind::TypeError, ErrorType::TemporalInvalidPlainDate, &[]);
+    }
+
+    // 4. Let result be ? ParseISODateTime(item, « TemporalDateTimeString[~Zoned] »).
+    let item_string = item.as_string().utf16_string();
+    let result = parse_iso_date_time(
+        vm,
+        Utf16View::of_string(&item_string),
+        &[Production::TemporalDateTimeString],
+    )?;
+
+    // 5. Let calendar be result.[[Calendar]].
+    // 6. If calendar is empty, set calendar to "iso8601".
+    let calendar = match &result.calendar {
+        Some(calendar) => canonicalize_calendar(vm, Utf16View::of_string(calendar))?,
+        None => canonicalize_calendar(vm, ascii_view(ISO8601_CALENDAR))?,
+    };
+
+    // 8. Let resolvedOptions be ? GetOptionsObject(options).
+    let resolved_options = get_options_object(vm, options)?;
+
+    // 9. Perform ? GetTemporalOverflowOption(resolvedOptions).
+    get_temporal_overflow_option(vm, &resolved_options)?;
+
+    // 10. Let isoDate be CreateISODateRecord(result.[[Year]], result.[[Month]], result.[[Day]]).
+    let iso_date = create_iso_date_record(
+        f64::from(result.year.expect("a date-time string has a year")),
+        f64::from(result.month),
+        f64::from(result.day),
+    );
+
+    // 11. Return ? CreateTemporalDate(isoDate, calendar).
+    create_temporal_date(vm, iso_date, calendar, None)
 }
 
 /// The monthOrCode of CompareSurpasses: an ordinal month or a month code.
@@ -372,6 +513,24 @@ pub fn pad_iso_year(year: i32) -> String {
     format!("{year_sign}{:06}", year.unsigned_abs())
 }
 
+// 3.5.10 TemporalDateToString ( temporalDate, showCalendar ), https://tc39.es/proposal-temporal/#sec-temporal-temporaldatetostring
+pub fn temporal_date_to_string(temporal_date: &PlainDate, show_calendar: ShowCalendar) -> String {
+    // 1. Let year be PadISOYear(temporalDate.[[ISODate]].[[Year]]).
+    let year = pad_iso_year(temporal_date.iso_date().year);
+
+    // 2. Let month be ToZeroPaddedDecimalString(temporalDate.[[ISODate]].[[Month]], 2).
+    let month = temporal_date.iso_date().month;
+
+    // 3. Let day be ToZeroPaddedDecimalString(temporalDate.[[ISODate]].[[Day]], 2).
+    let day = temporal_date.iso_date().day;
+
+    // 4. Let calendar be FormatCalendarAnnotation(temporalDate.[[Calendar]], showCalendar).
+    let calendar = format_calendar_annotation(Utf16View::of_string(&temporal_date.calendar()), show_calendar);
+
+    // 5. Return the string-concatenation of year, the code unit 0x002D (HYPHEN-MINUS), month, the code unit 0x002D (HYPHEN-MINUS), day, and calendar.
+    format!("{year}-{month:02}-{day:02}{calendar}")
+}
+
 // 3.5.11 ISODateWithinLimits ( isoDate ), https://tc39.es/proposal-temporal/#sec-temporal-isodatewithinlimits
 pub fn iso_date_within_limits(iso_date: ISODate) -> bool {
     // 1. Let isoDateTime be CombineISODateAndTimeRecord(isoDate, NoonTimeRecord()).
@@ -415,4 +574,138 @@ pub fn compare_iso_date(iso_date1: ISODate, iso_date2: ISODate) -> i8 {
 
     // 7. Return 0.
     0
+}
+
+// 3.5.13 DifferenceTemporalPlainDate ( operation, temporalDate, other, options ), https://tc39.es/proposal-temporal/#sec-temporal-differencetemporalplaindate
+pub fn difference_temporal_plain_date(
+    vm: &Vm,
+    operation: DurationOperation,
+    temporal_date: &PlainDate,
+    other_value: Value,
+    options: Value,
+) -> ThrowCompletionOr<Gc<Duration>> {
+    let calendar_string = temporal_date.calendar();
+    let calendar = Utf16View::of_string(&calendar_string);
+
+    // 1. Set other to ? ToTemporalDate(other).
+    let other = to_temporal_date(vm, other_value, Value::UNDEFINED)?;
+
+    // 2. If CalendarEquals(temporalDate.[[Calendar]], other.[[Calendar]]) is false, throw a RangeError exception.
+    if !calendar_equals(calendar, Utf16View::of_string(&other.calendar())) {
+        return vm.throw_completion(ErrorKind::RangeError, ErrorType::TemporalDifferentCalendars, &[]);
+    }
+
+    // 3. Let resolvedOptions be ? GetOptionsObject(options).
+    let resolved_options = get_options_object(vm, options)?;
+
+    // 4. Let settings be ? GetDifferenceSettings(operation, resolvedOptions, DATE, « », DAY, DAY).
+    let settings = get_difference_settings(
+        vm,
+        operation,
+        &resolved_options,
+        UnitGroup::Date,
+        &[],
+        Unit::Day,
+        Unit::Day,
+    )?;
+
+    // 5. If CompareISODate(temporalDate.[[ISODate]], other.[[ISODate]]) = 0, then
+    if compare_iso_date(temporal_date.iso_date(), other.iso_date()) == 0 {
+        // a. Return ! CreateTemporalDuration(0, 0, 0, 0, 0, 0, 0, 0, 0, 0).
+        return Ok(create_temporal_duration(vm, DurationFields::default(), None).must());
+    }
+
+    // 6. Let dateDifference be CalendarDateUntil(temporalDate.[[Calendar]], temporalDate.[[ISODate]], other.[[ISODate]], settings.[[LargestUnit]]).
+    let date_difference = calendar_date_until(
+        vm,
+        calendar,
+        temporal_date.iso_date(),
+        other.iso_date(),
+        settings.largest_unit,
+    );
+
+    // 7. Let duration be CombineDateAndTimeDuration(dateDifference, 0).
+    let mut duration = combine_date_and_time_duration(date_difference, TimeDuration::default());
+
+    // 8. If settings.[[SmallestUnit]] is not DAY or settings.[[RoundingIncrement]] ≠ 1, then
+    if settings.smallest_unit != Unit::Day || settings.rounding_increment != 1 {
+        // a. Let isoDateTime be CombineISODateAndTimeRecord(temporalDate.[[ISODate]], MidnightTimeRecord()).
+        let iso_date_time = combine_iso_date_and_time_record(temporal_date.iso_date(), midnight_time_record());
+
+        // b. Let originEpochNs be GetUTCEpochNanoseconds(isoDateTime).
+        let origin_epoch_ns = get_utc_epoch_nanoseconds(&iso_date_time);
+
+        // c. Let isoDateTimeOther be CombineISODateAndTimeRecord(other.[[ISODate]], MidnightTimeRecord()).
+        let iso_date_time_other = combine_iso_date_and_time_record(other.iso_date(), midnight_time_record());
+
+        // d. Let destEpochNs be GetUTCEpochNanoseconds(isoDateTimeOther).
+        let dest_epoch_ns = get_utc_epoch_nanoseconds(&iso_date_time_other);
+
+        // e. Set duration to ? RoundRelativeDuration(duration, originEpochNs, destEpochNs, isoDateTime, UNSET, temporalDate.[[Calendar]], settings.[[LargestUnit]], settings.[[RoundingIncrement]], settings.[[SmallestUnit]], settings.[[RoundingMode]]).
+        duration = round_relative_duration(
+            vm,
+            duration,
+            &origin_epoch_ns,
+            &dest_epoch_ns,
+            &iso_date_time,
+            None,
+            calendar,
+            settings.largest_unit,
+            settings.rounding_increment,
+            settings.smallest_unit,
+            settings.rounding_mode,
+        )?;
+    }
+
+    // 9. Let result be ! TemporalDurationFromInternal(duration, DAY).
+    let mut result = temporal_duration_from_internal(vm, &duration, Unit::Day).must();
+
+    // 10. If operation is since, set result to CreateNegatedTemporalDuration(result).
+    if operation == DurationOperation::Since {
+        result = create_negated_temporal_duration(vm, &result);
+    }
+
+    // 11. Return result.
+    Ok(result)
+}
+
+// 3.5.14 AddDurationToDate ( operation, temporalDate, temporalDurationLike, options ), https://tc39.es/proposal-temporal/#sec-temporal-adddurationtodate
+pub fn add_duration_to_date(
+    vm: &Vm,
+    operation: ArithmeticOperation,
+    temporal_date: &PlainDate,
+    temporal_duration_like: Value,
+    options: Value,
+) -> ThrowCompletionOr<Gc<PlainDate>> {
+    // 1. Let calendar be temporalDate.[[Calendar]].
+    let calendar = temporal_date.calendar();
+
+    // 2. Let duration be ? ToTemporalDuration(temporalDurationLike).
+    let mut duration = to_temporal_duration(vm, temporal_duration_like)?;
+
+    // 3. If operation is SUBTRACT, set duration to CreateNegatedTemporalDuration(duration).
+    if operation == ArithmeticOperation::Subtract {
+        duration = create_negated_temporal_duration(vm, &duration);
+    }
+
+    // 4. Let dateDuration be ToDateDurationRecordWithoutTime(duration).
+    let date_duration = to_date_duration_record_without_time(vm, &duration);
+
+    // 5. Let resolvedOptions be ? GetOptionsObject(options).
+    let resolved_options = get_options_object(vm, options)?;
+
+    // 6. Let overflow be ? GetTemporalOverflowOption(resolvedOptions).
+    let overflow = get_temporal_overflow_option(vm, &resolved_options)?;
+
+    // 7. Let result be ? CalendarDateAdd(calendar, temporalDate.[[ISODate]], dateDuration, overflow).
+    let result = calendar_date_add(
+        vm,
+        Utf16View::of_string(&calendar),
+        temporal_date.iso_date(),
+        &date_duration,
+        overflow,
+    )?;
+
+    // 8. Return ! CreateTemporalDate(result, calendar).
+    Ok(create_temporal_date(vm, result, calendar, None).must())
 }

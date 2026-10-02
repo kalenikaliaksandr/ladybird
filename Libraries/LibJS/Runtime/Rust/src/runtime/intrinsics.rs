@@ -123,6 +123,10 @@ use crate::runtime::temporal::duration_constructor::DurationConstructor;
 use crate::runtime::temporal::duration_prototype::DurationPrototype;
 use crate::runtime::temporal::instant_constructor::InstantConstructor;
 use crate::runtime::temporal::instant_prototype::InstantPrototype;
+use crate::runtime::temporal::plain_date_constructor::PlainDateConstructor;
+use crate::runtime::temporal::plain_date_prototype::PlainDatePrototype;
+use crate::runtime::temporal::plain_date_time_constructor::PlainDateTimeConstructor;
+use crate::runtime::temporal::plain_date_time_prototype::PlainDateTimePrototype;
 use crate::runtime::temporal::plain_time_constructor::PlainTimeConstructor;
 use crate::runtime::temporal::plain_time_prototype::PlainTimePrototype;
 use crate::runtime::temporal::temporal::Temporal;
@@ -704,6 +708,8 @@ initialize_builtin_function_types! {
     initialize_intl_segmenter: intl_segmenter_prototype: SegmenterPrototype, intl_segmenter_constructor: SegmenterConstructor, Segmenter;
     initialize_temporal_duration: temporal_duration_prototype: DurationPrototype, temporal_duration_constructor: DurationConstructor, Duration;
     initialize_temporal_instant: temporal_instant_prototype: InstantPrototype, temporal_instant_constructor: InstantConstructor, Instant;
+    initialize_temporal_plain_date: temporal_plain_date_prototype: PlainDatePrototype, temporal_plain_date_constructor: PlainDateConstructor, PlainDate;
+    initialize_temporal_plain_date_time: temporal_plain_date_time_prototype: PlainDateTimePrototype, temporal_plain_date_time_constructor: PlainDateTimeConstructor, PlainDateTime;
     initialize_temporal_plain_time: temporal_plain_time_prototype: PlainTimePrototype, temporal_plain_time_constructor: PlainTimeConstructor, PlainTime;
 }
 
@@ -771,8 +777,6 @@ unimplemented_builtin_types! {
     initialize_intl_number_format => "Intl.NumberFormat",
     initialize_intl_plural_rules => "Intl.PluralRules",
     initialize_intl_relative_time_format => "Intl.RelativeTimeFormat",
-    initialize_temporal_plain_date => "Temporal.PlainDate",
-    initialize_temporal_plain_date_time => "Temporal.PlainDateTime",
     initialize_temporal_plain_month_day => "Temporal.PlainMonthDay",
     initialize_temporal_plain_year_month => "Temporal.PlainYearMonth",
     initialize_temporal_zoned_date_time => "Temporal.ZonedDateTime",
@@ -1617,6 +1621,14 @@ mod tests {
             intrinsics.temporal_plain_time_prototype(vm),
         );
         add(
+            "Temporal.PlainDate.prototype",
+            intrinsics.temporal_plain_date_prototype(vm),
+        );
+        add(
+            "Temporal.PlainDateTime.prototype",
+            intrinsics.temporal_plain_date_time_prototype(vm),
+        );
+        add(
             "Temporal.Duration",
             intrinsics.temporal_duration_constructor(vm).upcast(),
         );
@@ -1624,6 +1636,14 @@ mod tests {
         add(
             "Temporal.PlainTime",
             intrinsics.temporal_plain_time_constructor(vm).upcast(),
+        );
+        add(
+            "Temporal.PlainDate",
+            intrinsics.temporal_plain_date_constructor(vm).upcast(),
+        );
+        add(
+            "Temporal.PlainDateTime",
+            intrinsics.temporal_plain_date_time_constructor(vm).upcast(),
         );
         add("globalThis", realm.global_object());
         named
@@ -1985,11 +2005,6 @@ mod tests {
         assert!(type_error_prototype.prototype() == Some(intrinsics.error_prototype(&vm)));
         assert!(intrinsics.type_error_prototype(&vm) == type_error_prototype);
 
-        // The intrinsics the runtime does not have yet stop the process with their names.
-        assert!(
-            thrown_message(|| intrinsics.temporal_plain_date_constructor(&vm))
-                .contains("Intrinsics::initialize_temporal_plain_date")
-        );
         assert!(Value::from_object(intrinsics.eval_function()).is_function());
         let values = realm.array_prototype().get_without_side_effects(&vm, &vm.names.values);
         assert!(values == Value::from_object(realm.array_prototype_values_function()));
