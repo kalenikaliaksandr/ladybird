@@ -123,6 +123,7 @@ const objects = [
     ["Temporal.PlainDate.prototype", Temporal.PlainDate.prototype],
     ["Temporal.PlainDateTime.prototype", Temporal.PlainDateTime.prototype],
     ["Temporal.PlainYearMonth.prototype", Temporal.PlainYearMonth.prototype],
+    ["Temporal.ZonedDateTime.prototype", Temporal.ZonedDateTime.prototype],
     ["Temporal.Duration", Temporal.Duration],
     ["Temporal.Instant", Temporal.Instant],
     ["Temporal.PlainMonthDay", Temporal.PlainMonthDay],
@@ -130,6 +131,7 @@ const objects = [
     ["Temporal.PlainDate", Temporal.PlainDate],
     ["Temporal.PlainDateTime", Temporal.PlainDateTime],
     ["Temporal.PlainYearMonth", Temporal.PlainYearMonth],
+    ["Temporal.ZonedDateTime", Temporal.ZonedDateTime],
     ["globalThis", globalThis],
 ];
 

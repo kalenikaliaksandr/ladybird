@@ -261,10 +261,10 @@ pub fn to_temporal_time_zone_identifier(vm: &Vm, temporal_time_zone_like: Value)
 
     // 2. If temporalTimeZoneLike is not a String, throw a TypeError exception.
     if !temporal_time_zone_like.is_string() {
-        return vm.throw_completion(
+        let temporal_time_zone_like = temporal_time_zone_like.to_utf16_string_without_side_effects();
+        return vm.throw_completion_with_utf16_message(
             ErrorKind::TypeError,
-            ErrorType::TemporalInvalidTimeZoneName,
-            &[&temporal_time_zone_like],
+            ErrorType::TemporalInvalidTimeZoneName.utf16_message(&[Utf16View::of_string(&temporal_time_zone_like)]),
         );
     }
 
