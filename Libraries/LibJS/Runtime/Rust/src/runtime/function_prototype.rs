@@ -172,7 +172,6 @@ impl FunctionPrototype {
             // NB: C++ passes the call a span of the storage. A call may change the storage, so this copies the
             //     elements first: few enough onto the stack, which the collector scans, and others into a rooted list.
             if u64::from(arg_array_object.indexed_packed_elements_span_size()) >= length {
-                const STACK_ARGUMENT_CAPACITY: usize = 16;
                 let length = length as usize;
                 if length <= STACK_ARGUMENT_CAPACITY {
                     let mut arguments = [Value::UNDEFINED; STACK_ARGUMENT_CAPACITY];
@@ -194,7 +193,7 @@ impl FunctionPrototype {
         // FIXME: 5. Perform PrepareForTailCall().
 
         // 6. Return ? Call(func, thisArg, argList).
-        call_function_object(vm, function, this_arg, &arguments.to_vec())
+        arguments.with_values(|arguments| call_function_object(vm, function, this_arg, arguments))
     }
 
     // 20.2.3.2 Function.prototype.bind ( thisArg, ...args ), https://tc39.es/ecma262/#sec-function.prototype.bind
@@ -296,10 +295,21 @@ impl FunctionPrototype {
         // FIXME: 3. Perform PrepareForTailCall().
 
         let this_arg = vm.argument(0);
-        let args = arguments_after_the_first(vm);
 
         // 4. Return ? Call(func, thisArg, args).
-        call_function_object(vm, function, this_arg, &args.to_vec())
+        // NB: C++ passes the call a span of this call's arguments, in the interpreter stack the call runs on, so they
+        //     are copied first: few enough onto the stack, which the collector scans, and others into a rooted list.
+        let argument_count = vm.argument_count().saturating_sub(1);
+        if argument_count <= STACK_ARGUMENT_CAPACITY {
+            let mut args = [Value::UNDEFINED; STACK_ARGUMENT_CAPACITY];
+            let args = &mut args[..argument_count];
+            for (index, argument) in args.iter_mut().enumerate() {
+                *argument = vm.argument(index + 1);
+            }
+            return call_function_object(vm, function, this_arg, args);
+        }
+        let args = arguments_after_the_first(vm);
+        args.with_values(|args| call_function_object(vm, function, this_arg, args))
     }
 
     // 20.2.3.5 Function.prototype.toString ( ), https://tc39.es/ecma262/#sec-function.prototype.tostring
@@ -355,6 +365,9 @@ impl FunctionPrototype {
 }
 
 /// The arguments of the running native function after its first, which the spec calls ...args.
+/// How many arguments apply() and call() copy onto the stack rather than into a rooted list.
+const STACK_ARGUMENT_CAPACITY: usize = 16;
+
 fn arguments_after_the_first(vm: &Vm) -> MarkedVec<'_, Value> {
     let argument_count = vm.argument_count();
     let arguments = MarkedVec::with_capacity(vm, argument_count.saturating_sub(1));
