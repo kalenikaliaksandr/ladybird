@@ -119,9 +119,13 @@ const objects = [
     ["Temporal.Duration.prototype", Temporal.Duration.prototype],
     ["Temporal.Instant.prototype", Temporal.Instant.prototype],
     ["Temporal.PlainTime.prototype", Temporal.PlainTime.prototype],
+    ["Temporal.PlainDate.prototype", Temporal.PlainDate.prototype],
+    ["Temporal.PlainDateTime.prototype", Temporal.PlainDateTime.prototype],
     ["Temporal.Duration", Temporal.Duration],
     ["Temporal.Instant", Temporal.Instant],
     ["Temporal.PlainTime", Temporal.PlainTime],
+    ["Temporal.PlainDate", Temporal.PlainDate],
+    ["Temporal.PlainDateTime", Temporal.PlainDateTime],
     ["globalThis", globalThis],
 ];
 
