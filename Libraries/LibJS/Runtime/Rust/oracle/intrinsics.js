@@ -115,6 +115,13 @@ const objects = [
     ["Float32Array", Float32Array],
     ["Float64Array", Float64Array],
     ["Atomics", Atomics],
+    ["Temporal.Now", Temporal.Now],
+    ["Temporal.Duration.prototype", Temporal.Duration.prototype],
+    ["Temporal.Instant.prototype", Temporal.Instant.prototype],
+    ["Temporal.PlainTime.prototype", Temporal.PlainTime.prototype],
+    ["Temporal.Duration", Temporal.Duration],
+    ["Temporal.Instant", Temporal.Instant],
+    ["Temporal.PlainTime", Temporal.PlainTime],
     ["globalThis", globalThis],
 ];
 

@@ -119,6 +119,13 @@ use crate::runtime::suppressed_error_constructor::SuppressedErrorConstructor;
 use crate::runtime::suppressed_error_prototype::SuppressedErrorPrototype;
 use crate::runtime::symbol_constructor::SymbolConstructor;
 use crate::runtime::symbol_prototype::SymbolPrototype;
+use crate::runtime::temporal::duration_constructor::DurationConstructor;
+use crate::runtime::temporal::duration_prototype::DurationPrototype;
+use crate::runtime::temporal::instant_constructor::InstantConstructor;
+use crate::runtime::temporal::instant_prototype::InstantPrototype;
+use crate::runtime::temporal::plain_time_constructor::PlainTimeConstructor;
+use crate::runtime::temporal::plain_time_prototype::PlainTimePrototype;
+use crate::runtime::temporal::temporal::Temporal;
 use crate::runtime::typed_array::{
     BigInt64ArrayConstructor, BigInt64ArrayPrototype, BigUint64ArrayConstructor, BigUint64ArrayPrototype,
     Float16ArrayConstructor, Float16ArrayPrototype, Float32ArrayConstructor, Float32ArrayPrototype,
@@ -695,6 +702,9 @@ initialize_builtin_function_types! {
     initialize_intl_list_format: intl_list_format_prototype: ListFormatPrototype, intl_list_format_constructor: ListFormatConstructor, ListFormat;
     initialize_intl_locale: intl_locale_prototype: LocalePrototype, intl_locale_constructor: LocaleConstructor, Locale;
     initialize_intl_segmenter: intl_segmenter_prototype: SegmenterPrototype, intl_segmenter_constructor: SegmenterConstructor, Segmenter;
+    initialize_temporal_duration: temporal_duration_prototype: DurationPrototype, temporal_duration_constructor: DurationConstructor, Duration;
+    initialize_temporal_instant: temporal_instant_prototype: InstantPrototype, temporal_instant_constructor: InstantConstructor, Instant;
+    initialize_temporal_plain_time: temporal_plain_time_prototype: PlainTimePrototype, temporal_plain_time_constructor: PlainTimeConstructor, PlainTime;
 }
 
 /// Intrinsics::initialize_snake_name() for the typed arrays, whose prototypes and constructors extend %TypedArray%'s.
@@ -761,30 +771,11 @@ unimplemented_builtin_types! {
     initialize_intl_number_format => "Intl.NumberFormat",
     initialize_intl_plural_rules => "Intl.PluralRules",
     initialize_intl_relative_time_format => "Intl.RelativeTimeFormat",
-    initialize_temporal_duration => "Temporal.Duration",
-    initialize_temporal_instant => "Temporal.Instant",
     initialize_temporal_plain_date => "Temporal.PlainDate",
     initialize_temporal_plain_date_time => "Temporal.PlainDateTime",
     initialize_temporal_plain_month_day => "Temporal.PlainMonthDay",
-    initialize_temporal_plain_time => "Temporal.PlainTime",
     initialize_temporal_plain_year_month => "Temporal.PlainYearMonth",
     initialize_temporal_zoned_date_time => "Temporal.ZonedDateTime",
-}
-
-/// The lazy accessors of the other namespace objects, none of which the runtime has yet.
-macro_rules! unimplemented_lazy_intrinsics {
-    ($($name:ident: $type:ty => $description:literal,)*) => {
-        impl Intrinsics {
-            $(
-                pub fn $name(&self, _vm: &Vm) -> Gc<$type> {
-                    if let Some(intrinsic) = self.$name.get() {
-                        return intrinsic;
-                    }
-                    unimplemented_runtime_function(concat!("the realm intrinsic ", $description), 0)
-                }
-            )*
-        }
-    };
 }
 
 /// The lazy accessors of the namespace objects, which create the object the first time it is asked for, as the C++
@@ -809,10 +800,7 @@ namespace_object_accessors! {
     intl_object: Intl;
     json_object: JSONObject;
     math_object: MathObject;
-}
-
-unimplemented_lazy_intrinsics! {
-    temporal_object: Object => "%Temporal%",
+    temporal_object: Temporal;
 }
 
 fn abstract_operations_source() -> Utf16String {
@@ -1617,6 +1605,26 @@ mod tests {
         add("Float32Array", intrinsics.float32_array_constructor(vm).upcast());
         add("Float64Array", intrinsics.float64_array_constructor(vm).upcast());
         add("Atomics", intrinsics.atomics_object(vm));
+        let temporal = intrinsics.temporal_object(vm);
+        add("Temporal.Now", temporal.get(vm, &vm.names.Now).must().as_object());
+        add(
+            "Temporal.Duration.prototype",
+            intrinsics.temporal_duration_prototype(vm),
+        );
+        add("Temporal.Instant.prototype", intrinsics.temporal_instant_prototype(vm));
+        add(
+            "Temporal.PlainTime.prototype",
+            intrinsics.temporal_plain_time_prototype(vm),
+        );
+        add(
+            "Temporal.Duration",
+            intrinsics.temporal_duration_constructor(vm).upcast(),
+        );
+        add("Temporal.Instant", intrinsics.temporal_instant_constructor(vm).upcast());
+        add(
+            "Temporal.PlainTime",
+            intrinsics.temporal_plain_time_constructor(vm).upcast(),
+        );
         add("globalThis", realm.global_object());
         named
     }
@@ -1710,6 +1718,11 @@ mod tests {
         value == "function" || value.starts_with('<') || value == "object" || key == "global"
     }
 
+    /// Intrinsics whose units are done, which must have every property the C++ runtime's have.
+    fn is_complete_in_the_rust_runtime(name: &str) -> bool {
+        name.starts_with("Temporal.")
+    }
+
     /// The functions and accessors of other builtins come with later units, so the Rust runtime has to have at least
     /// these ones that this unit defines.
     const PROPERTIES_THE_RUST_RUNTIME_DEFINES: &[(&str, &str)] = &[
@@ -1751,7 +1764,7 @@ mod tests {
             for expected in *expected_properties {
                 if actual.peek() == Some(&&expected.to_string()) {
                     actual.next();
-                } else if !may_be_missing(expected) {
+                } else if !may_be_missing(expected) || is_complete_in_the_rust_runtime(name) {
                     mismatches.push(format!("{name}: {expected} is missing or out of order"));
                 }
             }
@@ -1803,7 +1816,7 @@ mod tests {
              SyntaxError=SyntaxError:w-c TypeError=TypeError:w-c Uint8Array=Uint8Array:w-c \
              Uint8ClampedArray=Uint8ClampedArray:w-c Uint16Array=Uint16Array:w-c Uint32Array=Uint32Array:w-c \
              URIError=URIError:w-c WeakMap=function:w-c WeakRef=function:w-c WeakSet=function:w-c Atomics=Atomics:w-c \
-             Intl=object:w-c JSON=object:w-c Math=object:w-c Reflect=object:w-c escape=function:w-c \
+             Intl=object:w-c JSON=object:w-c Math=object:w-c Reflect=object:w-c Temporal=object:w-c escape=function:w-c \
              unescape=function:w-c InternalError=InternalError:w-c console=object:w-c"
         );
     }
@@ -1974,8 +1987,8 @@ mod tests {
 
         // The intrinsics the runtime does not have yet stop the process with their names.
         assert!(
-            thrown_message(|| intrinsics.temporal_duration_constructor(&vm))
-                .contains("Intrinsics::initialize_temporal_duration")
+            thrown_message(|| intrinsics.temporal_plain_date_constructor(&vm))
+                .contains("Intrinsics::initialize_temporal_plain_date")
         );
         assert!(Value::from_object(intrinsics.eval_function()).is_function());
         let values = realm.array_prototype().get_without_side_effects(&vm, &vm.names.values);
