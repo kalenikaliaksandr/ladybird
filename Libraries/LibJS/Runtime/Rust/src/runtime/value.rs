@@ -46,6 +46,15 @@ use crate::utf16::Utf16View;
 use libjs_abi::Builtin;
 use libjs_abi::value as nan_box;
 
+/// Makes the whole encoded value live up to this point. The conservative stack scan recognizes a cell by its tagged
+/// value or by its address, but not by its bare heap offset, which the compiler could otherwise keep instead of the
+/// value while the value is held across an allocation.
+#[inline(always)]
+fn keep_encoded_value_alive(encoded: u64) {
+    // SAFETY: The assembly is empty: it only has the compiler put `encoded` in a register here.
+    unsafe { core::arch::asm!("/* {0} */", in(reg) encoded, options(nomem, nostack, preserves_flags)) };
+}
+
 impl Value {
     pub const fn from_bool(value: bool) -> Self {
         if value { Self::TRUE } else { Self::FALSE }
@@ -174,6 +183,7 @@ impl Value {
     /// The value must hold a cell of type T.
     pub(crate) unsafe fn cell<T>(self) -> Gc<T> {
         debug_assert!(self.is_cell());
+        keep_encoded_value_alive(self.0);
         // SAFETY: Cell values are offsets into the heap region, whose base LibGC fixed before any cell existed.
         let base = unsafe { js_heap_region_base } as u64;
         let address = (base + (self.0 & HEAP_REGION_OFFSET_MASK)) as usize;
