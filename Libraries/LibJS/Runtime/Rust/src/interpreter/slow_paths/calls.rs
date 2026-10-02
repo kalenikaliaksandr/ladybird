@@ -1876,25 +1876,28 @@ mod tests {
     }
 
     #[test]
-    fn direct_eval_stops_where_it_would_compile_the_code() {
+    fn perform_eval_runs_strings_and_the_code_the_host_gets_for_objects() {
         let vm = Vm::create();
         let test_realm = realm_with_global_object(&vm);
         let _frame = Frame::new(&vm, &test_realm, &[], None);
         let code = Value::from_string(PrimitiveString::create_from_utf8(&vm, "1 + 1"));
-        let message = thrown_message(|| perform_eval(&vm, code, CallerMode::Strict, EvalMode::Direct));
-        assert!(
-            message.contains(
-                "compiling the code of an eval (RustIntegration::compile_eval in PerformEval, strict caller: true, in \
-                 function: false, in method: false, in derived constructor: false, in class field initializer: false)"
-            ),
-            "{message}"
+        assert_eq!(
+            perform_eval(&vm, code, CallerMode::Strict, EvalMode::Direct).must(),
+            int(2)
         );
 
-        // HostGetCodeForEval can give objects code, which is then compiled too.
-        vm.set_host_get_code_for_eval(|vm, _| Some(PrimitiveString::create_from_utf8(vm, "2")));
+        // Other values are returned as they are, unless HostGetCodeForEval gives an object code.
         let object = Value::from_object(test_realm.object());
-        let message = thrown_message(|| perform_eval(&vm, object, CallerMode::NonStrict, EvalMode::Indirect));
-        assert!(message.contains("compiling the code of an eval"), "{message}");
+        assert!(perform_eval(&vm, object, CallerMode::NonStrict, EvalMode::Indirect).must() == object);
+        assert_eq!(
+            perform_eval(&vm, int(5), CallerMode::NonStrict, EvalMode::Indirect).must(),
+            int(5)
+        );
+        vm.set_host_get_code_for_eval(|vm, _| Some(PrimitiveString::create_from_utf8(vm, "3 * 4")));
+        assert_eq!(
+            perform_eval(&vm, object, CallerMode::NonStrict, EvalMode::Indirect).must(),
+            int(12)
+        );
     }
 
     #[test]

@@ -393,7 +393,7 @@ mod tests {
         assert!(realm.global_declarative_environment() == environment.declarative_record());
         assert!(global.get(&vm, &vm.names.globalThis).must() == Value::from_object(global));
         assert!(own_keys(&vm, &global).starts_with(
-            "isFinite,isNaN,parseFloat,parseInt,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,globalThis,\
+            "eval,isFinite,isNaN,parseFloat,parseInt,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,globalThis,\
              Infinity,NaN,undefined,AggregateError,"
         ));
         assert!(vm.pop_execution_context() == context.as_non_null());
