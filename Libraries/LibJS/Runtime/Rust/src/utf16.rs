@@ -241,60 +241,21 @@ impl<'a> Utf16View<'a> {
     }
 
     /// Mirrors AK::Utf16String::to_lowercase() without a locale, which LibUnicode implements with ICU's full case
-    /// mapping in a locale without language-sensitive mappings, including the Final_Sigma context of U+03A3.
+    /// mapping in the default locale.
     pub fn to_lowercase(self) -> Utf16String {
         if let Self::Ascii(units) = self {
             return Utf16String::from_utf8(ascii_as_str(&units.to_ascii_lowercase()));
         }
-        self.transform_case(str::to_lowercase)
+        crate::unicode::apply_case_mapping(self, crate::unicode::CaseMapping::Lowercase, None, false)
     }
 
     /// Mirrors AK::Utf16String::to_uppercase() without a locale, which LibUnicode implements with ICU's full case
-    /// mapping in a locale without language-sensitive mappings.
+    /// mapping in the default locale.
     pub fn to_uppercase(self) -> Utf16String {
         if let Self::Ascii(units) = self {
             return Utf16String::from_utf8(ascii_as_str(&units.to_ascii_uppercase()));
         }
-        self.transform_case(str::to_uppercase)
-    }
-
-    /// Applies a case mapping of Rust's standard library, whose Unicode version matches ICU's, to every run of
-    /// well-formed UTF-16 and keeps unpaired surrogates as they are, as ICU does. An unpaired surrogate is neither
-    /// cased nor case-ignorable, so ending a run there leaves the Final_Sigma context of each run unchanged.
-    fn transform_case(self, transform: fn(&str) -> String) -> Utf16String {
-        let code_units: Vec<u16> = self.code_units().collect();
-        let mut builder = Utf16StringBuilder::with_capacity(code_units.len());
-        let append_transformed_run = |run: &[u16], builder: &mut Utf16StringBuilder| {
-            if run.is_empty() {
-                return;
-            }
-            let run = String::from_utf16(run).expect("a run between unpaired surrogates is well-formed");
-            for code_unit in transform(&run).encode_utf16() {
-                builder.append_code_unit(code_unit);
-            }
-        };
-
-        let mut run_start = 0;
-        let mut index = 0;
-        while index < code_units.len() {
-            let code_unit = code_units[index];
-            if is_utf16_high_surrogate(code_unit)
-                && code_units
-                    .get(index + 1)
-                    .is_some_and(|&next_code_unit| is_utf16_low_surrogate(next_code_unit))
-            {
-                index += 2;
-                continue;
-            }
-            if is_unicode_surrogate(code_unit) {
-                append_transformed_run(&code_units[run_start..index], &mut builder);
-                builder.append_code_unit(code_unit);
-                run_start = index + 1;
-            }
-            index += 1;
-        }
-        append_transformed_run(&code_units[run_start..], &mut builder);
-        builder.to_utf16_string()
+        crate::unicode::apply_case_mapping(self, crate::unicode::CaseMapping::Uppercase, None, false)
     }
 }
 
