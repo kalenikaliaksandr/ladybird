@@ -364,11 +364,21 @@ pub fn decode_utf16_surrogate_pair(high_surrogate: u16, low_surrogate: u16) -> u
         + FIRST_SUPPLEMENTARY_PLANE_CODE_POINT
 }
 
-/// Mirrors AK::Utf16StringBuilder: collects code units, and builds a string with ASCII storage when all of them are
-/// ASCII.
-#[derive(Default)]
+/// Mirrors AK::Utf16StringBuilder: collects code units as ASCII bytes until one of them is not ASCII, and builds a string
+/// with ASCII storage when all of them are.
 pub struct Utf16StringBuilder {
-    code_units: Vec<u16>,
+    storage: BuilderStorage,
+}
+
+enum BuilderStorage {
+    Ascii(Vec<u8>),
+    Utf16(Vec<u16>),
+}
+
+impl Default for Utf16StringBuilder {
+    fn default() -> Self {
+        Self::with_capacity(0)
+    }
 }
 
 impl Utf16StringBuilder {
@@ -378,51 +388,173 @@ impl Utf16StringBuilder {
 
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            code_units: Vec::with_capacity(capacity),
+            storage: BuilderStorage::Ascii(Vec::with_capacity(capacity)),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.code_units.is_empty()
+        match &self.storage {
+            BuilderStorage::Ascii(bytes) => bytes.is_empty(),
+            BuilderStorage::Utf16(code_units) => code_units.is_empty(),
+        }
+    }
+
+    /// The code units as UTF-16, widening the ASCII bytes collected so far the first time a code unit is not ASCII.
+    fn utf16_code_units(&mut self, additional: usize) -> &mut Vec<u16> {
+        if let BuilderStorage::Ascii(bytes) = &self.storage {
+            let mut code_units = Vec::with_capacity((bytes.len() + additional).max(bytes.capacity()));
+            code_units.extend(bytes.iter().map(|&byte| u16::from(byte)));
+            self.storage = BuilderStorage::Utf16(code_units);
+        }
+        match &mut self.storage {
+            BuilderStorage::Utf16(code_units) => code_units,
+            BuilderStorage::Ascii(_) => unreachable!("the storage was just widened"),
+        }
     }
 
     pub fn append(&mut self, view: Utf16View<'_>) {
-        view.append_to(&mut self.code_units);
+        match (&mut self.storage, view) {
+            (BuilderStorage::Ascii(bytes), Utf16View::Ascii(units)) => bytes.extend_from_slice(units),
+            (BuilderStorage::Ascii(bytes), Utf16View::Utf16(units)) if units.iter().all(|&unit| unit < 0x80) => {
+                bytes.extend(units.iter().map(|&unit| unit as u8));
+            }
+            _ => {
+                let code_units = self.utf16_code_units(view.length_in_code_units());
+                view.append_to(code_units);
+            }
+        }
     }
 
     pub fn append_ascii(&mut self, ascii: &str) {
         debug_assert!(ascii.is_ascii());
-        self.code_units.extend(ascii.bytes().map(u16::from));
+        match &mut self.storage {
+            BuilderStorage::Ascii(bytes) => bytes.extend_from_slice(ascii.as_bytes()),
+            BuilderStorage::Utf16(code_units) => code_units.extend(ascii.bytes().map(u16::from)),
+        }
+    }
+
+    pub fn append_utf8(&mut self, utf8: &str) {
+        if utf8.is_ascii() {
+            self.append_ascii(utf8);
+            return;
+        }
+        self.utf16_code_units(utf8.len()).extend(utf8.encode_utf16());
     }
 
     pub fn append_code_unit(&mut self, code_unit: u16) {
-        self.code_units.push(code_unit);
+        match &mut self.storage {
+            BuilderStorage::Ascii(bytes) if code_unit < 0x80 => bytes.push(code_unit as u8),
+            _ => self.utf16_code_units(1).push(code_unit),
+        }
     }
 
     /// Appends UTF16EncodeCodePoint(`code_point`), as AK::UnicodeUtils::code_point_to_utf16 encodes it.
     pub fn append_code_point(&mut self, code_point: u32) {
         assert!(code_point <= 0x10ffff);
         if code_point < FIRST_SUPPLEMENTARY_PLANE_CODE_POINT {
-            self.code_units.push(code_point as u16);
+            self.append_code_unit(code_point as u16);
             return;
         }
         let code_point = code_point - FIRST_SUPPLEMENTARY_PLANE_CODE_POINT;
-        self.code_units.push(HIGH_SURROGATE_MIN | (code_point >> 10) as u16);
-        self.code_units.push(LOW_SURROGATE_MIN | (code_point & 0x3ff) as u16);
+        let code_units = self.utf16_code_units(2);
+        code_units.push(HIGH_SURROGATE_MIN | (code_point >> 10) as u16);
+        code_units.push(LOW_SURROGATE_MIN | (code_point & 0x3ff) as u16);
     }
 
     pub fn append_repeated(&mut self, view: Utf16View<'_>, count: usize) {
-        self.code_units
-            .reserve(view.length_in_code_units().saturating_mul(count));
+        let additional = view.length_in_code_units().saturating_mul(count);
+        match &mut self.storage {
+            BuilderStorage::Ascii(bytes) => bytes.reserve(additional),
+            BuilderStorage::Utf16(code_units) => code_units.reserve(additional),
+        }
         for _ in 0..count {
-            view.append_to(&mut self.code_units);
+            self.append(view);
         }
     }
 
     pub fn to_utf16_string(&self) -> Utf16String {
-        Utf16String::from_utf16(&self.code_units)
+        match &self.storage {
+            BuilderStorage::Ascii(bytes) => Utf16String::from_ascii(bytes),
+            BuilderStorage::Utf16(code_units) => Utf16String::from_utf16(code_units),
+        }
     }
 }
+
+/// The UTF-16 counterpart of fmt::Display, mirroring AK::Formatter<T> as Utf16String::formatted() uses it: appends the
+/// value as code units, so a string keeps the unpaired surrogates that formatting through UTF-8 would replace.
+pub trait Utf16Display {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder);
+}
+
+/// Mirrors AK::Utf16String::formatted(): `format` with each `{}` replaced by the next of `arguments`.
+pub fn utf16_formatted(format: &str, arguments: &[&dyn Utf16Display]) -> Utf16String {
+    let mut builder = Utf16StringBuilder::new();
+    let mut pieces = format.split("{}");
+    builder.append_utf8(pieces.next().unwrap_or_default());
+    let mut arguments = arguments.iter();
+    for piece in pieces {
+        let argument = arguments
+            .next()
+            .unwrap_or_else(|| panic!("\"{format}\" needs more arguments than it was given"));
+        argument.fmt_utf16(&mut builder);
+        builder.append_utf8(piece);
+    }
+    assert!(
+        arguments.next().is_none(),
+        "\"{format}\" was given more arguments than it needs"
+    );
+    builder.to_utf16_string()
+}
+
+impl<T: Utf16Display + ?Sized> Utf16Display for &T {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        (**self).fmt_utf16(builder);
+    }
+}
+
+impl Utf16Display for str {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        builder.append_utf8(self);
+    }
+}
+
+impl Utf16Display for String {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        builder.append_utf8(self);
+    }
+}
+
+impl Utf16Display for Utf16View<'_> {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        builder.append(*self);
+    }
+}
+
+impl Utf16Display for Utf16String {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        builder.append(Utf16View::of_string(self));
+    }
+}
+
+impl Utf16Display for Utf16FlyString {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        builder.append(Utf16View::of_fly_string(self));
+    }
+}
+
+macro_rules! impl_utf16_display_through_display {
+    ($($type:ty),*) => {
+        $(
+            impl Utf16Display for $type {
+                fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+                    builder.append_utf8(&self.to_string());
+                }
+            }
+        )*
+    };
+}
+
+impl_utf16_display_through_display!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize, f32, f64, bool, char);
 
 impl PartialEq for Utf16View<'_> {
     fn eq(&self, other: &Self) -> bool {
