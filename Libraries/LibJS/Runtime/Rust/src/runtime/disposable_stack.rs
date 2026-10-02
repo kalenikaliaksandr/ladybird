@@ -43,7 +43,6 @@ impl Deref for DisposableStack {
 
 impl Finalize for DisposableStack {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.dispose_capability.replace(new_dispose_capability()));
     }
 }

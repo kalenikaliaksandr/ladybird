@@ -93,7 +93,6 @@ impl Deref for NumberFormatBase {
 
 impl Finalize for NumberFormatBase {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.formatter.replace(None));
     }
 }

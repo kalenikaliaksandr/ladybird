@@ -45,7 +45,6 @@ impl Deref for Segments {
 
 impl Finalize for Segments {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.segments_segmenter.replace(None));
     }
 }

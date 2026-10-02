@@ -165,7 +165,6 @@ impl Deref for RegExpObject {
 
 impl Finalize for RegExpObject {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.cached_regex.replace(None));
     }
 }

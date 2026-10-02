@@ -110,7 +110,6 @@ impl Deref for Map {
 
 impl Finalize for Map {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.storage.replace(MapStorage::default()));
     }
 }

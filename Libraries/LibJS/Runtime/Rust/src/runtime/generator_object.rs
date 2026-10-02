@@ -126,7 +126,6 @@ impl Deref for GeneratorObject {
 
 impl Finalize for GeneratorObject {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.execution_context.replace(None));
     }
 }

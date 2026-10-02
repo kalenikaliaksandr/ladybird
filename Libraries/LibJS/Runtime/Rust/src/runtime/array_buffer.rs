@@ -1046,7 +1046,6 @@ impl Deref for ArrayBuffer {
 
 impl Finalize for ArrayBuffer {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         let is_shared = self.data_block.borrow().is_shared;
         drop(self.data_block.replace(DataBlock::empty(is_shared)));
     }

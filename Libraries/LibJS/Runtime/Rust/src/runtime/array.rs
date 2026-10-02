@@ -679,8 +679,15 @@ mod tests {
         assert!(array_class.is_subclass_of(object_class) && !object_class.is_subclass_of(array_class));
         let finalizer_address =
             |class: &crate::gc::class::Class| class.type_info.finalize.map(|finalize| finalize as usize);
-        assert!(finalizer_address(object_class).is_some());
-        assert_eq!(finalizer_address(array_class), finalizer_address(object_class));
+        // Objects free their storage when they are destroyed, so only classes with more to release finalize.
+        assert!(finalizer_address(object_class).is_none() && finalizer_address(array_class).is_none());
+        assert!(object_class.type_info.destroy.is_some() && array_class.type_info.destroy.is_some());
+        let number_format_base_class = crate::runtime::intl::number_format::NumberFormatBase::CLASS;
+        assert!(finalizer_address(number_format_base_class).is_some());
+        assert_eq!(
+            finalizer_address(crate::runtime::intl::plural_rules::PluralRules::CLASS),
+            finalizer_address(number_format_base_class)
+        );
         assert!(Accessor::CLASS.object_methods.is_none() && Accessor::CLASS.type_info.finalize.is_none());
         assert!(core::ptr::fn_addr_eq(
             ARRAY_OBJECT_METHODS.internal_get_prototype_of,
