@@ -7,6 +7,8 @@
 //! The command line tools built on the runtime, which their C++ mains in Utilities/ call into.
 
 pub mod js;
+#[cfg(not(target_os = "android"))]
+pub mod readline;
 pub mod test262_runner;
 pub mod test_js;
 
