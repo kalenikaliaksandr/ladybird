@@ -344,6 +344,10 @@ impl Utf16StringBuilder {
         self.code_units.extend(ascii.bytes().map(u16::from));
     }
 
+    pub fn append_utf8(&mut self, utf8: &str) {
+        self.code_units.extend(utf8.encode_utf16());
+    }
+
     pub fn append_code_unit(&mut self, code_unit: u16) {
         self.code_units.push(code_unit);
     }
@@ -372,6 +376,82 @@ impl Utf16StringBuilder {
         Utf16String::from_utf16(&self.code_units)
     }
 }
+
+/// The UTF-16 counterpart of fmt::Display, mirroring AK::Formatter<T> as Utf16String::formatted() uses it: appends the
+/// value as code units, so a string keeps the unpaired surrogates that formatting through UTF-8 would replace.
+pub trait Utf16Display {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder);
+}
+
+/// Mirrors AK::Utf16String::formatted(): `format` with each `{}` replaced by the next of `arguments`.
+pub fn utf16_formatted(format: &str, arguments: &[&dyn Utf16Display]) -> Utf16String {
+    let mut builder = Utf16StringBuilder::new();
+    let mut pieces = format.split("{}");
+    builder.append_utf8(pieces.next().unwrap_or_default());
+    let mut arguments = arguments.iter();
+    for piece in pieces {
+        let argument = arguments
+            .next()
+            .unwrap_or_else(|| panic!("\"{format}\" needs more arguments than it was given"));
+        argument.fmt_utf16(&mut builder);
+        builder.append_utf8(piece);
+    }
+    assert!(
+        arguments.next().is_none(),
+        "\"{format}\" was given more arguments than it needs"
+    );
+    builder.to_utf16_string()
+}
+
+impl<T: Utf16Display + ?Sized> Utf16Display for &T {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        (**self).fmt_utf16(builder);
+    }
+}
+
+impl Utf16Display for str {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        builder.append_utf8(self);
+    }
+}
+
+impl Utf16Display for String {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        builder.append_utf8(self);
+    }
+}
+
+impl Utf16Display for Utf16View<'_> {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        builder.append(*self);
+    }
+}
+
+impl Utf16Display for Utf16String {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        builder.append(Utf16View::of_string(self));
+    }
+}
+
+impl Utf16Display for Utf16FlyString {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        builder.append(Utf16View::of_fly_string(self));
+    }
+}
+
+macro_rules! impl_utf16_display_through_display {
+    ($($type:ty),*) => {
+        $(
+            impl Utf16Display for $type {
+                fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+                    builder.append_utf8(&self.to_string());
+                }
+            }
+        )*
+    };
+}
+
+impl_utf16_display_through_display!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize, f32, f64, bool, char);
 
 impl PartialEq for Utf16View<'_> {
     fn eq(&self, other: &Self) -> bool {

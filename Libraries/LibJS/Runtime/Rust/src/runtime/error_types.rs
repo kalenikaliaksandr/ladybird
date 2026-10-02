@@ -9,7 +9,7 @@ use core::fmt;
 use ak::Utf16String;
 
 use crate::runtime::value::number_to_string;
-use crate::utf16::{Utf16StringBuilder, Utf16View};
+use crate::utf16::{Utf16Display, Utf16StringBuilder, Utf16View, utf16_formatted};
 
 macro_rules! define_error_types {
     ($($name:ident => $format:literal,)*) => {
@@ -282,23 +282,9 @@ define_error_types! {
 }
 
 impl ErrorType {
-    /// The message with each `{}` replaced by the next of `arguments`, as AK's String::formatted() does.
-    pub fn message(self, arguments: &[&dyn fmt::Display]) -> String {
-        let mut pieces = self.format().split("{}");
-        let mut message = pieces.next().unwrap_or_default().to_string();
-        let mut arguments = arguments.iter();
-        for piece in pieces {
-            let argument = arguments
-                .next()
-                .unwrap_or_else(|| panic!("{self:?} needs more arguments than it was given"));
-            fmt::write(&mut message, format_args!("{argument}")).expect("formatting into a String cannot fail");
-            message.push_str(piece);
-        }
-        assert!(
-            arguments.next().is_none(),
-            "{self:?} was given more arguments than it needs"
-        );
-        message
+    /// The message with each `{}` replaced by the next of `arguments`, as AK's Utf16String::formatted() does.
+    pub fn message(self, arguments: &[&dyn Utf16Display]) -> Utf16String {
+        utf16_formatted(self.format(), arguments)
     }
 
     /// The message with each `{}` replaced by the next of `arguments`, keeping every code unit of them, unpaired
@@ -343,18 +329,40 @@ impl fmt::Display for AkDouble {
     }
 }
 
+impl Utf16Display for AkDouble {
+    fn fmt_utf16(&self, builder: &mut Utf16StringBuilder) {
+        builder.append_utf8(&self.to_string());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(libjs_runtime_tests_with_libgc)]
     #[test]
     fn messages_fill_placeholders_in_order() {
-        assert_eq!(ErrorType::ArrayMaxSize.message(&[]), "Maximum array size exceeded");
+        let message = |error_type: ErrorType, arguments: &[&dyn Utf16Display]| {
+            Utf16View::of_string(&error_type.message(arguments)).to_utf8()
+        };
+        assert_eq!(message(ErrorType::ArrayMaxSize, &[]), "Maximum array size exceeded");
         assert_eq!(
-            ErrorType::BadArgCountMany.message(&[&"Reflect.apply", &3]),
+            message(ErrorType::BadArgCountMany, &[&"Reflect.apply", &3]),
             "Reflect.apply() needs 3 arguments"
         );
-        assert_eq!(ErrorType::InvalidHint.message(&[&"x"]), "Invalid hint: \"x\"");
+        assert_eq!(message(ErrorType::InvalidHint, &[&"x"]), "Invalid hint: \"x\"");
+    }
+
+    #[cfg(libjs_runtime_tests_with_libgc)]
+    #[test]
+    fn messages_keep_unpaired_surrogates_of_their_arguments() {
+        let unpaired_surrogates = Utf16String::from_utf16(&[0x61, 0xD800, 0x62, 0xDC00]);
+        let message = ErrorType::NotAFunction.message(&[&unpaired_surrogates]);
+        let expected: Vec<u16> = [0x61, 0xD800, 0x62, 0xDC00]
+            .into_iter()
+            .chain(" is not a function".encode_utf16())
+            .collect();
+        assert_eq!(Utf16View::of_string(&message), Utf16View::Utf16(&expected));
     }
 
     #[test]

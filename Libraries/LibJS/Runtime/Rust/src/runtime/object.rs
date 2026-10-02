@@ -1253,7 +1253,7 @@ impl Object {
             return vm.throw_completion(
                 ErrorKind::TypeError,
                 ErrorType::PrivateFieldAlreadyDeclared,
-                &[&display_fly_string(&name.description)],
+                &[&name.description],
             );
         }
 
@@ -1284,7 +1284,7 @@ impl Object {
             return vm.throw_completion(
                 ErrorKind::TypeError,
                 ErrorType::PrivateFieldAlreadyDeclared,
-                &[&display_fly_string(&element.key.description)],
+                &[&element.key.description],
             );
         }
 
@@ -1305,7 +1305,7 @@ impl Object {
             return vm.throw_completion(
                 ErrorKind::TypeError,
                 ErrorType::PrivateFieldDoesNotExistOnObject,
-                &[&display_fly_string(&name.description)],
+                &[&name.description],
             );
         };
         let entry = self.private_element_at(entry);
@@ -1329,7 +1329,7 @@ impl Object {
             return vm.throw_completion(
                 ErrorKind::TypeError,
                 ErrorType::PrivateFieldGetAccessorWithoutGetter,
-                &[&display_fly_string(&name.description)],
+                &[&name.description],
             );
         };
 
@@ -1347,7 +1347,7 @@ impl Object {
             return vm.throw_completion(
                 ErrorKind::TypeError,
                 ErrorType::PrivateFieldDoesNotExistOnObject,
-                &[&display_fly_string(&name.description)],
+                &[&name.description],
             );
         };
         let entry = self.private_element_at(entry_index);
@@ -1368,7 +1368,7 @@ impl Object {
             return vm.throw_completion(
                 ErrorKind::TypeError,
                 ErrorType::PrivateFieldSetMethod,
-                &[&display_fly_string(&name.description)],
+                &[&name.description],
             );
         }
 
@@ -1388,7 +1388,7 @@ impl Object {
             return vm.throw_completion(
                 ErrorKind::TypeError,
                 ErrorType::PrivateFieldSetAccessorWithoutSetter,
-                &[&display_fly_string(&name.description)],
+                &[&name.description],
             );
         };
 
@@ -3730,10 +3730,6 @@ fn create_data_property_for_set(
         };
     }
     Ok(result)
-}
-
-fn display_fly_string(string: &Utf16FlyString) -> String {
-    crate::utf16::Utf16View::of_fly_string(string).to_utf8()
 }
 
 impl Object {

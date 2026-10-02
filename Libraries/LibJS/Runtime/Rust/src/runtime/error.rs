@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-use core::fmt;
 use core::ops::Deref;
 
 use ak::Utf16String;
@@ -22,6 +21,7 @@ use crate::runtime::object::MayInterfereWithIndexedPropertyAccess;
 use crate::runtime::primitive_string::PrimitiveString;
 use crate::runtime::property_attributes::{Attribute, PropertyAttributes};
 use crate::runtime::realm::Realm;
+use crate::utf16::Utf16Display;
 
 /// The constructors of the errors the runtime throws: %Error% and the NativeError constructors, as the C++ Error
 /// subclasses.
@@ -73,9 +73,9 @@ impl Vm {
         &self,
         kind: ErrorKind,
         error_type: ErrorType,
-        arguments: &[&dyn fmt::Display],
+        arguments: &[&dyn Utf16Display],
     ) -> ThrowCompletionOr<T> {
-        self.throw_completion_with_message(kind, error_type.message(arguments))
+        self.throw_completion_with_utf16_message(kind, error_type.message(arguments))
     }
 
     /// Throws a new error of `kind` with `message`.
@@ -286,7 +286,7 @@ mod tests {
         Value::from_string(PrimitiveString::create_from_utf8(vm, text))
     }
 
-    fn thrown(vm: &Vm, kind: ErrorKind, error_type: ErrorType, arguments: &[&dyn fmt::Display]) -> Gc<Object> {
+    fn thrown(vm: &Vm, kind: ErrorKind, error_type: ErrorType, arguments: &[&dyn Utf16Display]) -> Gc<Object> {
         let thrown = vm
             .throw_completion::<()>(kind, error_type, arguments)
             .expect_err("throw_completion throws");
