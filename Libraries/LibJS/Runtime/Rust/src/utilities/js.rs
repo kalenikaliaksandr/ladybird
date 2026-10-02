@@ -568,9 +568,13 @@ fn parse_and_run(
         result = vm.throw_completion_with_message(ErrorKind::SyntaxError, error_string);
     } else {
         // NB: The C++ js dumps the AST in color unless -i is given, which the frontend only offers to standard output
-        //     directly, so this dumps it without color.
+        //     directly, so this dumps it without color. Like the frontend, it prints through the standard output of
+        //     std, which writes each line out past the buffer that js prints its other output into.
         if options.dump_ast {
-            standard_output::outln(parsed.ast_dump().as_bytes());
+            let mut stdout = io::stdout().lock();
+            let _ = stdout.write_all(parsed.ast_dump().as_bytes());
+            let _ = stdout.write_all(b"\n");
+            let _ = stdout.flush();
         }
         let source_code = SourceCode::create(
             Utf16String::from_utf8(source_name),
