@@ -686,9 +686,8 @@ mod tests {
     use super::*;
     use crate::interpreter::slow_paths::control::test_script_realm::ScriptRealm;
     use crate::runtime::completion::{CompletionType, Must, Throw};
-    use crate::runtime::property_attributes::{Attribute, PropertyAttributes};
+
     use crate::runtime::realm::test_realm::{enumerable_keys, key, thrown_message};
-    use crate::runtime::shape::Shape;
 
     const PRELUDE: &str = r#"
 var log = "";
@@ -925,7 +924,6 @@ function withIterator(iteratorMethod) { let iterable = {}; iterable[Symbol.itera
         let script_realm = ScriptRealm::new(&vm, PRELUDE);
         let realm = script_realm.test_realm.realm;
         let names = &vm.names;
-        let shape = realm.iterator_result_object_shape();
         let result = create_iterator_result_object(&vm, realm, Value::from_i32(3), true);
         assert_eq!(enumerable_keys(&vm, &result), "value,done");
         assert!(result.get(&vm, &names.value).must() == Value::from_i32(3));
