@@ -63,6 +63,7 @@ use crate::runtime::property_attributes::{Attribute, PropertyAttributes};
 use crate::runtime::property_key::PropertyKey;
 use crate::runtime::proxy_constructor::ProxyConstructor;
 use crate::runtime::realm::Realm;
+use crate::runtime::reflect_object::ReflectObject;
 use crate::runtime::regexp_string_iterator_prototype::RegExpStringIteratorPrototype;
 use crate::runtime::set_iterator_prototype::SetIteratorPrototype;
 use crate::runtime::shape::Shape;
@@ -669,7 +670,6 @@ unimplemented_lazy_intrinsics! {
     intl_object: Object => "%Intl%",
     json_object: Object => "%JSON%",
     math_object: Object => "%Math%",
-    reflect_object: Object => "%Reflect%",
     temporal_object: Object => "%Temporal%",
     async_iterator_close_abstract_operation_function: FunctionObject => "AsyncIteratorClose, written in JavaScript",
     get_method_abstract_operation_function: FunctionObject => "GetMethod, written in JavaScript",
@@ -678,6 +678,17 @@ unimplemented_lazy_intrinsics! {
     iterator_complete_abstract_operation_function: FunctionObject => "IteratorComplete, written in JavaScript",
     from_async_array_constructor_function: FunctionObject => "%Array.fromAsync%",
     default_collator: Object => "default Intl.Collator",
+}
+
+impl Intrinsics {
+    pub fn reflect_object(&self, vm: &Vm) -> Gc<Object> {
+        if let Some(reflect_object) = self.reflect_object.get() {
+            return reflect_object;
+        }
+        let reflect_object = ReflectObject::create(vm, self.realm).upcast();
+        self.reflect_object.set(Some(reflect_object));
+        reflect_object
+    }
 }
 
 impl Intrinsics {
@@ -1059,13 +1070,18 @@ impl Intrinsics {
                 == self.generator_function_prototype_property_offset.get()
         );
 
-        // NB: Array.prototype.values, Date.now, JSON.parse, JSON.stringify and Object.prototype.toString come with
-        //     their builtins; until a realm has them, their intrinsic accessors stop the process.
+        // NB: Array.prototype.values, Date.now, JSON.parse and JSON.stringify come with their builtins; until a realm
+        //     has them, their intrinsic accessors stop the process.
         let array_prototype_values = self.array_prototype(vm).get_without_side_effects(vm, &names.values);
         if array_prototype_values.is_function() {
             self.array_prototype_values_function
                 .set(Some(array_prototype_values.as_function()));
         }
+        self.object_prototype_to_string_function.set(Some(
+            self.object_prototype(vm)
+                .get_without_side_effects(vm, &names.toString)
+                .as_function(),
+        ));
 
         assert!(self.array_prototype(vm).indexed_array_like_size() == 0);
         assert!(self.object_prototype(vm).indexed_array_like_size() == 0);
@@ -1336,6 +1352,12 @@ mod tests {
         ("Error.prototype", "toString=function:w-c"),
         ("Error.prototype", "stack=<getset>:-c"),
         ("Error", "isError=function:w-c"),
+        ("Object.prototype", "toString=function:w-c"),
+        ("Object.prototype", "__proto__=<getset>:-c"),
+        ("Object", "assign=function:w-c"),
+        ("Function.prototype", "bind=function:w-c"),
+        ("Function.prototype", "toString=function:w-c"),
+        ("globalThis", "Reflect=object:w-c"),
     ];
 
     fn compare_intrinsics_with_the_cpp_runtime(vm: &Vm, realm: Gc<Realm>) {
@@ -1403,7 +1425,7 @@ mod tests {
              EvalError=EvalError:w-c Function=Function:w-c Iterator=Iterator:w-c Number=Number:w-c Object=Object:w-c \
              Proxy=Proxy:w-c RangeError=RangeError:w-c ReferenceError=ReferenceError:w-c String=String:w-c \
              Symbol=Symbol:w-c SyntaxError=SyntaxError:w-c TypeError=TypeError:w-c URIError=URIError:w-c \
-             InternalError=InternalError:w-c"
+             Reflect=object:w-c InternalError=InternalError:w-c"
         );
     }
 
@@ -1627,11 +1649,11 @@ mod tests {
         let root_execution_context = initialize_realm(&vm);
         let realm = root_execution_context.realm();
         let intrinsics = realm.intrinsics();
-        let object_constructor = Value::from_object(intrinsics.object_constructor(&vm));
-        assert!(object_constructor.is_constructor());
+        let proxy_constructor = Value::from_object(intrinsics.proxy_constructor());
+        assert!(proxy_constructor.is_constructor());
         assert!(
-            thrown_message(|| call(&vm, object_constructor, Value::UNDEFINED, &[]))
-                .contains("ObjectConstructor::call, the [[Call]] of %Object%")
+            thrown_message(|| call(&vm, proxy_constructor, Value::UNDEFINED, &[]))
+                .contains("ProxyConstructor::call, the [[Call]] of %Proxy%")
         );
         let symbol_constructor = intrinsics.symbol_constructor(&vm);
         assert!(

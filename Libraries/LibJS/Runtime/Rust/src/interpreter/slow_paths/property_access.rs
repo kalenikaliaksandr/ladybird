@@ -1704,7 +1704,7 @@ mod tests {
         assert_eq!(key_of(Value::from_symbol(symbol)), PropertyKey::from(symbol));
 
         // An object without toString or valueOf has no primitive value.
-        let object = test_realm.object();
+        let object = Object::create(&vm, test_realm.realm, None);
         let message = thrown_message(|| Value::from_object(object).to_property_key(&vm));
         assert!(message.contains("Cannot convert object to string"), "{message}");
     }

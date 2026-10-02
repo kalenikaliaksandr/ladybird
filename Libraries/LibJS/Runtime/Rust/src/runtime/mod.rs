@@ -85,6 +85,7 @@ pub mod prototype_object;
 pub mod proxy_constructor;
 pub mod realm;
 pub mod reference;
+pub mod reflect_object;
 pub mod regexp_object;
 pub mod regexp_string_iterator_prototype;
 pub mod set_iterator_prototype;
