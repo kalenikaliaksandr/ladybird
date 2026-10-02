@@ -10,7 +10,6 @@ use super::bytecode_cache;
 use super::ffi;
 use super::rust_panic::abort_on_panic;
 use crate::ast;
-use crate::ast::StatementKind;
 use crate::ast_dump;
 use crate::bytecode;
 use crate::bytecode::executable::ExecutableData;
@@ -34,7 +33,6 @@ use crate::compile::new_module_async_generator;
 use crate::compile::new_program_generator;
 use crate::compile::parse;
 use crate::lexer;
-use crate::parser::Parser;
 use crate::parser::ProgramType;
 use crate::token;
 use std::cell::RefCell;
@@ -1219,62 +1217,26 @@ pub unsafe extern "C" fn rust_compile_builtin_file(
                 return;
             };
 
-            let mut parser = Parser::new(source_slice, ProgramType::Script);
-            let program = parser.parse_program(true); // strict mode
-
-            if parser.has_errors() {
-                let errors: Vec<String> = parser
-                    .errors()
-                    .iter()
-                    .map(|e| format!("{}:{}: {}", e.line, e.column, e.message))
-                    .collect();
-                panic!("Parse errors in builtin file: {}", errors.join("; "));
-            }
-
-            parser.scope_collector.analyze(
-                false,
-                &mut parser.arena.identifiers,
-                &parser.arena.strings,
-                &mut parser.arena.scopes,
-            );
+            let mut parsed = crate::compile::parse_builtin_file(source_slice);
 
             write_ast_dump_output(
-                &program,
-                &parser.function_table,
-                &parser.arena,
+                &parsed.program,
+                &parsed.function_table,
+                &parsed.arena,
                 ast_dump_output,
                 ast_dump_output_len,
             );
 
-            let scope_id = if let StatementKind::Program(ref data) = program.inner {
-                data.scope
-            } else {
-                return;
+            let context = ffi::SharedFunctionDataCreationContext {
+                vm_ptr,
+                source_code_ptr,
+                owner: ffi::SharedFunctionDataOwner::None,
             };
-
-            let arena = std::sync::Arc::new(std::mem::take(&mut parser.arena));
-            let scope = &arena.scopes[scope_id];
-            for child in &scope.children {
-                if let StatementKind::FunctionDeclaration(ref fd) = child.inner {
-                    let function_data = parser.function_table.take(fd.function_id);
-                    let subtable = parser.function_table.extract_reachable(&function_data, &arena.scopes);
-                    let sfd_ptr = ffi::create_sfd_for_gdi(
-                        function_data,
-                        subtable,
-                        ffi::SharedFunctionDataCreationContext {
-                            vm_ptr,
-                            source_code_ptr,
-                            owner: ffi::SharedFunctionDataOwner::None,
-                        },
-                        true, // strict
-                        arena.clone(),
-                    );
-                    if !sfd_ptr.is_null()
-                        && let Some(name_ident) = fd.name
-                    {
-                        let name = arena.name_of(name_ident);
-                        push_function(ctx, sfd_ptr, name.as_ptr(), name.len());
-                    }
+            for description in crate::compile::describe_builtin_file_functions(&mut parsed) {
+                let name = description.name.clone();
+                let sfd_ptr = ffi::create_shared_function_data_from_description(description, context);
+                if !sfd_ptr.is_null() {
+                    push_function(ctx, sfd_ptr, name.as_ptr(), name.len());
                 }
             }
         });
