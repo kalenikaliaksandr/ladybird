@@ -54,7 +54,6 @@ pub type GCGatherRootsCallback = unsafe extern "C" fn(context: *mut c_void, root
 unsafe extern "C" {
     pub fn gc_get_layout(layout: *mut GCLayout);
     pub fn gc_heap_region_base() -> usize;
-    pub fn gc_primitive_storage_cage_base() -> usize;
 
     pub fn gc_heap_create(
         gather_roots: GCGatherRootsCallback,

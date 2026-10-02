@@ -12,11 +12,13 @@ use core::time::Duration;
 use libjs_runtime_macros::Trace;
 use num_bigint::BigInt as NumBigInt;
 
+use crate::build_configuration::PRIMITIVE_STORAGE_CAGE_OFFSET_MASK;
 use crate::futex::{self, AtomicWaitResult};
 use crate::gc::class::{ExternalMemorySize, Finalize, GcCell, define_cell};
 use crate::gc::gc_ref_cell::GcRefCell;
 use crate::gc::heap::Heap;
 use crate::gc::visitor::{Trace, Visitor};
+use crate::gc::weak::GcWeak;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
 use crate::layout::object::Object;
@@ -31,13 +33,14 @@ use crate::runtime::intrinsics::Intrinsics;
 use crate::runtime::math_object::round_to_binary16;
 use crate::runtime::object::MayInterfereWithIndexedPropertyAccess;
 use crate::runtime::realm::Realm;
+use crate::runtime::typed_array::TypedArrayBase;
 use crate::runtime::value::same_value;
 use crate::runtime::value_conversions::MAX_ARRAY_LIKE_INDEX;
 
 /// GC::PrimitiveStorage::default_cage_size: data blocks live in a cage of this size, so no reservation can exceed it.
-const PRIMITIVE_STORAGE_CAGE_SIZE: usize = 4 << 40;
+const PRIMITIVE_STORAGE_CAGE_SIZE: usize = PRIMITIVE_STORAGE_CAGE_OFFSET_MASK as usize + 1;
 
-/// GC::PrimitiveStorage::invalid_offset, which every data block reports, since none of them lives in the cage.
+/// GC::PrimitiveStorage::invalid_offset, the offset of a data block without bytes in the cage.
 pub const INVALID_DATA_OFFSET: usize = usize::MAX;
 
 /// Table 71: The element types, which the C++ runtime spells as the template parameter of get_value<T>() and
@@ -118,14 +121,20 @@ pub enum ZeroFillNewBytes {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OutOfMemory;
 
-/// The memory of data blocks, which C++ takes from GC::PrimitiveStorage, the primitive storage cage. LibGC has no C
-/// interface to that allocator, so these blocks come from the system allocator and from reserved address space
-/// outside the cage, with the same capacities, the same zero filling and the same limit on what can be reserved.
+/// The memory of data blocks: GC::PrimitiveStorage, the primitive storage cage. LibGC has no C interface to that
+/// allocator, so the runtime reserves a cage of its own, which the VM hands the interpreter as the cage base, and
+/// allocates data blocks in it the way GC::PrimitiveStorage::Allocator does. The interpreter then addresses the
+/// elements of a typed array from that base and the offset the view caches.
 /// This is the only part of the runtime that touches the bytes of data blocks directly.
 mod backing_store {
+    use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+
     use super::{OutOfMemory, PRIMITIVE_STORAGE_CAGE_SIZE, ZeroFillNewBytes};
-    use core::ptr::NonNull;
-    use std::sync::OnceLock;
+
+    const SMALL_SLAB_SIZE: usize = 64 * 1024;
+    const MINIMUM_SMALL_SLOT_SIZE: usize = 16;
+    const MAXIMUM_SMALL_SLOT_SIZE: usize = 64 * 1024;
+    const SMALL_SIZE_CLASS_COUNT: usize = 13;
 
     fn page_size() -> usize {
         static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
@@ -133,73 +142,38 @@ mod backing_store {
         *PAGE_SIZE.get_or_init(|| usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap_or(4096))
     }
 
-    fn round_up_to_page(value: usize) -> Option<usize> {
+    fn round_up_to_page(value: usize) -> Result<usize, OutOfMemory> {
         let page = page_size();
-        Some(value.checked_add(page - 1)? & !(page - 1))
+        Ok(value.checked_add(page - 1).ok_or(OutOfMemory)? & !(page - 1))
     }
 
-    enum Storage {
-        /// From the system allocator, like the cage's slots of fixed-size storage.
-        Heap,
-        /// Address space reserved for the whole capacity, of which only the committed pages are accessible, like the
-        /// cage's large storage.
-        Reservation {
-            reservation_size: usize,
-            committed_size: usize,
-        },
-    }
-
-    /// One allocation of GC::PrimitiveStorage: a size within a capacity.
-    pub struct Allocation {
-        data: NonNull<u8>,
-        size: usize,
-        capacity: usize,
-        storage: Storage,
-    }
-
-    impl Allocation {
-        /// PrimitiveStorage::Allocator::allocate(): fixed-size storage unless `force_large` or the capacity exceeds
-        /// the size.
-        pub fn allocate(
-            size: usize,
-            capacity: usize,
-            zero_fill_new_bytes: ZeroFillNewBytes,
-            force_large: bool,
-        ) -> Result<Self, OutOfMemory> {
-            assert!(size <= capacity);
-            if !force_large && size == capacity {
-                return Self::allocate_fixed_size(size, zero_fill_new_bytes);
-            }
-            Self::allocate_reservation(size, capacity)
+    fn small_size_class_index(size: usize) -> Option<usize> {
+        let slot_size = size.max(MINIMUM_SMALL_SLOT_SIZE);
+        if slot_size > MAXIMUM_SMALL_SLOT_SIZE {
+            return None;
         }
 
-        fn allocate_fixed_size(size: usize, zero_fill_new_bytes: ZeroFillNewBytes) -> Result<Self, OutOfMemory> {
-            if size > PRIMITIVE_STORAGE_CAGE_SIZE {
-                return Err(OutOfMemory);
-            }
-            // SAFETY: Both allocate at least one byte and return null on failure.
-            let data = unsafe {
-                match zero_fill_new_bytes {
-                    ZeroFillNewBytes::Yes => libc::calloc(size.max(1), 1),
-                    ZeroFillNewBytes::No => libc::malloc(size.max(1)),
-                }
-            };
-            let data = NonNull::new(data.cast::<u8>()).ok_or(OutOfMemory)?;
-            Ok(Self {
-                data,
-                size,
-                capacity: size,
-                storage: Storage::Heap,
-            })
+        let mut class_size = MINIMUM_SMALL_SLOT_SIZE;
+        let mut index = 0;
+        while class_size < slot_size {
+            class_size <<= 1;
+            index += 1;
         }
+        Some(index)
+    }
 
-        fn allocate_reservation(size: usize, capacity: usize) -> Result<Self, OutOfMemory> {
-            let reservation_size = round_up_to_page(capacity).ok_or(OutOfMemory)?.max(page_size());
-            if reservation_size > PRIMITIVE_STORAGE_CAGE_SIZE {
-                return Err(OutOfMemory);
-            }
-            // SAFETY: Reserves fresh address space, which nothing else refers to.
-            let data = unsafe {
+    fn small_slot_size_for_class(index: usize) -> usize {
+        MINIMUM_SMALL_SLOT_SIZE << index
+    }
+
+    /// The address of the cage, reserved on first use, with an inaccessible page after it so that a masked
+    /// fixed-width access at the top edge cannot cross into an unrelated mapping. None if it cannot be reserved.
+    fn cage_base() -> Option<usize> {
+        static CAGE_BASE: OnceLock<Option<usize>> = OnceLock::new();
+        *CAGE_BASE.get_or_init(|| {
+            let reservation_size = PRIMITIVE_STORAGE_CAGE_SIZE.checked_add(page_size())?;
+            // SAFETY: Reserves fresh address space, which nothing else refers to and which is never released.
+            let mapping = unsafe {
                 libc::mmap(
                     core::ptr::null_mut(),
                     reservation_size,
@@ -209,21 +183,341 @@ mod backing_store {
                     0,
                 )
             };
-            if data == libc::MAP_FAILED {
+            (mapping != libc::MAP_FAILED).then(|| mapping.expose_provenance())
+        })
+    }
+
+    /// The cage base the interpreter addresses typed array elements from, like js_primitive_storage_cage_base.
+    pub fn primitive_storage_cage_base() -> usize {
+        cage_base().expect("the primitive storage cage can be reserved")
+    }
+
+    fn cage_address(offset: usize) -> *mut u8 {
+        let base = cage_base().expect("an allocation implies a cage");
+        core::ptr::with_exposed_provenance_mut(base + offset)
+    }
+
+    /// Core::System::commit_memory(): makes reserved pages of the cage accessible, as fresh zeroed memory.
+    fn commit_memory(offset: usize, size: usize) -> Result<(), OutOfMemory> {
+        // SAFETY: The pages are part of the cage and belong to the allocation being committed.
+        let result = unsafe {
+            libc::mmap(
+                cage_address(offset).cast(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_FIXED,
+                -1,
+                0,
+            )
+        };
+        if result == libc::MAP_FAILED {
+            return Err(OutOfMemory);
+        }
+        Ok(())
+    }
+
+    /// Core::System::decommit_memory(): returns pages of the cage to inaccessible reserved address space.
+    fn decommit_memory(offset: usize, size: usize) {
+        if size == 0 {
+            return;
+        }
+        // SAFETY: The pages are part of the cage and belong to the allocation being freed, which nothing refers to.
+        let result = unsafe {
+            libc::mmap(
+                cage_address(offset).cast(),
+                size,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_FIXED | libc::MAP_NORESERVE,
+                -1,
+                0,
+            )
+        };
+        assert!(result != libc::MAP_FAILED, "decommitting cage memory succeeds");
+    }
+
+    /// Fills `count` bytes of the cage with zero.
+    fn zero_bytes(offset: usize, count: usize) {
+        if count == 0 {
+            return;
+        }
+        // SAFETY: Callers only zero committed bytes of an allocation they own.
+        unsafe { cage_address(offset).write_bytes(0, count) };
+    }
+
+    #[derive(Clone, Copy)]
+    struct SmallAllocation {
+        size_class_index: usize,
+        slab_index: usize,
+        slot_index: u32,
+    }
+
+    #[derive(Clone, Copy)]
+    struct FreeRange {
+        offset: usize,
+        size: usize,
+    }
+
+    struct Slab {
+        offset: usize,
+        slot_count: u32,
+        used_slot_count: u32,
+        free_slots: Vec<u32>,
+    }
+
+    /// GC::PrimitiveStorage::Allocator.
+    struct Allocator {
+        next_offset: usize,
+        free_ranges: Vec<FreeRange>,
+        small_slabs: [Vec<Slab>; SMALL_SIZE_CLASS_COUNT],
+    }
+
+    static ALLOCATOR: Mutex<Allocator> = Mutex::new(Allocator {
+        next_offset: 0,
+        free_ranges: Vec::new(),
+        small_slabs: [const { Vec::new() }; SMALL_SIZE_CLASS_COUNT],
+    });
+
+    fn allocator() -> MutexGuard<'static, Allocator> {
+        ALLOCATOR.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    impl Allocator {
+        fn allocate_small_storage(
+            &mut self,
+            size: usize,
+            size_class_index: usize,
+            zero_fill_new_bytes: ZeroFillNewBytes,
+        ) -> Result<Allocation, OutOfMemory> {
+            cage_base().ok_or(OutOfMemory)?;
+
+            let slot_size = small_slot_size_for_class(size_class_index);
+            let slabs = &mut self.small_slabs[size_class_index];
+
+            for (slab_index, slab) in slabs.iter_mut().enumerate() {
+                let Some(slot_index) = slab.free_slots.pop() else {
+                    continue;
+                };
+                slab.used_slot_count += 1;
+                let offset = slab.offset + slot_index as usize * slot_size;
+                if zero_fill_new_bytes == ZeroFillNewBytes::Yes {
+                    zero_bytes(offset, size);
+                }
+                return Ok(Allocation::small(
+                    offset,
+                    size,
+                    slot_size,
+                    SmallAllocation {
+                        size_class_index,
+                        slab_index,
+                        slot_index,
+                    },
+                ));
+            }
+
+            self.allocate_from_new_slab(size_class_index, slot_size, size)
+        }
+
+        /// NB: Unlike C++, this never zero fills the first slot, since the pages of a new slab were just committed and
+        ///     are zero already.
+        fn allocate_from_new_slab(
+            &mut self,
+            size_class_index: usize,
+            slot_size: usize,
+            requested_size: usize,
+        ) -> Result<Allocation, OutOfMemory> {
+            if self.small_slabs[size_class_index].len() >= usize::from(u16::MAX) {
                 return Err(OutOfMemory);
             }
-            let mut allocation = Self {
-                data: NonNull::new(data.cast::<u8>()).ok_or(OutOfMemory)?,
-                size: 0,
-                capacity,
-                storage: Storage::Reservation {
-                    reservation_size,
-                    committed_size: 0,
+
+            let slab_offset = self.allocate_cage_range(SMALL_SLAB_SIZE)?;
+            if let Err(error) = commit_memory(slab_offset, SMALL_SLAB_SIZE) {
+                self.release_cage_range(slab_offset, SMALL_SLAB_SIZE);
+                return Err(error);
+            }
+
+            let slot_count = (SMALL_SLAB_SIZE / slot_size) as u32;
+            let mut free_slots = Vec::with_capacity(slot_count as usize);
+            free_slots.extend((1..slot_count).rev());
+            let slabs = &mut self.small_slabs[size_class_index];
+            let slab_index = slabs.len();
+            slabs.push(Slab {
+                offset: slab_offset,
+                slot_count,
+                used_slot_count: 1,
+                free_slots,
+            });
+
+            Ok(Allocation::small(
+                slab_offset,
+                requested_size,
+                slot_size,
+                SmallAllocation {
+                    size_class_index,
+                    slab_index,
+                    slot_index: 0,
                 },
-            };
-            // Freshly committed pages are zero, so the new bytes are zero either way.
-            allocation.resize(size, ZeroFillNewBytes::No)?;
-            Ok(allocation)
+            ))
+        }
+
+        fn allocate_large_storage(&mut self, size: usize, capacity: usize) -> Result<Allocation, OutOfMemory> {
+            cage_base().ok_or(OutOfMemory)?;
+
+            let reservation_size = round_up_to_page(capacity)?;
+            let offset = self.allocate_cage_range(reservation_size)?;
+            let committed_size = round_up_to_page(size)?;
+            if committed_size > 0
+                && let Err(error) = commit_memory(offset, committed_size)
+            {
+                self.release_cage_range(offset, reservation_size);
+                return Err(error);
+            }
+            // NB: Unlike C++, this never zero fills, since freshly committed pages are zero already.
+
+            Ok(Allocation {
+                offset,
+                size,
+                capacity,
+                reservation_size,
+                committed_size,
+                small_allocation: None,
+            })
+        }
+
+        fn allocate_cage_range(&mut self, reservation_size: usize) -> Result<usize, OutOfMemory> {
+            let reservation_size = round_up_to_page(reservation_size)?;
+            if reservation_size == 0 {
+                return Ok(self.next_offset);
+            }
+
+            if let Some(index) = self.free_ranges.iter().position(|range| range.size >= reservation_size) {
+                let range = &mut self.free_ranges[index];
+                let offset = range.offset;
+                range.offset += reservation_size;
+                range.size -= reservation_size;
+                if range.size == 0 {
+                    self.free_ranges.remove(index);
+                }
+                return Ok(offset);
+            }
+
+            let next_offset = round_up_to_page(self.next_offset)?;
+            let new_next_offset = next_offset.checked_add(reservation_size).ok_or(OutOfMemory)?;
+            if new_next_offset > PRIMITIVE_STORAGE_CAGE_SIZE {
+                return Err(OutOfMemory);
+            }
+
+            self.next_offset = new_next_offset;
+            Ok(next_offset)
+        }
+
+        fn deallocate(&mut self, allocation: &Allocation) {
+            if let Some(small_allocation) = allocation.small_allocation {
+                let slab = &mut self.small_slabs[small_allocation.size_class_index][small_allocation.slab_index];
+                assert!((slab.free_slots.len() as u32) < slab.slot_count);
+                slab.free_slots.push(small_allocation.slot_index);
+                assert!(slab.used_slot_count > 0);
+                slab.used_slot_count -= 1;
+                return;
+            }
+
+            if allocation.reservation_size > 0 {
+                decommit_memory(allocation.offset, allocation.committed_size);
+                self.release_cage_range(allocation.offset, allocation.reservation_size);
+            }
+        }
+
+        fn release_cage_range(&mut self, offset: usize, size: usize) {
+            let size = round_up_to_page(size).expect("a released range was reserved");
+            if size == 0 {
+                return;
+            }
+
+            if offset <= self.next_offset && size == self.next_offset - offset {
+                self.next_offset = offset;
+                self.reclaim_free_ranges_at_top();
+                return;
+            }
+
+            self.free_cage_range(offset, size);
+        }
+
+        fn free_cage_range(&mut self, offset: usize, size: usize) {
+            let mut insert_before = self.free_ranges.partition_point(|range| range.offset < offset);
+            self.free_ranges.insert(insert_before, FreeRange { offset, size });
+
+            if insert_before > 0 {
+                let previous = self.free_ranges[insert_before - 1];
+                let current = self.free_ranges[insert_before];
+                if previous.offset + previous.size == current.offset {
+                    self.free_ranges[insert_before - 1].size += current.size;
+                    self.free_ranges.remove(insert_before);
+                    insert_before -= 1;
+                }
+            }
+
+            if insert_before + 1 < self.free_ranges.len() {
+                let current = self.free_ranges[insert_before];
+                let next = self.free_ranges[insert_before + 1];
+                if current.offset + current.size == next.offset {
+                    self.free_ranges[insert_before].size += next.size;
+                    self.free_ranges.remove(insert_before + 1);
+                }
+            }
+
+            self.reclaim_free_ranges_at_top();
+        }
+
+        fn reclaim_free_ranges_at_top(&mut self) {
+            while let Some(range) = self.free_ranges.last() {
+                if range.offset > self.next_offset || range.size != self.next_offset - range.offset {
+                    return;
+                }
+
+                self.next_offset = range.offset;
+                self.free_ranges.pop();
+            }
+        }
+    }
+
+    /// One allocation of GC::PrimitiveStorage: a size within a capacity, at an offset into the cage.
+    pub struct Allocation {
+        offset: usize,
+        size: usize,
+        capacity: usize,
+        reservation_size: usize,
+        committed_size: usize,
+        small_allocation: Option<SmallAllocation>,
+    }
+
+    impl Allocation {
+        fn small(offset: usize, size: usize, slot_size: usize, small_allocation: SmallAllocation) -> Self {
+            Self {
+                offset,
+                size,
+                capacity: slot_size,
+                reservation_size: slot_size,
+                committed_size: slot_size,
+                small_allocation: Some(small_allocation),
+            }
+        }
+
+        /// PrimitiveStorage::Allocator::allocate(): a slot of a slab unless `force_large`, the capacity exceeds the
+        /// size or the size exceeds the largest slot.
+        pub fn allocate(
+            size: usize,
+            capacity: usize,
+            zero_fill_new_bytes: ZeroFillNewBytes,
+            force_large: bool,
+        ) -> Result<Self, OutOfMemory> {
+            assert!(size <= capacity);
+            let mut allocator = allocator();
+            if !force_large
+                && size == capacity
+                && let Some(size_class_index) = small_size_class_index(size)
+            {
+                return allocator.allocate_small_storage(size, size_class_index, zero_fill_new_bytes);
+            }
+            allocator.allocate_large_storage(size, capacity)
         }
 
         pub fn size(&self) -> usize {
@@ -234,33 +528,45 @@ mod backing_store {
             self.capacity
         }
 
+        pub fn offset(&self) -> usize {
+            self.offset
+        }
+
         pub fn data(&self) -> *mut u8 {
-            self.data.as_ptr()
+            cage_address(self.offset)
+        }
+
+        /// PrimitiveStorage::Allocator::commit_large_storage(), which only touches the allocation's own pages.
+        fn commit_large_storage(&mut self, new_size: usize) -> Result<(), OutOfMemory> {
+            assert!(self.small_allocation.is_none());
+            assert!(new_size <= self.capacity);
+
+            let new_committed_size = round_up_to_page(new_size)?;
+            if new_committed_size > self.committed_size {
+                commit_memory(
+                    self.offset + self.committed_size,
+                    new_committed_size - self.committed_size,
+                )?;
+                self.committed_size = new_committed_size;
+            }
+            Ok(())
         }
 
         /// PrimitiveStorage::Allocator::resize(): changes the size within the capacity.
         pub fn resize(&mut self, new_size: usize, zero_fill_new_bytes: ZeroFillNewBytes) -> Result<(), OutOfMemory> {
             assert!(new_size <= self.capacity);
-            if let Storage::Reservation { committed_size, .. } = &mut self.storage {
-                let new_committed_size = round_up_to_page(new_size).ok_or(OutOfMemory)?;
-                if new_committed_size > *committed_size {
-                    // SAFETY: The pages are part of this allocation's reservation.
-                    let result = unsafe {
-                        libc::mprotect(
-                            self.data.as_ptr().add(*committed_size).cast(),
-                            new_committed_size - *committed_size,
-                            libc::PROT_READ | libc::PROT_WRITE,
-                        )
-                    };
-                    if result != 0 {
-                        return Err(OutOfMemory);
-                    }
-                    *committed_size = new_committed_size;
-                }
+            let old_committed_size = self.committed_size;
+            if self.small_allocation.is_none() {
+                self.commit_large_storage(new_size)?;
             }
+
             if zero_fill_new_bytes == ZeroFillNewBytes::Yes && new_size > self.size {
-                // SAFETY: The bytes up to the new size are accessible.
-                unsafe { self.data.as_ptr().add(self.size).write_bytes(0, new_size - self.size) };
+                // NB: Unlike C++, this only zero fills the bytes that were committed before, since the pages this
+                //     resize committed are zero already.
+                let zero_end = new_size.min(old_committed_size);
+                if zero_end > self.size {
+                    zero_bytes(self.offset + self.size, zero_end - self.size);
+                }
             }
             self.size = new_size;
             Ok(())
@@ -278,16 +584,9 @@ mod backing_store {
             let allocation = Self::allocate(new_size, new_capacity, ZeroFillNewBytes::No, force_large)?;
             let bytes_to_copy = self.size.min(new_size);
             // SAFETY: Both allocations have at least that many accessible bytes, and they are distinct.
-            unsafe { core::ptr::copy_nonoverlapping(self.data.as_ptr(), allocation.data.as_ptr(), bytes_to_copy) };
+            unsafe { core::ptr::copy_nonoverlapping(self.data(), allocation.data(), bytes_to_copy) };
             if zero_fill_new_bytes == ZeroFillNewBytes::Yes && new_size > self.size {
-                // SAFETY: The bytes up to the new size are accessible.
-                unsafe {
-                    allocation
-                        .data
-                        .as_ptr()
-                        .add(self.size)
-                        .write_bytes(0, new_size - self.size);
-                };
+                zero_bytes(allocation.offset + self.size, new_size - self.size);
             }
             Ok(allocation)
         }
@@ -295,14 +594,7 @@ mod backing_store {
 
     impl Drop for Allocation {
         fn drop(&mut self) {
-            match self.storage {
-                // SAFETY: The memory came from the system allocator and nothing refers to it any more.
-                Storage::Heap => unsafe { libc::free(self.data.as_ptr().cast()) },
-                Storage::Reservation { reservation_size, .. } => {
-                    // SAFETY: The reservation is this allocation's, and nothing refers to it any more.
-                    unsafe { libc::munmap(self.data.as_ptr().cast(), reservation_size) };
-                }
-            }
+            allocator().deallocate(self);
         }
     }
 
@@ -321,6 +613,7 @@ mod backing_store {
 }
 
 use backing_store::Allocation;
+pub use backing_store::primitive_storage_cage_base;
 
 /// DataBlock::OwnedBackingStore: an allocation of the primitive storage, or no allocation at all for a data block
 /// of zero bytes, like an invalid handle.
@@ -371,6 +664,10 @@ impl OwnedBackingStore {
 
     fn data(&self) -> *mut u8 {
         self.allocation.as_ref().map_or(core::ptr::null_mut(), Allocation::data)
+    }
+
+    pub fn offset(&self) -> usize {
+        self.allocation.as_ref().map_or(INVALID_DATA_OFFSET, Allocation::offset)
     }
 
     pub fn set_size(&mut self, new_size: usize, zero_fill_new_bytes: ZeroFillNewBytes) {
@@ -578,11 +875,18 @@ impl DataBlock {
     }
 
     pub fn offset(&self) -> usize {
-        INVALID_DATA_OFFSET
+        match &self.byte_buffer {
+            DataBlockStorage::Empty => INVALID_DATA_OFFSET,
+            DataBlockStorage::Owned(buffer) => buffer.offset(),
+        }
     }
 
+    /// Every allocation of an owned block lives in the cage.
     pub fn is_caged(&self) -> bool {
-        false
+        match &self.byte_buffer {
+            DataBlockStorage::Empty => false,
+            DataBlockStorage::Owned(_) => true,
+        }
     }
 
     pub fn external_memory_size(&self) -> usize {
@@ -719,6 +1023,9 @@ pub struct ArrayBuffer {
     // The various detach related members of ArrayBuffer are not used by any ECMA262 functionality,
     // but are required to be available for the use of various harnesses like the Test262 test runner.
     detach_key: Cell<Value>,
+    /// The views that cache the offset of this buffer's data in the cage, which has to be invalidated once the data
+    /// moves or goes away. C++ links them in an intrusive list that a view leaves when it is finalized.
+    cached_views: GcRefCell<Vec<GcWeak<TypedArrayBase>>>,
 }
 
 define_cell!(
@@ -766,6 +1073,7 @@ impl ArrayBuffer {
             data_block: GcRefCell::new(DataBlock::new(buffer, is_shared)),
             max_byte_length: Cell::new(None),
             detach_key: Cell::new(Value::UNDEFINED),
+            cached_views: GcRefCell::new(Vec::new()),
         }
     }
 
@@ -776,6 +1084,7 @@ impl ArrayBuffer {
             data_block: GcRefCell::new(DataBlock::empty(is_shared)),
             max_byte_length: Cell::new(None),
             detach_key: Cell::new(Value::UNDEFINED),
+            cached_views: GcRefCell::new(Vec::new()),
         }
     }
 
@@ -902,6 +1211,7 @@ impl ArrayBuffer {
         let old_external_memory_size = self.external_memory_size();
         let is_shared = self.data_block.borrow().is_shared;
         let block = self.data_block.replace(DataBlock::empty(is_shared));
+        self.invalidate_cached_typed_array_view_offsets();
         self.account_external_memory_change(vm, old_external_memory_size, 0);
         Ok(block)
     }
@@ -936,7 +1246,11 @@ impl ArrayBuffer {
     // Used by allocate_array_buffer() to attach the data block after construction
     pub fn set_data_block(&self, vm: &Vm, block: DataBlock) {
         let old_external_memory_size = self.external_memory_size();
+        let old_data_offset = self.data_offset();
         drop(self.data_block.replace(block));
+        if self.data_offset() != old_data_offset {
+            self.invalidate_cached_typed_array_view_offsets();
+        }
         self.account_external_memory_change(vm, old_external_memory_size, self.external_memory_size());
     }
 
@@ -951,14 +1265,22 @@ impl ArrayBuffer {
         zero_fill_new_bytes: ZeroFillNewBytes,
     ) -> Result<(), OutOfMemory> {
         let old_external_memory_size = self.external_memory_size();
+        let old_data_offset = self.data_offset();
         self.data_block.borrow_mut().try_resize(new_size, zero_fill_new_bytes)?;
+        if self.data_offset() != old_data_offset {
+            self.invalidate_cached_typed_array_view_offsets();
+        }
         self.did_change_data_block_capacity(vm, old_external_memory_size);
         Ok(())
     }
 
     pub fn try_ensure_capacity(&self, vm: &Vm, new_capacity: usize) -> Result<(), OutOfMemory> {
         let old_external_memory_size = self.external_memory_size();
+        let old_data_offset = self.data_offset();
         self.data_block.borrow_mut().try_ensure_capacity(new_capacity)?;
+        if self.data_offset() != old_data_offset {
+            self.invalidate_cached_typed_array_view_offsets();
+        }
         self.did_change_data_block_capacity(vm, old_external_memory_size);
         Ok(())
     }
@@ -973,6 +1295,7 @@ impl ArrayBuffer {
 
     pub fn detach_buffer(&self, vm: &Vm) {
         let old_external_memory_size = self.external_memory_size();
+        self.invalidate_cached_typed_array_view_offsets();
         let is_shared = self.data_block.borrow().is_shared;
         drop(self.data_block.replace(DataBlock::empty(is_shared)));
         self.account_external_memory_change(vm, old_external_memory_size, 0);
@@ -992,12 +1315,36 @@ impl ArrayBuffer {
         self.max_byte_length.get().is_none()
     }
 
+    pub fn register_cached_typed_array_view(&self, vm: &Vm, view: Gc<TypedArrayBase>) {
+        let view = GcWeak::new(vm.heap(), view);
+        let mut cached_views = self.cached_views.borrow_mut();
+        // NB: Views that died stay in the list until it is full, which keeps registering amortized constant time.
+        if cached_views.len() == cached_views.capacity() {
+            cached_views.retain(|view| view.get().is_some());
+        }
+        cached_views.push(view);
+    }
+
+    fn invalidate_cached_typed_array_view_offsets(&self) {
+        let cached_views = self.cached_views.replace(Vec::new());
+        for cached_view in &cached_views {
+            if let Some(view) = cached_view.get()
+                && core::ptr::eq(view.viewed_array_buffer().as_ptr(), self)
+            {
+                view.invalidate_cached_data_offset();
+            }
+        }
+    }
+
     pub fn can_cache_typed_array_view_data_offset(&self) -> bool {
         let data_block = self.data_block.borrow();
         !matches!(data_block.byte_buffer, DataBlockStorage::Empty)
             && self.is_fixed_length()
             && data_block.is_caged()
             && !data_block.is_cross_process_shared()
+            // NB: C++ backs every fixed-length shared block with cross-process shared memory, whose views stay on the
+            //     atomic slow path, and fixed-length shared blocks are owned here.
+            && data_block.is_shared == Shared::No
     }
 
     // 25.2.2.2 IsSharedArrayBuffer ( obj ), https://tc39.es/ecma262/#sec-issharedarraybuffer
