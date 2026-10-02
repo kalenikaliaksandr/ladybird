@@ -75,7 +75,6 @@ impl Deref for FinalizationRegistry {
 
 impl Finalize for FinalizationRegistry {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.records.replace(FinalizationRecords::default()));
     }
 }

@@ -57,7 +57,6 @@ impl Deref for ListFormat {
 
 impl Finalize for ListFormat {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.formatter.replace(None));
     }
 }

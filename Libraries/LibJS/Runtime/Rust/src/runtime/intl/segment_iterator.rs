@@ -46,7 +46,6 @@ impl Deref for SegmentIterator {
 
 impl Finalize for SegmentIterator {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.iterating_segmenter.replace(None));
     }
 }

@@ -60,7 +60,6 @@ impl Deref for Collator {
 
 impl Finalize for Collator {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.collator.replace(None));
     }
 }

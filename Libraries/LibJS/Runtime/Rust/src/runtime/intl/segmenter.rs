@@ -50,7 +50,6 @@ impl Deref for Segmenter {
 
 impl Finalize for Segmenter {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.segmenter.replace(None));
     }
 }

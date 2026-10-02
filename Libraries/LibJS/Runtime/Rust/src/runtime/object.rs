@@ -16,7 +16,7 @@ use libjs_runtime_macros::Trace;
 
 use crate::bytecode::executable::{PropertyLookupCache, StaticPropertyLookupCacheSite};
 use crate::bytecode::property_access::{Strict, put_by_property_key};
-use crate::gc::class::{Class, Extends, Finalize, GcCell, define_cell};
+use crate::gc::class::{Class, Extends, GcCell, define_cell};
 use crate::gc::gc_ref_cell::GcRefCell;
 use crate::gc::root::MarkedVec;
 use crate::gc::visitor::{Trace, Visitor};
@@ -77,7 +77,7 @@ pub struct PrivateElements(Cell<Option<NonNull<GcRefCell<Vec<PrivateElement>>>>>
 
 impl PrivateElements {
     fn get(&self) -> Option<&GcRefCell<Vec<PrivateElement>>> {
-        // SAFETY: The elements are owned by the object and live until it is finalized.
+        // SAFETY: The elements are owned by the object and live until it is destroyed.
         self.0.get().map(|elements| unsafe { elements.as_ref() })
     }
 
@@ -292,7 +292,7 @@ pub static ORDINARY_OBJECT_METHODS: ObjectMethods = ObjectMethods {
     as_builtin_iterator_if_next_is_not_redefined: |_, _| None,
 };
 
-define_cell!(Object, Object, methods: ORDINARY_OBJECT_METHODS, finalize: finalize);
+define_cell!(Object, Object, methods: ORDINARY_OBJECT_METHODS);
 
 // SAFETY: Visits the shape, the named properties the shape describes, the indexed properties and the private
 // elements, which are all the cells an object reaches.
@@ -324,8 +324,10 @@ unsafe impl Trace for Object {
     }
 }
 
-impl Finalize for Object {
-    fn finalize(&self) {
+/// Object::~Object(), which LibGC runs as it sweeps the object, rather than in a finalizer every dead object would
+/// have to visit while the world is stopped.
+impl Drop for Object {
+    fn drop(&mut self) {
         self.free_indexed_elements();
         let named_properties = self.named_properties.get();
         if !named_properties.is_null() && !self.named_storage_is_inline() {

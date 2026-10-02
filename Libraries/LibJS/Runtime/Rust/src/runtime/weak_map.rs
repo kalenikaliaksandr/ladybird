@@ -59,7 +59,6 @@ impl Deref for WeakMap {
 
 impl Finalize for WeakMap {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.values.replace(WeakMapValues::default()));
     }
 }

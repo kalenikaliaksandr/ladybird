@@ -54,7 +54,6 @@ impl Deref for WeakSet {
 
 impl Finalize for WeakSet {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.values.replace(WeakSetValues::default()));
     }
 }

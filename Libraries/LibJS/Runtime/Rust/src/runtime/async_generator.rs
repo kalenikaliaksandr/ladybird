@@ -62,7 +62,6 @@ define_cell!(AsyncGenerator, Object, extends: [Object], finalize: finalize);
 
 impl Finalize for AsyncGenerator {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.async_generator_queue.replace(VecDeque::new()));
         drop(self.async_generator_context.replace(None));
     }

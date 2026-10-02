@@ -121,7 +121,6 @@ impl Deref for DateTimeFormat {
 
 impl Finalize for DateTimeFormat {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         for formatter in [
             &self.formatter,
             &self.temporal_plain_date_formatter,

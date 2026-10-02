@@ -107,7 +107,6 @@ impl Deref for Promise {
 
 impl Finalize for Promise {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.fulfill_reactions.replace(Vec::new()));
         drop(self.reject_reactions.replace(Vec::new()));
     }

@@ -61,7 +61,6 @@ impl Deref for RelativeTimeFormat {
 
 impl Finalize for RelativeTimeFormat {
     fn finalize(&self) {
-        Finalize::finalize(&self.base);
         drop(self.formatter.replace(None));
     }
 }
