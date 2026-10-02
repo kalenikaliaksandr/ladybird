@@ -96,6 +96,7 @@ pub mod shape;
 pub mod shared_function_instance_data;
 pub mod string_constructor;
 pub mod string_conversions;
+pub mod string_iterator;
 pub mod string_iterator_prototype;
 pub mod string_object;
 pub mod string_prototype;

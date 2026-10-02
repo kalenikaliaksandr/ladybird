@@ -617,6 +617,12 @@ define_static_property_lookup_cache_sites! {
     ArraySpeciesCreateConstructor,
     ArraySpeciesCreateSpecies,
     JSONSerializeToJSON,
+    StringPrototypeMatchMatcher,
+    StringPrototypeMatchAllMatcher,
+    StringPrototypeReplaceReplacer,
+    StringPrototypeReplaceAllReplacer,
+    StringPrototypeSearchSearcher,
+    StringPrototypeSplitSplitter,
 }
 
 /// The caches of the static call sites, one set per VM, which prunes them like the caches of executables.
