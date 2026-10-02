@@ -24,16 +24,12 @@ use crate::compile::FunctionPrecompileMode;
 use crate::compile::ParsedProgram;
 use crate::compile::ScriptDeclarations;
 use crate::compile::collect_eval_declarations;
-use crate::compile::collect_module_var_names;
 use crate::compile::collect_script_declarations;
 use crate::compile::compile_function_payload_to_bytecode;
 use crate::compile::compile_module_as_async_to_bytecode;
 use crate::compile::compile_parsed_program_off_thread_impl;
 use crate::compile::compile_program_body_to_bytecode;
 use crate::compile::compile_script;
-use crate::compile::for_each_bound_name;
-use crate::compile::module_default_export_binding_name;
-use crate::compile::module_environment_scope;
 use crate::compile::new_module_async_generator;
 use crate::compile::new_program_generator;
 use crate::compile::parse;
@@ -1324,26 +1320,16 @@ pub unsafe extern "C" fn rust_compile_parsed_module(
                 owner: ffi::SharedFunctionDataOwner::List(shared_function_data_list_ptr),
             };
 
-            // 1. Report has_top_level_await.
-            (cb.set_has_top_level_await)(module_context, parsed.has_top_level_await);
-
-            // 2. Process imports and exports.
-            extract_module_metadata(&parsed.arena.scopes[parsed.scope_ref], module_context, cb);
-
-            // 3. Extract var declared names and lexical bindings.
-            extract_module_declarations(
+            // 1. Hand C++ the module's records.
+            let declarations = crate::compile::collect_module_declarations(
                 &parsed.arena.scopes[parsed.scope_ref],
-                shared_function_data_context,
-                module_context,
-                cb,
+                parsed.has_top_level_await,
                 &mut parsed.function_table,
                 &parsed.arena,
             );
+            push_module_declarations(declarations, shared_function_data_context, module_context, cb);
 
-            // 4. Compute requested modules (sorted by source offset).
-            extract_requested_modules(&parsed.arena.scopes[parsed.scope_ref], module_context, cb);
-
-            // 5. Compile module body.
+            // 2. Compile module body.
             if parsed.has_top_level_await {
                 let exec_ptr = compile_module_as_async(
                     &parsed.program,
@@ -1412,18 +1398,13 @@ pub unsafe extern "C" fn rust_materialize_compiled_module(
                 owner: ffi::SharedFunctionDataOwner::List(shared_function_data_list_ptr),
             };
 
-            (cb.set_has_top_level_await)(module_context, parsed.has_top_level_await);
-            extract_module_metadata(&parsed.arena.scopes[parsed.scope_ref], module_context, cb);
-
-            extract_module_declarations(
+            let declarations = crate::compile::collect_module_declarations(
                 &parsed.arena.scopes[parsed.scope_ref],
-                shared_function_data_context,
-                module_context,
-                cb,
+                parsed.has_top_level_await,
                 &mut parsed.function_table,
                 &parsed.arena,
             );
-            extract_requested_modules(&parsed.arena.scopes[parsed.scope_ref], module_context, cb);
+            push_module_declarations(declarations, shared_function_data_context, module_context, cb);
 
             match bytecode {
                 CompiledProgramBytecode::AsyncModule(executable) => {
@@ -1639,287 +1620,91 @@ pub unsafe extern "C" fn rust_compile_module(
     }
 }
 
-/// Extract import/export metadata from a module's scope and call C++ callbacks.
-unsafe fn extract_module_metadata(scope: &ast::ScopeData, ctx: *mut c_void, cb: &ModuleCallbacks) {
-    unsafe {
-        use ast::ExportEntryKind;
-        use ast::StatementKind;
-
-        // Collect all import entries with their module requests.
-        struct ImportEntryWithRequest {
-            import_name: Option<ast::Utf16String>,
-            local_name: ast::Utf16String,
-            module_request: ast::ModuleRequest,
-        }
-        let mut all_import_entries: Vec<ImportEntryWithRequest> = Vec::new();
-
-        for child in &scope.children {
-            if let StatementKind::Import(ref import_data) = child.inner {
-                for entry in &import_data.entries {
-                    // Report each import entry.
-                    let (in_ptr, in_len, is_ns) = entry
-                        .import_name
-                        .as_ref()
-                        .map_or((std::ptr::null(), 0, true), |n| (n.as_ptr(), n.len(), false));
-                    let (keys, values) = build_attribute_slices(&import_data.module_request.attributes);
-                    (cb.push_import_entry)(
-                        ctx,
-                        in_ptr,
-                        in_len,
-                        is_ns,
-                        entry.local_name.as_ptr(),
-                        entry.local_name.len(),
-                        import_data.module_request.module_specifier.as_ptr(),
-                        import_data.module_request.module_specifier.len(),
-                        keys.as_ptr(),
-                        values.as_ptr(),
-                        keys.len(),
-                    );
-
-                    all_import_entries.push(ImportEntryWithRequest {
-                        import_name: entry.import_name.clone(),
-                        local_name: entry.local_name.clone(),
-                        module_request: import_data.module_request.clone(),
-                    });
-                }
-            }
-        }
-
-        if let Some(name) = module_default_export_binding_name(scope) {
-            (cb.set_default_export_binding)(ctx, name.as_ptr(), name.len());
-        }
-
-        // Process export entries (matching SourceTextModule::parse steps 9-10).
-        for child in &scope.children {
-            let StatementKind::Export(ref export_data) = child.inner else {
-                continue;
-            };
-
-            for entry in &export_data.entries {
-                if entry.kind == ExportEntryKind::EmptyNamedExport {
-                    break;
-                }
-
-                let has_module_request = export_data.module_request.is_some();
-
-                if !has_module_request {
-                    // No module request: check against import entries.
-                    let matching_import = all_import_entries
-                        .iter()
-                        .find(|ie| entry.local_or_import_name.as_ref() == Some(&ie.local_name));
-
-                    if let Some(import_entry) = matching_import {
-                        if import_entry.import_name.is_none() {
-                            // Re-export of an imported module namespace object becomes an indirect namespace export.
-                            call_export_callback(
-                                cb.push_indirect_export,
-                                ctx,
-                                ExportEntryKind::ModuleRequestAll as u8,
-                                entry.export_name.as_ref(),
-                                None,
-                                Some(&import_entry.module_request),
-                            );
-                        } else {
-                            // Re-export of a specific binding → indirect export.
-                            call_export_callback(
-                                cb.push_indirect_export,
-                                ctx,
-                                ExportEntryKind::NamedExport as u8,
-                                entry.export_name.as_ref(),
-                                import_entry.import_name.as_ref(),
-                                Some(&import_entry.module_request),
-                            );
-                        }
-                    } else {
-                        // Direct local export.
-                        call_export_callback(
-                            cb.push_local_export,
-                            ctx,
-                            entry.kind as u8,
-                            entry.export_name.as_ref(),
-                            entry.local_or_import_name.as_ref(),
-                            None,
-                        );
-                    }
-                } else if entry.kind == ExportEntryKind::ModuleRequestAllButDefault {
-                    // export * from "module"
-                    call_export_callback(
-                        cb.push_star_export,
-                        ctx,
-                        entry.kind as u8,
-                        entry.export_name.as_ref(),
-                        entry.local_or_import_name.as_ref(),
-                        export_data.module_request.as_ref(),
-                    );
-                } else {
-                    // export { x } from "module" or export { x as y } from "module"
-                    call_export_callback(
-                        cb.push_indirect_export,
-                        ctx,
-                        entry.kind as u8,
-                        entry.export_name.as_ref(),
-                        entry.local_or_import_name.as_ref(),
-                        export_data.module_request.as_ref(),
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// Extract var declared names and lexical bindings from a module scope.
-unsafe fn extract_module_declarations(
-    scope: &ast::ScopeData,
+/// Hands C++ what ParseModule records of a module, through the callbacks of its ModuleBuilder, creating the
+/// SharedFunctionInstanceData of each function to initialize as it goes.
+unsafe fn push_module_declarations(
+    declarations: crate::compile::ModuleDeclarations,
     shared_function_data_context: ffi::SharedFunctionDataCreationContext,
     ctx: *mut c_void,
     cb: &ModuleCallbacks,
-    function_table: &mut ast::FunctionTable,
-    arena: &std::sync::Arc<ast::AstArena>,
 ) {
     unsafe {
-        use ast::StatementKind;
+        (cb.set_has_top_level_await)(ctx, declarations.has_top_level_await);
 
-        let default_name: ast::Utf16String = utf16!("*default*").into();
-        let module_environment_scope = module_environment_scope(scope, arena);
+        for entry in &declarations.import_entries {
+            let (import_name, import_name_len, is_namespace) = entry
+                .import_name
+                .as_ref()
+                .map_or((std::ptr::null(), 0, true), |name| (name.as_ptr(), name.len(), false));
+            let (keys, values) = build_attribute_slices(&entry.module_request.attributes);
+            (cb.push_import_entry)(
+                ctx,
+                import_name,
+                import_name_len,
+                is_namespace,
+                entry.local_name.as_ptr(),
+                entry.local_name.len(),
+                entry.module_request.module_specifier.as_ptr(),
+                entry.module_request.module_specifier.len(),
+                keys.as_ptr(),
+                values.as_ptr(),
+                keys.len(),
+            );
+        }
 
-        // Var declared names (walk all nesting levels).
-        for child in &scope.children {
-            collect_module_var_names(&child.inner, arena, &mut |name| {
-                (cb.push_var_name)(ctx, name.as_ptr(), name.len());
+        if let Some(name) = &declarations.default_export_binding_name {
+            (cb.set_default_export_binding)(ctx, name.as_ptr(), name.len());
+        }
+
+        for (callback, entries) in [
+            (cb.push_local_export, &declarations.local_export_entries),
+            (cb.push_indirect_export, &declarations.indirect_export_entries),
+            (cb.push_star_export, &declarations.star_export_entries),
+        ] {
+            for entry in entries {
+                call_export_callback(
+                    callback,
+                    ctx,
+                    entry.kind as u8,
+                    entry.export_name.as_ref(),
+                    entry.local_or_import_name.as_ref(),
+                    entry.module_request.as_ref(),
+                );
+            }
+        }
+
+        for name in &declarations.var_names {
+            (cb.push_var_name)(ctx, name.as_ptr(), name.len());
+        }
+
+        for function in declarations.functions_to_initialize {
+            let sfd_ptr =
+                ffi::create_shared_function_data_from_description(function.description, shared_function_data_context);
+            if function.is_anonymous_default_export {
+                module_sfd_set_name(sfd_ptr, function.name.as_ptr(), function.name.len());
+            }
+            (cb.push_function)(ctx, sfd_ptr, function.name.as_ptr(), function.name.len());
+        }
+
+        for binding in &declarations.lexical_bindings {
+            let function_index = binding.function_index.map_or(-1, |index| {
+                i32::try_from(index).expect("the function index fits in i32")
             });
+            (cb.push_lexical_binding)(
+                ctx,
+                binding.name.as_ptr(),
+                binding.name.len(),
+                binding.is_constant,
+                function_index,
+            );
         }
 
-        // Lexical bindings and functions to initialize.
-        let mut function_count: i32 = 0;
-        for child in &scope.children {
-            let (declaration, is_exported) = match &child.inner {
-                StatementKind::Export(export_data) => {
-                    if let Some(ref stmt) = export_data.statement {
-                        (&stmt.inner, true)
-                    } else {
-                        continue;
-                    }
-                }
-                other => (other, false),
-            };
-
-            match declaration {
-                StatementKind::FunctionDeclaration(fd) => {
-                    let is_default = is_exported
-                        && fd
-                            .name
-                            .is_some_and(|n| arena.name_of(n).as_slice() == default_name.as_slice());
-
-                    let function_data = function_table.take(fd.function_id);
-                    let subtable = function_table.extract_reachable(&function_data, &arena.scopes);
-                    let sfd_ptr = ffi::create_shared_function_data(
-                        function_data,
-                        subtable,
-                        shared_function_data_context,
-                        true,
-                        None,
-                        arena.clone(),
-                        Some(module_environment_scope.clone()),
-                    );
-                    if sfd_ptr.is_null() {
-                        continue;
-                    }
-
-                    // Get the binding name from the AST (e.g., "*default*" for anonymous defaults).
-                    let binding_name = if let Some(name_ident) = fd.name {
-                        arena.name_of(name_ident).clone()
-                    } else {
-                        continue;
-                    };
-
-                    // If default export with *default* name, set the SFD display name to "default".
-                    let sfd_name = if is_default {
-                        let sfd_display_name = utf16!("default");
-                        module_sfd_set_name(sfd_ptr, sfd_display_name.as_ptr(), sfd_display_name.len());
-                        let display_name: ast::Utf16String = sfd_display_name.into();
-                        display_name
-                    } else {
-                        binding_name.clone()
-                    };
-
-                    let function_index = function_count;
-                    (cb.push_function)(ctx, sfd_ptr, sfd_name.as_ptr(), sfd_name.len());
-                    function_count += 1;
-
-                    // Lexical binding uses the AST name (e.g., "*default*").
-                    (cb.push_lexical_binding)(ctx, binding_name.as_ptr(), binding_name.len(), false, function_index);
-                }
-                StatementKind::ClassDeclaration(class_data) => {
-                    if let Some(name_ident) = class_data.name {
-                        let name = arena.name_of(name_ident);
-                        (cb.push_lexical_binding)(ctx, name.as_ptr(), name.len(), false, -1);
-                    }
-                }
-                StatementKind::VariableDeclaration(vd) if vd.kind != ast::DeclarationKind::Var => {
-                    let is_constant = vd.kind == ast::DeclarationKind::Const;
-                    for declaration in &vd.declarations {
-                        for_each_bound_name(&declaration.target, arena, &mut |name| {
-                            (cb.push_lexical_binding)(ctx, name.as_ptr(), name.len(), is_constant, -1);
-                        });
-                    }
-                }
-                StatementKind::UsingDeclaration(declarations) => {
-                    for declaration in declarations.iter() {
-                        for_each_bound_name(&declaration.target, arena, &mut |name| {
-                            (cb.push_lexical_binding)(ctx, name.as_ptr(), name.len(), false, -1);
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-/// Extract requested modules sorted by source offset.
-unsafe fn extract_requested_modules(scope: &ast::ScopeData, ctx: *mut c_void, cb: &ModuleCallbacks) {
-    unsafe {
-        use ast::StatementKind;
-
-        struct RequestedModule {
-            source_offset: u32,
-            specifier: ast::Utf16String,
-            attributes: Vec<ast::ImportAttribute>,
-        }
-
-        let mut modules: Vec<RequestedModule> = Vec::new();
-
-        for child in &scope.children {
-            match &child.inner {
-                StatementKind::Import(import_data) => {
-                    modules.push(RequestedModule {
-                        source_offset: child.range.start.offset,
-                        specifier: import_data.module_request.module_specifier.clone(),
-                        attributes: import_data.module_request.attributes.clone(),
-                    });
-                }
-                StatementKind::Export(export_data) => {
-                    if let Some(ref mr) = export_data.module_request {
-                        modules.push(RequestedModule {
-                            source_offset: child.range.start.offset,
-                            specifier: mr.module_specifier.clone(),
-                            attributes: mr.attributes.clone(),
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Sort by source offset (spec requirement).
-        modules.sort_by_key(|m| m.source_offset);
-
-        for module in &modules {
-            let (keys, values) = build_attribute_slices(&module.attributes);
+        for module_request in &declarations.requested_modules {
+            let (keys, values) = build_attribute_slices(&module_request.attributes);
             (cb.push_requested_module)(
                 ctx,
-                module.specifier.as_ptr(),
-                module.specifier.len(),
+                module_request.module_specifier.as_ptr(),
+                module_request.module_specifier.len(),
                 keys.as_ptr(),
                 values.as_ptr(),
                 keys.len(),
