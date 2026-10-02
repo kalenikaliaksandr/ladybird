@@ -21,6 +21,7 @@ use crate::layout::object::Object;
 use crate::layout::value::Value;
 use crate::runtime::array::Array;
 use crate::runtime::async_from_sync_iterator_prototype::create_async_from_sync_iterator;
+use crate::runtime::async_generator::AsyncGenerator;
 use crate::runtime::completion::{Completion, Must, completion_type_from_bytecode};
 use crate::runtime::error::ErrorKind;
 use crate::runtime::error_types::ErrorType;
@@ -458,11 +459,12 @@ pub fn get_completion_fields(_vm: &Vm, pc: u32, values: &mut op::GetCompletionFi
         return SlowPathControl::continue_at(pc + op::GetCompletionFields::LENGTH);
     }
 
-    unimplemented_runtime_function(
-        "GetCompletionFields of an AsyncGenerator, which reads its pending completion, which comes with async \
-         generators",
-        pc,
-    )
+    let async_generator = completion_source
+        .downcast::<AsyncGenerator>()
+        .expect("a completion source is a generator or an async generator");
+    values.value_dst = async_generator.pending_completion_value();
+    values.type_dst = Value::from_i32(async_generator.pending_completion_type() as i32);
+    SlowPathControl::continue_at(pc + op::GetCompletionFields::LENGTH)
 }
 
 pub fn set_completion_type(
@@ -477,11 +479,11 @@ pub fn set_completion_type(
         return SlowPathControl::continue_at(pc + op::SetCompletionType::LENGTH);
     }
 
-    unimplemented_runtime_function(
-        "SetCompletionType of an AsyncGenerator, which sets its pending completion, which comes with async \
-         generators",
-        pc,
-    )
+    completion_source
+        .downcast::<AsyncGenerator>()
+        .expect("a completion source is a generator or an async generator")
+        .set_pending_completion_type(completion_type_from_bytecode(instruction.completion_type));
+    SlowPathControl::continue_at(pc + op::SetCompletionType::LENGTH)
 }
 
 pub fn debugger(pc: u32) -> SlowPathControl {
@@ -521,6 +523,20 @@ pub fn throw_if_nullish(vm: &Vm, pc: u32, values: &op::ThrowIfNullishValues) -> 
 
 pub fn throw_const_assignment(vm: &Vm, pc: u32) -> SlowPathControl {
     throw_error(vm, pc, ErrorKind::TypeError, ErrorType::InvalidAssignToConst, &[])
+}
+
+pub fn r#await(vm: &Vm, instruction: &op::Await, values: &op::AwaitValues) -> SlowPathControl {
+    let yielded_value = if values.argument.is_empty() {
+        Value::UNDEFINED
+    } else {
+        values.argument
+    };
+    let context = running_execution_context(vm);
+    context.yield_continuation.set(instruction.continuation_label.0);
+    context.yield_is_await.set(true);
+    context.yield_value_is_iterator_result.set(false);
+    vm.do_return(yielded_value);
+    SlowPathControl::EXIT
 }
 
 pub fn r#yield(vm: &Vm, instruction: &op::Yield, values: &op::YieldValues) -> SlowPathControl {
@@ -660,6 +676,7 @@ mod tests {
     use super::test_script_realm::ScriptRealm;
     use super::*;
     use crate::bytecode::operand::{InstructionHeader, Operand};
+    use crate::runtime::async_from_sync_iterator::AsyncFromSyncIterator;
     use crate::runtime::completion::CompletionType;
     use crate::runtime::iterator::IteratorHint;
     use crate::runtime::realm::test_realm::{key, thrown_message};
@@ -1027,11 +1044,18 @@ function returnThroughFinallyInForOf(iterable) { for (let x of iterable) { try {
         assert!(unpack_values.dst_done == Value::TRUE);
         assert!(unpack_values.iterator_done == Value::TRUE);
 
-        // The async hint gets the sync iterator before it would wrap it.
+        // The async hint gets the sync iterator and wraps it in an async-from-sync iterator.
         script_realm.run("log = \"\";").must();
         let async_instruction = get_iterator_instruction(IteratorHint::Async);
-        let message = thrown_message(|| get_iterator(&vm, 0, &async_instruction, &mut get_iterator_values));
-        assert!(message.contains("CreateAsyncFromSyncIterator"), "{message}");
+        let control = get_iterator(&vm, 0, &async_instruction, &mut get_iterator_values);
+        assert_eq!(control, SlowPathControl::continue_at(op::GetIterator::LENGTH));
+        assert!(
+            get_iterator_values
+                .dst_iterator_object
+                .as_object()
+                .is::<AsyncFromSyncIterator>()
+        );
+        assert!(get_iterator_values.dst_iterator_done == Value::FALSE);
         assert_eq!(script_realm.global_value("log").as_string().to_utf8(), "I");
 
         let mut get_primitive_iterator_values = op::GetIteratorValues {
@@ -1097,20 +1121,35 @@ function returnThroughFinallyInForOf(iterable) { for (let x of iterable) { try {
     }
 
     #[test]
-    fn completion_fields_of_async_generators_wait_for_async_generators() {
+    fn completion_fields_are_the_pending_completion_of_an_async_generator() {
         let vm = Vm::create();
         let script_realm = ScriptRealm::new(&vm, PRELUDE);
-        let object = Value::from_object(script_realm.test_realm.object());
+        let generator = script_realm.run("(async function* () {})()").must();
+        let async_generator = generator
+            .as_object()
+            .downcast::<AsyncGenerator>()
+            .expect("calling an async generator function creates an async generator");
+        async_generator.set_pending_completion(Completion::new(CompletionType::Throw, Value::from_i32(6)));
+
         let mut get_values = op::GetCompletionFieldsValues {
             type_dst: Value::EMPTY,
             value_dst: Value::EMPTY,
-            completion: object,
+            completion: generator,
         };
-        assert!(thrown_message(|| get_completion_fields(&vm, 0, &mut get_values)).contains("GetCompletionFields"));
-        let mut set_values = op::SetCompletionTypeValues { completion: object };
+        assert!(
+            get_completion_fields(&vm, 0, &mut get_values)
+                == SlowPathControl::continue_at(op::GetCompletionFields::LENGTH)
+        );
+        assert!(get_values.value_dst == Value::from_i32(6));
+        assert!(get_values.type_dst == Value::from_i32(CompletionType::Throw as i32));
+
+        let mut set_values = op::SetCompletionTypeValues { completion: generator };
         let instruction = set_completion_type_instruction(CompletionType::Return);
         assert!(
-            thrown_message(|| set_completion_type(&vm, 0, &instruction, &mut set_values)).contains("SetCompletionType")
+            set_completion_type(&vm, 0, &instruction, &mut set_values)
+                == SlowPathControl::continue_at(op::SetCompletionType::LENGTH)
         );
+        assert!(async_generator.pending_completion_type() == CompletionType::Return);
+        assert!(async_generator.pending_completion_value() == Value::from_i32(6));
     }
 }
