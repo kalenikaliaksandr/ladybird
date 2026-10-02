@@ -127,8 +127,12 @@ use crate::runtime::temporal::plain_date_constructor::PlainDateConstructor;
 use crate::runtime::temporal::plain_date_prototype::PlainDatePrototype;
 use crate::runtime::temporal::plain_date_time_constructor::PlainDateTimeConstructor;
 use crate::runtime::temporal::plain_date_time_prototype::PlainDateTimePrototype;
+use crate::runtime::temporal::plain_month_day_constructor::PlainMonthDayConstructor;
+use crate::runtime::temporal::plain_month_day_prototype::PlainMonthDayPrototype;
 use crate::runtime::temporal::plain_time_constructor::PlainTimeConstructor;
 use crate::runtime::temporal::plain_time_prototype::PlainTimePrototype;
+use crate::runtime::temporal::plain_year_month_constructor::PlainYearMonthConstructor;
+use crate::runtime::temporal::plain_year_month_prototype::PlainYearMonthPrototype;
 use crate::runtime::temporal::temporal::Temporal;
 use crate::runtime::typed_array::{
     BigInt64ArrayConstructor, BigInt64ArrayPrototype, BigUint64ArrayConstructor, BigUint64ArrayPrototype,
@@ -710,7 +714,9 @@ initialize_builtin_function_types! {
     initialize_temporal_instant: temporal_instant_prototype: InstantPrototype, temporal_instant_constructor: InstantConstructor, Instant;
     initialize_temporal_plain_date: temporal_plain_date_prototype: PlainDatePrototype, temporal_plain_date_constructor: PlainDateConstructor, PlainDate;
     initialize_temporal_plain_date_time: temporal_plain_date_time_prototype: PlainDateTimePrototype, temporal_plain_date_time_constructor: PlainDateTimeConstructor, PlainDateTime;
+    initialize_temporal_plain_month_day: temporal_plain_month_day_prototype: PlainMonthDayPrototype, temporal_plain_month_day_constructor: PlainMonthDayConstructor, PlainMonthDay;
     initialize_temporal_plain_time: temporal_plain_time_prototype: PlainTimePrototype, temporal_plain_time_constructor: PlainTimeConstructor, PlainTime;
+    initialize_temporal_plain_year_month: temporal_plain_year_month_prototype: PlainYearMonthPrototype, temporal_plain_year_month_constructor: PlainYearMonthConstructor, PlainYearMonth;
 }
 
 /// Intrinsics::initialize_snake_name() for the typed arrays, whose prototypes and constructors extend %TypedArray%'s.
@@ -777,8 +783,6 @@ unimplemented_builtin_types! {
     initialize_intl_number_format => "Intl.NumberFormat",
     initialize_intl_plural_rules => "Intl.PluralRules",
     initialize_intl_relative_time_format => "Intl.RelativeTimeFormat",
-    initialize_temporal_plain_month_day => "Temporal.PlainMonthDay",
-    initialize_temporal_plain_year_month => "Temporal.PlainYearMonth",
     initialize_temporal_zoned_date_time => "Temporal.ZonedDateTime",
 }
 
