@@ -126,6 +126,7 @@ test/built-ins/Temporal/Instant/prototype/round
 test/built-ins/Temporal/Instant/prototype/since
 test/built-ins/Temporal/Instant/prototype/subtract
 test/built-ins/Temporal/Instant/prototype/toJSON
+test/built-ins/Temporal/Instant/prototype/toLocaleString
 test/built-ins/Temporal/Instant/prototype/toStringTag
 test/built-ins/Temporal/Instant/prototype/toZonedDateTimeISO
 test/built-ins/Temporal/Instant/prototype/until
@@ -208,6 +209,7 @@ test/built-ins/Temporal/PlainTime/prototype/second
 test/built-ins/Temporal/PlainTime/prototype/since
 test/built-ins/Temporal/PlainTime/prototype/subtract
 test/built-ins/Temporal/PlainTime/prototype/toJSON
+test/built-ins/Temporal/PlainTime/prototype/toLocaleString
 test/built-ins/Temporal/PlainTime/prototype/toStringTag
 test/built-ins/Temporal/PlainTime/prototype/until
 test/built-ins/Temporal/PlainTime/prototype/valueOf
@@ -282,9 +284,12 @@ test/intl402/Array
 test/intl402/BigInt
 test/intl402/Collator/prototype
 test/intl402/Collator/supportedLocalesOf
-test/intl402/Date/prototype/toLocaleDateString
-test/intl402/Date/prototype/toLocaleTimeString
-test/intl402/DisplayNames/prototype/of
+test/intl402/Date
+test/intl402/DateTimeFormat/prototype/constructor
+test/intl402/DateTimeFormat/prototype/resolvedOptions
+test/intl402/DateTimeFormat/prototype/toStringTag
+test/intl402/DateTimeFormat/supportedLocalesOf
+test/intl402/DisplayNames
 test/intl402/DurationFormat/prototype/constructor
 test/intl402/DurationFormat/prototype/format
 test/intl402/DurationFormat/prototype/resolvedOptions
@@ -299,6 +304,12 @@ test/intl402/NumberFormat/prototype
 test/intl402/NumberFormat/supportedLocalesOf
 test/intl402/PluralRules/prototype
 test/intl402/PluralRules/supportedLocalesOf
+test/intl402/RelativeTimeFormat/constructor
+test/intl402/RelativeTimeFormat/instance
+test/intl402/RelativeTimeFormat/prototype/constructor
+test/intl402/RelativeTimeFormat/prototype/formatToParts
+test/intl402/RelativeTimeFormat/prototype/resolvedOptions
+test/intl402/RelativeTimeFormat/prototype/toStringTag
 test/intl402/Segmenter
 test/intl402/String
 test/intl402/Temporal/Duration/compare
@@ -359,6 +370,7 @@ test/intl402/Temporal/PlainMonthDay/prototype/toJSON
 test/intl402/Temporal/PlainMonthDay/prototype/toPlainDate
 test/intl402/Temporal/PlainMonthDay/prototype/toString
 test/intl402/Temporal/PlainMonthDay/prototype/with
+test/intl402/Temporal/PlainTime
 test/intl402/Temporal/PlainYearMonth/compare
 test/intl402/Temporal/PlainYearMonth/prototype/calendarId
 test/intl402/Temporal/PlainYearMonth/prototype/daysInMonth
@@ -576,6 +588,7 @@ test/staging/sm/Promise
 test/staging/sm/Reflect
 test/staging/sm/RegExp
 test/staging/sm/Set
+test/staging/sm/String
 test/staging/sm/Symbol
 test/staging/sm/TypedArray
 test/staging/sm/WeakMap
