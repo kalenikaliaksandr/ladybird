@@ -325,6 +325,11 @@ extern "C" void unicode_current_time_zone(UnicodeTextMappingOutput output)
     write_utf16_to(output, time_zone.utf16_view());
 }
 
+extern "C" bool unicode_set_current_time_zone(u16 const* time_zone, size_t length)
+{
+    return !Unicode::set_current_time_zone(Utf16View { reinterpret_cast<char16_t const*>(time_zone), length }).is_error();
+}
+
 extern "C" void unicode_available_time_zones(void* context, void (*append)(void*, u16 const*, size_t))
 {
     for (auto const& time_zone : Unicode::available_time_zones()) {
