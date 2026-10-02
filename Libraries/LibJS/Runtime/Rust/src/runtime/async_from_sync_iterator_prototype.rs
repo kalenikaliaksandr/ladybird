@@ -7,6 +7,7 @@
 use libjs_runtime_macros::Trace;
 
 use crate::gc::class::{GcCell, define_cell};
+use crate::gc::root::Root;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
 use crate::layout::object::Object;
@@ -94,6 +95,9 @@ fn async_from_sync_iterator_continuation(
 
     // 8. IfAbruptRejectPromise(valueWrapper, promiseCapability).
     let value_wrapper = try_or_must_reject!(vm, promise_capability, value_wrapper_completion);
+    // NB: Nothing else refers to the new promise while the functions below are created, and the conservative scan
+    //     does not find a Value whose code keeps only the heap offset of its cell, which the compiler does here.
+    let value_wrapper = Root::new(vm, value_wrapper);
 
     // 9. Let unwrap be a new Abstract Closure with parameters (value) that captures done and performs the following steps when called:
     // 10. Let onFulfilled be CreateBuiltinFunction(unwrap, 1, "", « »).
@@ -141,6 +145,7 @@ fn async_from_sync_iterator_continuation(
 
     // 14. Perform PerformPromiseThen(valueWrapper, onFulfilled, onRejected, promiseCapability).
     value_wrapper
+        .value()
         .as_object()
         .downcast::<Promise>()
         .expect("PromiseResolve of %Promise% returns a Promise")
