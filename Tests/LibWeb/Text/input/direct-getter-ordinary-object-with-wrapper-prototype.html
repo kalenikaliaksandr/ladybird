@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<script src="include.js"></script>
+<script>
+    test(() => {
+        function parentNodeOf(object) {
+            return object.parentNode;
+        }
+        for (let i = 0; i < 3; ++i)
+            parentNodeOf(document.body);
+
+        const ordinaryObjects = [];
+        for (let i = 0; i < 64; ++i)
+            ordinaryObjects.push(Object.create(HTMLBodyElement.prototype));
+
+        const outcomes = new Set();
+        for (const ordinaryObject of ordinaryObjects) {
+            try {
+                parentNodeOf(ordinaryObject);
+                outcomes.add("FAIL: no exception");
+            } catch (e) {
+                outcomes.add(e.name);
+            }
+        }
+        println([...outcomes].join(", "));
+        println(parentNodeOf(document.body) === document.documentElement);
+    });
+</script>
