@@ -192,6 +192,7 @@ pub fn generate(configuration: &LayoutConfiguration) -> LayoutWriter {
     w.constant("OBJECT_FLAG_IS_ECMASCRIPT_FUNCTION_OBJECT", object_flag::IS_ECMASCRIPT_FUNCTION_OBJECT);
     w.constant("OBJECT_FLAG_IS_RAW_NATIVE_FUNCTION", object_flag::IS_RAW_NATIVE_FUNCTION);
     w.constant("OBJECT_FLAG_IS_DIRECT_GETTER_FUNCTION", object_flag::IS_DIRECT_GETTER_FUNCTION);
+    w.constant("OBJECT_FLAG_IS_PLATFORM_OBJECT", object_flag::IS_PLATFORM_OBJECT);
     w.constant("OBJECT_FLAG_IS_GLOBAL_OBJECT", object_flag::IS_GLOBAL_OBJECT);
     w.constant("OBJECT_FLAG_IS_HTMLDDA", object_flag::IS_HTMLDDA);
 

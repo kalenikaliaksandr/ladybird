@@ -4474,7 +4474,7 @@ asm_handler_GetById:
     jz .Lasm_GetById.ssa_block_1
     and rsi, -4
     test rsi, rsi
-    jz .Lasm_GetById.assert_predicate_failure_266
+    jz .Lasm_GetById.assert_predicate_failure_262
     cmp QWORD PTR [rsi + 24], rdi
     jne .Lasm_GetById.ssa_block_1
     mov eax, DWORD PTR [rsi]
@@ -11684,6 +11684,9 @@ asm_handler_GetById_cold:
 .Lasm_GetById.ssa_block_15:
     cmp BYTE PTR [rsi + 12], 0
     jz .Lasm_GetById.ssa_block_3
+    movzx ecx, WORD PTR [rdx + 10]
+    test ecx, 512
+    jz .Lasm_GetById.ssa_block_3
     mov ecx, DWORD PTR [rax + 108]
     mov rcx, QWORD PTR [rdx + rcx * 8]
     test rcx, rcx
@@ -11699,10 +11702,10 @@ asm_handler_GetById_cold:
     mov eax, DWORD PTR [rax + 112]
     mov rax, QWORD PTR [rcx + rax * 8]
     test rax, rax
-    jnz .Lasm_GetById.ssa_block_31
+    jnz .Lasm_GetById.ssa_block_32
     movabs rcx, 9223090561878065152
-    jmp .Lasm_GetById.ssa_block_32
-.Lasm_GetById.ssa_block_31:
+    jmp .Lasm_GetById.ssa_block_33
+.Lasm_GetById.ssa_block_32:
     mov rax, QWORD PTR [rax + rsi * 8]
     test rax, rax
     jz .Lasm_GetById.ssa_block_3
@@ -11716,7 +11719,7 @@ asm_handler_GetById_cold:
     and rcx, rax
     movabs rax, -1970324836974592
     or rcx, rax
-.Lasm_GetById.ssa_block_32:
+.Lasm_GetById.ssa_block_33:
     mov r11d, DWORD PTR [r14 + r13 + 4]
     mov QWORD PTR [rbx + r11 * 8], rcx
     add r13d, 24
@@ -11820,7 +11823,7 @@ asm_handler_GetById_cold:
     jnz .Lasm_GetById.ssa_block_6
     mov rax, QWORD PTR [rbx - 32]
     test rax, rax
-    jz .Lasm_GetById.assert_predicate_failure_238
+    jz .Lasm_GetById.assert_predicate_failure_234
     mov rcx, QWORD PTR [rbp - 48]
     mov QWORD PTR [rcx + 15288], rax
     lea r11, [rbx - 128]
@@ -18328,7 +18331,7 @@ asm_assertion_failure_traps:
     ud2
 .Lasm_GetById.assert_failure_1:
     ud2
-.Lasm_GetById.assert_predicate_failure_266:
+.Lasm_GetById.assert_predicate_failure_262:
     ud2
 .Lasm_GetById.assert_failure_2:
     ud2
@@ -18356,7 +18359,7 @@ asm_assertion_failure_traps:
     ud2
 .Lasm_GetById.assert_predicate_failure_225:
     ud2
-.Lasm_GetById.assert_predicate_failure_238:
+.Lasm_GetById.assert_predicate_failure_234:
     ud2
 .Lasm_GetById.assert_predicate_failure_25:
     ud2
