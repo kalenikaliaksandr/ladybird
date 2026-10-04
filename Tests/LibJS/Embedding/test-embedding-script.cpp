@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Atomic.h>
 #include <AK/Utf16FlyString.h>
 #include <AK/Utf16String.h>
 #include <AK/Vector.h>
@@ -123,6 +124,80 @@ ProgramFromAnotherThread parse_and_compile_on_another_thread(JSSourceCode const*
     });
     worker.join();
     return program;
+}
+
+// The embedder's side of compiling lazy functions off thread, as LibWeb's thread pool and event loop provide it. It
+// runs each task right away on the thread that hands it over, or queues it for the test to run on a thread of its
+// choice.
+struct OffThreadCompilationHost {
+    bool runs_tasks_right_away { true };
+    Vector<JSOffThreadTask> submitted_work;
+    Vector<JSOffThreadTask> tasks_posted_to_the_vms_thread;
+    size_t submit_count { 0 };
+    Atomic<size_t> release_count { 0 };
+    // A script that the first submit_work and every post_to_main_thread on the VM's thread run, with garbage collected
+    // around it, before they hand the task over.
+    EmbeddedVM* vm_to_reenter { nullptr };
+    StringView script_to_reenter_the_vm_with;
+
+    void reenter_the_vm()
+    {
+        if (!vm_to_reenter)
+            return;
+        collect_garbage();
+        VERIFY(vm_to_reenter->run(script_to_reenter_the_vm_with));
+        collect_garbage();
+    }
+
+    JSOffThreadCompilationCallbacks callbacks()
+    {
+        return {
+            .context = this,
+            .submit_work = [](void* context, JSOffThreadTask task) {
+                auto& host = *static_cast<OffThreadCompilationHost*>(context);
+                if (++host.submit_count == 1)
+                    host.reenter_the_vm();
+                if (host.runs_tasks_right_away)
+                    task.run(task.data);
+                else
+                    host.submitted_work.append(task); },
+            .post_to_main_thread = [](void* context, JSOffThreadTask task) {
+                auto& host = *static_cast<OffThreadCompilationHost*>(context);
+                if (host.runs_tasks_right_away) {
+                    host.reenter_the_vm();
+                    task.run(task.data);
+                } else {
+                    host.tasks_posted_to_the_vms_thread.append(task);
+                } },
+            .release = [](void* context) { ++static_cast<OffThreadCompilationHost*>(context)->release_count; },
+        };
+    }
+
+    void run_submitted_work_on_a_worker()
+    {
+        std::thread worker([work = move(submitted_work)] {
+            for (auto task : work)
+                task.run(task.data);
+        });
+        worker.join();
+    }
+
+    void run_tasks_posted_to_the_vms_thread()
+    {
+        for (auto task : exchange(tasks_posted_to_the_vms_thread, {}))
+            task.run(task.data);
+    }
+};
+
+// The top-level function declaration is not one of the functions that the top-level code creates: declaration
+// instantiation creates it, so, as in C++, it stays lazy.
+constexpr StringView script_with_lazy_functions = "function declared() { return 'declared' }\nvar plain = function plain() { return 'plain' };\nvar outer = function outer() { function inner() { return /i+/.exec('ii')[0] } return inner };\nvar arrow = () => 'arrow';"sv;
+
+JSScript* parse_and_run_script_with_lazy_functions(EmbeddedVM& embedded_vm)
+{
+    auto* script = js_script_parse(embedded_vm.vm(), embedded_vm.realm(), ascii_view(script_with_lazy_functions), ascii_view("lazy.js"sv), ascii_view(""sv), nullptr, 1, nullptr);
+    VERIFY(js_script_run(embedded_vm.vm(), script, nullptr).variant == JS_COMPLETION_NORMAL);
+    return script;
 }
 
 }
@@ -287,4 +362,57 @@ TEST_CASE(syntax_errors_found_on_another_thread_reach_the_vms_thread)
         js_compile_parsed_program_destroy(js_compile_parse(ascii_view("let"sv), JS_PROGRAM_TYPE_MODULE, 1));
     });
     worker.join();
+}
+
+TEST_CASE(lazy_functions_compile_with_callbacks_that_run_the_work_right_away)
+{
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* script = parse_and_run_script_with_lazy_functions(*embedded_vm);
+
+    // The script that runs while the work is submitted calls outer(), which then compiles on the VM's thread, so the
+    // functions it creates are compiled off thread in a second round. It runs again whenever a task is posted.
+    OffThreadCompilationHost host;
+    host.vm_to_reenter = embedded_vm.ptr();
+    host.script_to_reenter_the_vm_with = "typeof outer() === 'function'"sv;
+    auto callbacks = host.callbacks();
+    js_compile_remaining_functions_of_script_off_thread(embedded_vm->vm(), script, &callbacks);
+    EXPECT_EQ(host.submit_count, 2u);
+    EXPECT_EQ(host.release_count.load(), 1u);
+    EXPECT_EQ(string_of_normal_completion(*embedded_vm, embedded_vm->evaluate("[declared(), plain(), outer()(), arrow()].join()"sv)), u"declared,plain,ii,arrow"sv);
+}
+
+TEST_CASE(lazy_functions_compile_on_a_worker_thread_and_install_on_the_vms_thread)
+{
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* script = parse_and_run_script_with_lazy_functions(*embedded_vm);
+
+    OffThreadCompilationHost host;
+    host.runs_tasks_right_away = false;
+    auto callbacks = host.callbacks();
+    js_compile_remaining_functions_of_script_off_thread(embedded_vm->vm(), script, &callbacks);
+    EXPECT_EQ(host.submit_count, 1u);
+
+    // outer() starts running before the worker is done, so the worker compiles the functions it creates next.
+    EXPECT(embedded_vm->run("typeof outer() === 'function'"sv));
+    collect_garbage();
+    host.run_submitted_work_on_a_worker();
+    collect_garbage();
+    EXPECT_EQ(host.release_count.load(), 0u);
+    host.run_tasks_posted_to_the_vms_thread();
+    EXPECT_EQ(host.submit_count, 2u);
+    host.run_submitted_work_on_a_worker();
+    host.run_tasks_posted_to_the_vms_thread();
+    EXPECT_EQ(host.release_count.load(), 1u);
+    EXPECT_EQ(string_of_normal_completion(*embedded_vm, embedded_vm->evaluate("[declared(), plain(), outer()(), arrow()].join()"sv)), u"declared,plain,ii,arrow"sv);
+
+    // A module whose functions compile off thread, here one with top-level await, whose body is an async function.
+    auto const* source_code = create_source_code("https://example.com/await.mjs"sv, "await null;\nglobalThis.later = () => 'later';"sv);
+    auto program = parse_and_compile_on_another_thread(source_code, JS_PROGRAM_TYPE_MODULE, 1);
+    auto* module = js_compile_create_module_from_compiled_program(embedded_vm->vm(), program.compiled, source_code, embedded_vm->realm(), ascii_view("https://example.com/await.mjs"sv), nullptr);
+    js_source_code_release(source_code);
+    OffThreadCompilationHost module_host;
+    auto module_callbacks = module_host.callbacks();
+    js_compile_remaining_functions_of_module_off_thread(embedded_vm->vm(), module, &module_callbacks);
+    EXPECT_EQ(module_host.submit_count, 1u);
+    EXPECT_EQ(module_host.release_count.load(), 1u);
 }
