@@ -214,7 +214,8 @@ impl io::Write for ByteSinkWriter<'_> {
 
 /// JS::print(): writes the value to the sink the way the js REPL shows it, as UTF-8 in which lone surrogates are
 /// encoded on their own, in ANSI colors unless `strip_ansi` is set, and with strings quoted and escaped unless
-/// `raw_strings` is set. Returns false if the sink refused bytes, which ends the printing. Only on the VM's thread.
+/// `raw_strings` is set. Returns false if the sink refused bytes, which ends the printing. The sink may run JavaScript,
+/// even JavaScript that changes the value being printed. Only on the VM's thread.
 ///
 /// # Safety
 ///
@@ -291,12 +292,15 @@ mod print_tests {
         vm.run_script(script, None)
     }
 
+    /// What a sink does after each call, given everything it collected so far.
+    type OnAppend<'a> = &'a dyn Fn(&[u8]);
+
     /// What a sink collects, and what it does on each call.
     struct Collected<'a> {
         bytes: Vec<u8>,
         append_count: usize,
         refuse_after: Option<usize>,
-        on_append: Option<&'a dyn Fn()>,
+        on_append: Option<OnAppend<'a>>,
     }
 
     unsafe extern "C" fn collect_bytes(context: *mut c_void, bytes: *const u8, length: usize) -> bool {
@@ -316,7 +320,7 @@ mod print_tests {
         }
         collected.bytes.extend_from_slice(bytes);
         if let Some(on_append) = collected.on_append {
-            on_append();
+            on_append(&collected.bytes);
         }
         true
     }
@@ -397,7 +401,7 @@ mod print_tests {
         let map =
             run_script(&vm, realm, "globalThis.map = new Map([[1, { a: 1 }]]); map").expect("the script returns a map");
 
-        let on_append = || {
+        let on_append = |_: &[u8]| {
             assert!(run_script(&vm, realm, "if (map.size < 4) map.set(map.size + 1, {});").is_ok());
             vm.heap().collect_garbage();
         };
@@ -413,5 +417,47 @@ mod print_tests {
             printed.starts_with("[Map] { 1 => Object{ \"a\": 1 }"),
             "printed {printed}"
         );
+    }
+
+    /// Prints the typed array that `setup` returns while the sink runs `mutation` once, as soon as the second element
+    /// has been written.
+    fn printed_while_the_sink_changes_the_buffer(setup: &str, mutation: &str) -> String {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let typed_array = run_script(&vm, realm, setup).expect("the script returns a typed array");
+        let mutated = core::cell::Cell::new(false);
+        let on_append = |printed_so_far: &[u8]| {
+            if !mutated.get() && printed_so_far.ends_with(b"[ 1, 2") {
+                mutated.set(true);
+                assert!(run_script(&vm, realm, mutation).is_ok());
+                vm.heap().collect_garbage();
+            }
+        };
+        let mut collected = Collected {
+            bytes: Vec::new(),
+            append_count: 0,
+            refuse_after: None,
+            on_append: Some(&on_append),
+        };
+        assert!(print_into(&vm, typed_array, &mut collected, true, false));
+        assert!(mutated.get(), "the sink changed the buffer");
+        String::from_utf8(collected.bytes).expect("the printed value is UTF-8")
+    }
+
+    #[test]
+    fn printing_a_typed_array_stops_at_the_elements_a_sink_takes_away() {
+        let detached = printed_while_the_sink_changes_the_buffer(
+            "globalThis.printed = new Uint8Array([1, 2, 3, 4])",
+            "printed.buffer.transfer()",
+        );
+        assert!(detached.ends_with("[ 1, 2,  ]"), "printed {detached}");
+
+        let shrunk = printed_while_the_sink_changes_the_buffer(
+            "globalThis.printed = new Uint8Array(new ArrayBuffer(4, { maxByteLength: 8 })); \
+             printed.set([1, 2, 3, 4]); printed",
+            "printed.buffer.resize(3)",
+        );
+        assert!(shrunk.ends_with("[ 1, 2, 3,  ]"), "printed {shrunk}");
     }
 }

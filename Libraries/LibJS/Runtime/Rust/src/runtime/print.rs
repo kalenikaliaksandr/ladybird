@@ -954,6 +954,12 @@ fn print_typed_array(
         if i > 0 {
             js_out(print_context, ", ")?;
         }
+        // NB: An embedder's stream can run JavaScript between two elements, which may have detached or shrunk the
+        //     buffer since the length was read.
+        let current_record = make_typed_array_with_buffer_witness_record(typed_array_base, Order::SeqCst);
+        if is_typed_array_out_of_bounds(&current_record) || i >= typed_array_length(&current_record) as usize {
+            break;
+        }
         let byte_index = typed_array_base.byte_offset() as usize + i * typed_array_base.element_size() as usize;
         print_value(
             print_context,
