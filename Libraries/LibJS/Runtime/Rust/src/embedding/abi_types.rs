@@ -39,6 +39,8 @@ use crate::layout::object::Object;
 use crate::layout::value::Value;
 use crate::runtime::big_int::BigInt;
 use crate::runtime::completion::{Throw, ThrowCompletionOr};
+use crate::runtime::error::ErrorKind;
+use crate::runtime::error_data::{ErrorData, ErrorDataCell};
 use crate::runtime::primitive_string::PrimitiveString;
 use crate::runtime::property_key::PropertyKey;
 use crate::runtime::realm::Realm;
@@ -68,6 +70,18 @@ pub struct JSSymbol {
     _opaque: [u8; 0],
 }
 
+/// The [[ErrorData]] of a host object that is not an Error, in a cell of its own: C++ ErrorDataCell.
+pub struct JSErrorDataCell {
+    _opaque: [u8; 0],
+}
+
+/// The [[ErrorData]] of an object, the call stack it was created on, which lives in the object if it is an Error and
+/// in a JSErrorDataCell otherwise. It is not a cell, so a pointer to it stays valid for as long as the cell it lives
+/// in.
+pub struct JSErrorData {
+    _opaque: [u8; 0],
+}
+
 /// The opaque C type of a kind of cell: a pointer to it is the address of such a cell.
 pub trait CellAbi {
     type Cell;
@@ -93,8 +107,30 @@ impl CellAbi for JSSymbol {
     type Cell = Symbol;
 }
 
+impl CellAbi for JSErrorDataCell {
+    type Cell = ErrorDataCell;
+}
+
+pub fn error_data_into_abi(error_data: &ErrorData) -> *const JSErrorData {
+    core::ptr::from_ref(error_data).cast()
+}
+
+/// # Safety
+///
+/// `error_data` must point to the error data of a cell that stays alive for `'cell`.
+pub unsafe fn error_data_from_abi<'cell>(error_data: *const JSErrorData) -> &'cell ErrorData {
+    assert!(!error_data.is_null(), "the embedder passes error data");
+    // SAFETY: The caller guarantees that the pointer is to error data, which lives as long as its cell.
+    unsafe { &*error_data.cast::<ErrorData>() }
+}
+
 pub fn cell_into_abi<C: CellAbi>(cell: Gc<C::Cell>) -> *mut C {
     cell.as_ptr().cast()
+}
+
+/// The cell's pointer, or null for none.
+pub fn optional_cell_into_abi<C: CellAbi>(cell: Option<Gc<C::Cell>>) -> *mut C {
+    cell.map_or(core::ptr::null_mut(), cell_into_abi)
 }
 
 /// # Safety
@@ -336,6 +372,37 @@ pub unsafe fn property_key_from_abi<'key>(key: *const JSPropertyKey) -> &'key Pr
     assert!(!key.is_null(), "the embedder passes a property key");
     // SAFETY: The caller guarantees that the word is a live property key, and the two types have the same layout.
     unsafe { &*key.cast::<PropertyKey>() }
+}
+
+/// The constructor of an error that the embedder creates or throws: %Error%, a NativeError constructor, or
+/// %AggregateError% or %SuppressedError%.
+pub type JSErrorKind = u8;
+
+pub const JS_ERROR_KIND_ERROR: JSErrorKind = 0;
+pub const JS_ERROR_KIND_EVAL_ERROR: JSErrorKind = 1;
+pub const JS_ERROR_KIND_INTERNAL_ERROR: JSErrorKind = 2;
+pub const JS_ERROR_KIND_RANGE_ERROR: JSErrorKind = 3;
+pub const JS_ERROR_KIND_REFERENCE_ERROR: JSErrorKind = 4;
+pub const JS_ERROR_KIND_SYNTAX_ERROR: JSErrorKind = 5;
+pub const JS_ERROR_KIND_TYPE_ERROR: JSErrorKind = 6;
+pub const JS_ERROR_KIND_URI_ERROR: JSErrorKind = 7;
+pub const JS_ERROR_KIND_AGGREGATE_ERROR: JSErrorKind = 8;
+pub const JS_ERROR_KIND_SUPPRESSED_ERROR: JSErrorKind = 9;
+
+pub fn error_kind_from_abi(kind: JSErrorKind) -> ErrorKind {
+    match kind {
+        JS_ERROR_KIND_ERROR => ErrorKind::Error,
+        JS_ERROR_KIND_EVAL_ERROR => ErrorKind::EvalError,
+        JS_ERROR_KIND_INTERNAL_ERROR => ErrorKind::InternalError,
+        JS_ERROR_KIND_RANGE_ERROR => ErrorKind::RangeError,
+        JS_ERROR_KIND_REFERENCE_ERROR => ErrorKind::ReferenceError,
+        JS_ERROR_KIND_SYNTAX_ERROR => ErrorKind::SyntaxError,
+        JS_ERROR_KIND_TYPE_ERROR => ErrorKind::TypeError,
+        JS_ERROR_KIND_URI_ERROR => ErrorKind::URIError,
+        JS_ERROR_KIND_AGGREGATE_ERROR => ErrorKind::AggregateError,
+        JS_ERROR_KIND_SUPPRESSED_ERROR => ErrorKind::SuppressedError,
+        kind => panic!("the embedder passed an unknown error kind {kind}"),
+    }
 }
 
 /// Hands `value` to the embedder's sink.

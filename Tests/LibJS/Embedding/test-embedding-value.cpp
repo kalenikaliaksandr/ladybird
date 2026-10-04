@@ -48,6 +48,7 @@ public:
     ~TestingRealm() { js_testing_realm_destroy(m_testing_realm); }
 
     JSVM* vm() const { return js_testing_realm_vm(m_testing_realm); }
+    JSRealm* realm() const { return js_testing_realm_realm(m_testing_realm); }
 
     JSCompletion evaluate(StringView source) const
     {
@@ -246,4 +247,95 @@ TEST_CASE(symbols_have_descriptions)
     EXPECT(js_symbol_description(iterator, &description));
     EXPECT_EQ(view_of(description), u"Symbol.iterator"sv);
     EXPECT_EQ(iterator, js_symbol_well_known(vm, JS_WELL_KNOWN_SYMBOL_ITERATOR));
+}
+
+TEST_CASE(thrown_errors_have_their_kind_and_message)
+{
+    TestingRealm testing_realm;
+    auto* vm = testing_realm.vm();
+    struct ErrorKindAndName {
+        JSErrorKind kind;
+        Utf16View name;
+    };
+    ErrorKindAndName const kinds[] = {
+        { JS_ERROR_KIND_ERROR, u"Error"sv },
+        { JS_ERROR_KIND_EVAL_ERROR, u"EvalError"sv },
+        { JS_ERROR_KIND_INTERNAL_ERROR, u"InternalError"sv },
+        { JS_ERROR_KIND_RANGE_ERROR, u"RangeError"sv },
+        { JS_ERROR_KIND_REFERENCE_ERROR, u"ReferenceError"sv },
+        { JS_ERROR_KIND_SYNTAX_ERROR, u"SyntaxError"sv },
+        { JS_ERROR_KIND_TYPE_ERROR, u"TypeError"sv },
+        { JS_ERROR_KIND_URI_ERROR, u"URIError"sv },
+        { JS_ERROR_KIND_AGGREGATE_ERROR, u"AggregateError"sv },
+        { JS_ERROR_KIND_SUPPRESSED_ERROR, u"SuppressedError"sv },
+    };
+    for (auto const& [kind, name] : kinds) {
+        auto completion = js_error_throw(vm, kind, abi_view_of(u"formatted by the embedder"sv));
+        EXPECT_EQ(testing_realm.thrown_error_text(completion), Utf16String::formatted("{}: formatted by the embedder", name));
+        auto* error = pointer_of_payload<JSObject>(js_value_to_object(vm, completion.payload));
+        EXPECT(js_error_is_error(error));
+        EXPECT_NE(js_error_data_of(error), nullptr);
+    }
+
+    auto message = Utf16String::from_utf8("ünïcode message, long enough for an allocation of its own"sv);
+    auto completion = js_error_throw_with_owned_message(vm, JS_ERROR_KIND_TYPE_ERROR, move(message).into_raw());
+    EXPECT_EQ(testing_realm.thrown_error_text(completion), u"TypeError: ünïcode message, long enough for an allocation of its own"sv);
+
+    // With one realm, a TypeError realm scope changes nothing but what it restores.
+    auto* realm = testing_realm.realm();
+    auto outer_scope = js_error_type_error_realm_scope_enter(vm, realm);
+    EXPECT_EQ(outer_scope.previous_realm, nullptr);
+    auto inner_scope = js_error_type_error_realm_scope_enter(vm, realm);
+    EXPECT_EQ(inner_scope.previous_realm, realm);
+    EXPECT_EQ(testing_realm.thrown_error_text(js_error_throw(vm, JS_ERROR_KIND_TYPE_ERROR, abi_view_of(u"in scope"sv))), u"TypeError: in scope"sv);
+    js_error_type_error_realm_scope_exit(vm, inner_scope);
+    js_error_type_error_realm_scope_exit(vm, outer_scope);
+}
+
+TEST_CASE(error_data_describes_the_call_stack)
+{
+    TestingRealm testing_realm;
+    auto* vm = testing_realm.vm();
+    auto* error = pointer_of_payload<JSObject>(js_value_to_object(vm, testing_realm.value_of("function make() { return new Error('x') }\nmake()"sv)));
+    auto const* error_data = js_error_data_of(error);
+    EXPECT_NE(error_data, nullptr);
+
+    // The frames are the Error constructor, make(), the script, and the realm's own execution context.
+    EXPECT_EQ(js_error_data_traceback_length(error_data), 4u);
+    JSTracebackFrame frame {};
+    js_error_data_traceback_frame(error_data, 0, &frame);
+    EXPECT_EQ(view_of(frame.function_name), u"Error"sv);
+    EXPECT(!frame.has_source_range);
+    js_error_data_traceback_frame(error_data, 1, &frame);
+    EXPECT_EQ(view_of(frame.function_name), u"make"sv);
+    EXPECT(frame.has_source_range);
+    EXPECT_EQ(frame.line, 1u);
+    js_error_data_traceback_frame(error_data, 2, &frame);
+    EXPECT_EQ(frame.line, 2u);
+    auto stack = Utf16String::adopt_raw(js_error_data_stack_string(error_data, true));
+    EXPECT(stack.starts_with(u"    at Error\n    at make ("sv));
+
+    // Error data captured outside of any script has only the bottom frame, which the stack leaves out.
+    auto* cell = js_error_data_cell_capture(vm);
+    auto const* cell_error_data = js_error_data_cell_error_data(cell);
+    EXPECT_EQ(js_error_data_traceback_length(cell_error_data), 1u);
+    EXPECT(Utf16String::adopt_raw(js_error_data_stack_string(cell_error_data, false)).is_empty());
+}
+
+TEST_CASE(errors_of_embedder_defined_classes)
+{
+    TestingRealm testing_realm;
+    auto* vm = testing_realm.vm();
+    auto* prototype = pointer_of_payload<JSObject>(js_value_to_object(vm, testing_realm.value_of("Object.create(Error.prototype, { name: { value: 'WebAssembly.LinkError' } })"sv)));
+
+    auto* error = js_error_create_with_prototype(vm, testing_realm.realm(), prototype);
+    js_error_set_owned_message(vm, error, Utf16String::from_utf8("import failed"sv).into_raw());
+    EXPECT(js_error_is_error(error));
+    EXPECT(!js_error_is_error(prototype));
+    EXPECT_NE(js_error_data_of(error), nullptr);
+    EXPECT_EQ(js_error_data_of(prototype), nullptr);
+
+    auto* range_error = js_error_create(vm, testing_realm.realm(), JS_ERROR_KIND_RANGE_ERROR);
+    js_error_set_message(vm, range_error, abi_view_of(u"out of range"sv));
+    EXPECT(js_error_is_error(range_error));
 }
