@@ -16,7 +16,7 @@ use libjs_runtime_macros::Trace;
 use num_bigint::BigInt as NumBigInt;
 
 use crate::futex::{self, AtomicWaitResult};
-use crate::gc::capi::GCPrimitiveStorageHandle;
+use crate::gc::capi::{GC_PRIMITIVE_STORAGE_NULL_HANDLE, GCPrimitiveStorageHandle, gc_cell_type_info};
 use crate::gc::class::{ExternalMemorySize, Finalize, GcCell, define_cell};
 use crate::gc::foreign::ForeignCellSlot;
 use crate::gc::gc_ref_cell::GcRefCell;
@@ -153,6 +153,13 @@ impl OwnedBackingStore {
         })
     }
 
+    /// The handle of the storage, or the null handle while there are no bytes.
+    pub fn handle(&self) -> GCPrimitiveStorageHandle {
+        self.storage
+            .as_ref()
+            .map_or(GC_PRIMITIVE_STORAGE_NULL_HANDLE, OwnedPrimitiveStorage::handle)
+    }
+
     #[inline]
     pub fn size(&self) -> usize {
         self.storage.as_ref().map_or(0, OwnedPrimitiveStorage::size)
@@ -242,6 +249,25 @@ impl ExternalPrimitiveStorage {
     fn byte_length(&self) -> usize {
         self.fixed_byte_length.unwrap_or_else(|| self.storage.size())
     }
+
+    /// The owner if it is an ArrayBuffer of the runtime that owns the storage, as when structured deserialization
+    /// makes a growable SharedArrayBuffer that shares the storage of another one. Resizing such storage has to go
+    /// through the owner, which keeps the layout of storage it owns at hand.
+    fn array_buffer_owning_the_storage(&self) -> Option<Gc<ArrayBuffer>> {
+        let owner = self.owner();
+        // NB: The owner may be a C++ cell, so its type is looked up through LibGC instead of read from the cell.
+        // SAFETY: The block keeps its owner, a cell of the VM's heap, alive.
+        let type_info = unsafe { gc_cell_type_info(owner.as_ptr()) };
+        if !core::ptr::eq(type_info, &raw const ArrayBuffer::CLASS.type_info) {
+            return None;
+        }
+        // SAFETY: LibGC allocated the owner as an ArrayBuffer.
+        let owner = unsafe { Gc::from_non_null(owner.cast::<ArrayBuffer>()) };
+        let owns_the_storage = owner.with_data_block(
+            |block| matches!(&block.byte_buffer, DataBlockStorage::Owned(buffer) if buffer.handle() == self.handle()),
+        );
+        owns_the_storage.then_some(owner)
+    }
 }
 
 /// C++ draws the id of a new shared memory object at random, as it has to stay unique across processes that never
@@ -299,6 +325,10 @@ impl SharedBackingStore {
 
     pub fn object_id(&self) -> u64 {
         self.object_id
+    }
+
+    pub fn handle(&self) -> GCPrimitiveStorageHandle {
+        self.storage.handle()
     }
 
     pub fn size(&self) -> usize {
@@ -945,8 +975,11 @@ impl ArrayBuffer {
             .expect("the ArrayBuffer has an [[ArrayBufferMaxByteLength]]")
     }
 
+    /// Makes the buffer resizable, or growable if it is shared. Only views of fixed-length buffers cache the offset of
+    /// the data, so the views that did stop doing so.
     pub fn set_max_byte_length(&self, max_byte_length: usize) {
         self.max_byte_length.set(Some(max_byte_length));
+        self.invalidate_cached_typed_array_view_offsets();
     }
 
     fn account_external_memory_change(
@@ -986,6 +1019,16 @@ impl ArrayBuffer {
         new_size: usize,
         zero_fill_new_bytes: ZeroFillNewBytes,
     ) -> Result<(), OutOfMemory> {
+        // NB: C++ cannot resize a block over the storage of another buffer. The runtime resizes the other buffer, whose
+        //     new size such a block has as long as it has no fixed byte length.
+        let owner_of_aliased_storage = match &self.data_block.borrow().byte_buffer {
+            DataBlockStorage::External(storage) => storage.array_buffer_owning_the_storage(),
+            _ => None,
+        };
+        if let Some(owner) = owner_of_aliased_storage {
+            return owner.try_resize(vm, new_size, zero_fill_new_bytes);
+        }
+
         let old_external_memory_size = self.external_memory_size();
         let old_data_offset = self.data_offset();
         self.data_block.borrow_mut().try_resize(new_size, zero_fill_new_bytes)?;
