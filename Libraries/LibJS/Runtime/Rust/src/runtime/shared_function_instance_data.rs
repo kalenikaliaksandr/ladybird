@@ -16,6 +16,7 @@ use crate::frontend_host::rust_free_compiled_regex;
 use crate::gc::class::{GcCell, define_cell};
 use crate::gc::gc_ref_cell::GcRefCell;
 use crate::gc::visitor::{Trace, Visitor};
+use crate::interpreter::run::should_dump_bytecode;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::{CellHeader, Gc};
 pub use crate::layout::function_object::{SharedFunctionInstanceData, asm_call_metadata};
@@ -105,6 +106,10 @@ pub struct SharedFunctionInstanceDataStorage {
     //     first called.
     #[gc(untraced)]
     cached_bytecode_executable: RefCell<Option<Box<DecodedCachedExecutableRecord>>>,
+    // NB: The source text range the function was created with, which a bytecode cache blob identifies the function
+    //     by, even after the range of a class constructor grew to the whole class.
+    bytecode_cache_source_text_offset: Cell<usize>,
+    bytecode_cache_source_text_length: Cell<usize>,
     use_rust_compilation: bool,
 }
 
@@ -201,6 +206,8 @@ impl SharedFunctionInstanceData {
                 rust_function_ast: RefCell::new(rust_function_ast),
                 precompiled_bytecode_executable: RefCell::new(None),
                 cached_bytecode_executable: RefCell::new(None),
+                bytecode_cache_source_text_offset: Cell::new(0),
+                bytecode_cache_source_text_length: Cell::new(0),
                 use_rust_compilation: true,
             },
         }
@@ -256,6 +263,7 @@ impl SharedFunctionInstanceData {
                 description.source_text_length,
             );
         }
+        shared.set_bytecode_cache_source_text_range(description.source_text_offset, description.source_text_length);
         shared
     }
 
@@ -303,6 +311,7 @@ impl SharedFunctionInstanceData {
         shared.update_asm_call_metadata();
 
         shared.set_source_text_range(source_code, source_text_range.start, source_text_length);
+        shared.set_bytecode_cache_source_text_range(source_text_range.start, source_text_length);
         if let Some((name, is_private)) = function.field_initializer_name() {
             shared.set_class_field_initializer_name_from_utf16(&name, is_private);
         }
@@ -312,6 +321,62 @@ impl SharedFunctionInstanceData {
             .cached_bytecode_executable
             .replace(Some(Box::new(function.cached_executable())));
         shared
+    }
+
+    fn set_bytecode_cache_source_text_range(&self, source_text_offset: usize, source_text_length: usize) {
+        self.storage.bytecode_cache_source_text_offset.set(source_text_offset);
+        self.storage.bytecode_cache_source_text_length.set(source_text_length);
+    }
+
+    /// The offset and length of the source text the function was created with.
+    pub fn bytecode_cache_source_text_range(&self) -> (usize, usize) {
+        (
+            self.storage.bytecode_cache_source_text_offset.get(),
+            self.storage.bytecode_cache_source_text_length.get(),
+        )
+    }
+
+    /// Whether `function`, a function of a bytecode cache blob nested in code that is strict if `outer_strict` is, is
+    /// the function this shared data was created for, as rust_sfd_matches_bytecode_cache_function decides.
+    pub fn matches_bytecode_cache_function(&self, function: &DecodedFunctionRecord, outer_strict: bool) -> bool {
+        let source_text_range = function.source_text_range();
+        self.bytecode_cache_source_text_range()
+            == (
+                source_text_range.start,
+                source_text_range.end.saturating_sub(source_text_range.start),
+            )
+            && self.storage.function_length == function.length()
+            && self.formal_parameter_count.get() == function.parameter_count()
+            && self.storage.kind == function.function_kind()
+            && self.strict.get() == (function.has_strict_code() || outer_strict)
+            && self.storage.is_arrow_function == function.is_arrow()
+            && self.storage.has_simple_parameter_list == function.simple_parameter_names().is_some()
+    }
+
+    /// Replaces how the function compiles with its executable in a bytecode cache blob, which becomes its executable
+    /// when it is first called, as rust_sfd_install_cached_bytecode_executable does.
+    pub fn install_cached_bytecode_executable(
+        &self,
+        cached_executable: DecodedCachedExecutableRecord,
+        metadata: &FunctionSfdMetadata,
+    ) {
+        self.clear_compile_inputs();
+        self.set_metadata(metadata);
+        self.storage
+            .cached_bytecode_executable
+            .replace(Some(Box::new(cached_executable)));
+    }
+
+    /// Replaces the executable of a function that already ran with one materialized from a bytecode cache blob, which
+    /// took over the inline caches of the previous one, as rust_sfd_install_bytecode_cache_executable does.
+    pub fn install_bytecode_cache_executable(&self, executable: Gc<Executable>, metadata: &FunctionSfdMetadata) {
+        self.set_metadata(metadata);
+        self.set_executable(Some(executable));
+        executable.set_name(self.name());
+        if should_dump_bytecode() {
+            executable.dump();
+        }
+        self.clear_compile_inputs();
     }
 
     /// vm.heap().allocate<SharedFunctionInstanceData>(vm, kind, name, function_length, formal_parameter_count, strict,
