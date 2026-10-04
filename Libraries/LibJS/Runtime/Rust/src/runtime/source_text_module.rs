@@ -121,6 +121,8 @@ pub const SOURCE_TEXT_MODULE_METHODS: ModuleMethods = ModuleMethods {
     resolve_export: |module, vm, export_name, resolve_set| {
         as_source_text_module(module).resolve_export(vm, export_name, resolve_set)
     },
+    initialize_environment: |module, vm| as_source_text_module(module).initialize_environment(vm),
+    execute_module: |module, vm, capability| as_source_text_module(module).execute_module(vm, capability),
     ..CYCLIC_MODULE_METHODS
 };
 
