@@ -18,6 +18,8 @@ use crate::embedding::host::class_table::{
     get_cache_metadata_into_abi, lend_object_to_hook, lookup_phase_into_abi, optional_object_completion_from_hook,
     set_cache_metadata_into_abi,
 };
+use crate::embedding::host::host_array::as_host_array;
+use crate::embedding::host::host_function::as_host_function;
 use crate::embedding::host::registry::runtime_class_and_allocator_of_host_class;
 use crate::embedding::object::{property_descriptor_from_abi, property_descriptor_to_abi};
 use crate::gc::class::{Class, Finalize, define_cell};
@@ -421,6 +423,8 @@ pub(crate) fn as_host_object(object: &Object) -> &HostObject {
 pub fn host_class_of(object: &Object) -> Option<&'static JSHostClass> {
     match object.class().id {
         ClassId::HostObject => Some(as_host_object(object).host_class),
+        ClassId::HostFunction => Some(as_host_function(object).host_class),
+        ClassId::HostArray => Some(as_host_array(object).host_class),
         _ => None,
     }
 }
@@ -434,6 +438,8 @@ pub fn is_host_instance_of(object: &Object, table: &'static JSHostClass) -> bool
 fn host_data_slot_of(object: &Object) -> Option<&ForeignCellSlot> {
     match object.class().id {
         ClassId::HostObject => Some(&as_host_object(object).host_data),
+        ClassId::HostFunction => Some(&as_host_function(object).host_data),
+        ClassId::HostArray => Some(&as_host_array(object).host_data),
         _ => None,
     }
 }
@@ -760,13 +766,13 @@ pub(crate) mod hook_tests {
     }
 
     /// A VM with a realm whose global object scripts can reach, which the hooks of this module run in.
-    struct HookTestEnvironment<'vm> {
+    pub(crate) struct HookTestEnvironment<'vm> {
         vm: &'vm Vm,
         root_execution_context: RootExecutionContext<'vm>,
     }
 
     impl<'vm> HookTestEnvironment<'vm> {
-        fn new(vm: &'vm Vm) -> Self {
+        pub(crate) fn new(vm: &'vm Vm) -> Self {
             HOOK_VM.set(core::ptr::from_ref(vm));
             Self {
                 vm,
@@ -774,11 +780,11 @@ pub(crate) mod hook_tests {
             }
         }
 
-        fn realm(&self) -> Gc<Realm> {
+        pub(crate) fn realm(&self) -> Gc<Realm> {
             self.root_execution_context.realm()
         }
 
-        fn define_global(&self, name: &str, object: Gc<Object>) {
+        pub(crate) fn define_global(&self, name: &str, object: Gc<Object>) {
             self.realm().global_object().define_direct_property(
                 self.vm,
                 &key(name),
@@ -788,14 +794,21 @@ pub(crate) mod hook_tests {
         }
 
         /// The completion value as a string, or "uncaught <error>" for an exception that escaped the script.
-        fn evaluate(&self, source: &str) -> String {
+        pub(crate) fn evaluate(&self, source: &str) -> String {
             match run_script(self.vm, self.realm(), source) {
                 Ok(value) => utf8(value),
                 Err(throw) => format!("uncaught {}", utf8(throw.value())),
             }
         }
 
-        fn create(&self, table: &'static JSHostClass, prototype: Option<Gc<Object>>) -> Gc<HostObject> {
+        /// "<name>: <message>" of what the statements throw, or "no exception".
+        pub(crate) fn exception_from(&self, statements: &str) -> String {
+            self.evaluate(&format!(
+                "(() => {{ try {{ {statements}; }} catch (error) {{ return `${{error.name}}: ${{error.message}}`; }} return 'no exception'; }})()"
+            ))
+        }
+
+        pub(crate) fn create(&self, table: &'static JSHostClass, prototype: Option<Gc<Object>>) -> Gc<HostObject> {
             // SAFETY: The tables of this module are of kind JS_HOST_CLASS_OBJECT.
             unsafe { HostObject::create(self.vm, self.realm(), table, prototype, None, None) }
         }
@@ -807,7 +820,7 @@ pub(crate) mod hook_tests {
         }
     }
 
-    fn hook_vm() -> &'static Vm {
+    pub(crate) fn hook_vm() -> &'static Vm {
         let vm = HOOK_VM.get();
         assert!(!vm.is_null(), "hooks run while a test environment exists");
         // SAFETY: The environment that set the VM outlives the hooks it runs.
@@ -818,7 +831,7 @@ pub(crate) mod hook_tests {
         vm_into_abi(hook_vm())
     }
 
-    fn key_is(key: JSPropertyKey, name: &str) -> bool {
+    pub(crate) fn key_is(key: JSPropertyKey, name: &str) -> bool {
         // SAFETY: Hooks receive live keys.
         let key = unsafe { clone_lent_property_key_from_abi(key) };
         key == PropertyKey::from_utf8(name)
@@ -828,7 +841,7 @@ pub(crate) mod hook_tests {
         Value::from_string(PrimitiveString::create_from_utf8(hook_vm(), text)).0
     }
 
-    fn hook_error(hook: &str) -> JSCompletion {
+    pub(crate) fn hook_error(hook: &str) -> JSCompletion {
         let message = format!("{hook} threw");
         // SAFETY: The view is of the message, which outlives the call.
         unsafe {
@@ -840,7 +853,7 @@ pub(crate) mod hook_tests {
         }
     }
 
-    fn normal(payload: u64) -> JSCompletion {
+    pub(crate) fn normal(payload: u64) -> JSCompletion {
         JSCompletion {
             payload,
             variant: JS_COMPLETION_NORMAL,
@@ -848,7 +861,7 @@ pub(crate) mod hook_tests {
     }
 
     /// Runs the script the test gave the hooks, and collects garbage, unless a hook is already doing so.
-    fn reenter(hook: &'static str) {
+    pub(crate) fn reenter(hook: &'static str) {
         let Some(script) = SCRIPT_FOR_HOOKS_TO_REENTER_WITH.get() else {
             return;
         };
@@ -864,6 +877,22 @@ pub(crate) mod hook_tests {
         assert!(completion.is_ok(), "the script that {hook} runs completes");
         HOOKS_THAT_REENTERED.with_borrow_mut(|hooks| hooks.push(hook));
     }
+
+    /// The hooks that re-entered the VM with `script` while `operation` ran, sorted and once each.
+    pub(crate) fn hooks_that_reentered_while(script: &'static str, operation: impl FnOnce()) -> Vec<&'static str> {
+        HOOKS_THAT_REENTERED.with_borrow_mut(Vec::clear);
+        SCRIPT_FOR_HOOKS_TO_REENTER_WITH.set(Some(script));
+        operation();
+        SCRIPT_FOR_HOOKS_TO_REENTER_WITH.set(None);
+        let mut hooks = HOOKS_THAT_REENTERED.with_borrow(Vec::clone);
+        hooks.sort_unstable();
+        hooks.dedup();
+        hooks
+    }
+
+    /// A script for hooks to re-enter the VM with, which reaches the hooks of `host` again and makes garbage.
+    pub(crate) const REENTRANT_SCRIPT: &str = "globalThis.reentered = (globalThis.reentered | 0) + 1; \
+         (typeof host === 'object' ? host.answer + Object.keys(host).length : 0) + [1, 2, 3].map(String).join()";
 
     // Hooks that implement every internal method. Hooks taking a key answer some keys themselves, throw for
     // "throwing", and leave the rest to the ordinary internal method, the way bindings do.
@@ -1788,23 +1817,17 @@ pub(crate) mod hook_tests {
         environment.define_global("errorish", errorish.upcast());
 
         // The script reaches the hooks again from inside them, and makes garbage for the collection that follows.
-        SCRIPT_FOR_HOOKS_TO_REENTER_WITH.set(Some(
-            "globalThis.reentered = (globalThis.reentered | 0) + 1; host.answer + Object.keys(host).length + [1, 2, 3].map(String).join()",
-        ));
-        HOOKS_THAT_REENTERED.with_borrow_mut(Vec::clear);
-        assert_eq!(
-            environment.evaluate(
-                "Object.getPrototypeOf(host); Reflect.setPrototypeOf(host, Object.prototype); Reflect.isExtensible(host); \
-                 Reflect.preventExtensions(host); Object.getOwnPropertyDescriptor(host, 'x'); Object.defineProperty(host, 'x', { value: 1, configurable: true }); \
-                 'x' in host; host.x; host.y = 2; delete host.y; Reflect.ownKeys(host); \
-                 host.toString; inheriting.toString; Object.prototype.toString.call(errorish)"
-            ),
-            "[object Error]"
-        );
-        SCRIPT_FOR_HOOKS_TO_REENTER_WITH.set(None);
-        let mut hooks_that_reentered = HOOKS_THAT_REENTERED.with_borrow(Vec::clone);
-        hooks_that_reentered.sort_unstable();
-        hooks_that_reentered.dedup();
+        let hooks_that_reentered = hooks_that_reentered_while(REENTRANT_SCRIPT, || {
+            assert_eq!(
+                environment.evaluate(
+                    "Object.getPrototypeOf(host); Reflect.setPrototypeOf(host, Object.prototype); Reflect.isExtensible(host); \
+                     Reflect.preventExtensions(host); Object.getOwnPropertyDescriptor(host, 'x'); Object.defineProperty(host, 'x', { value: 1, configurable: true }); \
+                     'x' in host; host.x; host.y = 2; delete host.y; Reflect.ownKeys(host); \
+                     host.toString; inheriting.toString; Object.prototype.toString.call(errorish)"
+                ),
+                "[object Error]"
+            );
+        });
         assert_eq!(
             hooks_that_reentered,
             [

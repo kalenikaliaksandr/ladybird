@@ -316,6 +316,40 @@ mod tests {
     }
 
     #[test]
+    fn function_classes_have_the_hooks_their_flags_need() {
+        unsafe extern "C" fn call(_: *mut JSObject, _: *mut crate::layout::host_class::JSVM) -> JSCompletion {
+            unreachable!("the test never calls the function")
+        }
+        let function_class = |name, call, flags| {
+            let hooks: &'static JSHostFunctionHooks = Box::leak(Box::new(JSHostFunctionHooks {
+                call,
+                construct: None,
+                finalize: None,
+            }));
+            leak_host_class(
+                JS_HOST_CLASS_FUNCTION,
+                name,
+                None,
+                core::ptr::from_ref(hooks).cast(),
+                flags,
+            )
+        };
+        function_class("Callable", Some(call), 0).validate(JS_HOST_CLASS_FUNCTION);
+        assert!(
+            validation_failure(function_class("NotCallable", None, 0), JS_HOST_CLASS_FUNCTION).contains("call hook")
+        );
+        assert!(
+            validation_failure(
+                function_class("ConstructorWithoutConstruct", Some(call), JS_HOST_CLASS_HAS_CONSTRUCTOR),
+                JS_HOST_CLASS_FUNCTION
+            )
+            .contains("construct hook")
+        );
+        let without_hooks = leak_host_class(JS_HOST_CLASS_FUNCTION, "WithoutHooks", None, core::ptr::null(), 0);
+        assert!(validation_failure(without_hooks, JS_HOST_CLASS_FUNCTION).contains("has hooks"));
+    }
+
+    #[test]
     fn the_allocating_class_is_the_nearest_one_that_does_not_share() {
         let root = object_class("Root", None, 0);
         let child = object_class("Child", Some(root), JS_HOST_CLASS_SHARES_ALLOCATOR_WITH_PARENT);
