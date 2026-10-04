@@ -6,12 +6,36 @@
 
 #include <AK/StringView.h>
 #include <AK/Utf16String.h>
+#include <AK/Utf16View.h>
+#include <AK/Vector.h>
 #include <LibJS/Embedding/ABI.h>
 #include <LibJS/HostObjectABI.h>
 
 #include "EmbeddingTest.h"
 
 namespace {
+
+Utf16View view_of(JSUtf16View view)
+{
+    if (view.has_ascii_storage)
+        return Utf16View { StringView { static_cast<char const*>(view.data), view.length_in_code_units } };
+    return Utf16View { static_cast<char16_t const*>(view.data), view.length_in_code_units };
+}
+
+JSUtf16View abi_view_of(Utf16View view)
+{
+    if (view.has_ascii_storage())
+        return { view.ascii_span().data(), view.length_in_code_units(), true };
+    return { view.utf16_span().data(), view.length_in_code_units(), false };
+}
+
+Vector<u32> magnitude_of(JSBigInt* bigint)
+{
+    Vector<u32> words;
+    words.resize(js_bigint_magnitude_word_count(bigint));
+    js_bigint_copy_magnitude_words(bigint, words.data(), words.size());
+    return words;
+}
 
 // A VM with a realm to evaluate scripts in, through the testing part of the ABI.
 class TestingRealm {
@@ -148,4 +172,78 @@ TEST_CASE(equality_and_predicates)
     EXPECT(!js_value_is_constructor(testing_realm.value_of("(() => {})"sv)));
     EXPECT(js_value_is_function(testing_realm.value_of("(() => {})"sv)));
     EXPECT(!js_value_to_boolean(testing_realm.value_of("''"sv)));
+}
+
+TEST_CASE(strings_round_trip_without_copies)
+{
+    TestingRealm testing_realm;
+    auto* vm = testing_realm.vm();
+    auto string = Utf16String::from_utf8("αβγδεζηθικλμ, a string with UTF-16 storage"sv);
+    auto const* storage = string.utf16_view().utf16_span().data();
+
+    auto* primitive_string = js_string_create_from_owned_utf16_string(vm, move(string).into_raw());
+    auto view = js_string_utf16_view(primitive_string);
+    EXPECT(!view.has_ascii_storage);
+    EXPECT_EQ(view.data, static_cast<void const*>(storage));
+    auto read_back = Utf16String::adopt_raw(js_string_utf16_string(primitive_string));
+    EXPECT_EQ(read_back.utf16_view().utf16_span().data(), storage);
+    EXPECT_EQ(read_back, u"αβγδεζηθικλμ, a string with UTF-16 storage"sv);
+
+    auto* ascii = js_string_create_from_utf16_view(vm, abi_view_of(u"; then ASCII"sv));
+    auto ascii_view = js_string_utf16_view(ascii);
+    EXPECT(ascii_view.has_ascii_storage);
+    EXPECT_EQ(view_of(ascii_view), u"; then ASCII"sv);
+
+    // A concatenation is built lazily, and resolved when it is first read.
+    auto* concatenation = pointer_of_payload<JSPrimitiveString>(js_string_create_concatenation(vm, primitive_string, ascii));
+    EXPECT_EQ(js_string_length_in_code_units(concatenation), 54u);
+    EXPECT_EQ(view_of(js_string_utf16_view(concatenation)), u"αβγδεζηθικλμ, a string with UTF-16 storage; then ASCII"sv);
+    EXPECT_EQ(view_of(js_string_utf16_view(js_string_create_substring(vm, concatenation, 44, 4))), u"then"sv);
+
+    // Strings from scripts are the same cells.
+    auto* from_script = pointer_of_payload<JSPrimitiveString>(js_value_to_primitive_string(vm, testing_realm.value_of("'; then ' + 'ASCII'"sv)));
+    EXPECT(js_string_equals(from_script, ascii));
+}
+
+TEST_CASE(bigints_round_trip)
+{
+    TestingRealm testing_realm;
+    auto* vm = testing_realm.vm();
+
+    auto* minimum = js_bigint_create_from_i64(vm, NumericLimits<i64>::min());
+    EXPECT(js_bigint_is_negative(minimum));
+    EXPECT_EQ(js_bigint_to_i64(minimum), NumericLimits<i64>::min());
+    EXPECT_EQ(magnitude_of(minimum), (Vector<u32> { 0, 0x8000'0000 }));
+
+    auto* maximum = js_bigint_create_from_u64(vm, NumericLimits<u64>::max());
+    EXPECT_EQ(js_bigint_to_u64(maximum), NumericLimits<u64>::max());
+    EXPECT_EQ(Utf16String::adopt_raw(js_bigint_to_string(maximum, 16)), u"ffffffffffffffff"sv);
+
+    u32 const words[] = { 0x1234'5678, 0, 1 };
+    auto* large = js_bigint_create_from_magnitude(vm, true, words, array_size(words));
+    EXPECT(js_bigint_is_negative(large));
+    EXPECT_EQ(magnitude_of(large), (Vector<u32> { 0x1234'5678, 0, 1 }));
+    EXPECT_EQ(Utf16String::adopt_raw(js_bigint_to_string(large, 10)), u"-18446744074014971512"sv);
+
+    auto* from_script = pointer_of_payload<JSBigInt>(js_value_to_bigint(vm, testing_realm.value_of("-(2n ** 70n)"sv)));
+    EXPECT(js_bigint_is_negative(from_script));
+    EXPECT_EQ(magnitude_of(from_script), (Vector<u32> { 0, 0, 64 }));
+}
+
+TEST_CASE(symbols_have_descriptions)
+{
+    TestingRealm testing_realm;
+    auto* vm = testing_realm.vm();
+
+    auto* symbol = js_symbol_create(vm, abi_view_of(u"ünïque"sv));
+    JSUtf16View description {};
+    EXPECT(js_symbol_description(symbol, &description));
+    EXPECT_EQ(view_of(description), u"ünïque"sv);
+    EXPECT_EQ(Utf16String::adopt_raw(js_symbol_descriptive_string(symbol)), u"Symbol(ünïque)"sv);
+    EXPECT(!js_symbol_description(js_symbol_create_without_description(vm), &description));
+
+    auto* iterator = js_symbol_well_known(vm, JS_WELL_KNOWN_SYMBOL_ITERATOR);
+    EXPECT(js_symbol_description(iterator, &description));
+    EXPECT_EQ(view_of(description), u"Symbol.iterator"sv);
+    EXPECT_EQ(iterator, js_symbol_well_known(vm, JS_WELL_KNOWN_SYMBOL_ITERATOR));
 }
