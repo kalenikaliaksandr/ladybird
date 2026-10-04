@@ -6,6 +6,7 @@
 
 #include <AK/StdLibExtras.h>
 #include <AK/Utf16FlyString.h>
+#include <AK/Utf16String.h>
 #include <AK/Vector.h>
 #include <LibGC/Function.h>
 #include <LibGC/Heap.h>
@@ -66,6 +67,7 @@ public:
     JSVM* vm() const { return m_embedded_vm->vm(); }
     JSRealm* realm() const { return m_embedded_vm->realm(); }
     JSObject* global_object() const { return field_at<JSObject>(realm(), JS_LAYOUT_REALM_GLOBAL_OBJECT_OFFSET); }
+    JSEnvironment* global_environment() const { return field_at<JSEnvironment>(realm(), JS_LAYOUT_REALM_GLOBAL_ENVIRONMENT_OFFSET); }
 
     JSCompletion evaluate(StringView source) const { return m_embedded_vm->evaluate(source); }
 
@@ -365,4 +367,38 @@ TEST_CASE(integrity_levels)
     EXPECT_EQ(js_object_set(vm, object, &key, int32_value(2), false).variant, JS_COMPLETION_NORMAL);
     EXPECT_EQ(js_object_set(vm, object, &key, int32_value(2), true).variant, JS_COMPLETION_THROW);
     EXPECT_EQ(js_object_get(vm, object, &key).payload, int32_value(1));
+}
+
+TEST_CASE(dynamic_functions_close_over_an_object_environment)
+{
+    Harness harness;
+    auto* vm = harness.vm();
+    auto source_text = u"function onclick(event) {\nreturn event + scoped\n}"sv;
+    auto body = u"\nreturn event + scoped\n"sv;
+    auto utf16_view_of = [](Utf16View const& view) {
+        return JSUtf16View { view.utf16_span().data(), view.length_in_code_units(), false };
+    };
+
+    JSOwnedUtf16String error_message = 0;
+    auto* function_data = js_function_compile_dynamic(vm, utf16_view_of(source_text), view_of("event"sv), utf16_view_of(body), JS_FUNCTION_KIND_NORMAL, &error_message);
+    EXPECT(function_data != nullptr);
+
+    auto* scope_object = harness.evaluate_to_object("({ scoped: 40 })"sv);
+    auto* scope = js_environment_new_object_environment(vm, scope_object, true, harness.global_environment());
+    EXPECT_EQ(js_environment_kind(scope), JS_ENVIRONMENT_KIND_OBJECT);
+    EXPECT_EQ(js_environment_outer(scope), harness.global_environment());
+
+    auto* function = js_function_instantiate_dynamic(vm, harness.realm(), function_data, scope, nullptr, { .tag = JS_LAYOUT_SCRIPT_OR_MODULE_TAG_EMPTY, .cell = nullptr });
+    JSValue arguments[] = { int32_value(2) };
+    auto result = js_function_call(vm, value_of_object(function), js_undefined, arguments, 1);
+    EXPECT_EQ(result.variant, JS_COMPLETION_NORMAL);
+    EXPECT_EQ(result.payload, int32_value(42));
+    harness.define_global("handler"_utf16_fly_string, value_of_object(function));
+    EXPECT(harness.evaluates_to_true("handler.name === 'onclick' && handler.length === 1 && String(handler).startsWith('function onclick(event)')"sv));
+
+    auto broken_source = u"function f() {\n}}\n}"sv;
+    auto* broken = js_function_compile_dynamic(vm, utf16_view_of(broken_source), view_of(""sv), view_of("\n}}\n"sv), JS_FUNCTION_KIND_NORMAL, &error_message);
+    EXPECT(broken == nullptr);
+    auto message = Utf16String::adopt_raw(error_message);
+    EXPECT(message.contains(u"(line: "sv));
 }

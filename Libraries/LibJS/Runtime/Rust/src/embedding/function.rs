@@ -22,18 +22,25 @@ use crate::embedding::abi_types::{
     optional_cell_from_abi, optional_cell_into_abi, owned_utf16_string_into_abi, property_key_from_abi, vm_from_abi,
     vm_into_abi,
 };
+use crate::embedding::environment::{JSEnvironment, JSPrivateEnvironment};
+use crate::embedding::execution_context::{JSScriptOrModule, script_or_module_from_abi};
 use crate::embedding::object::{function_from_abi, optional_function_from_abi, values_from_abi};
 use crate::gc::foreign::ForeignCellSlot;
 use crate::gc::visitor::{Trace, Visitor};
 use crate::interpreter::vm::Vm;
+use crate::layout::cell::Gc;
+use crate::layout::function_object::EcmascriptFunctionObject;
 use crate::layout::host_class::{JSCompletion, JSObject, JSPropertyKey, JSVM, JSValue};
 use crate::layout::value::Value;
 use crate::layout_forward::{RawNativeFunctionPointer, RawNativeFunctionResult};
 use crate::runtime::abstract_operations::{call, construct};
 use crate::runtime::completion::ThrowCompletionOr;
+use crate::runtime::function_constructor::compile_dynamic_function;
 use crate::runtime::native_function::{
     DirectGetterConfiguration, DirectGetterFunction, NativeFunction, RawNativeFunction,
 };
+use crate::runtime::private_environment::PrivateEnvironment;
+use crate::runtime::shared_function_instance_data::{FunctionKind, SharedFunctionInstanceData};
 
 /// A raw native function: the C++ runtime's NativeFunctionPointer, ThrowCompletionOr<Value> (*)(VM&). It reads its
 /// arguments, this value and callee from the running execution context. C++ returns the 16-byte ThrowCompletionOr in
@@ -380,6 +387,110 @@ pub unsafe extern "C" fn js_function_invoke(
     completion_into_abi(Value(value).invoke(vm, key, arguments))
 }
 
+// Functions from source text, which hosts create outside of any script
+
+/// The compiled code of a function, which C only ever sees behind a pointer.
+pub struct JSSharedFunctionData {
+    _opaque: [u8; 0],
+}
+
+pub const JS_FUNCTION_KIND_NORMAL: u8 = 0;
+pub const JS_FUNCTION_KIND_GENERATOR: u8 = 1;
+pub const JS_FUNCTION_KIND_ASYNC: u8 = 2;
+pub const JS_FUNCTION_KIND_ASYNC_GENERATOR: u8 = 3;
+
+fn function_kind_from_abi(kind: u8) -> FunctionKind {
+    match kind {
+        JS_FUNCTION_KIND_NORMAL => FunctionKind::Normal,
+        JS_FUNCTION_KIND_GENERATOR => FunctionKind::Generator,
+        JS_FUNCTION_KIND_ASYNC => FunctionKind::Async,
+        JS_FUNCTION_KIND_ASYNC_GENERATOR => FunctionKind::AsyncGenerator,
+        kind => panic!("{kind} is not a function kind"),
+    }
+}
+
+/// Compiles the function that the source text defines the way CreateDynamicFunction does, after checking its
+/// parameters and its body on their own, as C++ JS::CompiledDynamicFunction::compile() does: the kind is a
+/// JS_FUNCTION_KIND_* value, and the body is the body parse string, the body between two line feeds. Returns the
+/// compiled code, an unrooted cell that the caller keeps alive (in a GC::Root) until it instantiates it, or null after
+/// writing the message of the first syntax error, which the caller owns, to `error_message`. Borrows the strings. Main
+/// thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_function_compile_dynamic(
+    vm: *mut JSVM,
+    source_text: JSUtf16View,
+    parameters: JSUtf16View,
+    body: JSUtf16View,
+    kind: u8,
+    error_message: *mut JSOwnedUtf16String,
+) -> *mut JSSharedFunctionData {
+    // SAFETY: See the module documentation.
+    let (vm, source_text, parameters, body) = unsafe {
+        (
+            vm_from_abi(vm),
+            source_text.as_view(),
+            parameters.as_view(),
+            body.as_view(),
+        )
+    };
+    let code_units = |view: crate::utf16::Utf16View<'_>| {
+        let mut code_units = Vec::with_capacity(view.length_in_code_units());
+        view.append_to(&mut code_units);
+        code_units
+    };
+    match compile_dynamic_function(
+        vm,
+        &source_text.to_utf16_string(),
+        &code_units(parameters),
+        &code_units(body),
+        function_kind_from_abi(kind),
+    ) {
+        Ok(function_data) => function_data.as_ptr().cast(),
+        Err(parser_error) => {
+            let message = ak::Utf16String::from_utf8(&parser_error.to_string());
+            // SAFETY: As above, `error_message` is writable.
+            unsafe { error_message.write(owned_utf16_string_into_abi(message)) };
+            core::ptr::null_mut()
+        }
+    }
+}
+
+/// OrdinaryFunctionCreate over code js_function_compile_dynamic() compiled: a function of the realm with the default
+/// prototype for its kind, which closes over the scope and the private environment (null for none), and whose
+/// [[ScriptOrModule]] is `script_or_module`, as an execution context holds it. Returns an unrooted function. Main
+/// thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_function_instantiate_dynamic(
+    vm: *mut JSVM,
+    realm: *mut JSRealm,
+    function_data: *mut JSSharedFunctionData,
+    scope: *mut JSEnvironment,
+    private_environment: *mut JSPrivateEnvironment,
+    script_or_module: JSScriptOrModule,
+) -> *mut JSObject {
+    // SAFETY: See the module documentation.
+    let (vm, realm, scope) = unsafe {
+        (
+            vm_from_abi(vm),
+            cell_from_abi::<JSRealm>(realm),
+            cell_from_abi::<JSEnvironment>(scope),
+        )
+    };
+    let function_data = NonNull::new(function_data.cast::<SharedFunctionInstanceData>()).expect("the code is not null");
+    // SAFETY: The caller passes code js_function_compile_dynamic() compiled, which it kept alive.
+    let function_data = unsafe { Gc::from_non_null(function_data) };
+    let private_environment = NonNull::new(private_environment.cast::<PrivateEnvironment>()).map(|environment| {
+        // SAFETY: The caller passes null or a live private environment.
+        unsafe { Gc::from_non_null(environment) }
+    });
+    // SAFETY: The caller passes a live script or module, or an empty one.
+    let script_or_module = unsafe { script_or_module_from_abi(script_or_module) };
+    let function =
+        EcmascriptFunctionObject::create_from_function_data(vm, realm, function_data, Some(scope), private_environment);
+    function.set_script_or_module(script_or_module);
+    object_into_abi(function)
+}
+
 #[cfg(all(test, libjs_runtime_tests_with_libgc))]
 mod tests {
     use core::cell::Cell;
@@ -387,7 +498,7 @@ mod tests {
     use super::*;
     use crate::embedding::abi_types::cell_into_abi;
     use crate::gc::weak::GcWeak;
-    use crate::layout::cell::Gc;
+    use crate::layout::execution_context::ScriptOrModule;
     use crate::layout::host_class::{JS_COMPLETION_NORMAL, JS_COMPLETION_THROW};
     use crate::runtime::completion::Must;
     use crate::runtime::error::test_scripts::{run_script, utf8};
@@ -399,6 +510,14 @@ mod tests {
 
     fn abi_key(key: &PropertyKey) -> *const JSPropertyKey {
         core::ptr::from_ref(key).cast()
+    }
+
+    fn view_of(code_units: &[u16]) -> JSUtf16View {
+        JSUtf16View {
+            data: code_units.as_ptr().cast(),
+            length_in_code_units: code_units.len(),
+            has_ascii_storage: false,
+        }
     }
 
     fn ascii_view_of(ascii: &str) -> JSUtf16View {
@@ -675,6 +794,101 @@ mod tests {
         assert_eq!(
             utf8(run_script(&vm, realm, "getter.name + ' ' + getter(4, 5)").must()),
             "get add 9"
+        );
+    }
+
+    #[test]
+    fn dynamic_functions_close_over_the_scope_they_are_instantiated_in() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let source: Vec<u16> = "function onclick(event) {\nreturn event + scoped\n}"
+            .encode_utf16()
+            .collect();
+        let body: Vec<u16> = "\nreturn event + scoped\n".encode_utf16().collect();
+        let mut error_message = 0usize;
+        // SAFETY: The arguments are live.
+        let function_data = unsafe {
+            js_function_compile_dynamic(
+                vm_into_abi(&vm),
+                view_of(&source),
+                ascii_view_of("event"),
+                view_of(&body),
+                JS_FUNCTION_KIND_NORMAL,
+                &raw mut error_message,
+            )
+        };
+        assert!(!function_data.is_null());
+
+        let scope_object = Object::create(&vm, realm, Some(realm.object_prototype()));
+        scope_object.define_direct_property(&vm, &key("scoped"), Value::from_i32(40), DEFAULT_ATTRIBUTES);
+        // SAFETY: As above.
+        let scope = unsafe {
+            crate::embedding::environment::js_environment_new_object_environment(
+                vm_into_abi(&vm),
+                object_into_abi(scope_object),
+                true,
+                core::ptr::from_ref(&*realm.global_environment()).cast_mut().cast(),
+            )
+        };
+        // SAFETY: As above.
+        let function = unsafe {
+            js_function_instantiate_dynamic(
+                vm_into_abi(&vm),
+                cell_into_abi::<JSRealm>(realm),
+                function_data,
+                scope,
+                core::ptr::null_mut(),
+                ScriptOrModule::Empty.into(),
+            )
+        };
+        // SAFETY: As above.
+        let function = unsafe { cell_from_abi::<JSObject>(function) };
+        let result = crate::runtime::abstract_operations::call(
+            &vm,
+            Value::from_object(function),
+            Value::UNDEFINED,
+            &[Value::from_i32(2)],
+        )
+        .must();
+        assert_eq!(result, Value::from_i32(42));
+        realm.global_object().define_direct_property(
+            &vm,
+            &key("handler"),
+            Value::from_object(function),
+            DEFAULT_ATTRIBUTES,
+        );
+        assert_eq!(
+            utf8(
+                run_script(
+                    &vm,
+                    realm,
+                    "handler.name + ' ' + handler.length + ' ' + String(handler)"
+                )
+                .must()
+            ),
+            "onclick 1 function onclick(event) {\nreturn event + scoped\n}"
+        );
+
+        let broken_source: Vec<u16> = "function f() {\n}}\n}".encode_utf16().collect();
+        // SAFETY: As above.
+        let broken = unsafe {
+            js_function_compile_dynamic(
+                vm_into_abi(&vm),
+                view_of(&broken_source),
+                ascii_view_of(""),
+                ascii_view_of("\n}}\n"),
+                JS_FUNCTION_KIND_NORMAL,
+                &raw mut error_message,
+            )
+        };
+        assert!(broken.is_null());
+        // SAFETY: The runtime wrote an owned string.
+        let error_message = unsafe { ak::Utf16String::from_raw_owned(error_message) };
+        assert!(
+            crate::utf16::Utf16View::of_string(&error_message)
+                .to_utf8()
+                .contains("(line: ")
         );
     }
 }
