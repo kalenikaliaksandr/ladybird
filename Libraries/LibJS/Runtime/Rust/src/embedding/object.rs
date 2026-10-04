@@ -23,6 +23,7 @@ use crate::embedding::abi_types::{
     JSRealm, JSUtf16View, append_to_value_sink, cell_from_abi, cell_into_abi, completion_into_abi, object_into_abi,
     optional_cell_from_abi, optional_object_into_abi, property_key_from_abi, vm_from_abi,
 };
+use crate::embedding::function::{JSNativeFunction, raw_native_function_from_abi};
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
 use crate::layout::host_class::{
@@ -46,6 +47,16 @@ use crate::runtime::realm::Realm;
 // Conversions between the C types and the runtime's own, which the other files of the embedding module share.
 
 const _: () = assert!(size_of::<JSValue>() == size_of::<Value>());
+
+/// # Safety
+///
+/// `function` must be a live function object.
+pub(crate) unsafe fn function_from_abi(function: *mut JSObject) -> Gc<FunctionObject> {
+    // SAFETY: The caller passes a live object.
+    unsafe { cell_from_abi::<JSObject>(function) }
+        .downcast::<FunctionObject>()
+        .expect("the object is a function")
+}
 
 /// # Safety
 ///
@@ -527,6 +538,69 @@ pub unsafe extern "C" fn js_object_clear_cached_accessor_value(
         )
     };
     object.clear_cached_accessor_value(vm, key);
+}
+
+/// Defines a method whose behaviour is a raw native function, as a direct property of the key with the attributes.
+/// The function's [[Realm]] is the realm, and its "name" property is the key. Borrows the key. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_define_native_function(
+    vm: *mut JSVM,
+    object: *mut JSObject,
+    realm: *mut JSRealm,
+    key: *const JSPropertyKey,
+    behaviour: JSNativeFunction,
+    length: i32,
+    attributes: u8,
+) {
+    // SAFETY: See the module documentation.
+    let (vm, object, realm, key) = unsafe {
+        (
+            vm_from_abi(vm),
+            cell_from_abi::<JSObject>(object),
+            cell_from_abi::<JSRealm>(realm),
+            property_key_from_abi(key),
+        )
+    };
+    object.define_native_function(
+        vm,
+        realm,
+        key,
+        raw_native_function_from_abi(behaviour),
+        length,
+        PropertyAttributes::new(attributes),
+        None,
+    );
+}
+
+/// Defines an accessor property whose getter ("get <key>", length 0) and setter ("set <key>", length 1) are raw native
+/// functions. Either may be null for a missing function. Borrows the key. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_define_native_accessor(
+    vm: *mut JSVM,
+    object: *mut JSObject,
+    realm: *mut JSRealm,
+    key: *const JSPropertyKey,
+    getter: JSNativeFunction,
+    setter: JSNativeFunction,
+    attributes: u8,
+) {
+    // SAFETY: See the module documentation.
+    let (vm, object, realm, key) = unsafe {
+        (
+            vm_from_abi(vm),
+            cell_from_abi::<JSObject>(object),
+            cell_from_abi::<JSRealm>(realm),
+            property_key_from_abi(key),
+        )
+    };
+    object.define_native_accessor(
+        vm,
+        realm,
+        key,
+        raw_native_function_from_abi(getter),
+        raw_native_function_from_abi(setter),
+        PropertyAttributes::new(attributes),
+    );
 }
 
 /// Defines a data property of a string key whose value the accessor computes the first time anything reads it.
