@@ -144,13 +144,30 @@ static WeakImpl* as_weak_impl(GCWeakImpl* impl) { return reinterpret_cast<WeakIm
 static GCWeakImpl* as_gc_weak_impl(WeakImpl* impl) { return reinterpret_cast<GCWeakImpl*>(impl); }
 static PrimitiveStorage::ZeroFillNewBytes as_zero_fill_new_bytes(bool zero_fill) { return zero_fill ? PrimitiveStorage::ZeroFillNewBytes::Yes : PrimitiveStorage::ZeroFillNewBytes::No; }
 
-static bool store_primitive_storage_handle(ErrorOr<PrimitiveStorageHandle> handle_or_error, GCPrimitiveStorageHandle* out_handle)
+static void store_primitive_storage_layout(PrimitiveStorage const& storage, PrimitiveStorageHandle handle, GCPrimitiveStorageLayout* out_layout)
+{
+    if (!out_layout)
+        return;
+    auto layout = storage.layout(handle);
+    *out_layout = { .offset = layout.offset, .size = layout.size, .capacity = layout.capacity };
+}
+
+static bool store_created_primitive_storage(PrimitiveStorage const& storage, ErrorOr<PrimitiveStorageHandle> handle_or_error, GCPrimitiveStorageHandle* out_handle, GCPrimitiveStorageLayout* out_layout)
 {
     if (handle_or_error.is_error()) {
         *out_handle = GC_PRIMITIVE_STORAGE_NULL_HANDLE;
         return false;
     }
     *out_handle = encode_primitive_storage_handle(handle_or_error.value());
+    store_primitive_storage_layout(storage, handle_or_error.value(), out_layout);
+    return true;
+}
+
+static bool store_resized_primitive_storage(PrimitiveStorage const& storage, ErrorOr<void> result, PrimitiveStorageHandle handle, GCPrimitiveStorageLayout* out_layout)
+{
+    if (result.is_error())
+        return false;
+    store_primitive_storage_layout(storage, handle, out_layout);
     return true;
 }
 
@@ -339,34 +356,43 @@ void gc_visitor_visit_possible_values(GCVisitor* visitor, uint8_t const* data, s
     as_visitor(visitor).visit_possible_values(ReadonlyBytes { data, size });
 }
 
-bool gc_primitive_storage_allocate(size_t size, bool zero_fill, GCPrimitiveStorageHandle* out_handle)
+bool gc_primitive_storage_allocate(size_t size, bool zero_fill, GCPrimitiveStorageHandle* out_handle, GCPrimitiveStorageLayout* out_layout)
 {
-    return store_primitive_storage_handle(PrimitiveStorage::the().try_allocate(size, as_zero_fill_new_bytes(zero_fill)), out_handle);
+    auto& storage = PrimitiveStorage::the();
+    return store_created_primitive_storage(storage, storage.try_allocate(size, as_zero_fill_new_bytes(zero_fill)), out_handle, out_layout);
 }
 
-bool gc_primitive_storage_reserve(size_t size, size_t capacity, bool zero_fill, size_t guard_size, GCPrimitiveStorageHandle* out_handle)
+bool gc_primitive_storage_reserve(size_t size, size_t capacity, bool zero_fill, size_t guard_size, GCPrimitiveStorageHandle* out_handle, GCPrimitiveStorageLayout* out_layout)
 {
-    return store_primitive_storage_handle(PrimitiveStorage::the().try_reserve(size, capacity, as_zero_fill_new_bytes(zero_fill), guard_size), out_handle);
+    auto& storage = PrimitiveStorage::the();
+    return store_created_primitive_storage(storage, storage.try_reserve(size, capacity, as_zero_fill_new_bytes(zero_fill), guard_size), out_handle, out_layout);
 }
 
-bool gc_primitive_storage_adopt_shared_fd(int fd, size_t size, GCPrimitiveStorageHandle* out_handle)
+bool gc_primitive_storage_adopt_shared_fd(int fd, size_t size, GCPrimitiveStorageHandle* out_handle, GCPrimitiveStorageLayout* out_layout)
 {
-    return store_primitive_storage_handle(PrimitiveStorage::the().try_adopt_shared_fd(fd, size), out_handle);
+    auto& storage = PrimitiveStorage::the();
+    return store_created_primitive_storage(storage, storage.try_adopt_shared_fd(fd, size), out_handle, out_layout);
 }
 
-bool gc_primitive_storage_resize(GCPrimitiveStorageHandle handle, size_t new_size, bool zero_fill)
+bool gc_primitive_storage_resize(GCPrimitiveStorageHandle handle, size_t new_size, bool zero_fill, GCPrimitiveStorageLayout* out_layout)
 {
-    return !PrimitiveStorage::the().try_resize(decode_primitive_storage_handle(handle), new_size, as_zero_fill_new_bytes(zero_fill)).is_error();
+    auto& storage = PrimitiveStorage::the();
+    auto decoded_handle = decode_primitive_storage_handle(handle);
+    return store_resized_primitive_storage(storage, storage.try_resize(decoded_handle, new_size, as_zero_fill_new_bytes(zero_fill)), decoded_handle, out_layout);
 }
 
-bool gc_primitive_storage_reserve_capacity(GCPrimitiveStorageHandle handle, size_t new_capacity)
+bool gc_primitive_storage_reserve_capacity(GCPrimitiveStorageHandle handle, size_t new_capacity, GCPrimitiveStorageLayout* out_layout)
 {
-    return !PrimitiveStorage::the().try_reserve(decode_primitive_storage_handle(handle), new_capacity).is_error();
+    auto& storage = PrimitiveStorage::the();
+    auto decoded_handle = decode_primitive_storage_handle(handle);
+    return store_resized_primitive_storage(storage, storage.try_reserve(decoded_handle, new_capacity), decoded_handle, out_layout);
 }
 
-bool gc_primitive_storage_resize_and_reserve(GCPrimitiveStorageHandle handle, size_t new_size, size_t new_capacity, bool zero_fill)
+bool gc_primitive_storage_resize_and_reserve(GCPrimitiveStorageHandle handle, size_t new_size, size_t new_capacity, bool zero_fill, GCPrimitiveStorageLayout* out_layout)
 {
-    return !PrimitiveStorage::the().try_resize_and_reserve(decode_primitive_storage_handle(handle), new_size, new_capacity, as_zero_fill_new_bytes(zero_fill)).is_error();
+    auto& storage = PrimitiveStorage::the();
+    auto decoded_handle = decode_primitive_storage_handle(handle);
+    return store_resized_primitive_storage(storage, storage.try_resize_and_reserve(decoded_handle, new_size, new_capacity, as_zero_fill_new_bytes(zero_fill)), decoded_handle, out_layout);
 }
 
 void gc_primitive_storage_free(GCPrimitiveStorageHandle handle)

@@ -156,29 +156,38 @@ typedef uint64_t GCPrimitiveStorageHandle;
 #define GC_PRIMITIVE_STORAGE_HANDLE_GENERATION_SHIFT 32
 #define GC_PRIMITIVE_STORAGE_INVALID_OFFSET SIZE_MAX
 
+// Where storage is in the cage and how large it is. An owner may keep the layout at hand, since only creating and
+// resizing the storage change it.
+typedef struct GCPrimitiveStorageLayout {
+    size_t offset;
+    size_t size;
+    size_t capacity;
+} GCPrimitiveStorageLayout;
+
 // The functions that create storage write its handle to *out_handle and return true, or write
 // GC_PRIMITIVE_STORAGE_NULL_HANDLE and return false when the cage or the system is out of memory. With zero_fill, the
-// first size bytes start out zero; without it, their contents are unspecified.
+// first size bytes start out zero; without it, their contents are unspecified. The functions that create or resize
+// storage also write its new layout to *out_layout when they succeed, unless out_layout is null.
 //
 // Storage of size bytes, which may share pages with other small storage.
-GC_API bool gc_primitive_storage_allocate(size_t size, bool zero_fill, GCPrimitiveStorageHandle* out_handle);
+GC_API bool gc_primitive_storage_allocate(size_t size, bool zero_fill, GCPrimitiveStorageHandle* out_handle, GCPrimitiveStorageLayout* out_layout);
 // Storage of size bytes in a reservation of its own: capacity bytes followed by guard_size inaccessible bytes, both
 // rounded up to whole pages. Only the pages the size covers are committed. Fails if size is greater than capacity.
-GC_API bool gc_primitive_storage_reserve(size_t size, size_t capacity, bool zero_fill, size_t guard_size, GCPrimitiveStorageHandle* out_handle);
+GC_API bool gc_primitive_storage_reserve(size_t size, size_t capacity, bool zero_fill, size_t guard_size, GCPrimitiveStorageHandle* out_handle, GCPrimitiveStorageLayout* out_layout);
 // Maps the first size bytes of the shared memory object behind fd into the cage. The mapping keeps the memory alive by
 // itself, so the caller keeps ownership of fd and may close it at any time. Fails if size is 0. Growing the storage
 // would replace the mapping with private memory, so shared storage keeps its size.
-GC_API bool gc_primitive_storage_adopt_shared_fd(int fd, size_t size, GCPrimitiveStorageHandle* out_handle);
+GC_API bool gc_primitive_storage_adopt_shared_fd(int fd, size_t size, GCPrimitiveStorageHandle* out_handle, GCPrimitiveStorageLayout* out_layout);
 
 // The resizing functions return false and leave the storage as it was if the handle names no storage or memory runs
 // out. Within the capacity, the storage stays where it is; beyond it, the bytes move to new storage, which changes the
 // offset and the data pointer.
-GC_API bool gc_primitive_storage_resize(GCPrimitiveStorageHandle, size_t new_size, bool zero_fill);
+GC_API bool gc_primitive_storage_resize(GCPrimitiveStorageHandle, size_t new_size, bool zero_fill, GCPrimitiveStorageLayout* out_layout);
 // Grows the capacity to at least new_capacity, moving the storage into a reservation of its own if it has to grow.
-GC_API bool gc_primitive_storage_reserve_capacity(GCPrimitiveStorageHandle, size_t new_capacity);
+GC_API bool gc_primitive_storage_reserve_capacity(GCPrimitiveStorageHandle, size_t new_capacity, GCPrimitiveStorageLayout* out_layout);
 // Sets the size and grows the capacity to at least new_capacity, moving the storage at most once. Fails if new_size
 // is greater than new_capacity.
-GC_API bool gc_primitive_storage_resize_and_reserve(GCPrimitiveStorageHandle, size_t new_size, size_t new_capacity, bool zero_fill);
+GC_API bool gc_primitive_storage_resize_and_reserve(GCPrimitiveStorageHandle, size_t new_size, size_t new_capacity, bool zero_fill, GCPrimitiveStorageLayout* out_layout);
 // Does nothing if the handle names no storage.
 GC_API void gc_primitive_storage_free(GCPrimitiveStorageHandle);
 

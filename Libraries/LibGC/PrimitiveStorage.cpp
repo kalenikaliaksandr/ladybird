@@ -501,6 +501,14 @@ size_t PrimitiveStorage::committed_size(PrimitiveStorageHandle handle) const
     return entry ? entry->allocation.committed_size : 0;
 }
 
+PrimitiveStorage::Layout PrimitiveStorage::layout(PrimitiveStorageHandle handle) const
+{
+    auto const* entry = entry_for(handle);
+    if (!entry)
+        return {};
+    return { .offset = entry->allocation.offset, .size = entry->size, .capacity = entry->allocation.capacity };
+}
+
 u8* PrimitiveStorage::data(PrimitiveStorageHandle handle)
 {
     auto* entry = entry_for(handle);
