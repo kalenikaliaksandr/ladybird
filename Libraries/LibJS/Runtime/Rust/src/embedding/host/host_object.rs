@@ -18,6 +18,8 @@ use crate::embedding::host::class_table::{
     get_cache_metadata_into_abi, lend_object_to_hook, lookup_phase_into_abi, optional_object_completion_from_hook,
     set_cache_metadata_into_abi,
 };
+use crate::embedding::host::host_array::as_host_array;
+use crate::embedding::host::host_function::as_host_function;
 use crate::embedding::host::registry::runtime_class_and_allocator_of_host_class;
 use crate::embedding::object::{property_descriptor_from_abi, property_descriptor_to_abi};
 use crate::gc::class::{Class, Finalize, define_cell};
@@ -421,6 +423,8 @@ pub(crate) fn as_host_object(object: &Object) -> &HostObject {
 pub fn host_class_of(object: &Object) -> Option<&'static JSHostClass> {
     match object.class().id {
         ClassId::HostObject => Some(as_host_object(object).host_class),
+        ClassId::HostFunction => Some(as_host_function(object).host_class),
+        ClassId::HostArray => Some(as_host_array(object).host_class),
         _ => None,
     }
 }
@@ -434,6 +438,8 @@ pub fn is_host_instance_of(object: &Object, table: &'static JSHostClass) -> bool
 fn host_data_slot_of(object: &Object) -> Option<&ForeignCellSlot> {
     match object.class().id {
         ClassId::HostObject => Some(&as_host_object(object).host_data),
+        ClassId::HostFunction => Some(&as_host_function(object).host_data),
+        ClassId::HostArray => Some(&as_host_array(object).host_data),
         _ => None,
     }
 }
