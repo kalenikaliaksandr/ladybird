@@ -148,6 +148,9 @@ pub type HostPromiseJobQueueIsEmpty = fn(&Vm) -> bool;
 /// HostSystemUTCEpochNanoseconds ( global ), which hosts may override.
 pub type HostSystemUTCEpochNanoseconds = fn(&Vm, &Object) -> SignedBigInteger;
 
+/// VM::host_unrecognized_date_string, which tells the host about a string that date parsing found no date in.
+pub type HostUnrecognizedDateString = fn(&Vm, Utf16View<'_>);
+
 /// VM::on_promise_unhandled_rejection and VM::on_promise_rejection_handled, which the default
 /// HostPromiseRejectionTracker calls.
 pub type PromiseRejectionCallback = fn(&Vm, Gc<Promise>);
@@ -219,20 +222,20 @@ fn for_each_execution_context_top_to_bottom_of(
     }
 }
 
-fn default_host_promise_rejection_tracker(vm: &Vm, promise: Gc<Promise>, operation: RejectionOperation) {
+pub(crate) fn default_host_promise_rejection_tracker(vm: &Vm, promise: Gc<Promise>, operation: RejectionOperation) {
     vm.promise_rejection_tracker(promise, operation);
 }
 
-fn default_host_enqueue_promise_job(vm: &Vm, job: Gc<HeapFunction>, realm: Option<Gc<Realm>>) {
+pub(crate) fn default_host_enqueue_promise_job(vm: &Vm, job: Gc<HeapFunction>, realm: Option<Gc<Realm>>) {
     vm.enqueue_promise_job(job, realm);
 }
 
-fn default_host_promise_job_queue_is_empty(vm: &Vm) -> bool {
+pub(crate) fn default_host_promise_job_queue_is_empty(vm: &Vm) -> bool {
     vm.job_queues().promise_jobs.borrow().is_empty()
 }
 
 // 2.3.1 HostSystemUTCEpochNanoseconds ( global ), https://tc39.es/proposal-temporal/#sec-hostsystemutcepochnanoseconds
-fn default_host_system_utc_epoch_nanoseconds(_: &Vm, _: &Object) -> SignedBigInteger {
+pub(crate) fn default_host_system_utc_epoch_nanoseconds(_: &Vm, _: &Object) -> SignedBigInteger {
     use crate::runtime::temporal::instant::{NANOSECONDS_MAX_INSTANT, NANOSECONDS_MIN_INSTANT};
 
     // 1. Let ns be the approximate current UTC date and time, in nanoseconds since the epoch.
@@ -275,13 +278,16 @@ pub type HostFinalizeImportMeta = fn(&Vm, Gc<Object>, Gc<SourceTextModule>);
 /// HostGetSupportedImportAttributes.
 pub type HostGetSupportedImportAttributes = fn(&Vm) -> Vec<Utf16String>;
 
-fn default_host_get_import_meta_properties(vm: &Vm, _: Gc<SourceTextModule>) -> MarkedVec<'_, (PropertyKey, Value)> {
+pub(crate) fn default_host_get_import_meta_properties(
+    vm: &Vm,
+    _: Gc<SourceTextModule>,
+) -> MarkedVec<'_, (PropertyKey, Value)> {
     MarkedVec::new(vm)
 }
 
-fn default_host_finalize_import_meta(_: &Vm, _: Gc<Object>, _: Gc<SourceTextModule>) {}
+pub(crate) fn default_host_finalize_import_meta(_: &Vm, _: Gc<Object>, _: Gc<SourceTextModule>) {}
 
-fn default_host_get_supported_import_attributes(_: &Vm) -> Vec<Utf16String> {
+pub(crate) fn default_host_get_supported_import_attributes(_: &Vm) -> Vec<Utf16String> {
     vec![Utf16String::from_utf8("type")]
 }
 
@@ -312,7 +318,7 @@ pub type HostResizeArrayBuffer = fn(&Vm, &ArrayBuffer, usize) -> ThrowCompletion
 pub type HostGrowSharedArrayBuffer = fn(&Vm, &ArrayBuffer, usize) -> ThrowCompletionOr<HandledByHost>;
 
 // 25.1.3.8 HostResizeArrayBuffer ( buffer, newByteLength ), https://tc39.es/ecma262/#sec-hostresizearraybuffer
-fn default_host_resize_array_buffer(
+pub(crate) fn default_host_resize_array_buffer(
     vm: &Vm,
     buffer: &ArrayBuffer,
     new_byte_length: usize,
@@ -341,7 +347,11 @@ fn default_host_resize_array_buffer(
 
 // 25.2.2.4 HostGrowSharedArrayBuffer ( buffer, newByteLength ), https://tc39.es/ecma262/#sec-hostgrowsharedarraybuffer
 #[allow(clippy::unnecessary_wraps, reason = "the hook's type lets other hosts throw")]
-fn default_host_grow_shared_array_buffer(_: &Vm, _: &ArrayBuffer, _: usize) -> ThrowCompletionOr<HandledByHost> {
+pub(crate) fn default_host_grow_shared_array_buffer(
+    _: &Vm,
+    _: &ArrayBuffer,
+    _: usize,
+) -> ThrowCompletionOr<HandledByHost> {
     // The host-defined abstract operation HostGrowSharedArrayBuffer takes arguments buffer (a SharedArrayBuffer)
     // and newByteLength (a non-negative integer) and returns either a normal completion containing either handled
     // or unhandled, or a throw completion. It gives the host an opportunity to perform implementation-defined
@@ -356,7 +366,7 @@ fn default_host_grow_shared_array_buffer(_: &Vm, _: &ArrayBuffer, _: usize) -> T
 }
 
 // 1 HostGetCodeForEval ( argument ), https://tc39.es/proposal-dynamic-code-brand-checks/#sec-hostgetcodeforeval
-fn default_host_get_code_for_eval(_: &Vm, _: &Object) -> Option<Gc<PrimitiveString>> {
+pub(crate) fn default_host_get_code_for_eval(_: &Vm, _: &Object) -> Option<Gc<PrimitiveString>> {
     // The host-defined abstract operation HostGetCodeForEval takes argument argument (an Object) and returns a
     // String or NO-CODE. It allows host environments to return a String of code from argument to be used by eval,
     // rather than eval returning argument.
@@ -370,7 +380,7 @@ fn default_host_get_code_for_eval(_: &Vm, _: &Object) -> Option<Gc<PrimitiveStri
 // 2 HostEnsureCanCompileStrings ( calleeRealm, parameterStrings, bodyString, codeString, compilationType, parameterArgs, bodyArg ), https://tc39.es/proposal-dynamic-code-brand-checks/#sec-hostensurecancompilestrings
 #[allow(clippy::too_many_arguments, reason = "the hook takes the spec's arguments")]
 #[allow(clippy::unnecessary_wraps, reason = "the hook's type lets other hosts throw")]
-fn default_host_ensure_can_compile_strings(
+pub(crate) fn default_host_ensure_can_compile_strings(
     _: &Vm,
     _: Gc<Realm>,
     _: &[Utf16String],
@@ -392,7 +402,7 @@ fn default_host_ensure_can_compile_strings(
 }
 
 #[allow(clippy::unnecessary_wraps, reason = "the hook's type lets other hosts throw")]
-fn default_host_ensure_can_add_private_element(_: &Vm, _: &Object) -> ThrowCompletionOr<()> {
+pub(crate) fn default_host_ensure_can_add_private_element(_: &Vm, _: &Object) -> ThrowCompletionOr<()> {
     // The host-defined abstract operation HostEnsureCanAddPrivateElement takes argument O (an Object)
     // and returns either a normal completion containing unused or a throw completion.
     // It allows host environments to prevent the addition of private elements to particular host-defined exotic objects.
@@ -407,8 +417,13 @@ fn default_host_ensure_can_add_private_element(_: &Vm, _: &Object) -> ThrowCompl
     //       call HostEnsureCanAddPrivateElement when needed.
 }
 
+pub(crate) fn default_host_unrecognized_date_string(_: &Vm, _: Utf16View<'_>) {}
+
 // 9.10.4.1 HostEnqueueFinalizationRegistryCleanupJob ( finalizationRegistry ), https://tc39.es/ecma262/#sec-host-cleanup-finalization-registry
-fn default_host_enqueue_finalization_registry_cleanup_job(vm: &Vm, finalization_registry: Gc<FinalizationRegistry>) {
+pub(crate) fn default_host_enqueue_finalization_registry_cleanup_job(
+    vm: &Vm,
+    finalization_registry: Gc<FinalizationRegistry>,
+) {
     vm.enqueue_finalization_registry_cleanup_job(finalization_registry);
 }
 
@@ -509,6 +524,7 @@ pub struct Vm {
     host_make_job_callback: Cell<HostMakeJobCallback>,
     host_promise_job_queue_is_empty: Cell<HostPromiseJobQueueIsEmpty>,
     host_system_utc_epoch_nanoseconds: Cell<HostSystemUTCEpochNanoseconds>,
+    host_unrecognized_date_string: Cell<HostUnrecognizedDateString>,
     on_promise_unhandled_rejection: Cell<Option<PromiseRejectionCallback>>,
     on_promise_rejection_handled: Cell<Option<PromiseRejectionCallback>>,
     job_queues: OnceCell<Gc<JobQueues>>,
@@ -636,6 +652,7 @@ impl Vm {
             host_make_job_callback: Cell::new(make_job_callback),
             host_promise_job_queue_is_empty: Cell::new(default_host_promise_job_queue_is_empty),
             host_system_utc_epoch_nanoseconds: Cell::new(default_host_system_utc_epoch_nanoseconds),
+            host_unrecognized_date_string: Cell::new(default_host_unrecognized_date_string),
             on_promise_unhandled_rejection: Cell::new(None),
             on_promise_rejection_handled: Cell::new(None),
             job_queues: OnceCell::new(),
@@ -1256,6 +1273,14 @@ impl Vm {
 
     pub fn set_host_system_utc_epoch_nanoseconds(&self, hook: HostSystemUTCEpochNanoseconds) {
         self.host_system_utc_epoch_nanoseconds.set(hook);
+    }
+
+    pub fn host_unrecognized_date_string(&self) -> HostUnrecognizedDateString {
+        self.host_unrecognized_date_string.get()
+    }
+
+    pub fn set_host_unrecognized_date_string(&self, hook: HostUnrecognizedDateString) {
+        self.host_unrecognized_date_string.set(hook);
     }
 
     pub fn set_on_promise_unhandled_rejection(&self, callback: Option<PromiseRejectionCallback>) {
