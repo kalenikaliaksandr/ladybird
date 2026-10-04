@@ -474,7 +474,7 @@ pub unsafe extern "C" fn rust_decode_bytecode_cache_blob_with_owner(
                 BytecodeCacheRuntime::Cpp,
                 ForeignBytecodeCacheBlobOwner {
                     owner,
-                    clone_owner,
+                    clone_owner: Some(clone_owner),
                     free_owner,
                 },
             ) else {
