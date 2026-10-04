@@ -943,15 +943,29 @@ impl Vm {
     /// The override only applies at the depth the scope was created at, so callees pushed while it is alive are
     /// unaffected.
     pub fn type_error_realm_scope(&self, realm: Gc<Realm>) -> TypeErrorRealmScope<'_> {
-        let scope = TypeErrorRealmScope {
+        TypeErrorRealmScope {
             vm: self,
-            previous_realm: self.type_error_realm_override.get(),
-            previous_depth: self.type_error_realm_override_depth.get(),
+            previous: self.override_type_error_realm(realm),
+        }
+    }
+
+    /// What type_error_realm_scope() does, for an embedder that cannot hold the scope: overrides the realm of
+    /// TypeErrors at the current execution context stack depth, and returns the override this replaces, which the
+    /// caller must put back with restore_type_error_realm_override().
+    pub fn override_type_error_realm(&self, realm: Gc<Realm>) -> TypeErrorRealmOverride {
+        let previous = TypeErrorRealmOverride {
+            realm: self.type_error_realm_override.get(),
+            depth: self.type_error_realm_override_depth.get(),
         };
         self.type_error_realm_override.set(Some(realm));
         self.type_error_realm_override_depth
             .set(self.execution_context_stack.borrow().len());
-        scope
+        previous
+    }
+
+    pub fn restore_type_error_realm_override(&self, previous: TypeErrorRealmOverride) {
+        self.type_error_realm_override.set(previous.realm);
+        self.type_error_realm_override_depth.set(previous.depth);
     }
 
     /// The frames of every execution context, from the running one down, with where each is in its executable.
@@ -1588,15 +1602,20 @@ unsafe extern "C" fn enqueue_cleanup_jobs_of_finalization_registries_with_dead_c
 /// VM::TypeErrorRealmScope.
 pub struct TypeErrorRealmScope<'vm> {
     vm: &'vm Vm,
-    previous_realm: Option<Gc<Realm>>,
-    previous_depth: usize,
+    previous: TypeErrorRealmOverride,
 }
 
 impl Drop for TypeErrorRealmScope<'_> {
     fn drop(&mut self) {
-        self.vm.type_error_realm_override.set(self.previous_realm);
-        self.vm.type_error_realm_override_depth.set(self.previous_depth);
+        self.vm.restore_type_error_realm_override(self.previous);
     }
+}
+
+/// The realm that TypeErrors are created in at an execution context stack depth, if any.
+#[derive(Clone, Copy)]
+pub struct TypeErrorRealmOverride {
+    pub realm: Option<Gc<Realm>>,
+    pub depth: usize,
 }
 
 /// An element of VM::stack_trace(): an execution context and where it is in its executable, if it runs one.
