@@ -15,6 +15,12 @@ use crate::bytecode;
 use crate::bytecode::executable::ExecutableData;
 use crate::bytecode::generator::PendingSharedFunctionData;
 use crate::bytecode::generator::PrecompiledFunction;
+use crate::bytecode_cache::CloneBytecodeCacheBlobOwner;
+use crate::bytecode_cache::DecodedCacheBlob;
+use crate::bytecode_cache::ForeignBytecodeCacheBlobOwner;
+use crate::bytecode_cache::FreeBytecodeCacheBlobOwner;
+use crate::bytecode_cache::decode_blob;
+use crate::bytecode_cache::serialize_compiled_program;
 use crate::compile::CompiledProgram;
 use crate::compile::CompiledProgramBytecode;
 use crate::compile::CompiledScript;
@@ -50,7 +56,7 @@ pub struct BytecodeCacheBlob {
 }
 
 pub struct DecodedBytecodeCacheBlob {
-    _blob: Rc<RefCell<bytecode_cache::DecodedCacheBlob>>,
+    _blob: Rc<RefCell<DecodedCacheBlob>>,
 }
 
 fn validate_decoded_blob(blob: &DecodedBytecodeCacheBlob, source_len: usize) -> bool {
@@ -459,7 +465,7 @@ pub unsafe extern "C" fn rust_serialize_compiled_program_for_bytecode_cache(
             let source_hash = std::slice::from_raw_parts(source_hash, source_hash_len)
                 .try_into()
                 .expect("source hash length was checked");
-            let bytes = bytecode_cache::serialize_compiled_program(&*compiled, program_type, source_hash);
+            let bytes = serialize_compiled_program(&*compiled, program_type, source_hash);
             let length = bytes.len();
             let mut bytes = bytes.into_boxed_slice();
             let data = bytes.as_mut_ptr();
@@ -498,8 +504,8 @@ pub unsafe extern "C" fn rust_decode_bytecode_cache_blob_with_owner(
     expected_source_hash: *const u8,
     expected_source_hash_len: usize,
     owner: *mut c_void,
-    clone_owner: bytecode_cache::CloneBytecodeCacheBlobOwner,
-    free_owner: bytecode_cache::FreeBytecodeCacheBlobOwner,
+    clone_owner: CloneBytecodeCacheBlobOwner,
+    free_owner: FreeBytecodeCacheBlobOwner,
 ) -> *mut DecodedBytecodeCacheBlob {
     unsafe {
         abort_on_panic(|| {
@@ -521,11 +527,11 @@ pub unsafe extern "C" fn rust_decode_bytecode_cache_blob_with_owner(
             let expected_source_hash = std::slice::from_raw_parts(expected_source_hash, expected_source_hash_len)
                 .try_into()
                 .expect("source hash length was checked");
-            let Some(blob) = bytecode_cache::decode_blob_with_foreign_owner(
+            let Some(blob) = decode_blob(
                 std::slice::from_raw_parts(data, length),
                 expected_program_type,
                 expected_source_hash,
-                bytecode_cache::ForeignBytecodeCacheBlobOwner {
+                ForeignBytecodeCacheBlobOwner {
                     owner,
                     clone_owner,
                     free_owner,
