@@ -19,10 +19,13 @@
     reason = "the module documentation states the contract every exported function shares"
 )]
 
+use core::ffi::c_void;
+
 use crate::embedding::abi_types::{
-    JSRealm, JSUtf16View, append_to_value_sink, cell_from_abi, cell_into_abi, completion_into_abi, object_into_abi,
-    optional_cell_from_abi, optional_object_into_abi, property_key_from_abi, vm_from_abi,
+    JSRealm, JSSymbol, JSUtf16View, append_to_value_sink, cell_from_abi, cell_into_abi, completion_into_abi,
+    object_into_abi, optional_cell_from_abi, optional_object_into_abi, property_key_from_abi, vm_from_abi,
 };
+use crate::embedding::collections::{JSPropertyKind, property_kind_from_abi};
 use crate::embedding::function::{JSNativeFunction, raw_native_function_from_abi};
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
@@ -450,6 +453,92 @@ pub unsafe extern "C" fn js_object_test_integrity_level(
     completion_into_abi(object.test_integrity_level(vm, integrity_level_from_abi(level)))
 }
 
+/// SetImmutablePrototype(O, V), whose payload is whether the prototype is now `prototype`, which may be null. An
+/// exotic object with an immutable prototype, such as Location, calls it from its set_prototype_of hook. Main thread
+/// only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_set_immutable_prototype(
+    vm: *mut JSVM,
+    object: *mut JSObject,
+    prototype: *mut JSObject,
+) -> JSCompletion {
+    // SAFETY: See the module documentation.
+    let (vm, object, prototype) = unsafe {
+        (
+            vm_from_abi(vm),
+            cell_from_abi::<JSObject>(object),
+            optional_cell_from_abi::<JSObject>(prototype),
+        )
+    };
+    completion_into_abi(object.set_immutable_prototype(vm, prototype))
+}
+
+/// EnumerableOwnProperties(O, kind), with kind a JS_PROPERTY_KIND_* value: appends to the sink, in order, the key, the
+/// value or a [key, value] array of each enumerable own string-keyed property, with an unused payload. The getters of
+/// the properties run, and the sink may call back into the VM. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_enumerable_own_property_names(
+    vm: *mut JSVM,
+    object: *mut JSObject,
+    kind: JSPropertyKind,
+    sink: *mut JSValueSink,
+) -> JSCompletion {
+    // SAFETY: See the module documentation.
+    let (vm, object) = unsafe { (vm_from_abi(vm), cell_from_abi::<JSObject>(object)) };
+    // SAFETY: As above, the sink is valid.
+    unsafe {
+        append_keys_to_sink(
+            object.enumerable_own_property_names(vm, property_kind_from_abi(kind)),
+            sink,
+        )
+    }
+}
+
+/// Called with the context it came with and each key EnumerateObjectProperties produces, a String value. It may run
+/// JavaScript, and returns true to stop the enumeration.
+pub type JSPropertyEnumerationCallback = Option<unsafe extern "C" fn(context: *mut c_void, key: JSValue) -> bool>;
+
+/// EnumerateObjectProperties(O), the keys a for-in loop visits: calls `callback` with each string key of an enumerable
+/// property of the object and of its prototype chain, each at most once, until the callback returns true. The payload
+/// is whether the callback stopped the enumeration. A throw comes from an internal method of an object the
+/// enumeration visits. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_enumerate_object_properties(
+    vm: *mut JSVM,
+    object: *mut JSObject,
+    callback: JSPropertyEnumerationCallback,
+    context: *mut c_void,
+) -> JSCompletion {
+    // SAFETY: See the module documentation.
+    let (vm, object) = unsafe { (vm_from_abi(vm), cell_from_abi::<JSObject>(object)) };
+    let callback = callback.expect("the embedder passes a callback");
+    let stopped = object.enumerate_object_properties(vm, |key| {
+        // SAFETY: The embedder's callback takes keys with the context it came with.
+        unsafe { callback(context, key.0) }.then_some(())
+    });
+    completion_into_abi(stopped.map(|stopped| stopped.is_some()))
+}
+
+/// The value of the property of the key, looked up in the storage of the object and of its prototype chain without
+/// running any internal method or getter, or undefined if there is none. For an accessor property, it is the
+/// accessor itself, a cell of kind JS_LAYOUT_CELL_KIND_ACCESSOR. Borrows the key. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_get_without_side_effects(
+    vm: *mut JSVM,
+    object: *mut JSObject,
+    key: *const JSPropertyKey,
+) -> JSValue {
+    // SAFETY: See the module documentation.
+    let (vm, object, key) = unsafe {
+        (
+            vm_from_abi(vm),
+            cell_from_abi::<JSObject>(object),
+            property_key_from_abi(key),
+        )
+    };
+    object.get_without_side_effects(vm, key).0
+}
+
 // Defining properties directly in the object's storage, as built-in objects do
 
 /// Stores a data property in the object's own storage, replacing any property of the key, without running any
@@ -538,6 +627,26 @@ pub unsafe extern "C" fn js_object_clear_cached_accessor_value(
         )
     };
     object.clear_cached_accessor_value(vm, key);
+}
+
+/// Stores `value` in the object under a private symbol from js_symbol_create_private(), as an engine-private property,
+/// which no internal method, and so no script, ever sees. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_set_engine_private_property(
+    vm: *mut JSVM,
+    object: *mut JSObject,
+    private_symbol: *mut JSSymbol,
+    value: JSValue,
+) {
+    // SAFETY: See the module documentation; the symbol is a live symbol.
+    let (vm, object, private_symbol) = unsafe {
+        (
+            vm_from_abi(vm),
+            cell_from_abi::<JSObject>(object),
+            cell_from_abi::<JSSymbol>(private_symbol),
+        )
+    };
+    object.set_engine_private_property(vm, private_symbol, Value(value));
 }
 
 /// Defines a method whose behaviour is a raw native function, as a direct property of the key with the attributes.
@@ -700,6 +809,24 @@ pub unsafe extern "C" fn js_object_convert_to_prototype_if_needed(vm: *mut JSVM,
     object.convert_to_prototype_if_needed(vm);
 }
 
+/// Gives the object a dictionary shape of its own, which no inline cache has seen, so that every cached lookup of its
+/// properties misses and looks again. An embedder calls it when a property that its hooks report appears without the
+/// object's shape changing, as a document's named properties do. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_invalidate_property_lookup_caches(vm: *mut JSVM, object: *mut JSObject) {
+    // SAFETY: See the module documentation.
+    let (vm, object) = unsafe { (vm_from_abi(vm), cell_from_abi::<JSObject>(object)) };
+    object.invalidate_property_lookup_caches(vm);
+}
+
+/// Lets new own properties of the object be added through the inline caches again, which its host class's
+/// JS_HOST_CLASS_REQUIRES_SLOW_ADD_OWN_PROPERTY flag kept from it. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_clear_requires_slow_add_own_property(object: *mut JSObject) {
+    // SAFETY: See the module documentation.
+    unsafe { cell_from_abi::<JSObject>(object) }.clear_requires_slow_add_own_property();
+}
+
 /// Whether the object is an arguments object with a parameter map, as a mapped arguments object is. Main thread only.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn js_object_has_parameter_map(object: *mut JSObject) -> bool {
@@ -713,6 +840,17 @@ pub unsafe extern "C" fn js_object_has_parameter_map(object: *mut JSObject) -> b
 pub unsafe extern "C" fn js_object_class_id(object: *mut JSObject) -> u16 {
     // SAFETY: See the module documentation.
     unsafe { cell_from_abi::<JSObject>(object) }.class().id as u16
+}
+
+/// The name of the object's class, which for an object of a host class is the name in its JSHostClass: static UTF-8,
+/// not null-terminated, whose length goes to `out_length`. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_class_name(object: *mut JSObject, out_length: *mut usize) -> *const u8 {
+    // SAFETY: See the module documentation.
+    let class_name = unsafe { cell_from_abi::<JSObject>(object) }.class().class_name();
+    // SAFETY: As above, the out parameter is writable.
+    unsafe { out_length.write(class_name.len()) };
+    class_name.as_ptr()
 }
 
 /// Whether the object's class is the class of the id (a JS_LAYOUT_CLASS_ID_* value) or extends it. Main thread only.
@@ -1274,8 +1412,10 @@ mod tests {
     use crate::interpreter::vm::Vm;
     use crate::layout::host_class::{JS_COMPLETION_NORMAL, JSValueSink};
     use crate::runtime::completion::Must;
+    use crate::runtime::error::test_scripts::{run_script, utf8};
     use crate::runtime::property_attributes::DEFAULT_ATTRIBUTES;
     use crate::runtime::realm::test_realm::{TestRealm, key, own_keys};
+    use crate::utilities::initialize_realm;
 
     std::thread_local! {
         static REALMS_SEEN_BY_THE_ACCESSOR: Cell<Vec<*mut JSRealm>> = const { Cell::new(Vec::new()) };
@@ -1527,5 +1667,250 @@ mod tests {
             assert!(!js_object_is_subclass_of(object, ClassId::Array as u16));
             assert!(!js_object_is_subclass_of(array, ClassId::FunctionObject as u16));
         }
+    }
+
+    fn class_name_of(object: *mut JSObject) -> &'static str {
+        let mut length = 0;
+        // SAFETY: The object is live, and class names are static.
+        unsafe {
+            let name = js_object_class_name(object, &raw mut length);
+            core::str::from_utf8(core::slice::from_raw_parts(name, length)).expect("class names are UTF-8")
+        }
+    }
+
+    #[test]
+    fn class_names_are_those_of_the_runtimes_classes() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let object_of = |source: &str| object_into_abi(run_script(&vm, realm, source).must().as_object());
+        assert_eq!(class_name_of(object_of("({})")), "Object");
+        assert_eq!(class_name_of(object_of("[]")), "Array");
+        assert_eq!(class_name_of(object_of("new Map")), "Map");
+        assert_eq!(class_name_of(object_of("(function () {})")), "ECMAScriptFunctionObject");
+    }
+
+    #[test]
+    fn reading_without_side_effects_follows_the_prototype_chain_and_runs_no_getter() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let object = run_script(
+            &vm,
+            realm,
+            "globalThis.getterRuns = 0;
+             Object.create({ inherited: 1, get accessor() { getterRuns++; return 2; } }, { own: { value: 3 } })",
+        )
+        .must()
+        .as_object();
+        let (vm_pointer, object_pointer) = (vm_into_abi(&vm), object_into_abi(object));
+        let read = |name: &str| {
+            let name = key(name);
+            // SAFETY: The arguments are live.
+            Value(unsafe { js_object_get_without_side_effects(vm_pointer, object_pointer, abi_key(&name)) })
+        };
+        assert_eq!(read("own"), Value::from_i32(3));
+        assert_eq!(read("inherited"), Value::from_i32(1));
+        assert!(read("accessor").is_accessor());
+        assert!(read("missing").is_undefined());
+        assert_eq!(run_script(&vm, realm, "getterRuns").must(), Value::from_i32(0));
+    }
+
+    struct ReenteringValueSink<'vm> {
+        vm: &'vm Vm,
+        values: Vec<String>,
+    }
+
+    unsafe extern "C" fn collect_value_after_running_a_script(context: *mut c_void, value: JSValue) {
+        // SAFETY: The test passes its sink as the context.
+        let sink = unsafe { &mut *context.cast::<ReenteringValueSink<'_>>() };
+        let realm = sink.vm.current_realm().expect("there is a realm");
+        run_script(sink.vm, realm, "globalThis.sinkRuns = (globalThis.sinkRuns ?? 0) + 1").must();
+        sink.vm.heap().collect_garbage();
+        let string = Value(value).to_primitive_string(sink.vm).must();
+        sink.values.push(utf8(Value::from_string(string)));
+    }
+
+    #[test]
+    fn enumerable_own_properties_reach_the_sink_in_order_with_their_getters_run() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let object = run_script(
+            &vm,
+            realm,
+            "const object = { a: 1, get b() { return 'from getter'; }, [Symbol('s')]: 3 };
+             Object.defineProperty(object, 'hidden', { value: 4, enumerable: false });
+             object",
+        )
+        .must()
+        .as_object();
+        let (vm_pointer, object_pointer) = (vm_into_abi(&vm), object_into_abi(object));
+        let collect = |kind: JSPropertyKind| {
+            let mut sink_state = ReenteringValueSink {
+                vm: &vm,
+                values: Vec::new(),
+            };
+            let mut sink = JSValueSink {
+                context: core::ptr::from_mut(&mut sink_state).cast(),
+                append: Some(collect_value_after_running_a_script),
+            };
+            // SAFETY: The arguments are live, and the sink collects into a local.
+            let completion =
+                unsafe { js_object_enumerable_own_property_names(vm_pointer, object_pointer, kind, &raw mut sink) };
+            assert_eq!(completion.variant, JS_COMPLETION_NORMAL);
+            sink_state.values
+        };
+        use crate::embedding::collections::{
+            JS_PROPERTY_KIND_KEY, JS_PROPERTY_KIND_KEY_AND_VALUE, JS_PROPERTY_KIND_VALUE,
+        };
+        assert_eq!(collect(JS_PROPERTY_KIND_KEY), ["a", "b"]);
+        assert_eq!(collect(JS_PROPERTY_KIND_VALUE), ["1", "from getter"]);
+        assert_eq!(collect(JS_PROPERTY_KIND_KEY_AND_VALUE), ["a,1", "b,from getter"]);
+        assert_eq!(run_script(&vm, realm, "sinkRuns").must(), Value::from_i32(6));
+    }
+
+    struct EnumerationState<'vm> {
+        vm: &'vm Vm,
+        keys: Vec<String>,
+        stop_at: &'static str,
+    }
+
+    unsafe extern "C" fn record_key_and_stop_at_the_wanted_one(context: *mut c_void, key: JSValue) -> bool {
+        // SAFETY: The test passes its state as the context.
+        let state = unsafe { &mut *context.cast::<EnumerationState<'_>>() };
+        let realm = state.vm.current_realm().expect("there is a realm");
+        run_script(state.vm, realm, "delete object.deletedOnTheWay").must();
+        state.vm.heap().collect_garbage();
+        let key = utf8(Value(key));
+        let stop = key == state.stop_at;
+        state.keys.push(key);
+        stop
+    }
+
+    #[test]
+    fn enumerating_object_properties_visits_the_keys_of_a_for_in_loop_until_told_to_stop() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let object_of = || {
+            run_script(
+                &vm,
+                realm,
+                "globalThis.object = Object.create({ inherited: 1, own: 'shadowed' });
+                 object.own = 2; object.deletedOnTheWay = 3; object[Symbol('s')] = 4; object.last = 5;
+                 object",
+            )
+            .must()
+            .as_object()
+        };
+        let vm_pointer = vm_into_abi(&vm);
+        let enumerate = |object: Gc<Object>, stop_at: &'static str| {
+            let mut state = EnumerationState {
+                vm: &vm,
+                keys: Vec::new(),
+                stop_at,
+            };
+            // SAFETY: The arguments are live, and the callback records into a local.
+            let completion = unsafe {
+                js_object_enumerate_object_properties(
+                    vm_pointer,
+                    object_into_abi(object),
+                    Some(record_key_and_stop_at_the_wanted_one),
+                    core::ptr::from_mut(&mut state).cast(),
+                )
+            };
+            assert_eq!(completion.variant, JS_COMPLETION_NORMAL);
+            (state.keys, completion.payload == 1)
+        };
+        assert_eq!(
+            enumerate(object_of(), ""),
+            (
+                vec!["own".to_string(), "last".to_string(), "inherited".to_string()],
+                false
+            )
+        );
+        assert_eq!(enumerate(object_of(), "own"), (vec!["own".to_string()], true));
+    }
+
+    #[test]
+    fn set_immutable_prototype_only_accepts_the_current_prototype() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let vm_pointer = vm_into_abi(&vm);
+        let object = object_into_abi(realm.object_prototype());
+        let set = |prototype: *mut JSObject| {
+            // SAFETY: The arguments are live.
+            let completion = unsafe { js_object_set_immutable_prototype(vm_pointer, object, prototype) };
+            assert_eq!(completion.variant, JS_COMPLETION_NORMAL);
+            completion.payload == 1
+        };
+        assert!(set(core::ptr::null_mut()));
+        assert!(!set(object_into_abi(realm.array_prototype())));
+        // SAFETY: The object is live.
+        assert!(unsafe { js_object_prototype(object) }.is_null());
+    }
+
+    #[test]
+    fn engine_private_properties_stay_hidden_from_scripts() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let vm_pointer = vm_into_abi(&vm);
+        let object = run_script(&vm, realm, "globalThis.target = { visible: 1 }")
+            .must()
+            .as_object();
+        // SAFETY: The arguments are live.
+        let private_symbol = unsafe { crate::embedding::symbol::js_symbol_create_private(vm_pointer) };
+        // SAFETY: As above.
+        unsafe {
+            js_object_set_engine_private_property(
+                vm_pointer,
+                object_into_abi(object),
+                private_symbol,
+                Value::from_i32(9).0,
+            );
+        }
+        vm.heap().collect_garbage();
+        // SAFETY: The symbol is live.
+        let stored = object.get_engine_private_property(unsafe { cell_from_abi(private_symbol) });
+        assert_eq!(stored.map(|stored| stored.value), Some(Value::from_i32(9)));
+        assert_eq!(
+            utf8(
+                run_script(
+                    &vm,
+                    realm,
+                    "`${Reflect.ownKeys(target).length} ${Object.getOwnPropertySymbols(target).length}`"
+                )
+                .must()
+            ),
+            "1 0"
+        );
+    }
+
+    #[test]
+    fn invalidating_lookup_caches_gives_the_object_a_shape_no_cache_has_seen() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let object = run_script(
+            &vm,
+            realm,
+            "globalThis.cached = { x: 1 }; globalThis.readX = o => o.x;
+             for (let i = 0; i < 10; ++i) readX(cached); cached",
+        )
+        .must()
+        .as_object();
+        let shape_before = object.shape();
+        // SAFETY: The arguments are live.
+        unsafe { js_object_invalidate_property_lookup_caches(vm_into_abi(&vm), object_into_abi(object)) };
+        assert!(object.shape() != shape_before && object.shape().is_dictionary());
+        assert_eq!(run_script(&vm, realm, "readX(cached)").must(), Value::from_i32(1));
+
+        object.set_requires_slow_add_own_property();
+        // SAFETY: As above.
+        unsafe { js_object_clear_requires_slow_add_own_property(object_into_abi(object)) };
+        assert!(!object.requires_slow_add_own_property());
     }
 }

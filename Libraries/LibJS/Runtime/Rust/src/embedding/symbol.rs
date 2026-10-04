@@ -59,6 +59,19 @@ pub unsafe extern "C" fn js_symbol_create_without_description(vm: *mut JSVM) -> 
     cell_into_abi(Symbol::create(vm, None, Kind::Unique))
 }
 
+/// Symbol::create_private(): a new private symbol, which keys engine-private properties that scripts can never reach.
+/// Call on the VM's thread.
+///
+/// # Safety
+///
+/// `vm` must be the embedder's VM.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_symbol_create_private(vm: *mut JSVM) -> *mut JSSymbol {
+    // SAFETY: The caller passes its VM.
+    let vm = unsafe { vm_from_abi(vm) };
+    cell_into_abi(Symbol::create_private(vm))
+}
+
 /// Whether `symbol` has a description, which is then viewed in `out`. The view stays valid for as long as the symbol
 /// lives. Call on the VM's thread.
 ///
@@ -158,6 +171,21 @@ mod tests {
         assert_eq!(description(undescribed), None);
         assert_eq!(descriptive_string(undescribed), "Symbol()");
         assert!(described != also_described, "every symbol created is unique");
+    }
+
+    #[test]
+    fn private_symbols_are_unique_and_private() {
+        let vm = Vm::create();
+        let _test_realm = TestRealm::new(&vm);
+        let abi_vm = vm_into_abi(&vm);
+        // SAFETY: The VM is live.
+        let (first, second) = unsafe { (js_symbol_create_private(abi_vm), js_symbol_create_private(abi_vm)) };
+        assert!(first != second);
+        // SAFETY: Both symbols are live.
+        unsafe {
+            assert!(cell_from_abi(first).is_private() && cell_from_abi(second).is_private());
+            assert!(!cell_from_abi(js_symbol_create_without_description(abi_vm)).is_private());
+        }
     }
 
     #[test]

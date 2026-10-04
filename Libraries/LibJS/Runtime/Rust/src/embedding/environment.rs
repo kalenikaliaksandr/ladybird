@@ -15,6 +15,7 @@
     reason = "object.rs states the contract every exported function shares"
 )]
 
+use crate::bytecode::property_access::Strict;
 use crate::embedding::abi_types::{
     CellAbi, JSUtf16View, append_to_string_sink, cell_from_abi, completion_into_abi, object_into_abi,
     optional_cell_from_abi, vm_from_abi,
@@ -248,6 +249,60 @@ pub unsafe extern "C" fn js_environment_get_binding_value(
         )
     };
     completion_into_abi(environment.get_binding_value(vm, &binding_name_from_abi(name), strict))
+}
+
+/// DeleteBinding(N), whose payload is whether the binding is gone, which one that cannot be deleted is not. Borrows the
+/// name. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_environment_delete_binding(
+    vm: *mut JSVM,
+    environment: *mut JSEnvironment,
+    name: JSUtf16View,
+) -> JSCompletion {
+    // SAFETY: See the module documentation.
+    let (vm, environment, name) = unsafe {
+        (
+            vm_from_abi(vm),
+            cell_from_abi::<JSEnvironment>(environment),
+            name.as_view(),
+        )
+    };
+    completion_into_abi(environment.delete_binding(vm, &binding_name_from_abi(name)))
+}
+
+/// ResolveBinding(name, env): the payload is the environment that has a binding of the name, found by walking outwards
+/// from `environment`, or from the running execution context's LexicalEnvironment if that is null, or null if the
+/// reference is unresolvable. HasBinding runs on the way, which for the object environment of a with statement can
+/// run JavaScript and throw.
+///
+/// The C++ Reference Record this resolves to has the environment as its base. GetValue, PutValue and delete of it are
+/// js_environment_get_binding_value(), js_environment_set_mutable_binding() and js_environment_delete_binding() with
+/// the same name and strictness, and for an unresolvable reference GetValue throws a ReferenceError, PutValue sets the
+/// property of the global object unless it is strict, and delete returns true. Borrows the name. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_environment_resolve_binding(
+    vm: *mut JSVM,
+    name: JSUtf16View,
+    strict: bool,
+    environment: *mut JSEnvironment,
+) -> JSCompletion {
+    // SAFETY: See the module documentation.
+    let (vm, name, environment) = unsafe {
+        (
+            vm_from_abi(vm),
+            name.as_view(),
+            optional_cell_from_abi::<JSEnvironment>(environment),
+        )
+    };
+    let strict = if strict { Strict::Yes } else { Strict::No };
+    let reference = vm.resolve_binding(&binding_name_from_abi(name), strict, environment);
+    completion_into_abi(reference.map(|reference| {
+        if reference.is_unresolvable() {
+            core::ptr::null_mut()
+        } else {
+            environment_to_abi(reference.base_environment())
+        }
+    }))
 }
 
 // Walking environments
@@ -535,5 +590,90 @@ mod tests {
                 ak::Utf16String::from_raw_owned(crate::embedding::function::js_function_name_for_call_stack(function));
             assert_eq!(Utf16View::of_string(&name).to_utf8(), "outer");
         }
+    }
+
+    /// The environment that resolving the name finds, or None for an unresolvable reference, or the message of what
+    /// resolving threw.
+    fn resolve(vm: &Vm, name: &str, environment: *mut JSEnvironment) -> Result<Option<*mut JSEnvironment>, String> {
+        // SAFETY: The VM and the environment are live.
+        let completion =
+            unsafe { js_environment_resolve_binding(vm_into_abi(vm), ascii_view_of(name), false, environment) };
+        if completion.variant != JS_COMPLETION_NORMAL {
+            let thrown = Value(completion.payload)
+                .to_primitive_string(vm)
+                .expect("the error converts to a string");
+            return Err(utf8(Value::from_string(thrown)));
+        }
+        let environment = core::ptr::with_exposed_provenance_mut::<JSEnvironment>(completion.payload as usize);
+        Ok((!environment.is_null()).then_some(environment))
+    }
+
+    #[test]
+    fn resolving_a_binding_finds_the_environment_a_reference_has_as_its_base() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let vm_pointer = vm_into_abi(&vm);
+        run_script(
+            &vm,
+            realm,
+            "var declaredGlobal = 1; globalThis.implicitGlobal = 2; let lexicalGlobal = 3;
+             globalThis.proxyHasCalls = 0;
+             globalThis.scope = new Proxy({ shadowed: 4 }, {
+                 has(target, key) {
+                     proxyHasCalls++;
+                     if (key === 'poisoned') throw new Error('has trap for ' + key);
+                     return key in target;
+                 },
+             });",
+        )
+        .expect("runs");
+        let global_environment = environment_to_abi(realm.global_environment());
+        let scope_object = realm
+            .global_object()
+            .get(&vm, &crate::runtime::realm::test_realm::key("scope"))
+            .expect("the scope exists")
+            .as_object();
+        // SAFETY: The arguments are live.
+        let with_environment = unsafe {
+            js_environment_new_object_environment(vm_pointer, object_into_abi(scope_object), true, global_environment)
+        };
+
+        assert_eq!(
+            resolve(&vm, "declaredGlobal", global_environment),
+            Ok(Some(global_environment))
+        );
+        assert_eq!(
+            resolve(&vm, "lexicalGlobal", with_environment),
+            Ok(Some(global_environment))
+        );
+        assert_eq!(resolve(&vm, "shadowed", with_environment), Ok(Some(with_environment)));
+        assert_eq!(resolve(&vm, "missing", with_environment), Ok(None));
+        assert_eq!(
+            resolve(&vm, "poisoned", with_environment),
+            Err("Error: has trap for poisoned".to_string())
+        );
+        assert_eq!(utf8(run_script(&vm, realm, "proxyHasCalls").expect("runs")), "4");
+
+        // SAFETY: As above.
+        unsafe {
+            let shadowed =
+                js_environment_get_binding_value(vm_pointer, with_environment, ascii_view_of("shadowed"), false);
+            assert_eq!(
+                (shadowed.variant, shadowed.payload),
+                (JS_COMPLETION_NORMAL, Value::from_i32(4).0)
+            );
+
+            let deleted =
+                js_environment_delete_binding(vm_pointer, global_environment, ascii_view_of("implicitGlobal"));
+            assert_eq!((deleted.variant, deleted.payload), (JS_COMPLETION_NORMAL, 1));
+            let kept = js_environment_delete_binding(vm_pointer, global_environment, ascii_view_of("declaredGlobal"));
+            assert_eq!((kept.variant, kept.payload), (JS_COMPLETION_NORMAL, 0));
+        }
+        assert_eq!(resolve(&vm, "implicitGlobal", global_environment), Ok(None));
+        assert_eq!(
+            resolve(&vm, "declaredGlobal", global_environment),
+            Ok(Some(global_environment))
+        );
     }
 }

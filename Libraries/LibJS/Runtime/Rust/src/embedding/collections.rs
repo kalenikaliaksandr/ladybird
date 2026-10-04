@@ -31,8 +31,8 @@ use crate::runtime::object::PropertyKind;
 use crate::runtime::set::Set;
 use crate::runtime::set_iterator::SetIterator;
 
-/// What a Map or Set iterator yields, in the order of the C++ JS::Object::PropertyKind: keys, values, or [key, value]
-/// arrays.
+/// What a Map or Set iterator yields, or what EnumerableOwnProperties collects, in the order of the C++
+/// JS::Object::PropertyKind: keys, values, or [key, value] arrays.
 pub type JSPropertyKind = u8;
 
 pub const JS_PROPERTY_KIND_KEY: JSPropertyKind = 0;
@@ -48,7 +48,7 @@ pub type JSMapEntryCallback =
 /// of a normal one is ignored.
 pub type JSSetValueCallback = Option<unsafe extern "C" fn(context: *mut c_void, value: JSValue) -> JSCompletion>;
 
-fn property_kind_from_abi(kind: JSPropertyKind) -> PropertyKind {
+pub(crate) fn property_kind_from_abi(kind: JSPropertyKind) -> PropertyKind {
     match kind {
         JS_PROPERTY_KIND_KEY => PropertyKind::Key,
         JS_PROPERTY_KIND_VALUE => PropertyKind::Value,

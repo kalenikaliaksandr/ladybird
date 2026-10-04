@@ -12,6 +12,7 @@ use crate::embedding::abi_types::{
     owned_utf16_string_into_abi, property_key_into_abi, value_from_abi, vm_from_abi,
 };
 use crate::layout::host_class::{JSCompletion, JSPropertyKey, JSVM, JSValue};
+use crate::runtime::abstract_operations::can_be_held_weakly;
 use crate::runtime::value::{PreferredType, is_loosely_equal, is_strictly_equal, same_value, same_value_zero};
 
 /// The type hint of ToPrimitive, as C++ Value::PreferredType.
@@ -88,6 +89,17 @@ pub unsafe extern "C" fn js_value_same_value(lhs: JSValue, rhs: JSValue) -> bool
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn js_value_same_value_zero(lhs: JSValue, rhs: JSValue) -> bool {
     same_value_zero(value_from_abi(lhs), value_from_abi(rhs))
+}
+
+/// CanBeHeldWeakly(v): whether `value` is an object or a symbol that is not in the global symbol registry, which
+/// WeakRefs, WeakMaps, WeakSets and FinalizationRegistries accept. Call on the VM's thread.
+///
+/// # Safety
+///
+/// `value` must be a value of the embedder's VM.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_value_can_be_held_weakly(value: JSValue) -> bool {
+    can_be_held_weakly(value_from_abi(value))
 }
 
 /// The result of the typeof operator on `value`, one of the VM's cached strings. Call on the VM's thread.
@@ -654,5 +666,25 @@ mod tests {
                 positive_zero
             )));
         }
+    }
+
+    #[test]
+    fn only_objects_and_unregistered_symbols_can_be_held_weakly() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let can_be_held_weakly = |source: &str| {
+            let value = value_into_abi(run_script(&vm, realm, source).must());
+            // SAFETY: The value is live.
+            unsafe { js_value_can_be_held_weakly(value) }
+        };
+        assert!(can_be_held_weakly("({})"));
+        assert!(can_be_held_weakly("(function () {})"));
+        assert!(can_be_held_weakly("Symbol('unique')"));
+        assert!(can_be_held_weakly("Symbol.iterator"));
+        assert!(!can_be_held_weakly("Symbol.for('registered')"));
+        assert!(!can_be_held_weakly("'string'"));
+        assert!(!can_be_held_weakly("42"));
+        assert!(!can_be_held_weakly("undefined"));
     }
 }
