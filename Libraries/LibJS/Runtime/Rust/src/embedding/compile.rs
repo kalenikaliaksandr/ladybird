@@ -13,6 +13,9 @@
 //!
 //! The functions of a script or module that do not run right away compile on their first call. An embedder can have
 //! them compiled on its worker threads before that instead, through JSOffThreadCompilationCallbacks.
+//!
+//! Tokenizing source text for syntax highlighting, and finding the positions of a source where a debugger can stop,
+//! need no VM either.
 
 use core::ffi::c_void;
 use std::borrow::Cow;
@@ -712,6 +715,130 @@ pub unsafe extern "C" fn js_compile_remaining_functions_of_module_off_thread(
     }
 }
 
+/// A token of a source text, with the trivia (whitespace and comments) before it, laid out like the FFIToken that C++
+/// JS::SyntaxHighlighter reads. token_type and category are the values of JS::TokenType and JS::TokenCategory, and the
+/// offsets and lengths count UTF-16 code units.
+#[repr(C)]
+pub struct JSToken {
+    pub token_type: u8,
+    pub category: u8,
+    pub offset: u32,
+    pub length: u32,
+    pub trivia_offset: u32,
+    pub trivia_length: u32,
+}
+
+const _: () = assert!(size_of::<JSToken>() == 20 && core::mem::offset_of!(JSToken, offset) == 4);
+
+/// Where the runtime hands the tokens of a source text, one at a time, borrowed for the call.
+#[repr(C)]
+pub struct JSTokenSink {
+    pub context: *mut c_void,
+    pub append: Option<unsafe extern "C" fn(context: *mut c_void, token: *const JSToken)>,
+}
+
+// JS::TokenCategory.
+pub const JS_TOKEN_CATEGORY_INVALID: u8 = 0;
+pub const JS_TOKEN_CATEGORY_TRIVIA: u8 = 1;
+pub const JS_TOKEN_CATEGORY_NUMBER: u8 = 2;
+pub const JS_TOKEN_CATEGORY_STRING: u8 = 3;
+pub const JS_TOKEN_CATEGORY_PUNCTUATION: u8 = 4;
+pub const JS_TOKEN_CATEGORY_OPERATOR: u8 = 5;
+pub const JS_TOKEN_CATEGORY_KEYWORD: u8 = 6;
+pub const JS_TOKEN_CATEGORY_CONTROL_KEYWORD: u8 = 7;
+pub const JS_TOKEN_CATEGORY_IDENTIFIER: u8 = 8;
+
+const _: () = {
+    use libjs_rust::token::TokenCategory;
+    assert!(JS_TOKEN_CATEGORY_INVALID == TokenCategory::Invalid as u8);
+    assert!(JS_TOKEN_CATEGORY_TRIVIA == TokenCategory::Trivia as u8);
+    assert!(JS_TOKEN_CATEGORY_NUMBER == TokenCategory::Number as u8);
+    assert!(JS_TOKEN_CATEGORY_STRING == TokenCategory::String as u8);
+    assert!(JS_TOKEN_CATEGORY_PUNCTUATION == TokenCategory::Punctuation as u8);
+    assert!(JS_TOKEN_CATEGORY_OPERATOR == TokenCategory::Operator as u8);
+    assert!(JS_TOKEN_CATEGORY_KEYWORD == TokenCategory::Keyword as u8);
+    assert!(JS_TOKEN_CATEGORY_CONTROL_KEYWORD == TokenCategory::ControlKeyword as u8);
+    assert!(JS_TOKEN_CATEGORY_IDENTIFIER == TokenCategory::Identifier as u8);
+};
+
+/// Tokenizes `source` without parsing it, as JS::SyntaxHighlighter does, and hands every token to `tokens` on the
+/// calling thread. The last token is the end-of-file token, whose trivia is whatever follows the token before it.
+/// Borrows the view. Any thread may call this.
+///
+/// # Safety
+///
+/// The view must be valid, and `tokens` must point to a sink with an append function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_compile_tokenize(source: JSUtf16View, tokens: *const JSTokenSink) {
+    // SAFETY: The caller passes a valid view and sink.
+    let (source, tokens) = unsafe { (code_units_of(source), &*tokens) };
+    let append = tokens.append.expect("a token sink has an append function");
+    for token in libjs_rust::tokenize::tokenize(&source) {
+        let token = JSToken {
+            token_type: token.token_type as u8,
+            category: token.category as u8,
+            offset: token.offset,
+            length: token.length,
+            trivia_offset: token.trivia_offset,
+            trivia_length: token.trivia_length,
+        };
+        // SAFETY: The embedder's sink takes tokens with the context it came with, and borrows each for the call.
+        unsafe { append(tokens.context, &raw const token) };
+    }
+}
+
+/// JS::Position: a line and a column, both counted from 1.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JSPosition {
+    pub line: u32,
+    pub column: u32,
+}
+
+/// Where the runtime hands a run of positions, borrowed for the call.
+#[repr(C)]
+pub struct JSPositionSink {
+    pub context: *mut c_void,
+    pub append: Option<unsafe extern "C" fn(context: *mut c_void, positions: *const JSPosition, count: usize)>,
+}
+
+/// breakpoint_positions_for_source(source_code, type, line_number_offset): every position in `source` where a
+/// breakpoint can be set, those inside functions that have not been compiled yet included, sorted and without repeats.
+/// Lines count from `line_number_offset` as js_compile_parse() counts them, and a source with syntax errors has none.
+/// This compiles a private copy of the source, which needs no VM. Hands the positions to `positions` in one call on
+/// the calling thread, if there are any. Borrows the view. Any thread may call this.
+///
+/// # Safety
+///
+/// The view must be valid, and `positions` must point to a sink with an append function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_compile_breakpoint_positions_for_source(
+    source: JSUtf16View,
+    program_type: JSProgramType,
+    line_number_offset: usize,
+    positions: *const JSPositionSink,
+) {
+    // SAFETY: The caller passes a valid view and sink.
+    let (source, sink) = unsafe { (code_units_of(source), &*positions) };
+    let append = sink.append.expect("a position sink has an append function");
+    let positions: Vec<JSPosition> = libjs_rust::breakpoint_positions::breakpoint_positions_for_source(
+        &source,
+        program_type_from_abi(program_type),
+        line_number_offset,
+    )
+    .into_iter()
+    .map(|position| JSPosition {
+        line: position.line,
+        column: position.column,
+    })
+    .collect();
+    if positions.is_empty() {
+        return;
+    }
+    // SAFETY: The embedder's sink takes the positions with the context it came with, and borrows them for the call.
+    unsafe { append(sink.context, positions.as_ptr(), positions.len()) };
+}
+
 #[cfg(all(test, libjs_runtime_tests_with_libgc))]
 pub(crate) mod tests {
     use super::*;
@@ -1308,5 +1435,186 @@ pub(crate) mod tests {
             utf8(run_script(&vm, realm, "plainModule() + ',' + awaitModule()").must()),
             "later,awaited"
         );
+    }
+
+    /// Collects what sinks receive, and runs a script and collects garbage for each call, as an embedder may.
+    struct ReenteringCollector<'vm, T> {
+        vm: &'vm Vm,
+        realm: Gc<crate::layout::realm::Realm>,
+        collected: Vec<T>,
+        calls: usize,
+    }
+
+    impl<T> ReenteringCollector<'_, T> {
+        fn reenter(&mut self) {
+            self.calls += 1;
+            self.vm.heap().collect_garbage();
+            assert_eq!(
+                utf8(run_script(self.vm, self.realm, "[3, 4].map(x => x + 1).join()").must()),
+                "4,5"
+            );
+        }
+    }
+
+    unsafe extern "C" fn collect_token(context: *mut c_void, token: *const JSToken) {
+        // SAFETY: The sink's context is a collector, and the token is borrowed for the call.
+        let (collector, token) = unsafe {
+            (
+                &mut *context.cast::<ReenteringCollector<(u8, u8, u32, u32, u32, u32)>>(),
+                &*token,
+            )
+        };
+        collector.reenter();
+        collector.collected.push((
+            token.token_type,
+            token.category,
+            token.offset,
+            token.length,
+            token.trivia_offset,
+            token.trivia_length,
+        ));
+    }
+
+    unsafe extern "C" fn collect_positions(context: *mut c_void, positions: *const JSPosition, count: usize) {
+        // SAFETY: The sink's context is a collector, and the positions are borrowed for the call.
+        let (collector, positions) = unsafe {
+            (
+                &mut *context.cast::<ReenteringCollector<JSPosition>>(),
+                core::slice::from_raw_parts(positions, count),
+            )
+        };
+        collector.reenter();
+        collector.collected.extend_from_slice(positions);
+    }
+
+    #[test]
+    fn tokens_reach_a_sink_that_runs_scripts() {
+        use libjs_rust::token::{TokenCategory, TokenType};
+
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let mut collector: ReenteringCollector<(u8, u8, u32, u32, u32, u32)> = ReenteringCollector {
+            vm: &vm,
+            realm,
+            collected: Vec::new(),
+            calls: 0,
+        };
+        let sink = JSTokenSink {
+            context: (&raw mut collector).cast(),
+            append: Some(collect_token),
+        };
+        let source: Vec<u16> = "let x = '\u{e9}'; // done\n".encode_utf16().collect();
+        let view = JSUtf16View::of(Utf16View::Utf16(&source));
+        // SAFETY: The view and the sink outlive the call.
+        unsafe { js_compile_tokenize(view, &raw const sink) };
+
+        let expected: Vec<(u8, u8, u32, u32, u32, u32)> = [
+            (TokenType::Let, TokenCategory::Keyword, 0, 3, 0, 0),
+            (TokenType::Identifier, TokenCategory::Identifier, 4, 1, 3, 1),
+            (TokenType::Equals, TokenCategory::Operator, 6, 1, 5, 1),
+            (TokenType::StringLiteral, TokenCategory::String, 8, 3, 7, 1),
+            (TokenType::Semicolon, TokenCategory::Punctuation, 11, 1, 11, 0),
+            (TokenType::Eof, TokenCategory::Invalid, 21, 0, 12, 9),
+        ]
+        .into_iter()
+        .map(|(token_type, category, offset, length, trivia_offset, trivia_length)| {
+            (
+                token_type as u8,
+                category as u8,
+                offset,
+                length,
+                trivia_offset,
+                trivia_length,
+            )
+        })
+        .collect();
+        assert_eq!(collector.collected, expected);
+        assert_eq!(collector.calls, 6);
+
+        // An empty source has only the end-of-file token, which ASCII storage reaches as well.
+        collector.collected.clear();
+        // SAFETY: As above.
+        unsafe { js_compile_tokenize(ascii_view_of(""), &raw const sink) };
+        assert_eq!(collector.collected.len(), 1);
+        assert_eq!(collector.collected[0].0, TokenType::Eof as u8);
+    }
+
+    #[test]
+    fn breakpoint_positions_include_functions_that_were_not_compiled_yet() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let mut collector: ReenteringCollector<JSPosition> = ReenteringCollector {
+            vm: &vm,
+            realm,
+            collected: Vec::new(),
+            calls: 0,
+        };
+        let sink = JSPositionSink {
+            context: (&raw mut collector).cast(),
+            append: Some(collect_positions),
+        };
+        let source = "var a = 1;\nfunction f() {\n  return a;\n}\nf();";
+        // SAFETY: The view and the sink outlive the call.
+        unsafe {
+            js_compile_breakpoint_positions_for_source(
+                ascii_view_of(source),
+                JS_PROGRAM_TYPE_SCRIPT,
+                1,
+                &raw const sink,
+            );
+        };
+        let code_units: Vec<u16> = source.encode_utf16().collect();
+        let expected: Vec<JSPosition> =
+            libjs_rust::breakpoint_positions::breakpoint_positions_for_source(&code_units, ProgramType::Script, 1)
+                .into_iter()
+                .map(|position| JSPosition {
+                    line: position.line,
+                    column: position.column,
+                })
+                .collect();
+        assert_eq!(collector.calls, 1);
+        assert_eq!(collector.collected, expected);
+        assert!(collector.collected.iter().any(|position| position.line == 3));
+        assert!(
+            collector
+                .collected
+                .is_sorted_by_key(|position| (position.line, position.column))
+        );
+
+        // Lines count from the offset, as for an inline script further down a document.
+        let at_line_one = core::mem::take(&mut collector.collected);
+        // SAFETY: As above.
+        unsafe {
+            js_compile_breakpoint_positions_for_source(
+                ascii_view_of(source),
+                JS_PROGRAM_TYPE_SCRIPT,
+                10,
+                &raw const sink,
+            );
+        };
+        let shifted: Vec<JSPosition> = at_line_one
+            .iter()
+            .map(|position| JSPosition {
+                line: position.line + 9,
+                column: position.column,
+            })
+            .collect();
+        assert_eq!(collector.collected, shifted);
+
+        // A source with syntax errors has none, and the sink is not called.
+        collector.collected.clear();
+        // SAFETY: As above.
+        unsafe {
+            js_compile_breakpoint_positions_for_source(
+                ascii_view_of("function ("),
+                JS_PROGRAM_TYPE_MODULE,
+                1,
+                &raw const sink,
+            );
+        };
+        assert_eq!(collector.calls, 2);
+        assert!(collector.collected.is_empty());
     }
 }

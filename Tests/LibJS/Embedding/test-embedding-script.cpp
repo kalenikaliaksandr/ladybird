@@ -416,3 +416,81 @@ TEST_CASE(lazy_functions_compile_on_a_worker_thread_and_install_on_the_vms_threa
     EXPECT_EQ(module_host.submit_count, 1u);
     EXPECT_EQ(module_host.release_count.load(), 1u);
 }
+
+TEST_CASE(tokens_cover_the_source_and_end_with_its_trailing_trivia)
+{
+    auto embedded_vm = EmbeddedVM::create_with_realm();
+    struct TokenCollector {
+        EmbeddedVM& embedded_vm;
+        Vector<JSToken> tokens;
+    } collector { *embedded_vm, {} };
+    JSTokenSink sink {
+        .context = &collector,
+        .append = [](void* context, JSToken const* token) {
+            auto& collector = *static_cast<TokenCollector*>(context);
+            // The sink may run JavaScript while the tokenizer waits for it.
+            collector.embedded_vm.collect_garbage();
+            VERIFY(collector.embedded_vm.run("[1, 2].includes(2)"sv));
+            collector.tokens.append(*token);
+        },
+    };
+    auto source = "let x = 1; // c"sv;
+    js_compile_tokenize(ascii_view(source), &sink);
+
+    u8 const expected_categories[] = { JS_TOKEN_CATEGORY_KEYWORD, JS_TOKEN_CATEGORY_IDENTIFIER, JS_TOKEN_CATEGORY_OPERATOR, JS_TOKEN_CATEGORY_NUMBER, JS_TOKEN_CATEGORY_PUNCTUATION, JS_TOKEN_CATEGORY_INVALID };
+    VERIFY(collector.tokens.size() == array_size(expected_categories));
+    u32 covered_up_to = 0;
+    for (size_t i = 0; i < collector.tokens.size(); ++i) {
+        auto const& token = collector.tokens[i];
+        EXPECT_EQ(token.category, expected_categories[i]);
+        EXPECT_EQ(token.trivia_offset, covered_up_to);
+        EXPECT_EQ(token.offset, token.trivia_offset + token.trivia_length);
+        covered_up_to = token.offset + token.length;
+    }
+    EXPECT_EQ(covered_up_to, source.length());
+    auto const& end_of_file = collector.tokens.last();
+    EXPECT_EQ(end_of_file.length, 0u);
+    EXPECT_EQ(source.substring_view(end_of_file.trivia_offset, end_of_file.trivia_length), " // c"sv);
+}
+
+TEST_CASE(breakpoint_positions_match_the_cpp_runtime)
+{
+    struct PositionCollector {
+        size_t calls { 0 };
+        Vector<JSPosition> positions;
+    } collector;
+    JSPositionSink sink {
+        .context = &collector,
+        .append = [](void* context, JSPosition const* positions, size_t count) {
+            auto& collector = *static_cast<PositionCollector*>(context);
+            ++collector.calls;
+            collector.positions.append(positions, count);
+        },
+    };
+    auto positions_of = [&](StringView source, JSProgramType program_type, size_t line_number_offset) {
+        collector.positions.clear();
+        js_compile_breakpoint_positions_for_source(ascii_view(source), program_type, line_number_offset, &sink);
+        Vector<u32> lines_and_columns;
+        for (auto position : collector.positions)
+            lines_and_columns.extend({ position.line, position.column });
+        return lines_and_columns;
+    };
+
+    // The positions that C++ JS::breakpoint_positions_for_source() returns for the same sources. The one at line 3 is
+    // inside a function that has not been compiled.
+    auto source = "var a = 1;\nfunction f() {\n  return a;\n}\nf();"sv;
+    EXPECT_EQ(positions_of(source, JS_PROGRAM_TYPE_SCRIPT, 1), (Vector<u32> { 1, 1, 3, 3, 3, 10, 5, 1, 5, 2 }));
+    EXPECT_EQ(positions_of(source, JS_PROGRAM_TYPE_SCRIPT, 10), (Vector<u32> { 10, 1, 12, 3, 12, 10, 14, 1, 14, 2 }));
+    EXPECT_EQ(positions_of("export function g() { return 1 }\nawait g();"sv, JS_PROGRAM_TYPE_MODULE, 0), (Vector<u32> { 1, 23, 2, 1, 2, 8 }));
+    EXPECT_EQ(collector.calls, 3u);
+
+    // A source with syntax errors has none, and the sink hears nothing.
+    EXPECT(positions_of("function ("sv, JS_PROGRAM_TYPE_SCRIPT, 1).is_empty());
+    EXPECT_EQ(collector.calls, 3u);
+
+    // Like the tokenizer, the search needs no VM, so it runs on any thread.
+    Vector<u32> positions_found_on_another_thread;
+    std::thread worker([&] { positions_found_on_another_thread = positions_of(source, JS_PROGRAM_TYPE_SCRIPT, 1); });
+    worker.join();
+    EXPECT_EQ(positions_found_on_another_thread.size(), 10u);
+}
