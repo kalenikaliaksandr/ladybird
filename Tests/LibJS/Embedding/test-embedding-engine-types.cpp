@@ -5,6 +5,7 @@
  */
 
 #include <AK/Utf16FlyString.h>
+#include <AK/Utf16String.h>
 #include <AK/Vector.h>
 #include <LibGC/Function.h>
 #include <LibGC/Heap.h>
@@ -326,4 +327,65 @@ TEST_CASE(maps_and_sets_are_iterated_live_while_the_callback_changes_them)
     EXPECT(embedded_vm->run("if ([...values].join() !== '0,3,5,6' || !(set instanceof Set)) throw new Error();"sv));
     js_collections_set_clear(set);
     EXPECT_EQ(js_collections_set_size(set), 0u);
+}
+
+TEST_CASE(dates_regexps_and_json_round_trip)
+{
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* vm = embedded_vm->vm();
+
+    // 2026-10-04T12:34:56.789Z
+    auto time_value = js_date_make_date(js_date_make_day(2026, 9, 4), js_date_make_time(12, 34, 56, 789));
+    auto* date = js_date_create(vm, embedded_vm->realm(), time_value);
+    define_global(*embedded_vm, "date"sv, value_of_object(date));
+    EXPECT(embedded_vm->run("if (date.toISOString() !== '2026-10-04T12:34:56.789Z') throw new Error();"sv));
+    auto* parsed_date = embedded_vm->object_of("new Date(Date.UTC(1999, 11, 31, 23, 59, 58, 7))"sv);
+    auto parsed_time = js_date_date_value(parsed_date);
+    EXPECT_EQ(js_date_year_from_time(parsed_time), 1999);
+    EXPECT_EQ(js_date_month_from_time(parsed_time), 11);
+    EXPECT_EQ(js_date_date_from_time(parsed_time), 31);
+    EXPECT_EQ(js_date_hour_from_time(parsed_time), 23);
+    EXPECT_EQ(js_date_min_from_time(parsed_time), 59);
+    EXPECT_EQ(js_date_sec_from_time(parsed_time), 58);
+    EXPECT_EQ(js_date_ms_from_time(parsed_time), 7);
+
+    auto regexp_completion = js_regexp_create(vm, embedded_vm->value_of("'a+(b)'"sv), embedded_vm->value_of("'gi'"sv));
+    auto* regexp = pointer_of_payload<JSObject>(regexp_completion);
+    EXPECT_EQ(Utf16String::adopt_raw(js_regexp_pattern(regexp)), "a+(b)"sv);
+    EXPECT_EQ(Utf16String::adopt_raw(js_regexp_flags(regexp)), "gi"sv);
+    define_global(*embedded_vm, "regexp"sv, value_of_object(regexp));
+    EXPECT(embedded_vm->run("if (regexp.exec('xAAB')[1] !== 'B' || !(regexp instanceof RegExp)) throw new Error();"sv));
+    EXPECT_EQ(js_regexp_create(vm, embedded_vm->value_of("'('"sv), js_undefined).variant, JS_COMPLETION_THROW);
+
+    auto json = R"({"list":[1,"two",{"three":null}],"nested":{"flag":true}})"sv;
+    auto parsed = js_json_parse(vm, ascii_view(json));
+    EXPECT_EQ(parsed.variant, JS_COMPLETION_NORMAL);
+    define_global(*embedded_vm, "parsed"sv, parsed.payload);
+    EXPECT(embedded_vm->run("if (parsed.list[2].three !== null || parsed.nested.flag !== true) throw new Error();"sv));
+
+    JSOwnedUtf16String serialized = 0;
+    auto stringified = js_json_stringify(vm, parsed.payload, js_undefined, js_undefined, &serialized);
+    EXPECT_EQ(stringified.variant, JS_COMPLETION_NORMAL);
+    EXPECT_EQ(stringified.payload, 1u);
+    EXPECT_EQ(Utf16String::adopt_raw(serialized), json);
+
+    // The replacer runs C++ that reads the holder while the VM serializes.
+    size_t replacer_calls = 0;
+    auto* replacer = create_closure(*embedded_vm, [&](JSVM* vm) -> JSCompletion {
+        ++replacer_calls;
+        auto value = argument(vm, 1);
+        embedded_vm->collect_garbage();
+        return normal_completion(value == js_true ? int32_value(1) : value);
+    });
+    stringified = js_json_stringify(vm, embedded_vm->value_of("({ a: true, b: [true] })"sv), value_of_object(replacer), int32_value(1), &serialized);
+    EXPECT_EQ(stringified.payload, 1u);
+    EXPECT_EQ(Utf16String::adopt_raw(serialized), "{\n \"a\": 1,\n \"b\": [\n  1\n ]\n}"sv);
+    EXPECT_EQ(replacer_calls, 4u);
+
+    serialized = 0;
+    stringified = js_json_stringify(vm, js_undefined, js_undefined, js_undefined, &serialized);
+    EXPECT_EQ(stringified.variant, JS_COMPLETION_NORMAL);
+    EXPECT_EQ(stringified.payload, 0u);
+    EXPECT_EQ(serialized, 0u);
+    EXPECT_EQ(js_json_parse(vm, ascii_view("{,}"sv)).variant, JS_COMPLETION_THROW);
 }
