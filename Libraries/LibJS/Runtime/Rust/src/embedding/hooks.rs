@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-//! The host hooks: the embedder's table of callbacks and its data pointer.
+//! The host hooks, which are the embedder's table of callbacks and its data pointer, and the embedder's agent.
 
 use core::ffi::c_void;
 use core::mem::ManuallyDrop;
@@ -126,6 +126,29 @@ pub struct JSEnsureCanCompileStringsArguments {
 pub struct JSImportMetaPropertySink {
     pub context: *mut c_void,
     pub append: unsafe extern "C" fn(context: *mut c_void, key: JSPropertyKey, value: JSValue),
+}
+
+/// Whether the goal of a spin of the event loop is met, given the context that came with it.
+pub type JSGoalCondition = unsafe extern "C" fn(goal_context: *mut c_void) -> bool;
+
+/// The surrounding agent of the VM, which the embedder provides: the C++ runtime's JS::Agent.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct JSAgent {
+    /// [[CanBlock]]: whether Atomics.wait() may block.
+    pub can_block: bool,
+    /// Agent::spin_event_loop_until(): runs the embedder's event loop, promise jobs included, until
+    /// goal_condition(goal_context) is true, which await in native code waits for its promise with. It receives `data`
+    /// and the VM, runs on the VM's thread, and may run any JavaScript, including another spin.
+    pub spin_event_loop_until: Option<
+        unsafe extern "C" fn(
+            data: *mut c_void,
+            vm: *mut JSVM,
+            goal_condition: JSGoalCondition,
+            goal_context: *mut c_void,
+        ),
+    >,
+    pub data: *mut c_void,
 }
 
 /// The embedder's table of host hooks, which the VM calls in place of its own host-defined behavior. A null hook keeps
@@ -301,6 +324,36 @@ pub(crate) fn install_embedder(vm: &Vm, embedder: Option<Embedder>) {
         has_on_unimplemented_property_access
             .then_some(on_unimplemented_property_access as OnUnimplementedPropertyAccess),
     );
+}
+
+/// The event loop of the agent that an embedder provides, which the C++ runtime reaches through VM::agent().
+#[derive(Clone, Copy)]
+pub struct EmbedderAgent {
+    spin_event_loop_until: unsafe extern "C" fn(*mut c_void, *mut JSVM, JSGoalCondition, *mut c_void),
+    data: *mut c_void,
+}
+
+impl EmbedderAgent {
+    pub fn of(agent: &JSAgent) -> Self {
+        Self {
+            spin_event_loop_until: agent
+                .spin_event_loop_until
+                .expect("the agent of an embedder spins its event loop"),
+            data: agent.data,
+        }
+    }
+
+    /// Agent::spin_event_loop_until(goal_condition), which may run any JavaScript, including another spin.
+    pub fn spin_event_loop_until(&self, vm: &Vm, goal_condition: &dyn Fn() -> bool) {
+        unsafe extern "C" fn goal_condition_is_met(goal_condition: *mut c_void) -> bool {
+            // SAFETY: The goal context is the goal condition below, which outlives the spin.
+            let goal_condition = unsafe { &*goal_condition.cast::<&dyn Fn() -> bool>() };
+            goal_condition()
+        }
+        let goal_context = core::ptr::from_ref(&goal_condition).cast_mut().cast();
+        // SAFETY: The embedder's agent takes its data and the VM, and only calls the goal condition during the spin.
+        unsafe { (self.spin_event_loop_until)(self.data, vm_into_abi(vm), goal_condition_is_met, goal_context) };
+    }
 }
 
 /// Calls a hook of the embedder with its data, the VM and `arguments`. The VM holds a hook's thunk only while the
@@ -683,7 +736,8 @@ mod tests {
         js_vm_default_host_enqueue_promise_job, js_vm_default_host_grow_shared_array_buffer,
         js_vm_default_host_load_imported_module, js_vm_default_host_promise_job_queue_is_empty,
         js_vm_default_host_resize_array_buffer, js_vm_default_host_system_utc_epoch_nanoseconds,
-        js_vm_run_queued_finalization_registry_cleanup_jobs, js_vm_run_queued_promise_jobs, js_vm_set_embedder,
+        js_vm_run_queued_finalization_registry_cleanup_jobs, js_vm_run_queued_promise_jobs, js_vm_set_agent,
+        js_vm_set_embedder,
     };
     use crate::layout::host_class::{JS_COMPLETION_NORMAL, JS_COMPLETION_THROW};
     use crate::runtime::completion::Must;
@@ -762,6 +816,16 @@ mod tests {
             unsafe { js_vm_set_embedder(vm_into_abi(self.vm), &raw const TEST_HOOKS, data) };
         }
 
+        fn install_agent(&self) {
+            let agent = JSAgent {
+                can_block: true,
+                spin_event_loop_until: Some(test_spin_event_loop_until),
+                data: core::ptr::from_ref(self).cast_mut().cast(),
+            };
+            // SAFETY: The VM is live, and the embedder outlives every script the test runs.
+            unsafe { js_vm_set_agent(vm_into_abi(self.vm), &raw const agent) };
+        }
+
         /// # Safety
         ///
         /// `data` must be the embedder that the test installed.
@@ -781,13 +845,20 @@ mod tests {
             self.reentering.set(false);
         }
 
+        /// Runs the oldest promise job that has not run yet, if there is one.
+        fn run_promise_job(&self) -> bool {
+            let Some(job) = self.promise_jobs.get(self.promise_jobs_run.get()) else {
+                return false;
+            };
+            self.promise_jobs_run.set(self.promise_jobs_run.get() + 1);
+            // SAFETY: The VM is live, and the queue keeps the job alive.
+            let completion = unsafe { js_promise_job_run(vm_into_abi(self.vm), job.as_ptr().cast()) };
+            assert_eq!(completion.variant, JS_COMPLETION_NORMAL);
+            true
+        }
+
         fn run_promise_jobs(&self) {
-            while let Some(job) = self.promise_jobs.get(self.promise_jobs_run.get()) {
-                self.promise_jobs_run.set(self.promise_jobs_run.get() + 1);
-                // SAFETY: The VM is live, and the queue keeps the job alive.
-                let completion = unsafe { js_promise_job_run(vm_into_abi(self.vm), job.as_ptr().cast()) };
-                assert_eq!(completion.variant, JS_COMPLETION_NORMAL);
-            }
+            while self.run_promise_job() {}
         }
     }
 
@@ -1111,6 +1182,24 @@ mod tests {
         embedder.called("on_unimplemented_property_access", || {
             object.get(embedder.vm, &key).must();
         });
+    }
+
+    unsafe extern "C" fn test_spin_event_loop_until(
+        data: *mut c_void,
+        _: *mut JSVM,
+        goal_condition: JSGoalCondition,
+        goal_context: *mut c_void,
+    ) {
+        // SAFETY: The VM passes the embedder's data.
+        let embedder = unsafe { TestEmbedder::of(data) };
+        embedder.called("spin_event_loop_until", || {});
+        // SAFETY: The VM passes a goal condition with its context, for the duration of the spin.
+        while !unsafe { goal_condition(goal_context) } {
+            assert!(
+                embedder.run_promise_job(),
+                "the goal is met before the promise jobs run out"
+            );
+        }
     }
 
     static TEST_HOOKS: JSVmHostHooks = JSVmHostHooks {
@@ -1618,5 +1707,66 @@ mod tests {
         assert_eq!(promise_of(promise_capability).state(), PromiseState::Fulfilled);
         let host_defined: *mut c_void = host_defined.as_ptr().cast();
         assert_eq!(HOST_DEFINED_OF_LOADS.take(), [host_defined, host_defined]);
+    }
+
+    /// Awaits in native code twice: AsyncDisposableStack.prototype.disposeAsync() awaits what an async dispose method
+    /// returns, and the job that settles the outer one awaits a nested one, which spins the event loop inside the
+    /// first spin.
+    const SCRIPT_AWAITING_IN_NATIVE_CODE: &str = r#"
+        var log = [];
+        function disposeAsyncOf(name, settle) {
+            const stack = new AsyncDisposableStack();
+            stack.use({
+                [Symbol.asyncDispose]() {
+                    log.push(name);
+                    return Promise.resolve().then(() => { settle(); log.push(name + " settled"); });
+                },
+            });
+            return stack.disposeAsync();
+        }
+        Promise.resolve().then(() => log.push("queued before"));
+        disposeAsyncOf("outer", () => disposeAsyncOf("nested", () => {})).then(() => log.push("outer disposed"));
+        log.push("after");
+    "#;
+
+    const LOG_OF_THE_SCRIPT_AWAITING_IN_NATIVE_CODE: &str =
+        "outer,queued before,nested,nested settled,outer settled,after,outer disposed";
+
+    #[test]
+    fn await_spins_the_event_loop_of_the_embedder_agent() {
+        for reenter in [false, true] {
+            let vm = Vm::create();
+            let root_execution_context = initialize_realm(&vm);
+            let realm = root_execution_context.realm();
+            let embedder = TestEmbedder::new(&vm, realm, reenter);
+            embedder.install();
+            embedder.install_agent();
+
+            run_script(&vm, realm, SCRIPT_AWAITING_IN_NATIVE_CODE).must();
+            assert!(embedder.calls.borrow().contains("spin_event_loop_until"));
+            assert_eq!(
+                embedder.reentered_from.borrow().contains("spin_event_loop_until"),
+                reenter
+            );
+            embedder.run_promise_jobs();
+            let log = run_script(&vm, realm, "log.join()").must();
+            assert_eq!(utf8(log), LOG_OF_THE_SCRIPT_AWAITING_IN_NATIVE_CODE);
+        }
+    }
+
+    #[test]
+    fn await_runs_the_promise_jobs_of_the_vm_without_an_embedder_agent() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let embedder = TestEmbedder::new(&vm, realm, false);
+        embedder.install_agent();
+        // SAFETY: The VM is live.
+        unsafe { js_vm_set_agent(vm_into_abi(&vm), core::ptr::null()) };
+
+        run_script(&vm, realm, SCRIPT_AWAITING_IN_NATIVE_CODE).must();
+        assert!(embedder.calls.borrow().is_empty());
+        let log = run_script(&vm, realm, "log.join()").must();
+        assert_eq!(utf8(log), LOG_OF_THE_SCRIPT_AWAITING_IN_NATIVE_CODE);
     }
 }

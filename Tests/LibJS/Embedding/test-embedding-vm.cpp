@@ -35,6 +35,7 @@ struct TestEmbedder {
     Vector<ByteString> unrecognized_date_strings;
     size_t array_buffer_resizes { 0 };
     size_t shared_array_buffer_grows { 0 };
+    size_t event_loop_spins { 0 };
 };
 
 constexpr i64 test_epoch_nanoseconds = 1234567890123456789;
@@ -55,14 +56,18 @@ ByteString ascii_string(JSUtf16View view)
     return ByteString(static_cast<char const*>(view.data), view.length_in_code_units);
 }
 
+void run_promise_job(TestEmbedder& embedder)
+{
+    auto* root = embedder.promise_jobs.take_first();
+    auto completion = js_promise_job_run(embedder.vm, reinterpret_cast<JSPromiseJob*>(gc_root_cell(root)));
+    gc_root_destroy(root);
+    VERIFY(completion.variant == JS_COMPLETION_NORMAL);
+}
+
 void run_promise_jobs(TestEmbedder& embedder)
 {
-    while (!embedder.promise_jobs.is_empty()) {
-        auto* root = embedder.promise_jobs.take_first();
-        auto completion = js_promise_job_run(embedder.vm, reinterpret_cast<JSPromiseJob*>(gc_root_cell(root)));
-        gc_root_destroy(root);
-        VERIFY(completion.variant == JS_COMPLETION_NORMAL);
-    }
+    while (!embedder.promise_jobs.is_empty())
+        run_promise_job(embedder);
 }
 
 JSCompletion ensure_can_add_private_element(void* data, JSVM*, JSObject*)
@@ -162,6 +167,17 @@ i64 system_utc_epoch_nanoseconds(void*, JSVM*, JSObject*)
     return test_epoch_nanoseconds;
 }
 
+// Runs promise jobs until the goal is met, like HTML's "spin the event loop" runs microtasks.
+void spin_event_loop_until(void* data, JSVM*, JSGoalCondition goal_condition, void* goal_context)
+{
+    auto& embedder = embedder_of(data);
+    ++embedder.event_loop_spins;
+    while (!goal_condition(goal_context)) {
+        VERIFY(!embedder.promise_jobs.is_empty());
+        run_promise_job(embedder);
+    }
+}
+
 JSVmHostHooks const test_hooks {
     .ensure_can_add_private_element = ensure_can_add_private_element,
     .ensure_can_compile_strings = ensure_can_compile_strings,
@@ -192,7 +208,13 @@ struct EmbeddedVMWithHooks {
         embedder.vm = embedded_vm->vm();
         embedder.embedded_vm = embedded_vm.ptr();
         js_vm_set_embedder(embedder.vm, &test_hooks, &embedder);
+        set_agent({ .can_block = true, .spin_event_loop_until = spin_event_loop_until, .data = &embedder });
         embedded_vm->initialize_realm();
+    }
+
+    void set_agent(JSAgent agent)
+    {
+        js_vm_set_agent(embedder.vm, &agent);
     }
 
     ~EmbeddedVMWithHooks()
@@ -351,4 +373,49 @@ TEST_CASE(an_embedder_can_give_its_hooks_back_to_the_runtime)
     EXPECT_EQ(embedder.promise_jobs.size(), 1u);
     run_promise_jobs(embedder);
     EXPECT(embedded_vm.run("if (log.join() !== 'queued by the VM,queued by the embedder') throw new Error(log.join());"sv));
+}
+
+TEST_CASE(await_spins_the_event_loop_of_the_embedder_agent)
+{
+    EmbeddedVMWithHooks setup;
+    // AsyncDisposableStack.prototype.disposeAsync() awaits what an async dispose method returns, and the job that
+    // settles the outer one awaits a nested one, which spins the event loop inside the first spin.
+    EXPECT(setup.embedded_vm->run(R"~~~(
+        var log = [];
+        function disposeAsyncOf(name, settle) {
+            const stack = new AsyncDisposableStack();
+            stack.use({
+                [Symbol.asyncDispose]() {
+                    log.push(name);
+                    return Promise.resolve().then(() => { settle(); log.push(name + " settled"); });
+                },
+            });
+            return stack.disposeAsync();
+        }
+        Promise.resolve().then(() => log.push("queued before"));
+        disposeAsyncOf("outer", () => disposeAsyncOf("nested", () => {})).then(() => log.push("outer disposed"));
+        log.push("after");
+    )~~~"sv));
+    EXPECT_EQ(setup.embedder.event_loop_spins, 2u);
+    run_promise_jobs(setup.embedder);
+    EXPECT(setup.embedded_vm->run(R"~~~(
+        if (log.join() !== "outer,queued before,nested,nested settled,outer settled,after,outer disposed")
+            throw new Error(log.join());
+    )~~~"sv));
+}
+
+TEST_CASE(an_agent_that_cannot_block_cannot_wait)
+{
+    EmbeddedVMWithHooks setup;
+    EXPECT(setup.embedded_vm->run("if (Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 0) !== 'timed-out') throw new Error();"sv));
+    setup.set_agent({ .can_block = false, .spin_event_loop_until = spin_event_loop_until, .data = &setup.embedder });
+    EXPECT(setup.embedded_vm->run(R"~~~(
+        try {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 0);
+            throw new Error("an agent that cannot block waited");
+        } catch (error) {
+            if (!(error instanceof TypeError))
+                throw error;
+        }
+    )~~~"sv));
 }
