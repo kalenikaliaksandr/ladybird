@@ -5,13 +5,16 @@
  */
 
 //! Bytecode cache blobs on this runtime's types, as RustIntegration.cpp, Script.cpp and SourceTextModule.cpp use them
-//! in C++: Script and Source Text Module Records materialized from a decoded blob.
+//! in C++: Script and Source Text Module Records materialized from a decoded blob, and blobs installed into records
+//! that already run.
 //!
 //! The executables made from a blob run their bytecode in place in it and keep it alive. A function's executable stays
-//! in the blob until the function is first called.
+//! in the blob until the function is first called. Installing a blob into a running record matches every function the
+//! record has created to a function of the blob, then gives each one that ran an executable from the blob, which takes
+//! over the inline caches of the one it replaces, and each one that did not its executable in the blob.
 
 use core::cell::{Ref, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::bytecode::executable::Executable;
@@ -21,7 +24,10 @@ use crate::layout::cell::Gc;
 use crate::parser_error::ParserError;
 use crate::runtime::shared_function_instance_data::SharedFunctionInstanceData;
 use crate::source_code::SourceCode;
-use libjs_rust::bytecode_cache::{DecodedCacheBlob, DecodedCachedExecutableRecord, DecodedExecutableRecord};
+use libjs_rust::bytecode::generator::FunctionSfdMetadata;
+use libjs_rust::bytecode_cache::{
+    DecodedCacheBlob, DecodedCachedExecutableRecord, DecodedExecutableRecord, DecodedFunctionRecord,
+};
 
 /// RustIntegration::DecodedBytecodeCache: a decoded blob, which the records materialized from it share, and which is
 /// validated against the source code once.
@@ -86,6 +92,35 @@ impl ExecutableBacking {
     pub fn is_mapped_bytecode_cache(self) -> bool {
         self == Self::MappedBytecodeCache
     }
+
+    pub fn can_generate_bytecode_cache(self) -> bool {
+        matches!(self, Self::Source | Self::HeapBytecode)
+    }
+
+    pub fn can_install_generated_bytecode_cache(self) -> bool {
+        matches!(
+            self,
+            Self::GeneratingFreshCacheFromSource | Self::GeneratingFreshCacheFromHeapBytecode
+        )
+    }
+
+    /// The backing once the generation of a bytecode cache began.
+    pub fn with_bytecode_cache_generation_begun(self) -> Self {
+        match self {
+            Self::Source => Self::GeneratingFreshCacheFromSource,
+            Self::HeapBytecode => Self::GeneratingFreshCacheFromHeapBytecode,
+            _ => panic!("a bytecode cache is only generated for a record that has none, once at a time"),
+        }
+    }
+
+    /// The backing once the generation of a bytecode cache ended without installing it.
+    pub fn with_bytecode_cache_generation_finished_without_install(self) -> Self {
+        match self {
+            Self::GeneratingFreshCacheFromSource => Self::Source,
+            Self::GeneratingFreshCacheFromHeapBytecode => Self::HeapBytecode,
+            _ => panic!("only the generation of a bytecode cache that began can finish"),
+        }
+    }
 }
 
 /// Every function a record has created so far: those it declares, those its executables create, and so on for the
@@ -142,7 +177,7 @@ pub fn create_executable_and_its_functions(
             source_code,
         ));
     }
-    Executable::create_from_bytecode_cache(vm, record, &functions, source_code)
+    Executable::create_from_bytecode_cache(vm, record, &functions, source_code, None)
 }
 
 /// The executable of a function whose executable stayed in a bytecode cache blob until its first call, as
@@ -153,6 +188,144 @@ pub fn materialize_cached_function_executable(
     source_code: &Rc<SourceCode>,
 ) -> Option<Gc<Executable>> {
     create_executable_and_its_functions(vm, &cached_executable.decode_executable()?, source_code)
+}
+
+enum Replacement {
+    CachedExecutable(DecodedCachedExecutableRecord),
+    Executable(Gc<Executable>),
+}
+
+/// What installing a blob gives one function, once every function turned out to have its counterpart in the blob.
+struct PendingFunctionInstall {
+    function: Gc<SharedFunctionInstanceData>,
+    replacement: Replacement,
+    metadata: FunctionSfdMetadata,
+}
+
+/// Installing a bytecode cache blob into a running record: the functions the record has created, each of which must
+/// match one function of the blob, and what each one gets once they all did.
+pub struct BytecodeCacheInstall<'vm, 'source> {
+    vm: &'vm Vm,
+    source_code: &'source Rc<SourceCode>,
+    existing_functions: Vec<Gc<SharedFunctionInstanceData>>,
+    /// The indices of the existing functions by the source text range a blob identifies them by, in their order.
+    existing_functions_by_source_text_range: HashMap<(usize, usize), Vec<usize>, foldhash::fast::RandomState>,
+    matched: Vec<bool>,
+    pending_installs: Vec<PendingFunctionInstall>,
+    /// The executables made for functions that ran, which nothing else holds until the install commits.
+    new_executables: MarkedVec<'vm, Gc<Executable>>,
+}
+
+impl<'vm, 'source> BytecodeCacheInstall<'vm, 'source> {
+    /// `existing_functions` must stay alive until the install commits or is dropped, as the record does for those it
+    /// created.
+    pub fn new(
+        vm: &'vm Vm,
+        source_code: &'source Rc<SourceCode>,
+        existing_functions: &MarkedVec<'_, Gc<SharedFunctionInstanceData>>,
+    ) -> Self {
+        let existing_functions = existing_functions.to_vec();
+        let mut existing_functions_by_source_text_range: HashMap<_, Vec<_>, _> = HashMap::default();
+        for (index, function) in existing_functions.iter().enumerate() {
+            existing_functions_by_source_text_range
+                .entry(function.bytecode_cache_source_text_range())
+                .or_default()
+                .push(index);
+        }
+        Self {
+            vm,
+            source_code,
+            matched: vec![false; existing_functions.len()],
+            existing_functions,
+            existing_functions_by_source_text_range,
+            pending_installs: Vec::new(),
+            new_executables: MarkedVec::new(vm),
+        }
+    }
+
+    fn take_matching_function(
+        &mut self,
+        function: &DecodedFunctionRecord,
+        outer_strict: bool,
+    ) -> Option<Gc<SharedFunctionInstanceData>> {
+        let source_text_range = function.source_text_range();
+        let index = self
+            .existing_functions_by_source_text_range
+            .get(&(
+                source_text_range.start,
+                source_text_range.end.saturating_sub(source_text_range.start),
+            ))?
+            .iter()
+            .copied()
+            .find(|&index| {
+                !self.matched[index]
+                    && self.existing_functions[index].matches_bytecode_cache_function(function, outer_strict)
+            })?;
+        self.matched[index] = true;
+        Some(self.existing_functions[index])
+    }
+
+    /// Matches a function of the blob, nested in code that is strict if `outer_strict` is, to one the record created,
+    /// and prepares what that one gets: an executable from the blob if it ran, which recursively matches the functions
+    /// it creates, and its executable in the blob otherwise. Returns `None` if no function matches or the blob turns
+    /// out to be malformed.
+    pub fn prepare_function(
+        &mut self,
+        function: &DecodedFunctionRecord,
+        outer_strict: bool,
+    ) -> Option<Gc<SharedFunctionInstanceData>> {
+        let existing_function = self.take_matching_function(function, outer_strict)?;
+        let replacement = match existing_function.executable() {
+            None => Replacement::CachedExecutable(function.cached_executable()),
+            Some(existing_executable) => {
+                let record = function.cached_executable().decode_executable()?;
+                Replacement::Executable(self.prepare_executable(&record, Some(existing_executable))?)
+            }
+        };
+        self.pending_installs.push(PendingFunctionInstall {
+            function: existing_function,
+            replacement,
+            metadata: function.scope_metadata().clone(),
+        });
+        Some(existing_function)
+    }
+
+    /// The executable of a record of the blob, whose functions match functions the record created, and which takes over
+    /// the inline caches of `replaced_executable`.
+    pub fn prepare_executable(
+        &mut self,
+        record: &DecodedExecutableRecord,
+        replaced_executable: Option<Gc<Executable>>,
+    ) -> Option<Gc<Executable>> {
+        let functions = MarkedVec::new(self.vm);
+        for function in record.functions()? {
+            functions.push(self.prepare_function(&function, record.is_strict())?);
+        }
+        let executable =
+            Executable::create_from_bytecode_cache(self.vm, record, &functions, self.source_code, replaced_executable)?;
+        self.new_executables.push(executable);
+        Some(executable)
+    }
+
+    /// Gives every function what was prepared for it, if every function the record created found its counterpart in
+    /// the blob. Otherwise nothing changes and this returns false.
+    pub fn commit(self) -> bool {
+        if !self.matched.iter().all(|matched| *matched) {
+            return false;
+        }
+        for install in self.pending_installs {
+            match install.replacement {
+                Replacement::CachedExecutable(cached_executable) => install
+                    .function
+                    .install_cached_bytecode_executable(cached_executable, &install.metadata),
+                Replacement::Executable(executable) => install
+                    .function
+                    .install_bytecode_cache_executable(executable, &install.metadata),
+            }
+        }
+        drop(self.new_executables);
+        true
+    }
 }
 
 #[cfg(all(test, libjs_runtime_tests_with_libgc))]
@@ -174,7 +347,7 @@ pub(crate) mod tests {
     use libjs_rust::bytecode_cache::{
         BytecodeCacheRuntime, DecodedDeclarationMetadata, ForeignBytecodeCacheBlobOwner, decode_blob,
     };
-    use libjs_rust::compile::{FunctionPrecompileMode, compile_parsed_program_off_thread, parse};
+    use libjs_rust::compile::{FunctionPrecompileMode, compile_function, compile_parsed_program_off_thread, parse};
 
     const SOURCE_HASH: [u8; 32] = [42; 32];
 
@@ -695,5 +868,325 @@ pub(crate) mod tests {
         let cache = decode(&blob, ProgramType::Script, &releases).expect("the blob decodes");
         let script = script_from_cache(&vm, realm, &cache, source).expect("the original blob still materializes");
         assert_eq!(run(&vm, script), "1");
+    }
+
+    #[test]
+    fn installing_a_cache_gives_functions_that_ran_executables_from_it_with_their_inline_caches() {
+        let vm = Vm::create();
+        vm.heap().set_should_collect_on_every_allocation(true);
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let source = "var tag = function tag(strings) { return strings; };\n\
+                      var template = function template(use_template) { if (use_template) return tag`hello`; \
+                      return null; };\n\
+                      var outer = function outer() { function inner() { return 1; } return inner; };\n\
+                      var Klass = class { constructor() { this.value = 1; } method() { return this.value; } };\n\
+                      template(false); var innerFunction = outer(); new Klass().method();";
+        let source_code = source_code_of("test.js", source);
+        let script = parsed_script(&vm, realm, &source_code);
+        run(&vm, script);
+
+        let template = function_of_script(&vm, script, "template");
+        let old_template_executable = template.executable().expect("template() ran");
+        let old_template_cache = old_template_executable.template_object_cache(0);
+        assert!(old_template_cache.cached_template_object().is_none());
+        let inner = function_of_script(&vm, script, "inner");
+        assert!(inner.has_function_ast() && inner.executable().is_none());
+        let old_script_executable = script.cached_executable();
+
+        let releases = Rc::default();
+        let cache =
+            decode(&serialize(source, ProgramType::Script), ProgramType::Script, &releases).expect("the blob decodes");
+        assert!(script.try_install_bytecode_cache(&vm, &cache, &source_code));
+        assert!(script.executable_backing().is_mapped_bytecode_cache());
+        assert!(script.cached_executable() != old_script_executable);
+        assert!(script.cached_executable().runs_in_place_in_bytecode_cache_blob());
+
+        let new_template_executable = template.executable().expect("template() keeps an executable");
+        assert!(new_template_executable != old_template_executable);
+        assert!(new_template_executable.runs_in_place_in_bytecode_cache_blob());
+        assert!(new_template_executable.template_object_cache(0) == old_template_cache);
+        assert!(!inner.has_function_ast() && inner.has_cached_bytecode());
+        let declared: Vec<_> = script
+            .functions_to_initialize()
+            .iter()
+            .map(|function| function.shared_data)
+            .collect();
+        let functions = functions_created_by(&vm, declared, Some(script.cached_executable()));
+        assert!(have_only_bytecode_cache_compile_inputs(&functions));
+
+        assert!(
+            !script.try_install_bytecode_cache(&vm, &cache, &source_code),
+            "a cache installs once"
+        );
+        drop(cache);
+        assert_eq!(
+            utf8(
+                run_script(
+                    &vm,
+                    realm,
+                    "[template(true) === template(true), innerFunction(), new Klass().method()].join()"
+                )
+                .must()
+            ),
+            "true,1,1"
+        );
+        assert!(old_template_cache.cached_template_object().is_some());
+        assert_eq!(releases.get(), 0);
+    }
+
+    const TEMPORARY_SHAPE_COUNT: usize = 64;
+
+    /// Whether the first entry of each of the first property lookup caches of `executable` holds a shape.
+    #[inline(never)]
+    fn cached_shapes(executable: Gc<Executable>) -> Vec<bool> {
+        (0..TEMPORARY_SHAPE_COUNT)
+            .map(|index| {
+                executable
+                    .property_lookup_cache(index)
+                    .first_entry()
+                    .is_some_and(|entry| entry.shape.is_some())
+            })
+            .collect()
+    }
+
+    /// Runs the script in a frame of its own, so that no pointer to the objects it makes stays on the stack of the test,
+    /// where the conservative scan would keep them alive.
+    #[inline(never)]
+    fn executable_of_function_that_read_temporary_objects(vm: &Vm, script: Gc<Script>) -> Gc<Executable> {
+        run(vm, script);
+        let executable = function_of_script(vm, script, "read").executable().expect("read() ran");
+        assert!(cached_shapes(executable).iter().all(|cached| *cached));
+        executable
+    }
+
+    #[test]
+    fn an_executable_that_replaces_another_takes_over_no_cache_entry_for_a_cell_that_died_while_it_was_made() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let parameters: Vec<String> = (0..TEMPORARY_SHAPE_COUNT).map(|index| format!("o{index}")).collect();
+        let reads: Vec<String> = (0..TEMPORARY_SHAPE_COUNT).map(|index| format!("o{index}.p")).collect();
+        let objects: Vec<String> = (0..TEMPORARY_SHAPE_COUNT)
+            .map(|index| format!("{{ p: {index}, q{index}: 0 }}"))
+            .collect();
+        let source = format!(
+            "var read = function read({}) {{ return [{}]; }}; read({}); 0",
+            parameters.join(", "),
+            reads.join(", "),
+            objects.join(", ")
+        );
+        let source_code = source_code_of("test.js", &source);
+        let script = parsed_script(&vm, realm, &source_code);
+        let old_executable = executable_of_function_that_read_temporary_objects(&vm, script);
+
+        let cache = decode(
+            &serialize(&source, ProgramType::Script),
+            ProgramType::Script,
+            &Rc::default(),
+        )
+        .expect("the blob decodes");
+        let blob = cache
+            .validated_blob(source_code.length_in_code_units())
+            .expect("the blob is valid");
+        let functions = blob.program().executable().functions().expect("the functions decode");
+        let [read] = functions.as_slice() else {
+            panic!("the script creates one function");
+        };
+        let record = read.cached_executable().decode_executable().expect("read() decodes");
+
+        // Nothing holds the objects read() saw any more, so the collection that allocating the new executable starts
+        // frees their shapes.
+        vm.heap().set_should_collect_on_every_allocation(true);
+        let new_executable = Executable::create_from_bytecode_cache(
+            &vm,
+            &record,
+            &MarkedVec::new(&vm),
+            &source_code,
+            Some(old_executable),
+        )
+        .expect("read() materializes");
+        vm.heap().set_should_collect_on_every_allocation(false);
+        let shapes_kept_by_old_executable = cached_shapes(old_executable);
+        let shapes_kept_by_new_executable = cached_shapes(new_executable);
+        let died = shapes_kept_by_old_executable.iter().filter(|kept| !**kept).count();
+        assert!(
+            died >= TEMPORARY_SHAPE_COUNT / 2,
+            "only {died} of the {TEMPORARY_SHAPE_COUNT} temporary shapes died"
+        );
+        assert_eq!(shapes_kept_by_new_executable, shapes_kept_by_old_executable);
+    }
+
+    #[test]
+    fn a_failed_install_changes_nothing() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let source = "var f = function f() { return 1; }; f();";
+        let source_code = source_code_of("test.js", source);
+        let script = parsed_script(&vm, realm, &source_code);
+        assert_eq!(run(&vm, script), "1");
+        let f = function_of_script(&vm, script, "f");
+        let old_executable = script.cached_executable();
+        let old_function_executable = f.executable().expect("f() ran");
+
+        let blob = serialize(source, ProgramType::Script);
+        let top_level_bytecode = validated_blob_offsets(
+            &blob,
+            ProgramType::Script,
+            source_code.length_in_code_units(),
+            |blob, base| offset_in_blob(base, blob.program().executable().bytecode().as_slice()),
+        );
+        let corrupt = decode(
+            &with_byte_flipped(&blob, top_level_bytecode),
+            ProgramType::Script,
+            &Rc::default(),
+        )
+        .expect("the blob decodes");
+        assert!(!script.try_install_bytecode_cache(&vm, &corrupt, &source_code));
+        let of_longer_source = decode(
+            &serialize(&format!("{source} "), ProgramType::Script),
+            ProgramType::Script,
+            &Rc::default(),
+        )
+        .expect("the blob decodes");
+        assert!(!script.try_install_bytecode_cache(&vm, &of_longer_source, &source_code));
+        // A source of the same length whose function lies elsewhere: no function of the blob matches f().
+        let other_source = "var f =  function() { return 1; }; f(); ";
+        assert_eq!(other_source.len(), source.len());
+        let of_other_function = decode(
+            &serialize(other_source, ProgramType::Script),
+            ProgramType::Script,
+            &Rc::default(),
+        )
+        .expect("the blob decodes");
+        assert!(!script.try_install_bytecode_cache(&vm, &of_other_function, &source_code));
+
+        assert!(script.executable_backing().is_source());
+        assert!(script.cached_executable() == old_executable);
+        assert!(f.executable() == Some(old_function_executable));
+        assert_eq!(run(&vm, script), "1");
+    }
+
+    #[test]
+    fn generating_a_cache_moves_a_record_through_the_states_of_its_executable_backing() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let source = "let f = function lazy() { return 1; }; f;";
+        let source_code = source_code_of("test.js", source);
+
+        let parsed = parsed_script(&vm, realm, &source_code);
+        let code_units = source_code.code().to_utf16();
+        let compiled = Script::create(
+            &vm,
+            realm,
+            compile_parsed_program_off_thread(
+                parse(&code_units, ProgramType::Script, 1),
+                code_units.len(),
+                FunctionPrecompileMode::EagerOnly,
+            )
+            .into_script(),
+            source_code.clone(),
+            "test.js",
+            ForeignCellSlot::empty(),
+            ExecutableBacking::HeapBytecode,
+        );
+        for (script, is_source) in [(parsed, true), (compiled, false)] {
+            let backing_is_where_it_was_compiled = || {
+                let backing = script.executable_backing();
+                if is_source {
+                    backing.is_source()
+                } else {
+                    backing.is_heap_bytecode()
+                }
+            };
+            assert!(script.can_generate_bytecode_cache() && !script.can_install_generated_bytecode_cache());
+            script.begin_bytecode_cache_generation(&vm);
+            assert!(backing_is_where_it_was_compiled());
+            assert!(!script.can_generate_bytecode_cache() && script.can_install_generated_bytecode_cache());
+            script.finish_bytecode_cache_generation_without_install(&vm);
+            assert!(backing_is_where_it_was_compiled());
+            assert!(script.can_generate_bytecode_cache() && !script.can_install_generated_bytecode_cache());
+
+            script.begin_bytecode_cache_generation(&vm);
+            let lazy = function_of_script(&vm, script, "lazy");
+            if !is_source {
+                let (_, payload) = SharedFunctionInstanceData::uncompiled_functions_of(script.cached_executable())
+                    .into_iter()
+                    .find(|(function, _)| *function == lazy)
+                    .expect("lazy() has its AST");
+                lazy.set_precompiled_bytecode_executable(compile_function(
+                    payload,
+                    code_units.len(),
+                    false,
+                    FunctionPrecompileMode::All,
+                ));
+                assert!(lazy.has_precompiled_bytecode());
+            }
+            let cache = decode(
+                &serialize(source, ProgramType::Script),
+                ProgramType::Script,
+                &Rc::default(),
+            )
+            .expect("the blob decodes");
+            script.install_generated_bytecode_cache(&vm, &cache, &source_code);
+            assert!(script.executable_backing().is_mapped_bytecode_cache());
+            assert!(!script.can_generate_bytecode_cache() && !script.can_install_generated_bytecode_cache());
+            assert!(!lazy.has_function_ast() && !lazy.has_precompiled_bytecode() && lazy.has_cached_bytecode());
+        }
+    }
+
+    #[test]
+    fn installing_a_cache_into_a_module_with_top_level_await_replaces_the_body_of_its_async_function() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let source = "export const value = await Promise.resolve(function later() { return 'later'; });";
+        let source_code = source_code_of("test.mjs", source);
+        let module = SourceTextModule::parse(&vm, source_code.clone(), realm, "test.mjs").expect("the module parses");
+        let top_level_await_shared_data = module.top_level_await_shared_data().expect("the module awaits");
+        let old_body = top_level_await_shared_data.executable().expect("the body is compiled");
+
+        let cache = decode(
+            &serialize(source, ProgramType::Module),
+            ProgramType::Module,
+            &Rc::default(),
+        )
+        .expect("the blob decodes");
+        module.begin_bytecode_cache_generation(&vm);
+        assert!(module.can_install_generated_bytecode_cache());
+        module.install_generated_bytecode_cache(&vm, &cache, &source_code);
+        assert!(module.executable_backing().is_mapped_bytecode_cache());
+        assert!(module.top_level_await_shared_data() == Some(top_level_await_shared_data));
+        let new_body = top_level_await_shared_data.executable().expect("the body is replaced");
+        assert!(new_body != old_body && new_body.runs_in_place_in_bytecode_cache_blob());
+        assert!(!module.try_install_bytecode_cache(&vm, &cache, &source_code));
+
+        let plain_source = "export function plain() { return 'plain'; }";
+        let plain_source_code = source_code_of("plain.mjs", plain_source);
+        let plain =
+            SourceTextModule::parse(&vm, plain_source_code.clone(), realm, "plain.mjs").expect("the module parses");
+        let awaiting_cache = decode(
+            &serialize(source, ProgramType::Module),
+            ProgramType::Module,
+            &Rc::default(),
+        )
+        .expect("the blob decodes");
+        assert!(!plain.try_install_bytecode_cache(&vm, &awaiting_cache, &source_code));
+        let plain_cache = decode(
+            &serialize(plain_source, ProgramType::Module),
+            ProgramType::Module,
+            &Rc::default(),
+        )
+        .expect("the blob decodes");
+        let old_plain_body = plain.cached_executable();
+        assert!(plain.try_install_bytecode_cache(&vm, &plain_cache, &plain_source_code));
+        assert!(plain.cached_executable() != old_plain_body);
+        assert!(
+            plain
+                .cached_executable()
+                .is_some_and(|body| body.runs_in_place_in_bytecode_cache_blob())
+        );
     }
 }

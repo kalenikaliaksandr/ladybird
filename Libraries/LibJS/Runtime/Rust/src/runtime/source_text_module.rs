@@ -12,8 +12,8 @@ use ak::{ScopeGuard, Utf16FlyString};
 use libjs_runtime_macros::Trace;
 
 use crate::bytecode::bytecode_cache::{
-    DecodedBytecodeCache, ExecutableBacking, create_executable_and_its_functions, failed_to_materialize_bytecode_cache,
-    functions_created_by, have_only_bytecode_cache_compile_inputs,
+    BytecodeCacheInstall, DecodedBytecodeCache, ExecutableBacking, create_executable_and_its_functions,
+    failed_to_materialize_bytecode_cache, functions_created_by, have_only_bytecode_cache_compile_inputs,
 };
 use crate::bytecode::executable::Executable;
 use crate::gc::class::{GcCell, define_cell};
@@ -102,10 +102,10 @@ pub struct SourceTextModule {
     functions_to_initialize: Vec<FunctionToInitialize>,
     default_export_binding_name: Option<Utf16FlyString>,
 
-    executable: Option<Gc<Executable>>,
+    executable: Cell<Option<Gc<Executable>>>,
     tla_shared_data: Option<Gc<SharedFunctionInstanceData>>,
     #[gc(untraced)]
-    executable_backing: ExecutableBacking,
+    executable_backing: Cell<ExecutableBacking>,
     /// What the module's functions compile themselves from when they are first called.
     #[gc(untraced)]
     source_code: Rc<SourceCode>,
@@ -471,12 +471,14 @@ impl SourceTextModule {
             lexical_bindings: parts.lexical_bindings,
             functions_to_initialize,
             default_export_binding_name: parts.default_export_binding_name,
-            executable,
+            executable: Cell::new(executable),
             tla_shared_data,
-            executable_backing: parts.executable_backing,
+            executable_backing: Cell::new(parts.executable_backing),
             source_code,
         });
-        assert!(module.executable.is_some() || module.tla_shared_data.is_some_and(|data| data.executable().is_some()));
+        assert!(
+            module.executable.get().is_some() || module.tla_shared_data.is_some_and(|data| data.executable().is_some())
+        );
         module.verify_executable_backing_invariants(vm);
         module
     }
@@ -506,12 +508,144 @@ impl SourceTextModule {
     }
 
     pub fn executable_backing(&self) -> ExecutableBacking {
+        self.executable_backing.get()
+    }
+
+    fn has_executable(&self) -> bool {
+        self.executable.get().is_some() || self.tla_shared_data.is_some_and(|data| data.executable().is_some())
+    }
+
+    pub fn can_generate_bytecode_cache(&self) -> bool {
+        self.has_executable() && self.executable_backing.get().can_generate_bytecode_cache()
+    }
+
+    pub fn can_install_generated_bytecode_cache(&self) -> bool {
+        self.has_executable() && self.executable_backing.get().can_install_generated_bytecode_cache()
+    }
+
+    /// Marks the module as one whose bytecode cache is being generated, until the cache is installed or the
+    /// generation finishes without installing it.
+    ///
+    /// # Panics
+    /// Panics unless the module can generate a bytecode cache.
+    pub fn begin_bytecode_cache_generation(&self, vm: &Vm) {
+        assert!(
+            self.has_executable(),
+            "a module that generates a bytecode cache has an executable"
+        );
         self.executable_backing
+            .set(self.executable_backing.get().with_bytecode_cache_generation_begun());
+        self.verify_executable_backing_invariants(vm);
+    }
+
+    /// # Panics
+    /// Panics unless a bytecode cache is being generated for the module.
+    pub fn finish_bytecode_cache_generation_without_install(&self, vm: &Vm) {
+        self.executable_backing.set(
+            self.executable_backing
+                .get()
+                .with_bytecode_cache_generation_finished_without_install(),
+        );
+        self.verify_executable_backing_invariants(vm);
+    }
+
+    /// SourceTextModule::try_install_bytecode_cache(): like Script::try_install_bytecode_cache(), for a module, whose
+    /// body is that of the async function of a module with top-level await.
+    pub fn try_install_bytecode_cache(
+        &self,
+        vm: &Vm,
+        bytecode_cache: &DecodedBytecodeCache,
+        source_code: &Rc<SourceCode>,
+    ) -> bool {
+        if self.executable_backing.get().is_mapped_bytecode_cache() {
+            return false;
+        }
+        let Some(blob) = bytecode_cache.validated_blob(source_code.length_in_code_units()) else {
+            return false;
+        };
+        let DecodedDeclarationMetadata::Module {
+            metadata,
+            declaration_functions,
+        } = blob.declaration_metadata()
+        else {
+            return false;
+        };
+        if declaration_functions.len() != metadata.function_names.len() {
+            return false;
+        }
+
+        let existing_functions = self.functions_created_so_far(vm);
+        let mut install = BytecodeCacheInstall::new(vm, source_code, &existing_functions);
+        for function in declaration_functions {
+            if install.prepare_function(function, true).is_none() {
+                return false;
+            }
+        }
+        let program = blob.program();
+        let replaced_executable = if program.is_async_module() {
+            if !blob.has_top_level_await() {
+                return false;
+            }
+            let Some(top_level_await_executable) = self.tla_shared_data.and_then(|data| data.executable()) else {
+                return false;
+            };
+            top_level_await_executable
+        } else {
+            if blob.has_top_level_await() {
+                return false;
+            }
+            let Some(executable) = self.executable.get() else {
+                return false;
+            };
+            executable
+        };
+        let Some(executable) = install.prepare_executable(program.executable(), Some(replaced_executable)) else {
+            return false;
+        };
+        if !install.commit() {
+            return false;
+        }
+
+        match self.tla_shared_data {
+            Some(tla_shared_data) if program.is_async_module() => {
+                tla_shared_data.set_executable(Some(executable));
+                tla_shared_data.clear_non_bytecode_cache_compile_inputs();
+            }
+            _ => self.executable.set(Some(executable)),
+        }
+        for function in existing_functions.to_vec() {
+            function.clear_non_bytecode_cache_compile_inputs();
+        }
+        self.executable_backing.set(ExecutableBacking::MappedBytecodeCache);
+        self.verify_executable_backing_invariants(vm);
+        true
+    }
+
+    /// SourceTextModule::install_generated_bytecode_cache(): installs the bytecode cache that was generated for the
+    /// module.
+    ///
+    /// # Panics
+    /// Panics unless a bytecode cache is being generated for the module, and if the blob does not match it.
+    pub fn install_generated_bytecode_cache(
+        &self,
+        vm: &Vm,
+        bytecode_cache: &DecodedBytecodeCache,
+        source_code: &Rc<SourceCode>,
+    ) {
+        assert!(
+            self.can_install_generated_bytecode_cache(),
+            "a bytecode cache is being generated for the module"
+        );
+        assert!(
+            self.try_install_bytecode_cache(vm, bytecode_cache, source_code),
+            "the bytecode cache generated for a module matches it"
+        );
     }
 
     fn functions_created_so_far<'vm>(&self, vm: &'vm Vm) -> MarkedVec<'vm, Gc<SharedFunctionInstanceData>> {
         let body = self
             .executable
+            .get()
             .or_else(|| self.tla_shared_data.and_then(|data| data.executable()));
         functions_created_by(
             vm,
@@ -521,7 +655,7 @@ impl SourceTextModule {
     }
 
     fn verify_executable_backing_invariants(&self, vm: &Vm) {
-        if self.executable_backing.is_mapped_bytecode_cache() {
+        if self.executable_backing.get().is_mapped_bytecode_cache() {
             assert!(
                 have_only_bytecode_cache_compile_inputs(&self.functions_created_so_far(vm)),
                 "the functions of a module with a bytecode cache compile from the cache"
@@ -540,7 +674,7 @@ impl SourceTextModule {
     /// The executable of the module's body, which a module with top-level await does not have, as its body compiles to
     /// an async function instead.
     pub fn cached_executable(&self) -> Option<Gc<Executable>> {
-        self.executable
+        self.executable.get()
     }
 
     /// The shared data of the async function whose executable is the body of a module with top-level await.
@@ -1080,9 +1214,9 @@ impl SourceTextModule {
     // 16.2.1.6.5 ExecuteModule ( [ capability ] ), https://tc39.es/ecma262/#sec-source-text-module-record-execute-module
     // 9.1.1.1.2 ExecuteModule ( [ capability ] ), https://tc39.es/proposal-explicit-resource-management/#sec-source-text-module-record-execute-module
     pub(crate) fn execute_module(&self, vm: &Vm, capability: Option<Gc<PromiseCapability>>) -> ThrowCompletionOr<()> {
-        assert!(self.has_top_level_await() || self.executable.is_some());
+        assert!(self.has_top_level_await() || self.executable.get().is_some());
 
-        let (registers_and_locals_count, constant_count) = match self.executable {
+        let (registers_and_locals_count, constant_count) = match self.executable.get() {
             Some(executable) => (
                 executable.registers_and_locals_count(),
                 u32::try_from(executable.constants().len()).expect("the constant count fits in u32"),
@@ -1140,6 +1274,7 @@ impl SourceTextModule {
             // c. Let result be the result of evaluating module.[[ECMAScriptCode]].
             let executable = self
                 .executable
+                .get()
                 .expect("a module without top-level await has an executable");
             let mut result = match vm.run_executable(module_context, executable, 0) {
                 Err(exception) => Completion::new(CompletionType::Throw, exception),
