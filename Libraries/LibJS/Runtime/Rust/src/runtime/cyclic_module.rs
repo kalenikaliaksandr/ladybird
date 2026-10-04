@@ -77,7 +77,9 @@ impl Deref for CyclicModule {
 pub const CYCLIC_MODULE_METHODS: ModuleMethods = ModuleMethods {
     link: |module, vm| as_cyclic_module(module).link(vm),
     evaluate: |module, vm| as_cyclic_module(module).evaluate(vm),
-    load_requested_modules: |module, vm| as_cyclic_module(module).load_requested_modules(vm),
+    load_requested_modules: |module, vm, host_defined| {
+        as_cyclic_module(module).load_requested_modules(vm, host_defined)
+    },
     inner_module_linking: |module, vm, stack, index| as_cyclic_module(module).inner_module_linking(vm, stack, index),
     inner_module_evaluation: |module, vm, stack, index| {
         as_cyclic_module(module).inner_module_evaluation(vm, stack, index)
@@ -175,16 +177,16 @@ impl CyclicModule {
     }
 
     // 16.2.1.5.1 LoadRequestedModules ( [ hostDefined ] ), https://tc39.es/ecma262/#sec-LoadRequestedModules
-    fn load_requested_modules(&self, vm: &Vm) -> Gc<PromiseCapability> {
+    fn load_requested_modules(&self, vm: &Vm, host_defined: ForeignCellSlot) -> Gc<PromiseCapability> {
         // 1. If hostDefined is not present, let hostDefined be EMPTY.
-        // NOTE: The empty state is handled by hostDefined being an optional without value.
+        // NOTE: The empty state is handled by hostDefined being an empty slot.
 
         // 2. Let pc be ! NewPromiseCapability(%Promise%).
         let realm = vm.current_realm().expect("LoadRequestedModules runs in a realm");
         let promise_capability = new_intrinsic_promise_capability(vm, realm);
 
         // 3. Let state be the GraphLoadingState Record { [[IsLoading]]: true, [[PendingModulesCount]]: 1, [[Visited]]: « », [[PromiseCapability]]: pc, [[HostDefined]]: hostDefined }.
-        let state = GraphLoadingState::create(vm, promise_capability, true, 1);
+        let state = GraphLoadingState::create(vm, promise_capability, true, 1, host_defined);
 
         // 4. Perform InnerModuleLoading(state, module).
         inner_module_loading(vm, state, self.as_gc());
@@ -1009,6 +1011,7 @@ pub fn inner_module_loading(vm: &Vm, state: Gc<GraphLoadingState>, module: Gc<Mo
                     vm,
                     ImportedModuleReferrer::CyclicModule(cyclic_module),
                     &request,
+                    state.host_defined(),
                     ImportedModulePayload::GraphLoadingState(state),
                 );
 
@@ -1112,7 +1115,7 @@ pub fn continue_dynamic_import(
     };
 
     // 3. Let loadPromise be module.LoadRequestedModules().
-    let load_promise = module.load_requested_modules(vm);
+    let load_promise = module.load_requested_modules(vm, ForeignCellSlot::empty());
 
     // 4. Let rejectedClosure be a new Abstract Closure with parameters (reason) that captures promiseCapability and performs the
     //    following steps when called:
@@ -1204,4 +1207,105 @@ pub fn continue_dynamic_import(
     );
 
     // 9. Return unused.
+}
+
+#[cfg(all(test, libjs_runtime_tests_with_libgc))]
+mod tests {
+    use core::cell::RefCell;
+    use core::ffi::c_void;
+    use core::ptr::NonNull;
+
+    use ak::Utf16String;
+    use libjs_rust::ast::ProgramType;
+    use libjs_rust::compile::{compile_module, parse};
+
+    use super::*;
+    use crate::runtime::module::finish_loading_imported_module;
+    use crate::runtime::promise::PromiseState;
+    use crate::runtime::realm::test_realm::{
+        TestRealm, check_that_host_defined_slots_keep_their_cells_alive, slot_holding,
+    };
+    use crate::source_code::SourceCode;
+    use crate::utf16::Utf16View;
+
+    std::thread_local! {
+        /// The specifier of every request load_synchronously_with_the_host_defined_cell_of_the_graph() was asked to
+        /// load, with the hostDefined it was given.
+        static LOADS: RefCell<Vec<(String, Option<NonNull<c_void>>)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn create_module(vm: &Vm, realm: Gc<Realm>, source: &str, host_defined: ForeignCellSlot) -> Gc<SourceTextModule> {
+        let source: Vec<u16> = source.encode_utf16().collect();
+        let source_code = SourceCode::create(Utf16String::default(), Utf16String::from_utf16(&source));
+        let compiled = compile_module(parse(&source, ProgramType::Module, 0), source.len());
+        SourceTextModule::create(vm, realm, "", compiled, source_code, host_defined)
+    }
+
+    /// HostLoadImportedModule for a host that creates each module it loads with the hostDefined of the load, like
+    /// LibWeb fetching a module graph with one fetch context. It finishes every load before returning, which re-enters
+    /// the loading of the graph.
+    fn load_synchronously_with_the_host_defined_cell_of_the_graph(
+        vm: &Vm,
+        referrer: ImportedModuleReferrer,
+        request: &ModuleRequest,
+        host_defined: Option<NonNull<c_void>>,
+        payload: ImportedModulePayload,
+    ) {
+        let specifier = Utf16View::of_fly_string(&request.module_specifier).to_utf8();
+        let source = match specifier.as_str() {
+            "./middle.mjs" => "import './leaf.mjs'; export let middle = 1;",
+            "./leaf.mjs" => "export let leaf = 2;",
+            _ => unreachable!("the graph has no module {specifier}"),
+        };
+        LOADS.with_borrow_mut(|loads| loads.push((specifier, host_defined)));
+        let slot = ForeignCellSlot::empty();
+        // SAFETY: The cell is the live object that the graph loading state holds.
+        unsafe { slot.set(host_defined) };
+        let realm = vm.current_realm().expect("modules are loaded in a realm");
+        let module = create_module(vm, realm, source, slot);
+        finish_loading_imported_module(vm, referrer, request, payload, Ok(module.upcast()));
+    }
+
+    #[test]
+    fn load_requested_modules_passes_its_host_defined_cell_to_every_load_of_the_graph() {
+        let vm = Vm::create();
+        vm.heap().set_should_collect_on_every_allocation(true);
+        let test_realm = TestRealm::new(&vm);
+        vm.set_host_load_imported_module(load_synchronously_with_the_host_defined_cell_of_the_graph);
+        let host_defined = test_realm.object();
+        let entry = create_module(
+            &vm,
+            test_realm.realm,
+            "import './middle.mjs'; import './leaf.mjs';",
+            ForeignCellSlot::empty(),
+        );
+
+        let promise_capability = entry.load_requested_modules(&vm, slot_holding(host_defined));
+        assert_eq!(promise_of(promise_capability).state(), PromiseState::Fulfilled);
+        let host_defined = Some(host_defined.as_non_null().cast());
+        // The entry module requests ./leaf.mjs as well, so it is loaded once for each of its two referrers.
+        assert_eq!(
+            LOADS.take(),
+            [
+                ("./middle.mjs".to_string(), host_defined),
+                ("./leaf.mjs".to_string(), host_defined),
+                ("./leaf.mjs".to_string(), host_defined),
+            ]
+        );
+        let middle = entry.loaded_modules().borrow()[0].module;
+        assert_eq!(middle.host_defined(), host_defined);
+    }
+
+    #[test]
+    fn a_graph_loading_state_keeps_its_host_defined_cell_alive() {
+        let vm = Vm::create();
+        let test_realm = TestRealm::new(&vm);
+        let promise_capability = new_intrinsic_promise_capability(&vm, test_realm.realm);
+        check_that_host_defined_slots_keep_their_cells_alive(
+            &vm,
+            &test_realm,
+            |host_defined| GraphLoadingState::create(&vm, promise_capability, true, 1, host_defined),
+            |state| state.host_defined(),
+        );
+    }
 }

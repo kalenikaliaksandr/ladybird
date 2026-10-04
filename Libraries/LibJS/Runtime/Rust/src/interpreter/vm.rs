@@ -28,6 +28,7 @@ use crate::embedding::hooks::Embedder;
 use crate::embedding::host::registry::HostClassRegistry;
 use crate::gc::capi::{self, GCVisitor};
 use crate::gc::class::{GcCell, define_cell};
+use crate::gc::foreign::ForeignCellSlot;
 use crate::gc::gc_ref_cell::GcRefCell;
 use crate::gc::heap::{Heap, cell_is_dead};
 use crate::gc::heap_function::HeapFunction;
@@ -260,8 +261,9 @@ pub struct JobQueues {
 define_cell!(JobQueues, Other);
 
 // 16.2.1.10 HostLoadImportedModule ( referrer, moduleRequest, hostDefined, payload ), https://tc39.es/ecma262/#sec-HostLoadImportedModule
-/// HostLoadImportedModule, without the hostDefined that no host passes yet.
-pub type HostLoadImportedModule = fn(&Vm, ImportedModuleReferrer, &ModuleRequest, ImportedModulePayload);
+/// HostLoadImportedModule, whose hostDefined is the cell LoadRequestedModules was given, or none for EMPTY.
+pub type HostLoadImportedModule =
+    fn(&Vm, ImportedModuleReferrer, &ModuleRequest, Option<NonNull<c_void>>, ImportedModulePayload);
 
 /// HostGetImportMetaProperties, which returns the properties import.meta starts with.
 pub type HostGetImportMetaProperties =
@@ -1901,7 +1903,7 @@ impl Vm {
         }
 
         let module: Gc<Module> = module.upcast();
-        let promise_capability = module.load_requested_modules(self);
+        let promise_capability = module.load_requested_modules(self, ForeignCellSlot::empty());
 
         let promise = promise_of(promise_capability);
         if promise.state() == PromiseState::Rejected {
@@ -1930,6 +1932,7 @@ impl Vm {
         vm: &Vm,
         referrer: ImportedModuleReferrer,
         module_request: &ModuleRequest,
+        _host_defined: Option<NonNull<c_void>>,
         payload: ImportedModulePayload,
     ) {
         // An implementation of HostLoadImportedModule must conform to the following requirements:
