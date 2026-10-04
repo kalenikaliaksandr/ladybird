@@ -8,13 +8,19 @@
 //!
 //! Everything here runs on the thread that owns the VM.
 
+use std::io;
+
 use crate::console::{Console, ConsoleClient, LogLevel};
-use crate::embedding::abi_types::{JSErrorData, JSRealm, JSUtf16View, cell_from_abi, error_data_from_abi};
+use crate::embedding::abi_types::{
+    JSByteSink, JSErrorData, JSRealm, JSUtf16View, cell_from_abi, error_data_from_abi, vm_from_abi,
+};
 use crate::embedding::host::console_client::JSConsoleClient;
 use crate::gc::class::{GcCell, class_of};
 use crate::layout::cell::Gc;
-use crate::layout::host_class::JSObject;
+use crate::layout::host_class::{JSObject, JSVM, JSValue};
+use crate::layout::value::Value;
 use crate::runtime::console_object::ConsoleObject;
+use crate::runtime::print::{PrintContext, print};
 
 /// The Console of a realm's console object, which keeps its counters, timers and group stack and hands what it logs
 /// to its client.
@@ -182,6 +188,59 @@ pub unsafe extern "C" fn js_console_output_debug_message(console: *mut JSConsole
     console.output_debug_message(log_level_from_abi(log_level), unsafe { output.as_view() });
 }
 
+/// The stream a PrintContext writes to, which hands the bytes to the embedder's sink.
+struct ByteSinkWriter<'a> {
+    sink: &'a JSByteSink,
+}
+
+impl io::Write for ByteSinkWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        let append = self.sink.append.expect("a sink has an append function");
+        // SAFETY: The embedder's sink receives its context and bytes that outlive the call.
+        if unsafe { append(self.sink.context, bytes.as_ptr(), bytes.len()) } {
+            Ok(bytes.len())
+        } else {
+            Err(io::Error::other("the byte sink did not take the bytes"))
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// JS::print(): writes the value to the sink the way the js REPL shows it, as UTF-8 in which lone surrogates are
+/// encoded on their own, in ANSI colors unless `strip_ansi` is set, and with strings quoted and escaped unless
+/// `raw_strings` is set. Returns false if the sink refused bytes, which ends the printing. Only on the VM's thread.
+///
+/// # Safety
+///
+/// `vm` must point to a live VM and `sink` to a sink with an append function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_console_print_value(
+    vm: *mut JSVM,
+    value: JSValue,
+    sink: *const JSByteSink,
+    strip_ansi: bool,
+    raw_strings: bool,
+) -> bool {
+    // SAFETY: The caller passes a live VM.
+    let vm = unsafe { vm_from_abi(vm) };
+    // SAFETY: The caller passes a live sink.
+    let sink = unsafe { sink.as_ref() }.expect("a sink is not null");
+    let mut writer = ByteSinkWriter { sink };
+    let mut print_context = PrintContext {
+        vm,
+        stream: &mut writer,
+        strip_ansi,
+        raw_strings,
+    };
+    print(Value(value), &mut print_context).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +270,148 @@ mod tests {
             assert_eq!(usize::from(value), index);
             assert_eq!(log_level_from_abi(value), log_level);
         }
+    }
+}
+
+#[cfg(all(test, libjs_runtime_tests_with_libgc))]
+mod print_tests {
+    use core::ffi::c_void;
+
+    use super::*;
+    use crate::embedding::abi_types::vm_into_abi;
+    use crate::interpreter::vm::Vm;
+    use crate::layout::realm::Realm;
+    use crate::runtime::completion::ThrowCompletionOr;
+    use crate::script::Script;
+    use crate::utilities::initialize_realm;
+
+    fn run_script(vm: &Vm, realm: Gc<Realm>, source: &str) -> ThrowCompletionOr<Value> {
+        let source: Vec<u16> = source.encode_utf16().collect();
+        let script = Script::parse_with_filename(vm, &source, realm, "print.js").expect("the script parses");
+        vm.run_script(script, None)
+    }
+
+    /// What a sink collects, and what it does on each call.
+    struct Collected<'a> {
+        bytes: Vec<u8>,
+        append_count: usize,
+        refuse_after: Option<usize>,
+        on_append: Option<&'a dyn Fn()>,
+    }
+
+    unsafe extern "C" fn collect_bytes(context: *mut c_void, bytes: *const u8, length: usize) -> bool {
+        // SAFETY: The test passes what it collects into as the context, and the runtime that many bytes.
+        let (collected, bytes) = unsafe {
+            (
+                &mut *context.cast::<Collected<'_>>(),
+                core::slice::from_raw_parts(bytes, length),
+            )
+        };
+        collected.append_count += 1;
+        if collected
+            .refuse_after
+            .is_some_and(|limit| collected.append_count > limit)
+        {
+            return false;
+        }
+        collected.bytes.extend_from_slice(bytes);
+        if let Some(on_append) = collected.on_append {
+            on_append();
+        }
+        true
+    }
+
+    fn print_into(vm: &Vm, value: Value, collected: &mut Collected<'_>, strip_ansi: bool, raw_strings: bool) -> bool {
+        let sink = JSByteSink {
+            context: core::ptr::from_mut(collected).cast(),
+            append: Some(collect_bytes),
+        };
+        // SAFETY: The VM is live and the sink outlives the call.
+        unsafe { js_console_print_value(vm_into_abi(vm), value.0, &raw const sink, strip_ansi, raw_strings) }
+    }
+
+    fn printed(vm: &Vm, value: Value, strip_ansi: bool, raw_strings: bool) -> String {
+        let mut collected = Collected {
+            bytes: Vec::new(),
+            append_count: 0,
+            refuse_after: None,
+            on_append: None,
+        };
+        assert!(print_into(vm, value, &mut collected, strip_ansi, raw_strings));
+        String::from_utf8(collected.bytes).expect("the printed value is UTF-8")
+    }
+
+    fn printed_by_the_runtime(vm: &Vm, value: Value) -> String {
+        let mut bytes = Vec::new();
+        let mut print_context = PrintContext {
+            vm,
+            stream: &mut bytes,
+            strip_ansi: false,
+            raw_strings: false,
+        };
+        print(value, &mut print_context).expect("printing into a buffer succeeds");
+        String::from_utf8(bytes).expect("the printed value is UTF-8")
+    }
+
+    #[test]
+    fn values_print_into_a_byte_sink_as_the_runtime_prints_them() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+
+        let object = run_script(&vm, realm, "({ list: [1, 'two'], nested: { map: new Map([[3, 4]]) } })")
+            .expect("the script returns an object");
+        assert_eq!(
+            printed(&vm, object, true, false),
+            "Object{ \"list\": [ 1, \"two\" ], \"nested\": Object{ \"map\": [Map] { 3 => 4 } } }"
+        );
+        assert_eq!(printed(&vm, object, false, false), printed_by_the_runtime(&vm, object));
+        assert!(printed(&vm, object, false, false).contains('\x1b'));
+
+        let string = run_script(&vm, realm, "'say \"hi\"'").expect("the script returns a string");
+        assert_eq!(printed(&vm, string, true, false), "\"say \"hi\"\"");
+        assert_eq!(printed(&vm, string, true, true), "say \"hi\"");
+    }
+
+    #[test]
+    fn a_sink_that_refuses_bytes_ends_the_printing() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let array = run_script(&vm, root_execution_context.realm(), "[1, 2, 3]").expect("the script returns an array");
+
+        let mut collected = Collected {
+            bytes: Vec::new(),
+            append_count: 0,
+            refuse_after: Some(1),
+            on_append: None,
+        };
+        assert!(!print_into(&vm, array, &mut collected, true, false));
+        assert_eq!(collected.append_count, 2);
+    }
+
+    #[test]
+    fn a_sink_can_run_javascript_and_collect_garbage_while_a_value_prints() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let map =
+            run_script(&vm, realm, "globalThis.map = new Map([[1, { a: 1 }]]); map").expect("the script returns a map");
+
+        let on_append = || {
+            assert!(run_script(&vm, realm, "if (map.size < 4) map.set(map.size + 1, {});").is_ok());
+            vm.heap().collect_garbage();
+        };
+        let mut collected = Collected {
+            bytes: Vec::new(),
+            append_count: 0,
+            refuse_after: None,
+            on_append: Some(&on_append),
+        };
+        assert!(print_into(&vm, map, &mut collected, true, false));
+        let printed = String::from_utf8(collected.bytes).expect("the printed value is UTF-8");
+        assert!(
+            printed.starts_with("[Map] { 1 => Object{ \"a\": 1 }"),
+            "printed {printed}"
+        );
     }
 }
