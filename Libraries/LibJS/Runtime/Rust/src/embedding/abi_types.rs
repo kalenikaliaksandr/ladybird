@@ -39,7 +39,6 @@ use crate::layout::object::Object;
 use crate::layout::value::Value;
 use crate::runtime::big_int::BigInt;
 use crate::runtime::completion::{Throw, ThrowCompletionOr};
-use crate::runtime::environment::Environment;
 use crate::runtime::error::ErrorKind;
 use crate::runtime::error_data::{ErrorData, ErrorDataCell};
 use crate::runtime::primitive_string::PrimitiveString;
@@ -68,11 +67,6 @@ pub struct JSBigInt {
 
 /// A Symbol value.
 pub struct JSSymbol {
-    _opaque: [u8; 0],
-}
-
-/// An environment record.
-pub struct JSEnvironment {
     _opaque: [u8; 0],
 }
 
@@ -111,10 +105,6 @@ impl CellAbi for JSBigInt {
 
 impl CellAbi for JSSymbol {
     type Cell = Symbol;
-}
-
-impl CellAbi for JSEnvironment {
-    type Cell = Environment;
 }
 
 impl CellAbi for JSErrorDataCell {

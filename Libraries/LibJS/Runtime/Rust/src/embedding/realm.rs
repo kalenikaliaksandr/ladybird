@@ -15,9 +15,9 @@ use core::ffi::c_void;
 use core::ptr::NonNull;
 
 use crate::embedding::abi_types::{
-    CellAbi, JSEnvironment, JSRealm, cell_from_abi, cell_into_abi, completion_into_abi, optional_cell_into_abi,
-    vm_from_abi,
+    CellAbi, JSRealm, cell_from_abi, cell_into_abi, completion_into_abi, optional_cell_into_abi, vm_from_abi,
 };
+use crate::embedding::environment::JSEnvironment;
 use crate::gc::foreign::ForeignCellSlot;
 use crate::layout::cell::Gc;
 use crate::layout::execution_context::ExecutionContext;
