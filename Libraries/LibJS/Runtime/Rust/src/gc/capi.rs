@@ -6,7 +6,7 @@
 
 //! Declarations of Libraries/LibGC/CAPI.h.
 
-use core::ffi::{c_char, c_void};
+use core::ffi::{c_char, c_int, c_void};
 
 use super::class::CellTypeInfo;
 
@@ -22,6 +22,11 @@ pub struct GCVisitor {
 
 #[repr(C)]
 pub struct GCAllocator {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct GCRoot {
     _private: [u8; 0],
 }
 
@@ -47,6 +52,11 @@ pub struct GCLayout {
     pub heap_region_offset_mask: u64,
     pub primitive_storage_cage_offset_mask: u64,
 }
+
+/// The generation of the storage's table entry in the high 32 bits and the entry's index in the low 32 bits.
+pub type GCPrimitiveStorageHandle = u64;
+pub const GC_PRIMITIVE_STORAGE_NULL_HANDLE: GCPrimitiveStorageHandle = 0;
+pub const GC_PRIMITIVE_STORAGE_INVALID_OFFSET: usize = usize::MAX;
 
 pub type GCCallback = unsafe extern "C" fn(context: *mut c_void);
 pub type GCGatherRootsCallback = unsafe extern "C" fn(context: *mut c_void, root_visitor: *mut GCVisitor);
@@ -84,6 +94,10 @@ unsafe extern "C" {
     pub fn gc_heap_allocate_cell(heap: *mut GCHeap, allocator: *mut GCAllocator, must_mark: *mut bool) -> *mut c_void;
     pub fn gc_cell_type_info(cell: *const c_void) -> *const CellTypeInfo;
 
+    pub fn gc_root_create(cell: *mut c_void) -> *mut GCRoot;
+    pub fn gc_root_destroy(root: *mut GCRoot);
+    pub fn gc_root_cell(root: *const GCRoot) -> *mut c_void;
+
     pub fn gc_heap_create_weak_impl(heap: *mut GCHeap, cell: *mut c_void) -> *mut GCWeakImpl;
     pub fn gc_weak_impl_null() -> *mut GCWeakImpl;
     pub fn gc_weak_impl_ref(weak_impl: *mut GCWeakImpl);
@@ -93,6 +107,41 @@ unsafe extern "C" {
     pub fn gc_visitor_visit_cells(visitor: *mut GCVisitor, cells: *const *mut c_void, count: usize);
     pub fn gc_visitor_visit_values(visitor: *mut GCVisitor, values: *const u64, count: usize);
     pub fn gc_visitor_visit_possible_values(visitor: *mut GCVisitor, data: *const u8, size: usize);
+
+    pub fn gc_primitive_storage_allocate(
+        size: usize,
+        zero_fill: bool,
+        out_handle: *mut GCPrimitiveStorageHandle,
+    ) -> bool;
+    pub fn gc_primitive_storage_reserve(
+        size: usize,
+        capacity: usize,
+        zero_fill: bool,
+        guard_size: usize,
+        out_handle: *mut GCPrimitiveStorageHandle,
+    ) -> bool;
+    pub fn gc_primitive_storage_adopt_shared_fd(
+        fd: c_int,
+        size: usize,
+        out_handle: *mut GCPrimitiveStorageHandle,
+    ) -> bool;
+    pub fn gc_primitive_storage_resize(handle: GCPrimitiveStorageHandle, new_size: usize, zero_fill: bool) -> bool;
+    pub fn gc_primitive_storage_reserve_capacity(handle: GCPrimitiveStorageHandle, new_capacity: usize) -> bool;
+    pub fn gc_primitive_storage_resize_and_reserve(
+        handle: GCPrimitiveStorageHandle,
+        new_size: usize,
+        new_capacity: usize,
+        zero_fill: bool,
+    ) -> bool;
+    pub fn gc_primitive_storage_free(handle: GCPrimitiveStorageHandle);
+    pub fn gc_primitive_storage_is_valid(handle: GCPrimitiveStorageHandle) -> bool;
+    pub fn gc_primitive_storage_offset(handle: GCPrimitiveStorageHandle) -> usize;
+    pub fn gc_primitive_storage_size(handle: GCPrimitiveStorageHandle) -> usize;
+    pub fn gc_primitive_storage_capacity(handle: GCPrimitiveStorageHandle) -> usize;
+    pub fn gc_primitive_storage_committed_size(handle: GCPrimitiveStorageHandle) -> usize;
+    pub fn gc_primitive_storage_data(handle: GCPrimitiveStorageHandle) -> *mut u8;
+
+    pub fn gc_shared_memory_create(size: usize, out_fd: *mut c_int) -> bool;
 
     /// The base NaN-boxed cell values are relative to; zero until gc_heap_region_base() first runs.
     pub static js_heap_region_base: usize;
