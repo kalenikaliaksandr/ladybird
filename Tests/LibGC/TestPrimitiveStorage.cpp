@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Array.h>
+#include <AK/Vector.h>
 #include <LibGC/PrimitiveStorage.h>
 #include <LibTest/TestCase.h>
 
@@ -36,6 +38,34 @@ TEST_CASE(free_maximum_small_allocation)
     auto handle = MUST(storage.try_allocate(64 * KiB));
     EXPECT_EQ(storage.capacity(handle), 64u * KiB);
     storage.free(handle);
+}
+
+TEST_CASE(small_allocation_reuses_the_slots_freed_in_full_slabs)
+{
+    auto& storage = GC::PrimitiveStorage::the();
+    static constexpr size_t slot_size = 16 * KiB;
+    static constexpr size_t slots_per_slab = 64 * KiB / slot_size;
+
+    Vector<GC::PrimitiveStorageHandle> handles;
+    for (size_t i = 0; i < 2 * slots_per_slab; ++i)
+        handles.append(MUST(storage.try_allocate(slot_size)));
+
+    auto offset_in_first_slab = storage.offset(handles[1]);
+    storage.free(handles[1]);
+    handles[1] = MUST(storage.try_allocate(slot_size));
+    EXPECT_EQ(storage.offset(handles[1]), offset_in_first_slab);
+
+    auto offset_in_second_slab = storage.offset(handles[slots_per_slab + 1]);
+    storage.free(handles[1]);
+    storage.free(handles[slots_per_slab + 1]);
+    handles[1] = MUST(storage.try_allocate(slot_size));
+    handles[slots_per_slab + 1] = MUST(storage.try_allocate(slot_size));
+    auto reused_offsets = AK::Array { storage.offset(handles[1]), storage.offset(handles[slots_per_slab + 1]) };
+    EXPECT(reused_offsets.contains_slow(offset_in_first_slab));
+    EXPECT(reused_offsets.contains_slow(offset_in_second_slab));
+
+    for (auto handle : handles)
+        storage.free(handle);
 }
 
 TEST_CASE(large_allocation)

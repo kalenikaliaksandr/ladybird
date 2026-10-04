@@ -132,6 +132,8 @@ private:
         size_t m_next_offset { 0 };
         Vector<FreeRange> m_free_ranges;
         Vector<Slab> m_small_slabs[13];
+        // The indices of the slabs of each size class that have a free slot, so that allocation never visits a full one.
+        Vector<u16> m_small_slabs_with_free_slots[13];
     };
 
     struct Entry {
