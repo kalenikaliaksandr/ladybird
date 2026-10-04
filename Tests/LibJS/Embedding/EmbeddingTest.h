@@ -9,6 +9,7 @@
 #include <AK/Noncopyable.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/StringView.h>
+#include <LibGC/NanBoxedValue.h>
 #include <LibJS/Embedding/ABI.h>
 #include <LibJS/Embedding/Layout.h>
 #include <LibJS/HostObjectABI.h>
@@ -27,6 +28,23 @@ T* pointer_of_payload(JSCompletion completion)
 {
     VERIFY(completion.variant == JS_COMPLETION_NORMAL);
     return reinterpret_cast<T*>(static_cast<uintptr_t>(completion.payload));
+}
+
+// The tag of a JSValue that holds an object, as JS::Value encodes it in both runtimes, with the object's offset in the
+// heap region below it.
+constexpr u64 object_value_tag = 0b001 | GC::IS_CELL_BIT;
+
+inline JSValue value_of_object(JSObject* object)
+{
+    return (object_value_tag << GC::TAG_SHIFT) | GC::NanBoxedValue::encode_pointer_bits(object);
+}
+
+// The object that `value` holds, or null if it holds something else.
+inline JSObject* object_of_value(JSValue value)
+{
+    if ((value >> GC::TAG_SHIFT) != object_value_tag)
+        return nullptr;
+    return reinterpret_cast<JSObject*>(GC::NanBoxedValue::extract_pointer_bits(value));
 }
 
 // A VM constructed in storage that the test owns, the way the C++ JS::VM holds the runtime's VM in its first bytes. It
