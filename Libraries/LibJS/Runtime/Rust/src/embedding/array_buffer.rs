@@ -521,6 +521,33 @@ pub unsafe extern "C" fn js_array_buffer_detach(vm: *mut JSVM, buffer: *mut JSOb
     completion_into_abi(detach_array_buffer(vm, buffer, Some(Value(key))))
 }
 
+/// TransferArrayBuffer of the Streams standard: detaches `buffer`, as DetachArrayBuffer(buffer) does, and moves its data
+/// block without a copy into a new ArrayBuffer of `realm`, which is the payload of the normal completion. That is C++
+/// ArrayBuffer::detach_and_take_data_block() followed by ArrayBuffer::create(realm, block). Throws a TypeError, and
+/// leaves the buffer as it was, if the buffer has a detach key. Main thread only.
+///
+/// # Safety
+///
+/// `vm` and `realm` must be live, and `buffer` a live ArrayBuffer that is neither detached nor a SharedArrayBuffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_array_buffer_transfer(
+    vm: *mut JSVM,
+    realm: *mut JSRealm,
+    buffer: *mut JSObject,
+) -> JSCompletion {
+    // SAFETY: The caller passes a live VM, realm and buffer.
+    let (vm, realm, buffer) = unsafe { (vm_from_abi(vm), cell_from_abi(realm), array_buffer_from_abi(buffer)) };
+    assert!(
+        !buffer.is_detached(),
+        "the embedder transfers a buffer that is not detached"
+    );
+    completion_into_abi(
+        buffer
+            .detach_and_take_data_block(vm)
+            .map(|block| ArrayBuffer::create_from_data_block(vm, realm, block)),
+    )
+}
+
 /// [[ArrayBufferDetachKey]], which is undefined unless the embedder set one. Main thread only.
 ///
 /// # Safety
@@ -671,4 +698,104 @@ pub unsafe extern "C" fn js_array_buffer_is_data_view_out_of_bounds(
 pub unsafe extern "C" fn js_array_buffer_data_view_view_byte_length(record: *const JSDataViewWithBufferWitness) -> u32 {
     // SAFETY: The caller passes a valid record.
     get_view_byte_length(&unsafe { data_view_witness_record_from_abi(record) })
+}
+
+#[cfg(all(test, libjs_runtime_tests_with_libgc))]
+mod tests {
+    use super::*;
+    use crate::embedding::abi_types::{cell_into_abi, vm_into_abi};
+    use crate::interpreter::vm::Vm;
+    use crate::layout::host_class::{JS_COMPLETION_NORMAL, JS_COMPLETION_THROW};
+    use crate::runtime::completion::Must;
+    use crate::runtime::error::test_scripts::{run_script, utf8};
+    use crate::runtime::property_attributes::DEFAULT_ATTRIBUTES;
+    use crate::runtime::realm::test_realm::key;
+    use crate::utilities::initialize_realm;
+
+    fn storage_of(buffer: *mut JSObject) -> JSArrayBufferStorage {
+        let mut storage = core::mem::MaybeUninit::<JSArrayBufferStorage>::uninit();
+        // SAFETY: The buffer is live, and the storage is written before it is read.
+        unsafe {
+            js_array_buffer_storage(buffer, storage.as_mut_ptr());
+            storage.assume_init()
+        }
+    }
+
+    #[test]
+    fn transferring_moves_the_bytes_to_a_new_buffer_and_detaches_the_old_one() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let vm_pointer = vm_into_abi(&vm);
+        let realm_pointer = cell_into_abi(realm);
+        let bytes = [1u8, 2, 3, 4];
+        // SAFETY: The VM and realm are live, and the bytes outlive the call.
+        let buffer = unsafe { js_array_buffer_create_from_bytes(vm_pointer, realm_pointer, bytes.as_ptr(), 4, false) };
+        // SAFETY: The buffer is live.
+        let original = unsafe { cell_from_abi::<JSObject>(buffer) };
+        realm.global_object().define_direct_property(
+            &vm,
+            &key("original"),
+            Value::from_object(original),
+            DEFAULT_ATTRIBUTES,
+        );
+        run_script(&vm, realm, "globalThis.view = new Uint8Array(original, 1)").must();
+        let handle_before_transfer = storage_of(buffer).handle;
+
+        // SAFETY: As above.
+        let transferred = unsafe { js_array_buffer_transfer(vm_pointer, realm_pointer, buffer) };
+        assert_eq!(transferred.variant, JS_COMPLETION_NORMAL);
+        let new_buffer = core::ptr::with_exposed_provenance_mut::<JSObject>(transferred.payload as usize);
+        // SAFETY: Both buffers are live.
+        unsafe {
+            assert!(js_array_buffer_is_detached(buffer));
+            assert!(!js_array_buffer_is_detached(new_buffer));
+            assert_eq!(js_array_buffer_byte_length(new_buffer), 4);
+        }
+        assert_eq!(storage_of(new_buffer).kind, JS_ARRAY_BUFFER_STORAGE_OWNED);
+        assert_eq!(
+            storage_of(new_buffer).handle,
+            handle_before_transfer,
+            "the bytes are not copied"
+        );
+        assert_eq!(storage_of(buffer).kind, JS_ARRAY_BUFFER_STORAGE_DETACHED);
+        assert_eq!(
+            utf8(run_script(&vm, realm, "`${original.byteLength} ${view.length}`").must()),
+            "0 0"
+        );
+
+        // SAFETY: The new buffer is live.
+        let transferred = unsafe { cell_from_abi::<JSObject>(new_buffer) };
+        realm.global_object().define_direct_property(
+            &vm,
+            &key("transferred"),
+            Value::from_object(transferred),
+            DEFAULT_ATTRIBUTES,
+        );
+        vm.heap().collect_garbage();
+        assert_eq!(
+            utf8(run_script(&vm, realm, "Array.from(new Uint8Array(transferred)).join()").must()),
+            "1,2,3,4"
+        );
+    }
+
+    #[test]
+    fn transferring_a_buffer_with_a_detach_key_throws_and_keeps_it() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let vm_pointer = vm_into_abi(&vm);
+        let realm_pointer = cell_into_abi(realm);
+        // SAFETY: The VM and realm are live.
+        unsafe {
+            let buffer = js_array_buffer_create_from_bytes(vm_pointer, realm_pointer, [7u8].as_ptr(), 1, false);
+            js_array_buffer_set_detach_key(buffer, Value::from_i32(1).0);
+            let completion = js_array_buffer_transfer(vm_pointer, realm_pointer, buffer);
+            assert_eq!(completion.variant, JS_COMPLETION_THROW);
+            let thrown = Value(completion.payload).to_primitive_string(&vm).must();
+            assert!(utf8(Value::from_string(thrown)).starts_with("TypeError"));
+            assert!(!js_array_buffer_is_detached(buffer));
+            assert_eq!(js_array_buffer_byte_length(buffer), 1);
+        }
+    }
 }
