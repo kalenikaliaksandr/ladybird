@@ -45,6 +45,7 @@ pub mod regexp;
 pub mod script;
 pub mod string;
 pub mod symbol;
+pub mod testing;
 pub mod typed_array;
 pub mod value;
 pub mod vm;
