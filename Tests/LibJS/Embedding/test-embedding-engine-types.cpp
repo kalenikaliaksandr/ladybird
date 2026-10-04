@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Utf16FlyString.h>
 #include <AK/Vector.h>
 #include <LibGC/Function.h>
 #include <LibGC/Heap.h>
@@ -11,6 +12,8 @@
 #include "EmbeddingTest.h"
 
 namespace {
+
+constexpr u8 all_attributes = JS_ATTRIBUTE_WRITABLE | JS_ATTRIBUTE_ENUMERABLE | JS_ATTRIBUTE_CONFIGURABLE;
 
 // What a facade's VM::argument() reads: the arguments are the last slots of the running execution context, which
 // follow its fixed fields.
@@ -34,6 +37,13 @@ i32 int32_of(JSValue value)
 JSCompletion normal_completion(JSValue value = 0)
 {
     return { value, JS_COMPLETION_NORMAL };
+}
+
+void define_global(EmbeddedVM& embedded_vm, StringView name, JSValue value)
+{
+    auto fly_name = Utf16FlyString::from_utf8(name);
+    JSPropertyKey key { fly_name.raw_identity() };
+    js_object_define_direct_property(embedded_vm.vm(), embedded_vm.global_object(), &key, value, all_attributes);
 }
 
 using ClosureFunction = GC::Function<JSCompletion(JSVM*)>;
@@ -217,4 +227,103 @@ TEST_CASE(rejections_reach_the_tracker_until_a_reaction_handles_them)
     EXPECT_EQ(js_promise_state(marked), JS_PROMISE_STATE_REJECTED);
     EXPECT_EQ(js_promise_result(marked), int32_value(8));
     EXPECT_EQ(tracked_rejections.size(), 2u);
+}
+
+namespace {
+
+// Records the entries it visits, and changes the collection, runs a script and collects garbage on the way.
+struct CollectionVisit {
+    EmbeddedVM& embedded_vm;
+    JSObject* collection;
+    Vector<JSValue> keys;
+    bool throw_at_added_key { true };
+};
+
+JSCompletion visit_map_entry(void* context, JSValue key, JSValue value)
+{
+    auto& visit = *static_cast<CollectionVisit*>(context);
+    visit.keys.append(key);
+    if (key == int32_value(0)) {
+        js_collections_map_remove(visit.collection, int32_value(1));
+        js_collections_map_set(visit.collection, int32_value(9), int32_value(90));
+    } else if (key == int32_value(2)) {
+        VERIFY(value == int32_value(20));
+        auto completion = visit.embedded_vm.evaluate("map.delete(3); map.set('added by script', 1);"sv);
+        if (completion.variant != JS_COMPLETION_NORMAL)
+            return completion;
+        visit.embedded_vm.collect_garbage();
+    } else if (key == int32_value(9) && visit.throw_at_added_key) {
+        return { int32_value(13), JS_COMPLETION_THROW };
+    }
+    return normal_completion();
+}
+
+JSCompletion visit_set_value(void* context, JSValue value)
+{
+    auto& visit = *static_cast<CollectionVisit*>(context);
+    visit.keys.append(value);
+    if (value == int32_value(0)) {
+        js_collections_set_remove(visit.collection, int32_value(1));
+        js_collections_set_add(visit.collection, int32_value(5));
+        auto completion = visit.embedded_vm.evaluate("set.add(6); set.delete(2);"sv);
+        if (completion.variant != JS_COMPLETION_NORMAL)
+            return completion;
+        visit.embedded_vm.collect_garbage();
+    }
+    return normal_completion();
+}
+
+}
+
+TEST_CASE(maps_and_sets_are_iterated_live_while_the_callback_changes_them)
+{
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* vm = embedded_vm->vm();
+
+    auto* map = js_collections_map_create(vm, embedded_vm->realm());
+    define_global(*embedded_vm, "map"sv, value_of_object(map));
+    for (i32 key = 0; key < 4; ++key)
+        js_collections_map_set(map, int32_value(key), int32_value(key * 10));
+    EXPECT_EQ(js_collections_map_size(map), 4u);
+    JSValue value = js_undefined;
+    EXPECT(js_collections_map_get(map, int32_value(3), &value));
+    EXPECT_EQ(value, int32_value(30));
+    EXPECT(!js_collections_map_has(map, int32_value(4)));
+
+    // Removed entries are skipped and added ones are visited, and the throw stops the iteration.
+    CollectionVisit visit { *embedded_vm, map, {} };
+    auto completion = js_collections_map_for_each_entry(map, visit_map_entry, &visit);
+    EXPECT_EQ(completion.variant, JS_COMPLETION_THROW);
+    EXPECT_EQ(completion.payload, int32_value(13));
+    EXPECT_EQ(visit.keys, (Vector<JSValue> { int32_value(0), int32_value(2), int32_value(9) }));
+
+    visit.keys.clear();
+    visit.throw_at_added_key = false;
+    completion = js_collections_map_for_each_entry(map, visit_map_entry, &visit);
+    EXPECT_EQ(completion.variant, JS_COMPLETION_NORMAL);
+    EXPECT_EQ(visit.keys.size(), 4u);
+    EXPECT(embedded_vm->run("if ([...map.keys()].join() !== '0,2,9,added by script') throw new Error();"sv));
+
+    auto* entries = js_collections_map_iterator_create(vm, embedded_vm->realm(), map, JS_PROPERTY_KIND_KEY_AND_VALUE);
+    define_global(*embedded_vm, "entries"sv, value_of_object(entries));
+    js_collections_map_clear(map);
+    js_collections_map_set(map, int32_value(1), int32_value(2));
+    EXPECT(embedded_vm->run("if (JSON.stringify([...entries]) !== '[[1,2]]') throw new Error();"sv));
+
+    auto* set = js_collections_set_create(vm, embedded_vm->realm());
+    define_global(*embedded_vm, "set"sv, value_of_object(set));
+    for (i32 element = 0; element < 4; ++element)
+        js_collections_set_add(set, int32_value(element));
+    CollectionVisit set_visit { *embedded_vm, set, {} };
+    completion = js_collections_set_for_each_value(set, visit_set_value, &set_visit);
+    EXPECT_EQ(completion.variant, JS_COMPLETION_NORMAL);
+    EXPECT_EQ(set_visit.keys, (Vector<JSValue> { int32_value(0), int32_value(3), int32_value(5), int32_value(6) }));
+    EXPECT_EQ(js_collections_set_size(set), 4u);
+    EXPECT(js_collections_set_has(set, int32_value(6)));
+
+    auto* values = js_collections_set_iterator_create(vm, embedded_vm->realm(), set, JS_PROPERTY_KIND_VALUE);
+    define_global(*embedded_vm, "values"sv, value_of_object(values));
+    EXPECT(embedded_vm->run("if ([...values].join() !== '0,3,5,6' || !(set instanceof Set)) throw new Error();"sv));
+    js_collections_set_clear(set);
+    EXPECT_EQ(js_collections_set_size(set), 0u);
 }
