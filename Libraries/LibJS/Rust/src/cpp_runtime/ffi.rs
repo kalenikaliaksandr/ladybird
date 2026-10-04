@@ -26,6 +26,7 @@ use std::mem::align_of;
 use crate::ast::Utf16String;
 use crate::bytecode::basic_block::SourceMapEntry;
 use crate::bytecode::constant::ConstantTag;
+use crate::bytecode::executable::CompiledRegexHandle;
 use crate::bytecode::executable::ExecutableData;
 use crate::bytecode::generator::ConstantValue;
 use crate::bytecode::generator::ExceptionHandler;
@@ -755,7 +756,7 @@ pub struct ExecutableSlices<'a> {
     pub constants_count: usize,
     pub local_variable_metadata: &'a [FFILocalVariableMetadata],
     pub argument_variable_names: &'a [ak::Utf16FlyString],
-    pub compiled_regexes: &'a [*mut c_void],
+    pub compiled_regexes: &'a [CompiledRegexHandle],
 }
 
 /// Create a C++ Executable from borrowed native string tables and bytecode metadata.
@@ -834,7 +835,7 @@ pub unsafe fn create_executable_from_slices(
             shared_function_data_count: sfd_ptrs.len(),
             class_blueprints: bp_ptrs.as_ptr(),
             class_blueprint_count: bp_ptrs.len(),
-            compiled_regexes: slices.compiled_regexes.as_ptr(),
+            compiled_regexes: slices.compiled_regexes.as_ptr().cast(),
             regex_count: slices.compiled_regexes.len(),
         };
 

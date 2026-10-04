@@ -63,10 +63,6 @@ fn validate_decoded_blob(blob: &DecodedBytecodeCacheBlob, source_len: usize) -> 
     decoded_blob.validate_for_materialization(source_len).is_ok()
 }
 
-// SAFETY: `CompiledFunction` owns GC-free codegen state and is transferred
-// from a compile worker back to the main thread for materialization.
-unsafe impl Send for CompiledFunction {}
-
 // =============================================================================
 // Internal helpers
 // =============================================================================
