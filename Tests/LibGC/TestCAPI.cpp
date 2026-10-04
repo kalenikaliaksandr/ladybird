@@ -9,7 +9,13 @@
 #include <LibGC/Cell.h>
 #include <LibGC/HeapRegion.h>
 #include <LibGC/NanBoxedValue.h>
+#include <LibGC/PrimitiveStorage.h>
 #include <LibTest/TestCase.h>
+
+#if !defined(AK_OS_WINDOWS)
+#    include <fcntl.h>
+#    include <unistd.h>
+#endif
 
 namespace {
 
@@ -173,6 +179,41 @@ NEVER_INLINE void allocate_garbage(TestHeap& test_heap, size_t count)
         (void)test_heap.allocate();
 }
 
+void expect_storage_inside_cage(GCPrimitiveStorageHandle handle)
+{
+    GCLayout layout;
+    gc_get_layout(&layout);
+    auto cage_size = layout.primitive_storage_cage_offset_mask + 1;
+    auto offset = gc_primitive_storage_offset(handle);
+
+    EXPECT(offset < cage_size);
+    EXPECT(gc_primitive_storage_size(handle) <= cage_size - offset);
+    EXPECT_EQ(gc_primitive_storage_data(handle), reinterpret_cast<u8*>(gc_primitive_storage_cage_base() + offset));
+}
+
+void expect_no_storage(GCPrimitiveStorageHandle handle)
+{
+    EXPECT(!gc_primitive_storage_is_valid(handle));
+    EXPECT_EQ(gc_primitive_storage_offset(handle), GC_PRIMITIVE_STORAGE_INVALID_OFFSET);
+    EXPECT_EQ(gc_primitive_storage_size(handle), 0u);
+    EXPECT_EQ(gc_primitive_storage_capacity(handle), 0u);
+    EXPECT_EQ(gc_primitive_storage_committed_size(handle), 0u);
+    EXPECT(gc_primitive_storage_data(handle) == nullptr);
+    EXPECT(!gc_primitive_storage_resize(handle, 64, true));
+    EXPECT(!gc_primitive_storage_reserve_capacity(handle, 64));
+    EXPECT(!gc_primitive_storage_resize_and_reserve(handle, 64, 64, true));
+    gc_primitive_storage_free(handle);
+}
+
+bool all_bytes_are(u8 const* data, size_t size, u8 expected)
+{
+    for (size_t i = 0; i < size; ++i) {
+        if (data[i] != expected)
+            return false;
+    }
+    return true;
+}
+
 }
 
 TEST_CASE(layout_describes_the_cell_header)
@@ -332,3 +373,148 @@ TEST_CASE(heap_destruction_destroys_every_cell)
     EXPECT_EQ(s_destroyed_cells, 101u);
     EXPECT_EQ(s_finalized_cells, 101u);
 }
+
+TEST_CASE(primitive_storage_handles_carry_the_generation_and_index_of_their_entry)
+{
+    GCPrimitiveStorageHandle handle = GC_PRIMITIVE_STORAGE_NULL_HANDLE;
+    EXPECT(gc_primitive_storage_allocate(32, true, &handle));
+
+    GC::PrimitiveStorageHandle cpp_handle {
+        .index = static_cast<u32>(handle),
+        .generation = static_cast<u32>(handle >> GC_PRIMITIVE_STORAGE_HANDLE_GENERATION_SHIFT),
+    };
+    EXPECT(GC::PrimitiveStorage::the().is_valid(cpp_handle));
+    EXPECT_EQ(GC::PrimitiveStorage::the().data(cpp_handle), gc_primitive_storage_data(handle));
+
+    gc_primitive_storage_free(handle);
+    EXPECT(!GC::PrimitiveStorage::the().is_valid(cpp_handle));
+}
+
+TEST_CASE(primitive_storage_allocation_round_trip)
+{
+    GCPrimitiveStorageHandle handle = GC_PRIMITIVE_STORAGE_NULL_HANDLE;
+    EXPECT(gc_primitive_storage_allocate(32, true, &handle));
+    EXPECT(gc_primitive_storage_is_valid(handle));
+    EXPECT_EQ(gc_primitive_storage_size(handle), 32u);
+    EXPECT(gc_primitive_storage_capacity(handle) >= 32u);
+    EXPECT(gc_primitive_storage_committed_size(handle) >= 32u);
+    expect_storage_inside_cage(handle);
+    EXPECT(all_bytes_are(gc_primitive_storage_data(handle), 32, 0));
+
+    __builtin_memset(gc_primitive_storage_data(handle), 0x7b, 32);
+    EXPECT(gc_primitive_storage_resize(handle, 64, true));
+    EXPECT_EQ(gc_primitive_storage_size(handle), 64u);
+    expect_storage_inside_cage(handle);
+    EXPECT(all_bytes_are(gc_primitive_storage_data(handle), 32, 0x7b));
+    EXPECT(all_bytes_are(gc_primitive_storage_data(handle) + 32, 32, 0));
+
+    auto grown_size = 128 * KiB;
+    EXPECT(gc_primitive_storage_resize(handle, grown_size, true));
+    EXPECT_EQ(gc_primitive_storage_size(handle), grown_size);
+    EXPECT(gc_primitive_storage_capacity(handle) >= grown_size);
+    expect_storage_inside_cage(handle);
+    EXPECT(all_bytes_are(gc_primitive_storage_data(handle), 32, 0x7b));
+    EXPECT(all_bytes_are(gc_primitive_storage_data(handle) + 32, grown_size - 32, 0));
+
+    gc_primitive_storage_free(handle);
+    expect_no_storage(handle);
+}
+
+TEST_CASE(primitive_storage_reservation_resizes_in_place)
+{
+    auto capacity = 256 * KiB;
+    GCPrimitiveStorageHandle handle = GC_PRIMITIVE_STORAGE_NULL_HANDLE;
+    EXPECT(gc_primitive_storage_reserve(16, capacity, true, 64 * KiB, &handle));
+    EXPECT_EQ(gc_primitive_storage_size(handle), 16u);
+    EXPECT_EQ(gc_primitive_storage_capacity(handle), capacity);
+    EXPECT(gc_primitive_storage_committed_size(handle) >= 16u);
+    EXPECT(gc_primitive_storage_committed_size(handle) < capacity);
+    expect_storage_inside_cage(handle);
+    auto offset = gc_primitive_storage_offset(handle);
+    gc_primitive_storage_data(handle)[15] = 0x42;
+
+    EXPECT(gc_primitive_storage_resize(handle, 200 * KiB, true));
+    EXPECT_EQ(gc_primitive_storage_offset(handle), offset);
+    EXPECT_EQ(gc_primitive_storage_size(handle), 200u * KiB);
+    EXPECT(gc_primitive_storage_committed_size(handle) >= 200u * KiB);
+    EXPECT_EQ(gc_primitive_storage_data(handle)[15], 0x42);
+    EXPECT(all_bytes_are(gc_primitive_storage_data(handle) + 16, 200 * KiB - 16, 0));
+
+    EXPECT(gc_primitive_storage_reserve_capacity(handle, 128 * KiB));
+    EXPECT_EQ(gc_primitive_storage_offset(handle), offset);
+    EXPECT_EQ(gc_primitive_storage_capacity(handle), capacity);
+
+    EXPECT(gc_primitive_storage_reserve_capacity(handle, 512 * KiB));
+    EXPECT(gc_primitive_storage_capacity(handle) >= 512u * KiB);
+    EXPECT_EQ(gc_primitive_storage_size(handle), 200u * KiB);
+    expect_storage_inside_cage(handle);
+    EXPECT_EQ(gc_primitive_storage_data(handle)[15], 0x42);
+
+    EXPECT(!gc_primitive_storage_resize_and_reserve(handle, 2 * MiB, 1 * MiB, true));
+    EXPECT_EQ(gc_primitive_storage_size(handle), 200u * KiB);
+
+    EXPECT(gc_primitive_storage_resize_and_reserve(handle, 600 * KiB, 1 * MiB, true));
+    EXPECT_EQ(gc_primitive_storage_size(handle), 600u * KiB);
+    EXPECT(gc_primitive_storage_capacity(handle) >= 1u * MiB);
+    expect_storage_inside_cage(handle);
+    EXPECT_EQ(gc_primitive_storage_data(handle)[15], 0x42);
+    EXPECT(all_bytes_are(gc_primitive_storage_data(handle) + 200 * KiB, 400 * KiB, 0));
+
+    gc_primitive_storage_free(handle);
+    expect_no_storage(handle);
+}
+
+TEST_CASE(failed_primitive_storage_creation_returns_the_null_handle)
+{
+    GCPrimitiveStorageHandle handle = 1;
+    EXPECT(!gc_primitive_storage_reserve(32, 16, true, 0, &handle));
+    EXPECT_EQ(handle, GC_PRIMITIVE_STORAGE_NULL_HANDLE);
+    expect_no_storage(handle);
+
+    handle = 1;
+    GCLayout layout;
+    gc_get_layout(&layout);
+    EXPECT(!gc_primitive_storage_reserve(0, layout.primitive_storage_cage_offset_mask + 1 + 64 * KiB, true, 0, &handle));
+    EXPECT_EQ(handle, GC_PRIMITIVE_STORAGE_NULL_HANDLE);
+}
+
+#if !defined(AK_OS_WINDOWS)
+TEST_CASE(adopted_shared_memory_maps_the_same_bytes)
+{
+    size_t size = 3 * static_cast<size_t>(PAGE_SIZE);
+    int fd = -1;
+    EXPECT(gc_shared_memory_create(size, &fd));
+    EXPECT(fd >= 0);
+    EXPECT(fcntl(fd, F_GETFD) & FD_CLOEXEC);
+
+    GCPrimitiveStorageHandle first = GC_PRIMITIVE_STORAGE_NULL_HANDLE;
+    GCPrimitiveStorageHandle second = GC_PRIMITIVE_STORAGE_NULL_HANDLE;
+    EXPECT(gc_primitive_storage_adopt_shared_fd(fd, size, &first));
+    EXPECT(gc_primitive_storage_adopt_shared_fd(fd, size, &second));
+
+    GCPrimitiveStorageHandle empty = 1;
+    EXPECT(!gc_primitive_storage_adopt_shared_fd(fd, 0, &empty));
+    EXPECT_EQ(empty, GC_PRIMITIVE_STORAGE_NULL_HANDLE);
+
+    EXPECT_EQ(close(fd), 0);
+
+    EXPECT_EQ(gc_primitive_storage_size(first), size);
+    EXPECT_EQ(gc_primitive_storage_size(second), size);
+    EXPECT_NE(gc_primitive_storage_offset(first), gc_primitive_storage_offset(second));
+    expect_storage_inside_cage(first);
+    expect_storage_inside_cage(second);
+    EXPECT(all_bytes_are(gc_primitive_storage_data(first), size, 0));
+
+    gc_primitive_storage_data(first)[0] = 0x11;
+    gc_primitive_storage_data(first)[size - 1] = 0x22;
+    EXPECT_EQ(gc_primitive_storage_data(second)[0], 0x11);
+    EXPECT_EQ(gc_primitive_storage_data(second)[size - 1], 0x22);
+
+    gc_primitive_storage_free(first);
+    expect_no_storage(first);
+    gc_primitive_storage_data(second)[1] = 0x33;
+    EXPECT_EQ(gc_primitive_storage_data(second)[0], 0x11);
+    EXPECT_EQ(gc_primitive_storage_data(second)[1], 0x33);
+    gc_primitive_storage_free(second);
+}
+#endif

@@ -142,6 +142,64 @@ GC_API void gc_visitor_visit_values(GCVisitor*, uint64_t const*, size_t count);
 // Treats every aligned word in the range as a possible pointer to a cell or NaN-boxed cell value.
 GC_API void gc_visitor_visit_possible_values(GCVisitor*, uint8_t const*, size_t size);
 
+// Primitive storage holds byte buffers inside the cage that starts at gc_primitive_storage_cage_base(), so that the
+// interpreter can reach any of their bytes as a cage offset masked with primitive_storage_cage_offset_mask. Like the
+// heap, primitive storage is not thread-safe, and every call must come from the thread that uses the heap.
+//
+// A handle crosses this interface as one 64-bit word: the generation of its table entry in the high 32 bits and the
+// index of that entry in the low 32 bits. Generations start at 1, so GC_PRIMITIVE_STORAGE_NULL_HANDLE never names
+// storage. Freeing storage moves its entry to the next generation, after which every function treats the old handle
+// as naming no storage.
+typedef uint64_t GCPrimitiveStorageHandle;
+
+#define GC_PRIMITIVE_STORAGE_NULL_HANDLE ((GCPrimitiveStorageHandle)0)
+#define GC_PRIMITIVE_STORAGE_HANDLE_GENERATION_SHIFT 32
+#define GC_PRIMITIVE_STORAGE_INVALID_OFFSET SIZE_MAX
+
+// The functions that create storage write its handle to *out_handle and return true, or write
+// GC_PRIMITIVE_STORAGE_NULL_HANDLE and return false when the cage or the system is out of memory. With zero_fill, the
+// first size bytes start out zero; without it, their contents are unspecified.
+//
+// Storage of size bytes, which may share pages with other small storage.
+GC_API bool gc_primitive_storage_allocate(size_t size, bool zero_fill, GCPrimitiveStorageHandle* out_handle);
+// Storage of size bytes in a reservation of its own: capacity bytes followed by guard_size inaccessible bytes, both
+// rounded up to whole pages. Only the pages the size covers are committed. Fails if size is greater than capacity.
+GC_API bool gc_primitive_storage_reserve(size_t size, size_t capacity, bool zero_fill, size_t guard_size, GCPrimitiveStorageHandle* out_handle);
+// Maps the first size bytes of the shared memory object behind fd into the cage. The mapping keeps the memory alive by
+// itself, so the caller keeps ownership of fd and may close it at any time. Fails if size is 0. Growing the storage
+// would replace the mapping with private memory, so shared storage keeps its size.
+GC_API bool gc_primitive_storage_adopt_shared_fd(int fd, size_t size, GCPrimitiveStorageHandle* out_handle);
+
+// The resizing functions return false and leave the storage as it was if the handle names no storage or memory runs
+// out. Within the capacity, the storage stays where it is; beyond it, the bytes move to new storage, which changes the
+// offset and the data pointer.
+GC_API bool gc_primitive_storage_resize(GCPrimitiveStorageHandle, size_t new_size, bool zero_fill);
+// Grows the capacity to at least new_capacity, moving the storage into a reservation of its own if it has to grow.
+GC_API bool gc_primitive_storage_reserve_capacity(GCPrimitiveStorageHandle, size_t new_capacity);
+// Sets the size and grows the capacity to at least new_capacity, moving the storage at most once. Fails if new_size
+// is greater than new_capacity.
+GC_API bool gc_primitive_storage_resize_and_reserve(GCPrimitiveStorageHandle, size_t new_size, size_t new_capacity, bool zero_fill);
+// Does nothing if the handle names no storage.
+GC_API void gc_primitive_storage_free(GCPrimitiveStorageHandle);
+
+// For a handle that names no storage, the offset is GC_PRIMITIVE_STORAGE_INVALID_OFFSET, the sizes are 0 and the data
+// pointer is null.
+GC_API bool gc_primitive_storage_is_valid(GCPrimitiveStorageHandle);
+// The offset of the first byte from gc_primitive_storage_cage_base().
+GC_API size_t gc_primitive_storage_offset(GCPrimitiveStorageHandle);
+GC_API size_t gc_primitive_storage_size(GCPrimitiveStorageHandle);
+GC_API size_t gc_primitive_storage_capacity(GCPrimitiveStorageHandle);
+// The bytes from the offset on that are backed by memory.
+GC_API size_t gc_primitive_storage_committed_size(GCPrimitiveStorageHandle);
+GC_API uint8_t* gc_primitive_storage_data(GCPrimitiveStorageHandle);
+
+// Creates a zero-filled shared memory object of size bytes, made the way the C++ runtime makes the memory of a
+// fixed-length SharedArrayBuffer: sealed against resizing where the platform supports seals, so that another process
+// holding it cannot shrink it under this one. On success, *out_fd is a new close-on-exec descriptor that the caller owns and must
+// close, and that can be passed to other processes and to gc_primitive_storage_adopt_shared_fd(). On failure, *out_fd
+// is -1.
+GC_API bool gc_shared_memory_create(size_t size, int* out_fd);
+
 #ifdef __cplusplus
 }
 #endif

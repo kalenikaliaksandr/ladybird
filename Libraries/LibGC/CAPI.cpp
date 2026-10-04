@@ -5,6 +5,8 @@
  */
 
 #include <AK/StdLibExtras.h>
+#include <LibCore/AnonymousBuffer.h>
+#include <LibCore/System.h>
 #include <LibGC/BlockAllocator.h>
 #include <LibGC/CAPI.h>
 #include <LibGC/Heap.h>
@@ -39,6 +41,28 @@ static_assert(GC_CELL_STATE_LIVE == to_underlying(Cell::State::Live));
 static_assert(GC_CELL_STATE_DEAD == to_underlying(Cell::State::Dead));
 
 static_assert(sizeof(NanBoxedValue) == sizeof(uint64_t));
+
+static_assert(IsSame<decltype(PrimitiveStorageHandle::index), u32>);
+static_assert(IsSame<decltype(PrimitiveStorageHandle::generation), u32>);
+static_assert(GC_PRIMITIVE_STORAGE_INVALID_OFFSET == PrimitiveStorage::invalid_offset);
+
+static constexpr GCPrimitiveStorageHandle encode_primitive_storage_handle(PrimitiveStorageHandle handle)
+{
+    return (static_cast<u64>(handle.generation) << GC_PRIMITIVE_STORAGE_HANDLE_GENERATION_SHIFT) | handle.index;
+}
+
+static constexpr PrimitiveStorageHandle decode_primitive_storage_handle(GCPrimitiveStorageHandle handle)
+{
+    return {
+        .index = static_cast<u32>(handle),
+        .generation = static_cast<u32>(handle >> GC_PRIMITIVE_STORAGE_HANDLE_GENERATION_SHIFT),
+    };
+}
+
+static_assert(encode_primitive_storage_handle({ .index = 0x01234567, .generation = 0x89abcdef }) == 0x89abcdef01234567);
+static_assert(decode_primitive_storage_handle(0x89abcdef01234567).index == 0x01234567);
+static_assert(decode_primitive_storage_handle(0x89abcdef01234567).generation == 0x89abcdef);
+static_assert(decode_primitive_storage_handle(GC_PRIMITIVE_STORAGE_NULL_HANDLE).generation == 0);
 
 class CAPICellAllocator final : public CellAllocatorDescriptorBase {
 public:
@@ -118,6 +142,17 @@ static GCCell* as_gc_cell(Cell* cell) { return reinterpret_cast<GCCell*>(cell); 
 static Cell::Visitor& as_visitor(GCVisitor* visitor) { return *reinterpret_cast<Cell::Visitor*>(visitor); }
 static WeakImpl* as_weak_impl(GCWeakImpl* impl) { return reinterpret_cast<WeakImpl*>(impl); }
 static GCWeakImpl* as_gc_weak_impl(WeakImpl* impl) { return reinterpret_cast<GCWeakImpl*>(impl); }
+static PrimitiveStorage::ZeroFillNewBytes as_zero_fill_new_bytes(bool zero_fill) { return zero_fill ? PrimitiveStorage::ZeroFillNewBytes::Yes : PrimitiveStorage::ZeroFillNewBytes::No; }
+
+static bool store_primitive_storage_handle(ErrorOr<PrimitiveStorageHandle> handle_or_error, GCPrimitiveStorageHandle* out_handle)
+{
+    if (handle_or_error.is_error()) {
+        *out_handle = GC_PRIMITIVE_STORAGE_NULL_HANDLE;
+        return false;
+    }
+    *out_handle = encode_primitive_storage_handle(handle_or_error.value());
+    return true;
+}
 
 extern "C" {
 
@@ -302,5 +337,85 @@ void gc_visitor_visit_values(GCVisitor* visitor, uint64_t const* values, size_t 
 void gc_visitor_visit_possible_values(GCVisitor* visitor, uint8_t const* data, size_t size)
 {
     as_visitor(visitor).visit_possible_values(ReadonlyBytes { data, size });
+}
+
+bool gc_primitive_storage_allocate(size_t size, bool zero_fill, GCPrimitiveStorageHandle* out_handle)
+{
+    return store_primitive_storage_handle(PrimitiveStorage::the().try_allocate(size, as_zero_fill_new_bytes(zero_fill)), out_handle);
+}
+
+bool gc_primitive_storage_reserve(size_t size, size_t capacity, bool zero_fill, size_t guard_size, GCPrimitiveStorageHandle* out_handle)
+{
+    return store_primitive_storage_handle(PrimitiveStorage::the().try_reserve(size, capacity, as_zero_fill_new_bytes(zero_fill), guard_size), out_handle);
+}
+
+bool gc_primitive_storage_adopt_shared_fd(int fd, size_t size, GCPrimitiveStorageHandle* out_handle)
+{
+    return store_primitive_storage_handle(PrimitiveStorage::the().try_adopt_shared_fd(fd, size), out_handle);
+}
+
+bool gc_primitive_storage_resize(GCPrimitiveStorageHandle handle, size_t new_size, bool zero_fill)
+{
+    return !PrimitiveStorage::the().try_resize(decode_primitive_storage_handle(handle), new_size, as_zero_fill_new_bytes(zero_fill)).is_error();
+}
+
+bool gc_primitive_storage_reserve_capacity(GCPrimitiveStorageHandle handle, size_t new_capacity)
+{
+    return !PrimitiveStorage::the().try_reserve(decode_primitive_storage_handle(handle), new_capacity).is_error();
+}
+
+bool gc_primitive_storage_resize_and_reserve(GCPrimitiveStorageHandle handle, size_t new_size, size_t new_capacity, bool zero_fill)
+{
+    return !PrimitiveStorage::the().try_resize_and_reserve(decode_primitive_storage_handle(handle), new_size, new_capacity, as_zero_fill_new_bytes(zero_fill)).is_error();
+}
+
+void gc_primitive_storage_free(GCPrimitiveStorageHandle handle)
+{
+    PrimitiveStorage::the().free(decode_primitive_storage_handle(handle));
+}
+
+bool gc_primitive_storage_is_valid(GCPrimitiveStorageHandle handle)
+{
+    return PrimitiveStorage::the().is_valid(decode_primitive_storage_handle(handle));
+}
+
+size_t gc_primitive_storage_offset(GCPrimitiveStorageHandle handle)
+{
+    return PrimitiveStorage::the().offset(decode_primitive_storage_handle(handle));
+}
+
+size_t gc_primitive_storage_size(GCPrimitiveStorageHandle handle)
+{
+    return PrimitiveStorage::the().size(decode_primitive_storage_handle(handle));
+}
+
+size_t gc_primitive_storage_capacity(GCPrimitiveStorageHandle handle)
+{
+    return PrimitiveStorage::the().capacity(decode_primitive_storage_handle(handle));
+}
+
+size_t gc_primitive_storage_committed_size(GCPrimitiveStorageHandle handle)
+{
+    return PrimitiveStorage::the().committed_size(decode_primitive_storage_handle(handle));
+}
+
+uint8_t* gc_primitive_storage_data(GCPrimitiveStorageHandle handle)
+{
+    return PrimitiveStorage::the().data(decode_primitive_storage_handle(handle));
+}
+
+bool gc_shared_memory_create(size_t size, int* out_fd)
+{
+    *out_fd = -1;
+    auto buffer = Core::AnonymousBuffer::create_with_size(size, Core::AnonymousBuffer::Sealability::Sealable);
+    if (buffer.is_error())
+        return false;
+    // NB: The buffer closes its descriptor and unmaps its own view of the memory when it goes away; the caller gets a
+    //     duplicate of the descriptor.
+    auto fd = Core::System::dup(buffer.value().fd());
+    if (fd.is_error())
+        return false;
+    *out_fd = fd.value();
+    return true;
 }
 }
