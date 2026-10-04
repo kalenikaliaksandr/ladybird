@@ -14,12 +14,14 @@
 )]
 
 use crate::embedding::abi_types::{
-    JSRealm, cell_from_abi, completion_into_abi, object_into_abi, optional_cell_from_abi, vm_from_abi,
+    JSRealm, cell_from_abi, completion_into_abi, completion_writing_result_to, object_into_abi, optional_cell_from_abi,
+    vm_from_abi,
 };
 use crate::embedding::object::values_from_abi;
 use crate::gc::root::MarkedVec;
 use crate::layout::host_class::{JSCompletion, JSObject, JSVM, JSValue};
 use crate::layout::value::Value;
+use crate::runtime::abstract_operations::length_of_array_like;
 use crate::runtime::array::Array;
 use crate::runtime::property_attributes::DEFAULT_ATTRIBUTES;
 
@@ -65,6 +67,20 @@ pub unsafe extern "C" fn js_array_create_from(
         rooted_elements.push(*element);
     }
     object_into_abi(Array::create_from_list(vm, realm, &rooted_elements))
+}
+
+/// LengthOfArrayLike ( obj ), which gets the object's "length" and converts it with ToLength, and writes it to
+/// `length`. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_array_length_of_array_like(
+    vm: *mut JSVM,
+    object: *mut JSObject,
+    length: *mut u64,
+) -> JSCompletion {
+    // SAFETY: See the module documentation.
+    let (vm, object) = unsafe { (vm_from_abi(vm), cell_from_abi::<JSObject>(object)) };
+    // SAFETY: As above, `length` is writable.
+    unsafe { completion_writing_result_to(length_of_array_like(vm, &object), length) }
 }
 
 /// The size of the object's indexed storage: the length of an array, or one past its highest index. Main thread only.
@@ -123,6 +139,7 @@ mod tests {
     use crate::embedding::abi_types::{cell_into_abi, cell_of_payload, vm_into_abi};
     use crate::interpreter::vm::Vm;
     use crate::layout::host_class::JS_COMPLETION_THROW;
+    use crate::runtime::completion::Must;
     use crate::runtime::error::test_scripts::{run_script, utf8};
     use crate::runtime::property_attributes::Attribute;
     use crate::runtime::realm::test_realm::key;
@@ -183,6 +200,31 @@ mod tests {
                 core::ptr::null_mut(),
             );
             assert_eq!(too_long.variant, JS_COMPLETION_THROW);
+        }
+    }
+
+    #[test]
+    fn array_likes_have_the_length_their_getter_reports() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let array_like = run_script(&vm, realm, "({ get length() { return '3.9'; } })").must();
+        let throwing = run_script(&vm, realm, "({ get length() { throw 'no length'; } })").must();
+        let mut length = 0u64;
+        // SAFETY: The VM and objects are live, and the out parameter is a local.
+        unsafe {
+            let completion = js_array_length_of_array_like(
+                vm_into_abi(&vm),
+                object_into_abi(array_like.as_object()),
+                &raw mut length,
+            );
+            assert!(completion.variant != JS_COMPLETION_THROW);
+            assert_eq!(length, 3);
+            let completion =
+                js_array_length_of_array_like(vm_into_abi(&vm), object_into_abi(throwing.as_object()), &raw mut length);
+            assert_eq!(completion.variant, JS_COMPLETION_THROW);
+            assert_eq!(utf8(Value(completion.payload)), "no length");
+            assert_eq!(length, 3);
         }
     }
 }

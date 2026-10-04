@@ -62,11 +62,12 @@ JSObject* create_closure(EmbeddedVM& embedded_vm, Callable callable)
     return js_function_create_closure_with_name(embedded_vm.vm(), embedded_vm.realm(), ascii_view(""sv), call_closure_function, function.ptr());
 }
 
-// An embedder that queues promise jobs the way HTML queues microtasks, and records what its promise rejection tracker
-// sees.
+// An embedder that queues promise jobs the way HTML queues microtasks, and finalization registry cleanups the way it
+// queues global tasks, and records what its promise rejection tracker sees.
 struct EngineTypesEmbedder {
     JSVM* vm { nullptr };
     Vector<GCRoot*> promise_jobs;
+    Vector<GCRoot*> finalization_registries_to_clean_up;
     struct TrackedRejection {
         u8 operation;
         bool promise_was_handled;
@@ -94,13 +95,18 @@ bool promise_job_queue_is_empty(void* data, JSVM*)
     return embedder_of(data).promise_jobs.is_empty();
 }
 
+void enqueue_finalization_registry_cleanup_job(void* data, JSVM*, JSObject* finalization_registry)
+{
+    embedder_of(data).finalization_registries_to_clean_up.append(gc_root_create(reinterpret_cast<GCCell*>(finalization_registry)));
+}
+
 JSVmHostHooks const engine_types_hooks {
     .ensure_can_add_private_element = nullptr,
     .ensure_can_compile_strings = nullptr,
     .get_code_for_eval = nullptr,
     .promise_rejection_tracker = promise_rejection_tracker,
     .call_job_callback = nullptr,
-    .enqueue_finalization_registry_cleanup_job = nullptr,
+    .enqueue_finalization_registry_cleanup_job = enqueue_finalization_registry_cleanup_job,
     .enqueue_promise_job = enqueue_promise_job,
     .promise_job_queue_is_empty = promise_job_queue_is_empty,
     .make_job_callback = nullptr,
@@ -129,6 +135,8 @@ struct EmbeddedVMWithQueues {
     ~EmbeddedVMWithQueues()
     {
         for (auto* root : embedder.promise_jobs)
+            gc_root_destroy(root);
+        for (auto* root : embedder.finalization_registries_to_clean_up)
             gc_root_destroy(root);
     }
 
@@ -388,4 +396,123 @@ TEST_CASE(dates_regexps_and_json_round_trip)
     EXPECT_EQ(stringified.payload, 0u);
     EXPECT_EQ(serialized, 0u);
     EXPECT_EQ(js_json_parse(vm, ascii_view("{,}"sv)).variant, JS_COMPLETION_THROW);
+}
+
+namespace {
+
+struct ValueListSink {
+    EmbeddedVM& embedded_vm;
+    Vector<JSValue> values;
+};
+
+// Takes each value, then runs a script and collects garbage while the VM waits for it.
+void append_and_reenter(void* context, JSValue value)
+{
+    auto& sink = *static_cast<ValueListSink*>(context);
+    sink.values.append(value);
+    VERIFY(sink.embedded_vm.run("log.push('appended');"sv));
+    sink.embedded_vm.collect_garbage();
+}
+
+}
+
+TEST_CASE(iterators_close_when_the_embedder_stops_on_a_throw)
+{
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* vm = embedded_vm->vm();
+    EXPECT(embedded_vm->run(R"~~~(
+        var log = [];
+        function* generator() {
+            try {
+                yield 1;
+                yield 2;
+                yield 3;
+            } finally {
+                log.push("closed");
+            }
+        }
+    )~~~"sv));
+
+    auto* record = pointer_of_payload<JSIteratorRecord>(js_iterator_get(vm, embedded_vm->value_of("generator()"sv), JS_ITERATOR_HINT_SYNC));
+    EXPECT(!js_iterator_record_done(record));
+    JSValue value = js_undefined;
+    auto step = js_iterator_step_value(vm, record, &value);
+    EXPECT_EQ(step.variant, JS_COMPLETION_NORMAL);
+    EXPECT_EQ(step.payload, 1u);
+    EXPECT_EQ(value, int32_value(1));
+
+    // Converting the value failed, so the embedder closes the iterator with the throw, as TRY_OR_CLOSE_ITERATOR does.
+    auto conversion_error = embedded_vm->evaluate("throw new TypeError('not convertible');"sv);
+    EXPECT_EQ(conversion_error.variant, JS_COMPLETION_THROW);
+    auto closed = js_iterator_close(vm, record, conversion_error);
+    EXPECT_EQ(closed.variant, JS_COMPLETION_THROW);
+    EXPECT_EQ(closed.payload, conversion_error.payload);
+    EXPECT(embedded_vm->run("if (log.join() !== 'closed') throw new Error(log.join());"sv));
+    step = js_iterator_step_value(vm, record, &value);
+    EXPECT_EQ(step.payload, 0u);
+    EXPECT(js_iterator_record_done(record));
+
+    // IteratorToList steps to the end before the sink sees any value.
+    auto* method = embedded_vm->object_of("generator"sv);
+    record = pointer_of_payload<JSIteratorRecord>(js_iterator_get_from_method(vm, js_undefined, method));
+    ValueListSink sink { *embedded_vm, {} };
+    JSValueSink value_sink { &sink, append_and_reenter };
+    EXPECT_EQ(js_iterator_to_list(vm, record, &value_sink).variant, JS_COMPLETION_NORMAL);
+    EXPECT_EQ(sink.values, (Vector<JSValue> { int32_value(1), int32_value(2), int32_value(3) }));
+    EXPECT(embedded_vm->run("if (log.join() !== 'closed,closed,appended,appended,appended') throw new Error(log.join());"sv));
+
+    // IteratorNext, IteratorComplete and IteratorValue on a result object the embedder created.
+    record = pointer_of_payload<JSIteratorRecord>(js_iterator_get(vm, embedded_vm->value_of("['only']"sv), JS_ITERATOR_HINT_SYNC));
+    auto* result = pointer_of_payload<JSObject>(js_iterator_next(vm, record, nullptr));
+    EXPECT_EQ(js_iterator_complete(vm, result).payload, 0u);
+    auto only = js_iterator_value(vm, result);
+    define_global(*embedded_vm, "only"sv, only.payload);
+    EXPECT(embedded_vm->run("if (only !== 'only') throw new Error();"sv));
+    auto* done = js_iterator_create_result_object(vm, embedded_vm->realm(), js_undefined, true);
+    EXPECT_EQ(js_iterator_complete(vm, done).payload, 1u);
+    EXPECT_EQ(js_iterator_value(vm, done).payload, js_undefined);
+}
+
+TEST_CASE(array_likes_report_the_length_their_getter_returns)
+{
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* vm = embedded_vm->vm();
+    u64 length = 0;
+    EXPECT_EQ(js_array_length_of_array_like(vm, embedded_vm->object_of("({ get length() { return '2.5'; } })"sv), &length).variant, JS_COMPLETION_NORMAL);
+    EXPECT_EQ(length, 2u);
+    auto thrown = js_array_length_of_array_like(vm, embedded_vm->object_of("({ get length() { throw 'no length'; } })"sv), &length);
+    EXPECT_EQ(thrown.variant, JS_COMPLETION_THROW);
+    EXPECT_EQ(length, 2u);
+}
+
+TEST_CASE(the_embedder_runs_the_cleanup_of_a_finalization_registry)
+{
+    EmbeddedVMWithQueues setup;
+    auto& embedded_vm = *setup.embedded_vm;
+    auto* vm = embedded_vm.vm();
+    EXPECT(embedded_vm.run(R"~~~(
+        globalThis.held = [];
+        globalThis.registry = new FinalizationRegistry(value => held.push(value));
+        (() => {
+            for (let i = 0; i < 100; ++i)
+                registry.register({}, i);
+        })();
+    )~~~"sv));
+    embedded_vm.collect_garbage();
+    EXPECT(!setup.embedder.finalization_registries_to_clean_up.is_empty());
+    if (setup.embedder.finalization_registries_to_clean_up.is_empty())
+        return;
+
+    // The hook only queued the cleanup, which runs when the embedder gets to it.
+    EXPECT(embedded_vm.run("if (held.length !== 0) throw new Error();"sv));
+    auto* registry_root = setup.embedder.finalization_registries_to_clean_up.take_first();
+    auto* registry = reinterpret_cast<JSObject*>(gc_root_cell(registry_root));
+    EXPECT_EQ(registry, embedded_vm.object_of("registry"sv));
+    EXPECT_EQ(js_weak_finalization_registry_realm(registry), embedded_vm.realm());
+    auto* cleanup_callback = js_realm_job_callback_callback(js_weak_finalization_registry_cleanup_callback(registry));
+    EXPECT(js_value_is_function(value_of_object(cleanup_callback)));
+
+    EXPECT_EQ(js_weak_finalization_registry_cleanup(vm, registry, nullptr).variant, JS_COMPLETION_NORMAL);
+    gc_root_destroy(registry_root);
+    EXPECT(embedded_vm.run("if (held.length === 0 || new Set(held).size !== held.length) throw new Error();"sv));
 }
