@@ -4,13 +4,17 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/StdLibExtras.h>
 #include <AK/Utf16FlyString.h>
 #include <AK/Vector.h>
+#include <LibGC/Function.h>
+#include <LibGC/Heap.h>
 #include <LibJS/HostObjectABI.h>
 
 #include "EmbeddingTest.h"
 
 // The NaN-boxed encoding that JSValue shares with JS::Value.
+static constexpr JSValue js_undefined = 0x7FFEull << 48;
 static constexpr JSValue js_true = (0x7FF9ull << 48) | 1;
 
 static constexpr JSValue int32_value(i32 value)
@@ -26,10 +30,28 @@ static JSPropertyKey key_of(Utf16FlyString const& name)
     return { name.raw_identity() };
 }
 
+static JSUtf16View view_of(StringView ascii)
+{
+    return { ascii.characters_without_null_termination(), ascii.length(), true };
+}
+
 template<typename T>
 static T* field_at(void const* base, size_t offset)
 {
     return *reinterpret_cast<T* const*>(static_cast<u8 const*>(base) + offset);
+}
+
+// What a facade's VM::argument() reads: the arguments are the last slots of the running execution context, which
+// follow its fixed fields.
+static JSValue argument(JSVM* vm, size_t index)
+{
+    auto const* context = field_at<u8 const>(vm, JS_LAYOUT_VM_RUNNING_EXECUTION_CONTEXT_OFFSET);
+    auto slot_count = *reinterpret_cast<u32 const*>(context + JS_LAYOUT_EXECUTION_CONTEXT_REGISTERS_AND_CONSTANTS_AND_LOCALS_AND_ARGUMENTS_COUNT_OFFSET);
+    auto argument_count = *reinterpret_cast<u32 const*>(context + JS_LAYOUT_EXECUTION_CONTEXT_ARGUMENT_COUNT_OFFSET);
+    if (index >= argument_count)
+        return js_undefined;
+    auto const* slots = reinterpret_cast<JSValue const*>(context + JS_LAYOUT_EXECUTION_CONTEXT_SIZE);
+    return slots[slot_count - argument_count + index];
 }
 
 // A VM whose heap is the process default, so that the test can allocate C++ GC cells in it, with a realm.
@@ -72,6 +94,32 @@ private:
     NonnullOwnPtr<EmbeddedVM> m_embedded_vm;
 };
 
+// Native functions are written for whichever way the target returns a C++ ThrowCompletionOr<Value>.
+template<JSCompletion (*behaviour)(JSVM*)>
+static JSNativeFunction native_function()
+{
+    if constexpr (IsSame<JSNativeFunction, JSCompletion (*)(JSVM*)>)
+        return behaviour;
+    else
+        return [](JSCompletion* result, JSVM* vm) { *result = behaviour(vm); };
+}
+
+static JSCompletion add_two_int32_arguments(JSVM* vm)
+{
+    auto as_int32 = [](JSValue value) { return static_cast<i32>(static_cast<u32>(value)); };
+    return { int32_value(as_int32(argument(vm, 0)) + as_int32(argument(vm, 1))), JS_COMPLETION_NORMAL };
+}
+
+static JSCompletion throw_first_argument(JSVM* vm)
+{
+    return { argument(vm, 0), JS_COMPLETION_THROW };
+}
+
+static JSCompletion return_forty_two(JSVM*)
+{
+    return { int32_value(42), JS_COMPLETION_NORMAL };
+}
+
 TEST_CASE(property_operations_from_cpp)
 {
     Harness harness;
@@ -108,6 +156,126 @@ TEST_CASE(property_operations_from_cpp)
     EXPECT_EQ(js_object_class_id(array), JS_LAYOUT_CLASS_ID_ARRAY);
     EXPECT(js_object_is_subclass_of(array, JS_LAYOUT_CLASS_ID_OBJECT));
     EXPECT(!js_object_is_subclass_of(object, JS_LAYOUT_CLASS_ID_ARRAY));
+}
+
+TEST_CASE(cpp_raw_natives_are_called_from_javascript)
+{
+    Harness harness;
+    auto* vm = harness.vm();
+    auto add_name = "add"_utf16_fly_string;
+    auto thrower_name = "thrower"_utf16_fly_string;
+    auto computed_name = "computed"_utf16_fly_string;
+    auto add = key_of(add_name);
+    auto thrower = key_of(thrower_name);
+    auto computed = key_of(computed_name);
+
+    js_object_define_native_function(vm, harness.global_object(), harness.realm(), &add, native_function<add_two_int32_arguments>(), 2, all_attributes);
+    auto* thrower_function = js_function_create_native(vm, native_function<throw_first_argument>(), 1, &thrower, nullptr, nullptr, 0);
+    harness.define_global(thrower_name, value_of_object(thrower_function));
+    js_object_define_native_accessor(vm, harness.global_object(), harness.realm(), &computed, native_function<return_forty_two>(), nullptr, JS_ATTRIBUTE_CONFIGURABLE);
+
+    EXPECT(harness.evaluates_to_true("add(2, 3) === 5 && add.length === 2 && add.name === 'add'"sv));
+    EXPECT(harness.evaluates_to_true("try { thrower(7); false } catch (e) { e === 7 }"sv));
+    EXPECT(harness.evaluates_to_true("computed === 42 && Object.getOwnPropertyDescriptor(globalThis, 'computed').get.name === 'get computed'"sv));
+}
+
+using ClosureFunction = GC::Function<JSCompletion(JSVM*)>;
+
+// The facade's thunk for every closure: the context is the GC::Function that wraps the AK::Function.
+static JSCompletion call_closure_function(void* context, JSVM* vm)
+{
+    return static_cast<ClosureFunction*>(context)->function()(vm);
+}
+
+TEST_CASE(cpp_closures_are_called_from_javascript_and_can_call_back)
+{
+    Harness harness;
+    auto* vm = harness.vm();
+    auto base_name = "base"_utf16_fly_string;
+    auto closure_name = "closure"_utf16_fly_string;
+    harness.define_global(base_name, int32_value(100));
+
+    size_t calls = 0;
+    auto* global_object = harness.global_object();
+    auto function = GC::create_function(GC::Heap::the(), [&calls, global_object, &base_name](JSVM* vm) -> JSCompletion {
+        ++calls;
+        // The closure calls back into the VM while the VM runs it.
+        auto base = key_of(base_name);
+        auto base_value = js_object_get(vm, global_object, &base);
+        if (base_value.variant != JS_COMPLETION_NORMAL)
+            return base_value;
+        auto sum = static_cast<i32>(static_cast<u32>(base_value.payload)) + static_cast<i32>(static_cast<u32>(argument(vm, 0)));
+        return { int32_value(sum), JS_COMPLETION_NORMAL };
+    });
+    auto closure_key = key_of(closure_name);
+    auto* closure = js_function_create_closure(vm, call_closure_function, function.ptr(), 1, &closure_key, nullptr, nullptr, 0);
+    harness.define_global(closure_name, value_of_object(closure));
+
+    EXPECT(harness.evaluates_to_true("closure(1) + closure(2) === 203 && closure.name === 'closure' && closure.length === 1"sv));
+    EXPECT_EQ(calls, 2u);
+}
+
+static constexpr size_t closure_count = 64;
+static bool s_closure_context_destroyed[closure_count];
+
+class DestructionRecorder {
+    AK_MAKE_NONCOPYABLE(DestructionRecorder);
+
+public:
+    explicit DestructionRecorder(size_t index)
+        : m_index(index)
+    {
+    }
+
+    DestructionRecorder(DestructionRecorder&& other)
+        : m_index(exchange(other.m_index, NumericLimits<size_t>::max()))
+    {
+    }
+
+    ~DestructionRecorder()
+    {
+        if (m_index != NumericLimits<size_t>::max())
+            s_closure_context_destroyed[m_index] = true;
+    }
+
+private:
+    size_t m_index;
+};
+
+// Every even closure is reachable from the global object; nothing holds the odd ones.
+static NEVER_INLINE void create_closures_whose_contexts_record_their_destruction(Harness const& harness)
+{
+    auto* vm = harness.vm();
+    auto* holder = js_array_create_from(vm, harness.realm(), nullptr, 0);
+    harness.define_global("holder"_utf16_fly_string, value_of_object(holder));
+    for (size_t index = 0; index < closure_count; ++index) {
+        auto function = GC::create_function(GC::Heap::the(), [recorder = DestructionRecorder { index }, index](JSVM*) -> JSCompletion {
+            (void)recorder;
+            return { int32_value(static_cast<i32>(index)), JS_COMPLETION_NORMAL };
+        });
+        auto* closure = js_function_create_closure_with_name(vm, harness.realm(), view_of("recorder"sv), call_closure_function, function.ptr());
+        if (index % 2 == 0)
+            js_array_indexed_append(holder, value_of_object(closure));
+    }
+}
+
+TEST_CASE(a_closure_keeps_its_cpp_context_alive)
+{
+    Harness harness;
+    for (auto& destroyed : s_closure_context_destroyed)
+        destroyed = false;
+    create_closures_whose_contexts_record_their_destruction(harness);
+    harness.collect_garbage();
+
+    size_t destroyed_held_contexts = 0;
+    size_t destroyed_unheld_contexts = 0;
+    for (size_t index = 0; index < closure_count; ++index) {
+        if (s_closure_context_destroyed[index])
+            ++(index % 2 == 0 ? destroyed_held_contexts : destroyed_unheld_contexts);
+    }
+    EXPECT_EQ(destroyed_held_contexts, 0u);
+    EXPECT(destroyed_unheld_contexts >= closure_count / 4);
+    EXPECT(harness.evaluates_to_true("holder[0]() === 0 && holder[31]() === 62 && holder.length === 32"sv));
 }
 
 TEST_CASE(descriptors_round_trip_with_their_property_offsets)
