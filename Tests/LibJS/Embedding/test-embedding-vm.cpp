@@ -33,3 +33,24 @@ TEST_CASE(a_vm_needs_storage_of_its_size_and_alignment)
     js_vm_collect_garbage(vm);
     js_vm_destroy_at(vm);
 }
+
+TEST_CASE(a_realm_of_the_embedder_evaluates_scripts)
+{
+    auto embedded_vm = EmbeddedVM::create();
+    embedded_vm->initialize_realm();
+    EXPECT(embedded_vm->realm() != nullptr);
+    u8 const* running_execution_context = nullptr;
+    __builtin_memcpy(&running_execution_context, reinterpret_cast<u8 const*>(embedded_vm->vm()) + JS_LAYOUT_VM_RUNNING_EXECUTION_CONTEXT_OFFSET, sizeof(running_execution_context));
+    EXPECT_EQ(running_execution_context, embedded_vm->realm_execution_context());
+
+    EXPECT(embedded_vm->run("if (1 + 1 !== 2) throw new Error();"sv));
+    EXPECT(embedded_vm->run("var counter = 41;"sv));
+    js_vm_collect_garbage(embedded_vm->vm());
+    EXPECT(embedded_vm->run("if (++counter !== 42 || typeof globalThis.Array !== 'function') throw new Error();"sv));
+
+    EXPECT_EQ(embedded_vm->evaluate("throw new TypeError();"sv).variant, JS_COMPLETION_THROW);
+    EXPECT_EQ(embedded_vm->evaluate("let = = ;"sv).variant, JS_COMPLETION_THROW);
+    // A global lexical declaration of an earlier script conflicts with one of a later script before the later runs.
+    EXPECT(embedded_vm->run("let declared_by_two_scripts;"sv));
+    EXPECT_EQ(embedded_vm->evaluate("let declared_by_two_scripts;"sv).variant, JS_COMPLETION_THROW);
+}

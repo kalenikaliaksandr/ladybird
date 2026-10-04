@@ -8,10 +8,18 @@
 
 #include <AK/Noncopyable.h>
 #include <AK/NonnullOwnPtr.h>
+#include <AK/StringView.h>
 #include <LibJS/Embedding/ABI.h>
 #include <LibJS/Embedding/Layout.h>
 #include <LibJS/HostObjectABI.h>
 #include <LibTest/TestCase.h>
+
+// A JSUtf16View of ASCII text, in the ASCII storage kind of AK::Utf16View, which holds nothing else.
+inline JSUtf16View ascii_view(StringView ascii)
+{
+    VERIFY(ascii.is_ascii());
+    return { ascii.characters_without_null_termination(), ascii.length(), true };
+}
 
 // The pointer that the payload of a normal completion carries, such as the cell that an operation creates.
 template<typename T>
@@ -41,6 +49,36 @@ public:
 
     JSVM* vm() { return reinterpret_cast<JSVM*>(m_storage); }
 
+    // Creates a realm with an ordinary global object. Its execution context stays the running one until the VM is
+    // destroyed, before the storage of the context is, like the root execution context of the js tool.
+    void initialize_realm()
+    {
+        VERIFY(!realm());
+        auto completion = js_realm_initialize_host_defined_realm(vm(), m_realm_execution_context, nullptr, nullptr, nullptr, nullptr);
+        VERIFY(completion.variant == JS_COMPLETION_NORMAL);
+    }
+
+    u8 const* realm_execution_context() const { return m_realm_execution_context; }
+
+    // The realm is a field of its execution context, which the embedder reads through the layout of the runtime.
+    JSRealm* realm() const
+    {
+        JSRealm* realm = nullptr;
+        __builtin_memcpy(&realm, m_realm_execution_context + JS_LAYOUT_EXECUTION_CONTEXT_REALM_OFFSET, sizeof(realm));
+        return realm;
+    }
+
+    JSCompletion evaluate(StringView source)
+    {
+        return js_script_evaluate(vm(), realm(), ascii_view(source), ascii_view("test.js"sv));
+    }
+
+    // Runs a script that reports what it finds wrong by throwing.
+    bool run(StringView source)
+    {
+        return evaluate(source).variant == JS_COMPLETION_NORMAL;
+    }
+
 private:
     explicit EmbeddedVM(JSVmOptions options)
     {
@@ -48,4 +86,5 @@ private:
     }
 
     alignas(JS_LAYOUT_VM_ALIGN) u8 m_storage[JS_LAYOUT_VM_SIZE];
+    alignas(JS_LAYOUT_EXECUTION_CONTEXT_ALIGN) u8 m_realm_execution_context[JS_LAYOUT_EXECUTION_CONTEXT_SIZE] {};
 };
