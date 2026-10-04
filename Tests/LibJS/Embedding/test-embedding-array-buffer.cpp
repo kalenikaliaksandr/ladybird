@@ -17,17 +17,6 @@
 
 namespace {
 
-// A VM whose heap is the process default, so that the test can allocate C++ GC cells in it, with a realm.
-NonnullOwnPtr<EmbeddedVM> create_vm_with_realm(bool shared_memory_shared_array_buffers = false)
-{
-    auto embedded_vm = EmbeddedVM::create({
-        .become_process_default_heap = true,
-        .shared_memory_shared_array_buffers = shared_memory_shared_array_buffers,
-    });
-    embedded_vm->initialize_realm();
-    return embedded_vm;
-}
-
 constexpr size_t storage_owner_count = 64;
 Array<bool, storage_owner_count> s_storage_owner_was_finalized {};
 
@@ -85,7 +74,7 @@ NEVER_INLINE void scrub_stack()
 
 TEST_CASE(a_block_that_cpp_writes_is_what_a_uint8_array_of_the_runtime_views)
 {
-    auto embedded_vm = create_vm_with_realm();
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
     GCPrimitiveStorageHandle handle = GC_PRIMITIVE_STORAGE_NULL_HANDLE;
     EXPECT(gc_primitive_storage_allocate(64, false, &handle, nullptr));
     auto* bytes = gc_primitive_storage_data(handle);
@@ -135,7 +124,7 @@ TEST_CASE(a_block_that_cpp_writes_is_what_a_uint8_array_of_the_runtime_views)
 
 TEST_CASE(a_buffer_without_a_fixed_length_follows_the_storage_its_owner_resizes)
 {
-    auto embedded_vm = create_vm_with_realm();
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
     GCPrimitiveStorageHandle handle = GC_PRIMITIVE_STORAGE_NULL_HANDLE;
     EXPECT(gc_primitive_storage_reserve(16, 64 * KiB, true, 0, &handle, nullptr));
     auto owner = GC::Heap::the().allocate<StorageOwner>(0, handle);
@@ -172,7 +161,7 @@ NEVER_INLINE void make_storage_owners_of_which_buffers_view_every_other(Embedded
 TEST_CASE(a_buffer_keeps_the_owner_of_its_storage_alive)
 {
     s_storage_owner_was_finalized.fill(false);
-    auto embedded_vm = create_vm_with_realm();
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
     Vector<GCRoot*> buffer_roots;
     make_storage_owners_of_which_buffers_view_every_other(*embedded_vm, buffer_roots);
     scrub_stack();
@@ -193,7 +182,10 @@ TEST_CASE(a_buffer_keeps_the_owner_of_its_storage_alive)
 
 TEST_CASE(shared_memory_round_trips_through_its_descriptor)
 {
-    auto embedded_vm = create_vm_with_realm(true);
+    auto embedded_vm = EmbeddedVM::create_with_realm({
+        .become_process_default_heap = true,
+        .shared_memory_shared_array_buffers = true,
+    });
     int shared_memory = -1;
     EXPECT(gc_shared_memory_create(100, &shared_memory));
     auto* first = js_array_buffer_create_from_shared_memory(embedded_vm->vm(), embedded_vm->realm(), shared_memory, 100, 1234);
@@ -242,7 +234,7 @@ TEST_CASE(shared_memory_round_trips_through_its_descriptor)
 
 TEST_CASE(detaching_takes_the_detach_key)
 {
-    auto embedded_vm = create_vm_with_realm();
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
     auto* buffer = pointer_of_payload<JSObject>(js_array_buffer_create(embedded_vm->vm(), embedded_vm->realm(), 16, false));
     EXPECT(buffer != nullptr);
     auto* view = js_typed_array_create_on_buffer(embedded_vm->vm(), embedded_vm->realm(), JS_LAYOUT_TYPED_ARRAY_KIND_UINT32, 4, buffer);
@@ -284,7 +276,7 @@ TEST_CASE(detaching_takes_the_detach_key)
 
 TEST_CASE(owned_storage_resizes_within_its_maximum)
 {
-    auto embedded_vm = create_vm_with_realm();
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
     auto* typed_array = pointer_of_payload<JSObject>(js_typed_array_create(embedded_vm->vm(), embedded_vm->realm(), JS_LAYOUT_TYPED_ARRAY_KIND_FLOAT64, 4));
     auto* buffer = js_typed_array_viewed_array_buffer(typed_array);
     EXPECT_EQ(js_array_buffer_byte_length(buffer), 32u);
@@ -306,7 +298,7 @@ TEST_CASE(owned_storage_resizes_within_its_maximum)
 
 TEST_CASE(a_growable_alias_of_a_shared_array_buffer_grows_the_buffer_that_owns_the_storage)
 {
-    auto embedded_vm = create_vm_with_realm();
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
     auto* owner = pointer_of_payload<JSObject>(js_array_buffer_create(embedded_vm->vm(), embedded_vm->realm(), 8, true));
     js_array_buffer_set_max_byte_length(owner, 64 * KiB);
     auto owner_storage = storage_of(owner);

@@ -14,26 +14,12 @@
 
 #include "EmbeddingTest.h"
 
-// The NaN-boxed encoding that JSValue shares with JS::Value.
-static constexpr JSValue js_undefined = 0x7FFEull << 48;
-static constexpr JSValue js_true = (0x7FF9ull << 48) | 1;
-
-static constexpr JSValue int32_value(i32 value)
-{
-    return (0x7FFAull << 48) | static_cast<u32>(value);
-}
-
 static constexpr u8 all_attributes = JS_ATTRIBUTE_WRITABLE | JS_ATTRIBUTE_ENUMERABLE | JS_ATTRIBUTE_CONFIGURABLE;
 
 // A borrowed key for a name that is not an array index: the raw word of its fly string, which must outlive the key.
 static JSPropertyKey key_of(Utf16FlyString const& name)
 {
     return { name.raw_identity() };
-}
-
-static JSUtf16View view_of(StringView ascii)
-{
-    return { ascii.characters_without_null_termination(), ascii.length(), true };
 }
 
 template<typename T>
@@ -55,46 +41,17 @@ static JSValue argument(JSVM* vm, size_t index)
     return slots[slot_count - argument_count + index];
 }
 
-// A VM whose heap is the process default, so that the test can allocate C++ GC cells in it, with a realm.
-class Harness {
-public:
-    Harness()
-        : m_embedded_vm(EmbeddedVM::create({ .become_process_default_heap = true, .shared_memory_shared_array_buffers = false }))
-    {
-        m_embedded_vm->initialize_realm();
-    }
+static bool evaluates_to_true(EmbeddedVM& embedded_vm, StringView source)
+{
+    auto completion = embedded_vm.evaluate(source);
+    return completion.variant == JS_COMPLETION_NORMAL && completion.payload == js_true;
+}
 
-    JSVM* vm() const { return m_embedded_vm->vm(); }
-    JSRealm* realm() const { return m_embedded_vm->realm(); }
-    JSObject* global_object() const { return field_at<JSObject>(realm(), JS_LAYOUT_REALM_GLOBAL_OBJECT_OFFSET); }
-    JSEnvironment* global_environment() const { return field_at<JSEnvironment>(realm(), JS_LAYOUT_REALM_GLOBAL_ENVIRONMENT_OFFSET); }
-
-    JSCompletion evaluate(StringView source) const { return m_embedded_vm->evaluate(source); }
-
-    JSObject* evaluate_to_object(StringView source) const
-    {
-        auto completion = evaluate(source);
-        VERIFY(completion.variant == JS_COMPLETION_NORMAL);
-        return object_of_value(completion.payload);
-    }
-
-    bool evaluates_to_true(StringView source) const
-    {
-        auto completion = evaluate(source);
-        return completion.variant == JS_COMPLETION_NORMAL && completion.payload == js_true;
-    }
-
-    void define_global(Utf16FlyString const& name, JSValue value) const
-    {
-        auto key = key_of(name);
-        js_object_define_direct_property(vm(), global_object(), &key, value, all_attributes);
-    }
-
-    void collect_garbage() const { js_vm_collect_garbage(vm()); }
-
-private:
-    NonnullOwnPtr<EmbeddedVM> m_embedded_vm;
-};
+static void define_global(EmbeddedVM& embedded_vm, Utf16FlyString const& name, JSValue value)
+{
+    auto key = key_of(name);
+    js_object_define_direct_property(embedded_vm.vm(), embedded_vm.global_object(), &key, value, all_attributes);
+}
 
 // Native functions are written for whichever way the target returns a C++ ThrowCompletionOr<Value>.
 template<JSCompletion (*behaviour)(JSVM*)>
@@ -124,10 +81,10 @@ static JSCompletion return_forty_two(JSVM*)
 
 TEST_CASE(property_operations_from_cpp)
 {
-    Harness harness;
-    auto* vm = harness.vm();
-    auto* object_prototype = harness.evaluate_to_object("Object.prototype"sv);
-    auto* object = js_object_create(vm, harness.realm(), object_prototype);
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* vm = embedded_vm->vm();
+    auto* object_prototype = embedded_vm->object_of("Object.prototype"sv);
+    auto* object = js_object_create(vm, embedded_vm->realm(), object_prototype);
     EXPECT_EQ(js_object_prototype(object), object_prototype);
 
     auto answer_name = "answer"_utf16_fly_string;
@@ -148,13 +105,13 @@ TEST_CASE(property_operations_from_cpp)
     auto creation = js_object_create_data_property_or_throw(vm, object, &created, int32_value(1));
     EXPECT_EQ(creation.variant, JS_COMPLETION_NORMAL);
     EXPECT_EQ(creation.payload, 1u);
-    harness.define_global("object"_utf16_fly_string, value_of_object(object));
-    EXPECT(harness.evaluates_to_true("object.answer === 43 && object.created === 1 && Object.keys(object).join() === 'answer,created'"sv));
+    define_global(*embedded_vm, "object"_utf16_fly_string, value_of_object(object));
+    EXPECT(evaluates_to_true(*embedded_vm, "object.answer === 43 && object.created === 1 && Object.keys(object).join() === 'answer,created'"sv));
 
     EXPECT_EQ(js_object_delete_property_or_throw(vm, object, &created).variant, JS_COMPLETION_NORMAL);
     EXPECT_EQ(js_object_has_own_property(vm, object, &created).payload, 0u);
 
-    auto* array = js_array_create_from(vm, harness.realm(), nullptr, 0);
+    auto* array = js_array_create_from(vm, embedded_vm->realm(), nullptr, 0);
     EXPECT_EQ(js_object_class_id(array), JS_LAYOUT_CLASS_ID_ARRAY);
     EXPECT(js_object_is_subclass_of(array, JS_LAYOUT_CLASS_ID_OBJECT));
     EXPECT(!js_object_is_subclass_of(object, JS_LAYOUT_CLASS_ID_ARRAY));
@@ -162,8 +119,8 @@ TEST_CASE(property_operations_from_cpp)
 
 TEST_CASE(cpp_raw_natives_are_called_from_javascript)
 {
-    Harness harness;
-    auto* vm = harness.vm();
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* vm = embedded_vm->vm();
     auto add_name = "add"_utf16_fly_string;
     auto thrower_name = "thrower"_utf16_fly_string;
     auto computed_name = "computed"_utf16_fly_string;
@@ -171,14 +128,14 @@ TEST_CASE(cpp_raw_natives_are_called_from_javascript)
     auto thrower = key_of(thrower_name);
     auto computed = key_of(computed_name);
 
-    js_object_define_native_function(vm, harness.global_object(), harness.realm(), &add, native_function<add_two_int32_arguments>(), 2, all_attributes);
+    js_object_define_native_function(vm, embedded_vm->global_object(), embedded_vm->realm(), &add, native_function<add_two_int32_arguments>(), 2, all_attributes);
     auto* thrower_function = js_function_create_native(vm, native_function<throw_first_argument>(), 1, &thrower, nullptr, nullptr, 0);
-    harness.define_global(thrower_name, value_of_object(thrower_function));
-    js_object_define_native_accessor(vm, harness.global_object(), harness.realm(), &computed, native_function<return_forty_two>(), nullptr, JS_ATTRIBUTE_CONFIGURABLE);
+    define_global(*embedded_vm, thrower_name, value_of_object(thrower_function));
+    js_object_define_native_accessor(vm, embedded_vm->global_object(), embedded_vm->realm(), &computed, native_function<return_forty_two>(), nullptr, JS_ATTRIBUTE_CONFIGURABLE);
 
-    EXPECT(harness.evaluates_to_true("add(2, 3) === 5 && add.length === 2 && add.name === 'add'"sv));
-    EXPECT(harness.evaluates_to_true("try { thrower(7); false } catch (e) { e === 7 }"sv));
-    EXPECT(harness.evaluates_to_true("computed === 42 && Object.getOwnPropertyDescriptor(globalThis, 'computed').get.name === 'get computed'"sv));
+    EXPECT(evaluates_to_true(*embedded_vm, "add(2, 3) === 5 && add.length === 2 && add.name === 'add'"sv));
+    EXPECT(evaluates_to_true(*embedded_vm, "try { thrower(7); false } catch (e) { e === 7 }"sv));
+    EXPECT(evaluates_to_true(*embedded_vm, "computed === 42 && Object.getOwnPropertyDescriptor(globalThis, 'computed').get.name === 'get computed'"sv));
 }
 
 using ClosureFunction = GC::Function<JSCompletion(JSVM*)>;
@@ -191,14 +148,14 @@ static JSCompletion call_closure_function(void* context, JSVM* vm)
 
 TEST_CASE(cpp_closures_are_called_from_javascript_and_can_call_back)
 {
-    Harness harness;
-    auto* vm = harness.vm();
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* vm = embedded_vm->vm();
     auto base_name = "base"_utf16_fly_string;
     auto closure_name = "closure"_utf16_fly_string;
-    harness.define_global(base_name, int32_value(100));
+    define_global(*embedded_vm, base_name, int32_value(100));
 
     size_t calls = 0;
-    auto* global_object = harness.global_object();
+    auto* global_object = embedded_vm->global_object();
     auto function = GC::create_function(GC::Heap::the(), [&calls, global_object, &base_name](JSVM* vm) -> JSCompletion {
         ++calls;
         // The closure calls back into the VM while the VM runs it.
@@ -211,9 +168,9 @@ TEST_CASE(cpp_closures_are_called_from_javascript_and_can_call_back)
     });
     auto closure_key = key_of(closure_name);
     auto* closure = js_function_create_closure(vm, call_closure_function, function.ptr(), 1, &closure_key, nullptr, nullptr, 0);
-    harness.define_global(closure_name, value_of_object(closure));
+    define_global(*embedded_vm, closure_name, value_of_object(closure));
 
-    EXPECT(harness.evaluates_to_true("closure(1) + closure(2) === 203 && closure.name === 'closure' && closure.length === 1"sv));
+    EXPECT(evaluates_to_true(*embedded_vm, "closure(1) + closure(2) === 203 && closure.name === 'closure' && closure.length === 1"sv));
     EXPECT_EQ(calls, 2u);
 }
 
@@ -245,17 +202,17 @@ private:
 };
 
 // Every even closure is reachable from the global object; nothing holds the odd ones.
-static NEVER_INLINE void create_closures_whose_contexts_record_their_destruction(Harness const& harness)
+static NEVER_INLINE void create_closures_whose_contexts_record_their_destruction(EmbeddedVM& embedded_vm)
 {
-    auto* vm = harness.vm();
-    auto* holder = js_array_create_from(vm, harness.realm(), nullptr, 0);
-    harness.define_global("holder"_utf16_fly_string, value_of_object(holder));
+    auto* vm = embedded_vm.vm();
+    auto* holder = js_array_create_from(vm, embedded_vm.realm(), nullptr, 0);
+    define_global(embedded_vm, "holder"_utf16_fly_string, value_of_object(holder));
     for (size_t index = 0; index < closure_count; ++index) {
         auto function = GC::create_function(GC::Heap::the(), [recorder = DestructionRecorder { index }, index](JSVM*) -> JSCompletion {
             (void)recorder;
             return { int32_value(static_cast<i32>(index)), JS_COMPLETION_NORMAL };
         });
-        auto* closure = js_function_create_closure_with_name(vm, harness.realm(), view_of("recorder"sv), call_closure_function, function.ptr());
+        auto* closure = js_function_create_closure_with_name(vm, embedded_vm.realm(), ascii_view("recorder"sv), call_closure_function, function.ptr());
         if (index % 2 == 0)
             js_array_indexed_append(holder, value_of_object(closure));
     }
@@ -263,11 +220,11 @@ static NEVER_INLINE void create_closures_whose_contexts_record_their_destruction
 
 TEST_CASE(a_closure_keeps_its_cpp_context_alive)
 {
-    Harness harness;
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
     for (auto& destroyed : s_closure_context_destroyed)
         destroyed = false;
-    create_closures_whose_contexts_record_their_destruction(harness);
-    harness.collect_garbage();
+    create_closures_whose_contexts_record_their_destruction(*embedded_vm);
+    embedded_vm->collect_garbage();
 
     size_t destroyed_held_contexts = 0;
     size_t destroyed_unheld_contexts = 0;
@@ -277,14 +234,14 @@ TEST_CASE(a_closure_keeps_its_cpp_context_alive)
     }
     EXPECT_EQ(destroyed_held_contexts, 0u);
     EXPECT(destroyed_unheld_contexts >= closure_count / 4);
-    EXPECT(harness.evaluates_to_true("holder[0]() === 0 && holder[31]() === 62 && holder.length === 32"sv));
+    EXPECT(evaluates_to_true(*embedded_vm, "holder[0]() === 0 && holder[31]() === 62 && holder.length === 32"sv));
 }
 
 TEST_CASE(descriptors_round_trip_with_their_property_offsets)
 {
-    Harness harness;
-    auto* vm = harness.vm();
-    auto* object = js_object_create(vm, harness.realm(), nullptr);
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* vm = embedded_vm->vm();
+    auto* object = js_object_create(vm, embedded_vm->realm(), nullptr);
     auto name = "x"_utf16_fly_string;
     auto key = key_of(name);
 
@@ -318,7 +275,7 @@ TEST_CASE(descriptors_round_trip_with_their_property_offsets)
     js_object_ordinary_get_own_property(vm, object, &missing, &absent);
     EXPECT_EQ(absent.flags, 0);
 
-    auto* accessor_holder = harness.evaluate_to_object("({ get value() { return 1; } })"sv);
+    auto* accessor_holder = embedded_vm->object_of("({ get value() { return 1; } })"sv);
     auto value_name = "value"_utf16_fly_string;
     auto value = key_of(value_name);
     JSPropertyDescriptor accessor {};
@@ -337,24 +294,24 @@ static void append_to_vector(void* context, JSValue value)
 
 TEST_CASE(own_keys_reach_a_value_sink)
 {
-    Harness harness;
-    auto* vm = harness.vm();
-    auto* object = harness.evaluate_to_object("({ b: 1, a: 2, 1: 3, [Symbol.iterator]: 4 })"sv);
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* vm = embedded_vm->vm();
+    auto* object = embedded_vm->object_of("({ b: 1, a: 2, 1: 3, [Symbol.iterator]: 4 })"sv);
     Vector<JSValue> keys;
     JSValueSink sink { &keys, append_to_vector };
     EXPECT_EQ(js_object_internal_own_property_keys(vm, object, &sink).variant, JS_COMPLETION_NORMAL);
     EXPECT_EQ(keys.size(), 4u);
 
-    auto* keys_array = js_array_create_from(vm, harness.realm(), keys.data(), keys.size());
-    harness.define_global("keys"_utf16_fly_string, value_of_object(keys_array));
-    EXPECT(harness.evaluates_to_true("keys.slice(0, 3).join() === '1,b,a' && keys[3] === Symbol.iterator"sv));
+    auto* keys_array = js_array_create_from(vm, embedded_vm->realm(), keys.data(), keys.size());
+    define_global(*embedded_vm, "keys"_utf16_fly_string, value_of_object(keys_array));
+    EXPECT(evaluates_to_true(*embedded_vm, "keys.slice(0, 3).join() === '1,b,a' && keys[3] === Symbol.iterator"sv));
 }
 
 TEST_CASE(integrity_levels)
 {
-    Harness harness;
-    auto* vm = harness.vm();
-    auto* object = harness.evaluate_to_object("({ x: 1 })"sv);
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* vm = embedded_vm->vm();
+    auto* object = embedded_vm->object_of("({ x: 1 })"sv);
     auto name = "x"_utf16_fly_string;
     auto key = key_of(name);
 
@@ -371,33 +328,29 @@ TEST_CASE(integrity_levels)
 
 TEST_CASE(dynamic_functions_close_over_an_object_environment)
 {
-    Harness harness;
-    auto* vm = harness.vm();
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* vm = embedded_vm->vm();
     auto source_text = u"function onclick(event) {\nreturn event + scoped\n}"sv;
     auto body = u"\nreturn event + scoped\n"sv;
-    auto utf16_view_of = [](Utf16View const& view) {
-        return JSUtf16View { view.utf16_span().data(), view.length_in_code_units(), false };
-    };
-
     JSOwnedUtf16String error_message = 0;
-    auto* function_data = js_function_compile_dynamic(vm, utf16_view_of(source_text), view_of("event"sv), utf16_view_of(body), JS_FUNCTION_KIND_NORMAL, &error_message);
+    auto* function_data = js_function_compile_dynamic(vm, abi_view_of(source_text), ascii_view("event"sv), abi_view_of(body), JS_FUNCTION_KIND_NORMAL, &error_message);
     EXPECT(function_data != nullptr);
 
-    auto* scope_object = harness.evaluate_to_object("({ scoped: 40 })"sv);
-    auto* scope = js_environment_new_object_environment(vm, scope_object, true, harness.global_environment());
+    auto* scope_object = embedded_vm->object_of("({ scoped: 40 })"sv);
+    auto* scope = js_environment_new_object_environment(vm, scope_object, true, embedded_vm->global_environment());
     EXPECT_EQ(js_environment_kind(scope), JS_ENVIRONMENT_KIND_OBJECT);
-    EXPECT_EQ(js_environment_outer(scope), harness.global_environment());
+    EXPECT_EQ(js_environment_outer(scope), embedded_vm->global_environment());
 
-    auto* function = js_function_instantiate_dynamic(vm, harness.realm(), function_data, scope, nullptr, { .tag = JS_LAYOUT_SCRIPT_OR_MODULE_TAG_EMPTY, .cell = nullptr });
+    auto* function = js_function_instantiate_dynamic(vm, embedded_vm->realm(), function_data, scope, nullptr, { .tag = JS_LAYOUT_SCRIPT_OR_MODULE_TAG_EMPTY, .cell = nullptr });
     JSValue arguments[] = { int32_value(2) };
     auto result = js_function_call(vm, value_of_object(function), js_undefined, arguments, 1);
     EXPECT_EQ(result.variant, JS_COMPLETION_NORMAL);
     EXPECT_EQ(result.payload, int32_value(42));
-    harness.define_global("handler"_utf16_fly_string, value_of_object(function));
-    EXPECT(harness.evaluates_to_true("handler.name === 'onclick' && handler.length === 1 && String(handler).startsWith('function onclick(event)')"sv));
+    define_global(*embedded_vm, "handler"_utf16_fly_string, value_of_object(function));
+    EXPECT(evaluates_to_true(*embedded_vm, "handler.name === 'onclick' && handler.length === 1 && String(handler).startsWith('function onclick(event)')"sv));
 
     auto broken_source = u"function f() {\n}}\n}"sv;
-    auto* broken = js_function_compile_dynamic(vm, utf16_view_of(broken_source), view_of(""sv), view_of("\n}}\n"sv), JS_FUNCTION_KIND_NORMAL, &error_message);
+    auto* broken = js_function_compile_dynamic(vm, abi_view_of(broken_source), ascii_view(""sv), ascii_view("\n}}\n"sv), JS_FUNCTION_KIND_NORMAL, &error_message);
     EXPECT(broken == nullptr);
     auto message = Utf16String::adopt_raw(error_message);
     EXPECT(message.contains(u"(line: "sv));

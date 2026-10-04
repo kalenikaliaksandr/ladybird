@@ -15,31 +15,9 @@
 
 namespace {
 
-class TestHarness {
-public:
-    TestHarness()
-        : m_embedded_vm(EmbeddedVM::create())
-    {
-        m_embedded_vm->initialize_realm();
-    }
-
-    JSVM* vm() const { return m_embedded_vm->vm(); }
-
-    JSConsole* console() const { return js_console_object_console(js_realm_intrinsic(vm(), m_embedded_vm->realm(), JS_INTRINSIC_CONSOLE_OBJECT)); }
-
-    JSCompletion run_script(StringView source, StringView filename) const { return m_embedded_vm->evaluate(source, filename); }
-
-private:
-    NonnullOwnPtr<EmbeddedVM> m_embedded_vm;
-};
-
-ByteString byte_string_of(JSUtf16View view)
+JSConsole* console_of(EmbeddedVM& embedded_vm)
 {
-    if (view.length_in_code_units == 0)
-        return {};
-    if (view.has_ascii_storage)
-        return ByteString { static_cast<char const*>(view.data), view.length_in_code_units };
-    return MUST((Utf16View { static_cast<char16_t const*>(view.data), view.length_in_code_units }.to_byte_string()));
+    return js_console_object_console(embedded_vm.intrinsic(JS_INTRINSIC_CONSOLE_OBJECT));
 }
 
 struct ConsoleOutput {
@@ -66,7 +44,7 @@ JSCompletion print_to_console_output(void*, JSVM* vm, uint8_t log_level, JSConso
 
     VERIFY(arguments->kind == JS_CONSOLE_PRINTER_ARGUMENTS_VALUES);
     VERIFY(log_level == JS_CONSOLE_LOG_LEVEL_LOG);
-    size_t formatted = 0;
+    JSOwnedUtf16String formatted = 0;
     auto completion = js_console_client_generically_format_values(vm, s_console_output.client, arguments->values, arguments->value_count, &formatted);
     if (completion.variant != JS_COMPLETION_NORMAL)
         return completion;
@@ -82,11 +60,6 @@ constexpr JSConsoleClientMethods s_console_output_methods {
     .clear = nullptr,
     .end_group = nullptr,
 };
-
-JSUtf16View view_of(StringView ascii)
-{
-    return { .data = ascii.characters_without_null_termination(), .length_in_code_units = ascii.length(), .has_ascii_storage = true };
-}
 
 ByteString printed(JSVM* vm, JSValue value)
 {
@@ -137,7 +110,7 @@ void record_debugger_pause(void*, JSVM* vm, JSDebuggerPauseInfo const* pause_inf
     js_debugger_bindings_for_frame(vm, paused_execution_context, &sink);
     pause.bindings = move(frame_bindings.descriptions);
 
-    auto completion = js_debugger_evaluate_in_frame(vm, paused_execution_context, view_of("sum = value + argument + 8"sv));
+    auto completion = js_debugger_evaluate_in_frame(vm, paused_execution_context, ascii_view("sum = value + argument + 8"sv));
     VERIFY(completion.variant == JS_COMPLETION_NORMAL);
     pause.evaluated = printed(vm, completion.payload);
 
@@ -149,10 +122,10 @@ void record_debugger_pause(void*, JSVM* vm, JSDebuggerPauseInfo const* pause_inf
 
 TEST_CASE(host_console_client_receives_log_arguments_and_a_trace)
 {
-    TestHarness harness;
-    auto* console = harness.console();
+    auto embedded_vm = EmbeddedVM::create_with_realm();
+    auto* console = console_of(*embedded_vm);
     VERIFY(console);
-    s_console_output = { .client = js_console_client_create(harness.vm(), console, &s_console_output_methods, nullptr), .messages = {} };
+    s_console_output = { .client = js_console_client_create(embedded_vm->vm(), console, &s_console_output_methods, nullptr), .messages = {} };
     js_console_set_client(console, s_console_output.client);
 
     auto source = "console.log('answer', 42, [1, 2]);\n"
@@ -160,14 +133,14 @@ TEST_CASE(host_console_client_receives_log_arguments_and_a_trace)
                   "    console.trace('label %d', 5);\n"
                   "}\n"
                   "traced();\n"sv;
-    EXPECT_EQ(harness.run_script(source, "console-test.js"sv).variant, JS_COMPLETION_NORMAL);
+    EXPECT_EQ(embedded_vm->evaluate(source, "console-test.js"sv).variant, JS_COMPLETION_NORMAL);
     EXPECT_EQ(s_console_output.messages, (Vector<ByteString> { "log \"answer\" 42 [ 1, 2 ]"sv, "trace label 5: traced@console-test.js:3:18 <anonymous>@console-test.js:5:7 <anonymous>"sv }));
 }
 
 TEST_CASE(debugger_pauses_at_a_breakpoint_and_reads_the_bindings_of_the_frame)
 {
-    TestHarness harness;
-    auto* vm = harness.vm();
+    auto embedded_vm = EmbeddedVM::create_with_realm();
+    auto* vm = embedded_vm->vm();
     js_debugger_enable(vm);
     js_debugger_set_pause_callback(vm, record_debugger_pause, nullptr);
     s_debugger_pauses.clear();
@@ -179,12 +152,12 @@ TEST_CASE(debugger_pauses_at_a_breakpoint_and_reads_the_bindings_of_the_frame)
                   "    return sum;\n"
                   "}\n"
                   "answer(0);\n"sv;
-    EXPECT_EQ(harness.run_script(source, "debugger-test.js"sv).variant, JS_COMPLETION_NORMAL);
-    auto breakpoint = js_debugger_add_breakpoint(vm, view_of("debugger-test.js"sv), 4, false, 0);
+    EXPECT_EQ(embedded_vm->evaluate(source, "debugger-test.js"sv).variant, JS_COMPLETION_NORMAL);
+    auto breakpoint = js_debugger_add_breakpoint(vm, ascii_view("debugger-test.js"sv), 4, false, 0);
     EXPECT(breakpoint.error_message == nullptr);
     EXPECT(js_debugger_is_breakpoint_resolved(vm, breakpoint.breakpoint_id));
 
-    auto completion = harness.run_script("answer(1);"sv, "call.js"sv);
+    auto completion = embedded_vm->evaluate("answer(1);"sv, "call.js"sv);
     EXPECT_EQ(completion.variant, JS_COMPLETION_NORMAL);
     EXPECT_EQ(printed(vm, completion.payload), "50"sv);
 

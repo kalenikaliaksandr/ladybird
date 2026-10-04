@@ -50,12 +50,6 @@ JSCompletion normal_completion()
     return { 0, JS_COMPLETION_NORMAL };
 }
 
-ByteString ascii_string(JSUtf16View view)
-{
-    VERIFY(view.has_ascii_storage);
-    return ByteString(static_cast<char const*>(view.data), view.length_in_code_units);
-}
-
 void run_promise_job(TestEmbedder& embedder)
 {
     auto* root = embedder.promise_jobs.take_first();
@@ -80,7 +74,7 @@ JSCompletion ensure_can_compile_strings(void* data, JSVM*, JSEnsureCanCompileStr
 {
     auto& embedder = embedder_of(data);
     embedder.compilation_types.append(arguments->compilation_type);
-    auto code = ascii_string(arguments->code_string);
+    auto code = byte_string_of(arguments->code_string);
     if (code == "forbidden"sv)
         return { arguments->body_arg, JS_COMPLETION_THROW };
     if (code == "'reenter'"sv) {
@@ -147,7 +141,7 @@ void load_imported_module(void* data, JSVM*, JSImportedModuleReferrer referrer, 
 
 void unrecognized_date_string(void* data, JSVM*, JSUtf16View date_string)
 {
-    embedder_of(data).unrecognized_date_strings.append(ascii_string(date_string));
+    embedder_of(data).unrecognized_date_strings.append(byte_string_of(date_string));
 }
 
 JSCompletion resize_array_buffer(void* data, JSVM* vm, JSObject* buffer, size_t new_byte_length)
