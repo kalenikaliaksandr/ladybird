@@ -11,6 +11,7 @@ use ak::{ScopeGuard, Utf16FlyString};
 use libjs_runtime_macros::Trace;
 
 use crate::gc::class::{GcCell, define_cell};
+use crate::gc::foreign::ForeignCellSlot;
 use crate::gc::visitor::{Trace, Visitor};
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
@@ -117,7 +118,7 @@ impl SyntheticModule {
             );
         };
         let module = vm.heap().allocate(SyntheticModule {
-            base: Module::new(Self::CLASS, realm, filename),
+            base: Module::new(Self::CLASS, realm, filename, ForeignCellSlot::empty()),
             export_names,
             evaluation_steps: OnceCell::new(),
         });

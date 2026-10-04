@@ -5,8 +5,11 @@
  */
 
 use core::cell::Cell;
+use core::ffi::c_void;
+use core::ptr::NonNull;
 
 use crate::gc::class::{Extends, GcCell, define_cell};
+use crate::gc::foreign::ForeignCellSlot;
 use crate::gc::visitor::{Trace, Visitor};
 use crate::interpreter::execution_context::OwnedExecutionContext;
 use crate::interpreter::vm::Vm;
@@ -22,7 +25,7 @@ use crate::runtime::intrinsics::Intrinsics;
 use crate::runtime::object::allocate_object;
 use crate::runtime::shape::Shape;
 
-/// The parts of a realm the interpreter does not read. [[HostDefined]] comes with the hosts that define it.
+/// The parts of a realm the interpreter does not read.
 #[derive(Default)]
 pub struct RealmStorage {}
 
@@ -35,6 +38,7 @@ unsafe impl Trace for Realm {
         self.global_object.trace(visitor);
         self.global_environment.trace(visitor);
         self.global_declarative_environment.trace(visitor);
+        self.host_defined.trace(visitor);
     }
 }
 
@@ -107,6 +111,7 @@ impl Realm {
             global_declarative_environment: Cell::new(None),
             global_environment: Cell::new(None),
             intrinsics: Cell::new(None),
+            host_defined: ForeignCellSlot::empty(),
             storage: RealmStorage::default(),
         })
     }
@@ -231,6 +236,11 @@ impl Realm {
             .set(Some(environment.declarative_record()));
     }
 
+    /// [[HostDefined]]
+    pub fn host_defined(&self) -> Option<NonNull<c_void>> {
+        self.host_defined.get()
+    }
+
     pub fn global_declarative_environment(&self) -> Gc<DeclarativeEnvironment> {
         self.global_declarative_environment
             .get()
@@ -263,6 +273,8 @@ impl Realm {
 #[cfg(all(test, libjs_runtime_tests_with_libgc))]
 pub mod test_realm {
     use super::*;
+    use crate::gc::root::MarkedVec;
+    use crate::gc::weak::GcWeak;
     use crate::runtime::array::Array;
 
     pub struct TestRealm<'vm> {
@@ -308,6 +320,64 @@ pub mod test_realm {
             self.vm.pop_execution_context();
             self.vm.interpreter_stack().deallocate(self.stack_mark);
         }
+    }
+
+    /// A host-defined slot holding `object`, standing in for one of the embedder's cells.
+    pub fn slot_holding(object: Gc<Object>) -> ForeignCellSlot {
+        let slot = ForeignCellSlot::empty();
+        // SAFETY: The object is a live cell of the VM's heap.
+        unsafe { slot.set(Some(object.as_non_null().cast())) };
+        slot
+    }
+
+    const HOST_DEFINED_HOLDER_COUNT: usize = 32;
+
+    /// Creates holders with `create_holder`, each with a host-defined slot that holds an object nothing else does, and
+    /// as many objects that nothing holds. Once garbage is collected while only the holders are rooted, every held
+    /// object must have survived and `host_defined_of` must still find it in its holder, while most of the others,
+    /// which the conservative stack scan may keep alive, must be gone.
+    pub fn check_that_host_defined_slots_keep_their_cells_alive<Holder: Trace + Copy + 'static>(
+        vm: &Vm,
+        test_realm: &TestRealm<'_>,
+        create_holder: impl Fn(ForeignCellSlot) -> Holder,
+        host_defined_of: impl Fn(Holder) -> Option<NonNull<c_void>>,
+    ) {
+        let holders = MarkedVec::new(vm);
+        let (held_objects, objects_held_by_nothing) =
+            create_held_and_unheld_objects(vm, test_realm, &create_holder, &holders);
+        vm.heap().collect_garbage();
+
+        for (index, held_object) in held_objects.iter().enumerate() {
+            let held_object = held_object.get().expect("a host-defined slot keeps its cell alive");
+            let holder = holders.get(index).expect("the index is in bounds");
+            assert_eq!(host_defined_of(holder), Some(held_object.as_non_null().cast()));
+        }
+        let collected_count = objects_held_by_nothing
+            .iter()
+            .filter(|object| object.get().is_none())
+            .count();
+        assert!(
+            collected_count >= HOST_DEFINED_HOLDER_COUNT / 2,
+            "only {collected_count} of the objects nothing holds were collected"
+        );
+    }
+
+    #[inline(never)]
+    fn create_held_and_unheld_objects<Holder: Trace + Copy + 'static>(
+        vm: &Vm,
+        test_realm: &TestRealm<'_>,
+        create_holder: &impl Fn(ForeignCellSlot) -> Holder,
+        holders: &MarkedVec<'_, Holder>,
+    ) -> (Vec<GcWeak<Object>>, Vec<GcWeak<Object>>) {
+        let mut held_objects = Vec::new();
+        let mut objects_held_by_nothing = Vec::new();
+        for _ in 0..HOST_DEFINED_HOLDER_COUNT {
+            let held_object = test_realm.object();
+            held_objects.push(GcWeak::new(vm.heap(), held_object));
+            holders.push(create_holder(slot_holding(held_object)));
+            objects_held_by_nothing.push(GcWeak::new(vm.heap(), test_realm.object()));
+        }
+        (held_objects, objects_held_by_nothing)
     }
 
     pub fn key(name: &str) -> crate::runtime::property_key::PropertyKey {
@@ -372,7 +442,9 @@ mod tests {
     use super::*;
     use crate::layout::value::Value;
     use crate::runtime::completion::Must;
-    use crate::runtime::realm::test_realm::own_keys;
+    use crate::runtime::realm::test_realm::{
+        TestRealm, check_that_host_defined_slots_keep_their_cells_alive, own_keys,
+    };
 
     #[test]
     fn initialize_host_defined_realm_runs_a_new_realm_with_its_global_object() {
@@ -397,6 +469,23 @@ mod tests {
              Infinity,NaN,undefined,AggregateError,"
         ));
         assert!(vm.pop_execution_context() == context.as_non_null());
+    }
+
+    #[test]
+    fn a_realm_keeps_its_host_defined_cell_alive() {
+        let vm = Vm::create();
+        let test_realm = TestRealm::new(&vm);
+        check_that_host_defined_slots_keep_their_cells_alive(
+            &vm,
+            &test_realm,
+            |host_defined| {
+                let realm = Realm::create(&vm);
+                // SAFETY: The slot holds a live cell, which the realm's slot keeps alive from now on.
+                unsafe { realm.host_defined.set(host_defined.get()) };
+                realm
+            },
+            |realm| realm.host_defined(),
+        );
     }
 
     #[test]

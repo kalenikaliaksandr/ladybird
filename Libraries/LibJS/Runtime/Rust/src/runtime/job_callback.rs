@@ -5,10 +5,13 @@
  */
 
 use core::cell::Cell;
+use core::ffi::c_void;
+use core::ptr::NonNull;
 
 use libjs_runtime_macros::Trace;
 
 use crate::gc::class::{GcCell, define_cell};
+use crate::gc::foreign::ForeignCellSlot;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::{CellHeader, Gc};
 use crate::layout::value::Value;
@@ -17,34 +20,38 @@ use crate::runtime::completion::ThrowCompletionOr;
 use crate::runtime::function_object::FunctionObject;
 
 // 9.5.1 JobCallback Records, https://tc39.es/ecma262/#sec-jobcallback-records
-/// NB: C++ also keeps the host-defined [[HostDefined]] data LibWeb attaches to its callbacks. The hosts of the Rust
-///     runtime attach none.
 #[repr(C)]
 #[derive(Trace)]
 pub struct JobCallback {
     header: CellHeader,
-    callback: Cell<Gc<FunctionObject>>,
+    callback: Cell<Gc<FunctionObject>>, // [[Callback]]
+    custom_data: ForeignCellSlot,       // [[HostDefined]]
 }
 
 define_cell!(JobCallback, Other);
 
 impl JobCallback {
-    pub fn create(vm: &Vm, callback: Gc<FunctionObject>) -> Gc<JobCallback> {
+    pub fn create(vm: &Vm, callback: Gc<FunctionObject>, custom_data: ForeignCellSlot) -> Gc<JobCallback> {
         vm.heap().allocate(JobCallback {
             header: CellHeader::for_class(Self::CLASS),
             callback: Cell::new(callback),
+            custom_data,
         })
     }
 
     pub fn callback(&self) -> Gc<FunctionObject> {
         self.callback.get()
     }
+
+    pub fn custom_data(&self) -> Option<NonNull<c_void>> {
+        self.custom_data.get()
+    }
 }
 
 // 9.5.2 HostMakeJobCallback ( callback ), https://tc39.es/ecma262/#sec-hostmakejobcallback
 pub fn make_job_callback(vm: &Vm, callback: Gc<FunctionObject>) -> Gc<JobCallback> {
     // 1. Return the JobCallback Record { [[Callback]]: callback, [[HostDefined]]: empty }.
-    JobCallback::create(vm, callback)
+    JobCallback::create(vm, callback, ForeignCellSlot::empty())
 }
 
 // 9.5.3 HostCallJobCallback ( jobCallback, V, argumentsList ), https://tc39.es/ecma262/#sec-hostcalljobcallback
@@ -58,4 +65,23 @@ pub fn call_job_callback(
 
     // 2. Return ? Call(jobCallback.[[Callback]], V, argumentsList).
     call_function_object(vm, job_callback.callback(), this_value, arguments_list)
+}
+
+#[cfg(all(test, libjs_runtime_tests_with_libgc))]
+mod tests {
+    use super::*;
+    use crate::runtime::realm::test_realm::{TestRealm, check_that_host_defined_slots_keep_their_cells_alive};
+
+    #[test]
+    fn a_job_callback_keeps_its_custom_data_alive() {
+        let vm = Vm::create();
+        let test_realm = TestRealm::new(&vm);
+        let callback = test_realm.realm.eval_function();
+        check_that_host_defined_slots_keep_their_cells_alive(
+            &vm,
+            &test_realm,
+            |custom_data| JobCallback::create(&vm, callback, custom_data),
+            |job_callback| job_callback.custom_data(),
+        );
+    }
 }

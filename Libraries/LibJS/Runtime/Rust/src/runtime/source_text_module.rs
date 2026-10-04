@@ -13,6 +13,7 @@ use libjs_runtime_macros::Trace;
 
 use crate::bytecode::executable::Executable;
 use crate::gc::class::{GcCell, define_cell};
+use crate::gc::foreign::ForeignCellSlot;
 use crate::gc::gc_ref_cell::GcRefCell;
 use crate::gc::root::MarkedVec;
 use crate::interpreter::execution_context::OwnedExecutionContext;
@@ -174,15 +175,25 @@ impl SourceTextModule {
     ) -> Gc<SourceTextModule> {
         assert!(parsed.program_type() == ProgramType::Module && !parsed.has_errors());
         let source_length = source_code.length_in_code_units();
-        Self::create(vm, realm, filename, compile_module(parsed, source_length), source_code)
+        Self::create(
+            vm,
+            realm,
+            filename,
+            compile_module(parsed, source_length),
+            source_code,
+            ForeignCellSlot::empty(),
+        )
     }
 
-    fn create(
+    /// The Source Text Module Record of a module compiled, on any thread, from the code of `source_code`, whose
+    /// filename the module's code reports. Module loading resolves the module's imports against `filename`.
+    pub fn create(
         vm: &Vm,
         realm: Gc<Realm>,
         filename: &str,
         compiled: CompiledModule,
         source_code: Rc<SourceCode>,
+        host_defined: ForeignCellSlot,
     ) -> Gc<SourceTextModule> {
         let CompiledModule {
             executable,
@@ -275,6 +286,7 @@ impl SourceTextModule {
                 filename.to_string(),
                 has_top_level_await,
                 requested_modules,
+                host_defined,
             ),
             execution_context: OwnedExecutionContext::create(0, 0, 0),
             import_meta: Cell::new(None),
@@ -979,6 +991,7 @@ mod tests {
     use super::*;
     use crate::runtime::completion::Throw;
     use crate::runtime::property_key::PropertyKey;
+    use crate::runtime::realm::test_realm::{TestRealm, check_that_host_defined_slots_keep_their_cells_alive};
     use crate::script::Script;
     use crate::utf16::Utf16View;
     use crate::utilities::initialize_realm;
@@ -1031,6 +1044,23 @@ mod tests {
             Utf16View::of_string(&name.to_utf16_string(vm).must()).to_utf8(),
             Utf16View::of_string(&message.to_utf16_string(vm).must()).to_utf8()
         )
+    }
+
+    #[test]
+    fn a_module_keeps_its_host_defined_cell_alive() {
+        let vm = Vm::create();
+        let test_realm = TestRealm::new(&vm);
+        let source: Vec<u16> = "export let exported = 1;".encode_utf16().collect();
+        check_that_host_defined_slots_keep_their_cells_alive(
+            &vm,
+            &test_realm,
+            |host_defined| {
+                let source_code = SourceCode::create(Utf16String::default(), Utf16String::from_utf16(&source));
+                let compiled = compile_module(parse(&source, ProgramType::Module, 0), source.len());
+                SourceTextModule::create(&vm, test_realm.realm, "", compiled, source_code, host_defined)
+            },
+            |module| module.host_defined(),
+        );
     }
 
     /// The modules of a graph with a cycle through a module with top-level await, a JSON module and a dynamic
