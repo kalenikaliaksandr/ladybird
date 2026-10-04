@@ -152,7 +152,7 @@ unsafe fn optional_property_descriptor_from_abi(descriptor: *const JSPropertyDes
     })
 }
 
-fn lookup_phase_from_abi(phase: u8) -> PropertyLookupPhase {
+pub(crate) fn lookup_phase_from_abi(phase: u8) -> PropertyLookupPhase {
     match phase {
         JS_PROPERTY_LOOKUP_PHASE_OWN_PROPERTY => PropertyLookupPhase::OwnProperty,
         JS_PROPERTY_LOOKUP_PHASE_PROTOTYPE_CHAIN => PropertyLookupPhase::PrototypeChain,
@@ -173,7 +173,7 @@ unsafe fn get_cache_metadata_from_abi<'metadata>(
 /// # Safety
 ///
 /// `metadata` must be null or point to inline cache metadata the runtime handed out for a [[Set]] still running.
-unsafe fn set_cache_metadata_from_abi<'metadata>(
+pub(crate) unsafe fn set_cache_metadata_from_abi<'metadata>(
     metadata: *mut JSSetCacheMetadata,
 ) -> Option<&'metadata mut CacheableSetPropertyMetadata> {
     // SAFETY: The runtime passes its own metadata through the embedder unchanged, as the caller guarantees.
@@ -727,6 +727,31 @@ pub unsafe extern "C" fn js_object_is_subclass_of(object: *mut JSObject, class_i
         class = current.parent;
     }
     false
+}
+
+// The engine queries that inline caches and enumeration ask of an object's class
+
+/// Whether inline caches may remember that a key is missing from the object. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_is_cacheable_for_property_absence(object: *mut JSObject) -> bool {
+    // SAFETY: See the module documentation.
+    unsafe { cell_from_abi::<JSObject>(object) }.is_cacheable_for_property_absence()
+}
+
+/// Whether inline caches may remember a property found in the object's prototype chain, which a host class may answer
+/// through a hook that runs JavaScript. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_is_cacheable_for_inherited_property(object: *mut JSObject) -> bool {
+    // SAFETY: See the module documentation.
+    unsafe { cell_from_abi::<JSObject>(object) }.is_cacheable_for_inherited_property()
+}
+
+/// Whether enumeration may read the object's own keys, attributes and values straight from its shape and storage.
+/// Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_object_eligible_for_own_property_enumeration_fast_path(object: *mut JSObject) -> bool {
+    // SAFETY: See the module documentation.
+    unsafe { cell_from_abi::<JSObject>(object) }.eligible_for_own_property_enumeration_fast_path()
 }
 
 // The internal methods, which dispatch through the object's class like a call through a C++ Object pointer
