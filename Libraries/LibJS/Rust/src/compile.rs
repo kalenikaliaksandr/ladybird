@@ -27,13 +27,18 @@ use crate::parser::ProgramType;
 use crate::u32_from_usize;
 use std::collections::HashSet;
 
-// Compile-time assertion: `ParsedProgram` travels between the parse worker
-// thread and the main thread, so it must be `Send`. After the StringId and
+// Compile-time assertion: what parse and compile produce travels from a worker
+// thread to the main thread, so it must be `Send`. After the StringId and
 // ScopeId arena migrations the AST itself contains no `Rc`/`Cell`/`RefCell`
-// values, so this is naturally satisfied without `unsafe impl Send`.
+// values, and compiled regexes are CompiledRegexHandles, so this is naturally
+// satisfied without `unsafe impl Send`.
 const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<ParsedProgram>();
+    assert_send::<CompiledProgram>();
+    assert_send::<CompiledScript>();
+    assert_send::<CompiledModule>();
+    assert_send::<bytecode::generator::PrecompiledFunction>();
 };
 
 // =============================================================================
@@ -147,11 +152,6 @@ pub(crate) enum CompiledProgramBytecode {
     Program(ExecutableData),
     AsyncModule(ExecutableData),
 }
-
-// SAFETY: `CompiledProgram` owns raw handles of compiled regular expressions,
-// which Rust never dereferences; it is created on the parse-worker thread and
-// consumed (or freed) on the main thread, never accessed concurrently.
-unsafe impl Send for CompiledProgram {}
 
 /// Convert scope local variables to generator LocalVariable format.
 fn convert_local_variables(scope: &ast::ScopeData) -> Vec<bytecode::generator::LocalVariable> {
@@ -586,7 +586,7 @@ impl CompiledProgram {
         fn free_executable_regexes(executable: &mut ExecutableData) {
             for regex in executable.compiled_regexes.drain(..) {
                 // SAFETY: No runtime adopted the executables of a program that is discarded, so they still own these.
-                unsafe { crate::host::free_compiled_regex(regex) };
+                unsafe { crate::host::free_compiled_regex(regex.into_raw()) };
             }
             for shared_data in &mut executable.shared_function_data {
                 if let Some(precompiled) = &mut shared_data.precompiled_function {
@@ -2422,6 +2422,19 @@ mod tests {
 
         assert_eq!(script.executable.shared_function_data.len(), 1);
         assert!(script.executable.shared_function_data[0].precompiled_function.is_some());
+    }
+
+    #[test]
+    fn script_compiled_on_another_thread_brings_its_regular_expressions_along() {
+        let source = utf16("/a+/.test('aa'); (function () { return /b/; })();");
+        let script = compile_on_another_thread(&source, ProgramType::Script).into_script();
+
+        assert_eq!(script.executable.compiled_regexes.len(), 1);
+        let immediately_invoked = script.executable.shared_function_data[0]
+            .precompiled_function
+            .as_ref()
+            .expect("the immediately invoked function is compiled with the script");
+        assert_eq!(immediately_invoked.executable.compiled_regexes.len(), 1);
     }
 
     #[test]
