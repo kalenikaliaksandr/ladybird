@@ -52,7 +52,7 @@ use crate::source_code::SourceCode;
 use crate::standard_output::{self, StandardOutputWriter, UnbufferedWriter};
 use crate::utf16::{Utf16View, string_from_utf8_with_replacement_character, utf16_formatted, utf16_from_wtf8};
 use crate::utilities::initialize_realm_with_global_object;
-use crate::utilities::readline;
+use crate::utilities::line_editor::{self, JSLineEditor};
 use libjs_rust::ast::ProgramType;
 use libjs_rust::compile::parse;
 
@@ -730,7 +730,7 @@ fn warn_bytes_line(bytes: &[u8]) {
     let _ = io::stderr().write_all(&line);
 }
 
-fn run_debugger_prompt(vm: &Vm, pause_info: &PauseInfo) {
+fn run_debugger_prompt(vm: &Vm, pause_info: &PauseInfo, line_editor: Option<&JSLineEditor>) {
     let debugger = vm.debugger().expect("execution pauses in the attached debugger");
     let reason = debugger_pause_reason(pause_info.reason);
     if let Some(range) = &pause_info.source_range {
@@ -753,7 +753,11 @@ fn run_debugger_prompt(vm: &Vm, pause_info: &PauseInfo) {
     }
 
     loop {
-        let Some(raw_line) = readline::read_line(c"(debug) ") else {
+        let raw_line = match line_editor {
+            Some(line_editor) => line_editor.read_line(c"(debug) "),
+            None => line_editor::read_line_without_line_editor(c"(debug) "),
+        };
+        let Some(raw_line) = raw_line else {
             debugger.continue_execution(ResumeMode::Continue);
             return;
         };
@@ -1393,11 +1397,8 @@ impl Deref for ReplConsoleClient {
     }
 }
 
-/// The REPL, which reads its input with libedit, which js does not link on Android.
-#[cfg(not(target_os = "android"))]
 mod repl {
     use core::ops::ControlFlow;
-    use std::io::IsTerminal;
 
     use super::*;
     use crate::bytecode::property_access::Strict;
@@ -1405,7 +1406,6 @@ mod repl {
     use crate::runtime::shape::Shape;
     use crate::runtime::string_prototype::WHITESPACE_CHARACTER_CODE_UNITS;
     use crate::utf16::TrimMode;
-    use crate::utilities::readline;
     use libjs_rust::lexer::Lexer;
     use libjs_rust::token::TokenType;
 
@@ -1573,47 +1573,6 @@ mod repl {
         }
     }
 
-    extern "C" fn complete_repl_line_for_readline(
-        _text: *const c_char,
-        _start: c_int,
-        _end: c_int,
-    ) -> *mut *mut c_char {
-        let Some(line) = readline::line_buffer() else {
-            return core::ptr::null_mut();
-        };
-
-        readline::set_attempted_completion_over();
-
-        let completions = complete_repl_line(&line);
-        if completions.is_empty() {
-            return core::ptr::null_mut();
-        }
-
-        readline::completion_matches(common_prefix_of(&completions), &completions)
-    }
-
-    /// The longest run of bytes that every completion starts with, which replaces the word that is completed.
-    fn common_prefix_of(completions: &[Vec<u8>]) -> &[u8] {
-        let mut common_prefix = completions[0].as_slice();
-        for completion in &completions[1..] {
-            let prefix_length = common_prefix
-                .iter()
-                .zip(completion)
-                .take_while(|(prefix_byte, completion_byte)| prefix_byte == completion_byte)
-                .count();
-            common_prefix = &common_prefix[..prefix_length];
-        }
-        common_prefix
-    }
-
-    /// libedit only prompts when the standard input and output are terminals, and then flushes the stdout of C stdio
-    /// that it writes the prompt to, so what js has buffered for the standard output comes out first.
-    fn flush_standard_output_if_readline_prompts() {
-        if io::stdin().is_terminal() && io::stdout().is_terminal() {
-            standard_output::flush();
-        }
-    }
-
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum LabelState {
         NotInLabelOrObjectKey,
@@ -1661,13 +1620,12 @@ mod repl {
     }
 
     /// Reads lines until the brackets they open are closed. Returns an empty piece at the end of the input.
-    fn read_next_piece() -> Result<Vec<u8>, String> {
+    fn read_next_piece(line_editor: &JSLineEditor) -> Result<Vec<u8>, String> {
         let mut piece = Vec::new();
 
         loop {
             let prompt = prompt_for_level(REPL_LINE_LEVEL.load(Ordering::Relaxed));
-            flush_standard_output_if_readline_prompts();
-            let raw_line = readline::readline(&prompt);
+            let raw_line = line_editor.read_line(&prompt);
 
             let mut line_level_delta_for_next_line = 0;
 
@@ -1680,7 +1638,9 @@ mod repl {
                 return Err(STRING_FROM_UTF8_ERROR.to_string());
             };
             if !line.is_empty() {
-                readline::add_history(&CString::new(line.as_slice()).expect("a line from readline() has no NULs"));
+                line_editor.add_line_to_history(
+                    &CString::new(line.as_slice()).expect("a line from the line editor has no NULs"),
+                );
             }
 
             piece.extend_from_slice(&line);
@@ -1698,9 +1658,9 @@ mod repl {
         }
     }
 
-    fn repl(vm: &'static Vm, realm: Gc<Realm>, options: &Options) -> Result<(), String> {
+    fn repl(vm: &'static Vm, realm: Gc<Realm>, options: &Options, line_editor: &JSLineEditor) -> Result<(), String> {
         while KEEP_RUNNING_REPL.load(Ordering::Relaxed) {
-            let piece = read_next_piece()?;
+            let piece = read_next_piece(line_editor)?;
             let code = utf16_from_wtf8(&piece).expect("the lines of a piece are valid UTF-8");
             if Utf16View::Utf16(&code)
                 .trim(&WHITESPACE_CHARACTER_CODE_UNITS, TrimMode::Both)
@@ -1715,7 +1675,12 @@ mod repl {
         Ok(())
     }
 
-    pub(super) fn run_repl(vm: &'static Vm, mut options: Options, history_path: &CStr) -> Result<c_int, String> {
+    pub(super) fn run_repl(
+        vm: &'static Vm,
+        mut options: Options,
+        history_path: &CStr,
+        line_editor: &JSLineEditor,
+    ) -> Result<c_int, String> {
         options.print_last_result = true;
 
         let root_execution_context =
@@ -1735,11 +1700,11 @@ mod repl {
             global_environment: Root::new(vm, global_environment),
         }));
 
-        readline::read_history(history_path);
-        readline::set_attempted_completion_function(complete_repl_line_for_readline);
+        line_editor.read_history_file(history_path);
+        line_editor.complete_lines_with(complete_repl_line);
 
-        repl(vm, realm, &options)?;
-        readline::write_history(history_path);
+        repl(vm, realm, &options, line_editor)?;
+        line_editor.write_history_file(history_path);
         Ok(EXIT_CODE.load(Ordering::Relaxed))
     }
 
@@ -1773,19 +1738,6 @@ mod repl {
             assert!(!read_line("}})"));
             assert_eq!(level(), initial_level - 2);
             REPL_LINE_LEVEL.store(initial_level, Ordering::Relaxed);
-        }
-
-        #[test]
-        fn completions_share_their_longest_common_prefix_of_bytes() {
-            let prefix = |completions: &[&[u8]]| {
-                let completions: Vec<Vec<u8>> = completions.iter().map(|completion| completion.to_vec()).collect();
-                common_prefix_of(&completions).to_vec()
-            };
-            assert_eq!(prefix(&[b"Math.abs"]), b"Math.abs");
-            assert_eq!(prefix(&[b"Math.abs", b"Math.acos", b"Math.acosh"]), b"Math.a");
-            assert_eq!(prefix(&[b"xyz", b"x"]), b"x");
-            assert_eq!(prefix(&[b"a", b"b"]), b"");
-            assert_eq!(prefix(&["\u{E4}".as_bytes(), "\u{E5}".as_bytes()]), b"\xC3");
         }
 
         #[cfg(libjs_runtime_tests_with_libgc)]
@@ -1930,7 +1882,7 @@ fn read_file(path: &str) -> Result<Vec<u8>, ()> {
     Ok(file_contents)
 }
 
-fn ladybird_main(arguments: &[String]) -> c_int {
+fn ladybird_main(arguments: &[String], line_editor: Option<JSLineEditor>) -> c_int {
     let options = match parse_arguments(arguments, &mut StandardOutputWriter) {
         Ok(options) => options,
         Err(exit_code) => return exit_code,
@@ -1958,7 +1910,9 @@ fn ladybird_main(arguments: &[String]) -> c_int {
     if options.debug {
         vm.enable_debugging();
         let debugger = vm.debugger().expect("debugging was just enabled");
-        debugger.set_pause_callback(run_debugger_prompt);
+        debugger.set_pause_callback(move |vm, pause_info| {
+            run_debugger_prompt(vm, pause_info, line_editor.as_ref());
+        });
         debugger.request_pause_on_next_bytecode_execution();
     }
 
@@ -1980,14 +1934,11 @@ fn ladybird_main(arguments: &[String]) -> c_int {
     }
 
     if options.evaluate_script.is_empty() && options.script_paths.is_empty() {
-        #[cfg(target_os = "android")]
-        {
-            let _ = history_path;
+        let Some(line_editor) = &line_editor else {
             eprintln!("REPL functionality is not supported on this platform");
-            unreachable!("the REPL is not supported on this platform");
-        }
-        #[cfg(not(target_os = "android"))]
-        return match repl::run_repl(vm, options, &history_path) {
+            unreachable!("the REPL is only supported with a line editor");
+        };
+        return match repl::run_repl(vm, options, &history_path, line_editor) {
             Ok(exit_code) => exit_code,
             Err(error) => {
                 report_runtime_error(&error);
@@ -2049,13 +2000,20 @@ fn ladybird_main(arguments: &[String]) -> c_int {
     }
 }
 
-/// The entry point of js-rust, called from its C++ main.
+/// The entry point of js-rust, called from its C++ main on the main thread. The REPL and the debugger prompt read
+/// their input with `line_editor`, which is copied. Without one, the REPL is not supported, and the debugger prompt
+/// reads the standard input as the C++ js does without libedit.
 ///
 /// # Safety
 ///
-/// `argv` must hold `argc` NUL-terminated strings.
+/// `argv` must hold `argc` NUL-terminated strings, and `line_editor` must be NULL or point to a JSLineEditor whose
+/// functions stay callable until this returns.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn libjs_runtime_rust_js_main(argc: c_int, argv: *const *const c_char) -> c_int {
+pub unsafe extern "C" fn libjs_runtime_rust_js_main(
+    argc: c_int,
+    argv: *const *const c_char,
+    line_editor: *const JSLineEditor,
+) -> c_int {
     let arguments: Vec<String> = (0..usize::try_from(argc).unwrap_or(0))
         // SAFETY: The caller passes argc valid strings.
         .map(|index| {
@@ -2064,7 +2022,9 @@ pub unsafe extern "C" fn libjs_runtime_rust_js_main(argc: c_int, argv: *const *c
                 .into_owned()
         })
         .collect();
-    let result = ladybird_main(&arguments);
+    // SAFETY: The caller passes NULL or a valid line editor.
+    let line_editor = unsafe { line_editor.as_ref() }.copied();
+    let result = ladybird_main(&arguments, line_editor);
     // Like exit(), which flushes C stdio.
     standard_output::flush();
     result

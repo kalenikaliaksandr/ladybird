@@ -23,11 +23,6 @@ set_target_properties(libjs_runtime_rust PROPERTIES SYSTEM OFF)
 # The runtime allocates its cells from LibGC, and the regex engine it shares with the C++ runtime reads Unicode
 # properties from LibUnicode.
 target_link_libraries(libjs_runtime_rust INTERFACE LibGC LibUnicode)
-if (NOT ANDROID)
-    # The REPL of js-rust reads its input with libedit. Its code shares objects of the staticlib with the code of the
-    # other tools, so links that keep every object they pull in need libedit too.
-    target_link_libraries(libjs_runtime_rust INTERFACE PkgConfig::LIBEDIT)
-endif()
 if ((LINUX OR BSD) AND NOT BUILD_SHARED_LIBS)
     # The staticlib carries its own copy of the Rust standard library and of the Rust crates it shares with
     # LibUnicode, whose exported symbols then appear twice in static ELF links.
