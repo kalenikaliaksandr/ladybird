@@ -13,6 +13,9 @@
 //!
 //! The functions of a script or module that do not run right away compile on their first call. An embedder can have
 //! them compiled on its worker threads before that instead, through JSOffThreadCompilationCallbacks.
+//!
+//! Tokenizing source text for syntax highlighting, and finding the positions of a source where a debugger can stop,
+//! need no VM either.
 
 use core::ffi::c_void;
 use std::borrow::Cow;
@@ -710,4 +713,128 @@ pub unsafe extern "C" fn js_compile_remaining_functions_of_module_off_thread(
     if let Some(executable) = executable {
         compile_remaining_functions_of_executable_off_thread(vm, executable, callbacks);
     }
+}
+
+/// A token of a source text, with the trivia (whitespace and comments) before it, laid out like the FFIToken that C++
+/// JS::SyntaxHighlighter reads. token_type and category are the values of JS::TokenType and JS::TokenCategory, and the
+/// offsets and lengths count UTF-16 code units.
+#[repr(C)]
+pub struct JSToken {
+    pub token_type: u8,
+    pub category: u8,
+    pub offset: u32,
+    pub length: u32,
+    pub trivia_offset: u32,
+    pub trivia_length: u32,
+}
+
+const _: () = assert!(size_of::<JSToken>() == 20 && core::mem::offset_of!(JSToken, offset) == 4);
+
+/// Where the runtime hands the tokens of a source text, one at a time, borrowed for the call.
+#[repr(C)]
+pub struct JSTokenSink {
+    pub context: *mut c_void,
+    pub append: Option<unsafe extern "C" fn(context: *mut c_void, token: *const JSToken)>,
+}
+
+// JS::TokenCategory.
+pub const JS_TOKEN_CATEGORY_INVALID: u8 = 0;
+pub const JS_TOKEN_CATEGORY_TRIVIA: u8 = 1;
+pub const JS_TOKEN_CATEGORY_NUMBER: u8 = 2;
+pub const JS_TOKEN_CATEGORY_STRING: u8 = 3;
+pub const JS_TOKEN_CATEGORY_PUNCTUATION: u8 = 4;
+pub const JS_TOKEN_CATEGORY_OPERATOR: u8 = 5;
+pub const JS_TOKEN_CATEGORY_KEYWORD: u8 = 6;
+pub const JS_TOKEN_CATEGORY_CONTROL_KEYWORD: u8 = 7;
+pub const JS_TOKEN_CATEGORY_IDENTIFIER: u8 = 8;
+
+const _: () = {
+    use libjs_rust::token::TokenCategory;
+    assert!(JS_TOKEN_CATEGORY_INVALID == TokenCategory::Invalid as u8);
+    assert!(JS_TOKEN_CATEGORY_TRIVIA == TokenCategory::Trivia as u8);
+    assert!(JS_TOKEN_CATEGORY_NUMBER == TokenCategory::Number as u8);
+    assert!(JS_TOKEN_CATEGORY_STRING == TokenCategory::String as u8);
+    assert!(JS_TOKEN_CATEGORY_PUNCTUATION == TokenCategory::Punctuation as u8);
+    assert!(JS_TOKEN_CATEGORY_OPERATOR == TokenCategory::Operator as u8);
+    assert!(JS_TOKEN_CATEGORY_KEYWORD == TokenCategory::Keyword as u8);
+    assert!(JS_TOKEN_CATEGORY_CONTROL_KEYWORD == TokenCategory::ControlKeyword as u8);
+    assert!(JS_TOKEN_CATEGORY_IDENTIFIER == TokenCategory::Identifier as u8);
+};
+
+/// Tokenizes `source` without parsing it, as JS::SyntaxHighlighter does, and hands every token to `tokens` on the
+/// calling thread. The last token is the end-of-file token, whose trivia is whatever follows the token before it.
+/// Borrows the view. Any thread may call this.
+///
+/// # Safety
+///
+/// The view must be valid, and `tokens` must point to a sink with an append function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_compile_tokenize(source: JSUtf16View, tokens: *const JSTokenSink) {
+    // SAFETY: The caller passes a valid view and sink.
+    let (source, tokens) = unsafe { (code_units_of(source), &*tokens) };
+    let append = tokens.append.expect("a token sink has an append function");
+    for token in libjs_rust::tokenize::tokenize(&source) {
+        let token = JSToken {
+            token_type: token.token_type as u8,
+            category: token.category as u8,
+            offset: token.offset,
+            length: token.length,
+            trivia_offset: token.trivia_offset,
+            trivia_length: token.trivia_length,
+        };
+        // SAFETY: The embedder's sink takes tokens with the context it came with, and borrows each for the call.
+        unsafe { append(tokens.context, &raw const token) };
+    }
+}
+
+/// JS::Position: a line and a column, both counted from 1.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JSPosition {
+    pub line: u32,
+    pub column: u32,
+}
+
+/// Where the runtime hands a run of positions, borrowed for the call.
+#[repr(C)]
+pub struct JSPositionSink {
+    pub context: *mut c_void,
+    pub append: Option<unsafe extern "C" fn(context: *mut c_void, positions: *const JSPosition, count: usize)>,
+}
+
+/// breakpoint_positions_for_source(source_code, type, line_number_offset): every position in `source` where a
+/// breakpoint can be set, those inside functions that have not been compiled yet included, sorted and without repeats.
+/// Lines count from `line_number_offset` as js_compile_parse() counts them, and a source with syntax errors has none.
+/// This compiles a private copy of the source, which needs no VM. Hands the positions to `positions` in one call on
+/// the calling thread, if there are any. Borrows the view. Any thread may call this.
+///
+/// # Safety
+///
+/// The view must be valid, and `positions` must point to a sink with an append function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_compile_breakpoint_positions_for_source(
+    source: JSUtf16View,
+    program_type: JSProgramType,
+    line_number_offset: usize,
+    positions: *const JSPositionSink,
+) {
+    // SAFETY: The caller passes a valid view and sink.
+    let (source, sink) = unsafe { (code_units_of(source), &*positions) };
+    let append = sink.append.expect("a position sink has an append function");
+    let positions: Vec<JSPosition> = libjs_rust::breakpoint_positions::breakpoint_positions_for_source(
+        &source,
+        program_type_from_abi(program_type),
+        line_number_offset,
+    )
+    .into_iter()
+    .map(|position| JSPosition {
+        line: position.line,
+        column: position.column,
+    })
+    .collect();
+    if positions.is_empty() {
+        return;
+    }
+    // SAFETY: The embedder's sink takes the positions with the context it came with, and borrows them for the call.
+    unsafe { append(sink.context, positions.as_ptr(), positions.len()) };
 }
