@@ -12,12 +12,15 @@
 //! C++ class overrides.
 
 use core::cell::Cell;
+use core::ffi::c_void;
+use core::ptr::NonNull;
 
 use ak::{Utf16FlyString, Utf16String};
 use libjs_runtime_macros::Trace;
 
 use crate::gc::class::{Class, GcCell, define_cell};
 use crate::gc::class_id::ClassId;
+use crate::gc::foreign::ForeignCellSlot;
 use crate::gc::gc_ref_cell::GcRefCell;
 use crate::gc::root::MarkedVec;
 use crate::interpreter::vm::Vm;
@@ -197,7 +200,6 @@ pub const MODULE_METHODS: ModuleMethods = ModuleMethods {
 };
 
 // 16.2.1.4 Abstract Module Records, https://tc39.es/ecma262/#sec-abstract-module-records
-// NB: [[HostDefined]] is not ported: no host passes one yet.
 #[repr(C)]
 #[derive(Trace)]
 pub struct Module {
@@ -205,6 +207,7 @@ pub struct Module {
     realm: Gc<Realm>,                                 // [[Realm]]
     environment: Cell<Option<Gc<ModuleEnvironment>>>, // [[Environment]]
     namespace: Cell<Option<Gc<Object>>>,              // [[Namespace]]
+    host_defined: ForeignCellSlot,                    // [[HostDefined]]
 
     // Needed for potential lookups of modules.
     filename: String,
@@ -213,13 +216,14 @@ pub struct Module {
 define_cell!(Module, Other);
 
 impl Module {
-    /// Module(Realm&, ByteString filename), for `class`, which extends Module.
-    pub fn new(class: &'static Class, realm: Gc<Realm>, filename: String) -> Module {
+    /// Module(Realm&, ByteString filename, GC::Ptr<GC::Cell> host_defined), for `class`, which extends Module.
+    pub fn new(class: &'static Class, realm: Gc<Realm>, filename: String, host_defined: ForeignCellSlot) -> Module {
         Module {
             header: CellHeader::for_class(class),
             realm,
             environment: Cell::new(None),
             namespace: Cell::new(None),
+            host_defined,
             filename,
         }
     }
@@ -259,6 +263,10 @@ impl Module {
 
     pub fn filename(&self) -> &str {
         &self.filename
+    }
+
+    pub fn host_defined(&self) -> Option<NonNull<c_void>> {
+        self.host_defined.get()
     }
 
     pub fn environment(&self) -> Option<Gc<ModuleEnvironment>> {

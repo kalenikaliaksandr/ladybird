@@ -10,6 +10,7 @@ use core::ops::Deref;
 use libjs_runtime_macros::Trace;
 
 use crate::gc::class::{Class, define_cell};
+use crate::gc::foreign::ForeignCellSlot;
 use crate::gc::gc_ref_cell::GcRefCell;
 use crate::gc::root::MarkedVec;
 use crate::interpreter::vm::Vm;
@@ -103,17 +104,18 @@ fn new_intrinsic_promise_capability(vm: &Vm, realm: Gc<Realm>) -> Gc<PromiseCapa
 }
 
 impl CyclicModule {
-    /// CyclicModule(Realm&, StringView filename, bool has_top_level_await, Vector<ModuleRequest> requested_modules),
-    /// for `class`, which extends CyclicModule.
+    /// CyclicModule(Realm&, StringView filename, bool has_top_level_await, Vector<ModuleRequest> requested_modules,
+    /// GC::Ptr<GC::Cell> host_defined), for `class`, which extends CyclicModule.
     pub fn new(
         class: &'static Class,
         realm: Gc<Realm>,
         filename: String,
         has_top_level_await: bool,
         requested_modules: Vec<ModuleRequest>,
+        host_defined: ForeignCellSlot,
     ) -> CyclicModule {
         CyclicModule {
-            base: Module::new(class, realm, filename),
+            base: Module::new(class, realm, filename, host_defined),
             status: Cell::new(ModuleStatus::New),
             evaluation_error: Cell::new(None),
             dfs_index: Cell::new(None),

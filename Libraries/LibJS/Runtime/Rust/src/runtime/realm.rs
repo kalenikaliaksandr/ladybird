@@ -5,8 +5,11 @@
  */
 
 use core::cell::Cell;
+use core::ffi::c_void;
+use core::ptr::NonNull;
 
 use crate::gc::class::{Extends, GcCell, define_cell};
+use crate::gc::foreign::ForeignCellSlot;
 use crate::gc::visitor::{Trace, Visitor};
 use crate::interpreter::execution_context::OwnedExecutionContext;
 use crate::interpreter::vm::Vm;
@@ -22,7 +25,7 @@ use crate::runtime::intrinsics::Intrinsics;
 use crate::runtime::object::allocate_object;
 use crate::runtime::shape::Shape;
 
-/// The parts of a realm the interpreter does not read. [[HostDefined]] comes with the hosts that define it.
+/// The parts of a realm the interpreter does not read.
 #[derive(Default)]
 pub struct RealmStorage {}
 
@@ -35,6 +38,7 @@ unsafe impl Trace for Realm {
         self.global_object.trace(visitor);
         self.global_environment.trace(visitor);
         self.global_declarative_environment.trace(visitor);
+        self.host_defined.trace(visitor);
     }
 }
 
@@ -107,6 +111,7 @@ impl Realm {
             global_declarative_environment: Cell::new(None),
             global_environment: Cell::new(None),
             intrinsics: Cell::new(None),
+            host_defined: ForeignCellSlot::empty(),
             storage: RealmStorage::default(),
         })
     }
@@ -229,6 +234,11 @@ impl Realm {
         self.global_environment.set(Some(environment));
         self.global_declarative_environment
             .set(Some(environment.declarative_record()));
+    }
+
+    /// [[HostDefined]]
+    pub fn host_defined(&self) -> Option<NonNull<c_void>> {
+        self.host_defined.get()
     }
 
     pub fn global_declarative_environment(&self) -> Gc<DeclarativeEnvironment> {
