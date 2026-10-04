@@ -516,3 +516,44 @@ TEST_CASE(the_embedder_runs_the_cleanup_of_a_finalization_registry)
     gc_root_destroy(registry_root);
     EXPECT(embedded_vm.run("if (held.length === 0 || new Set(held).size !== held.length) throw new Error();"sv));
 }
+
+TEST_CASE(primitive_wrappers_round_trip_their_primitives)
+{
+    auto embedded_vm = EmbeddedVM::create_with_realm(EmbeddedVM::process_default_heap_options);
+    auto* vm = embedded_vm->vm();
+    auto* realm = embedded_vm->realm();
+
+    // What structured serialization does: tell the wrappers apart by class, then read and recreate their primitives.
+    auto* boolean = embedded_vm->object_of("Object(true)"sv);
+    auto* number = embedded_vm->object_of("Object(-0.5)"sv);
+    auto* bigint = embedded_vm->object_of("Object(-(2n ** 64n))"sv);
+    auto* string = embedded_vm->object_of("new String('wrapped')"sv);
+    EXPECT(js_object_is_subclass_of(boolean, JS_LAYOUT_CLASS_ID_BOOLEAN_OBJECT));
+    EXPECT(js_object_is_subclass_of(number, JS_LAYOUT_CLASS_ID_NUMBER_OBJECT));
+    EXPECT(js_object_is_subclass_of(bigint, JS_LAYOUT_CLASS_ID_BIG_INT_OBJECT));
+    EXPECT(js_object_is_subclass_of(string, JS_LAYOUT_CLASS_ID_STRING_OBJECT));
+    EXPECT(!js_object_is_subclass_of(string, JS_LAYOUT_CLASS_ID_BOOLEAN_OBJECT));
+
+    auto* boolean_copy = js_primitive_wrapper_create_boolean(vm, realm, js_primitive_wrapper_boolean(boolean));
+    auto* number_copy = js_primitive_wrapper_create_number(vm, realm, js_primitive_wrapper_number(number));
+    auto* bigint_value = js_primitive_wrapper_bigint(bigint);
+    EXPECT(js_bigint_is_negative(bigint_value));
+    EXPECT_EQ(js_bigint_magnitude_word_count(bigint_value), 3u);
+    auto* bigint_copy = js_primitive_wrapper_create_bigint(vm, realm, bigint_value);
+    auto string_view = js_string_utf16_view(js_primitive_wrapper_string(string));
+    auto* string_copy = js_primitive_wrapper_create_string(vm, realm, js_string_create_from_utf16_view(vm, string_view), embedded_vm->intrinsic(JS_INTRINSIC_STRING_PROTOTYPE));
+
+    JSValue copies[] = { value_of_object(boolean_copy), value_of_object(number_copy), value_of_object(bigint_copy), value_of_object(string_copy) };
+    define_global(*embedded_vm, "copies"sv, value_of_object(js_array_create_from(vm, realm, copies, array_size(copies))));
+    EXPECT(embedded_vm->run(R"~~~(
+        const [boolean, number, bigint, string] = copies;
+        if (!(boolean instanceof Boolean) || boolean.valueOf() !== true)
+            throw new Error("boolean");
+        if (!(number instanceof Number) || !Object.is(number.valueOf(), -0.5))
+            throw new Error("number");
+        if (!(bigint instanceof BigInt) || bigint.valueOf() !== -(2n ** 64n))
+            throw new Error("bigint");
+        if (!(string instanceof String) || string.length !== 7 || string[0] !== "w" || `${string}` !== "wrapped")
+            throw new Error("string");
+    )~~~"sv));
+}
