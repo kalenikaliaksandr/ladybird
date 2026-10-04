@@ -7,12 +7,11 @@
 //! The cell of a host object of kind JS_HOST_CLASS_OBJECT, whose layout LibJS/HostObjectABI.h fixes for every
 //! runtime.
 
-use core::cell::Cell;
-use core::ffi::c_void;
 use core::mem::offset_of;
 
 use super::host_class::JSHostClass;
 use super::object::Object;
+use crate::layout_forward::ForeignCellSlot;
 
 pub const JS_HOST_OBJECT_HOST_CLASS_OFFSET: usize = 72;
 pub const JS_HOST_OBJECT_WRAPPABLE_OFFSET: usize = 80;
@@ -25,9 +24,9 @@ pub struct HostObject {
     pub host_class: &'static JSHostClass,
     /// The embedder's wrapped implementation object, a C++ GC cell, or null. Direct getter functions read this slot
     /// without checking what it holds, so it never holds anything else.
-    pub wrappable: Cell<*mut c_void>,
+    pub wrappable: ForeignCellSlot,
     /// A C++ GC cell with the rest of the embedder's per-object state, or null.
-    pub host_data: Cell<*mut c_void>,
+    pub host_data: ForeignCellSlot,
 }
 
 const _: () = assert!(offset_of!(HostObject, host_class) == JS_HOST_OBJECT_HOST_CLASS_OFFSET);
