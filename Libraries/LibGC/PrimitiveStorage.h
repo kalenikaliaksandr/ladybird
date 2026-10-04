@@ -53,6 +53,13 @@ public:
     size_t capacity(PrimitiveStorageHandle) const;
     size_t committed_size(PrimitiveStorageHandle) const;
 
+    struct Layout {
+        size_t offset { invalid_offset };
+        size_t size { 0 };
+        size_t capacity { 0 };
+    };
+    Layout layout(PrimitiveStorageHandle) const;
+
     u8* data(PrimitiveStorageHandle);
     u8 const* data(PrimitiveStorageHandle) const;
     u8* data(PrimitiveStorageHandle, size_t byte_offset);

@@ -58,6 +58,14 @@ pub type GCPrimitiveStorageHandle = u64;
 pub const GC_PRIMITIVE_STORAGE_NULL_HANDLE: GCPrimitiveStorageHandle = 0;
 pub const GC_PRIMITIVE_STORAGE_INVALID_OFFSET: usize = usize::MAX;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct GCPrimitiveStorageLayout {
+    pub offset: usize,
+    pub size: usize,
+    pub capacity: usize,
+}
+
 pub type GCCallback = unsafe extern "C" fn(context: *mut c_void);
 pub type GCGatherRootsCallback = unsafe extern "C" fn(context: *mut c_void, root_visitor: *mut GCVisitor);
 
@@ -112,6 +120,7 @@ unsafe extern "C" {
         size: usize,
         zero_fill: bool,
         out_handle: *mut GCPrimitiveStorageHandle,
+        out_layout: *mut GCPrimitiveStorageLayout,
     ) -> bool;
     pub fn gc_primitive_storage_reserve(
         size: usize,
@@ -119,19 +128,31 @@ unsafe extern "C" {
         zero_fill: bool,
         guard_size: usize,
         out_handle: *mut GCPrimitiveStorageHandle,
+        out_layout: *mut GCPrimitiveStorageLayout,
     ) -> bool;
     pub fn gc_primitive_storage_adopt_shared_fd(
         fd: c_int,
         size: usize,
         out_handle: *mut GCPrimitiveStorageHandle,
+        out_layout: *mut GCPrimitiveStorageLayout,
     ) -> bool;
-    pub fn gc_primitive_storage_resize(handle: GCPrimitiveStorageHandle, new_size: usize, zero_fill: bool) -> bool;
-    pub fn gc_primitive_storage_reserve_capacity(handle: GCPrimitiveStorageHandle, new_capacity: usize) -> bool;
+    pub fn gc_primitive_storage_resize(
+        handle: GCPrimitiveStorageHandle,
+        new_size: usize,
+        zero_fill: bool,
+        out_layout: *mut GCPrimitiveStorageLayout,
+    ) -> bool;
+    pub fn gc_primitive_storage_reserve_capacity(
+        handle: GCPrimitiveStorageHandle,
+        new_capacity: usize,
+        out_layout: *mut GCPrimitiveStorageLayout,
+    ) -> bool;
     pub fn gc_primitive_storage_resize_and_reserve(
         handle: GCPrimitiveStorageHandle,
         new_size: usize,
         new_capacity: usize,
         zero_fill: bool,
+        out_layout: *mut GCPrimitiveStorageLayout,
     ) -> bool;
     pub fn gc_primitive_storage_free(handle: GCPrimitiveStorageHandle);
     pub fn gc_primitive_storage_is_valid(handle: GCPrimitiveStorageHandle) -> bool;
