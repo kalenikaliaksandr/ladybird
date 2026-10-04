@@ -8,13 +8,19 @@
 //!
 //! Everything here runs on the thread that owns the VM.
 
+use std::io;
+
 use crate::console::{Console, ConsoleClient, LogLevel};
-use crate::embedding::abi_types::{JSErrorData, JSRealm, JSUtf16View, cell_from_abi, error_data_from_abi};
+use crate::embedding::abi_types::{
+    JSByteSink, JSErrorData, JSRealm, JSUtf16View, cell_from_abi, error_data_from_abi, vm_from_abi,
+};
 use crate::embedding::host::console_client::JSConsoleClient;
 use crate::gc::class::{GcCell, class_of};
 use crate::layout::cell::Gc;
-use crate::layout::host_class::JSObject;
+use crate::layout::host_class::{JSObject, JSVM, JSValue};
+use crate::layout::value::Value;
 use crate::runtime::console_object::ConsoleObject;
+use crate::runtime::print::{PrintContext, print};
 
 /// The Console of a realm's console object, which keeps its counters, timers and group stack and hands what it logs
 /// to its client.
@@ -180,4 +186,58 @@ pub unsafe extern "C" fn js_console_output_debug_message(console: *mut JSConsole
     let console = unsafe { console_from_abi(console) };
     // SAFETY: The caller guarantees that the view is valid for the call.
     console.output_debug_message(log_level_from_abi(log_level), unsafe { output.as_view() });
+}
+
+/// The stream a PrintContext writes to, which hands the bytes to the embedder's sink.
+struct ByteSinkWriter<'a> {
+    sink: &'a JSByteSink,
+}
+
+impl io::Write for ByteSinkWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        let append = self.sink.append.expect("a sink has an append function");
+        // SAFETY: The embedder's sink receives its context and bytes that outlive the call.
+        if unsafe { append(self.sink.context, bytes.as_ptr(), bytes.len()) } {
+            Ok(bytes.len())
+        } else {
+            Err(io::Error::other("the byte sink did not take the bytes"))
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// JS::print(): writes the value to the sink the way the js REPL shows it, as UTF-8 in which lone surrogates are
+/// encoded on their own, in ANSI colors unless `strip_ansi` is set, and with strings quoted and escaped unless
+/// `raw_strings` is set. Returns false if the sink refused bytes, which ends the printing. The sink may run JavaScript,
+/// even JavaScript that changes the value being printed. Only on the VM's thread.
+///
+/// # Safety
+///
+/// `vm` must point to a live VM and `sink` to a sink with an append function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_console_print_value(
+    vm: *mut JSVM,
+    value: JSValue,
+    sink: *const JSByteSink,
+    strip_ansi: bool,
+    raw_strings: bool,
+) -> bool {
+    // SAFETY: The caller passes a live VM.
+    let vm = unsafe { vm_from_abi(vm) };
+    // SAFETY: The caller passes a live sink.
+    let sink = unsafe { sink.as_ref() }.expect("a sink is not null");
+    let mut writer = ByteSinkWriter { sink };
+    let mut print_context = PrintContext {
+        vm,
+        stream: &mut writer,
+        strip_ansi,
+        raw_strings,
+    };
+    print(Value(value), &mut print_context).is_ok()
 }
