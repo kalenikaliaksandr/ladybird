@@ -25,6 +25,7 @@ use std::mem::align_of;
 
 use crate::ast::Utf16String;
 use crate::bytecode::basic_block::SourceMapEntry;
+use crate::bytecode::constant::ConstantTag;
 use crate::bytecode::executable::ExecutableData;
 use crate::bytecode::generator::ConstantValue;
 use crate::bytecode::generator::ExceptionHandler;
@@ -582,21 +583,6 @@ fn class_element_to_ffi(element: &PendingClassElement) -> FFIClassElement {
         literal_value_string,
         literal_value_string_len,
     }
-}
-
-/// Constant tags for the FFI constant buffer (ABI-compatible).
-#[repr(u8)]
-pub enum ConstantTag {
-    Number = 0,
-    BooleanTrue = 1,
-    BooleanFalse = 2,
-    Null = 3,
-    Undefined = 4,
-    Empty = 5,
-    String = 6,
-    BigInt = 7,
-    WellKnownSymbol = 8,
-    AbstractOperation = 9,
 }
 
 /// Encode constants into a tagged byte buffer for FFI.

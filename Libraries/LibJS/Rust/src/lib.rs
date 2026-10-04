@@ -52,6 +52,7 @@
 //! - `parser/declarations.rs` — Functions, classes, variables, modules
 //! - `ast.rs` — AST type definitions
 //! - `bytecode/` — Bytecode generator, instruction types, and dumper
+//! - `bytecode_cache.rs` — Serialization of compiled programs for the bytecode cache
 //! - `scope_collector.rs` — Scope analysis
 
 #[cfg(feature = "allocator")]
@@ -92,6 +93,7 @@ mod cpp_runtime;
 pub mod ast;
 pub mod ast_dump;
 pub mod bytecode;
+pub mod bytecode_cache;
 pub mod compile;
 pub mod fast_hash;
 pub mod host;
