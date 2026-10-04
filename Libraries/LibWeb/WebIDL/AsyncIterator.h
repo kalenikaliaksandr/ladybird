@@ -7,7 +7,9 @@
 #pragma once
 
 #include <AK/StringView.h>
+#include <LibJS/Heap/Cell.h>
 #include <LibJS/Runtime/Completion.h>
+#include <LibJS/Runtime/HostObject.h>
 #include <LibJS/Runtime/Object.h>
 #include <LibJS/Runtime/PromiseCapability.h>
 #include <LibJS/Runtime/Realm.h>
@@ -18,8 +20,10 @@
 
 namespace Web::WebIDL {
 
-class WEB_API AsyncIterator : public JS::Object {
-    JS_OBJECT(AsyncIterator, JS::Object);
+// The state of a default asynchronous iterator object. The iterator's JS object is a host object whose host data is a
+// cell of the interface's AsyncIterator subclass.
+class WEB_API AsyncIterator : public JS::Cell {
+    GC_CELL(AsyncIterator, JS::Cell);
     GC_DECLARE_ALLOCATOR(AsyncIterator);
 
 public:
@@ -59,7 +63,7 @@ public:
 protected:
     AsyncIterator(JS::Realm&, JS::Object::PropertyKind);
 
-    JS::Realm& promise_realm() const { return shape().realm(); }
+    JS::Realm& promise_realm() const { return m_realm; }
 
     virtual void visit_edges(GC::Cell::Visitor&) override;
 
@@ -95,7 +99,7 @@ private:
         //         Return thisValidationPromiseCapability.[[Promise]].
 
         // 7. If object is not a default asynchronous iterator object for interface, then:
-        auto* iterator = as_if<AsyncIteratorInterface>(*object);
+        auto* iterator = JS::host_data_if<AsyncIteratorInterface>(*object);
 
         if (!iterator) {
             // 1. Let error be a new TypeError.
@@ -113,6 +117,7 @@ private:
     JS::ThrowCompletionOr<GC::Ptr<JS::Object>> iterator_next_impl();
     JS::ThrowCompletionOr<GC::Ptr<JS::Object>> iterator_return_impl(GC::Ref<WebIDL::Promise> return_promise_capability, JS::Value);
 
+    GC::Ref<JS::Realm> m_realm;
     JS::Object::PropertyKind m_kind { JS::Object::PropertyKind::Value };
     GC::Ptr<JS::Promise> m_ongoing_promise;
     bool m_is_finished { false };
