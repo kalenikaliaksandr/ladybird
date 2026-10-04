@@ -10,7 +10,6 @@ use core::ops::Deref;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use core::time::Duration;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
 use libjs_runtime_macros::Trace;
 use num_bigint::BigInt as NumBigInt;
@@ -22,6 +21,7 @@ use crate::gc::foreign::ForeignCellSlot;
 use crate::gc::gc_ref_cell::GcRefCell;
 use crate::gc::heap::Heap;
 use crate::gc::primitive_storage::{ForeignPrimitiveStorage, OwnedPrimitiveStorage, create_shared_memory};
+use crate::gc::shared_memory::{AsSharedMemory, BorrowedSharedMemory, OwnedSharedMemory};
 use crate::gc::visitor::{Trace, Visitor};
 use crate::gc::weak::GcWeak;
 use crate::interpreter::vm::Vm;
@@ -285,7 +285,7 @@ fn mint_shared_object_id() -> u64 {
 /// in other processes map too, mapped into the cage. The block keeps a descriptor of the object to hand it on, and the
 /// id that names the object in every agent, since one object that is mapped twice has two addresses.
 pub struct SharedBackingStore {
-    shared_memory: OwnedFd,
+    shared_memory: OwnedSharedMemory,
     object_id: u64,
     storage: OwnedPrimitiveStorage,
 }
@@ -294,7 +294,7 @@ impl SharedBackingStore {
     /// A new zero-filled shared memory object of `size` bytes, named by a new id.
     pub fn create(size: usize) -> Result<Self, OutOfMemory> {
         let shared_memory = create_shared_memory(size)?;
-        let storage = OwnedPrimitiveStorage::adopt_shared_memory(shared_memory.as_fd(), size)?;
+        let storage = OwnedPrimitiveStorage::adopt_shared_memory(shared_memory.as_shared_memory(), size)?;
         Ok(Self {
             shared_memory,
             object_id: mint_shared_object_id(),
@@ -305,13 +305,13 @@ impl SharedBackingStore {
     /// The first `size` bytes of a shared memory object that another agent made and `object_id` names. The store keeps
     /// a duplicate of the descriptor. Fails if `size` is 0 or the object is smaller than that, as accessing a mapping
     /// beyond the end of its object raises SIGBUS.
-    pub fn adopt(shared_memory: BorrowedFd<'_>, size: usize, object_id: u64) -> Result<Self, OutOfMemory> {
+    pub fn adopt(shared_memory: BorrowedSharedMemory<'_>, size: usize, object_id: u64) -> Result<Self, OutOfMemory> {
         let shared_memory = std::fs::File::from(shared_memory.try_clone_to_owned().map_err(|_| OutOfMemory)?);
         let object_size = shared_memory.metadata().map_err(|_| OutOfMemory)?.len();
         if object_size < size as u64 {
             return Err(OutOfMemory);
         }
-        let storage = OwnedPrimitiveStorage::adopt_shared_memory(shared_memory.as_fd(), size)?;
+        let storage = OwnedPrimitiveStorage::adopt_shared_memory(shared_memory.as_shared_memory(), size)?;
         Ok(Self {
             shared_memory: shared_memory.into(),
             object_id,
@@ -319,8 +319,8 @@ impl SharedBackingStore {
         })
     }
 
-    pub fn shared_memory(&self) -> BorrowedFd<'_> {
-        self.shared_memory.as_fd()
+    pub fn shared_memory(&self) -> BorrowedSharedMemory<'_> {
+        self.shared_memory.as_shared_memory()
     }
 
     pub fn object_id(&self) -> u64 {
@@ -866,7 +866,7 @@ impl ArrayBuffer {
     pub fn create_from_shared_memory(
         vm: &Vm,
         realm: Gc<Realm>,
-        shared_memory: BorrowedFd<'_>,
+        shared_memory: BorrowedSharedMemory<'_>,
         size: usize,
         object_id: u64,
     ) -> Result<Gc<ArrayBuffer>, OutOfMemory> {
@@ -1930,8 +1930,6 @@ mod tests {
 
     #[cfg(libjs_runtime_tests_with_libgc)]
     mod storage_of_embedders_and_shared_memory {
-        use std::os::fd::AsFd;
-
         use super::*;
         use crate::gc::root::Root;
         use crate::interpreter::vm::VmOptions;
@@ -2045,7 +2043,7 @@ mod tests {
             let too_large = ArrayBuffer::create_from_shared_memory(
                 &vm,
                 test_realm.realm,
-                unrelated_memory.as_fd(),
+                unrelated_memory.as_shared_memory(),
                 1 << 20,
                 object_id,
             );
