@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-//! The host hooks: the embedder's table of callbacks and its data pointer.
+//! The host hooks, which are the embedder's table of callbacks and its data pointer, and the embedder's agent.
 
 use core::ffi::c_void;
 use core::mem::ManuallyDrop;
@@ -126,6 +126,29 @@ pub struct JSEnsureCanCompileStringsArguments {
 pub struct JSImportMetaPropertySink {
     pub context: *mut c_void,
     pub append: unsafe extern "C" fn(context: *mut c_void, key: JSPropertyKey, value: JSValue),
+}
+
+/// Whether the goal of a spin of the event loop is met, given the context that came with it.
+pub type JSGoalCondition = unsafe extern "C" fn(goal_context: *mut c_void) -> bool;
+
+/// The surrounding agent of the VM, which the embedder provides: the C++ runtime's JS::Agent.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct JSAgent {
+    /// [[CanBlock]]: whether Atomics.wait() may block.
+    pub can_block: bool,
+    /// Agent::spin_event_loop_until(): runs the embedder's event loop, promise jobs included, until
+    /// goal_condition(goal_context) is true, which await in native code waits for its promise with. It receives `data`
+    /// and the VM, runs on the VM's thread, and may run any JavaScript, including another spin.
+    pub spin_event_loop_until: Option<
+        unsafe extern "C" fn(
+            data: *mut c_void,
+            vm: *mut JSVM,
+            goal_condition: JSGoalCondition,
+            goal_context: *mut c_void,
+        ),
+    >,
+    pub data: *mut c_void,
 }
 
 /// The embedder's table of host hooks, which the VM calls in place of its own host-defined behavior. A null hook keeps
@@ -301,6 +324,36 @@ pub(crate) fn install_embedder(vm: &Vm, embedder: Option<Embedder>) {
         has_on_unimplemented_property_access
             .then_some(on_unimplemented_property_access as OnUnimplementedPropertyAccess),
     );
+}
+
+/// The event loop of the agent that an embedder provides, which the C++ runtime reaches through VM::agent().
+#[derive(Clone, Copy)]
+pub struct EmbedderAgent {
+    spin_event_loop_until: unsafe extern "C" fn(*mut c_void, *mut JSVM, JSGoalCondition, *mut c_void),
+    data: *mut c_void,
+}
+
+impl EmbedderAgent {
+    pub fn of(agent: &JSAgent) -> Self {
+        Self {
+            spin_event_loop_until: agent
+                .spin_event_loop_until
+                .expect("the agent of an embedder spins its event loop"),
+            data: agent.data,
+        }
+    }
+
+    /// Agent::spin_event_loop_until(goal_condition), which may run any JavaScript, including another spin.
+    pub fn spin_event_loop_until(&self, vm: &Vm, goal_condition: &dyn Fn() -> bool) {
+        unsafe extern "C" fn goal_condition_is_met(goal_condition: *mut c_void) -> bool {
+            // SAFETY: The goal context is the goal condition below, which outlives the spin.
+            let goal_condition = unsafe { &*goal_condition.cast::<&dyn Fn() -> bool>() };
+            goal_condition()
+        }
+        let goal_context = core::ptr::from_ref(&goal_condition).cast_mut().cast();
+        // SAFETY: The embedder's agent takes its data and the VM, and only calls the goal condition during the spin.
+        unsafe { (self.spin_event_loop_until)(self.data, vm_into_abi(vm), goal_condition_is_met, goal_context) };
+    }
 }
 
 /// Calls a hook of the embedder with its data, the VM and `arguments`. The VM holds a hook's thunk only while the

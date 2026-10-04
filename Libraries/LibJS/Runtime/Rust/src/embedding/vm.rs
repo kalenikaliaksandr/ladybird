@@ -11,9 +11,9 @@ use core::ptr::NonNull;
 
 use crate::embedding::abi_types::{JSRealm, cell_from_abi, completion_into_abi, optional_cell_from_abi, vm_from_abi};
 use crate::embedding::hooks::{
-    Embedder, JSImportedModulePayload, JSImportedModuleReferrer, JSModuleRequest, JSPromiseJob, JSVmHostHooks,
-    imported_module_payload_from_abi, imported_module_referrer_from_abi, install_embedder, module_request_from_abi,
-    promise_job_from_abi,
+    Embedder, EmbedderAgent, JSAgent, JSImportedModulePayload, JSImportedModuleReferrer, JSModuleRequest, JSPromiseJob,
+    JSVmHostHooks, imported_module_payload_from_abi, imported_module_referrer_from_abi, install_embedder,
+    module_request_from_abi, promise_job_from_abi,
 };
 use crate::embedding::realm::JSJobCallback;
 use crate::gc::capi::GCHeap;
@@ -25,6 +25,7 @@ use crate::interpreter::vm::{
 use crate::layout::host_class::{JSCompletion, JSObject, JSVM, JSValue};
 use crate::layout::value::Value;
 use crate::layout::vm::{VM_ALIGN, VM_SIZE};
+use crate::runtime::agent::AgentRecord;
 use crate::runtime::array_buffer::ArrayBuffer;
 use crate::runtime::finalization_registry::FinalizationRegistry;
 use crate::runtime::job_callback::call_job_callback;
@@ -150,6 +151,25 @@ pub unsafe extern "C" fn js_vm_set_embedder(vm: *mut JSVM, hooks: *const JSVmHos
     // SAFETY: The caller passes a live VM, and a table that stays alive while the VM uses it.
     let (vm, hooks) = unsafe { (vm_from_abi(vm), hooks.as_ref()) };
     install_embedder(vm, hooks.map(|hooks| Embedder { hooks, data }));
+}
+
+/// Makes `agent` the surrounding agent of the VM, as VM::set_agent() of the C++ runtime does: its [[CanBlock]] says
+/// whether Atomics.wait() may block, and await in native code spins its event loop until the awaited promise settles.
+/// Without an agent, which a null `agent` sets, Atomics.wait() may block and await runs the VM's own queue of promise
+/// jobs, which is empty if an enqueue_promise_job hook takes the jobs. The VM copies the agent, whose data the embedder
+/// keeps alive until it sets another agent or destroys the VM. Only the VM's thread may call this.
+///
+/// # Safety
+///
+/// `vm` must be a live VM and `agent` null or a valid agent with a spin_event_loop_until function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_vm_set_agent(vm: *mut JSVM, agent: *const JSAgent) {
+    // SAFETY: The caller passes a live VM and a valid agent or null.
+    let (vm, agent) = unsafe { (vm_from_abi(vm), agent.as_ref()) };
+    vm.set_agent(agent.map_or_else(AgentRecord::default, |agent| AgentRecord {
+        can_block: agent.can_block,
+        embedder_agent: Some(EmbedderAgent::of(agent)),
+    }));
 }
 
 /// Runs the promise jobs in the VM's own queue until it is empty, as the runtime does after each script when no
