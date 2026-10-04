@@ -848,6 +848,22 @@ pub(crate) mod tests {
         out_of_range_source_text[source_text_start..source_text_start + size_of::<u32>()]
             .copy_from_slice(&u32::try_from(source_length + 1).expect("fits").to_le_bytes());
 
+        // Only the first call of lazy() decodes its constants, and only a BigInt constant's creation parses its digits.
+        let lazy_source = "var lazy = function lazy() { return 1234.5678; }; 0";
+        let mut with_malformed_lazy_constant = serialize(lazy_source, ProgramType::Script);
+        let lazy_number = with_malformed_lazy_constant
+            .windows(size_of::<f64>())
+            .position(|window| window == 1234.5678f64.to_le_bytes())
+            .expect("the blob has the constant of lazy()");
+        with_malformed_lazy_constant[lazy_number - 1] = 0xee;
+        let big_int_source = "var big = 123456789n; big";
+        let mut with_big_int_that_is_not_a_number = serialize(big_int_source, ProgramType::Script);
+        let digits = with_big_int_that_is_not_a_number
+            .windows(9)
+            .position(|window| window == b"123456789")
+            .expect("the blob has the digits of the BigInt");
+        with_big_int_that_is_not_a_number[digits + 4] = b'z';
+
         let materialization_fails = |bytes: &[u8], source: &str| {
             let cache = decode(bytes, ProgramType::Script, &releases).expect("the blob decodes");
             failure_message(script_from_cache(&vm, realm, &cache, source))
@@ -857,13 +873,15 @@ pub(crate) mod tests {
             (with_byte_flipped(&blob, declaration_bytecode), source.to_string()),
             (out_of_range_source_text, source.to_string()),
             (blob.clone(), format!("{source} ")),
+            (with_malformed_lazy_constant, lazy_source.to_string()),
+            (with_big_int_that_is_not_a_number, big_int_source.to_string()),
         ] {
             assert_eq!(
                 materialization_fails(&bytes, &source),
                 "Failed to materialize bytecode cache"
             );
         }
-        assert_eq!(releases.get(), 9);
+        assert_eq!(releases.get(), 11);
 
         let cache = decode(&blob, ProgramType::Script, &releases).expect("the blob decodes");
         let script = script_from_cache(&vm, realm, &cache, source).expect("the original blob still materializes");

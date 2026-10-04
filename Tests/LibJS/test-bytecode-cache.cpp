@@ -5,6 +5,8 @@
  */
 
 #include <AK/Array.h>
+#include <AK/BitCast.h>
+#include <AK/MemMem.h>
 #include <AK/ScopeGuard.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/File.h>
@@ -542,6 +544,56 @@ TEST_CASE(bytecode_cache_rejects_out_of_range_declaration_function_source_span)
 
     // The source hash still matches and the blob layout is intact, but the cached function source span points outside
     // the current SourceCode. Materialization should reject it as a cache miss instead of handing the range to C++.
+    auto decoded_blob = decode_bytecode_cache_blob(Core::ImmutableBytes::adopt(move(corrupted_blob)), JS::RustIntegration::ProgramType::Script, test_data.source_hash.bytes());
+
+    auto materialized = JS::RustIntegration::materialize_bytecode_cache_script(*decoded_blob, test_data.source_code, realm);
+    EXPECT(materialized.has_value());
+    EXPECT(materialized->is_error());
+    EXPECT(!materialized->error().is_empty());
+    EXPECT_EQ(materialized->error().first().message, "Failed to materialize bytecode cache"_string);
+}
+
+TEST_CASE(bytecode_cache_rejects_malformed_constant_of_function_that_has_not_run)
+{
+    auto vm = JS::VM::create();
+    auto root_execution_context = JS::create_simple_execution_context<JS::GlobalObject>(*vm);
+    auto& realm = *root_execution_context->realm;
+
+    auto test_data = create_bytecode_cache_blob("var lazy = function lazy() { return 1234.5678; }; lazy();"sv);
+    auto corrupted_blob = MUST(ByteBuffer::copy(test_data.blob.bytes()));
+
+    auto number_bits = bit_cast<u64>(1234.5678);
+    Array<u8, sizeof(u64)> number_bytes;
+    for (size_t i = 0; i < sizeof(u64); ++i)
+        number_bytes[i] = static_cast<u8>(number_bits >> (8 * i));
+    auto number_offset = AK::memmem_optional(corrupted_blob.data(), corrupted_blob.size(), number_bytes.data(), number_bytes.size());
+    VERIFY(number_offset.has_value());
+    corrupted_blob[*number_offset - 1] = 0xee; // The tag of the constant.
+
+    // Only the first call of lazy() creates its executable, which used to crash on the constant it could not decode.
+    auto decoded_blob = decode_bytecode_cache_blob(Core::ImmutableBytes::adopt(move(corrupted_blob)), JS::RustIntegration::ProgramType::Script, test_data.source_hash.bytes());
+
+    auto materialized = JS::RustIntegration::materialize_bytecode_cache_script(*decoded_blob, test_data.source_code, realm);
+    EXPECT(materialized.has_value());
+    EXPECT(materialized->is_error());
+    EXPECT(!materialized->error().is_empty());
+    EXPECT_EQ(materialized->error().first().message, "Failed to materialize bytecode cache"_string);
+}
+
+TEST_CASE(bytecode_cache_rejects_big_int_constant_that_is_not_a_number)
+{
+    auto vm = JS::VM::create();
+    auto root_execution_context = JS::create_simple_execution_context<JS::GlobalObject>(*vm);
+    auto& realm = *root_execution_context->realm;
+
+    auto test_data = create_bytecode_cache_blob("var big = 123456789n; big;"sv);
+    auto corrupted_blob = MUST(ByteBuffer::copy(test_data.blob.bytes()));
+
+    auto digits = "123456789"sv;
+    auto digits_offset = AK::memmem_optional(corrupted_blob.data(), corrupted_blob.size(), digits.characters_without_null_termination(), digits.length());
+    VERIFY(digits_offset.has_value());
+    corrupted_blob[*digits_offset + 4] = 'z';
+
     auto decoded_blob = decode_bytecode_cache_blob(Core::ImmutableBytes::adopt(move(corrupted_blob)), JS::RustIntegration::ProgramType::Script, test_data.source_hash.bytes());
 
     auto materialized = JS::RustIntegration::materialize_bytecode_cache_script(*decoded_blob, test_data.source_code, realm);

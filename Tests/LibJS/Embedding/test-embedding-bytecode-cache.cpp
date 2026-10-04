@@ -4,8 +4,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Array.h>
 #include <AK/Atomic.h>
+#include <AK/BitCast.h>
 #include <AK/ByteBuffer.h>
+#include <AK/MemMem.h>
 #include <AK/OwnPtr.h>
 #include <AK/Utf16FlyString.h>
 #include <AK/Utf16String.h>
@@ -437,6 +440,43 @@ TEST_CASE(blobs_that_do_not_match_their_source_or_are_corrupt_fail_to_materializ
     EXPECT_EQ(run_script(embedded_vm->vm(), script), u"1"sv);
     js_bytecode_cache_release(cache);
     js_source_code_release(source_code);
+}
+
+TEST_CASE(blobs_with_malformed_constants_fail_validation)
+{
+    // Only the first call of lazy() decodes its constants, and only creating a BigInt parses its digits.
+    auto lazy_source = "var lazy = function lazy() { return 1234.5678; }; 0"sv;
+    auto lazy_blob = blob_of(lazy_source);
+    auto number_bits = bit_cast<u64>(1234.5678);
+    Array<u8, sizeof(u64)> number_bytes;
+    for (size_t i = 0; i < sizeof(u64); ++i)
+        number_bytes[i] = static_cast<u8>(number_bits >> (8 * i));
+    auto number_offset = AK::memmem_optional(lazy_blob.data(), lazy_blob.size(), number_bytes.data(), number_bytes.size());
+    VERIFY(number_offset.has_value());
+    auto with_malformed_lazy_constant = MUST(ByteBuffer::copy(lazy_blob));
+    with_malformed_lazy_constant[*number_offset - 1] = 0xee; // The tag of the constant.
+
+    auto big_int_source = "var big = 123456789n; big"sv;
+    auto big_int_blob = blob_of(big_int_source);
+    auto digits = "123456789"sv;
+    auto digits_offset = AK::memmem_optional(big_int_blob.data(), big_int_blob.size(), digits.characters_without_null_termination(), digits.length());
+    VERIFY(digits_offset.has_value());
+    auto with_big_int_that_is_not_a_number = MUST(ByteBuffer::copy(big_int_blob));
+    with_big_int_that_is_not_a_number[*digits_offset + 4] = 'z';
+
+    Atomic<size_t> releases { 0 };
+    EXPECT(!decode_and_validate(with_malformed_lazy_constant.bytes(), JS_PROGRAM_TYPE_SCRIPT, lazy_source.length(), &releases));
+    EXPECT(!decode_and_validate(with_big_int_that_is_not_a_number.bytes(), JS_PROGRAM_TYPE_SCRIPT, big_int_source.length(), &releases));
+    EXPECT_EQ(releases.load(), 2u);
+
+    auto validates = [](ByteBuffer const& blob, StringView source) {
+        auto* cache = decode_and_validate(blob.bytes(), JS_PROGRAM_TYPE_SCRIPT, source.length());
+        if (cache)
+            js_bytecode_cache_release(cache);
+        return cache != nullptr;
+    };
+    EXPECT(validates(lazy_blob, lazy_source));
+    EXPECT(validates(big_int_blob, big_int_source));
 }
 
 TEST_CASE(blobs_of_another_runtime_version_program_or_source_are_rejected_and_released)
