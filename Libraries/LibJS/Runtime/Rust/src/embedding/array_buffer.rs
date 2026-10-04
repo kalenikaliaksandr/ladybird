@@ -521,6 +521,33 @@ pub unsafe extern "C" fn js_array_buffer_detach(vm: *mut JSVM, buffer: *mut JSOb
     completion_into_abi(detach_array_buffer(vm, buffer, Some(Value(key))))
 }
 
+/// TransferArrayBuffer of the Streams standard: detaches `buffer`, as DetachArrayBuffer(buffer) does, and moves its data
+/// block without a copy into a new ArrayBuffer of `realm`, which is the payload of the normal completion. That is C++
+/// ArrayBuffer::detach_and_take_data_block() followed by ArrayBuffer::create(realm, block). Throws a TypeError, and
+/// leaves the buffer as it was, if the buffer has a detach key. Main thread only.
+///
+/// # Safety
+///
+/// `vm` and `realm` must be live, and `buffer` a live ArrayBuffer that is neither detached nor a SharedArrayBuffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_array_buffer_transfer(
+    vm: *mut JSVM,
+    realm: *mut JSRealm,
+    buffer: *mut JSObject,
+) -> JSCompletion {
+    // SAFETY: The caller passes a live VM, realm and buffer.
+    let (vm, realm, buffer) = unsafe { (vm_from_abi(vm), cell_from_abi(realm), array_buffer_from_abi(buffer)) };
+    assert!(
+        !buffer.is_detached(),
+        "the embedder transfers a buffer that is not detached"
+    );
+    completion_into_abi(
+        buffer
+            .detach_and_take_data_block(vm)
+            .map(|block| ArrayBuffer::create_from_data_block(vm, realm, block)),
+    )
+}
+
 /// [[ArrayBufferDetachKey]], which is undefined unless the embedder set one. Main thread only.
 ///
 /// # Safety
