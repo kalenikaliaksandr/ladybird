@@ -80,7 +80,7 @@ impl Deref for SyntheticModule {
 }
 
 pub const SYNTHETIC_MODULE_METHODS: ModuleMethods = ModuleMethods {
-    load_requested_modules: |module, vm| as_synthetic_module(module).load_requested_modules(vm),
+    load_requested_modules: |module, vm, _| as_synthetic_module(module).load_requested_modules(vm),
     get_exported_names: |module, _, _: &ExportStarSet<'_>| as_synthetic_module(module).get_exported_names(),
     resolve_export: |module, _, export_name, _: ResolveSet<'_>| as_synthetic_module(module).resolve_export(export_name),
     link: |module, vm| as_synthetic_module(module).link(vm),
