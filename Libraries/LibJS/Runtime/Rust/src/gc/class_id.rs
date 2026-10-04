@@ -13,7 +13,10 @@ macro_rules! define_class_ids {
             $($name,)*
         }
 
-        pub const CLASS_COUNT: usize = [$(ClassId::$name,)*].len();
+        /// Every class id, in the order of their values.
+        pub const ALL_CLASS_IDS: &[ClassId] = &[$(ClassId::$name,)*];
+
+        pub const CLASS_COUNT: usize = ALL_CLASS_IDS.len();
     };
 }
 
