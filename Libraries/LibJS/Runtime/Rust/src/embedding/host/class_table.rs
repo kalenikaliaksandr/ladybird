@@ -17,11 +17,13 @@ use crate::layout::host_class::{
     JS_HOST_CLASS_IS_PLATFORM_OBJECT, JS_HOST_CLASS_MAY_INTERFERE_WITH_INDEXED_PROPERTY_ACCESS, JS_HOST_CLASS_MODULE,
     JS_HOST_CLASS_NOT_CACHEABLE_FOR_PROPERTY_ABSENCE,
     JS_HOST_CLASS_NOT_ELIGIBLE_FOR_OWN_PROPERTY_ENUMERATION_FAST_PATH, JS_HOST_CLASS_OBJECT,
-    JS_HOST_CLASS_REQUIRES_SLOW_ADD_OWN_PROPERTY, JS_HOST_CLASS_SHARES_ALLOCATOR_WITH_PARENT, JSCompletion,
-    JSHostArrayHooks, JSHostClass, JSHostFunctionHooks, JSHostObjectHooks, JSObject,
+    JS_HOST_CLASS_REQUIRES_SLOW_ADD_OWN_PROPERTY, JS_HOST_CLASS_SHARES_ALLOCATOR_WITH_PARENT,
+    JS_PROPERTY_LOOKUP_PHASE_OWN_PROPERTY, JS_PROPERTY_LOOKUP_PHASE_PROTOTYPE_CHAIN, JSCompletion, JSGetCacheMetadata,
+    JSHostArrayHooks, JSHostClass, JSHostFunctionHooks, JSHostObjectHooks, JSObject, JSSetCacheMetadata,
 };
 use crate::layout::object::Object;
 use crate::runtime::completion::ThrowCompletionOr;
+use crate::runtime::object::{CacheableGetPropertyMetadata, CacheableSetPropertyMetadata, PropertyLookupPhase};
 
 /// The engine flags that every kind of host object copies into the objects of its class.
 const FLAGS_COPIED_INTO_OBJECTS: u32 = JS_HOST_CLASS_IS_PLATFORM_OBJECT
@@ -197,6 +199,23 @@ pub fn copy_host_class_flags_into_object(table: &JSHostClass, object: &Object) {
     }
     if table.has_flag(JS_HOST_CLASS_IS_GLOBAL_OBJECT) {
         object.set_global_object_flag();
+    }
+}
+
+/// The inline cache metadata of a [[Get]], which a hook receives untouched, to pass on to the engine.
+pub fn get_cache_metadata_into_abi(metadata: Option<&mut CacheableGetPropertyMetadata>) -> *mut JSGetCacheMetadata {
+    metadata.map_or(core::ptr::null_mut(), |metadata| core::ptr::from_mut(metadata).cast())
+}
+
+/// The inline cache metadata of a [[Set]], which a hook receives untouched, to pass on to the engine.
+pub fn set_cache_metadata_into_abi(metadata: Option<&mut CacheableSetPropertyMetadata>) -> *mut JSSetCacheMetadata {
+    metadata.map_or(core::ptr::null_mut(), |metadata| core::ptr::from_mut(metadata).cast())
+}
+
+pub fn lookup_phase_into_abi(phase: PropertyLookupPhase) -> u8 {
+    match phase {
+        PropertyLookupPhase::OwnProperty => JS_PROPERTY_LOOKUP_PHASE_OWN_PROPERTY,
+        PropertyLookupPhase::PrototypeChain => JS_PROPERTY_LOOKUP_PHASE_PROTOTYPE_CHAIN,
     }
 }
 
