@@ -219,3 +219,167 @@ impl Drop for OwnedExecutionContext {
         unsafe { dealloc(self.context.as_ptr().cast(), self.layout) };
     }
 }
+
+#[cfg(all(test, libjs_runtime_tests_with_libgc))]
+mod tests {
+    use core::ops::ControlFlow;
+    use core::ptr::NonNull;
+
+    use super::OwnedExecutionContext;
+    use crate::gc::weak::GcWeak;
+    use crate::interpreter::vm::{TypeErrorRealmScope, Vm};
+    use crate::layout::execution_context::ExecutionContext;
+    use crate::layout::value::Value;
+    use crate::runtime::completion::Must;
+    use crate::runtime::error::test_scripts::run_script;
+    use crate::runtime::object::Object;
+    use crate::runtime::realm::Realm;
+    use crate::runtime::realm::test_realm::TestRealm;
+    use crate::utilities::initialize_realm;
+
+    const OBJECT_COUNT: u32 = 64;
+    const REALM_COUNT: usize = 16;
+
+    fn contexts_top_to_bottom(vm: &Vm) -> Vec<NonNull<ExecutionContext>> {
+        let mut contexts = Vec::new();
+        vm.for_each_execution_context_top_to_bottom(|context| {
+            contexts.push(NonNull::from(context));
+            ControlFlow::Continue(())
+        });
+        contexts
+    }
+
+    #[inline(never)]
+    fn context_holding_new_objects(vm: &Vm, test_realm: &TestRealm) -> (OwnedExecutionContext, Vec<GcWeak<Object>>) {
+        let context = OwnedExecutionContext::create(0, 0, OBJECT_COUNT);
+        context.realm.set(Some(test_realm.realm));
+        let objects = context
+            .arguments()
+            .iter()
+            .map(|argument| {
+                let object = test_realm.object();
+                argument.set(Value::from_object(object));
+                GcWeak::new(vm.heap(), object)
+            })
+            .collect();
+        (context, objects)
+    }
+
+    #[inline(never)]
+    fn override_type_error_realm_with_new_realm(vm: &Vm) -> (TypeErrorRealmScope<'_>, GcWeak<Realm>) {
+        let realm = Realm::create(vm);
+        (vm.type_error_realm_scope(realm), GcWeak::new(vm.heap(), realm))
+    }
+
+    #[test]
+    fn a_saved_stack_comes_back_as_it_was_after_another_one_ran_and_was_cleared() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let host_context = OwnedExecutionContext::create(0, 0, 0);
+        host_context.realm.set(Some(realm));
+        vm.push_execution_context(host_context.as_non_null());
+        let type_error_realm = Realm::create(&vm);
+        let type_error_realm_scope = vm.type_error_realm_scope(type_error_realm);
+        let saved_contexts = contexts_top_to_bottom(&vm);
+        assert_eq!(saved_contexts.len(), 2);
+
+        vm.save_execution_context_stack();
+        assert!(vm.running_execution_context().is_none());
+        assert_eq!(vm.execution_context_stack_size(), 0);
+        assert!(vm.type_error_realm().is_none());
+
+        let nested_realm_execution_context = Realm::initialize_host_defined_realm(&vm, None, None).must();
+        let nested_realm = nested_realm_execution_context
+            .realm
+            .get()
+            .expect("the context has the new realm");
+        assert_eq!(
+            run_script(&vm, nested_realm, "[1, 2, 3].length").must(),
+            Value::from_i32(3)
+        );
+        assert_eq!(vm.execution_context_stack_size(), 1);
+        vm.clear_execution_context_stack();
+        assert!(vm.running_execution_context().is_none());
+        assert_eq!(vm.execution_context_stack_size(), 0);
+
+        vm.restore_execution_context_stack();
+        assert_eq!(contexts_top_to_bottom(&vm), saved_contexts);
+        assert_eq!(vm.execution_context_stack_size(), 2);
+        assert!(vm.type_error_realm() == Some(type_error_realm));
+        drop(type_error_realm_scope);
+        assert!(vm.pop_execution_context() == host_context.as_non_null());
+        assert_eq!(run_script(&vm, realm, "1 + 1").must(), Value::from_i32(2));
+    }
+
+    #[test]
+    fn a_saved_stack_keeps_what_its_contexts_hold_alive() {
+        let vm = Vm::create();
+        let test_realm = TestRealm::new(&vm);
+        let (host_context, objects) = context_holding_new_objects(&vm, &test_realm);
+        vm.push_execution_context(host_context.as_non_null());
+
+        vm.save_execution_context_stack();
+        vm.heap().collect_garbage();
+        assert!(objects.iter().all(|object| object.get().is_some()));
+
+        vm.restore_execution_context_stack();
+        assert!(vm.pop_execution_context() == host_context.as_non_null());
+        drop(host_context);
+        vm.heap().collect_garbage();
+        let dead_objects = objects.iter().filter(|object| object.get().is_none()).count();
+        assert!(
+            dead_objects >= OBJECT_COUNT as usize / 2,
+            "only {dead_objects} of the objects nothing holds any more were collected"
+        );
+    }
+
+    #[test]
+    fn a_saved_stack_keeps_its_type_error_realm_alive() {
+        let vm = Vm::create();
+        let mut scopes_and_realms = Vec::new();
+        for _ in 0..REALM_COUNT {
+            scopes_and_realms.push(override_type_error_realm_with_new_realm(&vm));
+            vm.save_execution_context_stack();
+        }
+        vm.heap().collect_garbage();
+        assert!(scopes_and_realms.iter().all(|(_, realm)| realm.get().is_some()));
+
+        let mut realms = Vec::new();
+        for (scope, realm) in scopes_and_realms.into_iter().rev() {
+            vm.restore_execution_context_stack();
+            assert!(vm.type_error_realm() == realm.get());
+            drop(scope);
+            realms.push(realm);
+        }
+        vm.heap().collect_garbage();
+        let dead_realms = realms.iter().filter(|realm| realm.get().is_none()).count();
+        assert!(
+            dead_realms >= REALM_COUNT / 2,
+            "only {dead_realms} of the realms nothing holds any more were collected"
+        );
+    }
+
+    #[test]
+    fn the_topmost_matching_context_is_found_while_the_predicate_runs_javascript() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let realm_execution_context = vm.running_execution_context().expect("the realm's context runs");
+        let host_context = OwnedExecutionContext::create(0, 0, 0);
+        host_context.realm.set(Some(realm));
+        vm.push_execution_context(host_context.as_non_null());
+
+        let mut searched_contexts = Vec::new();
+        let matching_context = vm.last_execution_context_matching(|context| {
+            searched_contexts.push(context);
+            assert_eq!(run_script(&vm, realm, "6 * 7").must(), Value::from_i32(42));
+            context == realm_execution_context
+        });
+        assert!(matching_context == Some(realm_execution_context));
+        assert_eq!(searched_contexts, [host_context.as_non_null(), realm_execution_context]);
+        assert!(vm.last_execution_context_matching(|_| false).is_none());
+
+        assert!(vm.pop_execution_context() == host_context.as_non_null());
+    }
+}
