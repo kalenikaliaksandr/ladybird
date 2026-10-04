@@ -35,6 +35,12 @@ if (NOT result EQUAL 1 OR NOT error MATCHES "Uncaught exception: \n\\[TypeError\
     message(FATAL_ERROR "js-rust -c throw: exited with '${result}' and printed '${error}'")
 endif()
 
+# Like the C++ js, js-rust has no line editor on Windows, where it runs no REPL and its debugger prompt also shows the
+# prompts that libedit leaves out when the standard streams are not terminals.
+if (CMAKE_HOST_WIN32)
+    return()
+endif()
+
 # The REPL and the debugger prompt read the standard input with the line editor that the C++ main passes in. The REPL
 # keeps its history in HOME.
 set(home "${CMAKE_CURRENT_BINARY_DIR}/js-rust-smoke-home")

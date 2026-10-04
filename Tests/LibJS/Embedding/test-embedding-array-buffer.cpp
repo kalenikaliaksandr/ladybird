@@ -11,7 +11,10 @@
 #include <LibGC/Cell.h>
 #include <LibGC/CellAllocator.h>
 #include <LibGC/Heap.h>
-#include <unistd.h>
+
+#if !defined(AK_OS_WINDOWS)
+#    include <unistd.h>
+#endif
 
 #include "EmbeddingTest.h"
 
@@ -180,6 +183,8 @@ TEST_CASE(a_buffer_keeps_the_owner_of_its_storage_alive)
         gc_root_destroy(root);
 }
 
+// LibGC cannot map shared memory into its cage on Windows yet.
+#if !defined(AK_OS_WINDOWS)
 TEST_CASE(shared_memory_round_trips_through_its_descriptor)
 {
     auto embedded_vm = EmbeddedVM::create_with_realm({
@@ -231,6 +236,7 @@ TEST_CASE(shared_memory_round_trips_through_its_descriptor)
     EXPECT_EQ(js_array_buffer_duplicate_shared_memory(owned, &sent_byte_length), -1);
     EXPECT(!js_array_buffer_shares_storage_with(owned, first));
 }
+#endif
 
 TEST_CASE(detaching_takes_the_detach_key)
 {
