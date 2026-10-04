@@ -566,12 +566,27 @@ impl Vm {
     }
 
     pub fn create_with(options: VmOptions) -> Box<Vm> {
+        let mut storage = Box::<Vm>::new_uninit();
+        // SAFETY: The box is storage for a Vm, and the VM stays in it until the box drops it.
+        unsafe { Self::create_at(storage.as_mut_ptr(), options) };
+        // SAFETY: create_at() constructed the VM in the box.
+        unsafe { storage.assume_init() }
+    }
+
+    /// Constructs a VM in `storage`, its final address: the heap calls back into the VM there, and cells such as
+    /// WeakRefs point into it.
+    ///
+    /// # Safety
+    ///
+    /// `storage` must be valid for writes of a Vm and aligned for one. The VM must stay there until it is dropped in
+    /// place, which only the thread that constructed it may do.
+    pub unsafe fn create_at(storage: *mut Vm, options: VmOptions) {
         // SAFETY: Initializes the region cell pointers are relative to.
         let heap_region_base = unsafe { capi::gc_heap_region_base() };
         let primitive_storage_cage_base = crate::runtime::array_buffer::primitive_storage_cage_base();
         let interpreter_stack_memory = InterpreterStackMemory::allocate();
         let native_function_table = Vec::new();
-        let vm = Box::new(Vm {
+        let vm = Vm {
             head: VmHead {
                 running_execution_context: Cell::new(core::ptr::null_mut()),
                 interpreter_stack: interpreter_stack_memory.initial_state(),
@@ -649,9 +664,13 @@ impl Vm {
             agent: Cell::new(AgentRecord::default()),
             saved_execution_context_stacks: RefCell::new(Vec::new()),
             host_classes: RefCell::new(HashMap::default()),
-        });
-        let context = core::ptr::from_ref::<Vm>(&vm).cast_mut().cast();
-        // SAFETY: The VM is boxed, so its address is stable, and it destroys the heap before anything else.
+        };
+        // SAFETY: The caller provides storage for a Vm.
+        unsafe { storage.write(vm) };
+        // SAFETY: The VM was just written there.
+        let vm = unsafe { &*storage };
+        let context = storage.cast();
+        // SAFETY: The VM stays at this address until it is dropped, and it destroys the heap before anything else.
         let heap = unsafe { Heap::new(gather_roots, context, options.become_process_default_heap) };
         // SAFETY: As above.
         unsafe { heap.register_sweep_callback(sweep, context) };
@@ -660,7 +679,6 @@ impl Vm {
             unreachable!("the heap is created once");
         }
         vm.allocate_preallocated_strings_and_symbols();
-        vm
     }
 
     fn allocate_preallocated_strings_and_symbols(&self) {
