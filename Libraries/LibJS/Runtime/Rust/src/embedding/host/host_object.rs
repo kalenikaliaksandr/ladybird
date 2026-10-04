@@ -5,18 +5,29 @@
  */
 
 //! Host objects of kind JS_HOST_CLASS_OBJECT.
+//!
+//! The exported functions of this file run on the thread that owns the VM, and trust their arguments, as those of
+//! embedding/object.rs do: `vm` is the embedder's VM, objects and realms are live cells of its heap, host classes are
+//! tables that live as long as the process, and the embedder's cells are null or live GC cells of the same heap.
+#![allow(
+    clippy::missing_safety_doc,
+    reason = "the module documentation states the contract every exported function shares"
+)]
 
 use core::ffi::c_void;
 use core::ops::Deref;
 use core::ptr::NonNull;
 
-use crate::embedding::abi_types::{completion_from_abi, optional_object_into_abi};
+use crate::embedding::abi_types::{
+    JSRealm, cell_from_abi, completion_from_abi, object_into_abi, optional_cell_from_abi, optional_object_into_abi,
+    vm_from_abi,
+};
 use crate::embedding::error::error_data_from_host_hook;
 use crate::embedding::hooks::lend_property_key_to_abi;
 use crate::embedding::host::class_table::{
     bool_completion_from_hook, completion_without_result_from_hook, copy_host_class_flags_into_object,
-    get_cache_metadata_into_abi, lend_object_to_hook, lookup_phase_into_abi, optional_object_completion_from_hook,
-    set_cache_metadata_into_abi,
+    get_cache_metadata_into_abi, host_class_from_abi, host_class_into_abi, lend_object_to_hook, lookup_phase_into_abi,
+    optional_object_completion_from_hook, set_cache_metadata_into_abi,
 };
 use crate::embedding::host::host_array::as_host_array;
 use crate::embedding::host::host_function::as_host_function;
@@ -33,7 +44,7 @@ use crate::layout::host_class::{
     JS_HOST_CLASS_IMMUTABLE_PROTOTYPE, JS_HOST_CLASS_NOT_CACHEABLE_FOR_PROPERTY_ABSENCE,
     JS_HOST_CLASS_NOT_ELIGIBLE_FOR_OWN_PROPERTY_ENUMERATION_FAST_PATH, JS_HOST_CLASS_OBJECT, JS_PD_CONFIGURABLE,
     JS_PD_ENUMERABLE, JS_PD_HAS_CONFIGURABLE, JS_PD_HAS_ENUMERABLE, JS_PD_HAS_VALUE, JS_PD_HAS_WRITABLE, JS_PD_PRESENT,
-    JS_PD_WRITABLE, JSHostClass, JSHostObjectHooks, JSPropertyDescriptor, JSValue, JSValueSink,
+    JS_PD_WRITABLE, JSHostClass, JSHostObjectHooks, JSObject, JSPropertyDescriptor, JSVM, JSValue, JSValueSink,
 };
 pub use crate::layout::host_object::HostObject;
 use crate::layout::value::Value;
@@ -458,4 +469,80 @@ pub unsafe fn set_host_data(object: &Object, host_data: Option<NonNull<c_void>>)
     let slot = host_data_slot_of(object).expect("only host objects have host data");
     // SAFETY: The caller passes an absent or live cell, which the slot then keeps alive.
     unsafe { slot.set(host_data) };
+}
+
+// The embedding ABI of host objects, and of what every kind of host object shares
+
+/// HostObject::create(): a host object of `host_class`, a table of kind JS_HOST_CLASS_OBJECT, made from the realm's
+/// empty object shape with `prototype_or_null` as its [[Prototype]]. `wrappable_or_null` is the embedder's
+/// implementation object, which direct getter functions read at JS_HOST_OBJECT_WRAPPABLE_OFFSET, and
+/// `host_data_or_null` a cell with the rest of its per-object state; the object keeps both alive. Returns an unrooted
+/// object. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_host_object_create(
+    vm: *mut JSVM,
+    realm: *mut JSRealm,
+    host_class: *const JSHostClass,
+    prototype_or_null: *mut JSObject,
+    wrappable_or_null: *mut c_void,
+    host_data_or_null: *mut c_void,
+) -> *mut JSObject {
+    // SAFETY: See the module documentation.
+    unsafe {
+        object_into_abi(HostObject::create(
+            vm_from_abi(vm),
+            cell_from_abi::<JSRealm>(realm),
+            host_class_from_abi(host_class),
+            optional_cell_from_abi::<JSObject>(prototype_or_null),
+            NonNull::new(wrappable_or_null),
+            NonNull::new(host_data_or_null),
+        ))
+    }
+}
+
+/// HostObject::wrappable(): the implementation object of a host object of kind JS_HOST_CLASS_OBJECT, or null. Main
+/// thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_host_object_wrappable(host_object: *mut JSObject) -> *mut c_void {
+    // SAFETY: See the module documentation.
+    let host_object = unsafe { cell_from_abi::<JSObject>(host_object) };
+    assert!(host_object.is::<HostObject>(), "only host objects have a wrappable");
+    as_host_object(&host_object).wrappable.as_ptr()
+}
+
+/// host_class_of(): the host class of an object of any host kind, or null for any other object. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_host_object_host_class_of(object: *mut JSObject) -> *const JSHostClass {
+    // SAFETY: See the module documentation.
+    let object = unsafe { cell_from_abi::<JSObject>(object) };
+    host_class_of(&object).map_or(core::ptr::null(), host_class_into_abi)
+}
+
+/// is_host_instance_of(): whether the host class of the object is `host_class` or derives from it through
+/// JSHostClass::parent, false for an object of no host kind. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_host_object_is_host_instance_of(
+    object: *mut JSObject,
+    host_class: *const JSHostClass,
+) -> bool {
+    // SAFETY: See the module documentation.
+    let (object, host_class) = unsafe { (cell_from_abi::<JSObject>(object), host_class_from_abi(host_class)) };
+    is_host_instance_of(&object, host_class)
+}
+
+/// host_data_of(): the companion cell of a host object of any kind, or null, also for an object of no host kind.
+/// Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_host_object_host_data_of(object: *mut JSObject) -> *mut c_void {
+    // SAFETY: See the module documentation.
+    let object = unsafe { cell_from_abi::<JSObject>(object) };
+    host_data_of(&object).map_or(core::ptr::null_mut(), NonNull::as_ptr)
+}
+
+/// set_host_data(): replaces the companion cell of a host object of any kind with `host_data_or_null`, which the object
+/// then keeps alive. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_host_object_set_host_data(host_object: *mut JSObject, host_data_or_null: *mut c_void) {
+    // SAFETY: See the module documentation.
+    unsafe { set_host_data(&cell_from_abi::<JSObject>(host_object), NonNull::new(host_data_or_null)) };
 }

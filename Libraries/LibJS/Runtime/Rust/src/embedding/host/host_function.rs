@@ -5,6 +5,14 @@
  */
 
 //! Host functions, of kind JS_HOST_CLASS_FUNCTION.
+//!
+//! The exported functions of this file run on the thread that owns the VM, and trust their arguments, as those of
+//! embedding/object.rs do: `vm` is the embedder's VM, objects and realms are live cells of its heap, host classes are
+//! tables that live as long as the process, and the embedder's cells are null or live GC cells of the same heap.
+#![allow(
+    clippy::missing_safety_doc,
+    reason = "the module documentation states the contract every exported function shares"
+)]
 
 use core::ffi::c_void;
 use core::ops::Deref;
@@ -13,16 +21,19 @@ use core::ptr::NonNull;
 use ak::Utf16FlyString;
 use libjs_runtime_macros::Trace;
 
-use crate::embedding::abi_types::{completion_from_abi, object_into_abi, vm_into_abi};
+use crate::embedding::abi_types::{
+    JSRealm, JSUtf16View, cell_from_abi, completion_from_abi, object_into_abi, optional_cell_from_abi, vm_from_abi,
+    vm_into_abi,
+};
 use crate::embedding::host::class_table::{
-    copy_host_class_flags_into_object, lend_object_to_hook, object_completion_from_hook,
+    copy_host_class_flags_into_object, host_class_from_abi, lend_object_to_hook, object_completion_from_hook,
 };
 use crate::embedding::host::registry::runtime_class_and_allocator_of_host_class;
 use crate::gc::class::{Class, Finalize, define_cell};
 use crate::gc::foreign::ForeignCellSlot;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
-use crate::layout::host_class::{JS_HOST_CLASS_FUNCTION, JS_HOST_CLASS_HAS_CONSTRUCTOR, JSHostClass};
+use crate::layout::host_class::{JS_HOST_CLASS_FUNCTION, JS_HOST_CLASS_HAS_CONSTRUCTOR, JSHostClass, JSObject, JSVM};
 use crate::layout::value::Value;
 use crate::runtime::completion::ThrowCompletionOr;
 use crate::runtime::function_object::FunctionObject;
@@ -187,5 +198,60 @@ impl HostFunction {
         let function = allocate_object_in(vm, allocator, function);
         function.initialize(vm, realm);
         function
+    }
+}
+
+// The embedding ABI of host functions
+
+/// HostFunction::create(): a function of `host_class`, a table of kind JS_HOST_CLASS_FUNCTION, whose name is a copy of
+/// the code units `name` views. It defines "length" and then "name", as CreateBuiltinFunction does. Its [[Prototype]]
+/// is `prototype_or_null`, or %Function.prototype% of the realm for null, and its realm that of the prototype's shape.
+/// The function keeps `host_data_or_null` alive. Returns an unrooted function. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_host_function_create(
+    vm: *mut JSVM,
+    realm: *mut JSRealm,
+    host_class: *const JSHostClass,
+    name: JSUtf16View,
+    length: i32,
+    prototype_or_null: *mut JSObject,
+    host_data_or_null: *mut c_void,
+) -> *mut JSObject {
+    // SAFETY: See the module documentation.
+    unsafe {
+        object_into_abi(HostFunction::create(
+            vm_from_abi(vm),
+            cell_from_abi::<JSRealm>(realm),
+            host_class_from_abi(host_class),
+            name.as_view().to_utf16_fly_string(),
+            length,
+            optional_cell_from_abi::<JSObject>(prototype_or_null),
+            NonNull::new(host_data_or_null),
+        ))
+    }
+}
+
+/// HostFunction::create_without_own_properties(): js_host_function_create() without the "length" and "name"
+/// properties, for a caller that defines the function's own properties itself, in an order of its own. Main thread
+/// only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_host_function_create_without_own_properties(
+    vm: *mut JSVM,
+    realm: *mut JSRealm,
+    host_class: *const JSHostClass,
+    name: JSUtf16View,
+    prototype_or_null: *mut JSObject,
+    host_data_or_null: *mut c_void,
+) -> *mut JSObject {
+    // SAFETY: See the module documentation.
+    unsafe {
+        object_into_abi(HostFunction::create_without_own_properties(
+            vm_from_abi(vm),
+            cell_from_abi::<JSRealm>(realm),
+            host_class_from_abi(host_class),
+            name.as_view().to_utf16_fly_string(),
+            optional_cell_from_abi::<JSObject>(prototype_or_null),
+            NonNull::new(host_data_or_null),
+        ))
     }
 }

@@ -5,6 +5,14 @@
  */
 
 //! Host arrays, of kind JS_HOST_CLASS_ARRAY.
+//!
+//! The exported functions of this file run on the thread that owns the VM, and trust their arguments, as those of
+//! embedding/object.rs do: `vm` is the embedder's VM, objects and realms are live cells of its heap, host classes are
+//! tables that live as long as the process, and the embedder's cells are null or live GC cells of the same heap.
+#![allow(
+    clippy::missing_safety_doc,
+    reason = "the module documentation states the contract every exported function shares"
+)]
 
 use core::ffi::c_void;
 use core::ops::Deref;
@@ -12,17 +20,25 @@ use core::ptr::NonNull;
 
 use libjs_runtime_macros::Trace;
 
+use crate::embedding::abi_types::{
+    JSRealm, cell_from_abi, completion_into_abi, object_into_abi, optional_cell_from_abi, property_key_from_abi,
+    vm_from_abi,
+};
 use crate::embedding::hooks::lend_property_key_to_abi;
 use crate::embedding::host::class_table::{
-    bool_completion_from_hook, copy_host_class_flags_into_object, lend_object_to_hook, lookup_phase_into_abi,
-    set_cache_metadata_into_abi,
+    bool_completion_from_hook, copy_host_class_flags_into_object, host_class_from_abi, lend_object_to_hook,
+    lookup_phase_into_abi, set_cache_metadata_into_abi,
 };
 use crate::embedding::host::registry::runtime_class_and_allocator_of_host_class;
+use crate::embedding::object::{lookup_phase_from_abi, set_cache_metadata_from_abi};
 use crate::gc::class::{Class, define_cell};
 use crate::gc::foreign::ForeignCellSlot;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
-use crate::layout::host_class::{JS_HOST_CLASS_ARRAY, JSHostArrayHooks, JSHostClass};
+use crate::layout::host_class::{
+    JS_HOST_CLASS_ARRAY, JSCompletion, JSHostArrayHooks, JSHostClass, JSObject, JSPropertyKey, JSSetCacheMetadata,
+    JSVM, JSValue,
+};
 use crate::layout::value::Value;
 use crate::runtime::array::{ARRAY_OBJECT_METHODS, Array};
 use crate::runtime::completion::ThrowCompletionOr;
@@ -169,4 +185,82 @@ impl HostArray {
     pub fn array_delete(&self, vm: &Vm, key: &PropertyKey) -> ThrowCompletionOr<bool> {
         (ARRAY_OBJECT_METHODS.internal_delete)(self, vm, key)
     }
+}
+
+// The embedding ABI of host arrays
+
+/// HostArray::create(): an empty array of `host_class`, a table of kind JS_HOST_CLASS_ARRAY, whose [[Prototype]] is
+/// `prototype_or_null`, or %Array.prototype% of the realm for null. The array keeps `host_data_or_null` alive. Returns
+/// an unrooted array. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_host_array_create(
+    vm: *mut JSVM,
+    realm: *mut JSRealm,
+    host_class: *const JSHostClass,
+    prototype_or_null: *mut JSObject,
+    host_data_or_null: *mut c_void,
+) -> *mut JSObject {
+    // SAFETY: See the module documentation.
+    unsafe {
+        object_into_abi(HostArray::create(
+            vm_from_abi(vm),
+            cell_from_abi::<JSRealm>(realm),
+            host_class_from_abi(host_class),
+            optional_cell_from_abi::<JSObject>(prototype_or_null),
+            NonNull::new(host_data_or_null),
+        ))
+    }
+}
+
+/// HostArray::array_set(): the [[Set]] of an Array exotic object on a host array, for a [[Set]] hook that adds to it
+/// rather than replaces it. `cache_metadata` is null or the metadata the hook received, and the phase a
+/// JS_PROPERTY_LOOKUP_PHASE_* value. Borrows the key. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_host_array_array_set(
+    vm: *mut JSVM,
+    host_array: *mut JSObject,
+    key: *const JSPropertyKey,
+    value: JSValue,
+    receiver: JSValue,
+    cache_metadata: *mut JSSetCacheMetadata,
+    phase: u8,
+) -> JSCompletion {
+    // SAFETY: See the module documentation.
+    let (vm, host_array, key, cache_metadata) = unsafe {
+        (
+            vm_from_abi(vm),
+            cell_from_abi::<JSObject>(host_array),
+            property_key_from_abi(key),
+            set_cache_metadata_from_abi(cache_metadata),
+        )
+    };
+    assert!(host_array.is::<HostArray>(), "the object is a host array");
+    completion_into_abi(as_host_array(&host_array).array_set(
+        vm,
+        key,
+        Value(value),
+        Value(receiver),
+        cache_metadata,
+        lookup_phase_from_abi(phase),
+    ))
+}
+
+/// HostArray::array_delete(): the [[Delete]] of an Array exotic object on a host array, for a [[Delete]] hook that adds
+/// to it rather than replaces it. Borrows the key. Main thread only.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_host_array_array_delete(
+    vm: *mut JSVM,
+    host_array: *mut JSObject,
+    key: *const JSPropertyKey,
+) -> JSCompletion {
+    // SAFETY: See the module documentation.
+    let (vm, host_array, key) = unsafe {
+        (
+            vm_from_abi(vm),
+            cell_from_abi::<JSObject>(host_array),
+            property_key_from_abi(key),
+        )
+    };
+    assert!(host_array.is::<HostArray>(), "the object is a host array");
+    completion_into_abi(as_host_array(&host_array).array_delete(vm, key))
 }
