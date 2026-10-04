@@ -2,6 +2,7 @@ set(TEST_SOURCES
     TestBlockAllocator.cpp
     TestCAPI.cpp
     TestExternalEntityTable.cpp
+    TestForeignCell.cpp
     TestGCContainers.cpp
     TestGCHeapGroup.cpp
     TestGCIdleCollection.cpp
