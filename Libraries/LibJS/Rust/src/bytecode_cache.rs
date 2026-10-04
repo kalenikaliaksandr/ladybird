@@ -717,7 +717,8 @@ impl DecodedCacheBlob {
     }
 
     /// Checks everything that bytecode built from this blob may rely on for source code of `source_len` code units:
-    /// source ranges, table indices and the bytecode of every executable, including those of nested functions.
+    /// source ranges, the tables and the indices into them, and the bytecode of every executable, including those of
+    /// nested functions.
     pub fn validate_for_materialization(&mut self, source_len: usize) -> Result<(), ValidationErrorKind> {
         if self.source_len != source_len {
             return Err(ValidationErrorKind::InvalidLength);
@@ -1850,6 +1851,9 @@ impl DecodedExecutableRecord {
         {
             return Err(ValidationErrorKind::InvalidLength);
         }
+        if !self.tables_are_well_formed() {
+            return Err(ValidationErrorKind::InvalidLength);
+        }
         self.shared_functions.validate_for_materialization(source_len)?;
         self.class_blueprints
             .validate_for_materialization(source_len, self.shared_functions.len())?;
@@ -1905,6 +1909,17 @@ impl DecodedExecutableRecord {
         .map_err(|error| error.kind)?;
 
         Ok(())
+    }
+
+    /// Whether every table that an executable is created from decodes. A function's executable is only created on its
+    /// first call, when a malformed table can no longer make the host compile the source instead.
+    fn tables_are_well_formed(&self) -> bool {
+        self.identifier_table.is_well_formed()
+            && self.property_key_table.is_well_formed()
+            && self.string_table.is_well_formed()
+            && self.argument_variable_names.is_well_formed()
+            && self.constants.is_well_formed()
+            && self.local_variables.values().is_some()
     }
 
     pub fn is_strict(&self) -> bool {
@@ -2108,6 +2123,11 @@ impl DecodedUtf16Table {
         decoder.is_empty().then_some(values)
     }
 
+    fn is_well_formed(&self) -> bool {
+        let mut decoder = self.sequence.decoder();
+        (0..self.sequence.len()).all(|_| DecodedUtf16String::decode(&mut decoder).is_some()) && decoder.is_empty()
+    }
+
     fn fly_strings(&self) -> Option<Vec<ak::Utf16FlyString>> {
         // The strings point into the bytes of this table, which keep the blob alive while they are converted.
         Some(self.values()?.iter().map(DecodedUtf16String::to_fly_string).collect())
@@ -2153,6 +2173,12 @@ impl DecodedConstantTable {
         self.count
     }
 
+    /// Whether every constant is one that both runtimes create a value from.
+    fn is_well_formed(&self) -> bool {
+        let mut decoder = Decoder::new(self.bytes.as_slice(), None);
+        (0..self.count).all(|_| validate_constant_value(&mut decoder).is_some()) && decoder.is_empty()
+    }
+
     /// The number of constants and their encoding, which is the one executables are created from, once every
     /// constant in it turned out to be well-formed.
     #[cfg_attr(
@@ -2160,16 +2186,7 @@ impl DecodedConstantTable {
         allow(dead_code, reason = "only C++ executables use it")
     )]
     pub(crate) fn encoded_constants(&self) -> Option<(usize, &DecodedBytecodeBytes)> {
-        {
-            let mut decoder = Decoder::new(self.bytes.as_slice(), None);
-            for _ in 0..self.count {
-                validate_constant_value(&mut decoder)?;
-            }
-            if !decoder.is_empty() {
-                return None;
-            }
-        }
-        Some((self.count, &self.bytes))
+        self.is_well_formed().then_some((self.count, &self.bytes))
     }
 
     fn values(&self) -> Option<Vec<ConstantValue>> {
@@ -2182,10 +2199,6 @@ impl DecodedConstantTable {
     }
 }
 
-#[cfg_attr(
-    not(feature = "cpp-runtime"),
-    allow(dead_code, reason = "only C++ executables use it")
-)]
 fn validate_constant_value(decoder: &mut Decoder<'_>) -> Option<()> {
     match u8::decode(decoder)? {
         tag if tag == ConstantTag::Number as u8 => {
@@ -2203,7 +2216,7 @@ fn validate_constant_value(decoder: &mut Decoder<'_>) -> Option<()> {
         }
         tag if tag == ConstantTag::BigInt as u8 => {
             let length: usize = u32::decode(decoder)?.try_into().ok()?;
-            decoder.bytes(length)?.is_ascii().then_some(())?;
+            is_big_int_constant(decoder.bytes(length)?).then_some(())?;
         }
         tag if tag == ConstantTag::WellKnownSymbol as u8 => match u8::decode(decoder)? {
             0 | 1 => {}
@@ -2217,6 +2230,24 @@ fn validate_constant_value(decoder: &mut Decoder<'_>) -> Option<()> {
     }
 
     Some(())
+}
+
+/// Whether `literal` is a BigInt as the frontend writes one into a constant table, which both runtimes parse: the
+/// digits of a literal, after its 0x, 0o or 0b prefix and with the numeric separators of its source text, or the
+/// decimal digits of a folded value, which may be negative.
+fn is_big_int_constant(literal: &[u8]) -> bool {
+    let (radix, digits) = match literal {
+        [b'0', b'x' | b'X', digits @ ..] if !digits.is_empty() => (16, digits),
+        [b'0', b'o' | b'O', digits @ ..] if !digits.is_empty() => (8, digits),
+        [b'0', b'b' | b'B', digits @ ..] if !digits.is_empty() => (2, digits),
+        [b'-', digits @ ..] => (10, digits),
+        digits => (10, digits),
+    };
+    let is_digit = |byte: &u8| char::from(*byte).is_digit(radix);
+    digits.first().is_some_and(is_digit)
+        && digits.last().is_some_and(is_digit)
+        && digits.windows(2).all(|pair| pair != b"__")
+        && digits.iter().all(|byte| *byte == b'_' || is_digit(byte))
 }
 
 impl Encode for ConstantValue {
