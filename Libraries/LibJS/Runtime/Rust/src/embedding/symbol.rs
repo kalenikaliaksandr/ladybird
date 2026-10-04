@@ -59,6 +59,19 @@ pub unsafe extern "C" fn js_symbol_create_without_description(vm: *mut JSVM) -> 
     cell_into_abi(Symbol::create(vm, None, Kind::Unique))
 }
 
+/// Symbol::create_private(): a new private symbol, which keys engine-private properties that scripts can never reach.
+/// Call on the VM's thread.
+///
+/// # Safety
+///
+/// `vm` must be the embedder's VM.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_symbol_create_private(vm: *mut JSVM) -> *mut JSSymbol {
+    // SAFETY: The caller passes its VM.
+    let vm = unsafe { vm_from_abi(vm) };
+    cell_into_abi(Symbol::create_private(vm))
+}
+
 /// Whether `symbol` has a description, which is then viewed in `out`. The view stays valid for as long as the symbol
 /// lives. Call on the VM's thread.
 ///
