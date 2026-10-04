@@ -122,10 +122,10 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::al
         };
     }
 
-    return allocate_from_new_slab(*size_class_index, slot_size, zero_fill_new_bytes, size);
+    return allocate_from_new_slab(*size_class_index, slot_size);
 }
 
-ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::allocate_from_new_slab(u16 size_class_index, size_t slot_size, ZeroFillNewBytes zero_fill_new_bytes, size_t requested_size)
+ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::allocate_from_new_slab(u16 size_class_index, size_t slot_size)
 {
     auto& slabs = m_small_slabs[size_class_index];
     if (slabs.size() >= NumericLimits<u16>::max())
@@ -154,9 +154,7 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::al
     slabs.append(move(slab));
     release_slab_on_error.disarm();
 
-    if (zero_fill_new_bytes == ZeroFillNewBytes::Yes)
-        __builtin_memset(m_cage_base + slab_offset, 0, requested_size);
-
+    // NB: The pages of a new slab were just committed, so its first slot needs no zero fill.
     return Allocation {
         .offset = slab_offset,
         .capacity = slot_size,
