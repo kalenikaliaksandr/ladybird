@@ -10,6 +10,7 @@ use std::rc::Rc;
 use ak::{Utf16FlyString, Utf16String};
 use libjs_runtime_macros::Trace;
 
+use crate::bytecode::bytecode_cache::materialize_cached_function_executable;
 use crate::bytecode::executable::Executable;
 use crate::frontend_host::rust_free_compiled_regex;
 use crate::gc::class::{GcCell, define_cell};
@@ -26,6 +27,7 @@ pub use libjs_rust::ast::FunctionKind;
 use libjs_rust::ast::FunctionPayload;
 use libjs_rust::bytecode::executable::ExecutableData;
 use libjs_rust::bytecode::generator::{FunctionSfdMetadata, PendingSharedFunctionData, PrecompiledFunction};
+use libjs_rust::bytecode_cache::{DecodedCachedExecutableRecord, DecodedFunctionRecord};
 use libjs_rust::compile::FunctionPrecompileMode;
 use libjs_rust::compile::SharedFunctionDescription;
 
@@ -99,6 +101,10 @@ pub struct SharedFunctionInstanceDataStorage {
     // NB: When present, freshly compiled bytecode that becomes the function's executable when it is first called.
     #[gc(untraced)]
     precompiled_bytecode_executable: RefCell<Option<Box<PrecompiledFunction>>>,
+    // NB: When present, the function's executable in a bytecode cache blob, which becomes its executable when it is
+    //     first called.
+    #[gc(untraced)]
+    cached_bytecode_executable: RefCell<Option<Box<DecodedCachedExecutableRecord>>>,
     use_rust_compilation: bool,
 }
 
@@ -194,6 +200,7 @@ impl SharedFunctionInstanceData {
                 is_class_constructor: Cell::new(false),
                 rust_function_ast: RefCell::new(rust_function_ast),
                 precompiled_bytecode_executable: RefCell::new(None),
+                cached_bytecode_executable: RefCell::new(None),
                 use_rust_compilation: true,
             },
         }
@@ -249,6 +256,61 @@ impl SharedFunctionInstanceData {
                 description.source_text_length,
             );
         }
+        shared
+    }
+
+    /// Creates the shared data of a function of a bytecode cache blob that passed validation, whose executable stays
+    /// in the blob until the function is first called, as rust_create_sfd and rust_sfd_set_cached_bytecode_executable
+    /// do for the C++ runtime. The function is strict if its own code is or `outer_strict` is.
+    pub fn create_from_bytecode_cache(
+        vm: &Vm,
+        function: &DecodedFunctionRecord,
+        outer_strict: bool,
+        source_code: &Rc<SourceCode>,
+    ) -> Gc<SharedFunctionInstanceData> {
+        let name = function
+            .function_name()
+            .map_or_else(Utf16FlyString::default, |name| Utf16FlyString::from_utf16(&name));
+        let simple_parameter_names = function.simple_parameter_names();
+        let has_simple_parameter_list = simple_parameter_names.is_some();
+        let source_text_range = function.source_text_range();
+        let source_text_length = source_text_range.end.saturating_sub(source_text_range.start);
+        let is_arrow_function = function.is_arrow();
+
+        let shared = vm.heap().allocate(Self::new(
+            function.function_kind(),
+            name,
+            function.length(),
+            function.parameter_count(),
+            function.has_strict_code() || outer_strict,
+            is_arrow_function,
+            has_simple_parameter_list,
+            simple_parameter_names.unwrap_or_default(),
+            None,
+        ));
+        shared.update_can_inline_call();
+
+        // Set parsing insights that must be available before lazy compilation.
+        let (uses_this, uses_this_from_environment) = function.parsing_insights_about_this();
+        shared.uses_this.set(uses_this);
+        shared
+            .storage
+            .this_value_needs_environment_resolution
+            .set(uses_this_from_environment);
+        if uses_this_from_environment && !is_arrow_function {
+            shared.function_environment_needed.set(true);
+        }
+        shared.update_asm_call_metadata();
+
+        shared.set_source_text_range(source_code, source_text_range.start, source_text_length);
+        if let Some((name, is_private)) = function.field_initializer_name() {
+            shared.set_class_field_initializer_name_from_utf16(&name, is_private);
+        }
+        shared.set_metadata(function.scope_metadata());
+        shared
+            .storage
+            .cached_bytecode_executable
+            .replace(Some(Box::new(function.cached_executable())));
         shared
     }
 
@@ -400,6 +462,7 @@ impl SharedFunctionInstanceData {
 
     pub fn clear_compile_inputs(&self) {
         self.clear_non_bytecode_cache_compile_inputs();
+        drop(self.storage.cached_bytecode_executable.take());
     }
 
     pub fn clear_non_bytecode_cache_compile_inputs(&self) {
@@ -412,6 +475,16 @@ impl SharedFunctionInstanceData {
     /// Whether the function still has the AST it compiles from when it is first called.
     pub fn has_function_ast(&self) -> bool {
         self.storage.rust_function_ast.borrow().is_some()
+    }
+
+    /// Whether the function still has bytecode compiled ahead of its first call, apart from that of a bytecode cache.
+    pub fn has_precompiled_bytecode(&self) -> bool {
+        self.storage.precompiled_bytecode_executable.borrow().is_some()
+    }
+
+    /// Whether the function's executable is still in a bytecode cache blob, waiting for its first call.
+    pub fn has_cached_bytecode(&self) -> bool {
+        self.storage.cached_bytecode_executable.borrow().is_some()
     }
 
     /// The functions that `executable` creates and that have not been compiled yet, with a copy of the AST of each, so
@@ -430,11 +503,6 @@ impl SharedFunctionInstanceData {
                 Some((shared_data, function_ast))
             })
             .collect()
-    }
-
-    #[cfg(all(test, libjs_runtime_tests_with_libgc))]
-    pub(crate) fn has_precompiled_bytecode(&self) -> bool {
-        self.storage.precompiled_bytecode_executable.borrow().is_some()
     }
 
     /// Records what scope analysis found out about the function's body, as rust_sfd_set_metadata does.
@@ -462,26 +530,8 @@ impl SharedFunctionInstanceData {
     /// does.
     pub fn set_precompiled_bytecode_executable(&self, precompiled: Box<PrecompiledFunction>) {
         self.clear_compile_inputs();
-        self.uses_this.set(precompiled.metadata.uses_this);
-        self.storage
-            .this_value_needs_environment_resolution
-            .set(precompiled.metadata.this_value_needs_environment_resolution);
-        self.function_environment_needed
-            .set(precompiled.metadata.function_environment_needed);
-        self.storage
-            .function_environment_bindings_count
-            .set(precompiled.metadata.function_environment_bindings_count);
-        self.storage
-            .var_environment_bindings_count
-            .set(precompiled.metadata.var_environment_bindings_count);
-        self.storage
-            .might_need_arguments_object
-            .set(precompiled.metadata.might_need_arguments);
-        self.storage
-            .contains_direct_call_to_eval
-            .set(precompiled.metadata.contains_eval);
+        self.set_metadata(&precompiled.metadata);
         self.storage.precompiled_bytecode_executable.replace(Some(precompiled));
-        self.update_asm_call_metadata();
     }
 
     /// Sets [[ClassFieldInitializerName]] to a name the frontend found, as rust_sfd_set_class_field_initializer_name
@@ -610,6 +660,11 @@ impl SharedFunctionInstanceData {
                 precompiled.executable,
                 source_code.as_ref(),
             ));
+        }
+
+        if let Some(cached_executable) = shared_data.storage.cached_bytecode_executable.take() {
+            let source_code = source_code.expect("a function of a bytecode cache blob has its source code");
+            return materialize_cached_function_executable(vm, &cached_executable, &source_code);
         }
 
         if !shared_data.storage.use_rust_compilation {

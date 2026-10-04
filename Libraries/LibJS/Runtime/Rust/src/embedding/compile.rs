@@ -21,6 +21,7 @@ use core::ffi::c_void;
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use crate::bytecode::bytecode_cache::ExecutableBacking;
 use crate::bytecode::executable::Executable;
 use crate::embedding::abi_types::{JSRealm, JSSourceCode, JSUtf16View, cell_from_abi, cell_into_abi, vm_from_abi};
 use crate::embedding::script::{JSParserErrorSink, JSScript, append_to_parser_error_sink, host_defined_slot_from_abi};
@@ -298,6 +299,7 @@ pub unsafe extern "C" fn js_compile_create_script_from_parsed_program(
         source_code,
         &filename,
         host_defined,
+        ExecutableBacking::Source,
     ))
 }
 
@@ -337,6 +339,7 @@ pub unsafe extern "C" fn js_compile_create_script_from_compiled_program(
         source_code,
         &filename,
         host_defined,
+        ExecutableBacking::HeapBytecode,
     ))
 }
 
@@ -382,6 +385,7 @@ pub unsafe extern "C" fn js_compile_create_module_from_parsed_program(
         compile_module(parsed, source_length),
         source_code,
         host_defined,
+        ExecutableBacking::Source,
     ))
 }
 
@@ -419,6 +423,7 @@ pub unsafe extern "C" fn js_compile_create_module_from_compiled_program(
         compiled.into_module(),
         source_code,
         host_defined,
+        ExecutableBacking::HeapBytecode,
     ))
 }
 

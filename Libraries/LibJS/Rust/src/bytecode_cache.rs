@@ -18,14 +18,7 @@
 //! implementations. The matching decoder should mirror these records instead
 //! of growing a separate procedural parser.
 
-#![cfg_attr(
-    not(feature = "cpp-runtime"),
-    allow(
-        dead_code,
-        reason = "only the C++ runtime materializes decoded blobs until the native API does"
-    )
-)]
-
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ops::Range;
@@ -123,8 +116,9 @@ pub type CloneBytecodeCacheBlobOwner = unsafe extern "C" fn(*const c_void) -> *m
 /// An embedder's handle on the bytes of a bytecode cache blob.
 pub struct ForeignBytecodeCacheBlobOwner {
     pub owner: *mut c_void,
-    /// Returns a new handle on the same bytes, which keeps them alive independently of `owner`.
-    pub clone_owner: CloneBytecodeCacheBlobOwner,
+    /// Returns a new handle on the same bytes, which keeps them alive independently of `owner`. Only a runtime whose
+    /// executables hold handles of their own needs it.
+    pub clone_owner: Option<CloneBytecodeCacheBlobOwner>,
     /// Releases a handle once nothing decoded from the bytes needs them anymore.
     pub free_owner: FreeBytecodeCacheBlobOwner,
 }
@@ -199,7 +193,11 @@ struct ForeignBytecodeCacheBlob {
     data: *const u8,
     length: usize,
     owner: *mut c_void,
-    clone_owner: CloneBytecodeCacheBlobOwner,
+    #[cfg_attr(
+        not(feature = "cpp-runtime"),
+        allow(dead_code, reason = "only C++ executables use it")
+    )]
+    clone_owner: Option<CloneBytecodeCacheBlobOwner>,
     free_owner: FreeBytecodeCacheBlobOwner,
 }
 
@@ -469,19 +467,35 @@ impl From<ast::Utf16String> for DecodedUtf16String {
 
 impl DecodedUtf16String {
     pub(crate) fn to_vec(&self) -> Vec<u16> {
+        self.code_units().into_owned()
+    }
+
+    /// The code units, in place where the blob stores them in the native byte order. A foreign string is only valid
+    /// while its blob is, so callers only reach one through a record that keeps the blob alive.
+    fn code_units(&self) -> Cow<'_, [u16]> {
         match self {
-            Self::Owned(value) => value.to_vec(),
-            Self::Foreign { data, length } => unsafe {
+            Self::Owned(value) => Cow::Borrowed(value.as_slice()),
+            #[cfg(target_endian = "little")]
+            // SAFETY: The record this string was reached through keeps the blob alive, and the decoder checked that
+            //         the code units lie within it and are aligned.
+            Self::Foreign { data, length } => Cow::Borrowed(unsafe { std::slice::from_raw_parts(*data, *length) }),
+            #[cfg(not(target_endian = "little"))]
+            // SAFETY: As above.
+            Self::Foreign { data, length } => Cow::Owned(unsafe {
                 std::slice::from_raw_parts(*data, *length)
                     .iter()
                     .map(|code_unit| u16::from_le(*code_unit))
                     .collect()
-            },
+            }),
         }
     }
 
     fn to_utf16_string(&self) -> ast::Utf16String {
         self.to_vec().into()
+    }
+
+    fn to_fly_string(&self) -> ak::Utf16FlyString {
+        ak::Utf16FlyString::from_utf16(&self.code_units())
     }
 }
 
@@ -503,8 +517,9 @@ impl ByteVector {
     }
 }
 
+/// Bytes of a decoded blob, in place, which keep the whole blob alive.
 #[derive(Clone)]
-pub(crate) struct DecodedBytecodeBytes {
+pub struct DecodedBytecodeBytes {
     blob: Rc<ForeignBytecodeCacheBlob>,
     range: Range<usize>,
 }
@@ -515,15 +530,25 @@ impl DecodedBytecodeBytes {
         decoder.bytecode_bytes(length)
     }
 
-    pub(crate) fn as_slice(&self) -> &[u8] {
+    pub fn as_slice(&self) -> &[u8] {
         debug_assert!(self.range.end <= self.blob.length);
+        // SAFETY: The decoder checked that the range lies within the blob, which the Rc keeps alive.
         unsafe { std::slice::from_raw_parts(self.blob.data.add(self.range.start), self.range.len()) }
     }
 
     /// Asks the embedder for a new handle on the blob these bytes are in, which keeps them alive independently of the
     /// decoded blob.
+    #[cfg_attr(
+        not(feature = "cpp-runtime"),
+        allow(dead_code, reason = "only C++ executables use it")
+    )]
     pub(crate) fn clone_blob_owner(&self) -> *mut c_void {
-        unsafe { (self.blob.clone_owner)(self.blob.owner.cast_const()) }
+        let clone_owner = self
+            .blob
+            .clone_owner
+            .expect("an embedder whose executables adopt the owner of a blob can clone it");
+        // SAFETY: The embedder's callback takes the owner it handed over, which is still alive.
+        unsafe { clone_owner(self.blob.owner.cast_const()) }
     }
 
     fn decoder(&self) -> Decoder<'_> {
@@ -712,6 +737,24 @@ impl DecodedCacheBlob {
             "decoded bytecode cache blob must be validated before materialization"
         );
     }
+
+    /// What declaration instantiation of the program needs. Every record reached from here passed validation.
+    ///
+    /// # Panics
+    /// Panics if the blob has not passed [`DecodedCacheBlob::validate_for_materialization()`].
+    pub fn declaration_metadata(&self) -> &DecodedDeclarationMetadata {
+        self.verify_has_been_validated_for_materialization();
+        &self.metadata
+    }
+
+    /// The program's body. Every record reached from here passed validation.
+    ///
+    /// # Panics
+    /// Panics if the blob has not passed [`DecodedCacheBlob::validate_for_materialization()`].
+    pub fn program(&self) -> &DecodedProgramRecord {
+        self.verify_has_been_validated_for_materialization();
+        &self.program
+    }
 }
 
 impl Encode for ast::ProgramType {
@@ -788,7 +831,8 @@ impl DeclarationMetadataRecord<'_> {
     }
 }
 
-pub(crate) enum DecodedDeclarationMetadata {
+/// What declaration instantiation of a cached script or module needs, with the functions it declares.
+pub enum DecodedDeclarationMetadata {
     Script {
         metadata: ScriptDeclarationMetadata,
         declaration_functions: Vec<DecodedFunctionRecord>,
@@ -856,13 +900,13 @@ impl Decode for MetadataKind {
     }
 }
 
-pub(crate) struct ScriptDeclarationMetadata {
-    pub(crate) lexical_names: Vec<ast::Utf16String>,
-    pub(crate) var_names: Vec<ast::Utf16String>,
-    pub(crate) function_names: Vec<ast::Utf16String>,
-    pub(crate) var_scoped_names: Vec<ast::Utf16String>,
-    pub(crate) annex_b_candidate_names: Vec<ast::Utf16String>,
-    pub(crate) lexical_bindings: Vec<LexicalBindingRecord>,
+pub struct ScriptDeclarationMetadata {
+    pub lexical_names: Vec<ast::Utf16String>,
+    pub var_names: Vec<ast::Utf16String>,
+    pub function_names: Vec<ast::Utf16String>,
+    pub var_scoped_names: Vec<ast::Utf16String>,
+    pub annex_b_candidate_names: Vec<ast::Utf16String>,
+    pub lexical_bindings: Vec<LexicalBindingRecord>,
 }
 
 impl ScriptDeclarationMetadata {
@@ -915,16 +959,16 @@ impl Encode for ScriptDeclarationMetadata {
     }
 }
 
-pub(crate) struct ModuleDeclarationMetadata {
-    pub(crate) import_entries: Vec<ModuleImportEntryRecord>,
-    pub(crate) local_exports: Vec<ModuleExportEntryRecord>,
-    pub(crate) indirect_exports: Vec<ModuleExportEntryRecord>,
-    pub(crate) star_exports: Vec<ModuleExportEntryRecord>,
-    pub(crate) requested_modules: Vec<ModuleRequestRecord>,
-    pub(crate) default_export_binding_name: Option<ast::Utf16String>,
-    pub(crate) var_declared_names: Vec<ast::Utf16String>,
-    pub(crate) function_names: Vec<ast::Utf16String>,
-    pub(crate) lexical_bindings: Vec<ModuleLexicalBindingRecord>,
+pub struct ModuleDeclarationMetadata {
+    pub import_entries: Vec<ModuleImportEntryRecord>,
+    pub local_exports: Vec<ModuleExportEntryRecord>,
+    pub indirect_exports: Vec<ModuleExportEntryRecord>,
+    pub star_exports: Vec<ModuleExportEntryRecord>,
+    pub requested_modules: Vec<ModuleRequestRecord>,
+    pub default_export_binding_name: Option<ast::Utf16String>,
+    pub var_declared_names: Vec<ast::Utf16String>,
+    pub function_names: Vec<ast::Utf16String>,
+    pub lexical_bindings: Vec<ModuleLexicalBindingRecord>,
 }
 
 impl ModuleDeclarationMetadata {
@@ -1013,9 +1057,9 @@ impl Utf16Vector<'_> {
     }
 }
 
-pub(crate) struct LexicalBindingRecord {
-    pub(crate) name: ast::Utf16String,
-    pub(crate) is_constant: bool,
+pub struct LexicalBindingRecord {
+    pub name: ast::Utf16String,
+    pub is_constant: bool,
 }
 
 impl Encode for LexicalBindingRecord {
@@ -1044,10 +1088,11 @@ impl LexicalBindingTable<'_> {
     }
 }
 
-pub(crate) struct ModuleLexicalBindingRecord {
-    pub(crate) name: ast::Utf16String,
-    pub(crate) is_constant: bool,
-    pub(crate) function_index: i32,
+/// A lexical binding of a module, which the declared function at `function_index` initializes, unless that is -1.
+pub struct ModuleLexicalBindingRecord {
+    pub name: ast::Utf16String,
+    pub is_constant: bool,
+    pub function_index: i32,
 }
 
 impl Encode for ModuleLexicalBindingRecord {
@@ -1079,9 +1124,9 @@ impl ModuleLexicalBindingTable<'_> {
 }
 
 #[derive(Clone)]
-pub(crate) struct ModuleRequestRecord {
-    pub(crate) specifier: ast::Utf16String,
-    pub(crate) attributes: Vec<ast::ImportAttribute>,
+pub struct ModuleRequestRecord {
+    pub specifier: ast::Utf16String,
+    pub attributes: Vec<ast::ImportAttribute>,
 }
 
 impl From<&ast::ModuleRequest> for ModuleRequestRecord {
@@ -1106,6 +1151,15 @@ impl Decode for ModuleRequestRecord {
             specifier: ast::Utf16String::decode(decoder)?,
             attributes: ImportAttributeTable::decode(decoder)?,
         })
+    }
+}
+
+impl From<&ModuleRequestRecord> for ast::ModuleRequest {
+    fn from(record: &ModuleRequestRecord) -> Self {
+        Self {
+            module_specifier: record.specifier.clone(),
+            attributes: record.attributes.clone(),
+        }
     }
 }
 
@@ -1145,10 +1199,10 @@ impl ImportAttributeTable<'_> {
     }
 }
 
-pub(crate) struct ModuleImportEntryRecord {
-    pub(crate) import_name: Option<ast::Utf16String>,
-    pub(crate) local_name: ast::Utf16String,
-    pub(crate) module_request: ModuleRequestRecord,
+pub struct ModuleImportEntryRecord {
+    pub import_name: Option<ast::Utf16String>,
+    pub local_name: ast::Utf16String,
+    pub module_request: ModuleRequestRecord,
 }
 
 impl Encode for ModuleImportEntryRecord {
@@ -1179,11 +1233,11 @@ impl ModuleImportEntryTable<'_> {
     }
 }
 
-pub(crate) struct ModuleExportEntryRecord {
-    pub(crate) kind: ast::ExportEntryKind,
-    pub(crate) export_name: Option<ast::Utf16String>,
-    pub(crate) local_or_import_name: Option<ast::Utf16String>,
-    pub(crate) module_request: Option<ModuleRequestRecord>,
+pub struct ModuleExportEntryRecord {
+    pub kind: ast::ExportEntryKind,
+    pub export_name: Option<ast::Utf16String>,
+    pub local_or_import_name: Option<ast::Utf16String>,
+    pub module_request: Option<ModuleRequestRecord>,
 }
 
 impl Encode for ModuleExportEntryRecord {
@@ -1658,7 +1712,8 @@ impl ProgramRecord<'_> {
     }
 }
 
-pub(crate) struct DecodedProgramRecord {
+/// The body of a cached script or module.
+pub struct DecodedProgramRecord {
     pub(crate) kind: ProgramKind,
     pub(crate) executable: DecodedExecutableRecord,
 }
@@ -1666,6 +1721,15 @@ pub(crate) struct DecodedProgramRecord {
 impl DecodedProgramRecord {
     fn validate_for_materialization(&self, source_len: usize) -> Result<(), ValidationErrorKind> {
         self.executable.validate_for_materialization(source_len)
+    }
+
+    /// Whether this is the body of a module with top-level await, which is compiled as that of an async function.
+    pub fn is_async_module(&self) -> bool {
+        matches!(self.kind, ProgramKind::AsyncModule)
+    }
+
+    pub fn executable(&self) -> &DecodedExecutableRecord {
+        &self.executable
     }
 }
 
@@ -1757,7 +1821,9 @@ impl ExecutableRecord<'_> {
     }
 }
 
-pub(crate) struct DecodedExecutableRecord {
+/// One cached executable, whose bytecode stays in the blob. Its tables are decoded on request, into what a runtime
+/// creates an executable from; each returns `None` if the blob turns out to be malformed there.
+pub struct DecodedExecutableRecord {
     pub(crate) strict: bool,
     pub(crate) number_of_registers: u32,
     pub(crate) number_of_arguments: u32,
@@ -1840,15 +1906,102 @@ impl DecodedExecutableRecord {
 
         Ok(())
     }
+
+    pub fn is_strict(&self) -> bool {
+        self.strict
+    }
+
+    pub fn number_of_registers(&self) -> u32 {
+        self.number_of_registers
+    }
+
+    pub fn number_of_arguments(&self) -> u32 {
+        self.number_of_arguments
+    }
+
+    pub fn cache_counts(&self) -> ExecutableCacheCounts {
+        let counters = &self.cache_counters;
+        ExecutableCacheCounts {
+            property_lookup: counters.property_lookup_cache_count,
+            global_variable: counters.global_variable_cache_count,
+            environment_coordinate: counters.environment_coordinate_cache_count,
+            template_object: counters.template_object_cache_count,
+            object_shape: counters.object_shape_cache_count,
+            object_property_iterator: counters.object_property_iterator_cache_count,
+            environment_shape: counters.environment_shape_cache_count,
+        }
+    }
+
+    /// The index in the property key table of the name the bytecode reads a length through, if any.
+    pub fn length_identifier(&self) -> Option<u32> {
+        self.length_identifier
+    }
+
+    /// The bytecode, in the blob, which these bytes keep alive.
+    pub fn bytecode(&self) -> &DecodedBytecodeBytes {
+        &self.bytecode
+    }
+
+    pub fn identifiers(&self) -> Option<Vec<ak::Utf16FlyString>> {
+        self.identifier_table.fly_strings()
+    }
+
+    pub fn property_keys(&self) -> Option<Vec<ak::Utf16FlyString>> {
+        self.property_key_table.fly_strings()
+    }
+
+    pub fn strings(&self) -> Option<Vec<ak::Utf16FlyString>> {
+        self.string_table.fly_strings()
+    }
+
+    pub fn argument_names(&self) -> Option<Vec<ak::Utf16FlyString>> {
+        self.argument_variable_names.fly_strings()
+    }
+
+    pub fn constant_values(&self) -> Option<Vec<ConstantValue>> {
+        self.constants.values()
+    }
+
+    pub fn exception_handler_entries(&self) -> Option<Vec<ExceptionHandler>> {
+        self.exception_handlers.values()
+    }
+
+    pub fn source_map_entries(&self) -> Option<Vec<SourceMapEntry>> {
+        self.source_map.values()
+    }
+
+    pub fn locals(&self) -> Option<Vec<LocalVariable>> {
+        self.local_variables.local_variables()
+    }
+
+    /// The functions the bytecode creates, which refer to it by index.
+    pub fn functions(&self) -> Option<Vec<DecodedFunctionRecord>> {
+        self.shared_functions.values()
+    }
+
+    pub fn classes(&self) -> Option<Vec<PendingClassBlueprint>> {
+        Some(
+            self.class_blueprints
+                .values()?
+                .iter()
+                .map(PendingClassBlueprint::from)
+                .collect(),
+        )
+    }
 }
 
-pub(crate) struct DecodedCachedExecutableRecord {
+/// The executable of a cached function, kept in the blob until the function is first called.
+pub struct DecodedCachedExecutableRecord {
     bytes: DecodedBytecodeBytes,
     has_been_validated_for_materialization: bool,
 }
 
 impl DecodedCachedExecutableRecord {
-    pub(crate) fn decode_executable(&self) -> Option<DecodedExecutableRecord> {
+    /// The executable, decoded.
+    ///
+    /// # Panics
+    /// Panics unless the record came from a blob that passed validation.
+    pub fn decode_executable(&self) -> Option<DecodedExecutableRecord> {
         self.verify_has_been_validated_for_materialization();
         self.decode_validated_executable(CachedBytecodeValidation::Validated)
     }
@@ -1954,6 +2107,11 @@ impl DecodedUtf16Table {
         }
         decoder.is_empty().then_some(values)
     }
+
+    fn fly_strings(&self) -> Option<Vec<ak::Utf16FlyString>> {
+        // The strings point into the bytes of this table, which keep the blob alive while they are converted.
+        Some(self.values()?.iter().map(DecodedUtf16String::to_fly_string).collect())
+    }
 }
 
 struct ConstantTable<'a>(&'a [ConstantValue]);
@@ -1997,6 +2155,10 @@ impl DecodedConstantTable {
 
     /// The number of constants and their encoding, which is the one executables are created from, once every
     /// constant in it turned out to be well-formed.
+    #[cfg_attr(
+        not(feature = "cpp-runtime"),
+        allow(dead_code, reason = "only C++ executables use it")
+    )]
     pub(crate) fn encoded_constants(&self) -> Option<(usize, &DecodedBytecodeBytes)> {
         {
             let mut decoder = Decoder::new(self.bytes.as_slice(), None);
@@ -2009,8 +2171,21 @@ impl DecodedConstantTable {
         }
         Some((self.count, &self.bytes))
     }
+
+    fn values(&self) -> Option<Vec<ConstantValue>> {
+        let mut decoder = Decoder::new(self.bytes.as_slice(), None);
+        let mut values = Vec::with_capacity(self.count);
+        for _ in 0..self.count {
+            values.push(ConstantValue::decode(&mut decoder)?);
+        }
+        decoder.is_empty().then_some(values)
+    }
 }
 
+#[cfg_attr(
+    not(feature = "cpp-runtime"),
+    allow(dead_code, reason = "only C++ executables use it")
+)]
 fn validate_constant_value(decoder: &mut Decoder<'_>) -> Option<()> {
     match u8::decode(decoder)? {
         tag if tag == ConstantTag::Number as u8 => {
@@ -2257,6 +2432,23 @@ impl DecodedLocalVariableTable {
         }
         decoder.is_empty().then_some(values)
     }
+
+    fn local_variables(&self) -> Option<Vec<LocalVariable>> {
+        // The names point into the bytes of this table, which keep the blob alive while they are converted.
+        Some(
+            self.values()?
+                .into_iter()
+                .map(|local_variable| LocalVariable {
+                    name: local_variable.name.to_fly_string(),
+                    is_lexically_declared: local_variable.is_lexically_declared,
+                    is_initialized_during_declaration_instantiation: local_variable
+                        .is_initialized_during_declaration_instantiation,
+                    is_mutable: local_variable.is_mutable,
+                    scope_range: local_variable.scope_range,
+                })
+                .collect(),
+        )
+    }
 }
 
 pub(crate) struct DecodedLocalVariable {
@@ -2408,7 +2600,8 @@ impl FunctionRecord<'_> {
     }
 }
 
-pub(crate) struct DecodedFunctionRecord {
+/// One function a cached executable creates or a cached program declares. The strings it returns stay in the blob.
+pub struct DecodedFunctionRecord {
     pub(crate) name: Option<DecodedUtf16String>,
     pub(crate) source_text_start: u32,
     pub(crate) source_text_end: u32,
@@ -2431,6 +2624,71 @@ impl DecodedFunctionRecord {
             return Err(ValidationErrorKind::InvalidLength);
         }
         self.precompiled.validate_for_materialization(source_len)
+    }
+
+    // NB: The strings of a record point into the blob, which the record's own bytecode keeps alive.
+    pub fn function_name(&self) -> Option<Cow<'_, [u16]>> {
+        self.name.as_ref().map(DecodedUtf16String::code_units)
+    }
+
+    /// Where the function's source text starts and ends in the source code, in code units.
+    pub fn source_text_range(&self) -> Range<usize> {
+        self.source_text_start as usize..self.source_text_end as usize
+    }
+
+    pub fn length(&self) -> i32 {
+        self.function_length
+    }
+
+    pub fn parameter_count(&self) -> u32 {
+        self.formal_parameter_count
+    }
+
+    pub fn function_kind(&self) -> ast::FunctionKind {
+        self.kind
+    }
+
+    /// Whether the function's own code is strict, which does not count code it is nested in.
+    pub fn has_strict_code(&self) -> bool {
+        self.is_strict_mode
+    }
+
+    pub fn is_arrow(&self) -> bool {
+        self.is_arrow_function
+    }
+
+    /// The names of the parameters if the parameter list is simple, and `None` otherwise.
+    pub fn simple_parameter_names(&self) -> Option<Vec<ak::Utf16FlyString>> {
+        Some(
+            self.parameter_names
+                .as_ref()?
+                .iter()
+                .map(DecodedUtf16String::to_fly_string)
+                .collect(),
+        )
+    }
+
+    /// What parsing found out about the function's use of `this`: whether it does, and whether it resolves `this`
+    /// through its environment.
+    pub fn parsing_insights_about_this(&self) -> (bool, bool) {
+        (self.uses_this, self.uses_this_from_environment)
+    }
+
+    /// The name of the field whose initializer the function is, and whether that field is private.
+    pub fn field_initializer_name(&self) -> Option<(Cow<'_, [u16]>, bool)> {
+        self.class_field_initializer_name
+            .as_ref()
+            .map(|(name, is_private)| (name.code_units(), *is_private))
+    }
+
+    pub fn scope_metadata(&self) -> &FunctionSfdMetadata {
+        &self.metadata
+    }
+
+    /// The function's own executable, which stays in the blob until the function is first called.
+    pub fn cached_executable(&self) -> DecodedCachedExecutableRecord {
+        // Records are only reachable from outside this module through a blob that passed validation.
+        self.precompiled.validated_copy(CachedBytecodeValidation::Validated)
     }
 }
 
@@ -2829,10 +3087,6 @@ mod tests {
         storage.releases.set(storage.releases.get() + 1);
     }
 
-    unsafe extern "C" fn clone_test_blob_owner(_: *const c_void) -> *mut c_void {
-        unreachable!("only materialization into C++ executables clones the owner of a blob")
-    }
-
     /// Copies `bytes` into storage of the returned owner, which adds one to `releases` when it is released.
     fn test_blob(bytes: &[u8], releases: &Rc<Cell<usize>>) -> (&'static [u8], ForeignBytecodeCacheBlobOwner) {
         let mut storage = Box::new(TestBlobStorage {
@@ -2847,7 +3101,7 @@ mod tests {
         let view = unsafe { std::slice::from_raw_parts(storage.words.as_ptr().cast::<u8>(), bytes.len()) };
         let owner = ForeignBytecodeCacheBlobOwner {
             owner: Box::into_raw(storage).cast(),
-            clone_owner: clone_test_blob_owner,
+            clone_owner: None,
             free_owner: release_test_blob,
         };
         (view, owner)

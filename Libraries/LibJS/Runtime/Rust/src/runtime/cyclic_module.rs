@@ -1235,7 +1235,15 @@ mod tests {
         let source: Vec<u16> = source.encode_utf16().collect();
         let source_code = SourceCode::create(Utf16String::default(), Utf16String::from_utf16(&source));
         let compiled = compile_module(parse(&source, ProgramType::Module, 0), source.len());
-        SourceTextModule::create(vm, realm, "", compiled, source_code, host_defined)
+        SourceTextModule::create(
+            vm,
+            realm,
+            "",
+            compiled,
+            source_code,
+            host_defined,
+            crate::bytecode::bytecode_cache::ExecutableBacking::Source,
+        )
     }
 
     /// HostLoadImportedModule for a host that creates each module it loads with the hostDefined of the load, like
