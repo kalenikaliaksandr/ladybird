@@ -18,9 +18,9 @@ use crate::bytecode::executable::{PropertyLookupCache, StaticPropertyLookupCache
 use crate::bytecode::property_access::{Strict, put_by_property_key};
 use crate::gc::class::{Class, Extends, GcCell, define_cell};
 use crate::gc::gc_ref_cell::GcRefCell;
+use crate::gc::heap::RuntimeClassAllocator;
 use crate::gc::root::MarkedVec;
 use crate::gc::visitor::{Trace, Visitor};
-use crate::interpreter::runtime_functions::unimplemented_runtime_function;
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::{CellHeader, Gc};
 use crate::layout::execution_context::ExecutionContext;
@@ -37,7 +37,8 @@ use crate::runtime::accessor::Accessor;
 use crate::runtime::array::Array;
 use crate::runtime::class_field_definition::{ClassElementName, ClassFieldDefinition, ClassFieldInitializer};
 use crate::runtime::completion::{Must, ThrowCompletionOr};
-use crate::runtime::error::ErrorKind;
+use crate::runtime::error::{ErrorKind, error_data_of_error};
+use crate::runtime::error_data::ErrorData;
 use crate::runtime::error_types::ErrorType;
 use crate::runtime::indexed_properties::{GenericIndexedPropertyStorage, ValueAndAttributes};
 use crate::runtime::iterator::BuiltinIteratorNext;
@@ -263,6 +264,8 @@ pub struct ObjectMethods {
     /// The step of a built-in iterator whose next method is the original one, which IteratorStep takes without calling
     /// it; given the iterator and the next method of its iterator record.
     pub as_builtin_iterator_if_next_is_not_redefined: fn(&Object, Value) -> Option<BuiltinIteratorNext>,
+    /// The [[ErrorData]] internal slot, which Error objects have.
+    pub error_data: fn(&Object) -> Option<&ErrorData>,
 }
 
 pub static ORDINARY_OBJECT_METHODS: ObjectMethods = ObjectMethods {
@@ -290,6 +293,7 @@ pub static ORDINARY_OBJECT_METHODS: ObjectMethods = ObjectMethods {
     is_cacheable_for_inherited_property: |_| true,
     eligible_for_own_property_enumeration_fast_path: |_| true,
     as_builtin_iterator_if_next_is_not_redefined: |_, _| None,
+    error_data: error_data_of_error,
 };
 
 define_cell!(Object, Object, methods: ORDINARY_OBJECT_METHODS);
@@ -428,7 +432,25 @@ macro_rules! define_object_class {
 pub(crate) use define_object_class;
 
 /// Object::IntrinsicAccessor: computes the value of a property defined with define_intrinsic_accessor().
-pub type IntrinsicAccessor = fn(&Vm, Gc<Realm>) -> Value;
+#[derive(Clone, Copy)]
+pub enum IntrinsicAccessor {
+    Native(NativeIntrinsicAccessor),
+    Host(HostIntrinsicAccessor),
+}
+
+pub type NativeIntrinsicAccessor = fn(&Vm, Gc<Realm>) -> Value;
+
+/// An intrinsic accessor that an embedder defines through the C ABI, which returns the encoded value.
+pub type HostIntrinsicAccessor = unsafe extern "C" fn(realm: *mut Realm) -> u64;
+
+impl IntrinsicAccessor {
+    fn compute_value(self, vm: &Vm, realm: Gc<Realm>) -> Value {
+        match self {
+            Self::Native(accessor) => accessor(vm, realm),
+            Self::Host(accessor) => crate::embedding::object::call_host_intrinsic_accessor(accessor, realm),
+        }
+    }
+}
 
 /// Takes the intrinsic accessor of a property that has not been read yet, which is used at most once.
 fn find_intrinsic_accessor(vm: &Vm, object: &Object, property_key: &PropertyKey) -> Option<IntrinsicAccessor> {
@@ -458,7 +480,16 @@ const MAX_TRANSITIONS_BEFORE_CONVERTING_TO_DICTIONARY: u32 = 64;
 /// properties start out in its inline storage. Every object, of any class, is allocated through this, as C++ objects
 /// are through Realm::create.
 pub fn allocate_object<T: GcCell + Extends<Object>>(vm: &Vm, object: T) -> Gc<T> {
-    let cell = vm.heap().allocate(object);
+    set_up_named_storage(vm.heap().allocate(object))
+}
+
+/// allocate_object() for an object whose class was derived at run time, from that class's allocator.
+pub fn allocate_object_in<T: GcCell + Extends<Object>>(vm: &Vm, allocator: RuntimeClassAllocator, object: T) -> Gc<T> {
+    set_up_named_storage(vm.heap().allocate_in(allocator, object))
+}
+
+#[inline(always)]
+fn set_up_named_storage<T: GcCell + Extends<Object>>(cell: Gc<T>) -> Gc<T> {
     let object = cell.upcast::<Object>();
     debug_assert!(object.named_properties.get().is_null());
     object.named_properties.set(object.inline_named_storage_pointer());
@@ -1568,6 +1599,15 @@ impl Object {
         (self.methods().as_builtin_iterator_if_next_is_not_redefined)(self, next_method)
     }
 
+    pub fn error_data(&self) -> Option<&ErrorData> {
+        (self.methods().error_data)(self)
+    }
+
+    /// Whether the object has an [[ErrorData]] internal slot.
+    pub fn has_error_data(&self) -> bool {
+        self.error_data().is_some()
+    }
+
     pub fn has_constructor(&self) -> bool {
         (self.methods().has_constructor)(self)
     }
@@ -1680,8 +1720,10 @@ impl Object {
         // 1. If O does not have an own property with key P, return undefined.
         let Some(storage_entry) = self.storage_get(vm, property_key) else {
             // AD-HOC: Report accesses to unimplemented IDL properties without making them observable to JavaScript.
-            if self.is_unimplemented_property(property_key) {
-                unimplemented_runtime_function("VM::on_unimplemented_property_access", 0);
+            if self.is_unimplemented_property(vm, property_key)
+                && let Some(on_unimplemented_property_access) = vm.on_unimplemented_property_access()
+            {
+                on_unimplemented_property_access(vm, self, property_key);
             }
             return Ok(None);
         };
@@ -2283,7 +2325,7 @@ impl Object {
         if self.has_intrinsic_accessors()
             && let Some(accessor) = find_intrinsic_accessor(vm, self, property_key)
         {
-            let value = accessor(vm, self.shape().realm());
+            let value = accessor.compute_value(vm, self.shape().realm());
             self.put_direct(metadata.offset, value);
         }
 
@@ -2578,6 +2620,31 @@ impl Object {
         vm: &Vm,
         property_key: &PropertyKey,
         attributes: PropertyAttributes,
+        accessor: NativeIntrinsicAccessor,
+    ) {
+        self.define_intrinsic_accessor_of_either_kind(
+            vm,
+            property_key,
+            attributes,
+            IntrinsicAccessor::Native(accessor),
+        );
+    }
+
+    pub fn define_host_intrinsic_accessor(
+        &self,
+        vm: &Vm,
+        property_key: &PropertyKey,
+        attributes: PropertyAttributes,
+        accessor: HostIntrinsicAccessor,
+    ) {
+        self.define_intrinsic_accessor_of_either_kind(vm, property_key, attributes, IntrinsicAccessor::Host(accessor));
+    }
+
+    fn define_intrinsic_accessor_of_either_kind(
+        &self,
+        vm: &Vm,
+        property_key: &PropertyKey,
+        attributes: PropertyAttributes,
         accessor: IntrinsicAccessor,
     ) {
         assert!(property_key.is_string());
@@ -2690,14 +2757,25 @@ impl Object {
         self.delete_engine_private_property(vm, cached_value_key);
     }
 
-    fn is_unimplemented_property(&self, property_key: &PropertyKey) -> bool {
+    /// Records a property of a web platform interface that is not implemented, so that reading it can be reported
+    /// without making it observable to JavaScript.
+    pub fn define_unimplemented_property(&self, vm: &Vm, property_name: Utf16FlyString) {
+        self.set_flag(object_flag::HAS_UNIMPLEMENTED_PROPERTIES);
+        vm.unimplemented_properties()
+            .borrow_mut()
+            .entry(core::ptr::from_ref(self) as usize)
+            .or_default()
+            .insert(property_name);
+    }
+
+    fn is_unimplemented_property(&self, vm: &Vm, property_key: &PropertyKey) -> bool {
         if !self.has_unimplemented_properties() || !property_key.is_string() {
             return false;
         }
-        unimplemented_runtime_function(
-            "the unimplemented properties of Object::define_unimplemented_property",
-            0,
-        )
+        vm.unimplemented_properties()
+            .borrow()
+            .get(&(core::ptr::from_ref(self) as usize))
+            .is_some_and(|properties| properties.contains(property_key.as_string()))
     }
 
     // 20.1.2.3.1 ObjectDefineProperties ( O, Properties ), https://tc39.es/ecma262/#sec-objectdefineproperties
@@ -4498,5 +4576,118 @@ mod tests {
         assert_eq!(own_keys(&vm, &entry), "0,1,length");
         assert_eq!(get(&vm, &entry, 0u32).as_string().to_utf8(), "b");
         assert_eq!(get(&vm, &entry, 1u32), int(3));
+    }
+
+    static METHODS_OF_A_CLASS_DERIVED_AT_RUN_TIME: ObjectMethods = ObjectMethods {
+        is_cacheable_for_property_absence: |_| false,
+        ..ORDINARY_OBJECT_METHODS
+    };
+
+    #[test]
+    fn objects_of_a_class_derived_at_run_time_come_from_its_own_allocator() {
+        let vm = Vm::create();
+        let test_realm = TestRealm::new(&vm);
+        let class = Class::derive_runtime(
+            Object::CLASS,
+            "DerivedAtRunTime",
+            &METHODS_OF_A_CLASS_DERIVED_AT_RUN_TIME,
+        );
+        let allocator = vm.heap().runtime_class_allocator(class);
+        assert!(vm.heap().runtime_class_allocator(class) == allocator);
+        let new_object = || {
+            let object = Object::new_with_prototype(
+                &vm,
+                class,
+                test_realm.realm.object_prototype(),
+                MayInterfereWithIndexedPropertyAccess::No,
+            );
+            allocate_object_in(&vm, allocator, object)
+        };
+        let first = new_object();
+        let second = new_object();
+        set(&vm, &first, key("x"), int(1));
+        vm.heap().collect_garbage();
+
+        for object in [first, second] {
+            assert!(core::ptr::eq(object.class(), class));
+            assert!(object.is::<Object>());
+            assert!(!object.is_cacheable_for_property_absence());
+            // SAFETY: The object is a live cell.
+            let type_info = unsafe { crate::gc::capi::gc_cell_type_info(object.as_ptr().cast()) };
+            assert!(core::ptr::eq(type_info, &raw const class.type_info));
+            let mut name_length = 0;
+            let class_name_of_cell = class.type_info.class_name.expect("every class has a name");
+            // SAFETY: The object is a live cell, and the name is static.
+            let name = unsafe {
+                core::slice::from_raw_parts(
+                    class_name_of_cell(object.as_ptr().cast(), &raw mut name_length).cast::<u8>(),
+                    name_length,
+                )
+            };
+            assert_eq!(name, b"DerivedAtRunTime");
+        }
+        assert_eq!(get(&vm, &first, key("x")), int(1));
+        assert_eq!(own_keys(&vm, &second), "");
+    }
+
+    #[test]
+    fn the_class_of_an_object_finds_its_error_data() {
+        use crate::runtime::error::Error;
+
+        static WITHOUT_ERROR_DATA: ObjectMethods = ObjectMethods {
+            error_data: |_| None,
+            ..ORDINARY_OBJECT_METHODS
+        };
+
+        let vm = Vm::create();
+        let test_realm = TestRealm::new(&vm);
+        assert!(Error::create(&vm, test_realm.realm).has_error_data());
+        assert!(!test_realm.object().has_error_data());
+
+        let class = Class::derive_runtime(Error::CLASS, "ErrorWithoutErrorData", &WITHOUT_ERROR_DATA);
+        let error_prototype = test_realm.realm.intrinsics().error_prototype(&vm);
+        let error = allocate_object_in(
+            &vm,
+            vm.heap().runtime_class_allocator(class),
+            Error::new(&vm, class, error_prototype),
+        );
+        assert!(error.is::<Error>());
+        assert!(!error.has_error_data());
+    }
+
+    std::thread_local! {
+        static UNIMPLEMENTED_PROPERTY_ACCESSES: core::cell::RefCell<Vec<String>> = const { core::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn record_unimplemented_property_access(_: &Vm, _: &Object, property_key: &PropertyKey) {
+        UNIMPLEMENTED_PROPERTY_ACCESSES
+            .with_borrow_mut(|accesses| accesses.push(String::from_utf16_lossy(&property_key.as_string().to_utf16())));
+    }
+
+    #[test]
+    fn reading_an_unimplemented_property_is_reported_without_being_observable() {
+        let vm = Vm::create();
+        let test_realm = TestRealm::new(&vm);
+        let o = test_realm.object();
+        o.define_unimplemented_property(&vm, Utf16FlyString::from_utf8("unimplemented"));
+        set(&vm, &o, key("implemented"), int(1));
+        let other = test_realm.object();
+
+        assert_eq!(get(&vm, &o, key("unimplemented")), Value::UNDEFINED);
+
+        vm.set_on_unimplemented_property_access(Some(record_unimplemented_property_access));
+        assert_eq!(get(&vm, &o, key("unimplemented")), Value::UNDEFINED);
+        assert_eq!(get(&vm, &o, key("implemented")), int(1));
+        assert_eq!(get(&vm, &o, key("missing")), Value::UNDEFINED);
+        assert_eq!(get(&vm, &other, key("unimplemented")), Value::UNDEFINED);
+        assert!(!o.has_property(&vm, &key("unimplemented")).must());
+        assert_eq!(own_keys(&vm, &o), "implemented");
+        o.define_direct_property(&vm, &key("unimplemented"), int(2), DEFAULT_ATTRIBUTES);
+        assert_eq!(get(&vm, &o, key("unimplemented")), int(2));
+
+        assert_eq!(
+            UNIMPLEMENTED_PROPERTY_ACCESSES.take(),
+            ["unimplemented", "unimplemented"]
+        );
     }
 }
