@@ -18,6 +18,7 @@ use core::ptr::NonNull;
 use ak::{Utf16FlyString, Utf16String};
 use libjs_runtime_macros::Trace;
 
+use crate::embedding::host::host_module::HOST_MODULE_METHODS;
 use crate::gc::class::{Class, GcCell, define_cell};
 use crate::gc::class_id::ClassId;
 use crate::gc::foreign::ForeignCellSlot;
@@ -246,6 +247,7 @@ impl Module {
         match self.class().id {
             ClassId::SourceTextModule => &SOURCE_TEXT_MODULE_METHODS,
             ClassId::SyntheticModule => &SYNTHETIC_MODULE_METHODS,
+            ClassId::HostModule => &HOST_MODULE_METHODS,
             class_id => unreachable!("{class_id:?} is not a class of module"),
         }
     }
