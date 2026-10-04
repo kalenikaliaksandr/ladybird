@@ -86,9 +86,9 @@ public:
         return realm;
     }
 
-    JSCompletion evaluate(StringView source)
+    JSCompletion evaluate(StringView source, StringView source_name = "test.js"sv)
     {
-        return js_script_evaluate(vm(), realm(), ascii_view(source), ascii_view("test.js"sv));
+        return js_script_evaluate(vm(), realm(), ascii_view(source), ascii_view(source_name));
     }
 
     // Runs a script that reports what it finds wrong by throwing.
