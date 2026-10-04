@@ -118,6 +118,24 @@ TEST_CASE(resize_and_zero_fill_growth)
     storage.free(handle);
 }
 
+TEST_CASE(zero_fill_growth_clears_stale_bytes_of_committed_pages)
+{
+    auto& storage = GC::PrimitiveStorage::the();
+    auto handle = MUST(storage.try_reserve(8 * KiB, 1 * MiB, GC::PrimitiveStorage::ZeroFillNewBytes::Yes));
+    for (size_t i = 0; i < 8 * KiB; ++i)
+        EXPECT_EQ(*storage.data(handle, i), 0u);
+    for (size_t i = 0; i < 8 * KiB; ++i)
+        *storage.data(handle, i) = 0x7b;
+
+    MUST(storage.try_resize(handle, 1 * KiB, GC::PrimitiveStorage::ZeroFillNewBytes::Yes));
+    MUST(storage.try_resize(handle, 64 * KiB, GC::PrimitiveStorage::ZeroFillNewBytes::Yes));
+    EXPECT_EQ(*storage.data(handle, 1 * KiB - 1), 0x7b);
+    for (size_t i = 1 * KiB; i < 64 * KiB; ++i)
+        EXPECT_EQ(*storage.data(handle, i), 0u);
+
+    storage.free(handle);
+}
+
 TEST_CASE(reserve_capacity)
 {
     auto& storage = GC::PrimitiveStorage::the();

@@ -90,7 +90,7 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::al
     VERIFY(size <= capacity);
     if (!force_large && guard_size == 0 && size == capacity && small_size_class_index(size).has_value())
         return allocate_small_storage(size, zero_fill_new_bytes);
-    return allocate_large_storage(size, capacity, zero_fill_new_bytes, guard_size);
+    return allocate_large_storage(size, capacity, guard_size);
 }
 
 ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::allocate_small_storage(size_t size, ZeroFillNewBytes zero_fill_new_bytes)
@@ -122,10 +122,10 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::al
         };
     }
 
-    return allocate_from_new_slab(*size_class_index, slot_size, zero_fill_new_bytes, size);
+    return allocate_from_new_slab(*size_class_index, slot_size);
 }
 
-ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::allocate_from_new_slab(u16 size_class_index, size_t slot_size, ZeroFillNewBytes zero_fill_new_bytes, size_t requested_size)
+ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::allocate_from_new_slab(u16 size_class_index, size_t slot_size)
 {
     auto& slabs = m_small_slabs[size_class_index];
     if (slabs.size() >= NumericLimits<u16>::max())
@@ -154,9 +154,7 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::al
     slabs.append(move(slab));
     release_slab_on_error.disarm();
 
-    if (zero_fill_new_bytes == ZeroFillNewBytes::Yes)
-        __builtin_memset(m_cage_base + slab_offset, 0, requested_size);
-
+    // NB: The pages of a new slab were just committed, so its first slot needs no zero fill.
     return Allocation {
         .offset = slab_offset,
         .capacity = slot_size,
@@ -166,7 +164,7 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::al
     };
 }
 
-ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::allocate_large_storage(size_t size, size_t capacity, ZeroFillNewBytes zero_fill_new_bytes, size_t guard_size)
+ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::allocate_large_storage(size_t size, size_t capacity, size_t guard_size)
 {
     TRY(ensure_cage());
 
@@ -186,9 +184,8 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::al
             return commit_result.release_error();
         }
     }
-    if (zero_fill_new_bytes == ZeroFillNewBytes::Yes && size > 0)
-        __builtin_memset(m_cage_base + offset, 0, size);
 
+    // NB: A cage range is decommitted whenever it is freed, so the pages committed above need no zero fill.
     return Allocation {
         .offset = offset,
         .capacity = capacity,
@@ -257,11 +254,14 @@ ErrorOr<void> PrimitiveStorage::Allocator::resize(Allocation& allocation, size_t
 {
     VERIFY(new_size <= allocation.capacity);
 
+    auto old_committed_size = allocation.committed_size;
     if (!allocation.small_allocation.has_value())
         TRY(commit_large_storage(allocation, new_size));
 
-    if (zero_fill_new_bytes == ZeroFillNewBytes::Yes && new_size > old_size)
-        __builtin_memset(data(allocation, old_size), 0, new_size - old_size);
+    // NB: Only bytes that were committed before can hold stale data. The pages this resize committed are zero already.
+    auto end_of_bytes_to_zero_fill = min(new_size, old_committed_size);
+    if (zero_fill_new_bytes == ZeroFillNewBytes::Yes && end_of_bytes_to_zero_fill > old_size)
+        __builtin_memset(data(allocation, old_size), 0, end_of_bytes_to_zero_fill - old_size);
 
     return {};
 }
