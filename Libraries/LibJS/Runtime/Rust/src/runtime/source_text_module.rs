@@ -322,6 +322,11 @@ impl SourceTextModule {
         self.executable
     }
 
+    /// The shared data of the async function whose executable is the body of a module with top-level await.
+    pub fn top_level_await_shared_data(&self) -> Option<Gc<SharedFunctionInstanceData>> {
+        self.tla_shared_data
+    }
+
     // 16.2.1.7.2.1 GetExportedNames ( [ exportStarSet ] ), https://tc39.es/ecma262/#sec-getexportednames
     fn get_exported_names(&self, vm: &Vm, export_star_set: &ExportStarSet<'_>) -> Vec<Utf16FlyString> {
         // 1. Assert: module.[[Status]] is not NEW.

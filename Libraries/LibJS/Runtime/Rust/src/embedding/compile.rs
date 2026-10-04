@@ -10,24 +10,33 @@
 //!
 //! A JSParsedProgram and a JSCompiledProgram hold nothing of the VM or its heap, so any thread may create, inspect,
 //! compile or destroy them, and they may move between threads. Everything that takes a JSVM runs on the VM's thread.
+//!
+//! The functions of a script or module that do not run right away compile on their first call. An embedder can have
+//! them compiled on its worker threads before that instead, through JSOffThreadCompilationCallbacks.
 
+use core::ffi::c_void;
 use std::borrow::Cow;
+use std::sync::Arc;
 
+use crate::bytecode::executable::Executable;
 use crate::embedding::abi_types::{JSRealm, JSSourceCode, JSUtf16View, cell_from_abi, cell_into_abi, vm_from_abi};
 use crate::embedding::script::{JSParserErrorSink, JSScript, append_to_parser_error_sink, host_defined_slot_from_abi};
 use crate::embedding::source_code::{shared_source_code_from_abi, source_code_into_abi};
+use crate::gc::root::Root;
+use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
 use crate::layout::host_class::{JSModule, JSVM};
 use crate::parser_error::ParserError;
 use crate::runtime::module::Module;
+use crate::runtime::shared_function_instance_data::{SharedFunctionInstanceData, discard_precompiled_function};
 use crate::runtime::source_text_module::SourceTextModule;
 use crate::script::Script;
 use crate::utf16::Utf16View;
-use core::ffi::c_void;
-use libjs_rust::ast::ProgramType;
+use libjs_rust::ast::{FunctionPayload, ProgramType};
+use libjs_rust::bytecode::generator::PrecompiledFunction;
 use libjs_rust::compile::{
-    CompiledProgram, FunctionPrecompileMode, ParsedProgram, compile_module, compile_parsed_program_off_thread,
-    compile_script, parse,
+    CompiledProgram, FunctionPrecompileMode, ParsedProgram, compile_function, compile_module,
+    compile_parsed_program_off_thread, compile_script, parse,
 };
 
 /// A program that the frontend parsed, with or without syntax errors, which no VM owns: C++ JS::ParsedProgram.
@@ -191,7 +200,9 @@ pub unsafe extern "C" fn js_compile_parsed_program_destroy(parsed: *mut JSParsed
 
 /// CompiledProgram::compile(ParsedProgram): compiles a program that parsed without errors, which this consumes. The
 /// bytecode covers the top level and the functions it invokes right away; every other function compiles on its first
-/// call. The caller owns the compiled program. Any thread may call this.
+/// call, or through js_compile_remaining_functions_of_script_off_thread() and
+/// js_compile_remaining_functions_of_module_off_thread(). The caller owns the compiled program. Any thread may call
+/// this.
 ///
 /// # Safety
 ///
@@ -440,4 +451,263 @@ pub unsafe extern "C" fn js_compile_top_level_source_code_of_module(module: *mut
         .cached_executable()
         .and_then(|executable| executable.source_code.as_ref().map(source_code_into_abi))
         .unwrap_or(core::ptr::null())
+}
+
+/// Work that the embedder runs once, on the thread that the callback receiving it names: C++ Function<void()>.
+#[repr(C)]
+pub struct JSOffThreadTask {
+    pub run: Option<unsafe extern "C" fn(data: *mut c_void)>,
+    pub data: *mut c_void,
+}
+
+/// OffThreadCompilationCallbacks: how an embedder runs background compilation work. The runtime copies the struct and
+/// calls the functions with `context` from both threads, so they and the context must work on any thread.
+///
+/// - `submit_work` is called on the VM's thread, and must run the task on a worker thread.
+/// - `post_to_main_thread` is called on a worker thread, and must run the task on the VM's thread.
+/// - `release`, which may be null, is called once, on either thread, when the runtime no longer needs the callbacks.
+///
+/// A callback may also run its task right away when it is already on the task's thread, which is how an embedder
+/// without threads runs the work synchronously. The tasks hold nothing of the VM that a callback must keep alive.
+#[repr(C)]
+pub struct JSOffThreadCompilationCallbacks {
+    pub context: *mut c_void,
+    pub submit_work: Option<unsafe extern "C" fn(context: *mut c_void, task: JSOffThreadTask)>,
+    pub post_to_main_thread: Option<unsafe extern "C" fn(context: *mut c_void, task: JSOffThreadTask)>,
+    pub release: Option<unsafe extern "C" fn(context: *mut c_void)>,
+}
+
+/// The embedder's callbacks, which the VM's thread and the worker share, as C++ SharedOffThreadCompilationCallbacks
+/// does: the worker can still be inside post_to_main_thread() when the VM's thread has run the task it posted.
+struct SharedOffThreadCompilationCallbacks(JSOffThreadCompilationCallbacks);
+
+// SAFETY: The embedder's callbacks work on any thread, as JSOffThreadCompilationCallbacks requires.
+unsafe impl Send for SharedOffThreadCompilationCallbacks {}
+// SAFETY: As above.
+unsafe impl Sync for SharedOffThreadCompilationCallbacks {}
+
+impl SharedOffThreadCompilationCallbacks {
+    fn submit_work(&self, run: unsafe extern "C" fn(*mut c_void), data: *mut c_void) {
+        let submit_work = self.0.submit_work.expect("the embedder submits work to its workers");
+        // SAFETY: The embedder's callback takes tasks with the context it came with.
+        unsafe { submit_work(self.0.context, JSOffThreadTask { run: Some(run), data }) };
+    }
+
+    fn post_to_main_thread(&self, run: unsafe extern "C" fn(*mut c_void), data: *mut c_void) {
+        let post_to_main_thread = self
+            .0
+            .post_to_main_thread
+            .expect("the embedder posts tasks to the VM's thread");
+        // SAFETY: As above.
+        unsafe { post_to_main_thread(self.0.context, JSOffThreadTask { run: Some(run), data }) };
+    }
+}
+
+impl Drop for SharedOffThreadCompilationCallbacks {
+    fn drop(&mut self) {
+        if let Some(release) = self.0.release {
+            // SAFETY: The runtime is done with the callbacks, which the embedder releases once.
+            unsafe { release(self.0.context) };
+        }
+    }
+}
+
+/// What the VM's thread keeps while a worker compiles copies of the ASTs of some functions: their shared data, which
+/// stays alive until the compiled functions are installed in it.
+struct LazyFunctionsAwaitingCompilation {
+    vm: &'static Vm,
+    shared_function_data: Root<'static, Vec<Gc<SharedFunctionInstanceData>>>,
+    callbacks: Arc<SharedOffThreadCompilationCallbacks>,
+}
+
+/// What a worker carries without touching it, from the VM's thread and back, as C++ carries its GC roots.
+struct OnlyForTheVmsThread(Box<LazyFunctionsAwaitingCompilation>);
+
+// SAFETY: Only the VM's thread opens what the worker carries.
+unsafe impl Send for OnlyForTheVmsThread {}
+
+/// The task a worker runs.
+#[allow(clippy::vec_box, reason = "the frontend compiles boxed ASTs")]
+struct LazyFunctionCompilation {
+    function_asts: Vec<Box<FunctionPayload>>,
+    source_length_in_code_units: usize,
+    callbacks: Arc<SharedOffThreadCompilationCallbacks>,
+    awaiting_compilation: OnlyForTheVmsThread,
+}
+
+/// The task the worker posts back to the VM's thread.
+#[allow(
+    clippy::vec_box,
+    reason = "the frontend returns boxed functions, which shared function data keeps boxed"
+)]
+struct CompiledLazyFunctions {
+    compiled_functions: Vec<Box<PrecompiledFunction>>,
+    awaiting_compilation: OnlyForTheVmsThread,
+}
+
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<LazyFunctionCompilation>();
+    assert_send::<CompiledLazyFunctions>();
+};
+
+/// Has a worker compile copies of the ASTs of the functions, and installs the results on the VM's thread, as C++
+/// compile_lazy_functions_off_thread() does.
+fn compile_lazy_functions_off_thread(
+    vm: &'static Vm,
+    functions: Vec<(Gc<SharedFunctionInstanceData>, Box<FunctionPayload>)>,
+    source_length_in_code_units: usize,
+    callbacks: Arc<SharedOffThreadCompilationCallbacks>,
+) {
+    let (shared_function_data, function_asts): (Vec<_>, Vec<_>) = functions.into_iter().unzip();
+    let awaiting_compilation = LazyFunctionsAwaitingCompilation {
+        vm,
+        shared_function_data: Root::new(vm, shared_function_data),
+        callbacks: callbacks.clone(),
+    };
+    let work = Box::new(LazyFunctionCompilation {
+        function_asts,
+        source_length_in_code_units,
+        callbacks: callbacks.clone(),
+        awaiting_compilation: OnlyForTheVmsThread(Box::new(awaiting_compilation)),
+    });
+    callbacks.submit_work(compile_lazy_functions_on_a_worker, Box::into_raw(work).cast());
+}
+
+unsafe extern "C" fn compile_lazy_functions_on_a_worker(work: *mut c_void) {
+    // SAFETY: The embedder runs each task once, with the data that came with it, which is this boxed work.
+    let work = *unsafe { Box::from_raw(work.cast::<LazyFunctionCompilation>()) };
+    let compiled_functions = work
+        .function_asts
+        .into_iter()
+        .map(|function_ast| {
+            compile_function(
+                function_ast,
+                work.source_length_in_code_units,
+                false,
+                FunctionPrecompileMode::All,
+            )
+        })
+        .collect();
+    let compiled = Box::new(CompiledLazyFunctions {
+        compiled_functions,
+        awaiting_compilation: work.awaiting_compilation,
+    });
+    work.callbacks
+        .post_to_main_thread(install_compiled_lazy_functions, Box::into_raw(compiled).cast());
+}
+
+unsafe extern "C" fn install_compiled_lazy_functions(compiled: *mut c_void) {
+    // SAFETY: The embedder runs each task once, with the data that came with it, which is this boxed result.
+    let compiled = *unsafe { Box::from_raw(compiled.cast::<CompiledLazyFunctions>()) };
+    let awaiting_compilation = compiled.awaiting_compilation.0;
+    let shared_function_data = awaiting_compilation.shared_function_data.get().clone();
+    assert_eq!(shared_function_data.len(), compiled.compiled_functions.len());
+    for (shared_data, compiled_function) in shared_function_data.into_iter().zip(compiled.compiled_functions) {
+        // A function that started running in the meantime compiled on this thread, so the worker compiles the
+        // functions it creates instead.
+        if let Some(executable) = shared_data.executable() {
+            compile_remaining_functions_of_executable_off_thread(
+                awaiting_compilation.vm,
+                executable,
+                awaiting_compilation.callbacks.clone(),
+            );
+            discard_precompiled_function(compiled_function);
+            continue;
+        }
+        // Installing a bytecode cache may have dropped the AST, and its bytecode with it, while the worker compiled.
+        if !shared_data.has_function_ast() {
+            discard_precompiled_function(compiled_function);
+            continue;
+        }
+        shared_data.set_precompiled_bytecode_executable(compiled_function);
+    }
+    drop(awaiting_compilation);
+}
+
+fn compile_remaining_functions_of_executable_off_thread(
+    vm: &'static Vm,
+    executable: Gc<Executable>,
+    callbacks: Arc<SharedOffThreadCompilationCallbacks>,
+) {
+    let functions = SharedFunctionInstanceData::uncompiled_functions_of(executable);
+    if functions.is_empty() {
+        return;
+    }
+    // NB: The frontend checks that nested functions lie within the source, which is unknown without a source code.
+    let source_length_in_code_units = executable
+        .source_code
+        .as_ref()
+        .map_or(usize::MAX, |source_code| source_code.length_in_code_units());
+    compile_lazy_functions_off_thread(vm, functions, source_length_in_code_units, callbacks);
+}
+
+/// # Safety
+///
+/// `callbacks` must point to valid callbacks.
+unsafe fn shared_callbacks_from_abi(
+    callbacks: *const JSOffThreadCompilationCallbacks,
+) -> Arc<SharedOffThreadCompilationCallbacks> {
+    assert!(!callbacks.is_null(), "the embedder passes its callbacks");
+    // SAFETY: The caller passes valid callbacks, which the runtime copies.
+    let callbacks = unsafe { callbacks.read() };
+    Arc::new(SharedOffThreadCompilationCallbacks(callbacks))
+}
+
+/// compile_remaining_functions_off_thread(Script&, source_code, callbacks): has the embedder's workers compile the
+/// functions that the script's top-level code creates and that have not been compiled yet, so that their first calls
+/// do not have to. Functions that start running in the meantime compile on the VM's thread as usual, and the functions
+/// they create are then compiled off thread as well. The compiled functions are installed when the tasks the workers
+/// post run on the VM's thread. The VM must outlive every task. Only the VM's thread may call this.
+///
+/// # Safety
+///
+/// `vm` and `script` must be live, and `callbacks` must point to valid callbacks.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_compile_remaining_functions_of_script_off_thread(
+    vm: *mut JSVM,
+    script: *mut JSScript,
+    callbacks: *const JSOffThreadCompilationCallbacks,
+) {
+    // SAFETY: The caller passes a live VM and script, and valid callbacks, and the VM outlives the tasks.
+    let (vm, script, callbacks) = unsafe {
+        (
+            vm_from_abi(vm),
+            cell_from_abi(script),
+            shared_callbacks_from_abi(callbacks),
+        )
+    };
+    compile_remaining_functions_of_executable_off_thread(vm, script.cached_executable(), callbacks);
+}
+
+/// compile_remaining_functions_off_thread(SourceTextModule&, source_code, callbacks): like
+/// js_compile_remaining_functions_of_script_off_thread(), for the functions of a module, whose body is the async
+/// function of a module with top-level await. Only the VM's thread may call this.
+///
+/// # Safety
+///
+/// `vm` and `module` must be live, `module` a Source Text Module Record, and `callbacks` must point to valid
+/// callbacks.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_compile_remaining_functions_of_module_off_thread(
+    vm: *mut JSVM,
+    module: *mut JSModule,
+    callbacks: *const JSOffThreadCompilationCallbacks,
+) {
+    // SAFETY: The caller passes a live VM and module, and valid callbacks, and the VM outlives the tasks.
+    let (vm, module, callbacks) = unsafe {
+        (
+            vm_from_abi(vm),
+            source_text_module_from_abi(module),
+            shared_callbacks_from_abi(callbacks),
+        )
+    };
+    let executable = module.cached_executable().or_else(|| {
+        module
+            .top_level_await_shared_data()
+            .and_then(|shared_data| shared_data.executable())
+    });
+    if let Some(executable) = executable {
+        compile_remaining_functions_of_executable_off_thread(vm, executable, callbacks);
+    }
 }
