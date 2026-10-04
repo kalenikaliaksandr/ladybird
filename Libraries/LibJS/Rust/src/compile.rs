@@ -10,14 +10,10 @@
 //! [`compile_script()`], which returns the script's bytecode as
 //! [`ExecutableData`] along with the [`ScriptDeclarations`] that
 //! GlobalDeclarationInstantiation needs.
-
-#![cfg_attr(
-    not(feature = "cpp-runtime"),
-    allow(
-        dead_code,
-        reason = "only the C++ runtime compiles functions, modules and off-thread programs until the native API does"
-    )
-)]
+//!
+//! Nothing here needs the VM, so a runtime can also parse and compile on
+//! another thread with [`compile_parsed_program_off_thread()`] and finish the
+//! script or module on its main thread.
 
 use crate::ast;
 use crate::ast::StatementKind;
@@ -144,6 +140,7 @@ pub struct CompiledProgram {
     pub(crate) bytecode: CompiledProgramBytecode,
     pub(crate) declaration_functions: Vec<PendingSharedFunctionData>,
     pub(crate) source_len: usize,
+    function_precompile_mode: FunctionPrecompileMode,
 }
 
 pub(crate) enum CompiledProgramBytecode {
@@ -258,9 +255,13 @@ pub fn compile_script(mut parsed: ParsedProgram, source_len: usize) -> CompiledS
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum FunctionPrecompileMode {
+/// Which of the functions nested in the code being compiled get their bytecode right away, rather than when they are
+/// first called.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FunctionPrecompileMode {
+    /// Only those that codegen expects to run right away, such as immediately invoked function expressions.
     EagerOnly,
+    /// All of them, which the bytecode cache and the breakpoint positions of a source need.
     All,
 }
 
@@ -441,11 +442,24 @@ fn precompile_declaration_function(
     }
 }
 
-pub(crate) fn compile_parsed_program_off_thread_impl(
+/// Compiles a script or module that parsed without errors from `source_len` code units, which needs no VM and so can
+/// run on any thread.
+///
+/// A program compiled with [`FunctionPrecompileMode::EagerOnly`] is meant to run: the main thread finishes it with
+/// [`CompiledProgram::into_script()`] or [`CompiledProgram::into_module()`]. One compiled with
+/// [`FunctionPrecompileMode::All`] is meant for the bytecode cache and for breakpoint positions.
+///
+/// # Panics
+/// Panics if `parsed` has errors.
+pub fn compile_parsed_program_off_thread(
     mut parsed: ParsedProgram,
     source_len: usize,
     function_precompile_mode: FunctionPrecompileMode,
 ) -> CompiledProgram {
+    assert!(
+        !parsed.has_errors(),
+        "compile_parsed_program_off_thread() needs a program without parse errors"
+    );
     let arena_arc = parsed.arena.clone();
     let (bytecode, declaration_functions) = if parsed.has_top_level_await {
         let mut generator = new_module_async_generator(source_len, std::mem::take(&mut parsed.function_table));
@@ -489,6 +503,108 @@ pub(crate) fn compile_parsed_program_off_thread_impl(
         bytecode,
         declaration_functions,
         source_len,
+        function_precompile_mode,
+    }
+}
+
+impl CompiledProgram {
+    pub fn program_type(&self) -> ProgramType {
+        self.parsed.program_type
+    }
+
+    pub fn has_top_level_await(&self) -> bool {
+        self.parsed.has_top_level_await
+    }
+
+    pub fn function_precompile_mode(&self) -> FunctionPrecompileMode {
+        self.function_precompile_mode
+    }
+
+    /// Finishes a script compiled with [`FunctionPrecompileMode::EagerOnly`] into what [`compile_script()`] returns.
+    ///
+    /// # Panics
+    /// Panics if the program is a module or was compiled with [`FunctionPrecompileMode::All`].
+    pub fn into_script(self) -> CompiledScript {
+        assert!(
+            self.parsed.program_type == ProgramType::Script,
+            "into_script() needs a script, not a module"
+        );
+        assert!(
+            self.function_precompile_mode == FunctionPrecompileMode::EagerOnly,
+            "into_script() needs a script compiled to run, not one compiled for the bytecode cache"
+        );
+        let CompiledProgram {
+            mut parsed, bytecode, ..
+        } = self;
+        let CompiledProgramBytecode::Program(executable) = bytecode else {
+            unreachable!("only a module with top-level await compiles to an async function body");
+        };
+        let declarations = collect_script_declarations(
+            &parsed.arena.scopes[parsed.scope_ref],
+            &mut parsed.function_table,
+            &parsed.arena,
+        );
+        CompiledScript {
+            executable,
+            declarations,
+        }
+    }
+
+    /// Finishes a module compiled with [`FunctionPrecompileMode::EagerOnly`] into what [`compile_module()`] returns.
+    ///
+    /// # Panics
+    /// Panics if the program is a script or was compiled with [`FunctionPrecompileMode::All`].
+    pub fn into_module(self) -> CompiledModule {
+        assert!(
+            self.parsed.program_type == ProgramType::Module,
+            "into_module() needs a module, not a script"
+        );
+        assert!(
+            self.function_precompile_mode == FunctionPrecompileMode::EagerOnly,
+            "into_module() needs a module compiled to run, not one compiled for the bytecode cache"
+        );
+        let CompiledProgram {
+            mut parsed, bytecode, ..
+        } = self;
+        let declarations = collect_module_declarations(
+            &parsed.arena.scopes[parsed.scope_ref],
+            parsed.has_top_level_await,
+            &mut parsed.function_table,
+            &parsed.arena,
+        );
+        let (CompiledProgramBytecode::Program(executable) | CompiledProgramBytecode::AsyncModule(executable)) =
+            bytecode;
+        CompiledModule {
+            executable,
+            declarations,
+        }
+    }
+
+    /// Frees a program that will not run, together with the regular expressions the host compiled for it. Dropping it
+    /// instead would leak those, since only the runtime that adopts an executable frees them otherwise.
+    pub fn discard(mut self) {
+        fn free_executable_regexes(executable: &mut ExecutableData) {
+            for regex in executable.compiled_regexes.drain(..) {
+                // SAFETY: No runtime adopted the executables of a program that is discarded, so they still own these.
+                unsafe { crate::host::free_compiled_regex(regex) };
+            }
+            for shared_data in &mut executable.shared_function_data {
+                if let Some(precompiled) = &mut shared_data.precompiled_function {
+                    free_executable_regexes(&mut precompiled.executable);
+                }
+            }
+        }
+
+        match &mut self.bytecode {
+            CompiledProgramBytecode::Program(executable) | CompiledProgramBytecode::AsyncModule(executable) => {
+                free_executable_regexes(executable);
+            }
+        }
+        for declaration in &mut self.declaration_functions {
+            if let Some(precompiled) = &mut declaration.precompiled_function {
+                free_executable_regexes(&mut precompiled.executable);
+            }
+        }
     }
 }
 
@@ -1541,21 +1657,18 @@ impl PendingSharedFunctionData {
     }
 }
 
-/// Compiles the body of a described function, along with the functions nested in it that must be compiled eagerly.
+/// Compiles the body of a described function, along with the functions nested in it that `mode` asks for. Like
+/// [`compile_parsed_program_off_thread()`], it needs no VM and so can run on any thread.
 #[allow(clippy::boxed_local)] // Runtimes keep the payload boxed until the first call; unboxing would copy it.
 pub fn compile_function(
     payload: Box<ast::FunctionPayload>,
     source_len: usize,
     builtin_abstract_operations_enabled: bool,
+    mode: FunctionPrecompileMode,
 ) -> Box<bytecode::generator::PrecompiledFunction> {
     let arena = payload.arena.clone();
-    let (_function_data, precompiled) = compile_function_payload_to_bytecode(
-        *payload,
-        source_len,
-        builtin_abstract_operations_enabled,
-        arena,
-        FunctionPrecompileMode::EagerOnly,
-    );
+    let (_function_data, precompiled) =
+        compile_function_payload_to_bytecode(*payload, source_len, builtin_abstract_operations_enabled, arena, mode);
     precompiled
 }
 
@@ -2262,6 +2375,123 @@ mod tests {
         assert_eq!(descriptions[0].function_length, 2);
         assert!(descriptions[0].has_simple_parameter_list);
         assert!(!descriptions[1].has_simple_parameter_list);
+    }
+
+    fn compile_on_another_thread(source: &[u16], program_type: ProgramType) -> CompiledProgram {
+        let source = source.to_vec();
+        std::thread::spawn(move || {
+            compile_parsed_program_off_thread(
+                parse(&source, program_type, 1),
+                source.len(),
+                FunctionPrecompileMode::EagerOnly,
+            )
+        })
+        .join()
+        .expect("the compile thread finishes")
+    }
+
+    #[test]
+    fn script_compiled_on_another_thread_matches_one_compiled_in_place() {
+        let source = utf16("var total = 0; function add(n) { total += n; } let label = 'sum'; add(2);");
+        let in_place = compile_script(parse(&source, ProgramType::Script, 1), source.len());
+
+        let compiled = compile_on_another_thread(&source, ProgramType::Script);
+        assert_eq!(compiled.program_type(), ProgramType::Script);
+        assert_eq!(compiled.function_precompile_mode(), FunctionPrecompileMode::EagerOnly);
+        let off_thread = compiled.into_script();
+
+        assert_eq!(off_thread.executable.bytecode, in_place.executable.bytecode);
+        assert_eq!(off_thread.declarations.var_names, in_place.declarations.var_names);
+        assert_eq!(
+            off_thread.declarations.lexical_names,
+            in_place.declarations.lexical_names
+        );
+        let function_names: Vec<&ast::Utf16String> = off_thread
+            .declarations
+            .functions_to_initialize
+            .iter()
+            .map(|function| &function.name)
+            .collect();
+        assert_eq!(function_names, [&ast::Utf16String::from(utf16("add"))]);
+    }
+
+    #[test]
+    fn script_compiled_off_thread_keeps_the_bytecode_of_functions_it_calls_right_away() {
+        let source = utf16("(function () { return 1; })();");
+        let script = compile_on_another_thread(&source, ProgramType::Script).into_script();
+
+        assert_eq!(script.executable.shared_function_data.len(), 1);
+        assert!(script.executable.shared_function_data[0].precompiled_function.is_some());
+    }
+
+    #[test]
+    fn module_compiled_on_another_thread_matches_one_compiled_in_place() {
+        let source = utf16(
+            "import { base } from './base.mjs';
+             export function scaled(factor) { return base * factor; }
+             export default await scaled(2);",
+        );
+        let in_place = compile_module(parse(&source, ProgramType::Module, 1), source.len());
+
+        let compiled = compile_on_another_thread(&source, ProgramType::Module);
+        assert!(compiled.has_top_level_await());
+        let off_thread = compiled.into_module();
+
+        assert_eq!(off_thread.executable.bytecode, in_place.executable.bytecode);
+        let declarations = &off_thread.declarations;
+        assert!(declarations.has_top_level_await);
+        assert_eq!(declarations.import_entries.len(), 1);
+        assert_eq!(
+            declarations.default_export_binding_name,
+            in_place.declarations.default_export_binding_name
+        );
+        assert_eq!(declarations.var_names, in_place.declarations.var_names);
+        let function_names: Vec<&ast::Utf16String> = declarations
+            .functions_to_initialize
+            .iter()
+            .map(|function| &function.name)
+            .collect();
+        assert_eq!(function_names, [&ast::Utf16String::from(utf16("scaled"))]);
+    }
+
+    #[test]
+    #[should_panic(expected = "compiled for the bytecode cache")]
+    fn program_compiled_for_the_bytecode_cache_does_not_become_a_script() {
+        let source = utf16("function f() {}");
+        compile_parsed_program_off_thread(
+            parse(&source, ProgramType::Script, 1),
+            source.len(),
+            FunctionPrecompileMode::All,
+        )
+        .into_script();
+    }
+
+    #[test]
+    fn compile_function_precompiles_nested_functions_only_when_asked() {
+        let source = utf16("function outer() { return function inner() {}; }");
+        let mut script = compile_script(parse(&source, ProgramType::Script, 1), source.len());
+        let description = script.declarations.functions_to_initialize[0]
+            .shared_function_data
+            .take_description(false);
+
+        let compiled_lazily = compile_function(
+            description.payload.clone(),
+            source.len(),
+            false,
+            FunctionPrecompileMode::EagerOnly,
+        );
+        let compiled_fully = compile_function(description.payload, source.len(), false, FunctionPrecompileMode::All);
+
+        assert!(
+            compiled_lazily.executable.shared_function_data[0]
+                .precompiled_function
+                .is_none()
+        );
+        assert!(
+            compiled_fully.executable.shared_function_data[0]
+                .precompiled_function
+                .is_some()
+        );
     }
 
     #[test]

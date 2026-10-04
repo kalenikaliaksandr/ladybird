@@ -2783,7 +2783,7 @@ mod tests {
 
     use super::*;
     use crate::compile::FunctionPrecompileMode;
-    use crate::compile::compile_parsed_program_off_thread_impl;
+    use crate::compile::compile_parsed_program_off_thread;
     use crate::compile::parse;
 
     /// Blob bytes as an embedder owns them: aligned the way an embedder's blob is, and counting their releases.
@@ -2836,7 +2836,7 @@ mod tests {
         let source: Vec<u16> = source.encode_utf16().collect();
         let parsed = parse(&source, program_type, 1);
         assert!(!parsed.has_errors());
-        let compiled = compile_parsed_program_off_thread_impl(parsed, source.len(), FunctionPrecompileMode::All);
+        let compiled = compile_parsed_program_off_thread(parsed, source.len(), FunctionPrecompileMode::All);
         (source, compiled)
     }
 
