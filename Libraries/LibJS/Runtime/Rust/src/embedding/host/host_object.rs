@@ -10,28 +10,44 @@ use core::ffi::c_void;
 use core::ops::Deref;
 use core::ptr::NonNull;
 
-use crate::embedding::host::class_table::copy_host_class_flags_into_object;
+use crate::embedding::abi_types::{completion_from_abi, optional_object_into_abi};
+use crate::embedding::error::error_data_from_host_hook;
+use crate::embedding::hooks::lend_property_key_to_abi;
+use crate::embedding::host::class_table::{
+    bool_completion_from_hook, completion_without_result_from_hook, copy_host_class_flags_into_object,
+    get_cache_metadata_into_abi, lend_object_to_hook, lookup_phase_into_abi, optional_object_completion_from_hook,
+    set_cache_metadata_into_abi,
+};
 use crate::embedding::host::registry::runtime_class_and_allocator_of_host_class;
-use crate::gc::class::{Class, define_cell};
+use crate::embedding::object::{property_descriptor_from_abi, property_descriptor_to_abi};
+use crate::gc::class::{Class, Finalize, define_cell};
 use crate::gc::class_id::ClassId;
 use crate::gc::foreign::ForeignCellSlot;
+use crate::gc::root::MarkedVec;
 use crate::gc::visitor::{Trace, Visitor};
 use crate::interpreter::vm::Vm;
 use crate::layout::cell::Gc;
 use crate::layout::host_class::{
     JS_HOST_CLASS_IMMUTABLE_PROTOTYPE, JS_HOST_CLASS_NOT_CACHEABLE_FOR_PROPERTY_ABSENCE,
-    JS_HOST_CLASS_NOT_ELIGIBLE_FOR_OWN_PROPERTY_ENUMERATION_FAST_PATH, JS_HOST_CLASS_OBJECT, JSHostClass,
+    JS_HOST_CLASS_NOT_ELIGIBLE_FOR_OWN_PROPERTY_ENUMERATION_FAST_PATH, JS_HOST_CLASS_OBJECT, JS_PD_CONFIGURABLE,
+    JS_PD_ENUMERABLE, JS_PD_HAS_CONFIGURABLE, JS_PD_HAS_ENUMERABLE, JS_PD_HAS_VALUE, JS_PD_HAS_WRITABLE, JS_PD_PRESENT,
+    JS_PD_WRITABLE, JSHostClass, JSHostObjectHooks, JSPropertyDescriptor, JSValue, JSValueSink,
 };
 pub use crate::layout::host_object::HostObject;
+use crate::layout::value::Value;
+use crate::runtime::completion::ThrowCompletionOr;
 use crate::runtime::error_data::ErrorData;
 use crate::runtime::object::{
-    MayInterfereWithIndexedPropertyAccess, ORDINARY_OBJECT_METHODS, Object, ObjectMethods, allocate_object_in,
+    CacheableGetPropertyMetadata, CacheableSetPropertyMetadata, MayInterfereWithIndexedPropertyAccess,
+    ORDINARY_OBJECT_METHODS, Object, ObjectMethods, PropertyLookupPhase, allocate_object_in,
 };
+use crate::runtime::property_descriptor::PropertyDescriptor;
+use crate::runtime::property_key::PropertyKey;
 use crate::runtime::realm::Realm;
 
 // The class that the class of every host class table of this kind extends. Its own internal methods are ordinary,
 // and no object has it as its class.
-define_cell!(HostObject, Object, extends: [Object], methods: ORDINARY_OBJECT_METHODS);
+define_cell!(HostObject, Object, extends: [Object], methods: ORDINARY_OBJECT_METHODS, finalize: finalize);
 
 // SAFETY: Visits the object and the embedder's two cells, which are all the cells a host object reaches.
 unsafe impl Trace for HostObject {
@@ -39,6 +55,15 @@ unsafe impl Trace for HostObject {
         self.base.trace(visitor);
         self.wrappable.trace(visitor);
         self.host_data.trace(visitor);
+    }
+}
+
+impl Finalize for HostObject {
+    fn finalize(&self) {
+        if let Some(finalize) = self.host_class.host_object_hooks().finalize {
+            // SAFETY: The hook takes a dying object of its class, which stays intact while it runs.
+            unsafe { finalize(lend_object_to_hook(&self.base)) };
+        }
     }
 }
 
@@ -50,25 +75,69 @@ impl Deref for HostObject {
     }
 }
 
-fn no_error_data(_: &Object) -> Option<&ErrorData> {
-    None
-}
-
-/// The internal methods of the objects of a host class table: those of an ordinary object, as modified by the table's
-/// flags.
+/// The internal methods of the objects of a host class table: those of an ordinary object, with each method that the
+/// table has a hook for calling the hook, as modified by the table's flags.
 fn host_object_methods(table: &'static JSHostClass) -> ObjectMethods {
+    let hooks = table.host_object_hooks();
     let mut methods = ObjectMethods {
         error_data: no_error_data,
         ..ORDINARY_OBJECT_METHODS
     };
-    if table.has_flag(JS_HOST_CLASS_IMMUTABLE_PROTOTYPE) {
+    if hooks.get_prototype_of.is_some() {
+        methods.internal_get_prototype_of = get_prototype_of_through_hook;
+    }
+    if hooks.set_prototype_of.is_some() {
+        methods.internal_set_prototype_of = set_prototype_of_through_hook;
+    } else if table.has_flag(JS_HOST_CLASS_IMMUTABLE_PROTOTYPE) {
         methods.internal_set_prototype_of = Object::set_immutable_prototype;
+    }
+    if hooks.is_extensible.is_some() {
+        methods.internal_is_extensible = is_extensible_through_hook;
+    }
+    if hooks.prevent_extensions.is_some() {
+        methods.internal_prevent_extensions = prevent_extensions_through_hook;
+    }
+    if hooks.get_own_property.is_some() {
+        methods.internal_get_own_property = get_own_property_through_hook;
+    }
+    if hooks.define_own_property.is_some() {
+        methods.internal_define_own_property = define_own_property_through_hook;
+    }
+    if hooks.has_property.is_some() {
+        methods.internal_has_property = has_property_through_hook;
+    }
+    if hooks.get.is_some() {
+        methods.internal_get = get_through_hook;
+    }
+    if hooks.set.is_some() {
+        methods.internal_set = set_through_hook;
+    }
+    if hooks.delete_property.is_some() {
+        methods.internal_delete = delete_through_hook;
+    }
+    if hooks.own_property_keys.is_some() {
+        methods.internal_own_property_keys = own_property_keys_through_hook;
     }
     if table.has_flag(JS_HOST_CLASS_NOT_CACHEABLE_FOR_PROPERTY_ABSENCE) {
         methods.is_cacheable_for_property_absence = |_| false;
     }
-    if table.has_flag(JS_HOST_CLASS_NOT_ELIGIBLE_FOR_OWN_PROPERTY_ENUMERATION_FAST_PATH) {
+    if hooks.is_cacheable_for_inherited_property.is_some() {
+        methods.is_cacheable_for_inherited_property = is_cacheable_for_inherited_property_through_hook;
+    }
+    // The fast paths read keys, attributes and values straight from the shape and storage and follow the shape's
+    // prototype, so they would bypass these hooks.
+    let hooks_answer_instead_of_the_shape = hooks.get_prototype_of.is_some()
+        || hooks.get_own_property.is_some()
+        || hooks.has_property.is_some()
+        || hooks.get.is_some()
+        || hooks.own_property_keys.is_some();
+    if hooks_answer_instead_of_the_shape
+        || table.has_flag(JS_HOST_CLASS_NOT_ELIGIBLE_FOR_OWN_PROPERTY_ENUMERATION_FAST_PATH)
+    {
         methods.eligible_for_own_property_enumeration_fast_path = |_| false;
+    }
+    if hooks.error_data.is_some() {
+        methods.error_data = error_data_through_hook;
     }
     methods
 }
@@ -80,6 +149,223 @@ pub fn derive_host_object_class(table: &'static JSHostClass, parent: &'static Cl
         table.class_name(),
         Box::leak(Box::new(host_object_methods(table))),
     )
+}
+
+fn hooks_of(object: &Object) -> &'static JSHostObjectHooks {
+    as_host_object(object).host_class.host_object_hooks()
+}
+
+fn no_error_data(_: &Object) -> Option<&ErrorData> {
+    None
+}
+
+// The internal methods of a class whose table has a hook for them. The runtime only installs each for a table with
+// that hook, holds no borrow of its state across the call, and lends the hook the object and key for its duration.
+
+fn get_prototype_of_through_hook(object: &Object, _vm: &Vm) -> ThrowCompletionOr<Option<Gc<Object>>> {
+    let hook = hooks_of(object)
+        .get_prototype_of
+        .expect("the class has a [[GetPrototypeOf]] hook");
+    // SAFETY: The hook takes an object of its class, and completes with null or a live object.
+    unsafe { optional_object_completion_from_hook(hook(lend_object_to_hook(object))) }
+}
+
+fn set_prototype_of_through_hook(object: &Object, _vm: &Vm, prototype: Option<Gc<Object>>) -> ThrowCompletionOr<bool> {
+    let hook = hooks_of(object)
+        .set_prototype_of
+        .expect("the class has a [[SetPrototypeOf]] hook");
+    // SAFETY: The hook takes an object of its class and null or a live object.
+    bool_completion_from_hook(unsafe { hook(lend_object_to_hook(object), optional_object_into_abi(prototype)) })
+}
+
+fn is_extensible_through_hook(object: &Object, _vm: &Vm) -> ThrowCompletionOr<bool> {
+    let hook = hooks_of(object)
+        .is_extensible
+        .expect("the class has an [[IsExtensible]] hook");
+    // SAFETY: The hook takes an object of its class.
+    bool_completion_from_hook(unsafe { hook(lend_object_to_hook(object)) })
+}
+
+fn prevent_extensions_through_hook(object: &Object, _vm: &Vm) -> ThrowCompletionOr<bool> {
+    let hook = hooks_of(object)
+        .prevent_extensions
+        .expect("the class has a [[PreventExtensions]] hook");
+    // SAFETY: The hook takes an object of its class.
+    bool_completion_from_hook(unsafe { hook(lend_object_to_hook(object)) })
+}
+
+fn get_own_property_through_hook(
+    object: &Object,
+    _vm: &Vm,
+    key: &PropertyKey,
+) -> ThrowCompletionOr<Option<PropertyDescriptor>> {
+    let hook = hooks_of(object)
+        .get_own_property
+        .expect("the class has a [[GetOwnProperty]] hook");
+    let mut descriptor = property_descriptor_to_abi(None);
+    // SAFETY: The hook takes an object of its class, a key, and a zeroed descriptor to fill in.
+    completion_without_result_from_hook(unsafe {
+        hook(
+            lend_object_to_hook(object),
+            lend_property_key_to_abi(key),
+            &raw mut descriptor,
+        )
+    })?;
+    // SAFETY: The getter and setter of a descriptor that a hook fills in are null or live functions.
+    Ok(unsafe { property_descriptor_from_hook(&descriptor) })
+}
+
+/// The descriptor that a [[GetOwnProperty]] hook filled in. A data property with all of its attributes, such as an
+/// indexed or named property of a collection, skips the general conversion, as the C++ HostObject does, since reads
+/// of such properties spend a measurable share of their time in it.
+///
+/// # Safety
+///
+/// The getter and setter of the descriptor must be null or live functions.
+unsafe fn property_descriptor_from_hook(descriptor: &JSPropertyDescriptor) -> Option<PropertyDescriptor> {
+    const COMPLETE_DATA_DESCRIPTOR_FLAGS: u16 =
+        JS_PD_PRESENT | JS_PD_HAS_VALUE | JS_PD_HAS_WRITABLE | JS_PD_HAS_ENUMERABLE | JS_PD_HAS_CONFIGURABLE;
+    const ATTRIBUTE_FLAGS: u16 = JS_PD_WRITABLE | JS_PD_ENUMERABLE | JS_PD_CONFIGURABLE;
+    if descriptor.flags & !ATTRIBUTE_FLAGS == COMPLETE_DATA_DESCRIPTOR_FLAGS {
+        return Some(PropertyDescriptor {
+            value: Some(Value(descriptor.value)),
+            writable: Some(descriptor.flags & JS_PD_WRITABLE != 0),
+            enumerable: Some(descriptor.flags & JS_PD_ENUMERABLE != 0),
+            configurable: Some(descriptor.flags & JS_PD_CONFIGURABLE != 0),
+            ..Default::default()
+        });
+    }
+    // SAFETY: The caller guarantees that the getter and setter are null or live functions.
+    unsafe { property_descriptor_from_abi(descriptor) }
+}
+
+fn define_own_property_through_hook(
+    object: &Object,
+    _vm: &Vm,
+    key: &PropertyKey,
+    descriptor: &mut PropertyDescriptor,
+    precomputed_get_own_property: Option<&Option<PropertyDescriptor>>,
+) -> ThrowCompletionOr<bool> {
+    let hook = hooks_of(object)
+        .define_own_property
+        .expect("the class has a [[DefineOwnProperty]] hook");
+    let mut abi_descriptor = property_descriptor_to_abi(Some(descriptor));
+    let abi_precomputed_get_own_property =
+        precomputed_get_own_property.map(|precomputed| property_descriptor_to_abi(precomputed.as_ref()));
+    // SAFETY: The hook takes an object of its class, a key, a present descriptor it may update, and null or the
+    //         result of a [[GetOwnProperty]] the caller already ran.
+    let completion = unsafe {
+        hook(
+            lend_object_to_hook(object),
+            lend_property_key_to_abi(key),
+            &raw mut abi_descriptor,
+            abi_precomputed_get_own_property
+                .as_ref()
+                .map_or(core::ptr::null(), core::ptr::from_ref),
+        )
+    };
+    // SAFETY: The getter and setter of a descriptor that a hook writes back are null or live functions.
+    if let Some(descriptor_written_back_by_hook) = unsafe { property_descriptor_from_abi(&abi_descriptor) } {
+        *descriptor = descriptor_written_back_by_hook;
+    }
+    bool_completion_from_hook(completion)
+}
+
+fn has_property_through_hook(object: &Object, _vm: &Vm, key: &PropertyKey) -> ThrowCompletionOr<bool> {
+    let hook = hooks_of(object)
+        .has_property
+        .expect("the class has a [[HasProperty]] hook");
+    // SAFETY: The hook takes an object of its class and a key.
+    bool_completion_from_hook(unsafe { hook(lend_object_to_hook(object), lend_property_key_to_abi(key)) })
+}
+
+fn get_through_hook(
+    object: &Object,
+    _vm: &Vm,
+    key: &PropertyKey,
+    receiver: Value,
+    cacheable_metadata: Option<&mut CacheableGetPropertyMetadata>,
+    phase: PropertyLookupPhase,
+) -> ThrowCompletionOr<Value> {
+    let hook = hooks_of(object).get.expect("the class has a [[Get]] hook");
+    // SAFETY: The hook takes an object of its class, a key, and the caller's cache metadata and phase, which it
+    //         passes on untouched, if at all, to the engine operation it delegates to.
+    completion_from_abi(unsafe {
+        hook(
+            lend_object_to_hook(object),
+            lend_property_key_to_abi(key),
+            receiver.0,
+            get_cache_metadata_into_abi(cacheable_metadata),
+            lookup_phase_into_abi(phase),
+        )
+    })
+}
+
+fn set_through_hook(
+    object: &Object,
+    _vm: &Vm,
+    key: &PropertyKey,
+    value: Value,
+    receiver: Value,
+    cacheable_metadata: Option<&mut CacheableSetPropertyMetadata>,
+    phase: PropertyLookupPhase,
+) -> ThrowCompletionOr<bool> {
+    let hook = hooks_of(object).set.expect("the class has a [[Set]] hook");
+    // SAFETY: As for [[Get]].
+    bool_completion_from_hook(unsafe {
+        hook(
+            lend_object_to_hook(object),
+            lend_property_key_to_abi(key),
+            value.0,
+            receiver.0,
+            set_cache_metadata_into_abi(cacheable_metadata),
+            lookup_phase_into_abi(phase),
+        )
+    })
+}
+
+fn delete_through_hook(object: &Object, _vm: &Vm, key: &PropertyKey) -> ThrowCompletionOr<bool> {
+    let hook = hooks_of(object)
+        .delete_property
+        .expect("the class has a [[Delete]] hook");
+    // SAFETY: The hook takes an object of its class and a key.
+    bool_completion_from_hook(unsafe { hook(lend_object_to_hook(object), lend_property_key_to_abi(key)) })
+}
+
+/// Appends a key that an [[OwnPropertyKeys]] hook hands its sink to the list that is the sink's context.
+unsafe extern "C" fn append_key_to_list(keys: *mut c_void, key: JSValue) {
+    // SAFETY: The sink's context is the rooted list of keys of the [[OwnPropertyKeys]] call that made the sink.
+    let keys = unsafe { &*keys.cast::<MarkedVec<'_, Value>>() };
+    keys.push(Value(key));
+}
+
+fn own_property_keys_through_hook<'vm>(object: &Object, vm: &'vm Vm) -> ThrowCompletionOr<MarkedVec<'vm, Value>> {
+    let hook = hooks_of(object)
+        .own_property_keys
+        .expect("the class has an [[OwnPropertyKeys]] hook");
+    let keys = MarkedVec::new(vm);
+    let mut sink = JSValueSink {
+        context: core::ptr::from_ref(&keys).cast_mut().cast(),
+        append: Some(append_key_to_list),
+    };
+    // SAFETY: The hook takes an object of its class and a sink, whose list roots the keys appended to it.
+    completion_without_result_from_hook(unsafe { hook(lend_object_to_hook(object), &raw mut sink) })?;
+    Ok(keys)
+}
+
+fn is_cacheable_for_inherited_property_through_hook(object: &Object) -> bool {
+    let hook = hooks_of(object)
+        .is_cacheable_for_inherited_property
+        .expect("the class has an is_cacheable_for_inherited_property hook");
+    // SAFETY: The hook takes an object of its class.
+    unsafe { hook(lend_object_to_hook(object)) }
+}
+
+fn error_data_through_hook(object: &Object) -> Option<&ErrorData> {
+    let hook = hooks_of(object).error_data.expect("the class has an error_data hook");
+    // SAFETY: The hook takes an object of its class, and returns null or error data that lives as long as the object,
+    //         in a cell the object keeps alive.
+    unsafe { error_data_from_host_hook(object, hook(lend_object_to_hook(object))) }
 }
 
 impl HostObject {
