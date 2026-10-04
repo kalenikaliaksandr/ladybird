@@ -11,3 +11,10 @@ set_target_properties(test-embedding-headers PROPERTIES C_STANDARD 11 C_STANDARD
 if (NOT MSVC)
     set_source_files_properties(test-embedding-headers.c PROPERTIES COMPILE_OPTIONS -pedantic-errors)
 endif()
+
+# The end-to-end host runs runtime tests of Tests/LibJS and compares its results with those of the Rust runtime's
+# own test-js runner.
+target_compile_definitions(test-embedding-host-end-to-end PRIVATE
+    LADYBIRD_SOURCE_DIR="${LADYBIRD_SOURCE_DIR}"
+    TEST_JS_RUNTIME_RUST="$<TARGET_FILE:test-js-runtime-rust>")
+add_dependencies(test-embedding-host-end-to-end test-js-runtime-rust)
