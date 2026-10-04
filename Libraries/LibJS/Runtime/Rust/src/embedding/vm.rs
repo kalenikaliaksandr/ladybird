@@ -10,6 +10,7 @@ use core::ffi::c_void;
 use core::ptr::NonNull;
 
 use crate::embedding::abi_types::{JSRealm, cell_from_abi, completion_into_abi, optional_cell_from_abi, vm_from_abi};
+use crate::embedding::debugger::{JSDebuggerStackFrame, stack_frame_into_abi};
 use crate::embedding::hooks::{
     Embedder, EmbedderAgent, JSAgent, JSImportedModulePayload, JSImportedModuleReferrer, JSModuleRequest, JSPromiseJob,
     JSVmHostHooks, imported_module_payload_from_abi, imported_module_referrer_from_abi, install_embedder,
@@ -128,6 +129,47 @@ pub unsafe extern "C" fn js_vm_finish_execution_generation(vm: *mut JSVM) {
     // SAFETY: The caller passes a live VM.
     let generation = &unsafe { vm_from_abi(vm) }.head.execution_generation;
     generation.set(generation.get() + 1);
+}
+
+/// VM::did_reach_stack_space_limit(): whether so little of the thread's native stack is left that running more
+/// JavaScript could overflow it, which code that recurses on behalf of JavaScript, such as structured serialization,
+/// checks before it goes deeper. Only the VM's thread may call this.
+///
+/// # Safety
+///
+/// `vm` must be a live VM.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_vm_did_reach_stack_space_limit(vm: *mut JSVM) -> bool {
+    // SAFETY: The caller passes a live VM.
+    unsafe { vm_from_abi(vm) }.did_reach_stack_space_limit()
+}
+
+/// Receives each StackTraceElement of a stack trace, which lives for the call.
+#[repr(C)]
+pub struct JSStackTraceSink {
+    pub context: *mut c_void,
+    pub append: Option<unsafe extern "C" fn(context: *mut c_void, element: *const JSDebuggerStackFrame)>,
+}
+
+/// VM::stack_trace(): appends a StackTraceElement for every execution context on the stack, from the running one
+/// outwards, with where in its source code each one is, which is none for a context that runs no bytecode, such as
+/// that of a native function. The trace is taken before the first element is appended, and the sink may run
+/// JavaScript as long as it leaves the contexts of the trace on the stack. Only the VM's thread may call this.
+///
+/// # Safety
+///
+/// `vm` must be a live VM and `sink` a valid sink with an append function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn js_vm_stack_trace(vm: *mut JSVM, sink: *const JSStackTraceSink) {
+    // SAFETY: The caller passes a live VM and a valid sink.
+    let (vm, sink) = unsafe { (vm_from_abi(vm), &*sink) };
+    let append = sink.append.expect("a stack trace sink has an append function");
+    for element in vm.stack_trace() {
+        let element = stack_frame_into_abi(&element);
+        // SAFETY: The embedder's sink takes elements with the context it came with, and only reads them during the
+        //         call, while the trace's contexts and their executables are alive.
+        unsafe { append(sink.context, &raw const element) };
+    }
 }
 
 /// Forgets the system time zone that Date and Temporal cached, so that they pick up a change of the host's time zone.
@@ -369,4 +411,129 @@ pub unsafe extern "C" fn js_vm_default_host_call_job_callback(
         unsafe { core::slice::from_raw_parts(arguments.cast(), argument_count) }
     };
     completion_into_abi(call_job_callback(vm, job_callback, Value(this_value), arguments))
+}
+
+#[cfg(all(test, libjs_runtime_tests_with_libgc))]
+mod tests {
+    use core::cell::RefCell;
+
+    use super::*;
+    use crate::embedding::abi_types::{JSOwnedUtf16String, owned_utf16_string_from_abi, vm_into_abi};
+    use crate::embedding::execution_context::js_execution_context_function_name;
+    use crate::embedding::source_code::js_source_code_filename;
+    use crate::runtime::completion::Must;
+    use crate::runtime::error::test_scripts::run_script;
+    use crate::runtime::native_function::NativeFunction;
+    use crate::runtime::property_attributes::DEFAULT_ATTRIBUTES;
+    use crate::runtime::realm::test_realm::key;
+    use crate::script::Script;
+    use crate::utf16::Utf16View;
+    use crate::utilities::initialize_realm;
+
+    fn utf8_of_owned(string: JSOwnedUtf16String) -> String {
+        // SAFETY: The string is a raw owned string the ABI handed out.
+        Utf16View::of_string(&unsafe { owned_utf16_string_from_abi(string) }).to_utf8()
+    }
+
+    std::thread_local! {
+        static DESCRIBED_STACK_TRACE: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Describes each element as "<function name>@<filename>:<line>:<column>", or as "<function name>@-" when it has
+    /// no source range. Before it describes the first element, it runs a script and collects garbage, as an embedder's
+    /// sink may.
+    unsafe extern "C" fn describe_stack_trace_element(context: *mut c_void, element: *const JSDebuggerStackFrame) {
+        // SAFETY: The test passes its VM as the context.
+        let vm = unsafe { &*context.cast::<Vm>() };
+        if DESCRIBED_STACK_TRACE.with_borrow(Vec::is_empty) {
+            let realm = vm.current_realm().expect("the trace is taken in a realm");
+            run_script(vm, realm, "[1, 2, 3].map(x => ({ x })).length").must();
+            vm.heap().collect_garbage();
+        }
+        // SAFETY: The sink receives an element that lives for the call.
+        let element = unsafe { &*element };
+        // SAFETY: The element's execution context is on the stack.
+        let function_name = utf8_of_owned(unsafe { js_execution_context_function_name(element.execution_context) });
+        let source_range = &element.source_range;
+        let description = if source_range.source_code.is_null() {
+            format!("{function_name}@-")
+        } else {
+            // SAFETY: The frame's executable keeps its source code alive.
+            let filename = utf8_of_owned(unsafe { js_source_code_filename(source_range.source_code) });
+            format!(
+                "{function_name}@{filename}:{}:{}",
+                source_range.line, source_range.column
+            )
+        };
+        DESCRIBED_STACK_TRACE.with_borrow_mut(|trace| trace.push(description));
+    }
+
+    #[test]
+    fn the_stack_trace_names_each_frame_and_where_it_is() {
+        let vm = Vm::create();
+        let root_execution_context = initialize_realm(&vm);
+        let realm = root_execution_context.realm();
+        let capture = NativeFunction::create(
+            &vm,
+            (),
+            |vm, ()| {
+                let sink = JSStackTraceSink {
+                    context: core::ptr::from_ref(vm).cast_mut().cast(),
+                    append: Some(describe_stack_trace_element),
+                };
+                // SAFETY: The VM is live, and the sink describes the elements.
+                unsafe { js_vm_stack_trace(vm_into_abi(vm), &raw const sink) };
+                Ok(Value::UNDEFINED)
+            },
+            0,
+            &key("capture"),
+            None,
+            None,
+            None,
+        );
+        realm.global_object().define_direct_property(
+            &vm,
+            &key("capture"),
+            Value::from_object(capture),
+            DEFAULT_ATTRIBUTES,
+        );
+        let source: Vec<u16> = "function outer() {\n    inner();\n}\nfunction inner() {\n    capture();\n}\nouter();\n"
+            .encode_utf16()
+            .collect();
+        let script = Script::parse_with_filename(&vm, &source, realm, "trace.js").expect("the script parses");
+        vm.run_script(script, None).must();
+
+        assert_eq!(
+            DESCRIBED_STACK_TRACE.take(),
+            [
+                "@-",
+                "inner@trace.js:5:12",
+                "outer@trace.js:2:10",
+                "@trace.js:7:6",
+                "@-"
+            ]
+        );
+    }
+
+    /// Recurses with a kilobyte of stack per call until the VM says that the stack is nearly full, and returns how
+    /// many calls that took.
+    fn depth_at_which_the_stack_space_limit_is_reached(vm: *mut JSVM, depth: usize) -> usize {
+        let padding = core::hint::black_box([0u8; 1024]);
+        // SAFETY: The test passes its live VM.
+        if unsafe { js_vm_did_reach_stack_space_limit(vm) } {
+            return depth;
+        }
+        let depth = depth_at_which_the_stack_space_limit_is_reached(vm, depth + 1);
+        core::hint::black_box(&padding);
+        depth
+    }
+
+    #[test]
+    fn the_stack_space_limit_is_reached_only_near_the_end_of_the_stack() {
+        let vm = Vm::create();
+        let vm_abi = vm_into_abi(&vm);
+        // SAFETY: The VM is live.
+        assert!(!unsafe { js_vm_did_reach_stack_space_limit(vm_abi) });
+        assert!(depth_at_which_the_stack_space_limit_is_reached(vm_abi, 0) > 16);
+    }
 }
