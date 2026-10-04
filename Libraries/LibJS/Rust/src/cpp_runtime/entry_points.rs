@@ -15,6 +15,7 @@ use crate::bytecode;
 use crate::bytecode::executable::ExecutableData;
 use crate::bytecode::generator::PendingSharedFunctionData;
 use crate::bytecode::generator::PrecompiledFunction;
+use crate::bytecode_cache::BytecodeCacheRuntime;
 use crate::bytecode_cache::CloneBytecodeCacheBlobOwner;
 use crate::bytecode_cache::DecodedCacheBlob;
 use crate::bytecode_cache::ForeignBytecodeCacheBlobOwner;
@@ -404,7 +405,7 @@ pub unsafe extern "C" fn rust_serialize_compiled_program_for_bytecode_cache(
             let source_hash = std::slice::from_raw_parts(source_hash, source_hash_len)
                 .try_into()
                 .expect("source hash length was checked");
-            let bytes = serialize_compiled_program(&*compiled, program_type, source_hash);
+            let bytes = serialize_compiled_program(&*compiled, program_type, source_hash, BytecodeCacheRuntime::Cpp);
             let length = bytes.len();
             let mut bytes = bytes.into_boxed_slice();
             let data = bytes.as_mut_ptr();
@@ -470,6 +471,7 @@ pub unsafe extern "C" fn rust_decode_bytecode_cache_blob_with_owner(
                 std::slice::from_raw_parts(data, length),
                 expected_program_type,
                 expected_source_hash,
+                BytecodeCacheRuntime::Cpp,
                 ForeignBytecodeCacheBlobOwner {
                     owner,
                     clone_owner,

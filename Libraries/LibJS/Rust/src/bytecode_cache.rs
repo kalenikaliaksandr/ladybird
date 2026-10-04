@@ -11,6 +11,9 @@
 //! into views that borrow strings and bytecode from the blob. A runtime builds its executables from those views once
 //! [`DecodedCacheBlob::validate_for_materialization()`] has accepted them.
 //!
+//! Every blob names the [`BytecodeCacheRuntime`] it was written for, and decoding it for the other one fails, so a
+//! profile that a build of either runtime filled is safe to use with the other: its blobs only miss.
+//!
 //! The format is expressed as small record types with `Encode`
 //! implementations. The matching decoder should mirror these records instead
 //! of growing a separate procedural parser.
@@ -53,7 +56,7 @@ use crate::compile::CompiledProgramBytecode;
 use crate::u32_from_usize;
 
 const MAGIC: &[u8; 8] = b"LBJSBC\0\0";
-const FORMAT_VERSION: u32 = 19;
+const FORMAT_VERSION: u32 = 20;
 /// The size of the source hash a blob is keyed by.
 pub(crate) const SOURCE_HASH_SIZE: usize = 32;
 const BYTECODE_ALIGNMENT: usize = 8;
@@ -74,7 +77,24 @@ fn source_range_is_valid(offset: usize, length: usize, source_len: usize) -> boo
     offset <= source_len && length <= source_len - offset
 }
 
-/// Serializes a program compiled with
+/// The runtime that materializes the executables of a blob. Both runtimes run the frontend's bytecode, but each turns
+/// a blob into executables of its own, so a blob is only accepted by the runtime it was written for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BytecodeCacheRuntime {
+    Cpp,
+    Rust,
+}
+
+impl BytecodeCacheRuntime {
+    fn tag(self) -> u8 {
+        match self {
+            Self::Cpp => b'C',
+            Self::Rust => b'R',
+        }
+    }
+}
+
+/// Serializes, for `runtime`, a program compiled with
 /// [`FunctionPrecompileMode::All`](crate::compile::FunctionPrecompileMode::All) from source that hashes to
 /// `source_hash`.
 ///
@@ -84,12 +104,14 @@ pub fn serialize_compiled_program(
     compiled: &CompiledProgram,
     program_type: ast::ProgramType,
     source_hash: &[u8; SOURCE_HASH_SIZE],
+    runtime: BytecodeCacheRuntime,
 ) -> Vec<u8> {
     let mut encoder = Encoder::new();
     CacheBlob {
         compiled,
         program_type,
         source_hash,
+        runtime,
     }
     .encode(&mut encoder);
     encoder.finish()
@@ -107,12 +129,12 @@ pub struct ForeignBytecodeCacheBlobOwner {
     pub free_owner: FreeBytecodeCacheBlobOwner,
 }
 
-/// Decodes a blob that [`serialize_compiled_program()`] wrote for a program of `expected_program_type`, from source
-/// that hashes to `expected_source_hash`.
+/// Decodes a blob that [`serialize_compiled_program()`] wrote for `expected_runtime` and a program of
+/// `expected_program_type`, from source that hashes to `expected_source_hash`.
 ///
 /// Strings and bytecode stay in `bytes`, which `owner` keeps alive for as long as anything decoded from them does.
-/// `owner` is released when the blob is rejected as well. Returns `None` for a blob of another format version, program
-/// type or source, and for a malformed one.
+/// `owner` is released when the blob is rejected as well. Returns `None` for a blob of another format version, runtime,
+/// program type or source, and for a malformed one.
 ///
 /// # Safety
 /// `bytes` must stay alive and unchanged until `owner.free_owner` is called with `owner.owner`.
@@ -120,10 +142,16 @@ pub unsafe fn decode_blob(
     bytes: &[u8],
     expected_program_type: ast::ProgramType,
     expected_source_hash: &[u8; SOURCE_HASH_SIZE],
+    expected_runtime: BytecodeCacheRuntime,
     owner: ForeignBytecodeCacheBlobOwner,
 ) -> Option<DecodedCacheBlob> {
     let mut decoder = Decoder::new(bytes, Some(owner));
-    let blob = CacheBlob::decode(&mut decoder, expected_program_type, expected_source_hash)?;
+    let blob = CacheBlob::decode(
+        &mut decoder,
+        expected_program_type,
+        expected_source_hash,
+        expected_runtime,
+    )?;
     decoder.is_empty().then_some(blob)
 }
 
@@ -585,12 +613,14 @@ struct CacheBlob<'a> {
     // time we go to attach the sidecar. Embedding the source hash makes a stale write harmless: a later read whose
     // source no longer matches will reject the blob and fall through to source compilation.
     source_hash: &'a [u8; SOURCE_HASH_SIZE],
+    runtime: BytecodeCacheRuntime,
 }
 
 impl Encode for CacheBlob<'_> {
     fn encode(&self, encoder: &mut Encoder) {
         encoder.bytes(MAGIC);
         FORMAT_VERSION.encode(encoder);
+        self.runtime.tag().encode(encoder);
         self.program_type.encode(encoder);
         encoder.bytes(self.source_hash);
         u32_from_usize(self.compiled.source_len).encode(encoder);
@@ -610,9 +640,11 @@ impl CacheBlob<'_> {
         decoder: &mut Decoder<'_>,
         expected_program_type: ast::ProgramType,
         expected_source_hash: &[u8; SOURCE_HASH_SIZE],
+        expected_runtime: BytecodeCacheRuntime,
     ) -> Option<DecodedCacheBlob> {
         decoder.expect_bytes(MAGIC)?;
         (u32::decode(decoder)? == FORMAT_VERSION).then_some(())?;
+        (u8::decode(decoder)? == expected_runtime.tag()).then_some(())?;
         let program_type = ast::ProgramType::decode(decoder)?;
         (program_type == expected_program_type).then_some(())?;
         (decoder.bytes(SOURCE_HASH_SIZE)? == expected_source_hash).then_some(())?;
@@ -2827,9 +2859,33 @@ mod tests {
         expected_source_hash: &[u8; SOURCE_HASH_SIZE],
         releases: &Rc<Cell<usize>>,
     ) -> Option<DecodedCacheBlob> {
+        decode_test_blob_for_runtime(
+            bytes,
+            expected_program_type,
+            expected_source_hash,
+            BytecodeCacheRuntime::Rust,
+            releases,
+        )
+    }
+
+    fn decode_test_blob_for_runtime(
+        bytes: &[u8],
+        expected_program_type: ast::ProgramType,
+        expected_source_hash: &[u8; SOURCE_HASH_SIZE],
+        expected_runtime: BytecodeCacheRuntime,
+        releases: &Rc<Cell<usize>>,
+    ) -> Option<DecodedCacheBlob> {
         let (view, owner) = test_blob(bytes, releases);
         // SAFETY: The owner keeps the view alive.
-        unsafe { decode_blob(view, expected_program_type, expected_source_hash, owner) }
+        unsafe {
+            decode_blob(
+                view,
+                expected_program_type,
+                expected_source_hash,
+                expected_runtime,
+                owner,
+            )
+        }
     }
 
     fn compile_fully(source: &str, program_type: ast::ProgramType) -> (Vec<u16>, CompiledProgram) {
@@ -2976,6 +3032,7 @@ mod tests {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        bytes.push(BytecodeCacheRuntime::Rust.tag());
         bytes.push(ast::ProgramType::Script as u8);
         bytes.extend_from_slice(&stored_source_hash);
 
@@ -3019,7 +3076,12 @@ mod tests {
             ast::ProgramType::Script,
         );
         let source_hash = [7u8; SOURCE_HASH_SIZE];
-        let blob = serialize_compiled_program(&compiled, ast::ProgramType::Script, &source_hash);
+        let blob = serialize_compiled_program(
+            &compiled,
+            ast::ProgramType::Script,
+            &source_hash,
+            BytecodeCacheRuntime::Rust,
+        );
 
         let mut decoded = decode_test_blob(&blob, ast::ProgramType::Script, &source_hash, &Rc::default())
             .expect("the serialized script decodes");
@@ -3097,7 +3159,12 @@ mod tests {
             ast::ProgramType::Module,
         );
         let source_hash = [3u8; SOURCE_HASH_SIZE];
-        let blob = serialize_compiled_program(&compiled, ast::ProgramType::Module, &source_hash);
+        let blob = serialize_compiled_program(
+            &compiled,
+            ast::ProgramType::Module,
+            &source_hash,
+            BytecodeCacheRuntime::Rust,
+        );
 
         let mut decoded = decode_test_blob(&blob, ast::ProgramType::Module, &source_hash, &Rc::default())
             .expect("the serialized module decodes");
@@ -3132,7 +3199,12 @@ mod tests {
     fn decode_rejects_other_programs_and_releases_their_blobs() {
         let (_, compiled) = compile_fully("var x = 1;", ast::ProgramType::Script);
         let source_hash = [1u8; SOURCE_HASH_SIZE];
-        let blob = serialize_compiled_program(&compiled, ast::ProgramType::Script, &source_hash);
+        let blob = serialize_compiled_program(
+            &compiled,
+            ast::ProgramType::Script,
+            &source_hash,
+            BytecodeCacheRuntime::Rust,
+        );
         let mut blob_with_trailing_byte = blob.clone();
         blob_with_trailing_byte.push(0);
 
@@ -3148,5 +3220,30 @@ mod tests {
         assert_eq!(releases.get(), 4);
         drop(decoded);
         assert_eq!(releases.get(), 5);
+    }
+
+    #[test]
+    fn each_runtime_rejects_the_blobs_of_the_other() {
+        let (_, compiled) = compile_fully("function f() { return 1; } f();", ast::ProgramType::Script);
+        let source_hash = [5u8; SOURCE_HASH_SIZE];
+        let script = ast::ProgramType::Script;
+        let releases = Rc::default();
+        for (writer, reader) in [
+            (BytecodeCacheRuntime::Cpp, BytecodeCacheRuntime::Rust),
+            (BytecodeCacheRuntime::Rust, BytecodeCacheRuntime::Cpp),
+        ] {
+            let blob = serialize_compiled_program(&compiled, script, &source_hash, writer);
+            assert!(decode_test_blob_for_runtime(&blob, script, &source_hash, reader, &releases).is_none());
+            assert!(decode_test_blob_for_runtime(&blob, script, &source_hash, writer, &releases).is_some());
+        }
+        assert_eq!(releases.get(), 4);
+
+        // The blobs of both runtimes are the same apart from the tag that names their runtime.
+        let cpp_blob = serialize_compiled_program(&compiled, script, &source_hash, BytecodeCacheRuntime::Cpp);
+        let rust_blob = serialize_compiled_program(&compiled, script, &source_hash, BytecodeCacheRuntime::Rust);
+        let differing_offsets: Vec<usize> = (0..cpp_blob.len())
+            .filter(|&offset| cpp_blob[offset] != rust_blob[offset])
+            .collect();
+        assert_eq!(differing_offsets, [MAGIC.len() + size_of::<u32>()]);
     }
 }
