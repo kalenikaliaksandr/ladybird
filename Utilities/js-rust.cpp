@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibJS/ToolEntryPoints.h>
 #include <LibMain/Main.h>
 
 #if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID)
@@ -23,21 +24,6 @@ struct JSLineEditor {
     void (*set_line_completion_function)(LineCompletionFunction complete_line);
 };
 }
-
-#ifdef LIBJS_TOOL_ENTRY_POINTS_IN_FACADE
-#    include <LibJS/ToolEntryPoints.h>
-#else
-extern "C" int libjs_runtime_rust_js_main(int argc, char** argv, JSLineEditor const* line_editor);
-
-namespace JS {
-
-static int js_main(int argc, char** argv, JSLineEditor const* line_editor)
-{
-    return libjs_runtime_rust_js_main(argc, argv, line_editor);
-}
-
-}
-#endif
 
 #if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID)
 static LineCompletionFunction s_complete_line;
