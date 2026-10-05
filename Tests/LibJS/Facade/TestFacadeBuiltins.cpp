@@ -7,15 +7,22 @@
 #include <AK/Utf16FlyString.h>
 #include <AK/Utf16String.h>
 #include <AK/Vector.h>
+#include <LibGC/Function.h>
+#include <LibGC/Root.h>
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/ErrorConstructor.h>
 #include <LibJS/Runtime/ErrorData.h>
 #include <LibJS/Runtime/ExecutionContext.h>
+#include <LibJS/Runtime/FunctionObject.h>
 #include <LibJS/Runtime/Intrinsics.h>
 #include <LibJS/Runtime/Map.h>
 #include <LibJS/Runtime/MapIterator.h>
 #include <LibJS/Runtime/PrimitiveString.h>
+#include <LibJS/Runtime/Promise.h>
+#include <LibJS/Runtime/PromiseCapability.h>
+#include <LibJS/Runtime/PromiseConstructor.h>
+#include <LibJS/Runtime/PromiseJob.h>
 #include <LibJS/Runtime/PropertyKey.h>
 #include <LibJS/Runtime/Realm.h>
 #include <LibJS/Runtime/Set.h>
@@ -87,6 +94,25 @@ static Map& values_from_cpp(VM& vm, Realm& realm)
 static void pass_to_javascript(VM& vm, Realm& realm, i32 key, Value value)
 {
     values_from_cpp(vm, realm).map_set(Value(key), value);
+}
+
+// Has the promise jobs that the VM hands to the host queued in `queued_promise_jobs`, which keeps them alive.
+static void queue_promise_jobs_in(VM& vm, Vector<GC::Root<GC::Function<void()>>>& queued_promise_jobs)
+{
+    vm.host_enqueue_promise_job = [&vm, &queued_promise_jobs](PromiseJob job, GC::Ptr<Realm>) {
+        queued_promise_jobs.append(GC::make_root(GC::create_function(vm.heap(), [job = move(job)] {
+            MUST(job.run());
+        })));
+    };
+    vm.host_promise_job_queue_is_empty = [&queued_promise_jobs] { return queued_promise_jobs.is_empty(); };
+}
+
+static void run_queued_promise_jobs(Vector<GC::Root<GC::Function<void()>>>& queued_promise_jobs)
+{
+    while (!queued_promise_jobs.is_empty()) {
+        auto job = queued_promise_jobs.take_first();
+        job->function()();
+    }
 }
 
 // Object::PropertyKind, through Object so that this builds before the facade's Object has it.
@@ -246,6 +272,146 @@ TEST_CASE(error_data_of_errors_and_error_data_cells)
     EXPECT_EQ(cell_error_data->traceback().size(), 1u);
     EXPECT(cell_error_data->stack_string().is_empty());
     EXPECT_EQ(cell->traceback().size(), 1u);
+}
+
+TEST_CASE(promises_settled_from_cpp)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+    Vector<GC::Root<GC::Function<void()>>> queued_promise_jobs;
+    queue_promise_jobs_in(vm, queued_promise_jobs);
+
+    auto pending = Promise::create(realm);
+    EXPECT_EQ(pending->state(), Promise::State::Pending);
+    EXPECT(pending->result().is_undefined());
+    EXPECT(!pending->is_handled());
+    pending->set_is_handled();
+    EXPECT(pending->is_handled());
+    pass_to_javascript(vm, realm, 0, pending);
+    EXPECT(evaluates_to_true(vm, realm, "Object.getPrototypeOf(from_cpp.get(0)) === Promise.prototype"sv));
+
+    auto fulfilled = Promise::create(realm);
+    fulfilled->fulfill(Value(42));
+    EXPECT_EQ(fulfilled->state(), Promise::State::Fulfilled);
+    EXPECT_EQ(fulfilled->result().as_i32(), 42);
+
+    auto rejected = Promise::create(realm);
+    rejected->set_is_handled();
+    rejected->reject(Value(7));
+    EXPECT_EQ(rejected->state(), Promise::State::Rejected);
+    EXPECT_EQ(rejected->result().as_i32(), 7);
+
+    // Reactions run as promise jobs, which the host runs.
+    MUST(evaluate(vm, realm, "globalThis.log = []"sv));
+    auto on_fulfilled = MUST(evaluate(vm, realm, "value => { log.push('fulfilled ' + value); return value + 1; }"sv));
+    auto on_rejected = MUST(evaluate(vm, realm, "reason => { log.push('rejected ' + reason); }"sv));
+    auto capability = MUST(new_promise_capability(vm, realm.intrinsics().promise_constructor()));
+    auto source = Promise::create(realm);
+    EXPECT(same_value(source->perform_then(on_fulfilled, on_rejected, capability), capability->promise()));
+    EXPECT(source->is_handled());
+    EXPECT(source->perform_then(on_fulfilled, on_rejected, nullptr).is_undefined());
+    source->fulfill(Value(1));
+    EXPECT_EQ(queued_promise_jobs.size(), 2u);
+    run_queued_promise_jobs(queued_promise_jobs);
+    EXPECT_EQ(string_of(vm, MUST(evaluate(vm, realm, "log.join()"sv))), "fulfilled 1,fulfilled 1"sv);
+    auto& chained = as<Promise>(*capability->promise());
+    EXPECT_EQ(chained.state(), Promise::State::Fulfilled);
+    EXPECT_EQ(chained.result().as_i32(), 2);
+
+    // The resolving functions of a promise share whether it is resolved: the first call settles it.
+    auto target = Promise::create(realm);
+    auto resolving_functions = target->create_resolving_functions();
+    auto settled_first = Promise::create(realm);
+    settled_first->perform_then(resolving_functions.reject, resolving_functions.resolve, nullptr);
+    auto settled_second = Promise::create(realm);
+    settled_second->perform_then(resolving_functions.resolve, resolving_functions.resolve, nullptr);
+    settled_first->fulfill(Value(3));
+    settled_second->fulfill(Value(4));
+    target->set_is_handled();
+    run_queued_promise_jobs(queued_promise_jobs);
+    EXPECT_EQ(target->state(), Promise::State::Rejected);
+    EXPECT_EQ(target->result().as_i32(), 3);
+
+    // Resolving a promise with a thenable adopts its state.
+    auto adopting = Promise::create(realm);
+    auto adopting_functions = adopting->create_resolving_functions();
+    auto resolved_with_promise = Promise::create(realm);
+    resolved_with_promise->perform_then(adopting_functions.resolve, adopting_functions.reject, nullptr);
+    resolved_with_promise->fulfill(MUST(evaluate(vm, realm, "Promise.resolve('adopted')"sv)));
+    run_queued_promise_jobs(queued_promise_jobs);
+    EXPECT_EQ(adopting->state(), Promise::State::Fulfilled);
+    EXPECT_EQ(string_of(vm, adopting->result()), "adopted"sv);
+}
+
+TEST_CASE(promises_of_javascript)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+    Vector<GC::Root<GC::Function<void()>>> queued_promise_jobs;
+    queue_promise_jobs_in(vm, queued_promise_jobs);
+
+    auto results = MUST(evaluate(vm, realm, "class SubPromise extends Promise {}; [Promise.resolve(1), (async () => { throw 2; })(), new SubPromise(() => {}), { then() {} }, Promise.prototype]"sv));
+    auto& resolved = as<Promise>(property_of(vm, results, "0"sv).as_object());
+    EXPECT_EQ(resolved.state(), Promise::State::Fulfilled);
+    EXPECT_EQ(resolved.result().as_i32(), 1);
+    auto& thrown_in_async_function = as<Promise>(property_of(vm, results, "1"sv).as_object());
+    EXPECT_EQ(thrown_in_async_function.state(), Promise::State::Rejected);
+    EXPECT_EQ(thrown_in_async_function.result().as_i32(), 2);
+    EXPECT(!thrown_in_async_function.is_handled());
+    EXPECT(is<Promise>(property_of(vm, results, "2"sv).as_object()));
+    EXPECT(!is<Promise>(property_of(vm, results, "3"sv).as_object()));
+    EXPECT(!is<Promise>(property_of(vm, results, "4"sv).as_object()));
+
+    auto& caught = as<Promise>(MUST(evaluate(vm, realm, "globalThis.caught = Promise.reject(5); caught.catch(() => {}); caught"sv)).as_object());
+    EXPECT(caught.is_handled());
+    run_queued_promise_jobs(queued_promise_jobs);
+
+    EXPECT(same_value(realm.intrinsics().promise_constructor(), MUST(evaluate(vm, realm, "Promise"sv))));
+}
+
+TEST_CASE(promise_capabilities)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+    Vector<GC::Root<GC::Function<void()>>> queued_promise_jobs;
+    queue_promise_jobs_in(vm, queued_promise_jobs);
+
+    auto capability = MUST(new_promise_capability(vm, realm.intrinsics().promise_constructor()));
+    auto& promise = as<Promise>(*capability->promise());
+    EXPECT_EQ(promise.state(), Promise::State::Pending);
+    pass_to_javascript(vm, realm, 0, capability->promise());
+    pass_to_javascript(vm, realm, 1, capability->resolve());
+    pass_to_javascript(vm, realm, 2, capability->reject());
+    MUST(evaluate(vm, realm, "from_cpp.get(1)('resolved'); from_cpp.get(2)('ignored')"sv));
+    EXPECT_EQ(promise.state(), Promise::State::Fulfilled);
+    EXPECT_EQ(string_of(vm, promise.result()), "resolved"sv);
+
+    // A capability of a subclass constructs the subclass.
+    auto subclass = MUST(evaluate(vm, realm, "globalThis.constructed = 0; class SubPromise extends Promise { constructor(executor) { super(executor); ++constructed; } }; SubPromise"sv));
+    auto subclass_capability = MUST(new_promise_capability(vm, subclass));
+    EXPECT(is<Promise>(*subclass_capability->promise()));
+    pass_to_javascript(vm, realm, 3, subclass_capability->promise());
+    EXPECT(evaluates_to_true(vm, realm, "constructed === 1 && from_cpp.get(3) instanceof SubPromise"sv));
+
+    // Something that is not a constructor makes a TypeError, and a throwing constructor's exception passes through.
+    auto not_a_constructor = new_promise_capability(vm, Value(1));
+    EXPECT(not_a_constructor.is_throw_completion());
+    EXPECT(is<TypeError>(not_a_constructor.throw_completion().value().as_object()));
+    auto throwing_constructor = new_promise_capability(vm, MUST(evaluate(vm, realm, "(function (executor) { throw 'from constructor'; })"sv)));
+    EXPECT(throwing_constructor.is_throw_completion());
+    EXPECT_EQ(string_of(vm, throwing_constructor.throw_completion().value()), "from constructor"sv);
+
+    // A capability of any object and two functions.
+    auto resolve = MUST(evaluate(vm, realm, "(() => {})"sv));
+    auto reject = MUST(evaluate(vm, realm, "(() => {})"sv));
+    auto object = MUST(evaluate(vm, realm, "({})"sv));
+    auto record = PromiseCapability::create(vm, object.as_object(), as<FunctionObject>(resolve.as_object()), as<FunctionObject>(reject.as_object()));
+    EXPECT(same_value(record->promise(), object));
+    EXPECT(same_value(record->resolve(), resolve));
+    EXPECT(same_value(record->reject(), reject));
 }
 
 TEST_CASE(maps)
