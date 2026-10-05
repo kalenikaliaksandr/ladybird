@@ -7,9 +7,12 @@
 #pragma once
 
 #include <LibGC/Ptr.h>
+#include <LibGC/Root.h>
 #include <LibJS/Export.h>
 #include <LibJS/Heap/EngineCell.h>
+#include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/FunctionObject.h>
+#include <LibJS/Runtime/VM.h>
 
 namespace JS {
 
