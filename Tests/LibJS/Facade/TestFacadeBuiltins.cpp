@@ -264,6 +264,12 @@ TEST_CASE(error_data_of_errors_and_error_data_cells)
     expect_frame(2, ""sv, "builtins.js"sv, 4, 6);
     expect_frame(3, ""sv, ""sv, 0, 0);
 
+    // The source range of a frame is in the source code that the frame ran, which it keeps alive.
+    auto outer_source_range = traceback[1].source_range();
+    EXPECT_EQ(outer_source_range.code.ptr(), traceback[2].source_range().code.ptr());
+    traceback.clear();
+    EXPECT_EQ(outer_source_range.code->code(), "function outer() {\n    return new TypeError('from outer');\n}\nouter()"sv);
+
     auto expected_stack_string = "    at TypeError\n    at outer (builtins.js:2:12)\n    at builtins.js:4:6\n"sv;
     EXPECT_EQ(error_data.stack_string(), expected_stack_string);
     EXPECT_EQ(error.stack_string(), expected_stack_string);

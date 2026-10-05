@@ -263,12 +263,16 @@ TEST_CASE(error_data_describes_the_call_stack)
     js_error_data_traceback_frame(error_data, 0, &frame);
     EXPECT_EQ(utf16_view_of(frame.function_name), u"Error"sv);
     EXPECT(!frame.has_source_range);
+    EXPECT(!frame.source_code);
     js_error_data_traceback_frame(error_data, 1, &frame);
     EXPECT_EQ(utf16_view_of(frame.function_name), u"make"sv);
     EXPECT(frame.has_source_range);
+    EXPECT(frame.source_code);
     EXPECT_EQ(frame.line, 1u);
+    auto const* source_code_of_make = frame.source_code;
     js_error_data_traceback_frame(error_data, 2, &frame);
     EXPECT_EQ(frame.line, 2u);
+    EXPECT_EQ(frame.source_code, source_code_of_make);
     auto stack = Utf16String::adopt_raw(js_error_data_stack_string(error_data, true));
     EXPECT(stack.starts_with(u"    at Error\n    at make ("sv));
 
