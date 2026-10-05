@@ -20,10 +20,14 @@
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/HostArray.h>
 #include <LibJS/Runtime/HostFunction.h>
+#include <LibJS/Runtime/HostModule.h>
 #include <LibJS/Runtime/HostObject.h>
 #include <LibJS/Runtime/Intrinsics.h>
+#include <LibJS/Runtime/ModuleEnvironment.h>
 #include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/PrimitiveString.h>
+#include <LibJS/Runtime/Promise.h>
+#include <LibJS/Runtime/PromiseCapability.h>
 #include <LibJS/Runtime/Realm.h>
 #include <LibJS/Runtime/VM.h>
 #include <LibJS/Runtime/ValueInlines.h>
@@ -1366,4 +1370,121 @@ TEST_CASE(host_array_without_hooks_is_an_array)
     auto with_prototype = JS::HostArray::create(realm, hookless_array_class, realm.intrinsics().object_prototype());
     environment.define_global("withPrototype"sv, with_prototype);
     EXPECT_EQ(environment.evaluate("[Object.getPrototypeOf(withPrototype) === Object.prototype, Array.isArray(withPrototype)].join()"sv), "true,true"sv);
+}
+
+namespace {
+
+bool s_module_environment_throws = false;
+bool s_module_execution_throws = false;
+
+Vector<Utf16FlyString> exported_names_of_test_module()
+{
+    return { "answer"_utf16_fly_string, Utf16FlyString::from_utf8("名前"sv) };
+}
+
+// Exports two bindings and fills them in when executed, like a WebAssembly module record.
+struct ExportingModuleTraits {
+    static Vector<Utf16FlyString> get_exported_names(JS::HostModule&)
+    {
+        return exported_names_of_test_module();
+    }
+
+    static JS::ResolvedBinding resolve_export(JS::HostModule& module, Utf16FlyString const& export_name)
+    {
+        if (exported_names_of_test_module().contains_slow(export_name))
+            return JS::ResolvedBinding { JS::ResolvedBinding::Type::BindingName, &module, export_name };
+        return JS::ResolvedBinding::null();
+    }
+
+    static JS::ThrowCompletionOr<void> initialize_environment(JS::HostModule& module)
+    {
+        if (s_module_environment_throws)
+            return hook_error(module, "initialize_environment"sv);
+        auto& vm = module.vm();
+        auto environment = JS::new_module_environment(nullptr);
+        module.set_environment(environment);
+        for (auto const& name : exported_names_of_test_module())
+            MUST(environment->create_immutable_binding(vm, name, true));
+        return {};
+    }
+
+    static JS::ThrowCompletionOr<void> execute_module(JS::HostModule& module, GC::Ptr<JS::PromiseCapability> capability)
+    {
+        VERIFY(!capability);
+        if (s_module_execution_throws)
+            return hook_error(module, "execute_module"sv);
+        auto& vm = module.vm();
+        auto names = exported_names_of_test_module();
+        MUST(module.environment()->initialize_binding(vm, names[0], JS::Value(42), JS::Environment::InitializeBindingHint::Normal));
+        MUST(module.environment()->initialize_binding(vm, names[1], JS::PrimitiveString::create(vm, "value"_utf16), JS::Environment::InitializeBindingHint::Normal));
+        return {};
+    }
+};
+
+constexpr JSHostModuleHooks exporting_module_hooks = JS::make_host_module_hooks<ExportingModuleTraits>();
+constexpr JSHostClass exporting_module_class = JS::make_host_class(JS_HOST_CLASS_MODULE, "ExportingModule"sv, nullptr, &exporting_module_hooks, nullptr, 0);
+
+String message_of(JS::Value error)
+{
+    return error.as_object().get_without_side_effects("message"_utf16_fly_string).to_utf16_string_without_side_effects().to_utf8();
+}
+
+}
+
+TEST_CASE(host_module_links_and_evaluates)
+{
+    TestEnvironment environment;
+    auto& realm = environment.realm();
+    auto& vm = environment.vm();
+    auto host_data = realm.heap().allocate<TestHostData>();
+    auto module = JS::HostModule::create(realm, exporting_module_class, "exporting.wasm"sv, {}, nullptr, host_data);
+
+    EXPECT_EQ(JS::host_class_of(static_cast<JS::Module const&>(*module)), &exporting_module_class);
+    EXPECT(JS::is_host_instance_of(*module, exporting_module_class));
+    EXPECT_EQ(JS::host_data_if<TestHostData>(*module), host_data.ptr());
+    EXPECT_EQ(JS::host_data_if<OtherTestHostData>(*module), nullptr);
+
+    EXPECT_EQ(module->get_exported_names(vm), exported_names_of_test_module());
+
+    auto non_ascii_name = exported_names_of_test_module()[1];
+    auto binding = module->resolve_export(vm, non_ascii_name);
+    EXPECT(binding.type == JS::ResolvedBinding::BindingName);
+    EXPECT_EQ(binding.module.ptr(), static_cast<JS::Module*>(module.ptr()));
+    EXPECT_EQ(binding.export_name, non_ascii_name);
+    EXPECT(module->resolve_export(vm, "missing"_utf16_fly_string).type == JS::ResolvedBinding::Null);
+
+    module->load_requested_modules({});
+    MUST(module->link(vm));
+    auto evaluation = MUST(module->evaluate(vm));
+    EXPECT(as<JS::Promise>(*evaluation->promise()).state() == JS::Promise::State::Fulfilled);
+
+    environment.define_global("namespaceObject"sv, module->get_module_namespace(vm));
+    EXPECT_EQ(environment.evaluate("Object.keys(namespaceObject).length + ' ' + namespaceObject.answer"sv), "2 42"sv);
+    EXPECT_EQ(environment.evaluate("namespaceObject[Object.keys(namespaceObject)[1]]"sv), "value"sv);
+    EXPECT_EQ(environment.evaluate("Object.keys(namespaceObject)[1].charCodeAt(0)"sv), "21517"sv);
+}
+
+TEST_CASE(host_module_hooks_throw)
+{
+    TestEnvironment environment;
+    auto& realm = environment.realm();
+    auto& vm = environment.vm();
+
+    auto unlinkable = JS::HostModule::create(realm, exporting_module_class, "unlinkable.wasm"sv, {});
+    unlinkable->load_requested_modules({});
+    s_module_environment_throws = true;
+    auto link_result = unlinkable->link(vm);
+    s_module_environment_throws = false;
+    VERIFY(link_result.is_error());
+    EXPECT_EQ(message_of(link_result.error_value()), "initialize_environment threw"sv);
+
+    auto failing = JS::HostModule::create(realm, exporting_module_class, "failing.wasm"sv, {});
+    failing->load_requested_modules({});
+    MUST(failing->link(vm));
+    s_module_execution_throws = true;
+    auto evaluation = MUST(failing->evaluate(vm));
+    s_module_execution_throws = false;
+    auto& promise = as<JS::Promise>(*evaluation->promise());
+    VERIFY(promise.state() == JS::Promise::State::Rejected);
+    EXPECT_EQ(message_of(promise.result()), "execute_module threw"sv);
 }
