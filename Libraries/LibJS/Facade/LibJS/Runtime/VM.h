@@ -174,8 +174,36 @@ public:
     struct CheckStackSpaceLimitTag { };
 
     ThrowCompletionOr<void> push_execution_context(ExecutionContext&, CheckStackSpaceLimitTag);
-    void push_execution_context(ExecutionContext&);
-    ExecutionContext* pop_execution_context();
+
+    // Pushes onto the runtime's execution context stack in place, as the runtime itself does, unless the stack's
+    // storage is full, which only the runtime can grow.
+    void push_execution_context(ExecutionContext& execution_context)
+    {
+        auto length = execution_context_stack_length();
+        if (length == execution_context_stack_capacity()) [[unlikely]] {
+            push_execution_context_growing_the_stack(execution_context);
+            return;
+        }
+        execution_context.caller_frame = nullptr;
+        execution_context.caller_return_pc = 0;
+        execution_context.caller_dst_raw = 0;
+        execution_context.caller_is_construct = false;
+        auto& entry = execution_context_stack_entries()[length];
+        entry.execution_context = &execution_context;
+        entry.previous_running_execution_context = running_execution_context_or_null();
+        set_engine_head_field<size_t>(JS_LAYOUT_VM_EXECUTION_CONTEXT_STACK_LENGTH_OFFSET, length + 1);
+        set_engine_head_field<ExecutionContext*>(JS_LAYOUT_VM_RUNNING_EXECUTION_CONTEXT_OFFSET, &execution_context);
+    }
+
+    ExecutionContext* pop_execution_context()
+    {
+        auto length = execution_context_stack_length();
+        VERIFY(length > 0);
+        auto const& entry = execution_context_stack_entries()[length - 1];
+        set_engine_head_field<size_t>(JS_LAYOUT_VM_EXECUTION_CONTEXT_STACK_LENGTH_OFFSET, length - 1);
+        set_engine_head_field<ExecutionContext*>(JS_LAYOUT_VM_RUNNING_EXECUTION_CONTEXT_OFFSET, entry.previous_running_execution_context);
+        return entry.execution_context;
+    }
 
     // https://tc39.es/ecma262/#running-execution-context
     // At any point in time, there is at most one execution context per agent that is actually executing code.
@@ -462,6 +490,12 @@ private:
         return engine_head_field<size_t>(JS_LAYOUT_VM_EXECUTION_CONTEXT_STACK_LENGTH_OFFSET);
     }
 
+    size_t execution_context_stack_capacity() const
+    {
+        static_assert(JS_LAYOUT_VM_EXECUTION_CONTEXT_STACK_CAPACITY_SIZE == sizeof(size_t));
+        return engine_head_field<size_t>(JS_LAYOUT_VM_EXECUTION_CONTEXT_STACK_CAPACITY_OFFSET);
+    }
+
     // An entry of the runtime's execution context stack: a context pushed onto it, and the context that was running
     // when it was pushed.
     struct ExecutionContextStackEntry {
@@ -477,6 +511,8 @@ private:
         static_assert(JS_LAYOUT_VM_EXECUTION_CONTEXT_STACK_ENTRIES_SIZE == sizeof(ExecutionContextStackEntry*));
         return engine_head_field<ExecutionContextStackEntry*>(JS_LAYOUT_VM_EXECUTION_CONTEXT_STACK_ENTRIES_OFFSET);
     }
+
+    void push_execution_context_growing_the_stack(ExecutionContext&);
 
     static VM* s_the;
 
