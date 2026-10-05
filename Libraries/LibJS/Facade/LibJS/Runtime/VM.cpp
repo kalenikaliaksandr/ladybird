@@ -483,6 +483,20 @@ bool VM::debugging_enabled() const
     return js_debugger_is_enabled(vm_abi(*this));
 }
 
+Debugger* VM::debugger()
+{
+    if (!debugging_enabled())
+        return nullptr;
+    return reinterpret_cast<Debugger*>(this);
+}
+
+Debugger const* VM::debugger() const
+{
+    if (!debugging_enabled())
+        return nullptr;
+    return reinterpret_cast<Debugger const*>(this);
+}
+
 GC::Ref<Symbol> VM::well_known_symbol(WellKnownSymbol symbol) const
 {
     static_assert(to_underlying(WellKnownSymbol::async_dispose) == JS_WELL_KNOWN_SYMBOL_ASYNC_DISPOSE);

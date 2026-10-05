@@ -133,6 +133,9 @@ public:
     void enable_debugging();
     void disable_debugging();
     [[nodiscard]] bool debugging_enabled() const;
+    // The runtime's debugger, which is attached while debugging is enabled. A Debugger handle has the VM's address.
+    [[nodiscard]] Debugger* debugger();
+    [[nodiscard]] Debugger const* debugger() const;
 
 #define __JS_ENUMERATE(SymbolName, snake_name)                 \
     GC::Ref<Symbol> well_known_symbol_##snake_name() const     \
