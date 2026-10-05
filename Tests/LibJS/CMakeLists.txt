@@ -24,6 +24,14 @@ add_custom_command(
 if (LIBJS_RUNTIME STREQUAL "Rust")
     add_dependencies(test-js test-js-runtime-rust test-js-script js-rust)
     add_test(NAME test-js COMMAND test-js --js $<TARGET_FILE:js-rust> --runtime $<TARGET_FILE:test-js-runtime-rust>)
+
+    # The check reads the dependencies that ninja recorded for the translation units it compiled.
+    if (CMAKE_GENERATOR MATCHES "^Ninja")
+        add_test(
+            NAME LibJSFacadeIsolation
+            COMMAND "${Python3_EXECUTABLE}" "${LADYBIRD_SOURCE_DIR}/Meta/check-libjs-facade-isolation.py" "${CMAKE_BINARY_DIR}"
+        )
+    endif()
 else()
     add_dependencies(test-js test-js-runtime test-js-script js)
     add_test(NAME test-js COMMAND test-js)
