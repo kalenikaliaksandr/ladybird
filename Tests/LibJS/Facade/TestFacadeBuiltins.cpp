@@ -7,8 +7,12 @@
 #include <AK/Utf16FlyString.h>
 #include <AK/Utf16String.h>
 #include <AK/Vector.h>
+#include <LibCrypto/BigInt/SignedBigInteger.h>
 #include <LibGC/Function.h>
 #include <LibGC/Root.h>
+#include <LibJS/Runtime/BigInt.h>
+#include <LibJS/Runtime/BigIntObject.h>
+#include <LibJS/Runtime/BooleanObject.h>
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/Date.h>
 #include <LibJS/Runtime/Error.h>
@@ -21,6 +25,7 @@
 #include <LibJS/Runtime/JobCallback.h>
 #include <LibJS/Runtime/Map.h>
 #include <LibJS/Runtime/MapIterator.h>
+#include <LibJS/Runtime/NumberObject.h>
 #include <LibJS/Runtime/PrimitiveString.h>
 #include <LibJS/Runtime/Promise.h>
 #include <LibJS/Runtime/PromiseCapability.h>
@@ -31,6 +36,7 @@
 #include <LibJS/Runtime/RegExpObject.h>
 #include <LibJS/Runtime/Set.h>
 #include <LibJS/Runtime/SetIterator.h>
+#include <LibJS/Runtime/StringObject.h>
 #include <LibJS/Runtime/VM.h>
 #include <LibJS/Runtime/Value.h>
 #include <LibJS/Runtime/ValueInlines.h>
@@ -717,4 +723,46 @@ TEST_CASE(finalization_registries)
     auto thrown = registry.cleanup(JobCallback::create(vm, as<FunctionObject>(throwing_callback.as_object()), nullptr));
     EXPECT(thrown.is_throw_completion());
     EXPECT_EQ(string_of(vm, thrown.throw_completion().value()), "from cleanup"sv);
+}
+
+TEST_CASE(objects_that_wrap_primitives)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+
+    auto boolean_object = BooleanObject::create(realm, true);
+    EXPECT(boolean_object->boolean());
+    auto number_object = NumberObject::create(realm, 1.5);
+    EXPECT_EQ(number_object->number(), 1.5);
+    auto bigint = BigInt::create(vm, Crypto::SignedBigInteger { -12345 });
+    auto bigint_object = BigIntObject::create(realm, bigint);
+    EXPECT_EQ(&bigint_object->bigint(), bigint.ptr());
+    auto string = PrimitiveString::create(vm, "abc"_utf16);
+    auto string_object = StringObject::create(realm, string, realm.intrinsics().string_prototype());
+    EXPECT_EQ(&string_object->primitive_string(), string.ptr());
+    StringObject const& const_string_object = *string_object;
+    EXPECT_EQ(&const_string_object.primitive_string(), string.ptr());
+
+    pass_to_javascript(vm, realm, 0, boolean_object);
+    pass_to_javascript(vm, realm, 1, number_object);
+    pass_to_javascript(vm, realm, 2, bigint_object);
+    pass_to_javascript(vm, realm, 3, string_object);
+    EXPECT_EQ(string_of(vm, MUST(evaluate(vm, realm, "[0, 1, 2, 3].map(key => typeof from_cpp.get(key) + ' ' + from_cpp.get(key).valueOf()).join()"sv))), "object true,object 1.5,object -12345,object abc"sv);
+    EXPECT(evaluates_to_true(vm, realm, "const string_object = from_cpp.get(3); string_object.length === 3 && string_object[1] === 'b' && Object.keys(string_object).join() === '0,1,2'"sv));
+
+    // The objects that JavaScript creates are of the same kinds, and so are the prototypes that wrap a primitive.
+    auto objects = MUST(evaluate(vm, realm, "[Object(false), new Number(2), Object(3n), new String('x'), Boolean.prototype, Number.prototype, String.prototype, BigInt.prototype]"sv));
+    auto object_at = [&](StringView index) -> Object& { return property_of(vm, objects, index).as_object(); };
+    EXPECT(!as<BooleanObject>(object_at("0"sv)).boolean());
+    EXPECT_EQ(as<NumberObject>(object_at("1"sv)).number(), 2);
+    EXPECT_EQ(as<BigIntObject>(object_at("2"sv)).bigint().big_integer(), Crypto::SignedBigInteger { 3 });
+    EXPECT_EQ(as<StringObject>(object_at("3"sv)).primitive_string().utf16_string(), "x"sv);
+    EXPECT(!as<BooleanObject>(object_at("4"sv)).boolean());
+    EXPECT_EQ(as<NumberObject>(object_at("5"sv)).number(), 0);
+    EXPECT(as<StringObject>(object_at("6"sv)).primitive_string().utf16_string().is_empty());
+    EXPECT(!is<BigIntObject>(object_at("7"sv)));
+    EXPECT(!is<NumberObject>(object_at("0"sv)));
+    EXPECT(!is<StringObject>(object_at("1"sv)));
+    EXPECT(!is<BooleanObject>(object_at("3"sv)));
 }
