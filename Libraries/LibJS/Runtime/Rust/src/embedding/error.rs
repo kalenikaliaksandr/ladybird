@@ -14,7 +14,7 @@ use crate::embedding::abi_types::{
     completion_into_abi, error_data_from_abi, error_data_into_abi, error_kind_from_abi, optional_cell_from_abi,
     optional_cell_into_abi, owned_utf16_string_from_abi, owned_utf16_string_into_abi, value_from_abi, vm_from_abi,
 };
-use crate::gc::class::GcCell;
+use crate::gc::class::{Class, GcCell};
 use crate::interpreter::vm::TypeErrorRealmOverride;
 use crate::layout::cell::Gc;
 use crate::layout::host_class::{JSCompletion, JSObject, JSVM, JSValue};
@@ -23,15 +23,36 @@ use crate::runtime::error::Error;
 use crate::runtime::error_data::{CompactTraceback, ErrorData, ErrorDataCell};
 use crate::utf16::Utf16View;
 
-/// The error data that the error_data hook of a host class returned for `object`: an address js_error_data_of or
-/// js_error_data_cell_error_data gave the embedder, or null for none.
+/// The error data that the embedder passes as a JSErrorData: an address js_error_data_of or
+/// js_error_data_cell_error_data gave it, or a JSErrorDataCell itself, which is where a pointer to the C++
+/// ErrorDataCell points as a pointer to the ErrorData it derives from.
 ///
 /// # Safety
 ///
-/// `error_data` must be null or the error data of a cell that `object` keeps alive.
+/// `error_data` must be the error data or the error data cell of a live cell.
+unsafe fn error_data_or_error_data_cell_from_abi<'cell>(error_data: *const JSErrorData) -> &'cell ErrorData {
+    assert!(!error_data.is_null(), "the embedder passes error data");
+    // A cell starts with its class. Error data starts with a part of its traceback's Vec or a cell pointer, neither
+    // of which is ever the address of a class.
+    // SAFETY: Both start with an initialized word.
+    let first_word = unsafe { error_data.cast::<*const Class>().read_unaligned() };
+    if core::ptr::eq(first_word, ErrorDataCell::CLASS) {
+        // SAFETY: The pointer is the address of a live error data cell.
+        return unsafe { &*error_data.cast::<ErrorDataCell>() }.error_data();
+    }
+    // SAFETY: The caller passes error data of a live cell.
+    unsafe { error_data_from_abi(error_data) }
+}
+
+/// The error data that the error_data hook of a host class returned for `object`: error data or an error data cell
+/// as js_error_data_stack_string takes it, or null for none.
+///
+/// # Safety
+///
+/// `error_data` must be null or the error data or error data cell of a cell that `object` keeps alive.
 pub unsafe fn error_data_from_host_hook(_object: &Object, error_data: *mut c_void) -> Option<&ErrorData> {
     // SAFETY: The caller guarantees that the object keeps the error data alive, as long as the object itself.
-    (!error_data.is_null()).then(|| unsafe { error_data_from_abi(error_data.cast_const().cast()) })
+    (!error_data.is_null()).then(|| unsafe { error_data_or_error_data_cell_from_abi(error_data.cast_const().cast()) })
 }
 
 /// Throws a new error of `kind` whose message is a copy of the code units `message` views, created the way the
@@ -194,18 +215,19 @@ pub unsafe extern "C" fn js_error_data_of(object: *mut JSObject) -> *const JSErr
 
 /// The stack of `error_data` as Error.prototype.stack shows it after the name and message, one "    at" line per frame
 /// but the outermost, which the caller owns. With `compact` set, more than five consecutive frames of the same function
-/// show as one with a count. Call on the VM's thread.
+/// show as one with a count. Like the other functions that read error data, it also takes the JSErrorDataCell that
+/// holds it. Call on the VM's thread.
 ///
 /// # Safety
 ///
-/// `error_data` must be error data of a live cell of the embedder's VM.
+/// `error_data` must be error data, or an error data cell, of a live cell of the embedder's VM.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn js_error_data_stack_string(
     error_data: *const JSErrorData,
     compact: bool,
 ) -> JSOwnedUtf16String {
     // SAFETY: The caller passes error data of a live cell.
-    let error_data = unsafe { error_data_from_abi(error_data) };
+    let error_data = unsafe { error_data_or_error_data_cell_from_abi(error_data) };
     let compact = if compact {
         CompactTraceback::Yes
     } else {
@@ -219,11 +241,13 @@ pub unsafe extern "C" fn js_error_data_stack_string(
 ///
 /// # Safety
 ///
-/// `error_data` must be error data of a live cell of the embedder's VM.
+/// `error_data` must be error data, or an error data cell, of a live cell of the embedder's VM.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn js_error_data_traceback_length(error_data: *const JSErrorData) -> usize {
     // SAFETY: The caller passes error data of a live cell.
-    unsafe { error_data_from_abi(error_data) }.traceback().len()
+    unsafe { error_data_or_error_data_cell_from_abi(error_data) }
+        .traceback()
+        .len()
 }
 
 /// A frame of the call stack of an error, as C++ TracebackFrame: the name of the frame's function, and where in its
@@ -243,8 +267,8 @@ pub struct JSTracebackFrame {
 ///
 /// # Safety
 ///
-/// `error_data` must be error data of a live cell of the embedder's VM, `index` less than its traceback length, and
-/// `out` valid for writing.
+/// `error_data` must be error data, or an error data cell, of a live cell of the embedder's VM, `index` less than its
+/// traceback length, and `out` valid for writing.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn js_error_data_traceback_frame(
     error_data: *const JSErrorData,
@@ -252,7 +276,7 @@ pub unsafe extern "C" fn js_error_data_traceback_frame(
     out: *mut JSTracebackFrame,
 ) {
     // SAFETY: The caller passes error data of a live cell.
-    let error_data = unsafe { error_data_from_abi(error_data) };
+    let error_data = unsafe { error_data_or_error_data_cell_from_abi(error_data) };
     let frame = &error_data.traceback()[index];
     let (filename, line, column) = frame.source_position();
     assert!(!out.is_null(), "the embedder passes an out parameter");
@@ -521,9 +545,24 @@ mod tests {
         let cell_error_data = unsafe { js_error_data_cell_error_data(cell) };
         assert_eq!(frame(cell_error_data, 1).0, "f");
         assert!(stack_string(cell_error_data).starts_with("    at <unknown>\n    at f (eval:1:23)\n"));
+        // The cell stands for its error data, as a C++ ErrorDataCell does for the ErrorData it derives from.
+        let cell_as_error_data = cell.cast_const().cast::<JSErrorData>();
+        assert_eq!(frame(cell_as_error_data, 1).0, "f");
+        // SAFETY: The cell and its error data are live.
+        let traceback_lengths = unsafe {
+            (
+                js_error_data_traceback_length(cell_as_error_data),
+                js_error_data_traceback_length(cell_error_data),
+            )
+        };
+        assert_eq!(traceback_lengths.0, traceback_lengths.1);
+        assert_eq!(stack_string(cell_as_error_data), stack_string(cell_error_data));
         let host_object = realm.global_object();
         // SAFETY: A host object's error_data hook returns the cell's error data, which the object keeps alive.
         let from_hook = unsafe { error_data_from_host_hook(&host_object, cell_error_data.cast_mut().cast()) };
+        assert!(from_hook.is_some_and(|from_hook| core::ptr::eq(error_data_into_abi(from_hook), cell_error_data)));
+        // SAFETY: Or the cell itself.
+        let from_hook = unsafe { error_data_from_host_hook(&host_object, cell.cast()) };
         assert!(from_hook.is_some_and(|from_hook| core::ptr::eq(error_data_into_abi(from_hook), cell_error_data)));
         // SAFETY: A null result of the hook is no error data.
         assert!(unsafe { error_data_from_host_hook(&host_object, core::ptr::null_mut()) }.is_none());
