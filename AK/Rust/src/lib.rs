@@ -62,28 +62,33 @@ struct OwnedUtf16String {
 }
 
 impl OwnedUtf16String {
+    #[inline]
     const fn empty() -> Self {
         Self {
             raw: NonZeroUsize::new(SHORT_STRING_FLAG).unwrap(),
         }
     }
 
+    #[inline]
     unsafe fn from_raw(raw: usize) -> Self {
         Self {
             raw: NonZeroUsize::new(raw).expect("raw AK strings are never zero"),
         }
     }
 
+    #[inline]
     fn into_raw(self) -> usize {
         let this = std::mem::ManuallyDrop::new(self);
         this.raw.get()
     }
 
+    #[inline]
     fn raw_word(&self) -> &usize {
         // SAFETY: NonZeroUsize has the same layout as usize.
         unsafe { &*std::ptr::from_ref(&self.raw).cast::<usize>() }
     }
 
+    #[inline]
     fn as_units(&self) -> Utf16StringUnits<'_> {
         // SAFETY: This owner keeps the raw string alive for the returned lifetime.
         unsafe { utf16_string_units(self.raw_word()) }
@@ -91,6 +96,7 @@ impl OwnedUtf16String {
 }
 
 impl Clone for OwnedUtf16String {
+    #[inline]
     fn clone(&self) -> Self {
         // SAFETY: This owner keeps the raw string alive while adding a reference.
         unsafe { reference_utf16_string(self.raw.get()) };
@@ -100,6 +106,7 @@ impl Clone for OwnedUtf16String {
 }
 
 impl Drop for OwnedUtf16String {
+    #[inline]
     fn drop(&mut self) {
         // SAFETY: This object owns one reference to its raw string.
         unsafe {
@@ -141,22 +148,26 @@ macro_rules! impl_utf16_string_owner {
             /// `raw` must be a valid `AK::Utf16String` raw representation for which
             /// the caller owns one reference. The reference must not be released
             /// separately after this call.
+            #[inline]
             pub unsafe fn from_raw_owned(raw: usize) -> Self {
                 // SAFETY: The caller transfers a valid ownership reference.
                 Self(unsafe { OwnedUtf16String::from_raw(raw) })
             }
 
             /// Transfers this owner's existing reference to the caller.
+            #[inline]
             pub fn into_raw(self) -> usize {
                 self.0.into_raw()
             }
 
             /// Returns the shared one-word identity without transferring ownership.
+            #[inline]
             pub fn raw_identity(&self) -> usize {
                 self.0.raw.get()
             }
 
             /// Borrows the shared ASCII or UTF-16 character storage directly.
+            #[inline]
             pub fn as_units(&self) -> Utf16StringUnits<'_> {
                 self.0.as_units()
             }
@@ -170,6 +181,7 @@ macro_rules! impl_utf16_string_owner {
             }
 
             /// Returns whether the string has no code units.
+            #[inline]
             pub fn is_empty(&self) -> bool {
                 match self.as_units() {
                     Utf16StringUnits::Ascii(units) => units.is_empty(),
@@ -179,12 +191,14 @@ macro_rules! impl_utf16_string_owner {
         }
 
         impl Default for $name {
+            #[inline]
             fn default() -> Self {
                 Self(OwnedUtf16String::empty())
             }
         }
 
         impl Clone for $name {
+            #[inline]
             fn clone(&self) -> Self {
                 Self(self.0.clone())
             }
@@ -251,6 +265,7 @@ impl Utf16String {
         result
     }
 
+    #[inline]
     fn from_short_ascii(string: &[u8]) -> Self {
         assert!(string.len() < size_of::<usize>());
         let mut bytes = [0; size_of::<usize>()];
@@ -288,6 +303,7 @@ impl Utf16String {
         unsafe { Self::from_raw_owned(raw) }
     }
 
+    #[inline]
     fn long_storage(&self) -> *mut u8 {
         assert!(has_long_storage(self.raw_identity()));
         std::ptr::with_exposed_provenance_mut::<u8>(self.raw_identity())
@@ -360,6 +376,7 @@ impl PartialEq for Utf16String {
 impl Eq for Utf16String {}
 
 impl PartialEq for Utf16FlyString {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.raw_identity() == other.raw_identity() || (self.is_empty() && other.is_empty())
     }
@@ -368,12 +385,14 @@ impl PartialEq for Utf16FlyString {
 impl Eq for Utf16FlyString {}
 
 impl std::hash::Hash for Utf16FlyString {
+    #[inline]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.raw_identity().hash(state);
     }
 }
 
 impl From<Utf16FlyString> for Utf16String {
+    #[inline]
     fn from(string: Utf16FlyString) -> Self {
         // SAFETY: `into_raw` transfers the existing reference to this owner.
         unsafe { Self::from_raw_owned(string.into_raw()) }
@@ -381,6 +400,7 @@ impl From<Utf16FlyString> for Utf16String {
 }
 
 impl From<&Utf16FlyString> for Utf16String {
+    #[inline]
     fn from(string: &Utf16FlyString) -> Self {
         // SAFETY: The source owner keeps the raw string alive while adding a reference.
         unsafe { reference_utf16_string(string.raw_identity()) };
@@ -399,6 +419,7 @@ fn has_long_storage(raw: usize) -> bool {
 /// # Safety
 ///
 /// `raw` must be zero, a valid short string, or a live long string allocation.
+#[inline]
 pub unsafe fn reference_utf16_string(raw: usize) {
     if !has_long_storage(raw) {
         return;
@@ -422,6 +443,7 @@ pub unsafe fn reference_utf16_string(raw: usize) {
 /// `raw` must be zero, a valid short string, or a live long string allocation
 /// for which the caller owns one reference. `release_last` must perform the
 /// release-ordered decrement and acquire fence required before destruction.
+#[inline]
 pub unsafe fn release_utf16_string_with(raw: usize, release_last: impl FnOnce(usize)) {
     if !has_long_storage(raw) {
         return;
@@ -459,6 +481,7 @@ pub unsafe fn release_utf16_string_with(raw: usize, release_last: impl FnOnce(us
 /// `raw` must remain at a stable address for the returned lifetime. Its value
 /// must be zero, a valid short string, or a live long string allocation that
 /// remains alive for the returned lifetime.
+#[inline]
 pub unsafe fn utf16_string_units(raw: &usize) -> Utf16StringUnits<'_> {
     if *raw == 0 {
         return Utf16StringUnits::Ascii(&[]);
