@@ -75,20 +75,6 @@ inline Object& object_from_abi(JSObject* object)
     return *cell_from_abi<Object>(object);
 }
 
-// For the facade types that only a later part of the facade defines, which C++ can name before it knows them.
-template<typename FacadeCell>
-FacadeCell& declared_cell_from_abi(void* cell)
-{
-    VERIFY(cell);
-    return *static_cast<FacadeCell*>(cell);
-}
-
-template<typename AbiCell, typename FacadeCell>
-AbiCell* declared_cell_to_abi(FacadeCell& cell)
-{
-    return static_cast<AbiCell*>(static_cast<void*>(&cell));
-}
-
 // A key that the runtime lends for the duration of a call, which is not given a reference to its string.
 inline PropertyKey const& lent_property_key_from_abi(JSPropertyKey const& property_key)
 {
