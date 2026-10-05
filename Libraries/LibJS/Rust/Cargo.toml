@@ -19,10 +19,7 @@ indexmap = "2"
 foldhash = "0.1"
 
 [features]
-default = ["cpp-runtime"]
 allocator = []
-# The extern "C" entry points, FFI and bytecode cache through which the C++ LibJS runtime embeds the frontend.
-cpp-runtime = ["dep:cbindgen"]
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
@@ -31,7 +28,6 @@ iced-x86 = { version = "1.21", default-features = false, features = ["decoder", 
 farm64 = { package = "fARM64", version = "0.0.2", features = ["alloc"] }
 
 [build-dependencies]
-cbindgen = { version = "0.29", optional = true }
 flapc = { path = "../Flap" }
 
 [lints]
