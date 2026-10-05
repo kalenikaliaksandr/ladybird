@@ -20,5 +20,4 @@ ladybird_test(TestFacadeTimeZoneCache.cpp LibJS/Facade LIBS LibJS LibGC LibUnico
 # behavior.
 if (LIBJS_RUNTIME STREQUAL "Rust")
     target_compile_definitions(TestFacadeVM PRIVATE LIBJS_TESTS_RUN_ON_THE_RUST_RUNTIME)
-    target_compile_definitions(TestFacadeExecution PRIVATE LIBJS_TESTS_RUN_ON_THE_RUST_RUNTIME)
 endif()

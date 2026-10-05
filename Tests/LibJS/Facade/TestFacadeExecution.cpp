@@ -772,13 +772,7 @@ TEST_CASE(agent_spins_its_event_loop_until_an_await_in_native_code_settles)
         "disposed.join()"sv));
     EXPECT(string_of(disposed) == "second,first"sv);
     EXPECT(agent.goal_was_met_when_the_spin_ended.has_value());
-#ifdef LIBJS_TESTS_RUN_ON_THE_RUST_RUNTIME
     EXPECT(agent.goal_was_met_when_the_spin_ended.value());
-#else
-    // C++ bug #163: the goal condition captures a copy of the outcome from before the promise settles, so the goal is
-    // never met, and an agent that spins until it is would spin forever.
-    EXPECT(!agent.goal_was_met_when_the_spin_ended.value());
-#endif
 
     microtask_queue.perform_a_microtask_checkpoint();
     vm.set_agent(nullptr);
