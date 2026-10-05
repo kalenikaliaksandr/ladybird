@@ -255,6 +255,7 @@ impl AsyncGenerator {
 
                 // d. Resume the suspended evaluation of asyncContext using ThrowCompletion(reason) as the result of the operation that
                 //    suspended it.
+                crate::embedding::completion::log_exception_if_enabled(vm, reason);
                 generator.execute(vm, Completion::new(CompletionType::Throw, reason));
 
                 // e. Assert: When we reach this step, asyncContext has already been removed from the execution context stack and
@@ -538,6 +539,7 @@ impl AsyncGenerator {
                 generator.async_generator_state.set(AsyncGeneratorState::Completed);
 
                 // b. Let result be ThrowCompletion(reason).
+                crate::embedding::completion::log_exception_if_enabled(vm, vm.argument(0));
                 let result = Completion::new(CompletionType::Throw, vm.argument(0));
 
                 // c. Perform AsyncGeneratorCompleteStep(generator, result, true).
