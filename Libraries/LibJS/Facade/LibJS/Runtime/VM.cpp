@@ -497,15 +497,9 @@ ThrowCompletionOr<void> VM::push_execution_context(ExecutionContext& execution_c
     return completion_from_abi<void>(js_execution_context_push_checking_stack_space(vm_abi(*this), execution_context_to_abi(execution_context)));
 }
 
-void VM::push_execution_context(ExecutionContext& execution_context)
+void VM::push_execution_context_growing_the_stack(ExecutionContext& execution_context)
 {
     js_execution_context_push(vm_abi(*this), execution_context_to_abi(execution_context));
-}
-
-ExecutionContext* VM::pop_execution_context()
-{
-    VERIFY(!execution_context_stack().is_empty());
-    return execution_context_from_abi(js_execution_context_pop(vm_abi(*this)));
 }
 
 void VM::finish_execution_generation()
