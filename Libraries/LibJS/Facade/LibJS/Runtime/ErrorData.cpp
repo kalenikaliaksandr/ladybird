@@ -60,7 +60,7 @@ GC::Ref<ErrorDataCell> ErrorDataCell::capture(VM& vm)
 {
     auto* cell = js_error_data_cell_capture(vm_to_abi(vm));
     VERIFY(cell);
-    return *cell_from_abi<ErrorDataCell>(cell);
+    return cell_ref_from_abi<ErrorDataCell>(cell);
 }
 
 }

@@ -39,7 +39,7 @@ static GC::Ref<T> intrinsic_of_realm(Realm& realm, JSIntrinsic intrinsic)
 {
     auto* object = js_realm_intrinsic(vm_to_abi(realm.vm()), cell_to_abi<JSRealm>(realm), intrinsic);
     VERIFY(object);
-    return *cell_from_abi<T>(object);
+    return cell_ref_from_abi<T>(object);
 }
 
 Realm& Intrinsics::realm() const

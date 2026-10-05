@@ -46,7 +46,7 @@ Result<GC::Ref<Script>, Vector<ParserError>> Script::create_from_bytecode_cache(
 
 Realm& Script::realm()
 {
-    return *cell_from_abi<Realm>(js_script_realm(script_to_abi(*this)));
+    return cell_ref_from_abi<Realm>(js_script_realm(script_to_abi(*this)));
 }
 
 GC::Ptr<GC::Cell> Script::host_defined() const
