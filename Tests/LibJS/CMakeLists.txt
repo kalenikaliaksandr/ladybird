@@ -11,6 +11,8 @@ if (LIBJS_RUNTIME STREQUAL "Cpp")
     ladybird_testjs_test(test-js.cpp test-js NAME test-js-runtime NO_TEST LIBS LibGC)
 endif()
 
+add_subdirectory(Facade)
+
 ladybird_utility(test-js SOURCES test-js-main.cpp LIBS LibMain)
 ladybird_windows_bin(test-js CONSOLE)
 target_compile_definitions(test-js PRIVATE TEST_JS_PYTHON="${Python3_EXECUTABLE}")
