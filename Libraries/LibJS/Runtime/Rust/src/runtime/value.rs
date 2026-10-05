@@ -852,14 +852,14 @@ impl Value {
 
     pub fn to_utf16_string_without_side_effects(self) -> Utf16String {
         if self.is_double() {
-            return Utf16String::from_utf16(&number_to_utf16_string(self.as_f64()));
+            return number_to_ascii_utf16_string(self.as_f64());
         }
 
         match self.tag() {
             nan_box::UNDEFINED_TAG => Utf16String::from_utf8("undefined"),
             nan_box::NULL_TAG => Utf16String::from_utf8("null"),
             nan_box::BOOLEAN_TAG => Utf16String::from_utf8(if self.as_bool() { "true" } else { "false" }),
-            nan_box::INT32_TAG => Utf16String::from_utf8(&self.as_i32().to_string()),
+            nan_box::INT32_TAG => integer_to_utf16_string(self.as_i32().into()),
             nan_box::STRING_TAG => self.as_string().utf16_string(),
             nan_box::SYMBOL_TAG => self.as_symbol().descriptive_string(),
             nan_box::BIGINT_TAG => self.as_bigint().to_utf16_string(),
@@ -889,7 +889,7 @@ impl Value {
     // 7.1.17 ToString ( argument ), https://tc39.es/ecma262/#sec-tostring
     pub fn to_utf16_string(self, vm: &Vm) -> ThrowCompletionOr<Utf16String> {
         if self.is_double() {
-            return Ok(Utf16String::from_utf16(&number_to_utf16_string(self.as_f64())));
+            return Ok(number_to_ascii_utf16_string(self.as_f64()));
         }
 
         match self.tag() {
@@ -907,7 +907,7 @@ impl Value {
             // 6. If argument is false, return "false".
             nan_box::BOOLEAN_TAG => Ok(Utf16String::from_utf8(if self.as_bool() { "true" } else { "false" })),
             // 7. If argument is a Number, return Number::toString(argument, 10).
-            nan_box::INT32_TAG => Ok(Utf16String::from_utf8(&self.as_i32().to_string())),
+            nan_box::INT32_TAG => Ok(integer_to_utf16_string(self.as_i32().into())),
             // 8. If argument is a BigInt, return BigInt::toString(argument, 10).
             nan_box::BIGINT_TAG => Ok(Utf16String::from_utf8(&big_int_algorithms::to_base(
                 self.as_bigint().big_integer(),
@@ -2985,6 +2985,20 @@ impl NumberStringBuilder for Vec<u16> {
     }
 }
 
+impl NumberStringBuilder for AsciiBuffer {
+    fn append_ascii(&mut self, text: &[u8]) {
+        let end = self.length + text.len();
+        self.bytes[self.length..end].copy_from_slice(text);
+        self.length = end;
+    }
+
+    fn append_repeated_ascii(&mut self, code_unit: u8, count: usize) {
+        let end = self.length + count;
+        self.bytes[self.length..end].fill(code_unit);
+        self.length = end;
+    }
+}
+
 pub fn number_to_string(value: f64) -> String {
     let mut builder = String::new();
     append_number_to_string(&mut builder, value);
@@ -2995,6 +3009,18 @@ pub fn number_to_utf16_string(value: f64) -> Vec<u16> {
     let mut builder = Vec::new();
     append_number_to_string(&mut builder, value);
     builder
+}
+
+/// Number::toString(value, 10) as a string with ASCII storage, written on the stack first, where it always fits.
+pub fn number_to_ascii_utf16_string(value: f64) -> Utf16String {
+    let mut builder = AsciiBuffer::new();
+    append_number_to_string(&mut builder, value);
+    Utf16String::from_ascii(builder.as_bytes())
+}
+
+/// The decimal representation of an integer, as AK::Utf16String::number writes it.
+pub fn integer_to_utf16_string(value: i64) -> Utf16String {
+    Utf16String::from_ascii(DecimalDigits::new_signed(value).as_bytes())
 }
 
 // 6.1.6.1.20 Number::toString ( x ), https://tc39.es/ecma262/#sec-numeric-types-number-tostring
@@ -3175,6 +3201,10 @@ impl AsciiBuffer {
     fn as_str(&self) -> &str {
         core::str::from_utf8(&self.bytes[..self.length]).expect("only formatted ASCII is written")
     }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.length]
+    }
 }
 
 impl Write for AsciiBuffer {
@@ -3189,14 +3219,16 @@ impl Write for AsciiBuffer {
     }
 }
 
-struct DecimalDigits {
-    digits: [u8; 20],
+/// The decimal representation of an integer, written on the stack.
+pub(crate) struct DecimalDigits {
+    // The 20 digits of u64::MAX, or a minus sign and the 19 digits of i64::MIN.
+    digits: [u8; 21],
     start: usize,
 }
 
 impl DecimalDigits {
-    fn new(mut value: u64) -> Self {
-        let mut digits = [0; 20];
+    pub(crate) fn new(mut value: u64) -> Self {
+        let mut digits = [0; 21];
         let mut start = digits.len();
         loop {
             start -= 1;
@@ -3209,8 +3241,21 @@ impl DecimalDigits {
         Self { digits, start }
     }
 
-    fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn new_signed(value: i64) -> Self {
+        let mut result = Self::new(value.unsigned_abs());
+        if value < 0 {
+            result.start -= 1;
+            result.digits[result.start] = b'-';
+        }
+        result
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.digits[self.start..]
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        core::str::from_utf8(self.as_bytes()).expect("decimal digits are ASCII")
     }
 }
 
@@ -3232,7 +3277,34 @@ mod number_to_string_tests {
                 expected.encode_utf16().collect::<Vec<_>>(),
                 "Number::toString({value:e}) as UTF-16, bits {bits:016x}"
             );
+            assert_eq!(
+                Utf16View::of_string(&number_to_ascii_utf16_string(value)),
+                expected,
+                "Number::toString({value:e}) as an ASCII string, bits {bits:016x}"
+            );
         }
+    }
+
+    #[test]
+    fn integer_strings_match_the_decimal_representation() {
+        for value in [
+            0,
+            7,
+            -7,
+            1_234_567,
+            -1_234_567,
+            12_345_678,
+            i64::from(i32::MIN),
+            i64::from(i32::MAX),
+            i64::MIN,
+            i64::MAX,
+        ] {
+            assert_eq!(
+                Utf16View::of_string(&integer_to_utf16_string(value)),
+                value.to_string().as_str()
+            );
+        }
+        assert_eq!(DecimalDigits::new(u64::MAX).as_str(), u64::MAX.to_string());
     }
 
     /// Doubles with their String() in the C++ runtime, as bit patterns so that each case is exactly one double. They

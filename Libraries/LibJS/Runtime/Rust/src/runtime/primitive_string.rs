@@ -20,6 +20,7 @@ use crate::runtime::completion::ThrowCompletionOr;
 use crate::runtime::error::ErrorKind;
 use crate::runtime::error_types::ErrorType;
 use crate::runtime::property_key::PropertyKey;
+use crate::runtime::value::DecimalDigits;
 use crate::utf16::{
     MAX_SHORT_STRING_BYTE_COUNT, Utf16Display, Utf16StringBuilder, Utf16View, concatenate, has_fly_string_storage,
     has_short_ascii_storage, to_utf16_fly_string,
@@ -162,7 +163,7 @@ impl PrimitiveString {
         if number < numeric_string_cache.len() as u64 {
             let cache_slot = &numeric_string_cache[number as usize];
             if cache_slot.get().is_none() {
-                let string = Utf16FlyString::from_utf8(&number.to_string());
+                let string = Utf16FlyString::from_utf8(DecimalDigits::new(number).as_str());
                 cache_slot.set(Some(Self::create_from_fly_string(vm, &string)));
             }
             return cache_slot.get().expect("the numeric string was just cached");
@@ -172,7 +173,7 @@ impl PrimitiveString {
         let cache_entry = &large_cache[(number & (large_cache.len() as u64 - 1)) as usize];
         if cache_entry.string.get().is_none() || cache_entry.number.get() != number {
             cache_entry.number.set(number);
-            let string = Utf16FlyString::from_utf8(&number.to_string());
+            let string = Utf16FlyString::from_utf8(DecimalDigits::new(number).as_str());
             cache_entry.string.set(Some(Self::create_from_fly_string(vm, &string)));
         }
         cache_entry.string.get().expect("the numeric string was just cached")
