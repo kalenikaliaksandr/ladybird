@@ -69,6 +69,32 @@ inline JSObject* object_to_abi(Object const& object)
     return cell_to_abi<JSObject>(object);
 }
 
+inline Object& object_from_abi(JSObject* object)
+{
+    VERIFY(object);
+    return *cell_from_abi<Object>(object);
+}
+
+// For the facade types that only a later part of the facade defines, which C++ can name before it knows them.
+template<typename FacadeCell>
+FacadeCell& declared_cell_from_abi(void* cell)
+{
+    VERIFY(cell);
+    return *static_cast<FacadeCell*>(cell);
+}
+
+template<typename AbiCell, typename FacadeCell>
+AbiCell* declared_cell_to_abi(FacadeCell& cell)
+{
+    return static_cast<AbiCell*>(static_cast<void*>(&cell));
+}
+
+// A key that the runtime lends for the duration of a call, which is not given a reference to its string.
+inline PropertyKey const& lent_property_key_from_abi(JSPropertyKey const& property_key)
+{
+    return *reinterpret_cast<PropertyKey const*>(&property_key);
+}
+
 inline JSPrimitiveString* primitive_string_to_abi(PrimitiveString const& string)
 {
     return cell_to_abi<JSPrimitiveString>(string);
@@ -152,9 +178,35 @@ ThrowCompletionOr<T> completion_from_abi(JSCompletion completion)
         return completion.payload != 0;
     } else if constexpr (IsSame<T, Value>) {
         return value_from_abi(completion.payload);
+    } else if constexpr (IsEnum<T>) {
+        return static_cast<T>(completion.payload);
     } else {
         return Detail::CellPointerFromPayload<T>::from_payload(completion.payload);
     }
+}
+
+// A completion for the runtime, which the embedder's hooks return to it: a throw completion carries the thrown value,
+// and a normal one a JSValue, an ABI enumerator, or 0 for none.
+template<typename T>
+JSCompletion completion_to_abi(ThrowCompletionOr<T> const& completion)
+{
+    if (completion.is_throw_completion())
+        return { value_to_abi(completion.throw_completion().value()), JS_COMPLETION_THROW };
+    if constexpr (IsSame<T, void>)
+        return { 0, JS_COMPLETION_NORMAL };
+    else if constexpr (IsSame<T, Value>)
+        return { value_to_abi(completion.value()), JS_COMPLETION_NORMAL };
+    else if constexpr (IsEnum<T>)
+        return { static_cast<u64>(to_underlying(completion.value())), JS_COMPLETION_NORMAL };
+    else
+        static_assert(DependentFalse<T>, "A hook returns a value, an ABI enumerator or nothing");
+}
+
+// The value that a completion of the runtime threw, which must be a throw completion.
+inline Completion throw_completion_from_abi(JSCompletion completion)
+{
+    VERIFY(completion.variant == JS_COMPLETION_THROW);
+    return throw_completion(value_from_abi(completion.payload));
 }
 
 }

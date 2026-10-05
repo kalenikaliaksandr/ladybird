@@ -2,8 +2,11 @@
 # LIBJS_RUNTIME=Cpp they build against the C++ runtime's LibJS, and with Rust against the LibJS facade over the Rust
 # runtime, and they expect the same results from both.
 ladybird_test(TestFacadeValues.cpp LibJS/Facade LIBS LibJS LibGC LibCrypto)
+ladybird_test(TestFacadeValuesOnVM.cpp LibJS/Facade LIBS LibJS LibGC LibCrypto)
+ladybird_test(TestFacadeVM.cpp LibJS/Facade LIBS LibJS LibGC)
 
-# Creates a VM, which the facade cannot do yet.
-if (LIBJS_RUNTIME STREQUAL "Cpp")
-    ladybird_test(TestFacadeValuesOnVM.cpp LibJS/Facade LIBS LibJS LibGC LibCrypto)
+# Where the runtimes knowingly differ, because the Rust runtime fixes a bug of the C++ one, a test expects each one's
+# behavior.
+if (LIBJS_RUNTIME STREQUAL "Rust")
+    target_compile_definitions(TestFacadeVM PRIVATE LIBJS_TESTS_RUN_ON_THE_RUST_RUNTIME)
 endif()

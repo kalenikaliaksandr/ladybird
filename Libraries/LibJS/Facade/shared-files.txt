@@ -5,7 +5,10 @@
 ConsoleLogLevel.h
 HostClassBuilder.h
 HostObjectABI.h
+ParserError.cpp
 Position.h
+Runtime/Agent.cpp
+Runtime/Agent.h
 Runtime/ByteLength.h
 Runtime/CommonPropertyNames.h
 Runtime/ErrorTypes.cpp
