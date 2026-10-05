@@ -242,8 +242,10 @@ struct JS_API ExecutionContext {
     Span<Value> arguments_span() { return { arguments_data(), argument_count }; }
     ReadonlySpan<Value> arguments_span() const { return { arguments_data(), argument_count }; }
 
-    // Non-standard: The name of the function whose bytecode this context runs, for debuggers. A context that runs no
-    // bytecode, such as a native function's, has an empty one.
+    // Non-standard: The source code and function name of the bytecode this context runs, for debuggers. A context
+    // that runs no bytecode, such as a native function's, has no source code and an empty function name. The source
+    // code is the runtime's own, whose address identifies it.
+    SourceCode const* source_code() const;
     Utf16FlyString function_name() const;
 };
 
