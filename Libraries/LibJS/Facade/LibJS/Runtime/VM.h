@@ -197,9 +197,9 @@ public:
 
     // https://tc39.es/ecma262/#execution-context-stack
     // What LibJS's users need of the execution context stack is how many contexts are on it.
-    class JS_API ExecutionContextStack {
+    class ExecutionContextStack {
     public:
-        size_t size() const;
+        size_t size() const { return m_vm.execution_context_stack_length(); }
         bool is_empty() const { return size() == 0; }
 
     private:
@@ -215,40 +215,62 @@ public:
     ExecutionContextStack execution_context_stack() const { return ExecutionContextStack { *this }; }
 
     // Calls the callback with each execution context from the running one down, the frames of JavaScript functions
-    // that the interpreter calls directly included, until the callback returns false.
+    // that the interpreter calls directly included, until the callback returns false. This is the runtime's own walk:
+    // from a context that is on the execution context stack, it goes on to the context that was running when that one
+    // was pushed, and from any other context to its caller frame. The stack is read anew at every step, so the
+    // callback may push and pop contexts as long as it leaves the stack as it found it.
     template<typename Callback>
     void for_each_execution_context_top_to_bottom(Callback callback) const
     {
-        find_execution_context_from_the_top(
-            [](void* predicate_context, ExecutionContext& execution_context) {
-                return !(*static_cast<Callback*>(predicate_context))(execution_context);
-            },
-            &callback);
+        auto stack_index = execution_context_stack_length();
+        auto* execution_context = running_execution_context_or_null();
+        if (!execution_context) {
+            while (stack_index > 0) {
+                --stack_index;
+                if (stack_index >= execution_context_stack_length())
+                    return;
+                if (!callback(*execution_context_stack_entries()[stack_index].execution_context))
+                    return;
+            }
+            return;
+        }
+        while (true) {
+            if (!callback(*execution_context))
+                return;
+            auto* next_execution_context = execution_context->caller_frame;
+            if (stack_index > 0 && stack_index - 1 < execution_context_stack_length() && execution_context_stack_entries()[stack_index - 1].execution_context == execution_context) {
+                --stack_index;
+                next_execution_context = execution_context_stack_entries()[stack_index].previous_running_execution_context;
+            }
+            if (!next_execution_context)
+                return;
+            execution_context = next_execution_context;
+        }
     }
 
     template<typename Callback>
     Optional<ExecutionContext*> last_execution_context_matching(Callback callback)
     {
-        auto* matching_execution_context = find_execution_context_from_the_top(
-            [](void* predicate_context, ExecutionContext& execution_context) -> bool {
-                return (*static_cast<Callback*>(predicate_context))(&execution_context);
-            },
-            &callback);
-        if (!matching_execution_context)
-            return {};
+        Optional<ExecutionContext*> matching_execution_context;
+        for_each_execution_context_top_to_bottom([&](ExecutionContext& execution_context) {
+            if (!callback(&execution_context))
+                return true;
+            matching_execution_context = &execution_context;
+            return false;
+        });
         return matching_execution_context;
     }
 
     template<typename Callback>
     Optional<ExecutionContext const*> last_execution_context_matching(Callback callback) const
     {
-        auto const* matching_execution_context = find_execution_context_from_the_top(
-            [](void* predicate_context, ExecutionContext& execution_context) -> bool {
-                return (*static_cast<Callback*>(predicate_context))(static_cast<ExecutionContext const*>(&execution_context));
-            },
-            &callback);
-        if (!matching_execution_context)
-            return {};
+        Optional<ExecutionContext const*> matching_execution_context;
+        for_each_execution_context_top_to_bottom([&](ExecutionContext const& execution_context) {
+            if (!callback(&execution_context))
+                return true;
+            matching_execution_context = &execution_context;
+            return false;
+        });
         return matching_execution_context;
     }
 
@@ -282,23 +304,40 @@ public:
 
     // Has the TypeErrors that are thrown at the execution context stack depth the scope was created at created in
     // `realm`, until the scope is restored. Callees that push execution contexts are unaffected.
-    class JS_API TypeErrorRealmScope {
+    class TypeErrorRealmScope {
         AK_MAKE_NONCOPYABLE(TypeErrorRealmScope);
         AK_MAKE_NONMOVABLE(TypeErrorRealmScope);
 
     public:
-        TypeErrorRealmScope(VM& vm, Realm& realm);
+        TypeErrorRealmScope(VM& vm, Realm& realm)
+            : m_vm(vm)
+            , m_previous_realm(vm.engine_head_field<Realm*>(JS_LAYOUT_VM_TYPE_ERROR_REALM_OVERRIDE_OFFSET))
+            , m_previous_depth(vm.engine_head_field<size_t>(JS_LAYOUT_VM_TYPE_ERROR_REALM_OVERRIDE_DEPTH_OFFSET))
+        {
+            vm.set_engine_head_field<Realm*>(JS_LAYOUT_VM_TYPE_ERROR_REALM_OVERRIDE_OFFSET, &realm);
+            vm.set_engine_head_field<size_t>(JS_LAYOUT_VM_TYPE_ERROR_REALM_OVERRIDE_DEPTH_OFFSET, vm.execution_context_stack_length());
+        }
 
         ~TypeErrorRealmScope()
         {
             restore();
         }
 
-        void restore();
+        void restore()
+        {
+            if (!m_active)
+                return;
+            m_vm.set_engine_head_field<Realm*>(JS_LAYOUT_VM_TYPE_ERROR_REALM_OVERRIDE_OFFSET, m_previous_realm.ptr());
+            m_vm.set_engine_head_field<size_t>(JS_LAYOUT_VM_TYPE_ERROR_REALM_OVERRIDE_DEPTH_OFFSET, m_previous_depth);
+            m_active = false;
+        }
 
     private:
+        static_assert(JS_LAYOUT_VM_TYPE_ERROR_REALM_OVERRIDE_SIZE == sizeof(Realm*));
+        static_assert(JS_LAYOUT_VM_TYPE_ERROR_REALM_OVERRIDE_DEPTH_SIZE == sizeof(size_t));
+
         VM& m_vm;
-        Realm* m_previous_realm { nullptr };
+        GC::Ptr<Realm> m_previous_realm;
         size_t m_previous_depth { 0 };
         bool m_active { true };
     };
@@ -386,7 +425,6 @@ private:
     };
 
     using ErrorMessages = AK::Array<Utf16String, to_underlying(ErrorMessage::__Count)>;
-    using ExecutionContextPredicate = bool (*)(void* predicate_context, ExecutionContext&);
 
     explicit VM(ErrorMessages);
 
@@ -398,8 +436,6 @@ private:
     Completion throw_engine_error(EngineErrorKind, Utf16View message);
     Completion throw_engine_error(EngineErrorKind, Utf16String message);
 
-    ExecutionContext* find_execution_context_from_the_top(ExecutionContextPredicate, void* predicate_context) const;
-
     template<typename Field>
     Field engine_head_field(size_t offset) const
     {
@@ -408,10 +444,38 @@ private:
         return field;
     }
 
+    template<typename Field>
+    void set_engine_head_field(size_t offset, Field field)
+    {
+        __builtin_memcpy(m_engine_storage + offset, &field, sizeof(field));
+    }
+
     ExecutionContext* running_execution_context_or_null() const
     {
         static_assert(JS_LAYOUT_VM_RUNNING_EXECUTION_CONTEXT_SIZE == sizeof(ExecutionContext*));
         return engine_head_field<ExecutionContext*>(JS_LAYOUT_VM_RUNNING_EXECUTION_CONTEXT_OFFSET);
+    }
+
+    size_t execution_context_stack_length() const
+    {
+        static_assert(JS_LAYOUT_VM_EXECUTION_CONTEXT_STACK_LENGTH_SIZE == sizeof(size_t));
+        return engine_head_field<size_t>(JS_LAYOUT_VM_EXECUTION_CONTEXT_STACK_LENGTH_OFFSET);
+    }
+
+    // An entry of the runtime's execution context stack: a context pushed onto it, and the context that was running
+    // when it was pushed.
+    struct ExecutionContextStackEntry {
+        ExecutionContext* execution_context;
+        ExecutionContext* previous_running_execution_context;
+    };
+    static_assert(sizeof(ExecutionContextStackEntry) == JS_LAYOUT_EXECUTION_CONTEXT_STACK_ENTRY_SIZE);
+    static_assert(__builtin_offsetof(ExecutionContextStackEntry, execution_context) == JS_LAYOUT_EXECUTION_CONTEXT_STACK_ENTRY_EXECUTION_CONTEXT_OFFSET);
+    static_assert(__builtin_offsetof(ExecutionContextStackEntry, previous_running_execution_context) == JS_LAYOUT_EXECUTION_CONTEXT_STACK_ENTRY_PREVIOUS_RUNNING_EXECUTION_CONTEXT_OFFSET);
+
+    ExecutionContextStackEntry* execution_context_stack_entries() const
+    {
+        static_assert(JS_LAYOUT_VM_EXECUTION_CONTEXT_STACK_ENTRIES_SIZE == sizeof(ExecutionContextStackEntry*));
+        return engine_head_field<ExecutionContextStackEntry*>(JS_LAYOUT_VM_EXECUTION_CONTEXT_STACK_ENTRIES_OFFSET);
     }
 
     static VM* s_the;
