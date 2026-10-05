@@ -422,6 +422,21 @@ TEST_CASE(promise_capabilities)
     EXPECT(same_value(record->promise(), object));
     EXPECT(same_value(record->resolve(), resolve));
     EXPECT(same_value(record->reject(), reject));
+
+    // TRY_OR_REJECT and TRY_OR_MUST_REJECT reject the promise of a capability with a thrown value and return the
+    // promise, and pass the value of a normal completion on.
+    auto promise_rejected_by = [&](ThrowCompletionOr<Value> completion, bool must_reject) -> ThrowCompletionOr<GC::Ref<Object>> {
+        auto rejecting_capability = MUST(new_promise_capability(vm, realm.intrinsics().promise_constructor()));
+        auto value = must_reject ? TRY_OR_MUST_REJECT(vm, rejecting_capability, completion) : TRY_OR_REJECT(vm, rejecting_capability, completion);
+        EXPECT_EQ(value.as_i32(), 1);
+        return Object::create(realm, nullptr);
+    };
+    for (auto must_reject : { false, true }) {
+        auto& rejected_promise = as<Promise>(*MUST(promise_rejected_by(throw_completion(Value(7)), must_reject)));
+        EXPECT_EQ(rejected_promise.state(), Promise::State::Rejected);
+        EXPECT_EQ(rejected_promise.result().as_i32(), 7);
+        EXPECT(!is<Promise>(*MUST(promise_rejected_by(Value(1), must_reject))));
+    }
 }
 
 TEST_CASE(maps)
