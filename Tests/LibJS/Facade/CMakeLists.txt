@@ -5,6 +5,7 @@ ladybird_test(TestFacadeValues.cpp LibJS/Facade LIBS LibJS LibGC LibCrypto)
 ladybird_test(TestFacadeValuesOnVM.cpp LibJS/Facade LIBS LibJS LibGC LibCrypto)
 ladybird_test(TestFacadeVM.cpp LibJS/Facade LIBS LibJS LibGC)
 ladybird_test(TestFacadeObjects.cpp LibJS/Facade LIBS LibJS LibGC)
+ladybird_test(TestFacadeHostObjects.cpp LibJS/Facade LIBS LibJS LibGC)
 ladybird_test(TestFacadeOperations.cpp LibJS/Facade LIBS LibJS LibGC LibCrypto)
 ladybird_test(TestFacadeExecution.cpp LibJS/Facade LIBS LibJS LibGC)
 ladybird_test(TestFacadeScripts.cpp LibJS/Facade LIBS LibJS LibGC LibCore LibThreading)
@@ -14,11 +15,6 @@ ladybird_test(TestFacadeConsole.cpp LibJS/Facade LIBS LibJS LibGC)
 ladybird_test(TestFacadeDebugger.cpp LibJS/Facade LIBS LibJS LibGC)
 ladybird_test(TestFacadeSyntaxHighlighter.cpp LibJS/Facade LIBS LibJS LibCore LibGfx LibSyntax)
 ladybird_test(TestFacadeTimeZoneCache.cpp LibJS/Facade LIBS LibJS LibGC LibUnicode)
-
-# HostClassBuilder.h includes <LibJS/Runtime/HostModule.h>, which the facade does not provide yet.
-if (NOT LIBJS_RUNTIME STREQUAL "Rust" OR EXISTS "${LIBJS_FACADE_DIRECTORY}/LibJS/Runtime/HostModule.h")
-    ladybird_test(TestFacadeHostObjects.cpp LibJS/Facade LIBS LibJS LibGC)
-endif()
 
 # Where the runtimes knowingly differ, because the Rust runtime fixes a bug of the C++ one, a test expects each one's
 # behavior.
