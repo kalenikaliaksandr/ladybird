@@ -27,7 +27,7 @@ GC::Ref<PromiseCapability> PromiseCapability::create(VM& vm, GC::Ref<Object> pro
 {
     auto* promise_capability = js_promise_capability_create(vm_to_abi(vm), object_to_abi(*promise), object_to_abi(*resolve), object_to_abi(*reject));
     VERIFY(promise_capability);
-    return *cell_from_abi<PromiseCapability>(promise_capability);
+    return cell_ref_from_abi<PromiseCapability>(promise_capability);
 }
 
 GC::Ref<Object> PromiseCapability::promise() const

@@ -64,6 +64,13 @@ FacadeCell* cell_from_abi(AbiCell* cell)
     return reinterpret_cast<FacadeCell*>(cell);
 }
 
+template<typename FacadeCell, typename AbiCell>
+FacadeCell& cell_ref_from_abi(AbiCell* cell)
+{
+    VERIFY(cell);
+    return *cell_from_abi<FacadeCell>(cell);
+}
+
 inline JSObject* object_to_abi(Object const& object)
 {
     return cell_to_abi<JSObject>(object);
@@ -71,8 +78,7 @@ inline JSObject* object_to_abi(Object const& object)
 
 inline Object& object_from_abi(JSObject* object)
 {
-    VERIFY(object);
-    return *cell_from_abi<Object>(object);
+    return cell_ref_from_abi<Object>(object);
 }
 
 // A key that the runtime lends for the duration of a call, which is not given a reference to its string.

@@ -29,7 +29,7 @@ GC::Ref<Symbol> Symbol::create(VM& vm, Optional<Utf16String> description, Kind k
         VERIFY_NOT_REACHED();
     }
     VERIFY(symbol);
-    return *cell_from_abi<Symbol>(symbol);
+    return cell_ref_from_abi<Symbol>(symbol);
 }
 
 Utf16String Symbol::descriptive_string() const

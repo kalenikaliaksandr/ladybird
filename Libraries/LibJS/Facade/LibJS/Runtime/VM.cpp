@@ -116,7 +116,7 @@ static ImportedModuleReferrer imported_module_referrer_from_abi(JSImportedModule
     case JS_IMPORTED_MODULE_REFERRER_CYCLIC_MODULE:
         return module_from_abi<CyclicModule>(static_cast<JSModule*>(referrer.record));
     case JS_IMPORTED_MODULE_REFERRER_REALM:
-        return GC::Ref { *realm_from_abi(static_cast<JSRealm*>(referrer.record)) };
+        return GC::Ref { cell_ref_from_abi<Realm>(static_cast<JSRealm*>(referrer.record)) };
     default:
         VERIFY_NOT_REACHED();
     }
@@ -126,9 +126,9 @@ static ImportedModulePayload imported_module_payload_from_abi(JSImportedModulePa
 {
     switch (payload.kind) {
     case JS_IMPORTED_MODULE_PAYLOAD_GRAPH_LOADING_STATE:
-        return GC::Ref { *cell_from_abi<GraphLoadingState>(payload.record) };
+        return GC::Ref { cell_ref_from_abi<GraphLoadingState>(payload.record) };
     case JS_IMPORTED_MODULE_PAYLOAD_PROMISE_CAPABILITY:
-        return GC::Ref { *cell_from_abi<PromiseCapability>(payload.record) };
+        return GC::Ref { cell_ref_from_abi<PromiseCapability>(payload.record) };
     default:
         VERIFY_NOT_REACHED();
     }
@@ -167,7 +167,7 @@ struct HostHookThunks {
             parameter_strings.unchecked_append(Utf16String::from_utf16(utf16_view_from_abi(arguments->parameter_strings[index])));
 
         return completion_to_abi(vm_of(data).host_ensure_can_compile_strings(
-            *realm_from_abi(arguments->callee_realm),
+            cell_ref_from_abi<Realm>(arguments->callee_realm),
             parameter_strings,
             utf16_view_from_abi(arguments->body_string),
             utf16_view_from_abi(arguments->code_string),
@@ -187,17 +187,17 @@ struct HostHookThunks {
 
     static void promise_rejection_tracker(void* data, JSVM*, JSObject* promise, u8 operation)
     {
-        vm_of(data).host_promise_rejection_tracker(*cell_from_abi<Promise>(promise), static_cast<Promise::RejectionOperation>(operation));
+        vm_of(data).host_promise_rejection_tracker(cell_ref_from_abi<Promise>(promise), static_cast<Promise::RejectionOperation>(operation));
     }
 
     static JSCompletion call_job_callback(void* data, JSVM*, JSJobCallback* job_callback, JSValue this_value, JSValue const* arguments, size_t argument_count)
     {
-        return completion_to_abi(vm_of(data).host_call_job_callback(*cell_from_abi<JobCallback>(job_callback), value_from_abi(this_value), values_from_abi(arguments, argument_count)));
+        return completion_to_abi(vm_of(data).host_call_job_callback(cell_ref_from_abi<JobCallback>(job_callback), value_from_abi(this_value), values_from_abi(arguments, argument_count)));
     }
 
     static void enqueue_finalization_registry_cleanup_job(void* data, JSVM*, JSObject* finalization_registry)
     {
-        vm_of(data).host_enqueue_finalization_registry_cleanup_job(*cell_from_abi<FinalizationRegistry>(finalization_registry));
+        vm_of(data).host_enqueue_finalization_registry_cleanup_job(cell_ref_from_abi<FinalizationRegistry>(finalization_registry));
     }
 
     static void enqueue_promise_job(void* data, JSVM*, JSPromiseJob* job, JSRealm* realm)
@@ -213,7 +213,7 @@ struct HostHookThunks {
 
     static JSJobCallback* make_job_callback(void* data, JSVM*, JSObject* callable)
     {
-        return cell_to_abi<JSJobCallback>(*vm_of(data).host_make_job_callback(*cell_from_abi<FunctionObject>(callable)));
+        return cell_to_abi<JSJobCallback>(*vm_of(data).host_make_job_callback(cell_ref_from_abi<FunctionObject>(callable)));
     }
 
     static void get_import_meta_properties(void* data, JSVM*, JSModule* module, JSImportMetaPropertySink* properties)
@@ -481,13 +481,13 @@ GC::Ref<Symbol> VM::well_known_symbol(WellKnownSymbol symbol) const
     static_assert(to_underlying(WellKnownSymbol::unscopables) == JS_WELL_KNOWN_SYMBOL_UNSCOPABLES);
     auto* well_known_symbol = js_symbol_well_known(vm_abi(*this), to_underlying(symbol));
     VERIFY(well_known_symbol);
-    return *cell_from_abi<Symbol>(well_known_symbol);
+    return cell_ref_from_abi<Symbol>(well_known_symbol);
 }
 
 PrimitiveString& VM::empty_string()
 {
     // The runtime hands out the one empty string it keeps.
-    return *cell_from_abi<PrimitiveString>(js_string_create_from_utf16_view(vm_abi(*this), utf16_view_to_abi(Utf16View {})));
+    return cell_ref_from_abi<PrimitiveString>(js_string_create_from_utf16_view(vm_abi(*this), utf16_view_to_abi(Utf16View {})));
 }
 
 Utf16String const& VM::error_message(ErrorMessage type) const
