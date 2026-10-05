@@ -6,12 +6,11 @@
 
 #pragma once
 
-#include <LibJS/Runtime/FunctionObject.h>
+#include <LibJS/Runtime/NativeFunction.h>
 
 namespace JS {
 
-// FIXME: Derive from NativeFunction, as in the C++ runtime, once the facade has it.
-class SharedArrayBufferConstructor final : public FunctionObject {
+class SharedArrayBufferConstructor final : public NativeFunction {
 };
 
 }

@@ -13,8 +13,8 @@
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/ByteLength.h>
 #include <LibJS/Runtime/Completion.h>
-#include <LibJS/Runtime/FunctionObject.h>
 #include <LibJS/Runtime/GlobalObject.h>
+#include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/PropertyDescriptor.h>
 #include <LibJS/Runtime/PropertyKey.h>
 #include <LibJS/Runtime/VM.h>
@@ -133,7 +133,6 @@ class TypedArray : public TypedArrayBase {
 
 JS_API ThrowCompletionOr<TypedArrayBase*> typed_array_from(VM&, Value);
 
-// FIXME: The constructors are NativeFunctions, as in the C++ runtime, once the facade has NativeFunction.
 #define JS_DECLARE_TYPED_ARRAY(ClassName, snake_name, PrototypeName, ConstructorName, Type)                                                            \
     class JS_API ClassName final : public TypedArray<Type> {                                                                                           \
     public:                                                                                                                                            \
@@ -145,7 +144,7 @@ JS_API ThrowCompletionOr<TypedArrayBase*> typed_array_from(VM&, Value);
         static ThrowCompletionOr<GC::Ref<ClassName>> create(Realm&, u32 length);                                                                       \
         static GC::Ref<ClassName> create(Realm&, u32 length, ArrayBuffer& buffer);                                                                     \
     };                                                                                                                                                 \
-    class ConstructorName final : public FunctionObject {                                                                                              \
+    class ConstructorName final : public NativeFunction {                                                                                              \
     };
 
 #define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName, Type) \
