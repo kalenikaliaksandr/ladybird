@@ -9,6 +9,7 @@
 #include <AK/ScopeGuard.h>
 #include <LibGC/RootVector.h>
 #include <LibJS/EmbeddingABIConversions.h>
+#include <LibJS/Runtime/Environment.h>
 #include <LibJS/Runtime/ExecutionContext.h>
 #include <LibJS/Runtime/JobCallback.h>
 #include <LibJS/Runtime/PrimitiveString.h>
@@ -462,7 +463,7 @@ void VM::clear_host_hooks()
 
 ThrowCompletionOr<Value> VM::run(Script& script, GC::Ptr<Environment> lexical_environment_override)
 {
-    auto* abi_lexical_environment_override = lexical_environment_override ? declared_cell_to_abi<JSEnvironment>(*lexical_environment_override) : nullptr;
+    auto* abi_lexical_environment_override = lexical_environment_override ? cell_to_abi<JSEnvironment>(*lexical_environment_override) : nullptr;
     return completion_from_abi<Value>(js_script_run(vm_abi(*this), cell_to_abi<JSScript>(script), abi_lexical_environment_override));
 }
 
