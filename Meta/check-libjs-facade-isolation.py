@@ -37,6 +37,7 @@ GENERATED_EMBEDDING_DIRECTORY = "Embedding/"
 RUNTIME_C_ABI_HEADER = "Embedding/ABI.h"
 
 OBJECT_FILE_SUFFIXES = (".o", ".obj")
+SOURCE_FILE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".m", ".mm")
 LISTED_TRANSLATION_UNITS_PER_DEPENDENCY = 10
 
 
@@ -59,6 +60,14 @@ def read_shared_files(source_directory):
     return {line.strip() for line in lines if line.strip() and not line.startswith("#")}
 
 
+def with_source_file_first(dependencies):
+    # Compilers record the files they read on their own, such as a sanitizer's ignore list, before the source file.
+    source_file_index = next(
+        (index for index, path in enumerate(dependencies) if path.endswith(SOURCE_FILE_SUFFIXES)), 0
+    )
+    return [dependencies[source_file_index]] + dependencies[:source_file_index] + dependencies[source_file_index + 1 :]
+
+
 def recorded_dependencies_of_compiled_sources(ninja, build_directory):
     """Yields, for each compiled C or C++ translation unit, the paths ninja recorded, its source file first."""
     process = subprocess.Popen([ninja, "-C", str(build_directory), "-t", "deps"], stdout=subprocess.PIPE, text=True)
@@ -70,11 +79,11 @@ def recorded_dependencies_of_compiled_sources(ninja, build_directory):
                 dependencies.append(line.strip())
             continue
         if dependencies:
-            yield dependencies
+            yield with_source_file_first(dependencies)
         output, separator, _ = line.partition(": #deps ")
         dependencies = [] if separator and output.endswith(OBJECT_FILE_SUFFIXES) else None
     if dependencies:
-        yield dependencies
+        yield with_source_file_first(dependencies)
     if process.wait() != 0:
         sys.exit(f"'{ninja} -t deps' failed in {build_directory}")
 
