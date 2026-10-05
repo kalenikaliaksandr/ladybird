@@ -311,6 +311,7 @@ TEST_CASE(frames_of_running_code)
     auto& realm = vm_with_realm.realm();
 
     auto& realm_execution_context = *vm_with_realm.realm_execution_context;
+    Optional<SourceRange> source_range_of_the_callee;
     MUST(evaluate(vm, realm, "globalThis.receiver = { name: 'receiver', method(argument) { return callee(`${this.name} argument`); } };"sv, "receiver.js"sv));
 
     auto result = evaluate_calling_the_host_from_running_code(vm, realm, "frames.js"sv,
@@ -354,8 +355,37 @@ TEST_CASE(frames_of_running_code)
             EXPECT(native_function_frame.this_value.value().is_undefined());
             EXPECT(!callee_frame.this_value.has_value());
             EXPECT_EQ(address_of(method_frame.this_value.value()), address_of(property_of(vm, &realm.global_object(), "receiver"sv)));
+
+            // A stack trace has an element for each frame, which tells where in its source code a frame that runs
+            // bytecode is.
+            auto stack_trace = vm.stack_trace();
+            EXPECT_EQ(stack_trace.size(), frames.size());
+            if (stack_trace.size() != frames.size())
+                return;
+            for (size_t index = 0; index < frames.size(); ++index)
+                EXPECT_EQ(stack_trace[index].execution_context, frames[index]);
+            EXPECT(!stack_trace[0].source_range.has_value());
+            EXPECT(!stack_trace[4].source_range.has_value());
+            auto expect_source_range = [](StackTraceElement const& element, StringView filename, u32 line, u32 column) {
+                EXPECT(element.source_range.has_value());
+                if (!element.source_range.has_value())
+                    return;
+                auto const& source_range = *element.source_range;
+                EXPECT_EQ(source_range.code.ptr(), element.execution_context->source_code());
+                EXPECT(source_range.filename() == filename);
+                EXPECT_EQ(source_range.start.line, line);
+                EXPECT_EQ(source_range.start.column, column);
+            };
+            expect_source_range(stack_trace[1], "frames.js"sv, 1, 45);
+            expect_source_range(stack_trace[2], "receiver.js"sv, 1, 75);
+            expect_source_range(stack_trace[3], "frames.js"sv, 1, 66);
+            source_range_of_the_callee = stack_trace[1].source_range;
         });
     EXPECT(!result.is_error());
+
+    // A source range keeps its source code alive after the code has run.
+    collect_garbage(vm);
+    EXPECT(source_range_of_the_callee->filename() == "frames.js"sv);
 }
 
 TEST_CASE(environments_of_running_code)
