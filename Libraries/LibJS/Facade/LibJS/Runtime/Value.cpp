@@ -316,6 +316,12 @@ ThrowCompletionOr<i32> Value::to_i32(VM& vm) const
 {
     if (is_int32())
         return as_i32();
+
+#if __has_builtin(__builtin_arm_jcvt)
+    if (is_double())
+        return __builtin_arm_jcvt(m_value.as_double);
+#endif
+
     i32 result = 0;
     TRY(completion_from_abi<void>(js_value_to_i32(vm_to_abi(vm), value_to_abi(*this), &result)));
     return result;
@@ -324,6 +330,10 @@ ThrowCompletionOr<i32> Value::to_i32(VM& vm) const
 // 7.1.7 ToUint32 ( argument ), https://tc39.es/ecma262/#sec-touint32
 ThrowCompletionOr<u32> Value::to_u32(VM& vm) const
 {
+    // OPTIMIZATION: ToUint32 is ToInt32 reinterpreted, so the fast paths of to_i32() apply.
+    if (is_number())
+        return static_cast<u32>(TRY(to_i32(vm)));
+
     u32 result = 0;
     TRY(completion_from_abi<void>(js_value_to_u32(vm_to_abi(vm), value_to_abi(*this), &result)));
     return result;
@@ -340,6 +350,10 @@ ThrowCompletionOr<u16> Value::to_u16(VM& vm) const
 // 7.1.11 ToUint8 ( argument ), https://tc39.es/ecma262/#sec-touint8
 ThrowCompletionOr<u8> Value::to_u8(VM& vm) const
 {
+    // OPTIMIZATION: Fast path for the common case of an int32.
+    if (is_int32())
+        return static_cast<u8>(as_i32() & NumericLimits<u8>::max());
+
     u8 result = 0;
     TRY(completion_from_abi<void>(js_value_to_u8(vm_to_abi(vm), value_to_abi(*this), &result)));
     return result;
