@@ -213,7 +213,7 @@ impl Utf16String {
     /// Creates a string in AK's native representation and initializes its storage from UTF-8.
     pub fn from_utf8(string: &str) -> Self {
         if string.is_ascii() {
-            return Self::from_ascii(string.as_bytes());
+            return Self::from_ascii_without_validation(string.as_bytes());
         }
 
         let length = string.encode_utf16().count();
@@ -253,7 +253,67 @@ impl Utf16String {
         result
     }
 
-    fn from_ascii(string: &[u8]) -> Self {
+    /// Creates a string in AK's native representation from ASCII bytes.
+    #[inline]
+    pub fn from_ascii(string: &[u8]) -> Self {
+        assert!(string.is_ascii(), "an ASCII string holds ASCII bytes");
+        Self::from_ascii_without_validation(string)
+    }
+
+    /// Creates a string in AK's native representation from the ASCII bytes of `pieces` one after the other, which
+    /// add up to `length` bytes, copying each piece into the string's storage directly.
+    pub fn from_ascii_concatenation<'a>(length: usize, pieces: impl IntoIterator<Item = &'a [u8]>) -> Self {
+        if length < size_of::<usize>() {
+            let mut bytes = [0; size_of::<usize>() - 1];
+            let mut byte_count = 0;
+            for piece in pieces {
+                bytes[byte_count..byte_count + piece.len()].copy_from_slice(piece);
+                byte_count += piece.len();
+            }
+            assert_eq!(byte_count, length, "the pieces add up to the length of the string");
+            return Self::from_ascii(&bytes[..length]);
+        }
+
+        let result = Self::create_uninitialized(length, true);
+        let storage = result.long_storage();
+        let mut byte_count = 0;
+        for piece in pieces {
+            assert!(
+                piece.len() <= length - byte_count,
+                "the pieces add up to the length of the string"
+            );
+            assert!(piece.is_ascii(), "an ASCII string holds ASCII bytes");
+            // SAFETY: The allocation has space for `length` ASCII bytes, of which `byte_count` are written, and the
+            // piece fits in the rest.
+            unsafe { std::ptr::copy_nonoverlapping(piece.as_ptr(), storage.add(byte_count), piece.len()) };
+            byte_count += piece.len();
+        }
+        assert_eq!(byte_count, length, "the pieces add up to the length of the string");
+        result
+    }
+
+    /// Creates a string in AK's native representation of `length` ASCII bytes, which `fill` writes into the string's
+    /// storage directly.
+    pub fn from_ascii_with(length: usize, fill: impl FnOnce(&mut [u8])) -> Self {
+        if length < size_of::<usize>() {
+            let mut bytes = [0; size_of::<usize>() - 1];
+            fill(&mut bytes[..length]);
+            return Self::from_ascii(&bytes[..length]);
+        }
+
+        let result = Self::create_uninitialized(length, true);
+        // SAFETY: The allocation has space for exactly `length` ASCII bytes, which are zeroed before they are lent out.
+        let storage = unsafe {
+            std::ptr::write_bytes(result.long_storage(), 0, length);
+            std::slice::from_raw_parts_mut(result.long_storage(), length)
+        };
+        fill(storage);
+        assert!(storage.is_ascii(), "an ASCII string holds ASCII bytes");
+        result
+    }
+
+    #[inline]
+    fn from_ascii_without_validation(string: &[u8]) -> Self {
         if string.len() < size_of::<usize>() {
             return Self::from_short_ascii(string);
         }
