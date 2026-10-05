@@ -135,22 +135,6 @@ static NEVER_INLINE void collect_garbage(VM& vm)
     vm.heap().collect_garbage();
 }
 
-// Object::PropertyKind, through Object so that this builds before the facade's Object has it.
-enum class PropertyKindOfThisTest {
-    Key,
-    Value,
-    KeyAndValue,
-};
-
-template<typename ObjectType = Object>
-static auto property_kind(PropertyKindOfThisTest kind)
-{
-    if constexpr (requires { ObjectType::PropertyKind::KeyAndValue; })
-        return static_cast<typename ObjectType::PropertyKind>(kind);
-    else
-        return kind;
-}
-
 TEST_CASE(errors_of_each_kind)
 {
     VMWithRealm vm_with_realm;
@@ -591,9 +575,9 @@ TEST_CASE(map_and_set_iterators)
     auto map = Map::create(realm);
     map->map_set(Value(1), Value(10));
     map->map_set(Value(2), Value(20));
-    pass_to_javascript(vm, realm, 0, MapIterator::create(realm, map, property_kind(PropertyKindOfThisTest::Key)));
-    pass_to_javascript(vm, realm, 1, MapIterator::create(realm, map, property_kind(PropertyKindOfThisTest::Value)));
-    auto entries = MapIterator::create(realm, map, property_kind(PropertyKindOfThisTest::KeyAndValue));
+    pass_to_javascript(vm, realm, 0, MapIterator::create(realm, map, Object::PropertyKind::Key));
+    pass_to_javascript(vm, realm, 1, MapIterator::create(realm, map, Object::PropertyKind::Value));
+    auto entries = MapIterator::create(realm, map, Object::PropertyKind::KeyAndValue);
     pass_to_javascript(vm, realm, 2, entries);
     EXPECT(is<MapIterator>(static_cast<Object&>(*entries)));
 
@@ -605,8 +589,8 @@ TEST_CASE(map_and_set_iterators)
     auto set = Set::create(realm);
     set->set_add(Value(1));
     set->set_add(Value(2));
-    pass_to_javascript(vm, realm, 3, SetIterator::create(realm, set, property_kind(PropertyKindOfThisTest::Value)));
-    auto set_entries = SetIterator::create(realm, set, property_kind(PropertyKindOfThisTest::KeyAndValue));
+    pass_to_javascript(vm, realm, 3, SetIterator::create(realm, set, Object::PropertyKind::Value));
+    auto set_entries = SetIterator::create(realm, set, Object::PropertyKind::KeyAndValue);
     pass_to_javascript(vm, realm, 4, set_entries);
     EXPECT(is<SetIterator>(static_cast<Object&>(*set_entries)));
     EXPECT_EQ(string_of(vm, MUST(evaluate(vm, realm, "JSON.stringify([[...from_cpp.get(3)], [...from_cpp.get(4)]])"sv))), "[[1,2],[[1,1],[2,2]]]"sv);
