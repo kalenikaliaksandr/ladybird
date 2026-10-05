@@ -109,8 +109,9 @@ TEST_CASE(same_process_clone_aliases_the_backing_store)
     EXPECT_EQ(clone.data_at(0), source->data_at(0));
     EXPECT(clone.shares_storage_with(*source));
 
-    auto const& external = clone.data_block().byte_buffer.get<JS::DataBlock::ExternalPrimitiveStorage>();
-    EXPECT(external.owner.ptr() == static_cast<GC::Cell*>(source.ptr()));
+    auto const& clone_data_block = clone.data_block();
+    auto const& external = clone_data_block.byte_buffer.get<JS::DataBlock::ExternalPrimitiveStorage>();
+    EXPECT(external.owner == source);
 
     source->overwrite(0, "S", 1);
     auto clone_contents = contents_of(clone);
@@ -133,8 +134,10 @@ TEST_CASE(shared_memory_backed_clone_references_the_same_shared_object)
 
     // The clone references the source's shared object, rather than a process-local alias of it — so it can itself
     // be shared with an agent in another process.
-    EXPECT(clone.shared_buffer().has_value());
-    EXPECT_EQ(clone.shared_buffer()->fd(), source->shared_buffer()->fd());
+    auto clone_shared_memory = clone.shared_buffer();
+    EXPECT(clone_shared_memory.has_value());
+    clone_shared_memory->data<u8>()[2] = static_cast<u8>('M');
+    EXPECT_EQ(contents_of(*source)[2], static_cast<u8>('M'));
 
     source->overwrite(0, "S", 1);
     auto clone_contents = contents_of(clone);
@@ -157,8 +160,9 @@ TEST_CASE(alias_chains_are_flattened)
     auto& second_clone = as_array_buffer(deserialize(second_record, source_realm()));
 
     EXPECT(second_clone.shares_storage_with(*source));
-    auto const& external = second_clone.data_block().byte_buffer.get<JS::DataBlock::ExternalPrimitiveStorage>();
-    EXPECT(external.owner.ptr() == static_cast<GC::Cell*>(source.ptr()));
+    auto const& second_clone_data_block = second_clone.data_block();
+    auto const& external = second_clone_data_block.byte_buffer.get<JS::DataBlock::ExternalPrimitiveStorage>();
+    EXPECT(external.owner == source);
 }
 
 TEST_CASE(shared_array_buffer_reached_through_a_view_is_aliased)
