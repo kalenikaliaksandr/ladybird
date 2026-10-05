@@ -355,6 +355,8 @@ struct DeferredOffThreadCompilation {
 
 TEST_CASE(a_blob_made_and_validated_on_other_threads_runs_as_a_script_on_the_vms_thread)
 {
+    // The cached script's executable releases its blob when the VM's heap is destroyed, so the count outlives the VM.
+    Atomic<size_t> releases { 0 };
     auto embedded_vm = EmbeddedVM::create_with_realm();
     auto* vm = embedded_vm->vm();
     auto source = "var make_doubler = function (value) { return () => value * 2; };\nmake_doubler(21)() === 42;"sv;
@@ -367,7 +369,6 @@ TEST_CASE(a_blob_made_and_validated_on_other_threads_runs_as_a_script_on_the_vms
     EXPECT_EQ(run_script(vm, script), u"true"sv);
 
     // LibWeb decodes and validates a blob it loads on its thread pool, and creates the script on the VM's thread.
-    Atomic<size_t> releases { 0 };
     JSDecodedBytecodeCache const* cache = nullptr;
     std::thread worker([&] {
         VERIFY(!decode_and_validate(programs.blob, JS_PROGRAM_TYPE_SCRIPT, source_length + 1, &releases));
