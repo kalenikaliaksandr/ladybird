@@ -98,7 +98,7 @@ impl PrimitiveString {
             return None;
         }
 
-        let string = concatenate(&[Utf16View::Ascii(lhs_view), Utf16View::Ascii(rhs_view)]);
+        let string = Utf16String::from_ascii_concatenation(byte_count, [lhs_view, rhs_view]);
         Some(Self::create(vm, string))
     }
 
@@ -483,6 +483,25 @@ impl RopeString {
     }
 
     fn resolve(&self) {
+        let string = if self.lhs().deferred_kind.get() != DeferredKind::Rope
+            && self.rhs().deferred_kind.get() != DeferredKind::Rope
+        {
+            concatenate(&[self.lhs().utf16_string_view(), self.rhs().utf16_string_view()])
+        } else {
+            self.concatenate_pieces()
+        };
+        debug_assert_eq!(
+            Utf16View::of_string(&string).length_in_code_units(),
+            self.base.length_in_utf16_code_units()
+        );
+
+        self.base.set_resolved_utf16_string(string);
+        self.base.deferred_kind.set(DeferredKind::None);
+        self.lhs.set(None);
+        self.rhs.set(None);
+    }
+
+    fn concatenate_pieces(&self) -> Utf16String {
         // This vector will hold all the pieces of the rope that need to be assembled
         // into the resolved string.
         // NB: Resolving takes no VM, so it cannot allocate cells or collect garbage while these vectors hold strings
@@ -506,16 +525,7 @@ impl RopeString {
         }
 
         let views: Vec<Utf16View<'_>> = pieces.iter().map(|piece| piece.utf16_string_view()).collect();
-        let string = concatenate(&views);
-        debug_assert_eq!(
-            Utf16View::of_string(&string).length_in_code_units(),
-            self.base.length_in_utf16_code_units()
-        );
-
-        self.base.set_resolved_utf16_string(string);
-        self.base.deferred_kind.set(DeferredKind::None);
-        self.lhs.set(None);
-        self.rhs.set(None);
+        concatenate(&views)
     }
 }
 
