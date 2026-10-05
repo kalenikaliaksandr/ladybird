@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/Concepts.h>
+#include <LibJS/Runtime/Iterator.h>
 #include <LibJS/Runtime/Map.h>
 #include <LibJS/Runtime/Object.h>
 
