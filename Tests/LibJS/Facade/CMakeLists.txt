@@ -7,6 +7,7 @@ ladybird_test(TestFacadeVM.cpp LibJS/Facade LIBS LibJS LibGC)
 ladybird_test(TestFacadeObjects.cpp LibJS/Facade LIBS LibJS LibGC)
 ladybird_test(TestFacadeOperations.cpp LibJS/Facade LIBS LibJS LibGC LibCrypto)
 ladybird_test(TestFacadeExecution.cpp LibJS/Facade LIBS LibJS LibGC)
+ladybird_test(TestFacadeScripts.cpp LibJS/Facade LIBS LibJS LibGC LibCore LibThreading)
 
 # HostClassBuilder.h includes <LibJS/Runtime/HostModule.h>, which the facade does not provide yet.
 if (NOT LIBJS_RUNTIME STREQUAL "Rust" OR EXISTS "${LIBJS_FACADE_DIRECTORY}/LibJS/Runtime/HostModule.h")
