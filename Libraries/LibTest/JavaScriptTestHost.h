@@ -12,7 +12,6 @@
 
 #include <AK/Array.h>
 #include <AK/ByteString.h>
-#include <AK/Function.h>
 #include <AK/HashMap.h>
 #include <AK/Optional.h>
 #include <AK/Result.h>
@@ -106,7 +105,7 @@ struct FunctionWithLength {
 };
 extern HashMap<Utf16String, FunctionWithLength> s_exposed_global_functions;
 extern ByteString g_test_root_fragment;
-extern Function<void()> g_main_hook;
+extern void (*g_main_hook)();
 extern HashMap<bool*, Tuple<ByteString, ByteString, char>> g_extra_args;
 
 struct ParserError {
