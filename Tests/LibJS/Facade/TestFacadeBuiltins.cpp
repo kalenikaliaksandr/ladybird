@@ -10,6 +10,7 @@
 #include <LibGC/Function.h>
 #include <LibGC/Root.h>
 #include <LibJS/Runtime/Completion.h>
+#include <LibJS/Runtime/Date.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/ErrorConstructor.h>
 #include <LibJS/Runtime/ErrorData.h>
@@ -588,4 +589,43 @@ TEST_CASE(map_and_set_iterators)
     EXPECT(is<MapIterator>(MUST(evaluate(vm, realm, "new Map().entries()"sv)).as_object()));
     EXPECT(!is<MapIterator>(MUST(evaluate(vm, realm, "new Set().values()"sv)).as_object()));
     EXPECT(is<SetIterator>(MUST(evaluate(vm, realm, "new Set().values()"sv)).as_object()));
+}
+
+TEST_CASE(dates)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+
+    // 2026-10-04T12:34:56.789Z
+    auto time_value = make_date(make_day(2026, 9, 4), make_time(12, 34, 56, 789));
+    EXPECT_EQ(time_value, 1791117296789.0);
+    auto date = Date::create(realm, time_value);
+    EXPECT_EQ(date->date_value(), time_value);
+    pass_to_javascript(vm, realm, 0, date);
+    EXPECT_EQ(string_of(vm, MUST(evaluate(vm, realm, "from_cpp.get(0).toISOString()"sv))), "2026-10-04T12:34:56.789Z"sv);
+    EXPECT(evaluates_to_true(vm, realm, "from_cpp.get(0) instanceof Date"sv));
+
+    EXPECT(isnan(Date::create(realm, NAN)->date_value()));
+    auto& from_javascript = as<Date>(MUST(evaluate(vm, realm, "new Date(Date.UTC(1969, 11, 31, 23, 59, 58, 7))"sv)).as_object());
+    auto time = from_javascript.date_value();
+    EXPECT_EQ(year_from_time(time), 1969);
+    EXPECT_EQ(month_from_time(time), 11);
+    EXPECT_EQ(date_from_time(time), 31);
+    EXPECT_EQ(hour_from_time(time), 23);
+    EXPECT_EQ(min_from_time(time), 59);
+    EXPECT_EQ(sec_from_time(time), 58);
+    EXPECT_EQ(ms_from_time(time), 7);
+    EXPECT_EQ(make_day(1970, 0, 1), 0.0);
+    EXPECT_EQ(make_day(2024, 1, 29) * ms_per_day, MUST(evaluate(vm, realm, "Date.UTC(2024, 1, 29)"sv)).as_double());
+    EXPECT(isnan(make_day(INFINITY, 0, 1)));
+    EXPECT(isnan(make_time(NAN, 0, 0, 0)));
+    EXPECT_EQ(make_time(1, 2, 3, 4), ms_per_hour + 2 * ms_per_minute + 3 * ms_per_second + 4);
+    EXPECT_EQ(max_time_value, 8.64E15);
+    EXPECT_EQ(ms_per_day, hours_per_day * minutes_per_hour * seconds_per_minute * ms_per_second);
+
+    clear_system_time_zone_cache();
+    EXPECT(evaluates_to_true(vm, realm, "typeof new Date(0).getTimezoneOffset() === 'number'"sv));
+
+    EXPECT(!is<Date>(MUST(evaluate(vm, realm, "Date.prototype"sv)).as_object()));
 }
