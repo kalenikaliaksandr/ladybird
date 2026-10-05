@@ -14,6 +14,8 @@
 #include <LibJS/Console.h>
 #include <LibJS/Print.h>
 #include <LibJS/Runtime/ConsoleObject.h>
+#include <LibJS/Runtime/Error.h>
+#include <LibJS/Runtime/ErrorData.h>
 #include <LibJS/Runtime/Intrinsics.h>
 #include <LibJS/Runtime/PropertyKey.h>
 #include <LibJS/Runtime/Realm.h>
@@ -133,6 +135,17 @@ public:
     virtual void add_css_style_to_current_message(Utf16View style) override
     {
         m_events.append(MUST(String::formatted("css: {}", style)));
+    }
+
+    virtual void report_exception(Utf16View name, Utf16View message, ErrorData const& error_data, bool in_promise) override
+    {
+        StringBuilder builder;
+        builder.appendff("exception{}: {}: {}", in_promise ? " in promise"sv : ""sv, name, message);
+        for (auto const& frame : error_data.traceback()) {
+            auto const& source_range = frame.source_range();
+            builder.appendff(" | {}@{}:{}:{}", frame.function_name, source_range.filename(), source_range.start.line, source_range.start.column);
+        }
+        m_events.append(builder.to_string_without_validation());
     }
 
     virtual void clear() override
@@ -264,6 +277,27 @@ console.log("%cstyled", "color: red");
         "clear"_string,
         "css: color: red"_string,
         "Log: \"styled\""_string,
+    };
+    EXPECT_EQ(events, expected_events);
+}
+
+TEST_CASE(a_console_client_receives_reported_exceptions)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+    Vector<String> events;
+    install_recording_client(vm_with_realm, events);
+
+    // The client reads the error data of an Error and of an error data cell, which the console passes on as it is.
+    auto error = MUST(evaluate(vm, realm, "function make() {\n    return new TypeError('boom');\n}\nmake()"sv));
+    vm_with_realm.console().report_exception(u"TypeError"sv, u"boom"sv, as<JS::Error>(error.as_object()), false);
+    auto cell = ErrorDataCell::capture(vm);
+    vm_with_realm.console().report_exception(u"DOMException"sv, u"from a cell"sv, *cell, true);
+
+    Vector<String> expected_events {
+        "exception: TypeError: boom | TypeError@:0:0 | make@console.js:2:12 | @console.js:4:5 | @:0:0"_string,
+        "exception in promise: DOMException: from a cell | @:0:0"_string,
     };
     EXPECT_EQ(events, expected_events);
 }
