@@ -4,12 +4,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/MemoryStream.h>
 #include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/Utf16String.h>
+#include <AK/Utf16StringBuilder.h>
 #include <AK/Vector.h>
 #include <LibGC/RootVector.h>
 #include <LibJS/Console.h>
+#include <LibJS/Print.h>
 #include <LibJS/Runtime/ConsoleObject.h>
 #include <LibJS/Runtime/Intrinsics.h>
 #include <LibJS/Runtime/PropertyKey.h>
@@ -20,8 +23,9 @@
 #include <LibJS/Script.h>
 #include <LibTest/TestCase.h>
 
-// The console of a realm and the embedder's console clients that receive what it logs, as LibJS's users use them. The
-// same expectations hold for the C++ runtime's LibJS and for the facade over the Rust one.
+// The console of a realm, the embedder's console clients that receive what it logs, and printing values the way the
+// console shows them, as LibJS's users use them. The same expectations hold for the C++ runtime's LibJS and for the
+// facade over the Rust one.
 
 using namespace JS;
 
@@ -365,4 +369,116 @@ TEST_CASE(the_last_client_set_receives_what_the_console_logs)
     EXPECT(!evaluate(vm, realm, "console.log('to the first client')"sv).is_error());
     Vector<String> expected_first_events { "Log: \"to the first client\""_string };
     EXPECT_EQ(first_events, expected_first_events);
+}
+
+static String printed(VM& vm, Value value, bool strip_ansi = true, bool raw_strings = false)
+{
+    AllocatingMemoryStream stream;
+    PrintContext print_context { .vm = vm, .stream = &stream, .strip_ansi = strip_ansi, .raw_strings = raw_strings };
+    MUST(print(value, print_context));
+    return MUST(String::from_stream(stream, stream.used_buffer_size()));
+}
+
+TEST_CASE(print_writes_values_as_the_console_shows_them)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+
+    auto printed_result_of = [&](StringView source) {
+        return printed(vm, MUST(evaluate(vm, realm, source)));
+    };
+
+    EXPECT_EQ(printed(vm, Value(42)), "42"sv);
+    EXPECT_EQ(printed(vm, Value(-0.0)), "-0"sv);
+    EXPECT_EQ(printed(vm, Value(1.5)), "1.5"sv);
+    EXPECT_EQ(printed_result_of("NaN"sv), "NaN"sv);
+    EXPECT_EQ(printed(vm, js_undefined()), "undefined"sv);
+    EXPECT_EQ(printed(vm, js_null()), "null"sv);
+    EXPECT_EQ(printed(vm, Value(true)), "true"sv);
+    EXPECT_EQ(printed_result_of("'say \"hi\"'"sv), "\"say \"hi\"\""sv);
+    EXPECT_EQ(printed_result_of("10n"sv), "10n"sv);
+    EXPECT_EQ(printed_result_of("Symbol('description')"sv), "Symbol(description)"sv);
+    EXPECT_EQ(printed_result_of("[1, 'two', [3]]"sv), "[ 1, \"two\", [ 3 ] ]"sv);
+    EXPECT_EQ(printed_result_of("({ list: [1, 'two'], nested: { map: new Map([[3, 4]]) } })"sv),
+        "Object{ \"list\": [ 1, \"two\" ], \"nested\": Object{ \"map\": [Map] { 3 => 4 } } }"sv);
+    EXPECT_EQ(printed_result_of("new Set([1, 'two'])"sv), "[Set] { 1, \"two\" }"sv);
+    EXPECT_EQ(printed_result_of("(function named() {})"sv), "[Function] named"sv);
+    auto typed_array = printed_result_of("new Uint8Array([1, 2])"sv);
+    EXPECT(typed_array.starts_with_bytes("[Uint8Array]\n  buffer: [ArrayBuffer] @ 0x"sv));
+    EXPECT(typed_array.ends_with_bytes("\n  length: 2\n  byteLength: 2\n[ 1, 2 ]"sv));
+    EXPECT_EQ(printed_result_of("new TypeError('boom')"sv), "[TypeError] boom"sv);
+    EXPECT_EQ(printed_result_of("Promise.resolve(5)"sv), "[Promise]\n  state: Fulfilled\n  result: 5"sv);
+    EXPECT(printed_result_of("const cyclic = {}; cyclic.self = cyclic; cyclic"sv).starts_with_bytes("Object{ \"self\": <already printed Object 0x"sv));
+}
+
+TEST_CASE(print_honors_the_options_of_its_context)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+
+    auto string = MUST(evaluate(vm, realm, "'say \"hi\"'"sv));
+    EXPECT_EQ(printed(vm, string, true, true), "say \"hi\""sv);
+
+    auto object = MUST(evaluate(vm, realm, "({ a: [1] })"sv));
+    auto in_color = printed(vm, object, false);
+    EXPECT(in_color.contains('\x1b'));
+    EXPECT_NE(in_color, printed(vm, object));
+
+    Utf16StringBuilder builder;
+    PrintContext print_context { .vm = vm, .builder = &builder, .strip_ansi = true };
+    MUST(print(object, print_context));
+    EXPECT_EQ(builder.to_string(), Utf16String::from_utf8(printed(vm, object)));
+
+    Utf16StringBuilder builder_with_a_lone_surrogate;
+    PrintContext print_context_with_a_lone_surrogate { .vm = vm, .builder = &builder_with_a_lone_surrogate, .strip_ansi = true, .raw_strings = true };
+    MUST(print(MUST(evaluate(vm, realm, "'a\\ud800b'"sv)), print_context_with_a_lone_surrogate));
+    auto printed_with_a_lone_surrogate = builder_with_a_lone_surrogate.to_string();
+    EXPECT_EQ(printed_with_a_lone_surrogate.length_in_code_units(), 3u);
+    EXPECT_EQ(printed_with_a_lone_surrogate.code_unit_at(1), 0xd800u);
+}
+
+namespace {
+
+// A stream that takes `capacity` bytes and then fails.
+class StreamThatFills final : public Stream {
+public:
+    explicit StreamThatFills(size_t capacity)
+        : m_capacity(capacity)
+    {
+    }
+
+    virtual ErrorOr<Bytes> read_some(Bytes) override { return AK::Error::from_errno(EBADF); }
+
+    virtual ErrorOr<size_t> write_some(ReadonlyBytes bytes) override
+    {
+        if (m_written + bytes.size() > m_capacity)
+            return AK::Error::from_errno(ENOSPC);
+        m_written += bytes.size();
+        return bytes.size();
+    }
+
+    virtual bool is_eof() const override { return true; }
+    virtual bool is_open() const override { return true; }
+    virtual void close() override { }
+
+private:
+    size_t m_capacity { 0 };
+    size_t m_written { 0 };
+};
+
+}
+
+TEST_CASE(print_returns_the_error_of_its_stream)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+
+    StreamThatFills stream { 4 };
+    PrintContext print_context { .vm = vm, .stream = &stream, .strip_ansi = true };
+    auto result = print(MUST(evaluate(vm, realm, "[1, 2, 3, 4, 5, 6]"sv)), print_context);
+    EXPECT(result.is_error());
+    EXPECT_EQ(result.error().code(), ENOSPC);
 }
