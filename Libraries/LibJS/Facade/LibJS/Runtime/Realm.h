@@ -7,9 +7,16 @@
 
 #pragma once
 
+#include <AK/Badge.h>
 #include <AK/Function.h>
+#include <AK/HashTable.h>
 #include <AK/NonnullOwnPtr.h>
+#include <AK/OwnPtr.h>
+#include <AK/StringView.h>
+#include <AK/Traits.h>
+#include <AK/Weakable.h>
 #include <LibGC/Cell.h>
+#include <LibGC/CellAllocator.h>
 #include <LibGC/Heap.h>
 #include <LibJS/Embedding/Layout.h>
 #include <LibJS/Export.h>

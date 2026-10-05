@@ -4,6 +4,7 @@
 ladybird_test(TestFacadeValues.cpp LibJS/Facade LIBS LibJS LibGC LibCrypto)
 ladybird_test(TestFacadeValuesOnVM.cpp LibJS/Facade LIBS LibJS LibGC LibCrypto)
 ladybird_test(TestFacadeVM.cpp LibJS/Facade LIBS LibJS LibGC)
+ladybird_test(TestFacadeObjects.cpp LibJS/Facade LIBS LibJS LibGC)
 
 # Where the runtimes knowingly differ, because the Rust runtime fixes a bug of the C++ one, a test expects each one's
 # behavior.
