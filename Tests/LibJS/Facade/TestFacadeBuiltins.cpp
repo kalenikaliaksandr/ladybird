@@ -6,14 +6,20 @@
 
 #include <AK/Utf16FlyString.h>
 #include <AK/Utf16String.h>
+#include <AK/Vector.h>
 #include <LibJS/Runtime/Completion.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/ErrorConstructor.h>
 #include <LibJS/Runtime/ErrorData.h>
 #include <LibJS/Runtime/ExecutionContext.h>
 #include <LibJS/Runtime/Intrinsics.h>
+#include <LibJS/Runtime/Map.h>
+#include <LibJS/Runtime/MapIterator.h>
+#include <LibJS/Runtime/PrimitiveString.h>
 #include <LibJS/Runtime/PropertyKey.h>
 #include <LibJS/Runtime/Realm.h>
+#include <LibJS/Runtime/Set.h>
+#include <LibJS/Runtime/SetIterator.h>
 #include <LibJS/Runtime/VM.h>
 #include <LibJS/Runtime/Value.h>
 #include <LibJS/Runtime/ValueInlines.h>
@@ -64,6 +70,39 @@ static Value property_of(VM& vm, Value value, StringView name)
 static Utf16String string_of(VM& vm, Value value)
 {
     return MUST(value.to_utf16_string(vm));
+}
+
+static bool evaluates_to_true(VM& vm, Realm& realm, StringView source)
+{
+    auto result = evaluate(vm, realm, source);
+    return !result.is_error() && result.value().is_boolean() && result.value().as_bool();
+}
+
+// The values that JavaScript reads as from_cpp.get(key), from a Map that it created itself, which keeps them alive.
+static Map& values_from_cpp(VM& vm, Realm& realm)
+{
+    return as<Map>(MUST(evaluate(vm, realm, "globalThis.from_cpp ||= new Map()"sv)).as_object());
+}
+
+static void pass_to_javascript(VM& vm, Realm& realm, i32 key, Value value)
+{
+    values_from_cpp(vm, realm).map_set(Value(key), value);
+}
+
+// Object::PropertyKind, through Object so that this builds before the facade's Object has it.
+enum class PropertyKindOfThisTest {
+    Key,
+    Value,
+    KeyAndValue,
+};
+
+template<typename ObjectType = Object>
+static auto property_kind(PropertyKindOfThisTest kind)
+{
+    if constexpr (requires { ObjectType::PropertyKind::KeyAndValue; })
+        return static_cast<typename ObjectType::PropertyKind>(kind);
+    else
+        return kind;
 }
 
 TEST_CASE(errors_of_each_kind)
@@ -207,4 +246,180 @@ TEST_CASE(error_data_of_errors_and_error_data_cells)
     EXPECT_EQ(cell_error_data->traceback().size(), 1u);
     EXPECT(cell_error_data->stack_string().is_empty());
     EXPECT_EQ(cell->traceback().size(), 1u);
+}
+
+TEST_CASE(maps)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+
+    auto map = Map::create(realm);
+    EXPECT_EQ(map->map_size(), 0u);
+    map->map_set(Value(1), Value(10));
+    map->map_set(PrimitiveString::create(vm, "two"_utf16), Value(20));
+    map->map_set(Value(-0.0), Value(30));
+    map->map_set(Value(1), Value(11));
+    EXPECT_EQ(map->map_size(), 3u);
+    EXPECT_EQ(map->map_get(Value(1.0))->as_i32(), 11);
+    EXPECT_EQ(map->map_get(PrimitiveString::create(vm, "two"_utf16))->as_i32(), 20);
+    EXPECT(!map->map_get(Value(2)).has_value());
+    EXPECT(!map->map_has(js_undefined()));
+
+    // Unlike the JavaScript methods, which turn a key of -0 into +0, these compare keys with SameValue.
+    EXPECT(map->map_has(Value(-0.0)));
+    EXPECT(!map->map_has(Value(0)));
+
+    // JavaScript sees the same entries.
+    pass_to_javascript(vm, realm, 0, map);
+    EXPECT(evaluates_to_true(vm, realm, "const map = from_cpp.get(0); map instanceof Map && map.size === 3 && map.get('two') === 20"sv));
+    EXPECT(evaluates_to_true(vm, realm, "Object.is([...from_cpp.get(0).keys()][2], -0)"sv));
+    MUST(evaluate(vm, realm, "from_cpp.get(0).set('from javascript', 40)"sv));
+    EXPECT_EQ(map->map_size(), 4u);
+
+    EXPECT(map->map_remove(Value(1)));
+    EXPECT(!map->map_remove(Value(1)));
+    EXPECT_EQ(map->map_size(), 3u);
+    map->map_clear();
+    EXPECT_EQ(map->map_size(), 0u);
+    EXPECT(evaluates_to_true(vm, realm, "from_cpp.get(0).size === 0"sv));
+
+    EXPECT(is<Map>(MUST(evaluate(vm, realm, "new Map()"sv)).as_object()));
+    EXPECT(!is<Map>(MUST(evaluate(vm, realm, "Map.prototype"sv)).as_object()));
+    EXPECT(!is<Map>(MUST(evaluate(vm, realm, "new WeakMap()"sv)).as_object()));
+}
+
+TEST_CASE(for_each_entry_visits_a_map_as_for_each_does)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+
+    auto map = Map::create(realm);
+    for (i32 key = 1; key <= 4; ++key)
+        map->map_set(Value(key), Value(key * 10));
+
+    // Entries that the callback removes before they are reached are skipped, and entries it adds are visited.
+    Vector<i32> visited;
+    MUST(map->for_each_entry([&](Value key, Value value) -> ThrowCompletionOr<void> {
+        visited.append(key.as_i32());
+        EXPECT_EQ(value.as_i32(), key.as_i32() * 10);
+        if (key.as_i32() == 1) {
+            map->map_remove(Value(2));
+            map->map_set(Value(5), Value(50));
+        }
+        return {};
+    }));
+    EXPECT_EQ(visited, (Vector<i32> { 1, 3, 4, 5 }));
+
+    // The first error of the callback stops the visit.
+    visited.clear();
+    auto result = map->for_each_entry([&](Value key, Value) -> ThrowCompletionOr<void> {
+        visited.append(key.as_i32());
+        if (key.as_i32() == 3)
+            return vm.throw_completion<RangeError>("stop"sv);
+        return {};
+    });
+    EXPECT(result.is_throw_completion());
+    EXPECT(is<RangeError>(result.throw_completion().value().as_object()));
+    EXPECT_EQ(visited, (Vector<i32> { 1, 3 }));
+
+    visited.clear();
+    MUST(Map::create(realm)->for_each_entry([&](Value, Value) -> ThrowCompletionOr<void> {
+        visited.append(0);
+        return {};
+    }));
+    EXPECT(visited.is_empty());
+}
+
+TEST_CASE(sets)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+
+    auto set = Set::create(realm);
+    EXPECT_EQ(set->set_size(), 0u);
+    set->set_add(Value(1));
+    set->set_add(PrimitiveString::create(vm, "two"_utf16));
+    set->set_add(Value(1.0));
+    set->set_add(Value(-0.0));
+    EXPECT_EQ(set->set_size(), 3u);
+    EXPECT(set->set_has(Value(1)));
+    EXPECT(set->set_has(Value(-0.0)));
+    EXPECT(!set->set_has(Value(0)));
+    EXPECT(set->set_has(PrimitiveString::create(vm, "two"_utf16)));
+    EXPECT(!set->set_has(Value(2)));
+
+    pass_to_javascript(vm, realm, 0, set);
+    EXPECT(evaluates_to_true(vm, realm, "const set = from_cpp.get(0); set instanceof Set && set.size === 3 && set.has('two') && Object.is([...set][2], -0)"sv));
+
+    EXPECT(set->set_remove(Value(1)));
+    EXPECT(!set->set_remove(Value(1)));
+    EXPECT_EQ(set->set_size(), 2u);
+
+    // Values that the callback removes before they are reached are skipped, and values it adds are visited.
+    set->set_clear();
+    for (i32 value = 1; value <= 4; ++value)
+        set->set_add(Value(value));
+    Vector<i32> visited;
+    MUST(set->for_each_value([&](Value value) -> ThrowCompletionOr<void> {
+        visited.append(value.as_i32());
+        if (value.as_i32() == 1) {
+            set->set_remove(Value(3));
+            set->set_add(Value(5));
+        }
+        return {};
+    }));
+    EXPECT_EQ(visited, (Vector<i32> { 1, 2, 4, 5 }));
+
+    visited.clear();
+    auto result = set->for_each_value([&](Value value) -> ThrowCompletionOr<void> {
+        visited.append(value.as_i32());
+        return vm.throw_completion<TypeError>("stop"sv);
+    });
+    EXPECT(result.is_throw_completion());
+    EXPECT_EQ(visited, (Vector<i32> { 1 }));
+
+    set->set_clear();
+    EXPECT_EQ(set->set_size(), 0u);
+    EXPECT(evaluates_to_true(vm, realm, "from_cpp.get(0).size === 0"sv));
+
+    EXPECT(is<Set>(MUST(evaluate(vm, realm, "new Set()"sv)).as_object()));
+    EXPECT(!is<Set>(MUST(evaluate(vm, realm, "Set.prototype"sv)).as_object()));
+    EXPECT(!is<Set>(MUST(evaluate(vm, realm, "new Map()"sv)).as_object()));
+}
+
+TEST_CASE(map_and_set_iterators)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+
+    auto map = Map::create(realm);
+    map->map_set(Value(1), Value(10));
+    map->map_set(Value(2), Value(20));
+    pass_to_javascript(vm, realm, 0, MapIterator::create(realm, map, property_kind(PropertyKindOfThisTest::Key)));
+    pass_to_javascript(vm, realm, 1, MapIterator::create(realm, map, property_kind(PropertyKindOfThisTest::Value)));
+    auto entries = MapIterator::create(realm, map, property_kind(PropertyKindOfThisTest::KeyAndValue));
+    pass_to_javascript(vm, realm, 2, entries);
+    EXPECT(is<MapIterator>(static_cast<Object&>(*entries)));
+
+    // The iterators see the entries as they are when they step.
+    map->map_set(Value(3), Value(30));
+    EXPECT_EQ(string_of(vm, MUST(evaluate(vm, realm, "JSON.stringify([[...from_cpp.get(0)], [...from_cpp.get(1)], [...from_cpp.get(2)]])"sv))), "[[1,2,3],[10,20,30],[[1,10],[2,20],[3,30]]]"sv);
+    EXPECT(evaluates_to_true(vm, realm, "Object.getPrototypeOf(from_cpp.get(0)) === Object.getPrototypeOf(new Map().keys())"sv));
+
+    auto set = Set::create(realm);
+    set->set_add(Value(1));
+    set->set_add(Value(2));
+    pass_to_javascript(vm, realm, 3, SetIterator::create(realm, set, property_kind(PropertyKindOfThisTest::Value)));
+    auto set_entries = SetIterator::create(realm, set, property_kind(PropertyKindOfThisTest::KeyAndValue));
+    pass_to_javascript(vm, realm, 4, set_entries);
+    EXPECT(is<SetIterator>(static_cast<Object&>(*set_entries)));
+    EXPECT_EQ(string_of(vm, MUST(evaluate(vm, realm, "JSON.stringify([[...from_cpp.get(3)], [...from_cpp.get(4)]])"sv))), "[[1,2],[[1,1],[2,2]]]"sv);
+
+    EXPECT(is<MapIterator>(MUST(evaluate(vm, realm, "new Map().entries()"sv)).as_object()));
+    EXPECT(!is<MapIterator>(MUST(evaluate(vm, realm, "new Set().values()"sv)).as_object()));
+    EXPECT(is<SetIterator>(MUST(evaluate(vm, realm, "new Set().values()"sv)).as_object()));
 }
