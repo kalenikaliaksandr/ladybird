@@ -15,8 +15,10 @@
 #include <LibJS/Runtime/ErrorConstructor.h>
 #include <LibJS/Runtime/ErrorData.h>
 #include <LibJS/Runtime/ExecutionContext.h>
+#include <LibJS/Runtime/FinalizationRegistry.h>
 #include <LibJS/Runtime/FunctionObject.h>
 #include <LibJS/Runtime/Intrinsics.h>
+#include <LibJS/Runtime/JobCallback.h>
 #include <LibJS/Runtime/Map.h>
 #include <LibJS/Runtime/MapIterator.h>
 #include <LibJS/Runtime/PrimitiveString.h>
@@ -115,6 +117,16 @@ static void run_queued_promise_jobs(Vector<GC::Root<GC::Function<void()>>>& queu
         auto job = queued_promise_jobs.take_first();
         job->function()();
     }
+}
+
+// Collects garbage once the stack below the caller no longer holds pointers left over from earlier calls, which the
+// conservative scan would treat as roots.
+static NEVER_INLINE void collect_garbage(VM& vm)
+{
+    u8 volatile filler[8 * KiB];
+    for (size_t i = 0; i < sizeof(filler); ++i)
+        filler[i] = 0;
+    vm.heap().collect_garbage();
 }
 
 // Object::PropertyKind, through Object so that this builds before the facade's Object has it.
@@ -661,4 +673,48 @@ TEST_CASE(regexps)
     EXPECT_EQ(from_javascript.flags(), "dgimsy"sv);
 
     EXPECT(!is<RegExpObject>(MUST(evaluate(vm, realm, "RegExp.prototype"sv)).as_object()));
+}
+
+TEST_CASE(finalization_registries)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+
+    Vector<GC::Root<FinalizationRegistry>> registries_to_clean_up;
+    vm.host_enqueue_finalization_registry_cleanup_job = [&](FinalizationRegistry& registry) {
+        registries_to_clean_up.append(GC::make_root(registry));
+    };
+
+    auto callback = MUST(evaluate(vm, realm, "globalThis.cleaned_up = []; held => cleaned_up.push(held)"sv));
+    pass_to_javascript(vm, realm, 0, callback);
+    auto& registry = as<FinalizationRegistry>(MUST(evaluate(vm, realm, "globalThis.registry = new FinalizationRegistry(from_cpp.get(0)); registry"sv)).as_object());
+    EXPECT_EQ(&registry.realm(), &realm);
+    EXPECT(same_value(&registry.cleanup_callback().callback(), callback));
+
+    // Without collected targets, a cleanup calls nothing.
+    MUST(registry.cleanup());
+    EXPECT(evaluates_to_true(vm, realm, "cleaned_up.length === 0"sv));
+
+    MUST(evaluate(vm, realm, "(() => { for (let i = 0; i < 4; ++i) registry.register({}, 'held ' + i); })()"sv));
+    collect_garbage(vm);
+    EXPECT_EQ(registries_to_clean_up.size(), 1u);
+    EXPECT_EQ(registries_to_clean_up.first().ptr(), &registry);
+    MUST(registry.cleanup());
+    EXPECT(evaluates_to_true(vm, realm, "cleaned_up.sort().join() === 'held 0,held 1,held 2,held 3'"sv));
+
+    // A cleanup with a callback of its own calls it in place of the registry's.
+    MUST(evaluate(vm, realm, "(() => registry.register({}, 'held again'))()"sv));
+    collect_garbage(vm);
+    auto other_callback = MUST(evaluate(vm, realm, "globalThis.cleaned_up_by_other = []; held => cleaned_up_by_other.push(held)"sv));
+    MUST(registry.cleanup(JobCallback::create(vm, as<FunctionObject>(other_callback.as_object()), nullptr)));
+    EXPECT(evaluates_to_true(vm, realm, "cleaned_up.length === 4 && cleaned_up_by_other.join() === 'held again'"sv));
+
+    // A throwing callback stops the cleanup.
+    MUST(evaluate(vm, realm, "(() => registry.register({}, 'held by a throwing cleanup'))()"sv));
+    collect_garbage(vm);
+    auto throwing_callback = MUST(evaluate(vm, realm, "(() => { throw 'from cleanup'; })"sv));
+    auto thrown = registry.cleanup(JobCallback::create(vm, as<FunctionObject>(throwing_callback.as_object()), nullptr));
+    EXPECT(thrown.is_throw_completion());
+    EXPECT_EQ(string_of(vm, thrown.throw_completion().value()), "from cleanup"sv);
 }
