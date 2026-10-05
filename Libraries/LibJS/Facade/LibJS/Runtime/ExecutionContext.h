@@ -10,6 +10,7 @@
 #pragma once
 
 #include <AK/NonnullOwnPtr.h>
+#include <AK/Optional.h>
 #include <AK/Span.h>
 #include <AK/StdLibExtras.h>
 #include <AK/Utf16FlyString.h>
@@ -20,6 +21,7 @@
 #include <LibJS/Export.h>
 #include <LibJS/Forward.h>
 #include <LibJS/Runtime/Value.h>
+#include <LibJS/SourceRange.h>
 
 namespace JS {
 
@@ -280,6 +282,11 @@ JS_ASSERT_EXECUTION_CONTEXT_FIELD_LAYOUT(argument_count, ARGUMENT_COUNT)
 #undef JS_ASSERT_EXECUTION_CONTEXT_FIELD_LAYOUT
 static_assert(sizeof(ExecutionContext) == JS_LAYOUT_EXECUTION_CONTEXT_SIZE);
 static_assert(alignof(ExecutionContext) == JS_LAYOUT_EXECUTION_CONTEXT_ALIGN);
+
+struct StackTraceElement {
+    ExecutionContext* execution_context { nullptr };
+    Optional<SourceRange> source_range;
+};
 
 }
 

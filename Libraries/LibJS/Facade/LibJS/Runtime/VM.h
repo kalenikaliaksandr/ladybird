@@ -362,6 +362,9 @@ public:
     Function<void(Utf16View)> host_unrecognized_date_string;
     Function<bool()> host_promise_job_queue_is_empty;
 
+    // The frames of the execution context stack from the running one down, with where in its source code each one is.
+    [[nodiscard]] Vector<StackTraceElement> stack_trace() const;
+
 private:
     friend class InterpreterStack;
     friend struct HostHookThunks;
