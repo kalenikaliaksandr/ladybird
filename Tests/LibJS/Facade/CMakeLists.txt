@@ -6,6 +6,11 @@ ladybird_test(TestFacadeValuesOnVM.cpp LibJS/Facade LIBS LibJS LibGC LibCrypto)
 ladybird_test(TestFacadeVM.cpp LibJS/Facade LIBS LibJS LibGC)
 ladybird_test(TestFacadeObjects.cpp LibJS/Facade LIBS LibJS LibGC)
 
+# HostClassBuilder.h includes <LibJS/Runtime/HostModule.h>, which the facade does not provide yet.
+if (NOT LIBJS_RUNTIME STREQUAL "Rust" OR EXISTS "${LIBJS_FACADE_DIRECTORY}/LibJS/Runtime/HostModule.h")
+    ladybird_test(TestFacadeHostObjects.cpp LibJS/Facade LIBS LibJS LibGC)
+endif()
+
 # Where the runtimes knowingly differ, because the Rust runtime fixes a bug of the C++ one, a test expects each one's
 # behavior.
 if (LIBJS_RUNTIME STREQUAL "Rust")
