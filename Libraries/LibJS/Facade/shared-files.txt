@@ -6,6 +6,7 @@ ConsoleLogLevel.h
 HostClassBuilder.h
 HostObjectABI.h
 ParserError.cpp
+ParserError.h
 Position.h
 Runtime/Agent.cpp
 Runtime/Agent.h
@@ -16,4 +17,5 @@ Runtime/ErrorTypes.h
 Runtime/ExternalMemory.h
 Runtime/FunctionKind.h
 Runtime/PropertyAttributes.h
+SourceRange.h
 Token.h
