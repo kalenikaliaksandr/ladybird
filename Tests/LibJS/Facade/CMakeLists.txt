@@ -11,6 +11,7 @@ ladybird_test(TestFacadeScripts.cpp LibJS/Facade LIBS LibJS LibGC LibCore LibThr
 ladybird_test(TestFacadeBuffers.cpp LibJS/Facade LIBS LibJS LibGC LibCore LibCrypto)
 ladybird_test(TestFacadeBuiltins.cpp LibJS/Facade LIBS LibJS LibGC LibCrypto)
 ladybird_test(TestFacadeConsole.cpp LibJS/Facade LIBS LibJS LibGC)
+ladybird_test(TestFacadeDebugger.cpp LibJS/Facade LIBS LibJS LibGC)
 ladybird_test(TestFacadeSyntaxHighlighter.cpp LibJS/Facade LIBS LibJS LibCore LibGfx LibSyntax)
 
 # HostClassBuilder.h includes <LibJS/Runtime/HostModule.h>, which the facade does not provide yet.
