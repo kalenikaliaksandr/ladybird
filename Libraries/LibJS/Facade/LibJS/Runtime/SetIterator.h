@@ -8,6 +8,7 @@
 
 #include <AK/Concepts.h>
 #include <LibJS/Export.h>
+#include <LibJS/Runtime/Iterator.h>
 #include <LibJS/Runtime/Object.h>
 #include <LibJS/Runtime/Set.h>
 

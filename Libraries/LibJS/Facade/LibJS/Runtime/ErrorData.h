@@ -9,11 +9,13 @@
 
 #include <AK/Noncopyable.h>
 #include <AK/Optional.h>
+#include <AK/String.h>
 #include <AK/Utf16String.h>
 #include <AK/Vector.h>
 #include <LibGC/Ptr.h>
 #include <LibJS/Export.h>
 #include <LibJS/Forward.h>
+#include <LibJS/Heap/Cell.h>
 #include <LibJS/Heap/EngineCell.h>
 #include <LibJS/Position.h>
 
