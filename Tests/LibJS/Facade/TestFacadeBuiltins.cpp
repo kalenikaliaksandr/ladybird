@@ -26,6 +26,7 @@
 #include <LibJS/Runtime/PromiseJob.h>
 #include <LibJS/Runtime/PropertyKey.h>
 #include <LibJS/Runtime/Realm.h>
+#include <LibJS/Runtime/RegExpObject.h>
 #include <LibJS/Runtime/Set.h>
 #include <LibJS/Runtime/SetIterator.h>
 #include <LibJS/Runtime/VM.h>
@@ -628,4 +629,36 @@ TEST_CASE(dates)
     EXPECT(evaluates_to_true(vm, realm, "typeof new Date(0).getTimezoneOffset() === 'number'"sv));
 
     EXPECT(!is<Date>(MUST(evaluate(vm, realm, "Date.prototype"sv)).as_object()));
+}
+
+TEST_CASE(regexps)
+{
+    VMWithRealm vm_with_realm;
+    auto& vm = *vm_with_realm.vm;
+    auto& realm = vm_with_realm.realm();
+
+    auto regexp = MUST(regexp_create(vm, PrimitiveString::create(vm, "a+b"_utf16), PrimitiveString::create(vm, "gi"_utf16)));
+    EXPECT_EQ(regexp->pattern(), "a+b"sv);
+    EXPECT_EQ(regexp->flags(), "gi"sv);
+    pass_to_javascript(vm, realm, 0, regexp);
+    EXPECT(evaluates_to_true(vm, realm, "const regexp = from_cpp.get(0); regexp instanceof RegExp && regexp.test('xAAB') && regexp.lastIndex === 4"sv));
+
+    // undefined is the empty pattern and no flags, and other values become strings.
+    auto empty = MUST(regexp_create(vm, js_undefined(), js_undefined()));
+    EXPECT(empty->pattern().is_empty());
+    EXPECT(empty->flags().is_empty());
+    EXPECT_EQ(MUST(regexp_create(vm, Value(12), js_undefined()))->pattern(), "12"sv);
+
+    auto invalid_pattern = regexp_create(vm, PrimitiveString::create(vm, "("_utf16), js_undefined());
+    EXPECT(invalid_pattern.is_throw_completion());
+    EXPECT(is<SyntaxError>(invalid_pattern.throw_completion().value().as_object()));
+    auto invalid_flags = regexp_create(vm, js_undefined(), PrimitiveString::create(vm, "gg"_utf16));
+    EXPECT(invalid_flags.is_throw_completion());
+    EXPECT(is<SyntaxError>(invalid_flags.throw_completion().value().as_object()));
+
+    auto& from_javascript = as<RegExpObject>(MUST(evaluate(vm, realm, "/[a-z]\\//dgimsy"sv)).as_object());
+    EXPECT_EQ(from_javascript.pattern(), "[a-z]\\/"sv);
+    EXPECT_EQ(from_javascript.flags(), "dgimsy"sv);
+
+    EXPECT(!is<RegExpObject>(MUST(evaluate(vm, realm, "RegExp.prototype"sv)).as_object()));
 }
