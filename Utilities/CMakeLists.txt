@@ -1,6 +1,6 @@
-ladybird_utility(js-rust SOURCES js-rust.cpp LIBS LibJS LibMain)
+ladybird_utility(js SOURCES js.cpp LIBS LibJS LibMain)
 if (NOT WIN32 AND NOT ANDROID)
-    target_link_libraries(js-rust PRIVATE PkgConfig::LIBEDIT)
+    target_link_libraries(js PRIVATE PkgConfig::LIBEDIT)
 endif()
 ladybird_utility(wasm SOURCES wasm.cpp LIBS LibFileSystem LibWasm LibMain LibJS LibCrypto LibGC)
 
@@ -16,7 +16,7 @@ if (WIN32)
     return()
 endif()
 
-ladybird_utility(test262-runner-rust SOURCES test262-runner-rust.cpp LIBS LibJS LibMain)
+ladybird_utility(test262-runner SOURCES test262-runner.cpp LIBS LibJS LibMain)
 ladybird_utility(dump-html-tokens SOURCES dump-html-tokens.cpp LIBS LibMain LibWeb)
 ladybird_utility(dump-html-tree SOURCES dump-html-tree.cpp LIBS LibMain LibWeb LibJS LibGC LibGfx LibIPC LibURL)
 

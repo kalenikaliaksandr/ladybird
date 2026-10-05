@@ -1,4 +1,4 @@
-ladybird_utility(test-js-runtime-rust SOURCES test-js-runtime-rust.cpp LIBS LibJS LibMain)
+ladybird_utility(test-js-runtime SOURCES test-js-runtime.cpp LIBS LibJS LibMain)
 
 ladybird_utility(test-js SOURCES test-js-main.cpp LIBS LibMain)
 ladybird_windows_bin(test-js CONSOLE)
@@ -10,6 +10,6 @@ add_custom_command(
     COMMAND "${CMAKE_COMMAND}" -E copy "${ladybird_SOURCE_DIR}/Tests/LibJS/test-js.py" "${CMAKE_BINARY_DIR}/bin/test-js.py"
     DEPENDS "${ladybird_SOURCE_DIR}/Tests/LibJS/test-js.py"
 )
-add_dependencies(test-js test-js-runtime-rust test-js-script js-rust)
-add_test(NAME test-js COMMAND test-js --js $<TARGET_FILE:js-rust> --runtime $<TARGET_FILE:test-js-runtime-rust>)
+add_dependencies(test-js test-js-runtime test-js-script js)
+add_test(NAME test-js COMMAND test-js)
 set_tests_properties(test-js PROPERTIES ENVIRONMENT "LADYBIRD_SOURCE_DIR=${LADYBIRD_SOURCE_DIR}")
