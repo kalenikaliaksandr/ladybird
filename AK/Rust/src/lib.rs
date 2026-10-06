@@ -421,7 +421,17 @@ pub const fn utf16_short_string_raw(string: &str) -> Option<usize> {
 }
 
 impl PartialEq for Utf16String {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
+        // Mirrors AK::Utf16StringBase::operator==(): the same word is the same string, and short strings, whose
+        // characters are in the word itself, are equal only if their words are.
+        let (left, right) = (self.raw_identity(), other.raw_identity());
+        if left == right {
+            return true;
+        }
+        if left & SHORT_STRING_FLAG != 0 && right & SHORT_STRING_FLAG != 0 {
+            return false;
+        }
         match (self.as_units(), other.as_units()) {
             (Utf16StringUnits::Ascii(left), Utf16StringUnits::Ascii(right)) => left == right,
             (Utf16StringUnits::Utf16(left), Utf16StringUnits::Utf16(right)) => left == right,
