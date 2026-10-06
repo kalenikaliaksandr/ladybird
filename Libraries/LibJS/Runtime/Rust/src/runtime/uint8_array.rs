@@ -32,10 +32,10 @@ fn append_lowercase_hex_byte(builder: &mut Utf16StringBuilder, byte: u8) {
     builder.append_code_unit(u16::from(HEX_DIGITS[usize::from(byte & 0xf)]));
 }
 
-/// The Uint8Array constructor's functions, which C++ defines with Uint8ArrayConstructorHelpers.
+/// The Uint8Array constructor's functions.
 pub struct Uint8ArrayConstructorHelpers;
 
-/// The functions of %Uint8Array.prototype%, which C++ defines with Uint8ArrayPrototypeHelpers.
+/// The functions of %Uint8Array.prototype%.
 pub struct Uint8ArrayPrototypeHelpers;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -684,8 +684,8 @@ fn decode_final_base64_chunk(chunk: &[u8], throw_on_extra_bits: bool) -> Result<
     Ok(vec![byte_sequence[0], byte_sequence[1]])
 }
 
-/// FromBase64 without the error objects: the bytes read and decoded, and the error that stopped the decoding. The C++
-/// runtime decodes with simdutf, whose error codes pick the messages.
+/// FromBase64 without the error objects: the bytes read and decoded, and the error that stopped the decoding, which
+/// picks the message of the SyntaxError.
 fn decode_base64(
     string: Utf16View<'_>,
     alphabet: Alphabet,

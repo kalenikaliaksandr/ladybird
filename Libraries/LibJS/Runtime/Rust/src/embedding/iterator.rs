@@ -37,7 +37,7 @@ impl CellAbi for JSIteratorRecord {
     type Cell = IteratorRecord;
 }
 
-/// The kind of iterator GetIterator gets, in the order of the C++ JS::IteratorHint.
+/// The kind of iterator GetIterator gets, in the order of LibJS's JS::IteratorHint.
 pub type JSIteratorHint = u8;
 
 pub const JS_ITERATOR_HINT_SYNC: JSIteratorHint = 0;
@@ -152,7 +152,7 @@ pub unsafe extern "C" fn js_iterator_value(vm: *mut JSVM, iterator_result: *mut 
 
 /// IteratorStep ( iteratorRecord ), whose payload is false once the iterator is done. Otherwise it is true, and
 /// `value` is the value of the step of a builtin iterator, which steps without a result object, and undefined for any
-/// other, as in the C++ IterationResult. Main thread only.
+/// other. Main thread only.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn js_iterator_step(
     vm: *mut JSVM,

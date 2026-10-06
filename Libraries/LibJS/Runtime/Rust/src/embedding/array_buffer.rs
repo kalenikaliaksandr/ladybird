@@ -207,7 +207,7 @@ pub unsafe extern "C" fn js_array_buffer_create(
 }
 
 /// ArrayBuffer::create(Realm&, ByteBuffer, DataBlock::Shared): a fixed-length buffer that the buffer owns, with a copy
-/// of `length` bytes. Aborts when there is not enough memory, as C++ does. Main thread only.
+/// of `length` bytes. Aborts when there is not enough memory. Main thread only.
 ///
 /// # Safety
 ///
@@ -717,8 +717,7 @@ pub unsafe extern "C" fn js_array_buffer_set_detach_key(buffer: *mut JSObject, k
 }
 
 /// Whether two buffers view the same bytes. Blocks in shared memory are the same when they name the same object by a
-/// nonzero id, wherever they are mapped. Two buffers of no bytes share the storage they do not have, as in C++. Main
-/// thread only.
+/// nonzero id, wherever they are mapped. Two buffers of no bytes share the storage they do not have. Main thread only.
 ///
 /// # Safety
 ///
@@ -767,7 +766,7 @@ pub unsafe extern "C" fn js_array_buffer_data_view_viewed_buffer(data_view: *mut
     object_into_abi(unsafe { data_view_from_abi(data_view) }.viewed_array_buffer())
 }
 
-/// A DataView's [[ByteOffset]], truncated to 32 bits as in C++. Main thread only.
+/// A DataView's [[ByteOffset]], truncated to the 32 bits that DataView::byte_offset() returns. Main thread only.
 ///
 /// # Safety
 ///

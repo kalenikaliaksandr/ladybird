@@ -28,7 +28,7 @@ use crate::layout::value::Value;
 use crate::runtime::promise::{Promise, PromiseState, promise_resolve};
 use crate::runtime::promise_capability::{PromiseCapability, new_promise_capability};
 
-/// [[PromiseState]], in the order of the C++ JS::Promise::State.
+/// [[PromiseState]], in the order of LibJS's JS::Promise::State.
 pub type JSPromiseState = u8;
 
 pub const JS_PROMISE_STATE_PENDING: JSPromiseState = 0;

@@ -50,8 +50,7 @@ pub use crate::gc::primitive_storage::{OutOfMemory, ZeroFillNewBytes};
 /// GC::PrimitiveStorage::invalid_offset, the offset of a data block without bytes in the cage.
 pub const INVALID_DATA_OFFSET: usize = crate::gc::primitive_storage::INVALID_OFFSET;
 
-/// Table 71: The element types, which the C++ runtime spells as the template parameter of get_value<T>() and
-/// set_value<T>(), with ClampedU8 for Uint8C.
+/// Table 71: The element types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ElementType {
@@ -86,8 +85,8 @@ impl ElementType {
 }
 
 /// 25.1.1 Notation (read-modify-write modification function), https://tc39.es/ecma262/#sec-arraybuffer-notation
-/// NB: C++ passes a function that performs the read-modify-write on the live bytes. The Atomics functions only ever
-///     pass these operations, which the buffer performs itself so that the atomic access to its memory stays here.
+/// NB: The spec's modification function is an abstract closure. The Atomics functions only ever pass these operations,
+///     which the buffer performs itself so that the atomic access to its memory stays here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadWriteModifyOperation {
     Add,
@@ -290,7 +289,7 @@ impl ExternalPrimitiveStorage {
     }
 }
 
-/// C++ draws the id of a new shared memory object at random, as it has to stay unique across processes that never
+/// The id of a new shared memory object is drawn at random, as it has to stay unique across processes that never
 /// coordinate. Zero means that a block has no id.
 fn mint_shared_object_id() -> u64 {
     loop {
@@ -540,7 +539,7 @@ impl DataBlock {
         unsafe { core::ptr::copy(data.add(source_offset), data.add(destination_offset), count) };
     }
 
-    /// The first byte, or null for a detached block, whose bytes C++ never addresses when there are none to copy.
+    /// The first byte, or null for a detached block, whose bytes are never addressed when there are none to copy.
     #[inline]
     fn data_or_null(&self) -> *mut u8 {
         match &self.byte_buffer {
@@ -613,7 +612,7 @@ impl DataBlock {
     }
 
     /// Whether the bytes are in the cage. Owned storage and shared memory always are, as the runtime fails to create a
-    /// block where C++ falls back to memory outside of it, and external storage is while its handle names storage.
+    /// block rather than fall back to memory outside of it, and external storage is while its handle names storage.
     pub fn is_caged(&self) -> bool {
         match &self.byte_buffer {
             DataBlockStorage::Empty => false,
@@ -662,7 +661,7 @@ impl DataBlock {
         if matches!(other.byte_buffer, DataBlockStorage::Shared(_)) {
             return false;
         }
-        // NB: Like C++, two blocks of zero bytes share the storage they do not have.
+        // NB: Two blocks of zero bytes share the storage they do not have.
         core::ptr::eq(self.data(), other.data())
     }
 
@@ -758,7 +757,7 @@ impl DataBlock {
 }
 
 /// A large allocation that fails may succeed once dead buffers pinning address space are collected, so it is retried
-/// once after a collection before giving up, as C++ does (WebKit does the same).
+/// once after a collection before giving up, as WebKit does.
 fn allocate_or_retry_after_gc<T>(heap: &Heap, allocate: impl Fn() -> Result<T, OutOfMemory>) -> Result<T, OutOfMemory> {
     let result = allocate();
     if result.is_err() {
@@ -778,7 +777,7 @@ pub struct ArrayBuffer {
     // but are required to be available for the use of various harnesses like the Test262 test runner.
     detach_key: Cell<Value>,
     /// The views that cache the offset of this buffer's data in the cage, which has to be invalidated once the data
-    /// moves or goes away. C++ links them in an intrusive list that a view leaves when it is finalized.
+    /// moves or goes away.
     cached_views: GcRefCell<Vec<GcWeak<TypedArrayBase>>>,
 }
 
@@ -819,7 +818,6 @@ fn prototype_for_shared_state(vm: &Vm, realm: Gc<Realm>, is_shared: Shared) -> G
 }
 
 impl ArrayBuffer {
-    /// ArrayBuffer(DataBlock::OwnedBackingStore, DataBlock::Shared, Object& prototype)
     fn new_with_buffer(vm: &Vm, buffer: OwnedBackingStore, is_shared: Shared, prototype: Gc<Object>) -> Self {
         Self {
             base: Object::new_with_prototype(vm, Self::CLASS, prototype, MayInterfereWithIndexedPropertyAccess::No),
@@ -830,7 +828,6 @@ impl ArrayBuffer {
         }
     }
 
-    /// ArrayBuffer(DataBlock::Shared, Object& prototype)
     pub fn new(vm: &Vm, is_shared: Shared, prototype: Gc<Object>) -> Self {
         Self {
             base: Object::new_with_prototype(vm, Self::CLASS, prototype, MayInterfereWithIndexedPropertyAccess::No),
@@ -1039,8 +1036,8 @@ impl ArrayBuffer {
         new_size: usize,
         zero_fill_new_bytes: ZeroFillNewBytes,
     ) -> Result<(), OutOfMemory> {
-        // NB: C++ cannot resize a block over the storage of another buffer. The runtime resizes the other buffer, whose
-        //     new size such a block has as long as it has no fixed byte length.
+        // NB: A block over the storage of another buffer is not resized itself. The runtime resizes the other buffer,
+        //     whose new size such a block has as long as it has no fixed byte length.
         let owner_of_aliased_storage = match &self.data_block.borrow().byte_buffer {
             DataBlockStorage::External(storage) => storage.array_buffer_owning_the_storage(),
             _ => None,
@@ -1123,9 +1120,9 @@ impl ArrayBuffer {
 
     pub fn can_cache_typed_array_view_data_offset(&self) -> bool {
         let data_block = self.data_block.borrow();
-        // NB: C++ backs every fixed-length Shared Data Block it creates with shared memory, whose views stay on the
-        //     atomic slow path. Unless the VM was asked for shared memory, the runtime owns such a block instead, and
-        //     its views take the same path.
+        // NB: The views of a fixed-length Shared Data Block backed by shared memory stay on the atomic slow path.
+        //     Unless the VM was asked for shared memory, the runtime owns such a block instead, and its views take the
+        //     same path.
         let stands_in_for_shared_memory =
             matches!(data_block.byte_buffer, DataBlockStorage::Owned(_)) && data_block.is_shared == Shared::Yes;
         !matches!(data_block.byte_buffer, DataBlockStorage::Empty)

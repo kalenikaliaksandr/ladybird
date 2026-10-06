@@ -15,7 +15,7 @@ use crate::layout::host_class::{JSCompletion, JSPropertyKey, JSVM, JSValue};
 use crate::runtime::abstract_operations::can_be_held_weakly;
 use crate::runtime::value::{PreferredType, is_loosely_equal, is_strictly_equal, same_value, same_value_zero};
 
-/// The type hint of ToPrimitive, as C++ Value::PreferredType.
+/// The type hint of ToPrimitive.
 pub type JSPreferredType = u8;
 
 pub const JS_PREFERRED_TYPE_DEFAULT: JSPreferredType = 0;

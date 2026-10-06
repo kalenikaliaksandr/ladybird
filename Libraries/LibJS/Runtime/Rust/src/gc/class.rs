@@ -35,8 +35,7 @@ pub struct Class {
     pub id: ClassId,
     /// The class of the cell type this one extends.
     pub parent: Option<&'static Class>,
-    /// The internal methods of the objects of this class, the Rust form of the C++ Object vtable. Cells that are not
-    /// objects have none.
+    /// The internal methods of the objects of this class. Cells that are not objects have none.
     pub object_methods: Option<&'static ObjectMethods>,
 }
 
@@ -100,8 +99,8 @@ impl Class {
         unsafe { core::mem::transmute::<u8, CellKind>(self.type_info.kind) }
     }
 
-    /// What Cell::class_name() returns for the C++ class this one mirrors, which printing and messages show. It is
-    /// the name of the class unless the Rust type is spelled differently.
+    /// What Cell::class_name() returns for the cells of this class, which printing and messages show. It is the name
+    /// of the class unless the Rust type is spelled differently.
     pub fn class_name(&self) -> &'static str {
         if self.is_derived_at_run_time() {
             return self.name;
