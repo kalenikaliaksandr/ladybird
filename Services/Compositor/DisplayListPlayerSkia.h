@@ -22,6 +22,7 @@ class SkColorFilter;
 class SkImage;
 class SkImageFilter;
 class SkPaint;
+class SkPath;
 template<typename T>
 class sk_sp;
 
@@ -63,7 +64,8 @@ private:
     bool would_be_fully_clipped_by_painter(Gfx::IntRect) const override;
 
     void push_clip(Compositing::ReplayClip const&) override;
-    void push_clip_path(Gfx::Path const&, Gfx::WindingRule) override;
+    void push_clip_path(Gfx::Path const&, u64 path_identity, Gfx::WindingRule) override;
+    void push_clip_path_bytes(ReadonlyBytes, Gfx::WindingRule) override;
     void push_transform(Gfx::AffineTransform const&) override;
     void push_layer(Compositing::ReplayLayer const&) override;
     void push_mask(Compositing::ReplayMask const&) override;
@@ -71,7 +73,7 @@ private:
     void pop() override;
     void push_device_space_plane_clip(Gfx::Path const&) override;
 
-    void clip_path(Gfx::Path const&, Gfx::WindingRule, bool anti_aliased);
+    void clip_path(SkPath, Gfx::WindingRule, bool anti_aliased);
 
     SkPaint paint_style_to_skia_paint(Compositing::DisplayListPaintStyle const&, Gfx::FloatRect const& bounding_rect);
     sk_sp<SkImageFilter> layer_image_filter(Compositing::ReplayLayer const&);
