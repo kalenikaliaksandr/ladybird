@@ -9,6 +9,7 @@
 #include <AK/HashMap.h>
 #include <AK/Mutex.h>
 #include <AK/NeverDestroyed.h>
+#include <AK/NumericLimits.h>
 #include <AK/ScopeGuard.h>
 #include <AK/Vector.h>
 #include <LibGfx/Font/FontTable.h>
@@ -138,6 +139,135 @@ ErrorOr<NonnullRefPtr<TypefaceCoreText>> TypefaceCoreText::try_load_postscript_n
     ScopeGuard release_graphics_font = [&] { CFRelease(graphics_font); };
 
     return adopt_ref(*new TypefaceCoreText(core_text_font, graphics_font, postscript_name));
+}
+
+// A copy of a CoreText font of a face at the coordinates of a named instance of the face. A face does not have to list
+// its default instance, and then the index after the last instance selects it, which needs no copy.
+static CTFontRef create_core_text_named_instance(CTFontRef font, hb_face_t* face, unsigned instance_index)
+{
+    unsigned axis_count = hb_ot_var_get_axis_count(face);
+    Vector<hb_ot_var_axis_info_t> axes;
+    axes.resize(axis_count);
+    hb_ot_var_get_axis_infos(face, 0, &axis_count, axes.data());
+    Vector<float> coordinates;
+    coordinates.resize(axis_count);
+    unsigned coordinate_count = axis_count;
+    if (axis_count == 0 || hb_ot_var_named_instance_get_design_coords(face, instance_index, &coordinate_count, coordinates.data()) != axis_count)
+        return nullptr;
+
+    auto variation = CFDictionaryCreateMutable(kCFAllocatorDefault, axis_count, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    if (!variation)
+        return nullptr;
+    ScopeGuard release_variation = [&] { CFRelease(variation); };
+    for (unsigned index = 0; index < axis_count; ++index) {
+        i64 tag = axes[index].tag;
+        double value = coordinates[index];
+        auto tag_number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &tag);
+        auto value_number = CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &value);
+        if (tag_number && value_number)
+            CFDictionarySetValue(variation, tag_number, value_number);
+        if (tag_number)
+            CFRelease(tag_number);
+        if (value_number)
+            CFRelease(value_number);
+    }
+
+    CFTypeRef attribute_keys[] = { kCTFontVariationAttribute };
+    CFTypeRef attribute_values[] = { variation };
+    auto attributes = CFDictionaryCreate(kCFAllocatorDefault, attribute_keys, attribute_values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    if (!attributes)
+        return nullptr;
+    ScopeGuard release_attributes = [&] { CFRelease(attributes); };
+    auto descriptor = CTFontDescriptorCreateWithAttributes(attributes);
+    if (!descriptor)
+        return nullptr;
+    ScopeGuard release_descriptor = [&] { CFRelease(descriptor); };
+    return CTFontCreateCopyWithAttributes(font, 0, nullptr, descriptor);
+}
+
+CTFontRef create_core_text_font_from_data(NonnullRefPtr<Typeface::FontDataBacking> backing, ReadonlyBytes bytes, u32 ttc_index)
+{
+    if (bytes.size() > static_cast<size_t>(NumericLimits<CFIndex>::max()) || bytes.size() > NumericLimits<unsigned>::max())
+        return nullptr;
+    auto* blob = hb_blob_create(reinterpret_cast<char const*>(bytes.data()), bytes.size(), HB_MEMORY_MODE_READONLY, nullptr, nullptr);
+    ScopeGuard destroy_blob = [&] { hb_blob_destroy(blob); };
+    auto* face = hb_face_create(blob, ttc_index);
+    ScopeGuard destroy_face = [&] { hb_face_destroy(face); };
+
+    unsigned entry_count = 0;
+    auto const* entries = hb_ot_name_list_names(face, &entry_count);
+    auto language = HB_LANGUAGE_INVALID;
+    for (unsigned index = 0; index < entry_count; ++index) {
+        if (entries[index].name_id != HB_OT_NAME_ID_POSTSCRIPT_NAME)
+            continue;
+        if (language == HB_LANGUAGE_INVALID)
+            language = entries[index].language;
+        if (entries[index].language == hb_language_from_string("en", -1)) {
+            language = entries[index].language;
+            break;
+        }
+    }
+    unsigned name_length = hb_ot_name_get_utf8(face, HB_OT_NAME_ID_POSTSCRIPT_NAME, language, nullptr, nullptr);
+    if (name_length == 0 || name_length == NumericLimits<unsigned>::max())
+        return nullptr;
+    Vector<char> name;
+    name.resize(name_length + 1);
+    unsigned capacity = name_length + 1;
+    hb_ot_name_get_utf8(face, HB_OT_NAME_ID_POSTSCRIPT_NAME, language, &capacity, name.data());
+    auto postscript_name = CFStringCreateWithBytes(kCFAllocatorDefault, reinterpret_cast<UInt8 const*>(name.data()), capacity, kCFStringEncodingUTF8, false);
+    if (!postscript_name)
+        return nullptr;
+    ScopeGuard release_name = [&] { CFRelease(postscript_name); };
+
+    CFAllocatorContext allocator_context {};
+    allocator_context.info = backing.ptr();
+    allocator_context.retain = [](void const* info) -> void const* {
+        static_cast<Typeface::FontDataBacking const*>(info)->ref();
+        return info;
+    };
+    allocator_context.release = [](void const* info) { static_cast<Typeface::FontDataBacking const*>(info)->unref(); };
+    allocator_context.deallocate = [](void*, void*) { };
+    auto allocator = CFAllocatorCreate(kCFAllocatorDefault, &allocator_context);
+    if (!allocator)
+        return nullptr;
+    ScopeGuard release_allocator = [&] { CFRelease(allocator); };
+    auto data = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, bytes.data(), static_cast<CFIndex>(bytes.size()), allocator);
+    if (!data)
+        return nullptr;
+    ScopeGuard release_data = [&] { CFRelease(data); };
+    auto descriptors = CTFontManagerCreateFontDescriptorsFromData(data);
+    if (!descriptors)
+        return nullptr;
+    ScopeGuard release_descriptors = [&] { CFRelease(descriptors); };
+
+    // CoreText also lists the named instances of the faces, so the PostScript name of the face finds its descriptor,
+    // and the position of a descriptor in the list is not a face index.
+    CTFontDescriptorRef descriptor = nullptr;
+    for (CFIndex index = 0; index < CFArrayGetCount(descriptors); ++index) {
+        auto candidate = static_cast<CTFontDescriptorRef>(CFArrayGetValueAtIndex(descriptors, index));
+        auto candidate_name = CTFontDescriptorCopyAttribute(candidate, kCTFontNameAttribute);
+        if (!candidate_name)
+            continue;
+        ScopeGuard release_candidate_name = [&] { CFRelease(candidate_name); };
+        if (CFEqual(candidate_name, postscript_name)) {
+            descriptor = candidate;
+            break;
+        }
+    }
+    if (!descriptor)
+        return nullptr;
+    auto font = CTFontCreateWithFontDescriptor(descriptor, 0, nullptr);
+    if (!font)
+        return nullptr;
+
+    // The upper 16 bits of the index select a named instance, from 1. CoreText gets its coordinates as a variation.
+    if (auto instance_index = ttc_index >> 16; instance_index > 0) {
+        if (auto instance_font = create_core_text_named_instance(font, face, instance_index - 1)) {
+            CFRelease(font);
+            font = instance_font;
+        }
+    }
+    return font;
 }
 
 TypefaceCoreText::TypefaceCoreText(CTFontRef core_text_font, CGFontRef graphics_font, Identity identity)

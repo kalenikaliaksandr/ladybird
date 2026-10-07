@@ -57,4 +57,9 @@ private:
 template<>
 inline bool Typeface::fast_is<TypefaceCoreText>() const { return is_core_text(); }
 
+// The CoreText font of a face in font data. The upper 16 bits of the index select a named instance, from 1, whose
+// coordinates the font gets as a variation. CoreText keeps the backing while it uses the data. Null if CoreText does
+// not load the face.
+CTFontRef create_core_text_font_from_data(NonnullRefPtr<Typeface::FontDataBacking>, ReadonlyBytes, u32 ttc_index);
+
 }
