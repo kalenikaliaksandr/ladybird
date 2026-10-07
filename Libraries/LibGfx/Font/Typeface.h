@@ -144,11 +144,10 @@ protected:
     virtual hb_face_t* create_harfbuzz_face() const;
 
     void set_font_data(NonnullRefPtr<FontDataBacking> backing) { m_font_data = move(backing); }
-    void copy_font_data_from(Typeface const&);
     bool has_font_data_backing() const { return !m_font_data.is_null(); }
 
 private:
-    friend class SharedFontProvider;
+    friend class Font;
 
     template<typename T>
     friend ErrorOr<void> IPC::encode(IPC::Encoder&, T const&);
@@ -160,7 +159,8 @@ private:
     Optional<SystemFontIdentifier> m_system_font_identifier;
     Optional<String> m_file_path;
 
-    void clear_font_cache() const;
+    // A font that is being destroyed leaves the cache of its typeface.
+    void forget_font(Font const&) const;
 
     // This cache stores information per code point.
     // It's segmented into pages with data about 256 code points each.
@@ -179,7 +179,8 @@ private:
     u64 m_glyph_cache_id { 0 };
 
     mutable Mutex m_fonts_mutex;
-    mutable HashMap<FontCacheKey, NonnullRefPtr<Font>> m_fonts;
+    // The fonts that are alive. A font does not keep itself here, so it holds its typeface without a reference cycle.
+    mutable HashMap<FontCacheKey, Font*> m_fonts;
     mutable OnceFlag m_harfbuzz_face_once;
     mutable hb_blob_t* m_harfbuzz_blob { nullptr };
     mutable hb_face_t* m_harfbuzz_face { nullptr };

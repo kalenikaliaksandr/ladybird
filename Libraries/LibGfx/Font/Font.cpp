@@ -108,6 +108,11 @@ float Font::point_size() const
     return m_point_height;
 }
 
+void Font::will_be_destroyed() const
+{
+    m_typeface->forget_font(*this);
+}
+
 Font::~Font()
 {
     if (m_harfbuzz_font)
