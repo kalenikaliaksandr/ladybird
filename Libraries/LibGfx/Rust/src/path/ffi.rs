@@ -6,6 +6,7 @@
 
 //! The functions that `Gfx::Path` and the font code in C++ call.
 
+use super::geometry::point;
 use super::glyphs;
 use super::{Path, PathFillType, PathVerb};
 use crate::geometry::{FloatPoint, FloatRect};
@@ -51,10 +52,6 @@ unsafe fn path_mut<'a>(path: *mut RustPath) -> &'a mut Path {
 
 pub(crate) fn into_raw(path: Path) -> *mut RustPath {
     Box::into_raw(Box::new(path)).cast()
-}
-
-fn point(x: f32, y: f32) -> FloatPoint {
-    FloatPoint { x, y }
 }
 
 #[unsafe(no_mangle)]

@@ -16,7 +16,9 @@
 mod arc;
 mod bounds;
 mod buffer;
+mod contains;
 pub mod ffi;
+mod geometry;
 mod glyphs;
 mod serialize;
 mod sk_matrix;
@@ -95,6 +97,14 @@ impl PathFillType {
         } else {
             PathFillType::Winding
         }
+    }
+
+    pub(crate) fn is_even_odd(self) -> bool {
+        matches!(self, PathFillType::EvenOdd | PathFillType::InverseEvenOdd)
+    }
+
+    pub(crate) fn is_inverse(self) -> bool {
+        matches!(self, PathFillType::InverseWinding | PathFillType::InverseEvenOdd)
     }
 }
 

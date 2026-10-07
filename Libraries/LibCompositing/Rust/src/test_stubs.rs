@@ -10,11 +10,6 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[unsafe(no_mangle)]
-extern "C" fn ladybird_gfx_skia_path_contains(_path: *const c_void, _x: f32, _y: f32, _fill_type: u8) -> bool {
-    false
-}
-
-#[unsafe(no_mangle)]
 extern "C" fn ladybird_gfx_skia_path_append_svg_string(
     _path: *const c_void,
     _append: unsafe extern "C" fn(*mut c_void, *const u8, usize),

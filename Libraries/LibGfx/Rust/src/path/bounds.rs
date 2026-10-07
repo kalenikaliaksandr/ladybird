@@ -8,6 +8,7 @@
 // (SkPathPriv::TrimmedBounds).
 
 use super::PathVerb;
+use super::geometry::is_finite;
 use crate::geometry::FloatPoint;
 
 /// The left, top, right and bottom of the points, or None if a point is not finite.
@@ -48,7 +49,7 @@ pub(crate) fn trimmed_bounds(points: &[FloatPoint], verbs: &[PathVerb]) -> Optio
     let mut points = points;
     if verbs.len() > 1 && verbs.last() == Some(&PathVerb::Move) {
         let last = points.last()?;
-        if !last.x.is_finite() || !last.y.is_finite() {
+        if !is_finite(*last) {
             return None;
         }
         points = &points[..points.len() - 1];

@@ -7,31 +7,9 @@
 // Source: skia/src/core/SkPathBuilder.cpp (SkPathBuilder::arcTo).
 
 use super::Path;
+use super::geometry::{NEARLY_ZERO, add, length_squared, scale, subtract};
 use super::sk_matrix::{PI, SkMatrix, cos_snap_to_zero, sin_snap_to_zero};
 use crate::geometry::FloatPoint;
-
-const NEARLY_ZERO: f32 = 1.0 / 4096.0;
-
-fn subtract(a: FloatPoint, b: FloatPoint) -> FloatPoint {
-    FloatPoint {
-        x: a.x - b.x,
-        y: a.y - b.y,
-    }
-}
-
-fn add(a: FloatPoint, b: FloatPoint) -> FloatPoint {
-    FloatPoint {
-        x: a.x + b.x,
-        y: a.y + b.y,
-    }
-}
-
-fn scaled(point: FloatPoint, scale: f32) -> FloatPoint {
-    FloatPoint {
-        x: point.x * scale,
-        y: point.y * scale,
-    }
-}
 
 fn round_to_integer(value: f32) -> f32 {
     (f64::from(value) + 0.5).floor() as f32
@@ -67,7 +45,7 @@ pub(super) fn arc_to(
     }
     let mut rx = radii.x.abs();
     let mut ry = radii.y.abs();
-    let mid_point_distance = scaled(subtract(start, end), 0.5);
+    let mid_point_distance = scale(subtract(start, end), 0.5);
 
     let point_transform = SkMatrix::rotate(-angle);
     let transformed_mid_point = point_transform.map_point_affine(mid_point_distance);
@@ -90,7 +68,7 @@ pub(super) fn arc_to(
     point_transform.map_points(&mut unit_points, &[start, end]);
     let mut delta = subtract(unit_points[1], unit_points[0]);
 
-    let d = delta.x * delta.x + delta.y * delta.y;
+    let d = length_squared(delta);
     // Keep NaN, as std::max() does.
     let difference = 1.0 / d - 0.25f32;
     let scale_factor_squared = if difference < 0.0 { 0.0 } else { difference };
@@ -99,8 +77,8 @@ pub(super) fn arc_to(
     if counter_clockwise != large_arc {
         scale_factor = -scale_factor;
     }
-    delta = scaled(delta, scale_factor);
-    let mut center_point = scaled(add(unit_points[0], unit_points[1]), 0.5);
+    delta = scale(delta, scale_factor);
+    let mut center_point = scale(add(unit_points[0], unit_points[1]), 0.5);
     center_point.x += -delta.y;
     center_point.y += delta.x;
     unit_points[0] = subtract(unit_points[0], center_point);

@@ -7,12 +7,11 @@
 //! The path queries that Skia still answers. LibGfx makes a Skia path from the geometry for each
 //! one.
 
-use super::{Path, PathFillType};
+use super::Path;
 use crate::geometry::FloatPoint;
 use std::ffi::c_void;
 
 unsafe extern "C" {
-    fn ladybird_gfx_skia_path_contains(path: *const c_void, x: f32, y: f32, fill_type: PathFillType) -> bool;
     fn ladybird_gfx_skia_path_length(path: *const c_void) -> f32;
     fn ladybird_gfx_skia_path_first_contour_length(path: *const c_void) -> f32;
     fn ladybird_gfx_skia_path_position_and_tangent(
@@ -44,12 +43,6 @@ unsafe extern "C" fn append_to_string(context: *mut c_void, bytes: *const u8, le
 }
 
 impl Path {
-    /// True if `point` is inside the path with the given fill type, as the compositor fills it.
-    pub fn contains(&self, point: FloatPoint, fill_type: PathFillType) -> bool {
-        // SAFETY: The path is live for the call.
-        unsafe { ladybird_gfx_skia_path_contains(raw(self), point.x, point.y, fill_type) }
-    }
-
     /// The sum of the lengths of all contours.
     pub fn length(&self) -> f32 {
         // SAFETY: The path is live for the call.

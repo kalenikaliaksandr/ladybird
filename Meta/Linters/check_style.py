@@ -29,6 +29,8 @@ LICENSE_HEADER_CHECK_EXCLUDES = {
     "Libraries/LibCore/SocketpairWindows.cpp",
     "Libraries/LibGfx/Rust/src/path/arc.rs",
     "Libraries/LibGfx/Rust/src/path/bounds.rs",
+    "Libraries/LibGfx/Rust/src/path/contains.rs",
+    "Libraries/LibGfx/Rust/src/path/geometry.rs",
     "Libraries/LibGfx/Rust/src/path/mod.rs",
     "Libraries/LibGfx/Rust/src/path/serialize.rs",
     "Libraries/LibGfx/Rust/src/path/sk_matrix.rs",

@@ -16,7 +16,6 @@
 
 // The path queries that libgfx_rust does not answer itself yet.
 extern "C" {
-bool ladybird_gfx_skia_path_contains(void const*, float, float, Gfx::FFI::PathFillType);
 float ladybird_gfx_skia_path_length(void const*);
 float ladybird_gfx_skia_path_first_contour_length(void const*);
 bool ladybird_gfx_skia_path_position_and_tangent(void const*, float, float*);
@@ -38,13 +37,6 @@ static constexpr float path_measure_tolerance = 0.5f / path_measure_resolution_s
 
 // The most lines with which to follow a single curve, which bounds the number of vertices of a huge curve.
 static constexpr u32 maximum_line_count_along_curve = 4096;
-
-extern "C" bool ladybird_gfx_skia_path_contains(void const* path, float x, float y, Gfx::FFI::PathFillType fill_type)
-{
-    auto sk_path = skia_path(path);
-    sk_path.setFillType(static_cast<SkPathFillType>(fill_type));
-    return sk_path.contains(x, y);
-}
 
 extern "C" float ladybird_gfx_skia_path_length(void const* path)
 {
