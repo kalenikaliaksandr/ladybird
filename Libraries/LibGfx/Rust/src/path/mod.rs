@@ -13,6 +13,7 @@
 //! makes or reads one, follows Skia's rules exactly. A path that a document makes here must give
 //! the same bytes, bounds and hit tests that the compositor gets from the same data.
 
+mod along;
 mod arc;
 mod bounds;
 mod buffer;
@@ -20,6 +21,7 @@ mod contains;
 pub mod ffi;
 mod geometry;
 mod glyphs;
+mod measure;
 mod serialize;
 mod sk_matrix;
 mod skia;

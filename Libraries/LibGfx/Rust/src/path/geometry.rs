@@ -83,6 +83,33 @@ pub(crate) fn interpolate(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+pub(crate) fn vector_length(dx: f32, dy: f32) -> f32 {
+    let squared = dx * dx + dy * dy;
+    if squared.is_finite() {
+        squared.sqrt()
+    } else {
+        let (x, y) = (f64::from(dx), f64::from(dy));
+        (x * x + y * y).sqrt() as f32
+    }
+}
+
+pub(crate) fn distance(a: FloatPoint, b: FloatPoint) -> f32 {
+    vector_length(a.x - b.x, a.y - b.y)
+}
+
+/// The vector with unit length in the direction of (x, y), or (0, 0) if there is none.
+pub(crate) fn normalize(vector: FloatPoint) -> FloatPoint {
+    let (xx, yy) = (f64::from(vector.x), f64::from(vector.y));
+    let magnitude = (xx * xx + yy * yy).sqrt();
+    let factor = 1.0 / magnitude;
+    let x = (f64::from(vector.x) * factor) as f32;
+    let y = (f64::from(vector.y) * factor) as f32;
+    if !x.is_finite() || !y.is_finite() || (x == 0.0 && y == 0.0) {
+        return FloatPoint::default();
+    }
+    point(x, y)
+}
+
 fn valid_unit_divide(mut numerator: f32, mut denominator: f32) -> Option<f32> {
     if numerator < 0.0 {
         numerator = -numerator;
@@ -154,9 +181,20 @@ pub(crate) struct QuadCoefficients {
 }
 
 impl QuadCoefficients {
+    pub(crate) fn of_quad(points: &[FloatPoint]) -> QuadCoefficients {
+        let c = points[0];
+        let b = times_2(subtract(points[1], c));
+        let a = add(subtract(points[2], times_2(points[1])), c);
+        QuadCoefficients { a, b, c }
+    }
+
     pub(crate) fn eval(&self, t: FloatPoint) -> FloatPoint {
         add(multiply(add(multiply(self.a, t), self.b), t), self.c)
     }
+}
+
+pub(crate) fn eval_quad_at(points: &[FloatPoint], t: f32) -> FloatPoint {
+    QuadCoefficients::of_quad(points).eval(point(t, t))
 }
 
 pub(crate) fn eval_quad_tangent_at(points: &[FloatPoint], t: f32) -> FloatPoint {
@@ -171,7 +209,7 @@ pub(crate) fn eval_quad_tangent_at(points: &[FloatPoint], t: f32) -> FloatPoint 
     add(tangent, tangent)
 }
 
-fn interpolate_points(a: FloatPoint, b: FloatPoint, t: f32) -> FloatPoint {
+pub(crate) fn interpolate_points(a: FloatPoint, b: FloatPoint, t: f32) -> FloatPoint {
     add(a, scale(subtract(b, a), t))
 }
 
@@ -180,6 +218,10 @@ pub(crate) fn chop_quad_at(points: &[FloatPoint], t: f32) -> [FloatPoint; 5] {
     let p01 = interpolate_points(p0, p1, t);
     let p12 = interpolate_points(p1, p2, t);
     [p0, p01, interpolate_points(p01, p12, t), p12, p2]
+}
+
+pub(crate) fn chop_quad_at_half(points: &[FloatPoint]) -> [FloatPoint; 5] {
+    chop_quad_at(points, 0.5)
 }
 
 /// Splits a quad where its y coordinate turns, so that each part only goes up or down. Gives the
@@ -203,6 +245,16 @@ pub(crate) fn chop_quad_at_y_extrema(points: &[FloatPoint]) -> ([FloatPoint; 5],
     result[1] = point(points[1].x, b);
     result[2] = point(points[2].x, c);
     (result, 0)
+}
+
+/// A t^3 + B t^2 + C t + D, for each coordinate.
+pub(crate) fn eval_cubic_at(points: &[FloatPoint], t: f32) -> FloatPoint {
+    let (p0, p1, p2, p3) = (points[0], points[1], points[2], points[3]);
+    let a = subtract(add(p3, scale(subtract(p1, p2), 3.0)), p0);
+    let b = scale(add(subtract(p2, times_2(p1)), p0), 3.0);
+    let c = scale(subtract(p1, p0), 3.0);
+    let tt = point(t, t);
+    add(multiply(add(multiply(add(multiply(a, tt), b), tt), c), tt), p0)
 }
 
 fn eval_cubic_derivative(points: &[FloatPoint], t: f32) -> FloatPoint {
@@ -300,6 +352,10 @@ fn chop_cubic_at_two(points: &[FloatPoint], t0: f32, t1: f32) -> [FloatPoint; 10
     result
 }
 
+pub(crate) fn chop_cubic_at_half(points: &[FloatPoint]) -> [FloatPoint; 7] {
+    chop_cubic_at(points, 0.5)
+}
+
 /// Splits a cubic where its y coordinate turns, so that each part only goes up or down. Gives
 /// the number of splits, so the parts are at 0..4, 3..7 and 6..10.
 pub(crate) fn chop_cubic_at_y_extrema(points: &[FloatPoint]) -> ([FloatPoint; 10], usize) {
@@ -339,6 +395,33 @@ impl Conic {
                 1.0
             },
         }
+    }
+
+    fn coefficients(&self) -> (QuadCoefficients, QuadCoefficients) {
+        let [p0, p1, p2] = self.points;
+        let ww = point(self.weight, self.weight);
+        let p1w = multiply(p1, ww);
+        let numerator = QuadCoefficients {
+            c: p0,
+            a: add(subtract(p2, times_2(p1w)), p0),
+            b: times_2(subtract(p1w, p0)),
+        };
+        let denominator_c = point(1.0, 1.0);
+        let denominator_b = times_2(subtract(ww, denominator_c));
+        let denominator = QuadCoefficients {
+            c: denominator_c,
+            b: denominator_b,
+            a: subtract(point(0.0, 0.0), denominator_b),
+        };
+        (numerator, denominator)
+    }
+
+    pub(crate) fn eval_at(&self, t: f32) -> FloatPoint {
+        let (numerator, denominator) = self.coefficients();
+        let tt = point(t, t);
+        let n = numerator.eval(tt);
+        let d = denominator.eval(tt);
+        point(n.x / d.x, n.y / d.y)
     }
 
     pub(crate) fn eval_tangent_at(&self, t: f32) -> FloatPoint {

@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+use super::measure::ContourMeasure;
 use super::sk_matrix::{PI, SkMatrix};
-use super::skia::ContourMeasure;
 use super::{Path, PathFillType};
 use crate::text_layout::DrawGlyph;
 use std::ffi::c_void;
@@ -55,7 +55,7 @@ pub(crate) fn append_glyph_run(path: &mut Path, font: *const c_void, glyphs: &[D
 /// position, and turned to follow the contour. A glyph whose middle is past the end of the contour
 /// ends the text.
 pub(crate) fn place_glyph_runs_along(path: &Path, runs: &[GlyphRun], offset: f32) -> Path {
-    let measure = ContourMeasure::first_of(path);
+    let measure = ContourMeasure::first_of(path.snapshot());
     let length = measure.as_ref().map_or(0.0, ContourMeasure::length);
 
     let mut output = Path::new();

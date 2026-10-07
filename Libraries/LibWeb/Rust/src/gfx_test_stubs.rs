@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-//! Stand-ins for the LibGfx font, shaping and path entry points, which a unit test links through a document's render
-//! state, without the C++ runtime, but never reaches.
+//! Stand-ins for the LibGfx font and shaping entry points, which a unit test links through a document's render state,
+//! without the C++ runtime, but never reaches.
 
 use libgfx_rust::text_layout::{DrawGlyph, TextType};
 use std::ffi::c_void;
@@ -104,25 +104,6 @@ extern "C" fn ladybird_gfx_glyph_run_glyph_intercepts(
     _push: unsafe extern "C" fn(*mut c_void, f32),
 ) {
     unreachable!("no unit test shapes text");
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn ladybird_gfx_skia_path_length(_path: *const c_void) -> f32 {
-    unreachable!("no unit test measures a path");
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn ladybird_gfx_skia_path_first_contour_length(_path: *const c_void) -> f32 {
-    unreachable!("no unit test measures a path");
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn ladybird_gfx_skia_path_position_and_tangent(
-    _path: *const c_void,
-    _distance: f32,
-    _out: *mut f32,
-) -> bool {
-    unreachable!("no unit test measures a path");
 }
 
 #[unsafe(no_mangle)]

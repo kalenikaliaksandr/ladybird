@@ -6,6 +6,7 @@
 
 //! The functions that `Gfx::Path` and the font code in C++ call.
 
+use super::along::{PathVertex, PointAlongPath};
 use super::geometry::point;
 use super::glyphs;
 use super::{Path, PathFillType, PathVerb};
@@ -265,6 +266,41 @@ pub unsafe extern "C" fn ladybird_gfx_path_bounding_box(path: *const RustPath) -
 pub unsafe extern "C" fn ladybird_gfx_path_length(path: *const RustPath) -> f32 {
     // SAFETY: Guaranteed by the caller.
     unsafe { path_ref(path) }.length()
+}
+
+/// # Safety
+///
+/// `path` must be a live path, and `out` must point to a PointAlongPath.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ladybird_gfx_path_point_at_length(
+    path: *const RustPath,
+    distance: f32,
+    out: *mut PointAlongPath,
+) -> bool {
+    // SAFETY: Guaranteed by the caller.
+    let Some(point_along_path) = unsafe { path_ref(path) }.point_at_length(distance) else {
+        return false;
+    };
+    // SAFETY: Guaranteed by the caller.
+    unsafe { out.write(point_along_path) };
+    true
+}
+
+/// Gives the vertices to `append`, in one call.
+///
+/// # Safety
+///
+/// `path` must be a live path, and `append` must accept `context`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ladybird_gfx_path_vertices(
+    path: *const RustPath,
+    append: unsafe extern "C" fn(*mut c_void, *const PathVertex, usize),
+    context: *mut c_void,
+) {
+    // SAFETY: Guaranteed by the caller.
+    let vertices = unsafe { path_ref(path) }.vertices();
+    // SAFETY: Guaranteed by the caller. The vertices are live for the call.
+    unsafe { append(context, vertices.as_ptr(), vertices.len()) };
 }
 
 /// # Safety

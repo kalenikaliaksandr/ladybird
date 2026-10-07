@@ -166,6 +166,31 @@ float Path::length() const
     return FFI::ladybird_gfx_path_length(m_path);
 }
 
+Optional<PointAlongPath> Path::point_at_length(float distance) const
+{
+    FFI::PointAlongPath point_along_path {};
+    if (!FFI::ladybird_gfx_path_point_at_length(m_path, distance, &point_along_path))
+        return {};
+    return PointAlongPath {
+        .point = { point_along_path.point.x, point_along_path.point.y },
+        .tangent = { point_along_path.tangent.x, point_along_path.tangent.y },
+    };
+}
+
+Vector<PathVertex> Path::vertices() const
+{
+    Vector<PathVertex> vertices;
+    FFI::ladybird_gfx_path_vertices(
+        m_path, [](void* context, FFI::PathVertex const* data, size_t count) {
+            auto& vertices = *static_cast<Vector<PathVertex>*>(context);
+            vertices.ensure_capacity(count);
+            for (auto const& vertex : ReadonlySpan<FFI::PathVertex> { data, count })
+                vertices.unchecked_append({ { vertex.point.x, vertex.point.y }, vertex.distance, { vertex.direction.x, vertex.direction.y } });
+        },
+        &vertices);
+    return vertices;
+}
+
 bool Path::contains(FloatPoint point, WindingRule winding_rule) const
 {
     return FFI::ladybird_gfx_path_contains(m_path, point.x(), point.y(), to_underlying(winding_rule));
