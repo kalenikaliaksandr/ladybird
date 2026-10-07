@@ -10,11 +10,14 @@
 #include <AK/Mutex.h>
 #include <AK/NeverDestroyed.h>
 #include <AK/ScopeGuard.h>
+#include <AK/Vector.h>
 #include <LibGfx/Font/FontTable.h>
 #include <LibGfx/Font/TypefaceCoreText.h>
 #include <LibIPC/Encoder.h>
 
 #include <harfbuzz/hb-coretext.h>
+#include <harfbuzz/hb-ot.h>
+#include <math.h>
 
 namespace Gfx {
 
@@ -160,9 +163,59 @@ bool TypefaceCoreText::has_outlines_that_only_core_text_draws() const
     return m_has_outlines_that_only_core_text_draws;
 }
 
+// The named instance whose coordinates a CoreText font has, counted from 0.
+static Optional<unsigned> named_instance_of(hb_face_t* face, CTFontRef font)
+{
+    auto variation = CTFontCopyVariation(font);
+    if (!variation)
+        return {};
+    ScopeGuard release_variation = [&] { CFRelease(variation); };
+
+    auto axis_count = hb_ot_var_get_axis_count(face);
+    auto instance_count = hb_ot_var_get_named_instance_count(face);
+    if (axis_count == 0 || instance_count == 0)
+        return {};
+    Vector<hb_ot_var_axis_info_t> axes;
+    axes.resize(axis_count);
+    hb_ot_var_get_axis_infos(face, 0, &axis_count, axes.data());
+
+    // An axis that CoreText does not list is at its default.
+    Vector<float> coordinates;
+    for (auto const& axis : axes) {
+        float value = axis.default_value;
+        i64 tag = axis.tag;
+        auto tag_number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &tag);
+        if (auto number = static_cast<CFNumberRef>(CFDictionaryGetValue(variation, tag_number)))
+            CFNumberGetValue(number, kCFNumberFloat32Type, &value);
+        CFRelease(tag_number);
+        coordinates.append(value);
+    }
+
+    Vector<float> instance_coordinates;
+    instance_coordinates.resize(axis_count);
+    for (unsigned instance = 0; instance < instance_count; ++instance) {
+        unsigned coordinate_count = axis_count;
+        hb_ot_var_named_instance_get_design_coords(face, instance, &coordinate_count, instance_coordinates.data());
+        bool matches = coordinate_count == axis_count;
+        for (unsigned index = 0; matches && index < axis_count; ++index)
+            matches = fabsf(instance_coordinates[index] - coordinates[index]) < 0.001f;
+        if (matches)
+            return instance;
+    }
+    return {};
+}
+
 hb_face_t* TypefaceCoreText::create_harfbuzz_face() const
 {
-    return hb_coretext_face_create(m_graphics_font);
+    auto* face = hb_coretext_face_create(m_graphics_font);
+    // A font that CoreText opens by the PostScript name of a named instance has the coordinates of that instance. The
+    // upper 16 bits of the face index select the instance, so the fonts and the description of the face start from
+    // the same coordinates as CoreText.
+    if (m_identity.has<String>()) {
+        if (auto instance = named_instance_of(face, m_core_text_font); instance.has_value())
+            hb_face_set_index(face, (*instance + 1) << 16);
+    }
+    return face;
 }
 
 void TypefaceCoreText::encode_font_data_for_ipc(IPC::Encoder& encoder) const

@@ -28,6 +28,7 @@ LICENSE_HEADER_CHECK_EXCLUDES = {
     "AK/Function.h",
     "Libraries/LibCore/SocketpairWindows.cpp",
     "Libraries/LibGfx/Font/FaceDescription.cpp",
+    "Libraries/LibGfx/Font/SystemFontMatcherCoreText.cpp",
     "Libraries/LibGfx/Font/SystemFontMatcherFontconfig.cpp",
     "Libraries/LibMedia/Audio/WSOLAAlgorithm.cpp",
     "Libraries/LibMedia/Audio/WSOLAAlgorithm.h",

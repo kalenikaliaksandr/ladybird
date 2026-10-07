@@ -9,6 +9,10 @@
 #include <LibGfx/Font/SystemFontMatcher.h>
 #include <LibGfx/Font/WOFF/Loader.h>
 
+#ifdef AK_OS_MACOS
+#    include <LibGfx/Font/TypefaceCoreText.h>
+#endif
+
 namespace Gfx::SystemFontMatcher {
 
 static FontFileFormat format_of(ReadonlyBytes bytes)
@@ -51,6 +55,14 @@ ErrorOr<NonnullRefPtr<Typeface>> load(SystemFontMatch const& match)
             if (file.format == FontFileFormat::OpenType)
                 typeface->set_file_path(file.path);
             return typeface;
+        },
+        [](PlatformFontName const& name) -> ErrorOr<NonnullRefPtr<Typeface>> {
+#ifdef AK_OS_MACOS
+            return TRY(TypefaceCoreText::try_load_postscript_name(name.postscript_name));
+#else
+            (void)name;
+            return Error::from_string_literal("Only CoreText opens fonts by name");
+#endif
         },
         [](NonnullRefPtr<Typeface> const& typeface) -> ErrorOr<NonnullRefPtr<Typeface>> {
             return typeface;
