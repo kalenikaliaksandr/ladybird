@@ -389,7 +389,7 @@ FaceDescription FaceDescription::read(hb_face_t* face)
         description.m_vertical_metrics.x_height = os2->x_height;
 
     auto has_table = [&](char const* tag) {
-        return !FontTable { face, FourCC { tag } }.is_empty();
+        return face_has_table(face, FourCC { tag });
     };
     bool has_horizontal_header = [&] {
         FontTable table { face, FourCC { "hhea" } };

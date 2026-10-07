@@ -6,6 +6,7 @@
 
 #define AK_DONT_REPLACE_STD
 
+#include <AK/ScopeGuard.h>
 #include <AK/Span.h>
 #include <AK/TypeCasts.h>
 #include <LibGfx/Font/Font.h>
@@ -20,6 +21,10 @@
 #include <utils/SkParsePath.h>
 
 #include <harfbuzz/hb.h>
+
+#ifdef AK_OS_MACOS
+#    include <LibGfx/Font/TypefaceCoreText.h>
+#endif
 
 template<>
 constexpr bool AllocatedWithSystemAllocator<SkPath> = true;
@@ -126,9 +131,73 @@ hb_draw_funcs_t* glyph_outline_draw_funcs()
 
 }
 
+#ifdef AK_OS_MACOS
+static SkPath core_text_glyph_outline(Font const& font, CTFontRef core_text_font, u32 glyph_id)
+{
+    auto variations = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    ScopeGuard release_variations = [&] { CFRelease(variations); };
+    for (auto const& axis : font.variation_settings().axes) {
+        i64 tag = axis.key.to_u32();
+        float value = axis.value;
+        auto tag_number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &tag);
+        auto value_number = CFNumberCreate(kCFAllocatorDefault, kCFNumberFloat32Type, &value);
+        CFDictionarySetValue(variations, tag_number, value_number);
+        CFRelease(tag_number);
+        CFRelease(value_number);
+    }
+    CFTypeRef attribute_keys[] = { kCTFontVariationAttribute };
+    CFTypeRef attribute_values[] = { variations };
+    auto attributes = CFDictionaryCreate(kCFAllocatorDefault, attribute_keys, attribute_values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    ScopeGuard release_attributes = [&] { CFRelease(attributes); };
+    auto descriptor = CTFontDescriptorCreateWithAttributes(attributes);
+    ScopeGuard release_descriptor = [&] { CFRelease(descriptor); };
+    auto sized_font = CTFontCreateCopyWithAttributes(core_text_font, font.pixel_size(), nullptr, descriptor);
+    if (!sized_font)
+        return {};
+    ScopeGuard release_sized_font = [&] { CFRelease(sized_font); };
+
+    auto path = CTFontCreatePathForGlyph(sized_font, static_cast<CGGlyph>(glyph_id), nullptr);
+    if (!path)
+        return {};
+    ScopeGuard release_path = [&] { CGPathRelease(path); };
+
+    // CoreText gives points in pixels with y up.
+    SkPathBuilder builder;
+    CGPathApply(path, &builder, [](void* info, CGPathElement const* element) {
+        auto& builder = *static_cast<SkPathBuilder*>(info);
+        auto point = [&](size_t index) {
+            return SkPoint::Make(static_cast<float>(element->points[index].x), 0.0f - static_cast<float>(element->points[index].y));
+        };
+        switch (element->type) {
+        case kCGPathElementMoveToPoint:
+            builder.moveTo(point(0));
+            break;
+        case kCGPathElementAddLineToPoint:
+            builder.lineTo(point(0));
+            break;
+        case kCGPathElementAddQuadCurveToPoint:
+            builder.quadTo(point(0), point(1));
+            break;
+        case kCGPathElementAddCurveToPoint:
+            builder.cubicTo(point(0), point(1), point(2));
+            break;
+        case kCGPathElementCloseSubpath:
+            builder.close();
+            break;
+        }
+    });
+    return builder.detach();
+}
+#endif
+
 // The outline of a glyph in pixels, with its origin on the baseline.
 static SkPath glyph_outline(Font const& font, u32 glyph_id)
 {
+#ifdef AK_OS_MACOS
+    if (auto const* core_text_typeface = as_if<TypefaceCoreText>(font.typeface()); core_text_typeface && core_text_typeface->has_outlines_that_only_core_text_draws())
+        return core_text_glyph_outline(font, core_text_typeface->core_text_font(), glyph_id);
+#endif
+
     auto* hb_font = font.harfbuzz_font();
     int x_scale = 0;
     int y_scale = 0;

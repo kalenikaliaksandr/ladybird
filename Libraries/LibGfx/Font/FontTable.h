@@ -38,6 +38,9 @@ private:
     ReadonlyBytes m_bytes;
 };
 
+// Whether a face has a table, by the same rules as FontTable, without reading the table.
+bool face_has_table(hb_face_t*, FourCC tag);
+
 // One table of a face, kept while it is read. Like FreeType, it counts a table as missing if its length is 0 or if
 // it ends after the end of the font data, and it uses the first entry of the table directory with the tag.
 class FontTable : public FontDataReader {

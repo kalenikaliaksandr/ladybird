@@ -22,39 +22,52 @@
 
 namespace Gfx {
 
+// Prefers the US English name, or the first available localization if English is absent.
+static ErrorOr<Optional<String>> english_name(hb_face_t* face, hb_ot_name_id_t name_id)
+{
+    unsigned entry_count = 0;
+    auto const* entries = hb_ot_name_list_names(face, &entry_count);
+    hb_language_t language = HB_LANGUAGE_INVALID;
+    for (unsigned index = 0; index < entry_count; ++index) {
+        auto const& entry = entries[index];
+        if (entry.name_id != name_id)
+            continue;
+        if (language == HB_LANGUAGE_INVALID)
+            language = entry.language;
+        if (entry.language == hb_language_from_string("en", -1) || entry.language == hb_language_from_string("en-us", -1)) {
+            language = entry.language;
+            break;
+        }
+    }
+    if (language == HB_LANGUAGE_INVALID)
+        return OptionalNone {};
+    auto length = hb_ot_name_get_utf8(face, name_id, language, nullptr, nullptr);
+    if (length == 0 || length == NumericLimits<unsigned>::max())
+        return OptionalNone {};
+    auto bytes = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(length) + 1));
+    auto capacity = length + 1;
+    hb_ot_name_get_utf8(face, name_id, language, &capacity, reinterpret_cast<char*>(bytes.data()));
+    return TRY(String::from_utf8({ reinterpret_cast<char const*>(bytes.data()), capacity }));
+}
+
 ErrorOr<Vector<String>> Typeface::local_font_names() const
 {
     // https://drafts.csswg.org/css-fonts-4/#local-font-fallback
     // NB: local() identifies a face by its full name or PostScript name, never by its family.
-    //     Prefer US English names, or the first available localization if English is absent.
-    auto* face = harfbuzz_typeface();
-    unsigned entry_count = 0;
-    auto const* entries = hb_ot_name_list_names(face, &entry_count);
     Vector<String> names;
     for (auto name_id : { HB_OT_NAME_ID_FULL_NAME, HB_OT_NAME_ID_POSTSCRIPT_NAME }) {
-        hb_language_t language = HB_LANGUAGE_INVALID;
-        for (unsigned index = 0; index < entry_count; ++index) {
-            auto const& entry = entries[index];
-            if (entry.name_id != name_id)
-                continue;
-            if (language == HB_LANGUAGE_INVALID)
-                language = entry.language;
-            if (entry.language == hb_language_from_string("en", -1) || entry.language == hb_language_from_string("en-us", -1)) {
-                language = entry.language;
-                break;
-            }
-        }
-        if (language == HB_LANGUAGE_INVALID)
-            continue;
-        auto length = hb_ot_name_get_utf8(face, name_id, language, nullptr, nullptr);
-        if (length == 0 || length == NumericLimits<unsigned>::max())
-            continue;
-        auto bytes = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(length) + 1));
-        auto capacity = length + 1;
-        hb_ot_name_get_utf8(face, name_id, language, &capacity, reinterpret_cast<char*>(bytes.data()));
-        names.append(TRY(String::from_utf8({ reinterpret_cast<char const*>(bytes.data()), capacity })));
+        if (auto name = TRY(english_name(harfbuzz_typeface(), name_id)); name.has_value())
+            names.append(name.release_value());
     }
     return names;
+}
+
+Optional<String> Typeface::postscript_name() const
+{
+    auto name = english_name(harfbuzz_typeface(), HB_OT_NAME_ID_POSTSCRIPT_NAME);
+    if (name.is_error())
+        return {};
+    return name.release_value();
 }
 
 FlyString const& Typeface::family() const
@@ -399,6 +412,15 @@ ErrorOr<NonnullRefPtr<Gfx::Typeface const>> decode(Decoder& decoder)
         (void)style;
 #endif
         return Error::from_string_literal("Typeface IPC data referred to an unavailable system UI font");
+    }
+    case Gfx::Typeface::FontDataFormat::PlatformFontName: {
+        auto postscript_name = TRY(decoder.decode<String>());
+#ifdef AK_OS_MACOS
+        return TRY(Gfx::TypefaceCoreText::try_load_postscript_name(postscript_name));
+#else
+        (void)postscript_name;
+        return Error::from_string_literal("Typeface IPC data referred to a platform font, which this platform does not have");
+#endif
     }
     case Gfx::Typeface::FontDataFormat::SystemFontId: {
         auto generation = TRY(decoder.decode<u64>());

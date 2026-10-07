@@ -10,6 +10,7 @@
 #include <AK/Mutex.h>
 #include <AK/NeverDestroyed.h>
 #include <AK/ScopeGuard.h>
+#include <LibGfx/Font/FontTable.h>
 #include <LibGfx/Font/TypefaceCoreText.h>
 #include <LibIPC/Encoder.h>
 
@@ -106,10 +107,40 @@ RefPtr<TypefaceCoreText> TypefaceCoreText::system_ui(SystemUIFontStyle style)
     return typeface;
 }
 
-TypefaceCoreText::TypefaceCoreText(CTFontRef core_text_font, CGFontRef graphics_font, SystemUIFontStyle style)
+ErrorOr<NonnullRefPtr<TypefaceCoreText>> TypefaceCoreText::try_load_postscript_name(String const& postscript_name)
+{
+    auto name_bytes = postscript_name.bytes();
+    auto name = CFStringCreateWithBytes(kCFAllocatorDefault, name_bytes.data(), static_cast<CFIndex>(name_bytes.size()), kCFStringEncodingUTF8, false);
+    if (!name)
+        return Error::from_string_literal("Invalid PostScript name");
+    ScopeGuard release_name = [&] { CFRelease(name); };
+
+    auto core_text_font = CTFontCreateWithName(name, 0, nullptr);
+    if (!core_text_font)
+        return Error::from_string_literal("CoreText has no font with this PostScript name");
+    ScopeGuard release_core_text_font = [&] { CFRelease(core_text_font); };
+
+    // CoreText gives another font for a name that it does not know.
+    auto found_name = CTFontCopyPostScriptName(core_text_font);
+    ScopeGuard release_found_name = [&] {
+        if (found_name)
+            CFRelease(found_name);
+    };
+    if (!found_name || !CFEqual(found_name, name))
+        return Error::from_string_literal("CoreText has no font with this PostScript name");
+
+    auto graphics_font = CTFontCopyGraphicsFont(core_text_font, nullptr);
+    if (!graphics_font)
+        return Error::from_string_literal("Failed to get graphics font from CoreText font");
+    ScopeGuard release_graphics_font = [&] { CFRelease(graphics_font); };
+
+    return adopt_ref(*new TypefaceCoreText(core_text_font, graphics_font, postscript_name));
+}
+
+TypefaceCoreText::TypefaceCoreText(CTFontRef core_text_font, CGFontRef graphics_font, Identity identity)
     : m_core_text_font(core_text_font)
     , m_graphics_font(graphics_font)
-    , m_style(style)
+    , m_identity(move(identity))
 {
     CFRetain(m_core_text_font);
     CFRetain(m_graphics_font);
@@ -119,6 +150,14 @@ TypefaceCoreText::~TypefaceCoreText()
 {
     CFRelease(m_graphics_font);
     CFRelease(m_core_text_font);
+}
+
+bool TypefaceCoreText::has_outlines_that_only_core_text_draws() const
+{
+    call_once(m_outline_format_once, [&] {
+        m_has_outlines_that_only_core_text_draws = face_has_table(harfbuzz_typeface(), FourCC { "hvgl" });
+    });
+    return m_has_outlines_that_only_core_text_draws;
 }
 
 hb_face_t* TypefaceCoreText::create_harfbuzz_face() const
@@ -133,15 +172,24 @@ void TypefaceCoreText::encode_font_data_for_ipc(IPC::Encoder& encoder) const
         return;
     }
 
-    MUST(encoder.encode(FontDataFormat::SystemUIFont));
-    MUST(encoder.encode(m_style));
+    m_identity.visit(
+        [&](SystemUIFontStyle const& style) {
+            MUST(encoder.encode(FontDataFormat::SystemUIFont));
+            MUST(encoder.encode(style));
+        },
+        [&](String const& postscript_name) {
+            MUST(encoder.encode(FontDataFormat::PlatformFontName));
+            MUST(encoder.encode(postscript_name));
+        });
 }
 
 Optional<FaceStyle> TypefaceCoreText::fixed_style() const
 {
     // One variable face of a system UI font serves every style, so the typeface answers with the style that it was
     // asked for.
-    return FaceStyle { .weight = m_style.weight, .width = m_style.width, .slope = m_style.slope };
+    if (auto const* style = m_identity.get_pointer<SystemUIFontStyle>())
+        return FaceStyle { .weight = style->weight, .width = style->width, .slope = style->slope };
+    return {};
 }
 
 }
