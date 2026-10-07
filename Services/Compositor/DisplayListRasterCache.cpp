@@ -7,6 +7,7 @@
 #include <AK/BitCast.h>
 #include <AK/ByteBuffer.h>
 #include <Compositor/DisplayListRasterCache.h>
+#include <Compositor/FontSkia.h>
 #include <Compositor/VideoFrameSkia.h>
 #include <LibCompositing/DisplayList/DisplayList.h>
 #include <LibCompositing/DisplayList/DisplayListResourceStorage.h>
@@ -397,7 +398,10 @@ static sk_sp<SkTextBlob> make_text_blob(Gfx::Font const& font, float scale, Read
 {
     if (font.is_invisible())
         return nullptr;
-    auto sk_font = font.skia_font(scale);
+    auto maybe_sk_font = skia_font(font, scale);
+    if (!maybe_sk_font.has_value())
+        return nullptr;
+    auto& sk_font = *maybe_sk_font;
 #ifdef AK_OS_MACOS
     // INTEROP: Blink disables CoreGraphics outline dilation for antialiased text.
     // https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/platform/fonts/mac/font_platform_data_mac.mm
