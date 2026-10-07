@@ -42,7 +42,6 @@ set(SOURCES
     PaintingSurface.cpp
     Palette.cpp
     Path.cpp
-    PathSkiaBridge.cpp
     Point.cpp
     Rect.cpp
     SharedImage.cpp

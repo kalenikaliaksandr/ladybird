@@ -24,7 +24,7 @@ mod glyphs;
 mod measure;
 mod serialize;
 mod sk_matrix;
-mod skia;
+mod svg_string;
 
 use crate::geometry::{FloatPoint, FloatRect};
 use crate::matrix::AffineTransform;

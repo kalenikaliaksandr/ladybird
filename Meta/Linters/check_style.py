@@ -35,6 +35,7 @@ LICENSE_HEADER_CHECK_EXCLUDES = {
     "Libraries/LibGfx/Rust/src/path/mod.rs",
     "Libraries/LibGfx/Rust/src/path/serialize.rs",
     "Libraries/LibGfx/Rust/src/path/sk_matrix.rs",
+    "Libraries/LibGfx/Rust/src/path/svg_string.rs",
     "Libraries/LibMedia/Audio/WSOLAAlgorithm.cpp",
     "Libraries/LibMedia/Audio/WSOLAAlgorithm.h",
     "Libraries/LibMedia/Audio/WSOLAInternals.cpp",

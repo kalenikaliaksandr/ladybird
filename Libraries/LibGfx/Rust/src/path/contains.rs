@@ -8,7 +8,7 @@
 // (SkPathEdgeIter) and skia/src/core/SkCubicClipper.cpp (SkCubicClipper::ChopMonoAtY).
 
 use super::geometry::{
-    Conic, NEARLY_ZERO, chop_cubic_at_y_extrema, chop_quad_at_y_extrema, cross, eval_cubic_tangent_at,
+    Conic, NEARLY_ZERO, between, chop_cubic_at_y_extrema, chop_quad_at_y_extrema, cross, eval_cubic_tangent_at,
     eval_quad_tangent_at, find_unit_quad_roots, interpolate, length_squared, max_of, min_of, nearly_equal, sign_as_int,
 };
 use super::{Path, PathFillType, PathVerb, PathView, bounds};
@@ -98,10 +98,6 @@ fn poly_eval_3(a: f32, b: f32, c: f32, t: f32) -> f32 {
 
 fn poly_eval_4(a: f32, b: f32, c: f32, d: f32, t: f32) -> f32 {
     ((a * t + b) * t + c) * t + d
-}
-
-fn between(a: f32, b: f32, c: f32) -> bool {
-    (a - b) * (c - b) <= 0.0
 }
 
 fn eval_cubic_points(c0: f32, c1: f32, c2: f32, c3: f32, t: f32) -> f32 {

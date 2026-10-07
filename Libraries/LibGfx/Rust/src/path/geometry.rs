@@ -384,6 +384,21 @@ pub(crate) struct Conic {
     pub weight: f32,
 }
 
+fn subdivide_weight(weight: f32) -> f32 {
+    (0.5f32 + weight * 0.5).sqrt()
+}
+
+pub(crate) fn between(a: f32, b: f32, c: f32) -> bool {
+    (a - b) * (c - b) <= 0.0
+}
+
+fn equals_within_tolerance(a: FloatPoint, b: FloatPoint) -> bool {
+    let (dx, dy) = (a.x - b.x, a.y - b.y);
+    !(dx.is_finite() && dy.is_finite() && (dx != 0.0 || dy != 0.0))
+}
+
+pub(crate) const MAX_CONIC_TO_QUAD_POW2: usize = 5;
+
 impl Conic {
     /// A weight that is not positive and finite becomes 1.
     pub(crate) fn new(points: [FloatPoint; 3], weight: f32) -> Conic {
@@ -477,6 +492,30 @@ impl Conic {
         all_finite.then_some(result)
     }
 
+    /// Splits the conic in half.
+    pub(crate) fn chop(&self) -> [Conic; 2] {
+        // The scale is smaller than 1, so the terms below do not overflow.
+        let scale = 1.0 / (1.0 + self.weight);
+        let t0 = self::scale(self.points[0], scale);
+        let t1 = self::scale(self.points[1], self.weight * scale);
+        let t2 = self::scale(self.points[2], scale);
+        let p1 = add(t0, t1);
+        let p3 = add(t1, t2);
+        // Halve the terms before the sum, so the sum does not overflow.
+        let p2 = add(add(self::scale(t0, 0.5), t1), self::scale(t2, 0.5));
+        let weight = subdivide_weight(self.weight);
+        [
+            Conic {
+                points: [self.points[0], p1, p2],
+                weight,
+            },
+            Conic {
+                points: [p2, p3, self.points[2]],
+                weight,
+            },
+        ]
+    }
+
     fn find_y_extrema(&self) -> Option<f32> {
         let [p0, p1, p2] = self.points;
         let p20 = p2.y - p0.y;
@@ -496,5 +535,100 @@ impl Conic {
         result[1].points[0].y = value;
         result[1].points[1].y = value;
         Some(result)
+    }
+
+    /// The number of times to halve the conic, so that quads are within `tolerance` of it.
+    pub(crate) fn compute_quad_pow2(&self, tolerance: f32) -> usize {
+        if tolerance < 0.0
+            || !tolerance.is_finite()
+            || !are_finite(&self.points)
+            || self.weight < 0.0
+            || !self.weight.is_finite()
+        {
+            return 0;
+        }
+        let [p0, p1, p2] = self.points;
+        let a = self.weight - 1.0;
+        let k = a / (4.0 * (2.0 + a));
+        let x = k * (p0.x - 2.0 * p1.x + p2.x);
+        let y = k * (p0.y - 2.0 * p1.y + p2.y);
+        let mut error = (x * x + y * y).sqrt();
+        let mut pow2 = 0;
+        while pow2 < MAX_CONIC_TO_QUAD_POW2 {
+            if error <= tolerance {
+                break;
+            }
+            error *= 0.25;
+            pow2 += 1;
+        }
+        pow2
+    }
+
+    fn subdivide(&self, output: &mut Vec<FloatPoint>, level: usize) {
+        if level == 0 {
+            output.push(self.points[1]);
+            output.push(self.points[2]);
+            return;
+        }
+        let mut chopped = self.chop();
+        let start_y = self.points[0].y;
+        let end_y = self.points[2].y;
+        if between(start_y, self.points[1].y, end_y) {
+            // If the input only goes one way in y, the parts must too.
+            let middle_y = chopped[0].points[2].y;
+            if !between(start_y, middle_y, end_y) {
+                // Move a middle point outside of the ends to the nearer end.
+                let closer_y = if (middle_y - start_y).abs() < (middle_y - end_y).abs() {
+                    start_y
+                } else {
+                    end_y
+                };
+                chopped[0].points[2].y = closer_y;
+                chopped[1].points[0].y = closer_y;
+            }
+            if !between(start_y, chopped[0].points[1].y, chopped[0].points[2].y) {
+                chopped[0].points[1].y = start_y;
+            }
+            if !between(chopped[1].points[0].y, chopped[1].points[1].y, end_y) {
+                chopped[1].points[1].y = end_y;
+            }
+        }
+        chopped[0].subdivide(output, level - 1);
+        chopped[1].subdivide(output, level - 1);
+    }
+
+    /// Replaces the conic with 2^pow2 quads that share end points. Gives the points, which start
+    /// with the start point.
+    pub(crate) fn chop_into_quads_pow2(&self, pow2: usize) -> Vec<FloatPoint> {
+        let mut pow2 = pow2;
+        if self.weight < 0.0 || !self.weight.is_finite() {
+            pow2 = 0;
+        }
+        let mut output = vec![self.points[0]];
+        let mut done = false;
+        if pow2 == MAX_CONIC_TO_QUAD_POW2 {
+            // An extreme weight can make many quads. See if the first split already gives two
+            // lines.
+            let chopped = self.chop();
+            if equals_within_tolerance(chopped[0].points[1], chopped[0].points[2])
+                && equals_within_tolerance(chopped[1].points[0], chopped[1].points[1])
+            {
+                let control = chopped[0].points[1];
+                output.extend_from_slice(&[control, control, control, chopped[1].points[2]]);
+                done = true;
+            }
+        }
+        if !done {
+            self.subdivide(&mut output, pow2);
+        }
+        if !are_finite(&output) {
+            // Put the inner points in the middle of the hull. The first and last points are on
+            // the hull already.
+            let count = output.len();
+            for point in &mut output[1..count - 1] {
+                *point = self.points[1];
+            }
+        }
+        output
     }
 }

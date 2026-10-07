@@ -7392,13 +7392,6 @@ pub(crate) mod ffi_test_stubs {
         }
     }
     #[unsafe(no_mangle)]
-    extern "C" fn ladybird_gfx_skia_path_append_svg_string(
-        _path: *const std::ffi::c_void,
-        _append: unsafe extern "C" fn(*mut std::ffi::c_void, *const u8, usize),
-        _context: *mut std::ffi::c_void,
-    ) {
-    }
-    #[unsafe(no_mangle)]
     extern "C" fn ladybird_gfx_process_next_path_identity() -> u64 {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
