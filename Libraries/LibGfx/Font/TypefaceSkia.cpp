@@ -54,14 +54,12 @@ static auto& skia_font_manager()
 struct TypefaceSkia::Impl {
     AK_ALLOC_WITH_KMALLOC;
 
-    Impl(sk_sp<SkTypeface> skia_typeface, std::unique_ptr<SkStreamAsset> stream = {})
+    explicit Impl(sk_sp<SkTypeface> skia_typeface)
         : skia_typeface(move(skia_typeface))
-        , stream(move(stream))
     {
     }
 
     sk_sp<SkTypeface> skia_typeface;
-    std::unique_ptr<SkStreamAsset> stream;
 };
 
 static SkFontMgr& font_manager()
@@ -88,59 +86,6 @@ static SkFontMgr& font_manager()
     }
     VERIFY(font_manager);
     return *font_manager;
-}
-
-static std::unique_ptr<SkMemoryStream> copy_stream_to_memory_stream(SkStreamAsset& stream)
-{
-    auto stream_copy = stream.duplicate();
-    VERIFY(stream_copy);
-
-    auto data = SkData::MakeFromStream(stream_copy.get(), stream_copy->getLength());
-    VERIFY(data);
-    VERIFY(data->size() == stream.getLength());
-
-    return std::make_unique<SkMemoryStream>(move(data));
-}
-
-static SkFontStyle::Slant slope_to_skia_slant(u8 slope)
-{
-    switch (slope) {
-    case 1:
-        return SkFontStyle::kItalic_Slant;
-    case 2:
-        return SkFontStyle::kOblique_Slant;
-    default:
-        return SkFontStyle::kUpright_Slant;
-    }
-}
-
-ErrorOr<RefPtr<TypefaceSkia>> TypefaceSkia::typeface_from_skia_typeface(sk_sp<SkTypeface> skia_typeface)
-{
-    if (!skia_typeface)
-        return RefPtr<TypefaceSkia> {};
-
-    int skia_ttc_index = 0;
-    auto stream = skia_typeface->openStream(&skia_ttc_index);
-    auto ttc_index = static_cast<u32>(skia_ttc_index);
-
-    if (stream && stream->getMemoryBase()) {
-        // NB: Safe to reference without copying because we hold on to the stream.
-        ReadonlyBytes bytes { static_cast<u8 const*>(stream->getMemoryBase()), stream->getLength() };
-        return adopt_ref(*new TypefaceSkia {
-            make<TypefaceSkia::Impl>(skia_typeface, std::move(stream)),
-            bytes,
-            ttc_index });
-    }
-
-    if (!stream)
-        return Error::from_string_literal("Failed to get font data from typeface");
-
-    auto memory_stream = copy_stream_to_memory_stream(*stream);
-    auto bytes = ReadonlyBytes { static_cast<u8 const*>(memory_stream->getMemoryBase()), memory_stream->getLength() };
-    return adopt_ref(*new TypefaceSkia {
-        make<TypefaceSkia::Impl>(skia_typeface, move(memory_stream)),
-        bytes,
-        ttc_index });
 }
 
 // Text is shaped with HarfBuzz, so font data is of no use if HarfBuzz cannot read the face in it, even if Skia can
@@ -317,69 +262,9 @@ ErrorOr<NonnullRefPtr<TypefaceSkia>> TypefaceSkia::load_from_buffer(AK::Readonly
     return typeface;
 }
 
-void TypefaceSkia::encode_font_data_for_ipc(IPC::Encoder& encoder) const
-{
-    if (has_font_data_backing()) {
-        Typeface::encode_font_data_for_ipc(encoder);
-        return;
-    }
-
-    auto family_name = family().to_string();
-
-    MUST(encoder.encode(FontDataFormat::SystemFont));
-    MUST(encoder.encode(family_name));
-    MUST(encoder.encode(weight()));
-    MUST(encoder.encode(width()));
-    MUST(encoder.encode(slope()));
-}
-
-ErrorOr<RefPtr<TypefaceSkia>> TypefaceSkia::match_family_style(StringView family_name, u16 weight, u16 width, u8 slope)
-{
-    auto skia_typeface = font_manager().matchFamilyStyle(ByteString(family_name).characters(), SkFontStyle { weight, width, slope_to_skia_slant(slope) });
-    return typeface_from_skia_typeface(move(skia_typeface));
-}
-
-ErrorOr<RefPtr<TypefaceSkia>> TypefaceSkia::find_typeface_for_code_point(u32 code_point, u16 weight, u16 width, u8 slope, bool prefer_color_emoji)
-{
-    SkFontStyle style(weight, width, slope_to_skia_slant(slope));
-
-    // The "und-Zsye" language tag steers the font matcher towards a color emoji font. Without it, a text-presentation
-    // font is preferred for emoji-capable code points.
-    char const* emoji_locale[] = { "und-Zsye" };
-    auto skia_typeface = font_manager().matchFamilyStyleCharacter(
-        nullptr, style, prefer_color_emoji ? emoji_locale : nullptr, prefer_color_emoji ? 1 : 0, code_point);
-
-    if (!skia_typeface)
-        return RefPtr<TypefaceSkia> {};
-
-    return typeface_from_skia_typeface(move(skia_typeface));
-}
-
-Optional<FlyString> TypefaceSkia::resolve_generic_family(StringView family_name, u16 weight, u8 slope)
-{
-    SkFontStyle style(weight, SkFontStyle::kNormal_Width, slope_to_skia_slant(slope));
-    auto skia_typeface = font_manager().matchFamilyStyle(
-        ByteString(family_name).characters(), style);
-
-    if (!skia_typeface)
-        return {};
-
-    SkString resolved_family;
-    skia_typeface->getFamilyName(&resolved_family);
-    auto result_or_error = FlyString::from_utf8(StringView { resolved_family.c_str(), resolved_family.size() });
-    if (result_or_error.is_error())
-        return {};
-    return result_or_error.release_value();
-}
-
 SkTypeface const* TypefaceSkia::sk_typeface() const
 {
     return impl().skia_typeface.get();
-}
-
-u32 TypefaceSkia::platform_typeface_id() const
-{
-    return impl().skia_typeface->uniqueID();
 }
 
 TypefaceSkia::TypefaceSkia(NonnullOwnPtr<Impl> impl, ReadonlyBytes buffer, u32 ttc_index)
