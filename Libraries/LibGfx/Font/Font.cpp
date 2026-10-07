@@ -22,7 +22,6 @@
 #include <core/SkFont.h>
 #include <core/SkFontMetrics.h>
 #include <core/SkFontTypes.h>
-#include <core/SkPath.h>
 
 #include <harfbuzz/hb-ot.h>
 #include <harfbuzz/hb.h>
@@ -308,6 +307,63 @@ extern "C" void ladybird_gfx_font_unref(void const* font)
     static_cast<Gfx::Font const*>(font)->unref();
 }
 
+namespace {
+
+// Maps the coordinates of a glyph outline from font units, with y up, to pixels, with y down.
+struct GlyphOutline {
+    Gfx::FFI::RustPath* path;
+    float units_to_pixels_x;
+    float units_to_pixels_y;
+
+    float x(float units) const { return units * units_to_pixels_x; }
+    // Subtract from 0, so that a point on the baseline gets 0 and not -0.
+    float y(float units) const { return 0.0f - units * units_to_pixels_y; }
+};
+
+// NOTE: HarfBuzz emits the implicit line that closes each contour as a regular line_to before close_path. The
+//       quadratic callback must be set, otherwise HarfBuzz converts quadratic segments to cubics.
+hb_draw_funcs_t* glyph_outline_draw_funcs()
+{
+    static hb_draw_funcs_t* draw_funcs = [] {
+        auto* funcs = hb_draw_funcs_create();
+        hb_draw_funcs_set_move_to_func(
+            funcs, [](hb_draw_funcs_t*, void* draw_data, hb_draw_state_t*, float to_x, float to_y, void*) {
+                auto const& outline = *static_cast<GlyphOutline const*>(draw_data);
+                Gfx::FFI::ladybird_gfx_path_outline_move_to(outline.path, outline.x(to_x), outline.y(to_y));
+            },
+            nullptr, nullptr);
+        hb_draw_funcs_set_line_to_func(
+            funcs, [](hb_draw_funcs_t*, void* draw_data, hb_draw_state_t*, float to_x, float to_y, void*) {
+                auto const& outline = *static_cast<GlyphOutline const*>(draw_data);
+                Gfx::FFI::ladybird_gfx_path_outline_line_to(outline.path, outline.x(to_x), outline.y(to_y));
+            },
+            nullptr, nullptr);
+        hb_draw_funcs_set_quadratic_to_func(
+            funcs, [](hb_draw_funcs_t*, void* draw_data, hb_draw_state_t*, float control_x, float control_y, float to_x, float to_y, void*) {
+                auto const& outline = *static_cast<GlyphOutline const*>(draw_data);
+                Gfx::FFI::ladybird_gfx_path_outline_quad_to(outline.path, outline.x(control_x), outline.y(control_y), outline.x(to_x), outline.y(to_y));
+            },
+            nullptr, nullptr);
+        hb_draw_funcs_set_cubic_to_func(
+            funcs, [](hb_draw_funcs_t*, void* draw_data, hb_draw_state_t*, float control1_x, float control1_y, float control2_x, float control2_y, float to_x, float to_y, void*) {
+                auto const& outline = *static_cast<GlyphOutline const*>(draw_data);
+                Gfx::FFI::ladybird_gfx_path_outline_cubic_to(outline.path, outline.x(control1_x), outline.y(control1_y), outline.x(control2_x), outline.y(control2_y), outline.x(to_x), outline.y(to_y));
+            },
+            nullptr, nullptr);
+        hb_draw_funcs_set_close_path_func(
+            funcs, [](hb_draw_funcs_t*, void* draw_data, hb_draw_state_t*, void*) {
+                auto const& outline = *static_cast<GlyphOutline const*>(draw_data);
+                Gfx::FFI::ladybird_gfx_path_outline_close(outline.path);
+            },
+            nullptr, nullptr);
+        hb_draw_funcs_make_immutable(funcs);
+        return funcs;
+    }();
+    return draw_funcs;
+}
+
+}
+
 extern "C" bool ladybird_gfx_font_glyph_outline_ascent(void const* font, float* out_ascent)
 {
     VERIFY(font);
@@ -318,42 +374,20 @@ extern "C" bool ladybird_gfx_font_glyph_outline_ascent(void const* font, float* 
     return true;
 }
 
-extern "C" void ladybird_gfx_font_append_glyph_outline(void const* font, u32 glyph_id, void* outline_path)
+extern "C" void ladybird_gfx_font_append_glyph_outline(void const* font, u32 glyph_id, void* outline)
 {
-    auto* outline = static_cast<Gfx::FFI::RustPath*>(outline_path);
     VERIFY(font);
-    auto glyph_path = static_cast<Gfx::Font const*>(font)->skia_font(1).getPath(static_cast<SkGlyphID>(glyph_id));
-    if (!glyph_path.has_value())
+    auto const& gfx_font = *static_cast<Gfx::Font const*>(font);
+    auto* hb_font = gfx_font.harfbuzz_font();
+    int x_scale = 0;
+    int y_scale = 0;
+    hb_font_get_scale(hb_font, &x_scale, &y_scale);
+    if (x_scale <= 0 || y_scale <= 0)
         return;
-    auto const points = glyph_path->points();
-    auto const conic_weights = glyph_path->conicWeights();
-    size_t point_index = 0;
-    size_t conic_weight_index = 0;
-    for (auto verb : glyph_path->verbs()) {
-        switch (verb) {
-        case SkPathVerb::kMove:
-            Gfx::FFI::ladybird_gfx_path_outline_move_to(outline, points[point_index].x(), points[point_index].y());
-            point_index += 1;
-            break;
-        case SkPathVerb::kLine:
-            Gfx::FFI::ladybird_gfx_path_outline_line_to(outline, points[point_index].x(), points[point_index].y());
-            point_index += 1;
-            break;
-        case SkPathVerb::kQuad:
-            Gfx::FFI::ladybird_gfx_path_outline_quad_to(outline, points[point_index].x(), points[point_index].y(), points[point_index + 1].x(), points[point_index + 1].y());
-            point_index += 2;
-            break;
-        case SkPathVerb::kConic:
-            Gfx::FFI::ladybird_gfx_path_outline_conic_to(outline, points[point_index].x(), points[point_index].y(), points[point_index + 1].x(), points[point_index + 1].y(), conic_weights[conic_weight_index++]);
-            point_index += 2;
-            break;
-        case SkPathVerb::kCubic:
-            Gfx::FFI::ladybird_gfx_path_outline_cubic_to(outline, points[point_index].x(), points[point_index].y(), points[point_index + 1].x(), points[point_index + 1].y(), points[point_index + 2].x(), points[point_index + 2].y());
-            point_index += 3;
-            break;
-        case SkPathVerb::kClose:
-            Gfx::FFI::ladybird_gfx_path_outline_close(outline);
-            break;
-        }
-    }
+    GlyphOutline glyph_outline {
+        .path = static_cast<Gfx::FFI::RustPath*>(outline),
+        .units_to_pixels_x = gfx_font.pixel_size() / static_cast<float>(x_scale),
+        .units_to_pixels_y = gfx_font.pixel_size() / static_cast<float>(y_scale),
+    };
+    hb_font_draw_glyph(hb_font, glyph_id, glyph_outline_draw_funcs(), &glyph_outline);
 }

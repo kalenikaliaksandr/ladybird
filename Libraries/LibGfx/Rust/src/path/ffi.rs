@@ -433,22 +433,6 @@ pub unsafe extern "C" fn ladybird_gfx_path_outline_quad_to(
 ///
 /// As for ladybird_gfx_path_clear().
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ladybird_gfx_path_outline_conic_to(
-    path: *mut RustPath,
-    control_x: f32,
-    control_y: f32,
-    x: f32,
-    y: f32,
-    weight: f32,
-) {
-    // SAFETY: Guaranteed by the caller.
-    unsafe { path_mut(path) }.sk_conic_to(point(control_x, control_y), point(x, y), weight);
-}
-
-/// # Safety
-///
-/// As for ladybird_gfx_path_clear().
-#[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn ladybird_gfx_path_outline_cubic_to(
     path: *mut RustPath,
