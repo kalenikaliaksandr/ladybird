@@ -14,6 +14,9 @@
 #include <LibGfx/Font/FontVariationSettings.h>
 #include <LibGfx/Font/Typeface.h>
 #include <LibGfx/Font/TypefaceSkia.h>
+#ifdef AK_OS_MACOS
+#    include <LibGfx/Font/TypefaceCoreText.h>
+#endif
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
 
@@ -52,6 +55,26 @@ ErrorOr<Vector<String>> Typeface::local_font_names() const
         names.append(TRY(String::from_utf8({ reinterpret_cast<char const*>(bytes.data()), capacity })));
     }
     return names;
+}
+
+FlyString const& Typeface::family() const
+{
+    return description().family();
+}
+
+u16 Typeface::weight() const
+{
+    return fixed_style().value_or(description().style()).weight;
+}
+
+u16 Typeface::width() const
+{
+    return fixed_style().value_or(description().style()).width;
+}
+
+u8 Typeface::slope() const
+{
+    return fixed_style().value_or(description().style()).slope;
 }
 
 ErrorOr<NonnullRefPtr<Typeface>> Typeface::try_load_from_mapped_file(NonnullOwnPtr<Core::MappedFile> mapped_file, u32 ttc_index)
@@ -250,6 +273,8 @@ FaceDescription const& Typeface::description() const
 
 FaceStyle Typeface::style_for_variations(ReadonlySpan<FontVariationAxis> variations) const
 {
+    if (auto style = fixed_style(); style.has_value())
+        return *style;
     return description().style_for_variations(variations);
 }
 
@@ -367,10 +392,13 @@ ErrorOr<NonnullRefPtr<Gfx::Typeface const>> decode(Decoder& decoder)
     }
     case Gfx::Typeface::FontDataFormat::SystemUIFont: {
         auto style = TRY(decoder.decode<Gfx::SystemUIFontStyle>());
-        auto typeface = TRY(Gfx::TypefaceSkia::match_system_ui(style.kind, 0, style.weight, style.width, style.slope));
-        if (!typeface)
-            return Error::from_string_literal("Typeface IPC data referred to an unavailable system UI font");
-        return typeface.release_nonnull();
+#ifdef AK_OS_MACOS
+        if (auto typeface = Gfx::TypefaceCoreText::system_ui(style))
+            return typeface.release_nonnull();
+#else
+        (void)style;
+#endif
+        return Error::from_string_literal("Typeface IPC data referred to an unavailable system UI font");
     }
     case Gfx::Typeface::FontDataFormat::SystemFontId: {
         auto generation = TRY(decoder.decode<u64>());
@@ -383,6 +411,26 @@ ErrorOr<NonnullRefPtr<Gfx::Typeface const>> decode(Decoder& decoder)
     }
 
     return Error::from_string_literal("Typeface IPC data contained invalid font data format");
+}
+
+template<>
+ErrorOr<void> encode(Encoder& encoder, Gfx::SystemUIFontStyle const& style)
+{
+    TRY(encoder.encode(style.kind));
+    TRY(encoder.encode(style.weight));
+    TRY(encoder.encode(style.width));
+    TRY(encoder.encode(style.slope));
+    return {};
+}
+
+template<>
+ErrorOr<Gfx::SystemUIFontStyle> decode(Decoder& decoder)
+{
+    auto kind = TRY(decoder.decode<Gfx::SystemUIFontKind>());
+    auto weight = TRY(decoder.decode<u16>());
+    auto width = TRY(decoder.decode<u16>());
+    auto slope = TRY(decoder.decode<u8>());
+    return Gfx::SystemUIFontStyle { kind, weight, width, slope };
 }
 
 }

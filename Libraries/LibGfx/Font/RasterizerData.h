@@ -6,6 +6,9 @@
 
 #pragma once
 
+#include <AK/Noncopyable.h>
+#include <AK/Once.h>
+#include <AK/OwnPtr.h>
 #include <AK/kmalloc.h>
 
 namespace Gfx {
@@ -16,6 +19,26 @@ class RasterizerData {
 
 public:
     virtual ~RasterizerData() = default;
+};
+
+// Holds the rasterizer data of one typeface or font. The first call makes the data.
+class RasterizerDataSlot {
+    AK_MAKE_NONCOPYABLE(RasterizerDataSlot);
+    AK_MAKE_NONMOVABLE(RasterizerDataSlot);
+
+public:
+    RasterizerDataSlot() = default;
+
+    template<typename T, typename Callback>
+    T& get(Callback make) const
+    {
+        call_once(m_once, [&] { m_data = make(); });
+        return static_cast<T&>(*m_data);
+    }
+
+private:
+    mutable OnceFlag m_once;
+    mutable OwnPtr<RasterizerData> m_data;
 };
 
 }
