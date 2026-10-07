@@ -704,18 +704,30 @@ pub unsafe extern "C" fn ladybird_web_record_image_paint_display_list(
     }
 }
 
+#[repr(C)]
+pub struct FfiOptionalSvgPathBoundingBox {
+    pub has_value: bool,
+    pub rect: libgfx_rust::FloatRect,
+}
+
+/// The bounding box of the path that the SVG element's box was laid out with, if it has one.
 #[unsafe(no_mangle)]
-pub extern "C" fn render_state_paintable_computed_svg_path(
+pub extern "C" fn render_state_paintable_computed_svg_path_bounding_box(
     host: &DocumentHost,
     paintable: NodeSlotId,
-) -> *const c_void {
+) -> FfiOptionalSvgPathBoundingBox {
     read_arena(host, node_read(), paintable, |arena, paintable| {
         let paintable_rows = arena.paintable_rows();
-        if !paintable_rows.paintable_row_is_populated(paintable) {
-            return std::ptr::null();
+        let rect = if paintable_rows.paintable_row_is_populated(paintable) {
+            crate::painting::paintable_geometry::committed_svg_path(&paintable_rows, paintable)
+                .map(|path| libgfx_rust::FloatRect::from_array(path.bounding_box()))
+        } else {
+            None
+        };
+        FfiOptionalSvgPathBoundingBox {
+            has_value: rect.is_some(),
+            rect: rect.unwrap_or_default(),
         }
-        crate::painting::paintable_geometry::committed_svg_path(&paintable_rows, paintable)
-            .map_or(std::ptr::null(), |path| path.as_raw())
     })
 }
 
