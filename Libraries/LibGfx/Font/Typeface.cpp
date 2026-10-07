@@ -123,6 +123,19 @@ hb_face_t* Typeface::harfbuzz_typeface() const
     return m_harfbuzz_face;
 }
 
+FaceDescription const& Typeface::description() const
+{
+    call_once(m_description_once, [&] {
+        m_description = FaceDescription::read(harfbuzz_typeface());
+    });
+    return *m_description;
+}
+
+FaceStyle Typeface::style_for_variations(ReadonlySpan<FontVariationAxis> variations) const
+{
+    return description().style_for_variations(variations);
+}
+
 // Recording asks for this while the document thread may ask the same typeface for it, so the
 // read of a half-written memo has to be impossible. The same `call_once` the HarfBuzz face uses
 // above publishes it.

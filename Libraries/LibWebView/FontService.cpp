@@ -87,6 +87,9 @@ ErrorOr<void> FontService::build_catalog()
         auto collect_typeface = [&](String const& path, u32 ttc_index, Gfx::FontFileFormat format, NonnullRefPtr<Gfx::Typeface> typeface) {
             if (callback_error.has_value())
                 return;
+            // A face without a family name cannot be matched.
+            if (typeface->family().is_empty())
+                return;
             auto face_id = next_face_id++;
             auto names = typeface->local_font_names();
             if (names.is_error()) {
@@ -105,7 +108,8 @@ ErrorOr<void> FontService::build_catalog()
                 .family = typeface->family().bytes_as_string_view(),
                 .face_id = face_id,
                 .ttc_index = ttc_index,
-                .weight = typeface->weight(),
+                // CSS font weights start at 1, but some fonts give 0.
+                .weight = max<u16>(typeface->weight(), 1),
                 .width = typeface->width(),
                 .slope = typeface->slope(),
                 .format = format,
