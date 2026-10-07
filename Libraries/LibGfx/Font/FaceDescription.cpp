@@ -221,6 +221,11 @@ struct OS2Fields {
     u16 weight_class { 0 };
     u16 width_class { 0 };
     u16 selection { 0 };
+    i16 typo_ascender { 0 };
+    i16 typo_descender { 0 };
+    u16 win_ascent { 0 };
+    u16 win_descent { 0 };
+    i16 x_height { 0 };
 };
 
 // FreeType reads the fields that the version of the table has, and counts the table as missing if the font data ends
@@ -245,11 +250,17 @@ Optional<OS2Fields> read_os2(FontTable const& os2_table)
         .weight_class = table.u16_at(4),
         .width_class = table.u16_at(6),
         .selection = table.u16_at(62),
+        .typo_ascender = table.i16_at(68),
+        .typo_descender = table.i16_at(70),
+        .win_ascent = table.u16_at(74),
+        .win_descent = table.u16_at(76),
+        .x_height = version >= 2 ? table.i16_at(86) : static_cast<i16>(0),
     };
 }
 
 constexpr u16 italic_selection_bit = 1 << 0;
 constexpr u16 bold_selection_bit = 1 << 5;
+constexpr u16 use_typo_metrics_selection_bit = 1 << 7;
 constexpr u16 wws_selection_bit = 1 << 8;
 constexpr u16 oblique_selection_bit = 1 << 9;
 
@@ -350,6 +361,32 @@ FaceDescription FaceDescription::read(hb_face_t* face)
         if (family.has_value())
             description.m_family = FlyString { family.release_value() };
     }
+
+    // The same ascender and descender as FreeType's face->ascender and face->descender.
+    // https://learn.microsoft.com/en-us/typography/opentype/spec/recom#baseline-to-baseline-distances
+    if (os2.has_value() && (os2->selection & use_typo_metrics_selection_bit)) {
+        description.m_vertical_metrics.ascender = os2->typo_ascender;
+        description.m_vertical_metrics.descender = os2->typo_descender;
+    } else {
+        // https://learn.microsoft.com/en-us/typography/opentype/spec/hhea
+        FontTable hhea_table { face, FourCC { "hhea" } };
+        if (!hhea_table.is_empty() && hhea_table.with_following_data().contains(0, 36)) {
+            description.m_vertical_metrics.ascender = hhea_table.with_following_data().i16_at(4);
+            description.m_vertical_metrics.descender = hhea_table.with_following_data().i16_at(6);
+        }
+        auto& metrics = description.m_vertical_metrics;
+        if (metrics.ascender == 0 && metrics.descender == 0 && os2.has_value()) {
+            if (os2->typo_ascender != 0 || os2->typo_descender != 0) {
+                metrics.ascender = os2->typo_ascender;
+                metrics.descender = os2->typo_descender;
+            } else {
+                metrics.ascender = static_cast<i16>(os2->win_ascent);
+                metrics.descender = static_cast<i16>(-static_cast<i16>(os2->win_descent));
+            }
+        }
+    }
+    if (os2.has_value())
+        description.m_vertical_metrics.x_height = os2->x_height;
 
     auto has_table = [&](char const* tag) {
         return !FontTable { face, FourCC { tag } }.is_empty();
