@@ -483,12 +483,12 @@ sk_sp<SkTextBlob> DisplayListRasterCache::text_blob(DisplayListResourceStorage c
     return blob;
 }
 
-SkPath DisplayListRasterCache::clip_path(u64 path_identity, Gfx::Path const& path)
+SkPath DisplayListRasterCache::clip_path(u64 path_identity, Gfx::PathData const& path_data)
 {
     if (auto it = m_clip_paths.find(path_identity); it != m_clip_paths.end())
         return it->value->path;
     auto entry = m_clip_paths_from_last_frame.take(path_identity).value_or_lazy_evaluated([&] {
-        return make<ClipPath>(Gfx::to_skia_path(path));
+        return make<ClipPath>(Gfx::to_skia_path(path_data));
     });
     auto skia_path = entry->path;
     m_clip_paths.set(path_identity, move(entry));

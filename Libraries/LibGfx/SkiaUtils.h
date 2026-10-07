@@ -14,7 +14,7 @@
 #include <LibGfx/CompositingAndBlendingOperator.h>
 #include <LibGfx/Filter.h>
 #include <LibGfx/PaintStyle.h>
-#include <LibGfx/PathSkia.h>
+#include <LibGfx/Path.h>
 #include <LibGfx/ScalingMode.h>
 #include <LibGfx/WindingRule.h>
 #include <core/SkBlender.h>
@@ -139,7 +139,8 @@ constexpr SkSamplingOptions to_skia_sampling_options(ScalingMode scaling_mode)
     VERIFY_NOT_REACHED();
 }
 
-SkPath to_skia_path(Path const& path);
+SkPath to_skia_path(PathData const&);
+SkPath to_skia_path(Path const&);
 // Builds the SkImageFilter tree a serialized filter graph describes; `image_frame` supplies the
 // frames the graph names by id.
 sk_sp<SkImageFilter> to_skia_image_filter(ReadonlyBytes serialized_filter, Function<DecodedImageFrame const&(u64)> const& image_frame);

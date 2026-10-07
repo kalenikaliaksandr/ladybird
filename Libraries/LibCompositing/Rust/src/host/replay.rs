@@ -53,8 +53,8 @@ impl ReplayPainter for FfiDisplayListReplayCallbacks {
     }
 
     fn push_clip_path(&mut self, path: &OwnedPath, winding_rule: WindingRule) {
-        // SAFETY: The C++ painter reads the Gfx::Path synchronously; the tree keeps it alive.
-        unsafe { (self.push_clip_path)(self.context, path.as_raw(), path.identity(), winding_rule) };
+        // SAFETY: The C++ painter reads the path synchronously; the tree keeps it alive.
+        unsafe { (self.push_clip_path)(self.context, path.as_raw().cast(), path.identity(), winding_rule) };
     }
 
     fn push_layer(&mut self, layer: &ReplayLayer) {

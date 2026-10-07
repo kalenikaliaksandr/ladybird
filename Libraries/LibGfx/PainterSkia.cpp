@@ -17,7 +17,7 @@
 #include <LibGfx/Filter.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/PainterSkia.h>
-#include <LibGfx/PathSkia.h>
+#include <LibGfx/Path.h>
 #include <LibGfx/SkiaUtils.h>
 
 #include <core/SkCanvas.h>

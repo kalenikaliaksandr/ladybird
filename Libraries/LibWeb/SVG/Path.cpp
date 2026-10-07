@@ -74,10 +74,7 @@ Path& Path::operator=(Path&& other)
 
 Gfx::Path Path::to_gfx_path() const
 {
-    auto* path = static_cast<Gfx::Path*>(RustFFI::rust_svg_path_to_gfx_path(m_rust_path));
-    auto result = move(*path);
-    delete path;
-    return result;
+    return Gfx::Path::adopt(static_cast<Gfx::FFI::RustPath*>(RustFFI::rust_svg_path_to_gfx_path(m_rust_path)));
 }
 
 String Path::serialize() const

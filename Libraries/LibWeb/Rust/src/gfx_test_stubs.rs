@@ -107,43 +107,32 @@ extern "C" fn ladybird_gfx_glyph_run_glyph_intercepts(
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn ladybird_gfx_path_create_from_ops(_kinds: *const u8, _values: *const f32, _count: usize) -> *mut c_void {
-    unreachable!("no unit test builds a path");
+extern "C" fn ladybird_gfx_skia_path_length(_path: *const c_void) -> f32 {
+    unreachable!("no unit test measures a path");
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn ladybird_gfx_path_create_from_glyph_runs(_runs: *const c_void, _run_count: usize) -> *mut c_void {
-    unreachable!("no unit test builds a path");
+extern "C" fn ladybird_gfx_skia_path_first_contour_length(_path: *const c_void) -> f32 {
+    unreachable!("no unit test measures a path");
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn ladybird_gfx_path_copy_transformed(_path: *const c_void, _affine_values: *const f32) -> *mut c_void {
-    unreachable!("no unit test builds a path");
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn ladybird_gfx_path_length(_path: *const c_void) -> f32 {
-    unreachable!("no unit test builds a path");
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn ladybird_gfx_path_place_glyph_runs_along(
+extern "C" fn ladybird_gfx_skia_path_position_and_tangent(
     _path: *const c_void,
-    _runs: *const c_void,
-    _run_count: usize,
-    _offset: f32,
-) -> *mut c_void {
-    unreachable!("no unit test builds a path");
+    _distance: f32,
+    _out: *mut f32,
+) -> bool {
+    unreachable!("no unit test measures a path");
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn ladybird_gfx_path_set_fill_type(_path: *mut c_void, _winding_rule: i32) {
-    unreachable!("no unit test builds a path");
+extern "C" fn ladybird_gfx_font_glyph_outline_ascent(_font: *const c_void, _out_ascent: *mut f32) -> bool {
+    unreachable!("no unit test makes a glyph outline");
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn ladybird_gfx_process_next_path_identity() -> u64 {
-    unreachable!("no unit test builds a path");
+extern "C" fn ladybird_gfx_font_append_glyph_outline(_font: *const c_void, _glyph_id: u32, _outline: *mut c_void) {
+    unreachable!("no unit test makes a glyph outline");
 }
 
 #[unsafe(no_mangle)]

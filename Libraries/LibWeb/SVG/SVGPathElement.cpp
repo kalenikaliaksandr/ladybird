@@ -33,9 +33,7 @@ Gfx::Path SVGPathElement::get_path(CSSPixelSize, CSS::ComputedValues const& comp
     VERIFY(computed_d->is_basic_shape());
     auto const& shape = *computed_d->rust_style_value_data()->basic_shape.shape.pointer;
     VERIFY(shape.kind == 6);
-    auto* native_path = static_cast<Gfx::Path*>(CSS::StyleValueFFI::rust_css_path_to_gfx_path(&shape.path));
-    auto path = move(*native_path);
-    delete native_path;
+    auto path = Gfx::Path::adopt(static_cast<Gfx::FFI::RustPath*>(CSS::StyleValueFFI::rust_css_path_to_gfx_path(&shape.path)));
     static_assert(to_underlying(Gfx::WindingRule::Nonzero) == 0);
     static_assert(to_underlying(Gfx::WindingRule::EvenOdd) == 1);
     path.set_fill_type(static_cast<Gfx::WindingRule>(shape.fill_rule));

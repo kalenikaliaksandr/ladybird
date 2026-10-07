@@ -22,6 +22,7 @@
 #include <core/SkFont.h>
 #include <core/SkFontMetrics.h>
 #include <core/SkFontTypes.h>
+#include <core/SkPath.h>
 
 #include <harfbuzz/hb-ot.h>
 #include <harfbuzz/hb.h>
@@ -33,6 +34,8 @@ bool ladybird_gfx_font_contains_glyph(void const*, u32);
 bool ladybird_gfx_font_is_emoji_font(void const*);
 void ladybird_gfx_font_ref(void const*);
 void ladybird_gfx_font_unref(void const*);
+bool ladybird_gfx_font_glyph_outline_ascent(void const*, float*);
+void ladybird_gfx_font_append_glyph_outline(void const*, u32, void*);
 }
 
 namespace Gfx {
@@ -303,4 +306,54 @@ extern "C" void ladybird_gfx_font_unref(void const* font)
 {
     VERIFY(font);
     static_cast<Gfx::Font const*>(font)->unref();
+}
+
+extern "C" bool ladybird_gfx_font_glyph_outline_ascent(void const* font, float* out_ascent)
+{
+    VERIFY(font);
+    auto const& gfx_font = *static_cast<Gfx::Font const*>(font);
+    if (gfx_font.is_invisible())
+        return false;
+    *out_ascent = gfx_font.pixel_metrics().ascent;
+    return true;
+}
+
+extern "C" void ladybird_gfx_font_append_glyph_outline(void const* font, u32 glyph_id, void* outline_path)
+{
+    auto* outline = static_cast<Gfx::FFI::RustPath*>(outline_path);
+    VERIFY(font);
+    auto glyph_path = static_cast<Gfx::Font const*>(font)->skia_font(1).getPath(static_cast<SkGlyphID>(glyph_id));
+    if (!glyph_path.has_value())
+        return;
+    auto const points = glyph_path->points();
+    auto const conic_weights = glyph_path->conicWeights();
+    size_t point_index = 0;
+    size_t conic_weight_index = 0;
+    for (auto verb : glyph_path->verbs()) {
+        switch (verb) {
+        case SkPathVerb::kMove:
+            Gfx::FFI::ladybird_gfx_path_outline_move_to(outline, points[point_index].x(), points[point_index].y());
+            point_index += 1;
+            break;
+        case SkPathVerb::kLine:
+            Gfx::FFI::ladybird_gfx_path_outline_line_to(outline, points[point_index].x(), points[point_index].y());
+            point_index += 1;
+            break;
+        case SkPathVerb::kQuad:
+            Gfx::FFI::ladybird_gfx_path_outline_quad_to(outline, points[point_index].x(), points[point_index].y(), points[point_index + 1].x(), points[point_index + 1].y());
+            point_index += 2;
+            break;
+        case SkPathVerb::kConic:
+            Gfx::FFI::ladybird_gfx_path_outline_conic_to(outline, points[point_index].x(), points[point_index].y(), points[point_index + 1].x(), points[point_index + 1].y(), conic_weights[conic_weight_index++]);
+            point_index += 2;
+            break;
+        case SkPathVerb::kCubic:
+            Gfx::FFI::ladybird_gfx_path_outline_cubic_to(outline, points[point_index].x(), points[point_index].y(), points[point_index + 1].x(), points[point_index + 1].y(), points[point_index + 2].x(), points[point_index + 2].y());
+            point_index += 3;
+            break;
+        case SkPathVerb::kClose:
+            Gfx::FFI::ladybird_gfx_path_outline_close(outline);
+            break;
+        }
+    }
 }

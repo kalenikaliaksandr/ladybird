@@ -92,9 +92,10 @@ impl std::fmt::Debug for CssPath {
     }
 }
 
+/// The caller owns the returned path, which a Gfx::Path adopts.
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_css_path_to_gfx_path(path: &CssPath) -> *mut std::ffi::c_void {
-    path.to_gfx_path().into_raw()
+    path.to_gfx_path().into_raw().cast()
 }
 
 #[cfg(test)]

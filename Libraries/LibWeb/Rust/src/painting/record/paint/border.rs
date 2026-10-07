@@ -794,7 +794,7 @@ pub(crate) fn paint_border(
         if path.is_empty() {
             return;
         }
-        let built = path.build();
+        let built = std::mem::take(path).build();
         painter.fill_path(FillPathParams {
             force_dark_role: borders_data.force_dark_role,
             path: &built,
@@ -803,7 +803,6 @@ pub(crate) fn paint_border(
             winding_rule: WindingRule::EvenOdd,
             should_anti_alias: ShouldAntiAlias::Yes,
         });
-        *path = PathBuilder::new();
     };
 
     let is_horizontal_edge = matches!(edge, BorderEdge::Top | BorderEdge::Bottom);

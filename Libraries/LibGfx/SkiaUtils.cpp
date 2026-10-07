@@ -29,9 +29,30 @@
 
 namespace Gfx {
 
+static_assert(sizeof(SkPoint) == sizeof(FloatPoint));
+static_assert(to_underlying(SkPathVerb::kMove) == to_underlying(FFI::PathVerb::Move));
+static_assert(to_underlying(SkPathVerb::kLine) == to_underlying(FFI::PathVerb::Line));
+static_assert(to_underlying(SkPathVerb::kQuad) == to_underlying(FFI::PathVerb::Quad));
+static_assert(to_underlying(SkPathVerb::kConic) == to_underlying(FFI::PathVerb::Conic));
+static_assert(to_underlying(SkPathVerb::kCubic) == to_underlying(FFI::PathVerb::Cubic));
+static_assert(to_underlying(SkPathVerb::kClose) == to_underlying(FFI::PathVerb::Close));
+static_assert(to_underlying(SkPathFillType::kWinding) == to_underlying(FFI::PathFillType::Winding));
+static_assert(to_underlying(SkPathFillType::kEvenOdd) == to_underlying(FFI::PathFillType::EvenOdd));
+static_assert(to_underlying(SkPathFillType::kInverseWinding) == to_underlying(FFI::PathFillType::InverseWinding));
+static_assert(to_underlying(SkPathFillType::kInverseEvenOdd) == to_underlying(FFI::PathFillType::InverseEvenOdd));
+
+SkPath to_skia_path(PathData const& data)
+{
+    return SkPath::Raw(
+        { reinterpret_cast<SkPoint const*>(data.points.data()), data.points.size() },
+        { reinterpret_cast<SkPathVerb const*>(data.verbs.data()), data.verbs.size() },
+        { data.conic_weights.data(), data.conic_weights.size() },
+        static_cast<SkPathFillType>(data.fill_type));
+}
+
 SkPath to_skia_path(Path const& path)
 {
-    return static_cast<PathImplSkia const&>(path.impl()).sk_path();
+    return to_skia_path(path.data());
 }
 
 namespace {

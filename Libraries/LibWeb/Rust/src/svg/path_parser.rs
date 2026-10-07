@@ -921,10 +921,10 @@ pub unsafe extern "C" fn rust_svg_path_serialize(
 }
 
 /// # Safety
-/// `path` must point to a live `ParsedPath`.
+/// `path` must point to a live `ParsedPath`. The caller owns the returned path, which a Gfx::Path adopts.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_svg_path_to_gfx_path(path: *const c_void) -> *mut c_void {
-    unsafe { &*path.cast::<ParsedPath>() }.to_gfx_path().into_raw()
+    unsafe { &*path.cast::<ParsedPath>() }.to_gfx_path().into_raw().cast()
 }
 
 #[cfg(test)]
