@@ -44,6 +44,9 @@ public:
     // The style of the face with these variations applied.
     FaceStyle style_for_variations(ReadonlySpan<FontVariationAxis>) const;
 
+    // The number of named instances that the upper 16 bits of a face index can select, by the rules of FreeType.
+    static u32 named_instance_count(hb_face_t*);
+
 private:
     struct VariationAxis {
         u32 tag { 0 };

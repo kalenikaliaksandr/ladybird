@@ -334,6 +334,66 @@ bool is_usable_width_axis(float minimum, float maximum)
     return range > 0 && range <= 500 && maximum <= 500;
 }
 
+// https://learn.microsoft.com/en-us/typography/opentype/spec/fvar
+struct FvarHeader {
+    size_t axes_offset { 0 };
+    size_t axis_count { 0 };
+    size_t axis_size { 0 };
+    size_t instance_count { 0 };
+    size_t instance_size { 0 };
+
+    size_t axis_start(size_t index) const { return axes_offset + axis_size * index; }
+    size_t instance_start(size_t index) const { return axes_offset + axis_size * axis_count + instance_size * index; }
+};
+
+// The header of an fvar table that FreeType accepts.
+Optional<FvarHeader> read_fvar_header(FontDataReader const& fvar_table)
+{
+    if (!fvar_table.contains(0, 16))
+        return {};
+    auto version = fvar_table.u32_at(0);
+    FvarHeader header {
+        .axes_offset = fvar_table.u16_at(4),
+        .axis_count = fvar_table.u16_at(8),
+        .axis_size = fvar_table.u16_at(10),
+        .instance_count = fvar_table.u16_at(12),
+        .instance_size = fvar_table.u16_at(14),
+    };
+    bool is_valid = fvar_table.bytes().size() >= 20
+        && version == 0x00010000
+        && header.axis_size == 20
+        && header.axis_count != 0
+        && header.axis_count <= 0x3FFE
+        && (header.instance_size == 4 + 4 * header.axis_count || header.instance_size == 6 + 4 * header.axis_count)
+        && header.instance_count <= 0x7EFF
+        && header.instance_start(header.instance_count) <= fvar_table.bytes().size();
+    if (!is_valid)
+        return {};
+    return header;
+}
+
+}
+
+u32 FaceDescription::named_instance_count(hb_face_t* face)
+{
+    FontTable fvar_table { face, FourCC { "fvar" } };
+    auto header = read_fvar_header(fvar_table);
+    if (!header.has_value())
+        return 0;
+
+    // FreeType adds the default instance after the others if no instance has the default coordinates.
+    auto has_default_instance = false;
+    for (size_t instance = 0; instance < header->instance_count && !has_default_instance; ++instance) {
+        has_default_instance = true;
+        for (size_t axis = 0; axis < header->axis_count && has_default_instance; ++axis)
+            has_default_instance = fvar_table.u32_at(header->axis_start(axis) + 8) == fvar_table.u32_at(header->instance_start(instance) + 4 + 4 * axis);
+    }
+    auto count = static_cast<u32>(header->instance_count) + (has_default_instance ? 0 : 1);
+
+    // FreeType gives a CFF face no named instances unless the face also has glyf or CFF2 outlines.
+    if (!face_has_table(face, FourCC { "glyf" }) && !face_has_table(face, FourCC { "CFF2" }) && face_has_table(face, FourCC { "CFF " }))
+        return 0;
+    return count;
 }
 
 FaceDescription FaceDescription::read(hb_face_t* face)
@@ -433,49 +493,33 @@ FaceDescription FaceDescription::read(hb_face_t* face)
     Vector<i32> face_coordinates;
     {
         FontTable fvar_table { face, FourCC { "fvar" } };
-        if (fvar_table.contains(0, 16)) {
-            auto version = fvar_table.u32_at(0);
-            size_t axes_offset = fvar_table.u16_at(4);
-            size_t axis_count = fvar_table.u16_at(8);
-            size_t axis_size = fvar_table.u16_at(10);
-            size_t instance_count = fvar_table.u16_at(12);
-            size_t instance_size = fvar_table.u16_at(14);
-            bool is_valid = fvar_table.bytes().size() >= 20
-                && version == 0x00010000
-                && axis_size == 20
-                && axis_count != 0
-                && axis_count <= 0x3FFE
-                && (instance_size == 4 + 4 * axis_count || instance_size == 6 + 4 * axis_count)
-                && instance_count <= 0x7EFF
-                && axes_offset + axis_size * axis_count + instance_size * instance_count <= fvar_table.bytes().size();
-            if (is_valid) {
-                // The upper 16 bits of the face index select a named instance, from 1, and the face starts from its
-                // coordinates. A face does not have to list its default instance, and FreeType then adds it after the
-                // others, so an index after the last instance selects the default coordinates.
-                auto instance_index = hb_face_get_index(face) >> 16;
-                Optional<size_t> instance_start;
-                if (instance_index > 0 && instance_index <= instance_count)
-                    instance_start = axes_offset + axis_size * axis_count + instance_size * (instance_index - 1);
+        if (auto header = read_fvar_header(fvar_table); header.has_value()) {
+            // The upper 16 bits of the face index select a named instance, from 1, and the face starts from its
+            // coordinates. A face does not have to list its default instance, and FreeType then adds it after the
+            // others, so an index after the last instance selects the default coordinates.
+            auto instance_index = hb_face_get_index(face) >> 16;
+            Optional<size_t> instance_start;
+            if (instance_index > 0 && instance_index <= header->instance_count)
+                instance_start = header->instance_start(instance_index - 1);
 
-                for (size_t index = 0; index < axis_count; ++index) {
-                    auto axis_start = axes_offset + axis_size * index;
-                    auto minimum = fvar_table.i32_at(axis_start + 4);
-                    auto default_value = fvar_table.i32_at(axis_start + 8);
-                    auto maximum = fvar_table.i32_at(axis_start + 12);
-                    // An axis whose default is outside its range cannot vary.
-                    if (minimum > default_value || default_value > maximum) {
-                        minimum = default_value;
-                        maximum = default_value;
-                    }
-                    auto face_value = instance_start.has_value() ? fvar_table.i32_at(*instance_start + 4 + 4 * index) : default_value;
-                    description.m_axes.append({
-                        .tag = fvar_table.u32_at(axis_start),
-                        .minimum = fixed_to_float(minimum),
-                        .face_value = pin_to_range(fixed_to_float(face_value), fixed_to_float(minimum), fixed_to_float(maximum)),
-                        .maximum = fixed_to_float(maximum),
-                    });
-                    face_coordinates.append(face_value);
+            for (size_t index = 0; index < header->axis_count; ++index) {
+                auto axis_start = header->axis_start(index);
+                auto minimum = fvar_table.i32_at(axis_start + 4);
+                auto default_value = fvar_table.i32_at(axis_start + 8);
+                auto maximum = fvar_table.i32_at(axis_start + 12);
+                // An axis whose default is outside its range cannot vary.
+                if (minimum > default_value || default_value > maximum) {
+                    minimum = default_value;
+                    maximum = default_value;
                 }
+                auto face_value = instance_start.has_value() ? fvar_table.i32_at(*instance_start + 4 + 4 * index) : default_value;
+                description.m_axes.append({
+                    .tag = fvar_table.u32_at(axis_start),
+                    .minimum = fixed_to_float(minimum),
+                    .face_value = pin_to_range(fixed_to_float(face_value), fixed_to_float(minimum), fixed_to_float(maximum)),
+                    .maximum = fixed_to_float(maximum),
+                });
+                face_coordinates.append(face_value);
             }
         }
     }
